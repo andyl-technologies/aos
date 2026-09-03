@@ -58,6 +58,9 @@ mod hot_fork_child_qmp;
 #[path = "node/hot_fork_diagnostics.rs"]
 mod hot_fork_diagnostics;
 #[cfg(target_os = "linux")]
+#[path = "node/hot_fork_operation.rs"]
+mod hot_fork_operation;
+#[cfg(target_os = "linux")]
 #[path = "node/hot_fork_plugin_endpoints.rs"]
 mod hot_fork_plugin_endpoints;
 #[cfg(unix)]
@@ -80,6 +83,11 @@ pub use hot_fork_diagnostics::{
     MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_BYTES, QemuHotForkChildDiagnosticCapture,
     QemuHotForkChildDiagnosticDrain, QemuHotForkChildDiagnosticStageError,
     QemuHotForkChildDiagnosticStageProof, QemuHotForkChildDiagnosticStageState,
+};
+#[cfg(target_os = "linux")]
+pub use hot_fork_operation::{
+    QemuHotForkChildLaunch, QemuHotForkChildProcessBasis, QemuHotForkChildProcessOwner,
+    QemuHotForkCommandError, QemuHotForkLaunchError,
 };
 #[cfg(target_os = "linux")]
 use hot_fork_plugin_endpoints::QemuHotForkPluginEndpointStage;
@@ -1033,6 +1041,26 @@ pub trait QemuQmpMachineControlChannel: Send {
             "abort_hot_fork_template",
             "hot-fork template coordination is not implemented by this QMP channel",
         ))
+    }
+
+    /// Forks one exact retained template after all private child resources are sealed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuHotForkCommandError::Rejected`] only when QEMU explicitly
+    /// rejects the request before creating a child. Every other command error
+    /// is [`QemuHotForkCommandError::Indeterminate`] because a child may exist.
+    #[cfg(target_os = "linux")]
+    fn hot_fork(
+        &mut self,
+        _request: crate::QmpHotForkRequest,
+    ) -> Result<crate::QmpHotForkState, QemuHotForkCommandError> {
+        Err(QemuHotForkCommandError::Rejected {
+            source: QemuNodeChannelError::new(
+                "fork retained hot-fork template",
+                "hot-fork execution is not implemented by this QMP channel",
+            ),
+        })
     }
 
     /// Imports one held branch-private ring descriptor into the QEMU template.

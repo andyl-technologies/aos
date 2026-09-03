@@ -2337,11 +2337,23 @@ twelve-field request from those typed prepared states, validates every echoed
 field and outcome, preserves the connection only for an explicit pre-fork
 command rejection, and poisons it after every fork-indeterminate failure.
 
+The Rust node layer now composes that command through a linear host boundary.
+It requires a child-process owner to authenticate the exact source PID, child
+PID, and echoed request before success, and returns that nonduplicable authority
+only together with the one branch-private QMP endpoint. Explicit rejection
+retains the reusable source; ambiguous exchange, failed parent disposition,
+endpoint loss, and process-retention failure quarantine it. Focused scripted
+regressions cover all six outcomes, including proof that a numeric child PID is
+not sufficient process authority.
+
 This is still an executable T-CAM-6.1 audit checkpoint rather than completion
 of T-CAM-6.2 or T-CAM-6.3. The daemon must next compose the command with its
-attempt process guard, direct-child reaper/quarantine owner, exact resource
-accounting, private child-channel authentication, and observation publication;
-the real QEMU flight, measurements, and failure-injection audit remain open.
+attempt process guard, parent-QEMU-owned reap/status protocol, exact
+child-generation cgroup/pidfd authority, branch resource accounting, private
+child-channel authentication, and observation publication. Because the forked
+process is the template QEMU's direct child, the daemon must not fabricate a
+`std::process::Child` from its PID. The real QEMU flight, measurements, and
+failure-injection audit remain open.
 The internal registry now has safe RCU and internal-monitor dispositions, while
 other AIO owners and every generic or external thread remain unresolved. The
 retained AIO/BH/timer and RCU

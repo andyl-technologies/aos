@@ -117,6 +117,7 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
                 fail_descriptor_close: false,
                 fail_endpoint_install: false,
                 mismatch_endpoint_disposition: false,
+                hot_fork_script: HotForkScript::Rejected,
             },
         );
         let mut node = QemuNode::new(

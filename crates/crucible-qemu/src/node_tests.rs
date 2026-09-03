@@ -189,6 +189,7 @@ struct ScriptedQmpMachineControl {
     fail_descriptor_close: bool,
     fail_endpoint_install: bool,
     mismatch_endpoint_disposition: bool,
+    hot_fork_script: HotForkScript,
 }
 
 #[derive(Clone, Copy)]
@@ -198,6 +199,46 @@ enum DescriptorScript {
     CloseFailure,
     EndpointInstallFailure,
     EndpointDispositionMismatch,
+    ForkRejected,
+    ForkIndeterminate,
+    ForkParentDispositionFailed,
+}
+
+#[derive(Clone, Copy)]
+enum HotForkScript {
+    Forked,
+    Rejected,
+    Indeterminate,
+    ParentDispositionFailed,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ScriptedHotForkChildAuthority {
+    basis: crate::QemuHotForkChildProcessBasis,
+}
+
+#[derive(Default)]
+struct ScriptedHotForkChildOwner {
+    fail: bool,
+    retained: Vec<crate::QemuHotForkChildProcessBasis>,
+}
+
+impl crate::QemuHotForkChildProcessOwner for ScriptedHotForkChildOwner {
+    type Authority = ScriptedHotForkChildAuthority;
+
+    fn retain_hot_fork_child(
+        &mut self,
+        basis: crate::QemuHotForkChildProcessBasis,
+    ) -> Result<Self::Authority, QemuNodeChannelError> {
+        self.retained.push(basis);
+        if self.fail {
+            return Err(QemuNodeChannelError::new(
+                "retain forked child process",
+                "injected child process authentication failure",
+            ));
+        }
+        Ok(ScriptedHotForkChildAuthority { basis })
+    }
 }
 
 impl QemuPluginIpcControlChannel for ScriptedPluginControl {
@@ -958,6 +999,36 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
         ))
     }
 
+    fn hot_fork(
+        &mut self,
+        request: crate::QmpHotForkRequest,
+    ) -> Result<crate::QmpHotForkState, crate::QemuHotForkCommandError> {
+        match self.hot_fork_script {
+            HotForkScript::Forked => Ok(crate::QmpHotForkState::for_test(
+                request,
+                crate::QmpHotForkOutcome::Forked,
+                321,
+            )),
+            HotForkScript::Rejected => Err(crate::QemuHotForkCommandError::Rejected {
+                source: QemuNodeChannelError::new(
+                    "fork retained hot-fork template",
+                    "injected pre-fork rejection",
+                ),
+            }),
+            HotForkScript::Indeterminate => Err(crate::QemuHotForkCommandError::Indeterminate {
+                source: QemuNodeChannelError::new(
+                    "fork retained hot-fork template",
+                    "injected indeterminate exchange",
+                ),
+            }),
+            HotForkScript::ParentDispositionFailed => Ok(crate::QmpHotForkState::for_test(
+                request,
+                crate::QmpHotForkOutcome::ParentDispositionFailed,
+                321,
+            )),
+        }
+    }
+
     fn query_hot_fork_bottom_half_inventory(
         &mut self,
     ) -> Result<crate::QmpHotForkBottomHalfInventory, QemuNodeChannelError> {
@@ -1651,6 +1722,179 @@ fn hot_fork_plugin_endpoints_bind_the_installed_private_ring_generation()
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+fn sealed_hot_fork_node(script: DescriptorScript) -> Result<QemuNode, Box<dyn Error>> {
+    let (setup_identity, host_barrier, image) = held_hot_fork_ring_image()?;
+    let barrier = crate::QmpHotForkPluginBarrierState::one_quiescent(15, host_barrier.ring_count());
+    let mut node = scripted_hot_fork_capture_node(
+        shared_log(),
+        setup_identity,
+        setup_identity,
+        host_barrier,
+        image.clone(),
+        [barrier; 8],
+        script,
+    )?;
+    let capture = node.capture_hot_fork_plugin_ring_image(image.canonical_len()?)?;
+    let private = node.materialize_hot_fork_private_ring_mapping(capture)?;
+    node.stage_hot_fork_private_ring_mapping(private)?;
+    node.stage_hot_fork_child_diagnostics()?;
+    node.stage_hot_fork_child_qmp()?;
+    node.stage_hot_fork_plugin_endpoints()?;
+    Ok(node)
+}
+
+#[cfg(target_os = "linux")]
+fn exact_hot_fork_request() -> crate::QmpHotForkRequest {
+    crate::QmpHotForkRequest::for_test(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn hot_fork_success_transfers_only_the_private_child_endpoint() -> Result<(), Box<dyn Error>> {
+    let mut node = sealed_hot_fork_node(DescriptorScript::Success)?;
+    let source_process_id = node.process_id();
+    let mut process_owner = ScriptedHotForkChildOwner::default();
+
+    let launch = node.fork_hot_fork_template(exact_hot_fork_request(), &mut process_owner)?;
+
+    assert_eq!(launch.child_process_id(), 321);
+    assert_eq!(launch.parent_state().request(), exact_hot_fork_request());
+    assert_eq!(
+        launch.parent_state().outcome(),
+        crate::QmpHotForkOutcome::Forked
+    );
+    assert_eq!(process_owner.retained.len(), 1);
+    let retained_basis = launch.process_authority().basis;
+    assert_eq!(retained_basis.source_process_id(), source_process_id);
+    assert_eq!(retained_basis.child_process_id(), 321);
+    assert_eq!(retained_basis.request(), exact_hot_fork_request());
+    assert_eq!(node.lifecycle_state(), QemuNodeLifecycleState::Running);
+    assert!(node.take_hot_fork_child_qmp_host_endpoint().is_err());
+    drop(launch);
+    node.shutdown_child()?;
+    Ok(())
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn hot_fork_explicit_rejection_retains_a_reusable_source_owner() -> Result<(), Box<dyn Error>> {
+    let mut node = sealed_hot_fork_node(DescriptorScript::ForkRejected)?;
+    let mut process_owner = ScriptedHotForkChildOwner::default();
+
+    let error = node
+        .fork_hot_fork_template(exact_hot_fork_request(), &mut process_owner)
+        .expect_err("explicit rejection must not produce a child launch");
+
+    assert!(matches!(
+        error,
+        crate::QemuHotForkLaunchError::Rejected { .. }
+    ));
+    assert!(process_owner.retained.is_empty());
+    assert_eq!(node.lifecycle_state(), QemuNodeLifecycleState::Running);
+    let retained = node.take_hot_fork_child_qmp_host_endpoint()?;
+    drop(retained);
+    node.shutdown_child()?;
+    Ok(())
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn hot_fork_indeterminate_exchange_quarantines_the_complete_source_owner()
+-> Result<(), Box<dyn Error>> {
+    let mut node = sealed_hot_fork_node(DescriptorScript::ForkIndeterminate)?;
+    let mut process_owner = ScriptedHotForkChildOwner::default();
+
+    let error = node
+        .fork_hot_fork_template(exact_hot_fork_request(), &mut process_owner)
+        .expect_err("indeterminate exchange must not expose a child launch");
+
+    assert!(matches!(
+        error,
+        crate::QemuHotForkLaunchError::Indeterminate { .. }
+    ));
+    assert!(process_owner.retained.is_empty());
+    assert_eq!(node.lifecycle_state(), QemuNodeLifecycleState::Quarantined);
+    assert!(
+        node.hot_fork_child_qmp_stage()
+            .ok_or("quarantine discarded the child QMP stage")?
+            .resource_plan_bound()
+    );
+    node.shutdown_child()?;
+    Ok(())
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn hot_fork_parent_disposition_failure_preserves_child_identity_and_quarantines()
+-> Result<(), Box<dyn Error>> {
+    let mut node = sealed_hot_fork_node(DescriptorScript::ForkParentDispositionFailed)?;
+    let mut process_owner = ScriptedHotForkChildOwner::default();
+
+    let error = node
+        .fork_hot_fork_template(exact_hot_fork_request(), &mut process_owner)
+        .expect_err("failed parent disposition must quarantine the source owner");
+
+    assert!(matches!(
+        error,
+        crate::QemuHotForkLaunchError::ParentDispositionFailed {
+            child_pid: 321,
+            parent_status: -1,
+        }
+    ));
+    assert!(process_owner.retained.is_empty());
+    assert_eq!(node.lifecycle_state(), QemuNodeLifecycleState::Quarantined);
+    node.shutdown_child()?;
+    Ok(())
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn hot_fork_success_without_a_transferable_endpoint_quarantines_the_source()
+-> Result<(), Box<dyn Error>> {
+    let mut node = sealed_hot_fork_node(DescriptorScript::Success)?;
+    let mut process_owner = ScriptedHotForkChildOwner::default();
+    let consumed = node.take_hot_fork_child_qmp_host_endpoint()?;
+    drop(consumed);
+
+    let error = node
+        .fork_hot_fork_template(exact_hot_fork_request(), &mut process_owner)
+        .expect_err("a created child without its endpoint must quarantine the source");
+
+    assert!(matches!(
+        error,
+        crate::QemuHotForkLaunchError::EndpointTransfer { .. }
+    ));
+    assert!(process_owner.retained.is_empty());
+    assert_eq!(node.lifecycle_state(), QemuNodeLifecycleState::Quarantined);
+    node.shutdown_child()?;
+    Ok(())
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn hot_fork_process_retention_failure_quarantines_before_endpoint_admission()
+-> Result<(), Box<dyn Error>> {
+    let mut node = sealed_hot_fork_node(DescriptorScript::Success)?;
+    let mut process_owner = ScriptedHotForkChildOwner {
+        fail: true,
+        retained: Vec::new(),
+    };
+
+    let error = node
+        .fork_hot_fork_template(exact_hot_fork_request(), &mut process_owner)
+        .expect_err("an unauthenticated child process must not expose its endpoint");
+
+    assert!(matches!(
+        error,
+        crate::QemuHotForkLaunchError::ProcessRetention { .. }
+    ));
+    assert_eq!(process_owner.retained.len(), 1);
+    assert_eq!(node.lifecycle_state(), QemuNodeLifecycleState::Quarantined);
+    node.shutdown_child()?;
+    Ok(())
+}
+
 #[test]
 #[cfg(target_os = "linux")]
 fn hot_fork_plugin_endpoint_transfer_failure_retains_and_quarantines_owner()
@@ -2075,6 +2319,18 @@ fn scripted_hot_fork_capture_node(
                 descriptor_script,
                 DescriptorScript::EndpointDispositionMismatch
             ),
+            hot_fork_script: match descriptor_script {
+                DescriptorScript::ForkRejected => HotForkScript::Rejected,
+                DescriptorScript::ForkIndeterminate => HotForkScript::Indeterminate,
+                DescriptorScript::ForkParentDispositionFailed => {
+                    HotForkScript::ParentDispositionFailed
+                }
+                DescriptorScript::Success
+                | DescriptorScript::InstallFailure
+                | DescriptorScript::CloseFailure
+                | DescriptorScript::EndpointInstallFailure
+                | DescriptorScript::EndpointDispositionMismatch => HotForkScript::Forked,
+            },
         },
     );
     Ok(QemuNode::new(
@@ -2202,6 +2458,7 @@ fn scripted_node_with_fault_events(
             fail_descriptor_close: false,
             fail_endpoint_install: false,
             mismatch_endpoint_disposition: false,
+            hot_fork_script: HotForkScript::Rejected,
         },
     );
     Ok(QemuNode::new(
@@ -2298,6 +2555,7 @@ fn scripted_node_with_coverage(
             fail_descriptor_close: false,
             fail_endpoint_install: false,
             mismatch_endpoint_disposition: false,
+            hot_fork_script: HotForkScript::Rejected,
         },
     );
     Ok(QemuNode::new(

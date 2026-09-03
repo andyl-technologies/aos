@@ -236,12 +236,13 @@ pub use node::{
     MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_BYTES, QemuHotForkChildDiagnosticCapture,
     QemuHotForkChildDiagnosticDrain, QemuHotForkChildDiagnosticStageError,
     QemuHotForkChildDiagnosticStageProof, QemuHotForkChildDiagnosticStageState,
+    QemuHotForkChildLaunch, QemuHotForkChildProcessBasis, QemuHotForkChildProcessOwner,
     QemuHotForkChildQmpHandshakeError, QemuHotForkChildQmpHostEndpoint,
     QemuHotForkChildQmpStageError, QemuHotForkChildQmpStageProof, QemuHotForkChildQmpStageState,
-    QemuHotForkPluginEndpointStageError, QemuHotForkPluginEndpointStageProof,
-    QemuHotForkPluginEndpointStageState, QemuHotForkPrivateRingMapping,
-    QemuHotForkPrivateRingStageError, QemuHotForkPrivateRingStageProof,
-    QemuHotForkPrivateRingStageState,
+    QemuHotForkCommandError, QemuHotForkLaunchError, QemuHotForkPluginEndpointStageError,
+    QemuHotForkPluginEndpointStageProof, QemuHotForkPluginEndpointStageState,
+    QemuHotForkPrivateRingMapping, QemuHotForkPrivateRingStageError,
+    QemuHotForkPrivateRingStageProof, QemuHotForkPrivateRingStageState,
 };
 pub use node::{
     QemuLogicalTimeCalibration, QemuNode, QemuNodeChannelError, QemuNodeChannelPlane,

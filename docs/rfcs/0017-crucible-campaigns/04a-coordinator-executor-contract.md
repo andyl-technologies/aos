@@ -2910,6 +2910,18 @@ direct-child/quarantine lifecycle, private-channel promotion, and campaign
 observation integration remain mandatory before the executor may report
 `hot-fork`.
 
+The Rust node boundary enforces that rule with a linear launch token. A
+successful result contains the exact parent response, one nonduplicable
+child-process authority, and the single branch-private QMP endpoint; the node
+cannot return success with only a PID. Explicit pre-fork rejection retains the
+reusable source owner, while an indeterminate exchange, a failed parent
+disposition, endpoint transfer failure, or process-retention failure
+quarantines the source. This contract deliberately has no production process
+owner yet: the forked child belongs to the template QEMU's process hierarchy,
+not the daemon's. Parent-QEMU reap/status protocol, exact child-generation
+cgroup/pidfd retention, and branch-resource transfer remain required. A daemon
+MUST NOT synthesize a direct-child wait handle from the numeric PID.
+
 The driver owns selection application, stop-boundary execution, and candidate
 construction but never assignment or daemon-epoch identity. This adapter
 cannot report `hot-fork` until it is composed with the QEMU-owned protocol and
