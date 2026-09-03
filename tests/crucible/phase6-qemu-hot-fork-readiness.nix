@@ -690,7 +690,7 @@ in
               "threads",
               "unclassified-threads"
             ] and
-            $report."schema-version" == 2 and
+            $report."schema-version" == 3 and
             ($report.generation | type) == "number" and
             ($report.complete | type) == "boolean" and
             ($report.overflowed | type) == "boolean" and
@@ -716,13 +716,15 @@ in
               (.joinable | type) == "boolean" and
               (.disposition == "coordinator" or
                .disposition == "unclassified" or
-               .disposition == "unclassified-rcu" or
+               .disposition == "rcu-restart" or
                .disposition == "unclassified-aio")) and
             ([ $report.threads[] | select(.disposition == "coordinator") ] | length) == 1 and
-            ([ $report.threads[] | select(.disposition != "coordinator") ] | length) ==
+            ([ $report.threads[] |
+               select(.disposition == "unclassified" or
+                      .disposition == "unclassified-aio") ] | length) ==
               $report."unclassified-threads" and
             ([ $report.threads[] |
-               select(.name == "call_rcu" and .disposition == "unclassified-rcu") ] |
+               select(.name == "call_rcu" and .disposition == "rcu-restart") ] |
              length) == 1 and
             ([ $report.threads[] |
                select(.name == "IO mon_iothread" and .disposition == "unclassified-aio") ] |
@@ -1839,6 +1841,7 @@ in
           patch=0182-crucible-bind-concrete-child-qmp-runtime.patch
           patch=0183-crucible-reconstruct-child-thread-registry.patch
           patch=0184-crucible-compose-rcu-fork-transaction.patch
+          patch=0185-crucible-bind-rcu-worker-fork-disposition.patch
           plugin_endpoint_schema_version=4
           plugin_endpoint_source_descriptors_observed=true
           plugin_endpoint_replacement_plan_bound=false
@@ -1853,11 +1856,13 @@ in
           required_proofs=511
           precise_sim_rr_proofs=3
           ordinary_paused_exact_boundary_proof=false
-          thread_inventory_schema_version=2
+          thread_inventory_schema_version=3
           thread_inventory_bound=65536
           thread_inventory_stable=true
           thread_inventory_one_coordinator=true
           thread_inventory_rcu_owner=true
+          thread_inventory_rcu_disposition_complete=true
+          unsupported_registered_threads_rejected=true
           thread_inventory_aio_owner=true
           rcu_inventory_schema_version=1
           rcu_inventory_bound=65536

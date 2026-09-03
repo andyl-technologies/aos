@@ -164,7 +164,7 @@ snapshot used to drive that future barrier:
 
 ```text
 CrucibleHotForkThreadInventory {
-    schema-version: u32 = 2,
+    schema-version: u32 = 3,
     generation: u64,
     complete: bool,
     overflowed: bool,
@@ -178,7 +178,7 @@ CrucibleHotForkThreadInventory {
             disposition:
                 coordinator |
                 unclassified |
-                unclassified-rcu |
+                rcu-restart |
                 unclassified-aio,
         },
     ],
@@ -186,8 +186,9 @@ CrucibleHotForkThreadInventory {
 ```
 
 `threads` MUST contain at most 65,536 entries in strictly increasing thread-ID
-order. `unclassified-threads` MUST equal the number of every disposition other
-than `coordinator`, at most one coordinator may be present, and `complete` MUST equal
+order. `unclassified-threads` MUST equal the number of `unclassified` and
+`unclassified-aio` dispositions, at most one coordinator may be present, and
+`complete` MUST equal
 `!overflowed && all(name-valid) && coordinator-count == 1`. The process-local
 generation advances when a QEMU-created thread registers, unregisters, or
 changes disposition. The first query registers the process-lifetime QMP
@@ -197,15 +198,17 @@ return the same generation and body. Every thread created through
 through a cleanup handler. Threads created by linked libraries or raw pthread
 calls are not silently treated as QEMU-owned.
 
-Schema version 2 assigns the `call_rcu` worker to `unclassified-rcu` and every
-QEMU `IOThread` to `unclassified-aio` through calls made by the subsystem's own
-thread entry point, not by matching diagnostic names. These values identify the
-owner that must eventually provide the barrier and child reinitializer; they
-remain included in `unclassified-threads`, remain fork blockers, and do not
-acknowledge readiness bits 3, 4, or 8. Plain `unclassified` remains the
-fail-closed value for every other `qemu_thread_create()` caller. Schema version
-1 is rejected rather than silently interpreting its smaller disposition
-registry under version-2 semantics.
+Schema version 3 assigns the `call_rcu` worker to `rcu-restart` and every QEMU
+`IOThread` to `unclassified-aio` through calls made by the subsystem's own
+thread entry point, not by matching diagnostic names. The runtime transaction
+admits exactly one coordinator plus that one subsystem-owned RCU worker,
+discards the inherited worker in the child, and registers one fresh callback
+worker after RCU reconstruction. Generic and AIO workers remain fork blockers
+and are counted in `unclassified-threads`; neither this classification nor the
+transaction acknowledges readiness bit 8. Plain `unclassified` remains the
+fail-closed value for every other `qemu_thread_create()` caller. Earlier schema
+versions are rejected rather than silently interpreting their smaller
+disposition registry under version-3 semantics.
 
 Patched QEMU also exposes the bounded observational RCU inventory used to
 define the next subsystem-owned barrier:
@@ -1283,11 +1286,13 @@ The parent releases the registry and then restores its unchanged RCU state. The
 immediate child first reconstructs the thread registry, then discards vanished
 reader records, rebinds the coordinator reader, resets the proven-empty callback
 queue and drain state, reopens admission, and starts one fresh `call_rcu` worker
-before returning. A real-fork regression requires exactly the coordinator and
-that new worker in both child inventories while leaving both parent inventories
-unchanged; an active-reader regression proves fail-closed rollback. The
-transaction remains unreachable from a production fork command and does not
-dispose raw or library-owned locks, so readiness bit 8 remains clear.
+before returning. The registered-thread transaction admits exactly that
+two-thread source profile and rejects generic or AIO workers before fork. A
+real-fork regression requires exactly the coordinator and that new worker in
+both child inventories while leaving both parent inventories unchanged;
+active-reader and unsupported-worker regressions prove fail-closed rollback.
+The transaction remains unreachable from a production fork command and does
+not dispose raw or library-owned locks, so readiness bit 8 remains clear.
 The version-3 child-QMP report now derives `disposition-complete` from that
 exact accepted one-shot status instead of hard-coding false. Prepared but
 unattempted, contradictory, failed, and reset adapters remain incomplete; the

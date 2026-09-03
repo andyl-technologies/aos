@@ -111,8 +111,9 @@ in
                   || fail "rebase for $patch_name failed without REBASE_HEAD"
                 test "$rebase_head" != "$drop_commit" \
                   || fail "rebase for $patch_name conflicted on the dropped commit itself"
-                git rev-list "$drop_commit..refs/heads/patch-stack" \
-                  | grep -Fqx "$rebase_head" \
+                git merge-base --is-ancestor "$drop_commit" "$rebase_head" \
+                  && git merge-base --is-ancestor \
+                    "$rebase_head" refs/heads/patch-stack \
                   || fail "rebase for $patch_name failed outside the pinned later stack"
                 conflicting_files=$(git diff --name-only --diff-filter=U \
                   | tr '\n' ',' | sed 's/,$//')

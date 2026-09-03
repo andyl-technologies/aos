@@ -1692,14 +1692,14 @@ QEMU-owned coordinator rather than weakening this fail-closed query.
 
 Patched QEMU now also owns a bounded active-thread registry. Every
 `qemu_thread_create()` start routine is bracketed by register/unregister cleanup,
-the QMP main loop is the sole coordinator, and a version-2 QMP query returns a
+the QMP main loop is the sole coordinator, and a version-3 QMP query returns a
 sorted snapshot, overflow/name completeness, exact unresolved count, and
 process-local generation. The RCU callback and AIO-context thread entry points
-assign their own `unclassified-rcu` and `unclassified-aio` owners; every other
-non-coordinator remains plain `unclassified`. These owner labels stay blockers
-and do not claim barriers or child dispositions. The Apache host brackets its
-bounded two-pass Linux process
-inventory with two identical registry snapshots inside the exact QEMU
+assign their own `rcu-restart` and `unclassified-aio` dispositions; every other
+non-coordinator remains plain `unclassified`. The RCU worker is now a classified
+discard-and-restart owner, while AIO and generic workers stay blockers. The
+Apache host brackets its bounded two-pass Linux process inventory with two
+identical registry snapshots inside the exact QEMU
 readiness reports. It requires every registered thread to exist in procfs,
 reports externally created threads as blockers, records every visible thread,
 descriptor, and mapping under fixed 65,536-entry-per-class and 16-MiB-per-pass
@@ -2295,10 +2295,13 @@ not claim raw `pthread`/GLib lock completeness or the remaining subsystem
 dispositions. The following RCU transaction now closes reader/callback
 admission outside it, preserves the parent RCU registry, and reconstructs the
 immediate child around the coordinator plus one fresh callback worker. The
-composed transaction still cannot advance readiness bit 8 by itself.
+registered-thread half admits only that exact two-thread source profile and
+rejects generic or AIO workers before fork. The composed transaction still
+cannot advance readiness bit 8 by itself.
 These are executable T-CAM-6.1 audit prerequisites, not completion of the task:
-the internal registry identifies two non-coordinator subsystem owners but has
-no safe non-coordinator child disposition. The retained AIO/BH/timer and RCU
+the internal registry now has one safe non-coordinator RCU disposition, while
+the AIO owner and every generic or external thread remain unresolved. The
+retained AIO/BH/timer and RCU
 barriers now promote bits 3 and 4, but the remaining views cannot prove a
 retained mutex barrier, block write-root boundary, process-lifetime plugin
 ownership, external-thread disposition, or child-reinitialization state.

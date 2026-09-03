@@ -84,7 +84,7 @@ fn vmstate_control_forwards_exact_hot_fork_thread_inventory() -> Result<(), Box<
     let stream = scripted_qmp([
         r#"{"QMP":{"version":{},"capabilities":[]}}"#,
         r#"{"return":{}}"#,
-        r#"{"return":{"schema-version":2,"generation":3,"complete":true,"overflowed":false,"unclassified-threads":0,"threads":[{"thread-id":41,"name":"qmp-main-loop","name-valid":true,"joinable":false,"disposition":"coordinator"}]}}"#,
+        r#"{"return":{"schema-version":3,"generation":3,"complete":true,"overflowed":false,"unclassified-threads":0,"threads":[{"thread-id":41,"name":"qmp-main-loop","name-valid":true,"joinable":false,"disposition":"coordinator"}]}}"#,
     ]);
     let written = Arc::clone(&stream.written);
     let mut control = QemuQmpVmStateControlChannel::connect(stream)?;

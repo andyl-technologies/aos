@@ -107,7 +107,7 @@ pub const QMP_QUERY_HOT_FORK_MONITOR_INVENTORY_COMMAND: &str =
 /// Version of the QEMU-owned hot-fork proof-bit contract.
 pub const QMP_HOT_FORK_READINESS_SCHEMA_VERSION: u32 = 1;
 /// Version of the QEMU-owned active-thread inventory contract.
-pub const QMP_HOT_FORK_THREAD_INVENTORY_SCHEMA_VERSION: u32 = 2;
+pub const QMP_HOT_FORK_THREAD_INVENTORY_SCHEMA_VERSION: u32 = 3;
 /// Version of the QEMU-owned RCU-state inventory contract.
 pub const QMP_HOT_FORK_RCU_INVENTORY_SCHEMA_VERSION: u32 = 1;
 /// Version of the QEMU-owned AioContext activity inventory contract.
@@ -274,8 +274,8 @@ pub enum QmpHotForkThreadDisposition {
     Coordinator,
     /// Active QEMU-created thread without a child disposition.
     Unclassified,
-    /// RCU callback worker without an accepted barrier or child reinitializer.
-    UnclassifiedRcu,
+    /// RCU callback worker discarded in the child and restarted after reconstruction.
+    RcuRestart,
     /// AIO-context worker without an accepted barrier or child reinitializer.
     UnclassifiedAio,
 }
@@ -1678,10 +1678,7 @@ pub(super) fn parse_hot_fork_thread_inventory(
                 unclassified_threads += 1;
                 QmpHotForkThreadDisposition::Unclassified
             }
-            Some("unclassified-rcu") => {
-                unclassified_threads += 1;
-                QmpHotForkThreadDisposition::UnclassifiedRcu
-            }
+            Some("rcu-restart") => QmpHotForkThreadDisposition::RcuRestart,
             Some("unclassified-aio") => {
                 unclassified_threads += 1;
                 QmpHotForkThreadDisposition::UnclassifiedAio

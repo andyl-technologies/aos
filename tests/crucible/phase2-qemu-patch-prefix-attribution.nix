@@ -811,6 +811,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0185-crucible-bind-rcu-worker-fork-disposition.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

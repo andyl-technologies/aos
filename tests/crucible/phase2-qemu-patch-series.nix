@@ -1287,6 +1287,13 @@
       enforces = "HFORK-4,HFORK-22";
       capability = "the coordinator now composes an explicit RCU reader/callback quiescence transaction outside the registered thread and QemuMutex transaction, preserves the parent RCU registry, reconstructs the immediate child around only the surviving coordinator, reopens admission, and starts one fresh child callback worker before returning; raw or unregistered locks, remaining subsystem dispositions, production fork invocation, guest admission, and readiness bits 7 and 8 remain open";
     }
+    {
+      file = "0185-crucible-bind-rcu-worker-fork-disposition.patch";
+      catalogName = "crucible-hot-fork-rcu-thread-disposition";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "the registered-thread transaction admits exactly one coordinator and one subsystem-owned RCU discard-and-restart worker, reports that worker as classified in thread-inventory schema 3, and rejects generic or AIO workers before fork; raw or unregistered locks, AIO reconstruction, production fork invocation, guest admission, and readiness bits 7 and 8 remain open";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;
