@@ -601,38 +601,38 @@ let
   # Source fragments kept below underscore-prefixed directories are also
   # excluded from discovery, but are consumed by package factories.
   resourceInventory = {
-    "containers/_containerd-config/module.nix" = "target-independent-source";
+    "containers/_containerd-config/module.nix" = "linux-only-config-source";
     "containers/_containerd-tests/contract.nix" = "linux-only-test-source";
     "containers/_containerd-tests/lifecycle.nix" = "linux-only-test-source";
-    "db/_etcd-config/module.nix" = "target-independent-source";
-    "kubernetes/_cilium-config/module.nix" = "target-independent-source";
-    "kubernetes/_cloudcore-config/module.nix" = "target-independent-source";
-    "kubernetes/_edgecore-config/module.nix" = "target-independent-source";
-    "kubernetes/_k3s-config/module.nix" = "target-independent-source";
-    "kubernetes/_kubelet-config/module.nix" = "target-independent-source";
-    "networking/_envoy-config/module.nix" = "target-independent-source";
-    "networking/_envoy-config/render.nix" = "target-independent-source";
-    "networking/_envoy-config/types.nix" = "target-independent-source";
-    "networking/_nginx-config/module.nix" = "target-independent-source";
-    "networking/_openldap-config/module.nix" = "target-independent-source";
-    "security/_krb5-kdc-config/module.nix" = "target-independent-source";
-    "storage/_garage-config/module.nix" = "target-independent-source";
+    "db/_etcd-config/module.nix" = "linux-only-config-source";
+    "kubernetes/_cilium-config/module.nix" = "linux-only-config-source";
+    "kubernetes/_cloudcore-config/module.nix" = "linux-only-config-source";
+    "kubernetes/_edgecore-config/module.nix" = "linux-only-config-source";
+    "kubernetes/_k3s-config/module.nix" = "linux-only-config-source";
+    "kubernetes/_kubelet-config/module.nix" = "linux-only-config-source";
+    "networking/_envoy-config/module.nix" = "linux-only-config-source";
+    "networking/_envoy-config/render.nix" = "linux-only-config-source";
+    "networking/_envoy-config/types.nix" = "linux-only-config-source";
+    "networking/_nginx-config/module.nix" = "linux-only-config-source";
+    "networking/_openldap-config/module.nix" = "linux-only-config-source";
+    "security/_krb5-kdc-config/module.nix" = "linux-only-config-source";
+    "storage/_garage-config/module.nix" = "linux-only-config-source";
     "storage/_garage-tests/lifecycle.nix" = "linux-only-test-source";
-    "storage/_longhorn-config/module.nix" = "target-independent-source";
-    "storage/_mariadb-config/module.nix" = "target-independent-source";
+    "storage/_longhorn-config/module.nix" = "linux-only-config-source";
+    "storage/_mariadb-config/module.nix" = "linux-only-config-source";
     "storage/_mariadb-tests/lifecycle.nix" = "linux-only-test-source";
-    "storage/_postgresql-config/module.nix" = "target-independent-source";
+    "storage/_postgresql-config/module.nix" = "linux-only-config-source";
     "storage/_postgresql-tests/expose.nix" = "linux-only-test-source";
     "storage/_postgresql-tests/lifecycle.nix" = "linux-only-test-source";
     "storage/_postgresql-tests/module.nix" = "linux-only-test-source";
     "system/_dbus-conf-xsl/make-session-conf.xsl" = "target-independent-source";
     "system/_dbus-conf-xsl/make-system-conf.xsl" = "target-independent-source";
-    "tests/_aos-registry-server-config/module.nix" = "linux-only-test-source";
+    "tests/_aos-registry-server-config/module.nix" = "linux-only-config-source";
     "tests/_aos-test-agent-config/module.nix" = "linux-only-test-source";
     "tests/_config-module-smoke/module.nix" = "linux-only-test-source";
     "tests/_config-module-smoke/private.nix" = "linux-only-test-source";
-    "tools/_conntrackd-config/module.nix" = "target-independent-source";
-    "tools/_rsyncd-config/module.nix" = "target-independent-source";
+    "tools/_conntrackd-config/module.nix" = "linux-only-config-source";
+    "tools/_rsyncd-config/module.nix" = "linux-only-config-source";
   };
 
   isLinux = system: builtins.match "[a-zA-Z0-9_]+-linux" system != null;
