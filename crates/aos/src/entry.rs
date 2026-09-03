@@ -336,6 +336,12 @@ async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
     {
         return commands::release::finalize_registry(args, printer).await;
     }
+    if let Commands::Release {
+        command: crate::cli::ReleaseCommand::Finalize(args),
+    } = &cli.command
+    {
+        return commands::release::finalize(args, printer).await;
+    }
 
     // Local VM runs use downloaded artifacts and host-side QEMU tools.
     if let Commands::Vm { command } = &cli.command {

@@ -7,6 +7,7 @@ mod bootstrap;
 mod build;
 mod capture;
 mod channel;
+mod finalize;
 mod finalize_image;
 mod finalize_registry;
 mod hub_transition;
@@ -40,6 +41,9 @@ pub fn run(command: &ReleaseCommand, nix: &NixRunner, printer: &Printer) -> Resu
         }
         ReleaseCommand::FinalizeRegistry(_) => {
             anyhow::bail!("release registry finalization must use the asynchronous dispatcher")
+        }
+        ReleaseCommand::Finalize(_) => {
+            anyhow::bail!("release bundle finalization must use the asynchronous dispatcher")
         }
         ReleaseCommand::Timestamp { .. } => {
             anyhow::bail!("release timestamp command must use the asynchronous offline dispatcher")
@@ -103,6 +107,16 @@ pub async fn finalize_registry(
     printer: &Printer,
 ) -> Result<()> {
     finalize_registry::run(args, printer).await
+}
+
+/// Closes and threshold-signs one exact release bundle.
+///
+/// # Errors
+///
+/// Returns an error for plan, manifest, payload, journal, signer, verification,
+/// or atomic-output failure.
+pub async fn finalize(args: &crate::cli::ReleaseFinalizeArgs, printer: &Printer) -> Result<()> {
+    finalize::run(args, printer).await
 }
 
 /// Stages one finalized release without constructing a Nix environment.

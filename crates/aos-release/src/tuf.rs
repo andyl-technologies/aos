@@ -1,9 +1,10 @@
 //! Role-separated TUF metadata contracts and offline verification.
 //!
-//! Immutable release bundles carry root, top-level targets/delegations,
-//! release-class delegated targets, and snapshot metadata. Timestamp metadata
-//! is deliberately absent from that immutable set and is verified as an
-//! independently renewable pointer to the already-authorized snapshot.
+//! The registry metadata surface carries root, top-level targets/delegations,
+//! release-class delegated targets, and snapshot metadata. These files are
+//! repository metadata rather than targets and therefore remain outside the
+//! manifest payload closure they authorize. Timestamp metadata is verified as
+//! an independently renewable pointer to the already-authorized snapshot.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -150,7 +151,6 @@ pub fn delegated_release_metadata(
         &target.release_id,
         target.release_class,
         target.manifest_digest,
-        target.bundle_digest,
     )?;
     require_valid_expiry(&metadata.expires)?;
     Ok(metadata)
@@ -359,10 +359,8 @@ pub struct TufReleaseTargetV1 {
     pub release_id: String,
     /// Release class constrained by the delegated role.
     pub release_class: ReleaseClass,
-    /// Exact release-manifest payload digest.
+    /// Exact signed manifest-envelope digest; that manifest closes payloads.
     pub manifest_digest: Sha256Digest,
-    /// Exact closed bundle digest.
-    pub bundle_digest: Sha256Digest,
     /// Exact manifest-envelope byte length.
     pub length: u64,
 }
@@ -487,10 +485,8 @@ pub struct TufReleaseExpectation<'a> {
     pub release_id: &'a str,
     /// Release class selecting the delegated role.
     pub release_class: ReleaseClass,
-    /// Final release-manifest payload digest.
+    /// Final signed manifest-envelope digest; that manifest closes payloads.
     pub manifest_digest: Sha256Digest,
-    /// Closed bundle digest.
-    pub bundle_digest: Sha256Digest,
 }
 
 /// Verifies an independently bootstrapped root envelope and optional rotation.
@@ -629,7 +625,6 @@ pub fn verify_immutable_set(
         expected.release_id,
         expected.release_class,
         expected.manifest_digest,
-        expected.bundle_digest,
     )?;
     verify_envelope(
         &set.delegated,
@@ -799,7 +794,6 @@ fn validate_delegated(
     release_id: &str,
     release_class: ReleaseClass,
     manifest_digest: Sha256Digest,
-    bundle_digest: Sha256Digest,
 ) -> Result<()> {
     validate_common(delegated, TUF_DELEGATED_TARGETS_V1)?;
     let role = TufRole::for_release(release_class);
@@ -821,7 +815,6 @@ fn validate_delegated(
             target.release_id == release_id
                 && target.release_class == release_class
                 && target.manifest_digest == manifest_digest
-                && target.bundle_digest == bundle_digest
         })
         .count();
     if matches != 1
@@ -1174,7 +1167,6 @@ mod tests {
                     release_id: "release-2030.1.0".to_owned(),
                     release_class: ReleaseClass::Stable,
                     manifest_digest: Sha256Digest::of_bytes("manifest"),
-                    bundle_digest: Sha256Digest::of_bytes("bundle"),
                     length: 123,
                 },
             )?,

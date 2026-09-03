@@ -21,6 +21,8 @@ pub enum ReleaseCommand {
     FinalizeImage(ReleaseFinalizeImageArgs),
     /// Author and sign one isolated canonical registry release
     FinalizeRegistry(ReleaseFinalizeRegistryArgs),
+    /// Close and threshold-sign one release bundle
+    Finalize(ReleaseFinalizeArgs),
     /// Renew short-lived metadata without changing authorized content
     Timestamp {
         #[command(subcommand)]
@@ -272,6 +274,53 @@ pub struct ReleaseFinalizeRegistryArgs {
     /// Frozen timezone offset in minutes east of UTC
     #[arg(long, default_value_t = 0)]
     pub git_offset_minutes: i32,
+}
+
+#[derive(Args)]
+pub struct ReleaseFinalizeArgs {
+    /// Canonical release plan copied into the closed bundle
+    #[arg(long)]
+    pub plan: PathBuf,
+
+    /// Payload tree containing every manifest artifact except the release plan
+    #[arg(long)]
+    pub payload: PathBuf,
+
+    /// Canonical unsigned release-manifest payload
+    #[arg(long)]
+    pub manifest_payload: PathBuf,
+
+    /// Built-state append-only release journal
+    #[arg(long)]
+    pub journal: PathBuf,
+
+    /// Release-evidence public key as KEY_ID=PATH; repeat to threshold
+    #[arg(long = "signing-key", value_name = "KEY_ID=PATH", required = true)]
+    pub signing_keys: Vec<String>,
+
+    /// Independently pinned provider identity as KEY_ID=IDENTITY
+    #[arg(
+        long = "verification-identity",
+        value_name = "KEY_ID=IDENTITY",
+        required = true
+    )]
+    pub verification_identities: Vec<String>,
+
+    /// Absolute path to the deployment-configured signer executable
+    #[arg(long)]
+    pub signer_executable: PathBuf,
+
+    /// Maximum duration of each external signer operation in seconds
+    #[arg(long, default_value_t = 120)]
+    pub signer_timeout_seconds: u64,
+
+    /// RFC 3339 UTC finalization time recorded in the journal
+    #[arg(long)]
+    pub recorded_at: String,
+
+    /// New directory containing bundle and finalized journal
+    #[arg(long)]
+    pub output: PathBuf,
 }
 
 #[derive(Args)]
@@ -709,6 +758,36 @@ mod tests {
                 "release@example.invalid",
                 "--git-unix-seconds",
                 "1",
+            ])
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn bundle_finalization_requires_provider_identity_for_signers() {
+        assert!(
+            Cli::try_parse_from([
+                "aos",
+                "release",
+                "finalize",
+                "--plan",
+                "release-plan.json",
+                "--payload",
+                "payload",
+                "--manifest-payload",
+                "manifest-payload.json",
+                "--journal",
+                "release-journal.jsonl",
+                "--signing-key",
+                "release-1=release-1.pub",
+                "--verification-identity",
+                "release-1=provider-slot-1",
+                "--signer-executable",
+                "/opt/aos/signer",
+                "--recorded-at",
+                "2026-09-03T12:00:00Z",
+                "--output",
+                "finalized",
             ])
             .is_ok()
         );
