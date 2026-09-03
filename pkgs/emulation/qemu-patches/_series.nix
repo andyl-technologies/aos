@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "e4978277525bc884ab54937c86871557616845577c7a8ddd5cba7f59ec5d8a66";
+  patchBranchBundleSha256 = "482b17ae53ede3c410c96236daea77a170770b9a6c4bc728b4a89dfdacb281a7";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "a4be2a1b9685ebc275d063e8a506ceb941824ab7";
+  patchBranchHeadCommit = "4ba9d89af9bcf82a60e41ed32687bb01facb493a";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1785,6 +1785,66 @@ let
       class = "F";
       enforces = "HFORK-4,HFORK-22";
       capability = "the registered fork transaction now admits exactly one coordinator and one subsystem-owned RCU discard-and-restart worker, rejects generic and AIO workers before fork, reports the RCU worker as classified under thread-inventory schema 3, and preserves rollback after rejection; raw or unregistered locks, AIO and remaining subsystem dispositions, production fork invocation, guest admission, and readiness bits 7 and 8 remain open";
+    }
+    {
+      file = "0186-crucible-bind-monitor-iothread-fork-disposition.patch";
+      branchSubject = "crucible: bind monitor IOThread fork disposition";
+      branchCommit = "7b3a09e58759a906b1b1e7f53ffce05642f9d9da";
+      branchTree = "3926435a93bfb1d64329ee5cd41f1fc7b0dd29b1";
+      catalogName = "crucible-hot-fork-monitor-thread-disposition";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-22";
+      capability = "the monitor subsystem now binds its exact internal IOThread to a one-shot discard-and-restart disposition, the registered fork transaction admits exactly the coordinator, RCU worker, and monitor worker while rejecting every other AIO or generic thread, and child monitor reconstruction starts the replacement with the same disposition while input remains held; user IOThreads, raw or unregistered locks, remaining subsystem dispositions, production fork invocation, guest admission, and readiness bits 7 and 8 remain open";
+    }
+    {
+      file = "0187-crucible-defer-rcu-worker-until-fd-disposition.patch";
+      branchSubject = "crucible: defer child RCU worker until FD disposition";
+      branchCommit = "4d495d7722bfc6f8e03d080133cd52ea444e7791";
+      branchTree = "a9891f49d93937559e84a1045787ed33adea8316";
+      catalogName = "crucible-hot-fork-rcu-worker-ordering";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "the child RCU transaction now reconstructs registry and queue state without starting a callback worker, the complete runtime keeps the descriptor transaction active through that reconstruction, and it starts the fresh worker only after inherited descriptor disposition has committed; production fork invocation, parent-death containment, guest admission, and readiness bits 7 and 8 remain open";
+    }
+    {
+      file = "0188-crucible-borrow-retained-rcu-barrier-across-fork.patch";
+      branchSubject = "crucible: borrow retained RCU barrier across fork";
+      branchCommit = "c8b89d231d06a4d9c441f105077d0c137e48490c";
+      branchTree = "09f34aaf37cbc45440ffd91754cebb4668b9a66c";
+      catalogName = "crucible-hot-fork-retained-rcu-barrier";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "one exact retained RCU transaction records the barrier generation and monitor-thread owner, keeps the reusable source template barrier held after the parent terminal action, and permits only the copied immediate child to release that exact generation after descriptor disposition; production fork invocation, parent-death containment, guest admission, and readiness bits 7 and 8 remain open";
+    }
+    {
+      file = "0189-crucible-retain-async-fork-barrier-through-child-release.patch";
+      branchSubject = "crucible: retain async fork barrier through child release";
+      branchCommit = "5ab88a8c508261b87009d69e8cd28586b923ab5d";
+      branchTree = "5ab9102b7481d90a24dacd0921601d075245b8a3";
+      catalogName = "crucible-hot-fork-retained-async-barrier";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "one exact retained BH, timer, AIO, coroutine, and GLib admission transaction records its barrier generation and monitor-thread owner, keeps the source template barrier held after the parent terminal action, and permits only the copied immediate child to release the exact generation; production fork composition, parent-death containment, guest admission, and readiness bits 7 and 8 remain open";
+    }
+    {
+      file = "0190-crucible-release-child-async-barrier-before-qmp-start.patch";
+      branchSubject = "crucible: release child async barrier before QMP start";
+      branchCommit = "1865d149b1de476b51bbd26a25806b397a91da19";
+      branchTree = "a36e9b934e41f260074d0b52d2acd7736ed79493";
+      catalogName = "crucible-hot-fork-async-runtime-transaction";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
+      capability = "the complete retained runtime transaction now binds both RCU and asynchronous-source barrier generations, reconstructs registry and RCU state while descriptor admission remains closed, starts the replacement RCU worker only after descriptor disposition, reconstructs plugin resources, then releases the copied async barrier before child-QMP activation; the parent keeps both template barriers held, while production fork invocation, parent-death containment, guest admission, and readiness bits 7 and 8 remain open";
+    }
+    {
+      file = "0191-crucible-coordinate-fork-on-main-loop.patch";
+      branchSubject = "crucible: coordinate fork on the main loop";
+      branchCommit = "4ba9d89af9bcf82a60e41ed32687bb01facb493a";
+      branchTree = "13c715d86bb9323e19bff800af14f24740ae6393";
+      catalogName = "crucible-hot-fork-main-loop-coordinator";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-22";
+      capability = "a raw event-notifier bridge now lets one non-main-loop owner submit an exact fork operation without relying on blocked BH or AIO admission, executes preparation, fork, and parent disposition on the source main-loop thread, disables its copied notifier before immediate-child reconstruction, and returns a positive child PID even when parent disposition fails so ownership is not lost; no public QMP command supplies the operation yet, and parent-death containment, direct-child quarantine, guest admission, and readiness bits 7 and 8 remain open";
     }
   ];
   catalogOnlyCapabilities = [

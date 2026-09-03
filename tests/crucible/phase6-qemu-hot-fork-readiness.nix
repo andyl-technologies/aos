@@ -690,7 +690,7 @@ in
               "threads",
               "unclassified-threads"
             ] and
-            $report."schema-version" == 3 and
+            $report."schema-version" == 4 and
             ($report.generation | type) == "number" and
             ($report.complete | type) == "boolean" and
             ($report.overflowed | type) == "boolean" and
@@ -717,6 +717,7 @@ in
               (.disposition == "coordinator" or
                .disposition == "unclassified" or
                .disposition == "rcu-restart" or
+               .disposition == "monitor-restart" or
                .disposition == "unclassified-aio")) and
             ([ $report.threads[] | select(.disposition == "coordinator") ] | length) == 1 and
             ([ $report.threads[] |
@@ -727,7 +728,7 @@ in
                select(.name == "call_rcu" and .disposition == "rcu-restart") ] |
              length) == 1 and
             ([ $report.threads[] |
-               select(.name == "IO mon_iothread" and .disposition == "unclassified-aio") ] |
+               select(.name == "IO mon_iothread" and .disposition == "monitor-restart") ] |
              length) == 1 and
             $report.complete ==
               (($report.overflowed | not) and
@@ -1842,6 +1843,12 @@ in
           patch=0183-crucible-reconstruct-child-thread-registry.patch
           patch=0184-crucible-compose-rcu-fork-transaction.patch
           patch=0185-crucible-bind-rcu-worker-fork-disposition.patch
+          patch=0186-crucible-bind-monitor-iothread-fork-disposition.patch
+          patch=0187-crucible-defer-rcu-worker-until-fd-disposition.patch
+          patch=0188-crucible-borrow-retained-rcu-barrier-across-fork.patch
+          patch=0189-crucible-retain-async-fork-barrier-through-child-release.patch
+          patch=0190-crucible-release-child-async-barrier-before-qmp-start.patch
+          patch=0191-crucible-coordinate-fork-on-main-loop.patch
           plugin_endpoint_schema_version=4
           plugin_endpoint_source_descriptors_observed=true
           plugin_endpoint_replacement_plan_bound=false
@@ -1856,12 +1863,13 @@ in
           required_proofs=511
           precise_sim_rr_proofs=3
           ordinary_paused_exact_boundary_proof=false
-          thread_inventory_schema_version=3
+          thread_inventory_schema_version=4
           thread_inventory_bound=65536
           thread_inventory_stable=true
           thread_inventory_one_coordinator=true
           thread_inventory_rcu_owner=true
           thread_inventory_rcu_disposition_complete=true
+          thread_inventory_monitor_disposition_complete=true
           unsupported_registered_threads_rejected=true
           thread_inventory_aio_owner=true
           rcu_inventory_schema_version=1
