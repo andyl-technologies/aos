@@ -117,6 +117,7 @@
     environment.systemPackages = [
       pkgs.diffutils
       pkgs.gawk
+      pkgs.git
       pkgs.grep
       pkgs.sed
     ];
