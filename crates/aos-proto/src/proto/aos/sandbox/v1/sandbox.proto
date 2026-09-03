@@ -430,3 +430,377 @@ message RetryAdvice {
   RetryClass retry_class = 1;
   Duration minimum_delay = 2;
 }
+
+// Common acceptance fields for every mutating public RPC.
+message MutationContext {
+  bytes idempotency_key = 1;
+  bytes expected_resource_version = 2;
+  bytes expected_incarnation_id = 3;
+  Duration operation_timeout = 4;
+  repeated Feature required_features = 5;
+}
+
+message CreateSandboxRequest {
+  bytes project_id = 1;
+  bytes parent_sandbox_id = 2;
+  bytes expected_parent_resource_version = 3;
+  bytes expected_project_resource_version = 4;
+  ObjectDescriptor specification = 5;
+  ObjectDescriptor requested_policy = 6;
+  bytes idempotency_key = 7;
+  Duration operation_timeout = 8;
+  repeated Feature required_features = 9;
+}
+
+message CreateSandboxResponse {
+  Sandbox sandbox = 1;
+  Operation operation = 2;
+}
+
+message GetSandboxRequest { bytes sandbox_id = 1; }
+message GetSandboxResponse { Sandbox sandbox = 1; }
+
+message ListSandboxesRequest {
+  bytes project_id = 1;
+  uint32 page_size = 2;
+  bytes page_token = 3;
+}
+
+message ListSandboxesResponse {
+  repeated Sandbox sandboxes = 1;
+  PageInfo page = 2;
+}
+
+message ListChildrenRequest {
+  bytes parent_sandbox_id = 1;
+  uint32 page_size = 2;
+  bytes page_token = 3;
+}
+
+message ListChildrenResponse {
+  repeated Sandbox children = 1;
+  PageInfo page = 2;
+}
+
+message ListAncestorsRequest {
+  bytes sandbox_id = 1;
+  uint32 bounded_depth = 2;
+  uint32 page_size = 3;
+  bytes page_token = 4;
+}
+
+message ListAncestorsResponse {
+  repeated Sandbox ancestors = 1;
+  PageInfo page = 2;
+}
+
+message ListDescendantsRequest {
+  bytes sandbox_id = 1;
+  uint32 maximum_depth = 2;
+  uint32 page_size = 3;
+  bytes page_token = 4;
+}
+
+message ListDescendantsResponse {
+  repeated Sandbox descendants = 1;
+  PageInfo page = 2;
+}
+
+message PlanSandboxPolicyRequest {
+  bytes sandbox_id = 1;
+  bytes expected_resource_version = 2;
+  ObjectDescriptor requested_policy = 3;
+}
+
+message PlanSandboxPolicyResponse { PolicyPlan plan = 1; }
+
+message UpdateSandboxPolicyRequest {
+  bytes sandbox_id = 1;
+  ObjectDescriptor requested_policy = 2;
+  bytes expected_plan_digest = 3;
+  MutationContext mutation = 4;
+}
+
+message UpdateSandboxPolicyResponse { Operation operation = 1; }
+
+message SandboxLifecycleRequest {
+  bytes sandbox_id = 1;
+  MutationContext mutation = 2;
+}
+
+message SandboxLifecycleResponse { Operation operation = 1; }
+
+message DeleteSandboxRequest {
+  bytes sandbox_id = 1;
+  bool cascade = 2;
+  bytes expected_plan_digest = 3;
+  MutationContext mutation = 4;
+}
+
+message DeleteSandboxResponse { Operation operation = 1; }
+
+service SandboxService {
+  rpc CreateSandbox(CreateSandboxRequest) returns (CreateSandboxResponse);
+  rpc GetSandbox(GetSandboxRequest) returns (GetSandboxResponse);
+  rpc ListSandboxes(ListSandboxesRequest) returns (ListSandboxesResponse);
+  rpc ListChildren(ListChildrenRequest) returns (ListChildrenResponse);
+  rpc ListAncestors(ListAncestorsRequest) returns (ListAncestorsResponse);
+  rpc ListDescendants(ListDescendantsRequest) returns (ListDescendantsResponse);
+  rpc PlanPolicy(PlanSandboxPolicyRequest) returns (PlanSandboxPolicyResponse);
+  rpc UpdatePolicy(UpdateSandboxPolicyRequest) returns (UpdateSandboxPolicyResponse);
+  rpc Start(SandboxLifecycleRequest) returns (SandboxLifecycleResponse);
+  rpc Stop(SandboxLifecycleRequest) returns (SandboxLifecycleResponse);
+  rpc Suspend(SandboxLifecycleRequest) returns (SandboxLifecycleResponse);
+  rpc Resume(SandboxLifecycleRequest) returns (SandboxLifecycleResponse);
+  rpc DeleteSandbox(DeleteSandboxRequest) returns (DeleteSandboxResponse);
+}
+
+message CreateExecutionRequest {
+  bytes sandbox_id = 1;
+  Command command = 2;
+  bytes client_public_key = 3;
+  bytes proof_of_possession = 4;
+  MutationContext mutation = 5;
+}
+
+message CreateExecutionResponse {
+  Execution execution = 1;
+  Operation operation = 2;
+}
+
+message GetExecutionRequest { bytes execution_id = 1; }
+message GetExecutionResponse { Execution execution = 1; }
+
+message ListExecutionsRequest {
+  bytes sandbox_id = 1;
+  uint32 page_size = 2;
+  bytes page_token = 3;
+}
+
+message ListExecutionsResponse {
+  repeated Execution executions = 1;
+  PageInfo page = 2;
+}
+
+message CancelExecutionRequest {
+  bytes execution_id = 1;
+  MutationContext mutation = 2;
+}
+
+message CancelExecutionResponse { Operation operation = 1; }
+
+service ExecutionService {
+  rpc CreateExecution(CreateExecutionRequest) returns (CreateExecutionResponse);
+  rpc GetExecution(GetExecutionRequest) returns (GetExecutionResponse);
+  rpc ListExecutions(ListExecutionsRequest) returns (ListExecutionsResponse);
+  rpc CancelExecution(CancelExecutionRequest) returns (CancelExecutionResponse);
+}
+
+message CreateViewRequest {
+  bytes project_id = 1;
+  ObjectDescriptor revision = 2;
+  bytes expected_project_resource_version = 3;
+  bytes idempotency_key = 4;
+  repeated Feature required_features = 5;
+}
+
+message CreateViewResponse {
+  FilesystemView view = 1;
+  Operation operation = 2;
+}
+
+message GetViewRequest { bytes view_id = 1; }
+message GetViewResponse { FilesystemView view = 1; }
+
+message ListViewsRequest {
+  bytes project_id = 1;
+  uint32 page_size = 2;
+  bytes page_token = 3;
+}
+
+message ListViewsResponse {
+  repeated FilesystemView views = 1;
+  PageInfo page = 2;
+}
+
+message AttachViewRequest {
+  bytes sandbox_id = 1;
+  bytes view_id = 2;
+  ObjectDescriptor view_revision = 3;
+  bytes destination_slot_id = 4;
+  ViewMutation mutation_mode = 5;
+  MutationContext mutation = 6;
+}
+
+message AttachViewResponse {
+  Attachment attachment = 1;
+  Operation operation = 2;
+}
+
+message ReplaceAttachmentRequest {
+  bytes attachment_id = 1;
+  bytes new_view_id = 2;
+  ObjectDescriptor new_view_revision = 3;
+  MutationContext mutation = 4;
+}
+
+message ReplaceAttachmentResponse { Operation operation = 1; }
+
+message DetachViewRequest {
+  bytes attachment_id = 1;
+  MutationContext mutation = 2;
+}
+
+message DetachViewResponse { Operation operation = 1; }
+
+message ReleaseViewRequest {
+  bytes view_id = 1;
+  MutationContext mutation = 2;
+}
+
+message ReleaseViewResponse { Operation operation = 1; }
+
+service FilesystemViewService {
+  rpc CreateView(CreateViewRequest) returns (CreateViewResponse);
+  rpc GetView(GetViewRequest) returns (GetViewResponse);
+  rpc ListViews(ListViewsRequest) returns (ListViewsResponse);
+  rpc AttachView(AttachViewRequest) returns (AttachViewResponse);
+  rpc ReplaceAttachment(ReplaceAttachmentRequest) returns (ReplaceAttachmentResponse);
+  rpc DetachView(DetachViewRequest) returns (DetachViewResponse);
+  rpc ReleaseView(ReleaseViewRequest) returns (ReleaseViewResponse);
+}
+
+message CreateSnapshotRequest {
+  bytes sandbox_id = 1;
+  SnapshotAvailability requested_availability = 2;
+  MutationContext mutation = 3;
+}
+
+message CreateSnapshotResponse {
+  Snapshot snapshot = 1;
+  Operation operation = 2;
+}
+
+message GetSnapshotRequest { bytes snapshot_id = 1; }
+message GetSnapshotResponse { Snapshot snapshot = 1; }
+
+message ListSnapshotsRequest {
+  bytes project_id = 1;
+  bytes sandbox_id = 2;
+  uint32 page_size = 3;
+  bytes page_token = 4;
+}
+
+message ListSnapshotsResponse {
+  repeated Snapshot snapshots = 1;
+  PageInfo page = 2;
+}
+
+message RestoreSnapshotRequest {
+  bytes snapshot_id = 1;
+  bytes target_sandbox_id = 2;
+  ObjectDescriptor requested_policy = 3;
+  MutationContext mutation = 4;
+}
+
+message RestoreSnapshotResponse { Operation operation = 1; }
+
+message ForkSnapshotRequest {
+  bytes snapshot_id = 1;
+  bytes target_project_id = 2;
+  bytes parent_sandbox_id = 3;
+  bytes expected_parent_resource_version = 4;
+  ObjectDescriptor requested_policy = 5;
+  bytes idempotency_key = 6;
+  repeated Feature required_features = 7;
+}
+
+message ForkSnapshotResponse {
+  Sandbox sandbox = 1;
+  Operation operation = 2;
+}
+
+message DeleteSnapshotRequest {
+  bytes snapshot_id = 1;
+  MutationContext mutation = 2;
+}
+
+message DeleteSnapshotResponse { Operation operation = 1; }
+
+service SnapshotService {
+  rpc CreateSnapshot(CreateSnapshotRequest) returns (CreateSnapshotResponse);
+  rpc GetSnapshot(GetSnapshotRequest) returns (GetSnapshotResponse);
+  rpc ListSnapshots(ListSnapshotsRequest) returns (ListSnapshotsResponse);
+  rpc RestoreSnapshot(RestoreSnapshotRequest) returns (RestoreSnapshotResponse);
+  rpc ForkSnapshot(ForkSnapshotRequest) returns (ForkSnapshotResponse);
+  rpc DeleteSnapshot(DeleteSnapshotRequest) returns (DeleteSnapshotResponse);
+}
+
+message AttenuateCapabilityRequest {
+  bytes parent_capability_handle = 1;
+  bytes attenuation = 2; // Canonical controller-defined attenuation request.
+  bytes holder_channel_binding = 3;
+  bytes idempotency_key = 4;
+  bytes expected_parent_resource_version = 5;
+}
+
+message AttenuateCapabilityResponse {
+  Capability capability = 1;
+  bytes capability_handle = 2;
+}
+
+message InspectCapabilityRequest { bytes capability_handle = 1; }
+message InspectCapabilityResponse { Capability capability = 1; }
+
+message RenewCapabilityRequest {
+  bytes capability_handle = 1;
+  Timestamp requested_expiry = 2;
+  MutationContext mutation = 3;
+}
+
+message RenewCapabilityResponse {
+  Capability capability = 1;
+  bytes capability_handle = 2;
+}
+
+message RevokeCapabilityRequest {
+  bytes capability_id = 1;
+  MutationContext mutation = 2;
+}
+
+message RevokeCapabilityResponse { Operation operation = 1; }
+
+service CapabilityService {
+  rpc Attenuate(AttenuateCapabilityRequest) returns (AttenuateCapabilityResponse);
+  rpc Inspect(InspectCapabilityRequest) returns (InspectCapabilityResponse);
+  rpc Renew(RenewCapabilityRequest) returns (RenewCapabilityResponse);
+  rpc Revoke(RevokeCapabilityRequest) returns (RevokeCapabilityResponse);
+}
+
+message GetOperationRequest { bytes operation_id = 1; }
+message GetOperationResponse { Operation operation = 1; }
+
+message CancelOperationRequest {
+  bytes operation_id = 1;
+  MutationContext mutation = 2;
+}
+
+message CancelOperationResponse { Operation operation = 1; }
+
+message WatchRequest {
+  bytes project_id = 1;
+  repeated string resource_types = 2;
+  bytes resource_id = 3;
+  WatchCursor resume_after = 4;
+  repeated Feature observation_features = 5;
+}
+
+message GetNodeCapabilitiesRequest { bytes node_id = 1; }
+message GetNodeCapabilitiesResponse { NodeCapabilities capabilities = 1; }
+
+service OperationService {
+  rpc GetOperation(GetOperationRequest) returns (GetOperationResponse);
+  rpc CancelOperation(CancelOperationRequest) returns (CancelOperationResponse);
+  rpc Watch(WatchRequest) returns (stream Event);
+  rpc GetNodeCapabilities(GetNodeCapabilitiesRequest) returns (GetNodeCapabilitiesResponse);
+}
