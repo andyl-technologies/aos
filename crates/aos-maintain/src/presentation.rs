@@ -10,7 +10,7 @@ use crate::discovery::DiscoverySnapshotV1;
 use crate::envelope::InventoryEnvelopeV1;
 use crate::identity::RunId;
 use crate::plan::PackageUpdatePlanV1;
-use crate::run::PackageUpdateRunV1;
+use crate::run::{PackageUpdateEvidenceV1, PackageUpdateRunV1};
 use crate::workflow::{DiscoveryDecision, GateOutcome, RunState, TaskStatus};
 
 /// Classifies the outcome of the requested command independently of run state.
@@ -196,6 +196,30 @@ pub struct CommandData {
     /// Bounded textual patch returned by explicit diff inspection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub patch: Option<String>,
+    /// Complete local candidate evidence returned by evidence/inspection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<PackageUpdateEvidenceV1>,
+    /// Offline pull-request draft returned before any remote mutation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pull_request: Option<PullRequestDraft>,
+}
+
+/// Carries exact reviewed pull-request text and branch identities offline.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct PullRequestDraft {
+    /// Local source branch to publish.
+    pub branch: String,
+    /// Protected target branch selected from the plan base.
+    pub base_branch: String,
+    /// Bounded pull-request title.
+    pub title: String,
+    /// Bounded Markdown pull-request body.
+    pub body: String,
+    /// Exact candidate commit covered by final gates.
+    pub head: String,
+    /// Complete local evidence identity.
+    pub evidence_digest: aos_contract::Sha256Digest,
 }
 
 /// Contains the single terminal result returned by a maintenance command.
@@ -254,6 +278,12 @@ impl MaintainCommandResult {
                 .patch
                 .as_ref()
                 .is_some_and(|patch| patch.len() > 32 * 1024 * 1024)
+            || self.data.pull_request.as_ref().is_some_and(|draft| {
+                draft.title.is_empty()
+                    || draft.title.len() > 256
+                    || draft.body.is_empty()
+                    || draft.body.len() > 64 * 1024
+            })
             || self.primary_values.len() > 32
             || self.diagnostics.len() > 128
             || self.next_actions.len() > 3

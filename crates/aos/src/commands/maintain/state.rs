@@ -11,7 +11,9 @@ use aos_contract::{Sha256Digest, canonical};
 use aos_maintain::discovery::DiscoverySnapshotV1;
 use aos_maintain::envelope::InventoryEnvelopeV1;
 use aos_maintain::plan::PackageUpdatePlanV1;
-use aos_maintain::run::{GateResultsV1, MaterializationRecordV1, PackageUpdateRunV1};
+use aos_maintain::run::{
+    GateResultsV1, MaterializationRecordV1, PackageUpdateEvidenceV1, PackageUpdateRunV1,
+};
 use aos_maintain::workflow::{
     ActorClass, EventBindings, JournalEvent, JournalPayload, RunState, verify_journal,
 };
@@ -344,7 +346,11 @@ impl StateStore {
             if bytes.len() > 8 * 1024 * 1024 {
                 bail!("gate log exceeds size limit");
             }
-            write_immutable_bytes(&log_directory, &format!("{name}.log"), bytes)?;
+            write_immutable_bytes(
+                &log_directory,
+                &format!("{}-{name}.log", record.phase),
+                bytes,
+            )?;
         }
         write_immutable(&attempt, &format!("gates-{}.json", record.phase), record)
     }
@@ -370,6 +376,31 @@ impl StateStore {
             bail!("gate results do not match their state path");
         }
         Ok(Some(record))
+    }
+
+    /// Stores the immutable final local evidence dossier.
+    pub(super) fn write_evidence(
+        &self,
+        evidence: &PackageUpdateEvidenceV1,
+    ) -> Result<Sha256Digest> {
+        evidence.validate()?;
+        let directory = self.run_directory(evidence.run_id.as_str())?;
+        write_immutable(&directory, "final-evidence.json", evidence)?;
+        Sha256Digest::of_canonical(aos_maintain::PACKAGE_UPDATE_EVIDENCE_V1, evidence)
+    }
+
+    /// Reads and validates a retained final local evidence dossier.
+    pub(super) fn read_evidence(&self, run_id: &str) -> Result<Option<PackageUpdateEvidenceV1>> {
+        let path = self.run_directory(run_id)?.join("final-evidence.json");
+        let Some(evidence) = read_optional(&path, "package update evidence")? else {
+            return Ok(None);
+        };
+        let evidence: PackageUpdateEvidenceV1 = evidence;
+        evidence.validate()?;
+        if evidence.run_id.as_str() != run_id {
+            bail!("package update evidence belongs to another run");
+        }
+        Ok(Some(evidence))
     }
 
     /// Appends one legal transition and updates the validated run projection.

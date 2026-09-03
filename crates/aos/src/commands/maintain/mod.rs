@@ -1,6 +1,8 @@
 //! Local foreground package-maintenance controller and process-boundary renderer.
 
 mod discovery;
+mod evidence;
+mod git;
 mod inventory;
 mod materialize;
 mod mutation;
@@ -18,7 +20,8 @@ use aos_maintain::MAINTENANCE_CLI_V1;
 use aos_maintain::inventory::Classification;
 use aos_maintain::presentation::{
     CommandCompletion, CommandData, CommandDisposition, Diagnostic, DiagnosticSeverity,
-    EffectClass, MaintainCommandResult, NextAction, PrimaryValue, escape_terminal,
+    EffectClass, MaintainCommandResult, NextAction, PrimaryValue, PullRequestDraft,
+    escape_terminal,
 };
 use serde::Serialize;
 
@@ -89,6 +92,8 @@ pub async fn run(cli: &Cli, args: &MaintainArgs) -> Result<CommandCompletion> {
                             run: None,
                             runs: Vec::new(),
                             patch: None,
+                            evidence: None,
+                            pull_request: None,
                         },
                         Vec::new(),
                         vec![PrimaryValue {
@@ -175,7 +180,275 @@ pub async fn run(cli: &Cli, args: &MaintainArgs) -> Result<CommandCompletion> {
         Some(MaintainCommand::Diff(command)) => diff_command(args, command),
         Some(MaintainCommand::Abandon(command)) => abandon_command(args, command),
         Some(MaintainCommand::Clean(command)) => clean_command(args, command),
+        Some(MaintainCommand::Accept(command)) => accept_command(args, command),
+        Some(MaintainCommand::Commit(command)) => commit_command(args, command),
+        Some(MaintainCommand::Test(command)) => test_command(args, command),
+        Some(MaintainCommand::Evidence(command)) => evidence_command(args, command),
+        Some(MaintainCommand::PreparePr(command)) => prepare_pr_command(args, command),
     }
+}
+
+fn accept_command(
+    args: &MaintainArgs,
+    command: &crate::cli::MaintainAcceptArgs,
+) -> Result<CommandCompletion> {
+    let (store, _) = current_store(args)?;
+    let mut run = resolve_run(&store, &command.run)?;
+    if run.state == aos_maintain::workflow::RunState::CandidateAccepted {
+        return run_view_completion("accept", &store, run, None);
+    }
+    if run.state != aos_maintain::workflow::RunState::QuickGated {
+        return run_view_completion(
+            "accept",
+            &store,
+            run,
+            Some((
+                CommandDisposition::ActionRequired,
+                "Only an exact quick-gated candidate can be accepted",
+            )),
+        );
+    }
+    let digest = git::candidate_digest(&store, &run)?;
+    let digest_text = digest.to_string();
+    if command.confirm.as_deref() != Some(digest_text.as_str()) {
+        let mut completion = run_view_completion(
+            "accept",
+            &store,
+            run.clone(),
+            Some((
+                CommandDisposition::ActionRequired,
+                "Review the candidate diff and confirm its exact patch digest",
+            )),
+        )?;
+        completion.result.next_actions = vec![NextAction {
+            label: "Accept this exact candidate".to_string(),
+            argv: vec![
+                "aos".to_string(),
+                "maintain".to_string(),
+                "accept".to_string(),
+                run.run_id.to_string(),
+                "--confirm".to_string(),
+                digest.to_string(),
+            ],
+            reason: "acceptance binds the reviewed patch and does not create a commit".to_string(),
+            prerequisites: vec!["review `aos maintain diff` output".to_string()],
+            effect_class: EffectClass::HumanDecision,
+            bound_context: Some(digest.to_string()),
+        }];
+        return CommandCompletion::new(completion.result);
+    }
+    run.accepted_candidate = Some(digest);
+    run.updated_at_unix = state::now_unix()?;
+    store.write_run(&run)?;
+    store.transition(
+        &mut run,
+        aos_maintain::workflow::RunState::CandidateAccepted,
+        aos_maintain::workflow::ActorClass::Maintainer,
+        state::now_unix()?,
+    )?;
+    run_view_completion("accept", &store, run, None)
+}
+
+fn commit_command(
+    args: &MaintainArgs,
+    command: &crate::cli::MaintainCommitArgs,
+) -> Result<CommandCompletion> {
+    let (store, _) = current_store(args)?;
+    let mut run = resolve_run(&store, &command.run)?;
+    if run.state == aos_maintain::workflow::RunState::Committed {
+        return run_view_completion("commit", &store, run, None);
+    }
+    if run.state != aos_maintain::workflow::RunState::CandidateAccepted {
+        return run_view_completion(
+            "commit",
+            &store,
+            run,
+            Some((
+                CommandDisposition::ActionRequired,
+                "The exact candidate must be accepted before commit",
+            )),
+        );
+    }
+    if command.confirm.as_deref() != Some(run.run_id.as_str()) {
+        let mut completion = run_view_completion(
+            "commit",
+            &store,
+            run.clone(),
+            Some((
+                CommandDisposition::ActionRequired,
+                "Review the commit effect and repeat the run ID with --confirm",
+            )),
+        )?;
+        completion.result.next_actions = vec![NextAction {
+            label: "Commit with maintainer Git identity".to_string(),
+            argv: vec![
+                "aos".to_string(),
+                "maintain".to_string(),
+                "commit".to_string(),
+                run.run_id.to_string(),
+                "--confirm".to_string(),
+                run.run_id.to_string(),
+            ],
+            reason: "Git hooks are disabled; configured identity and signing policy are retained"
+                .to_string(),
+            prerequisites: vec!["accepted exact candidate".to_string()],
+            effect_class: EffectClass::HumanDecision,
+            bound_context: run.accepted_candidate.map(|digest| digest.to_string()),
+        }];
+        return CommandCompletion::new(completion.result);
+    }
+    let plan = store
+        .read_plan(run.plan_id.as_str())?
+        .ok_or_else(|| anyhow::anyhow!("run plan is unavailable"))?;
+    match git::commit_candidate(&store, &plan, &mut run) {
+        Ok(commit) => {
+            let mut completion = run_view_completion("commit", &store, run, None)?;
+            completion.result.primary_values.push(PrimaryValue {
+                name: "candidateCommit".to_string(),
+                value: commit.value,
+            });
+            CommandCompletion::new(completion.result)
+        }
+        Err(error) => stopped_run_completion(
+            "commit",
+            CommandDisposition::ActionRequired,
+            store
+                .read_inventory()?
+                .ok_or_else(|| anyhow::anyhow!("run inventory is unavailable"))?,
+            plan,
+            run,
+            "maintain.commit-blocked",
+            &format!("{error:#}"),
+        ),
+    }
+}
+
+fn test_command(
+    args: &MaintainArgs,
+    command: &crate::cli::MaintainTestArgs,
+) -> Result<CommandCompletion> {
+    let (store, _) = current_store(args)?;
+    let mut run = resolve_run(&store, &command.run)?;
+    let plan = store
+        .read_plan(run.plan_id.as_str())?
+        .ok_or_else(|| anyhow::anyhow!("run plan is unavailable"))?;
+    let final_phase = if command.quick {
+        false
+    } else {
+        command.final_gate
+    };
+    let results = if final_phase {
+        validation::final_gates(&store, &plan, &mut run)
+    } else {
+        validation::quick(&store, &plan, &mut run)
+    };
+    match results {
+        Ok(results) if results.all_succeeded() => run_view_completion("test", &store, run, None),
+        Ok(_) => run_view_completion(
+            "test",
+            &store,
+            run,
+            Some((
+                CommandDisposition::OperationFailed,
+                "One or more planned gates failed",
+            )),
+        ),
+        Err(error) => run_view_completion(
+            "test",
+            &store,
+            run,
+            Some((CommandDisposition::ActionRequired, &format!("{error:#}"))),
+        ),
+    }
+}
+
+fn evidence_command(
+    args: &MaintainArgs,
+    command: &crate::cli::MaintainRunIdentityArgs,
+) -> Result<CommandCompletion> {
+    let (store, _) = current_store(args)?;
+    let mut run = resolve_run(&store, &command.run)?;
+    let plan = store
+        .read_plan(run.plan_id.as_str())?
+        .ok_or_else(|| anyhow::anyhow!("run plan is unavailable"))?;
+    let (evidence, digest) = match evidence::generate(&store, &plan, &mut run) {
+        Ok(result) => result,
+        Err(error) => {
+            return run_view_completion(
+                "evidence",
+                &store,
+                run,
+                Some((CommandDisposition::ActionRequired, &format!("{error:#}"))),
+            );
+        }
+    };
+    let mut completion = run_view_completion("evidence", &store, run, None)?;
+    completion.result.data.evidence = Some(evidence);
+    completion.result.primary_values.push(PrimaryValue {
+        name: "evidenceDigest".to_string(),
+        value: digest.to_string(),
+    });
+    CommandCompletion::new(completion.result)
+}
+
+fn prepare_pr_command(
+    args: &MaintainArgs,
+    command: &crate::cli::MaintainRunIdentityArgs,
+) -> Result<CommandCompletion> {
+    let (store, _) = current_store(args)?;
+    let run = resolve_run(&store, &command.run)?;
+    if run.state != aos_maintain::workflow::RunState::ReadyForPr {
+        return run_view_completion(
+            "prepare-pr",
+            &store,
+            run,
+            Some((
+                CommandDisposition::ActionRequired,
+                "Final local evidence must be complete before PR preparation",
+            )),
+        );
+    }
+    let plan = store
+        .read_plan(run.plan_id.as_str())?
+        .ok_or_else(|| anyhow::anyhow!("run plan is unavailable"))?;
+    let evidence = store
+        .read_evidence(run.run_id.as_str())?
+        .ok_or_else(|| anyhow::anyhow!("run evidence is unavailable"))?;
+    let evidence_digest = run
+        .evidence_digest
+        .ok_or_else(|| anyhow::anyhow!("run evidence digest is unavailable"))?;
+    let head = run
+        .candidate_commit
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("candidate commit is unavailable"))?;
+    let title = format!(
+        "pkg: update {} to {}",
+        plan.unit_id, plan.target_package_version
+    );
+    let body = format!(
+        "## Package update\n\n- Unit: `{}`\n- Change: `{}` -> `{}`\n- Risk: `{}`\n- Sources: {} resolved and hashed\n- Quick gates: {}/{} passed\n- Final gates: {}/{} passed\n- Candidate commit: `{}`\n- Local evidence: `{}`\n\n## Review\n\n- [ ] Review the package and source changes\n- [ ] Confirm required package-owner or specialist review\n- [ ] Confirm remote contributor authorization and protected checks\n",
+        plan.unit_id,
+        plan.current_package_version,
+        plan.target_package_version,
+        risk_name(plan.risk),
+        evidence.materialization.sources.len(),
+        evidence.quick_gates.results.len(),
+        evidence.quick_gates.results.len(),
+        evidence.final_gates.results.len(),
+        evidence.final_gates.results.len(),
+        head.value,
+        evidence_digest,
+    );
+    let mut completion = run_view_completion("prepare-pr", &store, run.clone(), None)?;
+    completion.result.data.pull_request = Some(PullRequestDraft {
+        branch: run.branch,
+        base_branch: "master".to_string(),
+        title,
+        body,
+        head: head.value.clone(),
+        evidence_digest,
+    });
+    CommandCompletion::new(completion.result)
 }
 
 fn status_command(
@@ -552,6 +825,8 @@ fn cached_completion(
             run: None,
             runs: Vec::new(),
             patch: None,
+            evidence: None,
+            pull_request: None,
         },
         diagnostics,
         Vec::new(),
@@ -627,6 +902,8 @@ fn scan_completion(
             run: None,
             runs: Vec::new(),
             patch: None,
+            evidence: None,
+            pull_request: None,
         },
         diagnostics,
         vec![PrimaryValue {
@@ -776,6 +1053,8 @@ fn plan_command(
             run: None,
             runs: Vec::new(),
             patch: None,
+            evidence: None,
+            pull_request: None,
         },
         Vec::new(),
         vec![PrimaryValue {
@@ -1008,6 +1287,8 @@ async fn run_command(
             run: Some(run.clone()),
             runs: Vec::new(),
             patch: None,
+            evidence: None,
+            pull_request: None,
         },
         primary_values: vec![PrimaryValue {
             name: "runId".to_string(),
@@ -1061,6 +1342,8 @@ fn stopped_run_completion(
             run: Some(run.clone()),
             runs: Vec::new(),
             patch: None,
+            evidence: None,
+            pull_request: None,
         },
         primary_values: vec![PrimaryValue {
             name: "runId".to_string(),
@@ -1142,6 +1425,7 @@ fn run_view_completion(
                 .to_string(),
         );
     }
+    let evidence = store.read_evidence(run.run_id.as_str())?;
     let (disposition, diagnostics) = stopped.map_or(
         (CommandDisposition::Success, Vec::new()),
         |(disposition, summary)| {
@@ -1165,6 +1449,7 @@ fn run_view_completion(
             values,
             plan: Some(plan),
             run: Some(run.clone()),
+            evidence,
             ..CommandData::default()
         },
         primary_values: vec![PrimaryValue {
@@ -1172,8 +1457,68 @@ fn run_view_completion(
             value: run.run_id.to_string(),
         }],
         diagnostics,
-        next_actions: Vec::new(),
+        next_actions: next_actions_for_run(&run),
     })
+}
+
+fn next_actions_for_run(run: &aos_maintain::run::PackageUpdateRunV1) -> Vec<NextAction> {
+    use aos_maintain::workflow::RunState;
+
+    let (label, tail, reason, effect_class) = match run.state {
+        RunState::WorktreeReady => (
+            "Materialize the planned update",
+            vec!["resume", run.run_id.as_str(), "--until", "materialized"],
+            "download, hash, and apply only the immutable source intents",
+            EffectClass::LocalMutation,
+        ),
+        RunState::PolicyValid => (
+            "Run the planned quick gates",
+            vec!["test", run.run_id.as_str(), "--quick"],
+            "validate the exact retained candidate patch",
+            EffectClass::LocalMutation,
+        ),
+        RunState::QuickGated => (
+            "Review and accept the candidate",
+            vec!["accept", run.run_id.as_str()],
+            "acceptance requires the exact displayed patch digest",
+            EffectClass::HumanDecision,
+        ),
+        RunState::CandidateAccepted => (
+            "Review and commit the candidate",
+            vec!["commit", run.run_id.as_str()],
+            "commit creation requires a second operation-specific confirmation",
+            EffectClass::HumanDecision,
+        ),
+        RunState::Committed => (
+            "Run the complete final gate plan",
+            vec!["test", run.run_id.as_str(), "--final"],
+            "final results bind the exact candidate commit",
+            EffectClass::LocalMutation,
+        ),
+        RunState::FinalGated => (
+            "Generate the final local evidence",
+            vec!["evidence", run.run_id.as_str()],
+            "the dossier cross-checks the plan, journal, patch, commit, and gates",
+            EffectClass::LocalMutation,
+        ),
+        RunState::ReadyForPr => (
+            "Prepare the pull request offline",
+            vec!["prepare-pr", run.run_id.as_str()],
+            "review title, body, branch, head, and evidence before publication",
+            EffectClass::ReadOnly,
+        ),
+        _ => return Vec::new(),
+    };
+    let mut argv = vec!["aos".to_string(), "maintain".to_string()];
+    argv.extend(tail.into_iter().map(str::to_string));
+    vec![NextAction {
+        label: label.to_string(),
+        argv,
+        reason: reason.to_string(),
+        prerequisites: Vec::new(),
+        effect_class,
+        bound_context: Some(run.plan_digest.to_string()),
+    }]
 }
 
 fn missing_object(command: &str, label: &str) -> Result<CommandCompletion> {
@@ -1342,6 +1687,11 @@ fn command_name(args: &MaintainArgs) -> &'static str {
         Some(MaintainCommand::Diff(_)) => "diff",
         Some(MaintainCommand::Abandon(_)) => "abandon",
         Some(MaintainCommand::Clean(_)) => "clean",
+        Some(MaintainCommand::Accept(_)) => "accept",
+        Some(MaintainCommand::Commit(_)) => "commit",
+        Some(MaintainCommand::Test(_)) => "test",
+        Some(MaintainCommand::Evidence(_)) => "evidence",
+        Some(MaintainCommand::PreparePr(_)) => "prepare-pr",
     }
 }
 
@@ -1462,6 +1812,8 @@ fn render_human(result: &MaintainCommandResult, screen_reader: bool, printer: &P
         printer.kv("Owner", &escape_terminal(owner, 4096));
         printer.kv("Fields", &plan.semantic_mutations.len().to_string());
         printer.kv("Sources", &plan.sources.len().to_string());
+        printer.kv("Quick gates", &plan.quick_gates.len().to_string());
+        printer.kv("Final gates", &plan.final_gates.len().to_string());
         printer.kv("Risk", risk_name(plan.risk));
     }
 
@@ -1491,6 +1843,32 @@ fn render_human(result: &MaintainCommandResult, screen_reader: bool, printer: &P
         printer.plain("");
         printer.header("Patch");
         printer.plain(&escape_multiline(patch, 32 * 1024 * 1024));
+    }
+
+    if let Some(evidence) = &result.data.evidence {
+        printer.plain("");
+        printer.header("Evidence");
+        printer.kv("Candidate", &evidence.candidate_commit.value);
+        printer.kv("Patch", &evidence.patch_digest.to_string());
+        printer.kv(
+            "Quick gates",
+            &format!("{} passed", evidence.quick_gates.results.len()),
+        );
+        printer.kv(
+            "Final gates",
+            &format!("{} passed", evidence.final_gates.results.len()),
+        );
+    }
+
+    if let Some(draft) = &result.data.pull_request {
+        printer.plain("");
+        printer.header("Pull request draft");
+        printer.kv("Branch", &escape_terminal(&draft.branch, 256));
+        printer.kv("Base", &escape_terminal(&draft.base_branch, 256));
+        printer.kv("Head", &draft.head);
+        printer.kv("Title", &escape_terminal(&draft.title, 256));
+        printer.plain("");
+        printer.plain(&escape_multiline(&draft.body, 64 * 1024));
     }
 
     for diagnostic in &result.diagnostics {
