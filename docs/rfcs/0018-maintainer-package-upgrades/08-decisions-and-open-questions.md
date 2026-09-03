@@ -8,61 +8,97 @@
    editor, materializers, validation, journal, evidence, and Git handoff.
 3. No nixpkgs package/module/updater or host-tool dependency enters package or
    test derivations. External updater projects are precedents only.
-4. The atomic maintenance object is an update unit, not a package attribute or
-   file.
-5. Family, stream, unit, member, component, artifact, and cohort are distinct
-   identities/relationships.
-6. Concurrent major/LTS lines have separate update units and release policies
+4. The atomic policy object is an update unit, not a package attribute or file.
+   A unit may contain several independently versioned components.
+5. Execution is a campaign: an ordered set of one or more units sharing one
+   base, worktree, plan, journal, gate set, evidence dossier, and PR.
+6. Family, stream, unit, member, component, source, artifact, cohort, and
+   campaign are distinct identities/relationships.
+7. Concurrent major/LTS lines have separate update units and release policies
    and may coexist in one AOS point release.
-7. A new upstream major does not automatically replace, retire, or mutate an
+8. A new upstream major does not automatically replace, retire, or mutate an
    existing stream.
-8. `mkUpstream` colocates authoritative upstream/current/source/artifact/policy
-   data with the source values it controls.
-9. Pure Nix evaluation emits a closed canonical maintenance inventory consumed
-   by a pure Rust model.
-10. Every package is eventually classified automatic, assisted, manual, frozen,
+9. `mkUpstream` colocates authoritative package projection and per-component
+   current/discovery/policy/source/artifact data with the values it controls.
+10. Component candidates are selected independently, checked as a complete
+    compatible vector, then projected deterministically to the package version.
+11. Pure Nix evaluation emits canonical content only. The Rust command wraps it
+    in a repository envelope binding remote, clone/common-dir, commit/tree or
+    dirty content, inventory, target set, and frozen controller identity.
+12. The maintenance universe reconciles all supported lint/build/release roots,
+    aliases, generated/local/frozen helpers, and stdenv/package-set roots.
+13. Every AOS fixed-output/source constructor exposes typed identity and builder
+    parameters. A graph audit accounts for every reachable fixed-output input.
+14. Every package is eventually classified automatic, assisted, manual, frozen,
     local, generated, or alias; missing/contradictory coverage fails evaluation.
-11. Automatic fields are standardized literals. Mutation uses unit/owner/field
-    identity and expected old values through a syntax-aware editor.
-12. Nix source positions are diagnostic only. Line numbers, filename guessing,
+15. Automatic fields are standardized literals. Mutation proves both the exact
+    authored delta and the closed set of permitted derived evaluation effects.
+16. Generated outputs additionally declare path, format, preimage, typed
+    transformation, and postcondition. No arbitrary update script is accepted.
+17. Nix source positions are diagnostic only. Line numbers, filename guessing,
     global text replacement, and broad regex are not mutation authorities.
-13. Package-declared primary upstreams are authoritative. Repology is a cached
-    advisory/discrepancy signal.
-14. Provider outages, mapping ambiguity, parse incompatibility, and stale
-    required evidence are unknown, not current.
-15. Same upstream identity with changed bytes is quarantined rather than
+18. Package-declared primary upstreams are authoritative. Repology is a cached
+    advisory/discrepancy signal with a host-wide local rate budget.
+19. Every provider proves coverage through the current identity or declared
+    stream bound. Truncation, outage, ambiguity, incompatible parsing, or stale
+    required evidence is unknown, not current.
+20. Stream selection uses a closed version-range, channel, immutable VCS-lineage,
+    or manual selector. Force-pushed or unreachable VCS identity quarantines.
+21. Raw provider identity, upstream identity, comparison identity, and package
+    projection are distinct. A projection collision quarantines unless covered
+    by an explicit canonical-alias policy.
+22. Observation freshness and release stabilization are separate clocks with a
+    declared time basis. A missing required timestamp is unknown.
+23. Source URL templates are a typed AST with component-aware encoding; version
+    data cannot change URL scheme, authority, or other structural fields.
+24. Same upstream identity with changed bytes is quarantined rather than
     silently rehashed.
-16. Plans bind base, inventory, observations, current/target identity, exact
-    fields/paths, materializers, risk, gates, and budgets before effects.
-17. Deterministic version/source/hash/artifact/format/eval/graph/test work runs
+25. Source results say `verified-authentic`, `origin-integrity`, `failed`, or
+    `unknown`; transport plus content hash alone is not described as authentic.
+26. Plans bind base/envelope/controller, ordered campaign units, complete
+    component vectors, observations, exact fields/paths, materializers, risk,
+    gates, and budgets before effects.
+27. Deterministic version/source/hash/artifact/format/eval/graph/test work runs
     before agent assistance.
-18. Agent assistance is optional, provider-neutral, bounded to a typed failure,
+28. Candidate evaluation, materialization, agent tools, and tests require a
+    verified local confinement backend; environment filtering is not isolation.
+29. Candidate Nix evaluation is empty-environment, pure/restricted, import-
+    bounded, IFD-disabled, network-disabled, resource-bounded, and confined.
+30. Agent assistance is optional, provider-neutral, bounded to a typed failure,
     and disabled entirely with `--agent none`.
-19. The agent receives neither writable Git metadata nor GitHub, signing,
+31. The agent receives neither writable Git metadata nor GitHub, signing,
     release, SSH-agent, or unrelated filesystem authority.
-20. Every agent patch passes the same deterministic mutation, semantic-diff,
+32. Every agent patch passes the same deterministic mutation, semantic-diff,
     path, feature, dependency, test, license, and risk gateway.
-21. The agent cannot select upstream authority, expand its own scope, weaken
-    features/tests/hermeticity, accept a patch, or declare a gate successful.
-22. New required dependencies are complete AOS packages and require a new
-    maintainer-approved plan scope.
-23. Local state is durable, bounded, append-only at its journal boundary,
-    inspectable, and resumable without a resident process.
-24. Each run uses an isolated worktree and a `dplecki/upgrade-*` branch with
+33. The agent cannot select upstream authority, expand scope, accept a patch, or
+    declare a gate successful. Changes to patches, phases, flags, dependencies,
+    hardening, tests, or licenses always require a new human-approved plan.
+34. New required dependencies are complete AOS packages and require an explicit
+    multi-unit campaign approved by the maintainer.
+35. Local state is durable, bounded, corruption-detecting, inspectable, and
+    resumable. Each retained attempt includes enough patch/file content to be
+    reconstructed; it is not claimed tamper-proof against the maintainer.
+36. Each campaign uses an isolated worktree and a `dplecki/upgrade-*` branch with
     expected-head/tree checks. Human work is never overwritten.
-25. Final validation runs all required package/target/impact gates and every
-    `aos test` layer on the exact candidate commit.
-26. Missing KVM, target, builder, or test capability leaves an explicit
-    action-required result; validation is never silently narrowed.
-27. The maintainer accepts and commits the final tree with their configured Git
+37. Final validation runs all required unit/component/target/impact gates and
+    every `aos test` layer on the exact candidate commit.
+38. Missing confinement, KVM, target, builder, or test capability leaves an
+    explicit action-required result; validation is never silently narrowed.
+39. The frozen base controller owns the run. Candidate `pkgs.aos` is tested as
+    an artifact and never becomes the coordinator executing later phases.
+40. The maintainer accepts and commits the final tree with their configured Git
     identity/signing policy. The tool does not synthesize DCO sign-off.
-28. Branch push and PR creation are an explicit final `publish-pr` action with
-    a displayed remote effect and expected remote head.
-29. The tool cannot force-push, merge, tag, release, publish packages, or invoke
+41. Local preflight checks identity and signature policy but records contributor
+    authorization as `pending-remote`; only an exact-head remote observation can
+    record `merge-eligible-observed`.
+42. Branch push and PR creation are an explicit final, hook-free, one-shot
+    `publish-pr` action using sanitized Git configuration, an exact refspec,
+    displayed remote effect, and expected remote head.
+43. The tool cannot force-push, merge, tag, release, publish packages, or invoke
     RFC-0017 release authority.
-30. Commit/PR text contains no AI/vendor/model attribution, generated-by text,
+44. Commit/PR text contains no AI/vendor/model attribution, generated-by text,
     or agent session links.
-31. Update evidence is reviewer evidence, not release provenance. RFC-0017
+45. Update evidence is reviewer evidence, not release provenance. RFC-0017
     independently rebuilds and qualifies the merged protected source.
 
 ## Rejected alternatives
@@ -93,6 +129,12 @@ Rejected because Repology aggregates repository records, normalizes versions,
 can report several newest/untrusted values, and does not provide authoritative
 AOS source identity. It is an advisory observation only.
 
+### Treat a bounded provider result page as complete
+
+Rejected because releases from other streams may fill the page and hide the
+current or next in-policy identity. An adapter must prove coverage through the
+current identity or stream bound; otherwise the result is unknown.
+
 ### Compare every package with the family's global newest release
 
 Rejected because concurrent major, LTS, bootstrap, and security-only lines are
@@ -103,6 +145,19 @@ intentional. Selection occurs inside each declared maintained stream.
 Rejected because shared sources feed multiple attributes, aliases are not
 independent upstreams, and one package can contain several source/generated
 inputs.
+
+### Treat a multi-component package as one scalar version
+
+Rejected because components can advance independently and can have different
+providers, release policies, source identities, and failure states. Selection
+produces a complete component vector; a separate typed projection derives the
+package version.
+
+### Run cohort members as independent updates
+
+Rejected because compiler/toolchain cohorts and newly required dependencies can
+be valid only as a group. Their ordered units use one campaign transaction and
+cannot produce individually publishable partial results.
 
 ### Keep update metadata in one central hand-written map
 
@@ -115,6 +170,19 @@ inventory is generated and validated.
 Rejected because names cannot express project mapping, maintained streams,
 prerelease policy, shared ownership, generated hashes, or dynamic/composite
 sources reliably.
+
+### Claim a Git commit from pure Nix evaluation
+
+Rejected because pure evaluation cannot authoritatively identify the repository
+or account for dirty content. Nix emits content; the foreground Rust command
+adds the repository and frozen-controller envelope.
+
+### Audit only declared source slots
+
+Rejected because an undeclared reachable fixed-output derivation would be
+invisible precisely when the contract is incomplete. Every AOS source
+constructor is instrumented and the evaluated input graph is reconciled with
+the declared slots.
 
 ### Use source positions or regex as the editor
 
@@ -139,6 +207,12 @@ only with a typed repair failure.
 Rejected because prompt-injected source/log text could manipulate Git, read
 unrelated files, obtain credentials, or bypass the journal. The agent uses a
 bounded disposable view and returns a patch to a deterministic gateway.
+
+### Treat environment filtering as process isolation
+
+Rejected because hostile candidate code can inspect processes, filesystems,
+sockets, credentials, and descendants without an operating-system boundary.
+Sensitive execution requires the verified local confinement contract.
 
 ### Make passing affected tests sufficient for completion
 
@@ -195,8 +269,17 @@ small semantic edit interface.
 
 Decide whether append-only canonical NDJSON plus rebuildable JSON indexes is
 sufficient or whether a local SQLite projection materially improves queries.
-The canonical event records, digests, locking, recovery, and export format do
-not depend on the projection choice.
+The canonical event records, digests, retained attempt material, locking,
+recovery, flush/rename/directory-sync protocol, and export format do not depend
+on the projection choice.
+
+### Local confinement implementation
+
+Validate the exact Linux namespace/subordinate-UID/syscall/cgroup construction
+and the Darwin disposable-VM transport in PR 7. The externally enforced
+filesystem, process, credential, network, resource, teardown, and restricted-
+evaluation contract is fixed; a platform remains action-required until its
+implementation passes the hostile fixture suite.
 
 ### Initial provider coverage
 
@@ -204,10 +287,11 @@ Use the completed inventory census to select adapters that cover the greatest
 number/risk of maintainable units. Do not implement a provider merely because
 another updater supports it.
 
-### Signature and checksum policy vocabulary
+### Signature and checksum policy details
 
-Inventory current upstream verification practices, then define typed
-`required`, `optional-recorded`, `not-offered`, and transition behavior. A
+Inventory current upstream verification practices, then define per-component
+anchor requirements and transition behavior within the fixed
+`verified-authentic`/`origin-integrity`/`failed`/`unknown` outcome vocabulary. A
 package losing a previously required verification path must quarantine.
 
 ### Freeze review policy
@@ -230,8 +314,9 @@ eventually pushed, and publication cannot rewrite a tested head afterward.
 ### GitHub authentication surface
 
 Choose the local authentication mechanism for `publish-pr` that fits existing
-AOS dependencies and maintainer practice. The command must isolate credentials,
-support an expected remote head, and expose no merge/tag/release operation.
+AOS dependencies and maintainer practice. The command must remain a one-shot
+publisher with sanitized Git configuration, disabled hooks, exact refspec,
+expected remote head, and no merge/tag/release operation.
 
 ### Agent model adapter
 

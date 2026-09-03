@@ -10,7 +10,7 @@ Every gate result binds:
 
 - exact base and candidate Git commits or pre-commit tree identity;
 - maintenance inventory, discovery snapshot, update plan, and policy digests;
-- unit/current/target identity;
+- campaign and every unit/component current/target identity;
 - target platform and builder identity;
 - exact test definition and AOS tool closure;
 - immutable result and log digests.
@@ -22,7 +22,7 @@ rebase, or relevant policy change invalidates affected results.
 
 The pure planner selects gates from evaluated facts:
 
-- update-unit members and source/artifact dependency graph;
+- campaign units, component target vectors, members, and source/artifact graph;
 - supported targets from
   [`pkgs/_platform-support.nix`](../../../pkgs/_platform-support.nix);
 - direct/transitive dependencies and reverse dependencies;
@@ -73,13 +73,13 @@ that exact commit. `ready-for-pr` requires:
 
 1. canonical inventory, discovery, plan, journal, semantic diff, filesystem
    diff, and evidence validation;
-2. every unit source and secondary fixed-output artifact;
-3. every member package on every eligible AOS target;
+2. every campaign component source and secondary fixed-output artifact;
+3. every campaign unit member on every eligible AOS target;
 4. every member's package-authored checks;
 5. the complete affected reverse-dependency closure selected by risk policy;
 6. every existing `aos test` layer—eval, Rust, build, VM, and fleet;
-7. source/authenticity, license, contributor-authorization, and package-update
-   policy checks;
+7. source assurance, license, local contributor-identity/signature preflight,
+   and package-update policy checks;
 8. all unit/risk-specific gates;
 9. repeat clean builds where exceptional policy requires comparison.
 
@@ -88,11 +88,18 @@ The five repository layers are implemented in
 The maintainer tool invokes them through the documented AOS/Nix environment,
 not `cargo run`, host tools, or nixpkgs.
 
-All tests run from the maintainer workflow. If the current machine/configured
-AOS builders cannot provide KVM, a target platform, or another required
-capability, the gate remains unavailable and the run remains incomplete. The
-tool reports the exact command, capability, and expected result needed; it does
-not silently reduce the plan.
+All tests run from the maintainer workflow. If the current machine and its local
+AOS build/confinement environment cannot provide KVM, a target platform, or
+another required capability, the gate remains unavailable and the run remains
+incomplete. The tool reports the exact command, capability, and expected result
+needed; it does not silently reduce the plan.
+
+Authoritative contributor authorization is necessarily pending until the PR
+exists and the repository's fail-closed private-record check evaluates its exact
+head. It is not a local final gate and `ready-for-pr` does not imply it passed.
+After publication, a later foreground observation may record remote
+authorization/review/check state as `merge-eligible-observed`; uncertainty
+remains action-required.
 
 If a repair follows final-test failure, it creates a new attempt/candidate
 commit. All commit-bound final results run again. If the maintainer rewrites
@@ -156,7 +163,7 @@ plan.
 - Give it a valid maintenance classification/update unit.
 - Recompute build/runtime/reverse-dependency and license impact.
 - Preserve upstream features rather than disabling them.
-- Create a new plan generation and rerun invalidated gates.
+- Expand to a new multi-unit campaign plan and rerun invalidated gates.
 
 ## Evidence model
 
@@ -165,9 +172,10 @@ dossier references all attempts and contains these sections.
 
 ### Identity
 
-- run, attempt, parent-attempt, and update-unit IDs;
+- campaign, run, attempt, parent-attempt, and ordered update-unit IDs;
 - family, stream, classification, lifecycle, members, and cohort;
-- current and target package/upstream/comparison versions;
+- every unit's current/target package version and component
+  upstream/comparison vector;
 - base, candidate head, tree, patch, inventory, snapshot, plan, policy, and
   evidence digests;
 - platforms and risk.

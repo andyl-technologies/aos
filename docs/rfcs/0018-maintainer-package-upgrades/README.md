@@ -17,18 +17,23 @@ use a bounded agent to repair non-mechanical failures, run the required package
 and repository tests, inspect every intermediate result, resume interrupted
 work, and explicitly publish a branch and pull request.
 
-The atomic object is an **update unit**, not a Nix package attribute or source
-file. One unit may feed several package outputs; one upstream family may have
+The atomic package-policy object is an **update unit**, not a Nix package
+attribute or source file. One unit may feed several package outputs and contain
+several independently versioned components; one upstream family may have
 several simultaneously maintained units. For example, `bazel-7`, `bazel-8`,
 and `bazel-9` can all ship in one AOS point release while each tracks only the
-latest acceptable release in its own major line.
+latest acceptable release in its own major line. When several units must land
+together, one explicit campaign gives them a shared worktree, plan, journal,
+gate set, branch, and PR.
 
-A versioned `mkUpstream` declaration colocates each unit's upstream identity,
-current version, source and generated-input hashes, maintained stream, and
-automation policy with the package source. Pure Nix evaluation emits a closed
-maintenance inventory. The Rust tool consumes that inventory, queries declared
-primary upstreams, treats Repology as an advisory signal, and writes only
-schema-defined literal fields through a syntax-aware compare-and-swap editor.
+A versioned `mkUpstream` declaration colocates each unit's package version,
+component upstream identities, source and generated-input hashes, maintained
+stream, and automation policy with the package source. Pure Nix evaluation
+emits a closed content inventory; the local tool wraps it with the exact Git
+commit/tree/dirty-state identity it evaluated. Rust consumes that envelope,
+queries each component's declared primary upstream, treats Repology as an
+advisory signal, and writes only schema-defined literal fields through a
+syntax-aware compare-and-swap editor.
 
 Deterministic mechanics run before agent assistance. The tool selects the
 candidate, fetches sources, computes hashes, regenerates declared fixed-output
@@ -53,7 +58,7 @@ declared upstream + Repology advisory observation
              isolated local Git worktree
                          |
                          v
-        deterministic version/hash/input update
+       deterministic component/version/hash update
                          |
                          v
               bounded agent repair loop
@@ -81,12 +86,13 @@ declared upstream + Repology advisory observation
 | Where does the workflow run? | From `aos maintain` in a real maintainer checkout. |
 | Is a long-running process required? | No. Every operation is a resumable foreground command. |
 | Does AOS use nixpkgs or a nixpkgs updater? | No. The package API, fetchers, inventory, updater, tests, and execution are AOS-owned. |
-| What is updated atomically? | An explicit update unit, potentially with several members, source slots, and fixed-output artifacts. |
+| What is updated atomically? | Normally one update unit; an explicit campaign owns the transaction when a cohort or new dependency requires several units. |
 | How do concurrent major versions work? | Each maintained stream is a separate unit in one upstream family; family membership does not force grouping. |
+| How do composite packages work? | Each independently released component has its own current identity, provider, policy, candidate, and source slots inside the unit. |
 | Is Repology authoritative? | No. It is a cached advisory signal; the package-declared primary upstream is authoritative. |
 | How are Nix files changed? | Through standardized literal metadata and a syntax-aware expected-value editor; never by filename guessing or broad regex. |
 | When is an agent used? | Only after deterministic materialization, for a typed package failure and bounded write scope. |
-| Can the agent weaken features or tests? | No. Such a proposal is a policy failure. New required dependencies must be complete AOS packages. |
+| Can an agent change features, phases, dependencies, hardening, or tests autonomously? | No. It may propose such work, but the run blocks until a maintainer approves a new plan scope and validation. |
 | What makes a run complete? | All policy-selected package/target/impact gates and every `aos test` layer pass on the exact final head. |
 | Who publishes the PR? | The maintainer, through an explicit final command using their normal Git identity and authentication. |
 | Can the tool merge or release? | No. Human review authorizes merge; RFC-0017 independently rebuilds and publishes from protected source. |
@@ -103,19 +109,22 @@ declared upstream + Repology advisory observation
 4. **Every package is classified.** Missing or contradictory ownership is
    eventually an evaluation failure, following the precedent of the platform
    inventory.
-5. **Automatic edits are constrained.** Writable values are schema-defined
-   literals identified by update unit, owner path, field ID, and expected old
-   value.
+5. **Automatic edits are constrained.** Writable values and generated
+   repository outputs have schema-defined owners, formats, transformations, and
+   expected preimages.
 6. **Discovery is not authority.** Repology and other advisory data can find or
    challenge a candidate but cannot select source bytes or override policy.
 7. **Mechanics precede inference.** An agent never replaces deterministic
    version policy, downloading, hashing, graph calculation, formatting, or
    validation.
-8. **Untrusted code has no maintainer credentials.** Upstream builds and agent
-   tools cannot access Git/GitHub, signing, release, SSH-agent, or unrelated
-   host credentials.
+8. **Untrusted code is locally confined.** Candidate evaluation,
+   network-enabled materialization, builds, tests, and agent tools use a
+   fail-closed local confinement backend and cannot access Git/GitHub, signing,
+   release, SSH-agent, or unrelated host credentials.
 9. **Work is inspectable and resumable.** Every effect has durable local state,
-   immutable evidence, an expected input, and an idempotent recovery rule.
+   reconstructible attempt data, an expected input, and an idempotent recovery
+   rule. Local hash chains detect accidental corruption; they do not claim to
+   resist a malicious maintainer account.
 10. **Green is commit-specific.** Any edit or rebase invalidates prior results;
     unavailable or indeterminate required tests leave the run incomplete.
 11. **The maintainer owns publication.** Branch push and PR creation are
@@ -149,6 +158,12 @@ They share stable package/update-unit and source identity so a release can say
 which upstream unit produced a package. They do not share build authority. An
 update dossier helps reviewers decide whether to merge; the release flow
 independently resolves, rebuilds, qualifies, and publishes the merged source.
+
+Canonical JSON, digest, bounded-decoding, and primitive contract types are
+shared with `aos-release` through one small pure contract crate. `aos-maintain`
+owns only update-specific policy and state. This preserves RFC-0017's
+requirement for one implementation of common contract primitives; see its
+[code architecture](../0017-canonical-hub-publishing/07-code-architecture-and-delivery-plan.md).
 
 ## External design basis
 

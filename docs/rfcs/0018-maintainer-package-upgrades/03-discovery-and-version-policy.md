@@ -5,15 +5,16 @@
 Discovery gathers evidence; it does not define package truth. Candidate
 authority is:
 
-1. the primary upstream source declared by the update unit;
+1. the primary upstream source declared by each update-unit component;
 2. Repology as a cross-repository advisory and discrepancy signal;
 3. an optional secondary observation source for upstreams without a sufficient
    direct adapter;
 4. a maintainer when identity, ordering, or source evidence remains ambiguous.
 
-Only the declared primary upstream can produce a selectable release. Repology
-can trigger investigation or corroborate a result, but it cannot override the
-unit's maintained stream, construct source URLs, or authorize bytes.
+Only a component's declared primary upstream can produce its selectable
+candidate. Repology can trigger investigation or corroborate a result, but it
+cannot override stream policy, construct source URLs, choose a compatible
+component vector, or authorize bytes.
 
 ## Provider contract
 
@@ -30,12 +31,18 @@ records rather than a single `latest` string:
     "url": "https://api.github.com/...",
     "cacheValidator": "<etag-or-null>"
   },
+  "coverage": {
+    "kind": "through-current",
+    "boundary": "v3.31.6",
+    "truncated": false
+  },
   "responseDigest": "sha256:...",
   "candidates": [
     {
       "rawId": "v4.4.3",
       "rawVersion": "4.4.3",
       "publishedAt": "<timestamp-or-null>",
+      "firstObservedAt": "<timestamp>",
       "prerelease": false,
       "yanked": false,
       "releaseUrl": "https://example.invalid/release",
@@ -49,12 +56,22 @@ The closed adapter interface includes:
 
 - a typed provider/project configuration;
 - bounded pagination, response bytes, candidate count, and string sizes;
+- a proof that results are complete, cover all releases through the current
+  identity or a stream lower bound, or are truncated/unknown;
 - conditional request state and cache freshness;
 - stable error classes;
 - raw IDs and versions preserved without normalization loss;
 - optional release time, prerelease/yanked state, release/source links,
   checksum/signature links, and VCS identity;
 - no executable package-authored callback.
+
+For a provider ordered newest-first, the adapter paginates until it observes the
+current immutable identity or a stream-specific lower bound that proves every
+potentially newer candidate was seen. For unordered providers, it needs a
+provider-specific completeness proof. Hitting a page/count/byte limit before
+that boundary yields a truncated observation and `unknown`, never `no-change`.
+Fixtures interleave several maintained majors so a busy mainline cannot hide a
+newer release on an older supported stream.
 
 Initial direct adapters should be chosen from the evaluated package inventory,
 not a generic ecosystem wish list. Expected high-value classes are GitHub and
@@ -77,8 +94,10 @@ excludes draft/prerelease entries but selects the most recent release by
 version or the desired maintenance line. A backport release can therefore be
 temporally latest but belong to a lower line.
 
-List a bounded candidate window, retain release times and raw tags, and let the
-unit's pure version policy choose. Use conditional requests and ETags; GitHub
+List bounded pages until the adapter proves coverage through the current
+identity/stream boundary, retain release times and raw tags, and let the
+component's pure version policy choose. A configured safety limit that prevents
+that proof returns `unknown`. Use conditional requests and ETags; GitHub
 recommends them to avoid unnecessary rate-limit usage. See the
 [release API](https://docs.github.com/en/rest/releases/releases#get-the-latest-release)
 and [conditional-request guidance](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#use-conditional-requests).
@@ -103,9 +122,12 @@ These constraints and status definitions are documented in Repology's pinned
 [API source](https://github.com/repology/repology-rs/blob/4f10afe4209e8d8e28d9622090a6ddded4a901fc/repology-webapp/templates/api.html)
 and [status list](https://github.com/repology/repology-rs/blob/4f10afe4209e8d8e28d9622090a6ddded4a901fc/repology-webapp/templates/_includes/versionclass/list.html).
 
-`aos maintain scan` therefore:
+`aos maintain scan` therefore uses host-wide provider state beneath the XDG
+state root rather than a per-checkout timer. A cross-process lease/token bucket
+persists the one-second spacing, daily request budget, and `Retry-After`
+deadline across scans and clones. Budget exhaustion makes advisory evidence
+`unknown`; it never violates Repology's policy. The command also:
 
-- paces all Repology requests through one local limiter;
 - sends a compliant AOS source/issue-tracker user agent;
 - persists raw response digest, retrieval time, cache state, and parser version;
 - reuses sufficiently fresh cache entries across units and scans;
@@ -143,6 +165,20 @@ valid, and fresh under the unit policy. Advisory data may be stale or missing if
 policy explicitly permits that state and reports it. The resulting plan records
 the precise freshness decision.
 
+Observation freshness and candidate stabilization are separate clocks:
+
+- every provider policy declares `observationMaxAge`, with a repository
+  default fixed by schema/policy version;
+- `minimumAgeDays` declares its allowed basis: authenticated provider
+  publication time, immutable VCS commit time, or durable local
+  `firstObservedAt`;
+- a required but missing/invalid time basis makes selection `unknown`;
+- `firstObservedAt` is kept in durable host-wide provider state rather than the
+  disposable response cache, and is keyed by provider/project/raw immutable
+  identity;
+- wall-clock rollback or implausible future time stops age-based selection for
+  inspection.
+
 ## Normalization and ordering
 
 Supported version schemes should initially include:
@@ -167,10 +203,33 @@ Never silently strip arbitrary prefixes/suffixes or coerce an invalid version
 into a plausible one. Package, upstream, and comparison forms remain visible in
 the plan and PR.
 
+Each component declares one closed stream selector:
+
+- `version-range`: version scheme plus major/minor/range and prerelease rules;
+- `channel`: an exact provider feed/channel identity whose records carry the
+  channel provenance;
+- `vcs-lineage`: repository, named branch/ref policy, current immutable commit,
+  and required ancestry/order evidence;
+- `manual`: no automatic ordering or selection.
+
+A VCS observation resolves names to immutable commit IDs and proves the target
+is a descendant of the current commit under the declared lineage. Force-push,
+unreachable current commits, ambiguous ancestry, or inability to obtain the
+required graph quarantines the candidate. Commit timestamp alone is not
+lineage/order proof.
+
+The component also declares a typed candidate projection from provider fields
+to `upstreamId`, `comparisonVersion`, and any URL version form. The unit's typed
+package-version projection then consumes the closed component target vector.
+Two raw identities mapping to one comparison key quarantine unless an explicit
+canonical-alias rule identifies equivalent releases and a deterministic
+preferred identity.
+
 ## Candidate selection
 
-Selection is pure and deterministic over the update unit plus observation
-documents. It produces:
+Selection is pure and deterministic per component, followed by the unit's
+compatibility and package-version projections. It consumes the update unit plus
+observation documents and produces:
 
 - `no-change`;
 - `candidate` with a complete explanation;
@@ -181,15 +240,19 @@ documents. It produces:
 Policy applies in this order:
 
 1. validate provider/project identity and observation bounds;
-2. normalize without discarding raw values;
-3. reject yanked, malformed, or disallowed prerelease candidates;
-4. constrain candidates to the declared major/minor/branch/LTS stream;
-5. apply explicit ignored-release and project-specific typed filters;
-6. require a candidate to be newer under the declared scheme;
-7. enforce minimum age or stabilization delay;
-8. evaluate advisory corroboration/disagreement policy;
-9. select the greatest acceptable candidate deterministically;
-10. record every rejected candidate and reason.
+2. require coverage/completeness sufficient for `candidate` or `no-change`;
+3. project and normalize without discarding raw values;
+4. quarantine unapproved normalization collisions;
+5. reject yanked, malformed, or disallowed prerelease candidates;
+6. apply the declared range/channel/VCS-lineage selector;
+7. apply explicit ignored-release and project-specific typed filters;
+8. require a candidate to be newer under the declared scheme/evidence;
+9. enforce the declared stabilization basis and observation freshness;
+10. evaluate advisory corroboration/disagreement policy;
+11. select the greatest acceptable candidate deterministically;
+12. resolve a compatible complete component vector and projected package
+    version;
+13. record every rejected candidate and reason.
 
 For concurrent majors, each unit selects only inside its own stream. Family-
 level reporting can show a newly available major, but introducing or retiring a
@@ -198,9 +261,11 @@ version edit.
 
 ## Source resolution
 
-After candidate selection, the local tool expands the unit's schema-defined URL
-templates and fetches sources through the existing AOS transfer machinery. For
-each source slot it records:
+After candidate selection, the local tool evaluates the component's parsed URL-
+template AST. It percent-encodes values in their declared path-segment or
+query-value position and cannot substitute into scheme, authority, port, user
+info, or structural delimiters. It then fetches sources through the existing
+AOS transfer machinery. For each source slot it records:
 
 - requested URL and ordered mirrors;
 - redirects and final origin;
@@ -210,9 +275,24 @@ each source slot it records:
 - checksum, signature, or provenance identity and verification outcome;
 - trust-policy version.
 
-The source resolver, not the agent, computes hashes and authenticity outcomes.
+The source resolver, not the agent, computes hashes and assurance outcomes.
 A new Nix hash gives future immutability but does not establish that the first
 downloaded bytes were authentic.
+
+Every source gets one explicit assurance result:
+
+- `verified-authentic`: an independently anchored signature, checksum, or
+  provenance identity verified under pinned key/rotation policy;
+- `origin-integrity`: allowlisted HTTPS origin and newly recorded digest, with
+  no independent authenticity anchor;
+- `failed`: required assurance or origin policy failed;
+- `unknown`: evidence needed by policy is unavailable or indeterminate.
+
+Only `verified-authentic` is described as authenticated. A unit may explicitly
+permit `origin-integrity` to prepare a candidate PR, but risk and human-source-
+review gates remain visible. Losing a previously required verification path
+quarantines the source. Key identity, rotation, and checksum-origin policy must
+be declared before a source can produce `verified-authentic`.
 
 Quarantine rather than update when:
 
@@ -229,9 +309,9 @@ create a new explicit plan if the change is legitimate.
 
 ## Discovery snapshots
 
-One scan produces immutable `aos.discovery-snapshot/v1` containing:
+One scan produces content-addressed `aos.discovery-snapshot/v1` containing:
 
-- repository source commit and inventory digest;
+- repository/inventory-envelope digest;
 - adapter, parser, and normalization versions;
 - sanitized request identities and raw response digests;
 - retrieval time and cache/freshness decision;
@@ -243,14 +323,16 @@ Changing policy re-evaluates an immutable snapshot into a new decision record.
 It does not rewrite why the earlier decision was made. A fresh network scan
 creates a new snapshot.
 
-## Closed update plan
+## Closed campaign plan
 
-A selected candidate becomes `aos.package-update-plan/v1` before worktree
-creation or mutation. It binds:
+A selected compatible component vector becomes
+`aos.package-update-plan/v1` before worktree creation or mutation. The default
+campaign has one unit; an explicit cohort or approved dependency expansion has
+an ordered set of unit target vectors. One campaign plan binds:
 
-- run and update-unit IDs;
-- base commit, inventory digest, and discovery-snapshot digest;
-- current and target version forms;
+- run/campaign ID and ordered update-unit IDs;
+- clean base commit/tree and inventory-envelope/discovery-snapshot digests;
+- every unit's current/target package version and complete component vector;
 - selected primary record and advisory disposition;
 - source/artifact slots and expected old values;
 - allowed owner paths and semantic fields;
@@ -267,12 +349,14 @@ before every effect rather than only at creation.
 
 ## Grouping
 
-Default to one update unit per run, branch, and PR. Group only:
+Default to a one-unit campaign per run, branch, and PR. Expand the campaign only
+for:
 
 - members already owned by one shared-source unit;
 - units in an explicit atomic cohort;
 - a dependency cycle that cannot build separately;
-- a maintainer-authored migration plan.
+- a maintainer-authored migration plan;
+- a newly required AOS dependency whose unit must land in the same change.
 
 Family, ecosystem, maintainer, release date, or discovery batch are not grouping
 reasons. `bazel-7`, `bazel-8`, and `bazel-9` remain separate unless a deliberate

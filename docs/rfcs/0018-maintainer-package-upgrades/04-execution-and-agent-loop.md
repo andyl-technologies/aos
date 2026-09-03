@@ -2,8 +2,8 @@
 
 ## Run state machine
 
-One run pursues one target identity for one update unit from one base commit.
-Its normal states are:
+One run executes one closed campaign from one clean base commit. A campaign has
+one or more unit/component target vectors. Its normal states are:
 
 ```text
 observed
@@ -19,6 +19,8 @@ observed
   -> final-gated
   -> ready-for-pr
   -> pr-published
+  -> awaiting-remote-authorization
+  -> merge-eligible-observed
   -> merged-observed
   -> release-handoff
 ```
@@ -29,7 +31,7 @@ Side or terminal states are:
 no-change       no acceptable newer candidate exists
 superseded      a newer compatible candidate replaces an unreviewed run
 blocked-human   scope, legal, policy, or design input is required
-quarantined     source identity or authenticity evidence conflicts
+quarantined     source identity or assurance evidence conflicts
 rejected        the maintainer rejects the candidate or patch
 abandoned       the maintainer intentionally stops and retains evidence
 failed          a terminal policy/infrastructure failure exhausts its budget
@@ -41,33 +43,40 @@ result. Resume never infers a success from missing state.
 
 ## Attempts
 
-Every source-tree generation is an immutable attempt:
+Every source-tree generation is a reconstructible attempt:
 
 - attempt zero is the deterministic materialization;
 - an accepted agent patch creates the next attempt;
 - an adopted maintainer edit creates a human attempt;
 - a rebase, target change, or history rewrite creates a new plan generation;
-- each attempt records its parent head/tree and invalidates dependent gates.
+- each attempt records its parent head/tree, canonical patch, file manifest,
+  necessary new text content, and invalidates dependent gates.
 
-Logs can be garbage-collected by retention policy, but their digest, exit class,
-attempt association, and disposition remain in the journal.
+Attempts are content-addressed local records protected from accidental
+corruption by the journal chain and durable tip; they are not cryptographically
+immutable against the maintainer account. Logs can be garbage-collected by
+retention policy, but their digest, exit class, attempt association, and
+disposition remain in the journal.
 
 ## Deterministic transaction
 
 The first attempt does not use an agent:
 
-1. validate the closed plan, current inventory, base commit, local lock, and
-   clean isolated worktree;
-2. fetch every primary source slot through the bounded resolver;
+1. validate the closed campaign plan, inventory envelope, base commit/tree,
+   frozen coordinator identity, local lock, and clean isolated worktree;
+2. fetch every selected component source slot through the bounded resolver;
 3. verify origin/redirect/checksum/signature policy and compute hashes;
 4. use the syntax-aware compare-and-swap writer to update current-version and
    source-hash fields;
 5. materialize secondary fixed-output artifacts in declared dependency order;
-6. update their hash fields and approved generated lock/vendor inputs;
+6. update their hash fields and only generated lock/vendor inputs whose path,
+   format, expected preimage, transformation, and postcondition are in the plan;
 7. run `aos fmt` and reject formatting outside the plan's paths;
 8. re-evaluate maintenance inventories and package/check graphs before and
    after the edit;
-9. require exactly the planned semantic delta;
+9. require the exact planned authored-field/generated-output delta, then match
+   recomputed URLs, derivations, artifacts, checks, and impact to the allowed
+   derived-effect closure;
 10. validate path, file type, mode, symlink, submodule, size, dependency,
     feature, test, and license diff policy;
 11. calculate the quick and final gate plans;
@@ -80,10 +89,13 @@ is typed and ordered. This follows the useful pattern in nix-update's pinned
 [dependency hash implementation](https://github.com/Mic92/nix-update/blob/4f9f53413ba6e8b19de1b3a0500f17910320eda4/nix_update/dependency_hashes.py)
 without importing nix-update or nixpkgs.
 
-Preparation that must retrieve dependency data runs as a controlled local
-materialization effect and produces a fixed content-addressed input. The normal
-AOS package build consumes that input with network disabled. No package gains
-ambient network access.
+Preparation that must retrieve dependency data runs only inside the mandatory
+local confinement backend with destination policy and package-manager-specific
+script/rule restrictions. It produces a fixed content-addressed input. The
+normal AOS package build consumes that input with network disabled. No package
+gains ambient network access. If the configured host cannot enforce the required
+filesystem/process/network boundary for a materializer, that kind is unavailable
+and the run stops action-required.
 
 ## Mutation gateway
 
@@ -101,6 +113,14 @@ checks:
   changes;
 - Nix syntax, formatting, inventory validity, and before/after semantic delta;
 - risk escalation and new human gates.
+
+Automatic gateway acceptance is limited to declared version/source/artifact
+fields, declared generated-output transformations, and package-specific
+machine-checkable invariants. Changes to patches, phases, feature/configure
+flags, dependency shape, hardening, tests, licenses, or security-sensitive
+metadata always block for maintainer inspection and a new approved plan
+generation, even if the agent was permitted to propose them. General syntax and
+test success cannot prove that such a change preserved intent.
 
 The gateway can accept, reject, or escalate/block. It cannot silently rewrite a
 proposal into something close to the plan. A rejection becomes structured input
@@ -120,7 +140,7 @@ Classify failure before deciding whether an agent can help:
 | Resolver/materializer implementation failure | Tool failure; do not ask an agent to mask it |
 | Patch no longer applies | Agent-eligible inside patch/package scope |
 | Compile/package-test failure | Agent-eligible with bounded sanitized logs |
-| New required dependency | Agent may prepare a proposal; maintainer must approve expanded scope |
+| New required dependency | Agent may prepare a proposal; maintainer must approve a new multi-unit campaign plan |
 | License/bootstrap/QEMU/release-boundary change | Block for the required human workflow |
 | Flaky or unavailable host capability | Retry/classify under test policy; never edit tests to hide it |
 | Agent budget exhausted | Stop `blocked-human` with the best current worktree and dossier |
@@ -176,7 +196,7 @@ gateway and AOS test runner determine whether the patch is valid.
 ## Agent filesystem view
 
 Do not give the agent a writable Git worktree or `.git` control. Construct a
-bounded disposable view from:
+bounded disposable view inside the verified local confinement backend from:
 
 - the planned package owner and declared shared files;
 - approved patch/test files;
@@ -184,10 +204,12 @@ bounded disposable view from:
 - bounded source/release documentation;
 - current sanitized failure output.
 
-The agent emits a patch against that view. The maintainer tool applies the patch
-to the real run worktree only after gateway validation and expected-tree checks.
-This prevents the agent from creating commits, changing refs, reading unrelated
-working files, or bypassing the journal.
+The agent emits a patch against that view. The maintainer tool terminates and
+reaps the complete confined worker process tree before applying the patch to the
+real run worktree. Gateway validation and expected-tree checks happen outside
+the worker. The containment boundary—not environment filtering—prevents the
+agent from creating commits, changing refs, reading unrelated working files, or
+bypassing the journal.
 
 When broader repository context is necessary, the agent requests a typed path
 expansion. The tool displays the reason and requires maintainer approval before
@@ -217,7 +239,7 @@ The mutation policy rejects proposals that obtain green status by:
 
 - disabling an upstream feature;
 - removing a required build/runtime dependency;
-- weakening hardening, sandboxing, source authenticity, or closure checks;
+- weakening hardening, sandboxing, source assurance, or closure checks;
 - skipping, deleting, broadening tolerances in, or making tests non-failing;
 - enabling network access in a hermetic build;
 - importing host tools or nixpkgs;
@@ -295,7 +317,8 @@ successful and never repeats a Git write without expected-head protection.
 
 The generated PR has stable sections:
 
-- unit, family, stream, members, current and target identities;
+- campaign, ordered units, families, streams, members, component vectors, and
+  package current/target identities;
 - primary upstream and Repology advisory evidence;
 - source/artifact/checksum/signature changes;
 - dependency, patch, feature, test, license, and platform changes;
@@ -314,3 +337,10 @@ The updater never marks a change merged or handed to the release flow merely
 because it was published. It observes the eventual reviewed merge, binds that
 identity to the run, and records that RFC-0017 can independently consume the
 protected commit.
+
+Local identity/signature checks are preflight only. After publication the run
+is `awaiting-remote-authorization`; a later foreground `status`/`inspect`
+observation can record the repository's fail-closed contributor-authorization,
+review, and other exact-head checks. Only then can it become
+`merge-eligible-observed`. The local tool never renders its preflight as an
+authoritative contributor-authorization success.
