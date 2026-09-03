@@ -2292,8 +2292,10 @@ membership proof. The pidfd is kill authority, not direct-child wait authority:
 the source QEMU remains the kernel parent, retains one bounded generation/status
 record, performs `waitpid`, and releases that record only after daemon
 reconciliation. The daemon MUST retain the pidfd identity, target cgroup owner,
-source child-status generation, and private child channels as one attempt
-authority; it MUST NOT synthesize `std::process::Child` from the numeric PID.
+aggregate attempt filesystem quota, sticky cancellation hook, execution-quantum
+counter, source child-status generation, and private child channels as one
+attempt authority; it MUST NOT synthesize `std::process::Child` from the numeric
+PID or split the process owner from the target's complete resource guard.
 The daemon reconciliation owner also binds the lineage-qualified `AttemptId`
 and process-local `ExecutionId`. It admits modeled execution only after the
 private child QMP endpoint authenticates the complete retained generation
@@ -2304,8 +2306,9 @@ terminal-failure outcome, release the exact source status, and finally release
 the QEMU-owned process-contract descriptors. An observation is invalid if the
 private child was never admitted. A backend error retains the current phase for
 exact retry; dropping any incomplete owner kills through the pidfd and transfers
-the target cgroup to quarantine. The executor reservation remains associated
-with this state until the semantic outcome is supplied. The worker execution
+the indivisible process-and-filesystem guard to quarantine. The executor
+reservation remains associated with this state until the semantic outcome is
+supplied. The worker execution
 context carries the exact lineage-qualified attempt and process-local
 execution incarnation as operational, non-modeled data. After a successful
 modeled result, the fixed worker pool supplies the durable observation,
@@ -2971,15 +2974,20 @@ child-process authority, and the single branch-private QMP endpoint; the node
 cannot return success with only a PID. Explicit pre-fork rejection retains the
 reusable source owner, while an indeterminate exchange, a failed parent
 disposition, endpoint transfer failure, or process-retention failure
-quarantines the source. The Linux process facade now supplies the production
-pidfd/cgroup half without claiming direct-parent authority. The daemon
+quarantines the source. The Linux host-resource facade now delegates child-
+process retention only while it still owns both the live cgroup and aggregate
+filesystem quota. The composed attempt guard carries that delegation together
+with sticky cancellation and quantum accounting; the process-only owner is not
+an accepted reconciliation target. The daemon
 reconciliation owner consumes the launch token without exposing a PID-only
-success state and retains the source, target, private QMP channel, exact
-attempt/execution basis, and semantic publication disposition through ordered
-cleanup. The worker-pool post-execution contract now carries that exact basis
-and durable disposition through bounded cleanup before worker reuse. Concrete
-hot-fork runner construction, private-channel driving, and modeled candidate
-production remain open.
+success state and retains the source, complete target guard, private QMP
+channel, exact attempt/execution basis, and semantic publication disposition
+through ordered cleanup. It lends modeled execution only the child QMP channel
+and a non-releasing operational boundary, so modeled code cannot finish the
+guard early. The worker-pool post-execution contract now carries that exact
+basis and durable disposition through bounded cleanup before worker reuse.
+Concrete hot-fork runner construction, complete private-channel driving, and
+modeled candidate production remain open.
 
 The source QEMU now reserves the request's unique nonzero child-process
 generation in a fixed 4,096-record table before forking. The version-1

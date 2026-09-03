@@ -15,8 +15,8 @@ use std::os::unix::net::UnixStream;
 
 use crucible_campaign::{ExactCheckpointId, ObservationId};
 use crucible_qemu::{
-    LinuxQemuAttemptProcessOwner, LinuxQemuHotForkChildProcessAuthority, QemuHotForkChildLaunch,
-    QemuHotForkChildProcessBasis, QemuHotForkChildQmpHandshakeError, QemuHotForkLaunchError,
+    LinuxQemuHotForkChildProcessAuthority, QemuHotForkChildLaunch, QemuHotForkChildProcessBasis,
+    QemuHotForkChildProcessOwner, QemuHotForkChildQmpHandshakeError, QemuHotForkLaunchError,
     QemuNode, QemuNodeChannelError, QemuQmpVmStateControlChannel, QemuVmRealizationError,
     QmpHotForkChildProcessPhase, QmpHotForkChildProcessState,
 };
@@ -698,9 +698,13 @@ enum LinuxSourceReleasePhase {
 }
 
 /// Concrete source-QEMU, pidfd, cgroup, and private-channel owner.
-pub struct LinuxQemuHotForkReconciliationBackend {
+pub struct LinuxQemuHotForkReconciliationBackend<G>
+where
+    G: crate::QemuAttemptResourceGuard
+        + QemuHotForkChildProcessOwner<Authority = LinuxQemuHotForkChildProcessAuthority>,
+{
     source: QemuNode,
-    target: LinuxQemuAttemptProcessOwner,
+    target: G,
     process: LinuxQemuHotForkChildProcessAuthority,
     basis: QemuHotForkChildProcessBasis,
     pending_child_qmp: Option<crucible_qemu::QemuHotForkChildQmpHostEndpoint>,
@@ -709,7 +713,11 @@ pub struct LinuxQemuHotForkReconciliationBackend {
     diagnostics: Option<crucible_qemu::QemuHotForkChildDiagnosticCapture>,
 }
 
-impl fmt::Debug for LinuxQemuHotForkReconciliationBackend {
+impl<G> fmt::Debug for LinuxQemuHotForkReconciliationBackend<G>
+where
+    G: crate::QemuAttemptResourceGuard
+        + QemuHotForkChildProcessOwner<Authority = LinuxQemuHotForkChildProcessAuthority>,
+{
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("LinuxQemuHotForkReconciliationBackend")
@@ -722,10 +730,14 @@ impl fmt::Debug for LinuxQemuHotForkReconciliationBackend {
     }
 }
 
-impl LinuxQemuHotForkReconciliationBackend {
+impl<G> LinuxQemuHotForkReconciliationBackend<G>
+where
+    G: crate::QemuAttemptResourceGuard
+        + QemuHotForkChildProcessOwner<Authority = LinuxQemuHotForkChildProcessAuthority>,
+{
     fn from_launch(
         source: QemuNode,
-        target: LinuxQemuAttemptProcessOwner,
+        target: G,
         launch: QemuHotForkChildLaunch<LinuxQemuHotForkChildProcessAuthority>,
     ) -> Self {
         let (_parent, process, child_qmp) = launch.into_parts();
@@ -748,6 +760,21 @@ impl LinuxQemuHotForkReconciliationBackend {
         self.child_qmp.as_mut()
     }
 
+    /// Returns the narrow operational boundary paired with the live child.
+    ///
+    /// This capability can check cancellation and charge scheduler quanta, but
+    /// cannot release the target guard or its aggregate filesystem reservation.
+    #[must_use]
+    pub fn live_child_operational_parts_mut(
+        &mut self,
+    ) -> Option<(
+        &mut QemuQmpVmStateControlChannel<UnixStream>,
+        &mut dyn crate::QemuAttemptOperationalBoundary,
+    )> {
+        let child_qmp = self.child_qmp.as_mut()?;
+        Some((child_qmp, &mut self.target))
+    }
+
     /// Returns the bounded final child diagnostic capture after source release.
     #[must_use]
     pub const fn diagnostics(&self) -> Option<&crucible_qemu::QemuHotForkChildDiagnosticCapture> {
@@ -761,7 +788,11 @@ impl LinuxQemuHotForkReconciliationBackend {
     }
 }
 
-impl QemuHotForkReconciliationBackend for LinuxQemuHotForkReconciliationBackend {
+impl<G> QemuHotForkReconciliationBackend for LinuxQemuHotForkReconciliationBackend<G>
+where
+    G: crate::QemuAttemptResourceGuard
+        + QemuHotForkChildProcessOwner<Authority = LinuxQemuHotForkChildProcessAuthority>,
+{
     type Error = LinuxQemuHotForkReconciliationError;
 
     fn child_basis(&self) -> QemuHotForkReconciliationChildBasis {
@@ -877,13 +908,13 @@ fn qmp_child_observation(
 }
 
 /// Launch failure retaining the reusable source and target attempt owner.
-pub struct LinuxQemuHotForkAttemptLaunchError {
+pub struct LinuxQemuHotForkAttemptLaunchError<G> {
     source: Box<QemuHotForkLaunchError>,
     template: Box<QemuNode>,
-    target: Box<LinuxQemuAttemptProcessOwner>,
+    target: Box<G>,
 }
 
-impl fmt::Debug for LinuxQemuHotForkAttemptLaunchError {
+impl<G> fmt::Debug for LinuxQemuHotForkAttemptLaunchError<G> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("LinuxQemuHotForkAttemptLaunchError")
@@ -893,7 +924,7 @@ impl fmt::Debug for LinuxQemuHotForkAttemptLaunchError {
     }
 }
 
-impl fmt::Display for LinuxQemuHotForkAttemptLaunchError {
+impl<G> fmt::Display for LinuxQemuHotForkAttemptLaunchError<G> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
@@ -903,26 +934,27 @@ impl fmt::Display for LinuxQemuHotForkAttemptLaunchError {
     }
 }
 
-impl Error for LinuxQemuHotForkAttemptLaunchError {
+impl<G> Error for LinuxQemuHotForkAttemptLaunchError<G>
+where
+    G: 'static,
+{
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         Some(self.source.as_ref())
     }
 }
 
-impl LinuxQemuHotForkAttemptLaunchError {
+impl<G> LinuxQemuHotForkAttemptLaunchError<G> {
     /// Recovers the exact launch failure, source template, and target owner.
-    pub fn into_parts(
-        self,
-    ) -> (
-        QemuHotForkLaunchError,
-        QemuNode,
-        LinuxQemuAttemptProcessOwner,
-    ) {
+    pub fn into_parts(self) -> (QemuHotForkLaunchError, QemuNode, G) {
         (*self.source, *self.template, *self.target)
     }
 }
 
-impl QemuHotForkAttemptReconciliation<LinuxQemuHotForkReconciliationBackend> {
+impl<G> QemuHotForkAttemptReconciliation<LinuxQemuHotForkReconciliationBackend<G>>
+where
+    G: crate::QemuAttemptResourceGuard
+        + QemuHotForkChildProcessOwner<Authority = LinuxQemuHotForkChildProcessAuthority>,
+{
     /// Forks a retained source directly into one target reconciliation owner.
     ///
     /// No successful launch token is exposed outside the owner. Explicit
@@ -938,9 +970,9 @@ impl QemuHotForkAttemptReconciliation<LinuxQemuHotForkReconciliationBackend> {
     pub fn launch(
         attempt: QemuHotForkAttemptBasis,
         mut template: QemuNode,
-        mut target: LinuxQemuAttemptProcessOwner,
+        mut target: G,
         request: crucible_qemu::QmpHotForkRequest,
-    ) -> Result<Self, LinuxQemuHotForkAttemptLaunchError> {
+    ) -> Result<Self, LinuxQemuHotForkAttemptLaunchError<G>> {
         match template.fork_hot_fork_template(request, &mut target) {
             Ok(launch) => Ok(Self::new(
                 attempt,
@@ -958,6 +990,24 @@ impl QemuHotForkAttemptReconciliation<LinuxQemuHotForkReconciliationBackend> {
     #[must_use]
     pub fn child_qmp_mut(&mut self) -> Option<&mut QemuQmpVmStateControlChannel<UnixStream>> {
         self.backend.as_mut()?.child_qmp_mut()
+    }
+
+    /// Returns the admitted child QMP and its narrow operational boundary.
+    ///
+    /// The pair is available only after private-channel admission and before
+    /// terminal reconciliation begins. The operational capability cannot
+    /// release process, cgroup, cancellation, quota, or storage ownership.
+    #[must_use]
+    pub fn live_child_operational_parts_mut(
+        &mut self,
+    ) -> Option<(
+        &mut QemuQmpVmStateControlChannel<UnixStream>,
+        &mut dyn crate::QemuAttemptOperationalBoundary,
+    )> {
+        if self.phase != QemuHotForkReconciliationPhase::Live {
+            return None;
+        }
+        self.backend.as_mut()?.live_child_operational_parts_mut()
     }
 }
 
