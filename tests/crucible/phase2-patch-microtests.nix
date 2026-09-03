@@ -2903,6 +2903,45 @@
         '';
       };
     }
+    {
+      patch = "0181-crucible-activate-reconstructed-child-qmp.patch";
+      check = certifyExactPatch {
+        patchName = "0181-crucible-activate-reconstructed-child-qmp.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "qemu-hot-fork-child-qmp-activation";
+        liveEvidence = ''
+          grep -Fxq 'patch=0181-crucible-activate-reconstructed-child-qmp.patch' "$live_result"
+          grep -Fq 'monitor_hot_fork_greet_child_protocol_held' \
+            ${patchDir}/0181-crucible-activate-reconstructed-child-qmp.patch
+          grep -Fq 'monitor_hot_fork_release_child_protocol_input' \
+            ${patchDir}/0181-crucible-activate-reconstructed-child-qmp.patch
+          grep -Fq 'qemu_bh_timer_hot_fork_admission_try_begin()' \
+            ${patchDir}/0181-crucible-activate-reconstructed-child-qmp.patch
+          grep -Fq 'aio_wait_bh_oneshot(iothread_get_aio_context' \
+            ${patchDir}/0181-crucible-activate-reconstructed-child-qmp.patch
+          grep -Fq 'qemu_get_thread_id() != basis->iothread_thread_id' \
+            ${patchDir}/0181-crucible-activate-reconstructed-child-qmp.patch
+          grep -Fq 'qemu_chr_socket_hot_fork_child_input_is_held' \
+            ${patchDir}/0181-crucible-activate-reconstructed-child-qmp.patch
+          grep -Fq 'qemu_chr_socket_hot_fork_release_child_input' \
+            ${patchDir}/0181-crucible-activate-reconstructed-child-qmp.patch
+          grep -Fq 'update_ioc_handlers(s)' \
+            ${patchDir}/0181-crucible-activate-reconstructed-child-qmp.patch
+          grep -Fq 'qemu_chr_be_event(basis->chardev, CHR_EVENT_OPENED)' \
+            ${patchDir}/0181-crucible-activate-reconstructed-child-qmp.patch
+          grep -Fq 'basis->greeting_emitted = true' \
+            ${patchDir}/0181-crucible-activate-reconstructed-child-qmp.patch
+          grep -Fq 'monitor_flush(&basis->monitor->common)' \
+            ${patchDir}/0181-crucible-activate-reconstructed-child-qmp.patch
+          grep -Fq 'transition->result = -EAGAIN' \
+            ${patchDir}/0181-crucible-activate-reconstructed-child-qmp.patch
+          grep -Fq 'basis->input_released = true' \
+            ${patchDir}/0181-crucible-activate-reconstructed-child-qmp.patch
+          grep -Fq '== -EPERM' \
+            ${patchDir}/0181-crucible-activate-reconstructed-child-qmp.patch
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =

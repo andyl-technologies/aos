@@ -795,6 +795,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0181-crucible-activate-reconstructed-child-qmp.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

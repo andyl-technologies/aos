@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "b8493d4be3d6080212ed0400b0ad1db07aea8a342b81c4ea192ba9dfb469bff1";
+  patchBranchBundleSha256 = "e2337da9bee24fc57eee193670d2d33db3a9620d956f3697a7f37d9180b70b3d";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "d2ae47ca5377e22bcaf13cc285de32505e6150a4";
+  patchBranchHeadCommit = "82dc0327cbe1e07ca97450fe41ca82d1e1fa953d";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1735,6 +1735,16 @@ let
       class = "F";
       enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
       capability = "the child-only held QMP transition now binds the exact source monitor IOThread context and Linux thread identity, rejects source-process or still-live inherited-worker use, refreshes the initialization semaphore, and starts exactly one replacement worker over the retained quiescent AIO and GLib contexts while input remains held; greeting emission, input release, global child-thread registry reconstruction, production fork invocation, guest admission, and readiness bits 7 and 8 remain open";
+    }
+    {
+      file = "0181-crucible-activate-reconstructed-child-qmp.patch";
+      branchSubject = "crucible: activate reconstructed child QMP";
+      branchCommit = "82dc0327cbe1e07ca97450fe41ca82d1e1fa953d";
+      branchTree = "c266c720e019ec81aaa9d38344a25a3ed088d36d";
+      catalogName = "crucible-hot-fork-child-qmp-activation";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
+      capability = "after exact held socket, protocol, dispatcher, and monitor-IOThread reconstruction, one child-only main-thread operation synchronously emits exactly one QMP greeting on that replacement IOThread while input remains held; a distinct post-commit operation releases input only after the greeting has drained, then attaches exactly one read and HUP source, so no input can dispatch first; global child-thread registry reconstruction, production fork invocation, resource-transaction composition, guest admission, and readiness bits 7 and 8 remain open";
     }
   ];
   catalogOnlyCapabilities = [

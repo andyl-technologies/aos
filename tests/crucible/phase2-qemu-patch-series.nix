@@ -1259,6 +1259,13 @@
       enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
       capability = "the child-only held QMP transition now binds the exact source monitor IOThread context and Linux thread identity, rejects source-process or still-live inherited-worker use, refreshes the initialization semaphore, and starts exactly one replacement worker over the retained quiescent AIO and GLib contexts while input remains held; greeting emission, input release, global child-thread registry reconstruction, production fork invocation, guest admission, and readiness bits 7 and 8 remain open";
     }
+    {
+      file = "0181-crucible-activate-reconstructed-child-qmp.patch";
+      catalogName = "crucible-hot-fork-child-qmp-activation";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
+      capability = "after exact held socket, protocol, dispatcher, and monitor-IOThread reconstruction, one child-only main-thread operation synchronously emits exactly one QMP greeting on that replacement IOThread while input remains held; a distinct post-commit operation releases input only after the greeting has drained, then attaches exactly one read and HUP source, so no input can dispatch first; global child-thread registry reconstruction, production fork invocation, resource-transaction composition, guest admission, and readiness bits 7 and 8 remain open";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

@@ -1232,19 +1232,27 @@ input remains held across that transition. The same child-only transaction now
 binds the source monitor IOThread's exact Linux thread identity and retained
 AIO/GLib contexts, rejects source-process or still-live-worker use, refreshes
 the otherwise single-use initialization semaphore, and starts one replacement
-worker. These operations remain unreachable from a production command;
-greeting emission, input release, global child-thread registry reconstruction,
-fork coordination, and readiness bits 7 and 8 remain open.
+worker. A following child-only operation runs synchronously on that exact
+replacement worker, revalidates the complete held monitor and socket state,
+and emits the replacement QMP open event while input remains held. The open
+event emits exactly one greeting before the child reports its complete resource
+state. Only after the complete child resource transaction commits may a
+distinct operation flush that greeting and attach one read source and one HUP
+source; it returns `-EAGAIN` without mutation while output remains buffered.
+These operations remain unreachable from a production command;
+resource-transaction composition, global child-thread registry reconstruction,
+fork coordination, guest admission, and readiness bits 7 and 8 remain open.
 The sealed QMP contribution now carries those exact template and child-QMP
 generations alongside its descriptor and socket identity. The immediate-child
 resource transaction requires both the plugin and QMP reinitializers to match
 their complete sealed bases before descriptor mutation, then consumes them as
 one linear reconstruction step. A same-endpoint adapter from another QMP
 generation is rejected before mutation, and either runtime failure leaves the
-child transaction fail-closed. The QMP runtime remains an injected contract;
-inherited monitor disposal, dispatcher reconstruction, endpoint attachment,
-and the private-stream handshake are still not implemented, and proof bits 7
-and 8 remain clear.
+child transaction fail-closed. The QMP runtime remains an injected contract.
+Concrete child-only monitor disposal, dispatcher/IOThread reconstruction,
+endpoint attachment, greeting, and input release primitives now exist, but the
+injected runtime does not yet compose them with the private-stream generation
+handshake or production fork owner, and proof bits 7 and 8 remain clear.
 The version-3 child-QMP report now derives `disposition-complete` from that
 exact accepted one-shot status instead of hard-coding false. Prepared but
 unattempted, contradictory, failed, and reset adapters remain incomplete; the
@@ -1256,17 +1264,20 @@ proof bit 7 or 8.
 After successful child application, the immutable reinitializer and sealed-plan
 bases now remain exactly queryable without making either one reusable. The host
 records the child-QMP mutation generation in the staged proof and may transfer
-its socket endpoint exactly once only after plugin endpoint commitment has
-sealed the complete resource plan. Connecting that linear endpoint performs the
-ordinary QMP greeting and capability negotiation, then makes
+its host-side socket endpoint exactly once only after plugin endpoint commitment
+has sealed the complete resource plan. The child emits the ordinary QMP
+greeting into the still-held connection before reporting its complete resource
+state; after commit, opening the linear host endpoint observes that greeting and
+performs capability negotiation before making
 `crucible-hot-fork-child-qmp(query)` the first typed operation. The connection
 is exposed as a child VMState control channel only when the response matches the
 retained descriptor name, Linux `SO_COOKIE`, template generation, QMP
 generation, monitor generation, applied resource-plan membership, and accepted
 complete disposition. Any exchange or basis failure consumes the endpoint and
 fails closed. This implements the host authentication half of the private-stream
-generation handshake; the concrete child monitor runtime, input release, and
-production fork owner remain open, so proof bits 7 and 8 stay clear.
+generation handshake; the concrete child-only monitor operations exist but
+their composition into the injected runtime and production fork owner remains
+open, so proof bits 7 and 8 stay clear.
 Endpoint staging rejects a private-ring stage from a different or already
 aborted transaction. A new transaction starts only with an empty resource
 stage. Private-ring, diagnostics, child-QMP, and plugin-endpoint staging during a
