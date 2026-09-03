@@ -2578,7 +2578,7 @@
           grep -Fxq 'patch=0167-crucible-retain-branch-private-child-qmp.patch' "$live_result"
           grep -Fxq 'template_coordinator_schema_version=22' "$live_result"
           grep -Fxq 'template_resource_stage_schema_version=12' "$live_result"
-          grep -Fxq 'child_qmp_schema_version=6' "$live_result"
+          grep -Fxq 'child_qmp_schema_version=7' "$live_result"
           grep -Fxq 'child_qmp_initially_absent=true' "$live_result"
           grep -Fq 'crucible-hot-fork-child-qmp' \
             ${patchDir}/0167-crucible-retain-branch-private-child-qmp.patch
@@ -2603,7 +2603,7 @@
           grep -Fxq 'patch=0168-crucible-bind-child-qmp-reinitializer.patch' "$live_result"
           grep -Fxq 'template_coordinator_schema_version=22' "$live_result"
           grep -Fxq 'template_resource_stage_schema_version=12' "$live_result"
-          grep -Fxq 'child_qmp_schema_version=6' "$live_result"
+          grep -Fxq 'child_qmp_schema_version=7' "$live_result"
           grep -Fxq 'child_qmp_initially_absent=true' "$live_result"
           grep -Fq 'qemu_crucible_hot_fork_prepare_qmp_child_reinitializer' \
             ${patchDir}/0168-crucible-bind-child-qmp-reinitializer.patch
@@ -2626,7 +2626,7 @@
           grep -Fxq 'patch=0169-crucible-compose-child-qmp-reinitializer.patch' "$live_result"
           grep -Fxq 'template_coordinator_schema_version=22' "$live_result"
           grep -Fxq 'template_resource_stage_schema_version=12' "$live_result"
-          grep -Fxq 'child_qmp_schema_version=6' "$live_result"
+          grep -Fxq 'child_qmp_schema_version=7' "$live_result"
           grep -Fxq 'child_qmp_initially_absent=true' "$live_result"
           grep -Fq 'template_generation' \
             ${patchDir}/0169-crucible-compose-child-qmp-reinitializer.patch
@@ -2651,7 +2651,7 @@
           grep -Fxq 'patch=0170-crucible-report-complete-child-qmp-disposition.patch' "$live_result"
           grep -Fxq 'template_coordinator_schema_version=22' "$live_result"
           grep -Fxq 'template_resource_stage_schema_version=12' "$live_result"
-          grep -Fxq 'child_qmp_schema_version=6' "$live_result"
+          grep -Fxq 'child_qmp_schema_version=7' "$live_result"
           grep -Fxq 'child_qmp_initially_absent=true' "$live_result"
           grep -Fq 'qemu_crucible_hot_fork_qmp_child_reinitializer_complete' \
             ${patchDir}/0170-crucible-report-complete-child-qmp-disposition.patch
@@ -2674,7 +2674,7 @@
           grep -Fxq 'patch=0171-crucible-preserve-child-qmp-query-basis.patch' "$live_result"
           grep -Fxq 'template_coordinator_schema_version=22' "$live_result"
           grep -Fxq 'template_resource_stage_schema_version=12' "$live_result"
-          grep -Fxq 'child_qmp_schema_version=6' "$live_result"
+          grep -Fxq 'child_qmp_schema_version=7' "$live_result"
           grep -Fxq 'child_qmp_initially_absent=true' "$live_result"
           grep -Fq 'qemu_crucible_hot_fork_qmp_child_reinitializer_bound_for' \
             ${patchDir}/0171-crucible-preserve-child-qmp-query-basis.patch
@@ -2718,7 +2718,7 @@
           grep -Fxq 'patch=0173-crucible-bind-supported-child-qmp-profile.patch' "$live_result"
           grep -Fxq 'template_coordinator_schema_version=22' "$live_result"
           grep -Fxq 'template_resource_stage_schema_version=12' "$live_result"
-          grep -Fxq 'child_qmp_schema_version=6' "$live_result"
+          grep -Fxq 'child_qmp_schema_version=7' "$live_result"
           grep -Fq 'monitor_hot_fork_inventory_is_supported' \
             ${patchDir}/0173-crucible-bind-supported-child-qmp-profile.patch
           grep -Fq 'crucible_hot_fork_qmp_stage.monitor_generation' \
@@ -2740,7 +2740,7 @@
           grep -Fxq 'patch=0174-crucible-bind-child-monitor-ownership-basis.patch' "$live_result"
           grep -Fxq 'template_coordinator_schema_version=22' "$live_result"
           grep -Fxq 'template_resource_stage_schema_version=12' "$live_result"
-          grep -Fxq 'child_qmp_schema_version=6' "$live_result"
+          grep -Fxq 'child_qmp_schema_version=7' "$live_result"
           grep -Fxq 'child_qmp_monitor_basis_bound=false' "$live_result"
           grep -Fq 'MonitorHotForkChildBasis' \
             ${patchDir}/0174-crucible-bind-child-monitor-ownership-basis.patch
@@ -2763,7 +2763,7 @@
           grep -Fxq 'patch=0175-crucible-bind-child-monitor-chardev-disposition.patch' "$live_result"
           grep -Fxq 'template_coordinator_schema_version=22' "$live_result"
           grep -Fxq 'template_resource_stage_schema_version=12' "$live_result"
-          grep -Fxq 'child_qmp_schema_version=6' "$live_result"
+          grep -Fxq 'child_qmp_schema_version=7' "$live_result"
           grep -Fxq 'child_qmp_monitor_disposition_bound=false' "$live_result"
           grep -Fq 'monitor_hot_fork_child_chardev' \
             ${patchDir}/0175-crucible-bind-child-monitor-chardev-disposition.patch
@@ -2786,7 +2786,7 @@
           grep -Fxq 'patch=0176-crucible-bind-child-monitor-socket-resources.patch' "$live_result"
           grep -Fxq 'template_coordinator_schema_version=22' "$live_result"
           grep -Fxq 'template_resource_stage_schema_version=12' "$live_result"
-          grep -Fxq 'child_qmp_schema_version=6' "$live_result"
+          grep -Fxq 'child_qmp_schema_version=7' "$live_result"
           grep -Fxq 'child_qmp_monitor_socket_resources_bound=false' "$live_result"
           grep -Fq 'QemuChrSocketHotForkChildBasis' \
             ${patchDir}/0176-crucible-bind-child-monitor-socket-resources.patch
@@ -2811,7 +2811,7 @@
           grep -Fxq 'patch=0177-crucible-hold-reconstructed-child-monitor-socket.patch' "$live_result"
           grep -Fxq 'template_coordinator_schema_version=22' "$live_result"
           grep -Fxq 'template_resource_stage_schema_version=12' "$live_result"
-          grep -Fxq 'child_qmp_schema_version=6' "$live_result"
+          grep -Fxq 'child_qmp_schema_version=7' "$live_result"
           grep -Fq 'qemu_chr_socket_hot_fork_reconstruct_child_held' \
             ${patchDir}/0177-crucible-hold-reconstructed-child-monitor-socket.patch
           grep -Fq 'basis->source_pid == getpid()' \
@@ -2835,7 +2835,7 @@
           grep -Fxq 'patch=0178-crucible-reset-reconstructed-child-qmp-protocol.patch' "$live_result"
           grep -Fxq 'template_coordinator_schema_version=22' "$live_result"
           grep -Fxq 'template_resource_stage_schema_version=12' "$live_result"
-          grep -Fxq 'child_qmp_schema_version=6' "$live_result"
+          grep -Fxq 'child_qmp_schema_version=7' "$live_result"
           grep -Fq 'monitor_hot_fork_reconstruct_child_protocol_held' \
             ${patchDir}/0178-crucible-reset-reconstructed-child-qmp-protocol.patch
           grep -Fq 'QLIST_EMPTY(&mon->fds)' \
@@ -2939,6 +2939,36 @@
             ${patchDir}/0181-crucible-activate-reconstructed-child-qmp.patch
           grep -Fq '== -EPERM' \
             ${patchDir}/0181-crucible-activate-reconstructed-child-qmp.patch
+        '';
+      };
+    }
+    {
+      patch = "0182-crucible-bind-concrete-child-qmp-runtime.patch";
+      check = certifyExactPatch {
+        patchName = "0182-crucible-bind-concrete-child-qmp-runtime.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "qemu-hot-fork-concrete-child-qmp-runtime";
+        liveEvidence = ''
+          grep -Fxq 'patch=0182-crucible-bind-concrete-child-qmp-runtime.patch' "$live_result"
+          grep -Fxq 'child_qmp_schema_version=7' "$live_result"
+          grep -Fq 'crucible_hot_fork_reinitialize_child_qmp' \
+            ${patchDir}/0182-crucible-bind-concrete-child-qmp-runtime.patch
+          grep -Fq 'monitor_hot_fork_reconstruct_child_protocol_held' \
+            ${patchDir}/0182-crucible-bind-concrete-child-qmp-runtime.patch
+          grep -Fq 'monitor_hot_fork_greet_child_protocol_held' \
+            ${patchDir}/0182-crucible-bind-concrete-child-qmp-runtime.patch
+          grep -Fq '.runtime = runtime' \
+            ${patchDir}/0182-crucible-bind-concrete-child-qmp-runtime.patch
+          grep -Fq '.runtime_opaque = runtime_opaque' \
+            ${patchDir}/0182-crucible-bind-concrete-child-qmp-runtime.patch
+          grep -Fq 'result = reinitializer->runtime(' \
+            ${patchDir}/0182-crucible-bind-concrete-child-qmp-runtime.patch
+          grep -Fq 'basis->socket.replacement_attached' \
+            ${patchDir}/0182-crucible-bind-concrete-child-qmp-runtime.patch
+          grep -Fq 'basis->input_released' \
+            ${patchDir}/0182-crucible-bind-concrete-child-qmp-runtime.patch
+          grep -Fq 'reinitialize_alternate_qmp_child' \
+            ${patchDir}/0182-crucible-bind-concrete-child-qmp-runtime.patch
         '';
       };
     }

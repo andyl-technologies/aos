@@ -2073,10 +2073,10 @@ fn child_qmp_stage_authenticates_exact_stream_basis_and_releases_qemu_copy()
 -> Result<(), Box<dyn Error>> {
     let name = QmpDescriptorName::new("crucible-hfork-qmp-v1-test")?;
     let staged = format!(
-        r#"{{"return":{{"schema-version":6,"generation":1,"template-generation":3,"monitor-generation":5,"staged":true,"fdname":"{}","socket-cookie":103,"retained-fd":34,"resource-plan-bound":false,"nonblocking-unix-stream":true,"monitor-basis-bound":true,"monitor-disposition-bound":true,"monitor-socket-resources-bound":true,"reinitializer-prepared":true,"reinitialized":false,"disposition-complete":false,"readiness-proof-acknowledged":false}}}}"#,
+        r#"{{"return":{{"schema-version":7,"generation":1,"template-generation":3,"monitor-generation":5,"staged":true,"fdname":"{}","socket-cookie":103,"retained-fd":34,"resource-plan-bound":false,"nonblocking-unix-stream":true,"monitor-basis-bound":true,"monitor-disposition-bound":true,"monitor-socket-resources-bound":true,"reinitializer-prepared":true,"reinitialized":false,"disposition-complete":false,"readiness-proof-acknowledged":false}}}}"#,
         name.as_str(),
     );
-    let released = r#"{"return":{"schema-version":6,"generation":2,"template-generation":0,"monitor-generation":0,"staged":false,"socket-cookie":0,"retained-fd":-1,"resource-plan-bound":false,"nonblocking-unix-stream":false,"monitor-basis-bound":false,"monitor-disposition-bound":false,"monitor-socket-resources-bound":false,"reinitializer-prepared":false,"reinitialized":false,"disposition-complete":false,"readiness-proof-acknowledged":false}}"#;
+    let released = r#"{"return":{"schema-version":7,"generation":2,"template-generation":0,"monitor-generation":0,"staged":false,"socket-cookie":0,"retained-fd":-1,"resource-plan-bound":false,"nonblocking-unix-stream":false,"monitor-basis-bound":false,"monitor-disposition-bound":false,"monitor-socket-resources-bound":false,"reinitializer-prepared":false,"reinitialized":false,"disposition-complete":false,"readiness-proof-acknowledged":false}}"#;
     let stream = scripted_qmp([
         r#"{"QMP":{"version":{},"capabilities":[]}}"#,
         r#"{"return":{}}"#,

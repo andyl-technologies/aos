@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "e2337da9bee24fc57eee193670d2d33db3a9620d956f3697a7f37d9180b70b3d";
+  patchBranchBundleSha256 = "fd14a6fd794d3d47c7c22776be7215f4520db8b2635c0072cc1b92f09f30d75a";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "82dc0327cbe1e07ca97450fe41ca82d1e1fa953d";
+  patchBranchHeadCommit = "a4429f7df88540fc5063755d8a9907f953774db6";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1745,6 +1745,16 @@ let
       class = "F";
       enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
       capability = "after exact held socket, protocol, dispatcher, and monitor-IOThread reconstruction, one child-only main-thread operation synchronously emits exactly one QMP greeting on that replacement IOThread while input remains held; a distinct post-commit operation releases input only after the greeting has drained, then attaches exactly one read and HUP source, so no input can dispatch first; global child-thread registry reconstruction, production fork invocation, resource-transaction composition, guest admission, and readiness bits 7 and 8 remain open";
+    }
+    {
+      file = "0182-crucible-bind-concrete-child-qmp-runtime.patch";
+      branchSubject = "crucible: bind concrete child QMP runtime";
+      branchCommit = "a4429f7df88540fc5063755d8a9907f953774db6";
+      branchTree = "1a1c75c706e6cd0844152f7c0539cda031afdeef";
+      catalogName = "crucible-hot-fork-concrete-child-qmp-runtime";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
+      capability = "child-QMP staging now binds the exact concrete held-monitor reconstruction callback and private monitor basis into the one-shot reinitializer before fork, and child resource application can no longer substitute a runtime after descriptor mutation begins; that callback composes socket, protocol, dispatcher, monitor-IOThread, and greeting reconstruction while input remains held, while global child-thread registry reconstruction, production fork invocation, post-commit input release, guest admission, and readiness bits 7 and 8 remain open";
     }
   ];
   catalogOnlyCapabilities = [

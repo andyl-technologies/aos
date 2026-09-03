@@ -799,6 +799,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0182-crucible-bind-concrete-child-qmp-runtime.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

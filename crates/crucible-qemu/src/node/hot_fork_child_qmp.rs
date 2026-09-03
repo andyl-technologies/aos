@@ -638,7 +638,7 @@ mod tests {
             assert!(request.contains("crucible-hot-fork-child-qmp"));
             let response = json!({
                 "return": {
-                    "schema-version": 6,
+                    "schema-version": 7,
                     "generation": qmp_generation,
                     "template-generation": template_generation,
                     "monitor-generation": monitor_generation,

@@ -2272,9 +2272,14 @@ state, and emits the QMP greeting while input remains held. This is the complete
 status the child runtime reports before the whole resource transaction commits.
 A distinct post-commit operation flushes the greeting, returns `-EAGAIN`
 without mutation while output remains buffered, and only then attaches one
-read/HUP source pair and records input release. No command invokes this partial
-transition; resource-transaction composition, global child-thread registry
-reconstruction, and readiness bits 7 and 8 remain open.
+read/HUP source pair and records input release. Version 7 of the child-QMP
+contract now binds the exact concrete monitor callback and private monitor
+basis into the one-shot adapter before fork. Child resource application can no
+longer substitute a runtime after descriptor mutation begins, and that retained
+callback composes all held monitor reconstruction steps through greeting. No
+command invokes this path; global child-thread registry reconstruction,
+production fork invocation, post-commit input release, and readiness bits 7 and
+8 remain open.
 These are executable T-CAM-6.1 audit prerequisites, not completion of the task:
 the internal registry identifies two non-coordinator subsystem owners but has
 no safe non-coordinator child disposition. The retained AIO/BH/timer and RCU
