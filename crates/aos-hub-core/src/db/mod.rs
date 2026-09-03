@@ -472,12 +472,14 @@ mod placement_policy;
 mod publication_admission;
 mod registry_delete;
 mod registry_index_build;
+mod release_publication;
 mod signing_keys;
 mod topology;
 mod worker_jobs;
 pub use placement_policy::*;
 pub use publication_admission::*;
 pub use registry_index_build::*;
+pub use release_publication::*;
 pub use signing_keys::*;
 pub use topology::*;
 pub use worker_jobs::*;
@@ -538,6 +540,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("placement_policy_publication_history.sql"),
     EXPLICIT_TOPOLOGY_MIGRATION,
     include_str!("package_documentation.sql"),
+    include_str!("release_publication.sql"),
 ];
 
 /// Identity stamped into databases created by the topology hard-cutover
