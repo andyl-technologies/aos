@@ -15,6 +15,7 @@
   versionScheme ? "semver",
   minimumAgeDays ? 3,
   source,
+  artifacts ? {},
   riskFloor ? "normal",
   lifecycle ? "supported",
   successorUnit ? null,
@@ -88,10 +89,21 @@
           );
       };
     };
+    inherit artifacts;
     inherit policy;
   };
 in {
-  inherit (upstream) version components;
+  inherit (upstream) version components artifacts;
   update = upstream.forPackage {inherit member;};
   updateFor = member: upstream.forPackage {inherit member;};
+  updateWithArtifacts = artifactDerivations:
+    upstream.forPackage {
+      inherit member;
+      artifacts = artifactDerivations;
+    };
+  updateForWithArtifacts = member: artifactDerivations:
+    upstream.forPackage {
+      inherit member;
+      artifacts = artifactDerivations;
+    };
 }

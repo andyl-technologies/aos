@@ -240,13 +240,26 @@
 
   normalizeMaterializer = materializer: let
     kind = requireEnum "artifact materializer kind" ["cargo-deps" "cargo-vendor" "go-modules" "npm-deps" "bazel-deps"] materializer.kind;
+    expectedBuilder =
+      {
+        cargo-deps = "fetchCargoDeps/v1";
+        cargo-vendor = "fetchCargoVendor/v1";
+        go-modules = "fetchGoModules/v1";
+        npm-deps = "fetchNpmDeps/v1";
+        bazel-deps = "fetchBazelDeps/v1";
+      }.${
+        kind
+      };
+    builder = requireString "artifact builder identity" materializer.builder;
     common = {
       inherit kind;
       sourceRoot = requireRelativePath "artifact sourceRoot" materializer.sourceRoot;
-      builder = requireString "artifact builder identity" materializer.builder;
+      inherit builder;
     };
   in
-    if builtins.elem kind ["cargo-deps" "cargo-vendor"]
+    if builder != expectedBuilder
+    then throw "mkUpstream: ${kind} requires builder identity '${expectedBuilder}'"
+    else if builtins.elem kind ["cargo-deps" "cargo-vendor"]
     then let
       checked = assertFields "${kind} materializer" ["kind" "sourceRoot" "patches" "builder"] [] materializer;
     in
@@ -360,11 +373,20 @@ in
           then throw "mkUpstream: forPackage artifacts must exactly match declared artifact slots"
           else
             builtins.mapAttrs (
-              name: value:
-                value
-                // {
-                  derivation = artifactDerivations.${name}.drvPath;
-                }
+              name: value: let
+                actual =
+                  artifactDerivations.${name}.passthru.aos.fixedOutput
+                    or (throw "mkUpstream: artifact '${name}' lacks AOS fixed-output instrumentation");
+              in
+                if actual.schema != "aos.fixed-output/v1"
+                then throw "mkUpstream: artifact '${name}' has an incompatible fixed-output contract"
+                else if actual.kind != value.materializer.kind
+                then throw "mkUpstream: artifact '${name}' materializer kind disagrees with its derivation"
+                else
+                  value
+                  // {
+                    derivation = actual.outputDerivation;
+                  }
             )
             normalizedArtifacts;
       in

@@ -879,7 +879,7 @@ fn validate_materializer(
     unit_id: &UnitId,
     artifact_id: &ArtifactSlotId,
 ) -> Result<()> {
-    let (source_root, builder) = match materializer {
+    let (source_root, builder, expected_builder) = match materializer {
         ArtifactMaterializer::CargoDeps {
             source_root,
             patches,
@@ -893,7 +893,12 @@ fn validate_materializer(
             for patch in patches {
                 validate_repository_path(patch, "artifact patch")?;
             }
-            (source_root, builder)
+            let expected = if matches!(materializer, ArtifactMaterializer::CargoDeps { .. }) {
+                "fetchCargoDeps/v1"
+            } else {
+                "fetchCargoVendor/v1"
+            };
+            (source_root, builder, expected)
         }
         ArtifactMaterializer::GoModules {
             source_root,
@@ -907,7 +912,7 @@ fn validate_materializer(
             for root in module_roots {
                 validate_relative_path(root, "Go module root")?;
             }
-            (source_root, builder)
+            (source_root, builder, "fetchGoModules/v1")
         }
         ArtifactMaterializer::NpmDeps {
             source_root,
@@ -921,7 +926,7 @@ fn validate_materializer(
             }
             validate_repository_path(manifest, "npm manifest")?;
             validate_repository_path(lockfile, "npm lockfile")?;
-            (source_root, builder)
+            (source_root, builder, "fetchNpmDeps/v1")
         }
         ArtifactMaterializer::BazelDeps {
             source_root,
@@ -947,17 +952,12 @@ fn validate_materializer(
             for patch in patches {
                 validate_repository_path(patch, "artifact patch")?;
             }
-            (source_root, builder)
+            (source_root, builder, "fetchBazelDeps/v1")
         }
     };
     validate_relative_path(source_root, "artifact source root")?;
-    if builder.is_empty()
-        || builder.len() > 128
-        || !builder.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'/' | b':')
-        })
-    {
-        bail!("unit {unit_id} artifact {artifact_id} has an invalid builder identity");
+    if builder != expected_builder {
+        bail!("unit {unit_id} artifact {artifact_id} requires builder identity {expected_builder}");
     }
     Ok(())
 }
