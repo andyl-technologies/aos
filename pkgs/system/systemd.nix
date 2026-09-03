@@ -76,6 +76,8 @@ in
     #          rejects the dm-verity signed-key activation.
     #   0006 — Keep an embedded signed UKI command line authoritative over
     #          addon and SMBIOS fragments that run before initrd validation.
+    #   0007 — Add the closed AOS payload seccomp profile to nspawn and install
+    #          it after container setup, immediately before payload execution.
     patches = [
       ./patches/0001-remove-usr-lib-unit-lookup-paths.patch
       ./patches/0002-add-prefix-to-conf-paths.patch
@@ -83,6 +85,7 @@ in
       ./patches/0004-skip-runtime-dir-for-test-run-manager.patch
       ./patches/0005-fail-closed-on-roothash-signature-rejection.patch
       ./patches/0006-ignore-external-cmdline-for-embedded-uki.patch
+      ./patches/0007-nspawn-aos-payload-seccomp-profile.patch
     ];
 
     buildDeps = [
@@ -401,6 +404,21 @@ in
             fi
             "$out/bin/$executable" --version > /dev/null
           done
+
+          if ! "$out/bin/systemd-nspawn" --help | grep -F -q -- \
+            '--aos-payload-seccomp-profile=PROFILE'; then
+            echo "ERROR: systemd-nspawn lacks the AOS payload seccomp option" >&2
+            exit 1
+          fi
+
+          if "$out/bin/systemd-nspawn" \
+            --aos-payload-seccomp-profile=not-a-profile \
+            --directory=/nonexistent > /dev/null 2>&1; then
+            echo "ERROR: systemd-nspawn accepted an unknown AOS payload profile" >&2
+            exit 1
+          fi
+
+          ./test-nspawn-seccomp
         '';
       }
       {

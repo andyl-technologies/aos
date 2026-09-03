@@ -1,0 +1,316 @@
+diff --git a/src/nspawn/meson.build b/src/nspawn/meson.build
+index 8294e13..13d87d7 100644
+--- a/src/nspawn/meson.build
++++ b/src/nspawn/meson.build
+@@ -55,6 +55,10 @@ executables += [
+         nspawn_test_template + {
+                 'sources' : files('test-nspawn-tables.c'),
+         },
++        nspawn_test_template + {
++                'sources' : files('test-nspawn-seccomp.c', 'nspawn-seccomp.c'),
++                'conditions' : ['HAVE_SECCOMP'],
++        },
+         nspawn_fuzz_template + {
+                 'sources' : files('fuzz-nspawn-settings.c'),
+         },
+diff --git a/src/nspawn/nspawn-seccomp.c b/src/nspawn/nspawn-seccomp.c
+index 3788de0..b819a8f 100644
+--- a/src/nspawn/nspawn-seccomp.c
++++ b/src/nspawn/nspawn-seccomp.c
+@@ -2,7 +2,9 @@
+ 
+ #include <linux/capability.h>
+ #include <linux/netlink.h>
++#include <sched.h>
+ #include <sys/socket.h>
++#include <sys/prctl.h>
+ 
+ #include "log.h"
+ #include "nspawn-seccomp.h"
+@@ -11,6 +13,140 @@
+ 
+ #if HAVE_SECCOMP
+ 
++static int add_aos_payload_rule(
++                scmp_filter_ctx ctx,
++                uint32_t arch,
++                uint32_t action,
++                const char *syscall_name,
++                int syscall_number,
++                unsigned argument_count,
++                const struct scmp_arg_cmp *arguments) {
++
++        int r;
++
++        r = sym_seccomp_rule_add_array(ctx, action, syscall_number, argument_count, arguments);
++        if (r < 0)
++                return log_error_errno(r,
++                                       "Failed to add AOS payload seccomp rule for %s on %s: %m",
++                                       syscall_name,
++                                       seccomp_arch_to_string(arch));
++
++        return 0;
++}
++
++int setup_aos_payload_seccomp(void) {
++        static const char *const denied_syscalls[] = {
++                "bpf",
++                "delete_module",
++                "finit_module",
++                "fsconfig",
++                "fsmount",
++                "fsopen",
++                "fspick",
++                "init_module",
++                "mount",
++                "mount_setattr",
++                "move_mount",
++                "open_tree",
++                "open_tree_attr",
++                "perf_event_open",
++                "pivot_root",
++                "ptrace",
++                "setns",
++                "umount",
++                "umount2",
++                "unshare",
++        };
++        static const unsigned long denied_clone_flags[] = {
++                CLONE_NEWCGROUP,
++                CLONE_NEWIPC,
++                CLONE_NEWNET,
++                CLONE_NEWNS,
++                CLONE_NEWPID,
++                CLONE_NEWTIME,
++                CLONE_NEWUSER,
++                CLONE_NEWUTS,
++        };
++        uint32_t arch;
++        int r;
++
++        if (!is_seccomp_available())
++                return log_error_errno(SYNTHETIC_ERRNO(EOPNOTSUPP),
++                                       "AOS payload profile requires kernel seccomp support.");
++
++        r = prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0);
++        if (r < 0)
++                return log_error_errno(errno, "Failed to query no-new-privileges before AOS payload filter: %m");
++        if (r == 0)
++                return log_error_errno(SYNTHETIC_ERRNO(EPERM),
++                                       "AOS payload profile requires no-new-privileges.");
++
++        SECCOMP_FOREACH_LOCAL_ARCH(arch) {
++                _cleanup_(seccomp_releasep) scmp_filter_ctx seccomp = NULL;
++
++                r = seccomp_init_for_arch(&seccomp, arch, SCMP_ACT_ALLOW);
++                if (r < 0)
++                        return log_error_errno(r,
++                                               "Failed to allocate AOS payload seccomp filter for %s: %m",
++                                               seccomp_arch_to_string(arch));
++
++                FOREACH_ELEMENT(syscall_name, denied_syscalls) {
++                        int syscall_number;
++
++                        syscall_number = sym_seccomp_syscall_resolve_name(*syscall_name);
++                        if (syscall_number == __NR_SCMP_ERROR)
++                                return log_error_errno(SYNTHETIC_ERRNO(EOPNOTSUPP),
++                                                       "libseccomp does not recognize required AOS payload syscall %s.",
++                                                       *syscall_name);
++
++                        r = add_aos_payload_rule(
++                                        seccomp,
++                                        arch,
++                                        SCMP_ACT_ERRNO(EPERM),
++                                        *syscall_name,
++                                        syscall_number,
++                                        0,
++                                        NULL);
++                        if (r < 0)
++                                return r;
++                }
++
++                r = add_aos_payload_rule(
++                                seccomp,
++                                arch,
++                                SCMP_ACT_ERRNO(ENOSYS),
++                                "clone3",
++                                sym_seccomp_syscall_resolve_name("clone3"),
++                                0,
++                                NULL);
++                if (r < 0)
++                        return r;
++
++                FOREACH_ELEMENT(flag, denied_clone_flags) {
++                        const struct scmp_arg_cmp argument = SCMP_A0(SCMP_CMP_MASKED_EQ, *flag, *flag);
++
++                        r = add_aos_payload_rule(
++                                        seccomp,
++                                        arch,
++                                        SCMP_ACT_ERRNO(EPERM),
++                                        "clone",
++                                        sym_seccomp_syscall_resolve_name("clone"),
++                                        1,
++                                        &argument);
++                        if (r < 0)
++                                return r;
++                }
++
++                r = sym_seccomp_load(seccomp);
++                if (r < 0)
++                        return log_error_errno(r,
++                                               "Failed to install AOS payload seccomp filter for %s: %m",
++                                               seccomp_arch_to_string(arch));
++        }
++
++        return 0;
++}
++
+ static int add_syscall_filters(
+                 scmp_filter_ctx ctx,
+                 uint32_t arch,
+@@ -246,6 +382,11 @@ int setup_seccomp(uint64_t cap_list_retain, char **syscall_allow_list, char **sy
+ 
+ #else
+ 
++int setup_aos_payload_seccomp(void) {
++        return log_error_errno(SYNTHETIC_ERRNO(EOPNOTSUPP),
++                               "AOS payload profile requires a systemd build with seccomp support.");
++}
++
+ int setup_seccomp(uint64_t cap_list_retain, char **syscall_allow_list, char **syscall_deny_list) {
+         return 0;
+ }
+diff --git a/src/nspawn/nspawn-seccomp.h b/src/nspawn/nspawn-seccomp.h
+index f0a7d98..1936fd0 100644
+--- a/src/nspawn/nspawn-seccomp.h
++++ b/src/nspawn/nspawn-seccomp.h
+@@ -3,4 +3,7 @@
+ 
+ #include "shared-forward.h"
+ 
++#define AOS_NSPAWN_PAYLOAD_SECCOMP_PROFILE_V1 "aos-sandbox-payload-v1"
++
+ int setup_seccomp(uint64_t cap_list_retain, char **syscall_allow_list, char **syscall_deny_list);
++int setup_aos_payload_seccomp(void);
+diff --git a/src/nspawn/nspawn.c b/src/nspawn/nspawn.c
+index 67615d2..991d468 100644
+--- a/src/nspawn/nspawn.c
++++ b/src/nspawn/nspawn.c
+@@ -223,6 +223,7 @@ static MountSettingsMask arg_mount_settings = MOUNT_APPLY_APIVFS_RO|MOUNT_APPLY_
+ static VeritySettings arg_verity_settings = VERITY_SETTINGS_DEFAULT;
+ static char **arg_syscall_allow_list = NULL;
+ static char **arg_syscall_deny_list = NULL;
++static const char *arg_aos_payload_seccomp_profile = NULL;
+ #if HAVE_SECCOMP
+ static scmp_filter_ctx arg_seccomp = NULL;
+ #endif
+@@ -463,6 +464,8 @@ static int help(void) {
+                "     --no-new-privileges    Set PR_SET_NO_NEW_PRIVS flag for container payload\n"
+                "     --system-call-filter=LIST|~LIST\n"
+                "                            Permit/prohibit specific system calls\n"
++               "     --aos-payload-seccomp-profile=PROFILE\n"
++               "                            Apply a compiled AOS payload filter before exec\n"
+                "  -Z --selinux-context=SECLABEL\n"
+                "                            Set the SELinux security context to be used by\n"
+                "                            processes in the container\n"
+@@ -716,6 +719,7 @@ static int parse_argv(int argc, char *argv[]) {
+                 ARG_ROOT_HASH_SIG,
+                 ARG_VERITY_DATA,
+                 ARG_SYSTEM_CALL_FILTER,
++                ARG_AOS_PAYLOAD_SECCOMP_PROFILE,
+                 ARG_RLIMIT,
+                 ARG_HOSTNAME,
+                 ARG_NO_NEW_PRIVILEGES,
+@@ -797,6 +801,7 @@ static int parse_argv(int argc, char *argv[]) {
+                 { "root-hash-sig",          required_argument, NULL, ARG_ROOT_HASH_SIG          },
+                 { "verity-data",            required_argument, NULL, ARG_VERITY_DATA            },
+                 { "system-call-filter",     required_argument, NULL, ARG_SYSTEM_CALL_FILTER     },
++                { "aos-payload-seccomp-profile", required_argument, NULL, ARG_AOS_PAYLOAD_SECCOMP_PROFILE },
+                 { "rlimit",                 required_argument, NULL, ARG_RLIMIT                 },
+                 { "oom-score-adjust",       required_argument, NULL, ARG_OOM_SCORE_ADJUST       },
+                 { "cpu-affinity",           required_argument, NULL, ARG_CPU_AFFINITY           },
+@@ -1388,6 +1393,18 @@ static int parse_argv(int argc, char *argv[]) {
+                         break;
+                 }
+ 
++                case ARG_AOS_PAYLOAD_SECCOMP_PROFILE:
++                        if (arg_aos_payload_seccomp_profile)
++                                return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
++                                                       "AOS payload seccomp profile may be specified only once.");
++                        if (!streq(optarg, AOS_NSPAWN_PAYLOAD_SECCOMP_PROFILE_V1))
++                                return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
++                                                       "Unknown AOS payload seccomp profile '%s'.",
++                                                       optarg);
++
++                        arg_aos_payload_seccomp_profile = optarg;
++                        break;
++
+                 case ARG_RLIMIT: {
+                         const char *eq;
+                         _cleanup_free_ char *name = NULL;
+@@ -3679,6 +3696,15 @@ static int inner_child(
+ 
+         (void) fdset_close_others(fds);
+ 
++        /* This is intentionally the last nspawn setup operation before payload
++         * execution. The filter is inherited by guest PID 1 and every child it
++         * creates, while nspawn's namespace and mount setup remains possible. */
++        if (arg_aos_payload_seccomp_profile) {
++                r = setup_aos_payload_seccomp();
++                if (r < 0)
++                        return r;
++        }
++
+         if (arg_start_mode == START_BOOT) {
+                 char **a;
+                 size_t m;
+diff --git a/src/nspawn/test-nspawn-seccomp.c b/src/nspawn/test-nspawn-seccomp.c
+new file mode 100644
+index 0000000..a0c27a1
+--- /dev/null
++++ b/src/nspawn/test-nspawn-seccomp.c
+@@ -0,0 +1,44 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++
++#include <linux/sched.h>
++#include <sys/mount.h>
++#include <sys/prctl.h>
++#include <sys/syscall.h>
++#include <unistd.h>
++
++#include "errno-util.h"
++#include "nspawn-seccomp.h"
++#include "process-util.h"
++#include "seccomp-util.h"
++#include "tests.h"
++
++static void test_profile_child(void) {
++        int r;
++
++        ASSERT_OK(prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0));
++        ASSERT_OK(setup_aos_payload_seccomp());
++
++        ASSERT_ERROR_ERRNO(mount(NULL, NULL, NULL, 0, NULL), EPERM);
++        ASSERT_ERROR_ERRNO(syscall(__NR_unshare, 0), EPERM);
++        ASSERT_ERROR_ERRNO(syscall(__NR_clone3, NULL, 0), ENOSYS);
++        ASSERT_ERROR_ERRNO(syscall(__NR_clone, CLONE_NEWNS | SIGCHLD, NULL, NULL, NULL, 0), EPERM);
++
++        ASSERT_OK(r = safe_fork("(aos-seccomp-clone)", FORK_WAIT, NULL));
++        if (r == 0)
++                _exit(EXIT_SUCCESS);
++}
++
++TEST(aos_payload_profile) {
++        int r;
++
++        if (!is_seccomp_available())
++                return (void) log_tests_skipped("Seccomp not available");
++
++        ASSERT_OK(r = safe_fork("(aos-seccomp-profile)", FORK_WAIT, NULL));
++        if (r == 0) {
++                test_profile_child();
++                _exit(EXIT_SUCCESS);
++        }
++}
++
++DEFINE_TEST_MAIN(LOG_DEBUG);
