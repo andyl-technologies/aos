@@ -1834,6 +1834,7 @@ in
           patch=0177-crucible-hold-reconstructed-child-monitor-socket.patch
           patch=0178-crucible-reset-reconstructed-child-qmp-protocol.patch
           patch=0179-crucible-rebuild-reconstructed-child-qmp-dispatcher.patch
+          patch=0180-crucible-reconstruct-child-monitor-iothread.patch
           plugin_endpoint_schema_version=4
           plugin_endpoint_source_descriptors_observed=true
           plugin_endpoint_replacement_plan_bound=false

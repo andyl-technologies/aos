@@ -2878,6 +2878,31 @@
         '';
       };
     }
+    {
+      patch = "0180-crucible-reconstruct-child-monitor-iothread.patch";
+      check = certifyExactPatch {
+        patchName = "0180-crucible-reconstruct-child-monitor-iothread.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "qemu-hot-fork-held-child-monitor-iothread";
+        liveEvidence = ''
+          grep -Fxq 'patch=0180-crucible-reconstruct-child-monitor-iothread.patch' "$live_result"
+          grep -Fq 'iothread_hot_fork_reconstruct_child' \
+            ${patchDir}/0180-crucible-reconstruct-child-monitor-iothread.patch
+          grep -Fq 'source_process_id == getpid()' \
+            ${patchDir}/0180-crucible-reconstruct-child-monitor-iothread.patch
+          grep -Fq 'syscall(SYS_tgkill, getpid(), inherited_thread_id, 0)' \
+            ${patchDir}/0180-crucible-reconstruct-child-monitor-iothread.patch
+          grep -Fq 'qemu_sem_destroy(&iothread->init_done_sem)' \
+            ${patchDir}/0180-crucible-reconstruct-child-monitor-iothread.patch
+          grep -Fq 'qemu_thread_create(&iothread->thread, thread_name, iothread_run' \
+            ${patchDir}/0180-crucible-reconstruct-child-monitor-iothread.patch
+          grep -Fq 'basis->iothread_context ==' \
+            ${patchDir}/0180-crucible-reconstruct-child-monitor-iothread.patch
+          grep -Fq 'basis->iothread_rebuilt = true' \
+            ${patchDir}/0180-crucible-reconstruct-child-monitor-iothread.patch
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =

@@ -2845,9 +2845,12 @@ replaces the inherited JSON parser, and resets capability negotiation. It now
 also requires the copied dispatcher to be idle, retires it by waking it once
 with dispatcher shutdown asserted, waits for its normal coroutine exit, and
 installs one fresh dispatcher before any replacement input is released. This
-does not yet reconstruct the inherited monitor I/O thread, emit the one child
-greeting, invoke `fork(2)`, admit guest work, or acknowledge readiness bit 7 or
-8.
+transition now also binds the exact source monitor-I/O-thread identity and
+contexts, proves that copied worker is absent from the child process, refreshes
+its initialization semaphore, and starts one replacement worker over the
+retained quiescent contexts. It does not yet emit the one child greeting,
+release input, reconstruct the global child-thread registry, invoke `fork(2)`,
+admit guest work, or acknowledge readiness bit 7 or 8.
 
 The driver owns selection application, stop-boundary execution, and candidate
 construction but never assignment or daemon-epoch identity. This adapter cannot
