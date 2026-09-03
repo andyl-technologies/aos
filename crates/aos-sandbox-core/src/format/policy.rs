@@ -4,6 +4,7 @@ use crate::model::{
     ExplanationReason, ExplanationReasonCode, Optimization, OptimizationKind, OptimizationProfile,
     Policy, PolicyViewAction, RevocationMode, RevocationPolicy,
 };
+use crate::registry::DescriptorRole;
 use crate::{
     AttachmentSlotId, ExportId, Grant, GrantId, OperationSet, ResourceId, ResourceKind, Selector,
 };
@@ -11,8 +12,8 @@ use crate::{
 use super::cbor::{CanonicalCborError, DecodeLimits, Decoder, Encoder};
 use super::spec::{decode_resource_profile, encode_resource_profile};
 use super::tree::{
-    decode_descriptor, decode_feature, decode_path, decode_vec, encode_descriptor, encode_feature,
-    encode_path, encode_slice, exact_bytes, semantics,
+    decode_descriptor, decode_descriptor_for_role, decode_feature, decode_path, decode_vec,
+    encode_descriptor, encode_feature, encode_path, encode_slice, exact_bytes, semantics,
 };
 use super::view::{
     decode_cache_domain, decode_view_mutation, encode_cache_domain, view_mutation_code,
@@ -62,7 +63,7 @@ pub fn decode_policy(bytes: &[u8], limits: DecodeLimits) -> Result<Policy, Canon
     let view_actions = decode_vec(&mut decoder, decode_policy_view_action)?;
     let cache_domain = decode_cache_domain(&mut decoder)?;
     let revocation = decode_revocation(&mut decoder)?;
-    let optimization_digest = decoder.nullable(decode_descriptor)?;
+    let optimization_digest = decoder.nullable(decode_optimization_descriptor)?;
     let explanation_reasons = decode_vec(&mut decoder, decode_reason)?;
     decoder.finish()?;
     Policy::new(
@@ -166,22 +167,32 @@ fn decode_selector(decoder: &mut Decoder<'_>) -> Result<Selector, CanonicalCborE
             resource: ResourceId::from_bytes(exact_bytes(decoder, 16)?),
         }),
         (1, 2) => Ok(Selector::Tree {
-            tree: decode_descriptor(decoder)?,
+            tree: decode_descriptor_for_role(decoder, DescriptorRole::TreeSelector)?,
         }),
         (2, 3) => Ok(Selector::Path {
             export: ExportId::from_bytes(exact_bytes(decoder, 16)?),
             prefix: decode_path(decoder)?,
         }),
-        (3, 3) => Ok(Selector::Profile {
-            feature: decode_feature(decoder)?,
-            body: decode_descriptor(decoder)?,
-        }),
+        (3, 3) => {
+            let _feature = decode_feature(decoder)?;
+            let _body = decode_descriptor(decoder)?;
+            Err(CanonicalCborError::InvalidSemantics {
+                object: "profile selector",
+                message: "base v1 registers no profile-selector body schema".to_owned(),
+            })
+        }
         _ => Err(CanonicalCborError::ArrayLength {
             expected: if kind <= 1 { 2 } else { 3 },
             actual: length,
             offset,
         }),
     }
+}
+
+fn decode_optimization_descriptor(
+    decoder: &mut Decoder<'_>,
+) -> Result<crate::ObjectDescriptor, CanonicalCborError> {
+    decode_descriptor_for_role(decoder, DescriptorRole::OptimizationCommitment)
 }
 
 fn decode_resource_kind(decoder: &mut Decoder<'_>) -> Result<ResourceKind, CanonicalCborError> {
@@ -429,13 +440,22 @@ mod tests {
         )
     }
 
+    fn tree_descriptor(byte: u8) -> ObjectDescriptor {
+        ObjectDescriptor::new(
+            MediaType::new("application/vnd.aos.sandbox.tree.v1+cbor")
+                .unwrap_or_else(|error| panic!("test media type failed: {error}")),
+            ObjectDigest::from_bytes([byte; 32]),
+            1,
+        )
+    }
+
     fn grant(id: u8) -> Grant {
         Grant::new(
             GrantId::from_bytes([id; 16]),
             ResourceKind::Tree,
             OperationSet::one(Operation::ContentRead),
             Selector::Tree {
-                tree: descriptor(id),
+                tree: tree_descriptor(id),
             },
             true,
         )

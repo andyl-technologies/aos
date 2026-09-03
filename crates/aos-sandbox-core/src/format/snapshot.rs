@@ -4,6 +4,7 @@ use crate::model::{
     AttachmentSnapshot, ExternalDependency, OpaqueVersion, QuiesceEvidence, Receipt,
     RetentionClaim, Snapshot, SnapshotConsistency, SourceAssignment, StorageCheckpoint,
 };
+use crate::registry::DescriptorRole;
 use crate::{
     AssignmentEpoch, AttachmentSlotId, IncarnationId, IssuerId, NetworkEndpointId, ObjectDigest,
     ResourceId, RestoreScopeId, SandboxId, SecretId, ServiceId,
@@ -12,8 +13,8 @@ use crate::{
 use super::cbor::{CanonicalCborError, DecodeLimits, Decoder, Encoder};
 use super::policy::{decode_set, encode_set};
 use super::tree::{
-    decode_descriptor, decode_feature, decode_vec, encode_descriptor, encode_feature, encode_slice,
-    exact_bytes, semantics,
+    decode_descriptor_for_role, decode_feature, decode_vec, encode_descriptor, encode_feature,
+    encode_slice, exact_bytes, semantics,
 };
 use super::view::{decode_view_mutation, view_mutation_code};
 
@@ -69,13 +70,15 @@ pub fn decode_snapshot(bytes: &[u8], limits: DecodeLimits) -> Result<Snapshot, C
     let mut decoder = Decoder::new(bytes, limits)?;
     decoder.array(14)?;
     decoder.exact("snapshot version", 1)?;
-    let sandbox_spec = decode_descriptor(&mut decoder)?;
-    let historical_policy = decode_descriptor(&mut decoder)?;
+    let sandbox_spec = decode_descriptor_for_role(&mut decoder, DescriptorRole::SnapshotSpec)?;
+    let historical_policy =
+        decode_descriptor_for_role(&mut decoder, DescriptorRole::SnapshotPolicy)?;
     let ancestry = decode_vec(&mut decoder, decode_sandbox_id)?;
-    let private_roots = decode_vec(&mut decoder, decode_descriptor)?;
+    let private_roots = decode_vec(&mut decoder, decode_private_root)?;
     let storage_checkpoints = decode_vec(&mut decoder, decode_storage_checkpoint)?;
     let retention_claims = decode_set(&mut decoder, decode_retention_claim)?;
-    let environment = decode_descriptor(&mut decoder)?;
+    let environment =
+        decode_descriptor_for_role(&mut decoder, DescriptorRole::SnapshotEnvironment)?;
     let attachments = decode_vec(&mut decoder, decode_attachment_snapshot)?;
     let external_dependencies = decode_set(&mut decoder, decode_external_dependency)?;
     let consistency = decode_consistency(&mut decoder)?;
@@ -196,14 +199,17 @@ fn decode_retention_claim(decoder: &mut Decoder<'_>) -> Result<RetentionClaim, C
         1 => {
             exact_union_length(length, 3, "content retention")?;
             Ok(RetentionClaim::Content {
-                object: decode_descriptor(decoder)?,
+                object: decode_descriptor_for_role(decoder, DescriptorRole::ContentRetention)?,
                 receipt: decode_receipt(decoder)?,
             })
         }
         2 => {
             exact_union_length(length, 3, "Nix retention")?;
             Ok(RetentionClaim::Nix {
-                environment: decode_descriptor(decoder)?,
+                environment: decode_descriptor_for_role(
+                    decoder,
+                    DescriptorRole::EnvironmentDependency,
+                )?,
                 receipt: decode_receipt(decoder)?,
             })
         }
@@ -248,7 +254,7 @@ fn decode_storage_checkpoint(
     decoder.array(2)?;
     Ok(StorageCheckpoint::new(
         decode_feature(decoder)?,
-        decode_descriptor(decoder)?,
+        decode_descriptor_for_role(decoder, DescriptorRole::PortableStorageState)?,
     ))
 }
 
@@ -264,7 +270,7 @@ fn decode_attachment_snapshot(
 ) -> Result<AttachmentSnapshot, CanonicalCborError> {
     decoder.array(3)?;
     Ok(AttachmentSnapshot::new(
-        decode_descriptor(decoder)?,
+        decode_descriptor_for_role(decoder, DescriptorRole::SnapshotAttachment)?,
         decode_attachment_slot_id(decoder)?,
         decode_view_mutation(decoder)?,
     ))
@@ -345,14 +351,17 @@ fn decode_external_dependency(
         0 => {
             exact_union_length(length, 3, "immutable view dependency")?;
             Ok(ExternalDependency::ImmutableView {
-                view: decode_descriptor(decoder)?,
+                view: decode_descriptor_for_role(decoder, DescriptorRole::ImmutableViewDependency)?,
                 required: decoder.boolean()?,
             })
         }
         1 => {
             exact_union_length(length, 3, "package dependency")?;
             Ok(ExternalDependency::Package {
-                environment: decode_descriptor(decoder)?,
+                environment: decode_descriptor_for_role(
+                    decoder,
+                    DescriptorRole::EnvironmentDependency,
+                )?,
                 required: decoder.boolean()?,
             })
         }
@@ -504,6 +513,12 @@ fn decode_digest(decoder: &mut Decoder<'_>) -> Result<ObjectDigest, CanonicalCbo
 fn decode_opaque_version(decoder: &mut Decoder<'_>) -> Result<OpaqueVersion, CanonicalCborError> {
     OpaqueVersion::new(decoder.bytes(255)?.to_vec())
         .map_err(|error| semantics("opaque version", error))
+}
+
+fn decode_private_root(
+    decoder: &mut Decoder<'_>,
+) -> Result<crate::ObjectDescriptor, CanonicalCborError> {
+    decode_descriptor_for_role(decoder, DescriptorRole::SnapshotPrivateRoot)
 }
 
 fn exact_union_length(

@@ -4,12 +4,13 @@ use crate::model::{
     KeyReference, KeyUsage, Signature, SignatureBytes, SignaturePurpose, SignatureStatement,
     StableKeyId, TrustPolicy,
 };
+use crate::registry::{DescriptorRole, validate_signature_subject};
 use crate::{ObjectDigest, TrustScopeId};
 
 use super::cbor::{CanonicalCborError, DecodeLimits, Decoder, Encoder};
 use super::tree::{
-    decode_descriptor, decode_feature, decode_vec, encode_descriptor, encode_feature, encode_slice,
-    exact_bytes, semantics,
+    decode_descriptor, decode_descriptor_for_role, decode_feature, decode_vec, encode_descriptor,
+    encode_feature, encode_slice, exact_bytes, semantics,
 };
 
 /// Encodes one trust policy in its exact portable v1 CBOR form.
@@ -125,7 +126,10 @@ fn decode_statement(decoder: &mut Decoder<'_>) -> Result<SignatureStatement, Can
     let purpose = decode_purpose(decoder)?;
     let issued_seconds = decoder.signed()?;
     let expires_seconds = decoder.nullable(Decoder::signed)?;
-    let verification_policy = decode_descriptor(decoder)?;
+    let verification_policy =
+        decode_descriptor_for_role(decoder, DescriptorRole::SignatureVerificationPolicy)?;
+    validate_signature_subject(purpose, &subject)
+        .map_err(|error| semantics("signature subject", error))?;
     SignatureStatement::new(
         subject,
         trust_scope,

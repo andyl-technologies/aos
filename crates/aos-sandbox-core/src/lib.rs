@@ -13,6 +13,7 @@ pub mod capability;
 pub mod format;
 pub mod identity;
 pub mod model;
+pub mod registry;
 pub mod resources;
 pub mod selector;
 pub mod state;
@@ -29,6 +30,11 @@ pub use identity::{
     GrantId, IncarnationId, IssuerId, LeaseId, NetworkEndpointId, NodeId, OperationId, PrincipalId,
     ProjectId, ResourceId, RestoreScopeId, RevocationScopeId, SandboxId, SecretId, ServiceId,
     SnapshotId, TrustScopeId, ViewId,
+};
+pub use registry::{
+    DescriptorRole, PortableMediaType, ProtocolId, ProtocolVersion, RegistryError,
+    negotiate_protocol, validate_descriptor_role, validate_required_features,
+    validate_signature_subject,
 };
 pub use resources::{
     AccountingError, AncestryAdmissionError, ReservationClass, ResourceAccount, ResourceBudget,

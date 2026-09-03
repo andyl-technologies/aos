@@ -4,6 +4,7 @@ use crate::model::{
     Acl, AclEntry, ContentLayout, Delta, Directory, DirectoryEntry, Extent, FileNode,
     FilesystemMetadata, Node, SparseContent, SymlinkNode, Tree, Xattr,
 };
+use crate::registry::{DescriptorRole, validate_descriptor_role, validate_required_features};
 use crate::{FeatureRef, MediaType, ObjectDescriptor, ObjectDigest, PathName};
 
 use super::cbor::{CanonicalCborError, DecodeLimits, Decoder, Encoder};
@@ -59,9 +60,10 @@ pub fn decode_tree(bytes: &[u8], limits: DecodeLimits) -> Result<Tree, Canonical
     let mut decoder = Decoder::new(bytes, limits)?;
     decoder.array(3)?;
     decoder.exact("tree version", 1)?;
-    let root = decode_descriptor(&mut decoder)?;
+    let root = decode_descriptor_for_role(&mut decoder, DescriptorRole::TreeRoot)?;
     let required_features = decode_vec(&mut decoder, decode_feature)?;
     decoder.finish()?;
+    validate_features(&required_features)?;
     Tree::new(root, required_features).map_err(|error| semantics("tree", error))
 }
 
@@ -88,11 +90,12 @@ pub fn decode_delta(bytes: &[u8], limits: DecodeLimits) -> Result<Delta, Canonic
     let mut decoder = Decoder::new(bytes, limits)?;
     decoder.array(5)?;
     decoder.exact("delta version", 1)?;
-    let base = decode_descriptor(&mut decoder)?;
-    let result = decode_descriptor(&mut decoder)?;
-    let added_objects = decode_vec(&mut decoder, decode_descriptor)?;
+    let base = decode_descriptor_for_role(&mut decoder, DescriptorRole::DeltaTree)?;
+    let result = decode_descriptor_for_role(&mut decoder, DescriptorRole::DeltaTree)?;
+    let added_objects = decode_vec(&mut decoder, decode_delta_added_object)?;
     let required_features = decode_vec(&mut decoder, decode_feature)?;
     decoder.finish()?;
+    validate_features(&required_features)?;
     Delta::new(base, result, added_objects, required_features)
         .map_err(|error| semantics("delta", error))
 }
@@ -121,6 +124,26 @@ pub(super) fn decode_descriptor(
     ))
 }
 
+pub(super) fn decode_descriptor_for_role(
+    decoder: &mut Decoder<'_>,
+    role: DescriptorRole,
+) -> Result<ObjectDescriptor, CanonicalCborError> {
+    let descriptor = decode_descriptor(decoder)?;
+    validate_descriptor_role(role, &descriptor)
+        .map_err(|error| semantics("descriptor role", error))?;
+    Ok(descriptor)
+}
+
+pub(super) fn validate_features(features: &[FeatureRef]) -> Result<(), CanonicalCborError> {
+    validate_required_features(features).map_err(|error| semantics("required feature", error))
+}
+
+fn decode_delta_added_object(
+    decoder: &mut Decoder<'_>,
+) -> Result<ObjectDescriptor, CanonicalCborError> {
+    decode_descriptor_for_role(decoder, DescriptorRole::DeltaAddedObject)
+}
+
 pub(super) fn encode_feature(encoder: &mut Encoder, feature: &FeatureRef) {
     encoder.array(3);
     encoder.text(feature.namespace());
@@ -133,7 +156,10 @@ pub(super) fn decode_feature(decoder: &mut Decoder<'_>) -> Result<FeatureRef, Ca
     let namespace = decoder.text(255)?.to_owned();
     let major = unsigned_u32(decoder, "feature major")?;
     let minor = unsigned_u32(decoder, "feature minor")?;
-    FeatureRef::new(namespace, major, minor).map_err(|error| semantics("feature", error))
+    let feature =
+        FeatureRef::new(namespace, major, minor).map_err(|error| semantics("feature", error))?;
+    validate_features(std::slice::from_ref(&feature))?;
+    Ok(feature)
 }
 
 pub(super) fn encode_path(encoder: &mut Encoder, path: &crate::RelativePath) {
@@ -321,7 +347,9 @@ fn decode_node(decoder: &mut Decoder<'_>) -> Result<Node, CanonicalCborError> {
                 hardlink_group,
             }))
         }
-        (1, 2) => decode_descriptor(decoder).map(Node::Directory),
+        (1, 2) => {
+            decode_descriptor_for_role(decoder, DescriptorRole::DirectoryChild).map(Node::Directory)
+        }
         (2, 3) => {
             let metadata = decode_metadata(decoder)?;
             let target = decoder.bytes(4_096)?.to_vec();
@@ -363,7 +391,8 @@ fn decode_content_layout(decoder: &mut Decoder<'_>) -> Result<ContentLayout, Can
     let length = decoder.array_len()?;
     let kind = decoder.closed("content layout kind", 1)?;
     match (kind, length) {
-        (0, 2) => decode_descriptor(decoder).map(ContentLayout::whole),
+        (0, 2) => decode_descriptor_for_role(decoder, DescriptorRole::FileContent)
+            .map(ContentLayout::whole),
         (1, 3) => {
             let logical_size = decoder.unsigned()?;
             let extents = decode_vec(decoder, decode_extent)?;
@@ -390,7 +419,7 @@ fn decode_extent(decoder: &mut Decoder<'_>) -> Result<Extent, CanonicalCborError
     decoder.array(3)?;
     let offset = decoder.unsigned()?;
     let length = decoder.unsigned()?;
-    let content = decode_descriptor(decoder)?;
+    let content = decode_descriptor_for_role(decoder, DescriptorRole::FileContent)?;
     Extent::new(offset, length, content).map_err(|error| semantics("sparse extent", error))
 }
 
@@ -523,6 +552,28 @@ mod tests {
             Err(CanonicalCborError::UnknownRegistryValue {
                 registry: "tree node kind",
                 value: 3,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn unknown_required_feature_fails_closed() {
+        let root = ObjectDescriptor::new(
+            MediaType::new("application/vnd.aos.sandbox.directory.v1+cbor")
+                .unwrap_or_else(|error| panic!("test media type failed: {error}")),
+            ObjectDigest::from_bytes([1; 32]),
+            1,
+        );
+        let feature = FeatureRef::new("example.invalid.feature", 1, 0)
+            .unwrap_or_else(|error| panic!("test feature failed: {error}"));
+        let tree = Tree::new(root, vec![feature])
+            .unwrap_or_else(|error| panic!("test tree failed: {error}"));
+
+        assert!(matches!(
+            decode_tree(&encode_tree(&tree), DecodeLimits::default()),
+            Err(CanonicalCborError::InvalidSemantics {
+                object: "required feature",
                 ..
             })
         ));

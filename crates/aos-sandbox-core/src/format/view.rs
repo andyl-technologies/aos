@@ -4,12 +4,13 @@ use crate::model::{
     CacheDomain, CacheDomainKind, Environment, EnvironmentEntry, PresentationAction, View,
     ViewConsistency, ViewMutation, ViewSource,
 };
-use crate::{CacheDomainId, ExportId, Revision, SandboxId};
+use crate::registry::DescriptorRole;
+use crate::{CacheDomainId, ExportId, ObjectDescriptor, Revision, SandboxId};
 
 use super::cbor::{CanonicalCborError, DecodeLimits, Decoder, Encoder};
 use super::tree::{
-    decode_descriptor, decode_feature, decode_path, decode_vec, encode_descriptor, encode_feature,
-    encode_path, encode_slice, exact_bytes, semantics,
+    decode_descriptor_for_role, decode_feature, decode_path, decode_vec, encode_descriptor,
+    encode_feature, encode_path, encode_slice, exact_bytes, semantics,
 };
 
 /// Encodes one filesystem view in its exact portable v1 CBOR form.
@@ -96,7 +97,7 @@ pub fn decode_environment(
     let mut decoder = Decoder::new(bytes, limits)?;
     decoder.array(5)?;
     decoder.exact("environment version", 1)?;
-    let closure = decode_vec(&mut decoder, decode_descriptor)?;
+    let closure = decode_vec(&mut decoder, decode_environment_member)?;
     let variables = decode_vec(&mut decoder, decode_environment_entry)?;
     let command_search_path = decode_vec(&mut decoder, decode_path)?;
     let required_features = decode_vec(&mut decoder, decode_feature)?;
@@ -132,7 +133,7 @@ fn decode_view_source(decoder: &mut Decoder<'_>) -> Result<ViewSource, Canonical
     let kind = decoder.closed("view source kind", 1)?;
     match (kind, length) {
         (0, 2) => Ok(ViewSource::ImmutableTree {
-            tree: decode_descriptor(decoder)?,
+            tree: decode_descriptor_for_role(decoder, DescriptorRole::ImmutableViewSource)?,
         }),
         (1, 4) => Ok(ViewSource::LiveExport {
             owner_sandbox: SandboxId::from_bytes(exact_bytes(decoder, 16)?),
@@ -145,6 +146,12 @@ fn decode_view_source(decoder: &mut Decoder<'_>) -> Result<ViewSource, Canonical
             offset,
         }),
     }
+}
+
+fn decode_environment_member(
+    decoder: &mut Decoder<'_>,
+) -> Result<ObjectDescriptor, CanonicalCborError> {
+    decode_descriptor_for_role(decoder, DescriptorRole::EnvironmentClosure)
 }
 
 fn encode_presentation_action(encoder: &mut Encoder, action: &PresentationAction) {

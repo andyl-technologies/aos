@@ -6,12 +6,13 @@ use crate::model::{
     IdentityProfile, Limit, LimitDimension, LimitValue, NetworkKind, NetworkProfile,
     ResourceProfile, SandboxSpec, UnmappableIdentityPolicy,
 };
+use crate::registry::DescriptorRole;
 use crate::{AttachmentSlotId, GrantId, NetworkEndpointId};
 
 use super::cbor::{CanonicalCborError, DecodeLimits, Decoder, Encoder};
 use super::tree::{
-    decode_descriptor, decode_feature, decode_vec, encode_descriptor, encode_feature, encode_slice,
-    exact_bytes, semantics, unsigned_u32,
+    decode_descriptor_for_role, decode_feature, decode_vec, encode_descriptor, encode_feature,
+    encode_slice, exact_bytes, semantics, unsigned_u32,
 };
 
 /// Encodes one sandbox specification in its exact portable v1 CBOR form.
@@ -47,8 +48,8 @@ pub fn decode_sandbox_spec(
     let runtime_profile = decode_feature(&mut decoder)?;
     let identity_profile = decode_identity_profile(&mut decoder)?;
     let resource_profile = decode_resource_profile(&mut decoder)?;
-    let environment = decode_descriptor(&mut decoder)?;
-    let root_view = decode_descriptor(&mut decoder)?;
+    let environment = decode_descriptor_for_role(&mut decoder, DescriptorRole::SandboxEnvironment)?;
+    let root_view = decode_descriptor_for_role(&mut decoder, DescriptorRole::SandboxRootView)?;
     let attachment_slots = decode_ids(&mut decoder, AttachmentSlotId::from_bytes)?;
     let network_profile = decode_network_profile(&mut decoder)?;
     let required_features = decode_vec(&mut decoder, decode_feature)?;
