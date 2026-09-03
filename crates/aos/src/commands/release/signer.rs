@@ -512,10 +512,7 @@ async fn read_exchange_response_to_file(
 }
 
 fn verify_payload_binding(request: &SigningRequestV1, payload: &[u8]) -> Result<()> {
-    if Sha256Digest::of_bytes(payload) != request.payload_digest {
-        bail!("signer payload does not match the request digest");
-    }
-    Ok(())
+    request.verify_payload_bytes(payload)
 }
 
 async fn read_bounded(reader: impl AsyncRead + Unpin, maximum: u64) -> Result<Vec<u8>> {
