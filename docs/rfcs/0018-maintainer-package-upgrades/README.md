@@ -43,6 +43,13 @@ changes. It receives no Git, GitHub, release, signing, or unrelated filesystem
 authority. The maintainer remains in control of scope, commits, publication,
 and merge.
 
+The maintainer interface is part of the correctness contract. A polished
+inline CLI presents typed plans, task progress, semantic diffs, action-required
+cards, resume receipts, and exact next commands while preserving scrollback.
+Plain, screen-reader, JSON, and JSONL renderers expose the same state; an
+optional read-only full-screen cockpit may provide dense navigation without
+becoming required for any operation.
+
 The completed flow is:
 
 ```text
@@ -96,6 +103,7 @@ declared upstream + Repology advisory observation
 | What makes a run complete? | All policy-selected package/target/impact gates and every `aos test` layer pass on the exact final head. |
 | Who publishes the PR? | The maintainer, through an explicit final command using their normal Git identity and authentication. |
 | Can the tool merge or release? | No. Human review authorizes merge; RFC-0017 independently rebuilds and publishes from protected source. |
+| What is the primary interface? | A complete, responsive inline CLI over typed events and results; plain and machine modes have parity, and a full-screen cockpit is optional. |
 
 ## Load-bearing invariants
 
@@ -131,6 +139,9 @@ declared upstream + Repology advisory observation
     explicit, reviewable final operations. The tool never merges or releases.
 12. **Update and release evidence remain separate.** RFC-0017 evaluates the
     merged protected source and repeats its own complete release transaction.
+13. **The interface has no hidden authority.** Every renderer consumes the same
+    typed state and offers the same explicit workflow actions; prompts, progress
+    widgets, and model output cannot create or infer workflow transitions.
 
 ## Documents
 
@@ -145,6 +156,7 @@ declared upstream + Repology advisory observation
 | [`06-maintainer-machine-security.md`](06-maintainer-machine-security.md) | Local threat model, process isolation, credential handling, worktree protection, and publication safeguards |
 | [`07-implementation-plan.md`](07-implementation-plan.md) | Pull request sequence, migration, pilots, acceptance criteria, and rollout |
 | [`08-decisions-and-open-questions.md`](08-decisions-and-open-questions.md) | Locked decisions, rejected alternatives, and implementation-time questions |
+| [`09-maintainer-interface.md`](09-maintainer-interface.md) | Maintainer UX, renderers, screen flows, prompts, accessibility, Rust UI choices, and interface verification |
 
 ## Relationship to RFC-0017
 

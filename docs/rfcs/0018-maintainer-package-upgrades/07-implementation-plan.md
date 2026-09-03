@@ -17,6 +17,9 @@
 - Do not weaken AOS hermeticity or import nixpkgs while adding the tool.
 - Treat agent repair and PR publication as final layers over a complete
   deterministic workflow.
+- Treat presentation as a versioned product contract. Every implementation PR
+  that adds a state, event, action, or disposition updates rich/plain/machine
+  fixtures and exact next-action output in the same change.
 
 ## PR 1: Shared contracts and thin maintenance model
 
@@ -31,6 +34,8 @@ existing `aos-release` byte fixtures. Add a thin `aos-maintain` crate with:
 - legal state transitions and invalidation rules;
 - typed stream selectors, candidate/package-version projections, source
   assurance outcomes, and risk interfaces;
+- typed maintenance events, command results, dispositions, diagnostics,
+  next actions, and pure presentation views;
 - hostile, boundary, compatibility, and transition fixtures.
 
 Both crates perform no I/O and meet the repository Rust documentation standard.
@@ -74,8 +79,12 @@ Before generalizing the schemas, prove one complete local update path:
   for this canary path;
 - formatting, evaluation, one package build/check, semantic/derived delta, and
   interruption/resume;
-- `plan`, `run --until quick-gated`, `status`, `inspect`, and `diff` for the
-  canary;
+- canary-scoped `scan` and `report`, then `plan`,
+  `run --until quick-gated`, `status`, `inspect`, and `diff`;
+- responsive rich-inline, plain, screen-reader, one-document JSON, and JSONL
+  views for those commands, with stable stdout/stderr and exit contracts;
+- centralized injectable terminal capabilities, graceful Ctrl-C checkpointing,
+  one final result, and exact resume/inspection commands;
 - one real package-update rehearsal in an unpublished disposable worktree,
   captured in the PR evidence but not committed as a package bump.
 
@@ -85,7 +94,9 @@ included.
 **Exit:** a maintainer can reproduce one real conventional update from
 observation to tested worktree; kill/restart tests resume or stop at verified
 boundaries; basic hostile filesystem/network/process fixtures pass; observed
-constraints feed back into the v1 contract before it spreads across the tree.
+constraints feed back into the v1 contract before it spreads across the tree;
+the M0 usability exercise in the interface chapter passes without consulting
+raw implementation logs.
 
 ## PR 4: Root universe, fixed-output instrumentation, and classification
 
@@ -124,7 +135,9 @@ findings into fail-closed checks. Implement:
 - typed version-range/channel/VCS-lineage selectors;
 - projection-collision quarantine, observation freshness, stabilization basis,
   and immutable discovery snapshots;
-- `inventory`, `scan`, `scan --offline`, and `report` commands.
+- `inventory`, `scan`, `scan --offline`, and `report` commands;
+- adaptive inbox, family, unknown, and quarantine reports at the specified
+  terminal widths, with semantic JSON assertions and CLI golden fixtures.
 
 This PR remains read-only with respect to repository source and Git.
 
@@ -146,6 +159,11 @@ Generalize the PR 3 slice to:
 - full path/file/mode/symlink/submodule/binary/size diff policy;
 - `plan`, `run --until worktree-ready`, `status`, `inspect`, `diff`, `resume`,
   `abandon`, and `clean`.
+
+Add the optional read-only `aos maintain ui [RUN]` cockpit only after command,
+plain, and JSON parity is complete. If included here, it reuses the workspace
+Ratatui/Crossterm versions, the same pure views, and a tested terminal guard;
+no state transition exists only in the cockpit.
 
 No agent, networked generated materializer, or remote Git operation is included.
 
@@ -227,6 +245,11 @@ phases, flags, dependencies, hardening, tests, or licenses—always block for a
 new maintainer-approved plan even when the agent proposes them. `--agent none`
 remains supported.
 
+Render repair as controller-owned stages and an action-required card. Model
+prose and model-reported task lists remain bounded logs, never the progress or
+completion authority. Scope expansion shows the semantic delta, invalidated
+evidence, new plan digest, and exact acceptance action.
+
 **Exit:** representative repairs work; injection cannot reach secrets/Git/policy;
 the agent cannot autonomously accept semantic-risk changes, expand scope, or
 mark validation successful; the worker tree is dead before commit credentials
@@ -238,6 +261,10 @@ Implement offline `prepare-pr`, sanitized hook-free commit/push configuration,
 author/signature/attribution/base/head validation, exact refspec and expected
 remote head, explicit confirmation, authentication isolation, create/update-
 only matching PR behavior, and partial-failure reconciliation.
+
+Add exact-head commit and publication previews that leave any alternate screen,
+name remote effects and reversibility, bind confirmation to all displayed
+digests, and reject non-interactive ambiguity. There is no broad `--yes` path.
 
 Local preflight records contributor authorization as `pending-remote`. A later
 foreground observation may record the repository's exact-head authorization,
@@ -316,6 +343,7 @@ their automation at least as safe and understandable as manual maintenance.
 | Evidence | Complete bounded dossier, corruption-detecting journal, sanitized PR rendering, release boundary explicit |
 | Publication | Hook-free one-shot publisher; explicit maintainer confirmation; exact refspec/expected head; no force/merge/release |
 | Legal | Local preflight distinguishes identity/signature from remote authorization; authorization remains fail-closed; QEMU DCO is never synthesized |
+| Maintainer UX | Rich inline, plain, screen-reader, JSON, and JSONL views reduce the same typed state; responsive/golden/interrupt/prompt tests pass; every pause has an exact next action; full-screen UI is optional |
 
 ## Migration completion criteria
 

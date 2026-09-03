@@ -100,6 +100,28 @@
     or agent session links.
 45. Update evidence is reviewer evidence, not release provenance. RFC-0017
     independently rebuilds and qualifies the merged protected source.
+46. The primary maintainer interface is a complete, responsive, line-oriented
+    CLI that preserves scrollback. A read-only full-screen cockpit is optional
+    and no operation depends on it.
+47. One typed event/view/result model feeds rich inline, plain, screen-reader,
+    JSON, JSONL, and optional cockpit renderers. Renderers and model output have
+    no workflow authority.
+48. Human explanation and progress use stderr; requested data and primary
+    values use stdout. `--json` is one final document; `--jsonl` is an explicit
+    event stream with a mandatory terminal result event.
+49. Machine output never prompts or emits terminal controls. Interactive
+    prompts fail closed and bind the exact plan, tree, head, remote effect, and
+    other displayed scope; there is no global approval flag.
+50. Status words and reading order carry meaning independently of color,
+    symbols, animation, columns, or screen position. Screen-reader and narrow
+    terminal modes are first-class tested outputs.
+51. The initial UI stack extends AOS's Clap, `Printer`, `console`, and
+    `indicatif` foundations, replaces `atty` with `std::io::IsTerminal`, and
+    uses AOS-owned presentation types. Miette, Ratatui/Crossterm, and a prompt
+    helper remain subordinate renderers behind those contracts.
+52. Every stopped state produces a typed disposition and one to three exact
+    legal next commands. First Ctrl-C checkpoints and reaps workers; uncertain
+    teardown remains interrupted/unknown rather than being reported successful.
 
 ## Rejected alternatives
 
@@ -246,6 +268,38 @@ Rejected because update work is mutable and iterative while a release begins
 from a protected source commit and advances monotonically. They share identity,
 not state or authority.
 
+### Make a full-screen TUI the required interface
+
+Rejected because alternate-screen interaction loses useful scrollback, is
+fragile across terminals and SSH, and does not automatically provide an
+accessible reading model. The command/plain/JSON surfaces are complete. A
+full-screen cockpit may add dense read-only navigation over the same views. See
+Ratatui's [accessibility design discussion](https://github.com/ratatui/ratatui/discussions/2190).
+
+### Use a chat transcript or model task list as run state
+
+Rejected because prose is ambiguous, unbounded, and controlled partly by
+untrusted upstream context. The controller's typed task DAG and durable journal
+own progress; conversation and model output are inspectable attempt evidence.
+
+### Let each renderer infer its own state
+
+Rejected because table, progress, JSON, and TUI implementations would drift on
+status, safety, and next actions. They reduce the same typed events into the
+same pure view and differ only in presentation.
+
+### Add a broad non-interactive approval flag
+
+Rejected because it can silently authorize a changed plan, tree, head, or
+remote effect. Scriptable approvals, where allowed, are operation-specific and
+digest-bound; ambiguous or stale approval fails closed.
+
+### Derive user progress from tracing spans or raw logs
+
+Rejected because observability topology and third-party output are not the
+workflow state machine. Explicit typed events drive user progress; traces and
+logs remain diagnostic evidence.
+
 ## Open implementation questions
 
 These do not change the load-bearing architecture but must be resolved by the
@@ -330,11 +384,12 @@ Measure local CPU, disk, elapsed time, and KVM/target requirements during the
 pilot. Improve caching and gate ordering without reducing final completeness.
 Missing capability remains action-required.
 
-### Repology mapping review UX
+### Repology mapping review flow
 
-Determine how `scan` presents ambiguous projects and records a reviewed mapping
-change in package metadata. The mapping remains explicit source code, not
-mutable hidden local state.
+Use the interface contract's action-required and semantic-diff views to
+prototype the exact source-code change for an ambiguous project during PR 5.
+The mapping remains explicit source code, not mutable hidden local state; the
+pilot chooses only the minimal editable metadata spelling and reviewer wording.
 
 ### Event/log retention defaults
 
@@ -350,7 +405,7 @@ identity/result/digest tombstone.
 - A static AOS package/version feed generated from RFC-0017 release inventory
   for Repology ingestion.
 - Independently authenticated test-result statements.
-- Richer terminal UI over the same command/result schemas.
+- Additional optional cockpit views over the same command/result schemas.
 
 Each extension must first work through the foreground local command and retain
 the same plan, capability, evidence, and human-publication boundaries.
