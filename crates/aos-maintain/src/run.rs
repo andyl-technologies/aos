@@ -251,6 +251,16 @@ impl MaterializationRecordV1 {
     }
 }
 
+/// Identifies who produced an accepted candidate attempt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AttemptOrigin {
+    /// A maintainer edited the isolated worktree directly.
+    Maintainer,
+    /// A bounded agent proposal passed the maintainer-controlled gateway.
+    Agent,
+}
+
 /// Records one human-authorized repair patch applied after attempt zero.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -265,10 +275,14 @@ pub struct RepairAttemptV1 {
     pub attempt: u32,
     /// Attempt whose candidate tree was repaired.
     pub parent_attempt: u32,
-    /// Canonical task digest shown to the adapter.
-    pub task_digest: Sha256Digest,
-    /// Canonical untrusted result digest accepted by the maintainer.
-    pub result_digest: Sha256Digest,
+    /// Origin of the candidate change.
+    pub origin: AttemptOrigin,
+    /// Canonical task digest shown to the adapter, for agent attempts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_digest: Option<Sha256Digest>,
+    /// Canonical untrusted result digest accepted by the maintainer, for agent attempts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_digest: Option<Sha256Digest>,
     /// Exact proposal patch digest confirmed by the maintainer.
     pub proposal_digest: Sha256Digest,
     /// Cumulative base-to-candidate patch digest after applying the proposal.
@@ -291,9 +305,20 @@ impl RepairAttemptV1 {
             || self.attempt == 0
             || self.parent_attempt.checked_add(1) != Some(self.attempt)
             || self.changed_paths.is_empty()
-            || self.changed_paths.len() > 64
+            || self.changed_paths.len() > 4096
         {
             bail!("repair attempt header is invalid");
+        }
+        match self.origin {
+            AttemptOrigin::Agent if self.task_digest.is_none() || self.result_digest.is_none() => {
+                bail!("agent attempt lacks its task or result identity");
+            }
+            AttemptOrigin::Maintainer
+                if self.task_digest.is_some() || self.result_digest.is_some() =>
+            {
+                bail!("maintainer attempt cannot claim agent task or result identity");
+            }
+            AttemptOrigin::Agent | AttemptOrigin::Maintainer => {}
         }
         let mut paths = std::collections::BTreeSet::new();
         for value in &self.changed_paths {

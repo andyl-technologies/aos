@@ -34,6 +34,36 @@ const MAX_PATCH_BYTES: usize = 32 * 1024 * 1024;
 const MAX_MATERIALIZER_LOG_BYTES: usize = 8 * 1024 * 1024;
 const FAKE_HASH: &str = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 
+/// Validates and captures maintainer edits within an immutable plan's scope.
+///
+/// # Errors
+///
+/// Returns an error when the candidate escapes planned owners, changes file
+/// identity, exceeds bounds, or no longer evaluates to the planned versions.
+pub(super) fn adopt_candidate(
+    root: &Path,
+    plan: &PackageUpdatePlanV1,
+    verbose: u8,
+    quiet: bool,
+) -> Result<(Vec<u8>, Vec<String>)> {
+    verify_post_inventory(root, plan, verbose, quiet)?;
+    checked_patch(root, plan)
+}
+
+/// Returns the bounded current base-to-worktree patch for review.
+///
+/// # Errors
+///
+/// Returns an error when Git cannot produce the patch or it exceeds the
+/// maintenance evidence limit.
+pub(super) fn worktree_patch(root: &Path) -> Result<Vec<u8>> {
+    let patch = git(root, &["diff", "--no-ext-diff", "--full-index", "--"])?;
+    if !patch.status.success() || patch.stdout.len() > MAX_PATCH_BYTES {
+        bail!("worktree patch is unavailable or oversized");
+    }
+    Ok(patch.stdout)
+}
+
 /// Advances a worktree-ready run through deterministic materialization.
 ///
 /// # Errors
