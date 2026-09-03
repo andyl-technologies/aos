@@ -13,6 +13,7 @@ use aos_release::receipt::{
 use aos_release::receipt::{SignedReceiptEnvelopeV1, RECEIPT_SIGNATURE_DOMAIN, SIGNED_RECEIPT_V1};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use ed25519_dalek::{Signer as _, SigningKey, VerifyingKey};
+use serde::Deserialize;
 use serde::Serialize;
 
 use crate::backend::BackendBounds;
@@ -92,6 +93,29 @@ pub struct Ed25519ReleaseEvidenceAuthority {
 }
 
 impl Ed25519ReleaseEvidenceAuthority {
+    /// Builds an authority from one atomic private runtime configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed JSON, an unsupported schema, or any
+    /// invalid or role-confused key material.
+    pub fn from_json(deployment_id: impl Into<String>, source: &str) -> Result<Self> {
+        let config: ReleaseEvidenceConfigV1 =
+            serde_json::from_str(source).context("parsing release evidence configuration")?;
+        if config.schema_version != "aos.hub.release-evidence-config/v1" {
+            bail!("unsupported release evidence configuration schema");
+        }
+        Self::from_base64(
+            deployment_id,
+            config.publication_key_id,
+            &config.publication_signing_seed_base64,
+            config.channel_key_id,
+            &config.channel_signing_seed_base64,
+            config.publication_keys,
+            config.qualification_keys,
+        )
+    }
+
     /// Builds an authority from one receipt key and role-separated trust roots.
     ///
     /// # Errors
@@ -170,6 +194,18 @@ impl Ed25519ReleaseEvidenceAuthority {
             envelope_json: String::from_utf8(bytes).context("encoding signed release evidence")?,
         })
     }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReleaseEvidenceConfigV1 {
+    schema_version: String,
+    publication_key_id: String,
+    publication_signing_seed_base64: String,
+    channel_key_id: String,
+    channel_signing_seed_base64: String,
+    publication_keys: BTreeMap<String, String>,
+    qualification_keys: BTreeMap<String, String>,
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
@@ -356,7 +392,8 @@ mod tests {
             committed_at: "2026-03-01T00:00:00Z".into(),
         };
         let signed = authority.issue_channel(&receipt).await.unwrap();
-        let envelope: SignedReceiptEnvelopeV1 = serde_json::from_str(&signed.envelope_json).unwrap();
+        let envelope: SignedReceiptEnvelopeV1 =
+            serde_json::from_str(&signed.envelope_json).unwrap();
         assert_eq!(envelope.key_id, "channel-receipt");
         assert_ne!(envelope.key_id, authority.publication_key_id);
     }
@@ -364,18 +401,39 @@ mod tests {
     #[test]
     fn authority_rejects_reused_publication_and_channel_material() {
         let seed = STANDARD.encode([7_u8; 32]);
-        assert!(
-            Ed25519ReleaseEvidenceAuthority::from_base64(
-                "deployment",
-                "publication-key",
-                &seed,
-                "channel-key",
-                &seed,
-                BTreeMap::new(),
-                BTreeMap::new(),
-            )
-            .is_err()
-        );
+        assert!(Ed25519ReleaseEvidenceAuthority::from_base64(
+            "deployment",
+            "publication-key",
+            &seed,
+            "channel-key",
+            &seed,
+            BTreeMap::new(),
+            BTreeMap::new(),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn atomic_runtime_configuration_builds_the_role_separated_authority() {
+        let publication_seed = [7_u8; 32];
+        let channel_seed = [8_u8; 32];
+        let config = serde_json::json!({
+            "schema_version": "aos.hub.release-evidence-config/v1",
+            "publication_key_id": "publication-key",
+            "publication_signing_seed_base64": STANDARD.encode(publication_seed),
+            "channel_key_id": "channel-key",
+            "channel_signing_seed_base64": STANDARD.encode(channel_seed),
+            "publication_keys": {},
+            "qualification_keys": {},
+        });
+        let authority = Ed25519ReleaseEvidenceAuthority::from_json(
+            "deployment",
+            &serde_json::to_string(&config).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(authority.deployment_id(), "deployment");
+        assert_eq!(authority.publication_key_id, "publication-key");
+        assert_eq!(authority.channel_key_id, "channel-key");
     }
 
     #[tokio::test]

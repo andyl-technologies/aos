@@ -314,6 +314,9 @@ struct WorkerArgs {
     /// At-rest AES-GCM sealing key; minted randomly when omitted.
     #[arg(long, env = "HUB_SEAL_KEY")]
     seal_key: Option<String>,
+    /// Owner-private atomic release evidence configuration uploaded as a secret.
+    #[arg(long, env = "HUB_RELEASE_EVIDENCE_CONFIG_FILE")]
+    release_evidence_config_file: Option<PathBuf>,
     /// `KEY_ID:KEY` already active on the optional egress router.
     #[arg(long, env = "HUB_EGRESS_GATEWAY_KEY", requires = "egress_gateway_url")]
     egress_gateway_key: Option<String>,
@@ -1277,6 +1280,24 @@ async fn deploy_worker(
                 .with_context(|| format!("reading route reservation keyring at {}", path.display()))
         })
         .transpose()?;
+    let release_evidence_config = args
+        .release_evidence_config_file
+        .as_ref()
+        .map(|path| {
+            aos_hub::auth::seal::read_secret_file(path)
+                .and_then(|bytes| {
+                    String::from_utf8(bytes)
+                        .map_err(anyhow::Error::from)
+                        .context("release evidence configuration is not UTF-8")
+                })
+                .with_context(|| {
+                    format!(
+                        "reading release evidence configuration at {}",
+                        path.display()
+                    )
+                })
+        })
+        .transpose()?;
     let secrets = cloudflare::Secrets {
         jwt_secret: args.jwt_secret.clone(),
         seal_key: args.seal_key.clone(),
@@ -1287,6 +1308,7 @@ async fn deploy_worker(
         disable_delivery_attestation: args.disable_delivery_attestation,
         domain_probe_signer_manifest,
         route_reservation_keyring,
+        release_evidence_config,
     };
     secrets.validate()?;
     let cfg = provision_worker(assets, args).await?;
