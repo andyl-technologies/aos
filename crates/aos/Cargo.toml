@@ -55,6 +55,7 @@ base64 = { workspace = true }
 hex = { workspace = true }
 glob = { workspace = true }
 regex = { workspace = true }
+rnix = { workspace = true }
 serde = { workspace = true }
 rand = { workspace = true }
 axum = { workspace = true }

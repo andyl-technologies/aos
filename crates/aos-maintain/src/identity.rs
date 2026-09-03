@@ -86,6 +86,7 @@ identifier!(
     "Identifies an explicitly atomic multi-unit campaign cohort."
 );
 identifier!(RunId, "Identifies one durable maintenance run.");
+identifier!(PlanId, "Identifies one immutable package-update plan.");
 identifier!(OperationId, "Identifies one typed controller operation.");
 
 fn validate_identifier(value: &str) -> Result<()> {
