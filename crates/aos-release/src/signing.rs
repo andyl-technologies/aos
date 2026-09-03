@@ -50,6 +50,8 @@ pub enum SignerRole {
     Provenance,
     /// Release manifest and journal evidence authority.
     ReleaseEvidence,
+    /// Aggregate staging qualification authority.
+    Qualification,
     /// Signed channel-operation authority.
     Channel,
 }
@@ -292,6 +294,24 @@ impl SigningRequestV1 {
         );
         if !operation_matches {
             bail!("signature algorithm is incompatible with the requested operation");
+        }
+        if self.algorithm == SignatureAlgorithm::Ed25519Payload
+            && !matches!(
+                (&self.role, &self.context),
+                (
+                    SignerRole::Cache,
+                    SigningContext::Payload { artifact_kind }
+                ) if artifact_kind == "narinfo-fingerprint"
+            )
+            && !matches!(
+                (&self.role, &self.context),
+                (
+                    SignerRole::Qualification,
+                    SigningContext::Payload { artifact_kind }
+                ) if artifact_kind == "qualification-receipt-digest"
+            )
+        {
+            bail!("raw Ed25519 payload signing is not authorized for this role and context");
         }
         self.context.validate(self.role, self.operation)
     }
@@ -691,7 +711,7 @@ mod tests {
     }
 
     #[test]
-    fn raw_ed25519_payload_mode_is_confined_to_cache_fingerprints() {
+    fn raw_ed25519_payload_mode_is_confined_to_explicit_wire_formats() {
         let mut request = request();
         request.role = SignerRole::Cache;
         request.algorithm = SignatureAlgorithm::Ed25519Payload;
@@ -704,6 +724,12 @@ mod tests {
             artifact_kind: "release-manifest".to_owned(),
         };
         assert!(request.validate().is_err());
+
+        request.role = SignerRole::Qualification;
+        request.context = SigningContext::Payload {
+            artifact_kind: "qualification-receipt-digest".to_owned(),
+        };
+        assert!(request.validate().is_ok());
     }
 
     #[test]

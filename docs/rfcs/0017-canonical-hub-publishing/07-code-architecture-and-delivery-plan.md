@@ -234,7 +234,8 @@ The top-level command surface is:
 | `aos release build` | Realizes the planned matrix twice as required and records build evidence. |
 | `aos release finalize` | Uses role-bound external signers, finalizes images and registry metadata, and emits the closed bundle. |
 | `aos release stage` | Uploads the exact bundle to the staging Hub and records its receipt. |
-| `aos release qualify` | Reads staged public bytes, runs planned platform gates, and records signed qualification. |
+| `aos release qualify-run` | Dispatches every planned gate to native Linux and Darwin adapters over exact public staging bytes and signs the aggregate result. |
+| `aos release qualify` | Admits a complete signed aggregate qualification to staging and advances the journal. |
 | `aos release promote` | Imports the qualified bundle into production without build, conversion, metadata generation, or content signing. |
 | `aos release channel advance` | Performs one reviewed compare-and-swap partition transition after production read-back. |
 | `aos release channel complete` | Verifies the full signed rollout and threshold-approved retention/handoff evidence before closing the journal. |
@@ -416,11 +417,14 @@ The flake or default package set exposes deterministic publication roots for:
 - all eligible packages on `x86_64-darwin` and `aarch64-darwin`; and
 - all public system variants and image artifacts on both Linux architectures.
 
-Darwin static checks produce build evidence. Native macOS executors consume
-content-addressed candidate NARs and return signed, nonce-bound qualification
-receipts containing artifact digest, target, test policy, executor public
-identity, start/finish time, and result. They have no registry, channel, Hub,
-TUF, cache, or boot-signing credential.
+Darwin static checks produce build evidence. Native macOS executors receive a
+nonce-bound request containing the complete anonymous staging object inventory,
+download content-addressed candidate NARs, and return canonical gate reports
+containing artifact digest, target, test policy, executor public identity,
+start/finish time, and result. The coordinator validates every response against
+the frozen request, then the separate qualification authority signs the exact
+aggregate report. Native executors have no registry, channel, Hub, TUF, cache,
+boot-signing, or qualification-authority credential.
 
 ## Supply-chain evidence
 

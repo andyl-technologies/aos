@@ -11,6 +11,129 @@ use crate::platform::{MatrixCell, Platform};
 
 /// Schema for a complete staging qualification report.
 pub const QUALIFICATION_REPORT_V1: &str = "aos.release.qualification-report/v1";
+/// Schema for one platform executor request over public staging objects.
+pub const QUALIFICATION_EXECUTOR_REQUEST_V1: &str = "aos.release.qualification-executor-request/v1";
+/// Schema for one platform executor's canonical response.
+pub const QUALIFICATION_EXECUTOR_RESPONSE_V1: &str =
+    "aos.release.qualification-executor-response/v1";
+
+/// One immutable public staging object supplied to a qualification executor.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct QualificationObjectV1 {
+    /// Manifest artifact identity.
+    pub artifact_id: String,
+    /// Anonymous HTTPS URL from which the exact staged bytes must be read.
+    pub url: String,
+    /// Exact expected byte length.
+    pub size_bytes: u64,
+    /// Exact expected SHA-256 digest.
+    pub sha256: Sha256Digest,
+}
+
+/// Closed request for one planned gate on one artifact-bearing platform.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct QualificationExecutorRequestV1 {
+    /// Exact request schema identifier.
+    pub schema_version: String,
+    /// Canonical registry identity.
+    pub registry: String,
+    /// Immutable release identity.
+    pub release_id: String,
+    /// Digest of the signed staging publication receipt.
+    pub staging_receipt_digest: Sha256Digest,
+    /// Final release-manifest payload digest.
+    pub manifest_digest: Sha256Digest,
+    /// Planned gate identifier.
+    pub policy_id: String,
+    /// Digest of the exact planned gate policy.
+    pub policy_digest: Sha256Digest,
+    /// Native platform on which the executor must run.
+    pub platform: Platform,
+    /// Artifact identities the gate result must cover.
+    pub subjects: Vec<String>,
+    /// Complete immutable public staging object inventory.
+    pub objects: Vec<QualificationObjectV1>,
+    /// Coordinator-chosen replay-resistant request nonce.
+    pub nonce: String,
+}
+
+impl QualificationExecutorRequestV1 {
+    /// Validates the closed executor request and public object inventory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed identity, ordering, subject, URL, or
+    /// nonce fields.
+    pub fn validate(&self) -> Result<()> {
+        if self.schema_version != QUALIFICATION_EXECUTOR_REQUEST_V1 {
+            bail!("unsupported qualification executor request schema");
+        }
+        require_identifier(&self.registry, "qualification registry")?;
+        require_identifier(&self.release_id, "qualification release id")?;
+        require_identifier(&self.policy_id, "qualification policy id")?;
+        if self.nonce.len() < 32 || !self.nonce.is_ascii() {
+            bail!("qualification request nonce must contain at least 32 ASCII bytes");
+        }
+        if self.subjects.is_empty()
+            || self.subjects.windows(2).any(|pair| pair[0] >= pair[1])
+            || self.objects.is_empty()
+            || self
+                .objects
+                .windows(2)
+                .any(|pair| pair[0].artifact_id >= pair[1].artifact_id)
+        {
+            bail!("qualification subjects and objects must be nonempty, unique, and sorted");
+        }
+        let object_ids = self
+            .objects
+            .iter()
+            .map(|object| object.artifact_id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        for object in &self.objects {
+            require_identifier(&object.artifact_id, "qualification object id")?;
+            if !object.url.starts_with("https://")
+                || object.url.contains('@')
+                || object.url.contains('#')
+                || object.url.contains('?')
+            {
+                bail!("qualification object URL must be anonymous immutable HTTPS");
+            }
+        }
+        if self
+            .subjects
+            .iter()
+            .any(|subject| !object_ids.contains(subject.as_str()))
+        {
+            bail!("qualification request subject is absent from its public object inventory");
+        }
+        Ok(())
+    }
+
+    /// Computes the domain-separated canonical request digest.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the request cannot be canonically encoded.
+    pub fn digest(&self) -> Result<Sha256Digest> {
+        Sha256Digest::of_canonical(QUALIFICATION_EXECUTOR_REQUEST_V1, self)
+    }
+}
+
+/// Canonical response emitted by a bounded native qualification executor.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct QualificationExecutorResponseV1 {
+    /// Exact response schema identifier.
+    pub schema_version: String,
+    /// Digest of the exact canonical request read by the executor.
+    pub request_digest: Sha256Digest,
+    /// Closed public evidence record derived by the executor.
+    pub evidence: EvidenceRecord,
+    /// Public machine-readable gate report retained by the coordinator.
+    pub report: serde_json::Value,
+}
 
 /// Closed result of a release gate.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -133,18 +256,25 @@ impl QualificationReportV1 {
             .iter()
             .map(|artifact| artifact.id.as_str())
             .collect::<std::collections::BTreeSet<_>>();
-        let mut required_platforms = std::collections::BTreeSet::new();
+        let mut required_subjects =
+            std::collections::BTreeMap::<Platform, std::collections::BTreeSet<&str>>::new();
         for package in &manifest.packages {
             for cell in &package.platforms {
-                if matches!(cell.decision, MatrixCell::Artifact { .. }) {
-                    required_platforms.insert(cell.platform);
+                if let MatrixCell::Artifact { artifact } = &cell.decision {
+                    required_subjects
+                        .entry(cell.platform)
+                        .or_default()
+                        .extend(artifact.artifact_ids.iter().map(String::as_str));
                 }
             }
         }
         for image in &manifest.images {
             for cell in &image.platforms {
-                if matches!(cell.decision, MatrixCell::Artifact { .. }) {
-                    required_platforms.insert(cell.platform);
+                if let MatrixCell::Artifact { artifact } = &cell.decision {
+                    required_subjects
+                        .entry(cell.platform)
+                        .or_default()
+                        .extend(artifact.artifact_ids.iter().map(String::as_str));
                 }
             }
         }
@@ -173,14 +303,49 @@ impl QualificationReportV1 {
             if records.is_empty() {
                 bail!("qualification report lacks planned gate {}", gate.policy_id);
             }
-            if !records.iter().any(|record| record.platform.is_none()) {
-                let covered = records
+            let target_independent_subjects = records
+                .iter()
+                .filter(|record| record.platform.is_none())
+                .flat_map(|record| record.subjects.iter().map(String::as_str))
+                .collect::<std::collections::BTreeSet<_>>();
+            if target_independent_subjects.is_empty() {
+                let covered_platforms = records
                     .iter()
                     .filter_map(|record| record.platform)
                     .collect::<std::collections::BTreeSet<_>>();
-                if covered != required_platforms {
+                if covered_platforms
+                    != required_subjects
+                        .keys()
+                        .copied()
+                        .collect::<std::collections::BTreeSet<_>>()
+                {
                     bail!(
                         "qualification gate {} lacks full platform coverage",
+                        gate.policy_id
+                    );
+                }
+                for (platform, subjects) in &required_subjects {
+                    let covered_subjects = records
+                        .iter()
+                        .filter(|record| record.platform == Some(*platform))
+                        .flat_map(|record| record.subjects.iter().map(String::as_str))
+                        .collect::<std::collections::BTreeSet<_>>();
+                    if !subjects.is_subset(&covered_subjects) {
+                        bail!(
+                            "qualification gate {} lacks complete {} artifact coverage",
+                            gate.policy_id,
+                            platform
+                        );
+                    }
+                }
+            } else {
+                let all_subjects = required_subjects
+                    .values()
+                    .flat_map(|subjects| subjects.iter().copied())
+                    .collect::<std::collections::BTreeSet<_>>();
+                if !all_subjects.is_subset(&target_independent_subjects) {
+                    bail!(
+                        "qualification gate {} lacks complete target-independent artifact coverage",
                         gate.policy_id
                     );
                 }
@@ -426,5 +591,36 @@ mod tests {
                 .validate(&plan, &manifest, staging, manifest_digest)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn executor_request_closes_public_objects_and_subjects() {
+        let request = QualificationExecutorRequestV1 {
+            schema_version: QUALIFICATION_EXECUTOR_REQUEST_V1.to_owned(),
+            registry: crate::CANONICAL_REGISTRY.to_owned(),
+            release_id: "release-2026.9.0".to_owned(),
+            staging_receipt_digest: digest("staging"),
+            manifest_digest: digest("manifest"),
+            policy_id: "install-v1".to_owned(),
+            policy_digest: digest("policy"),
+            platform: Platform::Aarch64Darwin,
+            subjects: vec!["package/example/aarch64-darwin".to_owned()],
+            objects: vec![QualificationObjectV1 {
+                artifact_id: "package/example/aarch64-darwin".to_owned(),
+                url: "https://aos.staging.andyl.org/andyl/main/packages/example.nar".to_owned(),
+                size_bytes: 42,
+                sha256: digest("package"),
+            }],
+            nonce: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
+        };
+        assert!(request.validate().is_ok());
+
+        let mut missing = request.clone();
+        missing.subjects = vec!["package/not-present".to_owned()];
+        assert!(missing.validate().is_err());
+
+        let mut mutable_url = request;
+        mutable_url.objects[0].url.push_str("?token=secret");
+        assert!(mutable_url.validate().is_err());
     }
 }

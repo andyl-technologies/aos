@@ -38,6 +38,10 @@ The current implementation provides these fail-closed operations:
   canonical staging deployment identity before and after upload, reuses the
   bounded Hub publication protocol, reads every object back anonymously, and
   writes a staging receipt plus successor journal;
+- `aos release qualify-run` dispatches each planned gate for every
+  artifact-bearing platform to a bounded native adapter, validates exact
+  request/response and public-object binding, and obtains a separate external
+  qualification-authority signature over the complete aggregate report;
 - `aos release bootstrap` installs a threshold-approved first registry base in
   an otherwise empty staging or production Hub;
 - `aos release timestamp refresh` renews only the short-lived pointer to an
@@ -50,9 +54,9 @@ The current implementation provides these fail-closed operations:
 - `aos release verify` checks a closed release bundle and optional journal
   offline against explicitly supplied public keys.
 
-Qualification executor orchestration remains incomplete. Production
-publication through this workflow remains forbidden until that path and the
-remaining RFC-0017 launch gates are complete.
+Production publication through this workflow remains forbidden until the
+remaining RFC-0017 launch gates and end-to-end operational exercises are
+complete.
 
 The canonical release image profile enables external Secure Boot, distinct
 module and PCR-policy roles, lockdown, measured boot, encrypted state,
@@ -493,6 +497,46 @@ and size. The Hub receipt is verified with an independently pinned,
 environment-specific receipt key rather than a release-manifest key. The new
 directory contains `staging-receipt.json` and a successor
 `release-journal.jsonl`; existing paths are never replaced.
+
+## Run the native qualification matrix
+
+Configure four absolute executable paths. The Linux paths invoke native Linux
+test closures. The Darwin paths are credential-free authenticated remote
+adapters whose far ends execute on supported Intel and Apple Silicon macOS.
+Each adapter reads one canonical request from standard input and writes one
+canonical `aos.release.qualification-executor-response/v1` object to standard
+output. Successful adapters must not write diagnostics. They download every
+object they exercise from the anonymous URLs in the request and verify the
+declared length and SHA-256 before testing it.
+
+```sh
+aos release qualify-run \
+  --bundle release-bundle \
+  --staging-receipt release-staging/staging-receipt.json \
+  --trusted-key release-2026=/media/keys/release-2026.pub \
+  --hub-receipt-key staging-hub-2026=/media/keys/staging-hub-2026.pub \
+  --executor x86_64-linux=/run/aos-release/executors/x86_64-linux \
+  --executor aarch64-linux=/run/aos-release/executors/aarch64-linux \
+  --executor x86_64-darwin=/run/aos-release/executors/x86_64-darwin \
+  --executor aarch64-darwin=/run/aos-release/executors/aarch64-darwin \
+  --executor-identity x86_64-linux=linux-x86-v1 \
+  --executor-identity aarch64-linux=linux-arm-v1 \
+  --executor-identity x86_64-darwin=macos-intel-v1 \
+  --executor-identity aarch64-darwin=macos-apple-silicon-v1 \
+  --authority-executable /run/aos-release/signers/qualification \
+  --authority-key qualifier-2026=/media/keys/qualifier-2026.pub \
+  --authority-verification-identity qualification-provider-v1 \
+  --executor-nonce 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+  --authority-nonce abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789 \
+  --qualified-at 2026-09-03T12:00:00Z \
+  --output qualification
+```
+
+Both nonce values are single-use operator inputs. The plan must name a distinct
+`qualification` signer role with exactly the public key supplied above. The
+command retains each machine-readable executor report, the canonical aggregate
+report, its receipt, and the signed receipt. It refuses incomplete executor
+configuration even when a particular release has no artifact for one platform.
 
 ## Admit signed qualification
 

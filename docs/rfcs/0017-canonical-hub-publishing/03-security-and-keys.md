@@ -46,6 +46,7 @@ Private keys are separate even when two roles use the same algorithm.
 | Registry candidate/edge channels | Separate TPM-sealed maintainer-host keys | 1 signature | Point only the named channel to a release class it permits |
 | Nix narinfo | Non-exportable cache Ed25519 key | 1 signature | Sign narinfos for manifest-listed NARs only |
 | Release evidence | Maintainer-host TPM-backed Ed25519 key | 1 signature | Bind the public evidence manifest and restricted journal digest |
+| Qualification authority | Dedicated TPM-backed Ed25519 key | 1 signature | Authorize one complete passing native gate matrix over exact staging bytes |
 | Hub upload | Short-lived scoped bearer/capability | One release and environment | Upload manifest-listed objects; never sign content |
 | Hub runtime/seal/JWT | Environment-local secret manager | Per environment | Run one Hub; never authorize AOS artifacts |
 
