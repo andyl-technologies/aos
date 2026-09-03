@@ -313,6 +313,12 @@ async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
         return commands::release::promote_offline(args, printer).await;
     }
     if let Commands::Release {
+        command: crate::cli::ReleaseCommand::Bootstrap(args),
+    } = &cli.command
+    {
+        return commands::release::bootstrap_offline(args, printer).await;
+    }
+    if let Commands::Release {
         command: crate::cli::ReleaseCommand::Channel { command },
     } = &cli.command
     {

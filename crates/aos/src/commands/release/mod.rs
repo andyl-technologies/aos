@@ -3,6 +3,7 @@
 //! Effectful filesystem, Nix, signer, Git, and Hub adapters live below this
 //! module. The `aos-release` crate remains the sole semantic contract.
 
+mod bootstrap;
 mod build;
 mod capture;
 mod channel;
@@ -50,6 +51,9 @@ pub fn run(command: &ReleaseCommand, nix: &NixRunner, printer: &Printer) -> Resu
         }
         ReleaseCommand::Promote(_) => {
             anyhow::bail!("release promote command must use the asynchronous dispatcher")
+        }
+        ReleaseCommand::Bootstrap(_) => {
+            anyhow::bail!("release bootstrap command must use the asynchronous dispatcher")
         }
         ReleaseCommand::Channel { .. } => {
             anyhow::bail!("release channel command must use the asynchronous dispatcher")
@@ -118,6 +122,19 @@ pub async fn promote_offline(
     printer: &Printer,
 ) -> Result<()> {
     promote::run(args, printer).await
+}
+
+/// Installs an explicitly approved first registry base in one empty Hub.
+///
+/// # Errors
+///
+/// Returns an error for trust, plan, deployment, nonempty destination,
+/// publication, public read-back, or durable evidence failure.
+pub async fn bootstrap_offline(
+    args: &crate::cli::ReleaseBootstrapArgs,
+    printer: &Printer,
+) -> Result<()> {
+    bootstrap::run(args, printer).await
 }
 
 /// Advances one planned production release channel range.
