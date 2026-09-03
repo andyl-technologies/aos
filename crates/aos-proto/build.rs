@@ -6,6 +6,7 @@ fn main() {
             "src/proto/aos/gc/v1/gc.proto",
             "src/proto/aos/auth/v1/auth.proto",
             "src/proto/aos/hub/v1/hub.proto",
+            "src/proto/aos/sandbox/v1/sandbox.proto",
         ])
         .includes(&["src/proto/"])
         .include_file("_connectrpc.rs")

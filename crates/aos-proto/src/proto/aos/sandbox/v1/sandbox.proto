@@ -1,0 +1,432 @@
+syntax = "proto3";
+package aos.sandbox.v1;
+
+// A portable content-addressed object reference.
+message ObjectDescriptor {
+  string media_type = 1;
+  bytes sha256 = 2; // Exactly 32 bytes.
+  uint64 encoded_size = 3;
+}
+
+// A checked-in ownership-namespaced semantic feature.
+message Feature {
+  string namespace = 1;
+  uint32 major = 2;
+  uint32 minor = 3;
+}
+
+// A normalized wall-clock timestamp used only for audit and presentation.
+message Timestamp {
+  int64 seconds = 1;
+  uint32 nanoseconds = 2; // Less than one billion.
+}
+
+// A bounded monotonic duration interpreted relative to receipt.
+message Duration {
+  uint64 nanoseconds = 1;
+}
+
+// A typed machine-readable condition with safe public detail.
+message Condition {
+  string code = 1;
+  ConditionState state = 2;
+  string safe_message = 3;
+  Timestamp transition_time = 4;
+  repeated Feature unsatisfied_features = 5;
+}
+
+enum ConditionState {
+  CONDITION_STATE_UNSPECIFIED = 0;
+  CONDITION_STATE_TRUE = 1;
+  CONDITION_STATE_FALSE = 2;
+  CONDITION_STATE_UNKNOWN = 3;
+}
+
+enum DesiredLifecycle {
+  DESIRED_LIFECYCLE_UNSPECIFIED = 0;
+  DESIRED_LIFECYCLE_STOPPED = 1;
+  DESIRED_LIFECYCLE_RUNNING = 2;
+  DESIRED_LIFECYCLE_SUSPENDED_MEMORY = 3;
+  DESIRED_LIFECYCLE_HIBERNATED = 4;
+  DESIRED_LIFECYCLE_DELETED = 5;
+}
+
+enum SandboxPhase {
+  SANDBOX_PHASE_UNSPECIFIED = 0;
+  SANDBOX_PHASE_REQUESTED = 1;
+  SANDBOX_PHASE_PREPARING = 2;
+  SANDBOX_PHASE_STARTING = 3;
+  SANDBOX_PHASE_READY = 4;
+  SANDBOX_PHASE_FREEZING = 5;
+  SANDBOX_PHASE_FROZEN = 6;
+  SANDBOX_PHASE_STOPPING = 7;
+  SANDBOX_PHASE_STOPPED = 8;
+  SANDBOX_PHASE_HIBERNATED = 9;
+  SANDBOX_PHASE_DELETING = 10;
+  SANDBOX_PHASE_DELETED = 11;
+  SANDBOX_PHASE_ERROR = 12;
+  SANDBOX_PHASE_LOST = 13;
+}
+
+// Durable desired sandbox semantics.
+message SandboxDesiredState {
+  ObjectDescriptor specification = 1;
+  ObjectDescriptor requested_policy = 2;
+  DesiredLifecycle lifecycle = 3;
+  uint64 generation = 4;
+}
+
+// Reconstructible sandbox realization status.
+message SandboxObservedState {
+  SandboxPhase phase = 1;
+  bytes incarnation_id = 2; // Empty only when no active incarnation exists.
+  bytes node_id = 3; // Opaque logical node ID, never an address or host path.
+  uint64 assignment_epoch = 4;
+  uint64 desired_generation = 5;
+  uint64 observation_sequence = 6;
+  repeated Condition conditions = 7;
+}
+
+// A durable generic sandbox resource.
+message Sandbox {
+  bytes sandbox_id = 1; // Exactly 16 bytes.
+  bytes project_id = 2; // Exactly 16 bytes.
+  bytes parent_sandbox_id = 3; // Empty for a root sandbox.
+  bytes resource_version = 4;
+  SandboxDesiredState desired = 5;
+  SandboxObservedState observed = 6;
+  ObjectDescriptor effective_policy = 7;
+  Timestamp created_at = 8;
+  Timestamp updated_at = 9;
+}
+
+enum ExecutionPhase {
+  EXECUTION_PHASE_UNSPECIFIED = 0;
+  EXECUTION_PHASE_REQUESTED = 1;
+  EXECUTION_PHASE_ADMITTED = 2;
+  EXECUTION_PHASE_STARTING = 3;
+  EXECUTION_PHASE_RUNNING = 4;
+  EXECUTION_PHASE_EXITED = 5;
+  EXECUTION_PHASE_CANCELED = 6;
+  EXECUTION_PHASE_FAILED = 7;
+  EXECUTION_PHASE_LOST = 8;
+}
+
+// Portable command semantics. Values are data, not shell source.
+message Command {
+  repeated bytes arguments = 1;
+  repeated EnvironmentVariable environment = 2;
+  bytes working_directory = 3; // Slash-separated relative path bytes.
+  bool allocate_terminal = 4;
+}
+
+message EnvironmentVariable {
+  string name = 1;
+  bytes value = 2;
+}
+
+// Holder-bound short-lived OpenSSH execution access.
+message OpenSshAccessEndpoint {
+  string host = 1;
+  uint32 port = 2;
+  string user = 3;
+  bytes host_public_key = 4;
+  bytes client_certificate = 5;
+  Timestamp expires_at = 6;
+  bytes execution_id = 7;
+  bytes sandbox_incarnation_id = 8;
+  bytes principal_id = 9;
+  bytes audit_id = 10;
+  repeated Feature stream_features = 11;
+}
+
+message ExecutionResult {
+  int32 exit_code = 1;
+  string termination_reason = 2;
+  Timestamp exited_at = 3;
+}
+
+message Execution {
+  bytes execution_id = 1;
+  bytes sandbox_id = 2;
+  bytes sandbox_incarnation_id = 3;
+  bytes resource_version = 4;
+  Command command = 5;
+  ExecutionPhase phase = 6;
+  OpenSshAccessEndpoint access = 7;
+  ExecutionResult result = 8;
+  repeated Condition conditions = 9;
+  bytes audit_id = 10;
+}
+
+enum ViewPhase {
+  VIEW_PHASE_UNSPECIFIED = 0;
+  VIEW_PHASE_REQUESTED = 1;
+  VIEW_PHASE_VALIDATING = 2;
+  VIEW_PHASE_INDEXING = 3;
+  VIEW_PHASE_READY = 4;
+  VIEW_PHASE_DEGRADED = 5;
+  VIEW_PHASE_RELEASING = 6;
+  VIEW_PHASE_RELEASED = 7;
+  VIEW_PHASE_ERROR = 8;
+}
+
+message FilesystemView {
+  bytes view_id = 1;
+  bytes project_id = 2;
+  bytes resource_version = 3;
+  ObjectDescriptor revision = 4;
+  ViewPhase phase = 5;
+  repeated Condition conditions = 6;
+  uint64 active_attachment_count = 7;
+}
+
+enum ViewMutation {
+  VIEW_MUTATION_UNSPECIFIED = 0;
+  VIEW_MUTATION_READ_ONLY = 1;
+  VIEW_MUTATION_READ_WRITE = 2;
+  VIEW_MUTATION_PRIVATE_COW = 3;
+  VIEW_MUTATION_APPEND_ONLY = 4;
+  VIEW_MUTATION_SERVICE = 5;
+}
+
+enum AttachmentPhase {
+  ATTACHMENT_PHASE_UNSPECIFIED = 0;
+  ATTACHMENT_PHASE_REQUESTED = 1;
+  ATTACHMENT_PHASE_PREPARING = 2;
+  ATTACHMENT_PHASE_READY = 3;
+  ATTACHMENT_PHASE_REPLACING = 4;
+  ATTACHMENT_PHASE_DETACHING = 5;
+  ATTACHMENT_PHASE_RELEASED = 6;
+  ATTACHMENT_PHASE_ERROR = 7;
+  ATTACHMENT_PHASE_REVOKED = 8;
+}
+
+message Attachment {
+  bytes attachment_id = 1;
+  bytes sandbox_id = 2;
+  bytes destination_slot_id = 3;
+  bytes resource_version = 4;
+  ObjectDescriptor view_revision = 5;
+  ViewMutation mutation = 6;
+  AttachmentPhase phase = 7;
+  uint64 desired_generation = 8;
+  uint64 source_generation = 9;
+  repeated Condition conditions = 10;
+}
+
+enum SnapshotPhase {
+  SNAPSHOT_PHASE_UNSPECIFIED = 0;
+  SNAPSHOT_PHASE_REQUESTED = 1;
+  SNAPSHOT_PHASE_PREPARING = 2;
+  SNAPSHOT_PHASE_QUIESCING = 3;
+  SNAPSHOT_PHASE_CAPTURING = 4;
+  SNAPSHOT_PHASE_COMMITTING = 5;
+  SNAPSHOT_PHASE_READY = 6;
+  SNAPSHOT_PHASE_DELETING = 7;
+  SNAPSHOT_PHASE_DELETED = 8;
+  SNAPSHOT_PHASE_ERROR = 9;
+}
+
+enum SnapshotAvailability {
+  SNAPSHOT_AVAILABILITY_UNSPECIFIED = 0;
+  SNAPSHOT_AVAILABILITY_SELF_CONTAINED = 1;
+  SNAPSHOT_AVAILABILITY_EXTERNAL_DEPENDENCIES = 2;
+  SNAPSHOT_AVAILABILITY_DEGRADED = 3;
+}
+
+message Snapshot {
+  bytes snapshot_id = 1;
+  bytes source_sandbox_id = 2;
+  bytes project_id = 3;
+  bytes resource_version = 4;
+  ObjectDescriptor manifest = 5;
+  SnapshotPhase phase = 6;
+  SnapshotAvailability availability = 7;
+  repeated Condition conditions = 8;
+  Timestamp created_at = 9;
+}
+
+// A non-secret online capability summary. The bearer handle is returned only
+// by issuance operations and is never included in list or event resources.
+message Capability {
+  bytes capability_id = 1;
+  bytes project_id = 2;
+  bytes sandbox_id = 3;
+  bytes holder_principal_id = 4;
+  bytes resource_version = 5;
+  Timestamp not_before = 6;
+  Timestamp expires_at = 7;
+  uint32 remaining_delegation_depth = 8;
+  uint32 maximum_fanout = 9;
+  bool revoked = 10;
+  ObjectDescriptor effective_policy = 11;
+}
+
+enum OperationPhase {
+  OPERATION_PHASE_UNSPECIFIED = 0;
+  OPERATION_PHASE_ACCEPTED = 1;
+  OPERATION_PHASE_PREPARING = 2;
+  OPERATION_PHASE_COMMITTING = 3;
+  OPERATION_PHASE_COMMITTED = 4;
+  OPERATION_PHASE_SUCCEEDED = 5;
+  OPERATION_PHASE_FAILED_BEFORE_COMMIT = 6;
+  OPERATION_PHASE_CANCELED_BEFORE_COMMIT = 7;
+  OPERATION_PHASE_COMMITTED_WITH_RESIDUAL_CLEANUP = 8;
+  OPERATION_PHASE_PERMANENTLY_BLOCKED = 9;
+}
+
+enum RetryClass {
+  RETRY_CLASS_UNSPECIFIED = 0;
+  RETRY_CLASS_NEVER = 1;
+  RETRY_CLASS_SAME_REQUEST = 2;
+  RETRY_CLASS_AFTER_STATE_CHANGE = 3;
+  RETRY_CLASS_RESYNC_REQUIRED = 4;
+}
+
+message OperationProgress {
+  string milestone = 1;
+  uint32 completed_units = 2;
+  uint32 total_units = 3;
+}
+
+message ResourceReference {
+  string resource_type = 1;
+  bytes resource_id = 2;
+  bytes resource_version = 3;
+}
+
+message Operation {
+  bytes operation_id = 1;
+  bytes resource_version = 2;
+  string method = 3;
+  OperationPhase phase = 4;
+  uint64 accepted_generation = 5;
+  OperationProgress progress = 6;
+  RetryClass retry_class = 7;
+  repeated Condition conditions = 8;
+  repeated ResourceReference results = 9;
+  bytes audit_id = 10;
+  Timestamp accepted_at = 11;
+  Timestamp completed_at = 12;
+  bool cancelable = 13;
+}
+
+// A pure policy-plan result; applying it still requires current authority and
+// every named resource version.
+message PolicyPlan {
+  ObjectDescriptor requested_policy = 1;
+  ObjectDescriptor effective_policy = 2;
+  repeated ObjectDescriptor input_commitments = 3;
+  repeated Feature required_features = 4;
+  repeated PolicyReason reasons = 5;
+  bytes plan_digest = 6;
+}
+
+message PolicyReason {
+  string code = 1;
+  ObjectDescriptor source = 2;
+  string safe_message = 3;
+}
+
+message SemanticCapability {
+  Feature feature = 1;
+  bool available = 2;
+  string unavailable_reason = 3;
+  bytes conformance_fixture_digest = 4;
+}
+
+message NodeCapabilities {
+  bytes node_id = 1;
+  bytes resource_version = 2;
+  uint64 capability_generation = 3;
+  repeated SemanticCapability capabilities = 4;
+  Timestamp observed_at = 5;
+}
+
+enum EventKind {
+  EVENT_KIND_UNSPECIFIED = 0;
+  EVENT_KIND_RESOURCE_CREATED = 1;
+  EVENT_KIND_RESOURCE_UPDATED = 2;
+  EVENT_KIND_RESOURCE_DELETED = 3;
+  EVENT_KIND_OPERATION_UPDATED = 4;
+  EVENT_KIND_AUDIT = 5;
+  EVENT_KIND_SNAPSHOT_COMPLETE = 6;
+}
+
+// One bounded observation extension. Required unknown extensions terminate the
+// stream; authority-bearing requests never use this envelope.
+message ObservationExtension {
+  string type_url = 1;
+  uint32 schema_version = 2;
+  bool required = 3;
+  bytes payload = 4;
+  bool safe_for_opaque_display = 5;
+}
+
+message Event {
+  bytes event_id = 1;
+  uint64 sequence = 2;
+  EventKind kind = 3;
+  ResourceReference resource = 4;
+  bytes operation_id = 5;
+  Timestamp observed_at = 6;
+  repeated Condition conditions = 7;
+  repeated ObservationExtension extensions = 8;
+}
+
+message PageInfo {
+  bytes next_page_token = 1;
+  bytes immutable_list_revision = 2;
+}
+
+message WatchCursor {
+  bytes opaque_cursor = 1;
+}
+
+// Closed public error detail. Backend diagnostics never cross this boundary.
+message ErrorDetail {
+  ErrorReason reason = 1;
+  repeated FieldViolation field_violations = 2;
+  Conflict conflict = 3;
+  ResourceExhaustion resource_exhaustion = 4;
+  Feature unsatisfied_feature = 5;
+  RetryAdvice retry = 6;
+  PolicyReason policy_reason = 7;
+}
+
+enum ErrorReason {
+  ERROR_REASON_UNSPECIFIED = 0;
+  ERROR_REASON_INVALID_FIELD = 1;
+  ERROR_REASON_RESOURCE_VERSION_CONFLICT = 2;
+  ERROR_REASON_GENERATION_CONFLICT = 3;
+  ERROR_REASON_ASSIGNMENT_CONFLICT = 4;
+  ERROR_REASON_INVALID_LIFECYCLE_TRANSITION = 5;
+  ERROR_REASON_UNMET_DEPENDENCY = 6;
+  ERROR_REASON_RESOURCE_EXHAUSTED = 7;
+  ERROR_REASON_REQUIRED_FEATURE_UNAVAILABLE = 8;
+  ERROR_REASON_RESYNC_REQUIRED = 9;
+  ERROR_REASON_OPERATION_NOT_CANCELABLE = 10;
+  ERROR_REASON_POLICY_REJECTED = 11;
+}
+
+message FieldViolation {
+  string field = 1;
+  string description = 2;
+}
+
+message Conflict {
+  bytes expected = 1;
+  bytes actual = 2;
+}
+
+message ResourceExhaustion {
+  string dimension = 1;
+  uint64 effective_limit = 2;
+  uint64 requested = 3;
+}
+
+message RetryAdvice {
+  RetryClass retry_class = 1;
+  Duration minimum_delay = 2;
+}

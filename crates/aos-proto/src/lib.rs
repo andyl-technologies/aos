@@ -17,6 +17,8 @@
 //!   registries with verified index status, packages, channels with
 //!   partition maps, and signed releases. Implemented by
 //!   `aos-hub`.
+//! - `aos::sandbox::v1` — generic sandbox lifecycle, execution, filesystem
+//!   views, snapshots, capabilities, operations, and observations.
 //!
 //! Message types are plain `prost` structs; each service additionally
 //! gets a typed ConnectRPC client (e.g. `CacheServiceClient`) and a
