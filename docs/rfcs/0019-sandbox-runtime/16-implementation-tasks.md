@@ -95,8 +95,8 @@ they gate any affected runtime backend.
   `addc42e92`).
 - [x] **SBX-JRN-02** Implement idempotency indexing, transactions, replay,
   compaction, and bounded corruption recovery (`SBX-JRN-01`; `addc42e92`).
-- [ ] **SBX-CTRL-01** Implement the unprivileged single-node reconciler and
-  effect ledger (`SBX-JRN-02`, `SBX-BPROTO-01`).
+- [x] **SBX-CTRL-01** Implement the unprivileged single-node reconciler and
+  effect ledger (`SBX-JRN-02`, `SBX-BPROTO-01`; `8eb2d4ee8`).
 - [ ] **SBX-CTRL-02** Add crash injection at every record/effect boundary and
   prove convergence (`SBX-CTRL-01`).
 - [ ] **SBX-SD-01** Extend `aos-systemd` with typed transient sandbox unit,
@@ -313,3 +313,7 @@ completes. The Git history remains authoritative for code details.
   checksummed transaction journal with synchronous commits, immutable
   idempotency decisions, bounded replay/materialization, fail-closed complete
   corruption handling, torn-tail recovery, and atomic bounded compaction.
+- `8eb2d4ee8` — `SBX-CTRL-01`: atomic desired-state, operation, idempotency,
+  and ordered-effect admission; durable pre-effect intent and receipts;
+  restart observation of ambiguous effects; bounded retry/block evidence; and
+  fair nonterminal operation scheduling over fixed effect domains.
