@@ -8,6 +8,7 @@ pub mod policy;
 pub mod snapshot;
 pub mod spec;
 pub mod tree;
+pub mod trust;
 pub mod view;
 
 pub use policy::{
@@ -25,6 +26,10 @@ pub use spec::{
 pub use tree::{
     Acl, AclEntry, ContentLayout, Delta, Directory, DirectoryEntry, Extent, FileNode,
     FilesystemMetadata, InvalidTreeModel, Node, SparseContent, SymlinkNode, Tree, Xattr,
+};
+pub use trust::{
+    InvalidTrustModel, KeyReference, KeyUsage, Signature, SignatureBytes, SignaturePurpose,
+    SignatureStatement, StableKeyId, TrustPolicy,
 };
 pub use view::{
     CacheDomain, CacheDomainKind, Environment, EnvironmentEntry, InvalidViewModel,
