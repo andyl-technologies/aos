@@ -23,6 +23,10 @@ The current implementation provides these fail-closed operations:
   to the validated build report, authors every package-platform entry in an
   isolated clone, obtains externally backed provenance and Git SSHSIGs, and
   creates the release's sole registry commit and annotated tag;
+- `aos release finalize` captures a complete payload tree without following
+  links, verifies the unsigned manifest as its exact closure, obtains the
+  release-evidence signature threshold, verifies the finished bundle offline,
+  and atomically emits the bundle plus Finalized-state journal;
 - `aos release status` reconciles a captured journal without Nix or network;
 - `aos release stage` accepts only an already finalized signed bundle, pins the
   canonical staging deployment identity before and after upload, reuses the
@@ -40,7 +44,7 @@ The current implementation provides these fail-closed operations:
 - `aos release verify` checks a closed release bundle and optional journal
   offline against explicitly supplied public keys.
 
-Closed bundle finalization and qualification executor orchestration remain
+Immutable TUF-set authoring and qualification executor orchestration remain
 incomplete. Production publication through this workflow remains forbidden
 until those paths and the remaining RFC-0017 launch gates are complete.
 
@@ -246,6 +250,53 @@ surface digests pass does the transaction atomically install the isolated
 directory, create one signed commit and annotated tag, and generate its static
 origin surface. No authoring ref, Hub object, channel, or private key path is
 modified by this command.
+
+## Close and sign the bundle
+
+Assemble a payload directory containing every regular file named by the
+unsigned `aos.release.manifest/v1` payload except `release-plan.json`; the
+coordinator installs the exact plan itself. The payload includes package NARs,
+signed narinfos, registry objects and catalog data, documentation, provenance,
+source and license material, SBOM and gate evidence, and both finalized Linux
+image sets. It must not contain `release-plan.json`, `release-manifest.json`, a
+link, alias, or special file.
+
+```sh
+aos release finalize \
+  --plan release-plan.json \
+  --payload release-payload \
+  --manifest-payload release-manifest-payload.json \
+  --journal release-build/release-journal.jsonl \
+  --signing-key release-1=/media/trust/release-1.pub \
+  --signing-key release-2=/media/trust/release-2.pub \
+  --verification-identity release-1=provider-release-slot-1 \
+  --verification-identity release-2=provider-release-slot-2 \
+  --signer-executable /opt/aos-signers/bin/provider-adapter \
+  --recorded-at 2026-09-03T14:00:00Z \
+  --output /var/lib/aos-release/2026.9.0/finalized
+```
+
+Supply exactly the key count required by the plan's ReleaseEvidence threshold,
+with one independently pinned provider identity for each key. The command
+captures source files through no-follow handles, copies and hashes them in one
+pass, rechecks file metadata and directory membership, and compares every byte
+count and SHA-256 value to the manifest. It then asks each external signer to
+authorize the exact canonical manifest payload, verifies every response, writes
+the signed envelope, and runs the ordinary offline verifier over the completed
+tree before making the result visible.
+
+The new output contains `bundle/` and `release-journal.jsonl`. The journal is a
+strict successor of the supplied Built journal and binds the manifest digest,
+provider operation ids, and signature-response evidence. Neither output path is
+reused or replaced.
+
+TUF repository metadata is deliberately not a manifest target. Its delegated
+release entry authorizes the finalized manifest envelope, whose artifact list
+already closes every bundle payload. Keeping root, targets, delegated targets,
+snapshot, and timestamp on the registry metadata surface avoids an impossible
+self-reference in which a manifest inventories TUF bytes that themselves name
+the manifest or whole-bundle digest. Hub receipts continue to bind the separate
+exact-byte bundle digest.
 
 ## Refresh TUF timestamp metadata
 
@@ -503,12 +554,11 @@ inside the bundle it is meant to authenticate is not a trust anchor.
 
 ## Operational boundary
 
-Do not emulate missing later phases with ad hoc repeated package publishes,
-manual object copies, mutable tags, or direct channel edits. RFC-0017 requires
-one isolated registry transaction, role-separated signing, exact-byte staging
-and promotion receipts, production read-back, and compare-and-swap channel
-updates. Those operations remain fail-closed until their command implementations
-and qualification gates land.
+Do not bypass the isolated registry transaction, closed bundle finalizer,
+role-separated signing, exact-byte staging and promotion receipts, production
+read-back, or compare-and-swap channel updates with ad hoc publishes or manual
+object copies. Production remains fail-closed until immutable TUF authoring,
+qualification execution, and the remaining launch gates land.
 
 The normative design and rollout requirements are in
 [RFC-0017](../rfcs/0017-canonical-hub-publishing/README.md).
