@@ -10,6 +10,7 @@ use crate::discovery::DiscoverySnapshotV1;
 use crate::envelope::InventoryEnvelopeV1;
 use crate::identity::RunId;
 use crate::plan::PackageUpdatePlanV1;
+use crate::run::PackageUpdateRunV1;
 use crate::workflow::{DiscoveryDecision, GateOutcome, RunState, TaskStatus};
 
 /// Classifies the outcome of the requested command independently of run state.
@@ -186,6 +187,15 @@ pub struct CommandData {
     /// Immutable package-update plan returned by planning and inspection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<PackageUpdatePlanV1>,
+    /// Durable local run projection returned by execution and inspection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<PackageUpdateRunV1>,
+    /// Stable run list returned by cached status views.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runs: Vec<PackageUpdateRunV1>,
+    /// Bounded textual patch returned by explicit diff inspection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub patch: Option<String>,
 }
 
 /// Contains the single terminal result returned by a maintenance command.
@@ -238,6 +248,12 @@ impl MaintainCommandResult {
             bail!("maintenance result command is empty or oversized");
         }
         if self.data.values.len() > 128
+            || self.data.runs.len() > 1024
+            || self
+                .data
+                .patch
+                .as_ref()
+                .is_some_and(|patch| patch.len() > 32 * 1024 * 1024)
             || self.primary_values.len() > 32
             || self.diagnostics.len() > 128
             || self.next_actions.len() > 3

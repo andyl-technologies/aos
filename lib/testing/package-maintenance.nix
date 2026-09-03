@@ -108,8 +108,8 @@ in
   assert zlibUnit.members == ["zlib"];
   assert zlibUnit.platforms == [pkgs.stdenv.hostPlatform.system];
     lib.throwIfNot
-    (builtins.head pkgs.zlib.src.urls == "https://zlib.net/zlib-1.3.1.tar.xz")
-    "zlib maintenance metadata changed its source URL"
+    (builtins.head pkgs.zlib.src.urls == "https://zlib.net/zlib-${zlibUnit.package.currentVersion}.tar.xz")
+    "zlib derivation source diverged from its maintenance metadata"
     (pkgs.mkDerivation {
       pname = "package-maintenance-contract-check";
       version = "0";
