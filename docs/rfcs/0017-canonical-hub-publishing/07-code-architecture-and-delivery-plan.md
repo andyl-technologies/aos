@@ -209,10 +209,14 @@ The public evidence records their digests and non-sensitive conclusions.
 
 ### State journal
 
-The restricted journal is append-only and signed by the release-evidence role.
-Every entry includes the previous entry digest, plan and manifest digests,
-expected prior state, new state, commands or operation ids, timestamps, public
-evidence digests, and tool/deployment identities.
+The restricted journal is append-only and hash-chained. Every entry includes
+the previous entry digest, plan and manifest digests, expected prior state, new
+state, commands or operation ids, timestamps, public evidence digests, and
+tool/deployment identities. Signed manifest, Hub, qualification, and channel
+evidence authenticate the transitions they authorize. The threshold-signed
+completion decision additionally binds the exact rolling journal-head digest,
+which anchors the whole predecessor chain before the deterministic final entry
+is appended.
 
 The state implementation permits only:
 

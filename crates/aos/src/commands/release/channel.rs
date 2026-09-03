@@ -279,6 +279,10 @@ async fn complete(args: &ReleaseChannelCompleteArgs, printer: &Printer) -> Resul
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
+    let prior_journal_entry_digest = Sha256Digest::of_canonical(
+        "aos.release.journal-entry/v1",
+        journal.last().context("release journal is empty")?,
+    )?;
     let mut completion_payload: Option<CompletionReceiptV1> = None;
     let mut completion_signers = BTreeSet::new();
     let mut completion_envelopes = Vec::with_capacity(args.completion_receipts.len());
@@ -308,6 +312,7 @@ async fn complete(args: &ReleaseChannelCompleteArgs, printer: &Printer) -> Resul
         || completion.manifest_digest != summary.manifest_digest
         || completion.production_receipt_digest != production_digest
         || completion.channel_receipt_digests != expected_channel_digests
+        || completion.prior_journal_entry_digest != prior_journal_entry_digest
         || completion.retention_policy_id != plan.retention.policy_id
         || completion.retention_policy_digest != plan.retention.policy_digest
     {

@@ -120,7 +120,8 @@ and trust primitives but have their own owners, cadence, and authorization.
    a reviewed candidate bundle crosses the environment boundary.
 9. **One publisher.** The designated maintainer host holds the sole authoring
    clone and promotion state. Every mutating release operation is serialized
-   and recoverable from a signed journal.
+   and recoverable from a hash-chained journal, signed transition evidence, and
+   a threshold-authorized completion head.
 10. **Security claims match evidence.** A single-host manual build may publish
     signed provenance, but it does not claim SLSA Build L2 or L3.
 

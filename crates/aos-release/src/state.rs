@@ -57,7 +57,7 @@ impl ReleaseState {
     }
 }
 
-/// One signed append-only release journal payload.
+/// One hash-chained append-only release journal payload.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct JournalEntryV1 {

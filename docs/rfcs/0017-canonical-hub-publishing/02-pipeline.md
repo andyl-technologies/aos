@@ -286,9 +286,10 @@ storage migration, or key rotation.
 
 ## Failure and recovery
 
-Before a public pointer moves, failures are retried from the signed journal or
-abandon the version. Already-uploaded immutable objects remain harmless and may
-be reused only when their hashes match a later plan.
+Before a public pointer moves, failures are retried from the authenticated
+hash-chained journal and its signed transition evidence or abandon the version.
+Already-uploaded immutable objects remain harmless and may be reused only when
+their hashes match a later plan.
 
 After a public pointer moves:
 
