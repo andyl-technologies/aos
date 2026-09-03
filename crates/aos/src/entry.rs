@@ -300,6 +300,12 @@ async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
     {
         return commands::release::stage_offline(args, printer).await;
     }
+    if let Commands::Release {
+        command: crate::cli::ReleaseCommand::Timestamp { command },
+    } = &cli.command
+    {
+        return commands::release::timestamp_offline(command, printer).await;
+    }
 
     // Local VM runs use downloaded artifacts and host-side QEMU tools.
     if let Commands::Vm { command } = &cli.command {

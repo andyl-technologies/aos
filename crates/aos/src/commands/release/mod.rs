@@ -10,6 +10,7 @@ mod plan;
 mod signer;
 mod stage;
 mod status;
+mod timestamp;
 mod verify;
 
 use anyhow::Result;
@@ -31,6 +32,9 @@ pub fn run(command: &ReleaseCommand, nix: &NixRunner, printer: &Printer) -> Resu
         ReleaseCommand::FinalizeImage(_) => {
             anyhow::bail!("release image finalization must use the asynchronous dispatcher")
         }
+        ReleaseCommand::Timestamp { .. } => {
+            anyhow::bail!("release timestamp command must use the asynchronous offline dispatcher")
+        }
         ReleaseCommand::Signer { .. } => {
             anyhow::bail!("release signer command must use the asynchronous offline dispatcher")
         }
@@ -39,6 +43,18 @@ pub fn run(command: &ReleaseCommand, nix: &NixRunner, printer: &Printer) -> Resu
         }
         ReleaseCommand::Verify(args) => verify::run(args, printer),
     }
+}
+
+/// Renews a timestamp over an already-authorized immutable snapshot.
+///
+/// # Errors
+///
+/// Returns an error for trust, rollback, signer, freshness, or output failure.
+pub async fn timestamp_offline(
+    command: &crate::cli::ReleaseTimestampCommand,
+    printer: &Printer,
+) -> Result<()> {
+    timestamp::run(command, printer).await
 }
 
 /// Finalizes one public Linux image assembly through configured signers.

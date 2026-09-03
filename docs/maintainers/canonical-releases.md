@@ -24,6 +24,8 @@ The current implementation provides these fail-closed operations:
   canonical staging deployment identity before and after upload, reuses the
   bounded Hub publication protocol, reads every object back anonymously, and
   writes a staging receipt plus successor journal;
+- `aos release timestamp refresh` renews only the short-lived pointer to an
+  already root-authorized immutable snapshot, including recovery after expiry;
 - `aos release verify` checks a closed release bundle and optional journal
   offline against explicitly supplied public keys.
 
@@ -184,6 +186,37 @@ or remove the private work path according to the restricted operator policy.
 
 Repeat for `x86_64-linux` and `aarch64-linux`. Darwin targets do not run this
 command because their release matrix contains packages only.
+
+## Refresh TUF timestamp metadata
+
+Timestamp renewal cannot add release content or replace a snapshot. Supply the
+current signed root and snapshot, independently authenticated root keys, and
+exactly the timestamp-role signature threshold:
+
+```sh
+aos release timestamp refresh \
+  --plan release-plan.json \
+  --root 12.root.json \
+  --snapshot 41.snapshot.json \
+  --previous-timestamp timestamp.json \
+  --trusted-root-key root-1=/media/trust/root-1.pub \
+  --trusted-root-key root-2=/media/trust/root-2.pub \
+  --trusted-root-threshold 2 \
+  --signing-key timestamp-1=/media/trust/timestamp-1.pub \
+  --signer-executable /opt/aos-signers/bin/provider-adapter \
+  --version 87 \
+  --issued-at 2026-09-03T12:00:00Z \
+  --expires 2026-09-05T12:00:00Z \
+  --output timestamp.json.next
+```
+
+The command verifies the root bootstrap threshold, production role separation,
+snapshot signature, root/plan timestamp policy equality, signer public key and
+provider identity, exact prior timestamp continuity, and the 48-hour maximum
+window. An expired prior timestamp remains cryptographically verifiable at its
+recorded issuance instant, so freshness can recover without resetting the
+monotonic version. Publishing the resulting mutable pointer is a separate Hub
+compare-and-swap operation.
 
 ## Stage a finalized M1 bundle
 

@@ -19,10 +19,76 @@ pub enum ReleaseCommand {
     },
     /// Finalize one Linux image assembly through external signers
     FinalizeImage(ReleaseFinalizeImageArgs),
+    /// Renew short-lived metadata without changing authorized content
+    Timestamp {
+        #[command(subcommand)]
+        command: ReleaseTimestampCommand,
+    },
     /// Upload an exact finalized bundle to the canonical staging Hub
     Stage(ReleaseStageArgs),
     /// Verify a captured release bundle using only public trust inputs
     Verify(ReleaseVerifyArgs),
+}
+
+#[derive(Subcommand)]
+pub enum ReleaseTimestampCommand {
+    /// Sign a fresh pointer to one already-authorized snapshot
+    Refresh(ReleaseTimestampRefreshArgs),
+}
+
+#[derive(Args)]
+pub struct ReleaseTimestampRefreshArgs {
+    /// Canonical release plan governing the timestamp signer
+    #[arg(long)]
+    pub plan: PathBuf,
+
+    /// Current signed TUF root envelope
+    #[arg(long)]
+    pub root: PathBuf,
+
+    /// Current signed immutable snapshot envelope
+    #[arg(long)]
+    pub snapshot: PathBuf,
+
+    /// Previous timestamp for this snapshot, when one exists
+    #[arg(long)]
+    pub previous_timestamp: Option<PathBuf>,
+
+    /// Independently trusted root key as KEY_ID=PATH
+    #[arg(long = "trusted-root-key", value_name = "KEY_ID=PATH", required = true)]
+    pub trusted_root_keys: Vec<String>,
+
+    /// Required independently trusted root signature count
+    #[arg(long, default_value_t = 2)]
+    pub trusted_root_threshold: u16,
+
+    /// Timestamp signing key as KEY_ID=PATH; repeat to satisfy its threshold
+    #[arg(long = "signing-key", value_name = "KEY_ID=PATH", required = true)]
+    pub signing_keys: Vec<String>,
+
+    /// Absolute path to the deployment-configured signer executable
+    #[arg(long)]
+    pub signer_executable: PathBuf,
+
+    /// Maximum duration of each external signer operation in seconds
+    #[arg(long, default_value_t = 120)]
+    pub signer_timeout_seconds: u64,
+
+    /// Strictly increasing timestamp metadata version
+    #[arg(long)]
+    pub version: u64,
+
+    /// RFC 3339 UTC issuance time
+    #[arg(long)]
+    pub issued_at: String,
+
+    /// RFC 3339 UTC expiry no more than 48 hours after issuance
+    #[arg(long)]
+    pub expires: String,
+
+    /// New canonical signed timestamp path
+    #[arg(long)]
+    pub output: PathBuf,
 }
 
 #[derive(Args)]

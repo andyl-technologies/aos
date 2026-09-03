@@ -493,6 +493,44 @@ pub struct TufReleaseExpectation<'a> {
     pub bundle_digest: Sha256Digest,
 }
 
+/// Verifies an independently bootstrapped root envelope and optional rotation.
+///
+/// # Errors
+///
+/// Returns an error for malformed or expired root metadata, weak or collapsed
+/// role policy, failed bootstrap/new-root thresholds, or an invalid rotation.
+pub fn verify_root_envelope(
+    root: &TufEnvelopeV1<RootMetadataV1>,
+    trust: &TufRootTrust<'_>,
+    previous_root: Option<&TufEnvelopeV1<RootMetadataV1>>,
+    now: std::time::SystemTime,
+) -> Result<()> {
+    validate_root(&root.signed)?;
+    verify_root(root, trust, previous_root, now)
+}
+
+/// Verifies a snapshot envelope against the role policy in a trusted root.
+///
+/// This establishes snapshot authority and expiry. A caller verifying a full
+/// immutable set must additionally compare every described predecessor via
+/// [`verify_immutable_set`].
+///
+/// # Errors
+///
+/// Returns an error for malformed root/snapshot metadata, expiry, an invalid
+/// role signature threshold, or a public verification-identity mismatch.
+pub fn verify_snapshot_envelope(
+    snapshot: &TufEnvelopeV1<SnapshotMetadataV1>,
+    root: &RootMetadataV1,
+    now: std::time::SystemTime,
+) -> Result<()> {
+    validate_root(root)?;
+    let keys = root_keys(root)?;
+    let policies = root_policies(root)?;
+    verify_envelope(snapshot, policy(&policies, TufRole::Snapshot)?, &keys, now)?;
+    verify_declared_identities(snapshot, root)
+}
+
 trait SignedMetadata {
     fn role(&self) -> TufRole;
     fn version(&self) -> u64;
@@ -645,6 +683,45 @@ pub fn verify_timestamp(
     )?;
     if timestamp.signed.snapshot != expected {
         bail!("TUF timestamp does not name the exact authorized snapshot");
+    }
+    Ok(())
+}
+
+/// Verifies a prior timestamp for monotonic refresh even after its expiry.
+///
+/// The prior envelope is checked at its own issuance instant, including its
+/// signature threshold, ≤48-hour validity window, and exact snapshot binding.
+/// This permits recovery from an expired freshness pointer without permitting
+/// rollback or authorizing a different snapshot.
+///
+/// # Errors
+///
+/// Returns an error for malformed time, signature or role-policy failure, or
+/// when the prior timestamp does not name `snapshot` exactly.
+pub fn verify_prior_timestamp_for_refresh(
+    timestamp: &TufEnvelopeV1<TimestampMetadataV1>,
+    root: &RootMetadataV1,
+    snapshot: &TufEnvelopeV1<SnapshotMetadataV1>,
+) -> Result<()> {
+    let issued = parse_utc(&timestamp.signed.issued_at, "TUF timestamp issuance")?;
+    validate_root(root)?;
+    validate_timestamp_freshness(&timestamp.signed, issued)?;
+    let keys = root_keys(root)?;
+    let policies = root_policies(root)?;
+    verify_envelope(
+        timestamp,
+        policy(&policies, TufRole::Timestamp)?,
+        &keys,
+        issued,
+    )?;
+    verify_declared_identities(timestamp, root)?;
+    let expected = metadata_description(
+        format!("{}.snapshot.json", snapshot.signed.version),
+        snapshot.signed.version,
+        snapshot,
+    )?;
+    if timestamp.signed.snapshot != expected {
+        bail!("prior TUF timestamp does not name the exact snapshot");
     }
     Ok(())
 }
