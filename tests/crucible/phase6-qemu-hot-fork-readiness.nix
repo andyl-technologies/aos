@@ -269,7 +269,7 @@ in
             "$out/child-qmp-initial.json"
           jq -e -s '
             [.[] | select(has("return"))][-1].return == {
-              "schema-version": 6,
+              "schema-version": 7,
               "generation": 0,
               "template-generation": 0,
               "monitor-generation": 0,
@@ -1836,12 +1836,13 @@ in
           patch=0179-crucible-rebuild-reconstructed-child-qmp-dispatcher.patch
           patch=0180-crucible-reconstruct-child-monitor-iothread.patch
           patch=0181-crucible-activate-reconstructed-child-qmp.patch
+          patch=0182-crucible-bind-concrete-child-qmp-runtime.patch
           plugin_endpoint_schema_version=4
           plugin_endpoint_source_descriptors_observed=true
           plugin_endpoint_replacement_plan_bound=false
           child_diagnostics_schema_version=1
           child_diagnostics_initially_absent=true
-          child_qmp_schema_version=6
+          child_qmp_schema_version=7
           child_qmp_initially_absent=true
           child_qmp_monitor_basis_bound=false
           child_qmp_monitor_disposition_bound=false

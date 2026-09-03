@@ -3266,6 +3266,34 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   `T-CAM-6.3` stay incomplete.
 - **Risk:** F.
 
+### crucible-hot-fork-concrete-child-qmp-runtime — bind monitor reconstruction before fork
+
+- **Patch:** `0182-crucible-bind-concrete-child-qmp-runtime.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** child-QMP staging now retains the exact concrete monitor
+  callback and exact private monitor basis inside the one-shot reinitializer.
+  The callback validates the endpoint and all three retained generations,
+  composes held socket, parser/capability, dispatcher, monitor IOThread, and
+  greeting reconstruction, and reports completion only while replacement
+  input remains held. The complete child resource transaction invokes that
+  retained callback; its apply API no longer accepts a runtime or opaque basis
+  that could be substituted after descriptor mutation starts. Child-QMP QAPI
+  schema version 7 exposes that stronger prepared contract.
+- **Micro-test:** the child-resource unit tests bind the runtime before fork,
+  reject a missing runtime, a different callback, and a different opaque basis,
+  then prove the exact retained callback executes once inside the authenticated
+  immediate-child transaction. Strict patch certification pins the concrete
+  monitor operation order, held-state checks, fixed callback storage, and
+  schema version. The complete QEMU build proves the composition compiles and
+  links in the system emulator.
+- **Inertness:** no shipped command invokes the destructive child resource
+  transaction. This patch does not reconstruct the copied global thread
+  registry, invoke the production fork coordinator, release input after commit,
+  admit a guest, or acknowledge readiness bit 7 or 8. `T-CAM-6.1` through
+  `T-CAM-6.3` remain incomplete.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.

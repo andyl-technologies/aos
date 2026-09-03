@@ -2863,8 +2863,13 @@ second operation. It flushes the greeting, returns `-EAGAIN` without mutation
 while any greeting bytes remain buffered, and otherwise attaches exactly one
 read and HUP source. Input therefore cannot dispatch before the greeting has
 been accepted by the replacement socket. These operations remain unwired to
-the fork owner; global child-thread registry reconstruction, resource-plan
-composition, guest admission, and readiness bits 7 and 8 remain open.
+the fork owner. Child-QMP contract version 7 now binds the exact concrete
+monitor callback and private monitor basis into the one-shot reinitializer at
+staging. That callback composes held socket, protocol, dispatcher, monitor
+IOThread, and greeting reconstruction, and the resource transaction no longer
+accepts a substitute runtime after descriptor mutation starts. Global
+child-thread registry reconstruction, production fork invocation, post-commit
+input release, guest admission, and readiness bits 7 and 8 remain open.
 
 The driver owns selection application, stop-boundary execution, and candidate
 construction but never assignment or daemon-epoch identity. This adapter cannot

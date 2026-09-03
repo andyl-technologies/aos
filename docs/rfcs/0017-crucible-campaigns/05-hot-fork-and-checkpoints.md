@@ -1239,28 +1239,31 @@ event emits exactly one greeting before the child reports its complete resource
 state. Only after the complete child resource transaction commits may a
 distinct operation flush that greeting and attach one read source and one HUP
 source; it returns `-EAGAIN` without mutation while output remains buffered.
-These operations remain unreachable from a production command;
-resource-transaction composition, global child-thread registry reconstruction,
-fork coordination, guest admission, and readiness bits 7 and 8 remain open.
+These operations remain unreachable from a production command; global
+child-thread registry reconstruction, fork coordination, post-commit input
+release, guest admission, and readiness bits 7 and 8 remain open.
 The sealed QMP contribution now carries those exact template and child-QMP
 generations alongside its descriptor and socket identity. The immediate-child
 resource transaction requires both the plugin and QMP reinitializers to match
 their complete sealed bases before descriptor mutation, then consumes them as
 one linear reconstruction step. A same-endpoint adapter from another QMP
 generation is rejected before mutation, and either runtime failure leaves the
-child transaction fail-closed. The QMP runtime remains an injected contract.
-Concrete child-only monitor disposal, dispatcher/IOThread reconstruction,
-endpoint attachment, greeting, and input release primitives now exist, but the
-injected runtime does not yet compose them with the private-stream generation
-handshake or production fork owner, and proof bits 7 and 8 remain clear.
+child transaction fail-closed. Child-QMP schema version 7 now retains the exact
+concrete monitor runtime and private monitor basis in that one-shot adapter
+before fork; child application no longer accepts a runtime supplied after
+descriptor mutation begins. Concrete child-only monitor disposal,
+dispatcher/IOThread reconstruction, endpoint attachment, greeting, and input
+release primitives now exist, but the production fork owner does not yet invoke
+the composed callback or perform the post-commit private-stream release, and
+proof bits 7 and 8 remain clear.
 The version-3 child-QMP report now derives `disposition-complete` from that
 exact accepted one-shot status instead of hard-coding false. Prepared but
 unattempted, contradictory, failed, and reset adapters remain incomplete; the
 accepted result must still match the retained descriptor, socket identity,
 template generation, QMP generation, monitor generation, complete flags,
 single monitor, and empty queued/parser state. This makes a future child query
-accurately observable but does not supply the concrete runtime or acknowledge
-proof bit 7 or 8.
+accurately observable but does not invoke the retained concrete runtime or
+acknowledge proof bit 7 or 8.
 After successful child application, the immutable reinitializer and sealed-plan
 bases now remain exactly queryable without making either one reusable. The host
 records the child-QMP mutation generation in the staged proof and may transfer
@@ -1276,8 +1279,8 @@ generation, monitor generation, applied resource-plan membership, and accepted
 complete disposition. Any exchange or basis failure consumes the endpoint and
 fails closed. This implements the host authentication half of the private-stream
 generation handshake; the concrete child-only monitor operations exist but
-their composition into the injected runtime and production fork owner remains
-open, so proof bits 7 and 8 stay clear.
+their invocation from the production fork owner remains open, so proof bits 7
+and 8 stay clear.
 Endpoint staging rejects a private-ring stage from a different or already
 aborted transaction. A new transaction starts only with an empty resource
 stage. Private-ring, diagnostics, child-QMP, and plugin-endpoint staging during a
