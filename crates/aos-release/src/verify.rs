@@ -392,6 +392,7 @@ mod tests {
                 SignerRole::Cache,
                 SignerRole::Provenance,
                 SignerRole::ReleaseEvidence,
+                SignerRole::Qualification,
                 SignerRole::TufRoot,
                 SignerRole::TufTargets,
                 SignerRole::TufEdge,

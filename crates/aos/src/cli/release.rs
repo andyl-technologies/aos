@@ -36,6 +36,8 @@ pub enum ReleaseCommand {
     Stage(ReleaseStageArgs),
     /// Admit signed qualification of the exact staged public release
     Qualify(ReleaseQualifyArgs),
+    /// Execute every planned gate against exact public staging bytes
+    QualifyRun(ReleaseQualifyRunArgs),
     /// Import the exact qualified release into the canonical production Hub
     Promote(ReleasePromoteArgs),
     /// Install one explicitly approved first registry base in an empty Hub
@@ -528,6 +530,73 @@ pub struct ReleaseQualifyArgs {
 }
 
 #[derive(Args)]
+pub struct ReleaseQualifyRunArgs {
+    /// Closed finalized bundle whose public staging objects are tested
+    #[arg(long)]
+    pub bundle: PathBuf,
+
+    /// Exact signed staging receipt returned by the Hub
+    #[arg(long)]
+    pub staging_receipt: PathBuf,
+
+    /// Trusted manifest key as KEY_ID=PATH; repeat to satisfy thresholds
+    #[arg(long = "trusted-key", value_name = "KEY_ID=PATH", required = true)]
+    pub trusted_keys: Vec<String>,
+
+    /// Independently trusted staging Hub receipt key as KEY_ID=PATH
+    #[arg(long = "hub-receipt-key", value_name = "KEY_ID=PATH", required = true)]
+    pub hub_receipt_keys: Vec<String>,
+
+    /// Native executor as PLATFORM=ABSOLUTE_PATH; supply all four platforms
+    #[arg(long = "executor", value_name = "PLATFORM=PATH", required = true)]
+    pub executors: Vec<String>,
+
+    /// Expected executor identity as PLATFORM=IDENTITY; supply all four platforms
+    #[arg(
+        long = "executor-identity",
+        value_name = "PLATFORM=IDENTITY",
+        required = true
+    )]
+    pub executor_identities: Vec<String>,
+
+    /// Maximum duration of each native executor operation in seconds
+    #[arg(long, default_value_t = 1800)]
+    pub executor_timeout_seconds: u64,
+
+    /// Absolute path to the qualification authority signer executable
+    #[arg(long)]
+    pub authority_executable: PathBuf,
+
+    /// Qualification authority public key as KEY_ID=PATH
+    #[arg(long, value_name = "KEY_ID=PATH")]
+    pub authority_key: String,
+
+    /// Independently pinned qualification signer provider identity
+    #[arg(long)]
+    pub authority_verification_identity: String,
+
+    /// Maximum duration of the authority signer operation in seconds
+    #[arg(long, default_value_t = 120)]
+    pub authority_timeout_seconds: u64,
+
+    /// Lowercase 32-byte hexadecimal nonce seed for executor requests
+    #[arg(long)]
+    pub executor_nonce: String,
+
+    /// Lowercase 32-byte hexadecimal nonce for aggregate authority signing
+    #[arg(long)]
+    pub authority_nonce: String,
+
+    /// RFC 3339 UTC time recorded on the aggregate qualification receipt
+    #[arg(long)]
+    pub qualified_at: String,
+
+    /// New qualification result directory; existing paths are never replaced
+    #[arg(long)]
+    pub output: PathBuf,
+}
+
+#[derive(Args)]
 pub struct ReleasePromoteArgs {
     /// Closed finalized bundle already qualified in staging
     #[arg(long)]
@@ -998,6 +1067,56 @@ mod tests {
                 "/opt/aos/signer",
                 "--output",
                 "cache",
+            ])
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn qualification_run_requires_native_matrix_and_authority_inputs() {
+        assert!(
+            Cli::try_parse_from([
+                "aos",
+                "release",
+                "qualify-run",
+                "--bundle",
+                "bundle",
+                "--staging-receipt",
+                "staging.json",
+                "--trusted-key",
+                "release=release.pub",
+                "--hub-receipt-key",
+                "staging=staging.pub",
+                "--executor",
+                "x86_64-linux=/opt/aos/qualify-linux-x86",
+                "--executor",
+                "aarch64-linux=/opt/aos/qualify-linux-arm",
+                "--executor",
+                "x86_64-darwin=/opt/aos/qualify-darwin-x86",
+                "--executor",
+                "aarch64-darwin=/opt/aos/qualify-darwin-arm",
+                "--executor-identity",
+                "x86_64-linux=linux-x86-v1",
+                "--executor-identity",
+                "aarch64-linux=linux-arm-v1",
+                "--executor-identity",
+                "x86_64-darwin=darwin-x86-v1",
+                "--executor-identity",
+                "aarch64-darwin=darwin-arm-v1",
+                "--authority-executable",
+                "/opt/aos/signer",
+                "--authority-key",
+                "qualification=qualification.pub",
+                "--authority-verification-identity",
+                "qualification-provider-v1",
+                "--executor-nonce",
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "--authority-nonce",
+                "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+                "--qualified-at",
+                "2026-09-03T12:00:00Z",
+                "--output",
+                "qualification",
             ])
             .is_ok()
         );

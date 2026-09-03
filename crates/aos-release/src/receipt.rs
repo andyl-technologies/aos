@@ -15,6 +15,8 @@ use crate::evidence::GateResult;
 
 /// Schema for an exact Hub publication receipt.
 pub const PUBLICATION_RECEIPT_V1: &str = "aos.release.publication-receipt/v1";
+/// Schema for an independently authorized aggregate qualification decision.
+pub const QUALIFICATION_RECEIPT_V1: &str = "aos.release.qualification-receipt/v1";
 /// Schema for a canonical signed Hub evidence envelope.
 pub const SIGNED_RECEIPT_V1: &str = "aos.hub.signed-release-evidence/v1";
 /// Signature domain for canonical Hub evidence payloads.
@@ -258,7 +260,7 @@ impl QualificationReceiptV1 {
     /// Returns an error for an unsupported schema, malformed identity or
     /// nonce, a non-passing gate, or a non-UTC timestamp.
     pub fn validate(&self) -> Result<()> {
-        if self.schema_version != "aos.release.qualification-receipt/v1" {
+        if self.schema_version != QUALIFICATION_RECEIPT_V1 {
             bail!("unsupported qualification receipt schema");
         }
         require_identifier(&self.policy_id, "qualification policy id")?;

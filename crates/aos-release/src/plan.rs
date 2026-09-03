@@ -428,6 +428,7 @@ impl ReleasePlanV1 {
             SignerRole::Cache,
             SignerRole::Provenance,
             SignerRole::ReleaseEvidence,
+            SignerRole::Qualification,
             SignerRole::TufRoot,
             SignerRole::TufTargets,
             self.release_class.tuf_role(),

@@ -14,6 +14,7 @@ mod finalize_registry;
 mod hub_transition;
 mod plan;
 mod promote;
+mod qualification_run;
 mod qualify;
 mod signer;
 mod stage;
@@ -64,6 +65,9 @@ pub fn run(command: &ReleaseCommand, nix: &NixRunner, printer: &Printer) -> Resu
         }
         ReleaseCommand::Qualify(_) => {
             anyhow::bail!("release qualify command must use the asynchronous dispatcher")
+        }
+        ReleaseCommand::QualifyRun(_) => {
+            anyhow::bail!("release qualify-run command must use the asynchronous dispatcher")
         }
         ReleaseCommand::Promote(_) => {
             anyhow::bail!("release promote command must use the asynchronous dispatcher")
@@ -171,6 +175,19 @@ pub async fn qualify_offline(
     printer: &Printer,
 ) -> Result<()> {
     qualify::run(args, printer).await
+}
+
+/// Executes all planned qualification gates on native platform adapters.
+///
+/// # Errors
+///
+/// Returns an error for trust drift, incomplete executor configuration,
+/// failed native gates, authority signing failure, or non-atomic persistence.
+pub async fn qualification_run_offline(
+    args: &crate::cli::ReleaseQualifyRunArgs,
+    printer: &Printer,
+) -> Result<()> {
+    qualification_run::run(args, printer).await
 }
 
 /// Promotes one exact qualified release into the isolated production Hub.
