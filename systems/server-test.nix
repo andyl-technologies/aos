@@ -11,7 +11,7 @@
 ##!     rather than a baked /var seed
 ##!     (lib/testing/fleet.nix);
 ##!   - puts the CLI tools fleet test scripts invoke by bare name back on
-##!     PATH — git/sqlite/socat to hand-seed a registry, curl/jq to probe
+##!     PATH — git-minimal/sqlite/socat to hand-seed a registry, curl/jq to probe
 ##!     HTTP and parse JSON, nft to inspect the firewall ruleset.
 ##!
 ##! Suites layer their per-test fixture packages (aos-registry-server,
@@ -56,7 +56,7 @@
   # these from the server profile's PATH.
   environment.systemPackages = [
     pkgs.curl
-    pkgs.git
+    pkgs.git-minimal
     pkgs.jq
     pkgs.nftables
     pkgs.socat
