@@ -441,6 +441,18 @@ impl Journal {
             .map(Vec::as_slice)
     }
 
+    /// Iterates the materialized records in one namespace by bytewise key.
+    ///
+    /// The iterator is a stable snapshot only while this journal remains
+    /// immutably borrowed. Callers must copy values needed across a commit.
+    pub fn records(&self, namespace: RecordNamespace) -> impl Iterator<Item = (&[u8], &[u8])> {
+        self.state
+            .iter()
+            .filter_map(move |((record_namespace, key), value)| {
+                (*record_namespace == namespace).then_some((key.as_slice(), value.as_slice()))
+            })
+    }
+
     /// Resolves a caller key against durable semantic request identity.
     #[must_use]
     pub fn check_idempotency(

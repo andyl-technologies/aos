@@ -6,8 +6,13 @@
 //! broker implementations deliberately live outside this crate.
 
 pub mod journal;
+pub mod reconciler;
 
 pub use journal::{
     CommitResult, IdempotencyKey, IdempotencyOutcome, Journal, JournalError, JournalLimits,
     JournalRecord, JournalTransaction, RecordNamespace, RecoveryReport,
+};
+pub use reconciler::{
+    AcceptOutcome, EffectDomain, EffectFailure, EffectObservation, EffectPlan, EffectReceipt,
+    OperationPlan, ReconcileOutcome, Reconciler, ReconcilerError, SingleNodeEffectExecutor,
 };
