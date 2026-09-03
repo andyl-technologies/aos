@@ -29,6 +29,7 @@ promise.
 | System-package/configuration generation pruning | Implemented | `apm clean --system --generations --keep N`, then `apm gc` |
 | A/B image-generation pruning | Not implemented | Preserve rollback capacity; size `/var` and reimage rather than deleting image generations manually |
 | Secure Boot, lockdown, measured boot, dm-verity | Fleet-test fixtures implemented | Checked-in variants use public test keys; no complete production key-custody workflow is shipped |
+| Package supply-chain and runtime attestation | Fleet-test implementation for exposed system packages | Signed registry graphs authenticate every closure member; PCR 15 measures explicitly activated exposed roots and manifests, while only signed dm-verity `RootImage=` workloads have block-level runtime integrity |
 | SELinux module | Present, not enabled by presets | No production policy package is wired into `standard` or `hardened` |
 | Audit, firewall, kernel hardening | Implemented in server baseline | Verify active rules and service state on the deployed host |
 | Encrypted ZFS bare-metal storage | Early-preview installer and boot path implemented | Supply deployment trust keys; qualify TPM unlock, recovery, pool import, zvol slots, disk failure, and replacement on target hardware |
