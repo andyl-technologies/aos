@@ -9,6 +9,12 @@ use rnix::types::{
     Apply, AttrSet, EntryHolder as _, Ident, KeyValue, Str, TokenWrapper as _, TypedNode as _,
 };
 
+#[derive(Clone, Copy)]
+enum ContractKind {
+    Full,
+    Github,
+}
+
 /// Applies exact semantic mutations to one uniquely identified `mkUpstream` set.
 ///
 /// The returned source preserves every byte outside literal value ranges. No
@@ -27,13 +33,15 @@ pub(super) fn apply(source: &str, unit_id: &str, mutations: &[SemanticMutation])
         .node()
         .descendants()
         .filter_map(Apply::cast)
-        .filter(|apply| {
-            apply
-                .lambda()
-                .is_some_and(|lambda| lambda.to_string().trim() == "mkUpstream")
+        .filter_map(|apply| {
+            let kind = match apply.lambda()?.to_string().trim() {
+                "mkUpstream" => ContractKind::Full,
+                "mkGithubUpstream" => ContractKind::Github,
+                _ => return None,
+            };
+            apply.value().and_then(AttrSet::cast).map(|set| (kind, set))
         })
-        .filter_map(|apply| apply.value().and_then(AttrSet::cast))
-        .filter(|set| {
+        .filter(|(_, set)| {
             collect_fields(set)
                 .ok()
                 .and_then(|fields| fields.get(&vec!["unitId".to_string()]).cloned())
@@ -45,14 +53,16 @@ pub(super) fn apply(source: &str, unit_id: &str, mutations: &[SemanticMutation])
     if candidates.len() != 1 {
         bail!("owner file must contain exactly one matching literal mkUpstream unit");
     }
-    let set = candidates
+    let (kind, set) = candidates
         .first()
         .ok_or_else(|| anyhow::anyhow!("matching mkUpstream unit disappeared"))?;
     let fields = collect_fields(set)?;
-    let mut replacements = Vec::with_capacity(mutations.len());
+    let mut replacements: Vec<(usize, usize, String)> =
+        Vec::with_capacity(mutations.len());
     for mutation in mutations {
+        let field_path = editable_path(*kind, &mutation.field_path)?;
         let values = fields
-            .get(&mutation.field_path)
+            .get(&field_path)
             .ok_or_else(|| anyhow::anyhow!("planned semantic field is absent"))?;
         if values.len() != 1 {
             bail!("planned semantic field is not unique");
@@ -66,11 +76,21 @@ pub(super) fn apply(source: &str, unit_id: &str, mutations: &[SemanticMutation])
             bail!("planned semantic field does not match its expected old value");
         }
         let range = value.text_range();
-        replacements.push((
+        let replacement = (
             usize::from(range.start()),
             usize::from(range.end()),
             nix_string(&mutation.replacement)?,
-        ));
+        );
+        if let Some(existing) = replacements
+            .iter()
+            .find(|existing| existing.0 == replacement.0 && existing.1 == replacement.1)
+        {
+            if existing.2 != replacement.2 {
+                bail!("planned semantic mutations disagree on one concise contract field");
+            }
+        } else {
+            replacements.push(replacement);
+        }
     }
     replacements.sort_by_key(|replacement| replacement.0);
     if replacements.windows(2).any(|pair| pair[0].1 > pair[1].0) {
@@ -86,6 +106,36 @@ pub(super) fn apply(source: &str, unit_id: &str, mutations: &[SemanticMutation])
         bail!("semantic mutation produced invalid Nix syntax");
     }
     Ok(output)
+}
+
+fn editable_path(kind: ContractKind, normalized: &[String]) -> Result<Vec<String>> {
+    if matches!(kind, ContractKind::Full) {
+        return Ok(normalized.to_vec());
+    }
+    let concise = match normalized {
+        [package, current] if package == "package" && current == "currentVersion" => {
+            vec!["version".to_string()]
+        }
+        [components, _, current, field]
+            if components == "components"
+                && current == "current"
+                && field == "comparisonVersion" =>
+        {
+            vec!["version".to_string()]
+        }
+        [components, _, current, field]
+            if components == "components" && current == "current" && field == "upstreamId" =>
+        {
+            vec!["upstreamId".to_string()]
+        }
+        [components, _, sources, _, hash]
+            if components == "components" && sources == "sources" && hash == "hash" =>
+        {
+            vec!["source".to_string(), "hash".to_string()]
+        }
+        _ => bail!("concise GitHub contract does not expose the planned semantic field"),
+    };
+    Ok(concise)
 }
 
 fn collect_fields(set: &AttrSet) -> Result<BTreeMap<Vec<String>, Vec<rnix::SyntaxNode>>> {
@@ -201,5 +251,41 @@ in upstream
         );
         let duplicate = format!("[ ({source}) ({source}) ]");
         assert!(apply(&duplicate, "zlib-1", &[]).is_err());
+    }
+
+    #[test]
+    fn concise_github_contract_maps_normalized_fields_once() -> Result<()> {
+        let source = r#"let upstream = mkGithubUpstream {
+  unitId = "demo-1";
+  version = "1.0.0";
+  upstreamId = "v1.0.0";
+  source.hash = "sha256-old";
+}; in upstream"#;
+        let updated = apply(
+            source,
+            "demo-1",
+            &[
+                mutation(&["package", "currentVersion"], "1.0.0", "1.1.0"),
+                mutation(
+                    &["components", "main", "current", "comparisonVersion"],
+                    "1.0.0",
+                    "1.1.0",
+                ),
+                mutation(
+                    &["components", "main", "current", "upstreamId"],
+                    "v1.0.0",
+                    "v1.1.0",
+                ),
+                mutation(
+                    &["components", "main", "sources", "source", "hash"],
+                    "sha256-old",
+                    "sha256-new",
+                ),
+            ],
+        )?;
+        assert!(updated.contains("version = \"1.1.0\";"));
+        assert!(updated.contains("upstreamId = \"v1.1.0\";"));
+        assert!(updated.contains("source.hash = \"sha256-new\";"));
+        Ok(())
     }
 }
