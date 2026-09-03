@@ -556,6 +556,7 @@
   #   propagatedDeps;  — propagated dependencies (propagatedBuildInputs equivalent)
   #   phases;          — ordered list of { name; script; } records
   #   meta;            — package metadata
+  #   update;          — primitive maintenance metadata (evaluation only)
   #   storeDir;        — store directory (default: /nix/store)
   #   hostPlatform;    — structured platform where the output executes
   #   targetPlatform;  — structured code-generation target
@@ -594,6 +595,7 @@
     preInstall ? "",
     postInstall ? "",
     passthru ? {},
+    update ? null,
     checks ? null,
     expose ? null,
     # ── Compiler-hardening policy ─────────────────────────────────────
@@ -753,6 +755,7 @@
       "preInstall"
       "postInstall"
       "passthru"
+      "update"
       "checks"
       "expose"
       "hardeningEnable"
@@ -1017,6 +1020,13 @@
           // (
             if expose != null
             then {inherit expose;}
+            else {}
+          )
+          // (
+            if update != null
+            then {
+              aos = (passthru.aos or {}) // {maintenance = update;};
+            }
             else {}
           );
       }
