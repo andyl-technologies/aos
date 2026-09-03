@@ -11,6 +11,7 @@
 
 pub mod capability;
 pub mod identity;
+pub mod model;
 pub mod resources;
 pub mod selector;
 pub mod state;
@@ -22,8 +23,9 @@ pub use capability::{
     Grant, InvalidGrant,
 };
 pub use identity::{
-    AttachmentId, AuditId, CapabilityId, ExecutionId, ExportId, GrantId, IncarnationId, NodeId,
-    OperationId, PrincipalId, ProjectId, ResourceId, RevocationScopeId, SandboxId, SnapshotId,
+    AttachmentId, AttachmentSlotId, AuditId, CapabilityId, ExecutionId, ExportId, GrantId,
+    IncarnationId, IssuerId, NetworkEndpointId, NodeId, OperationId, PrincipalId, ProjectId,
+    ResourceId, RevocationScopeId, SandboxId, SecretId, ServiceId, SnapshotId, TrustScopeId,
     ViewId,
 };
 pub use resources::{

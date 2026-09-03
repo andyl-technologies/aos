@@ -193,6 +193,21 @@ define_identity!(
     "Identifies a capability revocation scope."
 );
 define_identity!(AuditId, "Identifies one durable authorization decision.");
+define_identity!(
+    AttachmentSlotId,
+    "Identifies a broker-owned attachment destination slot."
+);
+define_identity!(
+    NetworkEndpointId,
+    "Identifies one logical network-policy endpoint."
+);
+define_identity!(ServiceId, "Identifies one mediated external service.");
+define_identity!(SecretId, "Identifies one mediated secret resource.");
+define_identity!(IssuerId, "Identifies one secret or receipt issuer.");
+define_identity!(
+    TrustScopeId,
+    "Identifies one portable signature trust and revocation scope."
+);
 
 #[cfg(test)]
 mod tests {

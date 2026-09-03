@@ -331,7 +331,7 @@ impl From<MediaType> for String {
 pub struct InvalidMediaType;
 
 /// Identifies a stored portable object by type, digest, and exact byte size.
-#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ObjectDescriptor {
     media_type: MediaType,
@@ -370,7 +370,7 @@ impl ObjectDescriptor {
 }
 
 /// Identifies one versioned feature or presentation profile.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct FeatureRef {
     namespace: String,
     major: u32,
