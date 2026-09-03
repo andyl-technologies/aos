@@ -239,7 +239,7 @@ fn apply_mutations(root: &Path, unit_id: &str, mutations: &[SemanticMutation]) -
     Ok(())
 }
 
-fn verify_post_inventory(
+pub(super) fn verify_post_inventory(
     root: &Path,
     plan: &PackageUpdatePlanV1,
     verbose: u8,

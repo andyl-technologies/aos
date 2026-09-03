@@ -10,7 +10,7 @@ use aos_maintain::plan::{GateSpec, PackageUpdatePlanV1};
 use aos_maintain::run::{GateResult, GateResultsV1, PackageUpdateRunV1};
 use aos_maintain::workflow::{ActorClass, GateOutcome, RunState};
 
-use super::confinement::Backend;
+use super::confinement::{Backend, ResourceLimits};
 use super::state::{self, StateStore};
 
 const MAX_GATE_LOG_BYTES: usize = 8 * 1024 * 1024;
@@ -38,11 +38,13 @@ pub(super) fn quick(
     if run.state != RunState::PolicyValid {
         bail!("run is not at the quick validation boundary");
     }
-    let materialization = store
-        .read_materialization(run.run_id.as_str())?
-        .ok_or_else(|| anyhow::anyhow!("quick gates require materialization evidence"))?;
+    let candidate = store
+        .read_patch(run.run_id.as_str())?
+        .ok_or_else(|| anyhow::anyhow!("quick gates require a retained candidate patch"))?;
+    let candidate_digest =
+        aos_contract::Sha256Digest::separated("aos.package-update-patch/v1", &candidate);
     if let Some(record) = store.read_gate_results(run.run_id.as_str(), "quick")? {
-        if record.candidate_digest != materialization.patch_digest {
+        if record.candidate_digest != candidate_digest {
             bail!("stored quick gates bind a different candidate patch");
         }
         if record.all_succeeded() {
@@ -75,8 +77,9 @@ pub(super) fn quick(
         schema: PACKAGE_UPDATE_GATE_RESULTS_V1.to_string(),
         run_id: run.run_id.clone(),
         plan_id: plan.plan_id.clone(),
+        attempt: run.attempt,
         phase: "quick".to_string(),
-        candidate_digest: materialization.patch_digest,
+        candidate_digest,
         confinement: confinement
             .ok_or_else(|| anyhow::anyhow!("quick gate plan unexpectedly contained no gates"))?,
         results,
@@ -156,6 +159,7 @@ pub(super) fn final_gates(
         schema: PACKAGE_UPDATE_GATE_RESULTS_V1.to_string(),
         run_id: run.run_id.clone(),
         plan_id: plan.plan_id.clone(),
+        attempt: run.attempt,
         phase: "final".to_string(),
         candidate_digest,
         confinement: executed.confinement,
@@ -214,6 +218,8 @@ fn execute_gate(
         &gate.argv[1..],
         &[root.to_path_buf()],
         &[scratch.to_path_buf()],
+        true,
+        ResourceLimits::gates(),
     )?;
     let home = scratch.join("home");
     let temporary = scratch.join("tmp");

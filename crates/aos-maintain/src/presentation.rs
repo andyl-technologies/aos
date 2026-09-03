@@ -6,11 +6,12 @@ use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::MAINTENANCE_CLI_V1;
+use crate::agent::{AgentResultV1, AgentTaskV1};
 use crate::discovery::DiscoverySnapshotV1;
 use crate::envelope::InventoryEnvelopeV1;
 use crate::identity::RunId;
 use crate::plan::PackageUpdatePlanV1;
-use crate::run::{PackageUpdateEvidenceV1, PackageUpdateRunV1};
+use crate::run::{PackageUpdateEvidenceV1, PackageUpdateRunV1, RepairAttemptV1};
 use crate::workflow::{DiscoveryDecision, GateOutcome, RunState, TaskStatus};
 
 /// Classifies the outcome of the requested command independently of run state.
@@ -196,6 +197,15 @@ pub struct CommandData {
     /// Bounded textual patch returned by explicit diff inspection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub patch: Option<String>,
+    /// Closed trusted task supplied to a local repair adapter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_task: Option<AgentTaskV1>,
+    /// Closed untrusted adapter response retained for review.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_result: Option<AgentResultV1>,
+    /// Accepted attempt metadata after the mutation gateway succeeds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repair_attempt: Option<RepairAttemptV1>,
     /// Complete local candidate evidence returned by evidence/inspection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence: Option<PackageUpdateEvidenceV1>,
@@ -292,6 +302,20 @@ impl MaintainCommandResult {
         }
         for action in &self.next_actions {
             action.validate()?;
+        }
+        if let Some(task) = &self.data.agent_task {
+            task.validate()?;
+            let result = self
+                .data
+                .agent_result
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("agent task is missing its result"))?;
+            result.validate_for(task)?;
+        } else if self.data.agent_result.is_some() {
+            bail!("agent result is missing its trusted task");
+        }
+        if let Some(attempt) = &self.data.repair_attempt {
+            attempt.validate()?;
         }
         Ok(())
     }

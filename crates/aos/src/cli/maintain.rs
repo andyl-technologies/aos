@@ -52,6 +52,8 @@ pub enum MaintainCommand {
     Commit(MaintainCommitArgs),
     /// Run or rerun the immutable quick or final gate plan
     Test(MaintainTestArgs),
+    /// Run or accept one bounded local repair-agent proposal
+    Repair(MaintainRepairArgs),
     /// Generate and verify the complete local candidate evidence dossier
     Evidence(MaintainRunIdentityArgs),
     /// Render reviewed pull-request title, body, and publication inputs offline
@@ -215,6 +217,37 @@ pub struct MaintainTestArgs {
     pub final_gate: bool,
 }
 
+#[derive(Args)]
+pub struct MaintainRepairArgs {
+    /// Exact or unambiguous local run identity
+    pub run: String,
+
+    /// Select deterministic manual handoff or a confined local adapter
+    #[arg(long, value_enum, default_value_t = MaintainAgentMode::None)]
+    pub agent: MaintainAgentMode,
+
+    /// Absolute executable implementing the closed JSON stdin/stdout adapter
+    #[arg(
+        long,
+        value_name = "PATH",
+        required_if_eq("agent", "local"),
+        conflicts_with = "confirm"
+    )]
+    pub adapter: Option<PathBuf>,
+
+    /// Apply a retained proposal by confirming its exact patch digest
+    #[arg(long, value_name = "DIGEST", conflicts_with = "adapter")]
+    pub confirm: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum MaintainAgentMode {
+    /// Do not invoke a model; return typed manual repair instructions
+    None,
+    /// Invoke one explicit local adapter inside the verified boundary
+    Local,
+}
+
 #[cfg(test)]
 mod tests {
     use clap::Parser as _;
@@ -260,6 +293,45 @@ mod tests {
                 "plan-fixture",
                 "--until",
                 "worktree-ready"
+            ])
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn repair_defaults_to_no_agent_and_requires_an_explicit_local_adapter() {
+        let cli = Cli::try_parse_from(["aos", "maintain", "repair", "run-fixture"])
+            .expect("no-agent repair should parse");
+        let Commands::Maintain(args) = cli.command else {
+            panic!("expected maintain command");
+        };
+        let Some(MaintainCommand::Repair(repair)) = args.command else {
+            panic!("expected repair command");
+        };
+        assert_eq!(repair.agent, MaintainAgentMode::None);
+        assert!(repair.adapter.is_none());
+
+        assert!(
+            Cli::try_parse_from([
+                "aos",
+                "maintain",
+                "repair",
+                "run-fixture",
+                "--agent",
+                "local"
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "aos",
+                "maintain",
+                "repair",
+                "run-fixture",
+                "--agent",
+                "local",
+                "--adapter",
+                "/nix/store/adapter"
             ])
             .is_ok()
         );

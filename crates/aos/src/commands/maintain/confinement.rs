@@ -20,6 +20,7 @@ const MINIMUM_LANDLOCK_ABI: u32 = 4;
 /// A verified Linux candidate-execution boundary.
 pub(super) struct Backend {
     unshare: PathBuf,
+    prlimit: PathBuf,
     landlock: PathBuf,
     landlock_abi: u32,
 }
@@ -29,6 +30,46 @@ pub(super) struct Backend {
 struct FilesystemPolicy<'a> {
     read_only: &'a [PathBuf],
     read_write: &'a [PathBuf],
+}
+
+/// Process resource ceilings enforced before the confined executable starts.
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ResourceLimits {
+    /// Maximum processes visible to the worker user.
+    pub(super) processes: u64,
+    /// Maximum open descriptors per worker process.
+    pub(super) open_files: u64,
+    /// Maximum size of one file created by a worker process.
+    pub(super) file_bytes: u64,
+    /// Maximum virtual address space per worker process.
+    pub(super) address_bytes: u64,
+    /// Maximum CPU seconds per worker process.
+    pub(super) cpu_seconds: u64,
+}
+
+impl ResourceLimits {
+    /// Returns ceilings suitable for controller-owned Nix gate clients.
+    pub(super) const fn gates() -> Self {
+        Self {
+            processes: 1_024,
+            open_files: 4_096,
+            file_bytes: 32 * 1024 * 1024 * 1024,
+            address_bytes: 32 * 1024 * 1024 * 1024,
+            cpu_seconds: 6 * 60 * 60,
+        }
+    }
+
+    /// Returns stricter ceilings suitable for an untrusted repair adapter.
+    pub(super) const fn agent() -> Self {
+        Self {
+            processes: 64,
+            open_files: 256,
+            file_bytes: 16 * 1024 * 1024,
+            address_bytes: 8 * 1024 * 1024 * 1024,
+            cpu_seconds: 45 * 60,
+        }
+    }
 }
 
 impl Backend {
@@ -45,6 +86,7 @@ impl Backend {
         #[cfg(target_os = "linux")]
         {
             let unshare = configured_executable("AOS_UNSHARE")?;
+            let prlimit = configured_executable("AOS_PRLIMIT")?;
             let landlock = configured_executable("AOS_LANDLOCK_WRAPPER")?;
             let output = Command::new(&landlock)
                 .arg("--print-abi")
@@ -64,6 +106,7 @@ impl Backend {
             }
             let backend = Self {
                 unshare,
+                prlimit,
                 landlock,
                 landlock_abi: abi,
             };
@@ -87,13 +130,17 @@ impl Backend {
         arguments: impl IntoIterator<Item = impl AsRef<OsStr>>,
         read_only: &[PathBuf],
         read_write: &[PathBuf],
+        allow_nix_daemon: bool,
+        limits: ResourceLimits,
     ) -> Result<(Command, ConfinementEvidence)> {
         let executable = checked_existing_path(executable, "confined executable")?;
         let mut ro = normalize_paths(read_only, "read-only grant")?;
         let mut rw = normalize_paths(read_write, "read-write grant")?;
         add_if_present(&mut ro, Path::new("/nix/store"))?;
-        add_if_present(&mut ro, Path::new("/nix/var/nix/daemon-socket"))?;
-        add_if_present(&mut ro, Path::new("/etc/nix"))?;
+        if allow_nix_daemon {
+            add_if_present(&mut ro, Path::new("/nix/var/nix/daemon-socket"))?;
+            add_if_present(&mut ro, Path::new("/etc/nix"))?;
+        }
         add_if_present(&mut ro, Path::new("/etc/ssl"))?;
         add_if_present(&mut ro, Path::new("/proc"))?;
         add_if_present(&mut rw, Path::new("/dev/null"))?;
@@ -112,6 +159,8 @@ impl Backend {
         };
         let policy_digest =
             Sha256Digest::of_canonical("aos.maintain.confinement-filesystem-policy/v1", &policy)?;
+        let resource_limits_digest =
+            Sha256Digest::of_canonical("aos.maintain.confinement-resource-limits/v1", &limits)?;
 
         let mut command = Command::new(&self.unshare);
         command.args([
@@ -129,6 +178,14 @@ impl Backend {
             "--mount-proc=/proc",
             "--",
         ]);
+        command
+            .arg(&self.prlimit)
+            .arg(format!("--nproc={}", limits.processes))
+            .arg(format!("--nofile={}", limits.open_files))
+            .arg(format!("--fsize={}", limits.file_bytes))
+            .arg(format!("--as={}", limits.address_bytes))
+            .arg(format!("--cpu={}", limits.cpu_seconds))
+            .arg("--");
         command.arg(&self.landlock).args([
             OsString::from("--require-abi"),
             OsString::from(MINIMUM_LANDLOCK_ABI.to_string()),
@@ -151,17 +208,26 @@ impl Backend {
                 backend: "aos.linux-userns-landlock/v1".to_string(),
                 landlock_abi: self.landlock_abi,
                 filesystem_policy_digest: policy_digest,
+                resource_limits_digest,
                 private_user_namespace: true,
                 private_process_namespaces: true,
                 network_isolated: true,
                 worker_tree_reaped: true,
+                resource_limited: true,
             },
         ))
     }
 
     fn probe_namespaces(&self) -> Result<()> {
         let executable = checked_existing_path(&self.unshare, "namespace probe executable")?;
-        let (mut command, _) = self.command(&executable, [OsStr::new("--version")], &[], &[])?;
+        let (mut command, _) = self.command(
+            &executable,
+            [OsStr::new("--version")],
+            &[],
+            &[],
+            false,
+            ResourceLimits::agent(),
+        )?;
         let output = command
             .output()
             .context("probing local namespace confinement")?;
