@@ -11,7 +11,7 @@ use ed25519_dalek::{Signature, Verifier as _, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 use crate::CANONICAL_REGISTRY;
-use crate::artifact::require_identifier;
+use crate::artifact::{BundlePath, require_identifier};
 use crate::digest::Sha256Digest;
 use crate::platform::Platform;
 
@@ -362,7 +362,7 @@ impl SigningContext {
                 require_linux_platform(*platform)?;
                 require_identifier(system_variant, "signing system variant")?;
                 require_identifier(kernel_release, "kernel release")?;
-                require_identifier(module_id, "kernel module id")?;
+                BundlePath::parse(module_id).context("validating kernel module id")?;
                 if role != SignerRole::KernelModule {
                     bail!("kernel-module signing requires the kernel-module role");
                 }

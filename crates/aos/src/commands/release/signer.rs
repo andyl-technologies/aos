@@ -6,12 +6,14 @@
 //! private-key selection remains entirely behind provider policy.
 
 use std::fs::File;
-use std::io::Write as _;
+use std::io::{Read as _, Seek as _, Write as _};
+use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
+use aos_image_finalizer::signer::ImageSigner;
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
 use aos_release::signing::{
@@ -159,44 +161,6 @@ impl ExternalSigner {
         Ok(response)
     }
 
-    /// Requests one bounded artifact transformation and verifies its binding.
-    ///
-    /// The caller must additionally verify the artifact's embedded signature
-    /// against the independently captured certificate before accepting it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a payload mismatch, invalid provider exchange,
-    /// response-policy drift, public identity mismatch, or output digest
-    /// mismatch.
-    pub(super) async fn transform(
-        &self,
-        request: &SigningRequestV1,
-        payload: &[u8],
-        maximum_output_bytes: u64,
-        expected_verification_identity: &str,
-        expected_verification_material_digest: Sha256Digest,
-    ) -> Result<(SignatureResponseV1, Vec<u8>)> {
-        request.validate()?;
-        verify_payload_binding(request, payload)?;
-        let request_bytes = canonical::to_vec(request)?;
-        let (response_bytes, output) = self
-            .invoke(&request_bytes, payload, maximum_output_bytes)
-            .await?;
-        let response: SignatureResponseV1 =
-            canonical::from_slice(&response_bytes, "external signer response")?;
-        verify_response_binding(request, &response)?;
-        if response.verification_identity != expected_verification_identity
-            || response.verification_material_digest != expected_verification_material_digest
-        {
-            bail!("external signer returned unexpected public verification material");
-        }
-        if response.output_digest != Some(Sha256Digest::of_bytes(&output)) {
-            bail!("external signer transformed output digest does not match its bytes");
-        }
-        Ok((response, output))
-    }
-
     async fn invoke(
         &self,
         request: &[u8],
@@ -264,6 +228,287 @@ impl ExternalSigner {
         }
         Ok(exchange_response)
     }
+
+    async fn invoke_file(
+        &self,
+        request: &SigningRequestV1,
+        input: &Path,
+        output: Option<(&Path, u64)>,
+    ) -> Result<SignatureResponseV1> {
+        request.validate()?;
+        let input_capture = CapturedInput::open(input)?;
+        if input_capture.digest != request.payload_digest {
+            bail!("signer input does not match the request digest");
+        }
+        let request_bytes = canonical::to_vec(request)?;
+        let maximum_output_bytes = output.map_or(0, |(_, maximum)| maximum);
+        let mut temporary = match output {
+            Some((path, _)) => Some(new_output_temporary(path)?),
+            None => None,
+        };
+
+        let mut child = Command::new(&self.executable)
+            .arg("sign-exchange-v1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .with_context(|| {
+                format!(
+                    "starting external signer executable {}",
+                    self.executable.display()
+                )
+            })?;
+        let stdin = child
+            .stdin
+            .take()
+            .context("external signer has no standard input")?;
+        let stdout = child
+            .stdout
+            .take()
+            .context("external signer has no standard output")?;
+        let stderr = child
+            .stderr
+            .take()
+            .context("external signer has no diagnostic output")?;
+        let input_file = tokio::fs::File::from_std(input_capture.file.try_clone()?);
+        let output_file = temporary
+            .as_ref()
+            .map(tempfile::NamedTempFile::reopen)
+            .transpose()?
+            .map(tokio::fs::File::from_std);
+
+        let write_request =
+            write_file_exchange(stdin, &request_bytes, input_file, input_capture.size);
+        let read_response =
+            read_exchange_response_to_file(stdout, maximum_output_bytes, output_file);
+        let exchange = async {
+            let wait = async { Ok::<_, anyhow::Error>(child.wait().await?) };
+            let ((), (response, output_digest), stderr, status) = tokio::try_join!(
+                write_request,
+                read_response,
+                read_bounded(stderr, MAX_SIGNER_DIAGNOSTIC_BYTES),
+                wait,
+            )?;
+            Ok::<_, anyhow::Error>((status, response, output_digest, stderr))
+        };
+        let (status, response_bytes, output_digest, stderr) =
+            tokio::time::timeout(self.timeout, exchange)
+                .await
+                .context("external signer timed out")??;
+        if !status.success() {
+            let diagnostic = String::from_utf8_lossy(&stderr);
+            bail!(
+                "external signer exited unsuccessfully: {}",
+                diagnostic.trim()
+            );
+        }
+        if !stderr.is_empty() {
+            bail!("external signer wrote diagnostics on a successful request");
+        }
+        input_capture.verify_unchanged(input)?;
+
+        let response: SignatureResponseV1 =
+            canonical::from_slice(&response_bytes, "external signer response")?;
+        verify_response_binding(request, &response)?;
+        if response.output_digest != output_digest {
+            bail!("external signer transformed output digest does not match its bytes");
+        }
+        match (output, temporary.take(), output_digest) {
+            (Some((path, _)), Some(temporary), Some(_)) => persist_output(temporary, path)?,
+            (Some(_), _, None) => bail!("transforming signer returned no output bytes"),
+            (None, _, Some(_)) => bail!("detached signer returned transformed output bytes"),
+            (None, _, None) => {}
+            _ => bail!("external signer output state is inconsistent"),
+        }
+        Ok(response)
+    }
+}
+
+#[async_trait::async_trait]
+impl ImageSigner for ExternalSigner {
+    async fn transform(
+        &self,
+        request: &SigningRequestV1,
+        input: &Path,
+        output: &Path,
+        maximum_output_bytes: u64,
+    ) -> Result<SignatureResponseV1> {
+        if maximum_output_bytes == 0 {
+            bail!("signer transformed-output limit must be nonzero");
+        }
+        self.invoke_file(request, input, Some((output, maximum_output_bytes)))
+            .await
+    }
+
+    async fn sign_detached(
+        &self,
+        request: &SigningRequestV1,
+        input: &Path,
+    ) -> Result<SignatureResponseV1> {
+        self.invoke_file(request, input, None).await
+    }
+}
+
+struct CapturedInput {
+    file: File,
+    metadata: std::fs::Metadata,
+    size: u64,
+    digest: Sha256Digest,
+}
+
+impl CapturedInput {
+    fn open(path: &Path) -> Result<Self> {
+        use sha2::{Digest as _, Sha256};
+
+        let mut file =
+            File::open(path).with_context(|| format!("opening signer input {}", path.display()))?;
+        let metadata = file.metadata()?;
+        let path_metadata = path.symlink_metadata()?;
+        if !metadata.is_file()
+            || metadata.nlink() != 1
+            || path_metadata.dev() != metadata.dev()
+            || path_metadata.ino() != metadata.ino()
+        {
+            bail!("signer input must be a single-link regular file, not a symbolic link");
+        }
+        let mut hasher = Sha256::new();
+        let mut buffer = [0_u8; 64 * 1024];
+        let mut size = 0_u64;
+        loop {
+            let count = file.read(&mut buffer)?;
+            if count == 0 {
+                break;
+            }
+            size = size
+                .checked_add(u64::try_from(count)?)
+                .context("signer input size overflow")?;
+            hasher.update(&buffer[..count]);
+        }
+        if size != metadata.len() {
+            bail!("signer input changed while it was captured");
+        }
+        file.rewind()?;
+        Ok(Self {
+            file,
+            metadata,
+            size,
+            digest: Sha256Digest::from_bytes(hasher.finalize().into()),
+        })
+    }
+
+    fn verify_unchanged(&self, path: &Path) -> Result<()> {
+        let current = path.symlink_metadata()?;
+        if current.dev() != self.metadata.dev()
+            || current.ino() != self.metadata.ino()
+            || current.len() != self.metadata.len()
+            || current.mtime() != self.metadata.mtime()
+            || current.mtime_nsec() != self.metadata.mtime_nsec()
+        {
+            bail!("signer input changed during the provider operation");
+        }
+        Ok(())
+    }
+}
+
+fn new_output_temporary(path: &Path) -> Result<tempfile::NamedTempFile> {
+    if path.symlink_metadata().is_ok() {
+        bail!("signer output already exists");
+    }
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("creating signer output beside {}", path.display()))
+}
+
+fn persist_output(temporary: tempfile::NamedTempFile, path: &Path) -> Result<()> {
+    temporary.as_file().sync_all()?;
+    temporary
+        .persist_noclobber(path)
+        .map_err(|error| error.error)
+        .with_context(|| format!("installing signer output {}", path.display()))?;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
+async fn write_file_exchange(
+    mut writer: impl tokio::io::AsyncWrite + Unpin,
+    request: &[u8],
+    mut input: tokio::fs::File,
+    input_size: u64,
+) -> Result<()> {
+    writer.write_all(SIGNER_EXCHANGE_DOMAIN).await?;
+    writer
+        .write_all(&u64::try_from(request.len())?.to_be_bytes())
+        .await?;
+    writer.write_all(request).await?;
+    writer.write_all(&input_size.to_be_bytes()).await?;
+    let copied = tokio::io::copy(&mut input, &mut writer).await?;
+    if copied != input_size {
+        bail!("signer input changed while it was streamed");
+    }
+    writer.shutdown().await?;
+    Ok(())
+}
+
+async fn read_exchange_response_to_file(
+    mut reader: impl AsyncRead + Unpin,
+    maximum_output_bytes: u64,
+    mut output: Option<tokio::fs::File>,
+) -> Result<(Vec<u8>, Option<Sha256Digest>)> {
+    use sha2::{Digest as _, Sha256};
+
+    let mut domain = vec![0_u8; SIGNER_RESPONSE_DOMAIN.len()];
+    reader.read_exact(&mut domain).await?;
+    if domain != SIGNER_RESPONSE_DOMAIN {
+        bail!("external signer returned the wrong response framing domain");
+    }
+    let response_length = read_u64(&mut reader).await?;
+    if response_length == 0 || response_length > MAX_SIGNER_RESPONSE_BYTES {
+        bail!("external signer response JSON exceeds its byte limit");
+    }
+    let mut response = vec![0_u8; usize::try_from(response_length)?];
+    reader.read_exact(&mut response).await?;
+
+    let output_length = read_u64(&mut reader).await?;
+    if output_length > maximum_output_bytes {
+        bail!("external signer transformed output exceeds its byte limit");
+    }
+    if output_length == 0 {
+        if output.is_some() {
+            bail!("transforming signer returned an empty output");
+        }
+    } else if output.is_none() {
+        bail!("detached signer returned transformed output bytes");
+    }
+    let mut hasher = Sha256::new();
+    let mut remaining = output_length;
+    let mut buffer = [0_u8; 64 * 1024];
+    while remaining != 0 {
+        let wanted = usize::try_from(remaining.min(buffer.len() as u64))?;
+        reader.read_exact(&mut buffer[..wanted]).await?;
+        if let Some(file) = output.as_mut() {
+            file.write_all(&buffer[..wanted]).await?;
+        }
+        hasher.update(&buffer[..wanted]);
+        remaining -= u64::try_from(wanted)?;
+    }
+    if let Some(file) = output.as_mut() {
+        file.sync_all().await?;
+    }
+    let mut trailing = [0_u8; 1];
+    if reader.read(&mut trailing).await? != 0 {
+        bail!("external signer returned trailing exchange bytes");
+    }
+    let digest = (output_length != 0).then(|| Sha256Digest::from_bytes(hasher.finalize().into()));
+    Ok((response, digest))
 }
 
 fn verify_payload_binding(request: &SigningRequestV1, payload: &[u8]) -> Result<()> {

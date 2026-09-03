@@ -7,14 +7,14 @@ description = "External final-byte assembly and verification for AOS release ima
 
 [dependencies]
 anyhow = { workspace = true }
+async-trait = { workspace = true }
 aos-release = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 rustix = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true }
 
 [lints]
 workspace = true
-
-[dev-dependencies]
-tempfile = { workspace = true }
