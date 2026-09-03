@@ -13,7 +13,7 @@ use std::error::Error;
 use std::fmt;
 use std::os::unix::net::UnixStream;
 
-use crucible_campaign::{ExecutionId, ObservationId};
+use crucible_campaign::{ExactCheckpointId, ObservationId};
 use crucible_qemu::{
     LinuxQemuAttemptProcessOwner, LinuxQemuHotForkChildProcessAuthority, QemuHotForkChildLaunch,
     QemuHotForkChildProcessBasis, QemuHotForkChildQmpHandshakeError, QemuHotForkLaunchError,
@@ -22,34 +22,8 @@ use crucible_qemu::{
 };
 use thiserror::Error;
 
-use crate::AttemptExecutionKey;
-
 /// Exact supervisor reservation owning one hot-fork realization.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct QemuHotForkAttemptBasis {
-    key: AttemptExecutionKey,
-    execution: ExecutionId,
-}
-
-impl QemuHotForkAttemptBasis {
-    /// Binds one lineage-qualified attempt to its process-local execution.
-    #[must_use]
-    pub const fn new(key: AttemptExecutionKey, execution: ExecutionId) -> Self {
-        Self { key, execution }
-    }
-
-    /// Returns the exact lineage-qualified semantic attempt.
-    #[must_use]
-    pub const fn key(self) -> AttemptExecutionKey {
-        self.key
-    }
-
-    /// Returns the supervisor's process-local execution incarnation.
-    #[must_use]
-    pub const fn execution(self) -> ExecutionId {
-        self.execution
-    }
-}
+pub type QemuHotForkAttemptBasis = crate::AttemptExecutionRuntimeBasis;
 
 /// Parent-observed lifecycle of one exact hot-fork child.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -166,6 +140,8 @@ impl QemuHotForkReconciliationChildBasis {
 pub enum QemuHotForkPublicationDisposition {
     /// The exact observation was reconciled with the executor supervisor.
     Observation(ObservationId),
+    /// The exact paused checkpoint became the execution's durable origin.
+    ExactCheckpoint(ExactCheckpointId),
     /// Cancellation won before an observation became authoritative.
     Canceled,
     /// A stable execution or publication failure was durably reconciled.
@@ -307,9 +283,12 @@ where
     /// The source observation does not match the retained launch basis.
     #[error("source QEMU returned a child status outside the retained hot-fork basis")]
     ChildBasisMismatch,
-    /// An observation cannot be accepted for a child that never passed admission.
-    #[error("hot-fork observation publication requires an admitted private child channel")]
-    ObservationWithoutAdmission,
+    /// A modeled result cannot be accepted for a child that never passed admission.
+    #[error("hot-fork modeled result requires an admitted private child channel")]
+    ModeledResultWithoutAdmission,
+    /// A repeated callback supplied a different semantic disposition.
+    #[error("hot-fork publication disposition changed during reconciliation")]
+    PublicationDispositionMismatch,
     /// One backend operation failed while retaining reconciliation authority.
     #[error("hot-fork backend operation {operation} failed: {source}")]
     Backend {
@@ -451,13 +430,66 @@ where
         if matches!(
             disposition,
             QemuHotForkPublicationDisposition::Observation(_)
+                | QemuHotForkPublicationDisposition::ExactCheckpoint(_)
         ) && !self.child_admitted
         {
-            return Err(QemuHotForkAttemptReconciliationError::ObservationWithoutAdmission);
+            return Err(QemuHotForkAttemptReconciliationError::ModeledResultWithoutAdmission);
         }
         self.publication = Some(disposition);
         self.phase = QemuHotForkReconciliationPhase::PublicationReconciled;
         Ok(())
+    }
+
+    /// Advances one worker-owned post-execution reconciliation subphase.
+    ///
+    /// The first call records the exact durable semantic disposition. Later
+    /// calls require the same disposition and perform at most one backend
+    /// operation through [`Self::reconcile_step`]. This is the direct adapter
+    /// for [`crate::LocalAttemptWorker::reconcile_execution`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a phase, admission, disposition, basis, or backend error while
+    /// retaining the complete owner for exact retry or quarantine.
+    pub fn reconcile_execution_disposition(
+        &mut self,
+        disposition: crate::AttemptExecutionDisposition,
+    ) -> Result<
+        crate::AttemptExecutionReconciliationStep,
+        QemuHotForkAttemptReconciliationError<B::Error>,
+    > {
+        let publication = match disposition {
+            crate::AttemptExecutionDisposition::Observation(observation) => {
+                QemuHotForkPublicationDisposition::Observation(observation)
+            }
+            crate::AttemptExecutionDisposition::ExactCheckpoint(checkpoint) => {
+                QemuHotForkPublicationDisposition::ExactCheckpoint(checkpoint)
+            }
+            crate::AttemptExecutionDisposition::Canceled => {
+                QemuHotForkPublicationDisposition::Canceled
+            }
+            crate::AttemptExecutionDisposition::Failed => {
+                QemuHotForkPublicationDisposition::TerminalFailure
+            }
+        };
+        match self.publication {
+            None => self.reconcile_publication(publication)?,
+            Some(retained) if retained == publication => {}
+            Some(_) => {
+                return Err(QemuHotForkAttemptReconciliationError::PublicationDispositionMismatch);
+            }
+        }
+
+        match self.reconcile_step()? {
+            QemuHotForkReconciliationStep::Complete => {
+                Ok(crate::AttemptExecutionReconciliationStep::Complete)
+            }
+            QemuHotForkReconciliationStep::Advanced(_)
+            | QemuHotForkReconciliationStep::ChildRunning
+            | QemuHotForkReconciliationStep::AwaitingPublication => {
+                Ok(crate::AttemptExecutionReconciliationStep::Progressed)
+            }
+        }
     }
 
     /// Performs at most one bounded reconciliation operation.
@@ -938,9 +970,12 @@ mod tests {
     use std::io;
     use std::sync::{Arc, Mutex};
 
-    use crucible_campaign::{AttemptId, CampaignLineageId};
+    use crucible_campaign::{AttemptId, CampaignLineageId, ExecutionId};
 
     use super::*;
+    use crate::{
+        AttemptExecutionDisposition, AttemptExecutionKey, AttemptExecutionReconciliationStep,
+    };
 
     #[derive(Debug, Error)]
     #[error("injected reconciliation failure")]
@@ -1247,12 +1282,59 @@ mod tests {
         assert!(matches!(
             owner
                 .reconcile_publication(QemuHotForkPublicationDisposition::Observation(observation)),
-            Err(QemuHotForkAttemptReconciliationError::ObservationWithoutAdmission)
+            Err(QemuHotForkAttemptReconciliationError::ModeledResultWithoutAdmission)
         ));
         owner
             .reconcile_publication(QemuHotForkPublicationDisposition::TerminalFailure)
             .expect("terminal failure disposition");
         owner.quarantine();
+    }
+
+    #[test]
+    fn worker_disposition_drives_the_retained_owner_to_completion() {
+        let (mut owner, calls) = scripted([QemuHotForkChildDisposition::Exited(0)], false);
+        owner.admit_child().expect("admit child");
+        owner.reconcile_step().expect("observe reap");
+        owner.reconcile_step().expect("release child resources");
+        owner.reconcile_step().expect("release target");
+        owner.reconcile_step().expect("await publication");
+
+        let observation = observation_id(0x46);
+        assert_eq!(
+            owner
+                .reconcile_execution_disposition(AttemptExecutionDisposition::Observation(
+                    observation,
+                ))
+                .expect("release source status"),
+            AttemptExecutionReconciliationStep::Progressed
+        );
+        assert!(matches!(
+            owner.reconcile_execution_disposition(AttemptExecutionDisposition::Canceled),
+            Err(QemuHotForkAttemptReconciliationError::PublicationDispositionMismatch)
+        ));
+        assert_eq!(
+            owner
+                .reconcile_execution_disposition(AttemptExecutionDisposition::Observation(
+                    observation,
+                ))
+                .expect("release process contract"),
+            AttemptExecutionReconciliationStep::Complete
+        );
+        assert_eq!(
+            calls.lock().expect("calls").as_slice(),
+            [
+                "admit",
+                "observe",
+                "resources",
+                "target",
+                "status",
+                "contract"
+            ]
+        );
+        let Ok(backend) = owner.into_reconciled_backend() else {
+            panic!("owner should be fully reconciled")
+        };
+        drop(backend);
     }
 
     #[test]
@@ -1287,5 +1369,14 @@ mod tests {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<io::Error>();
         assert_send_sync::<LinuxQemuHotForkReconciliationError>();
+    }
+
+    fn observation_id(byte: u8) -> ObservationId {
+        ObservationId::parse(&typed_id(
+            "crucible.campaign.observation",
+            "observation",
+            byte,
+        ))
+        .expect("observation")
     }
 }

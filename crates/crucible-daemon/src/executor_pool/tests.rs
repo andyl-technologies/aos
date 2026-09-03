@@ -45,7 +45,8 @@ use crucible_qemu::{QemuReplayOracleCheck, QemuReplayOracleValidation, QemuVmSna
 use super::*;
 use crate::{
     AllowAllAttemptAdmission, AttemptAdmissionValidator, AttemptExecutionContext,
-    AttemptExecutionInput, AttemptExecutionKey, AttemptExecutionModel, AttemptExecutionProduct,
+    AttemptExecutionDisposition, AttemptExecutionInput, AttemptExecutionKey, AttemptExecutionModel,
+    AttemptExecutionProduct, AttemptExecutionReconciliationStep, AttemptExecutionRuntimeBasis,
     AttemptRuntimeState, AttemptStateCas, AttemptWorkResult, AttemptWorkerFailure,
     CheckpointPromotionExecutionBasis, CheckpointPromotionRestartWork, CheckpointRequestOutcome,
     ExactCheckpointStore, ExecutionCancellation, ExecutorCapacity, ExecutorLocalService,
@@ -221,6 +222,13 @@ impl LocalAttemptWorker for SequencedFailureWorker {
         };
         AttemptWorkResult::new(queued, result)
     }
+
+    fn reconcile_execution(
+        &mut self,
+        _disposition: AttemptExecutionDisposition,
+    ) -> Result<AttemptExecutionReconciliationStep, AttemptWorkerFailure<Self::Error>> {
+        panic!("a failed execution must reconcile its owner before returning")
+    }
 }
 
 struct BlockingWorker {
@@ -375,6 +383,8 @@ impl LocalAttemptWorker for PanickingWorker {
 struct CandidateModel {
     candidate: ObservationCandidate,
     calls: Arc<AtomicUsize>,
+    runtime_bases: Arc<Mutex<Vec<AttemptExecutionRuntimeBasis>>>,
+    reconciliations: Arc<Mutex<Vec<AttemptExecutionDisposition>>>,
 }
 
 struct ForeignCheckpointModel;
@@ -506,8 +516,25 @@ impl AttemptExecutionModel for CandidateModel {
         context: &AttemptExecutionContext,
     ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
         assert!(!context.cancellation().is_canceled());
+        self.runtime_bases
+            .lock()
+            .expect("runtime basis log")
+            .push(context.runtime_basis().expect("worker runtime basis"));
         self.calls.fetch_add(1, Ordering::AcqRel);
         Ok(AttemptExecutionProduct::observation(self.candidate.clone()))
+    }
+
+    fn reconcile_execution(
+        &mut self,
+        disposition: AttemptExecutionDisposition,
+    ) -> Result<AttemptExecutionReconciliationStep, AttemptWorkerFailure<Self::Error>> {
+        let mut reconciliations = self.reconciliations.lock().expect("reconciliation log");
+        reconciliations.push(disposition);
+        if reconciliations.len() == 1 {
+            Ok(AttemptExecutionReconciliationStep::Progressed)
+        } else {
+            Ok(AttemptExecutionReconciliationStep::Complete)
+        }
     }
 }
 
@@ -1113,6 +1140,8 @@ fn campaign_driver_pool_flight_incorporates_one_execution_without_submit_polling
     let capability =
         LocalExecutorCapabilityService::new(supervisor, description).expect("capability service");
     let calls = Arc::new(AtomicUsize::new(0));
+    let runtime_bases = Arc::new(Mutex::new(Vec::new()));
+    let reconciliations = Arc::new(Mutex::new(Vec::new()));
     let pool = LocalExecutorWorkerPool::start(
         capability,
         CampaignExecutorStore::new(Arc::clone(&repository)),
@@ -1122,6 +1151,8 @@ fn campaign_driver_pool_flight_incorporates_one_execution_without_submit_polling
             CandidateModel {
                 candidate: candidate.clone(),
                 calls: Arc::clone(&calls),
+                runtime_bases: Arc::clone(&runtime_bases),
+                reconciliations: Arc::clone(&reconciliations),
             },
         )],
     )
@@ -1146,14 +1177,15 @@ fn campaign_driver_pool_flight_incorporates_one_execution_without_submit_polling
     let first = driver
         .step("executor-flight", WorkerSlotId::new(0))
         .expect("submit attempt");
-    assert!(matches!(
-        first,
-        CampaignExecutorStepOutcome::Running {
-            attempt,
-            newly_accepted: true,
-            ..
-        } if attempt == admitted.attempt
-    ));
+    let CampaignExecutorStepOutcome::Running {
+        attempt,
+        execution,
+        newly_accepted: true,
+    } = first
+    else {
+        panic!("first driver step did not admit the attempt")
+    };
+    assert_eq!(attempt, admitted.attempt);
     let deadline = Instant::now() + Duration::from_secs(2);
     let incorporated = loop {
         match driver
@@ -1175,7 +1207,26 @@ fn campaign_driver_pool_flight_incorporates_one_execution_without_submit_polling
         incorporated.observation,
         candidate.observation().id().expect("observation id")
     );
+    wait_until(Duration::from_secs(2), || {
+        reconciliations
+            .lock()
+            .is_ok_and(|reconciliations| reconciliations.len() == 2)
+    });
     assert_eq!(calls.load(Ordering::Acquire), 1);
+    assert_eq!(
+        runtime_bases.lock().expect("runtime bases").as_slice(),
+        [AttemptExecutionRuntimeBasis::new(
+            AttemptExecutionKey::new(lineage.id().expect("lineage id"), admitted.attempt),
+            execution,
+        )]
+    );
+    assert_eq!(
+        reconciliations.lock().expect("reconciliations").as_slice(),
+        [
+            AttemptExecutionDisposition::Observation(incorporated.observation),
+            AttemptExecutionDisposition::Observation(incorporated.observation),
+        ]
+    );
     assert_eq!(submits.load(Ordering::Acquire), 1);
     assert!(status_reads.load(Ordering::Acquire) >= 1);
     assert_eq!(driver.reservation_count(), 0);

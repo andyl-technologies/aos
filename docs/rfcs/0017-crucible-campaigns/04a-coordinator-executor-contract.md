@@ -2305,9 +2305,17 @@ the QEMU-owned process-contract descriptors. An observation is invalid if the
 private child was never admitted. A backend error retains the current phase for
 exact retry; dropping any incomplete owner kills through the pidfd and transfers
 the target cgroup to quarantine. The executor reservation remains associated
-with this state until the semantic outcome is supplied. The worker-pool wiring
-that carries the linear reservation through this owner remains required before
-hot fork is advertised.
+with this state until the semantic outcome is supplied. The worker execution
+context carries the exact lineage-qualified attempt and process-local
+execution incarnation as operational, non-modeled data. After a successful
+modeled result, the fixed worker pool supplies the durable observation,
+checkpoint, cancellation, or rejected-result disposition through a bounded
+post-execution callback and does not dispatch another assignment on that
+worker until the retained owner reports complete. A runner that returns an
+execution error MUST instead finish or quarantine its operational incarnation
+before returning, so supervisor requeue cannot overlap the failed QEMU owner.
+The concrete hot-fork runner that creates this owner and drives the modeled
+private child remains required before hot fork is advertised.
 
 Exactly one attempt-owned watcher blocks on the same sticky eventfd, and child
 contracts cannot be minted before that watcher is live. Terminal cancellation
@@ -2968,7 +2976,10 @@ pidfd/cgroup half without claiming direct-parent authority. The daemon
 reconciliation owner consumes the launch token without exposing a PID-only
 success state and retains the source, target, private QMP channel, exact
 attempt/execution basis, and semantic publication disposition through ordered
-cleanup. Concrete worker-pool and modeled-driver wiring remain open.
+cleanup. The worker-pool post-execution contract now carries that exact basis
+and durable disposition through bounded cleanup before worker reuse. Concrete
+hot-fork runner construction, private-channel driving, and modeled candidate
+production remain open.
 
 The source QEMU now reserves the request's unique nonzero child-process
 generation in a fixed 4,096-record table before forking. The version-1

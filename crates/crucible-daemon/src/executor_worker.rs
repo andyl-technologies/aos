@@ -11,7 +11,7 @@ use crucible::ContentHash;
 use crucible_campaign::{
     Attempt, AttemptResourceLimits, AttemptStart, BranchPath, CampaignExecutorStore,
     CampaignLineage, CampaignRepositoryError, ConfigurationArtifact, ExactCheckpointId,
-    ExecutionRetentionIntent, ExecutorRejection, ObservationCandidate, ObservationId,
+    ExecutionId, ExecutionRetentionIntent, ExecutorRejection, ObservationCandidate, ObservationId,
     ResolvedSelection, ScenarioArtifact, SubmitAttemptRequest,
 };
 
@@ -51,6 +51,38 @@ pub struct AttemptExecutionInput {
     attempt: Attempt,
     path: BranchPath,
     start: ResolvedAttemptStart,
+}
+
+/// Exact process-local reservation basis for one operational execution.
+///
+/// This value is never part of modeled input or canonical evidence. It lets a
+/// process owner bind cleanup and publication reconciliation to the same
+/// lineage-qualified attempt and execution incarnation retained by the local
+/// supervisor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AttemptExecutionRuntimeBasis {
+    key: crate::AttemptExecutionKey,
+    execution: ExecutionId,
+}
+
+impl AttemptExecutionRuntimeBasis {
+    /// Binds one semantic attempt to its process-local execution incarnation.
+    #[must_use]
+    pub const fn new(key: crate::AttemptExecutionKey, execution: ExecutionId) -> Self {
+        Self { key, execution }
+    }
+
+    /// Returns the exact lineage-qualified semantic attempt.
+    #[must_use]
+    pub const fn key(self) -> crate::AttemptExecutionKey {
+        self.key
+    }
+
+    /// Returns the supervisor's process-local execution incarnation.
+    #[must_use]
+    pub const fn execution(self) -> ExecutionId {
+        self.execution
+    }
 }
 
 impl AttemptExecutionInput {
@@ -159,6 +191,7 @@ pub fn resolve_attempt_execution_input(
 /// configuration.
 #[derive(Clone, Debug)]
 pub struct AttemptExecutionContext {
+    runtime_basis: Option<AttemptExecutionRuntimeBasis>,
     resources: AttemptResourceLimits,
     retention: ExecutionRetentionIntent,
     cancellation: ExecutionCancellation,
@@ -178,6 +211,7 @@ impl AttemptExecutionContext {
         checkpoint_request: ExecutionCheckpointRequest,
     ) -> Self {
         Self {
+            runtime_basis: None,
             resources,
             retention,
             cancellation,
@@ -186,6 +220,22 @@ impl AttemptExecutionContext {
             checkpoint_scenario: None,
             checkpoint_handoff: None,
         }
+    }
+
+    /// Attaches the exact process-local reservation owned by this execution.
+    #[must_use]
+    pub(crate) const fn with_runtime_basis(mut self, basis: AttemptExecutionRuntimeBasis) -> Self {
+        self.runtime_basis = Some(basis);
+        self
+    }
+
+    /// Returns the process-local reservation basis when this is worker work.
+    ///
+    /// Standalone checkpoint preparation contexts intentionally have no
+    /// supervisor reservation and therefore return `None`.
+    #[must_use]
+    pub const fn runtime_basis(&self) -> Option<AttemptExecutionRuntimeBasis> {
+        self.runtime_basis
     }
 
     /// Attaches the exact durable root from which this execution must resume.
@@ -275,7 +325,8 @@ impl AttemptExecutionContext {
     /// Returns whether another context names the exact same execution contract.
     #[must_use]
     pub fn matches(&self, other: &Self) -> bool {
-        self.resources == other.resources
+        self.runtime_basis == other.runtime_basis
+            && self.resources == other.resources
             && self.retention == other.retention
             && self.resume_checkpoint == other.resume_checkpoint
             && self.checkpoint_scenario == other.checkpoint_scenario
@@ -312,6 +363,28 @@ pub trait AttemptExecutionModel {
         input: &AttemptExecutionInput,
         context: &AttemptExecutionContext,
     ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>>;
+
+    /// Reconciles model-owned operational authority after semantic completion.
+    ///
+    /// The worker calls this only after a successful [`Self::execute`] result
+    /// reaches a durable supervisor disposition. Implementations that retain a
+    /// process, template, or publication lease must authenticate the exact
+    /// disposition and release or quarantine that authority before returning.
+    /// An execution that returns an error must instead finish or quarantine
+    /// its operational owner before returning that error; this prevents a
+    /// retry from overlapping the failed incarnation.
+    /// Models without post-execution authority use the default no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified operational failure while retaining retry or
+    /// quarantine authority according to the failure class.
+    fn reconcile_execution(
+        &mut self,
+        _disposition: AttemptExecutionDisposition,
+    ) -> Result<AttemptExecutionReconciliationStep, AttemptWorkerFailure<Self::Error>> {
+        Ok(AttemptExecutionReconciliationStep::Complete)
+    }
 }
 
 /// Canonical completion or exact paused capture returned by an execution model.
@@ -348,6 +421,32 @@ pub enum AttemptWorkerFailure<E> {
     Terminal(E),
 }
 
+/// Durable semantic disposition supplied to model-owned operational cleanup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttemptExecutionDisposition {
+    /// The exact observation became the accepted or idempotent completion.
+    Observation(ObservationId),
+    /// The exact paused checkpoint became the durable execution origin.
+    ExactCheckpoint(ExactCheckpointId),
+    /// Cancellation won before a modeled result became authoritative.
+    Canceled,
+    /// Execution failed or its result was rejected before becoming authoritative.
+    ///
+    /// The supervisor may retry the semantic attempt when the originating
+    /// failure was transient, but every operational owner from this execution
+    /// incarnation must reconcile before that worker accepts more work.
+    Failed,
+}
+
+/// Progress made by one bounded post-execution reconciliation callback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttemptExecutionReconciliationStep {
+    /// One monotonic subphase completed and the callback must run again.
+    Progressed,
+    /// Every model-owned authority for this execution is reconciled.
+    Complete,
+}
+
 /// Worker boundary consumed by the bounded local supervisor driver.
 pub trait LocalAttemptWorker {
     /// Operational or semantic worker failure.
@@ -359,6 +458,31 @@ pub trait LocalAttemptWorker {
     ///
     /// Returns a worker-specific error before durable completion reconciliation.
     fn execute(&mut self, queued: QueuedAttempt) -> AttemptWorkResult<Self::Error>;
+
+    /// Reconciles operational authority retained by one successful execution.
+    ///
+    /// The pool invokes this for exactly one disposition, repeatedly until
+    /// completion, before this worker may execute another assignment. Retryable
+    /// failures are called again with the same disposition; terminal or
+    /// canceled failures must already have transferred remaining authority to
+    /// quarantine. Every attempt-charged process and resource must already be
+    /// stopped before [`Self::execute`] returns successfully; this callback
+    /// retains only the source-side or publication authority whose release is
+    /// ordered after the durable semantic disposition.
+    /// [`Self::execute`] errors are not passed to this callback: their
+    /// operational owner must already be finished or quarantined when the
+    /// error is returned, before the supervisor can requeue the attempt.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified cleanup failure while preserving the worker's
+    /// owned reconciliation state.
+    fn reconcile_execution(
+        &mut self,
+        _disposition: AttemptExecutionDisposition,
+    ) -> Result<AttemptExecutionReconciliationStep, AttemptWorkerFailure<Self::Error>> {
+        Ok(AttemptExecutionReconciliationStep::Complete)
+    }
 }
 
 /// Linear worker return carrying the sole reconciliation token and model result.
@@ -474,6 +598,10 @@ where
             queued.cancellation().clone(),
             queued.checkpoint_request().clone(),
         )
+        .with_runtime_basis(AttemptExecutionRuntimeBasis::new(
+            crate::AttemptExecutionKey::new(queued.request().lineage(), queued.request().attempt()),
+            queued.execution(),
+        ))
         .with_resume_checkpoint(queued.origin().checkpoint())
         .with_checkpoint_handoff(expected_scenario, queued.checkpoint_handoff().cloned());
         let product = self
@@ -539,6 +667,15 @@ where
 
     fn execute(&mut self, queued: QueuedAttempt) -> AttemptWorkResult<Self::Error> {
         RepositoryAttemptWorker::execute(self, queued)
+    }
+
+    fn reconcile_execution(
+        &mut self,
+        disposition: AttemptExecutionDisposition,
+    ) -> Result<AttemptExecutionReconciliationStep, AttemptWorkerFailure<Self::Error>> {
+        self.model
+            .reconcile_execution(disposition)
+            .map_err(|failure| map_worker_failure(failure, RepositoryAttemptWorkerError::Model))
     }
 }
 
