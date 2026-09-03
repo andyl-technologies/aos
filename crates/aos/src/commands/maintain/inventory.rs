@@ -33,18 +33,10 @@ pub(super) fn evaluate(nix: &NixRunner, target: Option<&str>) -> Result<Inventor
     let inventory_digest =
         Sha256Digest::of_canonical(aos_maintain::MAINTENANCE_INVENTORY_V1, &inventory)?;
 
-    let repository_root = fs::canonicalize(nix.root())
-        .with_context(|| format!("resolving repository root {}", nix.root().display()))?;
-    let common_dir = git_text(
-        &repository_root,
-        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-    )?;
-    let common_dir = fs::canonicalize(&common_dir)
-        .with_context(|| format!("resolving Git common directory {common_dir}"))?;
-    let remote = canonical_remote(&git_text(
-        &repository_root,
-        &["remote", "get-url", "origin"],
-    )?)?;
+    let coordinates = repository_coordinates(nix.root())?;
+    let repository_root = coordinates.root;
+    let common_dir = coordinates.common_dir;
+    let remote = coordinates.canonical_remote;
 
     let object_format =
         match git_text(&repository_root, &["rev-parse", "--show-object-format"])?.as_str() {
@@ -115,6 +107,33 @@ pub(super) fn evaluate(nix: &NixRunner, target: Option<&str>) -> Result<Inventor
     };
     envelope.validate()?;
     Ok(envelope)
+}
+
+/// Canonical paths and remote identity used to bind local maintenance state.
+pub(super) struct RepositoryCoordinates {
+    pub(super) root: std::path::PathBuf,
+    pub(super) common_dir: std::path::PathBuf,
+    pub(super) canonical_remote: String,
+}
+
+/// Resolves the repository identity required by read-only cached views.
+pub(super) fn repository_coordinates(root: &Path) -> Result<RepositoryCoordinates> {
+    let directory = fs::canonicalize(root)
+        .with_context(|| format!("resolving repository root {}", root.display()))?;
+    let root = fs::canonicalize(git_text(&directory, &["rev-parse", "--show-toplevel"])?)
+        .context("resolving Git worktree root")?;
+    let common_dir = git_text(
+        &root,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )?;
+    let common_dir = fs::canonicalize(&common_dir)
+        .with_context(|| format!("resolving Git common directory {common_dir}"))?;
+    let canonical_remote = canonical_remote(&git_text(&root, &["remote", "get-url", "origin"])?)?;
+    Ok(RepositoryCoordinates {
+        root,
+        common_dir,
+        canonical_remote,
+    })
 }
 
 fn git_object(algorithm: GitObjectFormat, value: &str) -> Result<GitObjectId> {

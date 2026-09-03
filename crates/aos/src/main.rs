@@ -23,7 +23,7 @@
 //!
 //! `0` success; `1` build/test failure (and unknown errors); `2` user
 //! error; `3` Nix not found. Maintenance commands additionally use stable
-//! outcome codes `10` through `17`; see
+//! outcome codes `10` through `14` and `130`; see
 //! `aos_maintain::presentation::CommandDisposition`.
 
 /// Runs the `aos` CLI.

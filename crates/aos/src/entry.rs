@@ -19,7 +19,7 @@ pub async fn aos_main() {
     let (progress, color) = maintenance_output_policy(&cli);
     let printer = printer(cli.verbose, cli.quiet, cli.json, progress, color);
     if let Commands::Maintain(args) = &cli.command {
-        let result = commands::maintain::run(&cli, args);
+        let result = commands::maintain::run(&cli, args).await;
         let exit_code = match result {
             Ok(completion) => {
                 let exit_code = i32::from(completion.exit_code());
