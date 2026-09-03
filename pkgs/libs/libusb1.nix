@@ -1,22 +1,63 @@
 ##! libusb1 — userspace USB device access library
 {
   mkDerivation,
-  fetchurl,
+  mkGithubUpstream,
   gnumake,
   stdenv,
 }: let
-  version = "1.0.29";
+  upstream = mkGithubUpstream {
+    unitId = "libusb-1";
+    family = "libusb";
+    member = "libusb1";
+    stream = "1";
+    owner = "pkgs/libs/libusb1.nix";
+    version = "1.0.29";
+    upstreamId = "v1.0.29";
+    repository = "libusb/libusb";
+    tagPrefix = "v";
+    major = 1;
+    source = {
+      authority = "github.com";
+      path = [
+        "libusb"
+        "libusb"
+        "releases"
+        "download"
+        {
+          parts = [
+            {literal = "v";}
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+          ];
+        }
+        {
+          parts = [
+            {literal = "libusb-";}
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+            {literal = ".tar.bz2";}
+          ];
+        }
+      ];
+      hash = "sha256-WXf8lQ+NE5XM6pvUjAaz+Aj9PCyWG0Swwubin8OnCoU=";
+    };
+  };
+  inherit (upstream) version;
 in
   mkDerivation {
     pname = "libusb1";
     inherit version;
 
-    src = fetchurl {
-      urls = [
-        "https://github.com/libusb/libusb/releases/download/v${version}/libusb-${version}.tar.bz2"
-      ];
-      hash = "sha256-WXf8lQ+NE5XM6pvUjAaz+Aj9PCyWG0Swwubin8OnCoU=";
-    };
+    src = upstream.components.main.sources.source;
+    update = upstream.update;
 
     buildDeps = [gnumake];
     runtimeDeps = [];
