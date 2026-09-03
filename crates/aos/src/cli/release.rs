@@ -30,6 +30,11 @@ pub enum ReleaseCommand {
     Qualify(ReleaseQualifyArgs),
     /// Import the exact qualified release into the canonical production Hub
     Promote(ReleasePromoteArgs),
+    /// Advance or complete planned production channel rollout
+    Channel {
+        #[command(subcommand)]
+        command: ReleaseChannelCommand,
+    },
     /// Verify a captured release bundle using only public trust inputs
     Verify(ReleaseVerifyArgs),
 }
@@ -247,6 +252,71 @@ pub struct ReleasePromoteArgs {
     pub token: Option<String>,
 
     /// New production evidence directory; existing paths are never replaced
+    #[arg(long)]
+    pub output: PathBuf,
+}
+
+#[derive(Subcommand)]
+pub enum ReleaseChannelCommand {
+    /// Compare-and-swap one planned channel partition range
+    Advance(ReleaseChannelAdvanceArgs),
+}
+
+#[derive(Args)]
+pub struct ReleaseChannelAdvanceArgs {
+    /// Closed finalized bundle whose manifest is being rolled out
+    #[arg(long)]
+    pub bundle: PathBuf,
+
+    /// Promoted or rolling append-only journal
+    #[arg(long)]
+    pub journal: PathBuf,
+
+    /// Exact signed production publication receipt
+    #[arg(long)]
+    pub production_receipt: PathBuf,
+
+    /// Planned channel name
+    #[arg(long)]
+    pub channel: String,
+
+    /// Expected prior channel generation
+    #[arg(long)]
+    pub prior_generation: u64,
+
+    /// Inclusive first planned partition
+    #[arg(long)]
+    pub first_partition: u16,
+
+    /// Inclusive final planned partition
+    #[arg(long)]
+    pub last_partition: u16,
+
+    /// Trusted manifest key as KEY_ID=PATH; repeat to satisfy thresholds
+    #[arg(long = "trusted-key", value_name = "KEY_ID=PATH", required = true)]
+    pub trusted_keys: Vec<String>,
+
+    /// Independently trusted production Hub receipt key as KEY_ID=PATH
+    #[arg(
+        long = "production-receipt-key",
+        value_name = "KEY_ID=PATH",
+        required = true
+    )]
+    pub production_receipt_keys: Vec<String>,
+
+    /// Independently trusted channel receipt key as KEY_ID=PATH
+    #[arg(
+        long = "channel-receipt-key",
+        value_name = "KEY_ID=PATH",
+        required = true
+    )]
+    pub channel_receipt_keys: Vec<String>,
+
+    /// Short-lived production-only Hub access token
+    #[arg(long, env = "AOS_TOKEN", hide_env_values = true)]
+    pub token: Option<String>,
+
+    /// New channel evidence directory; existing paths are never replaced
     #[arg(long)]
     pub output: PathBuf,
 }

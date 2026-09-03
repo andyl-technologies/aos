@@ -68,6 +68,12 @@ enum Command {
         /// Owner-private file containing a standard-base64 Ed25519 signing seed.
         #[arg(long, env = "HUB_RELEASE_RECEIPT_KEY_FILE")]
         release_receipt_key_file: Option<PathBuf>,
+        /// Stable public key id for signed channel receipts.
+        #[arg(long, env = "HUB_CHANNEL_RECEIPT_KEY_ID")]
+        channel_receipt_key_id: Option<String>,
+        /// Owner-private file containing the channel Ed25519 signing seed.
+        #[arg(long, env = "HUB_CHANNEL_RECEIPT_KEY_FILE")]
+        channel_receipt_key_file: Option<PathBuf>,
         /// Owner-private JSON map of trusted Hub receipt key ids to public keys.
         #[arg(long, env = "HUB_RELEASE_PUBLICATION_KEYS_FILE")]
         release_publication_keys_file: Option<PathBuf>,
@@ -415,6 +421,8 @@ async fn main() -> Result<()> {
             deployment_id,
             release_receipt_key_id,
             release_receipt_key_file,
+            channel_receipt_key_id,
+            channel_receipt_key_file,
             release_publication_keys_file,
             qualification_keys_file,
             reindex_interval,
@@ -508,12 +516,16 @@ async fn main() -> Result<()> {
                 deployment_id,
                 release_receipt_key_id,
                 release_receipt_key_file,
+                channel_receipt_key_id,
+                channel_receipt_key_file,
                 release_publication_keys_file,
                 qualification_keys_file,
             ) {
-                (Some(deployment_id), Some(key_id), Some(seed_path), Some(publication_keys_path), Some(qualification_keys_path)) => {
+                (Some(deployment_id), Some(key_id), Some(seed_path), Some(channel_key_id), Some(channel_seed_path), Some(publication_keys_path), Some(qualification_keys_path)) => {
                     let seed = std::fs::read_to_string(&seed_path)
                         .with_context(|| format!("reading release receipt key at {}", seed_path.display()))?;
+                    let channel_seed = std::fs::read_to_string(&channel_seed_path)
+                        .with_context(|| format!("reading channel receipt key at {}", channel_seed_path.display()))?;
                     let publication_keys_source = std::fs::read_to_string(&publication_keys_path)
                         .with_context(|| format!("reading publication keys at {}", publication_keys_path.display()))?;
                     let publication_keys = serde_json::from_str(&publication_keys_source)
@@ -527,15 +539,17 @@ async fn main() -> Result<()> {
                             deployment_id,
                             key_id,
                             seed.trim(),
+                            channel_key_id,
+                            channel_seed.trim(),
                             publication_keys,
                             qualification_keys,
                         )
                         .context("configuring release evidence authority")?,
                     ));
                 }
-                (None, None, None, None, None) => {}
+                (None, None, None, None, None, None, None) => {}
                 _ => anyhow::bail!(
-                    "HUB_DEPLOYMENT_ID, HUB_RELEASE_RECEIPT_KEY_ID, HUB_RELEASE_RECEIPT_KEY_FILE, HUB_RELEASE_PUBLICATION_KEYS_FILE, and HUB_QUALIFICATION_KEYS_FILE must be configured together"
+                    "HUB_DEPLOYMENT_ID, HUB_RELEASE_RECEIPT_KEY_ID, HUB_RELEASE_RECEIPT_KEY_FILE, HUB_CHANNEL_RECEIPT_KEY_ID, HUB_CHANNEL_RECEIPT_KEY_FILE, HUB_RELEASE_PUBLICATION_KEYS_FILE, and HUB_QUALIFICATION_KEYS_FILE must be configured together"
                 ),
             }
             if let Some(path) = jwt_secret_file {

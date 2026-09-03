@@ -5,6 +5,7 @@
 
 mod build;
 mod capture;
+mod channel;
 mod finalize_image;
 mod hub_transition;
 mod plan;
@@ -49,6 +50,9 @@ pub fn run(command: &ReleaseCommand, nix: &NixRunner, printer: &Printer) -> Resu
         }
         ReleaseCommand::Promote(_) => {
             anyhow::bail!("release promote command must use the asynchronous dispatcher")
+        }
+        ReleaseCommand::Channel { .. } => {
+            anyhow::bail!("release channel command must use the asynchronous dispatcher")
         }
         ReleaseCommand::Verify(args) => verify::run(args, printer),
     }
@@ -114,6 +118,19 @@ pub async fn promote_offline(
     printer: &Printer,
 ) -> Result<()> {
     promote::run(args, printer).await
+}
+
+/// Advances one planned production release channel range.
+///
+/// # Errors
+///
+/// Returns an error when trust, plan intent, generation continuity, public
+/// projection, signed receipt, or durable evidence persistence fails.
+pub async fn channel_offline(
+    command: &crate::cli::ReleaseChannelCommand,
+    printer: &Printer,
+) -> Result<()> {
+    channel::run(command, printer).await
 }
 
 /// Invokes an external signer without constructing a Nix environment.

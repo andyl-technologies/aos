@@ -255,8 +255,12 @@ impl ChannelReceiptV1 {
     /// # Errors
     ///
     /// Returns an error for an unknown channel, a partition outside `0..=255`,
-    /// a reversed range, a non-incrementing generation, or an empty timestamp.
+    /// a reversed range, a non-incrementing generation, an unsupported schema,
+    /// or an empty timestamp.
     pub fn validate(&self) -> Result<()> {
+        if self.schema_version != "aos.release.channel-receipt/v1" {
+            bail!("unsupported channel receipt schema");
+        }
         if !matches!(self.channel.as_str(), "edge" | "candidate" | "stable") {
             bail!("unknown release channel: {}", self.channel);
         }
