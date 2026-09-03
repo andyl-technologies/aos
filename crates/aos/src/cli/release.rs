@@ -132,6 +132,10 @@ pub struct ReleaseStageArgs {
     #[arg(long = "trusted-key", value_name = "KEY_ID=PATH", required = true)]
     pub trusted_keys: Vec<String>,
 
+    /// Independently trusted staging Hub receipt key as KEY_ID=PATH
+    #[arg(long = "hub-receipt-key", value_name = "KEY_ID=PATH", required = true)]
+    pub hub_receipt_keys: Vec<String>,
+
     /// Short-lived staging-only Hub access token
     #[arg(long, env = "AOS_TOKEN", hide_env_values = true)]
     pub token: Option<String>,
