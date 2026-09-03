@@ -5,6 +5,13 @@ anchor, signed Git history, signed release and channel tags, verified store
 realizations, and optional signed narinfo. Upload authentication controls who
 can write the serving surface; it does not replace those checks.
 
+These controls authenticate the publisher and exact content; they do not prove
+that a package is benign. Runtime confinement is a separate defense-in-depth
+control for services activated through a package's `expose` contract, and a
+package can declare permissions that weaken or remove that boundary. Review the
+confinement model in [Manage packages with APM](../aos/packages.md#understand-service-confinement)
+in addition to establishing registry trust.
+
 ## Keep the keys straight
 
 | Credential | Format | Purpose |

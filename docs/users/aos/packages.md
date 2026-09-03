@@ -183,6 +183,34 @@ apm gc
 The latest keep window and the active generation of each independent profile
 are retained. Image generations are not affected.
 
+## Understand service confinement
+
+Runtime confinement applies to systemd services that a package publishes
+through its `expose` contract. A package without `expose` has no APM-managed
+service to activate, and directly running an executable from a package profile
+does not place that process in the service sandbox.
+
+For an exposed service, an empty or omitted permission manifest selects the
+least-privilege defaults: a package-private root and temporary directories, a
+private network and user identity, an empty capability set, restricted devices
+and system calls, and the generated Landlock and systemd hardening policy.
+Requested permissions widen that boundary. Root-equivalent grants such as
+`CAP_SYS_ADMIN`, privileged users, or writable system locations cause APM to
+label the package `unconfined` instead of presenting it as sandboxed.
+
+Inspect the signed declaration and the host-policy decision before activation:
+
+```sh
+apm info PACKAGE --system --permissions
+apm policy PACKAGE --system
+```
+
+Confinement limits what an activated service can do; it does not establish that
+the package or its registry is trustworthy. Registry signatures authenticate
+the authorized publisher and exact content, not whether that content is benign.
+Bootstrap and operate registry trust independently as described in
+[Manage registry trust and incidents](../registry/trust.md).
+
 ## Distinguish a sysroot install
 
 This command has a narrower meaning than its spelling suggests:
