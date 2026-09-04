@@ -360,8 +360,10 @@ pub use realization::{
     QemuCapturedVmStateSource, QemuExactProfileWarmRestoreNodeLauncher,
     QemuExactRootWarmRestoreNodeLauncher, QemuFailedLaunchChildSource,
     QemuGuardedNodeRealizationLauncher, QemuGuardedThinNodeRealizationLauncher,
-    QemuLiveAttemptBackend, QemuLiveBackendShutdown, QemuNodeLauncher, QemuNodeRealizationExecutor,
-    QemuNodeRealizationLauncher, QemuPreparedThinWarmRestoreNodeLauncher, QemuRealizedNodeBackend,
+    QemuHotForkTemplateIdentity, QemuHotForkTemplatePreparer, QemuLiveAttemptBackend,
+    QemuLiveBackendShutdown, QemuNodeLauncher, QemuNodeRealizationExecutor,
+    QemuNodeRealizationLauncher, QemuPreparedHotForkTemplate,
+    QemuPreparedThinWarmRestoreNodeLauncher, QemuRealizedNodeBackend,
     QemuReplayValidationNodeLauncher, QemuThinProfileWarmRestoreNodeLauncher,
     QemuVmLiveRealizationExecutor, QemuWarmRestoreNodeLauncher,
 };
