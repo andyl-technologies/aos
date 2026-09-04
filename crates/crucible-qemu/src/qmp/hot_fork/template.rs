@@ -245,6 +245,58 @@ pub struct QmpHotForkTemplateState {
 }
 
 impl QmpHotForkTemplateState {
+    #[cfg(test)]
+    pub(crate) fn one_prepared(request: super::QmpHotForkRequest) -> Self {
+        let plugin_barrier =
+            QmpHotForkPluginBarrierState::one_quiescent(request.plugin_barrier_generation(), 1);
+        let worker_mask = plugin_barrier.worker_mask();
+        Self {
+            generation: request.template_generation(),
+            outcome: QmpHotForkTemplateOutcome::Prepared,
+            transaction_active: true,
+            acknowledged_proofs: QMP_HOT_FORK_TEMPLATE_REQUIRED_PROOFS,
+            missing_proofs: 0,
+            plugin_barrier,
+            rcu_barrier: QmpHotForkRcuBarrierState::one_quiescent(request.rcu_barrier_generation()),
+            bh_timer_barrier: QmpHotForkBhTimerBarrierState::one_quiescent(
+                request.bh_timer_barrier_generation(),
+            ),
+            block_barrier: QmpHotForkBlockBarrierState::one_quiescent(
+                request.block_barrier_generation(),
+            ),
+            resource_stage: QmpHotForkTemplateResourceStageState {
+                template_generation: request.template_generation(),
+                private_ring_staged: true,
+                private_ring_generation: request.private_ring_generation(),
+                diagnostics_staged: true,
+                diagnostic_generation: request.diagnostic_generation(),
+                diagnostics_resource_plan_bound: true,
+                qmp_staged: true,
+                qmp_generation: request.qmp_generation(),
+                qmp_resource_plan_bound: true,
+                console_staged: true,
+                console_generation: request.console_generation(),
+                console_resource_plan_bound: true,
+                plugin_endpoints_staged: true,
+                plugin_endpoint_generation: request.plugin_endpoint_generation(),
+                plugin_private_ring_generation: request.private_ring_generation(),
+                plugin_barrier_generation: request.plugin_barrier_generation(),
+                worker_mask,
+                parent_resume_worker_mask: worker_mask,
+                child_reinitialize_worker_mask: worker_mask,
+                worker_disposition_bound: true,
+                transaction_bound: true,
+                parent_process_generation: request.parent_process_generation(),
+                child_process_generation: request.child_process_generation(),
+                plugin_child_plan_bound: true,
+                plugin_child_resource_plan_bound: true,
+                readiness_proof_acknowledged: true,
+            },
+            rollback_complete: false,
+            ready: true,
+        }
+    }
+
     /// Returns the process-local transaction generation.
     #[must_use]
     pub const fn generation(&self) -> u64 {

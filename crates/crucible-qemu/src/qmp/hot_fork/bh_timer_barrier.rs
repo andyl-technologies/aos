@@ -44,6 +44,34 @@ pub struct QmpHotForkBhTimerBarrierState {
 }
 
 impl QmpHotForkBhTimerBarrierState {
+    #[cfg(test)]
+    pub(crate) const fn one_quiescent(generation: u64) -> Self {
+        Self {
+            generation,
+            owner_thread_id: 1,
+            held: true,
+            complete: true,
+            bottom_halves_complete: true,
+            timers_complete: true,
+            admissions_in_flight: 0,
+            bottom_half_count: 0,
+            pending_bottom_halves: 0,
+            scheduled_bottom_halves: 0,
+            active_bottom_half_callbacks: 0,
+            pending_timers: 0,
+            active_timer_callbacks: 0,
+            aio_context_count: 0,
+            active_aio_polls: 0,
+            active_aio_dispatches: 0,
+            queued_coroutines: 0,
+            aio_handler_count: 0,
+            active_aio_handler_callbacks: 0,
+            aio_contexts_complete: true,
+            aio_handlers_complete: true,
+            quiescent: true,
+        }
+    }
+
     /// Returns the process-local hold/release generation.
     #[must_use]
     pub const fn generation(self) -> u64 {

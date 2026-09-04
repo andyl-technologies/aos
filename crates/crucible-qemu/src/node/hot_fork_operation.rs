@@ -350,7 +350,212 @@ fn hot_fork_host_io_binding(
     )
 }
 
+struct QemuHotForkRetainedState {
+    template: crate::QmpHotForkTemplateState,
+    private_ring: crate::QmpHotForkPrivateRingState,
+    diagnostics: crate::QmpHotForkChildDiagnosticState,
+    child_qmp: crate::QmpHotForkChildQmpState,
+    child_console: crate::QmpHotForkChildConsoleState,
+    process_contract: crate::QmpHotForkChildProcessContractState,
+}
+
+fn hot_fork_request_basis_mismatch(message: impl Into<String>) -> QemuNodeChannelError {
+    QemuNodeChannelError::new("derive retained hot-fork request", message)
+}
+
 impl QemuNode {
+    fn derive_hot_fork_request(
+        &mut self,
+    ) -> Result<crate::QmpHotForkRequest, QemuNodeChannelError> {
+        if self.lifecycle_state != QemuNodeLifecycleState::Running {
+            return Err(hot_fork_request_basis_mismatch(
+                "hot-fork request derivation requires a running source node",
+            ));
+        }
+
+        let retained = QemuHotForkRetainedState {
+            template: self
+                .channels
+                .qmp_machine_control
+                .query_hot_fork_template()?,
+            private_ring: self
+                .channels
+                .qmp_machine_control
+                .query_hot_fork_private_rings()?,
+            diagnostics: self
+                .channels
+                .qmp_machine_control
+                .query_hot_fork_child_diagnostics()?,
+            child_qmp: self
+                .channels
+                .qmp_machine_control
+                .query_hot_fork_child_qmp()?,
+            child_console: self
+                .channels
+                .qmp_machine_control
+                .query_hot_fork_child_console()?,
+            process_contract: self
+                .channels
+                .qmp_machine_control
+                .query_hot_fork_child_process_contract()?,
+        };
+        let confirmed_template = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_template()?;
+        if confirmed_template != retained.template {
+            return Err(hot_fork_request_basis_mismatch(
+                "retained template changed while its fork request was derived",
+            ));
+        }
+
+        let request = crate::QmpHotForkRequest::from_prepared_template(
+            &retained.template,
+            &retained.child_qmp,
+            &retained.child_console,
+            &retained.process_contract,
+        )
+        .map_err(|source| hot_fork_request_basis_mismatch(source.to_string()))?;
+        self.validate_hot_fork_request_basis(request, &retained)?;
+        Ok(request)
+    }
+
+    fn validate_hot_fork_request_basis(
+        &self,
+        request: crate::QmpHotForkRequest,
+        retained: &QemuHotForkRetainedState,
+    ) -> Result<(), QemuNodeChannelError> {
+        let resource = retained.template.resource_stage();
+        let ring = self.hot_fork_private_ring_stage().ok_or_else(|| {
+            hot_fork_request_basis_mismatch("source node retains no private-ring authority")
+        })?;
+        let ring_identity = ring.backing_identity();
+        let ring_matches = ring.state() == QemuHotForkPrivateRingStageState::Installed
+            && retained.private_ring.staged()
+            && retained.private_ring.generation() == request.private_ring_generation()
+            && retained.private_ring.template_generation() == request.template_generation()
+            && retained.private_ring.descriptor_name() == Some(ring.descriptor_name())
+            && retained.private_ring.device() == ring_identity.device()
+            && retained.private_ring.inode() == ring_identity.inode()
+            && retained.private_ring.length() == ring_identity.length()
+            && retained.private_ring.shrink_sealed()
+            && retained.private_ring.source_mapping_bound()
+            && retained.private_ring.source_length() == ring.source_setup_region().length()
+            && resource.private_ring_staged();
+        if !ring_matches {
+            return Err(hot_fork_request_basis_mismatch(
+                "QEMU private-ring state does not match the node-owned mapping",
+            ));
+        }
+
+        let diagnostics = self.hot_fork_child_diagnostic_stage().ok_or_else(|| {
+            hot_fork_request_basis_mismatch("source node retains no child-diagnostics authority")
+        })?;
+        let diagnostics_match = diagnostics.state()
+            == QemuHotForkChildDiagnosticStageState::Installed
+            && retained.diagnostics.staged()
+            && retained.diagnostics.generation() == request.diagnostic_generation()
+            && retained.diagnostics.template_generation() == request.template_generation()
+            && retained.diagnostics.descriptor_name() == Some(diagnostics.descriptor_name())
+            && retained.diagnostics.socket_cookie() == Some(diagnostics.socket_cookie())
+            && retained.diagnostics.replacement_plan_bound()
+            && diagnostics.replacement_plan_bound()
+            && resource.diagnostics_staged();
+        if !diagnostics_match {
+            return Err(hot_fork_request_basis_mismatch(
+                "QEMU child-diagnostics state does not match the node-owned stream",
+            ));
+        }
+
+        let child_qmp = self.hot_fork_child_qmp_stage().ok_or_else(|| {
+            hot_fork_request_basis_mismatch("source node retains no child-QMP authority")
+        })?;
+        let child_qmp_matches = child_qmp.state() == QemuHotForkChildQmpStageState::Installed
+            && retained.child_qmp.descriptor_name() == Some(child_qmp.descriptor_name())
+            && retained.child_qmp.socket_cookie() == Some(child_qmp.socket_cookie())
+            && retained.child_qmp.template_generation() == child_qmp.template_generation()
+            && retained.child_qmp.generation() == child_qmp.qmp_generation()
+            && retained.child_qmp.monitor_generation() == child_qmp.monitor_generation()
+            && retained.child_qmp.resource_plan_bound() == child_qmp.resource_plan_bound()
+            && resource.qmp_staged();
+        if !child_qmp_matches {
+            return Err(hot_fork_request_basis_mismatch(
+                "QEMU child-QMP state does not match the node-owned stream",
+            ));
+        }
+
+        let child_console = self.hot_fork_child_console_stage().ok_or_else(|| {
+            hot_fork_request_basis_mismatch("source node retains no child-console authority")
+        })?;
+        let child_console_matches = child_console.state()
+            == QemuHotForkChildConsoleStageState::Installed
+            && retained.child_console.descriptor_name() == Some(child_console.descriptor_name())
+            && retained.child_console.socket_cookie() == Some(child_console.socket_cookie())
+            && retained.child_console.template_generation() == child_console.template_generation()
+            && retained.child_console.generation() == child_console.console_generation()
+            && retained.child_console.resource_plan_bound() == child_console.resource_plan_bound()
+            && resource.console_staged();
+        if !child_console_matches {
+            return Err(hot_fork_request_basis_mismatch(
+                "QEMU child-console state does not match the node-owned stream",
+            ));
+        }
+
+        let endpoints = self.hot_fork_plugin_endpoint_stage().ok_or_else(|| {
+            hot_fork_request_basis_mismatch("source node retains no plugin-endpoint authority")
+        })?;
+        let endpoints_match = endpoints.state() == QemuHotForkPluginEndpointStageState::Installed
+            && endpoints.generation() == request.plugin_endpoint_generation()
+            && endpoints.template_generation() == request.template_generation()
+            && endpoints.private_ring_generation() == request.private_ring_generation()
+            && endpoints.plugin_barrier_generation() == request.plugin_barrier_generation()
+            && endpoints.worker_mask() == resource.worker_mask()
+            && endpoints.replacement_plan().is_some()
+            && resource.plugin_endpoints_staged();
+        if !endpoints_match {
+            return Err(hot_fork_request_basis_mismatch(
+                "QEMU template state does not match the node-owned plugin endpoints",
+            ));
+        }
+
+        let process_contract_matches = self
+            .hot_fork_child_process_contract_stage
+            .as_ref()
+            .is_some_and(|stage| stage.matches_state(&retained.process_contract));
+        if !process_contract_matches {
+            return Err(hot_fork_request_basis_mismatch(
+                "QEMU process-contract state does not match the node-owned authority",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Forks the exact prepared template basis reported by QEMU and retained by this node.
+    ///
+    /// The operation brackets the independently queryable QEMU child-resource
+    /// reports with an unchanged prepared-template state and compares every
+    /// retained generation to the node's linear host authorities before
+    /// constructing the request. Callers cannot inject or replay a generation
+    /// tuple.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuHotForkLaunchError::Rejected`] when request derivation or
+    /// explicit pre-fork validation proves that no child was created. All other
+    /// variants leave this node quarantined because a child exists or may exist.
+    pub fn fork_prepared_hot_fork_template<O>(
+        &mut self,
+        process_owner: &mut O,
+    ) -> Result<QemuHotForkChildLaunch<O::Authority>, QemuHotForkLaunchError>
+    where
+        O: QemuHotForkChildProcessOwner,
+    {
+        let request = self
+            .derive_hot_fork_request()
+            .map_err(|source| QemuHotForkLaunchError::Rejected { source })?;
+        self.fork_hot_fork_template(request, process_owner)
+    }
+
     /// Queries the source QEMU's exact parent-owned process record.
     ///
     /// This remains available for a quarantined source after an indeterminate
@@ -407,7 +612,7 @@ impl QemuNode {
     /// Returns [`QemuHotForkLaunchError::Rejected`] when no child was created.
     /// All other variants leave this node quarantined because a child exists or
     /// may exist.
-    pub fn fork_hot_fork_template<O>(
+    pub(crate) fn fork_hot_fork_template<O>(
         &mut self,
         request: crate::QmpHotForkRequest,
         process_owner: &mut O,

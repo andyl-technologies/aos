@@ -1097,10 +1097,11 @@ where
 {
     /// Forks a retained source directly into one target reconciliation owner.
     ///
-    /// No successful launch token is exposed outside the owner. Explicit
-    /// pre-fork rejection returns both reusable authorities; post-fork failures
-    /// return them in their already-quarantined state for caller-directed
-    /// cleanup.
+    /// The source derives the exact fork request from QEMU's retained template
+    /// and child-resource reports; callers cannot inject generation values. No
+    /// successful launch token is exposed outside the owner. Explicit pre-fork
+    /// rejection returns both reusable authorities; post-fork failures return
+    /// them in their already-quarantined state for caller-directed cleanup.
     ///
     /// # Errors
     ///
@@ -1111,9 +1112,8 @@ where
         attempt: QemuHotForkAttemptBasis,
         mut template: QemuNode,
         mut target: G,
-        request: crucible_qemu::QmpHotForkRequest,
     ) -> Result<Self, LinuxQemuHotForkAttemptLaunchError<G>> {
-        match template.fork_hot_fork_template(request, &mut target) {
+        match template.fork_prepared_hot_fork_template(&mut target) {
             Ok(launch) => Ok(Self::new(
                 attempt,
                 LinuxQemuHotForkReconciliationBackend::from_launch(template, target, launch),

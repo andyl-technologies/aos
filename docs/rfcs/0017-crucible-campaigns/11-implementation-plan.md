@@ -2351,10 +2351,15 @@ field and outcome, preserves the connection only for an explicit pre-fork
 command rejection, and poisons it after every fork-indeterminate failure.
 
 The Rust node layer now composes that command through a linear host boundary.
-It requires a child-process owner to authenticate the exact source PID, child
-PID, and echoed request before success, and returns that nonduplicable authority
-only together with the one branch-private QMP endpoint and one linear host
-continuation. The latter owns the private-ring descriptor, host
+The daemon launch API accepts no caller-supplied generation tuple. The node
+queries the template, private ring, diagnostics, child QMP, child console, and
+process contract, brackets them with an unchanged second template query,
+matches every report to its node-owned linear authority, and constructs the
+fourteen-field request only from that basis. It then requires a child-process
+owner to authenticate the exact source PID, child PID, and echoed request
+before success, and returns that nonduplicable authority only together with the
+one branch-private QMP endpoint and one linear host continuation. The latter
+owns the private-ring descriptor, host
 control/wake endpoints, and a state-isolated clone of the scheduler-owned
 shared-memory cursors, pending values, coverage state, selectable continuation,
 and the same scheduler-owned topology send-authorizer capability. It also
@@ -2404,7 +2409,9 @@ preflight, immutable publication, and supervisor reconciliation; it supplies
 the resulting durable semantic disposition through bounded callback steps and
 does not reuse that worker until cleanup completes. A runner error must finish
 or quarantine its incarnation before returning, so a retry cannot overlap it.
-The concrete hot-fork runner still must construct this owner, install fresh
+The concrete hot-fork runner can invoke the source/target launch without
+constructing or replaying raw QMP generations. It still must construct the
+target owner, install fresh
 branch-local block/9p signal coordinators as part of the atomic world
 transaction, stage every remaining writable host-device continuation, run the
 modeled child, and produce the repository candidate.

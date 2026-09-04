@@ -175,6 +175,38 @@ pub struct QmpHotForkBlockBarrierState {
 }
 
 impl QmpHotForkBlockBarrierState {
+    #[cfg(test)]
+    pub(crate) fn one_quiescent(generation: u64) -> Self {
+        Self {
+            generation,
+            owner_thread_id: 1,
+            graph_barrier_generation: generation,
+            graph_mutation_generation: 1,
+            held_graph_mutation_generation: 1,
+            graph_owner_thread_id: 1,
+            held: true,
+            graph_held: true,
+            graph_writer_active: false,
+            graph_waiting_writers: 0,
+            graph_stable: true,
+            snapshot_generation: generation,
+            snapshot_backend_generation: generation,
+            snapshot_graph_mutation_generation: 1,
+            snapshot_owner_thread_id: 1,
+            snapshot_bound: true,
+            snapshot_complete: true,
+            snapshot_roots: Vec::new(),
+            complete: true,
+            backend_count: 0,
+            rooted_backends: 0,
+            writable_backends: 0,
+            writable_rooted_backends: 0,
+            quiesced_rooted_backends: 0,
+            in_flight: 0,
+            quiescent: true,
+        }
+    }
+
     /// Returns the process-local hold/release generation.
     #[must_use]
     pub const fn generation(&self) -> u64 {

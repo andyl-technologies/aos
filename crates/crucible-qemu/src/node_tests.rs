@@ -128,6 +128,8 @@ enum ChannelCall {
     QmpHotForkMutexInventory,
     QmpHotForkTimerInventory,
     QmpHotForkMonitorInventory,
+    QmpHotForkTemplate,
+    QmpHotForkChildProcessContract,
     HostHotForkContinuationClone,
     QmpHotFork,
     QmpTerminalLifecycle {
@@ -202,6 +204,7 @@ struct ScriptedQmpMachineControl {
     fail_descriptor_close: bool,
     fail_endpoint_install: bool,
     mismatch_endpoint_disposition: bool,
+    mismatch_request_basis: bool,
     hot_fork_script: HotForkScript,
 }
 
@@ -216,6 +219,7 @@ enum DescriptorScript {
     ForkIndeterminate,
     ForkParentDispositionFailed,
     HostIoCloneFailure,
+    RequestBasisMismatch,
 }
 
 #[derive(Clone, Copy)]
@@ -1118,6 +1122,43 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
         ))
     }
 
+    fn query_hot_fork_template(
+        &mut self,
+    ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(ChannelCall::QmpHotForkTemplate);
+        let request = if self.mismatch_request_basis {
+            crate::QmpHotForkRequest::for_test(1, 2, 1, 1, 1, 7, 1, 15, 8, 9, 10, 11, 12, 13)
+        } else {
+            exact_hot_fork_request()
+        };
+        Ok(crate::QmpHotForkTemplateState::one_prepared(request))
+    }
+
+    fn query_hot_fork_child_process_contract(
+        &mut self,
+    ) -> Result<crate::QmpHotForkChildProcessContractState, QemuNodeChannelError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(ChannelCall::QmpHotForkChildProcessContract);
+        let identity = crate::QmpHotForkChildProcessContractIdentity::new(1, 2, 3, 4)
+            .map_err(QemuNodeChannelError::from)?;
+        Ok(
+            crate::QmpHotForkChildProcessContractState::one_template_staged(
+                13,
+                1,
+                crate::QmpDescriptorName::new("test-hot-fork-cgroup")
+                    .map_err(QemuNodeChannelError::from)?,
+                crate::QmpDescriptorName::new("test-hot-fork-cancellation")
+                    .map_err(QemuNodeChannelError::from)?,
+                identity,
+            ),
+        )
+    }
+
     fn hot_fork(
         &mut self,
         request: crate::QmpHotForkRequest,
@@ -1929,18 +1970,18 @@ fn sealed_hot_fork_node_with_log(
 
 #[cfg(target_os = "linux")]
 fn exact_hot_fork_request() -> crate::QmpHotForkRequest {
-    crate::QmpHotForkRequest::for_test(1, 1, 3, 4, 1, 5, 6, 7, 8, 9, 10, 11, 12, 13)
+    crate::QmpHotForkRequest::for_test(1, 1, 1, 1, 1, 7, 1, 15, 8, 9, 10, 11, 12, 13)
 }
 
 #[test]
 #[cfg(target_os = "linux")]
 fn hot_fork_success_transfers_child_qmp_and_private_host_continuation() -> Result<(), Box<dyn Error>>
 {
-    let mut node = sealed_hot_fork_node(DescriptorScript::Success)?;
+    let (mut node, log) = sealed_hot_fork_node_with_log(DescriptorScript::Success)?;
     let source_process_id = node.process_id();
     let mut process_owner = ScriptedHotForkChildOwner::default();
 
-    let launch = node.fork_hot_fork_template(exact_hot_fork_request(), &mut process_owner)?;
+    let launch = node.fork_prepared_hot_fork_template(&mut process_owner)?;
 
     assert_eq!(launch.child_process_id(), 321);
     assert_eq!(launch.parent_state().request(), exact_hot_fork_request());
@@ -1957,6 +1998,16 @@ fn hot_fork_success_transfers_child_qmp_and_private_host_continuation() -> Resul
     assert_eq!(launch.host_continuation().private_ring_generation(), 1);
     assert_ne!(launch.host_continuation().ring_identity().inode(), 0);
     assert_eq!(node.lifecycle_state(), QemuNodeLifecycleState::Running);
+    let calls = recorded(&log);
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| matches!(call, ChannelCall::QmpHotForkTemplate))
+            .count(),
+        2
+    );
+    assert!(calls.contains(&ChannelCall::QmpHotForkChildProcessContract));
+    assert!(calls.contains(&ChannelCall::QmpHotFork));
     assert!(node.take_hot_fork_child_qmp_host_endpoint().is_err());
     let (_parent, _process, child_qmp, mut diagnostics, mut continuation) = launch.into_parts();
     assert_eq!(diagnostics.template_generation(), 1);
@@ -1980,6 +2031,28 @@ fn hot_fork_success_transfers_child_qmp_and_private_host_continuation() -> Resul
     let capture = node.release_hot_fork_child_diagnostics_with_consumer(&mut diagnostics)?;
     assert_eq!(capture.bytes(), b"scripted child diagnostics");
     drop(node.release_hot_fork_private_ring_mapping()?);
+    node.shutdown_child()?;
+    Ok(())
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn hot_fork_derived_request_rejects_a_foreign_qmp_basis_before_fork() -> Result<(), Box<dyn Error>>
+{
+    let (mut node, log) = sealed_hot_fork_node_with_log(DescriptorScript::RequestBasisMismatch)?;
+    let mut process_owner = ScriptedHotForkChildOwner::default();
+
+    let error = node
+        .fork_prepared_hot_fork_template(&mut process_owner)
+        .expect_err("a QMP template bound to another ring generation must be rejected");
+
+    assert!(matches!(
+        error,
+        crate::QemuHotForkLaunchError::Rejected { .. }
+    ));
+    assert!(process_owner.retained.is_empty());
+    assert_eq!(node.lifecycle_state(), QemuNodeLifecycleState::Running);
+    assert!(!recorded(&log).contains(&ChannelCall::QmpHotFork));
     node.shutdown_child()?;
     Ok(())
 }
@@ -2592,6 +2665,10 @@ fn scripted_hot_fork_capture_node(
                 descriptor_script,
                 DescriptorScript::EndpointDispositionMismatch
             ),
+            mismatch_request_basis: matches!(
+                descriptor_script,
+                DescriptorScript::RequestBasisMismatch
+            ),
             hot_fork_script: match descriptor_script {
                 DescriptorScript::ForkRejected => HotForkScript::Rejected,
                 DescriptorScript::ForkIndeterminate => HotForkScript::Indeterminate,
@@ -2603,7 +2680,8 @@ fn scripted_hot_fork_capture_node(
                 | DescriptorScript::CloseFailure
                 | DescriptorScript::EndpointInstallFailure
                 | DescriptorScript::EndpointDispositionMismatch
-                | DescriptorScript::HostIoCloneFailure => HotForkScript::Forked,
+                | DescriptorScript::HostIoCloneFailure
+                | DescriptorScript::RequestBasisMismatch => HotForkScript::Forked,
             },
         },
     );
@@ -2734,6 +2812,7 @@ fn scripted_node_with_fault_events(
             fail_descriptor_close: false,
             fail_endpoint_install: false,
             mismatch_endpoint_disposition: false,
+            mismatch_request_basis: false,
             hot_fork_script: HotForkScript::Rejected,
         },
     );
@@ -2833,6 +2912,7 @@ fn scripted_node_with_coverage(
             fail_descriptor_close: false,
             fail_endpoint_install: false,
             mismatch_endpoint_disposition: false,
+            mismatch_request_basis: false,
             hot_fork_script: HotForkScript::Rejected,
         },
     );

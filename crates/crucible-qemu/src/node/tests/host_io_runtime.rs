@@ -43,6 +43,7 @@ pub(crate) fn scripted_node_with_live_host_runtime(
             fail_descriptor_close: false,
             fail_endpoint_install: false,
             mismatch_endpoint_disposition: false,
+            mismatch_request_basis: false,
             hot_fork_script: HotForkScript::Rejected,
         },
     );
