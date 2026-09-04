@@ -437,6 +437,10 @@ in {
           printf '%s\\n' 'C1E62bSSQBXKCQLtB5BE06xdvsIwbwaUjBDajrbjny0=' > {channel_key}
       """))
 
+      # Stage and promote each publish and publicly read back a complete
+      # registry/cache snapshot. Cold two-vCPU Hub guests need explicit
+      # headroom for that production-shaped object count; the narrower
+      # qualification executors retain their separate 15-minute bound.
       publisher.succeed(textwrap.dedent(f"""
           {AOS} release verify /var/tmp/release-surface \\
             --trusted-key release-evidence-v1={release_key}
@@ -445,7 +449,7 @@ in {
             --trusted-key release-evidence-v1={release_key} \\
             --hub-receipt-key staging-publication-v1={staging_key} \\
             --token {shlex.quote(staging_token)} --output /var/tmp/staged
-      """), timeout=900)
+      """), timeout=1800)
       publisher.succeed(textwrap.dedent(f"""
           {AOS} release qualify-run --bundle /var/tmp/release-surface \\
             --staging-receipt /var/tmp/staged/staging-receipt.json \\
@@ -507,7 +511,7 @@ in {
             --completion-key release-evidence-v1={release_key} \\
             --output /var/tmp/complete
           {AOS} release status --journal /var/tmp/complete/release-journal.jsonl | grep -q complete
-      """), timeout=900)
+      """), timeout=1800)
 
       report = json.loads(publisher.succeed(
           f"{JQ} -c . /var/tmp/qualification-run/qualification-report.json"
