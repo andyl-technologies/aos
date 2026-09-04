@@ -5,22 +5,25 @@
 //! after validating the returned size, field mask, offsets, counts, and NUL
 //! terminators.
 
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::num::NonZeroU64;
-use std::os::fd::{AsRawFd, RawFd};
+use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
 use std::os::unix::ffi::OsStringExt;
 
 use crate::pidfd::{NamespaceFd, NamespaceKind};
 use crate::uapi::{
-    self, LSMT_ROOT, MountIdRequest, STATMOUNT_FS_TYPE, STATMOUNT_MNT_BASIC, STATMOUNT_MNT_GIDMAP,
-    STATMOUNT_MNT_NS_ID, STATMOUNT_MNT_POINT, STATMOUNT_MNT_ROOT, STATMOUNT_MNT_UIDMAP,
-    STATMOUNT_SB_BASIC, STATMOUNT_SB_SOURCE, STATMOUNT_SUPPORTED_MASK, StatMountBuffer,
+    self, LISTMOUNT_REVERSE, LSMT_ROOT, MountIdRequest, STATMOUNT_FS_TYPE, STATMOUNT_MNT_BASIC,
+    STATMOUNT_MNT_GIDMAP, STATMOUNT_MNT_NS_ID, STATMOUNT_MNT_POINT, STATMOUNT_MNT_ROOT,
+    STATMOUNT_MNT_UIDMAP, STATMOUNT_SB_BASIC, STATMOUNT_SB_SOURCE, STATMOUNT_SUPPORTED_MASK,
+    StatMountBuffer,
 };
 use crate::{Error, Result};
 
 const REQUEST_SIZE_CURRENT_NAMESPACE: u32 = 24;
 const REQUEST_SIZE_NAMESPACE_FD: u32 = 32;
 const MAX_LIST_PAGE: usize = 4096;
+const MAX_INVENTORY_MOUNTS: usize = 65_536;
 const MAX_IDMAP_EXTENTS: usize = 340;
 const REQUIRED_OBSERVATION_MASK: u64 = STATMOUNT_SB_BASIC
     | STATMOUNT_MNT_BASIC
@@ -62,6 +65,22 @@ impl MountId {
     pub const fn get(self) -> u64 {
         self.0.get()
     }
+
+    /// Reads the unique ID of the mount containing a pinned object.
+    ///
+    /// This uses `statx(AT_EMPTY_PATH, STATX_MNT_ID_UNIQUE)` and never parses
+    /// `/proc`. The identifier is not reused during the running kernel's
+    /// lifetime and is directly accepted by `statmount(2)` and `listmount(2)`.
+    /// Linux 6.8 or newer is required.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the descriptor cannot be inspected, the running
+    /// kernel does not implement `STATX_MNT_ID_UNIQUE`, the kernel omits the
+    /// requested field, or the returned identifier is invalid.
+    pub fn from_fd(fd: BorrowedFd<'_>) -> Result<Self> {
+        Self::new(uapi::statx_unique_mount_id(fd)?)
+    }
 }
 
 /// One bounded page returned by `listmount(2)`.
@@ -73,6 +92,23 @@ pub struct MountIdPage {
     pub next_after: Option<MountId>,
     /// Whether the page filled the caller's limit and may have a successor.
     pub may_have_more: bool,
+}
+
+/// One complete, caller-bounded mount namespace observation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MountInventory {
+    /// Observed mounts in the requested kernel traversal order.
+    pub mounts: Vec<MountObservation>,
+}
+
+/// Kernel traversal order for one `listmount(2)` page.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MountListOrder {
+    /// Lists earlier mounts before later mounts.
+    #[default]
+    Forward,
+    /// Lists later mounts before earlier mounts.
+    Reverse,
 }
 
 /// Validated metadata returned by `statmount(2)`.
@@ -160,6 +196,28 @@ impl<'a> MountNamespace<'a> {
         after: Option<MountId>,
         limit: usize,
     ) -> Result<MountIdPage> {
+        self.list_ordered(parent, after, limit, MountListOrder::Forward)
+    }
+
+    /// Lists a bounded page of mounts below `parent` in an explicit order.
+    ///
+    /// `MountListOrder::Reverse` requests `LISTMOUNT_REVERSE`, which visits
+    /// later mounts before earlier mounts and is available on the AOS Linux
+    /// 6.18 baseline. Pagination cursors are order-specific and must not be
+    /// reused with the opposite order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a zero or excessive limit, invalid namespace fd,
+    /// stale or order-mismatched cursor, unsupported reverse traversal,
+    /// malformed kernel IDs, access denial, or syscall failure.
+    pub fn list_ordered(
+        self,
+        parent: Option<MountId>,
+        after: Option<MountId>,
+        limit: usize,
+        order: MountListOrder,
+    ) -> Result<MountIdPage> {
         if !(1..=MAX_LIST_PAGE).contains(&limit) {
             return Err(Error::invalid(
                 "listmount limit",
@@ -171,7 +229,11 @@ impl<'a> MountNamespace<'a> {
             after.map_or(0, MountId::get),
         )?;
         let mut raw_ids = vec![0; limit];
-        let count = uapi::listmount(&request, &mut raw_ids)?;
+        let flags = match order {
+            MountListOrder::Forward => 0,
+            MountListOrder::Reverse => LISTMOUNT_REVERSE,
+        };
+        let count = uapi::listmount(&request, &mut raw_ids, flags)?;
         if count > raw_ids.len() {
             return Err(malformed("kernel returned more mount IDs than requested"));
         }
@@ -200,6 +262,65 @@ impl<'a> MountNamespace<'a> {
         let request = self.request(mount.get(), OBSERVATION_MASK)?;
         let observation = uapi::statmount(&request)?;
         decode_observation(mount, observation.as_ref())
+    }
+
+    /// Lists and observes a complete mount namespace within a hard bound.
+    ///
+    /// This method follows `listmount(2)` cursors until the kernel returns an
+    /// empty page, then resolves every unique ID through `statmount(2)`. It is
+    /// suitable for correlating mounts that report the same mountpoint without
+    /// assuming that a mount's parent ID encodes overmount stack order.
+    ///
+    /// `maximum_mounts` is an admission bound rather than a truncation limit.
+    /// The method probes for another ID after reaching the bound and fails
+    /// closed if the namespace contains more mounts. Concurrent topology
+    /// changes that repeat IDs, invalidate cursors, or remove mounts also fail
+    /// rather than producing a partial inventory. Callers that require a
+    /// coherent mutation proof must additionally serialize namespace changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a zero or excessive bound, an inventory exceeding
+    /// the admitted bound, repeated kernel IDs, stale cursors or mount IDs,
+    /// malformed observations, access denial, or syscall failure.
+    pub fn inventory(self, maximum_mounts: usize, order: MountListOrder) -> Result<MountInventory> {
+        if !(1..=MAX_INVENTORY_MOUNTS).contains(&maximum_mounts) {
+            return Err(Error::invalid(
+                "mount inventory limit",
+                format!("must be in 1..={MAX_INVENTORY_MOUNTS}"),
+            ));
+        }
+
+        let mut ids = Vec::with_capacity(maximum_mounts.min(MAX_LIST_PAGE));
+        let mut seen = BTreeSet::new();
+        let mut after = None;
+        loop {
+            let remaining = maximum_mounts.saturating_sub(ids.len());
+            let page_limit = remaining.saturating_add(1).min(MAX_LIST_PAGE);
+            let page = self.list_ordered(None, after, page_limit, order)?;
+            if page.mounts.is_empty() {
+                break;
+            }
+            for mount in page.mounts {
+                if !seen.insert(mount) {
+                    return Err(malformed("listmount repeated a mount ID"));
+                }
+                if ids.len() == maximum_mounts {
+                    return Err(Error::ObservationLimitExceeded {
+                        object: "mount inventory",
+                        limit: maximum_mounts,
+                    });
+                }
+                ids.push(mount);
+            }
+            after = ids.last().copied();
+        }
+
+        let mounts = ids
+            .into_iter()
+            .map(|mount| self.observe(mount))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(MountInventory { mounts })
     }
 
     fn request(self, mount_id: u64, parameter: u64) -> Result<MountIdRequest> {
@@ -353,6 +474,9 @@ fn malformed(message: impl Into<String>) -> Error {
 
 #[cfg(test)]
 mod tests {
+    use std::fs::File;
+    use std::os::fd::AsFd as _;
+
     use super::*;
 
     #[test]
@@ -367,6 +491,21 @@ mod tests {
         let current = MountNamespace::current();
         assert!(current.list(None, None, 0).is_err());
         assert!(current.list(None, None, MAX_LIST_PAGE + 1).is_err());
+        assert!(current.inventory(0, MountListOrder::Forward).is_err());
+        assert!(
+            current
+                .inventory(MAX_INVENTORY_MOUNTS + 1, MountListOrder::Forward)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn descriptor_mount_ids_are_unique_and_stable() {
+        let root = File::open("/").unwrap();
+        let first = MountId::from_fd(root.as_fd()).unwrap();
+        let second = MountId::from_fd(root.as_fd()).unwrap();
+        assert_eq!(first, second);
+        assert_ne!(first.get(), 0);
     }
 
     #[test]

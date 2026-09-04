@@ -60,6 +60,15 @@ pub enum Error {
         /// Validation failure.
         message: String,
     },
+
+    /// A kernel topology exceeded a caller-provided admission bound.
+    #[error("{object} exceeds observation limit {limit}")]
+    ObservationLimitExceeded {
+        /// Topology object being observed.
+        object: &'static str,
+        /// Maximum number of admitted entries.
+        limit: usize,
+    },
 }
 
 impl Error {

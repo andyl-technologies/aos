@@ -19,6 +19,7 @@ pub(crate) const OPEN_TREE_CLONE: u32 = 1;
 pub(crate) const OPEN_TREE_CLOEXEC: u32 = libc::O_CLOEXEC as u32;
 pub(crate) const AT_EMPTY_PATH: u32 = 0x1000;
 pub(crate) const AT_RECURSIVE: u32 = 0x8000;
+pub(crate) const STATX_MNT_ID_UNIQUE: u32 = 0x0000_4000;
 pub(crate) const MOVE_MOUNT_F_EMPTY_PATH: u32 = 0x0000_0004;
 pub(crate) const MOVE_MOUNT_T_EMPTY_PATH: u32 = 0x0000_0040;
 pub(crate) const MOVE_MOUNT_BENEATH: u32 = 0x0000_0200;
@@ -48,6 +49,7 @@ pub(crate) const STATMOUNT_SUPPORTED_MASK: u64 = 0x0000_1000;
 pub(crate) const STATMOUNT_MNT_UIDMAP: u64 = 0x0000_2000;
 pub(crate) const STATMOUNT_MNT_GIDMAP: u64 = 0x0000_4000;
 pub(crate) const LSMT_ROOT: u64 = u64::MAX;
+pub(crate) const LISTMOUNT_REVERSE: u32 = 1 << 0;
 
 const NSFS_MAGIC: libc::c_long = 0x6e73_6673;
 const NS_GET_NSTYPE: libc::c_ulong = 0xb703;
@@ -314,6 +316,37 @@ pub(crate) fn fstat(fd: BorrowedFd<'_>) -> Result<libc::stat> {
     Ok(stat)
 }
 
+pub(crate) fn statx_unique_mount_id(fd: BorrowedFd<'_>) -> Result<u64> {
+    // `STATX_MNT_ID_UNIQUE` was added in Linux 6.8. Unlike `STATX_MNT_ID`,
+    // the returned identifier is not reused during the running kernel's
+    // lifetime and is therefore suitable for statmount requests and durable
+    // broker observations.
+    // SAFETY: `statx` is an output structure with an all-zero valid bit
+    // pattern. The descriptor borrow and writable output span the syscall,
+    // and the static empty pathname is NUL terminated.
+    let mut statx: libc::statx = unsafe { std::mem::zeroed() };
+    // SAFETY: described above. `AT_EMPTY_PATH` directs the kernel to inspect
+    // the object pinned by `fd`, avoiding pathname re-resolution.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_statx,
+            fd.as_raw_fd(),
+            c"".as_ptr(),
+            AT_EMPTY_PATH,
+            STATX_MNT_ID_UNIQUE,
+            std::ptr::addr_of_mut!(statx),
+        )
+    };
+    unit_result(result, "statx(STATX_MNT_ID_UNIQUE)")?;
+    if statx.stx_mask & STATX_MNT_ID_UNIQUE != STATX_MNT_ID_UNIQUE {
+        return Err(Error::MalformedKernelResponse {
+            object: "statx",
+            message: "kernel omitted STATX_MNT_ID_UNIQUE".to_string(),
+        });
+    }
+    Ok(statx.stx_mnt_id)
+}
+
 pub(crate) fn ensure_cloexec(fd: BorrowedFd<'_>) -> Result<()> {
     // SAFETY: `F_GETFD` and `F_SETFD` operate only on the borrowed descriptor
     // and do not dereference an argument pointer.
@@ -483,7 +516,7 @@ pub(crate) fn statmount(request: &MountIdRequest) -> Result<Box<StatMountBuffer>
     Ok(output)
 }
 
-pub(crate) fn listmount(request: &MountIdRequest, output: &mut [u64]) -> Result<usize> {
+pub(crate) fn listmount(request: &MountIdRequest, output: &mut [u64], flags: u32) -> Result<usize> {
     // SAFETY: request is immutable and live; the mutable slice supplies its
     // exact element count and remains exclusively borrowed for the call.
     let result = unsafe {
@@ -492,7 +525,7 @@ pub(crate) fn listmount(request: &MountIdRequest, output: &mut [u64]) -> Result<
             request,
             output.as_mut_ptr(),
             output.len(),
-            0_u32,
+            flags,
         )
     };
     if result < 0 {
