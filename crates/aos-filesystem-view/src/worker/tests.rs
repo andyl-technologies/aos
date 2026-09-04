@@ -210,6 +210,103 @@ impl RequestControl for StopOnNth {
 }
 
 #[test]
+fn opendir_synchronous_reply_commits_once_without_post_reply_cancellation() {
+    let fixture = fixture();
+    let index = fixture.validate();
+    let plan = plan();
+    let presentation =
+        PreparedPresentation::prepare(&index, &plan, 1, [93; 32], PresentationLimits::new(5, 0, 2))
+            .unwrap_or_else(|error| panic!("presentation failed: {error}"));
+    let make_worker = |key| {
+        MetadataConnection::new(
+            &presentation,
+            key,
+            inode_limits(),
+            DirectoryHandleLimits::new(8, 16),
+            worker_limits(),
+        )
+        .unwrap_or_else(|error| panic!("worker failed: {error}"))
+    };
+    let mut worker = make_worker([94; 32]);
+    initialize(&mut worker);
+    let mut pending = worker
+        .prepare_opendir(ROOT_NODE_ID, full_budget(), &Uninterrupted)
+        .unwrap_or_else(|error| panic!("prepare failed: {error}"));
+    let raw = pending.raw_handle();
+
+    // A synchronous responder observes an unavailable reservation, publishes
+    // its raw handle, and then reports that cancellation has arrived.
+    let published = Cell::new(None);
+    let cancelled = Cell::new(false);
+    let reply = || {
+        assert!(worker.inode_table().resolve_active_directory(raw).is_err());
+        published.set(Some(raw));
+        cancelled.set(true);
+        Ok::<(), ()>(())
+    };
+    assert_eq!(reply(), Ok(()));
+    assert!(cancelled.get());
+    let opened = worker
+        .commit_opendir_after_reply(&mut pending)
+        .unwrap_or_else(|error| panic!("post-reply commit failed: {error}"));
+    assert_eq!(published.get(), Some(opened.handle.get()));
+    assert_eq!(worker.inode_table().pending_directory_handles(), 0);
+    let mut scratch = ReplyScratch::new(worker_limits())
+        .unwrap_or_else(|error| panic!("scratch failed: {error}"));
+    assert!(
+        worker
+            .readdir_for_node(
+                ROOT_NODE_ID,
+                raw,
+                0,
+                full_budget(),
+                &mut scratch,
+                &Uninterrupted
+            )
+            .is_ok()
+    );
+    // A replay is fatal to this connection even though its original handle
+    // remains active; teardown discards it without another protocol reply.
+    assert!(matches!(
+        worker.commit_opendir_after_reply(&mut pending),
+        Err(WorkerError::Stale)
+    ));
+    assert_eq!(worker.teardown().directory_handles, 1);
+
+    let mut worker = make_worker([95; 32]);
+    initialize(&mut worker);
+    let mut rejected = worker
+        .prepare_opendir(ROOT_NODE_ID, full_budget(), &Uninterrupted)
+        .unwrap_or_else(|error| panic!("prepare failed: {error}"));
+    let rejected_raw = rejected.raw_handle();
+    let failed_reply = || Err::<(), ()>(());
+    assert_eq!(failed_reply(), Err(()));
+    worker
+        .abort_opendir(&mut rejected)
+        .unwrap_or_else(|error| panic!("abort failed: {error}"));
+    assert!(
+        worker
+            .inode_table()
+            .resolve_active_directory(rejected_raw)
+            .is_err()
+    );
+    assert_eq!(worker.inode_table().live_directory_handles(), 0);
+    assert_eq!(worker.inode_table().pending_directory_handles(), 0);
+
+    let mut foreign = make_worker([96; 32]);
+    initialize(&mut foreign);
+    let mut pending = worker
+        .prepare_opendir(ROOT_NODE_ID, full_budget(), &Uninterrupted)
+        .unwrap_or_else(|error| panic!("prepare failed: {error}"));
+    assert!(matches!(
+        foreign.commit_opendir_after_reply(&mut pending),
+        Err(WorkerError::Stale)
+    ));
+    assert_eq!(foreign.teardown().directory_handles, 0);
+    assert_eq!(worker.teardown().pending_directory_handles, 1);
+}
+
+#[test]
 fn singleton_forget_and_directory_node_association_are_independent_of_batching() {
     let fixture = fixture();
     let index = fixture.validate();

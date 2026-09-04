@@ -356,9 +356,11 @@ fn main() {
     let mut pending_directory = worker
         .prepare_opendir(ROOT_NODE_ID, worker_budget, &Uninterrupted)
         .unwrap_or_else(|error| panic!("worker OPENDIR failed: {error}"));
-    let directory = worker
-        .publish_opendir(&mut pending_directory)
-        .unwrap_or_else(|error| panic!("worker OPENDIR publication failed: {error}"));
+    let (directory, commit_allocations) =
+        measure_allocations(|| worker.commit_opendir_after_reply(&mut pending_directory));
+    let directory = directory
+        .unwrap_or_else(|error| panic!("worker OPENDIR post-reply commit failed: {error}"));
+    assert_eq!(commit_allocations, 0);
     let mut worker_scratch = ReplyScratch::new(worker_limits)
         .unwrap_or_else(|error| panic!("worker scratch failed: {error}"));
     let (worker_result, worker_allocations) = measure_allocations(|| {

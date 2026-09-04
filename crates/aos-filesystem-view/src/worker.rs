@@ -638,11 +638,52 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
     /// If transport publication subsequently fails, the caller must invoke
     /// [`Self::rollback_opendir`] with the returned handle. Connection teardown
     /// also releases the in-memory state without external callbacks.
+    /// A synchronous adapter that sends its reply before activation instead
+    /// uses [`Self::commit_opendir_after_reply`]. These are alternative contracts;
+    /// a reservation is activated exactly once.
     ///
     /// # Errors
     ///
     /// Returns a closed error for a foreign, stale, or consumed reservation.
     pub fn publish_opendir(
+        &mut self,
+        pending: &mut PendingDirectoryReply,
+    ) -> Result<OpenDirectoryReply, WorkerError> {
+        self.activate_opendir(pending)
+    }
+
+    /// Commits a prepared OPENDIR after its synchronous reply succeeds.
+    ///
+    /// The caller first publishes [`PendingDirectoryReply::raw_handle`] using
+    /// its transport's synchronous responder. It calls this method only when
+    /// that responder reports success, and before dispatching another request
+    /// or returning from the transport callback. The reservation remains pending
+    /// throughout publication; success makes it available to the next request.
+    /// The core cannot verify the external reply, so the adapter owns this
+    /// ordering contract.
+    ///
+    /// This final transition has no cancellation or deadline checkpoint: after
+    /// successful publication the peer already owns the handle. Cancellation
+    /// observed then must not skip activation. If publication fails, the caller
+    /// instead uses [`Self::abort_opendir`] and follows its transport's terminal
+    /// reply-failure policy. It must never call both activation methods for one
+    /// reservation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed error for a foreign, stale, consumed, or corrupted
+    /// reservation. Any error after a successful reply requires fatal connection
+    /// teardown before another request is dispatched. The adapter must not send
+    /// a second reply, retry activation, or expose this error as an ordinary
+    /// request failure.
+    pub fn commit_opendir_after_reply(
+        &mut self,
+        pending: &mut PendingDirectoryReply,
+    ) -> Result<OpenDirectoryReply, WorkerError> {
+        self.activate_opendir(pending)
+    }
+
+    fn activate_opendir(
         &mut self,
         pending: &mut PendingDirectoryReply,
     ) -> Result<OpenDirectoryReply, WorkerError> {
