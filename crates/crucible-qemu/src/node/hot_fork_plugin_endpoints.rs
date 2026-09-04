@@ -31,6 +31,7 @@ pub enum QemuHotForkPluginEndpointStageState {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuHotForkPluginEndpointStageProof {
     state: QemuHotForkPluginEndpointStageState,
+    generation: u64,
     control_name: crate::QmpDescriptorName,
     wake_name: crate::QmpDescriptorName,
     identity: crate::QmpHotForkPluginEndpointIdentity,
@@ -46,6 +47,12 @@ impl QemuHotForkPluginEndpointStageProof {
     #[must_use]
     pub const fn state(&self) -> QemuHotForkPluginEndpointStageState {
         self.state
+    }
+
+    /// Returns the QEMU-owned endpoint mutation generation.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// Returns the standard-QMP name of the child control endpoint.
@@ -169,6 +176,7 @@ pub(super) struct QemuHotForkPluginEndpointPair {
     control_name: crate::QmpDescriptorName,
     wake_name: crate::QmpDescriptorName,
     identity: crate::QmpHotForkPluginEndpointIdentity,
+    generation: u64,
     private_ring_generation: u64,
     template_generation: u64,
     plugin_barrier_generation: u64,
@@ -199,6 +207,7 @@ impl QemuHotForkPluginEndpointPair {
     ) -> QemuHotForkPluginEndpointStageProof {
         QemuHotForkPluginEndpointStageProof {
             state,
+            generation: self.generation,
             control_name: self.control_name.clone(),
             wake_name: self.wake_name.clone(),
             identity: self.identity,
@@ -608,6 +617,7 @@ impl QemuNode {
             return Err(QemuHotForkPluginEndpointStageError::TransferUncertain { source });
         }
         endpoints.template_generation = qemu_endpoints.template_generation();
+        endpoints.generation = qemu_endpoints.generation();
         endpoints.plugin_barrier_generation = qemu_endpoints.plugin_barrier_generation();
         endpoints.worker_mask = qemu_endpoints.worker_mask();
         endpoints.replacement_plan = qemu_endpoints.replacement_plan();
@@ -739,6 +749,7 @@ fn create_plugin_endpoint_pair(
         control_name,
         wake_name,
         identity,
+        generation: 0,
         private_ring_generation,
         template_generation: 0,
         plugin_barrier_generation: 0,

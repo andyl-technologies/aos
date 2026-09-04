@@ -26,6 +26,22 @@ pub struct QmpHotForkRcuBarrierState {
 }
 
 impl QmpHotForkRcuBarrierState {
+    #[cfg(test)]
+    pub(crate) const fn one_quiescent(generation: u64) -> Self {
+        Self {
+            generation,
+            owner_thread_id: 1,
+            held: true,
+            complete: true,
+            registered_readers: 1,
+            active_readers: 0,
+            admissions_in_flight: 0,
+            pending_callbacks: 0,
+            drain_active: false,
+            quiescent: true,
+        }
+    }
+
     /// Returns the process-local hold/release generation.
     #[must_use]
     pub const fn generation(self) -> u64 {
