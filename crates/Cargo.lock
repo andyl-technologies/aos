@@ -192,7 +192,6 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "tokio",
- "tokio-rustls 0.26.4",
  "tokio-util",
  "tower",
  "tracing",
