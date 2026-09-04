@@ -68,6 +68,7 @@ enum BrokerMethod {
   BROKER_METHOD_STORAGE_INVENTORY = 8;
   BROKER_METHOD_NETWORK_APPLY = 9;
   BROKER_METHOD_NETWORK_INVENTORY = 10;
+  BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT = 11;
 }
 
 // Semantic roles for SCM_RIGHTS descriptors carried beside one packet.
@@ -228,10 +229,31 @@ message ObserveRuntimeRequest {
 message InventoryRuntimeRequest { RequestHeader header = 1; }
 message InventoryRuntimeResponse { repeated RuntimeObservation runtimes = 1; }
 
+// Queries one exact original ApplyRuntime transaction without admitting or
+// executing it. The outer envelope carries the same signed authorization
+// quartet; original_apply_request is the byte-exact ApplyRuntimeRequest body.
+message QueryRuntimeEffectRequest {
+  RequestHeader header = 1;
+  bytes original_apply_request = 2;
+}
+
+enum RuntimeEffectStatus {
+  RUNTIME_EFFECT_STATUS_UNSPECIFIED = 0;
+  RUNTIME_EFFECT_STATUS_ABSENT = 1;
+  RUNTIME_EFFECT_STATUS_PENDING = 2;
+  RUNTIME_EFFECT_STATUS_COMPLETE = 3;
+}
+
+message QueryRuntimeEffectResponse {
+  RuntimeEffectStatus status = 1;
+  bytes receipt = 2; // Exact prior RuntimeObservation bytes only for Complete.
+}
+
 service HostBroker {
   rpc ApplyRuntime(ApplyRuntimeRequest) returns (RuntimeObservation);
   rpc ObserveRuntime(ObserveRuntimeRequest) returns (RuntimeObservation);
   rpc InventoryRuntime(InventoryRuntimeRequest) returns (InventoryRuntimeResponse);
+  rpc QueryRuntimeEffect(QueryRuntimeEffectRequest) returns (QueryRuntimeEffectResponse);
 }
 
 enum StorageAction {

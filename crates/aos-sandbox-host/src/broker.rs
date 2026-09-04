@@ -3,10 +3,11 @@
 use std::collections::BTreeMap;
 
 use aos_proto::aos::sandbox::local::v1::{
-    AssignmentFence, InventoryRuntimeResponse, RuntimeAction, RuntimeObservation, RuntimeState,
+    AssignmentFence, InventoryRuntimeResponse, QueryRuntimeEffectResponse, RuntimeAction,
+    RuntimeEffectStatus, RuntimeObservation, RuntimeState,
 };
 use aos_sandbox_broker::{BrokerAuthorizationFenceV1, BrokerEffectIntentV2, BrokerEffectStatusV2};
-use aos_sandbox_core::{ProtocolVersion, RawPairedClockSample};
+use aos_sandbox_core::{ProtocolVersion, RawClockProvenance, RawPairedClockSample};
 use aos_sandbox_linux::pidfd::PidFd;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use aos_sandbox_protocol::{
@@ -19,7 +20,7 @@ use sha2::{Digest as _, Sha256};
 use crate::authorization::HostAuthorityV1;
 use crate::authorization::semantics_v1::runtime_handle_v1;
 use crate::plan::{HostCatalog, NspawnConfig, ResolvedLaunchResources};
-use crate::state::{Admission, HostState, HostStateStore};
+use crate::state::{Admission, HostState, HostStateStore, RuntimeEffectQuery};
 use crate::worker::{
     HostRuntimeIdentity, HostWorker, ObservedRuntimeState, PinnedLeader, WorkerObservation,
     WorkerOperation,
@@ -27,6 +28,16 @@ use crate::worker::{
 use crate::{HostError, Result};
 
 const MAXIMUM_INVENTORY_RUNTIMES: usize = 1_024;
+const HOST_APPLY_AUTHORIZATION_VERSION: ProtocolVersion = ProtocolVersion::new(1, 1);
+
+pub(crate) struct RuntimeEffectQueryContext<'a> {
+    pub(crate) original_request_bytes: &'a [u8],
+    pub(crate) request_id: [u8; 16],
+    pub(crate) peer: PeerCredentials,
+    pub(crate) policy: PeerPolicy,
+    pub(crate) current_clock: RawPairedClockSample,
+    pub(crate) maximum_response_bytes: u32,
+}
 
 /// Applies validated runtime requests through durable fixed-function effects.
 pub struct HostBroker<C, S, W> {
@@ -97,7 +108,7 @@ where
         policy: PeerPolicy,
         mut trusted_clock: impl FnMut() -> Result<RawPairedClockSample> + Send,
     ) -> Result<Vec<u8>> {
-        if protocol_version != ProtocolVersion::new(1, 1) {
+        if !host_apply_carrier_version(protocol_version) {
             return Err(HostError::Authority(
                 aos_sandbox_broker::BrokerAdmissionError::RequestMismatch,
             ));
@@ -105,6 +116,11 @@ where
         // Deadline-free decoding is used only to locate an already authenticated
         // complete record. No pending or new effect consumes this value.
         let replay_request = decode_runtime_request(request_bytes, peer, policy, 0)?;
+        if replay_request.header().protocol_version() != protocol_version {
+            return Err(HostError::Authority(
+                aos_sandbox_broker::BrokerAdmissionError::RequestMismatch,
+            ));
+        }
         let request_id = *replay_request.header().request_id();
         let request_digest: [u8; 32] = Sha256::digest(request_bytes).into();
 
@@ -151,7 +167,7 @@ where
             artifacts,
             &request,
             request_bytes,
-            protocol_version,
+            HOST_APPLY_AUTHORIZATION_VERSION,
             &admission_clock,
             prior_fence_bytes,
         )?;
@@ -225,6 +241,114 @@ where
         self.store.commit(&proposed)?;
         self.state = proposed;
         Ok(response)
+    }
+
+    /// Authenticates and reports one exact original Apply transaction.
+    ///
+    /// This method is strictly read-only: it does not compile a backend
+    /// operation, call a worker, admit a fence, or commit state. Existing
+    /// records are reverified at their authenticated admission clock because
+    /// this query reports history and grants no effect authority. An absent
+    /// request must still be live under the current protected clock.
+    pub(crate) fn query_runtime_effect(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        context: RuntimeEffectQueryContext<'_>,
+    ) -> Result<Vec<u8>> {
+        let RuntimeEffectQueryContext {
+            original_request_bytes,
+            request_id: query_request_id,
+            peer,
+            policy,
+            current_clock,
+            maximum_response_bytes,
+        } = context;
+        let located = decode_runtime_request(original_request_bytes, peer, policy, 0)?;
+        if !host_apply_carrier_version(located.header().protocol_version())
+            || located.header().request_id() != &query_request_id
+        {
+            return Err(HostError::Authority(
+                aos_sandbox_broker::BrokerAdmissionError::RequestMismatch,
+            ));
+        }
+        let request_digest: [u8; 32] = Sha256::digest(original_request_bytes).into();
+        let status = self.state.query_effect(&query_request_id, request_digest)?;
+        let existing_effect = self
+            .state
+            .effect(&query_request_id)
+            .map(|bytes| self.authority.open_effect(&query_request_id, bytes))
+            .transpose()?;
+        let verification_clock = match &existing_effect {
+            Some(effect) => historical_clock(effect)?,
+            None => current_clock,
+        };
+        let request = decode_runtime_request(
+            original_request_bytes,
+            peer,
+            policy,
+            verification_clock.boottime_nanoseconds(),
+        )?;
+        let prior_fence = existing_effect.as_ref().map_or_else(
+            || self.state.prior_authorization(request.fence().sandbox_id()),
+            |_| self.state.request_authorization(&query_request_id),
+        );
+        let admitted = self.authority.admit(
+            artifacts,
+            &request,
+            original_request_bytes,
+            HOST_APPLY_AUTHORIZATION_VERSION,
+            &verification_clock,
+            prior_fence,
+        )?;
+
+        if let Some(existing) = existing_effect {
+            let request_fence = self
+                .state
+                .request_authorization(&query_request_id)
+                .ok_or_else(|| HostError::State("host query lost its request fence".to_owned()))?;
+            let durable_fence = self
+                .authority
+                .open_fence(request.fence().sandbox_id(), request_fence)?;
+            let expected = match &status {
+                RuntimeEffectQuery::Pending => admitted.effect,
+                RuntimeEffectQuery::Complete(receipt) => admitted
+                    .effect
+                    .complete(receipt.clone())
+                    .map_err(|_| HostError::Fence("completed query effect is invalid"))?,
+                RuntimeEffectQuery::Absent => {
+                    return Err(HostError::State(
+                        "host query effect index is inconsistent".to_owned(),
+                    ));
+                }
+            };
+            if existing != expected || durable_fence != admitted.fence {
+                return Err(HostError::Fence(
+                    "query authorization differs from durable host effect",
+                ));
+            }
+        }
+
+        let (status, receipt) = match status {
+            RuntimeEffectQuery::Absent => (
+                RuntimeEffectStatus::RUNTIME_EFFECT_STATUS_ABSENT,
+                Vec::new(),
+            ),
+            RuntimeEffectQuery::Pending => (
+                RuntimeEffectStatus::RUNTIME_EFFECT_STATUS_PENDING,
+                Vec::new(),
+            ),
+            RuntimeEffectQuery::Complete(receipt) => {
+                (RuntimeEffectStatus::RUNTIME_EFFECT_STATUS_COMPLETE, receipt)
+            }
+        };
+        let bytes = QueryRuntimeEffectResponse {
+            status: status.into(),
+            receipt,
+            ..Default::default()
+        }
+        .encode_to_vec();
+        ensure_response_bound(&bytes, maximum_response_bytes)?;
+        Ok(bytes)
     }
 
     /// Resolves a live leader handle retained by this broker process.
@@ -353,6 +477,22 @@ where
             self.leaders.insert(handle, pidfd);
         }
     }
+}
+
+fn historical_clock(effect: &BrokerEffectIntentV2) -> Result<RawPairedClockSample> {
+    let provenance = RawClockProvenance::new_untrusted(*effect.clock_provenance())
+        .map_err(|_| HostError::State("durable effect clock provenance is invalid".to_owned()))?;
+    RawPairedClockSample::new_untrusted(
+        provenance,
+        *effect.host_boot_id(),
+        effect.admitted_wall_seconds(),
+        effect.admitted_boottime_nanoseconds(),
+    )
+    .map_err(|_| HostError::State("durable effect admission clock is invalid".to_owned()))
+}
+
+fn host_apply_carrier_version(version: ProtocolVersion) -> bool {
+    version == ProtocolVersion::new(1, 1) || version == ProtocolVersion::new(1, 2)
 }
 
 fn project_observation(
@@ -987,6 +1127,25 @@ mod tests {
             .await
     }
 
+    async fn apply_protocol<C: HostCatalog, S: HostStateStore, W: HostWorker>(
+        broker: &mut HostBroker<C, S, W>,
+        fixture: &AuthorityFixture,
+        request_bytes: &[u8],
+        protocol_version: ProtocolVersion,
+    ) -> Result<Vec<u8>> {
+        let artifacts = fixture.artifacts(request_bytes, 1);
+        broker
+            .apply_runtime(
+                request_bytes,
+                &artifacts,
+                protocol_version,
+                peer(),
+                policy(),
+                || Ok(clock()),
+            )
+            .await
+    }
+
     fn runtime_identity(request_bytes: &[u8]) -> HostRuntimeIdentity {
         let request =
             decode_runtime_request(request_bytes, peer(), policy(), TEST_BOOTTIME_NANOSECONDS)
@@ -996,6 +1155,19 @@ mod tests {
 
     fn request(request_id: u8, generation: u64, digest: u8) -> Vec<u8> {
         request_with_identity(request_id, generation, digest, 65_536, 65_536)
+    }
+
+    fn request_at_protocol(
+        request_id: u8,
+        sandbox_id: u8,
+        protocol_version: ProtocolVersion,
+    ) -> Vec<u8> {
+        let bytes = request_with_sandbox(request_id, 1, 4, sandbox_id, 65_536, 65_536);
+        let mut request = ApplyRuntimeRequest::decode_from_slice(&bytes).unwrap();
+        let header = request.header.get_or_insert_default();
+        header.protocol_major = u32::from(protocol_version.major());
+        header.protocol_minor = u32::from(protocol_version.minor());
+        request.encode_to_vec()
     }
 
     fn request_with_identity(
@@ -1321,6 +1493,238 @@ mod tests {
         )
         .unwrap();
         assert!(apply(&mut reopened, &fixture, &bytes).await.is_ok());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn apply_accepts_1_1_and_1_2_carriers_with_1_1_signed_semantics() {
+        let fixture = AuthorityFixture::new();
+        let store = MemoryStore::default();
+        let worker = FakeWorker::default();
+        let calls = worker.calls.clone();
+        let mut broker = HostBroker::open(
+            FixedCatalog,
+            store,
+            worker,
+            Some(nspawn()),
+            fixture.authority(),
+        )
+        .unwrap();
+        let request_1_1 = request_at_protocol(1, 2, ProtocolVersion::new(1, 1));
+        let request_1_2 = request_at_protocol(2, 8, ProtocolVersion::new(1, 2));
+
+        assert!(
+            apply_protocol(
+                &mut broker,
+                &fixture,
+                &request_1_1,
+                ProtocolVersion::new(1, 1),
+            )
+            .await
+            .is_ok()
+        );
+        let completed_1_2 = apply_protocol(
+            &mut broker,
+            &fixture,
+            &request_1_2,
+            ProtocolVersion::new(1, 2),
+        )
+        .await
+        .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        let artifacts = fixture.artifacts(&request_1_2, 1);
+        let query = broker
+            .query_runtime_effect(
+                &artifacts,
+                RuntimeEffectQueryContext {
+                    original_request_bytes: &request_1_2,
+                    request_id: [2; 16],
+                    peer: peer(),
+                    policy: policy(),
+                    current_clock: clock_at(1_000, 10_000),
+                    maximum_response_bytes: 4096,
+                },
+            )
+            .unwrap();
+        let query = QueryRuntimeEffectResponse::decode_from_slice(&query).unwrap();
+        assert_eq!(
+            query.status,
+            RuntimeEffectStatus::RUNTIME_EFFECT_STATUS_COMPLETE
+        );
+        assert_eq!(query.receipt, completed_1_2);
+
+        assert!(
+            apply_protocol(
+                &mut broker,
+                &fixture,
+                &request_1_2,
+                ProtocolVersion::new(1, 1),
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn runtime_effect_query_is_read_only_for_absent_pending_and_complete_requests() {
+        let fixture = AuthorityFixture::new();
+        let store = MemoryStore::default();
+        let worker = FakeWorker::default();
+        let calls = worker.calls.clone();
+        let mut broker = HostBroker::open(
+            FixedCatalog,
+            store.clone(),
+            worker.clone(),
+            Some(nspawn()),
+            fixture.authority(),
+        )
+        .unwrap();
+        let request = request(1, 1, 4);
+        let artifacts = fixture.artifacts(&request, 1);
+
+        let before = store.load().unwrap();
+        let response = broker
+            .query_runtime_effect(
+                &artifacts,
+                RuntimeEffectQueryContext {
+                    original_request_bytes: &request,
+                    request_id: [1; 16],
+                    peer: peer(),
+                    policy: policy(),
+                    current_clock: clock(),
+                    maximum_response_bytes: 4096,
+                },
+            )
+            .unwrap();
+        let response = QueryRuntimeEffectResponse::decode_from_slice(&response).unwrap();
+        assert_eq!(
+            response.status,
+            RuntimeEffectStatus::RUNTIME_EFFECT_STATUS_ABSENT
+        );
+        assert!(response.receipt.is_empty());
+        assert_eq!(store.load().unwrap(), before);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        worker.fail_next.store(true, Ordering::SeqCst);
+        assert!(apply(&mut broker, &fixture, &request).await.is_err());
+        let pending = store.load().unwrap();
+        let response = broker
+            .query_runtime_effect(
+                &artifacts,
+                RuntimeEffectQueryContext {
+                    original_request_bytes: &request,
+                    request_id: [1; 16],
+                    peer: peer(),
+                    policy: policy(),
+                    current_clock: clock_at(1_000, 10_000),
+                    maximum_response_bytes: 4096,
+                },
+            )
+            .unwrap();
+        let response = QueryRuntimeEffectResponse::decode_from_slice(&response).unwrap();
+        assert_eq!(
+            response.status,
+            RuntimeEffectStatus::RUNTIME_EFFECT_STATUS_PENDING
+        );
+        assert!(response.receipt.is_empty());
+        assert_eq!(store.load().unwrap(), pending);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        let completed = apply(&mut broker, &fixture, &request).await.unwrap();
+        let complete_state = store.load().unwrap();
+        let response = broker
+            .query_runtime_effect(
+                &artifacts,
+                RuntimeEffectQueryContext {
+                    original_request_bytes: &request,
+                    request_id: [1; 16],
+                    peer: peer(),
+                    policy: policy(),
+                    current_clock: clock_at(1_000, 10_000),
+                    maximum_response_bytes: 4096,
+                },
+            )
+            .unwrap();
+        let response = QueryRuntimeEffectResponse::decode_from_slice(&response).unwrap();
+        assert_eq!(
+            response.status,
+            RuntimeEffectStatus::RUNTIME_EFFECT_STATUS_COMPLETE
+        );
+        assert_eq!(response.receipt, completed);
+        assert_eq!(store.load().unwrap(), complete_state);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn runtime_effect_query_rejects_changed_original_identity_without_side_effects() {
+        let fixture = AuthorityFixture::new();
+        let store = MemoryStore::default();
+        let worker = FakeWorker::default();
+        let calls = worker.calls.clone();
+        let mut broker = HostBroker::open(
+            FixedCatalog,
+            store.clone(),
+            worker,
+            Some(nspawn()),
+            fixture.authority(),
+        )
+        .unwrap();
+        let original = request(1, 1, 4);
+        assert!(apply(&mut broker, &fixture, &original).await.is_ok());
+        let state = store.load().unwrap();
+        let changed = request(1, 2, 5);
+        let changed_artifacts = fixture.artifacts(&changed, 2);
+
+        assert!(
+            broker
+                .query_runtime_effect(
+                    &changed_artifacts,
+                    RuntimeEffectQueryContext {
+                        original_request_bytes: &changed,
+                        request_id: [1; 16],
+                        peer: peer(),
+                        policy: policy(),
+                        current_clock: clock(),
+                        maximum_response_bytes: 4096,
+                    },
+                )
+                .is_err()
+        );
+        let artifacts = fixture.artifacts(&original, 1);
+        let altered_artifacts = fixture.artifacts_with_lease_authority(&original, 1, true);
+        assert!(
+            broker
+                .query_runtime_effect(
+                    &altered_artifacts,
+                    RuntimeEffectQueryContext {
+                        original_request_bytes: &original,
+                        request_id: [1; 16],
+                        peer: peer(),
+                        policy: policy(),
+                        current_clock: clock(),
+                        maximum_response_bytes: 4096,
+                    },
+                )
+                .is_err()
+        );
+        assert!(
+            broker
+                .query_runtime_effect(
+                    &artifacts,
+                    RuntimeEffectQueryContext {
+                        original_request_bytes: &original,
+                        request_id: [9; 16],
+                        peer: peer(),
+                        policy: policy(),
+                        current_clock: clock(),
+                        maximum_response_bytes: 4096,
+                    },
+                )
+                .is_err()
+        );
+        assert_eq!(store.load().unwrap(), state);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
@@ -1722,6 +2126,122 @@ mod tests {
 
         store.0.lock().unwrap().swap_effects(&[1; 16], &[2; 16]);
         store.0.lock().unwrap().corrupt_effect(&[1; 16]);
+        assert!(
+            HostBroker::open(
+                FixedCatalog,
+                store,
+                FakeWorker::default(),
+                Some(nspawn()),
+                fixture.authority(),
+            )
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn restart_rejects_deleted_current_requests_and_corrupt_or_swapped_receipts() {
+        let fixture = AuthorityFixture::new();
+
+        let pending_store = MemoryStore::default();
+        let pending_worker = FakeWorker::default();
+        pending_worker.fail_next.store(true, Ordering::SeqCst);
+        let mut pending_broker = HostBroker::open(
+            FixedCatalog,
+            pending_store.clone(),
+            pending_worker,
+            Some(nspawn()),
+            fixture.authority(),
+        )
+        .unwrap();
+        let pending_request = request(1, 1, 4);
+        assert!(
+            apply(&mut pending_broker, &fixture, &pending_request)
+                .await
+                .is_err()
+        );
+        pending_store.0.lock().unwrap().remove_request(&[1; 16]);
+        assert!(
+            HostBroker::open(
+                FixedCatalog,
+                pending_store,
+                FakeWorker::default(),
+                Some(nspawn()),
+                fixture.authority(),
+            )
+            .is_err()
+        );
+
+        let complete_store = MemoryStore::default();
+        let mut complete_broker = HostBroker::open(
+            FixedCatalog,
+            complete_store.clone(),
+            FakeWorker::default(),
+            Some(nspawn()),
+            fixture.authority(),
+        )
+        .unwrap();
+        let first = request(1, 1, 4);
+        let second = request_with_sandbox(2, 1, 4, 8, 65_536, 65_536);
+        assert!(apply(&mut complete_broker, &fixture, &first).await.is_ok());
+        assert!(apply(&mut complete_broker, &fixture, &second).await.is_ok());
+        let valid = complete_store.load().unwrap();
+
+        let deleted = MemoryStore(Arc::new(Mutex::new(valid.clone())));
+        deleted.0.lock().unwrap().remove_request(&[1; 16]);
+        assert!(
+            HostBroker::open(
+                FixedCatalog,
+                deleted,
+                FakeWorker::default(),
+                Some(nspawn()),
+                fixture.authority(),
+            )
+            .is_err()
+        );
+        let corrupt = MemoryStore(Arc::new(Mutex::new(valid.clone())));
+        corrupt.0.lock().unwrap().corrupt_receipt(&[1; 16]);
+        assert!(
+            HostBroker::open(
+                FixedCatalog,
+                corrupt,
+                FakeWorker::default(),
+                Some(nspawn()),
+                fixture.authority(),
+            )
+            .is_err()
+        );
+        let swapped = MemoryStore(Arc::new(Mutex::new(valid)));
+        swapped.0.lock().unwrap().swap_receipts(&[1; 16], &[2; 16]);
+        assert!(
+            HostBroker::open(
+                FixedCatalog,
+                swapped,
+                FakeWorker::default(),
+                Some(nspawn()),
+                fixture.authority(),
+            )
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn restart_rejects_deleted_latest_request_even_when_an_older_fence_is_identical() {
+        let fixture = AuthorityFixture::new();
+        let store = MemoryStore::default();
+        let mut broker = HostBroker::open(
+            FixedCatalog,
+            store.clone(),
+            FakeWorker::default(),
+            Some(nspawn()),
+            fixture.authority(),
+        )
+        .unwrap();
+        let first = request(1, 1, 4);
+        let second = request(2, 1, 4);
+        assert!(apply(&mut broker, &fixture, &first).await.is_ok());
+        assert!(apply(&mut broker, &fixture, &second).await.is_ok());
+
+        store.0.lock().unwrap().remove_request(&[2; 16]);
         assert!(
             HostBroker::open(
                 FixedCatalog,

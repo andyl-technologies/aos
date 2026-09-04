@@ -450,10 +450,10 @@ pub fn negotiate_protocol(
 
 const fn protocol_version(protocol: ProtocolId) -> ProtocolVersion {
     match protocol {
-        ProtocolId::HostBroker
-        | ProtocolId::MountBroker
-        | ProtocolId::StorageBroker
-        | ProtocolId::NetworkBroker => ProtocolVersion::new(1, 1),
+        ProtocolId::HostBroker => ProtocolVersion::new(1, 2),
+        ProtocolId::MountBroker | ProtocolId::StorageBroker | ProtocolId::NetworkBroker => {
+            ProtocolVersion::new(1, 1)
+        }
         ProtocolId::PublicApi
         | ProtocolId::CoordinatorNode
         | ProtocolId::OwnershipAuthority
@@ -547,6 +547,10 @@ mod tests {
         assert_eq!(
             negotiate_protocol(ProtocolId::HostBroker, ProtocolVersion::new(1, 1)),
             Ok(ProtocolVersion::new(1, 1))
+        );
+        assert_eq!(
+            negotiate_protocol(ProtocolId::HostBroker, ProtocolVersion::new(1, 2)),
+            Ok(ProtocolVersion::new(1, 2))
         );
         assert_eq!(
             negotiate_protocol(ProtocolId::OwnershipAuthority, ProtocolVersion::new(1, 0)),

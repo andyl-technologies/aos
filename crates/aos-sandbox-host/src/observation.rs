@@ -1,11 +1,15 @@
-//! Host-local validation for non-authorizing runtime observation requests.
+//! Host-local validation for read-only runtime observation and query requests.
 //!
-//! These protobufs carry only a common request header, an assignment fence,
-//! and an opaque runtime handle. Validation accepts no host path, PID, or
+//! Observation protobufs carry a common request header, assignment fence, and
+//! opaque runtime handle. The authenticated effect query instead carries the
+//! byte-exact original Apply body. Validation accepts no host path, PID, or
 //! descriptor and reuses the protocol crate's common peer/session header gate.
 
-use aos_proto::aos::sandbox::local::v1::{InventoryRuntimeRequest, ObserveRuntimeRequest};
+use aos_proto::aos::sandbox::local::v1::{
+    InventoryRuntimeRequest, ObserveRuntimeRequest, QueryRuntimeEffectRequest,
+};
 use aos_sandbox_core::ProtocolId;
+use aos_sandbox_protocol::session::MAXIMUM_HOST_QUERY_PACKET_BYTES;
 use aos_sandbox_protocol::{
     MAXIMUM_REQUEST_BYTES, PeerCredentials, PeerPolicy, ProtocolValidationError, ValidatedHeader,
     validate_request_header,
@@ -18,6 +22,48 @@ pub(crate) struct ValidatedObserveRuntimeRequest {
     pub(crate) header: ValidatedHeader,
     pub(crate) identity: HostRuntimeIdentity,
     pub(crate) runtime_handle: [u8; 32],
+}
+
+pub(crate) struct ValidatedQueryRuntimeEffectRequest {
+    pub(crate) header: ValidatedHeader,
+    pub(crate) original_apply_request: Vec<u8>,
+}
+
+pub(crate) fn decode_query_runtime_effect_request(
+    bytes: &[u8],
+    peer: PeerCredentials,
+    policy: PeerPolicy,
+    now_boottime_nanoseconds: u64,
+) -> Result<ValidatedQueryRuntimeEffectRequest, ProtocolValidationError> {
+    if bytes.len() > MAXIMUM_HOST_QUERY_PACKET_BYTES {
+        return Err(ProtocolValidationError::RequestTooLarge);
+    }
+    let request = QueryRuntimeEffectRequest::decode_from_slice(bytes)
+        .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
+    if !request.__buffa_unknown_fields.is_empty() {
+        return Err(ProtocolValidationError::UnknownFields);
+    }
+    let header = validate_request_header(
+        request
+            .header
+            .as_option()
+            .ok_or(ProtocolValidationError::MissingField("header"))?,
+        peer,
+        policy,
+        ProtocolId::HostBroker,
+        now_boottime_nanoseconds,
+    )?;
+    if request.original_apply_request.is_empty()
+        || request.original_apply_request.len() > MAXIMUM_REQUEST_BYTES
+    {
+        return Err(ProtocolValidationError::InvalidField(
+            "original_apply_request",
+        ));
+    }
+    Ok(ValidatedQueryRuntimeEffectRequest {
+        header,
+        original_apply_request: request.original_apply_request,
+    })
 }
 
 pub(crate) fn decode_observe_runtime_request(
@@ -112,7 +158,9 @@ fn exact_nonzero<const N: usize>(
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use aos_proto::aos::sandbox::local::v1::{AssignmentFence, Audience, RequestHeader};
+    use aos_proto::aos::sandbox::local::v1::{
+        AssignmentFence, Audience, QueryRuntimeEffectRequest, RequestHeader,
+    };
 
     use super::*;
 
@@ -183,5 +231,27 @@ mod tests {
         let mut trailing = request.encode_to_vec();
         trailing.extend_from_slice(&[0xf8, 0x07, 0x01]);
         assert!(decode_inventory_runtime_request(&trailing, peer(), policy(), 100).is_err());
+    }
+
+    #[test]
+    fn query_requires_a_bounded_exact_original_apply_body() {
+        let request = QueryRuntimeEffectRequest {
+            header: Some(header(2)).into(),
+            original_apply_request: vec![7; 128],
+            ..Default::default()
+        };
+        let validated =
+            decode_query_runtime_effect_request(&request.encode_to_vec(), peer(), policy(), 100)
+                .unwrap();
+        assert_eq!(validated.original_apply_request, vec![7; 128]);
+
+        let empty = QueryRuntimeEffectRequest {
+            header: Some(header(2)).into(),
+            ..Default::default()
+        };
+        assert!(
+            decode_query_runtime_effect_request(&empty.encode_to_vec(), peer(), policy(), 100)
+                .is_err()
+        );
     }
 }

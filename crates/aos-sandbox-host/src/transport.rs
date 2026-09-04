@@ -10,7 +10,8 @@ use std::mem::MaybeUninit;
 use std::os::fd::{AsFd, OwnedFd};
 use std::time::Duration;
 
-use aos_sandbox_protocol::{MAXIMUM_REQUEST_BYTES, MAXIMUM_RESPONSE_BYTES, PeerCredentials};
+use aos_sandbox_protocol::session::MAXIMUM_HOST_QUERY_PACKET_BYTES;
+use aos_sandbox_protocol::{MAXIMUM_RESPONSE_BYTES, PeerCredentials};
 use rustix::io::{FdFlags, fcntl_getfd, fcntl_setfd};
 use rustix::net::sockopt::{
     Timeout, set_socket_timeout, socket_acceptconn, socket_peercred, socket_type,
@@ -114,7 +115,7 @@ impl HostConnection {
     /// unsupported ancillary messages, too many descriptors, or receive
     /// failure. Adopted descriptors close on every rejection path.
     pub fn receive(&self, maximum_bytes: usize) -> Result<ReceivedPacket> {
-        if maximum_bytes == 0 || maximum_bytes > MAXIMUM_REQUEST_BYTES {
+        if maximum_bytes == 0 || maximum_bytes > MAXIMUM_HOST_QUERY_PACKET_BYTES {
             return Err(protocol_field("invalid receive packet ceiling"));
         }
         let mut bytes = vec![0; maximum_bytes];
@@ -227,7 +228,9 @@ mod tests {
         let (listener, client) = listener(&path);
         send(&client, b"request", SendFlags::empty()).unwrap();
         let connection = listener.accept().unwrap();
-        let packet = connection.receive(MAXIMUM_REQUEST_BYTES).unwrap();
+        let packet = connection
+            .receive(aos_sandbox_protocol::MAXIMUM_REQUEST_BYTES)
+            .unwrap();
         assert_eq!(packet.bytes, b"request");
         assert!(packet.descriptors.is_empty());
         assert_eq!(connection.peer().uid, rustix::process::getuid().as_raw());
@@ -250,7 +253,9 @@ mod tests {
         let iov = [std::io::IoSlice::new(b"request")];
         sendmsg(&client, &iov, &mut control, SendFlags::empty()).unwrap();
         let connection = listener.accept().unwrap();
-        let packet = connection.receive(MAXIMUM_REQUEST_BYTES).unwrap();
+        let packet = connection
+            .receive(aos_sandbox_protocol::MAXIMUM_REQUEST_BYTES)
+            .unwrap();
         assert_eq!(packet.bytes, b"request");
         assert_eq!(packet.descriptors.len(), 1);
         assert!(

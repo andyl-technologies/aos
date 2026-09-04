@@ -16,21 +16,22 @@ use aos_proto::aos::sandbox::local::v1::{
     Audience, BrokerAuthorizationArtifactsV1, BrokerClientHello, BrokerDescriptorDisposition,
     BrokerDescriptorDispositionEntry, BrokerDescriptorEntry, BrokerDescriptorRole, BrokerError,
     BrokerErrorCode, BrokerMethod, BrokerRequestEnvelope, BrokerResponseEnvelope,
-    BrokerServerHello,
+    BrokerServerHello, QueryRuntimeEffectResponse, RuntimeEffectStatus, RuntimeObservation,
+    RuntimeState,
 };
 use aos_sandbox_core::format::{
     decode_broker_authorization_plan, decode_ownership_lease, decode_signature,
 };
 use aos_sandbox_core::{
-    negotiate_protocol, validate_required_features, DecodeLimits, FeatureRef, ProtocolId,
-    ProtocolVersion, RegistryError,
+    DecodeLimits, FeatureRef, ProtocolId, ProtocolVersion, RegistryError, negotiate_protocol,
+    validate_required_features,
 };
 use buffa::Message as _;
 
 use crate::{
-    exact_nonzero, validate_feature_set, validate_peer_audience, PeerCredentials, PeerPolicy,
-    ProtocolValidationError, ValidatedHeader, MAXIMUM_REQUEST_BYTES, MAXIMUM_RESPONSE_BYTES,
-    MINIMUM_RESPONSE_BYTES,
+    MAXIMUM_REQUEST_BYTES, MAXIMUM_RESPONSE_BYTES, MINIMUM_RESPONSE_BYTES, PeerCredentials,
+    PeerPolicy, ProtocolValidationError, ValidatedHeader, exact_nonzero, validate_feature_set,
+    validate_peer_audience,
 };
 
 /// Maximum encoded handshake packet accepted before protobuf decoding.
@@ -45,6 +46,13 @@ pub const MAXIMUM_BROKER_PLAN_BYTES: usize = 768 * 1024;
 pub const MAXIMUM_OWNERSHIP_LEASE_BYTES: usize = 64 * 1024;
 /// Maximum canonical detached-signature bytes carried in one local request.
 pub const MAXIMUM_AUTHORIZATION_SIGNATURE_BYTES: usize = 64 * 1024;
+/// Maximum protobuf growth when an exact Host Apply is wrapped by a 1.2 query.
+pub const HOST_QUERY_WRAPPER_OVERHEAD_BYTES: usize = 64;
+/// Maximum encoded Host 1.2 query packet accepted before protobuf decoding.
+pub const MAXIMUM_HOST_QUERY_PACKET_BYTES: usize =
+    MAXIMUM_REQUEST_BYTES + HOST_QUERY_WRAPPER_OVERHEAD_BYTES;
+/// Maximum exact completed Host Apply receipt carried by an effect query.
+pub const MAXIMUM_RUNTIME_EFFECT_RECEIPT_BYTES: usize = 1024 * 1024;
 const MAXIMUM_AUTHORIZATION_ARTIFACT_BYTES: usize = 960 * 1024;
 const MAXIMUM_BROKER_METHODS: usize = 16;
 const MAXIMUM_REQUIRED_FEATURES: usize = 64;
@@ -60,6 +68,7 @@ pub struct NegotiatedBrokerSession {
     advertised_features: Vec<FeatureRef>,
     required_methods: Vec<BrokerMethod>,
     advertised_methods: Vec<BrokerMethod>,
+    maximum_request_bytes: usize,
     maximum_response_bytes: u32,
 }
 
@@ -112,6 +121,12 @@ impl NegotiatedBrokerSession {
         self.maximum_response_bytes
     }
 
+    /// Returns the exact packet ceiling negotiated for this broker session.
+    #[must_use]
+    pub const fn maximum_request_bytes(&self) -> usize {
+        self.maximum_request_bytes
+    }
+
     /// Builds the sole successful server handshake packet.
     #[must_use]
     pub fn server_hello(&self) -> BrokerServerHello {
@@ -119,7 +134,7 @@ impl NegotiatedBrokerSession {
             protocol_major: u32::from(self.version.major()),
             protocol_minor: u32::from(self.version.minor()),
             features: self.advertised_features.iter().map(proto_feature).collect(),
-            maximum_request_bytes: u32::try_from(MAXIMUM_REQUEST_BYTES).unwrap_or(u32::MAX),
+            maximum_request_bytes: u32::try_from(self.maximum_request_bytes()).unwrap_or(u32::MAX),
             maximum_response_bytes: self.maximum_response_bytes,
             methods: self
                 .advertised_methods
@@ -303,6 +318,17 @@ pub struct ValidatedBrokerResponseEnvelope {
     error: Option<ValidatedBrokerError>,
 }
 
+/// Reports one structurally validated Host Apply effect status.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ValidatedRuntimeEffectStatus {
+    /// No exact durable request exists.
+    Absent,
+    /// The exact durable request remains pending.
+    Pending,
+    /// The exact durable request completed with these response bytes.
+    Complete(Vec<u8>),
+}
+
 impl ValidatedBrokerResponseEnvelope {
     /// Returns the request identifier echoed by the broker.
     #[must_use]
@@ -415,13 +441,18 @@ pub fn negotiate_client_hello(
 
     validate_canonical_feature_refs(advertised_features)?;
     validate_canonical_methods(advertised_methods, protocol, "advertised_methods")?;
+    let advertised_methods = advertised_methods
+        .iter()
+        .copied()
+        .filter(|method| method_available_in_version(*method, version))
+        .collect::<Vec<_>>();
     let required_features =
         validate_feature_set(&hello.required_features, "hello.required_features")?;
     ensure_feature_subset(&required_features, advertised_features)?;
     let required_methods =
         validate_proto_methods(&hello.required_methods, protocol, "hello.required_methods")?;
     validate_role_methods(policy.audience, &required_methods)?;
-    ensure_method_subset(&required_methods, advertised_methods)?;
+    ensure_method_subset(&required_methods, &advertised_methods)?;
     validate_negotiated_authorization_profile(version, &required_features, &required_methods)?;
 
     Ok(NegotiatedBrokerSession {
@@ -431,7 +462,8 @@ pub fn negotiate_client_hello(
         required_features,
         advertised_features: advertised_features.to_vec(),
         required_methods,
-        advertised_methods: advertised_methods.to_vec(),
+        advertised_methods,
+        maximum_request_bytes: maximum_request_bytes(protocol, version),
         maximum_response_bytes: hello.maximum_response_bytes,
     })
 }
@@ -482,7 +514,12 @@ pub fn decode_server_hello(
         )));
     }
     negotiate_protocol(protocol, offered_version)?;
-    validate_server_bounds(&hello, offered_maximum_response_bytes)?;
+    validate_server_bounds(
+        &hello,
+        protocol,
+        offered_version,
+        offered_maximum_response_bytes,
+    )?;
 
     validate_canonical_feature_refs(required_features)?;
     let advertised_features = validate_feature_set(&hello.features, "server_hello.features")?;
@@ -491,6 +528,7 @@ pub fn decode_server_hello(
     validate_role_methods(audience, required_methods)?;
     let advertised_methods =
         validate_proto_methods(&hello.methods, protocol, "server_hello.methods")?;
+    validate_methods_available(&advertised_methods, offered_version)?;
     ensure_method_subset(required_methods, &advertised_methods)?;
     validate_negotiated_authorization_profile(
         offered_version,
@@ -506,6 +544,8 @@ pub fn decode_server_hello(
         advertised_features,
         required_methods: required_methods.to_vec(),
         advertised_methods,
+        maximum_request_bytes: usize::try_from(hello.maximum_request_bytes)
+            .map_err(|_| ProtocolValidationError::InvalidResponseBound)?,
         maximum_response_bytes: hello.maximum_response_bytes,
     })
 }
@@ -525,7 +565,7 @@ pub fn decode_request_envelope(
     protocol: ProtocolId,
     ancillary_descriptor_count: usize,
 ) -> Result<ValidatedBrokerRequestEnvelope, ProtocolValidationError> {
-    if bytes.len() > MAXIMUM_REQUEST_BYTES {
+    if bytes.len() > MAXIMUM_HOST_QUERY_PACKET_BYTES {
         return Err(ProtocolValidationError::RequestTooLarge);
     }
     let envelope = BrokerRequestEnvelope::decode_from_slice(bytes)
@@ -534,6 +574,11 @@ pub fn decode_request_envelope(
         return Err(ProtocolValidationError::UnknownFields);
     }
     let method = validate_method(envelope.method.as_known(), protocol)?;
+    if bytes.len() > MAXIMUM_REQUEST_BYTES
+        && method != BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
+    {
+        return Err(ProtocolValidationError::RequestTooLarge);
+    }
     if envelope.body.is_empty() {
         return Err(ProtocolValidationError::InvalidField("envelope.body"));
     }
@@ -581,7 +626,7 @@ pub fn encode_authorized_request_envelope(
     if body.is_empty() {
         return Err(ProtocolValidationError::InvalidField("envelope.body"));
     }
-    if body.len() > MAXIMUM_REQUEST_BYTES {
+    if body.len() > MAXIMUM_HOST_QUERY_PACKET_BYTES {
         return Err(ProtocolValidationError::RequestTooLarge);
     }
 
@@ -602,10 +647,99 @@ pub fn encode_authorized_request_envelope(
         ..Default::default()
     };
     let encoded = envelope.encode_to_vec();
-    if encoded.len() > MAXIMUM_REQUEST_BYTES {
+    let maximum = if method == BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT {
+        MAXIMUM_HOST_QUERY_PACKET_BYTES
+    } else {
+        MAXIMUM_REQUEST_BYTES
+    };
+    if encoded.len() > maximum {
         return Err(ProtocolValidationError::RequestTooLarge);
     }
     Ok(encoded)
+}
+
+/// Decodes a hostile Host effect-query body and validates its exact receipt.
+///
+/// # Errors
+///
+/// Returns [`ProtocolValidationError`] for malformed or oversized bytes,
+/// unknown status or fields, an invalid status/receipt shape, or a completed
+/// observation whose assignment fence differs from the original Apply.
+pub fn decode_query_runtime_effect_response(
+    bytes: &[u8],
+    original_request: &crate::ValidatedRuntimeRequest,
+) -> Result<ValidatedRuntimeEffectStatus, ProtocolValidationError> {
+    if bytes.len() > MAXIMUM_RESPONSE_BYTES as usize {
+        return Err(ProtocolValidationError::ResponseTooLarge);
+    }
+    let response = QueryRuntimeEffectResponse::decode_from_slice(bytes)
+        .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
+    if !response.__buffa_unknown_fields.is_empty() {
+        return Err(ProtocolValidationError::UnknownFields);
+    }
+    match response.status.as_known() {
+        Some(RuntimeEffectStatus::RUNTIME_EFFECT_STATUS_ABSENT) if response.receipt.is_empty() => {
+            Ok(ValidatedRuntimeEffectStatus::Absent)
+        }
+        Some(RuntimeEffectStatus::RUNTIME_EFFECT_STATUS_PENDING) if response.receipt.is_empty() => {
+            Ok(ValidatedRuntimeEffectStatus::Pending)
+        }
+        Some(RuntimeEffectStatus::RUNTIME_EFFECT_STATUS_COMPLETE)
+            if !response.receipt.is_empty()
+                && response.receipt.len() <= MAXIMUM_RUNTIME_EFFECT_RECEIPT_BYTES =>
+        {
+            validate_runtime_effect_receipt(&response.receipt, original_request)?;
+            Ok(ValidatedRuntimeEffectStatus::Complete(response.receipt))
+        }
+        _ => Err(ProtocolValidationError::InvalidField(
+            "query response status/receipt",
+        )),
+    }
+}
+
+fn validate_runtime_effect_receipt(
+    bytes: &[u8],
+    original_request: &crate::ValidatedRuntimeRequest,
+) -> Result<(), ProtocolValidationError> {
+    let observation = RuntimeObservation::decode_from_slice(bytes)
+        .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
+    if !observation.__buffa_unknown_fields.is_empty()
+        || observation.error.as_option().is_some()
+        || observation.observation_sequence == 0
+        || observation
+            .state
+            .as_known()
+            .is_none_or(|state| state == RuntimeState::RUNTIME_STATE_UNSPECIFIED)
+    {
+        return Err(ProtocolValidationError::InvalidField(
+            "query response receipt",
+        ));
+    }
+    let runtime_handle =
+        exact_nonzero::<32>(&observation.runtime_handle, "receipt.runtime_handle")?;
+    let expected_handle = crate::semantics::host::runtime_handle_v1(
+        original_request.fence().incarnation_id(),
+        original_request.fence().assignment_epoch(),
+        original_request.fence().assignment_digest(),
+    );
+    if runtime_handle != expected_handle {
+        return Err(ProtocolValidationError::InvalidField(
+            "receipt.runtime_handle",
+        ));
+    }
+    if !observation.leader_handle.is_empty() {
+        exact_nonzero::<32>(&observation.leader_handle, "receipt.leader_handle")?;
+    }
+    let fence = observation
+        .fence
+        .as_option()
+        .ok_or(ProtocolValidationError::MissingField("receipt.fence"))?;
+    if !fence.__buffa_unknown_fields.is_empty()
+        || crate::validate_fence(fence)? != *original_request.fence()
+    {
+        return Err(ProtocolValidationError::InvalidField("receipt.fence"));
+    }
+    Ok(())
 }
 
 fn validate_authorization_artifacts(
@@ -772,6 +906,7 @@ const fn method_requires_authorization(method: BrokerMethod) -> bool {
     matches!(
         method,
         BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
+            | BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
             | BrokerMethod::BROKER_METHOD_MOUNT_APPLY
             | BrokerMethod::BROKER_METHOD_STORAGE_APPLY
             | BrokerMethod::BROKER_METHOD_NETWORK_APPLY
@@ -821,6 +956,7 @@ fn validate_outbound_carriers(
             )
         }),
         BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
+        | BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
         | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME
         | BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME
         | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY
@@ -1134,11 +1270,14 @@ fn validate_failed_server_hello(hello: &BrokerServerHello) -> Result<(), Protoco
 
 fn validate_server_bounds(
     hello: &BrokerServerHello,
+    protocol: ProtocolId,
+    version: ProtocolVersion,
     offered_maximum_response_bytes: u32,
 ) -> Result<(), ProtocolValidationError> {
+    let maximum_request_bytes = maximum_request_bytes(protocol, version);
     if hello.maximum_request_bytes == 0
         || usize::try_from(hello.maximum_request_bytes)
-            .map_or(true, |maximum| maximum > MAXIMUM_REQUEST_BYTES)
+            .map_or(true, |maximum| maximum > maximum_request_bytes)
         || !(MINIMUM_RESPONSE_BYTES..=offered_maximum_response_bytes)
             .contains(&hello.maximum_response_bytes)
         || hello.maximum_response_bytes > MAXIMUM_RESPONSE_BYTES
@@ -1172,6 +1311,7 @@ fn validate_method(
             BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
                 | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME
                 | BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME
+                | BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
         ) | (
             ProtocolId::MountBroker,
             BrokerMethod::BROKER_METHOD_MOUNT_APPLY
@@ -1191,6 +1331,32 @@ fn validate_method(
         return Err(ProtocolValidationError::MethodMismatch);
     }
     Ok(method)
+}
+
+fn method_available_in_version(method: BrokerMethod, version: ProtocolVersion) -> bool {
+    method != BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT || version.minor() >= 2
+}
+
+const fn maximum_request_bytes(protocol: ProtocolId, version: ProtocolVersion) -> usize {
+    if matches!(protocol, ProtocolId::HostBroker) && version.minor() >= 2 {
+        MAXIMUM_HOST_QUERY_PACKET_BYTES
+    } else {
+        MAXIMUM_REQUEST_BYTES
+    }
+}
+
+fn validate_methods_available(
+    methods: &[BrokerMethod],
+    version: ProtocolVersion,
+) -> Result<(), ProtocolValidationError> {
+    if methods
+        .iter()
+        .all(|method| method_available_in_version(*method, version))
+    {
+        Ok(())
+    } else {
+        Err(ProtocolValidationError::MethodMismatch)
+    }
 }
 
 fn validate_proto_methods(
@@ -1517,14 +1683,16 @@ mod tests {
             assignment,
             NodeId::from_bytes([7; 16]),
             authority.clone(),
-            vec![BrokerGrant::new(
-                BrokerVerb::MountCreate,
-                BrokerGrantTarget::Assignment,
-                BrokerArgumentCommitment::for_canonical_bytes(b"mount create"),
-                4096,
-                0,
-            )
-            .unwrap_or_else(|error| panic!("test grant failed: {error}"))],
+            vec![
+                BrokerGrant::new(
+                    BrokerVerb::MountCreate,
+                    BrokerGrantTarget::Assignment,
+                    BrokerArgumentCommitment::for_canonical_bytes(b"mount create"),
+                    4096,
+                    0,
+                )
+                .unwrap_or_else(|error| panic!("test grant failed: {error}")),
+            ],
             ObjectDigest::from_bytes([8; 32]),
             RevocationScopeId::from_bytes([9; 16]),
             100,
@@ -1877,6 +2045,77 @@ mod tests {
             encode_body(largest_body + 1),
             Err(ProtocolValidationError::RequestTooLarge)
         );
+    }
+
+    #[test]
+    fn host_query_adds_bounded_headroom_without_narrowing_apply() {
+        use aos_proto::aos::sandbox::local::v1::{QueryRuntimeEffectRequest, RequestHeader};
+
+        let artifacts = authorization_artifacts();
+        let encode_body = |size| {
+            let body = vec![0; size];
+            encode_authorized_request_envelope(
+                ProtocolId::HostBroker,
+                BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
+                &body,
+                &[],
+                borrowed_artifacts(&artifacts),
+            )
+        };
+        let mut low = 1;
+        let mut high = MAXIMUM_REQUEST_BYTES;
+        while low < high {
+            let middle = low + (high - low).div_ceil(2);
+            if encode_body(middle).is_ok() {
+                low = middle;
+            } else {
+                high = middle - 1;
+            }
+        }
+        let largest_body = low;
+        let apply_packet = encode_body(largest_body).unwrap();
+        assert!(apply_packet.len() <= MAXIMUM_REQUEST_BYTES);
+        assert_eq!(
+            encode_body(largest_body + 1),
+            Err(ProtocolValidationError::RequestTooLarge)
+        );
+        assert!(decode_request_envelope(&apply_packet, ProtocolId::HostBroker, 0).is_ok());
+        let oversized_apply = BrokerRequestEnvelope {
+            method: BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME.into(),
+            body: vec![0; largest_body + 1],
+            authorization: Some(artifacts.clone()).into(),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        assert_eq!(
+            decode_request_envelope(&oversized_apply, ProtocolId::HostBroker, 0),
+            Err(ProtocolValidationError::RequestTooLarge)
+        );
+
+        let query_body = QueryRuntimeEffectRequest {
+            header: Some(RequestHeader {
+                protocol_major: 1,
+                protocol_minor: 2,
+                request_id: vec![0xff; 16],
+                audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+                deadline_boottime_nanoseconds: u64::MAX,
+                maximum_response_bytes: MAXIMUM_RESPONSE_BYTES,
+                ..Default::default()
+            })
+            .into(),
+            original_apply_request: vec![0; largest_body],
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let query_packet = BrokerRequestEnvelope {
+            method: BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT.into(),
+            body: query_body,
+            authorization: Some(artifacts).into(),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        assert!(query_packet.len() <= MAXIMUM_HOST_QUERY_PACKET_BYTES);
+        assert!(query_packet.len() - apply_packet.len() <= HOST_QUERY_WRAPPER_OVERHEAD_BYTES);
     }
 
     #[test]
@@ -2524,6 +2763,136 @@ mod tests {
                 ))
             );
         }
+    }
+
+    #[test]
+    fn host_query_is_available_only_in_protocol_1_2_and_requires_authorization() {
+        use aos_proto::aos::sandbox::local::v1::RuntimeEffectStatus;
+
+        assert_eq!(RuntimeEffectStatus::RUNTIME_EFFECT_STATUS_ABSENT as i32, 1);
+        assert_eq!(RuntimeEffectStatus::RUNTIME_EFFECT_STATUS_PENDING as i32, 2);
+        assert_eq!(
+            RuntimeEffectStatus::RUNTIME_EFFECT_STATUS_COMPLETE as i32,
+            3
+        );
+        let features = client_features();
+        let methods = [
+            BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME,
+            BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT,
+        ];
+        let hello = BrokerClientHello {
+            protocol_major: 1,
+            protocol_minor: 2,
+            audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+            required_features: features.iter().map(proto_feature).collect(),
+            maximum_response_bytes: 8192,
+            required_methods: vec![BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT.into()],
+            ..Default::default()
+        };
+        let session = negotiate_client_hello(
+            &hello.encode_to_vec(),
+            peer(),
+            policy(),
+            ProtocolId::HostBroker,
+            &features,
+            &methods,
+        )
+        .unwrap_or_else(|error| panic!("valid host 1.2 query hello failed: {error}"));
+        assert_eq!(session.version(), ProtocolVersion::new(1, 2));
+        assert_eq!(
+            session.maximum_request_bytes(),
+            MAXIMUM_HOST_QUERY_PACKET_BYTES
+        );
+
+        let unauthorized = BrokerRequestEnvelope {
+            method: BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT.into(),
+            body: vec![1],
+            ..Default::default()
+        };
+        assert!(matches!(
+            session.decode_request(&unauthorized.encode_to_vec(), 0),
+            Err(ProtocolValidationError::InvalidField(
+                "envelope.authorization profile"
+            ))
+        ));
+        let authorized = BrokerRequestEnvelope {
+            authorization: Some(authorization_artifacts()).into(),
+            ..unauthorized
+        };
+        assert!(
+            session
+                .decode_request(&authorized.encode_to_vec(), 0)
+                .is_ok()
+        );
+        assert!(
+            session
+                .decode_request(&authorized.encode_to_vec(), 1)
+                .is_err()
+        );
+
+        let mut legacy = hello;
+        legacy.protocol_minor = 1;
+        assert_eq!(
+            negotiate_client_hello(
+                &legacy.encode_to_vec(),
+                peer(),
+                policy(),
+                ProtocolId::HostBroker,
+                &features,
+                &methods,
+            ),
+            Err(ProtocolValidationError::MethodMismatch)
+        );
+
+        legacy.required_methods = vec![BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME.into()];
+        let legacy_session = negotiate_client_hello(
+            &legacy.encode_to_vec(),
+            peer(),
+            policy(),
+            ProtocolId::HostBroker,
+            &features,
+            &methods,
+        )
+        .unwrap_or_else(|error| panic!("valid host 1.1 hello failed: {error}"));
+        assert_eq!(
+            legacy_session.advertised_methods(),
+            [BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME]
+        );
+        assert_eq!(
+            legacy_session.maximum_request_bytes(),
+            MAXIMUM_REQUEST_BYTES
+        );
+        let mut invalid_server = legacy_session.server_hello();
+        invalid_server
+            .methods
+            .push(BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT.into());
+        assert_eq!(
+            decode_server_hello(
+                &invalid_server.encode_to_vec(),
+                ProtocolId::HostBroker,
+                Audience::AUDIENCE_NODE_CONTROLLER,
+                ProtocolVersion::new(1, 1),
+                legacy_session.required_features(),
+                legacy_session.required_methods(),
+                8192,
+            ),
+            Err(ProtocolValidationError::MethodMismatch)
+        );
+        let mut invalid_bound = legacy_session.server_hello();
+        invalid_bound.maximum_request_bytes =
+            u32::try_from(MAXIMUM_HOST_QUERY_PACKET_BYTES).unwrap();
+        assert_eq!(
+            decode_server_hello(
+                &invalid_bound.encode_to_vec(),
+                ProtocolId::HostBroker,
+                Audience::AUDIENCE_NODE_CONTROLLER,
+                ProtocolVersion::new(1, 1),
+                legacy_session.required_features(),
+                legacy_session.required_methods(),
+                8192,
+            ),
+            Err(ProtocolValidationError::InvalidResponseBound)
+        );
     }
 
     #[test]

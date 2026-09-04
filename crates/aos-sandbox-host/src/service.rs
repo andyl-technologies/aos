@@ -10,16 +10,19 @@ use aos_sandbox_core::{FeatureRef, ProtocolId, RawClockProvenance, RawPairedCloc
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_protocol::session::SIGNED_PLAN_LEASE_FEATURE_NAMESPACE;
 use aos_sandbox_protocol::{
-    MAXIMUM_HANDSHAKE_BYTES, MAXIMUM_REQUEST_BYTES, PeerPolicy, ProtocolValidationError,
-    decode_runtime_request, encode_error_response_envelope, encode_success_response_envelope,
-    failed_server_hello, negotiate_client_hello, validate_request_descriptor_roles,
+    MAXIMUM_HANDSHAKE_BYTES, PeerPolicy, ProtocolValidationError, decode_runtime_request,
+    encode_error_response_envelope, encode_success_response_envelope, failed_server_hello,
+    negotiate_client_hello, validate_request_descriptor_roles,
 };
 use buffa::Message as _;
 use rustix::time::{ClockId, clock_gettime};
 
 use crate::KERNEL_CLOCK_PROVENANCE;
-use crate::broker::HostBroker;
-use crate::observation::{decode_inventory_runtime_request, decode_observe_runtime_request};
+use crate::broker::{HostBroker, RuntimeEffectQueryContext};
+use crate::observation::{
+    decode_inventory_runtime_request, decode_observe_runtime_request,
+    decode_query_runtime_effect_request,
+};
 use crate::peer::ControllerPeerVerifier;
 use crate::plan::HostCatalog;
 use crate::state::HostStateStore;
@@ -124,7 +127,7 @@ where
             return Ok(ConnectionOutcome::TransportRejected);
         }
 
-        let Ok(packet) = connection.receive(MAXIMUM_REQUEST_BYTES) else {
+        let Ok(packet) = connection.receive(session.maximum_request_bytes()) else {
             return Ok(ConnectionOutcome::TransportRejected);
         };
         let Ok(request) = session.decode_request(&packet.bytes, packet.descriptors.len()) else {
@@ -206,6 +209,37 @@ where
                 let result = self.broker.inventory_runtime(ceiling).await;
                 (request_id, ceiling, result)
             }
+            BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT => {
+                let now = trusted_paired_clock_sample()?;
+                let Ok(validated) = decode_query_runtime_effect_request(
+                    request.body(),
+                    peer.credentials(),
+                    self.peer_policy,
+                    now.boottime_nanoseconds(),
+                ) else {
+                    return Ok(ConnectionOutcome::RequestRejected);
+                };
+                if session.validate_header(&validated.header).is_err() {
+                    return Ok(ConnectionOutcome::RequestRejected);
+                }
+                let Some(artifacts) = request.authorization() else {
+                    return Ok(ConnectionOutcome::RequestRejected);
+                };
+                let request_id = *validated.header.request_id();
+                let ceiling = validated.header.maximum_response_bytes();
+                let result = self.broker.query_runtime_effect(
+                    artifacts,
+                    RuntimeEffectQueryContext {
+                        original_request_bytes: &validated.original_apply_request,
+                        request_id,
+                        peer: peer.credentials(),
+                        policy: self.peer_policy,
+                        current_clock: now,
+                        maximum_response_bytes: ceiling,
+                    },
+                );
+                (request_id, ceiling, result)
+            }
             _ => return Ok(ConnectionOutcome::RequestRejected),
         };
         let (request_id, response_ceiling, result) = dispatch;
@@ -237,17 +271,22 @@ where
 }
 
 fn advertised_methods(launch_available: bool) -> Vec<BrokerMethod> {
-    let mut methods = Vec::with_capacity(3);
+    let mut methods = Vec::with_capacity(4);
     if launch_available {
         methods.push(BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME);
     }
     methods.push(BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME);
     methods.push(BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME);
+    methods.push(BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT);
     methods
 }
 
 fn valid_service_authorization_profile(method: BrokerMethod, has_authorization: bool) -> bool {
-    (method == BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME) == has_authorization
+    matches!(
+        method,
+        BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
+            | BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
+    ) == has_authorization
 }
 
 fn encode_method_success(
@@ -456,6 +495,7 @@ mod tests {
             [
                 BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME,
                 BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
+                BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT,
             ]
         );
         assert_eq!(
@@ -464,6 +504,7 @@ mod tests {
                 BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
                 BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME,
                 BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
+                BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT,
             ]
         );
     }
@@ -532,6 +573,14 @@ mod tests {
         ));
         assert!(!valid_service_authorization_profile(
             BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
+            false,
+        ));
+        assert!(valid_service_authorization_profile(
+            BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT,
+            true,
+        ));
+        assert!(!valid_service_authorization_profile(
+            BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT,
             false,
         ));
     }

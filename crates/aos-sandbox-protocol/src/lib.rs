@@ -26,10 +26,10 @@ pub use session::{
     AuthorizationArtifactBytes, MAXIMUM_HANDSHAKE_BYTES, MAXIMUM_PACKET_DESCRIPTORS,
     NegotiatedBrokerSession, ValidatedBrokerError, ValidatedBrokerRequestEnvelope,
     ValidatedBrokerResponseEnvelope, ValidatedDescriptorDisposition, ValidatedDescriptorEntry,
-    decode_request_envelope, decode_response_envelope, decode_server_hello,
-    encode_authorized_request_envelope, encode_error_response_envelope,
-    encode_success_response_envelope, failed_server_hello, negotiate_client_hello,
-    validate_request_descriptor_roles,
+    ValidatedRuntimeEffectStatus, decode_query_runtime_effect_response, decode_request_envelope,
+    decode_response_envelope, decode_server_hello, encode_authorized_request_envelope,
+    encode_error_response_envelope, encode_success_response_envelope, failed_server_hello,
+    negotiate_client_hello, validate_request_descriptor_roles,
 };
 
 use aos_proto::aos::sandbox::local::v1::{
@@ -1282,5 +1282,97 @@ mod tests {
             decode_mount_request(&request.encode_to_vec(), peer(), policy(), 100),
             Err(ProtocolValidationError::InvalidDescriptor(_))
         ));
+    }
+
+    #[test]
+    fn query_response_requires_closed_status_shape_and_exact_apply_fence() {
+        use aos_proto::aos::sandbox::local::v1::{
+            QueryRuntimeEffectResponse, RuntimeEffectStatus, RuntimeObservation, RuntimeState,
+        };
+
+        let original = valid_runtime_request();
+        let validated =
+            decode_runtime_request(&original.encode_to_vec(), peer(), policy(), 100).unwrap();
+        let receipt = RuntimeObservation {
+            runtime_handle: semantics::host::runtime_handle_v1(
+                validated.fence().incarnation_id(),
+                validated.fence().assignment_epoch(),
+                validated.fence().assignment_digest(),
+            )
+            .to_vec(),
+            fence: original.fence.clone(),
+            state: RuntimeState::RUNTIME_STATE_READY.into(),
+            observation_sequence: 1,
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let complete = QueryRuntimeEffectResponse {
+            status: RuntimeEffectStatus::RUNTIME_EFFECT_STATUS_COMPLETE.into(),
+            receipt: receipt.clone(),
+            ..Default::default()
+        };
+        assert_eq!(
+            decode_query_runtime_effect_response(&complete.encode_to_vec(), &validated).unwrap(),
+            ValidatedRuntimeEffectStatus::Complete(receipt)
+        );
+
+        for response in [
+            QueryRuntimeEffectResponse::default(),
+            QueryRuntimeEffectResponse {
+                status: RuntimeEffectStatus::RUNTIME_EFFECT_STATUS_ABSENT.into(),
+                receipt: vec![1],
+                ..Default::default()
+            },
+            QueryRuntimeEffectResponse {
+                status: RuntimeEffectStatus::RUNTIME_EFFECT_STATUS_PENDING.into(),
+                receipt: vec![1],
+                ..Default::default()
+            },
+            QueryRuntimeEffectResponse {
+                status: RuntimeEffectStatus::RUNTIME_EFFECT_STATUS_COMPLETE.into(),
+                ..Default::default()
+            },
+        ] {
+            assert!(
+                decode_query_runtime_effect_response(&response.encode_to_vec(), &validated)
+                    .is_err()
+            );
+        }
+
+        let mut wrong = RuntimeObservation::decode_from_slice(&complete.receipt).unwrap();
+        wrong.fence.get_or_insert_default().assignment_digest = vec![10; 32];
+        let wrong = QueryRuntimeEffectResponse {
+            status: RuntimeEffectStatus::RUNTIME_EFFECT_STATUS_COMPLETE.into(),
+            receipt: wrong.encode_to_vec(),
+            ..Default::default()
+        };
+        assert!(decode_query_runtime_effect_response(&wrong.encode_to_vec(), &validated).is_err());
+
+        let mut wrong_handle = RuntimeObservation::decode_from_slice(&complete.receipt).unwrap();
+        wrong_handle.runtime_handle = vec![9; 32];
+        let wrong_handle = QueryRuntimeEffectResponse {
+            status: RuntimeEffectStatus::RUNTIME_EFFECT_STATUS_COMPLETE.into(),
+            receipt: wrong_handle.encode_to_vec(),
+            ..Default::default()
+        };
+        assert!(
+            decode_query_runtime_effect_response(&wrong_handle.encode_to_vec(), &validated)
+                .is_err()
+        );
+
+        let oversized = QueryRuntimeEffectResponse {
+            status: RuntimeEffectStatus::RUNTIME_EFFECT_STATUS_COMPLETE.into(),
+            receipt: vec![1; session::MAXIMUM_RUNTIME_EFFECT_RECEIPT_BYTES + 1],
+            ..Default::default()
+        };
+        assert!(
+            decode_query_runtime_effect_response(&oversized.encode_to_vec(), &validated).is_err()
+        );
+        let mut unknown = complete.encode_to_vec();
+        unknown.extend_from_slice(&[0xf8, 0x07, 0x01]);
+        assert_eq!(
+            decode_query_runtime_effect_response(&unknown, &validated),
+            Err(ProtocolValidationError::UnknownFields)
+        );
     }
 }

@@ -6,10 +6,10 @@
 //! magic[8] | version:u32-le | body-length:u64-le | sha256[32] | body
 //! ```
 //!
-//! Version 2 embeds domain-separated authenticated authority and effect
-//! records. Version 1 may be upgraded only when its fence and request tables
-//! are empty; live or pending unauthenticated authority is rejected rather
-//! than silently blessed. Terminal observation counters survive that upgrade.
+//! Version 3 binds every current fence to its latest admitting request. Prior
+//! versions may be upgraded only when their fence and request tables are empty;
+//! live authority is rejected rather than silently migrated. Terminal
+//! observation counters survive that upgrade.
 //! JSON is an internal node-local format, not a portable or wire contract.
 //! Unknown fields, checksum failures, overlong bodies, duplicate identities,
 //! and invalid pending/completed records fail closed during startup.
@@ -29,7 +29,7 @@ use crate::worker::HostRuntimeIdentity;
 use crate::{HostError, Result};
 
 const MAGIC: &[u8; 8] = b"AOSHOST\0";
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
 const HEADER_BYTES: usize = 8 + 4 + 8 + 32;
 const MAXIMUM_STATE_BYTES: usize = 16 * 1024 * 1024;
 const MAXIMUM_REQUESTS: usize = 16_384;
@@ -43,6 +43,17 @@ pub enum Admission {
     /// The same request was already durably pending and must be reconciled.
     Pending,
     /// The exact completed request replayed its persisted response bytes.
+    Complete(Vec<u8>),
+}
+
+/// Reports the immutable status of one exact request identity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum RuntimeEffectQuery {
+    /// No durable request uses this request ID.
+    Absent,
+    /// The exact request is durably pending.
+    Pending,
+    /// The exact request completed with these byte-exact response bytes.
     Complete(Vec<u8>),
 }
 
@@ -60,6 +71,7 @@ pub struct HostState {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct DurableFence {
+    witness_request_id: [u8; 16],
     sandbox_id: [u8; 16],
     incarnation_id: [u8; 16],
     assignment_epoch: u64,
@@ -89,7 +101,7 @@ struct StateWire {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct LegacyStateWire {
+struct PriorStateWire {
     fences: Vec<serde_json::Value>,
     requests: Vec<serde_json::Value>,
     observation_sequences: Vec<ObservationSequence>,
@@ -104,6 +116,11 @@ struct ObservationSequence {
 
 impl HostState {
     /// Authenticates every authority-bearing record and its structural links.
+    ///
+    /// Every current fence must be retained byte-exactly by at least one
+    /// authenticated request. Deleting an arbitrary older request cannot be
+    /// detected without a separately authenticated set root, but after a
+    /// newer fence exists replay of that older Apply is stale and rejected.
     pub(crate) fn validate_authenticated(&self, authority: &HostAuthorityV1) -> Result<()> {
         for (sandbox_id, durable) in &self.fences {
             let opened = authority.open_fence(sandbox_id, &durable.authorization)?;
@@ -112,6 +129,12 @@ impl HostState {
 
         let mut pending_sandboxes = BTreeSet::new();
         for (request_id, request) in &self.requests {
+            if request.request_id != *request_id || request.fence.witness_request_id != *request_id
+            {
+                return Err(HostError::State(
+                    "request index and fence witness disagree".to_owned(),
+                ));
+            }
             let effect = authority.open_effect(request_id, &request.effect)?;
             if effect.transport_request_digest().as_bytes() != &request.request_digest
                 || action_verb(request.action) != Some(effect.verb())
@@ -154,6 +177,15 @@ impl HostState {
                     "pending request is not the unique current sandbox transition".to_owned(),
                 ));
             }
+        }
+        if self.fences.values().any(|current| {
+            self.requests
+                .get(&current.witness_request_id)
+                .is_none_or(|request| request.fence != *current)
+        }) {
+            return Err(HostError::State(
+                "current sandbox fence has no retaining request".to_owned(),
+            ));
         }
         Ok(())
     }
@@ -209,7 +241,7 @@ impl HostState {
             ));
         }
 
-        let proposed = DurableFence::from_validated(fence, sealed_fence);
+        let proposed = DurableFence::from_validated(fence, request_id, sealed_fence);
         if let Some(current) = self.fences.get(fence.sandbox_id()) {
             current.validate_successor(&proposed)?;
         }
@@ -285,6 +317,25 @@ impl HostState {
             .map(|request| request.effect.as_slice())
     }
 
+    pub(crate) fn query_effect(
+        &self,
+        request_id: &[u8; 16],
+        request_digest: [u8; 32],
+    ) -> Result<RuntimeEffectQuery> {
+        let Some(record) = self.requests.get(request_id) else {
+            return Ok(RuntimeEffectQuery::Absent);
+        };
+        if record.request_digest != request_digest {
+            return Err(HostError::Fence(
+                "request ID was reused with different bytes",
+            ));
+        }
+        Ok(match &record.receipt {
+            Some(receipt) => RuntimeEffectQuery::Complete(receipt.clone()),
+            None => RuntimeEffectQuery::Pending,
+        })
+    }
+
     pub(crate) fn contains_runtime(&self, identity: &HostRuntimeIdentity) -> bool {
         self.fences
             .get(identity.sandbox_id())
@@ -319,6 +370,36 @@ impl HostState {
             return;
         };
         std::mem::swap(&mut left_record.effect, &mut right_record.effect);
+        self.requests.insert(*left, left_record);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn remove_request(&mut self, request_id: &[u8; 16]) {
+        self.requests.remove(request_id);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn corrupt_receipt(&mut self, request_id: &[u8; 16]) {
+        if let Some(byte) = self
+            .requests
+            .get_mut(request_id)
+            .and_then(|request| request.receipt.as_mut())
+            .and_then(|receipt| receipt.first_mut())
+        {
+            *byte ^= 1;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn swap_receipts(&mut self, left: &[u8; 16], right: &[u8; 16]) {
+        let Some(mut left_record) = self.requests.remove(left) else {
+            return;
+        };
+        let Some(right_record) = self.requests.get_mut(right) else {
+            self.requests.insert(*left, left_record);
+            return;
+        };
+        std::mem::swap(&mut left_record.receipt, &mut right_record.receipt);
         self.requests.insert(*left, left_record);
     }
 
@@ -417,13 +498,13 @@ impl HostState {
         Ok(state)
     }
 
-    fn decode_legacy(bytes: &[u8]) -> Result<Self> {
-        let wire: LegacyStateWire =
+    fn decode_prior(bytes: &[u8], version: u32) -> Result<Self> {
+        let wire: PriorStateWire =
             serde_json::from_slice(bytes).map_err(|error| HostError::State(error.to_string()))?;
         if !wire.fences.is_empty() || !wire.requests.is_empty() {
-            return Err(HostError::State(
-                "version-1 host state contains unauthenticated live authority".to_owned(),
-            ));
+            return Err(HostError::State(format!(
+                "version-{version} host authority requires explicit migration"
+            )));
         }
         let mut state = Self::default();
         for observation in wire.observation_sequences {
@@ -483,8 +564,13 @@ impl DurableFence {
         )
     }
 
-    fn from_validated(fence: &ValidatedAssignmentFence, authorization: Vec<u8>) -> Self {
+    fn from_validated(
+        fence: &ValidatedAssignmentFence,
+        witness_request_id: [u8; 16],
+        authorization: Vec<u8>,
+    ) -> Self {
         Self {
+            witness_request_id,
             sandbox_id: *fence.sandbox_id(),
             incarnation_id: *fence.incarnation_id(),
             assignment_epoch: fence.assignment_epoch(),
@@ -520,7 +606,8 @@ impl DurableFence {
 }
 
 fn validate_fence(fence: &DurableFence) -> Result<()> {
-    if fence.sandbox_id == [0; 16]
+    if fence.witness_request_id == [0; 16]
+        || fence.sandbox_id == [0; 16]
         || fence.incarnation_id == [0; 16]
         || fence.assignment_epoch == 0
         || fence.desired_generation == 0
@@ -687,7 +774,7 @@ fn decode_envelope(bytes: &[u8]) -> Result<HostState> {
             .try_into()
             .map_err(|_| HostError::State("host state version field is truncated".to_owned()))?,
     );
-    if version != 1 && version != VERSION {
+    if version != 1 && version != 2 && version != VERSION {
         return Err(HostError::State(
             "host state version is unsupported".to_owned(),
         ));
@@ -709,10 +796,12 @@ fn decode_envelope(bytes: &[u8]) -> Result<HostState> {
     if Sha256::digest(body).as_slice() != expected {
         return Err(HostError::State("host state checksum mismatch".to_owned()));
     }
-    if version == 1 {
-        HostState::decode_legacy(body)
-    } else {
-        HostState::decode(body)
+    match version {
+        1 | 2 => HostState::decode_prior(body, version),
+        VERSION => HostState::decode(body),
+        _ => Err(HostError::State(
+            "host state version is unsupported".to_owned(),
+        )),
     }
 }
 
@@ -755,6 +844,9 @@ mod tests {
         let migrated =
             decode_envelope(&legacy_envelope(&serde_json::to_vec(&terminal).unwrap())).unwrap();
         assert_eq!(migrated.observation_sequences.get(&[7; 16]), Some(&9));
+        let migrated_v2 =
+            decode_envelope(&prior_envelope(2, &serde_json::to_vec(&terminal).unwrap())).unwrap();
+        assert_eq!(migrated_v2.observation_sequences.get(&[7; 16]), Some(&9));
 
         let live = serde_json::json!({
             "fences": [{"legacy": true}],
@@ -762,12 +854,60 @@ mod tests {
             "observation_sequences": []
         });
         assert!(decode_envelope(&legacy_envelope(&serde_json::to_vec(&live).unwrap())).is_err());
+        assert!(decode_envelope(&prior_envelope(2, &serde_json::to_vec(&live).unwrap())).is_err());
+    }
+
+    #[test]
+    fn query_effect_is_exact_and_does_not_mutate_state() {
+        let request_id = [1; 16];
+        let request_digest = [2; 32];
+        let mut state = HostState::default();
+        state.requests.insert(
+            request_id,
+            RequestRecord {
+                request_id,
+                request_digest,
+                fence: DurableFence {
+                    witness_request_id: request_id,
+                    sandbox_id: [3; 16],
+                    incarnation_id: [4; 16],
+                    assignment_epoch: 5,
+                    desired_generation: 6,
+                    assignment_digest: [7; 32],
+                    authorization: vec![8],
+                },
+                action: 1,
+                effect: vec![9],
+                receipt: None,
+            },
+        );
+        let before = state.clone();
+        assert_eq!(
+            state.query_effect(&request_id, request_digest).unwrap(),
+            RuntimeEffectQuery::Pending
+        );
+        assert!(state.query_effect(&request_id, [10; 32]).is_err());
+        assert_eq!(
+            state.query_effect(&[11; 16], [12; 32]).unwrap(),
+            RuntimeEffectQuery::Absent
+        );
+        assert_eq!(state, before);
+
+        state.requests.get_mut(&request_id).unwrap().receipt = Some(vec![13, 14]);
+        assert_eq!(
+            state.query_effect(&request_id, request_digest).unwrap(),
+            RuntimeEffectQuery::Complete(vec![13, 14])
+        );
     }
 
     fn legacy_envelope(body: &[u8]) -> Vec<u8> {
+        prior_envelope(1, body)
+    }
+
+    fn prior_envelope(version: u32, body: &[u8]) -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(MAGIC);
-        bytes.extend_from_slice(&1_u32.to_le_bytes());
+        bytes.extend_from_slice(&version.to_le_bytes());
         bytes.extend_from_slice(&(body.len() as u64).to_le_bytes());
         bytes.extend_from_slice(&Sha256::digest(body));
         bytes.extend_from_slice(body);

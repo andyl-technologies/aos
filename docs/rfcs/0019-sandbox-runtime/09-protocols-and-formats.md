@@ -376,6 +376,32 @@ the request. The same portable artifact quartet can later be placed in a
 distinct authenticated remote wrapper, but the local `SOCK_SEQPACKET` framing,
 peer credentials, and descriptor table are not a remote protocol.
 
+Host-broker protocol 1.2 adds `QueryRuntimeEffect`. The query carries a fresh
+1.2 header, zero descriptors, the same exact signed authorization quartet, and
+the byte-exact original protocol 1.1 or 1.2 `ApplyRuntimeRequest`; its outer
+request ID must equal the embedded Apply request ID. Apply's portable signed
+semantic authorization remains version 1.1 under either carrier version. The
+query returns `Absent`, `Pending`, or
+`Complete`, with `Complete` carrying the byte-exact durable response receipt.
+Protocol 1.2 negotiates a Host-query packet ceiling 64 bytes above the legacy
+generic ceiling, which is greater than the maximum protobuf growth from the
+additional query header and nested-body framing. Protocol 1.1 Apply retains its
+original full packet ceiling, while every accepted Apply and its unchanged
+quartet therefore fit in a later 1.2 query packet. Packets in the additive band
+must decode specifically as `QueryRuntimeEffect`; every other method retains
+the legacy ceiling. Query responses reject unknown status values and fields;
+`Absent` and `Pending` require an empty receipt, while `Complete` requires a
+bounded, structurally valid `RuntimeObservation` whose fence exactly matches
+the original Apply.
+The broker revalidates the original request digest, semantic authorization,
+assignment fence, and authority artifacts against durable state. Existing
+effects are checked at their authenticated admission clock only to establish
+historical identity, never to grant new authority; an absent request must still
+be live at the current protected clock. The operation is strictly read-only:
+it does not admit or refresh a fence, write state, resolve a catalog handle, or
+invoke a worker. Protocol 1.0 and 1.1 do not advertise, negotiate, or accept the
+query method.
+
 Caller role derives from peer credentials, socket activation, and the expected
 service-unit identity; a serialized role is descriptive only. Unknown
 operations, features, or FD roles fail before effects. An exact request replay
