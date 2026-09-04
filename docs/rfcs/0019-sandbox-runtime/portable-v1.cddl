@@ -265,14 +265,14 @@ key-reference = [
   stable-key-id: text .size (1..255),
   generation: u64,
   public-key-sha256: digest,
-  usage: 0..3, ; policy, tree, snapshot, distribution
+  usage: 0..5, ; policy, tree, snapshot, distribution, broker-plan, ownership-lease
 ]
 
 ; application/vnd.aos.sandbox.trust-policy.v1+cbor
 trust-policy-v1 = [
   version: 1,
   trust-scope: id,
-  purpose: 0..3,
+  purpose: 0..4,
   allowed-keys: [* key-reference],
   required-features: [* feature],
 ]
@@ -283,7 +283,7 @@ signature-statement-v1 = [
   trust-scope: id,
   signer: key-reference,
   algorithm: 1, ; Ed25519
-  purpose: 0..3,
+  purpose: 0..4,
   issued-seconds: i64,
   expires-seconds: i64 / null,
   verification-policy: descriptor,
@@ -291,3 +291,42 @@ signature-statement-v1 = [
 
 ; application/vnd.aos.sandbox.signature.v1+cbor
 signature-v1 = [statement: signature-statement-v1, signature: bytes .size 64]
+
+broker-assignment-v1 = [
+  sandbox: id,
+  incarnation: id,
+  epoch: u64,
+  desired-generation: u64,
+  assignment-digest: digest,
+]
+
+broker-target-v1 =
+  [kind: 0] /                         ; assignment
+  [kind: 1, resource: bytes .size 32] /
+  [kind: 2, previous: bytes .size 32, successor: bytes .size 32]
+
+broker-grant-v1 = [
+  verb: 1..14,
+  target: broker-target-v1,
+  argument-commitment: digest,
+  maximum-request-bytes: 1..16777216,
+  maximum-descriptors: 0..16,
+]
+
+; application/vnd.aos.sandbox.broker-authorization-plan.v1+cbor
+broker-authorization-plan-v1 = [
+  version: 1,
+  audience: 0..1,                    ; host, mount
+  protocol: 0..1,                    ; host-broker, mount-broker
+  protocol-major: 1,
+  protocol-minor: 0,
+  assignment: broker-assignment-v1,
+  node: id,
+  ownership-authority: key-reference,
+  grants: [1*1024 broker-grant-v1],
+  policy-commitment: digest,
+  revocation-scope: id,
+  issued-seconds: i64,
+  expires-seconds: i64,
+  required-features: [*64 feature],
+]

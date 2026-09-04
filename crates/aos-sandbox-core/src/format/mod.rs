@@ -6,6 +6,7 @@
 //! non-shortest integers, tags, floating point, duplicate/noncanonical map
 //! keys, excess nesting, or an allocation claim beyond caller limits.
 
+mod broker_authorization;
 mod cbor;
 mod policy;
 mod snapshot;
@@ -18,6 +19,9 @@ use sha2::{Digest, Sha256};
 
 use crate::{MediaType, ObjectDescriptor, ObjectDigest};
 
+pub use broker_authorization::{
+    decode_broker_authorization_plan, encode_broker_authorization_plan,
+};
 pub use cbor::{CanonicalCborError, DecodeLimits, validate_canonical_cbor};
 pub use policy::{decode_optimization, decode_policy, encode_optimization, encode_policy};
 pub use snapshot::{decode_snapshot, encode_snapshot};

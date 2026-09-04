@@ -71,6 +71,10 @@ impl<'de> Deserialize<'de> for StableKeyId {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum KeyUsage {
+    /// Signs audience-specific local broker authorization plans.
+    BrokerAuthorization,
+    /// Signs short-lived assignment ownership leases.
+    OwnershipLease,
     /// Signs resolved policy objects.
     Policy,
     /// Signs portable tree/view/environment objects.
@@ -85,6 +89,8 @@ pub enum KeyUsage {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SignaturePurpose {
+    /// Authorizes one audience-specific local broker plan.
+    BrokerAuthorization,
     /// Authorizes a resolved policy object.
     Policy,
     /// Authenticates tree/view/environment provenance.
@@ -98,6 +104,7 @@ pub enum SignaturePurpose {
 impl SignaturePurpose {
     const fn required_usage(self) -> KeyUsage {
         match self {
+            Self::BrokerAuthorization => KeyUsage::BrokerAuthorization,
             Self::Policy => KeyUsage::Policy,
             Self::Tree => KeyUsage::Tree,
             Self::Snapshot => KeyUsage::Snapshot,

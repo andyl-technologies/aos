@@ -3,7 +3,7 @@
 ## Scope
 
 Portable policy, filesystem tree, delta, view, environment, sandbox spec,
-snapshot, trust-policy, and signature objects use one exact encoding profile so
+snapshot, trust-policy, broker-plan, and signature objects use one exact encoding profile so
 independent implementations compute identical identities. This profile is
 separate from protobuf RPC messages and from the replaceable node-local mmap
 index.
@@ -66,6 +66,7 @@ application/vnd.aos.sandbox.spec.v1+cbor
 application/vnd.aos.sandbox.snapshot.v1+cbor
 application/vnd.aos.sandbox.trust-policy.v1+cbor
 application/vnd.aos.sandbox.signature.v1+cbor
+application/vnd.aos.sandbox.broker-authorization-plan.v1+cbor
 ```
 
 Object size, media type, and digest are verified before semantic use. The
@@ -143,7 +144,16 @@ external dependency kind 0..4: immutable-view, package-closure, secret,
   service-endpoint, network-endpoint
 consistency 0..2: crash-consistent, application-quiesced, backend-exact
 quiesce evidence kind 0..2: none, guest-acknowledged, backend-acknowledged
-signature purpose 0..3: policy, tree, snapshot, distribution
+signature purpose 0..4: policy, tree, snapshot, distribution,
+  broker-authorization
+key usage 0..5: policy, tree, snapshot, distribution, broker-authorization,
+  ownership-lease
+broker audience/protocol 0..1: host, mount
+broker verb 1..14: host-launch, host-stop, host-freeze, host-thaw,
+  host-kill, host-observe, host-inventory, mount-create, mount-install,
+  mount-replace, mount-detach, mount-release, mount-inventory-summary,
+  mount-inventory-resources
+broker target 0..2: assignment, resource, resource-pair
 ACL tag 0..5: user-object, named-user, group-object, named-group, mask, other
 ```
 
@@ -175,6 +185,7 @@ matching digest bytes with the wrong media type is invalid:
 | immutable-view/package retention or dependency | view/environment as named by its union arm |
 | content retention | raw content or a closed portable object reachable from the snapshot |
 | signature verification policy | trust-policy |
+| broker authorization signature subject | broker-authorization-plan |
 | policy explanation source | a descriptor also present in policy input commitments |
 
 `profile-selector.body` and the feature-owned roles above are legal only when
@@ -452,13 +463,37 @@ trust-policy generation, match its scope/purpose and current revocation state,
 and carry the corresponding typed usage. Purpose-to-subject rules are closed:
 policy signs policy; tree signs tree, directory, delta, view, or environment;
 snapshot signs snapshot or spec; distribution signs raw content or any
-portable CBOR object while adding no authority. A mismatched purpose, usage,
+portable CBOR object while adding no authority; broker-authorization signs
+only an audience-specific broker plan. A mismatched purpose, usage,
 fingerprint, generation, subject media type, or trust scope fails.
 
 Authorization is not inferred from a valid signature alone. The verifier
 checks current key purpose, project scope, revocation/rotation state,
 provenance requirements, descriptor, media type, and restore policy. Mirrors
 may copy signed bytes but cannot broaden their disclosure domain.
+
+A verified broker plan is likewise not an effect permit. It commits one node,
+assignment, broker audience and protocol, exact semantic verbs and target
+shapes, canonical request-semantic digests, allocation ceilings, policy and
+revocation scope, ownership-authority key generation, and expiry. A broker may
+perform an effect only after independently verifying a current ownership lease,
+intersecting its node, assignment, authority key, boot and deadline facts with
+the plan, checking the exact request/catalog commitment, and durably admitting
+the resulting fences. Plan signature verification alone never satisfies those
+steps.
+
+The argument commitment is SHA-256 over the ASCII domain
+`aos-sandbox-broker-arguments-v1\0` followed by the broker verb's canonical
+typed request/catalog semantic bytes. Transport framing, protobuf unknown
+fields, request IDs, descriptor integers, and display strings are excluded;
+each verb specification must define those canonical semantic bytes before the
+verb is enabled.
+
+The canonical broker-plan golden fixture used by the core conformance test is:
+
+```text
+8e01010101008550010101010101010101010101010101015002020202020202020202020202020202030458200505050505050505050505050505050505050505050505050505050505050505500a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a84696f776e657273686970015820090909090909090909090909090909090909090909090909090909090909090905818508810058200b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b191000005820070707070707070707070707070707070707070707070707070707070707070750080808080808080808080808080808080a1481837825616f732e73616e64626f782e656e666f7263656d656e742e62726f6b65722d6c65646765720100
+```
 
 ## Distribution envelope
 

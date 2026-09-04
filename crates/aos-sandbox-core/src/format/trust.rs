@@ -142,7 +142,7 @@ fn decode_statement(decoder: &mut Decoder<'_>) -> Result<SignatureStatement, Can
     .map_err(|error| semantics("signature statement", error))
 }
 
-fn encode_key_reference(encoder: &mut Encoder, key: &KeyReference) {
+pub(super) fn encode_key_reference(encoder: &mut Encoder, key: &KeyReference) {
     encoder.array(4);
     encoder.text(key.stable_key_id().as_str());
     encoder.unsigned(key.generation());
@@ -150,7 +150,9 @@ fn encode_key_reference(encoder: &mut Encoder, key: &KeyReference) {
     encoder.unsigned(usage_code(key.usage()));
 }
 
-fn decode_key_reference(decoder: &mut Decoder<'_>) -> Result<KeyReference, CanonicalCborError> {
+pub(super) fn decode_key_reference(
+    decoder: &mut Decoder<'_>,
+) -> Result<KeyReference, CanonicalCborError> {
     decoder.array(4)?;
     let stable_key_id = StableKeyId::new(decoder.text(255)?.to_owned())
         .map_err(|error| semantics("stable key ID", error))?;
@@ -171,15 +173,17 @@ const fn purpose_code(purpose: SignaturePurpose) -> u64 {
         SignaturePurpose::Tree => 1,
         SignaturePurpose::Snapshot => 2,
         SignaturePurpose::Distribution => 3,
+        SignaturePurpose::BrokerAuthorization => 4,
     }
 }
 
 fn decode_purpose(decoder: &mut Decoder<'_>) -> Result<SignaturePurpose, CanonicalCborError> {
-    match decoder.closed("signature purpose", 3)? {
+    match decoder.closed("signature purpose", 4)? {
         0 => Ok(SignaturePurpose::Policy),
         1 => Ok(SignaturePurpose::Tree),
         2 => Ok(SignaturePurpose::Snapshot),
         3 => Ok(SignaturePurpose::Distribution),
+        4 => Ok(SignaturePurpose::BrokerAuthorization),
         value => Err(CanonicalCborError::UnknownRegistryValue {
             registry: "signature purpose",
             value,
@@ -194,15 +198,19 @@ const fn usage_code(usage: KeyUsage) -> u64 {
         KeyUsage::Tree => 1,
         KeyUsage::Snapshot => 2,
         KeyUsage::Distribution => 3,
+        KeyUsage::BrokerAuthorization => 4,
+        KeyUsage::OwnershipLease => 5,
     }
 }
 
 fn decode_usage(decoder: &mut Decoder<'_>) -> Result<KeyUsage, CanonicalCborError> {
-    match decoder.closed("key usage", 3)? {
+    match decoder.closed("key usage", 5)? {
         0 => Ok(KeyUsage::Policy),
         1 => Ok(KeyUsage::Tree),
         2 => Ok(KeyUsage::Snapshot),
         3 => Ok(KeyUsage::Distribution),
+        4 => Ok(KeyUsage::BrokerAuthorization),
+        5 => Ok(KeyUsage::OwnershipLease),
         value => Err(CanonicalCborError::UnknownRegistryValue {
             registry: "key usage",
             value,

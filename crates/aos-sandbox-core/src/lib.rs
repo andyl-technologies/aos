@@ -9,6 +9,7 @@
 //! The [`identity`] module defines opaque 128-bit identifiers. The [`version`]
 //! module defines monotonic counters used to reject stale work.
 
+pub mod broker_authorization;
 pub mod capability;
 pub mod crypto;
 pub mod format;
@@ -20,6 +21,12 @@ pub mod selector;
 pub mod state;
 pub mod version;
 
+pub use broker_authorization::{
+    BrokerArgumentCommitment, BrokerAssignment, BrokerAudience, BrokerAuthorizationPlan,
+    BrokerGrant, BrokerGrantTarget, BrokerPlanExpectation, BrokerPlanRequest,
+    BrokerPlanTrustAnchor, BrokerPlanVerificationError, BrokerResourceHandle, BrokerVerb,
+    InvalidBrokerAuthorizationPlan, MatchedBrokerRequest, VerifiedBrokerPlan, verify_broker_plan,
+};
 pub use capability::{
     AttenuationError, AttenuationRequest, AuthorizationContext, AuthorizationError,
     CapabilityDraft, CapabilityRecord, CapabilityValidationError, ChannelBinding, DelegationLimits,

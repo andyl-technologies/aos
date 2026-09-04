@@ -87,6 +87,8 @@ pub enum PortableMediaType {
     TrustPolicy,
     /// One detached signature envelope.
     Signature,
+    /// One controller-signed audience-specific local broker plan.
+    BrokerAuthorizationPlan,
 }
 
 impl PortableMediaType {
@@ -106,6 +108,9 @@ impl PortableMediaType {
             Self::Snapshot => "application/vnd.aos.sandbox.snapshot.v1+cbor",
             Self::TrustPolicy => "application/vnd.aos.sandbox.trust-policy.v1+cbor",
             Self::Signature => "application/vnd.aos.sandbox.signature.v1+cbor",
+            Self::BrokerAuthorizationPlan => {
+                "application/vnd.aos.sandbox.broker-authorization-plan.v1+cbor"
+            }
         }
     }
 
@@ -126,7 +131,7 @@ impl PortableMediaType {
     }
 }
 
-const ALL_MEDIA_TYPES: [PortableMediaType; 12] = [
+const ALL_MEDIA_TYPES: [PortableMediaType; 13] = [
     PortableMediaType::Content,
     PortableMediaType::Directory,
     PortableMediaType::Tree,
@@ -139,6 +144,7 @@ const ALL_MEDIA_TYPES: [PortableMediaType; 12] = [
     PortableMediaType::Snapshot,
     PortableMediaType::TrustPolicy,
     PortableMediaType::Signature,
+    PortableMediaType::BrokerAuthorizationPlan,
 ];
 
 /// Identifies the semantic field in which a descriptor appears.
@@ -303,6 +309,9 @@ pub fn validate_signature_subject(
             )
         }
         SignaturePurpose::Distribution => true,
+        SignaturePurpose::BrokerAuthorization => {
+            matches!(kind, PortableMediaType::BrokerAuthorizationPlan)
+        }
     };
     if allowed {
         Ok(kind)
