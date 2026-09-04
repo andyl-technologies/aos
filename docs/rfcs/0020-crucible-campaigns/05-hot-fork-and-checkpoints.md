@@ -1888,9 +1888,20 @@ and execution-quanta enforcement indivisible across the child set. An explicit
 pre-fork rejection rolls back only the unused node reservation; every ambiguous
 or post-fork failure quarantines the complete owner. Per-node reconciliation
 may record exact child cleanup, but only the aggregate owner can release the
-underlying attempt guard after all issued nodes finish. Construction of the
-authoritative scheduler lifecycle and its final handoff from this owner remain
-mandatory before this path is enabled or T-CAM-7.4 is marked complete.
+underlying attempt guard after all issued nodes finish. The lifecycle library
+now exposes the all-or-nothing adoption boundary for that private child set. It
+consumes the opaque host continuation and exactly one linear child process/lease
+for every running node, rejects powered-off or partial Worlds, requires each
+child generation to be the checked immediate successor of its source, and
+reauthenticates every process incarnation before publication. The continuation,
+rather than a new caller-supplied launch configuration, retains the source
+lifecycle configuration, immutable root identities, and resolved block/9p
+bindings; only a fresh durable run-state root is supplied at adoption. Any
+backing change or unconsumed child-world state fails closed. Daemon invocation
+of this constructor, transfer of the aggregate attempt owner into the resulting
+lifecycle, the branch-private child root-overlay proof, and the real modeled
+QEMU flight remain mandatory before this path is enabled or T-CAM-7.4 is marked
+complete.
 
 - **[HFORK-13]** A campaign branch is a world, not a bag of independently
   visible node forks. No consumer may observe a partially forked world.

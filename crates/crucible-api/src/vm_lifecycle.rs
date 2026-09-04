@@ -309,6 +309,14 @@ struct ProductionVmExactCheckpointSet {
     node_service_states: BTreeMap<NodeId, ProductionNodeServiceState>,
 }
 
+struct ProductionVmHotForkRestore {
+    expected_times: BTreeMap<NodeId, VirtualTime>,
+    adoptions: BTreeMap<NodeId, ProductionVmHotForkNodeAdoption>,
+    immutable_root_images: BTreeMap<NodeId, ContentHash>,
+    block_bindings: BTreeMap<NodeId, storage_faults::ProductionBlockBinding>,
+    ninep_bindings: BTreeMap<NodeId, storage_faults::ProductionNinepBinding>,
+}
+
 fn validate_exact_checkpoint_artifact(
     artifact: &ProductionCheckpointArtifact,
     role: &str,
@@ -877,6 +885,88 @@ pub struct ProductionVmNodeLaunch {
     node: QemuNode,
     lease: Box<dyn ProductionVmNodeLease>,
     run_directory: PathBuf,
+}
+
+/// One already-running hot-fork child offered for atomic lifecycle adoption.
+///
+/// Unlike [`ProductionVmNodeLaunch`], this value does not claim that the
+/// lifecycle launcher created the process. A daemon constructs it only after
+/// exact world assembly authenticated the child's source process,
+/// configuration, event-log prefix, node coordinate, and generation. The
+/// constructor captures the child process incarnation so lifecycle assembly
+/// can reauthenticate it immediately before publication.
+#[must_use = "install or retain the adopted QEMU node and its containment lease"]
+pub struct ProductionVmHotForkNodeAdoption {
+    identity: ProductionVmNodeGeneration,
+    process: QemuProcessIdentity,
+    node: QemuNode,
+    lease: Box<dyn ProductionVmNodeLease>,
+    run_directory: PathBuf,
+}
+
+impl ProductionVmHotForkNodeAdoption {
+    /// Binds one assembled child to its exact generation and storage owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError::LoopFactory`] when the lease names another
+    /// generation, the run directory is empty, or the QEMU process incarnation
+    /// cannot be authenticated.
+    pub fn new<L>(
+        identity: ProductionVmNodeGeneration,
+        node: QemuNode,
+        lease: L,
+        run_directory: impl Into<PathBuf>,
+    ) -> Result<Self, LifecycleApiError>
+    where
+        L: ProductionVmNodeLease + 'static,
+    {
+        if lease.identity() != &identity {
+            return Err(loop_factory_error(
+                "hot-fork QEMU node lease does not match its adopted generation",
+            ));
+        }
+        let run_directory = run_directory.into();
+        if run_directory.as_os_str().is_empty() {
+            return Err(loop_factory_error(
+                "hot-fork QEMU node adoption has an empty run directory",
+            ));
+        }
+        #[cfg(not(target_os = "linux"))]
+        return Err(loop_factory_error(
+            "hot-fork QEMU node adoption requires a Linux host",
+        ));
+        #[cfg(target_os = "linux")]
+        let process = node.process_identity().map_err(|error| {
+            loop_factory_error(format!(
+                "authenticate adopted hot-fork QEMU process: {error}"
+            ))
+        })?;
+        Ok(Self {
+            identity,
+            process,
+            node,
+            lease: Box::new(lease),
+            run_directory,
+        })
+    }
+
+    /// Returns the exact node-generation identity.
+    #[must_use]
+    pub const fn identity(&self) -> &ProductionVmNodeGeneration {
+        &self.identity
+    }
+
+    fn into_parts(
+        self,
+    ) -> (
+        QemuProcessIdentity,
+        QemuNode,
+        Box<dyn ProductionVmNodeLease>,
+        PathBuf,
+    ) {
+        (self.process, self.node, self.lease, self.run_directory)
+    }
 }
 
 /// Immutable scenario-aware launch profile retained for background replay.
@@ -1621,6 +1711,7 @@ where
         config,
         Some(restored),
         Box::new(launcher),
+        None,
     )
 }
 
@@ -1688,7 +1779,173 @@ where
         config,
         Some(restored),
         Box::new(launcher),
+        None,
     )
+}
+
+/// Adopts one completely assembled hot-fork child World as a lifecycle.
+///
+/// This boundary accepts no partial node set. Every running node in the opaque
+/// host continuation must have exactly one already-authenticated child and
+/// linear containment lease, while permanently failed nodes must have none.
+/// Powered-off nodes currently fail closed because preserving their paused
+/// restart image requires the still-open branch-private block/run-directory
+/// handoff. The complete semantic and child inventories are validated before
+/// the production run directory is created. Each retained process incarnation
+/// is then reauthenticated before the lifecycle is published.
+///
+/// The continuation retains the exact source lifecycle configuration and
+/// authenticated immutable/storage bindings. Only its durable run-state root
+/// is replaced. The supplied launcher remains responsible for later modeled
+/// process generations and must share the same aggregate attempt authority as
+/// the adopted node leases.
+///
+/// # Errors
+///
+/// Returns [`LifecycleApiError::LoopFactory`] when the scenario, continuation,
+/// node set, service-state policy, physical boundary, process incarnation,
+/// lease, durable run-state root, or lifecycle construction differs from the
+/// assembled World.
+#[cfg(target_os = "linux")]
+pub fn build_production_vm_lifecycle_loop_from_hot_fork_with_launcher<L>(
+    scenario: &ScenarioDef,
+    source: &ScenarioDefForm,
+    continuation: ProductionVmHotForkWorldContinuation,
+    adoptions: Vec<ProductionVmHotForkNodeAdoption>,
+    run_state_root: impl Into<PathBuf>,
+    launcher: L,
+) -> Result<ProductionVmLifecycleLoop, LifecycleApiError>
+where
+    L: ProductionVmNodeLauncher + 'static,
+{
+    if source.scenario_def() != *scenario
+        || continuation.configuration().def.id() != scenario.id()
+    {
+        return Err(loop_factory_error(
+            "hot-fork continuation does not reconstruct the requested scenario",
+        ));
+    }
+    continuation
+        .validate_complete_internal_state()
+        .map_err(|error| loop_factory_error(format!("validate hot-fork continuation: {error}")))?;
+
+    let source_nodes = source
+        .world()
+        .vm_nodes()
+        .iter()
+        .map(|node| node.id.clone())
+        .collect::<BTreeSet<_>>();
+    let continuation_nodes = continuation
+        .nodes()
+        .iter()
+        .map(|boundary| boundary.node().clone())
+        .collect::<BTreeSet<_>>();
+    if source_nodes != continuation_nodes {
+        return Err(loop_factory_error(
+            "hot-fork continuation node set differs from the scenario World",
+        ));
+    }
+
+    if adoptions.len() > source_nodes.len() {
+        return Err(loop_factory_error(
+            "hot-fork adopted child count exceeds the scenario World",
+        ));
+    }
+    let mut adoptions_by_node = BTreeMap::new();
+    for adoption in adoptions {
+        let node = adoption.identity().node().clone();
+        if adoptions_by_node.insert(node.clone(), adoption).is_some() {
+            return Err(loop_factory_error(format!(
+                "hot-fork World contains duplicate child `{}`",
+                node.name
+            )));
+        }
+    }
+    let adoption_generations = adoptions_by_node
+        .iter()
+        .map(|(node, adoption)| (node.clone(), adoption.identity().generation()))
+        .collect::<BTreeMap<_, _>>();
+    let (expected_times, node_generations) =
+        validate_hot_fork_adoption_inventory(&continuation, &adoption_generations)?;
+
+    let (config, checkpoint, immutable_root_images, block_bindings, ninep_bindings) =
+        continuation.into_restore_parts(node_generations, run_state_root);
+    build_production_vm_lifecycle_loop_with_restore(
+        scenario,
+        source,
+        &config,
+        Some(checkpoint),
+        Box::new(launcher),
+        Some(ProductionVmHotForkRestore {
+            expected_times,
+            adoptions: adoptions_by_node,
+            immutable_root_images,
+            block_bindings,
+            ninep_bindings,
+        }),
+    )
+}
+
+fn validate_hot_fork_adoption_inventory(
+    continuation: &ProductionVmHotForkWorldContinuation,
+    adoption_generations: &BTreeMap<NodeId, u64>,
+) -> Result<(BTreeMap<NodeId, VirtualTime>, BTreeMap<NodeId, u64>), LifecycleApiError> {
+    let mut expected_times = BTreeMap::new();
+    let mut node_generations = BTreeMap::new();
+    for boundary in continuation.nodes() {
+        match boundary.service_state() {
+            ProductionVmHotForkNodeServiceState::Running => {
+                let generation = adoption_generations
+                    .get(boundary.node())
+                    .copied()
+                    .ok_or_else(|| {
+                        loop_factory_error(format!(
+                            "hot-fork World has no adopted child for running node `{}`",
+                            boundary.node().name
+                        ))
+                    })?;
+                let expected_generation = boundary.generation().checked_add(1).ok_or_else(|| {
+                    loop_factory_error(format!(
+                        "hot-fork source generation for `{}` cannot advance",
+                        boundary.node().name
+                    ))
+                })?;
+                if generation != expected_generation {
+                    return Err(loop_factory_error(format!(
+                        "hot-fork child generation for `{}` is {generation}, expected {expected_generation}",
+                        boundary.node().name
+                    )));
+                }
+                let physical_time = boundary.physical_time().ok_or_else(|| {
+                    loop_factory_error("running hot-fork node lost its physical boundary")
+                })?;
+                expected_times.insert(boundary.node().clone(), physical_time);
+                node_generations.insert(boundary.node().clone(), generation);
+            }
+            ProductionVmHotForkNodeServiceState::PoweredOff => {
+                return Err(loop_factory_error(format!(
+                    "hot-fork lifecycle adoption does not yet support powered-off node `{}`",
+                    boundary.node().name
+                )));
+            }
+            ProductionVmHotForkNodeServiceState::PermanentlyFailed => {
+                if adoption_generations.contains_key(boundary.node()) {
+                    return Err(loop_factory_error(format!(
+                        "permanently failed hot-fork node `{}` unexpectedly has a child",
+                        boundary.node().name
+                    )));
+                }
+                node_generations.insert(boundary.node().clone(), boundary.generation());
+            }
+        }
+    }
+    let expected_running = expected_times.keys().cloned().collect::<BTreeSet<_>>();
+    if adoption_generations.keys().cloned().collect::<BTreeSet<_>>() != expected_running {
+        return Err(loop_factory_error(
+            "hot-fork adopted child set differs from the running-node set",
+        ));
+    }
+    Ok((expected_times, node_generations))
 }
 
 /// Builds a production local-QEMU lifecycle loop for `scenario`.
@@ -1742,6 +1999,7 @@ where
         config,
         None,
         Box::new(launcher),
+        None,
     )
 }
 
@@ -1751,6 +2009,7 @@ fn build_production_vm_lifecycle_loop_with_restore(
     config: &ProductionVmLifecycleConfig,
     mut restore_checkpoint: Option<ProductionVmExactCheckpointSet>,
     mut node_launcher: Box<dyn ProductionVmNodeLauncher>,
+    mut hot_fork_restore: Option<ProductionVmHotForkRestore>,
 ) -> Result<ProductionVmLifecycleLoop, LifecycleApiError> {
     if !cfg!(target_os = "linux") {
         return Err(loop_factory_error(
@@ -1940,16 +2199,26 @@ fn build_production_vm_lifecycle_loop_with_restore(
         let restore_target = restore_checkpoint
             .as_ref()
             .and_then(|checkpoint| checkpoint.targets.get(&vm.id));
+        let hot_fork_expected_time = hot_fork_restore
+            .as_mut()
+            .and_then(|restore| restore.expected_times.remove(&vm.id));
+        let hot_fork_adoption = hot_fork_restore
+            .as_mut()
+            .and_then(|restore| restore.adoptions.remove(&vm.id));
+        let hot_fork_immutable_root = hot_fork_restore
+            .as_mut()
+            .and_then(|restore| restore.immutable_root_images.remove(&vm.id));
         let restored_service_state = restore_checkpoint
             .as_ref()
             .and_then(|checkpoint| checkpoint.node_service_states.get(&vm.id))
             .copied();
         if restore_checkpoint.is_some()
             && restore_target.is_none()
+            && hot_fork_adoption.is_none()
             && restored_service_state != Some(ProductionNodeServiceState::PermanentlyFailed)
         {
             return Err(loop_factory_error(format!(
-                "production exact checkpoint has no target for `{}`",
+                "production restore has no exact or hot-fork target for `{}`",
                 vm.id.name
             )));
         }
@@ -1967,6 +2236,22 @@ fn build_production_vm_lifecycle_loop_with_restore(
             {
                 return Err(loop_factory_error(format!(
                     "production exact checkpoint for `{}` names immutable backing {} but the selected root image hashes to {}",
+                    vm.id.name,
+                    expected.to_hex(),
+                    immutable_root_image.to_hex()
+                )));
+            }
+        }
+        if hot_fork_restore.is_some() {
+            let expected = hot_fork_immutable_root.ok_or_else(|| {
+                loop_factory_error(format!(
+                    "hot-fork continuation has no immutable root identity for `{}`",
+                    vm.id.name
+                ))
+            })?;
+            if expected != immutable_root_image {
+                return Err(loop_factory_error(format!(
+                    "hot-fork continuation for `{}` names immutable backing {} but the retained root image hashes to {}",
                     vm.id.name,
                     expected.to_hex(),
                     immutable_root_image.to_hex()
@@ -2149,15 +2434,21 @@ fn build_production_vm_lifecycle_loop_with_restore(
             launch = launch.with_network_tx_next_sequence(next_sequence);
         }
         if restored_service_state != Some(ProductionNodeServiceState::PermanentlyFailed) {
-            if let Some(block) =
+            let block = if let Some(restore) = hot_fork_restore.as_mut() {
+                restore.block_bindings.remove(&vm.id)
+            } else {
                 block_binding_for_vm(source.world(), &vm.id, config.world_artifacts.as_ref())?
-            {
+            };
+            if let Some(block) = block {
                 launch = launch.with_shmem_block(block.base.clone(), block.durability.clone());
                 block_bindings.insert(vm.id.clone(), block);
             }
-            if let Some(ninep) =
+            let ninep = if let Some(restore) = hot_fork_restore.as_mut() {
+                restore.ninep_bindings.remove(&vm.id)
+            } else {
                 ninep_binding_for_vm(source.world(), &vm.id, config.world_artifacts.as_ref())?
-            {
+            };
+            if let Some(ninep) = ninep {
                 launch = launch.with_shmem_ninep(ninep.tree.clone(), ninep.latency);
                 ninep_bindings.insert(vm.id.clone(), ninep);
             }
@@ -2215,7 +2506,33 @@ fn build_production_vm_lifecycle_loop_with_restore(
                 root_image: &guest_assets.root_image,
             },
         };
-        let launched = match (restore_target, service_state) {
+        let launched = if let Some(adoption) = hot_fork_adoption {
+            if restore_target.is_some()
+                || service_state != ProductionNodeServiceState::Running
+                || hot_fork_expected_time.is_none()
+            {
+                return Err(loop_factory_error(format!(
+                    "hot-fork child for `{}` conflicts with its restore state",
+                    vm.id.name
+                )));
+            }
+            let (process, node, lease, run_directory) = adoption.into_parts();
+            if lease.identity().node() != &vm.id || lease.identity().generation() != generation {
+                return Err(loop_factory_error(format!(
+                    "hot-fork child lease for `{}` changed before adoption",
+                    vm.id.name
+                )));
+            }
+            Ok((
+                ProductionVmNodeLaunch {
+                    node,
+                    lease,
+                    run_directory,
+                },
+                Some(process),
+            ))
+        } else {
+            match (restore_target, service_state) {
             (Some(target), ProductionNodeServiceState::Running) => {
                 launch_production_node_generation(
                     node_launcher.as_mut(),
@@ -2227,6 +2544,7 @@ fn build_production_vm_lifecycle_loop_with_restore(
                         paused: false,
                     },
                 )
+                .map(|launch| (launch, None))
             }
             (Some(target), ProductionNodeServiceState::PoweredOff) => {
                 launch_production_node_generation(
@@ -2239,6 +2557,7 @@ fn build_production_vm_lifecycle_loop_with_restore(
                         paused: true,
                     },
                 )
+                .map(|launch| (launch, None))
             }
             (Some(_), ProductionNodeServiceState::PermanentlyFailed) => {
                 return Err(loop_factory_error(format!(
@@ -2253,11 +2572,21 @@ fn build_production_vm_lifecycle_loop_with_restore(
                 &format!("lifecycle-{}", vm.id.name),
                 preparation,
                 ProductionVmNodeLaunchKind::Fresh,
-            ),
+            )
+            .map(|launch| (launch, None)),
+            }
         };
-        let mut launched = launched?;
+        let (mut launched, adopted_process) = launched?;
         let observed = SimulationBackend::now(launched.node()).ticks;
-        if let Some(target) = restore_target {
+        if let Some(expected_time) = hot_fork_expected_time {
+            if expected_time.ticks != observed {
+                let _ = launched.quarantine_and_finish();
+                return Err(loop_factory_error(format!(
+                    "hot-fork QEMU node `{}` resumed at unauthenticated instruction boundary {observed}",
+                    vm.id.name
+                )));
+            }
+        } else if let Some(target) = restore_target {
             let restored_configuration = restore_checkpoint
                 .as_ref()
                 .map(|checkpoint| checkpoint.configuration.id());
@@ -2308,7 +2637,7 @@ fn build_production_vm_lifecycle_loop_with_restore(
                 initial_ticks.unwrap_or_default()
             )));
         }
-        if restore_target.is_none() {
+        if restore_target.is_none() && hot_fork_expected_time.is_none() {
             initial_ticks.get_or_insert(observed);
         }
         let process_identity = match launched.node().process_identity() {
@@ -2325,6 +2654,20 @@ fn build_production_vm_lifecycle_loop_with_restore(
                 )));
             }
         };
+        if adopted_process
+            .as_ref()
+            .is_some_and(|expected| expected != &process_identity)
+        {
+            let containment = launched.quarantine_and_finish();
+            return Err(loop_factory_error(format!(
+                "adopted hot-fork QEMU process for `{}` changed before lifecycle publication; process containment: {}",
+                vm.id.name,
+                containment.map_or_else(
+                    |failure| failure.to_string(),
+                    |()| String::from("reaped and lease released")
+                )
+            )));
+        }
         let launched_run_directory = launched.run_directory().to_path_buf();
         node_run_directories.insert(vm.id.clone(), launched_run_directory.clone());
         launch_configs.insert(
@@ -2386,6 +2729,18 @@ fn build_production_vm_lifecycle_loop_with_restore(
                     .map_or_else(|failure| failure.to_string(), |()| String::from("released"))
             )));
         }
+    }
+
+    if hot_fork_restore.as_ref().is_some_and(|restore| {
+        !restore.expected_times.is_empty()
+            || !restore.adoptions.is_empty()
+            || !restore.immutable_root_images.is_empty()
+            || !restore.block_bindings.is_empty()
+            || !restore.ninep_bindings.is_empty()
+    }) {
+        return Err(loop_factory_error(
+            "hot-fork lifecycle retained unconsumed child-world state",
+        ));
     }
 
     let initial_ticks = initial_ticks.unwrap_or_default();
