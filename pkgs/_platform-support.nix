@@ -373,6 +373,7 @@ let
     "erofs-utils"
     "ethtool"
     "firecracker"
+    "fuse3"
     "getent"
     "glibc"
     "hdparm"

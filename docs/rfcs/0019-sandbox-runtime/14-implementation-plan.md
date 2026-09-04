@@ -204,6 +204,15 @@ root-only helpers. Every dependency is an AOS source-built package. A FUSE
 userspace library selected in phase 0 is packaged hermetically rather than
 taken from the host.
 
+The first packaged candidate is libfuse 3.18.2. Its source-built AOS package
+contains the shared library, headers, and package metadata but no mount helper,
+setuid program, utility, init script, udev rule, or policy file. Packaging and
+ABI-metadata checks do not select the production worker boundary by themselves.
+Selection remains gated on the broker-supplied custom-FD lifecycle test, exact
+AOS Linux UAPI parity, cancellation behavior, and the `SBX-P0-11` resource and
+latency measurements. A small bounded raw codec remains the fallback if those
+tests show that libfuse cannot meet the admission model.
+
 ## Reuse and build ledger
 
 Reuse:
