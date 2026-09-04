@@ -488,6 +488,8 @@ pub struct TufRootTrust<'a> {
 
 /// Exact release identity that delegated targets must authorize.
 pub struct TufReleaseExpectation<'a> {
+    /// Registry trust domain authenticated by the release plan.
+    pub registry: &'a str,
     /// Immutable release id.
     pub release_id: &'a str,
     /// Release class selecting the delegated role.
@@ -618,6 +620,9 @@ pub fn verify_immutable_set(
     expected: &TufReleaseExpectation<'_>,
 ) -> Result<()> {
     validate_root(&set.root.signed)?;
+    if set.root.signed.registry != expected.registry {
+        bail!("immutable TUF registry does not match the release plan");
+    }
     if set.targets.signed.registry != set.root.signed.registry
         || set.delegated.signed.registry != set.root.signed.registry
         || set.snapshot.signed.registry != set.root.signed.registry
@@ -1226,6 +1231,35 @@ mod tests {
             &snapshot,
         )?;
         assert_eq!(timestamp.snapshot.path, "9.snapshot.json");
+        let set = ImmutableTufSetV1 {
+            root,
+            targets,
+            delegated,
+            snapshot,
+        };
+        for registry in ["andyl/testing", "andyl/testing-v2"] {
+            let error = verify_immutable_set(
+                &set,
+                &TufRootTrust {
+                    keys: &[],
+                    threshold: 1,
+                },
+                None,
+                humantime::parse_rfc3339("2029-12-30T00:00:00Z")?,
+                &TufReleaseExpectation {
+                    registry,
+                    release_id: "release-2030.1.0",
+                    release_class: ReleaseClass::Stable,
+                    manifest_digest: Sha256Digest::of_bytes("manifest"),
+                },
+            )
+            .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("registry does not match the release plan")
+            );
+        }
         Ok(())
     }
 

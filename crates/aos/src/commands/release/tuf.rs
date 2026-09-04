@@ -160,6 +160,7 @@ pub(super) async fn run(args: &ReleaseTufArgs, printer: &aos_core::output::Print
         previous_root.as_ref(),
         now,
         &TufReleaseExpectation {
+            registry: &plan.registry,
             release_id: &plan.release_id,
             release_class: plan.release_class,
             manifest_digest: manifest_envelope_digest,
