@@ -60,7 +60,9 @@ pub(crate) enum RuntimeEffectQuery {
 /// In-memory form of a structurally validated durable host snapshot.
 ///
 /// Broker construction performs a second authenticated validation before it
-/// can use any authority-bearing record.
+/// can use any authority-bearing record. An incarnation remains reserved to
+/// its sandbox while any current or historical authority record retains it;
+/// reuse requires a future explicit authoritative retirement operation.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct HostState {
     fences: BTreeMap<[u8; 16], DurableFence>,
@@ -122,6 +124,8 @@ impl HostState {
     /// detected without a separately authenticated set root, but after a
     /// newer fence exists replay of that older Apply is stale and rejected.
     pub(crate) fn validate_authenticated(&self, authority: &HostAuthorityV1) -> Result<()> {
+        self.validate_unique_retained_incarnations()?;
+
         for (sandbox_id, durable) in &self.fences {
             let opened = authority.open_fence(sandbox_id, &durable.authorization)?;
             validate_opened_fence(durable, &opened)?;
@@ -208,6 +212,7 @@ impl HostState {
                 "sealed host authorization record is empty or oversized".to_owned(),
             ));
         }
+        self.ensure_incarnation_available(fence.sandbox_id(), fence.incarnation_id())?;
         if let Some(record) = self.requests.get_mut(&request_id) {
             if record.request_digest != request_digest {
                 return Err(HostError::Fence(
@@ -258,6 +263,49 @@ impl HostState {
             },
         );
         Ok(Admission::New)
+    }
+
+    fn ensure_incarnation_available(
+        &self,
+        sandbox_id: &[u8; 16],
+        incarnation_id: &[u8; 16],
+    ) -> Result<()> {
+        // A superseded incarnation can still name a residual systemd unit.
+        // Historical authority therefore reserves the flat unit namespace
+        // until an explicit retirement mechanism removes that authority.
+        let current_collision = self.fences.values().any(|retained| {
+            &retained.sandbox_id != sandbox_id && &retained.incarnation_id == incarnation_id
+        });
+        let historical_collision = self.requests.values().any(|retained| {
+            &retained.fence.sandbox_id != sandbox_id
+                && &retained.fence.incarnation_id == incarnation_id
+        });
+        if current_collision || historical_collision {
+            return Err(HostError::Fence(
+                "runtime incarnation is already retained by another sandbox",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_unique_retained_incarnations(&self) -> Result<()> {
+        let mut incarnations = BTreeMap::new();
+        for fence in self
+            .fences
+            .values()
+            .chain(self.requests.values().map(|request| &request.fence))
+        {
+            if incarnations
+                .insert(fence.incarnation_id, fence.sandbox_id)
+                .is_some_and(|sandbox_id| sandbox_id != fence.sandbox_id)
+            {
+                return Err(HostError::State(
+                    "distinct sandboxes retain the same current or historical runtime incarnation"
+                        .to_owned(),
+                ));
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn complete(
@@ -417,6 +465,22 @@ impl HostState {
     #[cfg(test)]
     pub(crate) fn remove_fence(&mut self, sandbox_id: &[u8; 16]) {
         self.fences.remove(sandbox_id);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn merge_retained_authority_for_test(&mut self, other: &Self) {
+        self.fences.extend(
+            other
+                .fences
+                .iter()
+                .map(|(key, value)| (*key, value.clone())),
+        );
+        self.requests.extend(
+            other
+                .requests
+                .iter()
+                .map(|(key, value)| (*key, value.clone())),
+        );
     }
 
     #[cfg(test)]

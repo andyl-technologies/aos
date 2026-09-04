@@ -1250,6 +1250,20 @@ mod tests {
         request.encode_to_vec()
     }
 
+    fn request_with_sandbox_and_incarnation(
+        request_id: u8,
+        sandbox_id: u8,
+        incarnation_id: u8,
+        assignment_epoch: u64,
+    ) -> Vec<u8> {
+        let bytes = request_with_sandbox(request_id, 1, 4, sandbox_id, 65_536, 65_536);
+        let mut request = ApplyRuntimeRequest::decode_from_slice(&bytes).unwrap();
+        let fence = request.fence.get_or_insert_default();
+        fence.incarnation_id = vec![incarnation_id; 16];
+        fence.assignment_epoch = assignment_epoch;
+        request.encode_to_vec()
+    }
+
     #[tokio::test]
     async fn completed_request_replays_without_a_second_effect() {
         let fixture = AuthorityFixture::new();
@@ -1282,6 +1296,136 @@ mod tests {
         .unwrap();
         assert_eq!(apply(&mut reopened, &fixture, &bytes).await.unwrap(), first);
         assert_eq!(reopened_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn distinct_sandboxes_cannot_retain_the_same_runtime_incarnation() {
+        let fixture = AuthorityFixture::new();
+        let store = MemoryStore::default();
+        let worker = FakeWorker::default();
+        let calls = worker.calls.clone();
+        let mut broker = HostBroker::open(
+            FixedCatalog,
+            store,
+            worker,
+            Some(nspawn()),
+            fixture.authority(),
+        )
+        .unwrap();
+        let first = request_with_sandbox_and_incarnation(1, 2, 3, 1);
+        let collision = request_with_sandbox_and_incarnation(2, 8, 3, 1);
+
+        let receipt = apply(&mut broker, &fixture, &first).await.unwrap();
+        let error = apply(&mut broker, &fixture, &collision).await.unwrap_err();
+        assert!(matches!(
+            error,
+            HostError::Fence("runtime incarnation is already retained by another sandbox")
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(apply(&mut broker, &fixture, &first).await.unwrap(), receipt);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn historical_runtime_incarnation_remains_reserved_after_successor() {
+        let fixture = AuthorityFixture::new();
+        let store = MemoryStore::default();
+        let worker = FakeWorker::default();
+        let calls = worker.calls.clone();
+        let mut broker = HostBroker::open(
+            FixedCatalog,
+            store.clone(),
+            worker,
+            Some(nspawn()),
+            fixture.authority(),
+        )
+        .unwrap();
+        let original = request_with_sandbox_and_incarnation(1, 2, 3, 1);
+        let successor = request_with_sandbox_and_incarnation(2, 2, 4, 2);
+        let historical_collision = request_with_sandbox_and_incarnation(3, 8, 3, 1);
+
+        apply(&mut broker, &fixture, &original).await.unwrap();
+        apply(&mut broker, &fixture, &successor).await.unwrap();
+        HostBroker::open(
+            FixedCatalog,
+            store,
+            FakeWorker::default(),
+            Some(nspawn()),
+            fixture.authority(),
+        )
+        .unwrap();
+        let error = apply(&mut broker, &fixture, &historical_collision)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            HostError::Fence("runtime incarnation is already retained by another sandbox")
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn startup_rejects_authenticated_cross_sandbox_historical_collision() {
+        let fixture = AuthorityFixture::new();
+        let retained = MemoryStore::default();
+        let mut first = HostBroker::open(
+            FixedCatalog,
+            retained.clone(),
+            FakeWorker::default(),
+            Some(nspawn()),
+            fixture.authority(),
+        )
+        .unwrap();
+        apply(
+            &mut first,
+            &fixture,
+            &request_with_sandbox_and_incarnation(1, 2, 3, 1),
+        )
+        .await
+        .unwrap();
+        apply(
+            &mut first,
+            &fixture,
+            &request_with_sandbox_and_incarnation(2, 2, 4, 2),
+        )
+        .await
+        .unwrap();
+
+        let conflicting = MemoryStore::default();
+        let mut second = HostBroker::open(
+            FixedCatalog,
+            conflicting.clone(),
+            FakeWorker::default(),
+            Some(nspawn()),
+            fixture.authority(),
+        )
+        .unwrap();
+        apply(
+            &mut second,
+            &fixture,
+            &request_with_sandbox_and_incarnation(3, 8, 3, 1),
+        )
+        .await
+        .unwrap();
+
+        retained
+            .0
+            .lock()
+            .unwrap()
+            .merge_retained_authority_for_test(&conflicting.0.lock().unwrap());
+        let reopened = HostBroker::open(
+            FixedCatalog,
+            retained,
+            FakeWorker::default(),
+            Some(nspawn()),
+            fixture.authority(),
+        );
+        assert!(matches!(
+            reopened,
+            Err(HostError::State(message))
+                if message.contains("same current or historical runtime incarnation")
+        ));
     }
 
     #[tokio::test]
