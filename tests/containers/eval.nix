@@ -152,6 +152,10 @@ in
   assert testingAos.runtime.environment.AOS_RELEASE_TIER == "testing";
   assert testingAos.runtime.environment.AOS_REGISTRY == "andyl/testing";
   assert testingAos.runtime.environment.AOS_CHANNEL == "edge";
+  assert testing.config.aos.release.rootEpoch == 1;
+  assert
+    testing.config.system.build.defaultContainer.definition.annotations."dev.andyl.aos.registry-root-epoch"
+    == "1";
   assert builtins.all
   (path: builtins.elem path testingFilePaths)
   [

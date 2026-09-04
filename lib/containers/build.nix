@@ -197,7 +197,8 @@
     AOS_MODULE_ABI=${toString systemIdentity.moduleAbi}
     ${lib.optionalString releaseIdentity.enabled ''AOS_RELEASE_TIER=${releaseIdentity.tier}
     AOS_REGISTRY=${releaseIdentity.registry}
-    AOS_CHANNEL=${releaseIdentity.channel}''}
+    AOS_CHANNEL=${releaseIdentity.channel}
+    AOS_REGISTRY_ROOT_EPOCH=${toString releaseIdentity.rootEpoch}''}
   '';
   releaseAnnotations =
     container.annotations

@@ -65,6 +65,7 @@
         tier
         registry
         channel
+        rootEpoch
         ;
     };
   };
