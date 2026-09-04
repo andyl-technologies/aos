@@ -371,6 +371,79 @@ fn static_maximum_admits_exactly_the_bounded_worker_count() {
 }
 
 #[test]
+fn idle_retirement_returns_authority_and_busy_retirement_is_read_only() {
+    let input = execution_input();
+    let basis = execution_basis(&input);
+    let context = execution_context(&input);
+    let key = template_key(&input);
+    let mut pool = pool(key, 11, ScriptedQuarantine::default());
+    let mut lifecycle = pool.start(&input, &context, basis).expect("busy slot");
+
+    assert!(matches!(
+        pool.retire_idle(key, 0),
+        Err(QemuHotForkTemplatePoolRetirementError::Busy {
+            key: actual_key,
+            slot: 0,
+        }) if actual_key == key
+    ));
+    assert_eq!(pool.slot_count(), 1);
+    reconcile(&mut lifecycle);
+    pool.recover(lifecycle).expect("recover before retirement");
+
+    let factory = pool.retire_idle(key, 0).expect("idle retirement");
+    assert_eq!(factory.source, 11);
+    assert_eq!(pool.slot_count(), 0);
+    assert_eq!(pool.key_count(), 0);
+    assert!(matches!(
+        pool.retire_idle(key, 0),
+        Err(QemuHotForkTemplatePoolRetirementError::MissingSlot {
+            key: actual_key,
+            slot: 0,
+        }) if actual_key == key
+    ));
+}
+
+#[test]
+fn retiring_an_idle_sibling_preserves_busy_coordinates_and_reuses_only_the_hole() {
+    let input = execution_input();
+    let basis = execution_basis(&input);
+    let context = execution_context(&input);
+    let key = template_key(&input);
+    let starts = Arc::new(Mutex::new(Vec::new()));
+    let quarantined = Arc::new(Mutex::new(Vec::new()));
+    let mut pool = QemuHotForkTemplatePool::new(
+        2,
+        scripted_factory(key, 12, Arc::clone(&starts), Arc::clone(&quarantined)),
+        ScriptedQuarantine::default(),
+    )
+    .expect("two-slot pool");
+    pool.insert(scripted_factory(
+        key,
+        13,
+        Arc::clone(&starts),
+        Arc::clone(&quarantined),
+    ))
+    .expect("idle sibling");
+
+    let mut original = pool.start(&input, &context, basis).expect("slot zero");
+    assert_eq!(original.slot_index(), 0);
+    assert_eq!(pool.retire_idle(key, 1).expect("idle sibling").source, 13);
+    pool.insert(scripted_factory(key, 14, starts, quarantined))
+        .expect("reuse tombstone");
+    let mut replacement = pool.start(&input, &context, basis).expect("reused slot");
+    assert_eq!(replacement.slot_index(), 1);
+    assert_eq!(replacement.lifecycle.source, 14);
+
+    reconcile(&mut original);
+    reconcile(&mut replacement);
+    pool.recover(original)
+        .expect("original coordinate survives");
+    pool.recover(replacement)
+        .expect("replacement coordinate survives");
+    assert_eq!(pool.available_slot_count(), 2);
+}
+
+#[test]
 fn foreign_pool_recovery_retains_the_exact_lifecycle_for_quarantine() {
     let input = execution_input();
     let basis = execution_basis(&input);

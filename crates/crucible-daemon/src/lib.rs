@@ -415,6 +415,7 @@ pub use qemu_hot_fork_pool::{
     QemuHotForkTemplatePool, QemuHotForkTemplatePoolCapacityError,
     QemuHotForkTemplatePoolConstructionError, QemuHotForkTemplatePoolError,
     QemuHotForkTemplatePoolInsertionError, QemuHotForkTemplatePoolLifecycle,
+    QemuHotForkTemplatePoolRetirementError,
 };
 #[cfg(target_os = "linux")]
 pub use qemu_hot_fork_reconciliation::{
