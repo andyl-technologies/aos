@@ -401,3 +401,11 @@ completes. The Git history remains authoritative for code details.
   observation/inventory-only. Broker signature verification, semantic matching,
   durable intersection admission, and immediate pre-effect expiry checks remain
   open.
+- `d60256506` — foundation toward `SBX-BPROTO-04` and `SBX-MOUNT-01`: the mount
+  audience now verifies protected signed-plan and ownership-lease anchors,
+  commits exact catalog/request/lease intersections under a node-local MAC,
+  fences ownership-key lineage and replay, and rechecks one conservative
+  plan/lease/request `CLOCK_BOOTTIME` deadline in both the broker and the sealed
+  namespace helper immediately before every irreversible operation. Equivalent
+  admission and dispatch remain open for the other privileged audiences, and
+  the mount broker still requires its end-to-end namespace VM proof.
