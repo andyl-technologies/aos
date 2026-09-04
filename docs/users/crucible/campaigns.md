@@ -431,6 +431,14 @@ slot ceiling, and the checkpoint ceiling cannot exceed writable-disk capacity.
 The configured lifecycle run root is partitioned into stable fixed-worker
 subdirectories so recovery state is not shared between concurrent workers.
 
+On service shutdown, the executor stops admission, signals cancellation, and
+waits up to thirty seconds for semantic-worker cleanup. A `cleanup is pending`
+error means unresolved work still owns its capacity, ledger, repository, and
+executor endpoint lock; it is not a successful shutdown. Endpoint reuse remains
+blocked until those workers finish. Permanent fail-closed retention needs
+operator recovery, not deletion of the lock file or reuse of charged resources.
+The thirty-second wait bounds worker cleanup, not arbitrary host filesystem I/O.
+
 ## Create and inspect a campaign
 
 Creation records refer to artifacts already admitted by the verified importer.

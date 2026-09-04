@@ -30,8 +30,8 @@ use crucible_cas::content_store::StoreError;
 use crucible_qemu::QemuVmRealizationError;
 
 use super::{
-    POOL_RUNNING, SharedExecutor, WORKER_RETRY_INTERVAL, WorkerCompletion, increment,
-    retain_forever, supervisor_error_is_retryable,
+    POOL_RUNNING, SharedExecutor, WORKER_RETRY_INTERVAL, increment, retain_forever,
+    supervisor_error_is_retryable,
 };
 
 /// Maximum fixed promotion threads accepted by one local executor pool.
@@ -415,7 +415,6 @@ pub(super) fn promotion_worker_loop<L, V, W>(
     V: AttemptAdmissionValidator + Send + Sync + 'static,
     W: LocalCheckpointPromotionWorker,
 {
-    let _completion = WorkerCompletion::new(&shared.completion);
     loop {
         let Some((work, cancellation)) = shared.promotions.take(&shared) else {
             return;

@@ -983,6 +983,126 @@ fn dropping_unserved_coupled_owner_retains_endpoint_until_semantic_join() {
 }
 
 #[test]
+fn pending_service_cleanup_retains_endpoint_and_reservation_until_worker_exit() {
+    for retained in [false, true] {
+        let epoch = DaemonEpoch::from_bytes([0x79; 16]).expect("epoch");
+        let worker_state = Arc::new((
+            Mutex::new(DelayedCancellationState::default()),
+            Condvar::new(),
+        ));
+        let pool = pool(
+            epoch,
+            vec![DelayedCancellationWorker {
+                state: Arc::clone(&worker_state),
+            }],
+        );
+        let mut direct = pool.service();
+        direct
+            .submit_attempt(&request(epoch, 0x7a))
+            .expect("accepted attempt");
+        wait_for_delayed_worker(&worker_state, |state| state.entered);
+        let completion = pool.completion_handle();
+        if retained {
+            // Exercise the notification issued immediately before a worker
+            // parks in quarantine without leaving a permanent test thread.
+            pool.service.shared.fail_closed();
+            pool.service.shared.completion.signal_retained();
+        }
+        let (directory, socket, listener, peer) = managed_executor_endpoint("pending-cleanup");
+        let service = ExecutorLocalService::from_managed_listener(
+            listener,
+            pool,
+            peer,
+            ExecutorLoopbackServerConfig::default(),
+        )
+        .expect("service");
+        let shutdown = service.shutdown_handle();
+        let serving =
+            thread::spawn(move || service.serve_with_shutdown_timeout(Duration::from_millis(25)));
+        shutdown.shutdown();
+        wait_for_delayed_worker(&worker_state, |state| state.canceled);
+        let result = serving.join().expect("service thread");
+        assert!(matches!(
+            result,
+            Err(ExecutorLocalServiceError::Pool(
+                LocalExecutorPoolShutdownError::CleanupPending
+            ))
+        ));
+        assert!(!completion.is_finished());
+        assert_eq!(direct.report().expect("retained report").active(), 1);
+        assert!(socket.exists());
+        let endpoint = ExecutorLoopbackEndpointConfig::new(
+            &socket,
+            rustix::process::geteuid().as_raw(),
+            rustix::process::getegid().as_raw(),
+            0o600,
+        )
+        .expect("endpoint");
+        assert!(
+            endpoint.bind().is_err(),
+            "unfinished incarnation still owns endpoint"
+        );
+        {
+            let (state, changed) = worker_state.as_ref();
+            state.lock().expect("state").release = true;
+            changed.notify_all();
+        }
+        wait_until(Duration::from_secs(2), || {
+            completion.is_finished() && !socket.exists()
+        });
+        assert_eq!(direct.report().expect("reconciled report").active(), 0);
+        drop(endpoint.bind().expect("endpoint reusable after cleanup"));
+        drop(directory);
+    }
+}
+
+#[test]
+fn worker_completion_is_not_announced_before_model_drop_finishes() {
+    struct DropBlockedWorker(SharedDelayedCancellationState);
+
+    impl LocalAttemptWorker for DropBlockedWorker {
+        type Error = ();
+
+        fn execute(&mut self, queued: QueuedAttempt) -> AttemptWorkResult<Self::Error> {
+            AttemptWorkResult::new(queued, Err(AttemptWorkerFailure::Canceled(())))
+        }
+    }
+
+    impl Drop for DropBlockedWorker {
+        fn drop(&mut self) {
+            let (state, changed) = self.0.as_ref();
+            let mut state = state.lock().expect("drop state");
+            state.entered = true;
+            changed.notify_all();
+            while !state.release {
+                state = changed.wait(state).expect("drop release");
+            }
+        }
+    }
+
+    let state = Arc::new((
+        Mutex::new(DelayedCancellationState::default()),
+        Condvar::new(),
+    ));
+    let epoch = DaemonEpoch::from_bytes([0x7b; 16]).expect("epoch");
+    let pool = pool(epoch, vec![DropBlockedWorker(Arc::clone(&state))]);
+    let completion = pool.completion_handle();
+    pool.request_shutdown();
+    wait_for_delayed_worker(&state, |state| state.entered);
+    assert!(!completion.is_finished());
+    assert!(matches!(
+        pool.shutdown_and_join_with_timeout(Duration::ZERO),
+        Err(LocalExecutorPoolShutdownError::CleanupPending)
+    ));
+    {
+        let (state, changed) = state.as_ref();
+        state.lock().expect("state").release = true;
+        changed.notify_all();
+    }
+    wait_until(Duration::from_secs(2), || completion.is_finished());
+}
+
+#[test]
 fn terminal_worker_failure_closes_listener_and_precedes_listener_result() {
     let epoch = DaemonEpoch::from_bytes([0x75; 16]).expect("epoch");
     let pool = pool(epoch, vec![PanickingWorker]);

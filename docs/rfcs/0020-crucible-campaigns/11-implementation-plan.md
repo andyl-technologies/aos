@@ -2826,6 +2826,15 @@ evidence.
 
 ## 11.11 Phase 9 — Final integration and release criteria
 
+The local executor now distinguishes stopping admission from completing worker
+cleanup. Its service waits at most thirty seconds for semantic workers (or
+returns immediately for permanent retention), reports `CleanupPending`, and
+leaves reservations, phase tokens, ledger/repository authority, and endpoint
+ownership with unfinished workers. Regression coverage verifies endpoint reuse
+is rejected until cleanup completes and completion is not announced before an
+execution model's destructor returns. This does not satisfy the real recovery
+or operator-sign-off gates below.
+
 - [ ] **T-CAM-9.1** Run all existing Crucible determinism, replay, signal-fault,
   ABI, QEMU, package, and license gates with campaigns disabled and enabled.
 - [ ] **T-CAM-9.2** Run performance baselines and prove the hot path meets the
