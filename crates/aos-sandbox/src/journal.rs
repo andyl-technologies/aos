@@ -383,7 +383,6 @@ struct ProtectedJournalLocation {
 #[derive(Clone, Copy)]
 enum ProtectedOwnerPolicy {
     Root,
-    #[cfg(test)]
     Exact(u32),
 }
 
@@ -391,7 +390,6 @@ impl ProtectedOwnerPolicy {
     fn expected_uid(self) -> u32 {
         match self {
             Self::Root => 0,
-            #[cfg(test)]
             Self::Exact(uid) => uid,
         }
     }
@@ -506,8 +504,45 @@ impl Journal {
         name: &str,
         limits: JournalLimits,
     ) -> Result<(Self, RecoveryReport), JournalError> {
-        let directory = resolve_protected_directory_from_root(directory.as_ref())?;
+        let directory = resolve_protected_directory_from_root(directory.as_ref(), 0)?;
         Self::open_protected_directory(directory, name, limits, ProtectedOwnerPolicy::Root)
+    }
+
+    /// Opens a protected journal owned by one configured service UID.
+    ///
+    /// Resolution starts at `/` and rejects symlinks and ambiguous components.
+    /// Ancestors must be root-owned until ownership first transitions to
+    /// `expected_uid`; all remaining ancestors must belong to that UID. No
+    /// traversed directory may be group- or other-writable, including sticky
+    /// directories. The final directory must have exactly mode 0700 and the
+    /// expected owner. UID zero selects an entirely root-owned chain.
+    ///
+    /// Journal, lock, and compaction files retain the exact-owner, regular-file,
+    /// mode-0600 checks of [`Self::open_protected_at`]. All effects stay relative
+    /// to the retained final directory. This method neither changes credentials
+    /// nor authenticates the configured UID: the service and root remain trusted,
+    /// as do the kernel and filesystem enforcing these checks. Checksums do not
+    /// authenticate records against that service or provide rollback protection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`JournalError::ProtectedBoundary`] for unsafe paths, ownership,
+    /// types or modes, [`JournalError::UnsupportedProtectedOpen`] when the kernel
+    /// cannot enforce resolution, or another journal error for I/O, locking or
+    /// replay failures. Callers must not fall back to an unprotected opener.
+    pub fn open_protected_at_for_uid(
+        directory: impl AsRef<Path>,
+        name: &str,
+        limits: JournalLimits,
+        expected_uid: u32,
+    ) -> Result<(Self, RecoveryReport), JournalError> {
+        let directory = resolve_protected_directory_from_root(directory.as_ref(), expected_uid)?;
+        Self::open_protected_directory(
+            directory,
+            name,
+            limits,
+            ProtectedOwnerPolicy::Exact(expected_uid),
+        )
     }
 
     #[cfg(test)]
@@ -1438,7 +1473,10 @@ fn protected_directory_flags() -> OFlags {
     OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW
 }
 
-fn resolve_protected_directory_from_root(path: &Path) -> Result<File, JournalError> {
+fn resolve_protected_directory_from_root(
+    path: &Path,
+    expected_uid: u32,
+) -> Result<File, JournalError> {
     let bytes = path.as_os_str().as_bytes();
     if bytes.first() != Some(&b'/') {
         return Err(JournalError::ProtectedBoundary);
@@ -1467,7 +1505,7 @@ fn resolve_protected_directory_from_root(path: &Path) -> Result<File, JournalErr
     )
     .map_err(protected_open_error)?
     .into();
-    traverse_protected_directory(root, components, 0)
+    traverse_protected_directory(root, components, expected_uid)
 }
 
 fn traverse_protected_directory<'a>(
@@ -1475,7 +1513,8 @@ fn traverse_protected_directory<'a>(
     components: impl IntoIterator<Item = &'a [u8]>,
     expected_uid: u32,
 ) -> Result<File, JournalError> {
-    validate_protected_ancestor_fd(&directory, expected_uid)?;
+    let mut ancestry = ProtectedAncestry::new(expected_uid);
+    ancestry.admit(&directory)?;
     for component in components {
         let child: File = openat2(
             &directory,
@@ -1486,22 +1525,45 @@ fn traverse_protected_directory<'a>(
         )
         .map_err(protected_open_error)?
         .into();
-        validate_protected_ancestor_fd(&child, expected_uid)?;
+        ancestry.admit(&child)?;
         directory = child;
     }
     validate_protected_fd(&directory, expected_uid, FileType::Directory, Mode::RWXU)?;
     Ok(directory)
 }
 
-fn validate_protected_ancestor_fd(file: &File, expected_uid: u32) -> Result<(), JournalError> {
-    let stat = fstat(file).map_err(rustix_io)?;
-    if stat.st_uid != expected_uid
-        || FileType::from_raw_mode(stat.st_mode) != FileType::Directory
-        || stat.st_mode & 0o022 != 0
-    {
-        return Err(JournalError::ProtectedBoundary);
+/// Tracks the one-way transition from administrative to service-owned ancestry.
+struct ProtectedAncestry {
+    expected_uid: u32,
+    service_owned: bool,
+}
+
+impl ProtectedAncestry {
+    const fn new(expected_uid: u32) -> Self {
+        Self {
+            expected_uid,
+            service_owned: false,
+        }
     }
-    Ok(())
+
+    fn admit(&mut self, file: &File) -> Result<(), JournalError> {
+        let stat = fstat(file).map_err(rustix_io)?;
+        self.admit_metadata(stat.st_uid, stat.st_mode)
+    }
+
+    fn admit_metadata(&mut self, uid: u32, mode: u32) -> Result<(), JournalError> {
+        if FileType::from_raw_mode(mode) != FileType::Directory || mode & 0o022 != 0 {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        if uid == self.expected_uid {
+            self.service_owned = true;
+        } else if uid != 0 || self.service_owned {
+            // A root-owned descendant cannot restore trust after a service has
+            // acquired authority over the path above it.
+            return Err(JournalError::ProtectedBoundary);
+        }
+        Ok(())
+    }
 }
 
 fn validate_basename(name: &str) -> Result<(), JournalError> {
@@ -1724,8 +1786,9 @@ mod tests {
     use super::{
         HEADER_BYTES, IdempotencyKey, IdempotencyOutcome, Journal, JournalError, JournalLimits,
         JournalRecord, JournalTransaction, MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES,
-        ProtectedOwnerPolicy, RecordNamespace, RecoveryReport, encode_transaction,
-        open_protected_file, protected_open_error, traverse_protected_directory,
+        ProtectedAncestry, ProtectedOwnerPolicy, RecordNamespace, RecoveryReport,
+        encode_transaction, open_protected_file, protected_open_error,
+        traverse_protected_directory,
     };
 
     struct TestDirectory(PathBuf);
@@ -1765,6 +1828,95 @@ mod tests {
             JournalLimits::default(),
             uid,
         )
+    }
+
+    #[test]
+    fn service_ancestry_only_transitions_from_root_to_exact_owner() {
+        let directory_mode = rustix::fs::FileType::Directory.as_raw_mode() | 0o755;
+        for owners in [vec![0, 0, 1000, 1000], vec![1000, 1000]] {
+            let mut policy = ProtectedAncestry::new(1000);
+            for uid in owners {
+                policy.admit_metadata(uid, directory_mode).unwrap();
+            }
+        }
+        for owners in [vec![0, 1001], vec![0, 1000, 1001], vec![0, 1000, 0]] {
+            let mut policy = ProtectedAncestry::new(1000);
+            let mut rejected = false;
+            for uid in owners {
+                if policy.admit_metadata(uid, directory_mode).is_err() {
+                    rejected = true;
+                    break;
+                }
+            }
+            assert!(rejected);
+        }
+        let mut root_only = ProtectedAncestry::new(0);
+        root_only.admit_metadata(0, directory_mode).unwrap();
+        root_only.admit_metadata(0, directory_mode).unwrap();
+        assert!(root_only.admit_metadata(1000, directory_mode).is_err());
+    }
+
+    #[test]
+    fn service_ancestry_rejects_writable_directories_and_non_directories() {
+        for owner in [0, 1000] {
+            for mode in [0o722, 0o770, 0o777, 0o1777] {
+                let mut policy = ProtectedAncestry::new(1000);
+                assert!(
+                    policy
+                        .admit_metadata(owner, rustix::fs::FileType::Directory.as_raw_mode() | mode)
+                        .is_err()
+                );
+            }
+            let mut policy = ProtectedAncestry::new(1000);
+            assert!(
+                policy
+                    .admit_metadata(
+                        owner,
+                        rustix::fs::FileType::RegularFile.as_raw_mode() | 0o700
+                    )
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn service_opener_never_skips_unsafe_absolute_ancestry() {
+        let directory = TestDirectory::new("service-ancestry");
+        fs::set_permissions(&directory.0, fs::Permissions::from_mode(0o777)).unwrap();
+        let leaf = directory.0.join("private");
+        fs::create_dir(&leaf).unwrap();
+        fs::set_permissions(&leaf, fs::Permissions::from_mode(0o700)).unwrap();
+        let uid = fs::metadata(&directory.0).unwrap().uid();
+        // The private test opener accepts this leaf, but production must reject
+        // its writable ancestor regardless of the leaf's owner and mode. The
+        // fixture owns that ancestor; no property of the host TMPDIR is assumed.
+        assert!(matches!(
+            Journal::open_protected_at_for_uid(
+                &leaf,
+                "state.journal",
+                JournalLimits::default(),
+                uid,
+            ),
+            Err(JournalError::ProtectedBoundary)
+        ));
+        for path in [
+            "relative",
+            "",
+            "/",
+            "/tmp//leaf",
+            "/tmp/./leaf",
+            "/tmp/../leaf",
+        ] {
+            assert!(matches!(
+                Journal::open_protected_at_for_uid(
+                    path,
+                    "state.journal",
+                    JournalLimits::default(),
+                    uid,
+                ),
+                Err(JournalError::ProtectedBoundary)
+            ));
+        }
     }
 
     #[test]
