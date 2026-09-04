@@ -751,10 +751,22 @@ pub enum DurableOwnershipAuthorityError {
     /// Issuance or cryptographic live verification failed.
     #[error("ownership lease issuance failed: {0}")]
     Acquisition(#[from] OwnershipLeaseAcquisitionError),
+    /// The protected paired-clock source could not provide a sample.
+    #[error("protected ownership clock is unavailable")]
+    ProtectedClockUnavailable(#[from] ProtectedOwnershipClockError),
     /// The fixed authority-generation epoch has no capacity for another request.
     #[error("durable ownership authority epoch capacity is exhausted")]
     ResourceExhausted,
 }
+
+/// Reports failure to sample the protected paired clock without backend detail.
+///
+/// Production adapters should map device, service, and transport failures to
+/// this opaque value rather than exposing their implementation through the
+/// authority state-machine API.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("protected paired clock is unavailable")]
+pub struct ProtectedOwnershipClockError;
 
 /// Describes durable admission of one ownership claim.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -932,8 +944,8 @@ impl DurableOwnershipAuthority {
     /// # Errors
     ///
     /// Returns [`DurableOwnershipAuthorityError`] for a missing intent,
-    /// authority failure, malicious response, stale post-issuance CAS state, or
-    /// journal commit failure.
+    /// authority failure, unavailable protected clock, malicious response,
+    /// stale post-issuance CAS state, or journal commit failure.
     pub fn complete<A, C>(
         &mut self,
         request_id: [u8; 16],
@@ -942,7 +954,7 @@ impl DurableOwnershipAuthority {
     ) -> Result<SignedOwnershipLease, DurableOwnershipAuthorityError>
     where
         A: OwnershipAuthority,
-        C: FnMut() -> RawPairedClockSample,
+        C: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
     {
         let entry = self
             .entries
@@ -963,7 +975,7 @@ impl DurableOwnershipAuthority {
         // issuer call, so an already-expired response cannot be recorded using
         // stale pre-call time. This sample is advisory input to live signature
         // verification, not a transferable clock capability.
-        let clock = protected_clock();
+        let clock = protected_clock()?;
         let lease = self.verifier.verify_response(&claim, response, &clock)?;
         validate_claim_against_current(&claim, &self.current)?;
         let completed = DurableOwnershipEntry {
@@ -2134,7 +2146,7 @@ mod tests {
 
         let mut store = open_test_store(&path, 31).unwrap();
         let completed = store
-            .complete(*claim.request_id(), &mut authority, &mut || clock)
+            .complete(*claim.request_id(), &mut authority, &mut || Ok(clock))
             .unwrap();
         assert_eq!(completed.canonical_lease(), issued_before_commit.lease);
         assert_eq!(
@@ -2189,13 +2201,15 @@ mod tests {
         let acquire = acquire_claim(5);
         store.begin(&acquire).unwrap();
         let old = store
-            .complete(*acquire.request_id(), &mut authority, &mut || clock)
+            .complete(*acquire.request_id(), &mut authority, &mut || Ok(clock))
             .unwrap();
         let renew = renewal_claim(7, &old);
         store.begin(&renew).unwrap();
         authority.now_seconds = 160;
         let renewed = store
-            .complete(*renew.request_id(), &mut authority, &mut || test_clock(160))
+            .complete(*renew.request_id(), &mut authority, &mut || {
+                Ok(test_clock(160))
+            })
             .unwrap();
         assert!(renewed.generation() > old.generation());
         let stale = renewal_claim(8, &old);
@@ -2244,13 +2258,13 @@ mod tests {
         store.begin(&acquire_a).unwrap();
         let acquired_a = store
             .complete(*acquire_a.request_id(), &mut issuer_a, &mut || {
-                test_clock(150)
+                Ok(test_clock(150))
             })
             .unwrap();
         store.begin(&acquire_b).unwrap();
         let acquired_b = store
             .complete(*acquire_b.request_id(), &mut issuer_b, &mut || {
-                test_clock(150)
+                Ok(test_clock(150))
             })
             .unwrap();
         let renew_a = renewal_claim(11, &acquired_a);
@@ -2260,13 +2274,13 @@ mod tests {
         store.begin(&renew_b).unwrap();
         let renewed_b = store
             .complete(*renew_b.request_id(), &mut issuer_b, &mut || {
-                test_clock(170)
+                Ok(test_clock(170))
             })
             .unwrap();
         store.begin(&renew_a).unwrap();
         let renewed_a = store
             .complete(*renew_a.request_id(), &mut issuer_a, &mut || {
-                test_clock(160)
+                Ok(test_clock(160))
             })
             .unwrap();
         drop(store);
@@ -2312,13 +2326,13 @@ mod tests {
             store.begin(&claim_a).unwrap();
             let lease_a = store
                 .complete(*claim_a.request_id(), &mut issuer_a, &mut || {
-                    test_clock(150)
+                    Ok(test_clock(150))
                 })
                 .unwrap();
             store.begin(&claim_b).unwrap();
             let lease_b = store
                 .complete(*claim_b.request_id(), &mut issuer_b, &mut || {
-                    test_clock(150)
+                    Ok(test_clock(150))
                 })
                 .unwrap();
             drop(store);
@@ -2372,7 +2386,7 @@ mod tests {
         let first_claim = acquire_claim(5);
         store.begin(&first_claim).unwrap();
         store
-            .complete(*first_claim.request_id(), &mut authority, &mut || clock)
+            .complete(*first_claim.request_id(), &mut authority, &mut || Ok(clock))
             .unwrap();
         drop(store);
 
@@ -2412,7 +2426,7 @@ mod tests {
         store.begin(&root_claim).unwrap();
         let root = store
             .complete(*root_claim.request_id(), &mut base.authority, &mut || {
-                base.clock
+                Ok(base.clock)
             })
             .unwrap();
         drop(store);
@@ -2465,7 +2479,7 @@ mod tests {
             store.begin(&root_claim).unwrap();
             let root = store
                 .complete(*root_claim.request_id(), &mut base.authority, &mut || {
-                    base.clock
+                    Ok(base.clock)
                 })
                 .unwrap();
             drop(store);
@@ -2593,7 +2607,7 @@ mod tests {
             }
             store.begin(&claim_a).unwrap();
             store
-                .complete(*claim_a.request_id(), &mut authority, &mut || clock)
+                .complete(*claim_a.request_id(), &mut authority, &mut || Ok(clock))
                 .unwrap();
             if completion_first {
                 assert_eq!(
@@ -2645,7 +2659,7 @@ mod tests {
         let claim = acquire_claim(5);
         store.begin(&claim).unwrap();
         let result = store.complete(*claim.request_id(), &mut authority, &mut || {
-            test_clock(wall.get())
+            Ok(test_clock(wall.get()))
         });
 
         assert!(matches!(
@@ -2656,6 +2670,50 @@ mod tests {
         ));
         assert!(store.is_pending(claim.request_id()));
         assert!(store.current(claim.assignment().sandbox()).is_none());
+    }
+
+    #[test]
+    fn protected_clock_failure_preserves_intent_for_exact_resume() {
+        let directory = TestDirectory::new("clock-failure-resume");
+        let path = directory.journal();
+        let Fixture {
+            mut authority,
+            verifier,
+            ..
+        } = fixture(50);
+        let (journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
+        let mut store = DurableOwnershipAuthority::from_journal(journal, verifier).unwrap();
+        let claim = acquire_claim(5);
+        store.begin(&claim).unwrap();
+
+        let failed = store.complete(*claim.request_id(), &mut authority, &mut || {
+            Err(ProtectedOwnershipClockError)
+        });
+        assert!(matches!(
+            failed,
+            Err(DurableOwnershipAuthorityError::ProtectedClockUnavailable(
+                ProtectedOwnershipClockError
+            ))
+        ));
+        assert_eq!(authority.requests.len(), 1);
+        assert!(store.is_pending(claim.request_id()));
+        assert!(store.current(claim.assignment().sandbox()).is_none());
+        drop(store);
+
+        let mut store = open_test_store(&path, 50).unwrap();
+        assert!(store.is_pending(claim.request_id()));
+        assert!(store.current(claim.assignment().sandbox()).is_none());
+        let completed = store
+            .complete(*claim.request_id(), &mut authority, &mut || {
+                Ok(test_clock(160))
+            })
+            .unwrap();
+        assert_eq!(authority.requests.len(), 1);
+        assert!(!store.is_pending(claim.request_id()));
+        assert_eq!(
+            store.current(claim.assignment().sandbox()),
+            Some(&completed)
+        );
     }
 
     #[test]
