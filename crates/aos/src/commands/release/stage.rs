@@ -44,11 +44,12 @@ pub(super) async fn run(args: &ReleaseStageArgs, printer: &Printer) -> Result<()
         hub: Some(STAGING_HUB.to_owned()),
         token: args.token.clone(),
     };
+    let publication_surface = publication_surface(&args.bundle, &captured.files)?;
     let publication = crate::commands::hub::upload_registry_publication(
         &access,
         &plan.registry,
         None,
-        &args.bundle,
+        &publication_surface.path().join("surface"),
         printer,
     )
     .await?;
@@ -141,6 +142,31 @@ pub(super) async fn run(args: &ReleaseStageArgs, printer: &Printer) -> Result<()
         receipt.release_id, receipt.operation_id
     ));
     Ok(())
+}
+
+/// Copies the verified bundle into a private publication-only snapshot.
+///
+/// The release plan and signed manifest envelope are control inputs rather
+/// than registry-surface paths. The second capture is compared with the first
+/// before those reserved files are removed, preventing source mutation between
+/// verification and publication from changing the uploaded bytes.
+fn publication_surface(
+    bundle: &Path,
+    verified_files: &[aos_release::verify::CapturedFile],
+) -> Result<tempfile::TempDir> {
+    let temporary = tempfile::Builder::new()
+        .prefix("aos-release-stage-surface-")
+        .tempdir()?;
+    let surface = temporary.path().join("surface");
+    let mut copied_files = capture::copy_surface_tree(bundle, &surface)?;
+    copied_files.retain(|file| file.path.as_str() != "release-manifest.json");
+    if copied_files != verified_files {
+        bail!("release bundle changed between verification and publication capture");
+    }
+
+    fs::remove_file(surface.join("release-plan.json"))?;
+    fs::remove_file(surface.join("release-manifest.json"))?;
+    Ok(temporary)
 }
 
 fn require_finalized_journal(
@@ -261,6 +287,23 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn publication_surface_omits_only_reserved_controls() -> Result<()> {
+        let bundle = tempfile::tempdir()?;
+        fs::write(bundle.path().join("release-plan.json"), b"plan")?;
+        fs::write(bundle.path().join("release-manifest.json"), b"manifest")?;
+        fs::create_dir(bundle.path().join("objects"))?;
+        fs::write(bundle.path().join("objects/payload"), b"payload")?;
+        let captured = capture::bundle(bundle.path())?;
+
+        let publication = publication_surface(bundle.path(), &captured.files)?;
+        let surface = publication.path().join("surface");
+        assert!(!surface.join("release-plan.json").exists());
+        assert!(!surface.join("release-manifest.json").exists());
+        assert_eq!(fs::read(surface.join("objects/payload"))?, b"payload");
+        Ok(())
     }
 
     #[test]
