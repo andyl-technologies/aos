@@ -1,21 +1,61 @@
 ##! Oniguruma — regular expression library
 {
   mkDerivation,
-  fetchurl,
+  mkGithubUpstream,
   gnumake,
 }: let
-  version = "6.9.10";
+  upstream = mkGithubUpstream {
+    unitId = "oniguruma-6";
+    family = "oniguruma";
+    stream = "6";
+    owner = "pkgs/libs/oniguruma.nix";
+    version = "6.9.10";
+    upstreamId = "v6.9.10";
+    repository = "kkos/oniguruma";
+    tagPrefix = "v";
+    major = 6;
+    source = {
+      authority = "github.com";
+      path = [
+        "kkos"
+        "oniguruma"
+        "releases"
+        "download"
+        {
+          parts = [
+            {literal = "v";}
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+          ];
+        }
+        {
+          parts = [
+            {literal = "onig-";}
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+            {literal = ".tar.gz";}
+          ];
+        }
+      ];
+      hash = "sha256-Klz8WuJZ5Ol/hraN//wVLNr/6U4gYLdwy4JyONdp/AU=";
+    };
+  };
+  inherit (upstream) version;
 in
   mkDerivation {
     pname = "oniguruma";
     inherit version;
 
-    src = fetchurl {
-      urls = [
-        "https://github.com/kkos/oniguruma/releases/download/v${version}/onig-${version}.tar.gz"
-      ];
-      hash = "sha256-Klz8WuJZ5Ol/hraN//wVLNr/6U4gYLdwy4JyONdp/AU=";
-    };
+    src = upstream.components.main.sources.source;
+    update = upstream.update;
 
     buildDeps = [gnumake];
     runtimeDeps = [];

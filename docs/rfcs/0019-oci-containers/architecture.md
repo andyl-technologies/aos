@@ -1,4 +1,4 @@
-# RFC-0018 architecture
+# RFC-0019 architecture
 
 ## Artifact pipeline
 

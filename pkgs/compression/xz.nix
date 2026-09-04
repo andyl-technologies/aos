@@ -1,22 +1,62 @@
 ##! XZ Utils — LZMA compression utilities
 {
   mkDerivation,
-  fetchurl,
+  mkGithubUpstream,
   gnumake,
   stdenv,
 }: let
-  version = "5.8.2";
+  upstream = mkGithubUpstream {
+    unitId = "xz-5";
+    family = "xz";
+    stream = "5";
+    owner = "pkgs/compression/xz.nix";
+    version = "5.8.2";
+    upstreamId = "v5.8.2";
+    repository = "tukaani-project/xz";
+    tagPrefix = "v";
+    major = 5;
+    source = {
+      authority = "github.com";
+      path = [
+        "tukaani-project"
+        "xz"
+        "releases"
+        "download"
+        {
+          parts = [
+            {literal = "v";}
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+          ];
+        }
+        {
+          parts = [
+            {literal = "xz-";}
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+            {literal = ".tar.xz";}
+          ];
+        }
+      ];
+      hash = "sha256-iQlm7D9dXMFRB3h54VfAWTUApSL0E6xQuibSKpoUUhQ=";
+    };
+  };
+  inherit (upstream) version;
 in
   mkDerivation {
     pname = "xz";
     inherit version;
 
-    src = fetchurl {
-      urls = [
-        "https://github.com/tukaani-project/xz/releases/download/v${version}/xz-${version}.tar.xz"
-      ];
-      hash = "sha256-iQlm7D9dXMFRB3h54VfAWTUApSL0E6xQuibSKpoUUhQ=";
-    };
+    src = upstream.components.main.sources.source;
+    update = upstream.update;
 
     buildDeps = [gnumake];
     runtimeDeps = [];

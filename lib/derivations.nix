@@ -47,6 +47,27 @@
     ;
   hardening = import ./hardening.nix;
 
+  # Attach evaluation-only fixed-output identity without changing the
+  # derivation's builder environment or store identity.
+  annotateFixedOutput = drv: contract:
+    drv
+    // {
+      passthru =
+        (drv.passthru or {})
+        // {
+          aos =
+            ((drv.passthru or {}).aos or {})
+            // {
+              fixedOutput =
+                contract
+                // {
+                  schema = "aos.fixed-output/v1";
+                  outputDerivation = contract.outputDerivation or drv.drvPath;
+                };
+            };
+        };
+    };
+
   # ---------------------------------------------------------------------------
   # Default phase definitions
   # ---------------------------------------------------------------------------
@@ -556,6 +577,7 @@
   #   propagatedDeps;  — propagated dependencies (propagatedBuildInputs equivalent)
   #   phases;          — ordered list of { name; script; } records
   #   meta;            — package metadata
+  #   update;          — primitive maintenance metadata (evaluation only)
   #   storeDir;        — store directory (default: /nix/store)
   #   hostPlatform;    — structured platform where the output executes
   #   targetPlatform;  — structured code-generation target
@@ -594,6 +616,7 @@
     preInstall ? "",
     postInstall ? "",
     passthru ? {},
+    update ? null,
     checks ? null,
     expose ? null,
     # ── Compiler-hardening policy ─────────────────────────────────────
@@ -753,6 +776,7 @@
       "preInstall"
       "postInstall"
       "passthru"
+      "update"
       "checks"
       "expose"
       "hardeningEnable"
@@ -1018,6 +1042,13 @@
             if expose != null
             then {inherit expose;}
             else {}
+          )
+          // (
+            if update != null
+            then {
+              aos = (passthru.aos or {}) // {maintenance = update;};
+            }
+            else {}
           );
       }
       // (
@@ -1124,8 +1155,7 @@
       else if urls == [] && url != ""
       then [url]
       else throw "fetchurl requires either 'url' or 'urls' to be set, not both";
-  in
-    builtins.derivation {
+    drv = builtins.derivation {
       inherit name system;
       builder = "builtin:fetchurl";
       url = builtins.head resolvedUrls;
@@ -1142,10 +1172,15 @@
 
       # Make executable if requested
       inherit executable;
-    }
-    // {
-      urls = resolvedUrls;
     };
+  in
+    (annotateFixedOutput drv {
+      kind = "url";
+      hashMode = "flat";
+      sourceInputs = resolvedUrls;
+      builderParameters = {inherit executable system;};
+    })
+    // {urls = resolvedUrls;};
 
   # ---------------------------------------------------------------------------
   # fetchgit
@@ -1164,8 +1199,8 @@
     storeDir ? "/nix/store",
     deepClone ? false,
     leaveDotGit ? false,
-  }:
-    builtins.derivation {
+  }: let
+    drv = builtins.derivation {
       inherit name system;
       builder = builderPath;
       args = [
@@ -1209,6 +1244,15 @@
 
       preferLocalBuild = true;
       inherit url rev;
+    };
+  in
+    annotateFixedOutput drv {
+      kind = "git";
+      hashMode = "recursive";
+      sourceInputs = [url];
+      builderParameters = {
+        inherit rev fetchSubmodules deepClone leaveDotGit system;
+      };
     };
 
   # ---------------------------------------------------------------------------
@@ -1320,7 +1364,7 @@
           fetchedGitDeps
         );
   in
-    builtins.derivation {
+    annotateFixedOutput (builtins.derivation {
       inherit name system;
       builder = builderPath;
       args = [
@@ -1376,6 +1420,28 @@
       outputHashAlgo = "sha256";
 
       preferLocalBuild = true;
+    }) {
+      kind = "cargo-deps";
+      hashMode = "recursive";
+      sourceInputs = [builtins.toString src];
+      builderParameters = {
+        sourceRoot =
+          if sourceRoot == null
+          then "<auto>"
+          else sourceRoot;
+        patches = builtins.map builtins.toString cargoPatches;
+        gitDependencies =
+          builtins.map (dep: {
+            inherit (dep) url rev crate;
+            sourceArchive =
+              if dep ? sourceArchive
+              then builtins.toString dep.sourceArchive
+              else "<builtins.fetchGit>";
+          })
+          gitDeps;
+        cargo = builtins.toString cargo;
+        inherit system;
+      };
     };
 
   # ---------------------------------------------------------------------------
@@ -1469,7 +1535,7 @@
     };
   in
     # Stage 2: pure transformation of staging into cargo vendor layout.
-    builtins.derivation {
+    annotateFixedOutput (builtins.derivation {
       inherit name system;
       builder = builderPath;
       args = [
@@ -1483,6 +1549,20 @@
       ];
 
       preferLocalBuild = true;
+    }) {
+      kind = "cargo-vendor";
+      hashMode = "recursive";
+      sourceInputs = [builtins.toString src];
+      outputDerivation = vendorStaging.drvPath;
+      builderParameters = {
+        sourceRoot =
+          if sourceRoot == null
+          then "<auto>"
+          else sourceRoot;
+        patches = builtins.map builtins.toString cargoPatches;
+        cargo = builtins.toString cargo;
+        inherit system;
+      };
     };
 
   # ---------------------------------------------------------------------------
@@ -1501,7 +1581,7 @@
     system ? defaultSystem,
     extraPaths ? [],
   }:
-    builtins.derivation {
+    annotateFixedOutput (builtins.derivation {
       inherit name system;
       builder = builderPath;
       args = [
@@ -1544,6 +1624,18 @@
       outputHashAlgo = "sha256";
 
       preferLocalBuild = true;
+    }) {
+      kind = "go-modules";
+      hashMode = "recursive";
+      sourceInputs = [builtins.toString src];
+      builderParameters = {
+        sourceRoot =
+          if sourceRoot == null
+          then "<auto>"
+          else sourceRoot;
+        go = builtins.toString go;
+        inherit system;
+      };
     };
 
   # ---------------------------------------------------------------------------
@@ -1600,7 +1692,7 @@
       builtins.map (d: "${builtins.toString d}/lib") extraLibPaths
     );
   in
-    builtins.derivation {
+    annotateFixedOutput (builtins.derivation {
       inherit name system;
       builder = builderPath;
       args = [
@@ -1668,6 +1760,21 @@
       outputHashAlgo = "sha256";
 
       preferLocalBuild = true;
+    }) {
+      kind = "npm-deps";
+      hashMode = "recursive";
+      sourceInputs = [builtins.toString src];
+      builderParameters = {
+        sourceRoot =
+          if sourceRoot == null
+          then "."
+          else sourceRoot;
+        manifest = "package.json";
+        lockfile = "package-lock.json";
+        lifecycleScripts = false;
+        nodejs = builtins.toString nodejs;
+        inherit system;
+      };
     };
 
   # ---------------------------------------------------------------------------
@@ -1786,7 +1893,7 @@
       removeRepos
     );
   in
-    builtins.derivation {
+    annotateFixedOutput (builtins.derivation {
       inherit name system;
       builder = builderPath;
       args = [
@@ -1930,6 +2037,18 @@
       outputHashMode = "recursive";
       outputHashAlgo = "sha256";
       preferLocalBuild = true;
+    }) {
+      kind = "bazel-deps";
+      hashMode = "recursive";
+      sourceInputs = [builtins.toString src];
+      builderParameters = {
+        inherit bazelTarget bazelFlags bazelFetchFlags postPatch fetchPostPatch postFetch removeRepos populateBCR system;
+        environment = builtins.mapAttrs (_: value: builtins.toString value) env;
+        scrub = scrubMap;
+        tools = builtins.map builtins.toString tools;
+        bazel = builtins.toString bazel;
+        jdk = builtins.toString jdk;
+      };
     };
 in {
   inherit

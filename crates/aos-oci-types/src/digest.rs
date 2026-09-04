@@ -1,6 +1,6 @@
 //! Canonical SHA-256 content digests.
 //!
-//! RFC-0018 deliberately accepts only this exact wire form:
+//! RFC-0019 deliberately accepts only this exact wire form:
 //!
 //! ```text
 //! sha256:<64 lowercase hexadecimal digits>
@@ -37,7 +37,7 @@ impl Sha256Digest {
         Self(bytes)
     }
 
-    /// Parses the exact RFC-0018 digest spelling.
+    /// Parses the exact RFC-0019 digest spelling.
     ///
     /// # Errors
     ///

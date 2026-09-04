@@ -24,7 +24,7 @@ impl RepositoryName {
     ///
     /// Returns an error for an empty or overlong name, a non-ASCII or uppercase
     /// byte, a percent or backslash, an empty/dot component, or a component that
-    /// violates the RFC-0018 separator grammar.
+    /// violates the RFC-0019 separator grammar.
     pub fn parse(value: &str) -> Result<Self> {
         if value.is_empty() {
             return Err(Error::InvalidRepository {

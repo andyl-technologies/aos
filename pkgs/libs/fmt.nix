@@ -1,22 +1,50 @@
 ##! fmt — Modern C++ formatting library
 {
   mkDerivation,
-  fetchurl,
+  mkGithubUpstream,
   cmake,
   gnumake,
 }: let
-  version = "12.1.0";
+  upstream = mkGithubUpstream {
+    unitId = "fmt-12";
+    family = "fmt";
+    stream = "12";
+    owner = "pkgs/libs/fmt.nix";
+    version = "12.1.0";
+    upstreamId = "12.1.0";
+    repository = "fmtlib/fmt";
+    major = 12;
+    source = {
+      authority = "github.com";
+      path = [
+        "fmtlib"
+        "fmt"
+        "archive"
+        "refs"
+        "tags"
+        {
+          parts = [
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+            {literal = ".tar.gz";}
+          ];
+        }
+      ];
+      hash = "sha256-6n3kKZaJ4Stt3dOS+YlvCPsHd6xxaIl6JEptYIUEP+o=";
+    };
+  };
+  inherit (upstream) version;
 in
   mkDerivation {
     pname = "fmt";
     inherit version;
 
-    src = fetchurl {
-      urls = [
-        "https://github.com/fmtlib/fmt/archive/refs/tags/${version}.tar.gz"
-      ];
-      hash = "sha256-6n3kKZaJ4Stt3dOS+YlvCPsHd6xxaIl6JEptYIUEP+o=";
-    };
+    src = upstream.components.main.sources.source;
+    update = upstream.update;
 
     buildDeps = [cmake gnumake];
     runtimeDeps = [];

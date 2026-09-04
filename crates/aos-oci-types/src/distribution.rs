@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::canonical::{parse_bounded, to_canonical_json};
 use crate::error::{Error, Result};
 
-/// A standard OCI Distribution error code admitted by RFC-0018.
+/// A standard OCI Distribution error code admitted by RFC-0019.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum DistributionErrorCode {
     /// A referenced blob is unknown to the repository.

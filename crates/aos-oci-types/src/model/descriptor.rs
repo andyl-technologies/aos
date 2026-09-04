@@ -112,7 +112,7 @@ pub struct Descriptor {
     pub digest: Sha256Digest,
     /// Exact byte length of the referenced bytes.
     pub size: u64,
-    /// External retrieval URLs, rejected by RFC-0018 admission.
+    /// External retrieval URLs, rejected by RFC-0019 admission.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub urls: Vec<String>,
     /// Unknown and standard descriptor annotations retained in key order.
@@ -189,7 +189,7 @@ impl Descriptor {
         if !self.urls.is_empty() {
             return Err(Error::invalid(
                 "descriptor urls",
-                "external descriptor URLs are not admitted in RFC-0018 v1",
+                "external descriptor URLs are not admitted in RFC-0019 v1",
             ));
         }
         self.annotations.validate()?;

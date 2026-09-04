@@ -1,8 +1,23 @@
 ##! Shared Linux kernel source — used by linux and linux-headers
-{fetchurl}: let
+{
+  fetchurl,
+  mkManualUpstream,
+}: let
   version = "6.18.33";
+  upstream = mkManualUpstream {
+    unitId = "linux-6.18";
+    family = "linux";
+    stream = "6.18";
+    owner = "pkgs/kernel/_source.nix";
+    member = "linux";
+    inherit version;
+    upstreamId = "v6.18.33";
+    reason = "Kernel updates require config, ABI, module, boot, and all-target maintainer review.";
+    riskFloor = "critical";
+  };
 in {
   inherit version;
+  inherit (upstream) updateFor;
   src = fetchurl {
     urls = [
       "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${version}.tar.xz"

@@ -9,6 +9,16 @@
   targetPackages ? null,
 }: let
   fetchurl = lib.fetchurl;
+  mkUpstream = import ./build-support/_upstream.nix {
+    inherit lib fetchurl;
+    platform = stdenv.hostPlatform.system;
+  };
+  mkGithubUpstream = import ./build-support/_github-upstream.nix {
+    inherit mkUpstream;
+  };
+  mkManualUpstream = import ./build-support/_manual-upstream.nix {
+    platform = stdenv.hostPlatform.system;
+  };
   platformSupport = import ./_platform-support.nix;
 
   # Cross package-set roles. `self` is the host package set: its outputs run
@@ -1006,14 +1016,14 @@
     auto = builtins.intersectAttrs (builtins.functionArgs fn) (
       packageArgumentScope
       // {
-        inherit mkDerivation fetchurl callPackage;
+        inherit mkDerivation fetchurl mkUpstream mkGithubUpstream mkManualUpstream callPackage;
       }
     );
   in
     fn (auto // overrides);
 
   # Shared Linux kernel source (single tarball for linux and linux-headers)
-  linuxSource = import ./kernel/_source.nix {inherit fetchurl;};
+  linuxSource = import ./kernel/_source.nix {inherit fetchurl mkManualUpstream;};
 
   # Shared Kubernetes source (single tarball for kubelet, kubectl)
   kubeSource = import ./kubernetes/_source.nix {inherit fetchurl;};
@@ -1063,7 +1073,46 @@
   in
     filePackages // subdirPackages;
 
+  # Preserve an explicit source-owner association for every auto-discovered
+  # package root. This is structural discovery of AOS source, not an upstream
+  # name or URL heuristic. Reviewed mkUpstream metadata supersedes this
+  # fail-closed manual census entry.
+  discoverPackageOwners = dir: let
+    entries = builtins.readDir dir;
+    names = builtins.attrNames entries;
+    nixFiles =
+      builtins.filter (
+        name:
+          entries.${name}
+          == "regular"
+          && lib.hasSuffix ".nix" name
+          && name != "default.nix"
+          && builtins.substring 0 1 name != "_"
+      )
+      names;
+    subdirs =
+      builtins.filter (
+        name: entries.${name} == "directory" && builtins.substring 0 1 name != "_"
+      )
+      names;
+    root = (builtins.toString ./.) + "/";
+    fileOwners = builtins.listToAttrs (
+      builtins.map (name: {
+        name = lib.removeSuffix ".nix" name;
+        value = "pkgs/${lib.removePrefix root (builtins.toString (dir + "/${name}"))}";
+      })
+      nixFiles
+    );
+    subdirOwners =
+      builtins.foldl' (
+        acc: subdir: acc // discoverPackageOwners (dir + "/${subdir}")
+      ) {}
+      subdirs;
+  in
+    fileOwners // subdirOwners;
+
   discoveredPackages = discoverPackages ./.;
+  discoveredPackageOwners = discoverPackageOwners ./.;
   darwinGcc = import ./darwin/_darwin-gcc.nix {
     inherit lib mkDerivation fetchurl stdenv buildPackages;
     bash = self.bash;
@@ -1148,11 +1197,183 @@
     builtins.mapAttrs platformSupport.annotate (
       platformSupport.selectTargetPackages targetSystem self allPackageNames
     );
+  localMaintenanceRoots = [
+    "aos"
+    "aos-agent-rpc"
+    "aos-boot-identity"
+    "aos-ebpf-lsm-policy"
+    "aos-ebpf-net-policy"
+    "aos-hub"
+    "aos-hub-cloudflare"
+    "aos-hub-console-dist"
+    "aos-hub-dialect-tests"
+    "aos-hub-e2e"
+    "aos-hub-worker-dist"
+    "aos-hub-worker-do-e2e"
+    "aos-landlock"
+    "aos-recovery"
+    "aos-registry-server"
+    "aos-secret-reference-test"
+    "aos-selinux-run"
+    "aos-service-root"
+    "aos-system-image-e2e-fixture"
+    "aos-test-agent"
+    "aos-test-driver"
+    "aos-var-policy-migrate"
+    "aos-verity-root-guard"
+    "aos-vm"
+    "apm-systemd-client-test"
+    "config-module-smoke"
+    "crucible"
+    "crucible-controller"
+    "crucible-fixtures"
+    "crucible-fleet-store"
+    "crucible-guest"
+    "crucible-qemu-plugin"
+    "crucible-qemu-trace-plugin"
+    "desired-config-test"
+    "desired-prune-test"
+    "expose-smoke"
+    "test-http-server"
+    "test-static-cache-server"
+  ];
+  frozenMaintenanceRoots = [
+    "ant-bootstrap"
+    "bazel-bootstrap"
+    "classpath-0_93"
+    "classpath-0_99"
+    "ecj-bootstrap"
+    "fastjar"
+    "gcc-bootstrap"
+    "openjdk-bootstrap"
+    "rust-1_74"
+  ];
+  fallbackMaintenanceUnit = name: package: let
+    rawVersion = package.version or package.name or "unknown";
+    version =
+      if builtins.isString rawVersion && rawVersion != ""
+      then rawVersion
+      else "unknown";
+    local = builtins.elem name localMaintenanceRoots;
+    frozen = builtins.elem name frozenMaintenanceRoots;
+  in
+    {
+      unitId = name;
+      family = name;
+      stream = "manual";
+      classification =
+        if local
+        then "local"
+        else if frozen
+        then "frozen"
+        else "manual";
+      package =
+        if local
+        then null
+        else {
+          currentVersion = version;
+          versionProjection = {
+            kind = "component-field";
+            component = "main";
+            field = "comparisonVersion";
+          };
+        };
+      components =
+        if local
+        then {}
+        else {
+          main = {
+            current = {
+              upstreamId = version;
+              comparisonVersion = version;
+            };
+            primary = null;
+            advisors = [];
+            releasePolicy = {
+              strategy = "channel";
+              versionScheme = "provider";
+              seriesMajor = null;
+              allowPrerelease = false;
+              minimumAgeDays = 0;
+            };
+            sources = {};
+          };
+        };
+      artifacts = {};
+      owner = discoveredPackageOwners.${name} or "pkgs/default.nix";
+      members = [name];
+      platforms = [stdenv.hostPlatform.system];
+      policy = {
+        lifecycle =
+          if frozen
+          then "frozen"
+          else "supported";
+        riskFloor =
+          if local
+          then "low"
+          else "high";
+        repairScope = [];
+      };
+    }
+    // lib.optionalAttrs (!local) {
+      reason =
+        if frozen
+        then "Historical bootstrap input is intentionally pinned pending explicit bootstrap-chain review."
+        else "No reviewed typed upstream contract is declared; updates require a maintainer-authored plan.";
+    }
+    // lib.optionalAttrs frozen {
+      reviewAfter = "2027-01-01";
+    };
+  unmergedMaintenanceUnits =
+    builtins.map (
+      name: let
+        package = self.${name};
+        declared =
+          if
+            builtins.isAttrs package
+            && package ? passthru.aos.maintenance
+          then builtins.removeAttrs package.passthru.aos.maintenance ["schema"]
+          else fallbackMaintenanceUnit name package;
+        eligiblePlatforms = builtins.sort builtins.lessThan (builtins.filter (
+            system:
+              builtins.all (member: platformSupport.supportsTarget system member) declared.members
+          )
+          platformSupport.canonicalSystems);
+      in
+        declared // {platforms = eligiblePlatforms;}
+    )
+    packageNames;
+  maintenanceUnitIndex =
+    builtins.foldl' (
+      units: unit: let
+        existing = units.${unit.unitId} or null;
+        comparable = value: builtins.removeAttrs value ["members" "platforms"];
+        merged =
+          if existing == null
+          then unit
+          else if comparable existing != comparable unit
+          then throw "maintenance unit '${unit.unitId}' has conflicting member metadata"
+          else
+            existing
+            // {
+              members = builtins.sort builtins.lessThan (lib.unique (existing.members ++ unit.members));
+              platforms = builtins.sort builtins.lessThan (lib.unique (existing.platforms ++ unit.platforms));
+            };
+      in
+        units // {${unit.unitId} = merged;}
+    ) {}
+    unmergedMaintenanceUnits;
+  maintenanceUnits = builtins.attrValues maintenanceUnitIndex;
+  maintenanceInventory = {
+    schema = "aos.maintenance-inventory/v1";
+    units = builtins.sort (left: right: left.unitId < right.unitId) maintenanceUnits;
+  };
 
   self =
     {
       # --- Plumbing ---
-      inherit mkDerivation fetchurl lib packageNames allPackageNames;
+      inherit mkDerivation fetchurl mkUpstream mkGithubUpstream mkManualUpstream lib packageNames allPackageNames;
+      inherit maintenanceInventory;
       inherit platformSupport targetPackageNamesFor targetPackagesFor;
       inherit mkCargoPackage mkCargoArtifacts mkCargoNextestCheck mkGoPackage mkBazelPackage;
       inherit (cargoArtifactsSupport) mkCargoDummySource;

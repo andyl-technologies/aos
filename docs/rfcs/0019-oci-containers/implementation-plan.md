@@ -1,4 +1,4 @@
-# RFC-0018 implementation plan
+# RFC-0019 implementation plan
 
 This is the canonical task list for scratch OCI containers. Tasks are checked
 only after their implementation, focused tests, broader regression gates, and
@@ -33,7 +33,7 @@ Every phase is committed separately and pushed to `dplecki/aos-containers`.
 
 ### Design and inventory
 
-- [x] Record the architecture, locked decisions, and non-goals in RFC-0018.
+- [x] Record the architecture, locked decisions, and non-goals in RFC-0019.
 - [x] Define the single initial `aos` container and the meaning of golden-image
   parity.
 - [x] Define Hub registry ownership, OCI repository ownership, deduplication

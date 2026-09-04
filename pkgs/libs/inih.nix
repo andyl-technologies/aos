@@ -1,11 +1,46 @@
 ##! inih — Simple .INI file parser library
 {
   mkDerivation,
-  fetchurl,
+  mkGithubUpstream,
   gnumake,
   stdenv,
 }: let
-  version = "58";
+  upstream = mkGithubUpstream {
+    unitId = "inih-58";
+    family = "inih";
+    stream = "58";
+    owner = "pkgs/libs/inih.nix";
+    version = "58";
+    upstreamId = "r58";
+    repository = "benhoyt/inih";
+    tagPrefix = "r";
+    major = 58;
+    versionScheme = "numeric";
+    source = {
+      authority = "github.com";
+      path = [
+        "benhoyt"
+        "inih"
+        "archive"
+        "refs"
+        "tags"
+        {
+          parts = [
+            {literal = "r";}
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+            {literal = ".tar.gz";}
+          ];
+        }
+      ];
+      hash = "sha256-55IWJg1d/+gJvahAvkirDux3N7K7nwLSJ1wbRjROp7c=";
+    };
+  };
+  inherit (upstream) version;
   sharedLibrary =
     if stdenv.hostPlatform.isDarwin
     then "libinih.0.dylib"
@@ -23,12 +58,8 @@ in
     pname = "inih";
     inherit version;
 
-    src = fetchurl {
-      urls = [
-        "https://github.com/benhoyt/inih/archive/refs/tags/r${version}.tar.gz"
-      ];
-      hash = "sha256-55IWJg1d/+gJvahAvkirDux3N7K7nwLSJ1wbRjROp7c=";
-    };
+    src = upstream.components.main.sources.source;
+    update = upstream.update;
 
     buildDeps = [gnumake];
     runtimeDeps = [];
