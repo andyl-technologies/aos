@@ -19,12 +19,13 @@
   shell,
   coreutils,
   hostPlatform,
+  executionPlatform ? hostPlatform,
   storeDir ? "/nix/store",
   defaultHardening ? "",
   staticDefault ? false,
   staticNoPie ? false,
 }: let
-  system = hostPlatform.system;
+  system = executionPlatform.system;
   targetTriple = hostPlatform.config;
   dynamicLinker = "${libc}/lib/${hostPlatform.dynamicLinker}";
   libcDev = libc.dev or libc;
@@ -402,7 +403,7 @@ in
     inherit targetTriple;
     constraints = {
       build = null;
-      execute = hostPlatform.constraints;
+      execute = executionPlatform.constraints;
       target = hostPlatform.constraints;
     };
   }

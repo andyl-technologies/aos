@@ -31,11 +31,11 @@
   version = "2.24.12";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   buildMeson =
-    if isDarwinCross
+    if stdenv.isCross
     then buildPackages.meson
     else meson;
   mesonSetupFlags =
-    if isDarwinCross
+    if stdenv.isCross
     then ''      --buildtype=release \
             $mesonFlags''
     else "--buildtype=release";

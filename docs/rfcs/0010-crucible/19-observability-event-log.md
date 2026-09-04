@@ -702,10 +702,10 @@ the per-point truth of every standing condition is not itself a log entry.
 | `coverage` | Observational | Engine, Guest | `kind` (basic_block / named), `id`/`block`, `node` (22, [GHC-7]/[GHC-22]) |
 | `assertion_proximity` | Observational | Engine | `id`, `quantifier`, `distance` (non-negative u128, 0=satisfied), `node` (18 §18.13, [ASRT-33]; steering-only, excluded from the comparison) |
 | `guest_marker` | Observational | Guest | `marker_kind` (assert/lifecycle/event/coverage/random_request), typed body (16 §16.5) |
-| `guest_measurement_begin` | Observational | Guest | `node`, `retired_icount`, `measurement`, `instance` (16 §16.5, RFC-0019 §08.4) |
-| `guest_metric_sample` | Observational | Guest | `node`, `retired_icount`, `measurement`, `instance`, `metric`, one bounded typed value (16 §16.5, RFC-0019 §08.4) |
-| `guest_measurement_end` | Observational | Guest | `node`, `retired_icount`, `measurement`, `instance` (16 §16.5, RFC-0019 §08.4) |
-| `guest_semantic_marker` | Observational | Guest | `node`, `retired_icount`, `marker`, `instance`, bounded key-ordered typed details (16 §16.5, RFC-0019 §08.4) |
+| `guest_measurement_begin` | Observational | Guest | `node`, `retired_icount`, `measurement`, `instance` (16 §16.5, RFC-0020 §08.4) |
+| `guest_metric_sample` | Observational | Guest | `node`, `retired_icount`, `measurement`, `instance`, `metric`, one bounded typed value (16 §16.5, RFC-0020 §08.4) |
+| `guest_measurement_end` | Observational | Guest | `node`, `retired_icount`, `measurement`, `instance` (16 §16.5, RFC-0020 §08.4) |
+| `guest_semantic_marker` | Observational | Guest | `node`, `retired_icount`, `marker`, `instance`, bounded key-ordered typed details (16 §16.5, RFC-0020 §08.4) |
 
 ```rust,illustrative
 /// The open-set payload (§19.2.2). The catalog (§19.7) fixes each variant's

@@ -36,14 +36,19 @@
     testScript,
     rootfsDeps,
   }: let
-    allDeps =
+    # Callers describe their runtime needs without having to know which
+    # packages the harness itself supplies.  Deduplicate at that boundary so
+    # an explicit dependency that is also a harness dependency does not create
+    # duplicate reference-graph roots.
+    allDeps = lib.unique (
       rootfsDeps
       ++ [
         bashPkg
         coreutilsPkg
         utilLinuxPkg
         bootstrapTools
-      ];
+      ]
+    );
 
     # Build the exportReferencesGraph pairs list: ["name1" drv1 "name2" drv2 ...]
     graphPairs =

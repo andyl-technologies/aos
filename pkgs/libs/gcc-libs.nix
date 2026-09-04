@@ -11,6 +11,7 @@
 {
   mkDerivation,
   lib,
+  stdenv,
   bootstrapTools,
 }: let
   # Use the same sources as the gcc14 tier (builtins.fetchTarball)
@@ -40,6 +41,7 @@
   gcc = bootstrapTools.cc;
   trim = s: lib.removeSuffix "\n" s;
   interp = trim (builtins.readFile "${bootstrapTools}/nix-support/dynamic-linker");
+  platformConfig = stdenv.hostPlatform.config;
 in
   # Use mkDerivation but bypass the cc-wrapper by setting CC/CXX directly
   mkDerivation {
@@ -141,7 +143,7 @@ in
           AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true \
           "$TMPDIR/gcc-14.3.0/configure" \
             --prefix="$out" \
-            --build=x86_64-unknown-linux-gnu --host=x86_64-unknown-linux-gnu --target=x86_64-unknown-linux-gnu \
+            --build=${platformConfig} --host=${platformConfig} --target=${platformConfig} \
             --enable-languages=c,c++ \
             --enable-shared --disable-nls --enable-threads=posix \
             --disable-multilib --disable-bootstrap \
@@ -193,7 +195,7 @@ in
             cp -a "$out/lib64"/* "$out/lib/" 2>/dev/null || true
             rm -rf "$out/lib64"
           fi
-          rm -rf "$out/x86_64-unknown-linux-gnu" 2>/dev/null || true
+          rm -rf "$out/${platformConfig}" 2>/dev/null || true
           find "$out/lib" -type d -name 'gcc' -exec rm -rf {} + 2>/dev/null || true
 
           echo "gcc-libs installed to $out"
@@ -201,6 +203,8 @@ in
         '';
       }
     ];
+
+    passthru.evidenceSources = [gcc-src gmp-src mpfr-src mpc-src];
 
     meta = {
       description = "GCC runtime shared libraries (libstdc++.so, libgcc_s.so)";

@@ -11,9 +11,11 @@
   version = "4.0.4";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   efiArch =
-    if stdenv.hostPlatform.darwinArch == "arm64"
+    if stdenv.hostPlatform.isAarch64
     then "aarch64"
-    else "x86_64";
+    else if stdenv.hostPlatform.isx86_64
+    then "x86_64"
+    else throw "gnu-efi: unsupported architecture ${stdenv.hostPlatform.system}";
   efiTarget =
     if efiArch == "aarch64"
     then "aarch64-unknown-linux-gnu"
@@ -82,9 +84,10 @@ in
               # Only build lib and gnuefi (CRT objects), skip apps which tries
               # to link EFI binaries and conflicts with ccWrapper's LDFLAGS.
               # Pre-create output dirs that the out-of-tree build expects.
-              ARCH=x86_64
-              mkdir -p "$ARCH/lib/runtime" "$ARCH/lib/x86_64" "$ARCH/gnuefi"
+              ARCH=${efiArch}
+              mkdir -p "$ARCH/lib/runtime" "$ARCH/lib/$ARCH" "$ARCH/gnuefi"
               make -j$NIX_BUILD_CORES \
+                ARCH="$ARCH" \
                 SUBDIRS="lib gnuefi inc" \
                 PREFIX=/usr \
                 INSTALLROOT= \
@@ -125,13 +128,13 @@ in
             else ''
               # Manual install since the Makefile's install paths are relative
               # to the source tree and don't work with Nix store paths.
-              ARCH=x86_64
+              ARCH=${efiArch}
 
               # Headers
-              mkdir -p $out/include/efi/protocol $out/include/efi/x86_64 $out/include/efi/legacy
+              mkdir -p $out/include/efi/protocol $out/include/efi/$ARCH $out/include/efi/legacy
               cp inc/*.h $out/include/efi/
               cp inc/protocol/*.h $out/include/efi/protocol/
-              cp inc/x86_64/*.h $out/include/efi/x86_64/
+              cp inc/$ARCH/*.h $out/include/efi/$ARCH/
               # efilib.h includes "legacy/efilib.h"; ship it so consumers that
               # pull efilib.h (e.g. efitools' lib) resolve cleanly.
               cp inc/legacy/*.h $out/include/efi/legacy/
@@ -140,8 +143,8 @@ in
               mkdir -p $out/lib
               cp "$ARCH/lib/libefi.a" $out/lib/
               cp "$ARCH/gnuefi/libgnuefi.a" $out/lib/
-              cp "$ARCH/gnuefi/crt0-efi-x86_64.o" $out/lib/
-              cp gnuefi/elf_x86_64_efi.lds $out/lib/
+              cp "$ARCH/gnuefi/crt0-efi-$ARCH.o" $out/lib/
+              cp "gnuefi/elf_''${ARCH}_efi.lds" $out/lib/
             '';
         }
       ];

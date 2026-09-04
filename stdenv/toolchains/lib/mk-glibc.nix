@@ -146,6 +146,9 @@ in
     ];
   }
   // {
+    inherit version;
+    pname = "glibc";
+    passthru.evidenceSources = [src];
     meta =
       spec.meta
       or {

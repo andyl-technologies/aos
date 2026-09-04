@@ -211,6 +211,368 @@ mod connect_path_tests {
         assert!(EXPECTED_CONNECT_PATHS.contains(&IDENTITY_SERVICE_WHO_AM_I_PATH));
         assert_eq!(EXPECTED_CONNECT_METHODS.len(), EXPECTED_CONNECT_PATHS.len());
     }
+
+    #[test]
+    fn container_administration_requests_freeze_pagination_and_cas_fields() {
+        let request_fields = |method: &str| {
+            EXPECTED_CONNECT_METHODS
+                .iter()
+                .find(|descriptor| {
+                    descriptor.service == "ContainerService" && descriptor.method == method
+                })
+                .map(|descriptor| descriptor.input_fields)
+                .unwrap_or_else(|| panic!("missing ContainerService/{method}"))
+        };
+
+        assert_eq!(
+            request_fields("ListContainerRepositories"),
+            [
+                "registry",
+                "repository_prefix",
+                "lifecycle_state",
+                "page_size",
+                "page_token",
+            ]
+        );
+        assert_eq!(
+            request_fields("PlanSetContainerTag"),
+            [
+                "registry",
+                "repository",
+                "tag",
+                "target_digest",
+                "expected_resource_version",
+                "expected_digest",
+                "idempotency_key",
+            ]
+        );
+        assert_eq!(
+            request_fields("SetContainerTag"),
+            ["plan_id", "idempotency_key", "confirmation_hash"]
+        );
+        assert_eq!(
+            request_fields("GetContainerPublication"),
+            ["publication_id", "registry"]
+        );
+        assert_eq!(
+            request_fields("ListContainerLayers"),
+            [
+                "registry",
+                "repository",
+                "manifest_digest",
+                "page_size",
+                "page_token",
+                "root_digest",
+            ]
+        );
+        assert_eq!(
+            request_fields("GetContainerLayer"),
+            [
+                "registry",
+                "repository",
+                "manifest_digest",
+                "digest",
+                "root_digest",
+            ]
+        );
+        assert_eq!(
+            request_fields("ResolveContainerTag"),
+            [
+                "registry",
+                "repository",
+                "tag",
+                "operating_system",
+                "architecture",
+                "variant",
+                "os_version",
+                "os_features",
+            ]
+        );
+        assert_eq!(
+            request_fields("GetContainerPlatform"),
+            [
+                "registry",
+                "repository",
+                "root_digest",
+                "operating_system",
+                "architecture",
+                "variant",
+                "os_version",
+                "os_features",
+            ]
+        );
+        assert_eq!(
+            request_fields("GetContainerProvenance"),
+            ["registry", "repository", "root_digest", "release"]
+        );
+        assert_eq!(
+            request_fields("PlanRunContainerGc"),
+            ["registry", "expected_resource_version", "idempotency_key"]
+        );
+        assert_eq!(
+            request_fields("ListContainerGcCandidates"),
+            ["registry", "run_id", "page_size", "page_token"]
+        );
+        assert_eq!(
+            request_fields("ListContainerGcPlacementActions"),
+            ["registry", "run_id", "state", "page_size", "page_token"]
+        );
+        assert_eq!(
+            request_fields("RequeueContainerGcPlacementAction"),
+            [
+                "registry",
+                "run_id",
+                "action_id",
+                "expected_resource_version",
+                "idempotency_key",
+            ]
+        );
+        assert_eq!(
+            request_fields("ListContainerUntrackedInventory"),
+            ["registry", "page_size", "page_token"]
+        );
+        assert_eq!(
+            request_fields("PlanRepairContainerUntrackedObject"),
+            [
+                "registry",
+                "placement_id",
+                "inventory_generation_id",
+                "object_key",
+                "expected_resource_version",
+                "idempotency_key",
+            ]
+        );
+        assert_eq!(
+            request_fields("RepairContainerUntrackedObject"),
+            [
+                "plan_id",
+                "idempotency_key",
+                "confirmation_hash",
+                "expected_resource_version",
+            ]
+        );
+        assert_eq!(request_fields("GetContainerUntrackedRepair"), ["plan_id"]);
+        assert_eq!(
+            request_fields("PlanContainerRegistryPurgeFence"),
+            [
+                "registry",
+                "action",
+                "expected_resource_version",
+                "idempotency_key",
+            ]
+        );
+        assert_eq!(
+            request_fields("ApplyContainerRegistryPurgeFence"),
+            [
+                "plan_id",
+                "idempotency_key",
+                "confirmation_hash",
+                "expected_resource_version",
+            ]
+        );
+        assert_eq!(
+            request_fields("GetContainerRegistryPurgeFence"),
+            ["plan_id"]
+        );
+    }
+
+    #[test]
+    fn container_service_remains_a_closed_distinct_rpc_surface() {
+        let methods = EXPECTED_CONNECT_METHODS
+            .iter()
+            .filter(|descriptor| descriptor.service == "ContainerService")
+            .map(|descriptor| descriptor.method)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(methods.len(), 46);
+        for method in [
+            "ListContainerRepositories",
+            "GetContainerRepository",
+            "ListContainerTags",
+            "ResolveContainerTag",
+            "ListContainerTagHistory",
+            "GetContainerManifest",
+            "ListContainerPlatforms",
+            "GetContainerPlatform",
+            "ListContainerLayers",
+            "GetContainerLayer",
+            "ListContainerReferrers",
+            "ListContainerPublications",
+            "GetContainerPublication",
+            "GetContainerProvenance",
+            "GetContainerRetentionPolicy",
+            "PlanSetContainerRetentionPolicy",
+            "SetContainerRetentionPolicy",
+            "PlanRunContainerGc",
+            "RunContainerGc",
+            "GetContainerGcRun",
+            "ListContainerGcRuns",
+            "ListContainerGcCandidates",
+            "ListContainerGcBlockers",
+            "ListContainerGcPlacementActions",
+            "RequeueContainerGcPlacementAction",
+            "ListContainerUntrackedInventory",
+            "PlanRepairContainerUntrackedObject",
+            "RepairContainerUntrackedObject",
+            "GetContainerUntrackedRepair",
+            "PlanContainerRegistryPurgeFence",
+            "ApplyContainerRegistryPurgeFence",
+            "GetContainerRegistryPurgeFence",
+        ] {
+            assert!(
+                methods.contains(method),
+                "missing ContainerService/{method}"
+            );
+        }
+    }
+
+    #[test]
+    fn container_platform_protojson_preserves_the_complete_oci_identity() {
+        let platform = ContainerPlatform {
+            operating_system: "windows".to_string(),
+            architecture: "amd64".to_string(),
+            os_version: "10.0.20348.2402".to_string(),
+            os_features: vec!["win32k".to_string(), "containers".to_string()],
+            ..Default::default()
+        };
+
+        let encoded = serde_json::to_value(platform).unwrap();
+        assert_eq!(encoded["osVersion"], "10.0.20348.2402");
+        assert_eq!(
+            encoded["osFeatures"],
+            serde_json::json!(["win32k", "containers"])
+        );
+    }
+
+    #[test]
+    fn container_repository_protojson_exposes_only_an_explicit_distribution_reference() {
+        let repository = ContainerRepository {
+            registry: "andyl/main".to_string(),
+            repository: "aos".to_string(),
+            distribution_reference: "containers.example/aos".to_string(),
+            ..Default::default()
+        };
+
+        let encoded = serde_json::to_value(repository).unwrap();
+        assert_eq!(encoded["distributionReference"], "containers.example/aos");
+    }
+
+    #[test]
+    fn container_gc_run_protojson_preserves_exact_large_counters() {
+        let run = ContainerGcRun {
+            inventory_object_count: 9_007_199_254_740_993,
+            inventory_byte_size: u64::MAX,
+            reachable_object_count: 17,
+            candidate_object_count: 11,
+            reclaimable_byte_size: 1_100,
+            deleted_object_count: 4,
+            deleted_byte_size: 400,
+            ..Default::default()
+        };
+
+        let encoded = serde_json::to_value(run).unwrap();
+        assert_eq!(encoded["inventoryObjectCount"], "9007199254740993");
+        assert_eq!(encoded["inventoryByteSize"], u64::MAX.to_string());
+        assert_eq!(encoded["reachableObjectCount"], "17");
+        assert_eq!(encoded["candidateObjectCount"], "11");
+        assert_eq!(encoded["reclaimableByteSize"], "1100");
+        assert_eq!(encoded["deletedObjectCount"], "4");
+        assert_eq!(encoded["deletedByteSize"], "400");
+    }
+
+    #[test]
+    fn container_gc_action_protojson_exposes_frozen_non_secret_identity() {
+        let action = ContainerGcPlacementAction {
+            run_id: "gc-1".to_string(),
+            object_key: "oci/blobs/sha256/example".to_string(),
+            expected_hash: "sha256:example".to_string(),
+            expected_byte_size: u64::MAX,
+            expected_strong_etag: "\"strong\"".to_string(),
+            inventory_entry_present: true,
+            inventory_generation_id: "inventory-1".to_string(),
+            binding_write_revision: "7".to_string(),
+            delete_credential_purpose: "delete".to_string(),
+            delete_credential_generation: "3".to_string(),
+            delete_capability_fingerprint: "sha256:capability".to_string(),
+            ..Default::default()
+        };
+
+        let encoded = serde_json::to_value(action).unwrap();
+        assert_eq!(encoded["runId"], "gc-1");
+        assert_eq!(encoded["objectKey"], "oci/blobs/sha256/example");
+        assert_eq!(encoded["expectedByteSize"], u64::MAX.to_string());
+        assert_eq!(encoded["bindingWriteRevision"], "7");
+        assert_eq!(encoded["deleteCredentialGeneration"], "3");
+        assert_eq!(encoded["deleteCapabilityFingerprint"], "sha256:capability");
+    }
+
+    #[test]
+    fn container_untracked_repair_protojson_preserves_status_and_terminal_evidence() {
+        let repair = ContainerUntrackedRepair {
+            plan_id: "repair-1".to_string(),
+            state: "complete".to_string(),
+            resource_version: "4".to_string(),
+            object_key: "oci/blobs/sha256/example".to_string(),
+            byte_size: u64::MAX,
+            binding_write_revision: "7".to_string(),
+            delete_credential_generation: "3".to_string(),
+            delete_capability_fingerprint: "sha256:capability".to_string(),
+            evidence: Some(ContainerUntrackedRepairEvidence {
+                outcome: "deleted".to_string(),
+                provider_request_id: "provider-request".to_string(),
+                conditional_etag: "\"strong\"".to_string(),
+                evidence_digest: "sha256:evidence".to_string(),
+                confirmed_at: 42,
+            }),
+            ..Default::default()
+        };
+
+        let encoded = serde_json::to_value(repair).unwrap();
+        assert_eq!(encoded["planId"], "repair-1");
+        assert_eq!(encoded["state"], "complete");
+        assert_eq!(encoded["resourceVersion"], "4");
+        assert_eq!(encoded["byteSize"], u64::MAX.to_string());
+        assert_eq!(encoded["bindingWriteRevision"], "7");
+        assert_eq!(encoded["deleteCredentialGeneration"], "3");
+        assert_eq!(encoded["deleteCapabilityFingerprint"], "sha256:capability");
+        assert_eq!(encoded["evidence"]["outcome"], "deleted");
+        assert_eq!(encoded["evidence"]["evidenceDigest"], "sha256:evidence");
+        assert_eq!(encoded["evidence"]["confirmedAt"], "42");
+    }
+
+    #[test]
+    fn container_registry_purge_fence_protojson_preserves_action_and_bounded_blockers() {
+        let fence = ContainerRegistryPurgeFence {
+            plan_id: "purge-plan".to_string(),
+            action: ContainerRegistryPurgeFenceAction::Begin as i32,
+            plan_resource_version: "2".to_string(),
+            fence_resource_version: "1".to_string(),
+            captured_mutation_epoch: "9".to_string(),
+            post_fence_inventory_ready: false,
+            blockers: Some(ContainerRegistryPurgeBlockers {
+                repositories: u64::MAX,
+                untracked_provider_objects: 3,
+                stale_or_missing_inventories: 2,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let encoded = serde_json::to_value(&fence).unwrap();
+        assert_eq!(
+            encoded["action"],
+            "CONTAINER_REGISTRY_PURGE_FENCE_ACTION_BEGIN"
+        );
+        assert_eq!(encoded["planResourceVersion"], "2");
+        assert_eq!(encoded["blockers"]["repositories"], u64::MAX.to_string());
+        assert_eq!(encoded["blockers"]["untrackedProviderObjects"], "3");
+        assert_eq!(encoded["blockers"]["staleOrMissingInventories"], "2");
+
+        let mut unknown = serde_json::to_value(fence).unwrap();
+        unknown["action"] = serde_json::json!(77);
+        let decoded: ContainerRegistryPurgeFence = serde_json::from_value(unknown).unwrap();
+        assert_eq!(decoded.action, 77);
+        assert_eq!(serde_json::to_value(decoded).unwrap()["action"], 77);
+    }
 }
 
 macro_rules! impl_open_proto_enum {
@@ -227,6 +589,7 @@ macro_rules! impl_open_proto_enum {
 
 impl_open_proto_enum!(
     AccessClass,
+    ContainerRegistryPurgeFenceAction,
     EndpointIngressKind,
     HubDeliveryKind,
     PinResolutionAction,

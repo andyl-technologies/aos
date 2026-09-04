@@ -41,6 +41,37 @@ mod tests {
     }
 
     #[test]
+    fn mysql_quotes_rate_limit_reserved_identifiers() {
+        let source = "CREATE TABLE rate_limits(\
+                      class TEXT NOT NULL,\
+                      key TEXT NOT NULL,\
+                      window INTEGER NOT NULL,\
+                      PRIMARY KEY(class, key, window),\
+                      note TEXT DEFAULT 'key window',\
+                      window_name TEXT\
+                      )";
+
+        let translated = Dialect::Mysql.translate(source).unwrap().sql;
+        assert!(translated.contains("`key` VARCHAR(255) NOT NULL"));
+        assert!(translated.contains("`window` BIGINT NOT NULL"));
+        assert!(translated.contains("PRIMARY KEY(class, `key`, `window`)"));
+        assert!(translated.contains("DEFAULT 'key window'"));
+        assert!(translated.contains("window_name VARCHAR(255)"));
+    }
+
+    #[test]
+    fn postgres_quotes_rate_limit_window_identifier() {
+        let translated = Dialect::Postgres
+            .translate("CREATE TABLE rate_limits(window INTEGER, key TEXT)")
+            .unwrap()
+            .sql;
+        assert_eq!(
+            translated,
+            "CREATE TABLE rate_limits(\"window\" BIGINT, key TEXT)"
+        );
+    }
+
+    #[test]
     fn mysql_reused_placeholder_duplicates_param() {
         let t = Dialect::Mysql
             .translate("INSERT INTO t (a, b, c) VALUES (?1, ?2, ?2)")
@@ -118,6 +149,68 @@ mod tests {
                     "{dialect:?}: protected text {untouched:?} was rewritten: {sql}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn phase5_guard_and_quota_identities_translate_portably() {
+        let migration = crate::db::MIGRATIONS
+            .iter()
+            .find(|migration| {
+                migration.contains("CREATE TABLE IF NOT EXISTS oci_phase5_upgrade_guard")
+            })
+            .expect("Phase 5 OCI migration");
+        let statements = crate::db::backend::split_statements(migration);
+        let guard = statements
+            .iter()
+            .find(|statement| {
+                statement.contains("CREATE TABLE IF NOT EXISTS oci_phase5_upgrade_guard")
+            })
+            .expect("Phase 5 upgrade guard");
+        let quota = statements
+            .iter()
+            .find(|statement| statement.contains("CREATE TABLE oci_quota_reservations"))
+            .expect("Phase 5 quota reservations");
+        let upload = statements
+            .iter()
+            .find(|statement| statement.contains("CREATE TABLE oci_upload_sessions"))
+            .expect("Phase 5 upload sessions");
+
+        let postgres_guard = Dialect::Postgres.translate(guard).unwrap().sql;
+        assert!(
+            postgres_guard.contains("id VARCHAR(16) COLLATE \"C\" PRIMARY KEY"),
+            "{postgres_guard}"
+        );
+        assert!(!postgres_guard.contains("BIGSERIAL"), "{postgres_guard}");
+        let mysql_guard = Dialect::Mysql.translate(guard).unwrap().sql;
+        assert!(
+            mysql_guard.contains("id VARBINARY(16) PRIMARY KEY"),
+            "{mysql_guard}"
+        );
+        assert!(
+            !mysql_guard.contains("AUTO_INCREMENT"),
+            "the explicit singleton key must not become auto-incrementing: {mysql_guard}"
+        );
+
+        for (dialect, exact_type) in [
+            (Dialect::Sqlite, "TEXT COLLATE BINARY"),
+            (Dialect::Postgres, "VARCHAR(128) COLLATE \"C\""),
+            (Dialect::Mysql, "VARBINARY(128)"),
+        ] {
+            let quota = dialect.translate(quota).unwrap().sql;
+            let upload = dialect.translate(upload).unwrap().sql;
+            assert!(
+                quota.contains(&format!("id {exact_type} PRIMARY KEY")),
+                "{dialect:?}: {quota}"
+            );
+            assert!(
+                quota.contains(&format!("owner_id {exact_type} NOT NULL")),
+                "{dialect:?}: {quota}"
+            );
+            assert!(
+                upload.contains(&format!("quota_reservation_id {exact_type} NOT NULL")),
+                "{dialect:?}: {upload}"
+            );
         }
     }
 
@@ -225,27 +318,19 @@ mod tests {
     #[test]
     fn ddl_idtext_is_binary_collated_only_on_mysql() {
         // M-6: a security-identity `IDTEXT` column (OIDC iss/sub) must be
-        // byte-exact. On the supported MySQL 8.0.16+ baseline that means the
-        // binary, NO PAD `utf8mb4_0900_bin` collation, because the server
-        // default is case-insensitive and older PAD SPACE collations also
-        // collapse a trailing-space variant onto the unspaced identity. MySQL
-        // 8.0.16 is also the first release that enforces the CHECK constraints
-        // used by the topology schema. On postgres/sqlite `TEXT` is already
-        // case-sensitive, so `IDTEXT` is plain `TEXT`.
+        // byte-exact. MySQL-family default collations are case-insensitive and
+        // may collapse a trailing-space variant, so use a binary string on
+        // that dialect. On postgres/sqlite `TEXT` is already case-sensitive.
         let src = "CREATE TABLE t (issuer IDTEXT NOT NULL, subject IDTEXT NOT NULL)";
 
         let my = Dialect::Mysql.translate(src).unwrap().sql;
         assert!(
-            my.contains(
-                "issuer VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL"
-            ),
-            "issuer must be binary-collated on mysql: {my}"
+            my.contains("issuer VARBINARY(255) NOT NULL"),
+            "issuer must be byte-exact on mysql: {my}"
         );
         assert!(
-            my.contains(
-                "subject VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL"
-            ),
-            "subject must be binary-collated on mysql: {my}"
+            my.contains("subject VARBINARY(255) NOT NULL"),
+            "subject must be byte-exact on mysql: {my}"
         );
         // The marker must never leak into emitted SQL.
         assert!(!my.contains("IDTEXT"), "IDTEXT marker leaked: {my}");
@@ -288,10 +373,8 @@ mod tests {
                 "{column} must use postgres's deterministic C collation: {postgres}"
             );
             assert!(
-                mysql.contains(&format!(
-                    "{column} VARCHAR({capacity}) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin"
-                )),
-                "{column} must use mysql's byte-exact utf8mb4 collation: {mysql}"
+                mysql.contains(&format!("{column} VARBINARY({capacity})")),
+                "{column} must use mysql's byte-exact binary type: {mysql}"
             );
         }
 
@@ -309,20 +392,52 @@ mod tests {
 
     #[test]
     fn mysql_topology_ddl_preserves_the_minimum_version_contract() {
-        // MySQL 8.0.16+ is required: it both provides the selected binary,
-        // NO PAD collation and enforces CHECK instead of merely parsing it.
+        // Supported MySQL-family servers must enforce CHECK constraints; the
+        // binary key type itself works consistently on MySQL and MariaDB.
         let sql = Dialect::Mysql
             .translate("CREATE TABLE t (kind KEYTEXT32 NOT NULL, CHECK (kind IN ('a', 'b')))")
             .unwrap()
             .sql;
 
         assert!(
-            sql.contains("VARCHAR(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin"),
-            "topology keys require the supported MySQL collation: {sql}"
+            sql.contains("VARBINARY(32)"),
+            "topology keys require byte-exact MySQL storage: {sql}"
         );
         assert!(
             sql.contains("CHECK (kind IN ('a', 'b'))"),
             "topology integrity depends on enforced CHECK constraints: {sql}"
+        );
+    }
+
+    #[test]
+    fn mysql_indexes_unbounded_consumer_cache_urls_by_digest() {
+        let source = "CREATE TABLE consumer_cache_publication_intents(\
+                      change_id KEYTEXT64 NOT NULL,\
+                      committed_url LONGTEXT NOT NULL,\
+                      PRIMARY KEY(change_id, committed_url)\
+                      )";
+
+        let translated = Dialect::Mysql.translate(source).unwrap().sql;
+        assert!(translated.contains("committed_url LONGTEXT NOT NULL"));
+        assert!(translated.contains(
+            "committed_url_digest BINARY(32) GENERATED ALWAYS AS \
+             (UNHEX(SHA2(committed_url, 256))) STORED"
+        ));
+        assert!(translated.contains("UNIQUE(change_id, committed_url_digest)"));
+        assert!(!translated.contains("PRIMARY KEY(change_id, committed_url)"));
+
+        let insert = Dialect::Mysql
+            .translate(
+                "INSERT INTO consumer_cache_publication_intents \
+                 (change_id, committed_url) VALUES (?1, ?2) \
+                 ON CONFLICT(change_id, committed_url) DO NOTHING",
+            )
+            .unwrap()
+            .sql;
+        assert_eq!(
+            insert,
+            "INSERT IGNORE INTO consumer_cache_publication_intents \
+             (change_id, committed_url) VALUES (?, ?)"
         );
     }
 
@@ -363,7 +478,6 @@ mod tests {
 
     #[test]
     fn topology_v34_keytext_translates_without_leaks_and_fits_mysql_indexes() {
-        const UTF8MB4_MAX_BYTES_PER_CHAR: usize = 4;
         const BIGINT_INDEX_BYTES: usize = 8;
         const INNODB_MAX_INDEX_BYTES: usize = 3_072;
 
@@ -394,17 +508,16 @@ mod tests {
             .expect("release_artifacts DDL");
         let release_mysql = Dialect::Mysql.translate(release_artifacts).unwrap().sql;
         for declaration in [
-            "package_name VARCHAR(128)",
-            "package_version VARCHAR(64)",
-            "platform VARCHAR(64)",
-            "artifact_kind VARCHAR(32)",
-            "store_hash VARCHAR(64)",
+            "package_name VARBINARY(128)",
+            "package_version VARBINARY(64)",
+            "platform VARBINARY(64)",
+            "artifact_kind VARBINARY(32)",
+            "store_hash VARBINARY(64)",
         ] {
             assert!(release_mysql.contains(declaration), "{release_mysql}");
         }
-        let release_index_bytes =
-            (128 + 64 + 64 + 32 + 64) * UTF8MB4_MAX_BYTES_PER_CHAR + BIGINT_INDEX_BYTES;
-        assert_eq!(release_index_bytes, 1_416);
+        let release_index_bytes = 128 + 64 + 64 + 32 + 64 + BIGINT_INDEX_BYTES;
+        assert_eq!(release_index_bytes, 360);
         assert!(release_index_bytes <= INNODB_MAX_INDEX_BYTES);
 
         let root_reasons = statements
@@ -413,15 +526,156 @@ mod tests {
             .expect("cache_root_reasons DDL");
         let roots_mysql = Dialect::Mysql.translate(root_reasons).unwrap().sql;
         for declaration in [
-            "store_hash VARCHAR(64)",
-            "source_kind VARCHAR(32)",
-            "source_ref VARCHAR(255)",
+            "store_hash VARBINARY(64)",
+            "source_kind VARBINARY(32)",
+            "source_ref VARBINARY(255)",
         ] {
             assert!(roots_mysql.contains(declaration), "{roots_mysql}");
         }
-        let roots_index_bytes = (64 + 32 + 255) * UTF8MB4_MAX_BYTES_PER_CHAR + BIGINT_INDEX_BYTES;
-        assert_eq!(roots_index_bytes, 1_412);
+        let roots_index_bytes = 64 + 32 + 255 + BIGINT_INDEX_BYTES;
+        assert_eq!(roots_index_bytes, 359);
         assert!(roots_index_bytes <= INNODB_MAX_INDEX_BYTES);
+    }
+
+    #[test]
+    fn oci_catalog_ddl_translates_without_markers_and_fits_mysql_indexes() {
+        const BIGINT_INDEX_BYTES: usize = 8;
+        const INNODB_MAX_INDEX_BYTES: usize = 3_072;
+
+        let oci = crate::db::MIGRATIONS
+            .iter()
+            .find(|migration| {
+                migration.contains("CREATE TABLE oci_repositories")
+                    && migration.contains("CREATE TABLE oci_gc_generations")
+            })
+            .expect("OCI catalog migration");
+        let statements = crate::db::backend::split_statements(oci);
+        assert!(!statements.is_empty(), "OCI migration must contain DDL");
+
+        for statement in &statements {
+            for dialect in [Dialect::Sqlite, Dialect::Postgres, Dialect::Mysql] {
+                let sql = dialect.translate(statement).unwrap().sql;
+                assert!(
+                    !sql.contains("KEYTEXT"),
+                    "OCI marker leaked for {dialect:?}: {sql}"
+                );
+                if dialect == Dialect::Postgres {
+                    assert!(!sql.contains("LONGTEXT"), "{sql}");
+                }
+                if dialect == Dialect::Mysql {
+                    assert!(!sql.contains("LONGVARCHAR"), "{sql}");
+                }
+            }
+        }
+
+        let repositories = statements
+            .iter()
+            .find(|statement| statement.contains("CREATE TABLE oci_repositories"))
+            .expect("OCI repository DDL");
+        let repositories_mysql = Dialect::Mysql.translate(repositories).unwrap().sql;
+        assert!(
+            repositories_mysql.contains("name VARBINARY(255)"),
+            "{repositories_mysql}"
+        );
+        let repository_unique_bytes = BIGINT_INDEX_BYTES + 255;
+        assert!(repository_unique_bytes <= INNODB_MAX_INDEX_BYTES);
+
+        let release_roots = statements
+            .iter()
+            .find(|statement| statement.contains("CREATE TABLE oci_release_roots"))
+            .expect("OCI release-root DDL");
+        let release_roots_mysql = Dialect::Mysql.translate(release_roots).unwrap().sql;
+        for declaration in [
+            "release_id BIGINT NOT NULL",
+            "release_tag VARBINARY(255)",
+            "container_name VARBINARY(128)",
+        ] {
+            assert!(
+                release_roots_mysql.contains(declaration),
+                "{release_roots_mysql}"
+            );
+        }
+        let release_roots_mysql_compact = release_roots_mysql
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            release_roots_mysql_compact.contains(
+                "FOREIGN KEY(release_id, registry_id) REFERENCES releases(id, registry_id)"
+            ),
+            "release roots must use the pre-v20 numeric release identity: {release_roots_mysql}"
+        );
+        assert!(
+            !release_roots_mysql_compact.contains(
+                "FOREIGN KEY(registry_id, release_tag) REFERENCES releases(registry_id, semver)"
+            ),
+            "v20 must not require a new physical type for legacy releases.semver: {release_roots_mysql}"
+        );
+        let release_root_primary_bytes = BIGINT_INDEX_BYTES + 255 + BIGINT_INDEX_BYTES + 128;
+        assert!(release_root_primary_bytes <= INNODB_MAX_INDEX_BYTES);
+    }
+
+    #[test]
+    fn oci_admin_ddl_and_backfills_translate_for_every_backend() {
+        let migration = crate::db::MIGRATIONS
+            .iter()
+            .find(|migration| {
+                migration.contains("CREATE TABLE oci_admin_mutations")
+                    && migration.contains("CREATE TABLE oci_release_provenance")
+            })
+            .expect("OCI administration migration");
+        let statements = crate::db::backend::split_statements(migration);
+        assert!(
+            statements
+                .iter()
+                .any(|statement| statement.contains("tag_resource_version")),
+            "tag-history version backfill is absent"
+        );
+        for statement in &statements {
+            for dialect in [Dialect::Sqlite, Dialect::Postgres, Dialect::Mysql] {
+                let sql = dialect.translate(statement).unwrap().sql;
+                assert!(!sql.contains("KEYTEXT"), "marker leaked: {sql}");
+                if dialect == Dialect::Postgres {
+                    assert!(!sql.contains("LONGTEXT"), "{sql}");
+                }
+                if dialect == Dialect::Mysql {
+                    assert!(!sql.contains("LONGVARCHAR"), "{sql}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fresh_mysql_release_identity_is_byte_exact_and_legacy_shape_is_frozen() {
+        let baseline = crate::db::MIGRATIONS
+            .first()
+            .expect("hard-cutover baseline migration");
+        let statements = crate::db::backend::split_statements(baseline);
+
+        let releases = statements
+            .iter()
+            .find(|statement| statement.contains("CREATE TABLE releases"))
+            .expect("legacy releases DDL");
+        let releases_mysql = Dialect::Mysql.translate(releases).unwrap().sql;
+        assert!(
+            releases_mysql.contains("semver VARBINARY(255) NOT NULL"),
+            "fresh release identities must remain byte-exact: {releases_mysql}"
+        );
+
+        let legacy = Dialect::Mysql
+            .translate(
+                "CREATE TABLE releases(\
+                 id INTEGER PRIMARY KEY,\
+                 registry_id INTEGER NOT NULL,\
+                 semver TEXT NOT NULL,\
+                 UNIQUE(registry_id, semver))",
+            )
+            .unwrap()
+            .sql;
+        assert!(
+            legacy.contains("semver VARCHAR(255) NOT NULL"),
+            "the frozen v19 release key must remain reproducible: {legacy}"
+        );
     }
 
     #[test]
@@ -443,8 +697,8 @@ mod tests {
                         .find(|l| l.trim_start().starts_with(col))
                         .unwrap_or_else(|| panic!("no {col} column line in: {my}"));
                     assert!(
-                        line.contains("COLLATE utf8mb4_0900_bin"),
-                        "user_identities.{col} must be binary-collated on mysql: {line:?}"
+                        line.contains("VARBINARY(255)"),
+                        "user_identities.{col} must be byte-exact on mysql: {line:?}"
                     );
                 }
             }

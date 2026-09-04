@@ -1,4 +1,4 @@
-//! Executable requirement-to-task traceability gate for RFC-0019.
+//! Executable requirement-to-task traceability gate for RFC-0020.
 
 // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for exact failure localization.
 #![allow(clippy::expect_used)]
@@ -6,34 +6,34 @@
 use std::collections::BTreeSet;
 
 const IMPLEMENTATION_PLAN: &str =
-    include_str!("../../../docs/rfcs/0019-crucible-campaigns/11-implementation-plan.md");
+    include_str!("../../../docs/rfcs/0020-crucible-campaigns/11-implementation-plan.md");
 const TRACEABILITY: &str =
-    include_str!("../../../docs/rfcs/0019-crucible-campaigns/requirement-traceability.tsv");
+    include_str!("../../../docs/rfcs/0020-crucible-campaigns/requirement-traceability.tsv");
 const RFC_SOURCES: &[&str] = &[
-    include_str!("../../../docs/rfcs/0019-crucible-campaigns/README.md"),
-    include_str!("../../../docs/rfcs/0019-crucible-campaigns/00-goals-and-invariants.md"),
-    include_str!("../../../docs/rfcs/0019-crucible-campaigns/01-campaign-data-model.md"),
+    include_str!("../../../docs/rfcs/0020-crucible-campaigns/README.md"),
+    include_str!("../../../docs/rfcs/0020-crucible-campaigns/00-goals-and-invariants.md"),
+    include_str!("../../../docs/rfcs/0020-crucible-campaigns/01-campaign-data-model.md"),
     include_str!(
-        "../../../docs/rfcs/0019-crucible-campaigns/02-selectables-and-choice-protocol.md"
+        "../../../docs/rfcs/0020-crucible-campaigns/02-selectables-and-choice-protocol.md"
     ),
-    include_str!("../../../docs/rfcs/0019-crucible-campaigns/03-exploration-and-guidance.md"),
-    include_str!("../../../docs/rfcs/0019-crucible-campaigns/04-lazy-frontier-and-daemon.md"),
-    include_str!("../../../docs/rfcs/0019-crucible-campaigns/04a-coordinator-executor-contract.md"),
-    include_str!("../../../docs/rfcs/0019-crucible-campaigns/05-hot-fork-and-checkpoints.md"),
-    include_str!("../../../docs/rfcs/0019-crucible-campaigns/06-storage-replication-and-gc.md"),
-    include_str!("../../../docs/rfcs/0019-crucible-campaigns/07-user-experience-and-apis.md"),
+    include_str!("../../../docs/rfcs/0020-crucible-campaigns/03-exploration-and-guidance.md"),
+    include_str!("../../../docs/rfcs/0020-crucible-campaigns/04-lazy-frontier-and-daemon.md"),
+    include_str!("../../../docs/rfcs/0020-crucible-campaigns/04a-coordinator-executor-contract.md"),
+    include_str!("../../../docs/rfcs/0020-crucible-campaigns/05-hot-fork-and-checkpoints.md"),
+    include_str!("../../../docs/rfcs/0020-crucible-campaigns/06-storage-replication-and-gc.md"),
+    include_str!("../../../docs/rfcs/0020-crucible-campaigns/07-user-experience-and-apis.md"),
     include_str!(
-        "../../../docs/rfcs/0019-crucible-campaigns/08-observability-measurement-debugging.md"
+        "../../../docs/rfcs/0020-crucible-campaigns/08-observability-measurement-debugging.md"
     ),
     include_str!(
-        "../../../docs/rfcs/0019-crucible-campaigns/09-security-compatibility-and-operations.md"
+        "../../../docs/rfcs/0020-crucible-campaigns/09-security-compatibility-and-operations.md"
     ),
-    include_str!("../../../docs/rfcs/0019-crucible-campaigns/10-performance-and-validation.md"),
+    include_str!("../../../docs/rfcs/0020-crucible-campaigns/10-performance-and-validation.md"),
     IMPLEMENTATION_PLAN,
-    include_str!("../../../docs/rfcs/0019-crucible-campaigns/12-decisions-and-open-questions.md"),
-    include_str!("../../../docs/rfcs/0019-crucible-campaigns/13-worked-network-campaign.md"),
+    include_str!("../../../docs/rfcs/0020-crucible-campaigns/12-decisions-and-open-questions.md"),
+    include_str!("../../../docs/rfcs/0020-crucible-campaigns/13-worked-network-campaign.md"),
     include_str!(
-        "../../../docs/rfcs/0019-crucible-campaigns/14-manual-validation-and-dogfooding.md"
+        "../../../docs/rfcs/0020-crucible-campaigns/14-manual-validation-and-dogfooding.md"
     ),
 ];
 

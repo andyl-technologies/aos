@@ -104,16 +104,24 @@ in
               configure.ac
           ''
           + (
-            if stdenv.hostPlatform.isDarwin
+            if stdenv.isCross
             then ''
-              # Configure runs on Linux, so its uname cannot select the EFI
-              # architecture for the Darwin target. Darwin's UUID API is in
-              # libSystem rather than the Linux-only util-linux package.
+              # configure derives the EFI architecture from the build
+              # machine's uname, which is wrong for every cross build.
               sed -i '/^EFI_ARCH=/cEFI_ARCH=${
                 if stdenv.hostPlatform.isAarch64
                 then "aarch64"
                 else "x86_64"
               }' configure.ac
+            ''
+            else ""
+          )
+          + (
+            if stdenv.hostPlatform.isDarwin
+            then ''
+              # Configure runs on Linux, so its uname cannot select the EFI
+              # architecture for the Darwin target. Darwin's UUID API is in
+              # libSystem rather than the Linux-only util-linux package.
               sed -i \
                 -e 's|#include <endian.h>|#include <machine/endian.h>|' \
                 -e 's|__BYTE_ORDER|__DARWIN_BYTE_ORDER|g' \

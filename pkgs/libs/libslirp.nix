@@ -12,7 +12,6 @@
   buildPackages,
 }: let
   version = "4.9.1";
-  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
 in
   mkDerivation {
     pname = "libslirp";
@@ -26,7 +25,7 @@ in
     };
 
     buildDeps =
-      if isDarwinCross
+      if stdenv.isCross
       then [
         buildPackages.gnumake
         buildPackages.pkg-config
@@ -62,13 +61,11 @@ in
         name = "configure";
         script = ''
           ${
-            if isDarwinCross
+            if stdenv.isCross
             then ''
-              # Meson's sys_root property is correct for ordinary FHS cross
-              # sysroots, but pkg-config must not prepend the Darwin SDK to
-              # absolute Nix store paths from GLib's .pc files.  Keep the
-              # generated dependency metadata and provide its absolute target
-              # include/library roots explicitly.
+              # Cross pkg-config must preserve absolute Nix store paths from
+              # GLib's metadata. Provide the target include and split library
+              # outputs explicitly while all Meson/Python tools stay native.
               export PKG_CONFIG_PATH="${glib.dev}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
               export CFLAGS="''${CFLAGS:-} -I${glib.dev}/include/glib-2.0 -I${glib.dev}/lib/glib-2.0/include"
               # GLib keeps its unversioned linker-name symlinks in the dev

@@ -58,6 +58,7 @@ async fn app_state(db: Arc<Database>) -> Arc<AppState> {
         domain_probe_terminator: None,
         identity_domain_verifier: None,
         route_reservation_keyring: None,
+        container_rollout: aos_hub_core::container_rollout::ContainerRollout::all_enabled(),
         release_evidence: None,
     })
 }
@@ -96,6 +97,7 @@ fn machine_service(state: &Arc<AppState>) -> RpcService {
         ),
         Some(Arc::clone(&state.sealer)),
     )
+    .with_container_rollout(state.container_rollout)
 }
 
 /// Mint a bearer JWT for `principal` scoped to `scope` with `perms`.
