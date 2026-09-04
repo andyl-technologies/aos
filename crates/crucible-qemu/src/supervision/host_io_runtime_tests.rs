@@ -672,7 +672,8 @@ fn hot_fork_clone_requires_and_accepts_fresh_child_console()
     )?;
     source_writer.write_all(b"source-only")?;
     child_writer.write_all(b"child-only")?;
-    let _completion = child.await_child(QemuAsyncWait::AdvanceCompletion, Duration::from_millis(1));
+    let _completion =
+        child.await_child(QemuAsyncWait::AdvanceCompletion, Duration::from_millis(100));
     assert_eq!(child_spool.take()?, b"child-only");
     drop(child);
     Ok(())

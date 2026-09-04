@@ -9,6 +9,9 @@
 //! disposition in one linear state machine. No source record or
 //! process-contract descriptor is released until child reap, target cgroup
 //! cleanup, and the semantic publication outcome are all known.
+//! The sole branch-private diagnostic reader moves into this owner at launch;
+//! it is serviced independently of the reusable source template while live and
+//! returned for exact source-side writer release at teardown.
 
 use std::error::Error;
 use std::fmt;
@@ -16,7 +19,8 @@ use std::os::unix::net::UnixStream;
 
 use crucible_campaign::{ExactCheckpointId, ObservationId};
 use crucible_qemu::{
-    LinuxQemuHotForkChildProcessAuthority, QemuHotForkChildLaunch, QemuHotForkChildProcessBasis,
+    LinuxQemuHotForkChildProcessAuthority, QemuHotForkChildDiagnosticConsumer,
+    QemuHotForkChildDiagnosticDrain, QemuHotForkChildLaunch, QemuHotForkChildProcessBasis,
     QemuHotForkChildProcessOwner, QemuHotForkChildQmpHandshakeError, QemuHotForkHostContinuation,
     QemuHotForkLaunchError, QemuNode, QemuNodeChannelError, QemuQmpVmStateControlChannel,
     QemuVmRealizationError, QmpHotForkChildProcessPhase, QmpHotForkChildProcessState,
@@ -179,6 +183,8 @@ pub enum QemuHotForkReconciliationPhase {
 /// Result of one bounded reconciliation step.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QemuHotForkReconciliationStep {
+    /// One nonblocking diagnostics drain completed before the next status poll.
+    ChildDiagnosticsDrained,
     /// The source parent still reports the exact child running.
     ChildRunning,
     /// One durable public phase or backend-owned subphase completed.
@@ -219,6 +225,17 @@ pub trait QemuHotForkReconciliationBackend {
     ///
     /// Returns an error when the pidfd or equivalent exact signal fails.
     fn terminate_child(&mut self) -> Result<(), Self::Error>;
+
+    /// Drains every currently available branch-private diagnostic byte.
+    ///
+    /// Implementations retain one cumulative bounded capture and fail closed
+    /// rather than truncate it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the exact diagnostics generation can no longer be
+    /// captured completely. This is a terminal ownership failure.
+    fn drain_child_diagnostics(&mut self) -> Result<(), Self::Error>;
 
     /// Queries one nonblocking source-parent child-status observation.
     ///
@@ -313,6 +330,7 @@ where
     child_admitted: bool,
     terminal: Option<QemuHotForkChildObservation>,
     publication: Option<QemuHotForkPublicationDisposition>,
+    diagnostics_drained: bool,
 }
 
 impl<B> QemuHotForkAttemptReconciliation<B>
@@ -328,6 +346,7 @@ where
             child_admitted: false,
             terminal: None,
             publication: None,
+            diagnostics_drained: false,
         }
     }
 
@@ -369,6 +388,17 @@ where
             "admit private child channel",
             QemuHotForkReconciliationPhase::AwaitingChildAdmission,
         )?;
+        let drain = self.backend_mut()?.drain_child_diagnostics();
+        if let Err(source) = drain {
+            if let Some(backend) = self.backend.as_mut() {
+                backend.quarantine();
+            }
+            self.phase = QemuHotForkReconciliationPhase::Quarantined;
+            return Err(QemuHotForkAttemptReconciliationError::Backend {
+                operation: "drain child diagnostics before admission",
+                source,
+            });
+        }
         let admission = self.backend_mut()?.admit_child_channel();
         if let Err(source) = admission {
             if let Some(backend) = self.backend.as_mut() {
@@ -381,6 +411,7 @@ where
             });
         }
         self.child_admitted = true;
+        self.diagnostics_drained = false;
         self.phase = QemuHotForkReconciliationPhase::Live;
         Ok(())
     }
@@ -406,6 +437,7 @@ where
             }
         }
         self.phase = QemuHotForkReconciliationPhase::TerminationRequested;
+        self.diagnostics_drained = false;
         self.backend_mut()?.terminate_child().map_err(|source| {
             QemuHotForkAttemptReconciliationError::Backend {
                 operation: "request child termination",
@@ -486,6 +518,7 @@ where
                 Ok(crate::AttemptExecutionReconciliationStep::Complete)
             }
             QemuHotForkReconciliationStep::Advanced(_)
+            | QemuHotForkReconciliationStep::ChildDiagnosticsDrained
             | QemuHotForkReconciliationStep::ChildRunning
             | QemuHotForkReconciliationStep::AwaitingPublication => {
                 Ok(crate::AttemptExecutionReconciliationStep::Progressed)
@@ -496,8 +529,9 @@ where
     /// Performs at most one bounded reconciliation operation.
     ///
     /// The caller schedules subsequent calls without holding the executor
-    /// supervisor actor. A running child performs only one nonblocking parent
-    /// query. Every destructive success advances the phase before returning,
+    /// supervisor actor. A live child alternates one nonblocking diagnostics
+    /// drain with one parent-status query, so status cannot overtake stream
+    /// service. Every destructive success advances the phase before returning,
     /// so retry never repeats an acknowledged release.
     ///
     /// # Errors
@@ -512,6 +546,22 @@ where
             QemuHotForkReconciliationPhase::AwaitingChildAdmission
             | QemuHotForkReconciliationPhase::Live
             | QemuHotForkReconciliationPhase::TerminationRequested => {
+                if !self.diagnostics_drained {
+                    let drain = self.backend_mut()?.drain_child_diagnostics();
+                    if let Err(source) = drain {
+                        if let Some(backend) = self.backend.as_mut() {
+                            backend.quarantine();
+                        }
+                        self.phase = QemuHotForkReconciliationPhase::Quarantined;
+                        return Err(QemuHotForkAttemptReconciliationError::Backend {
+                            operation: "drain branch-private child diagnostics",
+                            source,
+                        });
+                    }
+                    self.diagnostics_drained = true;
+                    return Ok(QemuHotForkReconciliationStep::ChildDiagnosticsDrained);
+                }
+                self.diagnostics_drained = false;
                 let observed = self.backend_mut()?.observe_child().map_err(|source| {
                     QemuHotForkAttemptReconciliationError::Backend {
                         operation: "query source-owned child status",
@@ -710,9 +760,91 @@ where
     basis: QemuHotForkChildProcessBasis,
     pending_child_qmp: Option<crucible_qemu::QemuHotForkChildQmpHostEndpoint>,
     child_qmp: Option<QemuQmpVmStateControlChannel<UnixStream>>,
+    diagnostics_consumer: QemuHotForkChildDiagnosticConsumer,
     host_continuation: Option<QemuHotForkHostContinuation>,
     source_release: LinuxSourceReleasePhase,
     diagnostics: Option<crucible_qemu::QemuHotForkChildDiagnosticCapture>,
+}
+
+/// Narrow live-child capability retained by one hot-fork reconciliation owner.
+///
+/// The capability keeps the diagnostic consumer and non-releasing operational
+/// guard inseparable from the child QMP and plugin continuations. Every
+/// operational-boundary check or quantum charge first drains all currently
+/// available diagnostics. Direct QMP access is for bounded control exchange;
+/// guest progress must remain behind the operational methods.
+pub struct LinuxQemuHotForkLiveChild<'a> {
+    child_qmp: &'a mut QemuQmpVmStateControlChannel<UnixStream>,
+    diagnostics: &'a mut QemuHotForkChildDiagnosticConsumer,
+    host_continuation: &'a mut QemuHotForkHostContinuation,
+    operational: &'a mut dyn crate::QemuAttemptOperationalBoundary,
+}
+
+impl fmt::Debug for LinuxQemuHotForkLiveChild<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LinuxQemuHotForkLiveChild")
+            .field("diagnostics", &self.diagnostics)
+            .field(
+                "host_continuation_generation",
+                &self.host_continuation.template_generation(),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
+impl LinuxQemuHotForkLiveChild<'_> {
+    /// Borrows the authenticated private child QMP channel for bounded control.
+    #[must_use]
+    pub fn child_qmp_mut(&mut self) -> &mut QemuQmpVmStateControlChannel<UnixStream> {
+        self.child_qmp
+    }
+
+    /// Borrows the exact branch-private host continuation.
+    pub fn host_continuation_mut(&mut self) -> &mut QemuHotForkHostContinuation {
+        self.host_continuation
+    }
+
+    /// Drains all currently available branch-private diagnostic bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError::Executor`] when the exact bounded
+    /// diagnostic stream cannot be retained without truncation.
+    pub fn drain_diagnostics(
+        &mut self,
+    ) -> Result<QemuHotForkChildDiagnosticDrain, QemuVmRealizationError> {
+        self.diagnostics
+            .drain_available()
+            .map_err(diagnostic_drain_realization_error)
+    }
+}
+
+impl crate::QemuAttemptOperationalBoundary for LinuxQemuHotForkLiveChild<'_> {
+    fn resource_limits(&self) -> crucible_campaign::AttemptResourceLimits {
+        self.operational.resource_limits()
+    }
+
+    fn cancellation(&self) -> &crate::ExecutionCancellation {
+        self.operational.cancellation()
+    }
+
+    fn check_operational_boundary(&mut self) -> Result<(), QemuVmRealizationError> {
+        self.drain_diagnostics()?;
+        self.operational.check_operational_boundary()
+    }
+
+    fn charge_execution_quantum(&mut self) -> Result<(), QemuVmRealizationError> {
+        self.drain_diagnostics()?;
+        self.operational.charge_execution_quantum()
+    }
+}
+
+fn diagnostic_drain_realization_error(source: QemuNodeChannelError) -> QemuVmRealizationError {
+    QemuVmRealizationError::Executor {
+        operation: "drain branch-private hot-fork child diagnostics",
+        message: source.to_string(),
+    }
 }
 
 impl<G> fmt::Debug for LinuxQemuHotForkReconciliationBackend<G>
@@ -726,6 +858,7 @@ where
             .field("basis", &self.basis)
             .field("pending_child_qmp", &self.pending_child_qmp.is_some())
             .field("child_qmp_admitted", &self.child_qmp.is_some())
+            .field("diagnostics_consumer", &self.diagnostics_consumer)
             .field("host_continuation", &self.host_continuation.is_some())
             .field("source_release", &self.source_release)
             .field("diagnostics", &self.diagnostics.is_some())
@@ -743,7 +876,8 @@ where
         target: G,
         launch: QemuHotForkChildLaunch<LinuxQemuHotForkChildProcessAuthority>,
     ) -> Self {
-        let (_parent, process, child_qmp, host_continuation) = launch.into_parts();
+        let (_parent, process, child_qmp, diagnostics_consumer, host_continuation) =
+            launch.into_parts();
         let basis = process.basis();
         Self {
             source,
@@ -752,57 +886,20 @@ where
             basis,
             pending_child_qmp: Some(child_qmp),
             child_qmp: None,
+            diagnostics_consumer,
             host_continuation: Some(host_continuation),
             source_release: LinuxSourceReleasePhase::CloseChildChannel,
             diagnostics: None,
         }
     }
 
-    /// Returns mutable access to the authenticated private child QMP channel.
-    #[must_use]
-    pub fn child_qmp_mut(&mut self) -> Option<&mut QemuQmpVmStateControlChannel<UnixStream>> {
-        self.child_qmp.as_mut()
-    }
-
-    /// Returns mutable access to the exact branch-private host continuation.
-    #[must_use]
-    pub fn host_continuation_mut(&mut self) -> Option<&mut QemuHotForkHostContinuation> {
-        self.host_continuation.as_mut()
-    }
-
-    /// Returns the narrow operational boundary paired with the live child.
-    ///
-    /// This capability can check cancellation and charge scheduler quanta, but
-    /// cannot release the target guard or its aggregate filesystem reservation.
-    #[must_use]
-    pub fn live_child_operational_parts_mut(
-        &mut self,
-    ) -> Option<(
-        &mut QemuQmpVmStateControlChannel<UnixStream>,
-        &mut dyn crate::QemuAttemptOperationalBoundary,
-    )> {
-        let child_qmp = self.child_qmp.as_mut()?;
-        Some((child_qmp, &mut self.target))
-    }
-
-    /// Returns every admitted child continuation with the non-releasing boundary.
-    ///
-    /// The host continuation owns the branch-private control socket, wake
-    /// eventfd, mapped ring continuation, retained ring descriptor, and cloned
-    /// host devices. The returned operational boundary can check cancellation
-    /// and charge quanta, but cannot finish or quarantine the complete target
-    /// guard.
-    #[must_use]
-    pub fn live_child_plugin_parts_mut(
-        &mut self,
-    ) -> Option<(
-        &mut QemuQmpVmStateControlChannel<UnixStream>,
-        &mut QemuHotForkHostContinuation,
-        &mut dyn crate::QemuAttemptOperationalBoundary,
-    )> {
-        let child_qmp = self.child_qmp.as_mut()?;
-        let host_continuation = self.host_continuation.as_mut()?;
-        Some((child_qmp, host_continuation, &mut self.target))
+    fn live_child_mut(&mut self) -> Option<LinuxQemuHotForkLiveChild<'_>> {
+        Some(LinuxQemuHotForkLiveChild {
+            child_qmp: self.child_qmp.as_mut()?,
+            diagnostics: &mut self.diagnostics_consumer,
+            host_continuation: self.host_continuation.as_mut()?,
+            operational: &mut self.target,
+        })
     }
 
     /// Returns the bounded final child diagnostic capture after source release.
@@ -845,6 +942,13 @@ where
         self.process.kill().map_err(Into::into)
     }
 
+    fn drain_child_diagnostics(&mut self) -> Result<(), Self::Error> {
+        self.diagnostics_consumer
+            .drain_available()
+            .map(|_drain| ())
+            .map_err(Into::into)
+    }
+
     fn observe_child(&mut self) -> Result<QemuHotForkChildObservation, Self::Error> {
         let state = self
             .source
@@ -872,7 +976,12 @@ where
                     return Ok(false);
                 }
                 LinuxSourceReleasePhase::Diagnostics => {
-                    self.diagnostics = Some(self.source.release_hot_fork_child_diagnostics()?);
+                    self.diagnostics = Some(
+                        self.source
+                            .release_hot_fork_child_diagnostics_with_consumer(
+                                &mut self.diagnostics_consumer,
+                            )?,
+                    );
                     self.source_release = LinuxSourceReleasePhase::PrivateRing;
                     return Ok(false);
                 }
@@ -1017,46 +1126,18 @@ where
         }
     }
 
-    /// Returns the admitted private child QMP channel while the child is live.
-    #[must_use]
-    pub fn child_qmp_mut(&mut self) -> Option<&mut QemuQmpVmStateControlChannel<UnixStream>> {
-        self.backend.as_mut()?.child_qmp_mut()
-    }
-
-    /// Returns the admitted child QMP and its narrow operational boundary.
+    /// Borrows the admitted live-child capability while the child is live.
     ///
-    /// The pair is available only after private-channel admission and before
-    /// terminal reconciliation begins. The operational capability cannot
-    /// release process, cgroup, cancellation, quota, or storage ownership.
+    /// The capability joins private QMP, plugin/host-I/O continuation,
+    /// diagnostics service, and the non-releasing resource boundary. Modeled
+    /// execution must charge progress through this value, which drains the
+    /// branch-private diagnostic stream before every operational boundary.
     #[must_use]
-    pub fn live_child_operational_parts_mut(
-        &mut self,
-    ) -> Option<(
-        &mut QemuQmpVmStateControlChannel<UnixStream>,
-        &mut dyn crate::QemuAttemptOperationalBoundary,
-    )> {
+    pub fn live_child_mut(&mut self) -> Option<LinuxQemuHotForkLiveChild<'_>> {
         if self.phase != QemuHotForkReconciliationPhase::Live {
             return None;
         }
-        self.backend.as_mut()?.live_child_operational_parts_mut()
-    }
-
-    /// Returns the admitted QMP and private host continuation with its boundary.
-    ///
-    /// The triple is available only while the exact child is live. It exposes no
-    /// release, cgroup, quota, or quarantine authority to modeled code.
-    #[must_use]
-    pub fn live_child_plugin_parts_mut(
-        &mut self,
-    ) -> Option<(
-        &mut QemuQmpVmStateControlChannel<UnixStream>,
-        &mut QemuHotForkHostContinuation,
-        &mut dyn crate::QemuAttemptOperationalBoundary,
-    )> {
-        if self.phase != QemuHotForkReconciliationPhase::Live {
-            return None;
-        }
-        self.backend.as_mut()?.live_child_plugin_parts_mut()
+        self.backend.as_mut()?.live_child_mut()
     }
 }
 
@@ -1084,6 +1165,7 @@ mod tests {
         basis: QemuHotForkReconciliationChildBasis,
         observations: VecDeque<QemuHotForkChildObservation>,
         calls: Arc<Mutex<Vec<&'static str>>>,
+        fail_drain_once: bool,
         fail_release_resources_once: bool,
         resource_substeps_before_complete: u8,
     }
@@ -1102,6 +1184,15 @@ mod tests {
 
         fn terminate_child(&mut self) -> Result<(), Self::Error> {
             self.calls.lock().expect("calls").push("terminate");
+            Ok(())
+        }
+
+        fn drain_child_diagnostics(&mut self) -> Result<(), Self::Error> {
+            self.calls.lock().expect("calls").push("drain");
+            if self.fail_drain_once {
+                self.fail_drain_once = false;
+                return Err(ScriptedError);
+            }
             Ok(())
         }
 
@@ -1192,6 +1283,16 @@ mod tests {
             .expect("valid child observation")
     }
 
+    fn service_and_observe(
+        owner: &mut QemuHotForkAttemptReconciliation<ScriptedBackend>,
+    ) -> QemuHotForkReconciliationStep {
+        assert_eq!(
+            owner.reconcile_step().expect("service child diagnostics"),
+            QemuHotForkReconciliationStep::ChildDiagnosticsDrained
+        );
+        owner.reconcile_step().expect("observe child status")
+    }
+
     fn scripted(
         dispositions: impl IntoIterator<Item = QemuHotForkChildDisposition>,
         fail_release_resources_once: bool,
@@ -1223,6 +1324,7 @@ mod tests {
                     basis,
                     observations,
                     calls: Arc::clone(&calls),
+                    fail_drain_once: false,
                     fail_release_resources_once,
                     resource_substeps_before_complete,
                 },
@@ -1242,11 +1344,11 @@ mod tests {
         );
         owner.admit_child().expect("admit child");
         assert_eq!(
-            owner.reconcile_step().expect("running observation"),
+            service_and_observe(&mut owner),
             QemuHotForkReconciliationStep::ChildRunning
         );
         assert_eq!(
-            owner.reconcile_step().expect("terminal observation"),
+            service_and_observe(&mut owner),
             QemuHotForkReconciliationStep::Advanced(QemuHotForkReconciliationPhase::ParentReaped)
         );
         assert_eq!(
@@ -1265,7 +1367,16 @@ mod tests {
         );
         assert_eq!(
             calls.lock().expect("calls").as_slice(),
-            ["admit", "observe", "observe", "resources", "target"]
+            [
+                "drain",
+                "admit",
+                "drain",
+                "observe",
+                "drain",
+                "observe",
+                "resources",
+                "target"
+            ]
         );
 
         let observation = ObservationId::parse(&typed_id(
@@ -1290,8 +1401,11 @@ mod tests {
         assert_eq!(
             calls.lock().expect("calls").as_slice(),
             [
+                "drain",
                 "admit",
+                "drain",
                 "observe",
+                "drain",
                 "observe",
                 "resources",
                 "target",
@@ -1311,22 +1425,85 @@ mod tests {
     fn retry_resumes_at_the_first_unreleased_phase_without_rerunning_guest() {
         let (mut owner, calls) = scripted([QemuHotForkChildDisposition::Signaled(9)], true);
         owner.request_termination().expect("terminate");
-        owner.reconcile_step().expect("observe reap");
+        service_and_observe(&mut owner);
         assert!(owner.reconcile_step().is_err());
         assert_eq!(owner.phase(), QemuHotForkReconciliationPhase::ParentReaped);
         owner.reconcile_step().expect("retry resources");
         assert_eq!(
             calls.lock().expect("calls").as_slice(),
-            ["terminate", "observe", "resources", "resources"]
+            ["terminate", "drain", "observe", "resources", "resources"]
         );
         owner.quarantine();
+    }
+
+    #[test]
+    fn diagnostic_drain_failure_quarantines_before_status_observation() {
+        let child_basis = basis();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut owner = QemuHotForkAttemptReconciliation::new(
+            attempt_basis(),
+            ScriptedBackend {
+                basis: child_basis,
+                observations: VecDeque::from([observed(
+                    child_basis,
+                    QemuHotForkChildDisposition::Running,
+                )]),
+                calls: Arc::clone(&calls),
+                fail_drain_once: true,
+                fail_release_resources_once: false,
+                resource_substeps_before_complete: 0,
+            },
+        );
+
+        assert!(matches!(
+            owner.reconcile_step(),
+            Err(QemuHotForkAttemptReconciliationError::Backend {
+                operation: "drain branch-private child diagnostics",
+                ..
+            })
+        ));
+        assert_eq!(owner.phase(), QemuHotForkReconciliationPhase::Quarantined);
+        assert_eq!(
+            calls.lock().expect("calls").as_slice(),
+            ["drain", "quarantine"]
+        );
+    }
+
+    #[test]
+    fn diagnostic_drain_failure_quarantines_before_child_admission() {
+        let child_basis = basis();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut owner = QemuHotForkAttemptReconciliation::new(
+            attempt_basis(),
+            ScriptedBackend {
+                basis: child_basis,
+                observations: VecDeque::new(),
+                calls: Arc::clone(&calls),
+                fail_drain_once: true,
+                fail_release_resources_once: false,
+                resource_substeps_before_complete: 0,
+            },
+        );
+
+        assert!(matches!(
+            owner.admit_child(),
+            Err(QemuHotForkAttemptReconciliationError::Backend {
+                operation: "drain child diagnostics before admission",
+                ..
+            })
+        ));
+        assert_eq!(owner.phase(), QemuHotForkReconciliationPhase::Quarantined);
+        assert_eq!(
+            calls.lock().expect("calls").as_slice(),
+            ["drain", "quarantine"]
+        );
     }
 
     #[test]
     fn one_step_releases_at_most_one_backend_owned_child_resource() {
         let (mut owner, calls) =
             scripted_with_resource_substeps([QemuHotForkChildDisposition::Exited(0)], false, 2);
-        owner.reconcile_step().expect("observe reap");
+        service_and_observe(&mut owner);
         for _ in 0..2 {
             assert_eq!(
                 owner.reconcile_step().expect("release one substep"),
@@ -1343,7 +1520,7 @@ mod tests {
         );
         assert_eq!(
             calls.lock().expect("calls").as_slice(),
-            ["observe", "resources", "resources", "resources"]
+            ["drain", "observe", "resources", "resources", "resources"]
         );
         owner.quarantine();
     }
@@ -1367,7 +1544,7 @@ mod tests {
     fn unadmitted_child_cannot_publish_a_modeled_observation() {
         let (mut owner, _calls) = scripted([QemuHotForkChildDisposition::Signaled(9)], false);
         owner.request_termination().expect("terminate");
-        owner.reconcile_step().expect("observe reap");
+        service_and_observe(&mut owner);
         owner.reconcile_step().expect("release resources");
         owner.reconcile_step().expect("release target");
         owner.reconcile_step().expect("await publication");
@@ -1393,7 +1570,7 @@ mod tests {
     fn worker_disposition_drives_the_retained_owner_to_completion() {
         let (mut owner, calls) = scripted([QemuHotForkChildDisposition::Exited(0)], false);
         owner.admit_child().expect("admit child");
-        owner.reconcile_step().expect("observe reap");
+        service_and_observe(&mut owner);
         owner.reconcile_step().expect("release child resources");
         owner.reconcile_step().expect("release target");
         owner.reconcile_step().expect("await publication");
@@ -1422,7 +1599,9 @@ mod tests {
         assert_eq!(
             calls.lock().expect("calls").as_slice(),
             [
+                "drain",
                 "admit",
+                "drain",
                 "observe",
                 "resources",
                 "target",
@@ -1451,15 +1630,23 @@ mod tests {
                 )
                 .expect("foreign observation")]),
                 calls: Arc::clone(&calls),
+                fail_drain_once: false,
                 fail_release_resources_once: false,
                 resource_substeps_before_complete: 0,
             },
+        );
+        assert_eq!(
+            owner.reconcile_step().expect("service child diagnostics"),
+            QemuHotForkReconciliationStep::ChildDiagnosticsDrained
         );
         assert!(matches!(
             owner.reconcile_step(),
             Err(QemuHotForkAttemptReconciliationError::ChildBasisMismatch)
         ));
-        assert_eq!(calls.lock().expect("calls").as_slice(), ["observe"]);
+        assert_eq!(
+            calls.lock().expect("calls").as_slice(),
+            ["drain", "observe"]
+        );
         owner.quarantine();
     }
 

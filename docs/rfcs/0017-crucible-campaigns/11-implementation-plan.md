@@ -2104,9 +2104,16 @@ logging descriptor obligation. The node now also owns a nonblocking host drain
 with a cumulative 16 MiB limit for each diagnostics generation. Repeated drains
 preserve the bound; overflow quarantines instead of truncating, and exact
 release drains through EOF before returning a capture bound to the descriptor
-name, `SO_COOKIE`, and template generation. The production fork owner that
-drives this consumer while a child is live, all remaining supported-profile
-resource contributions, and readiness bits 7 and 8 remain open.
+name, `SO_COOKIE`, and template generation. A successful node fork now transfers
+the sole reader into its linear launch token while the source retains the
+ordered writers. The daemon reconciliation owner services that reader as a
+pre-admission prerequisite and as a separate bounded step before each
+source-status query; its narrow live-child capability drains before every
+cancellation check and scheduler-quantum charge. Drain failure quarantines
+before admission or status can advance. The concrete hot-fork
+runner that drives modeled execution only through this capability, all
+remaining supported-profile resource contributions, and readiness bits 7 and 8
+remain open.
 The next non-plugin contribution retains a future child's private QMP stream.
 The Linux node creates a distinct connected nonblocking Unix stream pair after
 diagnostics staging, keeps both original endpoints, transfers the child endpoint
@@ -2417,9 +2424,9 @@ The daemon now has the first linear source/target reconciliation owner. It
 consumes the successful launch token together with the exact lineage/attempt
 and process-local execution basis, authenticates the private child QMP endpoint,
 and retains the source template, complete target process/filesystem guard,
-pidfd, private channel, final diagnostics, and semantic publication disposition.
-One bounded step at a
-time observes the source-parent status, releases child-private resources,
+pidfd, private channel, sole diagnostic consumer, final capture, and semantic
+publication disposition. Separate bounded steps drain diagnostics before each
+source-parent status observation, release child-private resources,
 proves target cleanup, waits for an observation/cancellation/terminal-failure
 outcome, and only then releases the parent status record and QEMU-owned process
 contract. Failed steps preserve their phase for exact retry; incomplete drop
