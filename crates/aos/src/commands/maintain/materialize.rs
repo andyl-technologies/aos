@@ -11,6 +11,7 @@ use std::sync::Arc;
 use anyhow::{Context as _, Result, bail};
 use aos_contract::Sha256Digest;
 use aos_core::nix::NixRunner;
+use aos_core::output::Printer;
 use aos_maintain::PACKAGE_UPDATE_MATERIALIZATION_V1;
 use aos_maintain::identity::ArtifactSlotId;
 use aos_maintain::plan::{
@@ -77,6 +78,7 @@ pub(super) async fn execute(
     run: &mut PackageUpdateRunV1,
     verbose: u8,
     quiet: bool,
+    printer: &Printer,
 ) -> Result<MaterializationRecordV1> {
     if matches!(run.state, RunState::PolicyValid | RunState::QuickGated) {
         return verified_record(store, run);
@@ -110,7 +112,9 @@ pub(super) async fn execute(
     let mut sources = Vec::new();
     let mut unit_mutations = Vec::with_capacity(plan.units.len());
     for unit in &plan.units {
+        let activity = printer.activity(&format!("Resolve sources: {}", unit.unit_id));
         let resolved = resolve_sources(store, unit).await?;
+        activity.finish();
         let mut mutations = unit.semantic_mutations.clone();
         for source in &resolved {
             let intent = unit
@@ -140,15 +144,19 @@ pub(super) async fn execute(
         .collect::<Vec<_>>();
     let originals = capture_owner_files(&root, &mutations)?;
     let materialized = (|| {
+        let mutation_activity = printer.activity("Apply exact package metadata updates");
         for (unit, mutations) in &unit_mutations {
             apply_mutations(&root, unit.unit_id.as_str(), mutations)?;
         }
+        mutation_activity.finish();
         let mut artifacts = Vec::new();
         for unit in &plan.units {
-            artifacts.extend(resolve_artifacts(&root, unit, verbose, quiet)?);
+            artifacts.extend(resolve_artifacts(&root, unit, verbose, quiet, printer)?);
         }
+        let verification = printer.activity("Verify candidate inventory and artifact closure");
         verify_post_inventory(&root, plan, verbose, quiet)?;
         verify_post_artifacts(&root, plan, &artifacts, verbose, quiet)?;
+        verification.finish();
         Ok::<_, anyhow::Error>(artifacts)
     })();
     let artifacts = match materialized {
@@ -186,9 +194,14 @@ fn resolve_artifacts(
     unit: &PackageUpdateUnitPlan,
     verbose: u8,
     quiet: bool,
+    printer: &Printer,
 ) -> Result<Vec<MaterializedArtifact>> {
     let mut output = Vec::with_capacity(unit.artifacts.len());
     for intent in &unit.artifacts {
+        let activity = printer.activity(&format!(
+            "Materialize artifact: {}/{}",
+            unit.unit_id, intent.slot
+        ));
         if !intent.outputs.is_empty() {
             bail!(
                 "artifact {} declares repository outputs unsupported by this controller",
@@ -212,6 +225,7 @@ fn resolve_artifacts(
             expected_hash: intent.expected_hash.clone(),
             hash,
         });
+        activity.finish();
     }
     Ok(output)
 }

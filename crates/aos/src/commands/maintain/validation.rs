@@ -8,6 +8,7 @@ use std::time::Instant;
 use std::os::unix::process::ExitStatusExt as _;
 
 use anyhow::{Context as _, Result, bail};
+use aos_core::output::Printer;
 use aos_maintain::PACKAGE_UPDATE_GATE_RESULTS_V1;
 use aos_maintain::plan::{GateSpec, PackageUpdatePlanV1};
 use aos_maintain::run::{GateResult, GateResultsV1, PackageUpdateRunV1};
@@ -34,6 +35,7 @@ pub(super) fn quick(
     store: &StateStore,
     plan: &PackageUpdatePlanV1,
     run: &mut PackageUpdateRunV1,
+    printer: &Printer,
 ) -> Result<GateResultsV1> {
     if run.state == RunState::QuickGated {
         return verified_existing(store, run, "quick");
@@ -67,9 +69,16 @@ pub(super) fn quick(
     let mut results = Vec::with_capacity(plan.quick_gates.len());
     let mut logs = Vec::with_capacity(plan.quick_gates.len());
     let mut confinement = None;
-    for gate in &plan.quick_gates {
+    for (index, gate) in plan.quick_gates.iter().enumerate() {
+        let activity = printer.activity(&format!(
+            "Quick gate {}/{}: {}",
+            index + 1,
+            plan.quick_gates.len(),
+            gate.id
+        ));
         let (result, log, evidence) =
             execute_gate(Path::new(&run.worktree), &scratch, &backend, gate)?;
+        activity.finish();
         if confinement.as_ref().is_some_and(|prior| prior != &evidence) {
             bail!("planned gates did not share one confinement policy");
         }
@@ -115,6 +124,7 @@ pub(super) fn final_gates(
     store: &StateStore,
     plan: &PackageUpdatePlanV1,
     run: &mut PackageUpdateRunV1,
+    printer: &Printer,
 ) -> Result<GateResultsV1> {
     if run.state == RunState::FinalGated {
         return verified_existing(store, run, "final");
@@ -161,6 +171,7 @@ pub(super) fn final_gates(
         &scratch,
         &backend,
         &plan.final_gates,
+        printer,
     )?;
     if !git_status(Path::new(&run.worktree))?.is_empty() {
         bail!("a planned final gate changed the committed candidate worktree");
@@ -194,12 +205,20 @@ fn execute_plan(
     scratch: &Path,
     backend: &Backend,
     gates: &[GateSpec],
+    printer: &Printer,
 ) -> Result<ExecutedGatePlan> {
     let mut results = Vec::with_capacity(gates.len());
     let mut logs = Vec::with_capacity(gates.len());
     let mut confinement = None;
-    for gate in gates {
+    for (index, gate) in gates.iter().enumerate() {
+        let activity = printer.activity(&format!(
+            "Final gate {}/{}: {}",
+            index + 1,
+            gates.len(),
+            gate.id
+        ));
         let (result, log, evidence) = execute_gate(root, scratch, backend, gate)?;
+        activity.finish();
         if confinement.as_ref().is_some_and(|prior| prior != &evidence) {
             bail!("planned gates did not share one confinement policy");
         }
