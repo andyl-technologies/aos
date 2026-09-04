@@ -354,6 +354,7 @@ enum MountLifecycle {
   MOUNT_LIFECYCLE_RELEASED = 6;
   MOUNT_LIFECYCLE_FAULTED = 7;
   MOUNT_LIFECYCLE_DETACHING = 8;
+  MOUNT_LIFECYCLE_RELEASING = 9;
 }
 
 // Correlates detached-mount creation before the kernel object exists and while
@@ -380,6 +381,7 @@ enum MountFaultPhase {
   MOUNT_FAULT_PHASE_INSTALLED = 4;
   MOUNT_FAULT_PHASE_DRAINING = 5;
   MOUNT_FAULT_PHASE_DETACHING = 6;
+  MOUNT_FAULT_PHASE_RELEASING = 7;
 }
 
 // Correlates a terminal fault with the phase and sanitized failure identity.
@@ -413,6 +415,8 @@ message MountInventoryRecord {
   MountOperationCorrelation creation = 13;
   // Present in DETACHING and retained by a fault from that phase.
   MountOperationCorrelation detachment = 14;
+  // Present in RELEASING and retained by a fault from that phase.
+  MountOperationCorrelation release = 15;
 }
 
 // Preserved protocol-1.0 action-summary inventory.
@@ -422,6 +426,7 @@ message InventoryMountsResponse { repeated MountResult mounts = 1; }
 // protocol-1.0 peer can never decode resource records as MountResult values.
 message InventoryMountResourcesResponse {
   bytes kernel_boot_id = 2; // Current Linux boot ID, exactly 16 bytes.
+  // Nonzero next-frame boundary after the complete durable snapshot.
   uint64 journal_sequence = 3;
   repeated MountInventoryRecord mounts = 4; // At most 1024, strict handle order.
   bytes broker_instance_id = 5; // Exactly 16 bytes; changes on broker start.

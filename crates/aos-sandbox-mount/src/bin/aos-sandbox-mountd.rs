@@ -1,5 +1,6 @@
 //! Runs the root-only, systemd-activated sandbox mount broker.
 
+use std::collections::BTreeSet;
 use std::env;
 use std::os::fd::OwnedFd;
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
@@ -42,8 +43,10 @@ fn run() -> Result<()> {
     }
     let activation =
         SystemdFdStore::adopt_service_activation(EXPECTED_FD_NAME, MAXIMUM_RETAINED_MOUNTS)?;
+    let retained_names: BTreeSet<_> = activation.mounts.keys().cloned().collect();
     let listener = ActivatedSeqpacketListener::from_owned(activation.listener)?;
-    let keeper = SystemdFdStore::from_environment()?;
+    let keeper =
+        SystemdFdStore::from_environment_with_inventory(retained_names, MAXIMUM_RETAINED_MOUNTS)?;
     let (controller_identity, helper_executable) = arguments()?;
     validate_private_root(Path::new(STATE_ROOT))?;
     let (journal, _) = Journal::open(
@@ -53,7 +56,7 @@ fn run() -> Result<()> {
     let catalog = FileMountCatalog::open_root_owned(CATALOG_ROOT)?;
     let helper = PosixSpawnNamespaceHelper::new(helper_executable)?;
     let worker = DescriptorMountWorker::new(catalog, helper, keeper, activation.mounts)?;
-    let broker = MountBroker::new(journal, worker);
+    let broker = MountBroker::new(journal, worker)?;
     let verifier = ControllerPeerVerifier::new(open_cgroup_root()?);
     let mut service = MountService::new(broker, verifier, controller_identity);
     loop {

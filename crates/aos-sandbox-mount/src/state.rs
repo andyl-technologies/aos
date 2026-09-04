@@ -5,6 +5,8 @@ use aos_sandbox_protocol::ValidatedAssignmentFence;
 
 use crate::{MountError, Result};
 
+pub(crate) mod mount_resource_v1;
+
 const FENCE_BYTES: usize = 16 + 8 + 8 + 32;
 const EFFECT_FIXED_BYTES: usize = 1 + 1 + 32 + 4;
 const MAXIMUM_RECEIPT_BYTES: usize = 1024 * 1024;

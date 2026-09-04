@@ -13,6 +13,8 @@ use std::io::IoSlice;
 use std::mem::MaybeUninit;
 use std::os::fd::{AsFd, BorrowedFd, FromRawFd as _, OwnedFd, RawFd};
 use std::path::Path;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use aos_sandbox_linux::mount::DetachedMount;
@@ -146,6 +148,18 @@ pub struct ActivatedMountDescriptors {
 
 /// Provides synchronous restart-safe custody for kernel mount descriptors.
 pub trait KernelMountStore {
+    /// Reports whether the keeper's authoritative inventory contains `name`.
+    ///
+    /// Callers must perform this lookup before creating a resource that would
+    /// be stored under `name`. A lookup error is a fail-stop condition: the
+    /// process must restart and rebuild the inventory from socket activation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a prior mutation may have reached the keeper but
+    /// its barrier was not acknowledged, or when inventory access fails.
+    fn contains(&self, name: &KernelMountName) -> Result<bool>;
+
     /// Stores a duplicate of `descriptor` under `name` and waits for acceptance.
     ///
     /// Implementations must not consume the caller's descriptor. Returning
@@ -171,10 +185,17 @@ pub trait KernelMountStore {
 pub struct SystemdFdStore {
     socket: OwnedFd,
     notify_address: SocketAddrUnix,
+    inventory: Mutex<BTreeSet<KernelMountName>>,
+    maximum_entries: usize,
+    poisoned: AtomicBool,
 }
 
 impl SystemdFdStore {
     /// Connects a keeper to the `NOTIFY_SOCKET` supplied by systemd.
+    ///
+    /// This constructor is valid only for a service with no retained startup
+    /// descriptors. After adopting retained descriptors, use
+    /// [`Self::from_environment_with_inventory`] with their complete name set.
     ///
     /// Filesystem and Linux abstract-namespace notification sockets are
     /// accepted. This does not adopt activation descriptors; call
@@ -185,9 +206,35 @@ impl SystemdFdStore {
     /// Returns an error if `NOTIFY_SOCKET` is absent, non-Unicode, empty,
     /// malformed, too long, or a notification datagram socket cannot be made.
     pub fn from_environment() -> Result<Self> {
+        Self::from_environment_with_inventory(BTreeSet::new(), MAXIMUM_IMPORTED_DESCRIPTORS)
+    }
+
+    /// Connects a keeper and seeds its bounded restart inventory.
+    ///
+    /// `retained_names` must be the complete name set returned by the same
+    /// startup's socket activation. Seeding it makes lookup authoritative from
+    /// process start and prevents an already-restored name from being stored a
+    /// second time.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the bound exceeds the hard descriptor ceiling, the
+    /// initial inventory exceeds its bound, or `NOTIFY_SOCKET` is invalid.
+    pub fn from_environment_with_inventory(
+        retained_names: BTreeSet<KernelMountName>,
+        maximum_entries: usize,
+    ) -> Result<Self> {
+        if maximum_entries > MAXIMUM_IMPORTED_DESCRIPTORS {
+            return Err(state_error("descriptor-store ceiling exceeds hard limit"));
+        }
+        if retained_names.len() > maximum_entries {
+            return Err(state_error(
+                "initial descriptor-store inventory exceeds limit",
+            ));
+        }
         let value = std::env::var_os("NOTIFY_SOCKET")
             .ok_or_else(|| state_error("NOTIFY_SOCKET is absent"))?;
-        Self::from_notify_socket(&value)
+        Self::from_notify_socket_with_inventory(&value, retained_names, maximum_entries)
     }
 
     /// Adopts systemd file-descriptor-store entries after caller-owned sockets.
@@ -296,7 +343,28 @@ impl SystemdFdStore {
         Ok(ActivatedMountDescriptors { listener, mounts })
     }
 
+    #[cfg(test)]
     fn from_notify_socket(value: &OsStr) -> Result<Self> {
+        Self::from_notify_socket_with_inventory(
+            value,
+            BTreeSet::new(),
+            MAXIMUM_IMPORTED_DESCRIPTORS,
+        )
+    }
+
+    fn from_notify_socket_with_inventory(
+        value: &OsStr,
+        inventory: BTreeSet<KernelMountName>,
+        maximum_entries: usize,
+    ) -> Result<Self> {
+        if maximum_entries > MAXIMUM_IMPORTED_DESCRIPTORS {
+            return Err(state_error("descriptor-store ceiling exceeds hard limit"));
+        }
+        if inventory.len() > maximum_entries {
+            return Err(state_error(
+                "initial descriptor-store inventory exceeds limit",
+            ));
+        }
         let value = value
             .to_str()
             .ok_or_else(|| state_error("NOTIFY_SOCKET is not Unicode"))?;
@@ -322,7 +390,26 @@ impl SystemdFdStore {
         Ok(Self {
             socket,
             notify_address,
+            inventory: Mutex::new(inventory),
+            maximum_entries,
+            poisoned: AtomicBool::new(false),
         })
+    }
+
+    fn ensure_reconcilable(&self) -> Result<()> {
+        if self.poisoned.load(Ordering::Acquire) {
+            return Err(state_error(
+                "descriptor-store mutation outcome is ambiguous; service restart is required",
+            ));
+        }
+        Ok(())
+    }
+
+    fn ambiguous(&self, error: &MountError) -> MountError {
+        self.poisoned.store(true, Ordering::Release);
+        state_error(format!(
+            "descriptor-store mutation outcome is ambiguous; service restart is required: {error}"
+        ))
     }
 
     fn notify(&self, payload: &[u8], descriptor: Option<BorrowedFd<'_>>) -> Result<()> {
@@ -409,16 +496,53 @@ fn validate_activation_names(
 }
 
 impl KernelMountStore for SystemdFdStore {
+    fn contains(&self, name: &KernelMountName) -> Result<bool> {
+        self.ensure_reconcilable()?;
+        let inventory = self
+            .inventory
+            .lock()
+            .map_err(|_| state_error("descriptor-store inventory lock is poisoned"))?;
+        self.ensure_reconcilable()?;
+        Ok(inventory.contains(name))
+    }
+
     fn store(&self, name: &KernelMountName, descriptor: BorrowedFd<'_>) -> Result<()> {
+        self.ensure_reconcilable()?;
+        let mut inventory = self
+            .inventory
+            .lock()
+            .map_err(|_| state_error("descriptor-store inventory lock is poisoned"))?;
+        self.ensure_reconcilable()?;
+        if inventory.contains(name) {
+            return Ok(());
+        }
+        if inventory.len() >= self.maximum_entries {
+            return Err(state_error("descriptor-store inventory is full"));
+        }
+
         let payload = format!("FDSTORE=1\nFDPOLL=0\nFDNAME={}", name.as_str());
         self.notify(payload.as_bytes(), Some(descriptor))?;
-        self.barrier()
+        self.barrier().map_err(|error| self.ambiguous(&error))?;
+        inventory.insert(name.clone());
+        Ok(())
     }
 
     fn remove(&self, name: &KernelMountName) -> Result<()> {
+        self.ensure_reconcilable()?;
+        let mut inventory = self
+            .inventory
+            .lock()
+            .map_err(|_| state_error("descriptor-store inventory lock is poisoned"))?;
+        self.ensure_reconcilable()?;
+        if !inventory.contains(name) {
+            return Ok(());
+        }
+
         let payload = format!("FDSTOREREMOVE=1\nFDNAME={}", name.as_str());
         self.notify(payload.as_bytes(), None)?;
-        self.barrier()
+        self.barrier().map_err(|error| self.ambiguous(&error))?;
+        inventory.remove(name);
+        Ok(())
     }
 }
 
@@ -515,6 +639,32 @@ mod tests {
     }
 
     #[test]
+    fn seeded_inventory_is_bounded_and_supports_exact_lookup() {
+        let name = KernelMountName::from_digest([3; 32]);
+        let inventory = BTreeSet::from([name.clone()]);
+        assert!(
+            SystemdFdStore::from_notify_socket_with_inventory(
+                OsStr::new("/unused"),
+                inventory.clone(),
+                0,
+            )
+            .is_err()
+        );
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("notify.sock");
+        let keeper =
+            SystemdFdStore::from_notify_socket_with_inventory(path.as_os_str(), inventory, 1)
+                .unwrap();
+        assert!(keeper.contains(&name).unwrap());
+        assert!(
+            !keeper
+                .contains(&KernelMountName::from_digest([4; 32]))
+                .unwrap()
+        );
+    }
+
+    #[test]
     fn store_and_remove_are_barrier_ordered() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("notify.sock");
@@ -555,6 +705,43 @@ mod tests {
             ]
         );
         assert!(fcntl_getfd(&descriptor).unwrap().contains(FdFlags::CLOEXEC));
+    }
+
+    #[test]
+    fn ambiguous_barrier_failure_poisons_inventory_lookup() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("notify.sock");
+        let server = socket_with(
+            AddressFamily::UNIX,
+            SocketType::DGRAM,
+            SocketFlags::CLOEXEC,
+            None,
+        )
+        .unwrap();
+        bind(&server, &SocketAddrUnix::new(&path).unwrap()).unwrap();
+        let keeper = SystemdFdStore::from_notify_socket(path.as_os_str()).unwrap();
+        let descriptor: OwnedFd = File::open(directory.path()).unwrap().into();
+        let name = KernelMountName::from_digest([8; 32]);
+
+        let manager = std::thread::spawn(move || {
+            let (store_payload, stored) = receive_notification(&server);
+            assert!(store_payload.starts_with("FDSTORE=1\n"));
+            assert_eq!(stored.len(), 1);
+
+            let (barrier_payload, barrier) = receive_notification(&server);
+            assert_eq!(barrier_payload, "BARRIER=1");
+            assert_eq!(barrier.len(), 1);
+            rustix::io::write(&barrier[0], b"ambiguous").unwrap();
+        });
+
+        let error = keeper.store(&name, descriptor.as_fd()).unwrap_err();
+        assert!(error.to_string().contains("outcome is ambiguous"));
+        manager.join().unwrap();
+
+        let error = keeper.contains(&name).unwrap_err();
+        assert!(error.to_string().contains("service restart is required"));
+        let other = KernelMountName::from_digest([9; 32]);
+        assert!(keeper.store(&other, descriptor.as_fd()).is_err());
     }
 
     fn receive_notification(socket: &OwnedFd) -> (String, Vec<OwnedFd>) {

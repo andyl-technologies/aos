@@ -4,8 +4,9 @@ use aos_proto::aos::sandbox::local::v1::{Audience, BrokerErrorCode, BrokerMethod
 use aos_sandbox_core::ProtocolId;
 use aos_sandbox_protocol::{
     MAXIMUM_HANDSHAKE_BYTES, MAXIMUM_REQUEST_BYTES, PeerPolicy, ProtocolValidationError,
-    decode_mount_request, encode_error_response_envelope, encode_success_response_envelope,
-    failed_server_hello, negotiate_client_hello, validate_request_descriptor_roles,
+    ValidatedBrokerRequestEnvelope, decode_mount_inventory_request, decode_mount_request,
+    encode_error_response_envelope, encode_success_response_envelope, failed_server_hello,
+    negotiate_client_hello, validate_request_descriptor_roles,
 };
 use buffa::Message as _;
 use rustix::time::{ClockId, clock_gettime};
@@ -80,7 +81,10 @@ impl<W: MountWorker> MountService<W> {
             self.peer_policy,
             ProtocolId::MountBroker,
             &[],
-            &[BrokerMethod::BROKER_METHOD_MOUNT_APPLY],
+            &[
+                BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
+                BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES,
+            ],
         ) {
             Ok(session) => session,
             Err(error) => {
@@ -99,60 +103,114 @@ impl<W: MountWorker> MountService<W> {
         let Ok(envelope) = session.decode_request(&packet.bytes, packet.descriptors.len()) else {
             return Ok(ConnectionOutcome::RequestRejected);
         };
-        if envelope.method() != BrokerMethod::BROKER_METHOD_MOUNT_APPLY
-            || validate_request_descriptor_roles(&envelope, &[]).is_err()
-        {
+        if validate_request_descriptor_roles(&envelope, &[]).is_err() {
             return Ok(ConnectionOutcome::RequestRejected);
         }
         let now = boottime_nanoseconds()?;
-        let Ok(validated) =
-            decode_mount_request(envelope.body(), peer.credentials(), self.peer_policy, now)
-        else {
-            return Ok(ConnectionOutcome::RequestRejected);
-        };
-        if session.validate_header(validated.header()).is_err() {
-            return Ok(ConnectionOutcome::RequestRejected);
-        }
-        let request_id = *validated.header().request_id();
-        let response_ceiling = validated.header().maximum_response_bytes();
-        let response = match self.broker.apply_mount(
-            envelope.body(),
-            peer.credentials(),
-            self.peer_policy,
-            now,
-        ) {
-            Ok(body) => (
-                encode_success_response_envelope(
-                    &request_id,
-                    &envelope,
-                    body,
-                    &[],
-                    &[],
-                    response_ceiling,
-                ),
-                ConnectionOutcome::Served,
-            ),
-            Err(error) => {
-                let (code, message, retryable) = classify_error(&error);
+        let dispatch = match envelope.method() {
+            BrokerMethod::BROKER_METHOD_MOUNT_APPLY => {
+                let Ok(validated) = decode_mount_request(
+                    envelope.body(),
+                    peer.credentials(),
+                    self.peer_policy,
+                    now,
+                ) else {
+                    return Ok(ConnectionOutcome::RequestRejected);
+                };
+                if session.validate_header(validated.header()).is_err() {
+                    return Ok(ConnectionOutcome::RequestRejected);
+                }
+                let ceiling = validated.header().maximum_response_bytes();
                 (
-                    encode_error_response_envelope(
-                        &request_id,
-                        &envelope,
-                        code,
-                        message,
-                        retryable,
-                        None,
-                        &[],
-                        response_ceiling,
+                    *validated.header().request_id(),
+                    ceiling,
+                    self.broker.apply_mount(
+                        envelope.body(),
+                        peer.credentials(),
+                        self.peer_policy,
+                        now,
                     ),
-                    ConnectionOutcome::RequestRejected,
                 )
             }
+            BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES => {
+                let Ok(header) = decode_mount_inventory_request(
+                    envelope.body(),
+                    peer.credentials(),
+                    self.peer_policy,
+                    now,
+                ) else {
+                    return Ok(ConnectionOutcome::RequestRejected);
+                };
+                if session.validate_header(&header).is_err() {
+                    return Ok(ConnectionOutcome::RequestRejected);
+                }
+                let ceiling = header.maximum_response_bytes();
+                (
+                    *header.request_id(),
+                    ceiling,
+                    Ok(self.broker.inventory_resources()),
+                )
+            }
+            _ => return Ok(ConnectionOutcome::RequestRejected),
         };
+        let (request_id, response_ceiling, result) = dispatch;
+        let response = encode_dispatch_response(&request_id, &envelope, result, response_ceiling);
         match response {
             (Ok(bytes), outcome) if connection.send(&bytes).is_ok() => Ok(outcome),
             (Ok(_), _) => Ok(ConnectionOutcome::TransportRejected),
             (Err(_), _) => Ok(ConnectionOutcome::RequestRejected),
+        }
+    }
+}
+
+fn encode_dispatch_response(
+    request_id: &[u8; 16],
+    request: &ValidatedBrokerRequestEnvelope,
+    result: Result<Vec<u8>>,
+    maximum_bytes: u32,
+) -> (
+    std::result::Result<Vec<u8>, ProtocolValidationError>,
+    ConnectionOutcome,
+) {
+    match result {
+        Ok(body) => match encode_success_response_envelope(
+            request_id,
+            request,
+            body,
+            &[],
+            &[],
+            maximum_bytes,
+        ) {
+            Ok(bytes) => (Ok(bytes), ConnectionOutcome::Served),
+            Err(_) => (
+                encode_error_response_envelope(
+                    request_id,
+                    request,
+                    BrokerErrorCode::BROKER_ERROR_CODE_RESOURCE_EXHAUSTED,
+                    "response exceeds the negotiated packet ceiling",
+                    true,
+                    None,
+                    &[],
+                    maximum_bytes,
+                ),
+                ConnectionOutcome::RequestRejected,
+            ),
+        },
+        Err(error) => {
+            let (code, message, retryable) = classify_error(&error);
+            (
+                encode_error_response_envelope(
+                    request_id,
+                    request,
+                    code,
+                    message,
+                    retryable,
+                    None,
+                    &[],
+                    maximum_bytes,
+                ),
+                ConnectionOutcome::RequestRejected,
+            )
         }
     }
 }
@@ -254,6 +312,11 @@ fn send_hello_error(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use aos_proto::aos::sandbox::local::v1::{BrokerRequestEnvelope, BrokerResponseEnvelope};
+    use aos_sandbox_protocol::decode_request_envelope;
+
     use super::*;
 
     #[test]
@@ -263,5 +326,28 @@ mod tests {
         ));
         assert_eq!(message, "mount backend operation failed");
         assert!(!message.contains("/secret"));
+    }
+
+    #[test]
+    fn body_fits_but_envelope_overhead_becomes_a_bounded_resource_error() {
+        let request = BrokerRequestEnvelope {
+            method: BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES.into(),
+            body: vec![1],
+            ..Default::default()
+        };
+        let request =
+            decode_request_envelope(&request.encode_to_vec(), ProtocolId::MountBroker, 0).unwrap();
+        let ceiling = aos_sandbox_protocol::MINIMUM_RESPONSE_BYTES;
+        let (encoded, outcome) =
+            encode_dispatch_response(&[7; 16], &request, Ok(vec![8; ceiling as usize]), ceiling);
+        let encoded = encoded.unwrap();
+        assert_eq!(outcome, ConnectionOutcome::RequestRejected);
+        assert!(encoded.len() <= ceiling as usize);
+        let response = BrokerResponseEnvelope::decode_from_slice(&encoded).unwrap();
+        assert!(response.body.is_empty());
+        assert_eq!(
+            response.error.as_option().unwrap().code.as_known(),
+            Some(BrokerErrorCode::BROKER_ERROR_CODE_RESOURCE_EXHAUSTED)
+        );
     }
 }

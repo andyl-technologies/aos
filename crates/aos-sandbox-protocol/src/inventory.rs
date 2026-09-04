@@ -25,14 +25,15 @@ use crate::{
 /// Maximum durable mount rows accepted in one complete inventory snapshot.
 pub const MAXIMUM_MOUNT_INVENTORY_RECORDS: usize = 1024;
 const MAXIMUM_KERNEL_PATH_BYTES: usize = 4096;
-const HAS_DETACHED: u8 = 1 << 0;
-const HAS_INSTALLED: u8 = 1 << 1;
-const HAS_CREATION: u8 = 1 << 2;
-const HAS_PUBLICATION: u8 = 1 << 3;
-const HAS_REPLACEMENT: u8 = 1 << 4;
-const HAS_FAULT: u8 = 1 << 5;
-const HAS_LAST_INSTALLED: u8 = 1 << 6;
-const HAS_DETACHMENT: u8 = 1 << 7;
+const HAS_DETACHED: u16 = 1 << 0;
+const HAS_INSTALLED: u16 = 1 << 1;
+const HAS_CREATION: u16 = 1 << 2;
+const HAS_PUBLICATION: u16 = 1 << 3;
+const HAS_REPLACEMENT: u16 = 1 << 4;
+const HAS_FAULT: u16 = 1 << 5;
+const HAS_LAST_INSTALLED: u16 = 1 << 6;
+const HAS_DETACHMENT: u16 = 1 << 7;
+const HAS_RELEASE: u16 = 1 << 8;
 
 /// Carries a complete, validated mount-broker inventory snapshot.
 #[derive(Clone, Debug, PartialEq)]
@@ -56,7 +57,7 @@ impl ValidatedMountInventory {
         &self.broker_instance_id
     }
 
-    /// Returns the durable journal sequence covered by the snapshot.
+    /// Returns the nonzero next-frame boundary after the durable snapshot.
     #[must_use]
     pub const fn journal_sequence(&self) -> u64 {
         self.journal_sequence
@@ -302,6 +303,7 @@ pub struct ValidatedMountInventoryRecord {
     resource_kernel_boot_id: [u8; 16],
     creation: Option<ValidatedMountOperationCorrelation>,
     detachment: Option<ValidatedMountOperationCorrelation>,
+    release: Option<ValidatedMountOperationCorrelation>,
     detached_unique_mount_id: Option<u64>,
     installed_observation: Option<ValidatedMountKernelObservation>,
     publication: Option<ValidatedMountPublicationCorrelation>,
@@ -350,6 +352,11 @@ impl ValidatedMountInventoryRecord {
     #[must_use]
     pub const fn detachment(&self) -> Option<ValidatedMountOperationCorrelation> {
         self.detachment
+    }
+    /// Returns release correlation while descriptor-store removal is uncertain.
+    #[must_use]
+    pub const fn release(&self) -> Option<ValidatedMountOperationCorrelation> {
+        self.release
     }
     /// Returns the detached mount's unique kernel identifier when one existed.
     #[must_use]
@@ -537,15 +544,21 @@ fn claims_slot(resource: &ValidatedMountInventoryRecord) -> bool {
             | MountLifecycle::MOUNT_LIFECYCLE_INSTALLED
             | MountLifecycle::MOUNT_LIFECYCLE_DETACHING
             | MountLifecycle::MOUNT_LIFECYCLE_DRAINING
-    ) || resource.fault.is_some_and(|fault| {
-        matches!(
-            fault.from,
-            MountFaultPhase::MOUNT_FAULT_PHASE_PUBLISHING
-                | MountFaultPhase::MOUNT_FAULT_PHASE_INSTALLED
-                | MountFaultPhase::MOUNT_FAULT_PHASE_DETACHING
-                | MountFaultPhase::MOUNT_FAULT_PHASE_DRAINING
-        )
-    })
+    ) || (resource.lifecycle == MountLifecycle::MOUNT_LIFECYCLE_RELEASING
+        && resource.installed_observation.is_some())
+        || resource.fault.is_some_and(|fault| {
+            matches!(
+                fault.from,
+                MountFaultPhase::MOUNT_FAULT_PHASE_PUBLISHING
+                    | MountFaultPhase::MOUNT_FAULT_PHASE_INSTALLED
+                    | MountFaultPhase::MOUNT_FAULT_PHASE_DETACHING
+                    | MountFaultPhase::MOUNT_FAULT_PHASE_DRAINING
+            )
+        })
+        || (resource
+            .fault
+            .is_some_and(|fault| fault.from == MountFaultPhase::MOUNT_FAULT_PHASE_RELEASING)
+            && resource.installed_observation.is_some())
 }
 
 fn declares_replacement(
@@ -583,6 +596,17 @@ fn is_phase(resource: &ValidatedMountInventoryRecord, lifecycle: MountLifecycle)
                     )
                 )
             }))
+        || (lifecycle == MountLifecycle::MOUNT_LIFECYCLE_DRAINING
+            && resource.lifecycle == MountLifecycle::MOUNT_LIFECYCLE_RELEASING
+            && resource.installed_observation.is_some()
+            && resource.replaced_by_mount_handle.is_some())
+        || (lifecycle == MountLifecycle::MOUNT_LIFECYCLE_DRAINING
+            && resource.lifecycle == MountLifecycle::MOUNT_LIFECYCLE_FAULTED
+            && resource
+                .fault
+                .is_some_and(|fault| fault.from == MountFaultPhase::MOUNT_FAULT_PHASE_RELEASING)
+            && resource.installed_observation.is_some()
+            && resource.replaced_by_mount_handle.is_some())
 }
 
 fn validate_replacement_correlations(
@@ -596,11 +620,8 @@ fn validate_replacement_correlations(
             let replaced = find_mount(mounts, replaced_handle)?;
             if !same_slot(resource, replaced)
                 || !binding_strictly_advances(&resource.binding, &replaced.binding)
-                || !matches!(
-                    replaced.lifecycle,
-                    MountLifecycle::MOUNT_LIFECYCLE_INSTALLED
-                        | MountLifecycle::MOUNT_LIFECYCLE_DRAINING
-                )
+                || !(is_phase(replaced, MountLifecycle::MOUNT_LIFECYCLE_INSTALLED)
+                    || is_phase(replaced, MountLifecycle::MOUNT_LIFECYCLE_DRAINING))
             {
                 return Err(ProtocolValidationError::InvalidField(
                     "inventory replacement correlation",
@@ -611,7 +632,7 @@ fn validate_replacement_correlations(
             let successor = find_mount(mounts, successor_handle)?;
             if !same_slot(resource, successor)
                 || !binding_strictly_advances(&successor.binding, &resource.binding)
-                || successor.lifecycle != MountLifecycle::MOUNT_LIFECYCLE_INSTALLED
+                || !is_phase(successor, MountLifecycle::MOUNT_LIFECYCLE_INSTALLED)
                 || successor
                     .publication
                     .and_then(|value| value.replaces_mount_handle)
@@ -660,6 +681,7 @@ fn binding_strictly_advances(
         )
 }
 
+#[allow(clippy::too_many_lines)]
 fn validate_record(
     record: &MountInventoryRecord,
 ) -> Result<ValidatedMountInventoryRecord, ProtocolValidationError> {
@@ -685,6 +707,11 @@ fn validate_record(
         .transpose()?;
     let detachment = record
         .detachment
+        .as_option()
+        .map(validate_operation)
+        .transpose()?;
+    let release = record
+        .release
         .as_option()
         .map(validate_operation)
         .transpose()?;
@@ -734,14 +761,15 @@ fn validate_record(
         .last_installed_unique_mount_id
         .map(|value| nonzero(value, "inventory.last_installed_unique_mount_id"))
         .transpose()?;
-    let presence = (u8::from(detached_unique_mount_id.is_some()) * HAS_DETACHED)
-        | (u8::from(installed_observation.is_some()) * HAS_INSTALLED)
-        | (u8::from(creation.is_some()) * HAS_CREATION)
-        | (u8::from(detachment.is_some()) * HAS_DETACHMENT)
-        | (u8::from(publication.is_some()) * HAS_PUBLICATION)
-        | (u8::from(replaced_by_mount_handle.is_some()) * HAS_REPLACEMENT)
-        | (u8::from(fault.is_some()) * HAS_FAULT)
-        | (u8::from(last_installed_unique_mount_id.is_some()) * HAS_LAST_INSTALLED);
+    let presence = (u16::from(detached_unique_mount_id.is_some()) * HAS_DETACHED)
+        | (u16::from(installed_observation.is_some()) * HAS_INSTALLED)
+        | (u16::from(creation.is_some()) * HAS_CREATION)
+        | (u16::from(detachment.is_some()) * HAS_DETACHMENT)
+        | (u16::from(release.is_some()) * HAS_RELEASE)
+        | (u16::from(publication.is_some()) * HAS_PUBLICATION)
+        | (u16::from(replaced_by_mount_handle.is_some()) * HAS_REPLACEMENT)
+        | (u16::from(fault.is_some()) * HAS_FAULT)
+        | (u16::from(last_installed_unique_mount_id.is_some()) * HAS_LAST_INSTALLED);
     validate_lifecycle_shape(lifecycle, presence, fault.map(|value| value.from))?;
 
     Ok(ValidatedMountInventoryRecord {
@@ -753,6 +781,7 @@ fn validate_record(
         resource_kernel_boot_id,
         creation,
         detachment,
+        release,
         detached_unique_mount_id,
         installed_observation,
         publication,
@@ -936,7 +965,7 @@ fn validate_fault(
 
 fn validate_lifecycle_shape(
     lifecycle: MountLifecycle,
-    presence: u8,
+    presence: u16,
     fault_from: Option<MountFaultPhase>,
 ) -> Result<(), ProtocolValidationError> {
     let valid = match lifecycle {
@@ -952,10 +981,14 @@ fn validate_lifecycle_shape(
         MountLifecycle::MOUNT_LIFECYCLE_DRAINING => {
             presence == (HAS_DETACHED | HAS_INSTALLED | HAS_REPLACEMENT)
         }
+        MountLifecycle::MOUNT_LIFECYCLE_RELEASING => {
+            presence == (HAS_DETACHED | HAS_RELEASE)
+                || presence == (HAS_DETACHED | HAS_INSTALLED | HAS_REPLACEMENT | HAS_RELEASE)
+        }
         MountLifecycle::MOUNT_LIFECYCLE_RELEASED => {
             presence & !(HAS_DETACHED | HAS_LAST_INSTALLED) == 0
         }
-        MountLifecycle::MOUNT_LIFECYCLE_FAULTED => fault_presence(fault_from) == Some(presence),
+        MountLifecycle::MOUNT_LIFECYCLE_FAULTED => fault_presence_matches(fault_from, presence),
         MountLifecycle::MOUNT_LIFECYCLE_UNSPECIFIED => false,
     };
     if valid {
@@ -967,7 +1000,7 @@ fn validate_lifecycle_shape(
     }
 }
 
-fn fault_presence(from: Option<MountFaultPhase>) -> Option<u8> {
+fn fault_presence(from: Option<MountFaultPhase>) -> Option<u16> {
     match from? {
         MountFaultPhase::MOUNT_FAULT_PHASE_ALLOCATED => Some(HAS_CREATION | HAS_FAULT),
         MountFaultPhase::MOUNT_FAULT_PHASE_PREPARED => {
@@ -985,8 +1018,18 @@ fn fault_presence(from: Option<MountFaultPhase>) -> Option<u8> {
         MountFaultPhase::MOUNT_FAULT_PHASE_DRAINING => {
             Some(HAS_DETACHED | HAS_INSTALLED | HAS_REPLACEMENT | HAS_FAULT)
         }
-        MountFaultPhase::MOUNT_FAULT_PHASE_UNSPECIFIED => None,
+        MountFaultPhase::MOUNT_FAULT_PHASE_RELEASING
+        | MountFaultPhase::MOUNT_FAULT_PHASE_UNSPECIFIED => None,
     }
+}
+
+fn fault_presence_matches(from: Option<MountFaultPhase>, presence: u16) -> bool {
+    if from == Some(MountFaultPhase::MOUNT_FAULT_PHASE_RELEASING) {
+        return presence == (HAS_DETACHED | HAS_RELEASE | HAS_FAULT)
+            || presence
+                == (HAS_DETACHED | HAS_INSTALLED | HAS_REPLACEMENT | HAS_RELEASE | HAS_FAULT);
+    }
+    fault_presence(from) == Some(presence)
 }
 
 fn optional_handle(
@@ -1030,8 +1073,9 @@ fn reject_unknown(fields: &buffa::UnknownFields) -> Result<(), ProtocolValidatio
 mod tests {
     use aos_proto::aos::sandbox::local::v1::{
         AssignmentFence, Descriptor, InventoryMountResourcesResponse, MountAssignmentBinding,
-        MountAttributes, MountInventoryRecord, MountKernelObservation, MountLifecycle,
-        MountOperationCorrelation, MountPublicationCorrelation, MountRecipe,
+        MountAttributes, MountFaultCorrelation, MountFaultPhase, MountInventoryRecord,
+        MountKernelObservation, MountLifecycle, MountOperationCorrelation,
+        MountPublicationCorrelation, MountRecipe,
     };
 
     use super::*;
@@ -1172,6 +1216,115 @@ mod tests {
                 .installed_observation()
                 .map(ValidatedMountKernelObservation::unique_mount_id),
             Some(101)
+        );
+    }
+
+    #[test]
+    fn releasing_inventory_retains_exact_operation_correlation() {
+        let mut record = installed_record(1, 101);
+        record.lifecycle = MountLifecycle::MOUNT_LIFECYCLE_RELEASING.into();
+        record.installed_observation = None.into();
+        record.publication = None.into();
+        record.release = Some(MountOperationCorrelation {
+            operation_id: vec![18; 16],
+            request_digest: vec![19; 32],
+            ..Default::default()
+        })
+        .into();
+        let encoded = response(vec![record]).encode_to_vec();
+        let inventory = decode_mount_inventory_response(&encoded, MINIMUM_RESPONSE_BYTES)
+            .unwrap_or_else(|error| panic!("valid releasing inventory failed: {error}"));
+        assert_eq!(
+            inventory.mounts()[0]
+                .release()
+                .map(|value| *value.operation_id()),
+            Some([18; 16])
+        );
+    }
+
+    #[test]
+    fn faulted_releasing_replacement_pair_remains_reciprocal() {
+        let mut predecessor = installed_record(1, 101);
+        predecessor.lifecycle = MountLifecycle::MOUNT_LIFECYCLE_FAULTED.into();
+        predecessor.publication = None.into();
+        predecessor.replaced_by_mount_handle = vec![2; 32];
+        predecessor.release = Some(MountOperationCorrelation {
+            operation_id: vec![18; 16],
+            request_digest: vec![19; 32],
+            ..Default::default()
+        })
+        .into();
+        predecessor.fault = Some(MountFaultCorrelation {
+            from: MountFaultPhase::MOUNT_FAULT_PHASE_RELEASING.into(),
+            failure_digest: vec![20; 32],
+            ..Default::default()
+        })
+        .into();
+
+        let mut successor = installed_record(2, 102);
+        let successor_fence = successor
+            .binding
+            .get_or_insert_default()
+            .fence
+            .get_or_insert_default();
+        successor_fence.desired_generation = 5;
+        successor_fence.assignment_digest = vec![21; 32];
+        successor
+            .publication
+            .get_or_insert_default()
+            .replaces_mount_handle = vec![1; 32];
+        successor.lifecycle = MountLifecycle::MOUNT_LIFECYCLE_FAULTED.into();
+        successor.fault = Some(MountFaultCorrelation {
+            from: MountFaultPhase::MOUNT_FAULT_PHASE_INSTALLED.into(),
+            failure_digest: vec![22; 32],
+            ..Default::default()
+        })
+        .into();
+
+        let encoded = response(vec![predecessor, successor]).encode_to_vec();
+        let inventory = decode_mount_inventory_response(&encoded, MINIMUM_RESPONSE_BYTES)
+            .unwrap_or_else(|error| panic!("faulted reciprocal pair failed: {error}"));
+        assert_eq!(inventory.mounts().len(), 2);
+    }
+
+    #[test]
+    fn ordinary_faulted_release_cannot_be_a_replacement_predecessor() {
+        let mut predecessor = installed_record(1, 101);
+        predecessor.lifecycle = MountLifecycle::MOUNT_LIFECYCLE_FAULTED.into();
+        predecessor.installed_observation = None.into();
+        predecessor.publication = None.into();
+        predecessor.release = Some(MountOperationCorrelation {
+            operation_id: vec![18; 16],
+            request_digest: vec![19; 32],
+            ..Default::default()
+        })
+        .into();
+        predecessor.fault = Some(MountFaultCorrelation {
+            from: MountFaultPhase::MOUNT_FAULT_PHASE_RELEASING.into(),
+            failure_digest: vec![20; 32],
+            ..Default::default()
+        })
+        .into();
+
+        let mut successor = installed_record(2, 102);
+        let successor_fence = successor
+            .binding
+            .get_or_insert_default()
+            .fence
+            .get_or_insert_default();
+        successor_fence.desired_generation = 5;
+        successor_fence.assignment_digest = vec![21; 32];
+        successor
+            .publication
+            .get_or_insert_default()
+            .replaces_mount_handle = vec![1; 32];
+
+        let encoded = response(vec![predecessor, successor]).encode_to_vec();
+        assert_eq!(
+            decode_mount_inventory_response(&encoded, MINIMUM_RESPONSE_BYTES),
+            Err(ProtocolValidationError::InvalidField(
+                "inventory replacement correlation"
+            ))
         );
     }
 

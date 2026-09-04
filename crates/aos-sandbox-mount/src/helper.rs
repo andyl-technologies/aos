@@ -1,5 +1,6 @@
 //! Single-threaded namespace-helper process and its fixed launcher.
 
+use std::collections::BTreeSet;
 use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 use std::os::fd::{AsFd as _, FromRawFd as _, OwnedFd};
 use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
@@ -209,6 +210,7 @@ impl NamespaceHelper for PosixSpawnNamespaceHelper {
 /// Returns an error for arguments/environment, plan seals or decoding, an
 /// inexact descriptor table, identity mismatch, multiple threads, namespace
 /// entry, root confinement, mount mutation, or post-effect verification.
+#[allow(clippy::too_many_lines)]
 pub fn run_inherited() -> Result<u8> {
     if std::env::args_os().count() != 1 || std::env::vars_os().next().is_some() {
         return Err(MountError::Worker(
@@ -278,9 +280,38 @@ pub fn run_inherited() -> Result<u8> {
                     "replacement target is not the authorized predecessor".to_owned(),
                 ));
             }
-            let mount = DetachedMount::from_inherited(adopt(DETACHED_MOUNT_FD)?)
+            let inventory = MountNamespace::current()
+                .inventory(
+                    65_536,
+                    aos_sandbox_linux::inventory::MountListOrder::Forward,
+                )
                 .map_err(helper_linux_error)?;
-            mount.attach_beneath(&current).map_err(helper_linux_error)?;
+            let expected_mount_point = inventory
+                .mounts
+                .iter()
+                .find(|mount| mount.mount_id == predecessor)
+                .map(|mount| mount.mount_point.as_os_str().as_bytes())
+                .ok_or_else(|| {
+                    MountError::Worker(
+                        "complete inventory omitted the topmost predecessor".to_owned(),
+                    )
+                })?;
+            match classify_replacement_stack(
+                &inventory.mounts,
+                MountId::new(plan.expected_mount_id).map_err(helper_linux_error)?,
+                predecessor,
+                MountId::new(plan.target_slot_mount_id).map_err(helper_linux_error)?,
+                expected_mount_point,
+            )? {
+                ReplacementStackState::NeedsAttach => {
+                    let mount = DetachedMount::from_inherited(adopt(DETACHED_MOUNT_FD)?)
+                        .map_err(helper_linux_error)?;
+                    mount.attach_beneath(&current).map_err(helper_linux_error)?;
+                }
+                ReplacementStackState::AlreadyAttached => {
+                    ensure_descriptor(DETACHED_MOUNT_FD, true)?;
+                }
+            }
             detach_relative(&plan.target_relative_path, &single).map_err(helper_linux_error)?;
             observe_published(&target_root, &plan)?
         }
@@ -304,6 +335,46 @@ pub fn run_inherited() -> Result<u8> {
     };
     write_report(adopt(OBSERVATION_FD)?, &observation)?;
     Ok(0)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReplacementStackState {
+    NeedsAttach,
+    AlreadyAttached,
+}
+
+/// Classifies replacement membership without using parent IDs or list order.
+///
+/// The caller has proven `predecessor` is topmost and serializes namespace
+/// mutations. The exclusive slot invariant plus a complete inventory means
+/// exactly one additional broker mount at the target must be immediately
+/// beneath the predecessor. `mount_point` is copied from that predecessor's
+/// own `statmount(2)` observation, avoiding any path-representation guess.
+fn classify_replacement_stack(
+    mounts: &[MountObservation],
+    successor: MountId,
+    predecessor: MountId,
+    target_slot: MountId,
+    mount_point: &[u8],
+) -> Result<ReplacementStackState> {
+    let explicit: BTreeSet<_> = mounts
+        .iter()
+        .filter(|mount| mount.mount_point.as_os_str().as_bytes() == mount_point)
+        .map(|mount| mount.mount_id)
+        .filter(|mount_id| *mount_id != target_slot)
+        .collect();
+    let successor_is_elsewhere = mounts.iter().any(|mount| {
+        mount.mount_id == successor && mount.mount_point.as_os_str().as_bytes() != mount_point
+    });
+    if explicit == BTreeSet::from([predecessor]) && !successor_is_elsewhere {
+        Ok(ReplacementStackState::NeedsAttach)
+    } else if explicit == BTreeSet::from([predecessor, successor]) {
+        Ok(ReplacementStackState::AlreadyAttached)
+    } else {
+        Err(MountError::Worker(
+            "replacement target stack is not exclusively broker-owned".to_owned(),
+        ))
+    }
 }
 
 fn compile_plan(
@@ -647,6 +718,71 @@ mod tests {
 
     use super::*;
     use aos_sandbox_linux::pidfd::NamespaceIdentity;
+
+    fn mount_at(mount_id: u64, parent_mount_id: u64, mount_point: &[u8]) -> MountObservation {
+        MountObservation {
+            mount_id: MountId::new(mount_id).unwrap(),
+            parent_mount_id: MountId::new(parent_mount_id).unwrap(),
+            mount_namespace_id: 39,
+            device_major: 8,
+            device_minor: 1,
+            superblock_magic: 0xef53,
+            superblock_flags: 7,
+            mount_attributes: 11,
+            propagation: 13,
+            supported_mask: Some(17),
+            root: std::ffi::OsString::from_vec(b"/root".to_vec()),
+            mount_point: std::ffi::OsString::from_vec(mount_point.to_vec()),
+            filesystem_type: std::ffi::OsString::from_vec(b"ext4".to_vec()),
+            superblock_source: std::ffi::OsString::from_vec(b"/dev/vda".to_vec()),
+            uid_map: None,
+            gid_map: None,
+        }
+    }
+
+    #[test]
+    fn replacement_stack_uses_complete_membership_not_parent_or_list_order() {
+        let predecessor = MountId::new(40).unwrap();
+        let successor = MountId::new(41).unwrap();
+        let target_slot = MountId::new(39).unwrap();
+        let mut mounts = vec![
+            mount_at(70, 1, b"/elsewhere"),
+            mount_at(40, 2, b"/target"),
+            mount_at(39, 3, b"/target"),
+        ];
+        assert_eq!(
+            classify_replacement_stack(&mounts, successor, predecessor, target_slot, b"/target")
+                .unwrap(),
+            ReplacementStackState::NeedsAttach
+        );
+
+        // Parent IDs and list order carry no stack semantics.
+        mounts.insert(0, mount_at(41, 999, b"/target"));
+        assert_eq!(
+            classify_replacement_stack(&mounts, successor, predecessor, target_slot, b"/target")
+                .unwrap(),
+            ReplacementStackState::AlreadyAttached
+        );
+        mounts.push(mount_at(42, 40, b"/target"));
+        assert!(
+            classify_replacement_stack(&mounts, successor, predecessor, target_slot, b"/target")
+                .is_err()
+        );
+        let successor_elsewhere = vec![
+            mount_at(40, 2, b"/target"),
+            mount_at(41, 999, b"/elsewhere"),
+        ];
+        assert!(
+            classify_replacement_stack(
+                &successor_elsewhere,
+                successor,
+                predecessor,
+                target_slot,
+                b"/target"
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn rich_observation_report_round_trips_and_preserves_idmap_evidence() {

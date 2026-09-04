@@ -453,6 +453,17 @@ impl Journal {
             })
     }
 
+    /// Returns the next monotonic frame sequence defining the current snapshot boundary.
+    ///
+    /// The value starts at one for an empty journal and advances only after a
+    /// transaction is durably committed. Inventory producers may therefore use
+    /// it as a nonzero watermark without implying that an empty journal has a
+    /// committed frame.
+    #[must_use]
+    pub const fn snapshot_sequence(&self) -> u64 {
+        self.next_sequence
+    }
+
     /// Resolves a caller key against durable semantic request identity.
     #[must_use]
     pub fn check_idempotency(

@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use aos_proto::aos::sandbox::local::v1::{MountAction, MountState};
-use aos_sandbox_linux::inventory::{MountId, MountObservation};
+use aos_sandbox_linux::inventory::{MountId, MountNamespace, MountObservation};
 use aos_sandbox_linux::mount::{DetachedMount, MountAttributes};
 use aos_sandbox_linux::pidfd::NamespaceIdentity;
 use aos_sandbox_protocol::ValidatedMountRequest;
@@ -41,6 +41,24 @@ pub struct ReleasedMountObservation {
     pub mount_id: MountId,
 }
 
+/// Reports one broker-owned descriptor retained across service restarts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RetainedMountObservation {
+    /// Stable broker resource handle encoded in the descriptor-store name.
+    pub handle: [u8; 32],
+    /// Exact kernel-lifetime mount identity carried by the descriptor.
+    pub mount_id: MountId,
+}
+
+/// Reports the exact read-only target disposition before publication.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PublicationPreflight {
+    /// Exact kernel mount-namespace identity returned by `statmount(2)`.
+    pub target_mount_namespace_id: u64,
+    /// Closed target classification relative to persisted mount identities.
+    pub disposition: MountTargetObservation,
+}
+
 /// Identifies one exact published mount in one exact namespace incarnation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InstalledMountObservation {
@@ -65,8 +83,58 @@ pub enum MountTargetObservation {
     Conflict,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PublicationEffect {
+    AlreadyInstalled,
+    AttachToEmptySlot,
+    ReplacePredecessor,
+}
+
 /// Applies one idempotent, descriptor-only mount transaction.
 pub trait MountWorker {
+    /// Returns the complete bounded set of restart-retained mount descriptors.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if custody contains aliases or exceeds its fixed bound.
+    fn custody_inventory(&self) -> Result<Vec<RetainedMountObservation>>;
+
+    /// Removes one retained descriptor without performing a namespace effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless descriptor-store removal is acknowledged.
+    fn discard_retained(&mut self, handle: [u8; 32]) -> Result<()>;
+
+    /// Performs a read-only publication preflight against persisted identities.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for missing custody, catalog failure, namespace
+    /// observation failure, or a target that cannot be classified exactly.
+    fn preflight_publication(
+        &self,
+        request: &ValidatedMountRequest,
+        request_digest: [u8; 32],
+        handle: [u8; 32],
+        expected_mount_id: MountId,
+        predecessor: Option<([u8; 32], MountId)>,
+    ) -> Result<PublicationPreflight>;
+
+    /// Reconciles an uncertain detach from durable identity alone.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for catalog failure, a conflicting target, helper
+    /// failure, or unacknowledged descriptor-store removal.
+    fn reconcile_detach(
+        &mut self,
+        request: &ValidatedMountRequest,
+        request_digest: [u8; 32],
+        handle: [u8; 32],
+        expected_mount_id: MountId,
+    ) -> Result<ReleasedMountObservation>;
+
     /// Applies or reconciles the validated action and verifies its result.
     ///
     /// The worker must resolve all resources through its trusted catalog. It
@@ -224,6 +292,97 @@ impl<C: MountCatalog, H: NamespaceHelper, K: KernelMountStore> DescriptorMountWo
 impl<C: MountCatalog, H: NamespaceHelper, K: KernelMountStore> MountWorker
     for DescriptorMountWorker<C, H, K>
 {
+    fn custody_inventory(&self) -> Result<Vec<RetainedMountObservation>> {
+        Ok(self
+            .detached
+            .iter()
+            .map(|(handle, mount)| RetainedMountObservation {
+                handle: *handle,
+                mount_id: mount.mount_id(),
+            })
+            .collect())
+    }
+
+    fn discard_retained(&mut self, handle: [u8; 32]) -> Result<()> {
+        self.keeper.remove(&KernelMountName::from_digest(handle))?;
+        self.detached.remove(&handle);
+        Ok(())
+    }
+
+    fn preflight_publication(
+        &self,
+        request: &ValidatedMountRequest,
+        request_digest: [u8; 32],
+        handle: [u8; 32],
+        expected_mount_id: MountId,
+        predecessor: Option<([u8; 32], MountId)>,
+    ) -> Result<PublicationPreflight> {
+        let mount = self.detached.get(&handle).ok_or_else(|| {
+            MountError::Worker("publication mount is not retained by this broker".to_owned())
+        })?;
+        if mount.mount_id() != expected_mount_id {
+            return Err(MountError::Worker(
+                "publication custody differs from durable mount identity".to_owned(),
+            ));
+        }
+        if let Some((predecessor_handle, predecessor_id)) = predecessor {
+            let retained = self.detached.get(&predecessor_handle).ok_or_else(|| {
+                MountError::Worker("replacement predecessor is not retained".to_owned())
+            })?;
+            if retained.mount_id() != predecessor_id {
+                return Err(MountError::Worker(
+                    "predecessor custody differs from durable mount identity".to_owned(),
+                ));
+            }
+        }
+
+        let resources = self.catalog.resolve(request)?;
+        let namespace = MountNamespace::pinned(&resources.mount_namespace)
+            .map_err(|error| MountError::Worker(error.to_string()))?;
+        let root = namespace
+            .list(None, None, 1)
+            .map_err(|error| MountError::Worker(error.to_string()))?;
+        let target_mount_namespace_id = root
+            .mounts
+            .first()
+            .copied()
+            .map(|mount_id| namespace.observe(mount_id))
+            .transpose()
+            .map_err(|error| MountError::Worker(error.to_string()))?
+            .map(|observation| observation.mount_namespace_id)
+            .filter(|identity| *identity != 0)
+            .ok_or_else(|| {
+                MountError::Worker("target mount namespace has no observable root".to_owned())
+            })?;
+        let disposition = self.helper.observe(
+            request,
+            request_digest,
+            &resources,
+            expected_mount_id,
+            predecessor.map(|(_, mount_id)| mount_id),
+        )?;
+        Ok(PublicationPreflight {
+            target_mount_namespace_id,
+            disposition,
+        })
+    }
+
+    fn reconcile_detach(
+        &mut self,
+        request: &ValidatedMountRequest,
+        request_digest: [u8; 32],
+        handle: [u8; 32],
+        expected_mount_id: MountId,
+    ) -> Result<ReleasedMountObservation> {
+        DescriptorMountWorker::reconcile_detach(
+            self,
+            request,
+            request_digest,
+            handle,
+            expected_mount_id,
+        )
+    }
+
     #[allow(clippy::too_many_lines)]
     fn execute(
         &mut self,
@@ -254,10 +413,15 @@ impl<C: MountCatalog, H: NamespaceHelper, K: KernelMountStore> MountWorker
                 if let std::collections::btree_map::Entry::Vacant(entry) =
                     self.detached.entry(handle)
                 {
+                    let name = KernelMountName::from_digest(handle);
+                    if self.keeper.contains(&name)? {
+                        return Err(MountError::State(
+                            "descriptor store contains an unadopted mount name".to_owned(),
+                        ));
+                    }
                     let mount = prepare_mount(request, &resources)?;
                     let mount_id = mount.mount_id();
-                    self.keeper
-                        .store(&KernelMountName::from_digest(handle), mount.as_fd())?;
+                    self.keeper.store(&name, mount.as_fd())?;
                     entry.insert(mount);
                     return Ok(WorkerObservation {
                         state: MountState::MOUNT_STATE_DETACHED,
@@ -303,30 +467,31 @@ impl<C: MountCatalog, H: NamespaceHelper, K: KernelMountStore> MountWorker
                     ),
                     _ => None,
                 };
-                let installed = match self.helper.observe(
+                let disposition = self.helper.observe(
                     request,
                     request_digest,
                     &resources,
                     mount.mount_id(),
                     predecessor,
-                )? {
-                    MountTargetObservation::Installed(observation) => *observation,
-                    MountTargetObservation::Absent => {
-                        if predecessor.is_some() {
-                            return Err(MountError::Worker(
-                                "replacement predecessor is absent".to_owned(),
+                )?;
+                let installed = match publication_effect(&disposition, predecessor.is_some())? {
+                    PublicationEffect::AlreadyInstalled => {
+                        let MountTargetObservation::Installed(observation) = disposition else {
+                            return Err(MountError::State(
+                                "publication classification changed".to_owned(),
                             ));
-                        }
-                        self.helper.install(
-                            request,
-                            request_digest,
-                            &resources,
-                            mount,
-                            false,
-                            None,
-                        )?
+                        };
+                        *observation
                     }
-                    MountTargetObservation::PredecessorInstalled => self.helper.install(
+                    PublicationEffect::AttachToEmptySlot => self.helper.install(
+                        request,
+                        request_digest,
+                        &resources,
+                        mount,
+                        false,
+                        None,
+                    )?,
+                    PublicationEffect::ReplacePredecessor => self.helper.install(
                         request,
                         request_digest,
                         &resources,
@@ -334,11 +499,6 @@ impl<C: MountCatalog, H: NamespaceHelper, K: KernelMountStore> MountWorker
                         true,
                         predecessor,
                     )?,
-                    MountTargetObservation::Conflict => {
-                        return Err(MountError::Worker(
-                            "destination contains a different mount generation".to_owned(),
-                        ));
-                    }
                 };
                 if installed.mount.mount_id != mount.mount_id() {
                     return Err(MountError::Worker(
@@ -379,6 +539,26 @@ impl<C: MountCatalog, H: NamespaceHelper, K: KernelMountStore> MountWorker
                 "validated worker received an unspecified action".to_owned(),
             )),
         }
+    }
+}
+
+fn publication_effect(
+    disposition: &MountTargetObservation,
+    is_replacement: bool,
+) -> Result<PublicationEffect> {
+    match disposition {
+        MountTargetObservation::Installed(_) => Ok(PublicationEffect::AlreadyInstalled),
+        MountTargetObservation::Absent if !is_replacement => {
+            Ok(PublicationEffect::AttachToEmptySlot)
+        }
+        MountTargetObservation::PredecessorInstalled if is_replacement => {
+            Ok(PublicationEffect::ReplacePredecessor)
+        }
+        MountTargetObservation::Absent
+        | MountTargetObservation::PredecessorInstalled
+        | MountTargetObservation::Conflict => Err(MountError::Worker(
+            "destination contains a different mount generation".to_owned(),
+        )),
     }
 }
 
@@ -464,5 +644,14 @@ mod tests {
             );
             assert!(expected_handles(action, [9; 32], None).is_err());
         }
+    }
+
+    #[test]
+    fn replacement_requires_predecessor_or_completed_successor() {
+        assert!(publication_effect(&MountTargetObservation::Absent, true).is_err());
+        assert_eq!(
+            publication_effect(&MountTargetObservation::PredecessorInstalled, true).unwrap(),
+            PublicationEffect::ReplacePredecessor
+        );
     }
 }
