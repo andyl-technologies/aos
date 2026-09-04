@@ -103,8 +103,9 @@ they gate any affected runtime backend.
   cgroup, freeze/thaw, leader, and observation operations (`d1e40ea28`).
 - [x] **SBX-LINUX-01** Add safe, owned pidfd, namespace FD, `openat2`, mount FD,
   idmap, `statmount`, and `listmount` wrappers (`SBX-P0-03`; `362732f96`).
-- [ ] **SBX-HOST-01** Implement the root-only fixed host broker and one-shot
-  workers (`SBX-BPROTO-02`, `SBX-SD-01`, `SBX-LINUX-01`).
+- [x] **SBX-HOST-01** Implement the root-only fixed host broker and one-shot
+  workers (`SBX-BPROTO-02`, `SBX-SD-01`, `SBX-LINUX-01`;
+  `b024bb612`..`eda7b29b9`).
 - [ ] **SBX-STOR-01** Implement the root-only fixed storage broker with opaque
   handles and typed ZFS verbs (`SBX-BPROTO-02`, `SBX-P0-07`).
 - [ ] **SBX-MOUNT-01** Implement the root-only descriptor mount broker and
@@ -320,3 +321,10 @@ completes. The Git history remains authoritative for code details.
 - `ec3a23d4f` — `SBX-CTRL-02`: exhaustive transaction-frame and durable-effect
   restart matrices, including the external-apply-before-receipt ambiguity,
   prove atomic recovery and convergence without duplicate effect application.
+- `b024bb612`..`eda7b29b9` — `SBX-HOST-01`: bounded sequence-packet ingress,
+  closed runtime decoding, exact assignment-bound atomic launch catalogs,
+  durable fencing and replay, typed one-shot systemd effects, pidfd/cgroup
+  leader and controller identity checks, safe bounded errors, hermetic hostd
+  packaging, and hardened systemd socket activation. Focused tests, strict
+  pedantic lint, the package build, enabled unit materialization, and
+  `systemd-analyze verify` pass.
