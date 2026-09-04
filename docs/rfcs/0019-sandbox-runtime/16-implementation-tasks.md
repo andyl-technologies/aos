@@ -1084,6 +1084,26 @@ completes. The Git history remains authoritative for code details.
   rounds pass. The VM body has not run on x86_64 or aarch64, and the proof is
   still not the production transient-unit, full-argv, MAC, or guardian path;
   therefore both tasks remain unchecked.
+- `38fb4bab7` — further foundation toward `SBX-FS-02` and `SBX-FS-03`: a
+  backend-neutral single-connection metadata worker now composes the exact V3
+  index, prepared presentation, inode table, directory handles, and reusable
+  reply scratch. INIT-gated typed operations cover lookup, batch `FORGET`,
+  `GETATTR`, `READLINK`, two-phase `OPENDIR`, stateless paged `READDIR`, and
+  `RELEASEDIR`; mutation, file-data, xattr, and `READDIRPLUS` requests fail
+  through a closed error vocabulary. Per-connection and per-request entry,
+  variable-byte, typed-output, scratch-heap, and `FORGET` ceilings fail before
+  allocation or attacker-sized sorting. Lookup performs all presentation,
+  budget, and cancellation work before its final fallible inode commit.
+  `FORGET` uses an exclusive non-replayable prepared transaction whose final
+  cancellation check is immediately followed by one infallible mutation.
+  `READDIR` copies only complete fitting records, retains the prior cookie when
+  the next record does not fit, preserves byte names, and never interns
+  children. The allocator harness proves zero-allocation hot metadata paths;
+  90 filesystem tests, ten compile-fail doctests, strict Clippy,
+  warning-denied rustdoc, scoped formatting, and independent adversarial repair
+  pass. This core neither parses FUSE wire records nor owns a kernel connection,
+  cancellation carrier, backing descriptor, or external resource, so
+  `SBX-FS-03` remains unchecked.
 
 The post-`727da7f3e` x86_64 `sandbox-filesystem-capability-proof` rerun built the
 complete hermetic Rust closure, AOS system, initrd, and VM disk and launched
