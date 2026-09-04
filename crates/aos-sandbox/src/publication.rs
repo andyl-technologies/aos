@@ -15,17 +15,20 @@
 
 use std::collections::BTreeMap;
 
+use aos_proto::aos::sandbox::local::v1::{BrokerDescriptorRole, BrokerMethod};
 use aos_sandbox_core::format::{
     decode_broker_authorization_plan, decode_ownership_lease, decode_signature, encode_signature,
 };
 use aos_sandbox_core::model::SignaturePurpose;
 use aos_sandbox_core::{
-    descriptor_for_bytes, BrokerAudience, CanonicalAssignmentManifestV1, DecodeLimits,
-    ObjectDigest, OperationId, SandboxId,
+    BrokerAudience, BrokerAuthorizationPlan, CanonicalAssignmentManifestV1, DecodeLimits,
+    ObjectDigest, OperationId, OwnershipLease, RawPairedClockSample, SandboxId,
+    descriptor_for_bytes,
 };
 use sha2::{Digest as _, Sha256};
 
 use crate::{
+    BrokerDispatchAttemptError, BrokerDispatchAttemptV1, BrokerDispatchSemanticIdentityV1,
     BrokerDispatchTemplateV1, IdempotencyKey, IdempotencyOutcome, Journal, JournalError,
     JournalRecord, JournalTransaction, RecordNamespace, SignedOwnershipLease,
 };
@@ -128,6 +131,8 @@ impl PreparedAuthorityPublicationV1 {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CurrentAuthorityPublicationV1 {
     prepared: PreparedAuthorityPublicationV1,
+    lease: RecoveredOwnershipLeaseV1,
+    templates: Vec<RecoveredBrokerDispatchTemplateV1>,
 }
 
 impl CurrentAuthorityPublicationV1 {
@@ -154,6 +159,135 @@ impl CurrentAuthorityPublicationV1 {
     pub const fn lease_digest(&self) -> ObjectDigest {
         self.prepared.lease_digest
     }
+
+    /// Returns the exact structurally recovered ownership lease.
+    ///
+    /// Recovery preserves the signed bytes but does not re-establish
+    /// cryptographic trust; every privileged broker must verify them.
+    #[must_use]
+    pub const fn lease(&self) -> &RecoveredOwnershipLeaseV1 {
+        &self.lease
+    }
+
+    /// Returns every immutable current dispatch template in publication order.
+    #[must_use]
+    pub fn templates(&self) -> &[RecoveredBrokerDispatchTemplateV1] {
+        &self.templates
+    }
+}
+
+/// Retains one exact ownership lease recovered from the current publication.
+///
+/// This type proves canonical structure and publication cross-links, not
+/// signature authenticity. It therefore cannot authorize a privileged effect.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecoveredOwnershipLeaseV1 {
+    lease: OwnershipLease,
+    canonical_lease: Vec<u8>,
+    canonical_signature: Vec<u8>,
+    digest: ObjectDigest,
+}
+
+impl RecoveredOwnershipLeaseV1 {
+    /// Returns the decoded immutable lease semantics.
+    #[must_use]
+    pub const fn lease(&self) -> &OwnershipLease {
+        &self.lease
+    }
+
+    /// Returns the exact canonical lease bytes.
+    #[must_use]
+    pub fn canonical_lease(&self) -> &[u8] {
+        &self.canonical_lease
+    }
+
+    /// Returns the exact canonical detached-signature bytes.
+    #[must_use]
+    pub fn canonical_signature(&self) -> &[u8] {
+        &self.canonical_signature
+    }
+
+    /// Returns the descriptor digest of the exact canonical lease bytes.
+    #[must_use]
+    pub const fn digest(&self) -> ObjectDigest {
+        self.digest
+    }
+}
+
+/// Retains one exact non-authorizing dispatch template recovered as current.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecoveredBrokerDispatchTemplateV1 {
+    digest: ObjectDigest,
+    audience: BrokerAudience,
+    plan: BrokerAuthorizationPlan,
+    canonical_plan: Vec<u8>,
+    canonical_plan_signature: Vec<u8>,
+    method: BrokerMethod,
+    body_without_deadline: Vec<u8>,
+    descriptor_roles: Vec<BrokerDescriptorRole>,
+    semantics: BrokerDispatchSemanticIdentityV1,
+}
+
+impl RecoveredBrokerDispatchTemplateV1 {
+    /// Returns the exact immutable template digest.
+    #[must_use]
+    pub const fn digest(&self) -> ObjectDigest {
+        self.digest
+    }
+
+    /// Returns the sole broker audience named by the recovered plan.
+    #[must_use]
+    pub const fn audience(&self) -> BrokerAudience {
+        self.audience
+    }
+
+    /// Returns the decoded immutable broker plan.
+    #[must_use]
+    pub const fn plan(&self) -> &BrokerAuthorizationPlan {
+        &self.plan
+    }
+
+    /// Returns the exact canonical broker-plan bytes.
+    #[must_use]
+    pub fn canonical_plan(&self) -> &[u8] {
+        &self.canonical_plan
+    }
+
+    /// Returns the exact canonical broker-plan signature bytes.
+    #[must_use]
+    pub fn canonical_plan_signature(&self) -> &[u8] {
+        &self.canonical_plan_signature
+    }
+
+    /// Returns the closed local broker method.
+    #[must_use]
+    pub const fn method(&self) -> BrokerMethod {
+        self.method
+    }
+
+    /// Returns the exact deadline-free protobuf body.
+    #[must_use]
+    pub fn body_without_deadline(&self) -> &[u8] {
+        &self.body_without_deadline
+    }
+
+    /// Returns exact ancillary descriptor roles in transport order.
+    #[must_use]
+    pub fn descriptor_roles(&self) -> &[BrokerDescriptorRole] {
+        &self.descriptor_roles
+    }
+
+    /// Returns the structurally cross-linked portable request semantics.
+    #[must_use]
+    pub const fn semantics(&self) -> BrokerDispatchSemanticIdentityV1 {
+        self.semantics
+    }
+}
+
+#[derive(Debug)]
+struct RecoveredPublicationArtifactsV1 {
+    lease: RecoveredOwnershipLeaseV1,
+    templates: Vec<RecoveredBrokerDispatchTemplateV1>,
 }
 
 /// Reports whether atomic publication committed or replayed a prior decision.
@@ -245,6 +379,52 @@ impl<'a> AuthorityPublicationStore<'a> {
             .map(decode_current)
             .transpose()
     }
+
+    /// Selects one exact current template and attenuates it to a fresh attempt.
+    ///
+    /// `expected_publication` prevents work compiled against an older bundle
+    /// from dispatching after renewal or replacement. Callers supply only
+    /// immutable identities and fresh clock/deadline facts, never alternate
+    /// authority or request bytes. The result remains non-authorizing broker
+    /// input and requires complete protected verification on receipt.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthorityPublicationError`] when current state is absent,
+    /// stale, corrupt, lacks the template, assigns it to another audience, or
+    /// rejects fresh deadline attenuation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn select_current_attempt(
+        &self,
+        sandbox: SandboxId,
+        expected_publication: ObjectDigest,
+        audience: BrokerAudience,
+        template_digest: ObjectDigest,
+        deadline_boottime_nanoseconds: u64,
+        clock: RawPairedClockSample,
+    ) -> Result<BrokerDispatchAttemptV1, AuthorityPublicationError> {
+        let current = self
+            .current(sandbox)?
+            .ok_or(AuthorityPublicationError::CurrentAbsent)?;
+        if current.digest() != expected_publication {
+            return Err(AuthorityPublicationError::StaleCurrent);
+        }
+        let template = current
+            .templates
+            .iter()
+            .find(|candidate| candidate.digest == template_digest)
+            .ok_or(AuthorityPublicationError::TemplateAbsent)?;
+        if template.audience != audience {
+            return Err(AuthorityPublicationError::WrongAudience);
+        }
+        BrokerDispatchAttemptV1::from_recovered_current(
+            template,
+            &current.lease,
+            deadline_boottime_nanoseconds,
+            clock,
+        )
+        .map_err(AuthorityPublicationError::DispatchAttempt)
+    }
 }
 
 /// Reports rejected proposal, ordering, replay, or durability state.
@@ -274,6 +454,21 @@ pub enum AuthorityPublicationError {
     /// Journal validation or durability failed.
     #[error("authority publication journal failed: {0}")]
     Journal(#[from] JournalError),
+    /// No complete current publication exists for the sandbox.
+    #[error("sandbox has no complete current authority publication")]
+    CurrentAbsent,
+    /// The current publication changed after the caller compiled its work.
+    #[error("authority publication is no longer current")]
+    StaleCurrent,
+    /// The requested template digest is not in the current publication.
+    #[error("dispatch template is absent from the current publication")]
+    TemplateAbsent,
+    /// The selected current template belongs to another broker audience.
+    #[error("dispatch template does not belong to the requested broker audience")]
+    WrongAudience,
+    /// Fresh lease and deadline attenuation rejected the current template.
+    #[error("current dispatch attempt is invalid: {0}")]
+    DispatchAttempt(#[from] BrokerDispatchAttemptError),
 }
 
 fn validate_proposal(
@@ -468,7 +663,7 @@ fn decode_current(
     if publication_digest(&publication) != digest {
         return Err(AuthorityPublicationError::CorruptCurrent);
     }
-    validate_encoded_publication(
+    let recovered = validate_encoded_publication(
         &publication,
         sandbox,
         incarnation,
@@ -492,6 +687,8 @@ fn decode_current(
             digest,
             bytes: publication,
         },
+        lease: recovered.lease,
+        templates: recovered.templates,
     })
 }
 
@@ -508,7 +705,7 @@ fn validate_encoded_publication(
     node: [u8; 16],
     lease_generation: u64,
     lease_digest: ObjectDigest,
-) -> Result<(), AuthorityPublicationError> {
+) -> Result<RecoveredPublicationArtifactsV1, AuthorityPublicationError> {
     if bytes.len() < 10 || &bytes[..8] != MAGIC || bytes[8..10] != VERSION.to_be_bytes() {
         return Err(AuthorityPublicationError::CorruptCurrent);
     }
@@ -559,6 +756,12 @@ fn validate_encoded_publication(
     {
         return Err(AuthorityPublicationError::CorruptCurrent);
     }
+    let recovered_lease = RecoveredOwnershipLeaseV1 {
+        lease,
+        canonical_lease: lease_bytes.to_vec(),
+        canonical_signature: signature_bytes.to_vec(),
+        digest: lease_digest,
+    };
     let required = take_u32(bytes, &mut cursor)?;
     if required == 0 || required > 4 {
         return Err(AuthorityPublicationError::CorruptCurrent);
@@ -577,6 +780,7 @@ fn validate_encoded_publication(
         .broker_assignment()
         .map_err(|_| AuthorityPublicationError::CorruptCurrent)?;
     let mut plans: BTreeMap<u8, (Vec<u8>, Vec<u8>)> = BTreeMap::new();
+    let mut recovered_templates = Vec::with_capacity(templates);
     for _ in 0..templates {
         let stored_template_digest = ObjectDigest::from_bytes(take_array(bytes, &mut cursor)?);
         let audience = *take(bytes, &mut cursor, 1)?
@@ -621,10 +825,11 @@ fn validate_encoded_publication(
             }
             _ => {}
         }
-        let method = i32::from_be_bytes(take_array(bytes, &mut cursor)?);
-        if !matches!((audience, method), (1, 1) | (2, 4) | (3, 7) | (4, 9)) {
+        let method_code = i32::from_be_bytes(take_array(bytes, &mut cursor)?);
+        if !matches!((audience, method_code), (1, 1) | (2, 4) | (3, 7) | (4, 9)) {
             return Err(AuthorityPublicationError::CorruptCurrent);
         }
+        let method = broker_method_from_code(method_code)?;
         let body = take_bytes(bytes, &mut cursor)?;
         if !crate::dispatch::validate_durable_deadline_free_body(body) {
             return Err(AuthorityPublicationError::CorruptCurrent);
@@ -633,13 +838,15 @@ fn validate_encoded_publication(
         if roles > 16 {
             return Err(AuthorityPublicationError::CorruptCurrent);
         }
-        let mut prior_roles = Vec::with_capacity(roles);
+        let mut role_codes = Vec::with_capacity(roles);
+        let mut descriptor_roles = Vec::with_capacity(roles);
         for _ in 0..roles {
             let role = i32::from_be_bytes(take_array(bytes, &mut cursor)?);
-            if !(1..=7).contains(&role) || prior_roles.contains(&role) {
+            if !(1..=7).contains(&role) || role_codes.contains(&role) {
                 return Err(AuthorityPublicationError::CorruptCurrent);
             }
-            prior_roles.push(role);
+            role_codes.push(role);
+            descriptor_roles.push(broker_descriptor_role_from_code(role)?);
         }
         let verb = u32::from_be_bytes(take_array(bytes, &mut cursor)?);
         let target_start = cursor;
@@ -665,7 +872,7 @@ fn validate_encoded_publication(
             .ok_or(AuthorityPublicationError::CorruptCurrent)?;
         let descriptor_count =
             u16::try_from(roles).map_err(|_| AuthorityPublicationError::CorruptCurrent)?;
-        if !plan.grants().iter().any(|grant| {
+        let matching_grant = plan.grants().iter().find(|grant| {
             let mut encoded_target = Vec::new();
             encode_target(&mut encoded_target, grant.target());
             grant.verb().get() == verb
@@ -673,24 +880,46 @@ fn validate_encoded_publication(
                 && grant.argument_commitment().digest() == commitment
                 && maximum_body <= grant.maximum_request_bytes()
                 && descriptor_count <= grant.maximum_descriptors()
-        }) || durable_template_digest(
-            plan_descriptor.digest(),
-            plan_signature,
-            method,
-            body,
-            &prior_roles,
-            verb,
-            target_bytes,
-            commitment,
-        ) != stored_template_digest
+        });
+        if matching_grant.is_none()
+            || durable_template_digest(
+                plan_descriptor.digest(),
+                plan_signature,
+                method_code,
+                body,
+                &role_codes,
+                verb,
+                target_bytes,
+                commitment,
+            ) != stored_template_digest
         {
             return Err(AuthorityPublicationError::CorruptCurrent);
         }
+        let grant = matching_grant.ok_or(AuthorityPublicationError::CorruptCurrent)?;
+        let semantics = BrokerDispatchSemanticIdentityV1::new(
+            grant.verb(),
+            grant.target(),
+            grant.argument_commitment(),
+        );
+        recovered_templates.push(RecoveredBrokerDispatchTemplateV1 {
+            digest: stored_template_digest,
+            audience: audience_from_code(audience)?,
+            plan,
+            canonical_plan: plan_bytes.to_vec(),
+            canonical_plan_signature: plan_signature.to_vec(),
+            method,
+            body_without_deadline: body.to_vec(),
+            descriptor_roles,
+            semantics,
+        });
     }
     if cursor != bytes.len() || plans.len() != audiences.len() {
         return Err(AuthorityPublicationError::CorruptCurrent);
     }
-    Ok(())
+    Ok(RecoveredPublicationArtifactsV1 {
+        lease: recovered_lease,
+        templates: recovered_templates,
+    })
 }
 
 fn validate_successor(
@@ -779,6 +1008,41 @@ const fn audience_code(audience: BrokerAudience) -> u8 {
     }
 }
 
+fn audience_from_code(code: u8) -> Result<BrokerAudience, AuthorityPublicationError> {
+    match code {
+        1 => Ok(BrokerAudience::Host),
+        2 => Ok(BrokerAudience::Mount),
+        3 => Ok(BrokerAudience::Storage),
+        4 => Ok(BrokerAudience::Network),
+        _ => Err(AuthorityPublicationError::CorruptCurrent),
+    }
+}
+
+fn broker_method_from_code(code: i32) -> Result<BrokerMethod, AuthorityPublicationError> {
+    match code {
+        1 => Ok(BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME),
+        4 => Ok(BrokerMethod::BROKER_METHOD_MOUNT_APPLY),
+        7 => Ok(BrokerMethod::BROKER_METHOD_STORAGE_APPLY),
+        9 => Ok(BrokerMethod::BROKER_METHOD_NETWORK_APPLY),
+        _ => Err(AuthorityPublicationError::CorruptCurrent),
+    }
+}
+
+fn broker_descriptor_role_from_code(
+    code: i32,
+) -> Result<BrokerDescriptorRole, AuthorityPublicationError> {
+    match code {
+        1 => Ok(BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_PAYLOAD_MOUNT_NAMESPACE),
+        2 => Ok(BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_TARGET_ROOT),
+        3 => Ok(BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_MOUNT_SOURCE),
+        4 => Ok(BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_DETACHED_MOUNT),
+        5 => Ok(BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_RUNTIME_LEADER),
+        6 => Ok(BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_PAYLOAD_USER_NAMESPACE),
+        7 => Ok(BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_TARGET_SLOT),
+        _ => Err(AuthorityPublicationError::CorruptCurrent),
+    }
+}
+
 fn put_u32(bytes: &mut Vec<u8>, value: usize) -> Result<(), AuthorityPublicationError> {
     bytes.extend_from_slice(
         &u32::try_from(value)
@@ -841,11 +1105,11 @@ mod tests {
         SignaturePurpose, SignatureStatement, StableKeyId, TrustPolicy,
     };
     use aos_sandbox_core::{
-        sign_statement, AssignmentEpoch, BrokerArgumentCommitment, BrokerAssignment,
-        BrokerAuthorizationPlan, BrokerGrant, BrokerGrantTarget, BrokerVerb, DesiredGeneration,
-        FeatureRef, IncarnationId, LeaseAssignment, MediaType, NamespaceGeneration, NodeId,
-        ObjectDescriptor, OwnershipLease, PortableMediaType, ProjectId, ProtocolId,
-        ProtocolVersion, ResourceDimension, ResourceVector, RevocationScopeId, TrustScopeId,
+        AssignmentEpoch, BrokerArgumentCommitment, BrokerAssignment, BrokerAuthorizationPlan,
+        BrokerGrant, BrokerGrantTarget, BrokerVerb, DesiredGeneration, FeatureRef, IncarnationId,
+        LeaseAssignment, MediaType, NamespaceGeneration, NodeId, ObjectDescriptor, OwnershipLease,
+        PortableMediaType, ProjectId, ProtocolId, ProtocolVersion, ResourceDimension,
+        ResourceVector, RevocationScopeId, TrustScopeId, sign_statement,
     };
     use ed25519_dalek::SigningKey;
 
@@ -975,14 +1239,16 @@ mod tests {
             assignment,
             manifest.manifest().node(),
             lease_signer,
-            vec![BrokerGrant::new(
-                semantics.verb(),
-                semantics.target(),
-                semantics.argument_commitment(),
-                4096,
-                1,
-            )
-            .unwrap_or_else(|error| panic!("test grant failed: {error}"))],
+            vec![
+                BrokerGrant::new(
+                    semantics.verb(),
+                    semantics.target(),
+                    semantics.argument_commitment(),
+                    4096,
+                    1,
+                )
+                .unwrap_or_else(|error| panic!("test grant failed: {error}")),
+            ],
             ObjectDigest::from_bytes([50; 32]),
             RevocationScopeId::from_bytes([51; 16]),
             100,
@@ -1059,6 +1325,17 @@ mod tests {
         )
     }
 
+    fn clock(wall: i64, boottime: u64) -> RawPairedClockSample {
+        RawPairedClockSample::new_untrusted(
+            aos_sandbox_core::RawClockProvenance::new_untrusted([91; 16])
+                .unwrap_or_else(|error| panic!("test provenance failed: {error}")),
+            [92; 16],
+            wall,
+            boottime,
+        )
+        .unwrap_or_else(|error| panic!("test clock failed: {error}"))
+    }
+
     #[test]
     fn publication_is_atomic_idempotent_and_byte_exact_after_reopen() {
         let directory = TestDirectory::new();
@@ -1101,6 +1378,144 @@ mod tests {
             .unwrap_or_else(|| panic!("missing current"));
         assert_eq!(current.canonical_bytes(), prepared.canonical_bytes());
         assert_eq!(current.digest(), prepared.digest());
+    }
+
+    #[test]
+    fn recovery_retains_exact_typed_lease_plan_and_template_bytes() {
+        let directory = TestDirectory::new();
+        let proposal = proposal(1, 190);
+        let expected_lease = proposal.lease.canonical_lease().to_vec();
+        let expected_lease_signature = proposal.lease.canonical_signature().to_vec();
+        let expected_template = proposal.templates[0].clone();
+        let prepared = proposal
+            .prepare()
+            .unwrap_or_else(|error| panic!("test prepare failed: {error}"));
+        {
+            let (mut journal, _) = Journal::open(directory.journal(), Default::default())
+                .unwrap_or_else(|error| panic!("test journal failed: {error}"));
+            AuthorityPublicationStore::new(&mut journal)
+                .publish(
+                    &prepared,
+                    &IdempotencyKey::new(b"typed".to_vec())
+                        .unwrap_or_else(|error| panic!("test key failed: {error}")),
+                    OperationId::from_bytes([93; 16]),
+                    [94; 16],
+                )
+                .unwrap_or_else(|error| panic!("test publish failed: {error}"));
+        }
+
+        let (mut journal, _) = Journal::open(directory.journal(), Default::default())
+            .unwrap_or_else(|error| panic!("test reopen failed: {error}"));
+        let current = AuthorityPublicationStore::new(&mut journal)
+            .current(SandboxId::from_bytes([1; 16]))
+            .unwrap_or_else(|error| panic!("test current failed: {error}"))
+            .unwrap_or_else(|| panic!("missing current"));
+        assert_eq!(current.lease().canonical_lease(), expected_lease);
+        assert_eq!(
+            current.lease().canonical_signature(),
+            expected_lease_signature
+        );
+        assert_eq!(current.templates().len(), 1);
+        let recovered = &current.templates()[0];
+        assert_eq!(recovered.digest(), expected_template.digest());
+        assert_eq!(
+            recovered.canonical_plan(),
+            expected_template.signed_plan().canonical_plan()
+        );
+        assert_eq!(
+            recovered.canonical_plan_signature(),
+            expected_template.signed_plan().canonical_signature()
+        );
+        assert_eq!(
+            recovered.body_without_deadline(),
+            expected_template.body_without_deadline()
+        );
+        assert_eq!(
+            recovered.descriptor_roles(),
+            expected_template.descriptor_roles()
+        );
+        assert_eq!(recovered.semantics(), expected_template.semantics());
+    }
+
+    #[test]
+    fn selection_rejects_substitution_wrong_audience_and_stale_publication() {
+        let directory = TestDirectory::new();
+        let first_proposal = proposal(1, 190);
+        let template_digest = first_proposal.templates[0].digest();
+        let first = first_proposal
+            .prepare()
+            .unwrap_or_else(|error| panic!("test prepare failed: {error}"));
+        let (mut journal, _) = Journal::open(directory.journal(), Default::default())
+            .unwrap_or_else(|error| panic!("test journal failed: {error}"));
+        let mut store = AuthorityPublicationStore::new(&mut journal);
+        store
+            .publish(
+                &first,
+                &IdempotencyKey::new(b"first-selection".to_vec())
+                    .unwrap_or_else(|error| panic!("test key failed: {error}")),
+                OperationId::from_bytes([95; 16]),
+                [96; 16],
+            )
+            .unwrap_or_else(|error| panic!("test publish failed: {error}"));
+
+        let attempt = store
+            .select_current_attempt(
+                SandboxId::from_bytes([1; 16]),
+                first.digest(),
+                BrokerAudience::Mount,
+                template_digest,
+                2_000,
+                clock(150, 1_000),
+            )
+            .unwrap_or_else(|error| panic!("test selection failed: {error}"));
+        assert_eq!(attempt.template_digest(), template_digest);
+        assert_eq!(attempt.lease_digest(), first.lease_digest);
+        assert!(matches!(
+            store.select_current_attempt(
+                SandboxId::from_bytes([1; 16]),
+                first.digest(),
+                BrokerAudience::Host,
+                template_digest,
+                2_000,
+                clock(150, 1_000),
+            ),
+            Err(AuthorityPublicationError::WrongAudience)
+        ));
+        assert!(matches!(
+            store.select_current_attempt(
+                SandboxId::from_bytes([1; 16]),
+                first.digest(),
+                BrokerAudience::Mount,
+                ObjectDigest::from_bytes([97; 32]),
+                2_000,
+                clock(150, 1_000),
+            ),
+            Err(AuthorityPublicationError::TemplateAbsent)
+        ));
+
+        let renewed = proposal(2, 195)
+            .prepare()
+            .unwrap_or_else(|error| panic!("test renewal prepare failed: {error}"));
+        store
+            .publish(
+                &renewed,
+                &IdempotencyKey::new(b"renewed-selection".to_vec())
+                    .unwrap_or_else(|error| panic!("test key failed: {error}")),
+                OperationId::from_bytes([98; 16]),
+                [99; 16],
+            )
+            .unwrap_or_else(|error| panic!("test renewal publish failed: {error}"));
+        assert!(matches!(
+            store.select_current_attempt(
+                SandboxId::from_bytes([1; 16]),
+                first.digest(),
+                BrokerAudience::Mount,
+                template_digest,
+                2_000,
+                clock(150, 1_000),
+            ),
+            Err(AuthorityPublicationError::StaleCurrent)
+        ));
     }
 
     #[test]
@@ -1201,10 +1616,12 @@ mod tests {
             )
             .unwrap_or_else(|error| panic!("test partial commit failed: {error}"));
         let store = AuthorityPublicationStore::new(&mut journal);
-        assert!(store
-            .current(SandboxId::from_bytes([1; 16]))
-            .unwrap_or_else(|error| panic!("test current failed: {error}"))
-            .is_none());
+        assert!(
+            store
+                .current(SandboxId::from_bytes([1; 16]))
+                .unwrap_or_else(|error| panic!("test current failed: {error}"))
+                .is_none()
+        );
     }
 
     #[test]

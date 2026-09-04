@@ -359,6 +359,11 @@ where
         }
     }
 
+    /// Borrows the sole journal writer for a short composed controller action.
+    pub(crate) fn journal_mut(&mut self) -> &mut Journal {
+        &mut self.journal
+    }
+
     /// Atomically admits desired state, an operation, and its effect ledger.
     ///
     /// # Errors

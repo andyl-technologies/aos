@@ -39,6 +39,7 @@ pub use ownership_authority::{
 pub use publication::{
     AuthorityPublicationError, AuthorityPublicationOutcome, AuthorityPublicationProposalV1,
     AuthorityPublicationStore, CurrentAuthorityPublicationV1, PreparedAuthorityPublicationV1,
+    RecoveredBrokerDispatchTemplateV1, RecoveredOwnershipLeaseV1,
 };
 pub use reconciler::{
     AcceptOutcome, EffectDomain, EffectFailure, EffectObservation, EffectPlan, EffectReceipt,

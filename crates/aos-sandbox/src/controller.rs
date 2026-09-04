@@ -9,12 +9,14 @@
 //! It deliberately owns no signing key, privileged catalog, broker transport,
 //! or volatile work queue.
 
-use aos_sandbox_core::{ObjectDigest, OperationId};
+use aos_sandbox_core::{
+    BrokerAudience, ObjectDigest, OperationId, RawPairedClockSample, SandboxId,
+};
 use sha2::{Digest as _, Sha256};
 
 use crate::{
-    AcceptOutcome, OperationPlan, ReconcileOutcome, Reconciler, ReconcilerError,
-    SingleNodeEffectExecutor,
+    AcceptOutcome, AuthorityPublicationError, AuthorityPublicationStore, BrokerDispatchAttemptV1,
+    OperationPlan, ReconcileOutcome, Reconciler, ReconcilerError, SingleNodeEffectExecutor,
 };
 
 const REQUEST_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.controller-request.v1\0";
@@ -255,6 +257,36 @@ where
             });
         }
         Ok(ControllerQuantumReport { steps, idle })
+    }
+
+    /// Selects a lease-bound attempt from the exact durable current publication.
+    ///
+    /// This composed path temporarily borrows the reconciler's sole journal
+    /// writer, preventing an independently opened publication writer. It does
+    /// not send the packet or access a privileged descriptor catalog.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthorityPublicationError`] for absent, stale, corrupt, or
+    /// substituted current authority and for invalid clock attenuation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn select_current_broker_attempt(
+        &mut self,
+        sandbox: SandboxId,
+        expected_publication: ObjectDigest,
+        audience: BrokerAudience,
+        template_digest: ObjectDigest,
+        deadline_boottime_nanoseconds: u64,
+        clock: RawPairedClockSample,
+    ) -> Result<BrokerDispatchAttemptV1, AuthorityPublicationError> {
+        AuthorityPublicationStore::new(self.reconciler.journal_mut()).select_current_attempt(
+            sandbox,
+            expected_publication,
+            audience,
+            template_digest,
+            deadline_boottime_nanoseconds,
+            clock,
+        )
     }
 }
 
