@@ -31,14 +31,16 @@ a channel unless the release command initializes or advances it.
   publication, staged advancement, and recovery.
 - [Host a registry](hosting.md) covers a shared filesystem, static HTTP,
   object storage and CDNs, SFTP, smart Git, and AOS Hub.
-- [Use multiple registries](multiple-registries.md) covers the built-in AOS
-  registry, organizational overrides, priorities, and explicit selection.
+- [Configure registries on an AOS host](../aos/registries.md) covers the
+  built-in registry, organizational registries, priorities, trust, and
+  explicit consumer selection.
 - [Stage and schedule updates](rollouts.md) covers release channels, rollout
   partitions, automation, observation, and fix-forward recovery.
 - [Manage trust and incidents](trust.md) covers trust bootstrap, key custody,
   planned and emergency rotation, and bad package versions.
 
-Package consumers should begin with [Manage packages with APM](../aos/packages.md).
+Package consumers should begin with [Manage packages with APM](../aos/packages.md)
+and [Configure package registries](../aos/registries.md).
 AOS Hub operators should also read [Operate AOS Hub](../aos-hub/).
 
 ## Command map

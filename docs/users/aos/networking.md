@@ -143,6 +143,49 @@ sysctl net.core.somaxconn
 sysctl net.ipv4.tcp_syncookies
 ```
 
+## Keep the firewall closed by default
+
+The firewall defaults to a drop policy and trusts loopback. Open only the
+ports owned by services in the active image or package generation:
+
+```nix
+{
+  aos.firewall = {
+    enable = true;
+    defaultPolicy = "drop";
+    forwardPolicy = "drop";
+    # The SSH module contributes its configured port separately.
+    allowedTCP = [443];
+    allowedUDP = [];
+    trustedInterfaces = ["lo"];
+  };
+}
+```
+
+The SSH module contributes its configured port automatically. Exposed APM
+packages may also contribute firewall policy through their signed activation
+manifest. Review the package's network mode and declared listeners before
+activation; a firewall opening does not by itself make the service reachable
+inside a private package namespace.
+
+Do not trust an entire workload interface merely to avoid listing ports.
+`trustedInterfaces` bypasses ordinary input filtering for that interface and
+is a materially broader grant than an exact TCP or UDP port.
+
+Inspect both listeners and the active nftables rules after network, package, or
+firewall changes:
+
+```sh
+ss -lntup
+nft list ruleset
+systemctl status nftables.service
+journalctl -u nftables.service -b
+```
+
+Keep routing, listener ownership, package namespace policy, and firewall rules
+as separate checks. See [Understand the package sandbox](package-sandbox.md)
+for package TCP grants and host-networking implications.
+
 ## Diagnose a running host
 
 Start with the rendered policy and networkd's view:

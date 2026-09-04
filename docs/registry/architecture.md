@@ -28,9 +28,11 @@ unmodified — **channels are branches**, **releases are signed semver tags**, a
 `*.narinfo` / `nar/`) so a stock `nix` substituter can pull the same artifacts.
 The AOS client (`apm`) layers two extra, *additive* surfaces that ride alongside
 without conflict: signed **`/channels/<name>/00..ff`** partition tags for bucketed
-rollout, and **thin `delta-*.pack`s** for cheap incremental fetch. One Ed25519 key
-signs the release and channel tags. The governing design principle is **asymmetric
-cost: make publishing as expensive as possible so that consumption is as cheap as
+rollout, and **thin `delta-*.pack`s** for cheap incremental fetch. The current
+tools accept active registry Ed25519 keys for release and channel tags;
+canonical production assigns those authorities separate role- and
+channel-scoped keys. The governing design principle is **asymmetric cost: make
+publishing as expensive as possible so that consumption is as cheap as
 possible** — the producer pays once, every consumer benefits forever.
 
 > **CURRENT.** The registry now uses sha256 git repositories, dumb-HTTP index
@@ -280,8 +282,8 @@ transitively by the signed tag), with the consumer's client-side `registries.d`
 as an optional override (or the origin itself) — it is *not* advertised in any
 signed tag. The origin **may** serve the
 `nix-cache-info` / `<storehash>.narinfo` / `nar/` surface, a strict superset for
-stock `nix` dev-shell substitution; narinfo `Sig:` signatures (if served) reuse the
-one Ed25519 key. The AOS-namespace and git-object surfaces are untouched and
+stock `nix` dev-shell substitution; a separate cache-role Ed25519 key signs
+narinfo in production. The AOS-namespace and git-object surfaces are untouched and
 invisible to `nix`. See [`nix-cache-compatibility.md`](./nix-cache-compatibility.md).
 
 ---

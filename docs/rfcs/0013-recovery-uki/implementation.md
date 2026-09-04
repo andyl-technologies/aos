@@ -593,7 +593,7 @@ After implementation, update:
 
 - `docs/users/aos/recovery.md` with the exact menu, key workflow, slot restore,
   and external-reimage boundary;
-- `docs/users/aos/security.md` with PCR 12 and recovery-key authority;
+- `docs/users/aos/secure-boot.md` with PCR 12 and recovery-key authority;
 - `docs/users/aos/installation.md` with the paired recovery artifacts;
 - `docs/users/aos/upgrades.md` with recovery-copy retention; and
 - maintainer system-image documentation with recovery bundle publication and

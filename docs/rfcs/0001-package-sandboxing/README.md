@@ -6,7 +6,10 @@
   tier remains a planned future effort; the current threat model is first-party
   workload confinement. AOS remains an early preview; see the canonical
   [`support-status.md`](../../users/aos/support-status.md) for operational
-  limitations.
+  limitations. Current operator behavior is documented in
+  [`package-sandbox.md`](../../users/aos/package-sandbox.md); maintainer review
+  responsibilities are in
+  [`package-security.md`](../../maintainers/package-security.md).
 - **Mandate:** unlimited engineering budget, no corners cut — the target is the
   state of the art ([`state-of-the-art.md`](state-of-the-art.md)). Cost-based
   deferrals are lifted; what stays out is out **on merit** (dominated, no

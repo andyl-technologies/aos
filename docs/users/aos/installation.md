@@ -5,6 +5,10 @@ registry. There is no `aos install` command that writes a disk: installation
 means downloading a verified image, importing it into a hypervisor, or writing
 it with the target platform's normal imaging tool.
 
+Before enrollment or first boot, read [Use Secure Boot and verify package
+trust](secure-boot.md) for the full chain, production-key requirements, and the
+boundary between image and package verification.
+
 ## Discover and download an image
 
 Open the registry's **Images** page at `https://HUB/REGISTRY/-/images`, or use
