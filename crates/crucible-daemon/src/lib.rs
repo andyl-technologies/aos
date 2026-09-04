@@ -154,6 +154,8 @@ pub mod qemu_hot_fork_reconciliation;
 pub mod qemu_hot_fork_runner;
 #[cfg(target_os = "linux")]
 pub mod qemu_hot_fork_world;
+#[cfg(target_os = "linux")]
+pub mod qemu_hot_fork_world_resource;
 pub mod qemu_lifecycle_launcher;
 pub mod qemu_resource_guard;
 pub mod repository_admission;
@@ -498,6 +500,7 @@ pub use qemu_hot_fork_pool::{
 pub use qemu_hot_fork_reconciliation::{
     LinuxQemuHotForkAttemptLaunchError, LinuxQemuHotForkLiveChild,
     LinuxQemuHotForkReconciliationBackend, LinuxQemuHotForkReconciliationError,
+    LinuxQemuHotForkWorldAttemptLaunchError, LinuxQemuHotForkWorldAttemptLaunchFailure,
     QemuHotForkAttemptBasis, QemuHotForkAttemptReconciliation,
     QemuHotForkAttemptReconciliationError, QemuHotForkChildDisposition,
     QemuHotForkChildObservation, QemuHotForkChildObservationError,
@@ -518,6 +521,8 @@ pub use qemu_hot_fork_world::{
     QemuHotForkWorldChild, QemuHotForkWorldChildAdmissionError,
     QemuHotForkWorldChildAdmissionFailure, QemuHotForkWorldIncomplete,
 };
+#[cfg(target_os = "linux")]
+pub use qemu_hot_fork_world_resource::{QemuHotForkWorldNodeTarget, QemuHotForkWorldResourceOwner};
 pub use qemu_lifecycle_launcher::QemuAttemptProductionVmNodeLauncher;
 pub use qemu_resource_guard::{
     ComposedQemuAttemptResourceGuard, ComposedQemuAttemptResourceGuardFactory,

@@ -22,6 +22,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crucible::{ContentHash, EventLog, EventLogOffset, NodeId};
+use crucible_api::ProductionVmNodeGeneration;
 use crucible_campaign::{ExactCheckpointId, ObservationId};
 use crucible_qemu::{
     LinuxQemuHotForkChildProcessAuthority, QemuAsyncDriverPolicy, QemuChildWait, QemuCrashDetector,
@@ -37,6 +38,9 @@ use thiserror::Error;
 
 use crate::CrucibleAttemptExecution;
 use crate::qemu_hot_fork_world::QemuHotForkWorldAssemblyToken;
+use crate::qemu_hot_fork_world_resource::{
+    QemuHotForkWorldNodeTarget, QemuHotForkWorldResourceOwner,
+};
 
 /// Exact supervisor reservation owning one hot-fork realization.
 pub type QemuHotForkAttemptBasis = crate::AttemptExecutionRuntimeBasis;
@@ -990,8 +994,7 @@ impl QemuNodeExternalProcessControl for LinuxQemuHotForkNodeProcessControl {
 /// Concrete source-QEMU, pidfd, cgroup, and private-channel owner.
 pub struct LinuxQemuHotForkReconciliationBackend<G>
 where
-    G: crate::QemuAttemptResourceGuard
-        + QemuHotForkChildProcessOwner<Authority = LinuxQemuHotForkChildProcessAuthority>,
+    G: crate::QemuAttemptResourceGuard,
 {
     process_owner: Arc<LinuxQemuHotForkProcessOwner>,
     template_identity: QemuHotForkTemplateIdentity,
@@ -1090,8 +1093,7 @@ fn diagnostic_drain_realization_error(source: QemuNodeChannelError) -> QemuVmRea
 
 impl<G> fmt::Debug for LinuxQemuHotForkReconciliationBackend<G>
 where
-    G: crate::QemuAttemptResourceGuard
-        + QemuHotForkChildProcessOwner<Authority = LinuxQemuHotForkChildProcessAuthority>,
+    G: crate::QemuAttemptResourceGuard,
 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -1112,8 +1114,7 @@ where
 
 impl<G> LinuxQemuHotForkReconciliationBackend<G>
 where
-    G: crate::QemuAttemptResourceGuard
-        + QemuHotForkChildProcessOwner<Authority = LinuxQemuHotForkChildProcessAuthority>,
+    G: crate::QemuAttemptResourceGuard,
 {
     fn from_launch(
         source: QemuNode,
@@ -1284,8 +1285,7 @@ where
 
 impl<G> QemuHotForkReconciliationBackend for LinuxQemuHotForkReconciliationBackend<G>
 where
-    G: crate::QemuAttemptResourceGuard
-        + QemuHotForkChildProcessOwner<Authority = LinuxQemuHotForkChildProcessAuthority>,
+    G: crate::QemuAttemptResourceGuard,
 {
     type Error = LinuxQemuHotForkReconciliationError;
 
@@ -1492,6 +1492,73 @@ impl<G> LinuxQemuHotForkAttemptLaunchError<G> {
     }
 }
 
+/// Failure to launch one child through an aggregate World resource owner.
+#[derive(Debug, Error)]
+pub enum LinuxQemuHotForkWorldAttemptLaunchFailure {
+    /// The aggregate target owner rejected reservation or launch access.
+    #[error("aggregate hot-fork World resource admission failed: {0}")]
+    Target(#[source] QemuVmRealizationError),
+    /// QEMU rejected or failed the retained-template fork transaction.
+    #[error(transparent)]
+    Launch(#[from] QemuHotForkLaunchError),
+    /// An explicit no-child rejection could not roll back its reservation.
+    #[error(
+        "hot-fork launch was rejected before child creation, but target rollback failed: {rollback}"
+    )]
+    RejectedRollback {
+        /// Original explicit no-child fork rejection.
+        launch: QemuHotForkLaunchError,
+        /// Aggregate target-reservation rollback failure.
+        #[source]
+        rollback: QemuVmRealizationError,
+    },
+}
+
+/// Aggregate-World launch failure retaining the exact source template.
+#[must_use = "recover or quarantine the returned source template"]
+pub struct LinuxQemuHotForkWorldAttemptLaunchError {
+    source: Box<LinuxQemuHotForkWorldAttemptLaunchFailure>,
+    template: Box<QemuPreparedHotForkTemplate<QemuNode>>,
+}
+
+impl fmt::Debug for LinuxQemuHotForkWorldAttemptLaunchError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LinuxQemuHotForkWorldAttemptLaunchError")
+            .field("source", &self.source)
+            .field("template_configuration", &self.template.configuration())
+            .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Display for LinuxQemuHotForkWorldAttemptLaunchError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "launch retained-template World child failed: {}",
+            self.source
+        )
+    }
+}
+
+impl Error for LinuxQemuHotForkWorldAttemptLaunchError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(self.source.as_ref())
+    }
+}
+
+impl LinuxQemuHotForkWorldAttemptLaunchError {
+    /// Recovers the exact launch failure and retained source template.
+    pub fn into_parts(
+        self,
+    ) -> (
+        LinuxQemuHotForkWorldAttemptLaunchFailure,
+        QemuPreparedHotForkTemplate<QemuNode>,
+    ) {
+        (*self.source, *self.template)
+    }
+}
+
 impl<G> QemuHotForkAttemptReconciliation<LinuxQemuHotForkReconciliationBackend<G>>
 where
     G: crate::QemuAttemptProcessResourceGuard
@@ -1520,28 +1587,6 @@ where
         target: G,
     ) -> Result<Self, LinuxQemuHotForkAttemptLaunchError<G>> {
         Self::launch_inner(attempt, input, template, target, None)
-    }
-
-    /// Forks one retained source for an exact atomic world assembly.
-    ///
-    /// The process-local assembly token is retained inside the resulting
-    /// reconciliation owner. Atomic world admission later requires pointer-
-    /// identical token provenance in addition to the authenticated source
-    /// process, configuration, and event-log prefix.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LinuxQemuHotForkAttemptLaunchError`] with the source and target
-    /// authorities when QEMU rejects the request or launch ownership cannot be
-    /// established exactly.
-    pub fn launch_for_world(
-        attempt: QemuHotForkAttemptBasis,
-        input: &CrucibleAttemptExecution,
-        template: QemuPreparedHotForkTemplate<QemuNode>,
-        target: G,
-        world_assembly: QemuHotForkWorldAssemblyToken,
-    ) -> Result<Self, LinuxQemuHotForkAttemptLaunchError<G>> {
-        Self::launch_inner(attempt, input, template, target, Some(world_assembly))
     }
 
     fn launch_inner(
@@ -1581,7 +1626,135 @@ where
             }),
         }
     }
+}
 
+impl<G>
+    QemuHotForkAttemptReconciliation<
+        LinuxQemuHotForkReconciliationBackend<QemuHotForkWorldNodeTarget<G>>,
+    >
+where
+    G: crate::QemuAttemptProcessResourceGuard
+        + QemuHotForkChildProcessOwner<Authority = LinuxQemuHotForkChildProcessAuthority>,
+{
+    /// Forks one node through the exact aggregate World target owner.
+    ///
+    /// The node target is reserved before QEMU can create a child. An explicit
+    /// pre-fork rejection rolls that reservation back; every ambiguous or
+    /// post-fork failure quarantines the complete aggregate owner. Success
+    /// retains only a per-node release share in the reconciliation backend, so
+    /// no child can independently release CPU, memory, storage, cancellation,
+    /// or execution-quantum enforcement for the rest of the World.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LinuxQemuHotForkWorldAttemptLaunchError`] with the exact source
+    /// template after target reservation, fork, or rollback failure. The target
+    /// owner remains with the caller and is either reusable after a proven
+    /// no-child rejection or terminally quarantined.
+    pub fn launch_for_world(
+        attempt: QemuHotForkAttemptBasis,
+        input: &CrucibleAttemptExecution,
+        template: QemuPreparedHotForkTemplate<QemuNode>,
+        target: &mut QemuHotForkWorldResourceOwner<G>,
+        node_generation: ProductionVmNodeGeneration,
+        world_assembly: QemuHotForkWorldAssemblyToken,
+    ) -> Result<Self, LinuxQemuHotForkWorldAttemptLaunchError> {
+        let node_target = match target.reserve_node(node_generation) {
+            Ok(node_target) => node_target,
+            Err(source) => {
+                return Err(LinuxQemuHotForkWorldAttemptLaunchError {
+                    source: Box::new(LinuxQemuHotForkWorldAttemptLaunchFailure::Target(source)),
+                    template: Box::new(template),
+                });
+            }
+        };
+        let (mut source_node, template_identity) = template.into_parts();
+        let launched = target.with_guard_mut(|guard| {
+            source_node.fork_prepared_hot_fork_template_into(guard, |guard| {
+                guard.child_process_contract().map_err(|source| {
+                    QemuNodeChannelError::new(
+                        "obtain aggregate target hot-fork process contract",
+                        source.to_string(),
+                    )
+                })
+            })
+        });
+        let launch = match launched {
+            Ok(Ok(launch)) => launch,
+            Ok(Err(source @ QemuHotForkLaunchError::Rejected { .. })) => {
+                let failure = match node_target.abort_without_child() {
+                    Ok(()) => LinuxQemuHotForkWorldAttemptLaunchFailure::Launch(source),
+                    Err(rollback) => {
+                        target.quarantine();
+                        LinuxQemuHotForkWorldAttemptLaunchFailure::RejectedRollback {
+                            launch: source,
+                            rollback,
+                        }
+                    }
+                };
+                return Err(LinuxQemuHotForkWorldAttemptLaunchError {
+                    source: Box::new(failure),
+                    template: Box::new(QemuPreparedHotForkTemplate::from_reconciled_parts(
+                        source_node,
+                        template_identity,
+                    )),
+                });
+            }
+            Ok(Err(source)) => {
+                let mut node_target = node_target;
+                crate::QemuAttemptResourceGuard::quarantine(&mut node_target);
+                return Err(LinuxQemuHotForkWorldAttemptLaunchError {
+                    source: Box::new(LinuxQemuHotForkWorldAttemptLaunchFailure::Launch(source)),
+                    template: Box::new(QemuPreparedHotForkTemplate::from_reconciled_parts(
+                        source_node,
+                        template_identity,
+                    )),
+                });
+            }
+            Err(source) => {
+                let rollback = node_target.abort_without_child();
+                let failure = match rollback {
+                    Ok(()) => LinuxQemuHotForkWorldAttemptLaunchFailure::Target(source),
+                    Err(rollback) => {
+                        target.quarantine();
+                        LinuxQemuHotForkWorldAttemptLaunchFailure::Target(
+                            QemuVmRealizationError::Executor {
+                                operation: "roll back aggregate hot-fork target reservation",
+                                message: format!(
+                                    "launch access failed: {source}; rollback failed: {rollback}"
+                                ),
+                            },
+                        )
+                    }
+                };
+                return Err(LinuxQemuHotForkWorldAttemptLaunchError {
+                    source: Box::new(failure),
+                    template: Box::new(QemuPreparedHotForkTemplate::from_reconciled_parts(
+                        source_node,
+                        template_identity,
+                    )),
+                });
+            }
+        };
+
+        Ok(Self::new(
+            attempt,
+            LinuxQemuHotForkReconciliationBackend::from_launch(
+                source_node,
+                template_identity,
+                input.clone(),
+                Some(world_assembly),
+                node_target,
+                launch,
+            ),
+        ))
+    }
+}
+
+impl<G> QemuHotForkAttemptReconciliation<LinuxQemuHotForkReconciliationBackend<G>>
+where
+    G: crate::QemuAttemptResourceGuard,
+{
     /// Borrows the admitted live-child capability while the child is live.
     ///
     /// The capability joins private QMP, plugin/host-I/O continuation,

@@ -88,5 +88,9 @@ fn hot_fork_continuation_rejects_a_cross_node_generation_map() {
         .err()
         .unwrap_or_else(|| panic!("cross-node continuation should fail closed"));
 
-    assert!(error.to_string().contains("node continuation is incomplete"));
+    assert!(
+        error
+            .to_string()
+            .contains("node continuation is incomplete")
+    );
 }

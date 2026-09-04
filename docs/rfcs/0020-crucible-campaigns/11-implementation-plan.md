@@ -2467,11 +2467,17 @@ new world-assembly owner withholds all admitted node children until the exact
 running-node set matches one captured continuation by installed node, source process,
 configuration, event prefix, child-channel admission, scheduler-node
 installation, and an unforgeable process-local assembly incarnation. Partial
-assembly drop quarantines every admitted child. Shared
-aggregate target ownership, authoritative lifecycle construction, the remaining
-writable host-device endpoints, modeled QEMU driving, observation production,
-and a real fork flight remain open, so T-CAM-6.2, T-CAM-6.3, and T-CAM-7.4 stay
-unchecked.
+assembly drop quarantines every admitted child. The daemon now also reserves
+those launches through one bounded aggregate target owner. Its per-node
+reconciliation shares can charge and check the common attempt contract but
+cannot release it; explicit pre-fork rejection rolls back the unused slot,
+while ambiguous launch failure, unfinished-share drop, or incomplete aggregate
+finish quarantines the entire guard. The Linux process owner correspondingly
+retains a bounded set of authenticated hot-fork child pidfds instead of
+enforcing an incorrect one-child-per-attempt restriction. Authoritative
+lifecycle construction and ownership handoff, the remaining writable
+host-device endpoints, modeled QEMU driving, observation production, and a real
+fork flight remain open, so T-CAM-6.2, T-CAM-6.3, and T-CAM-7.4 stay unchecked.
 The daemon now also has the linear hot-fork execution-runner boundary above
 that owner. It rejects exact-resume substitution and foreign execution
 incarnations, admits the private child before a two-phase modeled drive/seal,
