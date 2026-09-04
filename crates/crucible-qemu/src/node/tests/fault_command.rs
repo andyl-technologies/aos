@@ -120,6 +120,7 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
                 fail_endpoint_install: false,
                 mismatch_endpoint_disposition: false,
                 mismatch_request_basis: false,
+                serve_child_qmp: false,
                 template_query_count: Arc::new(Mutex::new(0)),
                 hot_fork_script: HotForkScript::Rejected,
             },

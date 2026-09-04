@@ -2492,8 +2492,17 @@ the complete scheduler and event-log closure plus fault/network, trigger,
 assertion, selectable, terminal, and node-generation state, and sandwiches the
 capture between identical process/time inventories. It rejects unsettled
 network output, debug/checkpoint ownership, and lifecycle cleanup debt before
-any QEMU fork can begin. Linux child-node assembly and the atomic all-node
-installation transaction remain open. Realization now also
+any QEMU fork can begin. Each successful node fork now retains the exact state
+for one linear transition into an opaque process-neutral scheduler-node
+continuation containing the authenticated private plugin/QMP/shared-memory
+planes, cloned host-I/O runtime, private ring and console ownership, and exact
+scheduler/fault/network sequence state. Node forking rejects uncommitted
+observations, any operator debug endpoint, and terminal fault transport state before
+process creation. The continuation cannot be assembled from raw public parts
+and deliberately carries no fabricated direct-child wait handle. Pairing it
+with source-parent status and target pidfd/cgroup authority,
+then installing every child atomically into the complete world continuation,
+remains open. Realization now also
 converts an exact active node into a non-forgeable prepared-template capability only after QEMU has
 completed the retained-template and branch-resource transaction. The capability
 keeps the realized configuration and unified event-log prefix paired with the

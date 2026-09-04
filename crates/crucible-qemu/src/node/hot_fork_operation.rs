@@ -91,14 +91,16 @@ pub trait QemuHotForkChildProcessOwner {
 /// node retains its independent template continuation.
 #[must_use = "the child host continuation must remain owned through child teardown"]
 pub struct QemuHotForkHostContinuation {
-    endpoint: QemuHotForkPluginHostEndpoint,
-    ring_descriptor: OwnedFd,
-    ring: QemuHotForkPrivateRingStageProof,
-    endpoint_stage: QemuHotForkPluginEndpointStageProof,
-    shmem_hot_path: Box<dyn QemuShmemHotPathChannel>,
-    host_io_binding: crucible::model::ContentHash,
-    host_io_runtime: Box<dyn QemuHostIoRuntime>,
-    console_spool: Option<QemuConsoleObservationSpool>,
+    pub(super) request: crate::QmpHotForkRequest,
+    pub(super) endpoint: QemuHotForkPluginHostEndpoint,
+    pub(super) ring_descriptor: OwnedFd,
+    pub(super) ring: QemuHotForkPrivateRingStageProof,
+    pub(super) endpoint_stage: QemuHotForkPluginEndpointStageProof,
+    pub(super) shmem_hot_path: Box<dyn QemuShmemHotPathChannel>,
+    pub(super) host_io_binding: crucible::model::ContentHash,
+    pub(super) host_io_runtime: Box<dyn QemuHostIoRuntime>,
+    pub(super) console_spool: Option<QemuConsoleObservationSpool>,
+    pub(super) node_state: QemuHotForkNodeStateContinuation,
 }
 
 impl std::fmt::Debug for QemuHotForkHostContinuation {
@@ -118,6 +120,12 @@ impl QemuHotForkHostContinuation {
     #[must_use]
     pub const fn template_generation(&self) -> u64 {
         self.endpoint.template_generation()
+    }
+
+    /// Returns the exact QMP fork request binding every child continuation.
+    #[must_use]
+    pub const fn request(&self) -> crate::QmpHotForkRequest {
+        self.request
     }
 
     /// Returns the exact child-private ring generation.
@@ -160,6 +168,12 @@ impl QemuHotForkHostContinuation {
     #[must_use]
     pub const fn host_io_binding(&self) -> crucible::model::ContentHash {
         self.host_io_binding
+    }
+
+    /// Returns the exact scheduler-owned node state cloned at the fork boundary.
+    #[must_use]
+    pub const fn node_state(&self) -> &QemuHotForkNodeStateContinuation {
+        &self.node_state
     }
 
     /// Borrows the branch-private host-device continuation.
@@ -753,6 +767,8 @@ impl QemuNode {
                 ),
             });
         }
+        let node_state = QemuHotForkNodeStateContinuation::capture(self)
+            .map_err(|source| QemuHotForkLaunchError::Rejected { source })?;
         let mapping = match self.hot_fork_private_ring_stage.as_ref() {
             Some(QemuHotForkPrivateRingStage::Installed(mapping)) => mapping,
             Some(QemuHotForkPrivateRingStage::TransferUncertain(_)) | None => {
@@ -803,7 +819,6 @@ impl QemuNode {
                     source.to_string(),
                 ),
             })?;
-
         let parent_state = match self.channels.qmp_machine_control.hot_fork(request) {
             Ok(state) => state,
             Err(QemuHotForkCommandError::Rejected { source }) => {
@@ -894,6 +909,7 @@ impl QemuNode {
                 }
             })?;
         let host_continuation = QemuHotForkHostContinuation {
+            request,
             endpoint: host_endpoint,
             ring_descriptor,
             ring,
@@ -902,6 +918,7 @@ impl QemuNode {
             host_io_binding,
             host_io_runtime,
             console_spool: Some(console_spool),
+            node_state,
         };
         Ok(QemuHotForkChildLaunch {
             parent_state,

@@ -76,6 +76,9 @@ mod hot_fork_process_contract;
 #[path = "node/hot_fork_ring_image.rs"]
 mod hot_fork_ring_image;
 #[cfg(target_os = "linux")]
+#[path = "node/hot_fork_scheduler_continuation.rs"]
+mod hot_fork_scheduler_continuation;
+#[cfg(target_os = "linux")]
 mod process_identity;
 pub use error::{QemuNodeChannelError, QemuNodeChannelPlane, QemuNodeError};
 #[cfg(target_os = "linux")]
@@ -130,6 +133,11 @@ use hot_fork_ring_image::QemuHotForkPrivateRingStage;
 pub use hot_fork_ring_image::{
     QemuHotForkPrivateRingMapping, QemuHotForkPrivateRingStageError,
     QemuHotForkPrivateRingStageProof, QemuHotForkPrivateRingStageState,
+};
+#[cfg(target_os = "linux")]
+pub use hot_fork_scheduler_continuation::{
+    QemuHotForkNodeStateContinuation, QemuHotForkSchedulerNodeAssemblyError,
+    QemuHotForkSchedulerNodeContinuation,
 };
 #[cfg(target_os = "linux")]
 use process_identity::linux_process_identity_components;

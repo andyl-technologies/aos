@@ -3114,6 +3114,20 @@ atomic installation of all child nodes into that continuation, complete
 private-channel driving, hot-child checkpoint capture, and a real modeled QEMU
 flight remain open.
 
+The successful node transaction now retains the exact state needed for one
+linear process-neutral scheduler-node sealing transition. That transition
+moves the authenticated private plugin control plane, shared-memory cursor
+state, child QMP channel, cloned host-I/O runtime, private-ring descriptor, and
+child-only console spool into a single opaque value. The same value carries the
+exact scheduler mirror captured before process creation: logical time,
+completed-step state, pending preemption, network and fault sequence cursors,
+fault manifests, and ready markers. A fork is
+rejected before process creation when the source retains uncommitted network or
+priming observations, any operator debug endpoint, or a terminal fault-transport
+failure. The continuation deliberately has no raw-parts constructor and no
+`std::process::Child`; installing it still requires the source-QEMU status owner
+and target pidfd/cgroup authority as part of the atomic world transaction.
+
 The source QEMU now reserves the request's unique nonzero child-process
 generation in a fixed 4,096-record table before forking. The version-1
 `crucible-hot-fork-child-process(query|release, generation)` protocol binds that
