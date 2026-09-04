@@ -862,63 +862,55 @@ async fn load_topology_defaults(
         ),
     };
     let binding_scope = owner_scope_key.clone();
-    let bindings = client
-        .collect_pages::<_, aos_proto_types::ListBindingsResponse, _, _, _>(
-            aos_proto_types::BINDING_SERVICE_LIST_BINDINGS_PATH,
-            move |page_token| aos_proto_types::ListBindingsRequest {
-                owner_scope_key: binding_scope.clone(),
-                page_size: 100,
-                page_token,
-                include_granted: true,
-            },
-            |response| (response.bindings, response.next_page_token),
-        )
-        .await
-        .map_err(|failure| failure.to_string())?;
+    let bindings = client.collect_pages::<_, aos_proto_types::ListBindingsResponse, _, _, _>(
+        aos_proto_types::BINDING_SERVICE_LIST_BINDINGS_PATH,
+        move |page_token| aos_proto_types::ListBindingsRequest {
+            owner_scope_key: binding_scope.clone(),
+            page_size: 100,
+            page_token,
+            include_granted: true,
+        },
+        |response| (response.bindings, response.next_page_token),
+    );
     let domain_scope = owner_scope_key.clone();
-    let domains = client
-        .collect_pages::<_, aos_proto_types::ListDomainsResponse, _, _, _>(
-            aos_proto_types::DOMAIN_SERVICE_LIST_DOMAINS_PATH,
-            move |page_token| aos_proto_types::ListDomainsRequest {
-                owner_scope_key: domain_scope.clone(),
-                page_size: 100,
-                page_token,
-            },
-            |response| (response.domains, response.next_page_token),
-        )
-        .await
-        .map_err(|failure| failure.to_string())?;
-    let endpoints = client
-        .collect_pages::<_, aos_proto_types::ListEndpointsResponse, _, _, _>(
-            aos_proto_types::DELIVERY_SERVICE_LIST_ENDPOINTS_PATH,
-            move |page_token| aos_proto_types::ListTopologyResourcesRequest {
-                owner_scope_key: owner_scope_key.clone(),
-                page_size: 100,
-                page_token,
-                include_granted: true,
-            },
-            |response| (response.endpoints, response.next_page_token),
-        )
-        .await
-        .map_err(|failure| failure.to_string())?;
-    let mut gateways = Vec::new();
-    for binding in &bindings {
-        let binding = binding_ref(binding, organization.as_deref())
-            .ok_or_else(|| "a binding has no canonical reference".to_string())?;
-        let mut binding_gateways = client
-            .collect_pages::<_, aos_proto_types::ListGatewaysResponse, _, _, _>(
-                aos_proto_types::DELIVERY_SERVICE_LIST_GATEWAYS_PATH,
-                move |page_token| aos_proto_types::ListGatewaysRequest {
-                    binding: Some(binding.clone()),
-                    page_size: 100,
-                    page_token,
-                },
-                |response| (response.gateways, response.next_page_token),
-            )
-            .await
-            .map_err(|failure| failure.to_string())?;
-        gateways.append(&mut binding_gateways);
-    }
+    let domains = client.collect_pages::<_, aos_proto_types::ListDomainsResponse, _, _, _>(
+        aos_proto_types::DOMAIN_SERVICE_LIST_DOMAINS_PATH,
+        move |page_token| aos_proto_types::ListDomainsRequest {
+            owner_scope_key: domain_scope.clone(),
+            page_size: 100,
+            page_token,
+        },
+        |response| (response.domains, response.next_page_token),
+    );
+    let endpoint_scope = owner_scope_key.clone();
+    let endpoints = client.collect_pages::<_, aos_proto_types::ListEndpointsResponse, _, _, _>(
+        aos_proto_types::DELIVERY_SERVICE_LIST_ENDPOINTS_PATH,
+        move |page_token| aos_proto_types::ListTopologyResourcesRequest {
+            owner_scope_key: endpoint_scope.clone(),
+            page_size: 100,
+            page_token,
+            include_granted: true,
+        },
+        |response| (response.endpoints, response.next_page_token),
+    );
+    let gateway_scope = owner_scope_key;
+    let gateways = client.collect_pages::<_, aos_proto_types::ListGatewaysResponse, _, _, _>(
+        aos_proto_types::DELIVERY_SERVICE_LIST_GATEWAYS_PATH,
+        move |page_token| aos_proto_types::ListGatewaysRequest {
+            binding: None,
+            page_size: 100,
+            page_token,
+            owner_scope_key: gateway_scope.clone(),
+            include_granted: true,
+        },
+        |response| (response.gateways, response.next_page_token),
+    );
+    let (bindings, domains, endpoints, gateways) =
+        futures::join!(bindings, domains, endpoints, gateways);
+    let bindings = bindings.map_err(|failure| failure.to_string())?;
+    let domains = domains.map_err(|failure| failure.to_string())?;
+    let endpoints = endpoints.map_err(|failure| failure.to_string())?;
+    let gateways = gateways.map_err(|failure| failure.to_string())?;
 
     Ok((
         defaults,

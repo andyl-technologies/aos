@@ -14,6 +14,7 @@ mod cache_retention;
 mod cache_retention_refresh;
 mod cache_root_reasons;
 mod cache_stack;
+mod delivery_workflow;
 mod endpoints;
 mod gateways;
 mod infrastructure;

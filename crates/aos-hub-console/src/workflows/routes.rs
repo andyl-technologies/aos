@@ -9,7 +9,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use crate::components::{HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
-use crate::mutation::{idempotency_key, PendingPlan};
+use crate::mutation::{idempotency_key, watch_draft, PendingPlan};
 use crate::route::{route_selection_for_audience, ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
 
@@ -17,6 +17,7 @@ use super::access_policy::{
     access_policy_name, canonical_path, AccessPolicyFields, AccessPolicySignals,
 };
 use super::cache_integrations::CacheIntegrationWorkflow;
+use super::delivery_workflow::DeliveryDestinationWorkflows;
 use super::gateways::{endpoint_option_label, gateway_option_label};
 use super::organization_scope::surface_authorization_scope;
 
@@ -88,6 +89,7 @@ fn Routes(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl IntoV
                         match topology.await.as_ref() {
                             Ok(response) => view! {
                                 <DeliverySummary topology=response.clone()/>
+                                <DeliveryDestinationWorkflows client=client.clone() surface=surface.clone() choices=choices can_manage=can_manage/>
                                 <section class="panel resource-panel">
                                     <div class="section-heading"><div><p class="section-kicker">"Simultaneous delivery paths"</p><div class="section-title"><h2>"Routes"</h2><HelpTooltip term="Routes" summary="Multiple Hub-proxied, redirected, CDN-fronted, and direct routes can serve the same logical surface concurrently."/></div></div></div>
                                     {if response.routes.is_empty() {
@@ -165,12 +167,14 @@ struct RouteSignals {
 }
 
 #[derive(Clone, Debug)]
-struct RouteCreateChoices {
-    endpoints: Vec<aos_proto_types::Endpoint>,
-    placements: Vec<aos_proto_types::Placement>,
-    policies: Vec<aos_proto_types::PlacementPolicy>,
-    gateways: Vec<aos_proto_types::Gateway>,
-    boundaries: Vec<aos_proto_types::NetworkPolicy>,
+pub(super) struct RouteCreateChoices {
+    pub(super) owner_scope_key: String,
+    pub(super) endpoints: Vec<aos_proto_types::Endpoint>,
+    pub(super) domains: Vec<aos_proto_types::Domain>,
+    pub(super) placements: Vec<aos_proto_types::Placement>,
+    pub(super) policies: Vec<aos_proto_types::PlacementPolicy>,
+    pub(super) gateways: Vec<aos_proto_types::Gateway>,
+    pub(super) boundaries: Vec<aos_proto_types::NetworkPolicy>,
 }
 
 impl RouteSignals {
@@ -328,21 +332,18 @@ async fn load_route_create_choices(
     surface: &aos_proto_types::SurfaceRef,
     topology: aos_proto_types::GetSurfaceTopologyResponse,
 ) -> Result<RouteCreateChoices, String> {
-    let (owner_scope_key, organization) = surface_authorization_scope(client, surface).await?;
+    let (owner_scope_key, _) = surface_authorization_scope(client, surface).await?;
     let endpoint_scope = owner_scope_key.clone();
-    let endpoints = client
-        .collect_pages::<_, aos_proto_types::ListEndpointsResponse, _, _, _>(
-            aos_proto_types::DELIVERY_SERVICE_LIST_ENDPOINTS_PATH,
-            move |page_token| aos_proto_types::ListTopologyResourcesRequest {
-                owner_scope_key: endpoint_scope.clone(),
-                page_size: 100,
-                page_token,
-                include_granted: true,
-            },
-            |response| (response.endpoints, response.next_page_token),
-        )
-        .await
-        .map_err(|failure| failure.to_string())?;
+    let endpoints = client.collect_pages::<_, aos_proto_types::ListEndpointsResponse, _, _, _>(
+        aos_proto_types::DELIVERY_SERVICE_LIST_ENDPOINTS_PATH,
+        move |page_token| aos_proto_types::ListTopologyResourcesRequest {
+            owner_scope_key: endpoint_scope.clone(),
+            page_size: 100,
+            page_token,
+            include_granted: true,
+        },
+        |response| (response.endpoints, response.next_page_token),
+    );
     let boundary_scope = owner_scope_key.clone();
     let boundaries = client
         .collect_pages::<_, aos_proto_types::ListNetworkPoliciesResponse, _, _, _>(
@@ -354,61 +355,40 @@ async fn load_route_create_choices(
                 include_granted: true,
             },
             |response| (response.network_policies, response.next_page_token),
-        )
-        .await
-        .map_err(|failure| failure.to_string())?;
-    let bindings = client
-        .collect_pages::<_, aos_proto_types::ListBindingsResponse, _, _, _>(
-            aos_proto_types::BINDING_SERVICE_LIST_BINDINGS_PATH,
-            move |page_token| aos_proto_types::ListBindingsRequest {
-                owner_scope_key: owner_scope_key.clone(),
-                page_size: 100,
-                page_token,
-                include_granted: true,
-            },
-            |response| (response.bindings, response.next_page_token),
-        )
-        .await
-        .map_err(|failure| failure.to_string())?;
-
-    let mut gateways = Vec::new();
-    for binding in bindings {
-        let Some(spec) = binding.spec else {
-            continue;
-        };
-        let binding = match organization.as_ref() {
-            Some(org_slug) => aos_proto_types::BindingRef {
-                target: Some(aos_proto_types::binding_ref::Target::Organization(
-                    aos_proto_types::OrganizationBindingRef {
-                        org_slug: org_slug.clone(),
-                        name: spec.name,
-                    },
-                )),
-            },
-            None => aos_proto_types::BindingRef {
-                target: Some(aos_proto_types::binding_ref::Target::InstanceDefault(true)),
-            },
-        };
-        let mut binding_gateways = client
-            .collect_pages::<_, aos_proto_types::ListGatewaysResponse, _, _, _>(
-                aos_proto_types::DELIVERY_SERVICE_LIST_GATEWAYS_PATH,
-                move |page_token| aos_proto_types::ListGatewaysRequest {
-                    binding: Some(binding.clone()),
-                    page_size: 100,
-                    page_token,
-                },
-                |response| (response.gateways, response.next_page_token),
-            )
-            .await
-            .map_err(|failure| failure.to_string())?;
-        gateways.append(&mut binding_gateways);
-        if organization.is_none() {
-            break;
-        }
-    }
+        );
+    let domain_scope = owner_scope_key.clone();
+    let domains = client.collect_pages::<_, aos_proto_types::ListDomainsResponse, _, _, _>(
+        aos_proto_types::DOMAIN_SERVICE_LIST_DOMAINS_PATH,
+        move |page_token| aos_proto_types::ListDomainsRequest {
+            owner_scope_key: domain_scope.clone(),
+            page_size: 100,
+            page_token,
+        },
+        |response| (response.domains, response.next_page_token),
+    );
+    let gateway_scope = owner_scope_key.clone();
+    let gateways = client.collect_pages::<_, aos_proto_types::ListGatewaysResponse, _, _, _>(
+        aos_proto_types::DELIVERY_SERVICE_LIST_GATEWAYS_PATH,
+        move |page_token| aos_proto_types::ListGatewaysRequest {
+            binding: None,
+            page_size: 100,
+            page_token,
+            owner_scope_key: gateway_scope.clone(),
+            include_granted: true,
+        },
+        |response| (response.gateways, response.next_page_token),
+    );
+    let (endpoints, boundaries, domains, gateways) =
+        futures::join!(endpoints, boundaries, domains, gateways);
+    let endpoints = endpoints.map_err(|failure| failure.to_string())?;
+    let boundaries = boundaries.map_err(|failure| failure.to_string())?;
+    let domains = domains.map_err(|failure| failure.to_string())?;
+    let gateways = gateways.map_err(|failure| failure.to_string())?;
 
     Ok(RouteCreateChoices {
+        owner_scope_key,
         endpoints,
+        domains,
         placements: topology.placements,
         policies: topology.placement_policies,
         gateways,
@@ -1081,20 +1061,6 @@ fn plan<Req: serde::Serialize + 'static>(
     });
 }
 
-fn watch_draft(
-    observe: impl Fn() + 'static,
-    pending: RwSignal<Option<PendingPlan>>,
-    error: RwSignal<Option<String>>,
-) -> RwSignal<u64> {
-    let epoch = RwSignal::new(0_u64);
-    Effect::new(move |_| {
-        observe();
-        epoch.update(|value| *value = value.wrapping_add(1));
-        pending.set(None);
-        error.set(None);
-    });
-    epoch
-}
 fn apply_route(
     client: ApiClient,
     path: &'static str,
@@ -1134,6 +1100,6 @@ fn cache_surface(path: &str) -> aos_proto_types::SurfaceRef {
         )),
     }
 }
-fn reload() {
+pub(super) fn reload() {
     crate::app::refresh();
 }

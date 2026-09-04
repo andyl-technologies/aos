@@ -120,6 +120,65 @@ pub fn route_selection_for_audience(
         .unwrap_or_default()
 }
 
+/// Primary action available for one durable delivery workflow state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeliveryWorkflowAction {
+    /// Rechecks prerequisites and continues unfinished provisioning.
+    Resume,
+    /// Opens the reviewed activation step after verification succeeds.
+    ReviewActivation,
+}
+
+/// Returns the primary action supported by a delivery workflow state.
+#[must_use]
+pub fn delivery_workflow_action(state: &str) -> Option<DeliveryWorkflowAction> {
+    match state {
+        "preparing" | "awaiting_verification" | "blocked" => Some(DeliveryWorkflowAction::Resume),
+        "ready" => Some(DeliveryWorkflowAction::ReviewActivation),
+        "active" => None,
+        _ => Some(DeliveryWorkflowAction::Resume),
+    }
+}
+
+/// Returns prerequisite messages for a delivery-destination draft.
+#[must_use]
+pub fn delivery_draft_prerequisites(
+    placement_selected: bool,
+    endpoint_selected: bool,
+    new_endpoint: bool,
+    hostname_source_present: bool,
+    network_policy_selected: bool,
+    provider_attachment_present: bool,
+) -> Vec<&'static str> {
+    let mut missing = Vec::new();
+    if !placement_selected {
+        missing.push("A storage placement is required.");
+    }
+    if !new_endpoint && !endpoint_selected {
+        missing.push("Choose an existing endpoint or configure a new one.");
+    }
+    if new_endpoint && !hostname_source_present {
+        missing.push("A hostname or managed domain is required for the new endpoint.");
+    }
+    if new_endpoint && !network_policy_selected {
+        missing.push("A network policy is required for the new endpoint.");
+    }
+    if new_endpoint && !provider_attachment_present {
+        missing.push("Provider listener, TLS, and probe references are required for verification.");
+    }
+    missing
+}
+
+/// Returns whether owner-only controls belong on a scoped resource card.
+#[must_use]
+pub fn owner_controls_visible(
+    owner_scope_key: &str,
+    consumer_scope_key: &str,
+    permission_granted: bool,
+) -> bool {
+    permission_granted && owner_scope_key == consumer_scope_key
+}
+
 /// One page in a scope's deterministic settings navigation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PageSpec {
@@ -956,6 +1015,7 @@ mod tests {
                 &[
                     "overview",
                     "storage",
+                    "storage-new",
                     "domains",
                     "domains-new",
                     "boundaries",
@@ -1365,6 +1425,56 @@ mod tests {
             "route-ready"
         );
         assert!(route_selection_for_audience("web", &[], &[]).is_empty());
+    }
+
+    #[test]
+    fn delivery_workflow_actions_follow_verification_and_activation() {
+        assert_eq!(
+            delivery_workflow_action("awaiting_verification"),
+            Some(DeliveryWorkflowAction::Resume)
+        );
+        assert_eq!(
+            delivery_workflow_action("ready"),
+            Some(DeliveryWorkflowAction::ReviewActivation)
+        );
+        assert_eq!(delivery_workflow_action("active"), None);
+    }
+
+    #[test]
+    fn new_delivery_endpoint_requires_verifiable_provider_attachment() {
+        assert_eq!(
+            delivery_draft_prerequisites(true, false, true, true, true, false),
+            vec!["Provider listener, TLS, and probe references are required for verification."]
+        );
+        assert!(delivery_draft_prerequisites(true, true, false, false, false, false).is_empty());
+    }
+
+    #[test]
+    fn granted_infrastructure_never_exposes_owner_mutations() {
+        assert!(owner_controls_visible(
+            "scope:org:acme",
+            "scope:org:acme",
+            true
+        ));
+        assert!(!owner_controls_visible(
+            "scope:instance",
+            "scope:org:acme",
+            true
+        ));
+        assert!(!owner_controls_visible(
+            "scope:org:acme",
+            "scope:org:acme",
+            false
+        ));
+    }
+
+    #[test]
+    fn delivery_inventory_does_not_wait_on_duplicate_route_or_binding_reads() {
+        let source = include_str!("../../aos-hub-console/src/workflows/routes.rs");
+        assert!(!source.contains("ROUTE_SERVICE_LIST_ROUTES_PATH"));
+        assert!(!source.contains("OrganizationBindingRef"));
+        assert!(source.contains("owner_scope_key: gateway_scope.clone()"));
+        assert!(source.contains("include_granted: true"));
     }
 
     #[test]
