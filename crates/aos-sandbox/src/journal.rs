@@ -17,12 +17,17 @@
 //! parent directory. A separate advisory lock remains held across replacement.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 
 use aos_sandbox_core::OperationId;
-use rustix::fs::{flock, FlockOperation};
+use rustix::fs::{
+    AtFlags, CWD, FileType, FlockOperation, Mode, OFlags, ResolveFlags, flock, fstat, fsync,
+    openat2, renameat, unlinkat,
+};
 use sha2::{Digest, Sha256};
 
 const MAGIC: &[u8; 8] = b"AOSJRN01";
@@ -32,6 +37,8 @@ const CHECKSUM_OFFSET: usize = 40;
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.journal.transaction.v1\0";
 const FRAME_DOMAIN: &[u8] = b"aos.sandbox.journal.frame.v1\0";
 const IDEMPOTENCY_VALUE_BYTES: usize = 48;
+const MAXIMUM_PROTECTED_COMPONENT_BYTES: usize = 255;
+const MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES: usize = 200;
 
 /// Bounds all disk input and in-memory work performed while opening a journal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -295,6 +302,12 @@ pub enum JournalError {
     /// An earlier durability failure requires the journal to be reopened.
     #[error("journal handle is poisoned and must be reopened")]
     Poisoned,
+    /// A protected path, owner, file type, or mode violates its boundary.
+    #[error("protected journal storage boundary is invalid")]
+    ProtectedBoundary,
+    /// The kernel cannot enforce the protected opener's resolution policy.
+    #[error("protected journal opening requires supported, permitted openat2 resolution")]
+    UnsupportedProtectedOpen,
     /// Sequence space is exhausted and cannot safely wrap.
     #[error("journal sequence space is exhausted")]
     SequenceExhausted,
@@ -352,6 +365,30 @@ pub struct Journal {
     materialized_bytes: usize,
     idempotency: BTreeMap<Vec<u8>, IdempotencyDecision>,
     poisoned: bool,
+    protected: Option<ProtectedJournalLocation>,
+}
+
+struct ProtectedJournalLocation {
+    directory: File,
+    name: String,
+    expected_uid: u32,
+}
+
+#[derive(Clone, Copy)]
+enum ProtectedOwnerPolicy {
+    Root,
+    #[cfg(test)]
+    Exact(u32),
+}
+
+impl ProtectedOwnerPolicy {
+    fn expected_uid(self) -> u32 {
+        match self {
+            Self::Root => 0,
+            #[cfg(test)]
+            Self::Exact(uid) => uid,
+        }
+    }
 }
 
 impl Journal {
@@ -428,6 +465,128 @@ impl Journal {
                 materialized_bytes: replay.materialized_bytes,
                 idempotency: replay.idempotency,
                 poisoned: false,
+                protected: None,
+            },
+            report,
+        ))
+    }
+
+    /// Opens a root-owned journal beneath one protected directory.
+    ///
+    /// `directory` must be an unambiguous absolute path. Resolution starts at
+    /// an opened `/`, never follows symlinks, and requires every traversed
+    /// directory to be root-owned and not group- or other-writable. The final
+    /// directory must additionally be mode 0700 and remains open. `name` must
+    /// be one ordinary basename. Journal and lock files are no-follow
+    /// root-owned regular files mode 0600.
+    /// Compaction uses an exclusive, unique temporary name and remains entirely
+    /// relative to the retained directory FD, including cleanup and directory
+    /// synchronization.
+    ///
+    /// This boundary provides local integrity and confidentiality against
+    /// unprivileged users while the kernel and supplied root-owned directory
+    /// remain trusted. It does not encrypt journal contents or authenticate
+    /// records copied from another equally protected directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`JournalError::ProtectedBoundary`] for a path, type, owner, or
+    /// mode violation, [`JournalError::UnsupportedProtectedOpen`] when the
+    /// kernel cannot enforce the required resolution policy, or another
+    /// [`JournalError`] for lock, replay, or I/O failure. Callers must not fall
+    /// back to [`Journal::open`] after either protected-opening error.
+    pub fn open_protected_at(
+        directory: impl AsRef<Path>,
+        name: &str,
+        limits: JournalLimits,
+    ) -> Result<(Self, RecoveryReport), JournalError> {
+        let directory = resolve_protected_directory_from_root(directory.as_ref())?;
+        Self::open_protected_directory(directory, name, limits, ProtectedOwnerPolicy::Root)
+    }
+
+    #[cfg(test)]
+    fn open_protected_at_uid(
+        directory_path: &Path,
+        name: &str,
+        limits: JournalLimits,
+        expected_uid: u32,
+    ) -> Result<(Self, RecoveryReport), JournalError> {
+        let directory: File = openat2(
+            CWD,
+            directory_path,
+            protected_directory_flags(),
+            Mode::empty(),
+            ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
+        )
+        .map_err(protected_open_error)?
+        .into();
+        Self::open_protected_directory(
+            directory,
+            name,
+            limits,
+            ProtectedOwnerPolicy::Exact(expected_uid),
+        )
+    }
+
+    fn open_protected_directory(
+        directory: File,
+        name: &str,
+        limits: JournalLimits,
+        owner: ProtectedOwnerPolicy,
+    ) -> Result<(Self, RecoveryReport), JournalError> {
+        let expected_uid = owner.expected_uid();
+        validate_limits(limits)?;
+        if name.len() > MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        validate_basename(name)?;
+        validate_protected_fd(&directory, expected_uid, FileType::Directory, Mode::RWXU)?;
+        let lock_name = format!("{name}.lock");
+        let lock = open_protected_file(&directory, &lock_name, expected_uid, true, false, false)?;
+        flock(&lock, FlockOperation::NonBlockingLockExclusive).map_err(|error| {
+            if error == rustix::io::Errno::WOULDBLOCK {
+                JournalError::AlreadyLocked
+            } else {
+                rustix_io(error)
+            }
+        })?;
+        remove_stale_protected_compaction(&directory, name)?;
+        let mut file = open_protected_file(&directory, name, expected_uid, true, false, false)?;
+        fsync(&directory).map_err(rustix_io)?;
+        let length = file.metadata()?.len();
+        if length > limits.maximum_journal_bytes {
+            return Err(JournalError::JournalTooLarge);
+        }
+        let replay = replay(&mut file, limits)?;
+        let truncated_bytes = length.saturating_sub(replay.durable_end);
+        if truncated_bytes > 0 {
+            file.set_len(replay.durable_end)?;
+            file.sync_data()?;
+        }
+        file.seek(SeekFrom::End(0))?;
+        let report = RecoveryReport {
+            committed_transactions: replay.committed_transactions,
+            committed_records: replay.committed_records,
+            truncated_bytes,
+        };
+        Ok((
+            Self {
+                path: PathBuf::from(name),
+                file,
+                _lock: lock,
+                limits,
+                next_sequence: replay.next_sequence,
+                committed_transactions: replay.committed_transactions,
+                transaction_ids: replay.transaction_ids,
+                state: replay.state,
+                materialized_bytes: replay.materialized_bytes,
+                idempotency: replay.idempotency,
+                poisoned: false,
+                protected: Some(ProtectedJournalLocation {
+                    directory,
+                    name: name.to_owned(),
+                    expected_uid,
+                }),
             },
             report,
         ))
@@ -580,6 +739,17 @@ impl Journal {
     }
 
     fn compact_inner(&mut self) -> Result<(), JournalError> {
+        if let Some(location) = &self.protected {
+            let (file, replay) = compact_protected(location, &self.state, self.limits)?;
+            self.file = file;
+            self.next_sequence = replay.next_sequence;
+            self.committed_transactions = replay.committed_transactions;
+            self.transaction_ids = replay.transaction_ids;
+            self.state = replay.state;
+            self.materialized_bytes = replay.materialized_bytes;
+            self.idempotency = replay.idempotency;
+            return Ok(());
+        }
         let temporary = sibling_with_suffix(&self.path, ".compact.tmp");
         let mut replacement = OpenOptions::new()
             .read(true)
@@ -1258,6 +1428,265 @@ fn reopen_replacement(
     Ok((file, replay))
 }
 
+fn protected_directory_flags() -> OFlags {
+    OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW
+}
+
+fn resolve_protected_directory_from_root(path: &Path) -> Result<File, JournalError> {
+    let bytes = path.as_os_str().as_bytes();
+    if bytes.first() != Some(&b'/') {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    let components = &bytes[1..];
+    if components.is_empty() {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    let components = components.split(|byte| *byte == b'/');
+    if components.clone().any(|component| {
+        component.is_empty()
+            || component == b"."
+            || component == b".."
+            || component.contains(&0)
+            || component.len() > MAXIMUM_PROTECTED_COMPONENT_BYTES
+    }) {
+        return Err(JournalError::ProtectedBoundary);
+    }
+
+    let root: File = openat2(
+        CWD,
+        "/",
+        protected_directory_flags(),
+        Mode::empty(),
+        ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
+    )
+    .map_err(protected_open_error)?
+    .into();
+    traverse_protected_directory(root, components, 0)
+}
+
+fn traverse_protected_directory<'a>(
+    mut directory: File,
+    components: impl IntoIterator<Item = &'a [u8]>,
+    expected_uid: u32,
+) -> Result<File, JournalError> {
+    validate_protected_ancestor_fd(&directory, expected_uid)?;
+    for component in components {
+        let child: File = openat2(
+            &directory,
+            OsStr::from_bytes(component),
+            protected_directory_flags(),
+            Mode::empty(),
+            ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
+        )
+        .map_err(protected_open_error)?
+        .into();
+        validate_protected_ancestor_fd(&child, expected_uid)?;
+        directory = child;
+    }
+    validate_protected_fd(&directory, expected_uid, FileType::Directory, Mode::RWXU)?;
+    Ok(directory)
+}
+
+fn validate_protected_ancestor_fd(file: &File, expected_uid: u32) -> Result<(), JournalError> {
+    let stat = fstat(file).map_err(rustix_io)?;
+    if stat.st_uid != expected_uid
+        || FileType::from_raw_mode(stat.st_mode) != FileType::Directory
+        || stat.st_mode & 0o022 != 0
+    {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    Ok(())
+}
+
+fn validate_basename(name: &str) -> Result<(), JournalError> {
+    if name.is_empty()
+        || name.len() > MAXIMUM_PROTECTED_COMPONENT_BYTES
+        || name == "."
+        || name == ".."
+        || name.as_bytes().contains(&0)
+        || name.as_bytes().contains(&b'/')
+    {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    Ok(())
+}
+
+fn rustix_io(error: rustix::io::Errno) -> JournalError {
+    JournalError::Io(io::Error::from_raw_os_error(error.raw_os_error()))
+}
+
+fn protected_open_error(error: rustix::io::Errno) -> JournalError {
+    if error == rustix::io::Errno::NOSYS
+        || error == rustix::io::Errno::PERM
+        || error == rustix::io::Errno::INVAL
+    {
+        JournalError::UnsupportedProtectedOpen
+    } else if error == rustix::io::Errno::LOOP
+        || error == rustix::io::Errno::XDEV
+        || error == rustix::io::Errno::NOTDIR
+        || error == rustix::io::Errno::ISDIR
+        || error == rustix::io::Errno::ACCESS
+    {
+        JournalError::ProtectedBoundary
+    } else {
+        rustix_io(error)
+    }
+}
+
+fn protected_compaction_name(name: &str) -> String {
+    format!("{name}.compact.tmp")
+}
+
+fn remove_stale_protected_compaction(directory: &File, name: &str) -> Result<(), JournalError> {
+    let temporary = protected_compaction_name(name);
+    validate_basename(&temporary)?;
+    match unlinkat(directory, temporary.as_str(), AtFlags::empty()) {
+        Ok(()) => fsync(directory).map_err(rustix_io),
+        Err(error) if error == rustix::io::Errno::NOENT => Ok(()),
+        Err(error) => Err(rustix_io(error)),
+    }
+}
+
+fn validate_protected_fd(
+    file: &File,
+    expected_uid: u32,
+    expected_type: FileType,
+    expected_mode: Mode,
+) -> Result<(), JournalError> {
+    let stat = fstat(file).map_err(rustix_io)?;
+    if stat.st_uid != expected_uid
+        || FileType::from_raw_mode(stat.st_mode) != expected_type
+        || Mode::from_raw_mode(stat.st_mode) != expected_mode
+        || (expected_type == FileType::RegularFile && stat.st_nlink != 1)
+    {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    Ok(())
+}
+
+fn open_protected_file(
+    directory: &File,
+    name: &str,
+    expected_uid: u32,
+    create: bool,
+    exclusive: bool,
+    truncate: bool,
+) -> Result<File, JournalError> {
+    validate_basename(name)?;
+    let mut flags = OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOFOLLOW;
+    if create {
+        flags |= OFlags::CREATE;
+    }
+    if exclusive {
+        flags |= OFlags::EXCL;
+    }
+    if truncate {
+        flags |= OFlags::TRUNC;
+    }
+    let create_mode = if create {
+        Mode::RUSR | Mode::WUSR
+    } else {
+        Mode::empty()
+    };
+    let file: File = openat2(
+        directory,
+        name,
+        flags,
+        create_mode,
+        ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
+    )
+    .map_err(protected_open_error)?
+    .into();
+    if let Err(error) = validate_protected_fd(
+        &file,
+        expected_uid,
+        FileType::RegularFile,
+        Mode::RUSR | Mode::WUSR,
+    ) {
+        if create && exclusive {
+            drop(file);
+            let _ = unlinkat(directory, name, AtFlags::empty());
+            let _ = fsync(directory);
+        }
+        return Err(error);
+    }
+    Ok(file)
+}
+
+/// Removes an uncommitted compaction file relative to the retained directory.
+struct ProtectedTemporary<'a> {
+    directory: &'a File,
+    name: String,
+    armed: bool,
+}
+
+impl ProtectedTemporary<'_> {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ProtectedTemporary<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = unlinkat(self.directory, self.name.as_str(), AtFlags::empty());
+            let _ = fsync(self.directory);
+        }
+    }
+}
+
+fn compact_protected(
+    location: &ProtectedJournalLocation,
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+    limits: JournalLimits,
+) -> Result<(File, ReplayState), JournalError> {
+    let temporary = protected_compaction_name(&location.name);
+    let mut replacement = open_protected_file(
+        &location.directory,
+        &temporary,
+        location.expected_uid,
+        true,
+        true,
+        true,
+    )?;
+    let mut cleanup = ProtectedTemporary {
+        directory: &location.directory,
+        name: temporary.clone(),
+        armed: true,
+    };
+    write_compacted(&mut replacement, state, limits)?;
+    replacement.sync_all()?;
+    if replacement.metadata()?.len() > limits.maximum_journal_bytes {
+        return Err(JournalError::JournalTooLarge);
+    }
+    drop(replacement);
+    renameat(
+        &location.directory,
+        temporary.as_str(),
+        &location.directory,
+        location.name.as_str(),
+    )
+    .map_err(rustix_io)?;
+    cleanup.disarm();
+    fsync(&location.directory).map_err(rustix_io)?;
+    let mut file = open_protected_file(
+        &location.directory,
+        &location.name,
+        location.expected_uid,
+        false,
+        false,
+        false,
+    )?;
+    let replay = replay(&mut file, limits)?;
+    if replay.durable_end != file.metadata()?.len() {
+        return Err(JournalError::MalformedTransaction(
+            "compacted journal has an uncommitted tail",
+        ));
+    }
+    file.seek(SeekFrom::End(0))?;
+    Ok((file, replay))
+}
+
 fn sync_parent(path: &Path) -> Result<(), JournalError> {
     let parent = path.parent().ok_or_else(|| {
         JournalError::Io(io::Error::new(
@@ -1279,15 +1708,18 @@ fn sibling_with_suffix(path: &Path, suffix: &str) -> PathBuf {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use std::fs::{self, OpenOptions};
+    use std::fs::{self, File, OpenOptions};
     use std::io::{Seek as _, SeekFrom, Write as _};
+    use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
     use std::path::{Path, PathBuf};
 
     use aos_sandbox_core::OperationId;
 
     use super::{
-        encode_transaction, IdempotencyKey, IdempotencyOutcome, Journal, JournalError,
-        JournalLimits, JournalRecord, JournalTransaction, RecordNamespace, HEADER_BYTES,
+        HEADER_BYTES, IdempotencyKey, IdempotencyOutcome, Journal, JournalError, JournalLimits,
+        JournalRecord, JournalTransaction, MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES,
+        ProtectedOwnerPolicy, RecordNamespace, RecoveryReport, encode_transaction,
+        open_protected_file, protected_open_error, traverse_protected_directory,
     };
 
     struct TestDirectory(PathBuf);
@@ -1316,6 +1748,362 @@ mod tests {
 
     fn transaction(id: u8, records: Vec<JournalRecord>) -> JournalTransaction {
         JournalTransaction::new([id; 16], records).unwrap()
+    }
+
+    fn protected_open(directory: &Path) -> Result<(Journal, RecoveryReport), JournalError> {
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).unwrap();
+        let uid = fs::metadata(directory).unwrap().uid();
+        Journal::open_protected_at_uid(
+            directory,
+            "protected.journal",
+            JournalLimits::default(),
+            uid,
+        )
+    }
+
+    #[test]
+    fn protected_open_rejects_public_modes_and_symlinks() {
+        let directory = TestDirectory::new("protected-rejections");
+        fs::set_permissions(&directory.0, fs::Permissions::from_mode(0o755)).unwrap();
+        let uid = fs::metadata(&directory.0).unwrap().uid();
+        assert!(matches!(
+            Journal::open_protected_at_uid(
+                &directory.0,
+                "protected.journal",
+                JournalLimits::default(),
+                uid,
+            ),
+            Err(JournalError::ProtectedBoundary)
+        ));
+
+        fs::set_permissions(&directory.0, fs::Permissions::from_mode(0o700)).unwrap();
+        let target = directory.0.join("target");
+        fs::write(&target, b"").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+        symlink(&target, directory.0.join("protected.journal")).unwrap();
+        assert!(protected_open(&directory.0).is_err());
+        fs::remove_file(directory.0.join("protected.journal")).unwrap();
+        fs::write(directory.0.join("protected.journal"), b"").unwrap();
+        fs::set_permissions(
+            directory.0.join("protected.journal"),
+            fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        assert!(matches!(
+            protected_open(&directory.0),
+            Err(JournalError::ProtectedBoundary)
+        ));
+        fs::remove_file(directory.0.join("protected.journal")).unwrap();
+        fs::remove_file(directory.0.join("protected.journal.lock")).unwrap();
+        symlink(&target, directory.0.join("protected.journal.lock")).unwrap();
+        assert!(protected_open(&directory.0).is_err());
+        fs::remove_file(directory.0.join("protected.journal.lock")).unwrap();
+        fs::create_dir(directory.0.join("protected.journal")).unwrap();
+        assert!(protected_open(&directory.0).is_err());
+        fs::remove_dir(directory.0.join("protected.journal")).unwrap();
+
+        fs::hard_link(&target, directory.0.join("protected.journal")).unwrap();
+        assert!(matches!(
+            protected_open(&directory.0),
+            Err(JournalError::ProtectedBoundary)
+        ));
+        fs::remove_file(directory.0.join("protected.journal")).unwrap();
+        fs::remove_file(directory.0.join("protected.journal.lock")).unwrap();
+        fs::hard_link(&target, directory.0.join("protected.journal.lock")).unwrap();
+        assert!(matches!(
+            protected_open(&directory.0),
+            Err(JournalError::ProtectedBoundary)
+        ));
+        fs::remove_file(directory.0.join("protected.journal.lock")).unwrap();
+
+        assert!(matches!(
+            Journal::open_protected_at_uid(
+                &directory.0,
+                "protected.journal",
+                JournalLimits::default(),
+                uid.wrapping_add(1),
+            ),
+            Err(JournalError::ProtectedBoundary)
+        ));
+
+        let alias = directory.0.with_extension("symlink");
+        symlink(&directory.0, &alias).unwrap();
+        assert!(
+            Journal::open_protected_at_uid(
+                &alias,
+                "another.journal",
+                JournalLimits::default(),
+                uid,
+            )
+            .is_err()
+        );
+        fs::remove_file(alias).unwrap();
+
+        let maximum_name = "j".repeat(MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES);
+        let (mut journal, _) = Journal::open_protected_at_uid(
+            &directory.0,
+            &maximum_name,
+            JournalLimits::default(),
+            uid,
+        )
+        .unwrap();
+        journal.compact().unwrap();
+        drop(journal);
+        assert!(matches!(
+            Journal::open_protected_at_uid(
+                &directory.0,
+                &"j".repeat(MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES + 1),
+                JournalLimits::default(),
+                uid,
+            ),
+            Err(JournalError::ProtectedBoundary)
+        ));
+    }
+
+    #[test]
+    fn protected_traversal_rejects_untrusted_ancestors_and_relative_paths() {
+        assert!(matches!(
+            Journal::open_protected_at(
+                "relative/protected",
+                "state.journal",
+                JournalLimits::default(),
+            ),
+            Err(JournalError::ProtectedBoundary)
+        ));
+        assert!(matches!(
+            Journal::open_protected_at(
+                "/tmp//ambiguous",
+                "state.journal",
+                JournalLimits::default(),
+            ),
+            Err(JournalError::ProtectedBoundary)
+        ));
+
+        let root = TestDirectory::new("protected-ancestry");
+        fs::set_permissions(&root.0, fs::Permissions::from_mode(0o700)).unwrap();
+        let uid = fs::metadata(&root.0).unwrap().uid();
+        fs::create_dir(root.0.join("trusted")).unwrap();
+        fs::set_permissions(root.0.join("trusted"), fs::Permissions::from_mode(0o700)).unwrap();
+        fs::create_dir(root.0.join("trusted/final")).unwrap();
+        fs::set_permissions(
+            root.0.join("trusted/final"),
+            fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        let directory = traverse_protected_directory(
+            File::open(&root.0).unwrap(),
+            [b"trusted".as_slice(), b"final".as_slice()],
+            uid,
+        )
+        .unwrap();
+        let (journal, _) = Journal::open_protected_directory(
+            directory,
+            "state.journal",
+            JournalLimits::default(),
+            ProtectedOwnerPolicy::Exact(uid),
+        )
+        .unwrap();
+        drop(journal);
+
+        fs::create_dir(root.0.join("writable")).unwrap();
+        fs::set_permissions(root.0.join("writable"), fs::Permissions::from_mode(0o777)).unwrap();
+        fs::create_dir(root.0.join("writable/final")).unwrap();
+        fs::set_permissions(
+            root.0.join("writable/final"),
+            fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        assert!(matches!(
+            traverse_protected_directory(
+                File::open(&root.0).unwrap(),
+                [b"writable".as_slice(), b"final".as_slice()],
+                uid,
+            ),
+            Err(JournalError::ProtectedBoundary)
+        ));
+    }
+
+    #[test]
+    fn protected_open_errors_distinguish_policy_and_kernel_support() {
+        assert!(matches!(
+            protected_open_error(rustix::io::Errno::LOOP),
+            JournalError::ProtectedBoundary
+        ));
+        assert!(matches!(
+            protected_open_error(rustix::io::Errno::XDEV),
+            JournalError::ProtectedBoundary
+        ));
+        assert!(matches!(
+            protected_open_error(rustix::io::Errno::NOSYS),
+            JournalError::UnsupportedProtectedOpen
+        ));
+        assert!(matches!(
+            protected_open_error(rustix::io::Errno::PERM),
+            JournalError::UnsupportedProtectedOpen
+        ));
+        assert!(matches!(
+            protected_open_error(rustix::io::Errno::INVAL),
+            JournalError::UnsupportedProtectedOpen
+        ));
+        assert!(matches!(
+            protected_open_error(rustix::io::Errno::NOENT),
+            JournalError::Io(_)
+        ));
+    }
+
+    #[test]
+    fn protected_files_are_private_locked_and_compact_fd_relatively() {
+        let directory = TestDirectory::new("protected-compact");
+        let (mut journal, _) = protected_open(&directory.0).unwrap();
+        assert_eq!(
+            fs::metadata(directory.0.join("protected.journal"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::metadata(directory.0.join("protected.journal.lock"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert!(matches!(
+            protected_open(&directory.0),
+            Err(JournalError::AlreadyLocked)
+        ));
+        journal
+            .commit(&transaction(
+                1,
+                vec![JournalRecord::put(
+                    RecordNamespace::DesiredState,
+                    b"key".to_vec(),
+                    b"value".to_vec(),
+                )],
+            ))
+            .unwrap();
+
+        let moved = directory.0.with_extension("retained");
+        fs::rename(&directory.0, &moved).unwrap();
+        fs::create_dir(&directory.0).unwrap();
+        fs::set_permissions(&directory.0, fs::Permissions::from_mode(0o700)).unwrap();
+        journal.compact().unwrap();
+        assert!(moved.join("protected.journal").exists());
+        assert!(!directory.0.join("protected.journal").exists());
+        drop(journal);
+        fs::remove_dir(&directory.0).unwrap();
+        fs::rename(&moved, &directory.0).unwrap();
+        let (journal, _) = protected_open(&directory.0).unwrap();
+        assert_eq!(
+            journal.get(RecordNamespace::DesiredState, b"key"),
+            Some(b"value".as_slice())
+        );
+    }
+
+    #[test]
+    fn protected_open_removes_bounded_stale_temp_without_reusing_it() {
+        let directory = TestDirectory::new("protected-stale-temp");
+        fs::set_permissions(&directory.0, fs::Permissions::from_mode(0o700)).unwrap();
+        let temporary = directory.0.join("protected.journal.compact.tmp");
+        fs::write(&temporary, b"partial prior compaction").unwrap();
+        fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600)).unwrap();
+        let (mut journal, _) = protected_open(&directory.0).unwrap();
+        assert!(!temporary.exists());
+        journal
+            .commit(&transaction(
+                1,
+                vec![JournalRecord::put(
+                    RecordNamespace::DesiredState,
+                    b"key".to_vec(),
+                    b"value".to_vec(),
+                )],
+            ))
+            .unwrap();
+        journal.compact().unwrap();
+        assert!(!temporary.exists());
+        assert_eq!(
+            journal.get(RecordNamespace::DesiredState, b"key"),
+            Some(b"value".as_slice())
+        );
+        drop(journal);
+
+        let victim = directory.0.join("victim");
+        fs::write(&victim, b"must remain unchanged").unwrap();
+        symlink(&victim, &temporary).unwrap();
+        let (mut journal, _) = protected_open(&directory.0).unwrap();
+        assert!(!temporary.exists());
+        journal.compact().unwrap();
+        assert_eq!(fs::read(&victim).unwrap(), b"must remain unchanged");
+        assert!(!temporary.exists());
+    }
+
+    #[test]
+    fn protected_exclusive_temp_rejects_regular_and_symlink_collisions() {
+        let directory = TestDirectory::new("protected-temp-collisions");
+        fs::set_permissions(&directory.0, fs::Permissions::from_mode(0o700)).unwrap();
+        let directory_fd = File::open(&directory.0).unwrap();
+        let uid = fs::metadata(&directory.0).unwrap().uid();
+        let collision = directory.0.join("collision.tmp");
+        fs::write(&collision, b"stale").unwrap();
+        fs::set_permissions(&collision, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(
+            open_protected_file(&directory_fd, "collision.tmp", uid, true, true, true).is_err()
+        );
+        assert_eq!(fs::read(&collision).unwrap(), b"stale");
+
+        fs::remove_file(&collision).unwrap();
+        let victim = directory.0.join("victim");
+        fs::write(&victim, b"unchanged").unwrap();
+        symlink(&victim, &collision).unwrap();
+        assert!(
+            open_protected_file(&directory_fd, "collision.tmp", uid, true, true, true).is_err()
+        );
+        assert_eq!(fs::read(&victim).unwrap(), b"unchanged");
+    }
+
+    #[test]
+    fn protected_compaction_cleans_bounded_temp_after_failure() {
+        let directory = TestDirectory::new("protected-temp-cleanup");
+        let (mut journal, _) = protected_open(&directory.0).unwrap();
+        journal
+            .commit(&transaction(
+                1,
+                vec![JournalRecord::put(
+                    RecordNamespace::DesiredState,
+                    b"key".to_vec(),
+                    b"value".to_vec(),
+                )],
+            ))
+            .unwrap();
+        journal.limits.maximum_journal_bytes = 1;
+        assert!(journal.compact().is_err());
+        let names: Vec<_> = fs::read_dir(&directory.0)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert!(
+            names
+                .iter()
+                .all(|name| !name.to_string_lossy().contains(".compact."))
+        );
+    }
+
+    #[test]
+    fn protected_reopen_truncates_a_partial_crash_tail() {
+        let directory = TestDirectory::new("protected-crash-tail");
+        let path = directory.0.join("protected.journal");
+        let (journal, _) = protected_open(&directory.0).unwrap();
+        drop(journal);
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(b"partial-frame").unwrap();
+        file.sync_data().unwrap();
+        drop(file);
+        let (_, report) = protected_open(&directory.0).unwrap();
+        assert_eq!(report.truncated_bytes, 13);
+        assert_eq!(fs::metadata(path).unwrap().len(), 0);
     }
 
     fn commit_fixture(path: &Path) -> u64 {
