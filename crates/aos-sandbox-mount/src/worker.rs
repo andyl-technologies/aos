@@ -117,6 +117,17 @@ impl<C: MountCatalog, H: NamespaceHelper> MountWorker for DescriptorMountWorker<
         request_digest: [u8; 32],
         handles: EffectHandles,
     ) -> Result<WorkerObservation> {
+        if request.action() == MountAction::MOUNT_ACTION_RELEASE {
+            let handle = request.detached_mount_handle().copied().ok_or_else(|| {
+                MountError::Worker("release operation lost its staged handle".to_owned())
+            })?;
+            self.detached.remove(&handle);
+            return Ok(WorkerObservation {
+                state: MountState::MOUNT_STATE_ABSENT,
+                handles,
+            });
+        }
+
         let resources = self.catalog.resolve(request)?;
         match request.action() {
             MountAction::MOUNT_ACTION_CREATE_DETACHED => {
@@ -173,16 +184,9 @@ impl<C: MountCatalog, H: NamespaceHelper> MountWorker for DescriptorMountWorker<
                     handles,
                 })
             }
-            MountAction::MOUNT_ACTION_RELEASE => {
-                let handle = request.detached_mount_handle().copied().ok_or_else(|| {
-                    MountError::Worker("release operation lost its staged handle".to_owned())
-                })?;
-                self.detached.remove(&handle);
-                Ok(WorkerObservation {
-                    state: MountState::MOUNT_STATE_ABSENT,
-                    handles,
-                })
-            }
+            MountAction::MOUNT_ACTION_RELEASE => Err(MountError::Worker(
+                "release reached catalog-backed dispatch".to_owned(),
+            )),
             MountAction::MOUNT_ACTION_UNSPECIFIED => Err(MountError::Worker(
                 "validated worker received an unspecified action".to_owned(),
             )),

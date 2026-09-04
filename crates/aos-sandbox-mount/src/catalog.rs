@@ -289,7 +289,9 @@ impl MountCatalogEntry {
             && self.assignment.assignment_digest == *fence.assignment_digest()
             && self.attachment_id == *request.attachment_id()
             && self.destination_slot_id == *request.destination_slot_id()
-            && request.view_revision() == Some(&self.view_revision)
+            && request
+                .view_revision()
+                .is_none_or(|revision| revision == &self.view_revision)
             && self.source_generation == request.source_generation()
             && self.namespace_generation == request.namespace_generation()
     }
