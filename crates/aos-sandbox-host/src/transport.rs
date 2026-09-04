@@ -8,10 +8,13 @@
 use std::io::IoSliceMut;
 use std::mem::MaybeUninit;
 use std::os::fd::{AsFd, OwnedFd};
+use std::time::Duration;
 
 use aos_sandbox_protocol::{MAXIMUM_REQUEST_BYTES, MAXIMUM_RESPONSE_BYTES, PeerCredentials};
 use rustix::io::{FdFlags, fcntl_getfd, fcntl_setfd};
-use rustix::net::sockopt::{socket_acceptconn, socket_peercred, socket_type};
+use rustix::net::sockopt::{
+    Timeout, set_socket_timeout, socket_acceptconn, socket_peercred, socket_type,
+};
 use rustix::net::{
     RecvAncillaryBuffer, RecvFlags, ReturnFlags, SendFlags, SocketFlags, SocketType, accept_with,
     recvmsg, send,
@@ -20,6 +23,7 @@ use rustix::net::{
 use crate::{HostError, Result};
 
 const MAXIMUM_UNEXPECTED_DESCRIPTORS: usize = 8;
+const CONNECTION_IO_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Owns the sole validated systemd-activated host broker listener.
 #[derive(Debug)]
@@ -55,6 +59,10 @@ impl ActivatedSeqpacketListener {
     /// kernel reports a peer PID that cannot fit the protocol representation.
     pub fn accept(&self) -> Result<HostConnection> {
         let fd = accept_with(&self.fd, SocketFlags::CLOEXEC).map_err(transport_error)?;
+        set_socket_timeout(&fd, Timeout::Recv, Some(CONNECTION_IO_TIMEOUT))
+            .map_err(transport_error)?;
+        set_socket_timeout(&fd, Timeout::Send, Some(CONNECTION_IO_TIMEOUT))
+            .map_err(transport_error)?;
         let credentials = socket_peercred(&fd).map_err(transport_error)?;
         let pid = u32::try_from(credentials.pid.as_raw_nonzero().get())
             .map_err(|_| HostError::Worker("peer PID does not fit u32".to_owned()))?;

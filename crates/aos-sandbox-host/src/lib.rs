@@ -11,6 +11,8 @@
 //! - [`activation`] adopts the sole systemd-owned broker socket;
 //! - [`plan`] resolves catalog handles and compiles the fixed nspawn launch;
 //! - [`catalog`] resolves launch resources from one atomic root-owned snapshot;
+//! - [`peer`] pins the controller process to its exact service cgroup;
+//! - [`service`] serves one bounded request per verified connection;
 //! - [`state`] persists fences, pending effects, and replay receipts;
 //! - [`transport`] validates systemd-activated local packet sockets;
 //! - [`worker`] performs idempotent typed systemd and pidfd operations;
@@ -19,7 +21,9 @@
 pub mod activation;
 pub mod broker;
 pub mod catalog;
+pub mod peer;
 pub mod plan;
+pub mod service;
 pub mod state;
 pub mod transport;
 pub mod worker;
