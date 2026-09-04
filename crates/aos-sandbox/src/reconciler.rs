@@ -30,7 +30,6 @@ const EFFECT_KEY_BYTES: usize = 20;
 // The default journal transaction bound is 4096 records. Admission also
 // carries desired-state, operation, and idempotency records atomically.
 const MAXIMUM_EFFECTS: usize = 4093;
-#[allow(dead_code)]
 const MAXIMUM_GATED_EFFECTS: usize = 4092;
 const MAXIMUM_REQUEST_BYTES: usize = 1024 * 1024;
 const MAXIMUM_RECEIPT_BYTES: usize = 64 * 1024;
@@ -156,17 +155,17 @@ impl OperationPlan {
     /// Constructs an operation held behind an atomically admitted ownership gate.
     ///
     /// The claim and validated publication draft remain non-authorizing durable
-    /// inputs. Only a later explicit ownership-protocol exchange may supply
-    /// activation facts. The draft determines the expected authority; callers
-    /// cannot provide that security-sensitive reference separately.
+    /// inputs. Only [`crate::NodeController::resume_ownership`] may supply
+    /// verified activation facts through the crate-private opaque bridge. The
+    /// draft determines the expected authority; callers cannot provide that
+    /// security-sensitive reference separately.
     ///
     /// # Errors
     ///
     /// Returns [`ReconcilerError::InvalidPlan`] for the ordinary operation
     /// invariants, more than 4092 effects, or an invalid or mismatched gate.
     #[allow(clippy::too_many_arguments)]
-    #[allow(dead_code)]
-    pub(crate) fn ownership_gated(
+    pub fn ownership_gated(
         operation_id: OperationId,
         idempotency_key: IdempotencyKey,
         request_digest: [u8; 32],
@@ -583,7 +582,6 @@ where
     /// Returns [`ReconcilerError`] for an absent or corrupt gate, mismatched
     /// publication context, conflicting replay, stale publication, duplicate
     /// records, or durability failure.
-    #[allow(dead_code)]
     pub(crate) fn activate_ownership_gate(
         &mut self,
         operation_id: OperationId,

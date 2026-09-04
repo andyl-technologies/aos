@@ -266,7 +266,7 @@ impl OwnershipProtocolErrorCodeV1 {
             Self::DeadlineExceeded | Self::Unavailable | Self::Internal => {
                 OwnershipErrorRecoveryV1::QueryThenRetryExact
             }
-            Self::AlreadyOwned | Self::StaleExpectedPrior => {
+            Self::AlreadyOwned | Self::StaleExpectedPrior | Self::WrongAuthorityEpoch => {
                 OwnershipErrorRecoveryV1::RefreshAndReplan
             }
             Self::ResourceExhausted => OwnershipErrorRecoveryV1::AwaitStateChange,
@@ -276,7 +276,6 @@ impl OwnershipProtocolErrorCodeV1 {
             | Self::PermissionDenied
             | Self::IncompatibleProtocol
             | Self::RequiredCapabilityUnavailable
-            | Self::WrongAuthorityEpoch
             | Self::IdempotencyConflict
             | Self::NotFound => OwnershipErrorRecoveryV1::CorrectRequest,
         }
@@ -1154,6 +1153,10 @@ mod tests {
         );
         assert_eq!(
             OwnershipProtocolErrorCodeV1::StaleExpectedPrior.recovery(),
+            OwnershipErrorRecoveryV1::RefreshAndReplan
+        );
+        assert_eq!(
+            OwnershipProtocolErrorCodeV1::WrongAuthorityEpoch.recovery(),
             OwnershipErrorRecoveryV1::RefreshAndReplan
         );
         assert_eq!(

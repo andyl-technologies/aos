@@ -676,7 +676,6 @@ impl<'a> AuthorityPublicationStore<'a> {
     /// substituted prepared bytes, a conflicting prepared-key value, or
     /// corrupt current state. Final successor eligibility is deliberately
     /// rechecked against the live journal immediately before gate activation.
-    #[allow(dead_code)]
     pub(crate) fn prepare_gate_activation(
         &self,
         draft: &AuthorityPublicationDraftV1,

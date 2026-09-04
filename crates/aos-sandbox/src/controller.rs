@@ -16,7 +16,9 @@ use sha2::{Digest as _, Sha256};
 
 use crate::{
     AcceptOutcome, AuthorityPublicationError, AuthorityPublicationStore, BrokerDispatchAttemptV1,
-    OperationPlan, ReconcileOutcome, Reconciler, ReconcilerError, SingleNodeEffectExecutor,
+    OperationPlan, OwnershipAuthoritySessionClient, OwnershipAuthorityVerifier,
+    OwnershipClockObservationError, OwnershipResumeError, OwnershipResumeOutcomeV1,
+    ReconcileOutcome, Reconciler, ReconcilerError, SingleNodeEffectExecutor,
 };
 
 const REQUEST_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.controller-request.v1\0";
@@ -257,6 +259,39 @@ where
             });
         }
         Ok(ControllerQuantumReport { steps, idle })
+    }
+
+    /// Explicitly resumes one operation held behind durable ownership.
+    ///
+    /// An already activated gate is validated and replayed without consulting
+    /// the session client or clock. A pending gate always queries its exact
+    /// authority transaction before beginning or completing it. Ordinary
+    /// reconciliation never invokes this path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OwnershipResumeError`] for an absent or corrupt gate, a
+    /// mismatched negotiated session, hostile response substitution, local
+    /// clock-observation failure, invalid authority artifacts, publication
+    /// conflict, or durable activation failure.
+    pub fn resume_ownership<A, T>(
+        &mut self,
+        operation_id: OperationId,
+        client: &mut A,
+        verifier: &OwnershipAuthorityVerifier,
+        observe_clock: &mut T,
+    ) -> Result<OwnershipResumeOutcomeV1, OwnershipResumeError>
+    where
+        A: OwnershipAuthoritySessionClient,
+        T: FnMut() -> Result<RawPairedClockSample, OwnershipClockObservationError>,
+    {
+        crate::ownership_resume::resume_ownership(
+            &mut self.reconciler,
+            operation_id,
+            client,
+            verifier,
+            observe_clock,
+        )
     }
 
     /// Selects a lease-bound attempt from the exact durable current publication.

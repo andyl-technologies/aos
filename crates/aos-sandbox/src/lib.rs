@@ -10,6 +10,7 @@ pub mod controller;
 pub mod dispatch;
 pub mod journal;
 pub mod ownership_authority;
+pub mod ownership_resume;
 pub mod publication;
 pub mod reconciler;
 
@@ -37,6 +38,10 @@ pub use ownership_authority::{
     OwnershipAuthorityVerifier, OwnershipClaimAction, OwnershipClaimError, OwnershipClaimV1,
     OwnershipLeaseAcquisitionError, OwnershipTransactionReceiptV1, ProtectedOwnershipClockError,
     RecoveredOwnershipLease, SignedOwnershipLease, UnverifiedOwnershipLeaseResponse,
+};
+pub use ownership_resume::{
+    OwnershipAuthoritySessionClient, OwnershipClockObservationError, OwnershipResumeError,
+    OwnershipResumeOutcomeV1, OwnershipSessionTransportError, UntrustedOwnershipResponsePartsV1,
 };
 pub use publication::{
     AuthorityPublicationDraftV1, AuthorityPublicationError, AuthorityPublicationOutcome,

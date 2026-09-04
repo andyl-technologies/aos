@@ -303,12 +303,24 @@ every planned effect, idempotency, and a self-contained, lease-independent
 publication draft. The operation remains `OwnershipPending`; ordinary
 reconciliation cannot execute its effects and cannot contact the ownership
 authority. Only an explicit resume path may obtain and verify the exact signed
-lease and receipt for the gate's canonical claim. Release then atomically
-publishes the permanent prepared record and current pointer, changes the
-operation to `Accepted`, and records the activated gate. Recovery requires the
-permanent record and either that exact current publication or a valid successor.
-Renewal may change only the lease-bound artifacts for the same authority and
-source draft at an unchanged assignment epoch and desired generation.
+lease and receipt for the gate's canonical claim. The controller uses a local
+paired-clock observation to reject artifacts that are not live at publication
+time, but that caller-supplied observation is not a sealed clock capability.
+Publication and gate release remain non-authorizing: every privileged broker
+independently verifies protected current time, assignment authority, and all
+fences immediately before an effect. Release atomically publishes the permanent
+prepared record and current pointer, changes the operation to `Accepted`, and
+records the activated gate. Recovery requires the permanent record and either
+that exact current publication or a valid successor. Renewal may change only
+the lease-bound artifacts for the same authority and source draft at an
+unchanged assignment epoch and desired generation.
+
+The protocol error code is the single source of truth for recovery behavior.
+Wrong authority epoch, already-owned acquisition, and stale renewal fences
+require refresh and replan; unavailable, deadline, and internal indeterminacy
+require an exact query before retry; resource exhaustion awaits an explicit
+state transition; integrity failure quarantines; and correctable request or
+identity failures do not become automatic retries.
 
 ## Node-local broker protocols
 
