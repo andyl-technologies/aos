@@ -212,13 +212,17 @@ const fn audience_code(audience: BrokerAudience) -> u64 {
     match audience {
         BrokerAudience::Host => 0,
         BrokerAudience::Mount => 1,
+        BrokerAudience::Storage => 2,
+        BrokerAudience::Network => 3,
     }
 }
 
 fn decode_audience(decoder: &mut Decoder<'_>) -> Result<BrokerAudience, CanonicalCborError> {
-    match decoder.closed("broker audience", 1)? {
+    match decoder.closed("broker audience", 3)? {
         0 => Ok(BrokerAudience::Host),
         1 => Ok(BrokerAudience::Mount),
+        2 => Ok(BrokerAudience::Storage),
+        3 => Ok(BrokerAudience::Network),
         value => Err(CanonicalCborError::UnknownRegistryValue {
             registry: "broker audience",
             value,
@@ -231,19 +235,21 @@ fn protocol_code(protocol: ProtocolId) -> u64 {
     match protocol {
         ProtocolId::HostBroker => 0,
         ProtocolId::MountBroker => 1,
+        ProtocolId::StorageBroker => 2,
+        ProtocolId::NetworkBroker => 3,
         ProtocolId::PublicApi
         | ProtocolId::CoordinatorNode
-        | ProtocolId::StorageBroker
-        | ProtocolId::NetworkBroker
         | ProtocolId::Guardian
         | ProtocolId::GuestAgent => unreachable!("broker plans use only broker protocols"),
     }
 }
 
 fn decode_protocol(decoder: &mut Decoder<'_>) -> Result<ProtocolId, CanonicalCborError> {
-    match decoder.closed("broker protocol", 1)? {
+    match decoder.closed("broker protocol", 3)? {
         0 => Ok(ProtocolId::HostBroker),
         1 => Ok(ProtocolId::MountBroker),
+        2 => Ok(ProtocolId::StorageBroker),
+        3 => Ok(ProtocolId::NetworkBroker),
         value => Err(CanonicalCborError::UnknownRegistryValue {
             registry: "broker protocol",
             value,
@@ -327,6 +333,127 @@ mod tests {
             decode_broker_authorization_plan(&bytes, DecodeLimits::default()),
             Ok(plan)
         );
+    }
+
+    #[test]
+    fn every_signed_broker_verb_round_trips_canonically() {
+        let original = plan();
+        let verbs = [
+            BrokerVerb::HostLaunch,
+            BrokerVerb::HostStop,
+            BrokerVerb::HostFreeze,
+            BrokerVerb::HostThaw,
+            BrokerVerb::HostKill,
+            BrokerVerb::HostObserve,
+            BrokerVerb::HostInventory,
+            BrokerVerb::MountCreate,
+            BrokerVerb::MountInstall,
+            BrokerVerb::MountReplace,
+            BrokerVerb::MountDetach,
+            BrokerVerb::MountRelease,
+            BrokerVerb::MountInventorySummary,
+            BrokerVerb::MountInventoryResources,
+            BrokerVerb::StorageCreateWorkspace,
+            BrokerVerb::StorageSnapshot,
+            BrokerVerb::StorageHoldSnapshot,
+            BrokerVerb::StorageReleaseHold,
+            BrokerVerb::StorageClone,
+            BrokerVerb::StorageSetQuota,
+            BrokerVerb::StorageDestroy,
+            BrokerVerb::StorageInventory,
+            BrokerVerb::NetworkPrepare,
+            BrokerVerb::NetworkArmLease,
+            BrokerVerb::NetworkRenewLease,
+            BrokerVerb::NetworkDisarm,
+            BrokerVerb::NetworkDestroy,
+            BrokerVerb::NetworkInventory,
+        ];
+        let resource = BrokerResourceHandle::from_bytes([30; 32])
+            .unwrap_or_else(|error| panic!("test resource failed: {error}"));
+        let successor = BrokerResourceHandle::from_bytes([31; 32])
+            .unwrap_or_else(|error| panic!("test resource failed: {error}"));
+
+        for verb in verbs {
+            let audience = verb.audience();
+            let target = match verb {
+                BrokerVerb::HostLaunch
+                | BrokerVerb::HostInventory
+                | BrokerVerb::MountCreate
+                | BrokerVerb::MountInventorySummary
+                | BrokerVerb::MountInventoryResources
+                | BrokerVerb::StorageCreateWorkspace
+                | BrokerVerb::StorageInventory
+                | BrokerVerb::NetworkPrepare
+                | BrokerVerb::NetworkInventory => BrokerGrantTarget::Assignment,
+                BrokerVerb::MountReplace => BrokerGrantTarget::ResourcePair {
+                    previous: resource,
+                    successor,
+                },
+                _ => BrokerGrantTarget::Resource(resource),
+            };
+            let candidate = BrokerAuthorizationPlan::new(
+                audience,
+                audience.protocol(),
+                ProtocolVersion::new(1, 0),
+                original.assignment(),
+                original.node(),
+                original.ownership_authority().clone(),
+                vec![
+                    BrokerGrant::new(
+                        verb,
+                        target,
+                        crate::BrokerArgumentCommitment::from_digest(ObjectDigest::from_bytes(
+                            [verb.get() as u8; 32],
+                        ))
+                        .unwrap_or_else(|error| panic!("test commitment failed: {error}")),
+                        4_096,
+                        0,
+                    )
+                    .unwrap_or_else(|error| panic!("test grant failed: {error}")),
+                ],
+                original.policy_commitment(),
+                original.revocation_scope(),
+                original.issued_seconds(),
+                original.expires_seconds(),
+                original.required_features().to_vec(),
+            )
+            .unwrap_or_else(|error| panic!("test plan failed: {error}"));
+            let bytes = encode_broker_authorization_plan(&candidate);
+            assert_eq!(
+                decode_broker_authorization_plan(&bytes, DecodeLimits::default()),
+                Ok(candidate)
+            );
+        }
+    }
+
+    #[test]
+    fn audience_protocol_mismatch_and_unknown_codes_fail_closed() {
+        let mut mismatch = encode_broker_authorization_plan(&plan());
+        mismatch[2] = 2;
+        assert!(matches!(
+            decode_broker_authorization_plan(&mismatch, DecodeLimits::default()),
+            Err(CanonicalCborError::InvalidSemantics { .. })
+        ));
+
+        let mut unknown_audience = encode_broker_authorization_plan(&plan());
+        unknown_audience[2] = 4;
+        assert!(matches!(
+            decode_broker_authorization_plan(&unknown_audience, DecodeLimits::default()),
+            Err(CanonicalCborError::UnknownRegistryValue {
+                registry: "broker audience",
+                ..
+            })
+        ));
+
+        let mut unknown_protocol = encode_broker_authorization_plan(&plan());
+        unknown_protocol[3] = 4;
+        assert!(matches!(
+            decode_broker_authorization_plan(&unknown_protocol, DecodeLimits::default()),
+            Err(CanonicalCborError::UnknownRegistryValue {
+                registry: "broker protocol",
+                ..
+            })
+        ));
     }
 
     #[test]

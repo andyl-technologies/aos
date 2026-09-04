@@ -63,6 +63,10 @@ pub enum BrokerDomain {
     Host,
     /// Detached mount and namespace attachment effects.
     Mount,
+    /// Storage workspace and immutable-version effects.
+    Storage,
+    /// Network preparation and lease-gate effects.
+    Network,
 }
 
 impl BrokerDomain {
@@ -70,6 +74,8 @@ impl BrokerDomain {
         match self {
             Self::Host => b"AOSHAJ\0\0",
             Self::Mount => b"AOSMAJ\0\0",
+            Self::Storage => b"AOSSAJ\0\0",
+            Self::Network => b"AOSNAJ\0\0",
         }
     }
 
@@ -77,6 +83,8 @@ impl BrokerDomain {
         match self {
             Self::Host => b"aos.host.journal-authentication.v1\0",
             Self::Mount => b"aos.mount.journal-authentication.v1\0",
+            Self::Storage => b"aos.storage.journal-authentication.v1\0",
+            Self::Network => b"aos.network.journal-authentication.v1\0",
         }
     }
 
@@ -84,6 +92,8 @@ impl BrokerDomain {
         match self {
             Self::Host => b"AOSHAF\0\0",
             Self::Mount => b"AOSMAF\0\0",
+            Self::Storage => b"AOSSAF\0\0",
+            Self::Network => b"AOSNAF\0\0",
         }
     }
 
@@ -91,6 +101,8 @@ impl BrokerDomain {
         match self {
             Self::Host => b"AOSHAE\0\0",
             Self::Mount => b"AOSMAE\0\0",
+            Self::Storage => b"AOSSAE\0\0",
+            Self::Network => b"AOSNAE\0\0",
         }
     }
 }
@@ -490,6 +502,23 @@ impl BrokerEffectIntentV2 {
                     successor,
                 },
             ) => previous != successor,
+            (
+                BrokerVerb::StorageCreateWorkspace | BrokerVerb::NetworkPrepare,
+                BrokerGrantTarget::Assignment,
+            ) => true,
+            (
+                BrokerVerb::StorageSnapshot
+                | BrokerVerb::StorageHoldSnapshot
+                | BrokerVerb::StorageReleaseHold
+                | BrokerVerb::StorageClone
+                | BrokerVerb::StorageSetQuota
+                | BrokerVerb::StorageDestroy
+                | BrokerVerb::NetworkArmLease
+                | BrokerVerb::NetworkRenewLease
+                | BrokerVerb::NetworkDisarm
+                | BrokerVerb::NetworkDestroy,
+                BrokerGrantTarget::Resource(_),
+            ) => true,
             _ => false,
         };
         let receipt_valid = match self.status {
@@ -861,6 +890,10 @@ fn encode_effect(
     let lease_bytes = encode_local_lease_record(&intent.local_lease_record);
     let receipt_length = u32::try_from(intent.receipt.len())
         .map_err(|_| AuthorizationRecordError::InvalidPayload)?;
+    let encoded_verb = verb_code(domain, intent.verb);
+    if encoded_verb == 0 {
+        return Err(AuthorizationRecordError::InvalidPayload);
+    }
     let mut bytes = Vec::with_capacity(554 + intent.receipt.len());
     bytes.extend_from_slice(domain.effect_magic());
     bytes.extend_from_slice(&EFFECT_VERSION.to_be_bytes());
@@ -868,7 +901,7 @@ fn encode_effect(
         BrokerEffectStatusV2::Pending => 0,
         BrokerEffectStatusV2::Complete => 1,
     });
-    bytes.push(verb_code(domain, intent.verb));
+    bytes.push(encoded_verb);
     encode_target(&mut bytes, intent.target);
     bytes.extend_from_slice(&intent.request_id);
     bytes.extend_from_slice(intent.transport_request_digest.as_bytes());
@@ -1032,6 +1065,18 @@ const fn verb_code(domain: BrokerDomain, verb: BrokerVerb) -> u8 {
         | (BrokerDomain::Mount, BrokerVerb::MountDetach) => 4,
         (BrokerDomain::Host, BrokerVerb::HostKill)
         | (BrokerDomain::Mount, BrokerVerb::MountRelease) => 5,
+        (BrokerDomain::Storage, BrokerVerb::StorageCreateWorkspace)
+        | (BrokerDomain::Network, BrokerVerb::NetworkPrepare) => 1,
+        (BrokerDomain::Storage, BrokerVerb::StorageSnapshot)
+        | (BrokerDomain::Network, BrokerVerb::NetworkArmLease) => 2,
+        (BrokerDomain::Storage, BrokerVerb::StorageHoldSnapshot)
+        | (BrokerDomain::Network, BrokerVerb::NetworkRenewLease) => 3,
+        (BrokerDomain::Storage, BrokerVerb::StorageReleaseHold)
+        | (BrokerDomain::Network, BrokerVerb::NetworkDisarm) => 4,
+        (BrokerDomain::Storage, BrokerVerb::StorageClone)
+        | (BrokerDomain::Network, BrokerVerb::NetworkDestroy) => 5,
+        (BrokerDomain::Storage, BrokerVerb::StorageSetQuota) => 6,
+        (BrokerDomain::Storage, BrokerVerb::StorageDestroy) => 7,
         _ => 0,
     }
 }
@@ -1048,6 +1093,18 @@ fn decode_verb(domain: BrokerDomain, code: u8) -> Result<BrokerVerb, Authorizati
         (BrokerDomain::Mount, 3) => Ok(BrokerVerb::MountReplace),
         (BrokerDomain::Mount, 4) => Ok(BrokerVerb::MountDetach),
         (BrokerDomain::Mount, 5) => Ok(BrokerVerb::MountRelease),
+        (BrokerDomain::Storage, 1) => Ok(BrokerVerb::StorageCreateWorkspace),
+        (BrokerDomain::Storage, 2) => Ok(BrokerVerb::StorageSnapshot),
+        (BrokerDomain::Storage, 3) => Ok(BrokerVerb::StorageHoldSnapshot),
+        (BrokerDomain::Storage, 4) => Ok(BrokerVerb::StorageReleaseHold),
+        (BrokerDomain::Storage, 5) => Ok(BrokerVerb::StorageClone),
+        (BrokerDomain::Storage, 6) => Ok(BrokerVerb::StorageSetQuota),
+        (BrokerDomain::Storage, 7) => Ok(BrokerVerb::StorageDestroy),
+        (BrokerDomain::Network, 1) => Ok(BrokerVerb::NetworkPrepare),
+        (BrokerDomain::Network, 2) => Ok(BrokerVerb::NetworkArmLease),
+        (BrokerDomain::Network, 3) => Ok(BrokerVerb::NetworkRenewLease),
+        (BrokerDomain::Network, 4) => Ok(BrokerVerb::NetworkDisarm),
+        (BrokerDomain::Network, 5) => Ok(BrokerVerb::NetworkDestroy),
         _ => Err(AuthorizationRecordError::InvalidPayload),
     }
 }
@@ -1256,25 +1313,38 @@ mod tests {
 
     #[test]
     fn broker_domains_cannot_open_each_others_records() {
-        let mount_key = mac_key();
-        let host_key = NodeJournalMacKey::new(BrokerDomain::Host, [90; 16], [91; 32])
-            .unwrap_or_else(|error| panic!("key: {error}"));
-        let bytes = seal_authorization_fence(
-            &mount_key,
-            RecordNamespace::DesiredState,
-            b"fence-key",
-            &fence(),
-        )
-        .unwrap_or_else(|error| panic!("seal: {error}"));
-        assert!(
-            open_authorization_fence(
-                &host_key,
+        let domains = [
+            BrokerDomain::Host,
+            BrokerDomain::Mount,
+            BrokerDomain::Storage,
+            BrokerDomain::Network,
+        ];
+        for sealing_domain in domains {
+            let sealing_key = NodeJournalMacKey::new(sealing_domain, [90; 16], [91; 32])
+                .unwrap_or_else(|error| panic!("key: {error}"));
+            let bytes = seal_authorization_fence(
+                &sealing_key,
                 RecordNamespace::DesiredState,
                 b"fence-key",
-                &bytes,
+                &fence(),
             )
-            .is_err()
-        );
+            .unwrap_or_else(|error| panic!("seal: {error}"));
+            for opening_domain in domains {
+                let opening_key = NodeJournalMacKey::new(opening_domain, [90; 16], [91; 32])
+                    .unwrap_or_else(|error| panic!("key: {error}"));
+                let result = open_authorization_fence(
+                    &opening_key,
+                    RecordNamespace::DesiredState,
+                    b"fence-key",
+                    &bytes,
+                );
+                if opening_domain == sealing_domain {
+                    assert_eq!(result, Ok(fence()));
+                } else {
+                    assert!(result.is_err());
+                }
+            }
+        }
     }
 
     #[test]
@@ -1298,6 +1368,102 @@ mod tests {
 
         assert_eq!(opened, intent);
         assert_eq!(opened.verb(), BrokerVerb::HostStop);
+    }
+
+    #[test]
+    fn every_effect_verb_round_trips_only_in_its_broker_domain() {
+        let cases = [
+            (BrokerDomain::Host, BrokerVerb::HostLaunch, 1),
+            (BrokerDomain::Host, BrokerVerb::HostStop, 2),
+            (BrokerDomain::Host, BrokerVerb::HostFreeze, 3),
+            (BrokerDomain::Host, BrokerVerb::HostThaw, 4),
+            (BrokerDomain::Host, BrokerVerb::HostKill, 5),
+            (BrokerDomain::Mount, BrokerVerb::MountCreate, 1),
+            (BrokerDomain::Mount, BrokerVerb::MountInstall, 2),
+            (BrokerDomain::Mount, BrokerVerb::MountReplace, 3),
+            (BrokerDomain::Mount, BrokerVerb::MountDetach, 4),
+            (BrokerDomain::Mount, BrokerVerb::MountRelease, 5),
+            (BrokerDomain::Storage, BrokerVerb::StorageCreateWorkspace, 1),
+            (BrokerDomain::Storage, BrokerVerb::StorageSnapshot, 2),
+            (BrokerDomain::Storage, BrokerVerb::StorageHoldSnapshot, 3),
+            (BrokerDomain::Storage, BrokerVerb::StorageReleaseHold, 4),
+            (BrokerDomain::Storage, BrokerVerb::StorageClone, 5),
+            (BrokerDomain::Storage, BrokerVerb::StorageSetQuota, 6),
+            (BrokerDomain::Storage, BrokerVerb::StorageDestroy, 7),
+            (BrokerDomain::Network, BrokerVerb::NetworkPrepare, 1),
+            (BrokerDomain::Network, BrokerVerb::NetworkArmLease, 2),
+            (BrokerDomain::Network, BrokerVerb::NetworkRenewLease, 3),
+            (BrokerDomain::Network, BrokerVerb::NetworkDisarm, 4),
+            (BrokerDomain::Network, BrokerVerb::NetworkDestroy, 5),
+        ];
+        let domains = [
+            BrokerDomain::Host,
+            BrokerDomain::Mount,
+            BrokerDomain::Storage,
+            BrokerDomain::Network,
+        ];
+        let resource = BrokerResourceHandle::from_bytes([7; 32])
+            .unwrap_or_else(|error| panic!("resource: {error}"));
+        let successor = BrokerResourceHandle::from_bytes([8; 32])
+            .unwrap_or_else(|error| panic!("resource: {error}"));
+
+        for (domain, verb, stable_code) in cases {
+            let mut intent = sample_intent();
+            intent.verb = verb;
+            intent.target = match verb {
+                BrokerVerb::HostLaunch
+                | BrokerVerb::MountCreate
+                | BrokerVerb::StorageCreateWorkspace
+                | BrokerVerb::NetworkPrepare => BrokerGrantTarget::Assignment,
+                BrokerVerb::MountReplace => BrokerGrantTarget::ResourcePair {
+                    previous: resource,
+                    successor,
+                },
+                _ => BrokerGrantTarget::Resource(resource),
+            };
+
+            let bytes = encode_effect(&intent, domain)
+                .unwrap_or_else(|error| panic!("encode {domain:?}/{verb:?}: {error}"));
+            assert_eq!(verb_code(domain, verb), stable_code);
+            assert_eq!(bytes[11], stable_code);
+            assert_eq!(
+                decode_effect(&bytes, domain),
+                Ok(intent.clone()),
+                "round trip failed for {domain:?}/{verb:?}"
+            );
+            for wrong_domain in domains {
+                if wrong_domain != domain {
+                    assert_eq!(
+                        encode_effect(&intent, wrong_domain),
+                        Err(AuthorizationRecordError::InvalidPayload),
+                        "{verb:?} encoded in {wrong_domain:?}"
+                    );
+                    assert_eq!(
+                        decode_effect(&bytes, wrong_domain),
+                        Err(AuthorizationRecordError::InvalidPayload),
+                        "{verb:?} decoded in {wrong_domain:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_domain_rejects_unknown_effect_verb_codes() {
+        for domain in [
+            BrokerDomain::Host,
+            BrokerDomain::Mount,
+            BrokerDomain::Storage,
+            BrokerDomain::Network,
+        ] {
+            let mut bytes = sample_effect();
+            bytes[..8].copy_from_slice(domain.effect_magic());
+            bytes[11] = u8::MAX;
+            assert_eq!(
+                decode_effect(&bytes, domain),
+                Err(AuthorizationRecordError::InvalidPayload)
+            );
+        }
     }
 
     #[test]
@@ -1467,9 +1633,9 @@ mod tests {
         );
     }
 
-    fn sample_effect() -> Vec<u8> {
+    fn sample_intent() -> BrokerEffectIntentV2 {
         let lease = local_lease();
-        let intent = BrokerEffectIntentV2 {
+        BrokerEffectIntentV2 {
             status: BrokerEffectStatusV2::Pending,
             request_id: [15; 16],
             transport_request_digest: ObjectDigest::from_bytes([11; 32]),
@@ -1491,8 +1657,11 @@ mod tests {
             effect_deadline_boottime_nanoseconds: 500,
             local_lease_record: lease,
             receipt: Vec::new(),
-        };
-        encode_effect(&intent, BrokerDomain::Mount)
+        }
+    }
+
+    fn sample_effect() -> Vec<u8> {
+        encode_effect(&sample_intent(), BrokerDomain::Mount)
             .unwrap_or_else(|error| panic!("effect: {error}"))
     }
 

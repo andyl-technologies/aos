@@ -426,6 +426,8 @@ impl BrokerDomain {
         match self {
             Self::Host => BrokerAudience::Host,
             Self::Mount => BrokerAudience::Mount,
+            Self::Storage => BrokerAudience::Storage,
+            Self::Network => BrokerAudience::Network,
         }
     }
 }

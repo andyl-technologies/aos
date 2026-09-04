@@ -6,8 +6,9 @@
 //! commitments, and an exclusive expiry. [`VerifiedBrokerPlan`] proves only
 //! plan authenticity; it is deliberately not an effect authorization because
 //! ownership-lease verification and durable fence admission remain required.
-//! This v1 registry covers the Host and Mount protocols already present on the
-//! local wire; Storage and Network are added only with their closed verbs.
+//! This v1 registry covers the Host, Mount, Storage, and Network protocols
+//! already present on the local wire. The per-assignment guardian consumes its
+//! signed ownership lease directly and is not a broker-plan audience.
 
 use crate::format::{
     CanonicalCborError, DecodeLimits, decode_broker_authorization_plan, decode_trust_policy,
@@ -69,6 +70,10 @@ pub enum BrokerAudience {
     Host,
     /// Root detached-mount broker.
     Mount,
+    /// Root storage broker.
+    Storage,
+    /// Root network broker.
+    Network,
 }
 
 impl BrokerAudience {
@@ -78,6 +83,8 @@ impl BrokerAudience {
         match self {
             Self::Host => ProtocolId::HostBroker,
             Self::Mount => ProtocolId::MountBroker,
+            Self::Storage => ProtocolId::StorageBroker,
+            Self::Network => ProtocolId::NetworkBroker,
         }
     }
 }
@@ -113,6 +120,34 @@ pub enum BrokerVerb {
     MountInventorySummary,
     /// Inventories retained mount resources.
     MountInventoryResources,
+    /// Creates an assignment workspace and mints its storage handle.
+    StorageCreateWorkspace,
+    /// Snapshots an existing workspace.
+    StorageSnapshot,
+    /// Holds an existing immutable storage version.
+    StorageHoldSnapshot,
+    /// Releases a hold on an immutable storage version.
+    StorageReleaseHold,
+    /// Clones an immutable storage version into a workspace.
+    StorageClone,
+    /// Changes the quota on an existing workspace.
+    StorageSetQuota,
+    /// Destroys an existing broker-owned storage object.
+    StorageDestroy,
+    /// Inventories storage resources for an assignment.
+    StorageInventory,
+    /// Prepares assignment networking and mints its network handle.
+    NetworkPrepare,
+    /// Arms the ownership-lease gate for an existing network.
+    NetworkArmLease,
+    /// Renews the ownership-lease gate for an existing network.
+    NetworkRenewLease,
+    /// Applies default-drop and disarms an existing network.
+    NetworkDisarm,
+    /// Destroys an existing broker-owned network.
+    NetworkDestroy,
+    /// Inventories network resources for an assignment.
+    NetworkInventory,
 }
 
 impl BrokerVerb {
@@ -138,6 +173,20 @@ impl BrokerVerb {
             12 => Ok(Self::MountRelease),
             13 => Ok(Self::MountInventorySummary),
             14 => Ok(Self::MountInventoryResources),
+            15 => Ok(Self::StorageCreateWorkspace),
+            16 => Ok(Self::StorageSnapshot),
+            17 => Ok(Self::StorageHoldSnapshot),
+            18 => Ok(Self::StorageReleaseHold),
+            19 => Ok(Self::StorageClone),
+            20 => Ok(Self::StorageSetQuota),
+            21 => Ok(Self::StorageDestroy),
+            22 => Ok(Self::StorageInventory),
+            23 => Ok(Self::NetworkPrepare),
+            24 => Ok(Self::NetworkArmLease),
+            25 => Ok(Self::NetworkRenewLease),
+            26 => Ok(Self::NetworkDisarm),
+            27 => Ok(Self::NetworkDestroy),
+            28 => Ok(Self::NetworkInventory),
             _ => Err(InvalidBrokerAuthorizationPlan::UnknownVerb),
         }
     }
@@ -160,6 +209,20 @@ impl BrokerVerb {
             Self::MountRelease => 12,
             Self::MountInventorySummary => 13,
             Self::MountInventoryResources => 14,
+            Self::StorageCreateWorkspace => 15,
+            Self::StorageSnapshot => 16,
+            Self::StorageHoldSnapshot => 17,
+            Self::StorageReleaseHold => 18,
+            Self::StorageClone => 19,
+            Self::StorageSetQuota => 20,
+            Self::StorageDestroy => 21,
+            Self::StorageInventory => 22,
+            Self::NetworkPrepare => 23,
+            Self::NetworkArmLease => 24,
+            Self::NetworkRenewLease => 25,
+            Self::NetworkDisarm => 26,
+            Self::NetworkDestroy => 27,
+            Self::NetworkInventory => 28,
         }
     }
 
@@ -181,6 +244,20 @@ impl BrokerVerb {
             | Self::MountRelease
             | Self::MountInventorySummary
             | Self::MountInventoryResources => BrokerAudience::Mount,
+            Self::StorageCreateWorkspace
+            | Self::StorageSnapshot
+            | Self::StorageHoldSnapshot
+            | Self::StorageReleaseHold
+            | Self::StorageClone
+            | Self::StorageSetQuota
+            | Self::StorageDestroy
+            | Self::StorageInventory => BrokerAudience::Storage,
+            Self::NetworkPrepare
+            | Self::NetworkArmLease
+            | Self::NetworkRenewLease
+            | Self::NetworkDisarm
+            | Self::NetworkDestroy
+            | Self::NetworkInventory => BrokerAudience::Network,
         }
     }
 
@@ -190,7 +267,11 @@ impl BrokerVerb {
             | Self::HostInventory
             | Self::MountCreate
             | Self::MountInventorySummary
-            | Self::MountInventoryResources => BrokerGrantTargetShape::Assignment,
+            | Self::MountInventoryResources
+            | Self::StorageCreateWorkspace
+            | Self::StorageInventory
+            | Self::NetworkPrepare
+            | Self::NetworkInventory => BrokerGrantTargetShape::Assignment,
             Self::HostStop
             | Self::HostFreeze
             | Self::HostThaw
@@ -198,7 +279,17 @@ impl BrokerVerb {
             | Self::HostObserve
             | Self::MountInstall
             | Self::MountDetach
-            | Self::MountRelease => BrokerGrantTargetShape::Resource,
+            | Self::MountRelease
+            | Self::StorageSnapshot
+            | Self::StorageHoldSnapshot
+            | Self::StorageReleaseHold
+            | Self::StorageClone
+            | Self::StorageSetQuota
+            | Self::StorageDestroy
+            | Self::NetworkArmLease
+            | Self::NetworkRenewLease
+            | Self::NetworkDisarm
+            | Self::NetworkDestroy => BrokerGrantTargetShape::Resource,
             Self::MountReplace => BrokerGrantTargetShape::ResourcePair,
         }
     }
@@ -1283,13 +1374,44 @@ mod tests {
 
     #[test]
     fn unknown_verbs_wrong_audiences_and_zero_sentinels_fail_closed() {
-        for code in 1..=14 {
+        let stable_codes = [
+            (1, BrokerVerb::HostLaunch),
+            (2, BrokerVerb::HostStop),
+            (3, BrokerVerb::HostFreeze),
+            (4, BrokerVerb::HostThaw),
+            (5, BrokerVerb::HostKill),
+            (6, BrokerVerb::HostObserve),
+            (7, BrokerVerb::HostInventory),
+            (8, BrokerVerb::MountCreate),
+            (9, BrokerVerb::MountInstall),
+            (10, BrokerVerb::MountReplace),
+            (11, BrokerVerb::MountDetach),
+            (12, BrokerVerb::MountRelease),
+            (13, BrokerVerb::MountInventorySummary),
+            (14, BrokerVerb::MountInventoryResources),
+            (15, BrokerVerb::StorageCreateWorkspace),
+            (16, BrokerVerb::StorageSnapshot),
+            (17, BrokerVerb::StorageHoldSnapshot),
+            (18, BrokerVerb::StorageReleaseHold),
+            (19, BrokerVerb::StorageClone),
+            (20, BrokerVerb::StorageSetQuota),
+            (21, BrokerVerb::StorageDestroy),
+            (22, BrokerVerb::StorageInventory),
+            (23, BrokerVerb::NetworkPrepare),
+            (24, BrokerVerb::NetworkArmLease),
+            (25, BrokerVerb::NetworkRenewLease),
+            (26, BrokerVerb::NetworkDisarm),
+            (27, BrokerVerb::NetworkDestroy),
+            (28, BrokerVerb::NetworkInventory),
+        ];
+        for (code, expected) in stable_codes {
             let verb = BrokerVerb::from_code(code)
                 .unwrap_or_else(|error| panic!("registered verb failed: {error}"));
+            assert_eq!(verb, expected);
             assert_eq!(verb.get(), code);
         }
         assert_eq!(
-            BrokerVerb::from_code(15),
+            BrokerVerb::from_code(29),
             Err(InvalidBrokerAuthorizationPlan::UnknownVerb)
         );
         assert_eq!(
@@ -1389,6 +1511,77 @@ mod tests {
                 17,
             ),
             Err(InvalidBrokerAuthorizationPlan::InvalidRequestBound)
+        );
+    }
+
+    #[test]
+    fn privileged_broker_registry_has_stable_audiences_and_target_shapes() {
+        let assignment_verbs = [
+            BrokerVerb::HostLaunch,
+            BrokerVerb::HostInventory,
+            BrokerVerb::MountCreate,
+            BrokerVerb::MountInventorySummary,
+            BrokerVerb::MountInventoryResources,
+            BrokerVerb::StorageCreateWorkspace,
+            BrokerVerb::StorageInventory,
+            BrokerVerb::NetworkPrepare,
+            BrokerVerb::NetworkInventory,
+        ];
+        let resource_verbs = [
+            BrokerVerb::HostStop,
+            BrokerVerb::HostFreeze,
+            BrokerVerb::HostThaw,
+            BrokerVerb::HostKill,
+            BrokerVerb::HostObserve,
+            BrokerVerb::MountInstall,
+            BrokerVerb::MountDetach,
+            BrokerVerb::MountRelease,
+            BrokerVerb::StorageSnapshot,
+            BrokerVerb::StorageHoldSnapshot,
+            BrokerVerb::StorageReleaseHold,
+            BrokerVerb::StorageClone,
+            BrokerVerb::StorageSetQuota,
+            BrokerVerb::StorageDestroy,
+            BrokerVerb::NetworkArmLease,
+            BrokerVerb::NetworkRenewLease,
+            BrokerVerb::NetworkDisarm,
+            BrokerVerb::NetworkDestroy,
+        ];
+
+        for verb in assignment_verbs {
+            assert_eq!(verb.target_shape(), BrokerGrantTargetShape::Assignment);
+        }
+        for verb in resource_verbs {
+            assert_eq!(verb.target_shape(), BrokerGrantTargetShape::Resource);
+        }
+        assert_eq!(
+            BrokerVerb::MountReplace.target_shape(),
+            BrokerGrantTargetShape::ResourcePair
+        );
+
+        for code in 15..=22 {
+            assert_eq!(
+                BrokerVerb::from_code(code)
+                    .unwrap_or_else(|error| panic!("storage verb {code}: {error}"))
+                    .audience(),
+                BrokerAudience::Storage
+            );
+        }
+        for code in 23..=28 {
+            assert_eq!(
+                BrokerVerb::from_code(code)
+                    .unwrap_or_else(|error| panic!("network verb {code}: {error}"))
+                    .audience(),
+                BrokerAudience::Network
+            );
+        }
+        assert_eq!(
+            BrokerAudience::Storage.protocol(),
+            ProtocolId::StorageBroker
+        );
+        assert_eq!(
+            BrokerAudience::Network.protocol(),
+            ProtocolId::NetworkBroker
         );
     }
 
