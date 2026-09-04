@@ -15,7 +15,8 @@ use crate::{
 
 use super::ViewMutation;
 
-const MAX_ANCESTRY_DEPTH: usize = 4_096;
+/// Maximum logical sandbox-parent edges in one ancestry chain.
+pub const MAX_ANCESTRY_DEPTH: usize = 4_096;
 
 /// Reports invalid ancestry, placement, or attachment intent.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
