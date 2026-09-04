@@ -2,7 +2,7 @@
 #![allow(clippy::expect_used)]
 
 use crucible::ContentHash;
-use crucible_campaign::CampaignLineageId;
+use crucible_campaign::{CampaignLineageId, ConfigurationArtifactId};
 use crucible_cas::content_store::{ContentId, ObjectKind};
 
 use super::*;
@@ -65,6 +65,30 @@ fn within_budget_commit_accounts_every_resource_dimension() {
     assert_eq!(manager.usage().virtual_cpu_count(), 2);
     assert_eq!(manager.usage().descriptor_count(), 12);
     assert_eq!(manager.usage().overlay_count(), 2);
+}
+
+#[test]
+fn fallback_identity_survives_planning_and_inventory_commit() {
+    let mut manager = manager(2, resources(20, 20, 2, 2, 20, 2), 4);
+    let exact = exact_fallback(1);
+    let thin = thin_fallback(2);
+    assert_ne!(exact, exact_fallback(3));
+    assert_eq!(exact.tier(), HotCheckpointFallbackTier::Exact);
+    assert_eq!(thin.tier(), HotCheckpointFallbackTier::Thin);
+    assert!(exact.exact_checkpoint().is_some());
+    assert!(exact.thin_configuration().is_none());
+    assert!(thin.exact_checkpoint().is_none());
+    assert!(thin.thin_configuration().is_some());
+
+    let candidate = HotCheckpointCandidate::new(key(1), unit_resources(), signals(1, false), thin);
+    let plan = manager.plan_admission(candidate).expect("thin plan");
+    let retained = manager
+        .commit_admission(plan, slot(1, 0))
+        .expect("thin commit")
+        .retained();
+
+    assert_eq!(retained.fallback(), thin);
+    assert_eq!(manager.status(retained.slot()), Some(retained));
 }
 
 #[test]
@@ -299,7 +323,7 @@ fn orderly_demotion_releases_exact_accounting_and_coordinate() {
         .expect("orderly demotion");
     assert_eq!(removed.status().slot(), coordinate);
     assert_eq!(
-        removed.status().fallback(),
+        removed.status().fallback().tier(),
         HotCheckpointFallbackTier::Exact
     );
     assert_eq!(
@@ -488,7 +512,25 @@ fn candidate(
         key(byte),
         resources,
         signals(score, pinned),
-        HotCheckpointFallbackTier::Exact,
+        exact_fallback(byte),
+    )
+}
+
+fn exact_fallback(byte: u8) -> HotCheckpointFallback {
+    HotCheckpointFallback::Exact(
+        ExactCheckpointId::try_from(ContentId::for_bytes(ObjectKind::ExactManifest, 4, &[byte]))
+            .expect("exact fallback"),
+    )
+}
+
+fn thin_fallback(byte: u8) -> HotCheckpointFallback {
+    let content = ContentId::for_bytes(ObjectKind::Configuration, 1, &[byte]);
+    HotCheckpointFallback::Thin(
+        ConfigurationArtifactId::parse(&format!(
+            "crucible.campaign.configuration-artifact@{}",
+            content.encode()
+        ))
+        .expect("thin fallback"),
     )
 }
 

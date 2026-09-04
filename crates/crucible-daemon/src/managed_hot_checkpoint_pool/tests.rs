@@ -18,11 +18,12 @@ use crucible_qemu::{
 use super::*;
 use crate::{
     AttemptExecutionDisposition, AttemptExecutionKey, AttemptExecutionReconciliationStep,
-    ExecutionCancellation, ExecutionCheckpointRequest, HotCheckpointFallbackTier,
-    HotCheckpointHotnessSignals, HotCheckpointResourceProfile, HotCheckpointUsage,
-    QemuAttemptOperationalBoundary, QemuHotForkAttemptLifecycle, QemuHotForkChildExitPolicy,
-    QemuHotForkLiveExecution, QemuHotForkTemplateKey,
+    ExecutionCancellation, ExecutionCheckpointRequest, HotCheckpointFallback,
+    HotCheckpointFallbackTier, HotCheckpointHotnessSignals, HotCheckpointResourceProfile,
+    HotCheckpointUsage, QemuAttemptOperationalBoundary, QemuHotForkAttemptLifecycle,
+    QemuHotForkChildExitPolicy, QemuHotForkLiveExecution, QemuHotForkTemplateKey,
 };
+use crucible_cas::content_store::{ContentId, ObjectKind};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("scripted managed-pool failure")]
@@ -168,11 +169,25 @@ impl QemuHotForkLifecycleQuarantine<QemuHotForkTemplatePoolLifecycle<ScriptedLif
 struct ScriptedDemotions {
     completed: Vec<u64>,
     plans: Vec<HotCheckpointPlannedDemotion>,
+    validations: Vec<(QemuHotForkTemplateKey, HotCheckpointFallback)>,
+    fail_validation_call: Option<usize>,
     fail_source: Option<u64>,
 }
 
 impl HotCheckpointTemplateDemotionSink<ScriptedFactory> for ScriptedDemotions {
     type Error = ScriptedError;
+
+    fn validate_fallback(
+        &mut self,
+        key: QemuHotForkTemplateKey,
+        fallback: HotCheckpointFallback,
+    ) -> Result<(), Self::Error> {
+        self.validations.push((key, fallback));
+        if self.fail_validation_call == Some(self.validations.len()) {
+            return Err(ScriptedError);
+        }
+        Ok(())
+    }
 
     fn demote(
         &mut self,
@@ -214,6 +229,37 @@ fn admission_keeps_manager_and_pool_on_the_same_exact_coordinate() {
 }
 
 #[test]
+fn invalid_candidate_fallback_rejects_before_pool_or_manager_mutation() {
+    let mut owner = owner(
+        1,
+        unit_resources(),
+        1,
+        ScriptedDemotions {
+            fail_validation_call: Some(1),
+            ..ScriptedDemotions::default()
+        },
+    );
+    let (factory, _available, _starts) = factory(1, 7);
+
+    let failure = owner
+        .admit_template(factory, candidate(1, 1, unit_resources()))
+        .expect_err("invalid fallback");
+    let (candidate, stranded, error) = failure.into_parts();
+
+    assert_eq!(candidate.expect("returned candidate").source, 7);
+    assert!(stranded.is_none());
+    assert!(matches!(
+        error,
+        ManagedHotCheckpointAdmissionError::FallbackValidation(ScriptedError)
+    ));
+    assert_eq!(owner.manager().usage(), HotCheckpointUsage::default());
+    assert_eq!(owner.manager().retained().len(), 0);
+    assert_eq!(owner.pool().slot_count(), 0);
+    assert_eq!(owner.demotion_sink().validations.len(), 1);
+    assert!(owner.demotion_sink().completed.is_empty());
+}
+
+#[test]
 fn pressure_reaps_colder_source_before_installing_replacement() {
     let mut owner = owner(1, unit_resources(), 4, ScriptedDemotions::default());
     let (first, _available, _starts) = factory(1, 1);
@@ -227,7 +273,7 @@ fn pressure_reaps_colder_source_before_installing_replacement() {
 
     assert_eq!(owner.demotion_sink().completed, vec![1]);
     assert_eq!(
-        owner.demotion_sink().plans[0].fallback(),
+        owner.demotion_sink().plans[0].fallback().tier(),
         HotCheckpointFallbackTier::Exact
     );
     assert_eq!(
@@ -271,15 +317,54 @@ fn busy_victim_rejects_before_any_authority_or_accounting_change() {
 }
 
 #[test]
+fn invalid_planned_victim_fallback_rejects_before_any_source_transfer() {
+    let mut owner = owner(
+        2,
+        resources(10, 10, 2, 2, 20, 2),
+        4,
+        ScriptedDemotions {
+            fail_validation_call: Some(5),
+            ..ScriptedDemotions::default()
+        },
+    );
+    let (first, _available, _starts) = factory(1, 1);
+    owner
+        .admit_template(first, candidate(1, 1, resources(5, 5, 1, 1, 10, 1)))
+        .expect("first");
+    let (second, _available, _starts) = factory(2, 2);
+    owner
+        .admit_template(second, candidate(2, 2, resources(5, 5, 1, 1, 10, 1)))
+        .expect("second");
+    let before_usage = owner.manager().usage();
+    let before_slots = owner.pool().slot_count();
+    let (replacement, _available, _starts) = factory(3, 3);
+
+    let failure = owner
+        .admit_template(replacement, candidate(3, 3, unit_resources()))
+        .expect_err("second planned fallback is invalid");
+    let (candidate, stranded, error) = failure.into_parts();
+
+    assert_eq!(candidate.expect("returned candidate").source, 3);
+    assert!(stranded.is_none());
+    assert!(matches!(
+        error,
+        ManagedHotCheckpointAdmissionError::FallbackValidation(ScriptedError)
+    ));
+    assert_eq!(owner.manager().usage(), before_usage);
+    assert_eq!(owner.pool().slot_count(), before_slots);
+    assert!(owner.demotion_sink().completed.is_empty());
+    assert_eq!(owner.demotion_sink().validations.len(), 5);
+}
+
+#[test]
 fn partial_demotion_failure_restores_failed_source_and_accounts_completed_work() {
     let mut owner = owner(
         2,
         resources(10, 10, 2, 2, 20, 2),
         4,
         ScriptedDemotions {
-            completed: Vec::new(),
-            plans: Vec::new(),
             fail_source: Some(2),
+            ..ScriptedDemotions::default()
         },
     );
     let (first, _available, _starts) = factory(1, 1);
@@ -340,7 +425,7 @@ fn explicit_demotion_secures_fallback_before_releasing_accounting() {
     );
     assert_eq!(owner.demotion_sink().completed, vec![7]);
     assert_eq!(
-        owner.demotion_sink().plans[0].fallback(),
+        owner.demotion_sink().plans[0].fallback().tier(),
         HotCheckpointFallbackTier::Exact
     );
     assert_eq!(
@@ -352,15 +437,52 @@ fn explicit_demotion_secures_fallback_before_releasing_accounting() {
 }
 
 #[test]
+fn invalid_explicit_fallback_leaves_source_and_accounting_owned() {
+    let mut owner = owner(
+        1,
+        unit_resources(),
+        1,
+        ScriptedDemotions {
+            fail_validation_call: Some(2),
+            ..ScriptedDemotions::default()
+        },
+    );
+    let (factory, _available, _starts) = factory(1, 7);
+    let retained = owner
+        .admit_template(factory, candidate(1, 9, unit_resources()))
+        .expect("retained source")
+        .retained();
+    let before = owner.manager().usage();
+
+    let failure = owner
+        .demote_template(
+            retained.slot(),
+            HotCheckpointDemotionReason::OperatorRequest,
+        )
+        .expect_err("fallback preflight fails");
+    let (stranded, error) = failure.into_parts();
+
+    assert!(stranded.is_none());
+    assert!(matches!(
+        error,
+        ManagedHotCheckpointDemotionError::FallbackValidation(ScriptedError)
+    ));
+    assert_eq!(owner.pool().first_slot(), Some(retained.slot()));
+    assert_eq!(owner.manager().status(retained.slot()), Some(retained));
+    assert_eq!(owner.manager().usage(), before);
+    assert!(owner.demotion_sink().completed.is_empty());
+    assert_eq!(owner.demotion_sink().validations.len(), 2);
+}
+
+#[test]
 fn failed_explicit_demotion_restores_the_exact_source_coordinate() {
     let mut owner = owner(
         1,
         unit_resources(),
         1,
         ScriptedDemotions {
-            completed: Vec::new(),
-            plans: Vec::new(),
             fail_source: Some(7),
+            ..ScriptedDemotions::default()
         },
     );
     let (factory, _available, _starts) = factory(1, 7);
@@ -423,12 +545,7 @@ fn every_start_attempt_consumes_the_managed_fork_rate_before_pool_work() {
                 available,
                 starts: Arc::clone(&starts),
             },
-            HotCheckpointCandidate::new(
-                key,
-                unit_resources(),
-                signals(1),
-                HotCheckpointFallbackTier::Exact,
-            ),
+            HotCheckpointCandidate::new(key, unit_resources(), signals(1), exact_fallback(1)),
         )
         .expect("managed source");
 
@@ -486,11 +603,17 @@ fn candidate(
     score: u64,
     resources: HotCheckpointResourceProfile,
 ) -> HotCheckpointCandidate {
-    HotCheckpointCandidate::new(
-        key(byte),
-        resources,
-        signals(score),
-        HotCheckpointFallbackTier::Exact,
+    HotCheckpointCandidate::new(key(byte), resources, signals(score), exact_fallback(byte))
+}
+
+fn exact_fallback(byte: u8) -> HotCheckpointFallback {
+    HotCheckpointFallback::Exact(
+        crucible_campaign::ExactCheckpointId::try_from(ContentId::for_bytes(
+            ObjectKind::ExactManifest,
+            4,
+            &[byte],
+        ))
+        .expect("exact fallback"),
     )
 }
 

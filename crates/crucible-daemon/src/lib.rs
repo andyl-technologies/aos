@@ -349,13 +349,14 @@ pub use guest_selectable::GuestSelectableError;
 pub use hot_checkpoint_manager::{
     HotCheckpointAdmissionCommit, HotCheckpointAdmissionCommitError, HotCheckpointAdmissionPlan,
     HotCheckpointAdmissionRejection, HotCheckpointCandidate, HotCheckpointDemotion,
-    HotCheckpointDemotionReason, HotCheckpointFallbackTier, HotCheckpointForkPermit,
-    HotCheckpointForkRateError, HotCheckpointHotnessComponent, HotCheckpointHotnessError,
-    HotCheckpointHotnessSignals, HotCheckpointInventoryError, HotCheckpointLimits,
-    HotCheckpointLimitsError, HotCheckpointManager, HotCheckpointOrderlyDemotionPlan,
-    HotCheckpointPlannedDemotion, HotCheckpointPressure, HotCheckpointResourceProfile,
-    HotCheckpointResourceProfileError, HotCheckpointRetentionReason, HotCheckpointScore,
-    HotCheckpointStatus, HotCheckpointUsage, MAX_HOT_CHECKPOINT_SCORE_COMPONENT,
+    HotCheckpointDemotionReason, HotCheckpointFallback, HotCheckpointFallbackTier,
+    HotCheckpointForkPermit, HotCheckpointForkRateError, HotCheckpointHotnessComponent,
+    HotCheckpointHotnessError, HotCheckpointHotnessSignals, HotCheckpointInventoryError,
+    HotCheckpointLimits, HotCheckpointLimitsError, HotCheckpointManager,
+    HotCheckpointOrderlyDemotionPlan, HotCheckpointPlannedDemotion, HotCheckpointPressure,
+    HotCheckpointResourceProfile, HotCheckpointResourceProfileError, HotCheckpointRetentionReason,
+    HotCheckpointScore, HotCheckpointStatus, HotCheckpointUsage,
+    MAX_HOT_CHECKPOINT_SCORE_COMPONENT,
 };
 #[cfg(target_os = "linux")]
 pub use managed_hot_checkpoint_pool::{

@@ -426,28 +426,32 @@ candidate may replace only strictly colder sources, so an existing source wins
 a score tie; a pinned candidate may replace any unpinned source.
 
 Admission is two-phase. Planning is read-only and names the exact stable pool
-slots plus the exact or thin fallback tier that must remain available. The
-daemon retires only idle source authorities and secures those fallbacks before
-committing the generation-bound inventory change. Any intervening signal, pin,
-or inventory update makes the plan stale. The manager accounts template bytes,
-expected private dirty bytes, processes, virtual CPUs, descriptors, and
-writable overlays with checked arithmetic. Actual fork starts separately
-consume one non-cloneable permit from a configured fixed-duration operational
-rate window; failed starts still consume their permit. The window clock and all
-scores are host telemetry and never enter canonical campaign state.
+slots plus the exact authenticated fallback identity that must remain
+available: an `ExactCheckpointId` for exact restore or a
+`ConfigurationArtifactId` for thin replay. The daemon retires only idle source
+authorities and secures those fallbacks before committing the generation-bound
+inventory change. Any intervening signal, pin, or inventory update makes the
+plan stale. The manager accounts template bytes, expected private dirty bytes,
+processes, virtual CPUs, descriptors, and writable overlays with checked
+arithmetic. Actual fork starts separately consume one non-cloneable permit from
+a configured fixed-duration operational rate window; failed starts still
+consume their permit. The window clock and all scores are host telemetry and
+never enter canonical campaign state.
 
 The single mutable retained-pool owner composes those phases. Before moving any
-source authority, it proves every planned victim is still idle. It then gives
-each source and its exact planned fallback tier to the orderly-demotion sink,
-which succeeds only after the fallback remains authenticated and available and
-the hot source process and hot-only resources have been reaped. A failed sink
-returns the unchanged factory for restoration at the same stable coordinate.
-If a later victim fails after earlier demotions completed, those completed
-resource releases remain valid and are reconciled into manager accounting; the
-candidate is returned unchanged. Explicit operator, shutdown, and invalidation
-demotions use the same fallback-before-accounting-release order. The owner also
-charges its process-local monotonic-nanosecond rate window before every source-
-pool start attempt, so missing, busy, and failed launches cannot bypass the
+source authority, it authenticates the candidate fallback, preflights every
+planned victim fallback, and proves every planned victim is still idle. It then
+gives each source and its exact planned fallback identity to the
+orderly-demotion sink. The sink reauthenticates that identity at the release
+boundary and succeeds only after the hot source process and hot-only resources
+have been reaped. A failed sink returns a factory retaining the source or
+partial-shutdown authority for restoration at the same stable coordinate. If a
+later victim fails after earlier demotions completed, those completed resource
+releases remain valid and are reconciled into manager accounting; the candidate
+is returned unchanged. Explicit operator, shutdown, and invalidation demotions
+use the same fallback-before-accounting-release order. The owner also charges
+its process-local monotonic-nanosecond rate window before every source-pool
+start attempt, so missing, busy, and failed launches cannot bypass the
 configured start rate.
 
 - **[LAZY-15]** Materialization policy MUST expose why a checkpoint is hot,

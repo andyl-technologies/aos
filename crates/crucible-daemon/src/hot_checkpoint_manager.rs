@@ -10,6 +10,8 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use crucible_campaign::{ConfigurationArtifactId, ExactCheckpointId};
+
 use crate::{
     MAX_QEMU_HOT_FORK_TEMPLATE_POOL_SLOTS, QemuHotForkTemplateKey, QemuHotForkTemplatePoolSlot,
 };
@@ -496,13 +498,51 @@ pub enum HotCheckpointFallbackTier {
     Thin,
 }
 
+/// Exact authenticated realization basis preserved after hot demotion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HotCheckpointFallback {
+    /// Preserve one complete authenticated exact-checkpoint closure.
+    Exact(ExactCheckpointId),
+    /// Preserve one verified configuration artifact for deterministic replay.
+    Thin(ConfigurationArtifactId),
+}
+
+impl HotCheckpointFallback {
+    /// Returns the durable realization tier represented by this exact basis.
+    #[must_use]
+    pub const fn tier(self) -> HotCheckpointFallbackTier {
+        match self {
+            Self::Exact(_) => HotCheckpointFallbackTier::Exact,
+            Self::Thin(_) => HotCheckpointFallbackTier::Thin,
+        }
+    }
+
+    /// Returns the exact-checkpoint closure root, when this is an exact fallback.
+    #[must_use]
+    pub const fn exact_checkpoint(self) -> Option<ExactCheckpointId> {
+        match self {
+            Self::Exact(checkpoint) => Some(checkpoint),
+            Self::Thin(_) => None,
+        }
+    }
+
+    /// Returns the verified configuration artifact, when this is a thin fallback.
+    #[must_use]
+    pub const fn thin_configuration(self) -> Option<ConfigurationArtifactId> {
+        match self {
+            Self::Exact(_) => None,
+            Self::Thin(configuration) => Some(configuration),
+        }
+    }
+}
+
 /// Candidate metadata considered for hot retention.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HotCheckpointCandidate {
     key: QemuHotForkTemplateKey,
     resources: HotCheckpointResourceProfile,
     signals: HotCheckpointHotnessSignals,
-    fallback: HotCheckpointFallbackTier,
+    fallback: HotCheckpointFallback,
 }
 
 impl HotCheckpointCandidate {
@@ -512,7 +552,7 @@ impl HotCheckpointCandidate {
         key: QemuHotForkTemplateKey,
         resources: HotCheckpointResourceProfile,
         signals: HotCheckpointHotnessSignals,
-        fallback: HotCheckpointFallbackTier,
+        fallback: HotCheckpointFallback,
     ) -> Self {
         Self {
             key,
@@ -542,7 +582,7 @@ impl HotCheckpointCandidate {
 
     /// Returns the authenticated fallback selected if hot retention ends.
     #[must_use]
-    pub const fn fallback(self) -> HotCheckpointFallbackTier {
+    pub const fn fallback(self) -> HotCheckpointFallback {
         self.fallback
     }
 }
@@ -749,7 +789,7 @@ pub struct HotCheckpointStatus {
     slot: QemuHotForkTemplatePoolSlot,
     resources: HotCheckpointResourceProfile,
     signals: HotCheckpointHotnessSignals,
-    fallback: HotCheckpointFallbackTier,
+    fallback: HotCheckpointFallback,
     reason: HotCheckpointRetentionReason,
 }
 
@@ -778,9 +818,9 @@ impl HotCheckpointStatus {
         self.signals.score()
     }
 
-    /// Returns the fallback tier used on demotion.
+    /// Returns the exact authenticated fallback basis used on demotion.
     #[must_use]
-    pub const fn fallback(self) -> HotCheckpointFallbackTier {
+    pub const fn fallback(self) -> HotCheckpointFallback {
         self.fallback
     }
 
@@ -818,9 +858,9 @@ impl HotCheckpointPlannedDemotion {
         self.status.slot
     }
 
-    /// Returns the durable realization tier that must remain available.
+    /// Returns the exact durable realization basis that must remain available.
     #[must_use]
-    pub const fn fallback(self) -> HotCheckpointFallbackTier {
+    pub const fn fallback(self) -> HotCheckpointFallback {
         self.status.fallback
     }
 

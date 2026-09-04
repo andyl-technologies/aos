@@ -2329,8 +2329,10 @@ realizations intact.
   realization tier, never semantic proposal priority in strict mode. Fork rate
   is measured over one configured fixed-duration monotonic host-time window;
   every admitted process-fork attempt is charged even when later preparation
-  fails. The retained-pool owner MUST secure and authenticate the selected
-  exact/thin fallback and reap the idle source before releasing its accounting;
-  partial multi-source demotion failure MUST preserve completed releases,
-  restore the failed source at its exact stable coordinate, and leave the
+  fails. The retained-pool owner MUST bind the selected fallback to an exact
+  `ExactCheckpointId` or thin `ConfigurationArtifactId`, authenticate that
+  identity before source transfer, reauthenticate it at the release boundary,
+  and reap the idle source before releasing its accounting. Partial
+  multi-source demotion failure MUST preserve completed releases, restore the
+  failed source authority at its exact stable coordinate, and leave the
   candidate uninstalled.
