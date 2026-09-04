@@ -147,20 +147,22 @@ pub(super) fn audit_fixed_outputs(
         .iter()
         .flat_map(|unit| unit.members.iter().map(ToString::to_string))
         .collect::<BTreeSet<_>>();
-    let member_json = serde_json::to_string(&members)?;
-    let root_json = serde_json::to_string(&nix.root().join("default.nix"))?;
-    let arguments = if let Some(value) = target {
-        format!("{{ crossSystem = {}; }}", serde_json::to_string(value)?)
-    } else {
-        "{}".to_string()
-    };
-    let expression = format!(
-        "let root = import (builtins.toPath {root_json}) {arguments}; names = builtins.fromJSON {members_json}; in builtins.listToAttrs (map (name: {{ inherit name; value = (builtins.getAttr name root.pkgs).drvPath; }}) names)",
-        members_json = serde_json::to_string(&member_json)?,
-    );
-    let member_drvs: BTreeMap<String, String> =
-        serde_json::from_value(nix.eval_expr_json(&expression)?)
-            .context("decoding package derivation identities")?;
+    let member_drvs = members
+        .iter()
+        .map(|member| {
+            let attribute = format!("pkgs.{member}");
+            let path = if let Some(target) = target {
+                nix.instantiate_for_target(&attribute, target)?
+            } else {
+                nix.instantiate(&attribute)?
+            };
+            let path = path
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("package derivation path is not UTF-8"))?
+                .to_string();
+            Ok((member.clone(), path))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
 
     let roots = derivation_documents(member_drvs.values())?;
     let mut direct_inputs = BTreeSet::new();

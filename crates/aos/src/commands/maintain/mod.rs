@@ -1564,6 +1564,14 @@ fn cached_completion(
                 };
                 family_matches && state_matches
             });
+            let retained = snapshot
+                .units
+                .iter()
+                .map(|unit| format!("{}/", unit.unit_id))
+                .collect::<Vec<_>>();
+            snapshot
+                .observations
+                .retain(|key, _| retained.iter().any(|prefix| key.starts_with(prefix)));
         }
     }
 
@@ -1578,6 +1586,7 @@ fn cached_completion(
         .to_string(),
     );
     values.insert("stateRoot".to_string(), store.root().display().to_string());
+    values.insert("inventoryDigest".to_string(), inventory_digest.to_string());
     values.insert(
         "unitCount".to_string(),
         discovery
@@ -1611,7 +1620,7 @@ fn cached_completion(
         CommandDisposition::Success,
         CommandData {
             values,
-            inventory: Some(inventory),
+            inventory: (command == "inventory").then_some(inventory),
             discovery,
             ..CommandData::default()
         },
@@ -1903,10 +1912,16 @@ fn plan_command(
             .iter()
             .any(|selected| selected.as_str() == unit.unit_id)
     });
+    snapshot.observations.retain(|key, _| {
+        unit_ids
+            .iter()
+            .any(|selected| key.starts_with(&format!("{selected}/")))
+    });
     completion(
         "plan",
         CommandDisposition::Success,
         CommandData {
+            values: BTreeMap::from([("repositoryState".to_string(), "clean".to_string())]),
             inventory: Some(envelope),
             discovery: Some(snapshot),
             plan: Some(plan.clone()),
@@ -2810,7 +2825,12 @@ fn render_human(result: &MaintainCommandResult, screen_reader: bool, printer: &P
             .get("unitCount")
             .cloned()
             .unwrap_or_else(|| envelope.inventory.units.len().to_string());
-        printer.kv("Units", &unit_count);
+        let unit_label = match result.command.as_str() {
+            "plan" | "run" => "Inventory units",
+            "report" => "Matching units",
+            _ => "Units",
+        };
+        printer.kv(unit_label, &unit_count);
         if let Some(audited) = result.data.values.get("fixedOutputsAudited") {
             printer.kv("Fixed outputs", &format!("{audited} associations verified"));
         }
