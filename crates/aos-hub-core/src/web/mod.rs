@@ -47,6 +47,7 @@ pub mod browse_pages;
 pub mod config_form;
 pub mod console;
 pub mod console_render;
+pub mod container_browse_pages;
 pub mod csrf;
 pub mod help;
 pub mod render;

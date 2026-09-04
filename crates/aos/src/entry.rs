@@ -1,9 +1,9 @@
 //! Process entry points shared by the AOS command-line programs.
 
 use std::process;
-use std::{ffi::OsString, io::Write};
+use std::{ffi::OsStr, ffi::OsString, io::Write};
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use clap::Parser;
 
 use crate::cli::{ApmCli, AprCli, Cli, ColorChoice, Commands, ProgressChoice};
@@ -212,6 +212,7 @@ fn printer(
 /// they work even when `nix` is absent or the working directory is not a repo
 /// root.
 async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
+    validate_container_runtime(&cli.command)?;
     // Shell completions can be generated without a Nix installation or
     // project root, so handle them before constructing the NixRunner.
     if let Commands::Completions { shell } = &cli.command {
@@ -314,6 +315,12 @@ async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
     // Signed image discovery and downloads use only the Hub API.
     if let Commands::Image { command } = &cli.command {
         return commands::image::run(command, printer).await;
+    }
+
+    // Container transfers and local inspection are daemon-free. The handler
+    // constructs Nix lazily only for definition list/show/build operations.
+    if let Commands::Container { command } = &cli.command {
+        return commands::container::run(command, printer).await;
     }
 
     // Offline release verification uses captured files and public keys only.
@@ -525,9 +532,45 @@ async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
         Commands::Metadata { .. } => unreachable!(),
         Commands::Hub { .. } => unreachable!(),
         Commands::Image { .. } => unreachable!(),
+        Commands::Container { .. } => unreachable!(),
         Commands::Vm { .. } => unreachable!(),
         Commands::LanguageServer { .. } => unreachable!(),
     }
+}
+
+/// Rejects entrypoints that necessarily operate on host boot or device state.
+///
+/// Package-manager and registry-authoring paths are guarded within
+/// `aos-package`, where their complete command shapes are available. This
+/// top-level guard owns the repository CLI: the QEMU lifecycle and boot
+/// metadata agent are rejected, while portable builds, signed image downloads,
+/// and container publication remain available.
+fn validate_container_runtime(command: &Commands) -> Result<()> {
+    let runtime = std::env::var_os("AOS_RUNTIME");
+    validate_runtime(command, runtime.as_deref())?;
+
+    // The independent apm/apr processes synchronize inside `aos-package`.
+    // Every admitted repository command waits here so `docker exec aos ...`
+    // cannot race PID-1 setup.
+    if runtime.as_deref() == Some(OsStr::new("container")) {
+        aos_core::container_runtime::synchronize()?;
+    }
+
+    Ok(())
+}
+
+/// Applies the runtime boundary using an explicit value so tests do not mutate
+/// the process environment.
+fn validate_runtime(command: &Commands, runtime: Option<&OsStr>) -> Result<()> {
+    if runtime == Some(OsStr::new("container"))
+        && matches!(command, Commands::Vm { .. } | Commands::Metadata { .. })
+    {
+        bail!(
+            "this command requires host boot, virtualization, or device access unavailable in an AOS container; run it on an AOS machine or VM"
+        );
+    }
+
+    Ok(())
 }
 
 /// Maps an `anyhow::Error` to an appropriate exit code while printing a
@@ -544,4 +587,53 @@ fn handle_error(printer: &Printer, err: anyhow::Error) -> i32 {
     // Fallback: unknown error type -- treat as build failure.
     printer.error(&format!("{err:#}"));
     1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Cli {
+        Cli::try_parse_from(args).expect("test command line should parse")
+    }
+
+    #[test]
+    fn container_rejects_vm_and_boot_metadata_entrypoints() {
+        for args in [
+            ["aos", "vm", "run", "aos.qcow2"].as_slice(),
+            ["aos", "metadata", "detect"].as_slice(),
+        ] {
+            let cli = parse(args);
+            let error = validate_runtime(&cli.command, Some(OsStr::new("container")))
+                .expect_err("host command should be rejected");
+
+            assert_eq!(
+                error.to_string(),
+                "this command requires host boot, virtualization, or device access unavailable in an AOS container; run it on an AOS machine or VM"
+            );
+        }
+    }
+
+    #[test]
+    fn container_allows_image_downloads_and_repository_builds() {
+        for args in [
+            ["aos", "image", "list", "--registry", "core"].as_slice(),
+            ["aos", "build", "bash"].as_slice(),
+            ["aos", "system", "image"].as_slice(),
+        ] {
+            let cli = parse(args);
+            assert!(
+                validate_runtime(&cli.command, Some(OsStr::new("container"))).is_ok(),
+                "portable command should remain available: {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_container_runtime_preserves_host_command_admission() {
+        let cli = parse(&["aos", "vm", "run", "aos.qcow2"]);
+
+        assert!(validate_runtime(&cli.command, None).is_ok());
+        assert!(validate_runtime(&cli.command, Some(OsStr::new("Container"))).is_ok());
+    }
 }

@@ -12,6 +12,11 @@ compatibility_date = "2024-09-23"
 
 [vars]
 HUB_REQUEST_SHARDING = "on"
+HUB_OCI_PULL_ENABLED = "false"
+HUB_OCI_PUSH_ENABLED = "false"
+HUB_OCI_VERIFIED_PUBLICATION_ENABLED = "false"
+HUB_OCI_ADMINISTRATION_ENABLED = "false"
+HUB_OCI_GC_ENABLED = "false"
 
 # Build the Rust cdylib to wasm with the workers-rs wasm-pack pipeline.
 # `worker-build` (installed via `cargo install worker-build`) wraps

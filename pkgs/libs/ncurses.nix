@@ -47,11 +47,11 @@ in
           export CPPFLAGS="$CPPFLAGS -include stdbool.h"
 
           ${
-            if stdenv.isCross && stdenv.hostPlatform.isDarwin
+            if stdenv.isCross
             then ''
               # ncurses compiles generators such as make_keys for the build
-              # machine. Isolate its native compiler from the target SDK and
-              # linker search paths exported by the cross stdenv.
+              # machine. Isolate its native compiler from target hardening,
+              # SDK, include, and linker settings exported by a cross stdenv.
               native_cc="$BUILD_CC"
               mkdir -p .aos-build-tools
               {

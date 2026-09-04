@@ -1,0 +1,17 @@
+[package]
+name = "aos-oci-types"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Wasm-friendly OCI image and Distribution contracts for AOS"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+base64 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }

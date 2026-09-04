@@ -2297,12 +2297,15 @@ impl Database {
         if part_number == 0 || !matches!(state, "ambiguous" | "confirmed") {
             bail!("multipart part transition is invalid");
         }
+        // MariaDB and MySQL evaluate SET assignments from left to right. Keep
+        // the etag decision against the persisted state, then transition the
+        // state, matching sqlite and PostgreSQL's simultaneous-assignment result.
         self.backend
             .checked_batch(&[
                 Statement::new(
                     "UPDATE cache_write_ticket_parts
-                     SET state = CASE WHEN state = 'confirmed' THEN state ELSE ?4 END,
-                         etag = CASE WHEN state = 'confirmed' THEN etag ELSE ?5 END
+                     SET etag = CASE WHEN state = 'confirmed' THEN etag ELSE ?5 END,
+                         state = CASE WHEN state = 'confirmed' THEN state ELSE ?4 END
                      WHERE ticket_id = ?1 AND part_number = ?3
                        AND (state IN ('admitted', 'ambiguous')
                          OR (state = 'confirmed' AND ?4 = 'ambiguous')
@@ -8147,7 +8150,8 @@ impl Database {
                     resulting_epoch,
                     input.mutation_id
                 ],
-            ).expecting(1),
+            )
+            .expecting(1),
             Statement::new(
                 "UPDATE retention_leases SET state = 'superseded',
                    resource_version = resource_version + 1
@@ -8155,7 +8159,8 @@ impl Database {
                    WHERE id = ?1 AND manual_retention_root_id = ?2)
                    AND manual_retention_root_id = ?2 AND state = 'active'",
                 vals![input.lease_id, input.root_id],
-            ).expecting(1),
+            )
+            .expecting(1),
             Statement::new(
                 "UPDATE manual_retention_roots
                  SET resource_version = resource_version + 1
@@ -8168,7 +8173,8 @@ impl Database {
                     input.cache_id,
                     input.expected_root_version
                 ],
-            ).expecting(1),
+            )
+            .expecting(1),
             Statement::new(
                 "UPDATE manual_retention_lease_heads
                  SET current_lease_id = ?1,
@@ -8186,7 +8192,8 @@ impl Database {
                     input.expected_root_version,
                     input.now
                 ],
-            ).expecting(1),
+            )
+            .expecting(1),
             Statement::new(
                 "INSERT INTO cache_root_reasons
                  (id, cache_id, store_hash, reason_key, source_kind,
@@ -8209,7 +8216,8 @@ impl Database {
                     input.cache_id,
                     (input.expected_root_version + 1).to_string()
                 ],
-            ).expecting(1),
+            )
+            .expecting(1),
             epoch_assertion_statement(
                 &input.mutation_id,
                 input.cache_id,
@@ -8271,7 +8279,8 @@ impl Database {
                        AND root.cache_id = ?4 AND head.current_lease_id = ?1
                        AND root.resource_version = ?5 AND root.deleted_at IS NULL)",
                 vals![lease_id, actor, now, cache_id, expected_root_version],
-            ).expecting(1),
+            )
+            .expecting(1),
             Statement::new(
                 "UPDATE manual_retention_roots
                  SET resource_version = resource_version + 1
@@ -8282,14 +8291,16 @@ impl Database {
                    AND EXISTS (SELECT 1 FROM retention_leases
                      WHERE id = ?2 AND state = 'revoked')",
                 vals![cache_id, lease_id, expected_root_version],
-            ).expecting(1),
+            )
+            .expecting(1),
             Statement::new(
                 "DELETE FROM manual_retention_lease_heads
                  WHERE cache_id = ?1 AND current_lease_id = ?2
                    AND EXISTS (SELECT 1 FROM retention_leases
                      WHERE id = ?2 AND state = 'revoked')",
                 vals![cache_id, lease_id],
-            ).expecting(1),
+            )
+            .expecting(1),
             epoch_assertion_statement(
                 mutation_id,
                 cache_id,
@@ -8339,7 +8350,7 @@ impl Database {
                 "root_generation = root_generation + 1",
             ),
             Statement::new(
-                 "UPDATE retention_leases SET state = 'revoked', revoked_by = ?4,
+                "UPDATE retention_leases SET state = 'revoked', revoked_by = ?4,
                    revoked_at = ?5, resource_version = resource_version + 1
                  WHERE id = (SELECT head.current_lease_id
                    FROM manual_retention_roots root
@@ -8349,19 +8360,22 @@ impl Database {
                      AND root.resource_version = ?3 AND root.deleted_at IS NULL)
                    AND state = 'active'",
                 vals![root_id, cache_id, expected_root_version, actor, now],
-            ).unchecked(),
+            )
+            .unchecked(),
             Statement::new(
                 "DELETE FROM manual_retention_lease_heads
                  WHERE manual_retention_root_id = ?1 AND cache_id = ?2",
                 vals![root_id, cache_id],
-            ).unchecked(),
+            )
+            .unchecked(),
             Statement::new(
                 "UPDATE manual_retention_roots SET deleted_at = ?4,
                    resource_version = resource_version + 1
                  WHERE id = ?1 AND cache_id = ?2 AND resource_version = ?3
                    AND deleted_at IS NULL",
                 vals![root_id, cache_id, expected_root_version, now],
-            ).expecting(1),
+            )
+            .expecting(1),
             epoch_assertion_statement(
                 mutation_id,
                 cache_id,
@@ -10209,6 +10223,13 @@ impl Database {
     /// Returns an error when fixture insertion fails.
     #[cfg(any(test, feature = "do-e2e-test-support"))]
     pub async fn install_do_e2e_topology_fixture(&self) -> Result<()> {
+        if let Some(cache) = self.binary_cache_by_slug("flat-cache").await? {
+            if self.cache_gc_topology_state(cache.id).await?.is_some() {
+                return Ok(());
+            }
+            bail!("disposable flat-cache fixture has incomplete GC topology");
+        }
+
         self.install_write_failure_test_tickets().await?;
         self.backend
             .checked_batch(&[
@@ -10299,6 +10320,12 @@ impl Database {
                     "INSERT INTO cache_gc_state
                      (cache_id, epoch, epoch_owner_token, inventory_generation)
                      VALUES (2, 0, 'bootstrap', 1)",
+                    vec![],
+                )
+                .expecting(1),
+                Statement::new(
+                    "INSERT INTO cache_gc_heads (cache_id, resource_version, updated_at)
+                     VALUES (2, 1, 1)",
                     vec![],
                 )
                 .expecting(1),
@@ -10743,12 +10770,35 @@ mod tests {
     async fn do_e2e_fixture_has_distinct_flat_and_nested_surface_identities() {
         let db = Database::open_in_memory().await.unwrap();
         db.install_do_e2e_topology_fixture().await.unwrap();
+        db.install_do_e2e_topology_fixture().await.unwrap();
 
-        assert!(db
+        let flat_cache = db
             .binary_cache_by_slug("flat-cache")
             .await
             .unwrap()
-            .is_some());
+            .unwrap();
+        let flat_topology = db
+            .cache_gc_topology_state(flat_cache.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(flat_topology.cache_id, flat_cache.id);
+        assert_eq!(flat_topology.epoch, 0);
+        assert_eq!(flat_topology.inventory_generation, 1);
+        let head = db
+            .backend
+            .query_opt(
+                "SELECT resource_version, updated_at FROM cache_gc_heads
+                 WHERE cache_id = ?1",
+                &vals![flat_cache.id],
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let head_resource_version: i64 = head.get(0).unwrap();
+        let head_updated_at: i64 = head.get(1).unwrap();
+        assert_eq!(head_resource_version, 1);
+        assert_eq!(head_updated_at, 1);
         assert!(db
             .binary_cache_by_slug("failure/cache")
             .await

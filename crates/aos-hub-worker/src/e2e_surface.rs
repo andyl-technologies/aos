@@ -16,7 +16,9 @@ use aos_hub_core::db::{
     Database, EndpointHostInput, EndpointRevisionSpec, GrantResource, NewSurfacePlacementSpec,
     RouteSpec, SurfacePlacementRecord, SurfaceTarget,
 };
-use aos_hub_core::fetch::{StreamedRead, SurfaceFetch, SurfaceProvider};
+use aos_hub_core::fetch::{
+    StreamedRead, SurfaceFetch, SurfaceListPage, SurfaceListedEvidence, SurfaceProvider,
+};
 use aos_hub_core::surface_write::{
     MultipartAbortOutcome, PartTag, SurfaceDeleteOutcome, SurfaceDeletePrecondition, SurfaceWrite,
     SurfaceWriteProvider,
@@ -24,6 +26,9 @@ use aos_hub_core::surface_write::{
 
 /// Keeps every SQLite value comfortably below Durable Object SQL's value cap.
 const SURFACE_CHUNK_BYTES: usize = 256 * 1024;
+const MAIN_HTTP_ENDPOINT_ID: &str = "worker-e2e-http";
+const PUBLIC_BOUNDARY_ID: &str = "instance:public";
+const MAIN_HTTP_PORT: u16 = 8799;
 
 /// Persistent test provider rooted in Durable Object SQLite.
 pub(crate) struct DoE2eSurfaceProvider {
@@ -180,6 +185,10 @@ impl DoE2eSurfaceProvider {
                 Some(placement.id),
             )
             .await?;
+            anyhow::ensure!(
+                db.list_system_images(registry_id).await?.len() == 2,
+                "signed store-backed image encodings were not indexed"
+            );
             configure_hub_route(
                 db,
                 SurfaceTarget::Registry(registry_id),
@@ -203,10 +212,6 @@ pub(crate) async fn configure_hub_route(
     placement_id: i64,
     slug: &str,
 ) -> Result<()> {
-    const ENDPOINT_ID: &str = "worker-e2e-http";
-    const BOUNDARY_ID: &str = "instance:public";
-    const PORT: u16 = 8799;
-
     let (org_id, owner_scope, visibility) = match surface {
         SurfaceTarget::Registry(id) => {
             let registry = db
@@ -228,7 +233,9 @@ pub(crate) async fn configure_hub_route(
         }
     };
 
-    let boundary = GrantResource::NetworkPolicy { id: BOUNDARY_ID };
+    let boundary = GrantResource::NetworkPolicy {
+        id: PUBLIC_BOUNDARY_ID,
+    };
     if !db
         .list_consumer_scope_grants(boundary)
         .await?
@@ -244,15 +251,15 @@ pub(crate) async fn configure_hub_route(
         )
         .await?;
     }
-    if db.endpoint(ENDPOINT_ID).await?.is_none() {
+    if db.endpoint(MAIN_HTTP_ENDPOINT_ID).await?.is_none() {
         db.create_endpoint(
-            ENDPOINT_ID,
+            MAIN_HTTP_ENDPOINT_ID,
             &owner_scope,
             org_id,
             "http",
             &EndpointHostInput::Ipv4([127, 0, 0, 1]),
-            PORT,
-            BOUNDARY_ID,
+            MAIN_HTTP_PORT,
+            PUBLIC_BOUNDARY_ID,
             &EndpointRevisionSpec {
                 boundary_revision: 1,
                 ingress_kind: "hub".to_string(),
@@ -265,16 +272,16 @@ pub(crate) async fn configure_hub_route(
             "worker-image-endpoint",
         )
         .await?;
-        db.reconcile_endpoint(ENDPOINT_ID, 1, 1, "healthy", true, false, None, 1)
+        db.reconcile_endpoint(MAIN_HTTP_ENDPOINT_ID, 1, 1, "healthy", true, false, None, 1)
             .await?;
     }
 
     let base_path = format!("/{slug}");
-    let canonical_url = format!("http://127.0.0.1:{PORT}{base_path}");
+    let canonical_url = format!("http://127.0.0.1:{MAIN_HTTP_PORT}{base_path}");
     let access_policy_json = "{}";
     let access_policy_digest = hex::encode(Sha256::digest(access_policy_json.as_bytes()));
     let endpoint = db
-        .endpoint(ENDPOINT_ID)
+        .endpoint(MAIN_HTTP_ENDPOINT_ID)
         .await?
         .context("worker image endpoint disappeared")?;
     let endpoint_digest = hex::decode(&endpoint.endpoint_identity_digest)
@@ -297,7 +304,7 @@ pub(crate) async fn configure_hub_route(
             surface,
             &RouteSpec {
                 consumer_scope_key: owner_scope,
-                endpoint_id: ENDPOINT_ID.to_string(),
+                endpoint_id: MAIN_HTTP_ENDPOINT_ID.to_string(),
                 endpoint_generation: 1,
                 endpoint_ingress_kind: "hub".to_string(),
                 base_path,
@@ -324,6 +331,7 @@ pub(crate) async fn configure_hub_route(
                 serves_git,
                 serves_cache,
                 serves_web: true,
+                serves_oci: false,
                 enabled: true,
             },
             &canonical_url,
@@ -362,6 +370,153 @@ pub(crate) async fn configure_hub_route(
     Ok(())
 }
 
+/// Configures one root-mounted OCI route for the live-workerd parity fixture.
+///
+/// The public and authenticated authorities intentionally use distinct
+/// loopback ports. This lets the same workerd service qualify authority-bound
+/// tokens and route policy without relying on TLS or external DNS inside the
+/// hermetic test.
+///
+/// # Errors
+///
+/// Returns an error when the registry, endpoint, grant, route, or ready route
+/// generation cannot be installed in Durable Object SQLite.
+pub(crate) async fn configure_oci_route(
+    db: &Database,
+    registry_id: i64,
+    placement_id: i64,
+    port: u16,
+    access_policy_kind: &str,
+) -> Result<()> {
+    let registry = db
+        .registry_by_id(registry_id)
+        .await?
+        .context("worker OCI fixture registry is missing")?;
+    // The public OCI authority is served by the main workerd socket. Reuse its
+    // endpoint record: endpoint identity is authority + boundary, and the
+    // database correctly rejects aliases for the same identity.
+    let endpoint_id = if port == MAIN_HTTP_PORT {
+        MAIN_HTTP_ENDPOINT_ID.to_string()
+    } else {
+        format!("worker-e2e-oci-{registry_id}")
+    };
+    let boundary_id = PUBLIC_BOUNDARY_ID;
+
+    let boundary = GrantResource::NetworkPolicy { id: boundary_id };
+    if !db
+        .list_consumer_scope_grants(boundary)
+        .await?
+        .iter()
+        .any(|grant| {
+            grant.consumer_scope_key == registry.owner_scope_key && grant.state == "active"
+        })
+    {
+        db.grant_consumer_scope(
+            boundary,
+            &registry.owner_scope_key,
+            "explicit",
+            "workerd-e2e",
+            "worker-oci-boundary-grant",
+        )
+        .await?;
+    }
+    if db.endpoint(&endpoint_id).await?.is_none() {
+        db.create_endpoint(
+            &endpoint_id,
+            &registry.owner_scope_key,
+            registry.org_id,
+            "http",
+            &EndpointHostInput::Ipv4([127, 0, 0, 1]),
+            port,
+            boundary_id,
+            &EndpointRevisionSpec {
+                boundary_revision: 1,
+                ingress_kind: "hub".to_string(),
+                listener_configuration: "workerd-e2e-oci".to_string(),
+                tls_configuration: "{}".to_string(),
+                probe_configuration: "{\"provider\":\"native_file\",\"signerSecretRef\":\"worker-e2e-probe-key\",\"publicKey\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\"}".to_string(),
+            },
+            Some(1),
+            "workerd-e2e",
+            "worker-oci-endpoint",
+        )
+        .await?;
+        db.reconcile_endpoint(&endpoint_id, 1, 1, "healthy", true, false, None, 1)
+            .await?;
+    }
+
+    let canonical_url = format!("http://127.0.0.1:{port}");
+    let access_policy_json = "{}";
+    let access_policy_digest = hex::encode(Sha256::digest(access_policy_json.as_bytes()));
+    let endpoint = db
+        .endpoint(&endpoint_id)
+        .await?
+        .context("worker OCI fixture endpoint disappeared")?;
+    let endpoint_digest = hex::decode(&endpoint.endpoint_identity_digest)
+        .context("decoding worker OCI endpoint identity")?;
+    let reservation_digest =
+        Database::route_reservation_digest(&[19_u8; 32], &endpoint_digest, "", &canonical_url)?;
+    let route_id = format!("worker-e2e-oci-{registry_id}");
+    let route = db
+        .create_route(
+            &route_id,
+            SurfaceTarget::Registry(registry_id),
+            &RouteSpec {
+                consumer_scope_key: registry.owner_scope_key,
+                endpoint_id,
+                endpoint_generation: 1,
+                endpoint_ingress_kind: "hub".to_string(),
+                base_path: String::new(),
+                mode: "hub_proxy".to_string(),
+                access_policy_kind: access_policy_kind.to_string(),
+                access_policy_json: access_policy_json.to_string(),
+                access_policy_digest: access_policy_digest.clone(),
+                access_boundary_id: None,
+                access_boundary_revision: None,
+                external_provider_kind: None,
+                external_provider_resource_id: None,
+                external_provider_revision: None,
+                gateway_id: None,
+                gateway_generation: None,
+                target_binding_id: None,
+                gateway_client_base_path: None,
+                target_placement_prefix: None,
+                placement_id: Some(placement_id),
+                placement_policy_revision_id: None,
+                serves_git: false,
+                serves_cache: false,
+                serves_web: false,
+                serves_oci: true,
+                enabled: true,
+            },
+            &canonical_url,
+            1,
+            &reservation_digest,
+            &[(1, reservation_digest.to_vec())],
+            None,
+            "workerd-e2e",
+        )
+        .await?;
+    db.reconcile_route(
+        &route_id,
+        route
+            .configuration_generation
+            .context("worker OCI route has no selected generation")?,
+        route
+            .configuration_digest
+            .as_deref()
+            .context("worker OCI route has no configuration digest")?,
+        &access_policy_digest,
+        "healthy",
+        "verified",
+        None,
+        None,
+        1,
+    )
+    .await?;
+    Ok(())
+}
+
 fn is_publication_pointer(path: &str) -> bool {
     path == "HEAD" || path == "info/refs" || path.starts_with("channels/")
 }
@@ -369,8 +524,6 @@ fn is_publication_pointer(path: &str) -> bool {
 pub(crate) struct WorkerImageFixture {
     trust_key: String,
     objects: std::collections::BTreeMap<String, Vec<u8>>,
-    pub(crate) raw_key: String,
-    pub(crate) qcow2_key: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -396,21 +549,19 @@ pub(crate) fn decode_producer_surface_fixture(bytes: &[u8]) -> Result<WorkerImag
                 .context("decoding producer surface object")?,
         );
     }
-    let raw_key = objects
-        .keys()
-        .find(|path| path.starts_with("images/sha256/") && path.ends_with("/aos-e2e.img.zst"))
-        .context("apr producer surface has no raw image object")?
-        .clone();
-    let qcow2_key = objects
-        .keys()
-        .find(|path| path.starts_with("images/sha256/") && path.ends_with("/aos-e2e.qcow2"))
-        .context("apr producer surface has no QCOW2 image object")?
-        .clone();
+    anyhow::ensure!(
+        objects.keys().any(|path| path.ends_with(".narinfo")),
+        "apr producer surface has no unified-cache metadata"
+    );
+    anyhow::ensure!(
+        objects
+            .keys()
+            .any(|path| path.starts_with("nar/") && path.ends_with(".nar.zst")),
+        "apr producer surface has no unified-cache NAR objects"
+    );
     Ok(WorkerImageFixture {
         trust_key: encoded.trust_key,
         objects,
-        raw_key,
-        qcow2_key,
     })
 }
 
@@ -509,6 +660,15 @@ impl SurfaceWriteProvider for DoE2eSurfaceProvider {
         }))
     }
 
+    async fn placement_writer_at_revision(
+        &self,
+        placement: &SurfacePlacementRecord,
+        revision: &aos_hub_core::db::BindingWriteRevisionRecord,
+    ) -> Result<Box<dyn SurfaceWrite>> {
+        anyhow::ensure!(placement.binding_id == revision.binding_id);
+        self.placement_writer(placement).await
+    }
+
     async fn placement_deleter(
         &self,
         placement: &SurfacePlacementRecord,
@@ -523,6 +683,71 @@ impl SurfaceWriteProvider for DoE2eSurfaceProvider {
 impl SurfaceFetch for DoE2eSurface {
     async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
         Ok(self.load_object(path)?.map(|(bytes, _, _, _)| bytes))
+    }
+
+    async fn list_page(&self, cursor: Option<&str>, limit: usize) -> Result<SurfaceListPage> {
+        anyhow::ensure!(limit > 0, "test surface listing limit must be positive");
+        let query_limit = i64::try_from(
+            limit
+                .checked_add(1)
+                .context("test surface listing limit overflowed")?,
+        )
+        .context("test surface listing limit exceeds SQLite")?;
+        let prefix = match self.prefix.trim_matches('/') {
+            "" => String::new(),
+            prefix => format!("{prefix}/"),
+        };
+        let after_key = cursor
+            .map(|cursor| self.object_key(cursor))
+            .unwrap_or_else(|| prefix.clone());
+        let cursor = self.sql.exec(
+            "SELECT object_key, byte_size, strong_etag
+             FROM aos_e2e_surface_objects
+             WHERE substr(object_key, 1, ?) = ? AND object_key > ?
+             ORDER BY object_key LIMIT ?",
+            Some(vec![
+                SqlStorageValue::Integer(i64::try_from(prefix.len())?),
+                SqlStorageValue::String(prefix.clone()),
+                SqlStorageValue::String(after_key),
+                SqlStorageValue::Integer(query_limit),
+            ]),
+        )?;
+        let mut paths = Vec::new();
+        let mut evidence = std::collections::BTreeMap::new();
+        for row in cursor.raw() {
+            let row = row?;
+            let [SqlStorageValue::String(object_key), SqlStorageValue::Integer(byte_size), SqlStorageValue::String(strong_etag)] =
+                row.as_slice()
+            else {
+                anyhow::bail!("test object listing row had an invalid shape");
+            };
+            anyhow::ensure!(*byte_size >= 0, "test object has a negative byte size");
+            let path = object_key
+                .strip_prefix(&prefix)
+                .context("test object escaped its placement prefix")?
+                .to_string();
+            paths.push(path.clone());
+            evidence.insert(
+                path,
+                SurfaceListedEvidence {
+                    size: *byte_size,
+                    strong_etag: strong_etag.clone(),
+                },
+            );
+        }
+        let next_cursor = if paths.len() > limit {
+            for overflow in paths.split_off(limit) {
+                evidence.remove(&overflow);
+            }
+            paths.last().cloned()
+        } else {
+            None
+        };
+        Ok(SurfaceListPage {
+            paths,
+            evidence,
+            next_cursor,
+        })
     }
 
     async fn inventory_strong_etag(&self, path: &str) -> Result<Option<String>> {

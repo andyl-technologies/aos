@@ -94,6 +94,9 @@
           // {
             buildDeps = (args.buildDeps or []) ++ initialPath;
             system = args.system or system;
+            hostPlatform = args.hostPlatform or hostPlatform;
+            targetPlatform = args.targetPlatform or targetPlatform;
+            buildExecutionSystem = args.buildExecutionSystem or buildPlatform.system;
             shell = args.shell or shellPath;
             storeDir = args.storeDir or "/nix/store";
             defaultHardeningFlags = args.defaultHardeningFlags or [];
@@ -106,6 +109,9 @@
           // {
             buildDeps = (args.buildDeps or []) ++ initialPath;
             system = args.system or system;
+            hostPlatform = args.hostPlatform or hostPlatform;
+            targetPlatform = args.targetPlatform or targetPlatform;
+            buildExecutionSystem = args.buildExecutionSystem or buildPlatform.system;
             shell = args.shell or shellPath;
           }
         );

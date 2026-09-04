@@ -44,7 +44,7 @@ Build the complete suite first:
 nix build .#pkg-crucible
 ```
 
-Generate the RFC-0019 worked-network reference fixture into a new private
+Generate the RFC-0020 worked-network reference fixture into a new private
 directory:
 
 ```sh
@@ -77,8 +77,8 @@ offline before opening repository state:
 Validation derives the exact stored identities, rejects symlinks and oversized
 files, and does not contact a daemon. The manifest accepted by `serve` is the
 same strict format. The currently authoritative field grammar is shown by the
-`CampaignImportManifest` decoder in the CLI and frozen by its tests; RFC-0019's
-[worked network campaign](../../rfcs/0019-crucible-campaigns/13-worked-network-campaign.md)
+`CampaignImportManifest` decoder in the CLI and frozen by its tests; RFC-0020's
+[worked network campaign](../../rfcs/0020-crucible-campaigns/13-worked-network-campaign.md)
 explains the modeled network policy represented by the generated fixture; its
 future-looking execution narrative is not a substitute for
 `crucible campaign --help`.

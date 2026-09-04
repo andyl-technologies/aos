@@ -140,6 +140,8 @@ pub mod coordinatorobj;
 mod e2e_surface;
 #[cfg(target_arch = "wasm32")]
 pub mod edgeratelimit;
+#[cfg(any(target_arch = "wasm32", test))]
+mod frozen_surface_access;
 #[cfg(target_arch = "wasm32")]
 pub mod handlers;
 #[cfg(target_arch = "wasm32")]
@@ -197,9 +199,64 @@ fn registry_index_build_id(
     hex::encode(digest.finalize())
 }
 
+#[cfg(any(test, target_arch = "wasm32"))]
+fn oci_inventory_follow_up(
+    envelope: &aos_hub_core::jobs::JobEnvelope,
+    cursor: Option<String>,
+) -> anyhow::Result<Option<aos_hub_core::jobs::JobEnvelope>> {
+    cursor
+        .map(|cursor| envelope.continued(aos_hub_core::jobs::Job::InventoryOciProviders, cursor))
+        .transpose()
+}
+
+#[cfg(any(test, target_arch = "wasm32"))]
+fn scheduled_maintenance_jobs(
+    rollout: aos_hub_core::container_rollout::ContainerRollout,
+) -> Vec<aos_hub_core::jobs::Job> {
+    let mut jobs = vec![
+        aos_hub_core::jobs::Job::RunTopologyProbes,
+        aos_hub_core::jobs::Job::RecoverCacheWrites,
+        aos_hub_core::jobs::Job::RecoverOciUploads,
+        aos_hub_core::jobs::Job::RunCacheGc,
+        aos_hub_core::jobs::Job::RebuildDirectory,
+    ];
+    if rollout.garbage_collection {
+        jobs.extend([
+            aos_hub_core::jobs::Job::InventoryOciProviders,
+            aos_hub_core::jobs::Job::ProbeOciConditionalDeletes,
+            aos_hub_core::jobs::Job::RunOciGc,
+        ]);
+    }
+    jobs
+}
+
+/// Controls which requests the outer Worker may move onto execution shards.
+#[cfg(any(test, target_arch = "wasm32"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RequestShardingMode {
+    Off,
+    ReadOnly,
+    On,
+}
+
+#[cfg(any(test, target_arch = "wasm32"))]
+impl RequestShardingMode {
+    /// Returns whether a route with the given mutability may use a shard.
+    fn allows(self, read_only: bool) -> bool {
+        match self {
+            Self::Off => false,
+            Self::ReadOnly => read_only,
+            Self::On => true,
+        }
+    }
+}
+
 #[cfg(test)]
 mod index_build_identity_tests {
-    use super::registry_index_build_id;
+    use super::{
+        oci_inventory_follow_up, registry_index_build_id, scheduled_maintenance_jobs,
+        RequestShardingMode,
+    };
 
     #[test]
     fn identity_coalesces_duplicates_and_tracks_every_input_version() {
@@ -221,6 +278,79 @@ mod index_build_identity_tests {
             original,
             registry_index_build_id(7, 3, Some("publication-a"), 12)
         );
+    }
+
+    #[test]
+    fn sharding_modes_preserve_the_read_only_cutover_for_oci_methods() {
+        for method in ["GET", "HEAD"] {
+            let route = crate::requestshard::classify_oci_repository(
+                method,
+                "registry-00000000000000000000000000000001",
+                &aos_oci_types::RepositoryName::parse("team/aos").unwrap(),
+            );
+            assert!(!RequestShardingMode::Off.allows(route.read_only));
+            assert!(RequestShardingMode::ReadOnly.allows(route.read_only));
+            assert!(RequestShardingMode::On.allows(route.read_only));
+        }
+
+        for method in ["POST", "PATCH", "PUT", "DELETE"] {
+            let route = crate::requestshard::classify_oci_repository(
+                method,
+                "registry-00000000000000000000000000000001",
+                &aos_oci_types::RepositoryName::parse("team/aos").unwrap(),
+            );
+            assert!(!RequestShardingMode::Off.allows(route.read_only));
+            assert!(!RequestShardingMode::ReadOnly.allows(route.read_only));
+            assert!(RequestShardingMode::On.allows(route.read_only));
+        }
+    }
+
+    #[test]
+    fn worker_maintenance_never_schedules_provider_gc_while_rollout_is_disabled() {
+        use aos_hub_core::jobs::Job;
+
+        let disabled = aos_hub_core::container_rollout::ContainerRollout::default();
+        let disabled_jobs = scheduled_maintenance_jobs(disabled);
+        assert!(!disabled_jobs.iter().any(|job| matches!(
+            job,
+            Job::InventoryOciProviders | Job::ProbeOciConditionalDeletes | Job::RunOciGc
+        )));
+
+        let enabled_jobs =
+            scheduled_maintenance_jobs(aos_hub_core::container_rollout::ContainerRollout {
+                garbage_collection: true,
+                ..disabled
+            });
+        assert!(enabled_jobs
+            .iter()
+            .any(|job| matches!(job, Job::InventoryOciProviders)));
+        assert!(enabled_jobs
+            .iter()
+            .any(|job| matches!(job, Job::ProbeOciConditionalDeletes)));
+        assert!(enabled_jobs.iter().any(|job| matches!(job, Job::RunOciGc)));
+    }
+
+    #[test]
+    fn inventory_continuations_are_deterministic_bounded_queue_children() {
+        use aos_hub_core::jobs::{Job, JobEnvelope};
+
+        let root = JobEnvelope::new(Job::InventoryOciProviders);
+        let cursor = "oci-provider-inventory-v1:generation:claim".to_string();
+        let first = oci_inventory_follow_up(&root, Some(cursor.clone()))
+            .unwrap()
+            .unwrap();
+        let replay = oci_inventory_follow_up(&root, Some(cursor))
+            .unwrap()
+            .unwrap();
+        assert_eq!(first, replay);
+        assert_eq!(first.job, Job::InventoryOciProviders);
+        assert_eq!(first.continuation.as_ref().unwrap().sequence, 1);
+        assert!(oci_inventory_follow_up(&first, None).unwrap().is_none());
+
+        let maximum = "x".repeat(2_048);
+        assert!(oci_inventory_follow_up(&root, Some(maximum)).is_ok());
+        let oversized = "x".repeat(2_049);
+        assert!(oci_inventory_follow_up(&root, Some(oversized)).is_err());
     }
 }
 
@@ -268,6 +398,7 @@ mod entry {
         sealer_from_secret, WorkerCloudflareControlPlaneClient, WorkerEgressClient,
         WorkerHttpClient, WorkerMailer, WorkerReindexer, WorkerStorageCredentialProbeProvider,
     };
+    use crate::{scheduled_maintenance_jobs, RequestShardingMode};
 
     /// The Wrangler secret holding the HS256 JWT signing secret.
     const HUB_JWT_SECRET: &str = "HUB_JWT_SECRET";
@@ -295,6 +426,16 @@ mod entry {
     const HUB_RELEASE_EVIDENCE_CONFIG: &str = "HUB_RELEASE_EVIDENCE_CONFIG";
     /// Staged request-execution cutover: `off`, `read`, or `on`.
     const HUB_REQUEST_SHARDING: &str = "HUB_REQUEST_SHARDING";
+    /// Optional fail-closed OCI Distribution pull rollout flag.
+    const HUB_OCI_PULL_ENABLED: &str = "HUB_OCI_PULL_ENABLED";
+    /// Optional fail-closed OCI Distribution push rollout flag.
+    const HUB_OCI_PUSH_ENABLED: &str = "HUB_OCI_PUSH_ENABLED";
+    /// Optional fail-closed verified container-publication rollout flag.
+    const HUB_OCI_VERIFIED_PUBLICATION_ENABLED: &str = "HUB_OCI_VERIFIED_PUBLICATION_ENABLED";
+    /// Optional fail-closed container-administration rollout flag.
+    const HUB_OCI_ADMINISTRATION_ENABLED: &str = "HUB_OCI_ADMINISTRATION_ENABLED";
+    /// Optional fail-closed container garbage-collection rollout flag.
+    const HUB_OCI_GC_ENABLED: &str = "HUB_OCI_GC_ENABLED";
     /// Non-cacheable endpoint exposing [`HUB_DEPLOYMENT_ID`].
     const DEPLOYMENT_ID_PATH: &str = "/.well-known/aos-deployment";
     /// Optional `[vars]` entry: the email-relay endpoint magic links are
@@ -320,13 +461,6 @@ mod entry {
     /// binding sends `from`. Required to use the [`EMAIL_BINDING`].
     const HUB_EMAIL_FROM: &str = "HUB_EMAIL_FROM";
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum RequestShardingMode {
-        Off,
-        ReadOnly,
-        On,
-    }
-
     fn request_sharding_mode(env: &Env) -> Result<RequestShardingMode> {
         match env
             .var(HUB_REQUEST_SHARDING)
@@ -339,6 +473,31 @@ mod entry {
             "on" => Ok(RequestShardingMode::On),
             value => Err(worker::Error::RustError(format!(
                 "{HUB_REQUEST_SHARDING} must be off, read, or on; got {value:?}"
+            ))),
+        }
+    }
+
+    fn container_rollout(env: &Env) -> Result<aos_hub_core::container_rollout::ContainerRollout> {
+        Ok(aos_hub_core::container_rollout::ContainerRollout {
+            pull: rollout_flag(env, HUB_OCI_PULL_ENABLED)?,
+            push: rollout_flag(env, HUB_OCI_PUSH_ENABLED)?,
+            verified_publication: rollout_flag(env, HUB_OCI_VERIFIED_PUBLICATION_ENABLED)?,
+            administration: rollout_flag(env, HUB_OCI_ADMINISTRATION_ENABLED)?,
+            garbage_collection: rollout_flag(env, HUB_OCI_GC_ENABLED)?,
+        })
+    }
+
+    fn rollout_flag(env: &Env, name: &str) -> Result<bool> {
+        match env
+            .var(name)
+            .map(|value| value.to_string())
+            .unwrap_or_else(|_| "false".to_string())
+            .as_str()
+        {
+            "true" => Ok(true),
+            "false" => Ok(false),
+            value => Err(worker::Error::RustError(format!(
+                "{name} must be true or false; got {value:?}"
             ))),
         }
     }
@@ -415,6 +574,9 @@ mod entry {
             format!("/{slug}/"),
             format!("/{slug}/-/packages"),
             format!("/{slug}/-/images"),
+            format!("/{slug}/-/containers"),
+            // Query-bearing container detail pages are deliberately not
+            // cached; purging the canonical index prevents stale discovery.
             format!("/{slug}/-/channels"),
             format!("/{slug}/-/releases"),
             format!("/{slug}/-/health"),
@@ -435,16 +597,45 @@ mod entry {
             return Ok(None);
         }
         let mode = request_sharding_mode(env)?;
-        if mode == RequestShardingMode::Off {
+        if !mode.allows(true) {
             return Ok(None);
         }
         let url = req.url()?;
         let path = url.path();
+        let request_method = req.method();
+        let method = request_method.as_ref();
         if path.starts_with("/_internal/") || path.starts_with("/_admin/") {
             return Ok(None);
         }
-        let request_method = req.method();
-        let method = request_method.as_ref();
+        if let Some(repository) = crate::requestshard::oci_repository_from_path(path) {
+            let Some(authority) = crate::requestshard::canonical_oci_authority(&url) else {
+                return Ok(None);
+            };
+            let projection_key = aos_hub_core::oci::oci_route_projection_key(&authority);
+            let kv =
+                crate::workerkv::WorkerKv::new(env.kv(crate::handlers::bindings::KV_SESSIONS)?);
+            let Some(registry_stable_id) = kv
+                .get_str(&projection_key)
+                .await
+                .map_err(|error| {
+                    worker::Error::RustError(format!(
+                        "read OCI route projection {projection_key}: {error:#}"
+                    ))
+                })?
+                .filter(|stable_id| crate::requestshard::canonical_registry_stable_id(stable_id))
+            else {
+                // A cold/stale projection must not invent an authority-based
+                // shard. HubDb resolves the route and writes through the exact
+                // current stable registry incarnation for the next request.
+                return Ok(None);
+            };
+            let route = crate::requestshard::classify_oci_repository(
+                method,
+                &registry_stable_id,
+                &repository,
+            );
+            return Ok(mode.allows(route.read_only).then_some(route));
+        }
         let authority = url.host_str().unwrap_or_default();
         let initial = crate::requestshard::classify_request(method, path, authority, None);
         let content_length = req
@@ -466,10 +657,7 @@ mod entry {
             None
         };
         let route = crate::requestshard::classify_request(method, path, authority, body.as_deref());
-        if mode == RequestShardingMode::ReadOnly && !route.read_only {
-            return Ok(None);
-        }
-        Ok(Some(route))
+        Ok(mode.allows(route.read_only).then_some(route))
     }
 
     fn worker_egress(env: &Env) -> worker::Result<Arc<WorkerEgressClient>> {
@@ -527,7 +715,7 @@ mod entry {
             crate::e2e_surface::DoE2eSurfaceProvider::new(state.storage().sql())
                 .map_err(|error| worker::Error::RustError(format!("e2e storage: {error:#}")))?,
         );
-        let service = RpcService::new(
+        let mut service = RpcService::new(
             Arc::clone(&db),
             jwt_keys.clone(),
             external_url.clone(),
@@ -540,7 +728,11 @@ mod entry {
                 aos_hub_core::topology_probe::DatabaseTopologyProbeScheduler::new(Arc::clone(&db)),
             ),
             None,
-        );
+        )
+        .with_container_rollout(container_rollout(env)?);
+        if let Some(delivery_url) = default_public_delivery_url(env)? {
+            service = service.with_default_public_delivery_url(delivery_url);
+        }
         let service = Arc::new(service);
         let egress = worker_egress(env)?;
         let sealer = sealer_from_secret(&env.secret(HUB_SEAL_KEY)?.to_string())
@@ -818,7 +1010,7 @@ mod entry {
             _ => {
                 return Err(worker::Error::RustError(format!(
                     "{HUB_ROUTE_PUBLICATION_MANIFEST} and {HUB_ROUTE_PUBLICATION_PUBLIC_KEY} must be configured together"
-                )))
+                )));
             }
         }
         domain_probe_readiness =
@@ -881,6 +1073,7 @@ mod entry {
             ),
             Some(Arc::clone(&sealer)),
         )
+        .with_container_rollout(container_rollout(env)?)
         .with_secret_versions(Arc::clone(&secret_versions))
         .with_origin_fetch(Arc::new(crate::surface::WorkerOriginFetch::new(
             Arc::clone(&egress),
@@ -1272,12 +1465,7 @@ mod entry {
             .await
             .map_err(|error| worker::Error::RustError(format!("list caches: {error:#}")))?;
 
-        let mut jobs = vec![
-            aos_hub_core::jobs::Job::RunTopologyProbes,
-            aos_hub_core::jobs::Job::RecoverCacheWrites,
-            aos_hub_core::jobs::Job::RunCacheGc,
-            aos_hub_core::jobs::Job::RebuildDirectory,
-        ];
+        let mut jobs = scheduled_maintenance_jobs(container_rollout(env)?);
         jobs.extend(
             registries
                 .into_iter()
@@ -1307,7 +1495,15 @@ mod entry {
                 let cursor = match &job {
                     aos_hub_core::jobs::Job::RunTopologyProbes => "topology".to_string(),
                     aos_hub_core::jobs::Job::RecoverCacheWrites => "cache-recovery".to_string(),
+                    aos_hub_core::jobs::Job::RecoverOciUploads => "oci-recovery".to_string(),
                     aos_hub_core::jobs::Job::RunCacheGc => "cache-gc".to_string(),
+                    aos_hub_core::jobs::Job::RunOciGc => "oci-gc".to_string(),
+                    aos_hub_core::jobs::Job::ProbeOciConditionalDeletes => {
+                        "oci-conditional-delete-probes".to_string()
+                    }
+                    aos_hub_core::jobs::Job::InventoryOciProviders => {
+                        "oci-provider-inventory".to_string()
+                    }
                     aos_hub_core::jobs::Job::RebuildDirectory => "directory".to_string(),
                     aos_hub_core::jobs::Job::Reindex { registry_id } => {
                         format!("registry:{registry_id}")
@@ -1508,7 +1704,7 @@ mod entry {
                 return Err(worker::Error::RustError(format!(
                     "job operation {} is already running",
                     envelope.operation_id
-                )))
+                )));
             }
         };
         worker::console_log!(
@@ -1524,7 +1720,7 @@ mod entry {
                 .await
                 .map_err(|error| worker::Error::RustError(format!("complete job: {error:#}"))),
             Err(error) => {
-                let detail = bounded_job_error(&format!("{error:#}"));
+                let detail = aos_hub_core::jobs::redacted_job_failure(&format!("{error:#}"));
                 if let Err(release_error) = db
                     .release_worker_job(
                         &envelope.operation_id,
@@ -1543,18 +1739,6 @@ mod entry {
         }
     }
 
-    fn bounded_job_error(error: &str) -> String {
-        const MAX_BYTES: usize = 8_192;
-        if error.len() <= MAX_BYTES {
-            return error.to_string();
-        }
-        let mut end = MAX_BYTES;
-        while !error.is_char_boundary(end) {
-            end -= 1;
-        }
-        error[..end].to_string()
-    }
-
     /// Runs one deferred [`Job`](aos_hub_core::jobs::Job) in its caller's isolate.
     ///
     /// Queue callers use the remote SQL backend; the retained internal endpoint
@@ -1565,10 +1749,18 @@ mod entry {
         env: &Env,
     ) -> Result<()> {
         use aos_hub_core::jobs::Job;
+        if !envelope.job.enabled_for(container_rollout(env)?) {
+            worker::console_log!(
+                "job operation={} kind={} skipped by rollout",
+                envelope.operation_id,
+                envelope.kind()
+            );
+            return Ok(());
+        }
         let make = || job_backend(state, env);
         match &envelope.job {
             Job::DispatchMaintenance => run_cron(state, env, envelope).await?,
-            Job::RunTopologyProbes => run_domain_probes(make(), env).await,
+            Job::RunTopologyProbes => run_domain_probes(make(), env).await?,
             Job::RecoverCacheWrites => {
                 let bucket = env.bucket(crate::handlers::bindings::R2).map_err(|error| {
                     worker::Error::RustError(format!(
@@ -1612,6 +1804,29 @@ mod entry {
                     worker::Error::RustError(format!("job recover expired cache writes: {error:#}"))
                 })?;
             }
+            Job::RecoverOciUploads => {
+                let bucket = env.bucket(crate::handlers::bindings::R2).map_err(|error| {
+                    worker::Error::RustError(format!("job recover OCI uploads R2 binding: {error}"))
+                })?;
+                let secret_versions = crate::secretversions::from_env(env).map_err(|error| {
+                    worker::Error::RustError(format!(
+                        "job recover OCI uploads secret versions: {error}"
+                    ))
+                })?;
+                let egress = worker_egress(env)?;
+                let db = Arc::new(aos_hub_core::db::Database::attach(make()));
+                let writers = crate::surface::R2SurfaceWriteProvider::new(
+                    bucket,
+                    Arc::clone(&db),
+                    secret_versions,
+                    egress,
+                );
+                aos_hub_core::oci::recover_expired_oci_work(&db, &writers, now_for_worker(), 100)
+                    .await
+                    .map_err(|error| {
+                        worker::Error::RustError(format!("job recover OCI uploads: {error:#}"))
+                    })?;
+            }
             Job::RunCacheGc => {
                 let bucket = env.bucket(crate::handlers::bindings::R2).map_err(|error| {
                     worker::Error::RustError(format!("job cache GC R2 binding: {error}"))
@@ -1634,6 +1849,127 @@ mod entry {
                     .map_err(|error| {
                         worker::Error::RustError(format!("job cache GC: {error:#}"))
                     })?;
+            }
+            Job::RunOciGc => {
+                let bucket = env.bucket(crate::handlers::bindings::R2).map_err(|error| {
+                    worker::Error::RustError(format!("job OCI GC R2 binding: {error}"))
+                })?;
+                let secret_versions = crate::secretversions::from_env(env).map_err(|error| {
+                    worker::Error::RustError(format!("job OCI GC secret versions: {error}"))
+                })?;
+                let egress = worker_egress(env)?;
+                let db = Arc::new(aos_hub_core::db::Database::attach(make()));
+                let surfaces: Arc<dyn aos_hub_core::fetch::SurfaceProvider> =
+                    Arc::new(crate::surface::R2SurfaceProvider::new(
+                        bucket.clone(),
+                        Arc::clone(&db),
+                        Arc::clone(&secret_versions),
+                        Arc::clone(&egress),
+                    ));
+                let writes: Arc<dyn aos_hub_core::surface_write::SurfaceWriteProvider> =
+                    Arc::new(crate::surface::R2SurfaceWriteProvider::new(
+                        bucket,
+                        Arc::clone(&db),
+                        secret_versions,
+                        egress,
+                    ));
+                aos_hub_core::oci_gc_controller::OciGcDeletionController::new(db, surfaces, writes)
+                    .run_due(
+                        &format!("worker:{}", envelope.operation_id),
+                        now_for_worker(),
+                        25,
+                    )
+                    .await
+                    .map_err(|error| worker::Error::RustError(format!("job OCI GC: {error:#}")))?;
+            }
+            Job::InventoryOciProviders => {
+                let bucket = env.bucket(crate::handlers::bindings::R2).map_err(|error| {
+                    worker::Error::RustError(format!(
+                        "job OCI provider inventory R2 binding: {error}"
+                    ))
+                })?;
+                let secret_versions = crate::secretversions::from_env(env).map_err(|error| {
+                    worker::Error::RustError(format!(
+                        "job OCI provider inventory secret versions: {error}"
+                    ))
+                })?;
+                let egress = worker_egress(env)?;
+                let db = Arc::new(aos_hub_core::db::Database::attach(make()));
+                let surfaces: Arc<dyn aos_hub_core::fetch::SurfaceProvider> =
+                    Arc::new(crate::surface::R2SurfaceProvider::new(
+                        bucket,
+                        Arc::clone(&db),
+                        secret_versions,
+                        egress,
+                    ));
+                let stats = aos_hub_core::oci_inventory_controller::OciProviderInventoryController::new(
+                    db, surfaces,
+                )
+                .run_due_bounded(
+                    "worker-oci-inventory",
+                    &envelope.operation_id,
+                    now_for_worker(),
+                    25,
+                    envelope
+                        .continuation
+                        .as_ref()
+                        .map(|continuation| continuation.cursor.as_str()),
+                    aos_hub_core::oci_inventory_controller::WORKER_OCI_INVENTORY_DISPATCH_BUDGET,
+                )
+                .await
+                .map_err(|error| {
+                    worker::Error::RustError(format!("job OCI provider inventory: {error:#}"))
+                })?;
+                if let Some(next) = crate::oci_inventory_follow_up(envelope, stats.continuation)
+                    .map_err(|error| {
+                        worker::Error::RustError(format!(
+                            "build OCI provider inventory continuation: {error:#}"
+                        ))
+                    })?
+                {
+                    crate::workerqueue::WorkerQueue::from_env(env)?
+                        .enqueue_envelopes(&[next])
+                        .await
+                        .map_err(|error| {
+                            worker::Error::RustError(format!(
+                                "enqueue OCI provider inventory continuation: {error:#}"
+                            ))
+                        })?;
+                }
+            }
+            Job::ProbeOciConditionalDeletes => {
+                let bucket = env.bucket(crate::handlers::bindings::R2).map_err(|error| {
+                    worker::Error::RustError(format!("job OCI delete probes R2 binding: {error}"))
+                })?;
+                let secret_versions = crate::secretversions::from_env(env).map_err(|error| {
+                    worker::Error::RustError(format!(
+                        "job OCI delete probes secret versions: {error}"
+                    ))
+                })?;
+                let egress = worker_egress(env)?;
+                let db = Arc::new(aos_hub_core::db::Database::attach(make()));
+                let surfaces: Arc<dyn aos_hub_core::fetch::SurfaceProvider> =
+                    Arc::new(crate::surface::R2SurfaceProvider::new(
+                        bucket.clone(),
+                        Arc::clone(&db),
+                        Arc::clone(&secret_versions),
+                        Arc::clone(&egress),
+                    ));
+                let writes: Arc<dyn aos_hub_core::surface_write::SurfaceWriteProvider> =
+                    Arc::new(crate::surface::R2SurfaceWriteProvider::new(
+                        bucket,
+                        Arc::clone(&db),
+                        secret_versions,
+                        egress,
+                    ));
+                aos_hub_core::conditional_delete_probe::ConditionalDeleteProbeController::new(
+                    db, surfaces, writes,
+                )
+                .run_due(now_for_worker(), 10)
+                .await
+                .map_err(|error| {
+                    worker::Error::RustError(format!("job OCI delete probes: {error:#}"))
+                })?;
             }
             Job::RebuildDirectory => {
                 let kv_ns = env
@@ -1742,7 +2078,8 @@ mod entry {
                             }
                         };
                         if let Err(error) = reindexer.reindex(&registry).await {
-                            let detail = bounded_job_error(&format!("{error:#}"));
+                            let detail =
+                                aos_hub_core::jobs::redacted_job_failure(&format!("{error:#}"));
                             if let Err(failure_error) = db
                                 .fail_registry_index_build(
                                     *registry_id,
@@ -1797,7 +2134,7 @@ mod entry {
                     Err(err) => {
                         return Err(worker::Error::RustError(format!(
                             "job reindex load {registry_id}: {err:#}"
-                        )))
+                        )));
                     }
                 }
             }
@@ -1999,56 +2336,47 @@ mod entry {
             Job::RegenerateSurface { .. } => {
                 return Err(worker::Error::RustError(
                     "regenerate_surface is unsupported".into(),
-                ))
+                ));
             }
         }
         Ok(())
     }
 
-    async fn run_domain_probes(backend: Box<dyn aos_hub_core::backend::Backend>, env: &Env) {
-        let Ok(endpoint) = env.var(HUB_DNS_JSON_ENDPOINT) else {
-            worker::console_error!("domain probes: {HUB_DNS_JSON_ENDPOINT} is not configured");
-            return;
-        };
+    async fn run_domain_probes(
+        backend: Box<dyn aos_hub_core::backend::Backend>,
+        env: &Env,
+    ) -> Result<()> {
+        let endpoint = env.var(HUB_DNS_JSON_ENDPOINT).map_err(|error| {
+            worker::Error::RustError(format!(
+                "domain probes: {HUB_DNS_JSON_ENDPOINT} is not configured: {error}"
+            ))
+        })?;
         let db = Arc::new(aos_hub_core::db::Database::attach(backend));
         let tls_verifier = aos_hub_core::topology_probe::DomainTlsProbeVerifier::new();
-        let egress = match worker_egress(env) {
-            Ok(client) => client,
-            Err(error) => {
-                worker::console_error!("domain probes: invalid egress configuration: {error}");
-                return;
-            }
-        };
+        let egress = worker_egress(env)?;
         let route_http: Arc<dyn aos_hub_core::web::console::ports::HttpClient> =
             Arc::new(WorkerHttpClient::new(Arc::clone(&egress)));
-        let mut controller = match aos_hub_core::topology_probe::DomainProbeController::new(
+        let mut controller = aos_hub_core::topology_probe::DomainProbeController::new(
             Arc::clone(&db),
             Arc::clone(&route_http),
             tls_verifier,
             endpoint.to_string(),
             "cloudflare-worker",
-        ) {
-            Ok(controller) => controller,
-            Err(error) => {
-                worker::console_error!("domain probes: {error:#}");
-                return;
-            }
-        };
+        )
+        .map_err(|error| worker::Error::RustError(format!("domain probes: {error:#}")))?;
         let mut route_adapters =
             aos_hub_core::topology_probe::ControllerOwnedRouteObservationProvider::new()
                 .with_external(Arc::new(
                     aos_hub_core::topology_probe::CloudflareRouteControlPlane::new(
                         Arc::new(WorkerCloudflareControlPlaneClient::new(
                             Arc::clone(&egress),
-                            match env.secret(HUB_CLOUDFLARE_API_TOKEN) {
-                                Ok(token) => token.to_string(),
-                                Err(_) => {
-                                    worker::console_error!(
-                                        "domain probes: Cloudflare API token is not configured"
-                                    );
-                                    return;
-                                }
-                            },
+                            env.secret(HUB_CLOUDFLARE_API_TOKEN)
+                                .map_err(|error| {
+                                    worker::Error::RustError(format!(
+                                    "domain probes: Cloudflare API token is not configured: {error}"
+                                ))
+                                })?
+                                .to_string(),
                         )),
                         Arc::clone(&route_http),
                     ),
@@ -2066,28 +2394,24 @@ mod entry {
                 ) {
                     Ok(direct) => direct,
                     Err(error) => {
-                        worker::console_error!("route publication manifest: {error:#}");
-                        return;
+                        return Err(worker::Error::RustError(format!(
+                            "route publication manifest: {error:#}"
+                        )));
                     }
                 };
                 route_adapters = route_adapters.with_direct(Arc::new(direct));
             }
             (None, None) => {}
             _ => {
-                worker::console_error!(
+                return Err(worker::Error::RustError(format!(
                     "{HUB_ROUTE_PUBLICATION_MANIFEST} and {HUB_ROUTE_PUBLICATION_PUBLIC_KEY} must be configured together"
-                );
-                return;
+                )));
             }
         }
         controller = controller.with_route_observer(Arc::new(route_adapters));
-        let secret_versions = match crate::secretversions::from_env(env) {
-            Ok(resolver) => resolver,
-            Err(error) => {
-                worker::console_error!("storage credential probes: {error:#}");
-                return;
-            }
-        };
+        let secret_versions = crate::secretversions::from_env(env).map_err(|error| {
+            worker::Error::RustError(format!("storage credential probes: {error:#}"))
+        })?;
         controller = controller.with_storage_credential_probe(Arc::new(
             WorkerStorageCredentialProbeProvider::new(
                 Arc::clone(&egress),
@@ -2124,6 +2448,7 @@ mod entry {
                 worker::console_error!("placement scans: R2 binding missing: {error}");
             }
         }
+        Ok(())
     }
 
     /// Cached shared-router dependencies for one request-execution shard.
@@ -2369,6 +2694,9 @@ mod entry {
                     let body = req.bytes().await.unwrap_or_default();
                     return self.e2e_managed_registry_bootstrap(&body).await;
                 }
+                if req.method() == Method::Post && path == "/_e2e/rescan-image-cache" {
+                    return self.e2e_rescan_image_cache().await;
+                }
             }
             // Seal-gated control-plane (RFC-0004 ch.14 Phase E). Background
             // queue isolates use `/_internal/sql` for short database operations;
@@ -2405,13 +2733,13 @@ mod entry {
                         let body = match req.bytes().await {
                             Ok(body) => body,
                             Err(error) => {
-                                return Response::error(format!("remote SQL body: {error}"), 400)
+                                return Response::error(format!("remote SQL body: {error}"), 400);
                             }
                         };
                         let operation = match crate::remoteprotocol::decode_request(&body) {
                             Ok(operation) => operation,
                             Err(error) => {
-                                return Response::error(format!("remote SQL decode: {error}"), 400)
+                                return Response::error(format!("remote SQL decode: {error}"), 400);
                             }
                         };
                         let backend = crate::sqldobackend::SqlDoBackend::new(self.state.storage());
@@ -2443,7 +2771,7 @@ mod entry {
                                 return Response::error(
                                     format!("bootstrap-root decode: {err}"),
                                     400,
-                                )
+                                );
                             }
                         };
                         let db = Database::attach(Box::new(
@@ -2561,6 +2889,35 @@ mod entry {
 
     #[cfg(feature = "do-e2e")]
     impl HubDb {
+        /// Publishes a complete inventory for the cache populated by the live driver.
+        async fn e2e_rescan_image_cache(&self) -> Result<Response> {
+            let db = aos_hub_core::db::Database::attach(Box::new(
+                crate::sqldobackend::SqlDoBackend::new(self.state.storage()),
+            ));
+            let cache = db
+                .binary_cache_by_slug("flat-cache")
+                .await
+                .map_err(|error| {
+                    worker::Error::RustError(format!("image cache inventory: {error:#}"))
+                })?
+                .ok_or_else(|| {
+                    worker::Error::RustError("image cache fixture is missing".to_string())
+                })?;
+            let provider =
+                crate::e2e_surface::DoE2eSurfaceProvider::new(self.state.storage().sql()).map_err(
+                    |error| worker::Error::RustError(format!("image cache provider: {error:#}")),
+                )?;
+            let stats = aos_hub_core::cache_scan::rescan_cache(&db, &provider, &cache)
+                .await
+                .map_err(|error| {
+                    worker::Error::RustError(format!("image cache rescan: {error:#}"))
+                })?;
+            Response::ok(format!(
+                "added={} removed={} unchanged={}",
+                stats.added, stats.removed, stats.unchanged
+            ))
+        }
+
         /// Installs the disposable topology and returns an authenticated token.
         ///
         /// # Errors
@@ -2583,6 +2940,31 @@ mod entry {
                 .map_err(|error| {
                     worker::Error::RustError(format!("topology fixture: {error:#}"))
                 })?;
+            // The signed system-image fixture advertises this cache to
+            // anonymous clients. Keep the topology fixture's write authority,
+            // but qualify the public read policy before its route snapshot is
+            // created below.
+            let image_cache = db
+                .binary_cache_by_slug("flat-cache")
+                .await
+                .map_err(|error| {
+                    worker::Error::RustError(format!("image cache fixture: {error:#}"))
+                })?
+                .ok_or_else(|| {
+                    worker::Error::RustError("image cache fixture is missing".to_string())
+                })?;
+            db.update_binary_cache(
+                image_cache.id,
+                &image_cache.name,
+                "public",
+                image_cache.priority,
+                &image_cache.compression,
+                image_cache.want_mass_query,
+            )
+            .await
+            .map_err(|error| {
+                worker::Error::RustError(format!("public image cache fixture: {error:#}"))
+            })?;
             for (surface, placement_id, slug) in [
                 (
                     aos_hub_core::db::SurfaceTarget::BinaryCache(2),
@@ -2611,11 +2993,26 @@ mod entry {
                         worker::Error::RustError(format!("fixture route: {error:#}"))
                     })?;
             }
+            for (registry_id, placement_id, port, access_policy_kind) in
+                [(2, 4, 8799, "public"), (1, 2, 8800, "hub_auth")]
+            {
+                crate::e2e_surface::configure_oci_route(
+                    &db,
+                    registry_id,
+                    placement_id,
+                    port,
+                    access_policy_kind,
+                )
+                .await
+                .map_err(|error| {
+                    worker::Error::RustError(format!("fixture OCI route: {error:#}"))
+                })?;
+            }
             let image_fixture = crate::e2e_surface::decode_producer_surface_fixture(
                 producer_surface,
             )
             .map_err(|error| worker::Error::RustError(format!("producer fixture: {error:#}")))?;
-            let image_fixture =
+            let _image_fixture =
                 crate::e2e_surface::DoE2eSurfaceProvider::new(self.state.storage().sql())
                     .map_err(|error| worker::Error::RustError(format!("image surface: {error:#}")))?
                     .install_signed_image_fixtures(&db, image_fixture)
@@ -2633,9 +3030,9 @@ mod entry {
                 .await
                 .map_err(|error| worker::Error::RustError(format!("image GC roots: {error:#}")))?
                 .len();
-            if gc_root_count != 4 {
+            if gc_root_count != 0 {
                 return Err(worker::Error::RustError(format!(
-                    "apr image publication produced {gc_root_count} GC roots, expected 4"
+                    "store-backed apr image publication produced {gc_root_count} direct-object GC roots"
                 )));
             }
             // Materialize topology setup events before installing the webhook.
@@ -2702,6 +3099,18 @@ mod entry {
             db.grant_membership("user", user_id, "instance", Role::Owner.as_str())
                 .await
                 .map_err(|error| worker::Error::RustError(format!("e2e grant: {error:#}")))?;
+            let (docker_username, docker_password) = db
+                .create_token(
+                    Principal::user(user_id),
+                    "instance",
+                    &[Permission::Read, Permission::Publish],
+                    Some("workerd OCI parity Docker credential"),
+                    None,
+                )
+                .await
+                .map_err(|error| {
+                    worker::Error::RustError(format!("e2e Docker credential: {error:#}"))
+                })?;
             let session = db
                 .create_session(user_id, 3_600, 0)
                 .await
@@ -2726,9 +3135,13 @@ mod entry {
             Response::from_json(&serde_json::json!({
                 "token": token,
                 "session": session,
-                "raw_key": image_fixture.raw_key,
-                "qcow2_key": image_fixture.qcow2_key,
                 "gc_root_count": gc_root_count,
+                "docker_username": docker_username,
+                "docker_password": docker_password,
+                "oci_public_base": "http://127.0.0.1:8799",
+                "oci_public_registry": "flat-registry",
+                "oci_private_base": "http://127.0.0.1:8800",
+                "oci_private_registry": "failure/registry",
             }))
         }
     }

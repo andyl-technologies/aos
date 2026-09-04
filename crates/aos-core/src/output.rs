@@ -226,6 +226,18 @@ impl Printer {
         }
     }
 
+    /// Writes exact machine-readable text to stdout in every output mode.
+    ///
+    /// This is reserved for commands with an explicit raw-data contract. It
+    /// performs no JSON reserialization and appends one newline only when the
+    /// supplied text does not already end with one.
+    pub fn raw(&self, value: &str) {
+        print!("{value}");
+        if !value.ends_with('\n') {
+            println!();
+        }
+    }
+
     /// Prints an indented `key: value` pair with a bold key to stderr.
     ///
     /// Suppressed in quiet and JSON modes.

@@ -4,6 +4,7 @@
 //! key as one value. Apply callbacks therefore cannot accidentally recompute a
 //! plan or combine confirmation material from two requests.
 
+#[cfg(target_arch = "wasm32")]
 use std::sync::atomic::{AtomicU32, Ordering};
 
 /// One exact reviewed mutation awaiting confirmation.
@@ -13,6 +14,53 @@ pub(crate) struct PendingPlan {
     pub(crate) plan: aos_proto_types::TopologyPlan,
     /// Idempotency key shared by the plan and apply request.
     pub(crate) idempotency_key: String,
+}
+
+/// Returns whether a tag ownership class accepts manual CAS mutation.
+pub(crate) fn container_tag_is_manually_mutable(ownership_kind: &str) -> bool {
+    ownership_kind == "manual"
+}
+
+/// Returns whether the live route capability allows manual tag mutation.
+pub(crate) fn container_tag_controls_visible(allows: impl FnOnce(&str) -> bool) -> bool {
+    allows("publish")
+}
+
+/// Returns the exact retention-policy resource version used by a GC plan.
+pub(crate) fn effective_container_retention_version(value: &str) -> String {
+    if value.is_empty() {
+        "0".to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+/// Returns whether a reviewed GC plan can expose its destructive apply control.
+pub(crate) fn container_gc_plan_is_applicable(
+    response: &aos_proto_types::ContainerGcPlanResponse,
+) -> bool {
+    response.blockers.is_empty()
+        && response
+            .run
+            .as_ref()
+            .is_some_and(|run| run.state == "planned")
+}
+
+/// Extracts the positive optimistic-concurrency version frozen by a repair plan.
+pub(crate) fn reviewed_plan_resource_version(
+    response: &aos_proto_types::TopologyPlanResponse,
+) -> Result<String, String> {
+    response
+        .plan
+        .as_ref()
+        .and_then(|plan| {
+            plan.input_versions
+                .iter()
+                .find_map(|value| value.strip_prefix("resource_version="))
+        })
+        .filter(|value| value.parse::<u64>().is_ok_and(|version| version > 0))
+        .map(str::to_string)
+        .ok_or_else(|| "The repair plan omitted its positive resource-version CAS.".to_string())
 }
 
 impl PendingPlan {
@@ -81,6 +129,15 @@ impl PendingPlan {
     /// Builds a cache policy/operation apply envelope for this exact plan.
     pub(crate) fn cache_plan_apply(&self) -> aos_proto_types::ApplyCachePlanRequest {
         aos_proto_types::ApplyCachePlanRequest {
+            plan_id: self.plan.plan_id.clone(),
+            idempotency_key: self.idempotency_key.clone(),
+            confirmation_hash: self.plan.confirmation_hash.clone(),
+        }
+    }
+
+    /// Builds a container-administration apply envelope for this exact plan.
+    pub(crate) fn container_apply(&self) -> aos_proto_types::ApplyContainerMutationRequest {
+        aos_proto_types::ApplyContainerMutationRequest {
             plan_id: self.plan.plan_id.clone(),
             idempotency_key: self.idempotency_key.clone(),
             confirmation_hash: self.plan.confirmation_hash.clone(),
@@ -239,9 +296,11 @@ impl PendingPlan {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
 static IDEMPOTENCY_SEQUENCE: AtomicU32 = AtomicU32::new(0);
 
 /// Generates a collision-resistant, non-secret browser idempotency key.
+#[cfg(target_arch = "wasm32")]
 pub(crate) fn idempotency_key(action: &str) -> String {
     let time = js_sys::Date::now().to_bits();
     let random = (js_sys::Math::random() * u64::MAX as f64) as u64;
@@ -262,5 +321,103 @@ mod tests {
             }),
         };
         assert!(PendingPlan::from_response(response, "key".to_string()).is_err());
+    }
+
+    #[test]
+    fn container_apply_preserves_the_reviewed_plan_and_idempotency_key() {
+        let reviewed = PendingPlan::from_response(
+            aos_proto_types::TopologyPlanResponse {
+                plan: Some(aos_proto_types::TopologyPlan {
+                    plan_id: "plan:container".to_string(),
+                    confirmation_hash: "sha256:confirmation".to_string(),
+                    ..Default::default()
+                }),
+            },
+            "web-container-same-key".to_string(),
+        )
+        .expect("complete plan must be retained");
+
+        let apply = reviewed.container_apply();
+        assert_eq!(apply.plan_id, "plan:container");
+        assert_eq!(apply.confirmation_hash, "sha256:confirmation");
+        assert_eq!(apply.idempotency_key, "web-container-same-key");
+    }
+
+    #[test]
+    fn signed_container_tags_never_enable_manual_controls() {
+        assert!(container_tag_is_manually_mutable("manual"));
+        assert!(!container_tag_is_manually_mutable("release"));
+        assert!(!container_tag_is_manually_mutable("channel"));
+    }
+
+    #[test]
+    fn admin_configure_only_does_not_expose_tag_mutation_controls() {
+        let permissions = ["read", "registry.configure"];
+        assert!(!container_tag_controls_visible(|required| {
+            permissions.contains(&required)
+        }));
+    }
+
+    #[test]
+    fn maintainer_publish_exposes_tag_mutation_controls() {
+        let permissions = ["read", "publish", "channel.advance", "keys.manage"];
+        assert!(container_tag_controls_visible(|required| {
+            permissions.contains(&required)
+        }));
+    }
+
+    #[test]
+    fn default_retention_policy_binds_gc_to_version_zero() {
+        assert_eq!(effective_container_retention_version(""), "0");
+        assert_eq!(effective_container_retention_version("7"), "7");
+    }
+
+    #[test]
+    fn blockers_and_non_planned_states_hide_apply_controls() {
+        let planned = aos_proto_types::ContainerGcPlanResponse {
+            run: Some(aos_proto_types::ContainerGcRun {
+                state: "planned".to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(container_gc_plan_is_applicable(&planned));
+
+        let mut blocked = planned.clone();
+        blocked.blockers.push(aos_proto_types::ContainerGcBlocker {
+            kind: "stale_inventory".to_string(),
+            detail: "placement inventory is stale".to_string(),
+            ..Default::default()
+        });
+        assert!(!container_gc_plan_is_applicable(&blocked));
+
+        let mut failed = planned;
+        failed.run.as_mut().unwrap().state = "failed".to_string();
+        assert!(!container_gc_plan_is_applicable(&failed));
+    }
+
+    #[test]
+    fn untracked_repair_apply_requires_the_exact_positive_plan_version() {
+        let response = aos_proto_types::TopologyPlanResponse {
+            plan: Some(aos_proto_types::TopologyPlan {
+                input_versions: vec!["resource_version=2".to_string()],
+                ..Default::default()
+            }),
+        };
+        assert_eq!(reviewed_plan_resource_version(&response).unwrap(), "2");
+
+        for value in [
+            "resource_version=0",
+            "resource_version=-1",
+            "mutation_epoch=2",
+        ] {
+            let response = aos_proto_types::TopologyPlanResponse {
+                plan: Some(aos_proto_types::TopologyPlan {
+                    input_versions: vec![value.to_string()],
+                    ..Default::default()
+                }),
+            };
+            assert!(reviewed_plan_resource_version(&response).is_err());
+        }
     }
 }

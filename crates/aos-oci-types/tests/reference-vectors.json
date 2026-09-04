@@ -1,0 +1,50 @@
+{
+  "repositories": {
+    "valid": [
+      "a",
+      "a/b",
+      "team/image.v1",
+      "team/image_v1",
+      "team/image__v1",
+      "team/image---v1",
+      "0/9"
+    ],
+    "invalid": [
+      "",
+      "/a",
+      "a/",
+      "a//b",
+      "a/./b",
+      "a/../b",
+      "Upper",
+      "a%2fb",
+      "a\\b",
+      "a..b",
+      "a___b",
+      "a.-b",
+      "a_-b",
+      "a-"
+    ]
+  },
+  "tags": {
+    "valid": ["latest", "V1.2-rc_3", "_internal"],
+    "invalid": ["", ".latest", "-bad", "with/slash", "x%2fy"]
+  },
+  "taggedReferences": {
+    "valid": ["a:latest", "team/image.v1:V1.2-rc_3"],
+    "invalid": [
+      "a",
+      "Team/a:latest",
+      "a//b:latest",
+      "a:bad/tag",
+      "a:sha256:deadbeef"
+    ]
+  },
+  "manifestReferences": {
+    "valid": [
+      "latest",
+      "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    ],
+    "invalid": ["sha256:not-a-digest", "sha512:deadbeef"]
+  }
+}

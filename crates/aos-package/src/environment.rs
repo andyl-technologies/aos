@@ -214,6 +214,37 @@ mod tests {
     }
 
     #[test]
+    fn accepts_an_absolute_toplevel_link_inside_an_offline_root() {
+        let root = tempdir().unwrap();
+        let toplevel = "/nix/store/00000000000000000000000000000000-aos-system";
+        let identity = "/nix/store/11111111111111111111111111111111-etc-os-release/os-release";
+        fs::create_dir_all(root.path().join(&toplevel[1..])).unwrap();
+        fs::create_dir_all(root.path().join(&identity[1..]).parent().unwrap()).unwrap();
+        fs::write(
+            root.path().join(&identity[1..]),
+            "NAME=AOS\nID=aos\nAOS_MODULE_ABI=7\n",
+        )
+        .unwrap();
+        symlink(
+            identity,
+            root.path().join(&toplevel[1..]).join("os-release"),
+        )
+        .unwrap();
+        symlink(toplevel, root.path().join("aos-toplevel")).unwrap();
+
+        validate_aos_root(root.path(), false).unwrap();
+    }
+
+    #[test]
+    fn rejects_an_absolute_toplevel_link_that_escapes_the_offline_root() {
+        let root = tempdir().unwrap();
+        symlink("/../etc", root.path().join("aos-toplevel")).unwrap();
+
+        let error = validate_aos_root(root.path(), false).unwrap_err();
+        assert!(format!("{error:#}").contains("rooted path escapes its AOS root"));
+    }
+
+    #[test]
     fn rejects_a_non_aos_or_incomplete_root() {
         let root = tempdir().unwrap();
         fs::create_dir_all(root.path().join("etc")).unwrap();

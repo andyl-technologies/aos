@@ -23,7 +23,7 @@ use async_trait::async_trait;
 use sha2::{Digest as _, Sha256};
 use worker::Bucket;
 
-use aos_hub_core::db::{Database, SurfacePlacementRecord};
+use aos_hub_core::db::{BindingWriteRevisionRecord, Database, SurfacePlacementRecord};
 use aos_hub_core::fetch::{
     OriginFetch, StreamedRead, SurfaceFetch, SurfaceListPage, SurfaceListedEvidence,
     SurfaceObjectEvidence, SurfaceProvider,
@@ -34,10 +34,13 @@ use aos_hub_core::storage_credential::{
     DatabaseStorageCredentialResolver, StorageCredentialResolver,
 };
 use aos_hub_core::surface_write::{
-    MultipartAbortOutcome, PartTag, SurfaceWrite, SurfaceWriteProvider,
+    FrozenSurfaceAccess, MultipartAbortOutcome, PartTag, SurfaceWrite, SurfaceWriteProvider,
 };
 
 use crate::consoleports::WorkerEgressClient;
+use crate::frozen_surface_access::{
+    binding as frozen_access_binding, delete_credential as frozen_delete_credential,
+};
 use crate::keymap;
 use crate::r2_adapter::{R2BucketAdapter, R2Contract, R2HeadObject, R2ListObject, R2ListPage};
 
@@ -348,7 +351,7 @@ async fn placement_s3_surface(
     db: &Database,
     credentials: &dyn StorageCredentialResolver,
     placement: &SurfacePlacementRecord,
-    write: bool,
+    write_revision: Option<&BindingWriteRevisionRecord>,
 ) -> Result<Option<S3Surface>> {
     let binding = db.binding(placement.binding_id).await?.ok_or_else(|| {
         aos_hub_core::placement_read::terminal_read_error(format!(
@@ -366,11 +369,11 @@ async fn placement_s3_surface(
         )));
     }
     let credential = if binding.access_mode.as_deref() == Some("private") {
-        if write {
-            let revision = db
-                .placement_publication_write_revision(placement.id)
-                .await?
-                .context("placement has no validated publication write revision")?;
+        if let Some(revision) = write_revision {
+            anyhow::ensure!(
+                placement.binding_id == revision.binding_id,
+                "placement does not match frozen binding revision"
+            );
             Some(
                 credentials
                     .resolve_exact(
@@ -420,7 +423,7 @@ async fn placement_s3_delete_surface(
             placement.name
         );
     }
-    if binding.is_instance_default || binding.kind != "s3" {
+    if binding.is_instance_default || !matches!(binding.kind.as_str(), "s3" | "r2") {
         anyhow::bail!(
             "placement '{}' backend '{}' cannot enforce conditional deletion",
             placement.name,
@@ -638,7 +641,7 @@ impl SurfaceProvider for R2SurfaceProvider {
         placement: &SurfacePlacementRecord,
     ) -> Result<Box<dyn SurfaceFetch>> {
         if let Some(surface) =
-            placement_s3_surface(&self.db, self.credentials.as_ref(), placement, false).await?
+            placement_s3_surface(&self.db, self.credentials.as_ref(), placement, None).await?
         {
             return Ok(Box::new(S3SurfaceFetch {
                 surface,
@@ -651,6 +654,36 @@ impl SurfaceProvider for R2SurfaceProvider {
                 bucket: self.bucket.as_ref().clone(),
             }),
             prefix: placement.prefix.clone(),
+        }))
+    }
+
+    async fn frozen_placement_fetcher(
+        &self,
+        access: &FrozenSurfaceAccess,
+    ) -> Result<Box<dyn SurfaceFetch>> {
+        let binding = frozen_access_binding(&self.db, access).await?;
+        if binding.is_instance_default || binding.kind == "deployment_r2" {
+            anyhow::bail!(
+                "deployment R2 has no atomic conditional-delete capability for GC access"
+            );
+        }
+        anyhow::ensure!(
+            matches!(binding.kind.as_str(), "s3" | "r2"),
+            "frozen placement uses unsupported Worker storage"
+        );
+        let credential = frozen_delete_credential(self.credentials.as_ref(), access).await?;
+        let surface = S3Surface::from_binding(
+            &binding,
+            &access.placement_prefix,
+            credential
+                .as_ref()
+                .map(|credential| credential.secret())
+                .transpose()?,
+        )?
+        .context("frozen placement object-store binding cannot be resolved")?;
+        Ok(Box::new(S3SurfaceFetch {
+            surface,
+            egress: Arc::clone(&self.egress),
         }))
     }
 }
@@ -1342,7 +1375,8 @@ impl SurfaceWriteProvider for R2SurfaceWriteProvider {
         &self,
         placement: &SurfacePlacementRecord,
     ) -> Result<Box<dyn SurfaceWrite>> {
-        self.db
+        let revision = self
+            .db
             .placement_publication_write_revision(placement.id)
             .await?
             .with_context(|| {
@@ -1351,8 +1385,27 @@ impl SurfaceWriteProvider for R2SurfaceWriteProvider {
                     placement.name
                 )
             })?;
-        if let Some(surface) =
-            placement_s3_surface(&self.db, self.credentials.as_ref(), placement, true).await?
+        self.placement_writer_at_revision(placement, &revision)
+            .await
+    }
+
+    async fn placement_writer_at_revision(
+        &self,
+        placement: &SurfacePlacementRecord,
+        revision: &BindingWriteRevisionRecord,
+    ) -> Result<Box<dyn SurfaceWrite>> {
+        anyhow::ensure!(
+            placement.binding_id == revision.binding_id,
+            "placement '{}' does not match frozen binding revision",
+            placement.name
+        );
+        if let Some(surface) = placement_s3_surface(
+            &self.db,
+            self.credentials.as_ref(),
+            placement,
+            Some(revision),
+        )
+        .await?
         {
             return Ok(Box::new(S3Write {
                 surface,
@@ -1381,6 +1434,33 @@ impl SurfaceWriteProvider for R2SurfaceWriteProvider {
             delete_credential_generation,
         )
         .await?;
+        Ok(Box::new(S3Write {
+            surface,
+            egress: Arc::clone(&self.egress),
+        }))
+    }
+
+    async fn frozen_placement_deleter(
+        &self,
+        access: &FrozenSurfaceAccess,
+    ) -> Result<Box<dyn SurfaceWrite>> {
+        let binding = frozen_access_binding(&self.db, access).await?;
+        if binding.is_instance_default || binding.kind == "deployment_r2" {
+            anyhow::bail!("deployment R2 cannot enforce atomic conditional deletion");
+        }
+        anyhow::ensure!(
+            matches!(binding.kind.as_str(), "s3" | "r2"),
+            "frozen placement uses unsupported Worker storage"
+        );
+        let credential = frozen_delete_credential(self.credentials.as_ref(), access)
+            .await?
+            .context("object-store frozen deletion requires exact credentials")?;
+        let surface = S3Surface::from_binding(
+            &binding,
+            &access.placement_prefix,
+            Some(credential.secret()?),
+        )?
+        .context("frozen deletion object-store binding cannot be resolved")?;
         Ok(Box::new(S3Write {
             surface,
             egress: Arc::clone(&self.egress),
@@ -1899,11 +1979,11 @@ impl SurfaceWrite for S3Write {
             .await
             .map_err(|err| anyhow::anyhow!("s3 conditional DELETE: {err}"))?;
         match response.status_code() {
-            200..=299 => Ok(aos_hub_core::surface_write::SurfaceDeleteOutcome::Deleted {
-                etag: expected.etag.clone(),
-                content_hash: expected.content_hash.clone(),
-                size: expected.size,
-            }),
+            200..=299 => Ok(
+                aos_hub_core::surface_write::SurfaceDeleteOutcome::ConditionalDeleteAcknowledged {
+                    etag,
+                },
+            ),
             404 => Ok(aos_hub_core::surface_write::SurfaceDeleteOutcome::NotFound),
             412 => Ok(
                 aos_hub_core::surface_write::SurfaceDeleteOutcome::PreconditionFailed {
