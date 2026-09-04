@@ -473,19 +473,23 @@ impl HostCatalog for FileHostCatalog {
                 "catalog resources do not bind the exact launch assignment".to_owned(),
             ));
         }
-        verify_workspace_pin(&workspace.root_directory, workspace.device, workspace.inode)?;
-        verify_network_pin(&network.namespace_path, network.device, network.inode)?;
+        let workspace_pin =
+            verify_workspace_pin(&workspace.root_directory, workspace.device, workspace.inode)?;
+        let network_pin =
+            verify_network_pin(&network.namespace_path, network.device, network.inode)?;
         Ok(ResolvedLaunchResources {
-            workspace: ResolvedWorkspace {
-                root_directory: workspace.root_directory.clone(),
-                device: workspace.device,
-                inode: workspace.inode,
-            },
-            network: ResolvedNetwork {
-                namespace_path: network.namespace_path.clone(),
-                device: network.device,
-                inode: network.inode,
-            },
+            workspace: ResolvedWorkspace::from_pinned(
+                workspace.root_directory.clone(),
+                workspace.device,
+                workspace.inode,
+                workspace_pin,
+            )?,
+            network: ResolvedNetwork::from_pinned(
+                network.namespace_path.clone(),
+                network.device,
+                network.inode,
+                network_pin,
+            )?,
             identity: ResolvedIdentityAllocation {
                 range_start: workspace.identity.range_start,
                 range_size: workspace.identity.range_size,
@@ -502,7 +506,7 @@ fn validate_handle(handle: OpaqueHandle, label: &str) -> Result<()> {
     Ok(())
 }
 
-fn verify_workspace_pin(path: &str, device: u64, inode: u64) -> Result<()> {
+fn verify_workspace_pin(path: &str, device: u64, inode: u64) -> Result<std::os::fd::OwnedFd> {
     let fd = rustix::fs::open(
         path,
         rustix::fs::OFlags::PATH
@@ -512,16 +516,20 @@ fn verify_workspace_pin(path: &str, device: u64, inode: u64) -> Result<()> {
         rustix::fs::Mode::empty(),
     )
     .map_err(|error| HostError::Catalog(error.to_string()))?;
-    let stat = rustix::fs::fstat(fd).map_err(|error| HostError::Catalog(error.to_string()))?;
+    let stat = rustix::fs::fstat(&fd).map_err(|error| HostError::Catalog(error.to_string()))?;
     if stat.st_dev != device || stat.st_ino != inode {
         return Err(HostError::Catalog(
             "workspace pin identity changed".to_owned(),
         ));
     }
-    Ok(())
+    Ok(fd)
 }
 
-fn verify_network_pin(path: &str, device: u64, inode: u64) -> Result<()> {
+fn verify_network_pin(
+    path: &str,
+    device: u64,
+    inode: u64,
+) -> Result<aos_sandbox_linux::pidfd::NamespaceFd> {
     use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceKind};
 
     let fd = rustix::fs::open(
@@ -538,20 +546,29 @@ fn verify_network_pin(path: &str, device: u64, inode: u64) -> Result<()> {
             "network namespace pin identity changed".to_owned(),
         ));
     }
+    if current_network_namespace_identity()? == identity {
+        return Err(HostError::Catalog(
+            "network pin resolves to the host network namespace".to_owned(),
+        ));
+    }
+    Ok(namespace)
+}
+
+fn current_network_namespace_identity() -> Result<aos_sandbox_linux::pidfd::NamespaceIdentity> {
+    use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceKind};
+
     let host_fd = rustix::fs::open(
         "/proc/self/ns/net",
-        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
+        // procfs namespace entries are kernel magic links. The path is fixed,
+        // and NamespaceFd performs the authoritative nsfs/type check after
+        // following it; O_NOFOLLOW would reject every valid comparison.
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC,
         rustix::fs::Mode::empty(),
     )
     .map_err(|error| HostError::Catalog(error.to_string()))?;
     let host = NamespaceFd::from_owned(host_fd, NamespaceKind::Network)
         .map_err(|error| HostError::Catalog(error.to_string()))?;
-    if host.identity() == identity {
-        return Err(HostError::Catalog(
-            "network pin resolves to the host network namespace".to_owned(),
-        ));
-    }
-    Ok(())
+    Ok(host.identity())
 }
 
 fn strictly_ordered(values: &[OpaqueHandle]) -> bool {
@@ -807,6 +824,9 @@ mod tests {
     #[test]
     fn host_network_namespace_is_never_an_admissible_pin() {
         let stat = rustix::fs::stat("/proc/self/ns/net").unwrap();
+        let identity = current_network_namespace_identity().unwrap();
+        assert_eq!(identity.device, stat.st_dev);
+        assert_eq!(identity.inode, stat.st_ino);
         assert!(verify_network_pin("/proc/self/ns/net", stat.st_dev, stat.st_ino).is_err());
     }
 }

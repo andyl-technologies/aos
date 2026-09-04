@@ -13,6 +13,7 @@ use aos_systemd::{
 use async_trait::async_trait;
 use sha2::{Digest as _, Sha256};
 
+use crate::plan::LaunchPins;
 use crate::{HostError, Result};
 
 /// Identifies one controller-assigned runtime without host paths or process IDs.
@@ -89,7 +90,12 @@ impl From<&ValidatedAssignmentFence> for HostRuntimeIdentity {
 #[derive(Debug)]
 pub enum WorkerOperation {
     /// Starts the sole fully compiled transient-unit specification.
-    Launch(Box<SandboxUnitSpec>),
+    Launch {
+        /// Fixed systemd unit properties.
+        spec: Box<SandboxUnitSpec>,
+        /// Kernel pins retained across the complete asynchronous start.
+        pins: LaunchPins,
+    },
     /// Stops the incarnation-derived service and awaits its job.
     Stop,
     /// Freezes the complete service cgroup.
@@ -309,10 +315,14 @@ impl HostWorker for SystemdOneShotWorker {
         let name = SandboxUnitName::from_incarnation(*identity.incarnation_id());
         let current = self.observe_with_client(&client, &identity).await?;
         match operation {
-            WorkerOperation::Launch(_) if current.state != ObservedRuntimeState::Absent => {
+            WorkerOperation::Launch { .. } if current.state != ObservedRuntimeState::Absent => {
                 return Ok(current);
             }
-            WorkerOperation::Launch(spec) => {
+            WorkerOperation::Launch { spec, pins } => {
+                // Retain both pins across the D-Bus await. Production launch
+                // remains disabled until the systemd property transport
+                // consumes these descriptors rather than reopening paths.
+                let _pins = pins;
                 before_effect()?;
                 ensure_done(
                     &client
@@ -320,6 +330,7 @@ impl HostWorker for SystemdOneShotWorker {
                         .await
                         .map_err(|error| worker_error(&error))?,
                 )?;
+                return self.observe_with_client(&client, &identity).await;
             }
             WorkerOperation::Stop | WorkerOperation::Kill
                 if current.state == ObservedRuntimeState::Absent =>

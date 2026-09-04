@@ -310,11 +310,12 @@ where
                 ))?;
                 let resolved: ResolvedLaunchResources =
                     self.catalog.resolve(request.fence(), plan)?;
-                WorkerOperation::Launch(Box::new(nspawn.compile_resolved(
-                    request.fence(),
-                    plan,
-                    resolved,
-                )?))
+                let prepared = nspawn.compile_resolved(request.fence(), plan, resolved)?;
+                let (spec, pins) = prepared.into_parts();
+                WorkerOperation::Launch {
+                    spec: Box::new(spec),
+                    pins,
+                }
             }
             RuntimeAction::RUNTIME_ACTION_STOP => WorkerOperation::Stop,
             RuntimeAction::RUNTIME_ACTION_FREEZE => WorkerOperation::Freeze,
@@ -524,17 +525,40 @@ mod tests {
             if plan.network_handle() != &[7; 32] {
                 return Err(HostError::Catalog("unknown network".to_owned()));
             }
+            let workspace_pin = rustix::fs::open(
+                "/",
+                rustix::fs::OFlags::PATH
+                    | rustix::fs::OFlags::DIRECTORY
+                    | rustix::fs::OFlags::CLOEXEC,
+                rustix::fs::Mode::empty(),
+            )
+            .unwrap();
+            let workspace_identity = rustix::fs::fstat(&workspace_pin).unwrap();
+            let network_fd = rustix::fs::open(
+                "/proc/self/ns/net",
+                rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC,
+                rustix::fs::Mode::empty(),
+            )
+            .unwrap();
+            let network_pin = aos_sandbox_linux::pidfd::NamespaceFd::from_owned(
+                network_fd,
+                aos_sandbox_linux::pidfd::NamespaceKind::Network,
+            )
+            .unwrap();
+            let network_identity = network_pin.identity();
             Ok(ResolvedLaunchResources {
-                workspace: ResolvedWorkspace {
-                    root_directory: "/run/aos/sandbox-pins/workspaces/test-root".to_owned(),
-                    device: 1,
-                    inode: 2,
-                },
-                network: ResolvedNetwork {
-                    namespace_path: "/run/aos/sandbox-pins/netns/test-net".to_owned(),
-                    device: 3,
-                    inode: 4,
-                },
+                workspace: ResolvedWorkspace::from_pinned(
+                    "/run/aos/sandbox-pins/workspaces/test-root".to_owned(),
+                    workspace_identity.st_dev,
+                    workspace_identity.st_ino,
+                    workspace_pin,
+                )?,
+                network: ResolvedNetwork::from_pinned(
+                    "/run/aos/sandbox-pins/netns/test-net".to_owned(),
+                    network_identity.device,
+                    network_identity.inode,
+                    network_pin,
+                )?,
                 identity: ResolvedIdentityAllocation {
                     range_start: 65_536,
                     range_size: 65_536,
@@ -560,7 +584,7 @@ mod tests {
             operation: WorkerOperation,
             before_effect: &mut (dyn FnMut() -> Result<()> + Send),
         ) -> Result<WorkerObservation> {
-            let WorkerOperation::Launch(spec) = operation else {
+            let WorkerOperation::Launch { spec, pins: _pins } = operation else {
                 panic!("test expected launch operation");
             };
             assert_eq!(

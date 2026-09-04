@@ -1,7 +1,9 @@
 //! Trusted catalog resolution and fixed nspawn launch compilation.
 
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::time::Duration;
 
+use aos_sandbox_linux::pidfd::NamespaceFd;
 use aos_sandbox_protocol::{ValidatedAssignmentFence, ValidatedRuntimePlan};
 use aos_systemd::{SandboxResolvedPaths, SandboxResources, SandboxUnitName, SandboxUnitSpec};
 
@@ -27,7 +29,7 @@ const SUPPORTED_BACKEND_FEATURES: &[(&str, u32, u32)] = &[
 pub type OpaqueHandle = [u8; 32];
 
 /// Describes a broker-catalogued private root after identity verification.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub struct ResolvedWorkspace {
     /// Absolute directory containing the assembled private sandbox root.
     pub root_directory: String,
@@ -35,10 +37,40 @@ pub struct ResolvedWorkspace {
     pub device: u64,
     /// Inode identity verified against the publisher record.
     pub inode: u64,
+    pin: OwnedFd,
+}
+
+impl ResolvedWorkspace {
+    /// Constructs a workspace only when its descriptor has the catalogued identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the descriptor cannot be inspected or its device
+    /// and inode differ from the trusted catalog record.
+    pub fn from_pinned(
+        root_directory: String,
+        device: u64,
+        inode: u64,
+        pin: OwnedFd,
+    ) -> Result<Self> {
+        let identity =
+            rustix::fs::fstat(&pin).map_err(|error| HostError::Catalog(error.to_string()))?;
+        if identity.st_dev != device || identity.st_ino != inode {
+            return Err(HostError::Catalog(
+                "workspace descriptor identity changed".to_owned(),
+            ));
+        }
+        Ok(Self {
+            root_directory,
+            device,
+            inode,
+            pin,
+        })
+    }
 }
 
 /// Describes a broker-catalogued prepared network namespace.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub struct ResolvedNetwork {
     /// Absolute path to a host-owned pinned network namespace descriptor.
     pub namespace_path: String,
@@ -46,6 +78,35 @@ pub struct ResolvedNetwork {
     pub device: u64,
     /// Namespace inode identity verified against the publisher record.
     pub inode: u64,
+    pin: NamespaceFd,
+}
+
+impl ResolvedNetwork {
+    /// Constructs a network resource from its type-checked namespace pin.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the namespace identity differs from the trusted
+    /// catalog record.
+    pub fn from_pinned(
+        namespace_path: String,
+        device: u64,
+        inode: u64,
+        pin: NamespaceFd,
+    ) -> Result<Self> {
+        let identity = pin.identity();
+        if identity.device != device || identity.inode != inode {
+            return Err(HostError::Catalog(
+                "network descriptor identity changed".to_owned(),
+            ));
+        }
+        Ok(Self {
+            namespace_path,
+            device,
+            inode,
+            pin,
+        })
+    }
 }
 
 /// Describes an incarnation-bound subordinate UID/GID allocation.
@@ -60,7 +121,7 @@ pub struct ResolvedIdentityAllocation {
 }
 
 /// Carries one assignment-bound, atomically resolved launch resource tuple.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub struct ResolvedLaunchResources {
     /// Private assembled runtime root.
     pub workspace: ResolvedWorkspace,
@@ -68,6 +129,51 @@ pub struct ResolvedLaunchResources {
     pub network: ResolvedNetwork,
     /// Incarnation-bound private user-namespace allocation.
     pub identity: ResolvedIdentityAllocation,
+}
+
+/// Retains the exact workspace and network objects resolved for one launch.
+///
+/// Holding these descriptors prevents the underlying objects from disappearing
+/// while a launch is in flight. It does not by itself authorize reopening the
+/// catalog paths; production readiness additionally requires a descriptor-based
+/// handoff to systemd and post-launch identity verification.
+#[derive(Debug)]
+pub struct LaunchPins {
+    workspace: OwnedFd,
+    network: NamespaceFd,
+}
+
+impl LaunchPins {
+    /// Returns the pinned workspace directory descriptor.
+    #[must_use]
+    pub fn workspace(&self) -> BorrowedFd<'_> {
+        self.workspace.as_fd()
+    }
+
+    /// Returns the pinned prepared network namespace descriptor.
+    #[must_use]
+    pub fn network(&self) -> &NamespaceFd {
+        &self.network
+    }
+}
+
+/// Couples a fixed systemd unit specification to its kernel object pins.
+#[derive(Debug)]
+pub struct PreparedLaunch {
+    spec: SandboxUnitSpec,
+    pins: LaunchPins,
+}
+
+impl PreparedLaunch {
+    /// Returns the fixed transient-unit specification.
+    #[must_use]
+    pub const fn spec(&self) -> &SandboxUnitSpec {
+        &self.spec
+    }
+
+    pub(crate) fn into_parts(self) -> (SandboxUnitSpec, LaunchPins) {
+        (self.spec, self.pins)
+    }
 }
 
 /// Resolves only broker-minted node-local handles into privileged resources.
@@ -179,7 +285,7 @@ impl NspawnConfig {
         catalog: &C,
         fence: &ValidatedAssignmentFence,
         plan: &ValidatedRuntimePlan,
-    ) -> Result<SandboxUnitSpec> {
+    ) -> Result<PreparedLaunch> {
         let resolved = catalog.resolve(fence, plan)?;
         self.compile_resolved(fence, plan, resolved)
     }
@@ -200,7 +306,7 @@ impl NspawnConfig {
         fence: &ValidatedAssignmentFence,
         plan: &ValidatedRuntimePlan,
         resolved: ResolvedLaunchResources,
-    ) -> Result<SandboxUnitSpec> {
+    ) -> Result<PreparedLaunch> {
         validate_backend_features(plan)?;
         let workspace = resolved.workspace;
         let network = resolved.network;
@@ -250,7 +356,7 @@ impl NspawnConfig {
         .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
         let paths = SandboxResolvedPaths::new(workspace.root_directory, network.namespace_path)
             .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
-        SandboxUnitSpec::new_nspawn(
+        let spec = SandboxUnitSpec::new_nspawn(
             SandboxUnitName::from_incarnation(*fence.incarnation_id()),
             command,
             paths,
@@ -258,7 +364,14 @@ impl NspawnConfig {
             self.timeout_start,
             self.timeout_stop,
         )
-        .map_err(|error| HostError::InvalidPlan(error.to_string()))
+        .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
+        Ok(PreparedLaunch {
+            spec,
+            pins: LaunchPins {
+                workspace: workspace.pin,
+                network: network.pin,
+            },
+        })
     }
 }
 
@@ -355,6 +468,10 @@ pub(crate) fn validate_published_pin(value: &str, prefix: &str, label: &str) -> 
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceKind};
+
     use super::*;
 
     #[test]
@@ -402,6 +519,44 @@ mod tests {
                 "workspace"
             )
             .is_ok()
+        );
+    }
+
+    #[test]
+    fn resolved_resources_reject_descriptor_identity_substitution() {
+        let workspace = rustix::fs::open(
+            "/",
+            rustix::fs::OFlags::PATH | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .unwrap();
+        let identity = rustix::fs::fstat(&workspace).unwrap();
+        assert!(
+            ResolvedWorkspace::from_pinned(
+                "/run/aos/sandbox-pins/workspaces/test".to_owned(),
+                identity.st_dev,
+                identity.st_ino.wrapping_add(1),
+                workspace,
+            )
+            .is_err()
+        );
+
+        let network = rustix::fs::open(
+            "/proc/self/ns/net",
+            rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .unwrap();
+        let network = NamespaceFd::from_owned(network, NamespaceKind::Network).unwrap();
+        let identity = network.identity();
+        assert!(
+            ResolvedNetwork::from_pinned(
+                "/run/aos/sandbox-pins/netns/test".to_owned(),
+                identity.device,
+                identity.inode.wrapping_add(1),
+                network,
+            )
+            .is_err()
         );
     }
 }
