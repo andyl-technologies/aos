@@ -655,6 +655,15 @@ completes. The Git history remains authoritative for code details.
   liveness; its distinct non-authorizing proof type cannot enter the live lease
   pipeline. Chain ordering, unique-head recovery, and anchor-history selection
   remain obligations of the protected durable authority backend.
+- `a662b3c6d` — foundation toward `SBX-NET-01`: a root network crate now
+  verifies signed Network-audience authority and atomically retains a bounded,
+  authenticated, losslessly recoverable PREPARE intent with exact protected
+  profile, endpoint-policy, and reserved-handle resolution. The durable V1
+  schema accepts only Prepared/NetworkPrepare; it does not speculate about
+  existing kernel-resource identity or effect phases. A distinct protected
+  catalog publisher has no production implementation yet, all existing-resource
+  actions fail before admission, durable history is not advertised as current
+  inventory, and the service advertises no methods.
 
 The post-`727da7f3e` x86_64 `sandbox-filesystem-capability-proof` rerun built the
 complete hermetic Rust closure, AOS system, initrd, and VM disk and launched
