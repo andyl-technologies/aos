@@ -122,7 +122,7 @@ struct UnreachableDeliveryHttp(std::sync::atomic::AtomicUsize);
 
 #[async_trait::async_trait]
 impl crate::web::console::ports::HttpClient for UnreachableDeliveryHttp {
-    async fn post_form(&self, _: &str, _: &[(&str, &str)]) -> anyhow::Result<Vec<u8>> {
+    async fn post_form(&self, _: &str, _: &[(String, String)]) -> anyhow::Result<Vec<u8>> {
         anyhow::bail!("unexpected delivery form request")
     }
 
