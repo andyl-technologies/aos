@@ -7106,6 +7106,7 @@ async fn gateway(printer: &Printer, command: &HubGatewayCmd) -> Result<()> {
                     binding: binding.as_deref().map(parse_binding_ref).transpose()?,
                     page_size: pagination.page_size.unwrap_or_default(),
                     page_token: pagination.page_token.clone().unwrap_or_default(),
+                    ..Default::default()
                 },
             )
             .await
