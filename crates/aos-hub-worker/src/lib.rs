@@ -169,19 +169,24 @@ pub mod workerqueue;
 ///
 /// Queue envelopes deliberately have unique operation IDs, but several publish
 /// or maintenance events may request the same derived index. Fencing builds by
-/// the configuration version and publication identity coalesces those
-/// duplicates while still admitting a new build whenever either input changes.
+/// the configuration version, publication identity, and selected placement
+/// coalesces those duplicates while still admitting a new build whenever an
+/// input changes. The placement identity matters during topology cutover: the
+/// same publication may become readable from a newly reconciled placement
+/// after an earlier source returned an unchanged or stale surface.
 fn registry_index_build_id(
     registry_id: i64,
     registry_resource_version: i64,
     publication_id: Option<&str>,
+    placement_id: i64,
 ) -> String {
     use sha2::{Digest as _, Sha256};
 
     let mut digest = Sha256::new();
-    digest.update(b"aos-registry-index-build-v1\0");
+    digest.update(b"aos-registry-index-build-v2\0");
     digest.update(registry_id.to_be_bytes());
     digest.update(registry_resource_version.to_be_bytes());
+    digest.update(placement_id.to_be_bytes());
     match publication_id {
         Some(publication_id) => {
             digest.update([1]);
@@ -197,21 +202,25 @@ mod index_build_identity_tests {
     use super::registry_index_build_id;
 
     #[test]
-    fn identity_coalesces_duplicates_and_tracks_both_input_versions() {
-        let original = registry_index_build_id(7, 3, Some("publication-a"));
+    fn identity_coalesces_duplicates_and_tracks_every_input_version() {
+        let original = registry_index_build_id(7, 3, Some("publication-a"), 11);
         assert_eq!(
             original,
-            registry_index_build_id(7, 3, Some("publication-a"))
+            registry_index_build_id(7, 3, Some("publication-a"), 11)
         );
         assert_ne!(
             original,
-            registry_index_build_id(7, 4, Some("publication-a"))
+            registry_index_build_id(7, 4, Some("publication-a"), 11)
         );
         assert_ne!(
             original,
-            registry_index_build_id(7, 3, Some("publication-b"))
+            registry_index_build_id(7, 3, Some("publication-b"), 11)
         );
-        assert_ne!(original, registry_index_build_id(7, 3, None));
+        assert_ne!(original, registry_index_build_id(7, 3, None, 11));
+        assert_ne!(
+            original,
+            registry_index_build_id(7, 3, Some("publication-a"), 12)
+        );
     }
 }
 
@@ -282,6 +291,8 @@ mod entry {
     const HUB_EXTERNAL_URL: &str = "HUB_EXTERNAL_URL";
     /// Immutable source/build identity used to attest the active deployment.
     const HUB_DEPLOYMENT_ID: &str = "HUB_DEPLOYMENT_ID";
+    /// Atomic JSON secret containing role-separated release evidence keys.
+    const HUB_RELEASE_EVIDENCE_CONFIG: &str = "HUB_RELEASE_EVIDENCE_CONFIG";
     /// Staged request-execution cutover: `off`, `read`, or `on`.
     const HUB_REQUEST_SHARDING: &str = "HUB_REQUEST_SHARDING";
     /// Non-cacheable endpoint exposing [`HUB_DEPLOYMENT_ID`].
@@ -639,6 +650,30 @@ mod entry {
         }
         let sealer = sealer_from_secret(&seal_secret)
             .map_err(|err| worker::Error::RustError(format!("seal key: {err:#}")))?;
+        let release_evidence = match env.secret(HUB_RELEASE_EVIDENCE_CONFIG).ok() {
+            Some(config) => {
+                let deployment_id = env.var(HUB_DEPLOYMENT_ID).map_err(|_| {
+                    worker::Error::RustError(format!(
+                        "{HUB_DEPLOYMENT_ID} is required with release receipt signing"
+                    ))
+                })?;
+                Some(Arc::new(
+                    aos_hub_core::release_evidence::Ed25519ReleaseEvidenceAuthority::from_json(
+                        deployment_id.to_string(),
+                        &config.to_string(),
+                    )
+                    .map_err(|error| {
+                        worker::Error::RustError(format!(
+                            "release evidence authority is invalid: {error:#}"
+                        ))
+                    })?,
+                )
+                    as Arc<
+                        dyn aos_hub_core::release_evidence::ReleaseEvidenceAuthority,
+                    >)
+            }
+            None => None,
+        };
         let secret_versions = crate::secretversions::from_env(env)?;
         let route_reservation_secret = env
             .secret(HUB_ROUTE_RESERVATION_KEYRING)
@@ -865,6 +900,9 @@ mod entry {
         .with_kv(Arc::new(crate::workerkv::WorkerKv::new(
             env.kv(crate::handlers::bindings::KV_SESSIONS)?,
         )));
+        if let Some(authority) = release_evidence {
+            service = service.with_release_evidence(authority);
+        }
         let service = Arc::new(service);
 
         // Seed the editable site chrome (title/banner/footer) from HubDb once per
@@ -1636,8 +1674,6 @@ mod entry {
                                 return Err(error);
                             }
                         };
-                        let reindexer =
-                            WorkerReindexer::new(bucket, Arc::clone(&db), secret_versions, egress);
                         let publication_state = db
                             .registry_publication_state(*registry_id)
                             .await
@@ -1646,12 +1682,30 @@ mod entry {
                                 "job reindex {registry_id} publication state: {error:#}"
                             ))
                         })?;
+                        let placement = db
+                            .reconciled_surface_reader(aos_hub_core::db::SurfaceTarget::Registry(
+                                *registry_id,
+                            ))
+                            .await
+                            .map_err(|error| {
+                                worker::Error::RustError(format!(
+                                    "job reindex {registry_id} placement: {error:#}"
+                                ))
+                            })?;
                         let build_id = crate::registry_index_build_id(
                             *registry_id,
                             registry.resource_version,
                             publication_state
                                 .as_ref()
                                 .and_then(|state| state.current_publication_id.as_deref()),
+                            placement.id,
+                        );
+                        let reindexer = WorkerReindexer::new(
+                            bucket,
+                            Arc::clone(&db),
+                            secret_versions,
+                            egress,
+                            placement,
                         );
                         let claim = db
                             .claim_registry_index_build(

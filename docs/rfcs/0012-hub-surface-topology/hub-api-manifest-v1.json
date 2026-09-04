@@ -1611,6 +1611,55 @@
          "service" : "PublishService"
       },
       {
+         "method" : "BeginReleasePublication",
+         "path" : "aos.hub.v1.PublishService/BeginReleasePublication",
+         "request" : "BeginReleasePublicationRequest",
+         "response" : "ReleasePublicationState",
+         "service" : "PublishService"
+      },
+      {
+         "method" : "CommitReleasePublication",
+         "path" : "aos.hub.v1.PublishService/CommitReleasePublication",
+         "request" : "CommitReleasePublicationRequest",
+         "response" : "ReleaseReceipt",
+         "service" : "PublishService"
+      },
+      {
+         "method" : "RecordReleaseQualification",
+         "path" : "aos.hub.v1.PublishService/RecordReleaseQualification",
+         "request" : "RecordReleaseQualificationRequest",
+         "response" : "ReleaseQualificationState",
+         "service" : "PublishService"
+      },
+      {
+         "method" : "PromoteReleasePublication",
+         "path" : "aos.hub.v1.PublishService/PromoteReleasePublication",
+         "request" : "PromoteReleasePublicationRequest",
+         "response" : "ReleaseReceipt",
+         "service" : "PublishService"
+      },
+      {
+         "method" : "GetReleaseReceipt",
+         "path" : "aos.hub.v1.PublishService/GetReleaseReceipt",
+         "request" : "GetReleaseReceiptRequest",
+         "response" : "ReleaseReceipt",
+         "service" : "PublishService"
+      },
+      {
+         "method" : "PublishReleaseTimestamp",
+         "path" : "aos.hub.v1.PublishService/PublishReleaseTimestamp",
+         "request" : "PublishReleaseTimestampRequest",
+         "response" : "ReleaseTimestampState",
+         "service" : "PublishService"
+      },
+      {
+         "method" : "AdvanceReleaseChannel",
+         "path" : "aos.hub.v1.PublishService/AdvanceReleaseChannel",
+         "request" : "AdvanceReleaseChannelRequest",
+         "response" : "ReleaseReceipt",
+         "service" : "PublishService"
+      },
+      {
          "method" : "GitLog",
          "path" : "aos.hub.v1.GitService/GitLog",
          "request" : "GitLogRequest",

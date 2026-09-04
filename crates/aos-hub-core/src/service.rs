@@ -29,6 +29,7 @@
 //! ```
 
 mod publication_manifest;
+mod release_publication;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
@@ -58,6 +59,8 @@ use crate::topology_probe::TopologyProbeScheduler;
 
 /// Default page size when a list request leaves `page_size` at zero.
 const DEFAULT_PAGE_SIZE: u32 = 500;
+/// Maximum bounded documentation projection considered by one search request.
+const MAX_DOCUMENTATION_RESULTS: usize = 10_000;
 /// Hard ceiling on page size.
 const MAX_PAGE_SIZE: u32 = 1000;
 
@@ -1074,6 +1077,9 @@ fn package_documentation_identity(
         document_sha256: locator.artifact.document_sha256.clone(),
         document_size: locator.artifact.document_size,
         semantic_schema_sha256: locator.artifact.semantic_schema_sha256.clone(),
+        release: locator.release.clone().unwrap_or_default(),
+        verified_tag_oid: locator.verified_tag_oid.clone().unwrap_or_default(),
+        release_snapshot_id: locator.release_snapshot_id.clone().unwrap_or_default(),
     }
 }
 
@@ -2171,7 +2177,7 @@ impl RouteReservationKeyring for ConfiguredRouteReservationKeyring {
 pub const MAX_UPLOAD_BYTES: usize = 20 * 1024 * 1024;
 
 /// Maximum number of objects admitted by one registry publication manifest.
-pub const MAX_REGISTRY_PUBLICATION_OBJECTS: usize = 20_000;
+pub const MAX_REGISTRY_PUBLICATION_OBJECTS: usize = 50_000;
 
 /// Maximum narinfos accepted by one cache-upload completion request.
 pub const MAX_CACHE_NARINFO_REGISTRATION_BATCH: usize = 256;
@@ -2567,6 +2573,8 @@ pub struct RpcService {
     pub identity_domain_verifier: Option<Arc<dyn crate::topology_probe::IdentityDomainVerifier>>,
     /// Runtime-owned active and retained route-reservation HMAC keys.
     pub route_reservation_keyring: Option<Arc<dyn RouteReservationKeyring>>,
+    /// Restricted deployment authority for release and channel evidence.
+    pub release_evidence: Option<Arc<dyn crate::release_evidence::ReleaseEvidenceAuthority>>,
     /// Serializes memory-bounded Git pack/index verification within the process or Worker isolate.
     pack_validation: Arc<futures_util::lock::Mutex<()>>,
 }
@@ -10035,6 +10043,7 @@ impl RpcService {
             domain_probe_terminator: None,
             identity_domain_verifier: None,
             route_reservation_keyring: None,
+            release_evidence: None,
             pack_validation: pack_validation_gate(),
         }
     }
@@ -10066,6 +10075,16 @@ impl RpcService {
         keyring: Arc<dyn RouteReservationKeyring>,
     ) -> Self {
         self.route_reservation_keyring = Some(keyring);
+        self
+    }
+
+    /// Attaches the deployment-owned release evidence authority.
+    #[must_use]
+    pub fn with_release_evidence(
+        mut self,
+        authority: Arc<dyn crate::release_evidence::ReleaseEvidenceAuthority>,
+    ) -> Self {
+        self.release_evidence = Some(authority);
         self
     }
 
@@ -11394,9 +11413,6 @@ impl RpcService {
     ) -> Result<pb::SearchPackageDocumentationResponse, RpcError> {
         let registry = self.registry_or_not_found(&req.registry).await?;
         self.require_read(auth, &registry).await?;
-        if req.query.trim().is_empty() {
-            return Err(RpcError::invalid("documentation query must not be empty"));
-        }
         let kind = (!req.kind.is_empty()).then_some(req.kind.as_str());
         if kind.is_some_and(|kind| {
             !matches!(
@@ -11406,23 +11422,33 @@ impl RpcService {
         }) {
             return Err(RpcError::invalid("unsupported documentation result kind"));
         }
-        let results = self
-            .db
-            .search_package_documentation(registry.id, &req.query, kind, 100)
-            .await
-            .map_err(RpcError::internal)?
-            .into_iter()
-            .map(|result| pb::PackageDocumentationSearchResult {
-                package: result.package_name,
-                version: result.package_version,
-                platform: result.platform,
-                kind: result.kind,
-                key: result.key,
-                title: result.title,
-                summary: result.summary,
-                score: result.score,
-            })
-            .collect();
+        let results = if req.query.trim().is_empty() {
+            self.db
+                .browse_package_documentation(registry.id, kind, MAX_DOCUMENTATION_RESULTS)
+                .await
+        } else {
+            self.db
+                .search_package_documentation(
+                    registry.id,
+                    &req.query,
+                    kind,
+                    MAX_DOCUMENTATION_RESULTS,
+                )
+                .await
+        }
+        .map_err(RpcError::internal)?
+        .into_iter()
+        .map(|result| pb::PackageDocumentationSearchResult {
+            package: result.package_name,
+            version: result.package_version,
+            platform: result.platform,
+            kind: result.kind,
+            key: result.key,
+            title: result.title,
+            summary: result.summary,
+            score: result.score,
+        })
+        .collect();
         let (results, next_page_token) = paginate(results, req.page_size, &req.page_token)?;
         Ok(pb::SearchPackageDocumentationResponse {
             results,

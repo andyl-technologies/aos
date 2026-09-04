@@ -51,12 +51,13 @@ impl ReleaseState {
                 | (Self::Staged, Self::Qualified)
                 | (Self::Qualified, Self::Promoted)
                 | (Self::Promoted, Self::Rolling)
+                | (Self::Rolling, Self::Rolling)
                 | (Self::Rolling, Self::Complete)
         ) || (!matches!(self, Self::Complete | Self::Failed) && matches!(next, Self::Failed))
     }
 }
 
-/// One signed append-only release journal payload.
+/// One hash-chained append-only release journal payload.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct JournalEntryV1 {
@@ -167,6 +168,7 @@ mod tests {
     #[test]
     fn transitions_are_strictly_monotonic() {
         assert!(ReleaseState::Planned.can_transition_to(ReleaseState::Built));
+        assert!(ReleaseState::Rolling.can_transition_to(ReleaseState::Rolling));
         assert!(ReleaseState::Built.can_transition_to(ReleaseState::Failed));
         assert!(!ReleaseState::Built.can_transition_to(ReleaseState::Staged));
         assert!(!ReleaseState::Failed.can_transition_to(ReleaseState::Planned));

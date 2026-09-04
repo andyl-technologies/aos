@@ -104,7 +104,26 @@ pub fn numbered_to_positional(sql: &str, params: &[Value]) -> (String, Vec<Value
 #[cfg(test)]
 mod tests {
     use super::numbered_to_positional;
+    use aos_hub_core::backend::{prepare, split_statements};
+    use aos_hub_core::db::MIGRATIONS;
+    use aos_hub_core::dialect::Dialect;
     use aos_hub_core::value::Value;
+
+    #[test]
+    fn worker_sql_accepts_documentation_projection_generation_migration() {
+        let migration = MIGRATIONS
+            .iter()
+            .find(|migration| migration.contains("documentation_projection_generation"))
+            .expect("documentation projection migration");
+        let statements = split_statements(migration);
+        assert_eq!(statements.len(), 1);
+        assert!(statements[0].contains("documentation_projection_generation"));
+
+        let (translated, parameters) =
+            prepare(Dialect::Sqlite, &statements[0], &[]).expect("Worker SQLite translation");
+        assert_eq!(translated, statements[0]);
+        assert!(parameters.is_empty());
+    }
 
     #[test]
     fn expands_numbered_to_positional_in_order() {

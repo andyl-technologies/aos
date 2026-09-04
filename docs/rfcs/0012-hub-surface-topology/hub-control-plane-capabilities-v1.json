@@ -263,9 +263,16 @@
         {"method": "GetRegistryPublication", "reason": "ListRegistryPublications returns the complete publication state rendered by the browser workflow."},
         {"method": "BeginRegistryPublicationMultipartUpload", "reason": "The browser observes publication state; the CLI alone streams local release artifacts into bounded multipart transactions."},
         {"method": "CompleteRegistryPublicationMultipartUpload", "reason": "The browser observes publication state; the CLI alone completes multipart transactions for local release artifacts."},
-        {"method": "AbortRegistryPublicationMultipartUpload", "reason": "The browser observes publication state; the CLI alone cleans up failed multipart transactions for local release artifacts."}
+        {"method": "AbortRegistryPublicationMultipartUpload", "reason": "The browser observes publication state; the CLI alone cleans up failed multipart transactions for local release artifacts."},
+        {"method": "BeginReleasePublication", "reason": "Canonical release admission is a maintainer CLI operation."},
+        {"method": "CommitReleasePublication", "reason": "Canonical staging commit is a maintainer CLI operation."},
+        {"method": "RecordReleaseQualification", "reason": "Signed release qualification is admitted by the maintainer CLI."},
+        {"method": "PromoteReleasePublication", "reason": "Canonical production promotion is a maintainer CLI operation."},
+        {"method": "GetReleaseReceipt", "reason": "Public receipt read-back is consumed by release verification tooling."},
+        {"method": "PublishReleaseTimestamp", "reason": "Online timestamp renewal is a restricted maintainer operation."},
+        {"method": "AdvanceReleaseChannel", "reason": "Partitioned release rollout is a restricted maintainer operation."}
       ],
-      "methods": ["BeginRegistryPublication", "BeginRegistryPublicationManifest", "AppendRegistryPublicationManifest", "SealRegistryPublicationManifest", "BeginRegistryPublicationMultipartUpload", "CompleteRegistryPublicationMultipartUpload", "AbortRegistryPublicationMultipartUpload", "ListRegistryPublications", "GetRegistryPublication", "CommitRegistryPublication", "AbortRegistryPublication"]
+      "methods": ["BeginRegistryPublication", "BeginRegistryPublicationManifest", "AppendRegistryPublicationManifest", "SealRegistryPublicationManifest", "BeginRegistryPublicationMultipartUpload", "CompleteRegistryPublicationMultipartUpload", "AbortRegistryPublicationMultipartUpload", "ListRegistryPublications", "GetRegistryPublication", "CommitRegistryPublication", "AbortRegistryPublication", "BeginReleasePublication", "CommitReleasePublication", "RecordReleaseQualification", "PromoteReleasePublication", "GetReleaseReceipt", "PublishReleaseTimestamp", "AdvanceReleaseChannel"]
     },
     {
       "service": "GitService",

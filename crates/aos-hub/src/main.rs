@@ -59,6 +59,27 @@ enum Command {
         /// Externally reachable base URL for setup snippets.
         #[arg(long)]
         external_url: Option<String>,
+        /// Immutable deployment identity used by canonical release plans.
+        #[arg(long, env = "HUB_DEPLOYMENT_ID")]
+        deployment_id: Option<String>,
+        /// Stable public key id for environment release receipts.
+        #[arg(long, env = "HUB_RELEASE_RECEIPT_KEY_ID")]
+        release_receipt_key_id: Option<String>,
+        /// Owner-private file containing a standard-base64 Ed25519 signing seed.
+        #[arg(long, env = "HUB_RELEASE_RECEIPT_KEY_FILE")]
+        release_receipt_key_file: Option<PathBuf>,
+        /// Stable public key id for signed channel receipts.
+        #[arg(long, env = "HUB_CHANNEL_RECEIPT_KEY_ID")]
+        channel_receipt_key_id: Option<String>,
+        /// Owner-private file containing the channel Ed25519 signing seed.
+        #[arg(long, env = "HUB_CHANNEL_RECEIPT_KEY_FILE")]
+        channel_receipt_key_file: Option<PathBuf>,
+        /// Owner-private JSON map of trusted Hub receipt key ids to public keys.
+        #[arg(long, env = "HUB_RELEASE_PUBLICATION_KEYS_FILE")]
+        release_publication_keys_file: Option<PathBuf>,
+        /// Owner-private JSON map of qualification key ids to base64 public keys.
+        #[arg(long, env = "HUB_QUALIFICATION_KEYS_FILE")]
+        qualification_keys_file: Option<PathBuf>,
         /// Seconds between background re-index runs (0 disables).
         #[arg(long, default_value_t = 60)]
         reindex_interval: u64,
@@ -293,6 +314,9 @@ struct WorkerArgs {
     /// At-rest AES-GCM sealing key; minted randomly when omitted.
     #[arg(long, env = "HUB_SEAL_KEY")]
     seal_key: Option<String>,
+    /// Owner-private atomic release evidence configuration uploaded as a secret.
+    #[arg(long, env = "HUB_RELEASE_EVIDENCE_CONFIG_FILE")]
+    release_evidence_config_file: Option<PathBuf>,
     /// `KEY_ID:KEY` already active on the optional egress router.
     #[arg(long, env = "HUB_EGRESS_GATEWAY_KEY", requires = "egress_gateway_url")]
     egress_gateway_key: Option<String>,
@@ -397,6 +421,13 @@ async fn main() -> Result<()> {
             dev,
             seed,
             external_url,
+            deployment_id,
+            release_receipt_key_id,
+            release_receipt_key_file,
+            channel_receipt_key_id,
+            channel_receipt_key_file,
+            release_publication_keys_file,
+            qualification_keys_file,
             reindex_interval,
             jwt_secret_file,
             delivery_attestation_key_file,
@@ -483,6 +514,47 @@ async fn main() -> Result<()> {
                 }
             }
             let mut app_state = AppState::new(db, external_url).await;
+            app_state.deployment_id = deployment_id.clone();
+            match (
+                deployment_id,
+                release_receipt_key_id,
+                release_receipt_key_file,
+                channel_receipt_key_id,
+                channel_receipt_key_file,
+                release_publication_keys_file,
+                qualification_keys_file,
+            ) {
+                (Some(deployment_id), Some(key_id), Some(seed_path), Some(channel_key_id), Some(channel_seed_path), Some(publication_keys_path), Some(qualification_keys_path)) => {
+                    let seed = std::fs::read_to_string(&seed_path)
+                        .with_context(|| format!("reading release receipt key at {}", seed_path.display()))?;
+                    let channel_seed = std::fs::read_to_string(&channel_seed_path)
+                        .with_context(|| format!("reading channel receipt key at {}", channel_seed_path.display()))?;
+                    let publication_keys_source = std::fs::read_to_string(&publication_keys_path)
+                        .with_context(|| format!("reading publication keys at {}", publication_keys_path.display()))?;
+                    let publication_keys = serde_json::from_str(&publication_keys_source)
+                        .context("parsing publication public-key map")?;
+                    let qualification_keys_source = std::fs::read_to_string(&qualification_keys_path)
+                        .with_context(|| format!("reading qualification keys at {}", qualification_keys_path.display()))?;
+                    let qualification_keys = serde_json::from_str(&qualification_keys_source)
+                        .context("parsing qualification public-key map")?;
+                    app_state.release_evidence = Some(Arc::new(
+                        aos_hub_core::release_evidence::Ed25519ReleaseEvidenceAuthority::from_base64(
+                            deployment_id,
+                            key_id,
+                            seed.trim(),
+                            channel_key_id,
+                            channel_seed.trim(),
+                            publication_keys,
+                            qualification_keys,
+                        )
+                        .context("configuring release evidence authority")?,
+                    ));
+                }
+                (None, None, None, None, None, None, None) => {}
+                _ => anyhow::bail!(
+                    "HUB_DEPLOYMENT_ID, HUB_RELEASE_RECEIPT_KEY_ID, HUB_RELEASE_RECEIPT_KEY_FILE, HUB_CHANNEL_RECEIPT_KEY_ID, HUB_CHANNEL_RECEIPT_KEY_FILE, HUB_RELEASE_PUBLICATION_KEYS_FILE, and HUB_QUALIFICATION_KEYS_FILE must be configured together"
+                ),
+            }
             if let Some(path) = jwt_secret_file {
                 let secret = aos_hub::auth::seal::read_secret_file(&path)
                     .with_context(|| format!("reading JWT signing secret at {}", path.display()))?;
@@ -1208,6 +1280,24 @@ async fn deploy_worker(
                 .with_context(|| format!("reading route reservation keyring at {}", path.display()))
         })
         .transpose()?;
+    let release_evidence_config = args
+        .release_evidence_config_file
+        .as_ref()
+        .map(|path| {
+            aos_hub::auth::seal::read_secret_file(path)
+                .and_then(|bytes| {
+                    String::from_utf8(bytes)
+                        .map_err(anyhow::Error::from)
+                        .context("release evidence configuration is not UTF-8")
+                })
+                .with_context(|| {
+                    format!(
+                        "reading release evidence configuration at {}",
+                        path.display()
+                    )
+                })
+        })
+        .transpose()?;
     let secrets = cloudflare::Secrets {
         jwt_secret: args.jwt_secret.clone(),
         seal_key: args.seal_key.clone(),
@@ -1218,6 +1308,7 @@ async fn deploy_worker(
         disable_delivery_attestation: args.disable_delivery_attestation,
         domain_probe_signer_manifest,
         route_reservation_keyring,
+        release_evidence_config,
     };
     secrets.validate()?;
     let cfg = provision_worker(assets, args).await?;

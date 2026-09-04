@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 
 use anyhow::{Result, bail};
+use aos_release::artifact::BundlePath;
 use aos_release::artifact::require_identifier;
 use aos_release::digest::Sha256Digest;
 use aos_release::platform::Platform;
@@ -50,6 +51,8 @@ pub struct FinalizedImageArtifactV1 {
     pub id: String,
     /// Closed artifact purpose.
     pub kind: FinalizedImageKind,
+    /// Relative path beneath the finalized image-set root.
+    pub path: BundlePath,
     /// Exact byte length.
     pub size_bytes: u64,
     /// Exact SHA-256 identity.
@@ -100,9 +103,13 @@ impl FinalizedImageSetV1 {
         }
         require_identifier(&self.system_variant, "system variant")?;
         let mut kinds = BTreeSet::new();
+        let mut paths = BTreeSet::new();
         for artifact in &self.artifacts {
             require_identifier(&artifact.id, "finalized image artifact id")?;
-            if artifact.size_bytes == 0 || !kinds.insert(artifact.kind) {
+            if artifact.size_bytes == 0
+                || !kinds.insert(artifact.kind)
+                || !paths.insert(artifact.path.as_str())
+            {
                 bail!("finalized image set contains an empty or duplicate artifact kind");
             }
         }

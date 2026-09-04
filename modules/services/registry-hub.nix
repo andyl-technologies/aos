@@ -55,6 +55,22 @@
       handle = "cloudflare-api-token";
       environment = "HUB_CLOUDFLARE_API_TOKEN_FILE";
     };
+    releaseReceiptKey = {
+      handle = "release-receipt-key";
+      environment = "HUB_RELEASE_RECEIPT_KEY_FILE";
+    };
+    channelReceiptKey = {
+      handle = "channel-receipt-key";
+      environment = "HUB_CHANNEL_RECEIPT_KEY_FILE";
+    };
+    releasePublicationKeys = {
+      handle = "release-publication-keys";
+      environment = "HUB_RELEASE_PUBLICATION_KEYS_FILE";
+    };
+    qualificationKeys = {
+      handle = "qualification-keys";
+      environment = "HUB_QUALIFICATION_KEYS_FILE";
+    };
   };
   configuredCredentials = lib.filterAttrs (name: _: cfg.credentials.${name} != null) credentialFields;
   loadCredentials =
@@ -67,6 +83,17 @@
       _: spec: "${spec.environment}=${credentialDirectory}/${spec.handle}"
     )
     configuredCredentials;
+  releaseEvidenceFields = [
+    cfg.deploymentId
+    cfg.releaseReceiptKeyId
+    cfg.channelReceiptKeyId
+    cfg.credentials.releaseReceiptKey
+    cfg.credentials.channelReceiptKey
+    cfg.credentials.releasePublicationKeys
+    cfg.credentials.qualificationKeys
+  ];
+  releaseEvidenceConfigured = builtins.any (value: value != null) releaseEvidenceFields;
+  releaseEvidenceComplete = builtins.all (value: value != null) releaseEvidenceFields;
 in {
   options.aos.registry-hub = {
     enable = lib.mkEnableOption "the AOS registry management hub (aos-hub)";
@@ -130,6 +157,29 @@ in {
       description = "Pinned non-secret Ed25519 key for the signed route-publication manifest.";
     };
 
+    deploymentId = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "aos-production-us-west-v1";
+      description = ''
+        Immutable public deployment identity bound into canonical release
+        plans and receipts. Configuring it enables the release evidence
+        authority and requires every role-separated key input below.
+      '';
+    };
+
+    releaseReceiptKeyId = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Public key identity used to sign environment publication receipts.";
+    };
+
+    channelReceiptKeyId = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Distinct public key identity used to sign channel receipts.";
+    };
+
     credentials = lib.mapAttrs (_: _:
       lib.mkOption {
         type = lib.types.nullOr lib.serviceTypes.credentialName;
@@ -154,6 +204,18 @@ in {
           (cfg.credentials.routePublicationManifest == null)
           == (cfg.routePublicationPublicKey == null);
         message = "routePublicationManifest and routePublicationPublicKey must be configured together";
+      }
+      {
+        assertion = !releaseEvidenceConfigured || releaseEvidenceComplete;
+        message = "native Hub release evidence requires deploymentId, both receipt key ids, both receipt key credentials, releasePublicationKeys, and qualificationKeys together";
+      }
+      {
+        assertion =
+          cfg.releaseReceiptKeyId
+          == null
+          || cfg.channelReceiptKeyId == null
+          || cfg.releaseReceiptKeyId != cfg.channelReceiptKeyId;
+        message = "releaseReceiptKeyId and channelReceiptKeyId must be distinct";
       }
     ];
     aos.users.users.aos-hub = {
@@ -203,6 +265,11 @@ in {
         Environment =
           credentialEnvironment
           ++ ["HUB_DNS_JSON_ENDPOINT=${cfg.dnsJsonEndpoint}"]
+          ++ lib.optionals releaseEvidenceComplete [
+            "HUB_DEPLOYMENT_ID=${cfg.deploymentId}"
+            "HUB_RELEASE_RECEIPT_KEY_ID=${cfg.releaseReceiptKeyId}"
+            "HUB_CHANNEL_RECEIPT_KEY_ID=${cfg.channelReceiptKeyId}"
+          ]
           ++ lib.optional (cfg.routePublicationPublicKey != null)
           "HUB_ROUTE_PUBLICATION_PUBLIC_KEY=${cfg.routePublicationPublicKey}";
         Restart = "always";

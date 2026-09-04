@@ -366,6 +366,24 @@
   legacyUnits = pkgs.runCommand "legacy-system-units-parity-oracle" {} ''
     mkdir -p "$out"
 
+    unit_filename() {
+      unit_dir=$1
+      unit_filename=
+      for candidate in "$unit_dir"/*; do
+        [ -e "$candidate" ] || [ -L "$candidate" ] || continue
+        [ -d "$candidate" ] && continue
+        if [ -n "$unit_filename" ]; then
+          echo "unit derivation contains multiple unit payloads: $unit_dir" >&2
+          exit 1
+        fi
+        unit_filename=$(basename "$candidate")
+      done
+      if [ -z "$unit_filename" ]; then
+        echo "unit derivation contains no unit payload: $unit_dir" >&2
+        exit 1
+      fi
+    }
+
     for base in \
       "${packagedUnits}/etc/systemd/system" \
       "${packagedUnits}/lib/systemd/system"; do
@@ -386,7 +404,8 @@
     done
 
     for unit_dir in ${builtins.toString autoUnitDrvs}; do
-      fn=$(basename "$unit_dir"/*)
+      unit_filename "$unit_dir"
+      fn=$unit_filename
       if [ -e "$out/$fn" ]; then
         if [ "$(readlink -f "$unit_dir/$fn")" = /dev/null ]; then
           ln -sfn /dev/null "$out/$fn"
@@ -400,7 +419,8 @@
     done
 
     for unit_dir in ${builtins.toString dropinUnitDrvs}; do
-      fn=$(basename "$unit_dir"/*)
+      unit_filename "$unit_dir"
+      fn=$unit_filename
       mkdir -p "$out/$fn.d"
       ln -s "$unit_dir/$fn" "$out/$fn.d/overrides.conf"
     done
@@ -490,7 +510,11 @@ in
           # The output is assembled from configManifest.etc, so its complete
           # leaf set must match the manifest's systemd subtree, not just the
           # representative names above.
-          (cd "$units_dir" && find . -mindepth 1 \( -type f -o -type l \)) \
+          # mkDerivation adds output metadata beside the materialized unit
+          # tree. It is not part of configManifest.etc and must not enter the
+          # parity comparison.
+          (cd "$units_dir" && find . -path ./nix-support -prune -o \
+            -mindepth 1 \( -type f -o -type l \) -print) \
             | sed 's|^\./||' | sort -u > actual-paths
           sort -u "$expectedPathsPath" > expected-paths
           if ! diff -u expected-paths actual-paths; then

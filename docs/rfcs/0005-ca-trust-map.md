@@ -1,6 +1,7 @@
 # RFC-0005: The `store/` realisation graph - content-addressed closure validation
 
-- **Status:** Proposed (implementation in the same PR)
+- **Status:** **Implemented.** The signed `store/` realisation graph is
+  published by `apr` and enforced over complete closures by `apm`.
 - **Date:** 2026-06-12
 - **PR:** [#98](https://github.com/andyl-technologies/aos/pull/98)
 - **Audience:** anyone working on `crates/aos-package/` (the `apr`

@@ -71,9 +71,12 @@ use aos_core::output::{OutputMode, Printer};
 
 use crate::config::ApmConfig;
 use crate::platform::native_platform;
+#[cfg(test)]
+use crate::provenance::sign_statement_dsse_jsonl;
 use crate::provenance::{
-    TrustedProvenanceKey, builder_id as provenance_builder_id, digest_map as provenance_digest_map,
-    sha256_hex_payload, sign_statement_dsse_jsonl,
+    ProvenanceSignature, ProvenanceSigner, TrustedProvenanceKey,
+    builder_id as provenance_builder_id, digest_map as provenance_digest_map, sha256_hex_payload,
+    sign_statement_dsse_jsonl_external,
 };
 use crate::registry::channel::{self, PartitionMap};
 use crate::registry::keys::{self, KeysToml, RevokedKey, RosterKey};
@@ -1847,6 +1850,7 @@ pub async fn publish(
         message,
         key,
         key_id,
+        None,
         printer,
     )
     .await
@@ -1890,6 +1894,7 @@ pub(crate) async fn publish_to_registry_directory(
     message: Option<&str>,
     key: Option<&str>,
     key_id: Option<&str>,
+    external_provenance_signer: Option<&mut dyn ProvenanceSigner>,
     printer: &Printer,
 ) -> Result<()> {
     let description = required_publish_metadata(description, "--description", "No description")?;
@@ -2052,12 +2057,16 @@ pub(crate) async fn publish_to_registry_directory(
         expose_artifact_info.as_ref(),
         &documentation_declarations,
     )?;
-    let provenance_signer = Some(resolve_package_provenance_signer(
-        dir,
-        name,
-        signing_key.as_ref(),
-        key_id,
-    )?);
+    let mut local_provenance_signer;
+    let provenance_signer: &mut dyn ProvenanceSigner =
+        if let Some(signer) = external_provenance_signer {
+            validate_external_provenance_signer(dir, signer)?;
+            signer
+        } else {
+            local_provenance_signer =
+                resolve_package_provenance_signer(dir, name, signing_key.as_ref(), key_id)?;
+            &mut local_provenance_signer
+        };
 
     let _publish_lock = RegistryPublishLock::acquire(&dir)?;
 
@@ -2125,21 +2134,22 @@ pub(crate) async fn publish_to_registry_directory(
     )?;
     let provenance_artifact =
         if let (Some(module), Some(attestation)) = (config_module, config_attestation.as_ref()) {
-            Some(publish_config_provenance_artifact_with_documentation(
-                &name,
-                pkg_name,
-                pkg_version,
-                &platform,
-                &info,
-                source_info.as_ref(),
-                module,
-                expose_manifest_digest.as_deref(),
-                attestation,
-                &documentation.metadata,
-                provenance_signer
-                    .as_ref()
-                    .context("provenance signer missing for config-module package")?,
-            )?)
+            Some(
+                publish_config_provenance_artifact_with_documentation(
+                    &name,
+                    pkg_name,
+                    pkg_version,
+                    &platform,
+                    &info,
+                    source_info.as_ref(),
+                    module,
+                    expose_manifest_digest.as_deref(),
+                    attestation,
+                    &documentation.metadata,
+                    provenance_signer,
+                )
+                .await?,
+            )
         } else {
             match (expose_manifest.as_ref(), expose_manifest_digest.as_deref()) {
                 (Some(manifest), Some(manifest_digest)) => {
@@ -2153,26 +2163,26 @@ pub(crate) async fn publish_to_registry_directory(
                         manifest,
                         manifest_digest,
                         &documentation.metadata,
-                        provenance_signer
-                            .as_ref()
-                            .context("provenance signer missing for exposed package")?,
-                    )?
+                        provenance_signer,
+                    )
+                    .await?
                 }
-                _ => Some(publish_documentation_provenance_artifact(
-                    &name,
-                    pkg_name,
-                    pkg_version,
-                    &platform,
-                    &info,
-                    source_info.as_ref(),
-                    &documentation.metadata,
-                    documentation_attestation
-                        .as_ref()
-                        .context("documentation-only package is missing attestation metadata")?,
-                    provenance_signer
-                        .as_ref()
-                        .context("provenance signer missing for documented package")?,
-                )?),
+                _ => Some(
+                    publish_documentation_provenance_artifact(
+                        &name,
+                        pkg_name,
+                        pkg_version,
+                        &platform,
+                        &info,
+                        source_info.as_ref(),
+                        &documentation.metadata,
+                        documentation_attestation.as_ref().context(
+                            "documentation-only package is missing attestation metadata",
+                        )?,
+                        provenance_signer,
+                    )
+                    .await?,
+                ),
             }
         };
 
@@ -2433,6 +2443,70 @@ pub(crate) async fn publish_to_registry_directory(
     }
 
     Ok(())
+}
+
+/// Materializes one canonical package-platform entry without committing it.
+///
+/// This is the narrow bridge used by an isolated registry release transaction.
+/// It deliberately exposes neither producer key paths nor ordinary authoring
+/// clone discovery; provenance is supplied by the caller's external adapter.
+///
+/// # Errors
+///
+/// Returns an error when package introspection, metadata validation,
+/// provenance signing, documentation generation, or store-graph authoring
+/// fails.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn publish_canonical_release_entry(
+    config: &ApmConfig,
+    dir: &Path,
+    registry: &str,
+    store_path: &str,
+    package: &str,
+    version: &str,
+    platform: &str,
+    description: &str,
+    homepage: Option<&str>,
+    license: &str,
+    maintainer: &str,
+    provenance_signer: &mut dyn ProvenanceSigner,
+    printer: &Printer,
+) -> Result<()> {
+    publish_to_registry_directory(
+        config,
+        dir,
+        registry,
+        store_path,
+        Some(package),
+        Some(version),
+        Some(platform),
+        Some(description),
+        homepage,
+        Some(license),
+        Some(maintainer),
+        false,
+        None,
+        None,
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        None,
+        None,
+        None,
+        None,
+        &[],
+        false,
+        false,
+        true,
+        None,
+        None,
+        None,
+        Some(provenance_signer),
+        printer,
+    )
+    .await
 }
 
 /// Returns required package distribution metadata after rejecting historical
@@ -3496,7 +3570,11 @@ fn publish_package_documentation(
         },
         sections,
         options,
-        runtime: documentation_runtime_surface(expose_manifest, system_documentation),
+        runtime: documentation_runtime_surface(
+            expose_manifest,
+            expose_artifact,
+            system_documentation,
+        )?,
     };
     document.identity.semantic_schema_sha256 = document
         .computed_semantic_schema_sha256()
@@ -3591,8 +3669,9 @@ fn documented_option_declarations(
 
 fn documentation_runtime_surface(
     manifest: Option<&PublishExposeManifest>,
+    expose_artifact: Option<&StorePathInfo>,
     system_documentation: Option<&PublishedSystemDocumentation>,
-) -> RuntimeSurface {
+) -> Result<RuntimeSurface> {
     let Some(manifest) = manifest else {
         let units = system_documentation
             .into_iter()
@@ -3607,11 +3686,13 @@ fn documentation_runtime_surface(
                 requires: Vec::new(),
             })
             .collect();
-        return RuntimeSurface {
+        return Ok(RuntimeSurface {
             units,
             ..RuntimeSurface::default()
-        };
+        });
     };
+    let expose_artifact =
+        expose_artifact.context("exposed package documentation has no expose artifact")?;
     let expose = &manifest.expose;
     let permissions = &manifest.permissions;
     let network = match permissions.network {
@@ -3622,16 +3703,18 @@ fn documentation_runtime_surface(
     let mut units = expose
         .units
         .iter()
-        .map(|name| RuntimeUnit {
-            name: name.clone(),
-            kind: name
-                .rsplit_once('.')
-                .map_or("unit", |(_, kind)| kind)
-                .to_string(),
-            summary: String::new(),
-            requires: Vec::new(),
+        .map(|name| {
+            Ok(RuntimeUnit {
+                name: name.clone(),
+                kind: name
+                    .rsplit_once('.')
+                    .map_or("unit", |(_, kind)| kind)
+                    .to_string(),
+                summary: exposed_unit_description(&expose_artifact.path, name)?,
+                requires: Vec::new(),
+            })
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>>>()?;
     if !units.iter().any(|unit| unit.name == expose.target) {
         units.push(RuntimeUnit {
             name: expose.target.clone(),
@@ -3747,7 +3830,7 @@ fn documentation_runtime_surface(
         ConfinementClass::Unconfined => "unconfined",
     };
 
-    RuntimeSurface {
+    Ok(RuntimeSurface {
         units,
         listeners,
         managed_paths,
@@ -3759,7 +3842,75 @@ fn documentation_runtime_surface(
             network: network.to_string(),
             private_root: computed.class != ConfinementClass::Unconfined,
         }),
+    })
+}
+
+/// Extracts the human-facing unit description from an authenticated expose artifact.
+fn exposed_unit_description(expose_artifact: &str, unit: &str) -> Result<String> {
+    crate::types::validate_unit_name(unit)
+        .with_context(|| format!("validating documented runtime unit '{unit}'"))?;
+    let path = Path::new(expose_artifact).join("units").join(unit);
+    let link_metadata = fs::symlink_metadata(&path)
+        .with_context(|| format!("inspecting documented runtime unit {}", path.display()))?;
+    let source = if link_metadata.file_type().is_symlink() {
+        let target = fs::read_link(&path)
+            .with_context(|| format!("resolving documented runtime unit {}", path.display()))?;
+        let expose_store_dir = store_dir_from_store_path(expose_artifact);
+        let target_store_path = target.parent().and_then(Path::to_str);
+        if target.file_name() != Some(std::ffi::OsStr::new(unit))
+            || expose_store_dir.is_none()
+            || target_store_path.and_then(store_dir_from_store_path) != expose_store_dir
+        {
+            bail!(
+                "documented runtime unit symlink must select the same unit from one direct store object: {}",
+                path.display()
+            );
+        }
+        target
+    } else {
+        path.clone()
+    };
+    let metadata = fs::metadata(&source)
+        .with_context(|| format!("inspecting documented runtime unit {}", source.display()))?;
+    if !metadata.is_file() {
+        bail!(
+            "documented runtime unit must be one regular file: {}",
+            source.display()
+        );
     }
+
+    const MAX_DOCUMENTED_UNIT_BYTES: u64 = 1024 * 1024;
+    let mut content = String::new();
+    fs::File::open(&source)?
+        .take(MAX_DOCUMENTED_UNIT_BYTES + 1)
+        .read_to_string(&mut content)
+        .with_context(|| format!("reading documented runtime unit {}", source.display()))?;
+    if content.len() as u64 > MAX_DOCUMENTED_UNIT_BYTES {
+        bail!(
+            "documented runtime unit exceeds {MAX_DOCUMENTED_UNIT_BYTES} bytes: {}",
+            source.display()
+        );
+    }
+
+    let mut in_unit_section = false;
+    let mut description = None;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            in_unit_section = line == "[Unit]";
+            continue;
+        }
+        if in_unit_section && let Some(value) = line.strip_prefix("Description=") {
+            let value = value.trim();
+            description = (!value.is_empty()).then(|| value.to_string());
+        }
+    }
+    description.with_context(|| {
+        format!(
+            "documented runtime unit '{}' has no non-empty [Unit] Description",
+            source.display()
+        )
+    })
 }
 
 fn nix_publish_string(value: &str) -> String {
@@ -3812,6 +3963,7 @@ fn scan_config_module_interface(
         if relative == Path::new("config-meta.json")
             || relative == Path::new("expose-config.json")
             || relative == Path::new("generated/expose-config.json")
+            || relative == Path::new(TARGET_PLATFORM_RELATIVE_PATH)
         {
             continue;
         }
@@ -4883,13 +5035,17 @@ where
     {
         let entry = entry?;
         let file_type = entry.file_type()?;
+        let name = entry.file_name();
+        if name == std::ffi::OsStr::new("nix-support") {
+            validate_image_target_platform_metadata(&entry.path(), &file_type, platform)?;
+            continue;
+        }
         if file_type.is_symlink() || !file_type.is_file() {
             bail!(
                 "image output contains a symlink, directory, or special entry: {}",
                 entry.path().display()
             );
         }
-        let name = entry.file_name();
         let is_primary = name == std::ffi::OsStr::new("image-info.json")
             || name == std::ffi::OsStr::new(producer.filename.as_str());
         let is_auxiliary = name.to_str().is_some_and(|name| {
@@ -5181,6 +5337,63 @@ where
         root_range,
         virtual_size_bytes: producer.virtual_size_bytes,
     })
+}
+
+/// Validates the sole derivation metadata entry admitted beside image files.
+fn validate_image_target_platform_metadata(
+    support: &Path,
+    support_type: &fs::FileType,
+    platform: &str,
+) -> Result<()> {
+    if support_type.is_symlink() || !support_type.is_dir() {
+        bail!(
+            "image output target-platform metadata is not a real directory: {}",
+            support.display()
+        );
+    }
+
+    let mut entries = fs::read_dir(support)
+        .with_context(|| format!("enumerating image metadata {}", support.display()))?;
+    let marker = entries
+        .next()
+        .transpose()?
+        .context("image output nix-support directory is empty")?;
+    if entries.next().transpose()?.is_some()
+        || marker.file_name() != std::ffi::OsStr::new("aos-target-platform")
+    {
+        bail!(
+            "image output nix-support must contain only aos-target-platform: {}",
+            support.display()
+        );
+    }
+    let marker_type = marker.file_type()?;
+    if marker_type.is_symlink() || !marker_type.is_file() {
+        bail!(
+            "image output target-platform marker is not a regular file: {}",
+            marker.path().display()
+        );
+    }
+    const MAX_TARGET_PLATFORM_MARKER_BYTES: u64 = 128;
+    let mut stamped = String::new();
+    fs::File::open(marker.path())?
+        .take(MAX_TARGET_PLATFORM_MARKER_BYTES + 1)
+        .read_to_string(&mut stamped)
+        .with_context(|| {
+            format!(
+                "reading image target-platform marker {}",
+                marker.path().display()
+            )
+        })?;
+    if stamped.len() as u64 > MAX_TARGET_PLATFORM_MARKER_BYTES {
+        bail!("image output target-platform marker exceeds 128 bytes");
+    }
+    if stamped.trim() != platform {
+        bail!(
+            "image output target-platform marker '{}' disagrees with published platform '{platform}'",
+            stamped.trim()
+        );
+    }
+    Ok(())
 }
 
 fn validate_lower_sha256(value: &str, label: &str) -> Result<()> {
@@ -7071,9 +7284,29 @@ struct PublishProvenanceArtifact {
     attestation: AttestationMeta,
 }
 
-struct PackageProvenanceSigner {
+struct LocalPackageProvenanceSigner {
     key_id: String,
     key_path: PathBuf,
+}
+
+#[async_trait::async_trait]
+impl ProvenanceSigner for LocalPackageProvenanceSigner {
+    fn key_id(&self) -> &str {
+        &self.key_id
+    }
+
+    async fn sign_provenance(&mut self, payload: &[u8]) -> Result<ProvenanceSignature> {
+        let armored_signature = crate::security::sign_payload_signature(
+            &self.key_path,
+            crate::provenance::DSSE_SIGNATURE_NAMESPACE,
+            payload,
+        )?;
+        Ok(ProvenanceSignature {
+            key_id: self.key_id.clone(),
+            provider_operation_id: "local-file-key".to_string(),
+            armored_signature,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -7158,7 +7391,7 @@ struct StagedPackageRfc0001Meta {
     bpf_lsm: Option<BpfLsmPolicyMeta>,
 }
 
-fn publish_provenance_artifact_inner(
+fn unsigned_publish_provenance_artifact(
     registry_name: &str,
     name: &str,
     version: &str,
@@ -7168,8 +7401,8 @@ fn publish_provenance_artifact_inner(
     manifest: &PublishExposeManifest,
     manifest_digest: &str,
     documentation: Option<&DocumentationArtifactMeta>,
-    signer: &PackageProvenanceSigner,
-) -> Result<Option<PublishProvenanceArtifact>> {
+    key_id: &str,
+) -> Result<Option<(String, Value, AttestationMeta)>> {
     let Some(attestation) = publish_attestation_meta(
         name,
         version,
@@ -7200,7 +7433,7 @@ fn publish_provenance_artifact_inner(
         source_info,
         manifest_digest,
         &attestation,
-        &signer.key_id,
+        key_id,
     )?;
     if let Some(documentation) = documentation {
         append_documentation_provenance_subject(
@@ -7211,9 +7444,40 @@ fn publish_provenance_artifact_inner(
             documentation,
         )?;
     }
-    let jsonl = sign_statement_dsse_jsonl(&statement, &signer.key_id, &signer.key_path)?;
+    Ok(Some((provenance, statement, attestation)))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn publish_provenance_artifact_inner(
+    registry_name: &str,
+    name: &str,
+    version: &str,
+    platform: &str,
+    info: &StorePathInfo,
+    source_info: Option<&StorePathInfo>,
+    manifest: &PublishExposeManifest,
+    manifest_digest: &str,
+    documentation: Option<&DocumentationArtifactMeta>,
+    signer: &mut dyn ProvenanceSigner,
+) -> Result<Option<PublishProvenanceArtifact>> {
+    let Some((path, statement, attestation)) = unsigned_publish_provenance_artifact(
+        registry_name,
+        name,
+        version,
+        platform,
+        info,
+        source_info,
+        manifest,
+        manifest_digest,
+        documentation,
+        signer.key_id(),
+    )?
+    else {
+        return Ok(None);
+    };
+    let jsonl = sign_statement_dsse_jsonl_external(&statement, signer).await?;
     Ok(Some(PublishProvenanceArtifact {
-        path: provenance,
+        path,
         jsonl,
         attestation,
     }))
@@ -7230,9 +7494,9 @@ fn publish_provenance_artifact(
     source_info: Option<&StorePathInfo>,
     manifest: &PublishExposeManifest,
     manifest_digest: &str,
-    signer: &PackageProvenanceSigner,
+    signer: &LocalPackageProvenanceSigner,
 ) -> Result<Option<PublishProvenanceArtifact>> {
-    publish_provenance_artifact_inner(
+    let Some((path, statement, attestation)) = unsigned_publish_provenance_artifact(
         registry_name,
         name,
         version,
@@ -7242,12 +7506,21 @@ fn publish_provenance_artifact(
         manifest,
         manifest_digest,
         None,
-        signer,
-    )
+        &signer.key_id,
+    )?
+    else {
+        return Ok(None);
+    };
+    let jsonl = sign_statement_dsse_jsonl(&statement, &signer.key_id, &signer.key_path)?;
+    Ok(Some(PublishProvenanceArtifact {
+        path,
+        jsonl,
+        attestation,
+    }))
 }
 
 #[allow(clippy::too_many_arguments)]
-fn publish_provenance_artifact_with_documentation(
+async fn publish_provenance_artifact_with_documentation(
     registry_name: &str,
     name: &str,
     version: &str,
@@ -7257,7 +7530,7 @@ fn publish_provenance_artifact_with_documentation(
     manifest: &PublishExposeManifest,
     manifest_digest: &str,
     documentation: &DocumentationArtifactMeta,
-    signer: &PackageProvenanceSigner,
+    signer: &mut dyn ProvenanceSigner,
 ) -> Result<Option<PublishProvenanceArtifact>> {
     publish_provenance_artifact_inner(
         registry_name,
@@ -7271,10 +7544,11 @@ fn publish_provenance_artifact_with_documentation(
         Some(documentation),
         signer,
     )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
-fn publish_config_provenance_artifact_inner(
+fn unsigned_config_provenance_artifact(
     registry_name: &str,
     name: &str,
     version: &str,
@@ -7285,8 +7559,8 @@ fn publish_config_provenance_artifact_inner(
     expose_manifest_digest: Option<&str>,
     attestation: &AttestationMeta,
     documentation: Option<&DocumentationArtifactMeta>,
-    signer: &PackageProvenanceSigner,
-) -> Result<PublishProvenanceArtifact> {
+    key_id: &str,
+) -> Result<(String, Value, AttestationMeta)> {
     let provenance = attestation
         .provenance
         .clone()
@@ -7304,7 +7578,7 @@ fn publish_config_provenance_artifact_inner(
         source_info,
         &config_publish_binding_digest(module, expose_manifest_digest)?,
         attestation,
-        &signer.key_id,
+        key_id,
     )?;
     let subjects = statement
         .get_mut("subject")
@@ -7345,11 +7619,41 @@ fn publish_config_provenance_artifact_inner(
             documentation,
         )?;
     }
-    let jsonl = sign_statement_dsse_jsonl(&statement, &signer.key_id, &signer.key_path)?;
+    Ok((provenance, statement, attestation.clone()))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn publish_config_provenance_artifact_inner(
+    registry_name: &str,
+    name: &str,
+    version: &str,
+    platform: &str,
+    info: &StorePathInfo,
+    source_info: Option<&StorePathInfo>,
+    module: &ConfigModuleMeta,
+    expose_manifest_digest: Option<&str>,
+    attestation: &AttestationMeta,
+    documentation: Option<&DocumentationArtifactMeta>,
+    signer: &mut dyn ProvenanceSigner,
+) -> Result<PublishProvenanceArtifact> {
+    let (path, statement, attestation) = unsigned_config_provenance_artifact(
+        registry_name,
+        name,
+        version,
+        platform,
+        info,
+        source_info,
+        module,
+        expose_manifest_digest,
+        attestation,
+        documentation,
+        signer.key_id(),
+    )?;
+    let jsonl = sign_statement_dsse_jsonl_external(&statement, signer).await?;
     Ok(PublishProvenanceArtifact {
-        path: provenance,
+        path,
         jsonl,
-        attestation: attestation.clone(),
+        attestation,
     })
 }
 
@@ -7365,9 +7669,9 @@ fn publish_config_provenance_artifact(
     module: &ConfigModuleMeta,
     expose_manifest_digest: Option<&str>,
     attestation: &AttestationMeta,
-    signer: &PackageProvenanceSigner,
+    signer: &LocalPackageProvenanceSigner,
 ) -> Result<PublishProvenanceArtifact> {
-    publish_config_provenance_artifact_inner(
+    let (path, statement, attestation) = unsigned_config_provenance_artifact(
         registry_name,
         name,
         version,
@@ -7378,12 +7682,18 @@ fn publish_config_provenance_artifact(
         expose_manifest_digest,
         attestation,
         None,
-        signer,
-    )
+        &signer.key_id,
+    )?;
+    let jsonl = sign_statement_dsse_jsonl(&statement, &signer.key_id, &signer.key_path)?;
+    Ok(PublishProvenanceArtifact {
+        path,
+        jsonl,
+        attestation,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
-fn publish_config_provenance_artifact_with_documentation(
+async fn publish_config_provenance_artifact_with_documentation(
     registry_name: &str,
     name: &str,
     version: &str,
@@ -7394,7 +7704,7 @@ fn publish_config_provenance_artifact_with_documentation(
     expose_manifest_digest: Option<&str>,
     attestation: &AttestationMeta,
     documentation: &DocumentationArtifactMeta,
-    signer: &PackageProvenanceSigner,
+    signer: &mut dyn ProvenanceSigner,
 ) -> Result<PublishProvenanceArtifact> {
     publish_config_provenance_artifact_inner(
         registry_name,
@@ -7409,10 +7719,11 @@ fn publish_config_provenance_artifact_with_documentation(
         Some(documentation),
         signer,
     )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
-fn publish_documentation_provenance_artifact(
+async fn publish_documentation_provenance_artifact(
     registry_name: &str,
     name: &str,
     version: &str,
@@ -7421,7 +7732,7 @@ fn publish_documentation_provenance_artifact(
     source_info: Option<&StorePathInfo>,
     documentation: &DocumentationArtifactMeta,
     attestation: &AttestationMeta,
-    signer: &PackageProvenanceSigner,
+    signer: &mut dyn ProvenanceSigner,
 ) -> Result<PublishProvenanceArtifact> {
     let provenance = attestation
         .provenance
@@ -7437,7 +7748,7 @@ fn publish_documentation_provenance_artifact(
         source_info,
         &binding_digest,
         attestation,
-        &signer.key_id,
+        signer.key_id(),
     )?;
     append_documentation_provenance_subject(
         &mut statement,
@@ -7446,7 +7757,7 @@ fn publish_documentation_provenance_artifact(
         platform,
         documentation,
     )?;
-    let jsonl = sign_statement_dsse_jsonl(&statement, &signer.key_id, &signer.key_path)?;
+    let jsonl = sign_statement_dsse_jsonl_external(&statement, signer).await?;
     Ok(PublishProvenanceArtifact {
         path: provenance,
         jsonl,
@@ -7493,7 +7804,7 @@ fn resolve_package_provenance_signer(
     registry_name: &str,
     signing_key: Option<&ResolvedSigningKey>,
     key_id: Option<&str>,
-) -> Result<PackageProvenanceSigner> {
+) -> Result<LocalPackageProvenanceSigner> {
     let key_id = key_id.context(
         "publishing privileged package provenance requires --key-id so the DSSE builder \
          identity is tied to keys.toml",
@@ -7515,10 +7826,38 @@ fn resolve_package_provenance_signer(
             active.key
         );
     }
-    Ok(PackageProvenanceSigner {
+    Ok(LocalPackageProvenanceSigner {
         key_id: key_id.to_string(),
         key_path: PathBuf::from(signing_key.path()),
     })
+}
+
+fn validate_external_provenance_signer(dir: &Path, signer: &dyn ProvenanceSigner) -> Result<()> {
+    let trusted_key = signer
+        .trusted_key_line()
+        .context("external provenance signer must expose its pinned roster trust line")?;
+    require_active_registry_key(dir, signer.key_id(), trusted_key)
+}
+
+pub(crate) fn require_active_registry_key(
+    dir: &Path,
+    key_id: &str,
+    trusted_key: &str,
+) -> Result<()> {
+    validate_roster_key_id(key_id)?;
+    let roster = load_committed_roster(dir)?;
+    if keys::is_revoked(&roster, key_id) {
+        bail!("signing key id '{}' is revoked in keys.toml", key_id);
+    }
+    let active = keys::active_key_by_id(&roster, key_id)
+        .ok_or_else(|| anyhow::anyhow!("signing key id '{}' is not active in keys.toml", key_id))?;
+    if trusted_key != active.key {
+        bail!(
+            "external signing key for '{}' differs from keys.toml",
+            key_id
+        );
+    }
+    Ok(())
 }
 
 fn package_provenance_trusted_keys(dir: &Path) -> Result<(String, Vec<TrustedProvenanceKey>)> {
@@ -16682,6 +17021,81 @@ mod tests {
     }
 
     #[test]
+    fn package_documentation_extracts_exposed_unit_descriptions() {
+        let expose = TempDir::new().unwrap();
+        fs::create_dir(expose.path().join("units")).unwrap();
+        fs::write(
+            expose.path().join("units/example.service"),
+            "[Unit]\nDescription=Example workload service\n\n[Service]\nExecStart=/bin/true\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            exposed_unit_description(expose.path().to_str().unwrap(), "example.service").unwrap(),
+            "Example workload service"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn package_documentation_accepts_only_store_owned_unit_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let root = TempDir::new().unwrap();
+        let store = root.path().join("nix/store");
+        let expose = store.join("00000000000000000000000000000000-expose");
+        let unit_output = store.join("11111111111111111111111111111111-unit");
+        fs::create_dir_all(expose.join("units")).unwrap();
+        fs::create_dir_all(&unit_output).unwrap();
+        let unit = unit_output.join("example.service");
+        fs::write(&unit, "[Unit]\nDescription=Store-owned unit\n").unwrap();
+        symlink(&unit, expose.join("units/example.service")).unwrap();
+
+        assert_eq!(
+            exposed_unit_description(expose.to_str().unwrap(), "example.service").unwrap(),
+            "Store-owned unit"
+        );
+
+        fs::remove_file(expose.join("units/example.service")).unwrap();
+        symlink("/etc/passwd", expose.join("units/example.service")).unwrap();
+        assert!(
+            exposed_unit_description(expose.to_str().unwrap(), "example.service")
+                .unwrap_err()
+                .to_string()
+                .contains("same unit from one direct store object")
+        );
+    }
+
+    #[test]
+    fn package_documentation_rejects_undocumented_or_oversized_units() {
+        let expose = TempDir::new().unwrap();
+        fs::create_dir(expose.path().join("units")).unwrap();
+        fs::write(
+            expose.path().join("units/missing.service"),
+            "[Unit]\nAfter=network.target\n",
+        )
+        .unwrap();
+        assert!(
+            exposed_unit_description(expose.path().to_str().unwrap(), "missing.service")
+                .unwrap_err()
+                .to_string()
+                .contains("has no non-empty [Unit] Description")
+        );
+
+        fs::write(
+            expose.path().join("units/large.service"),
+            vec![b'x'; 1024 * 1024 + 1],
+        )
+        .unwrap();
+        assert!(
+            exposed_unit_description(expose.path().to_str().unwrap(), "large.service")
+                .unwrap_err()
+                .to_string()
+                .contains("exceeds 1048576 bytes")
+        );
+    }
+
+    #[test]
     fn publish_platform_uses_cross_target_marker() {
         let output = TempDir::new().unwrap();
         let support = output.path().join("nix-support");
@@ -17046,6 +17460,54 @@ mod tests {
         public_info_file.read_to_string(&mut public_info).unwrap();
         assert!(!public_info.contains("ukiStorePath"));
         assert_eq!(image.image_info.identity.len, public_info.len() as u64);
+    }
+
+    #[test]
+    fn image_publisher_accepts_only_exact_target_platform_metadata() {
+        let accepted = TempDir::new().unwrap();
+        let store = write_direct_image_output(
+            accepted.path(),
+            "qcow2",
+            serde_json::json!(["qemu-kvm", "openstack"]),
+        );
+        let support = Path::new(&store.path).join("nix-support");
+        fs::create_dir(&support).unwrap();
+        fs::write(support.join("aos-target-platform"), "x86_64-linux\n").unwrap();
+        inspect_test_image("qcow2", store, "2026.08", "x86_64-linux").unwrap();
+
+        let wrong = TempDir::new().unwrap();
+        let store = write_direct_image_output(
+            wrong.path(),
+            "qcow2",
+            serde_json::json!(["qemu-kvm", "openstack"]),
+        );
+        let support = Path::new(&store.path).join("nix-support");
+        fs::create_dir(&support).unwrap();
+        fs::write(support.join("aos-target-platform"), "aarch64-linux\n").unwrap();
+        assert!(inspect_test_image("qcow2", store, "2026.08", "x86_64-linux").is_err());
+
+        let extra = TempDir::new().unwrap();
+        let store = write_direct_image_output(
+            extra.path(),
+            "qcow2",
+            serde_json::json!(["qemu-kvm", "openstack"]),
+        );
+        let support = Path::new(&store.path).join("nix-support");
+        fs::create_dir(&support).unwrap();
+        fs::write(support.join("aos-target-platform"), "x86_64-linux\n").unwrap();
+        fs::write(support.join("unexpected"), "metadata\n").unwrap();
+        assert!(inspect_test_image("qcow2", store, "2026.08", "x86_64-linux").is_err());
+
+        let oversized = TempDir::new().unwrap();
+        let store = write_direct_image_output(
+            oversized.path(),
+            "qcow2",
+            serde_json::json!(["qemu-kvm", "openstack"]),
+        );
+        let support = Path::new(&store.path).join("nix-support");
+        fs::create_dir(&support).unwrap();
+        fs::write(support.join("aos-target-platform"), "x".repeat(129)).unwrap();
+        assert!(inspect_test_image("qcow2", store, "2026.08", "x86_64-linux").is_err());
     }
 
     #[test]
@@ -17560,6 +18022,27 @@ mod tests {
         fs::write(tmp.path().join("authored.json"), "{}\n").expect("write unauthorized helper");
         let error = scan_config_module_interface(tmp.path(), "web", &[], &[])
             .expect_err("reject unauthorized non-Nix helper");
+        assert!(error.to_string().contains("non-Nix helper"), "{error:#}");
+    }
+
+    #[test]
+    fn config_interface_scan_accepts_only_the_canonical_target_platform_marker() {
+        let tmp = TempDir::new().expect("temporary config module");
+        fs::create_dir(tmp.path().join("nix-support")).expect("create nix-support directory");
+        fs::write(tmp.path().join("module.nix"), "{ ... }: {}\n").expect("write module");
+        fs::write(
+            tmp.path().join(TARGET_PLATFORM_RELATIVE_PATH),
+            "x86_64-linux\n",
+        )
+        .expect("write target platform marker");
+
+        scan_config_module_interface(tmp.path(), "web", &[], &[])
+            .expect("scan canonical target platform metadata");
+
+        fs::write(tmp.path().join("nix-support/helper"), "not Nix\n")
+            .expect("write unauthorized nix-support helper");
+        let error = scan_config_module_interface(tmp.path(), "web", &[], &[])
+            .expect_err("reject neighboring nix-support helper");
         assert!(error.to_string().contains("non-Nix helper"), "{error:#}");
     }
 
@@ -19075,7 +19558,7 @@ mod tests {
 
     struct TestProvenanceSigner {
         _tmp: TempDir,
-        signer: PackageProvenanceSigner,
+        signer: LocalPackageProvenanceSigner,
         trusted_key: String,
     }
 
@@ -19091,7 +19574,7 @@ mod tests {
             TEST_PROVENANCE_KEY_ID,
         );
         TestProvenanceSigner {
-            signer: PackageProvenanceSigner {
+            signer: LocalPackageProvenanceSigner {
                 key_id: TEST_PROVENANCE_KEY_ID.to_string(),
                 key_path: key.private_key.clone(),
             },

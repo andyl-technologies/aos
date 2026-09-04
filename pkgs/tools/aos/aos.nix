@@ -177,7 +177,7 @@ in
     pname = "aos";
     inherit version src;
 
-    outputs = ["out" "apm" "apr" "packageRuntime"];
+    outputs = ["out" "apm" "apr" "packageRuntime" "testSupport"];
 
     cargoFlags = "-p aos";
 
@@ -311,6 +311,10 @@ in
                   cat << 'APR_ENVIRONMENT'
       export AOS_MCOPY="${mtools}/bin/mcopy"
       export AOS_QEMU_IMG="${qemu-img}/bin/qemu-img"
+      ${lib.optionalString (!isDarwinCross) ''
+        export AOS_CHECKMODULE="${checkpolicy}/bin/checkmodule"
+        export AOS_SEMODULE_PACKAGE="${semodule-utils}/bin/semodule_package"
+      ''}
       APR_ENVIRONMENT
                   ;;
                 apm|aos-package-runtime)
@@ -338,6 +342,12 @@ in
           install_cli apm "$apm" ${lib.escapeShellArg (runtimeBinPath apmRuntimeTools)} 1
           install_cli apr "$apr" ${lib.escapeShellArg (runtimeBinPath aprRuntimeTools)} 0
           install_cli aos-package-runtime "$packageRuntime" ${lib.escapeShellArg (runtimeBinPath apmRuntimeTools)} 1
+
+          # This deterministic signer/fixture process exists only for the
+          # isolated fleet release exercise. Keep it out of every shipped CLI
+          # output and expose it solely through the explicit testSupport output.
+          mkdir -p "$testSupport/bin"
+          mv "$out/bin/aos-release-fleet-fixture" "$testSupport/bin/"
 
           # Cargo links the binaries before they are distributed among the
           # named outputs, so its default install-prefix RPATH names $out/lib.
@@ -374,9 +384,13 @@ in
             ${lib.optionalString (!isDarwinCross) "${systemd} ${builtins.concatStringsSep " " (map toString nonAosLinuxRuntimeDeps)}"}; do
             reject_output_reference "$out" "$dependency"
           done
+          # APR validates package-owned SELinux modules at publication time,
+          # so its compiler and module packager are intentional APR runtime
+          # dependencies. The remaining host-enforcement helpers belong only
+          # to APM/runtime.
           for dependency in \
             ${tpm2-tools} ${which} \
-            ${lib.optionalString (!isDarwinCross) "${systemd} ${util-linux} ${builtins.concatStringsSep " " (map toString linuxRuntimeDeps)}"}; do
+            ${lib.optionalString (!isDarwinCross) "${systemd} ${util-linux} ${builtins.concatStringsSep " " (map toString (lib.subtractLists [checkpolicy semodule-utils] linuxRuntimeDeps))}"}; do
             reject_output_reference "$apr" "$dependency"
           done
 

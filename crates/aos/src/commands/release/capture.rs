@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::CStr;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::Read as _;
 use std::os::fd::OwnedFd;
 use std::os::unix::fs::MetadataExt as _;
@@ -137,13 +137,199 @@ pub(super) fn control_file(path: &Path, label: &str) -> Result<Vec<u8>> {
     }
     let snapshot = FileSnapshot::of(&file)?;
     let mut bytes = Vec::with_capacity(usize::try_from(metadata.len())?);
-    file.by_ref()
+    std::io::Read::by_ref(&mut file)
         .take(MAX_CONTROL_FILE_BYTES + 1)
         .read_to_end(&mut bytes)?;
     if u64::try_from(bytes.len())? != metadata.len() || FileSnapshot::of(&file)? != snapshot {
         bail!("{label} changed during capture");
     }
     Ok(bytes)
+}
+
+/// Copies a no-follow payload tree into a new private destination.
+///
+/// Every source file is held open while it is copied, hashed, and checked for
+/// metadata changes. Directory membership and the root identity are rechecked
+/// after traversal. Release control filenames are reserved for the caller.
+///
+/// # Errors
+///
+/// Returns an error for links, aliases, special files, unstable input,
+/// reserved control paths, excessive depth/count, or destination collisions.
+pub(super) fn copy_payload_tree(source: &Path, destination: &Path) -> Result<Vec<CapturedFile>> {
+    copy_tree(source, destination, true)
+}
+
+/// Copies a publication surface without following links or accepting aliases.
+///
+/// # Errors
+///
+/// Returns an error for links, aliases, special files, unstable input,
+/// excessive depth/count, or destination collisions.
+pub(super) fn copy_surface_tree(source: &Path, destination: &Path) -> Result<Vec<CapturedFile>> {
+    copy_tree(source, destination, false)
+}
+
+fn copy_tree(
+    source: &Path,
+    destination: &Path,
+    reserve_release_controls: bool,
+) -> Result<Vec<CapturedFile>> {
+    let root = open(
+        source,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .with_context(|| format!("opening release payload tree {}", source.display()))?;
+    let root_identity = Identity::of(&File::from(root.try_clone()?))?;
+    fs::create_dir(destination).with_context(|| {
+        format!(
+            "creating release payload destination {}",
+            destination.display()
+        )
+    })?;
+
+    let mut state = CaptureState::default();
+    copy_payload_directory(
+        &root,
+        "",
+        0,
+        &mut state,
+        destination,
+        reserve_release_controls,
+    )?;
+    let reopened = open(
+        source,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    if Identity::of(&File::from(reopened))? != root_identity {
+        bail!("release payload root changed during capture");
+    }
+    Ok(state.files)
+}
+
+fn copy_payload_directory(
+    directory: &OwnedFd,
+    relative: &str,
+    depth: usize,
+    state: &mut CaptureState,
+    destination: &Path,
+    reserve_release_controls: bool,
+) -> Result<()> {
+    if depth > MAX_DEPTH {
+        bail!("release payload exceeds maximum depth of {MAX_DEPTH}");
+    }
+    let names = directory_entries(directory)?;
+    for name in &names {
+        state.entries = state
+            .entries
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("release payload entry count overflow"))?;
+        if state.entries > MAX_ENTRIES {
+            bail!("release payload exceeds maximum entry count of {MAX_ENTRIES}");
+        }
+        let child = openat(
+            directory,
+            name.as_str(),
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?;
+        let child_file = File::from(child.try_clone()?);
+        let metadata = child_file.metadata()?;
+        let identity = Identity::of(&child_file)?;
+        let child_path = if relative.is_empty() {
+            name.clone()
+        } else {
+            format!("{relative}/{name}")
+        };
+        if reserve_release_controls
+            && matches!(
+                child_path.as_str(),
+                "release-plan.json" | "release-manifest.json"
+            )
+        {
+            bail!("release payload uses reserved control path {child_path}");
+        }
+        let target = destination.join(&child_path);
+        if metadata.is_dir() {
+            fs::create_dir(&target)?;
+            copy_payload_directory(
+                &child,
+                &child_path,
+                depth + 1,
+                state,
+                destination,
+                reserve_release_controls,
+            )?;
+        } else if metadata.is_file() {
+            copy_payload_regular(child, &child_path, &target, state)?;
+        } else {
+            bail!("release payload contains a symlink or special file: {child_path}");
+        }
+        let reopened = openat(
+            directory,
+            name.as_str(),
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?;
+        if Identity::of(&File::from(reopened))? != identity {
+            bail!("release payload member changed during capture: {child_path}");
+        }
+    }
+    assert_directory_entries(directory, &names)
+}
+
+fn copy_payload_regular(
+    handle: OwnedFd,
+    relative: &str,
+    target: &Path,
+    state: &mut CaptureState,
+) -> Result<()> {
+    let mut source = File::from(handle);
+    let snapshot = FileSnapshot::of(&source)?;
+    if snapshot.links != 1 || !state.identities.insert(snapshot.identity) {
+        bail!("release payload contains a linked or aliased file: {relative}");
+    }
+    let mut destination = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(target)?;
+    let mut digest = Sha256::new();
+    let copied = std::io::copy(
+        &mut source,
+        &mut CopyDigestWriter {
+            destination: &mut destination,
+            digest: &mut digest,
+        },
+    )?;
+    destination.sync_all()?;
+    if copied != snapshot.size || FileSnapshot::of(&source)? != snapshot {
+        bail!("release payload file changed during copy: {relative}");
+    }
+    state.files.push(CapturedFile {
+        path: BundlePath::parse(relative)?,
+        size_bytes: snapshot.size,
+        sha256: Sha256Digest::parse(&format!("sha256:{:x}", digest.finalize()))?,
+    });
+    Ok(())
+}
+
+struct CopyDigestWriter<'a> {
+    destination: &'a mut File,
+    digest: &'a mut Sha256,
+}
+
+impl std::io::Write for CopyDigestWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let written = self.destination.write(bytes)?;
+        self.digest.update(&bytes[..written]);
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.destination.flush()
+    }
 }
 
 #[derive(Default)]
@@ -303,7 +489,7 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::bundle;
+    use super::{bundle, copy_payload_tree, copy_surface_tree};
 
     fn control_files(root: &Path) -> Result<()> {
         fs::write(root.join("release-plan.json"), b"{}")?;
@@ -348,6 +534,52 @@ mod tests {
             temporary.path().join("alias"),
         )?;
         assert!(bundle(temporary.path()).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn payload_copy_recreates_exact_regular_file_closure() -> Result<()> {
+        let source = tempdir()?;
+        let parent = tempdir()?;
+        fs::create_dir(source.path().join("nested"))?;
+        fs::write(source.path().join("nested/artifact"), b"payload")?;
+
+        let destination = parent.path().join("bundle");
+        let files = copy_payload_tree(source.path(), &destination)?;
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path.as_str(), "nested/artifact");
+        assert_eq!(fs::read(destination.join("nested/artifact"))?, b"payload");
+        Ok(())
+    }
+
+    #[test]
+    fn payload_copy_rejects_reserved_controls_and_links() -> Result<()> {
+        let source = tempdir()?;
+        let parent = tempdir()?;
+        fs::write(source.path().join("release-manifest.json"), b"{}")?;
+        assert!(copy_payload_tree(source.path(), &parent.path().join("reserved")).is_err());
+
+        fs::remove_file(source.path().join("release-manifest.json"))?;
+        fs::write(source.path().join("artifact"), b"payload")?;
+        symlink("artifact", source.path().join("alias"))?;
+        assert!(copy_payload_tree(source.path(), &parent.path().join("linked")).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn surface_copy_accepts_controls_but_still_rejects_links() -> Result<()> {
+        let source = tempdir()?;
+        let parent = tempdir()?;
+        fs::write(source.path().join("release-manifest.json"), b"{}")?;
+
+        let copied = parent.path().join("copied");
+        copy_surface_tree(source.path(), &copied)?;
+        assert_eq!(fs::read(copied.join("release-manifest.json"))?, b"{}");
+
+        fs::write(source.path().join("artifact"), b"payload")?;
+        symlink("artifact", source.path().join("alias"))?;
+        assert!(copy_surface_tree(source.path(), &parent.path().join("linked")).is_err());
         Ok(())
     }
 }
