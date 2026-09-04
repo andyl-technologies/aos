@@ -29,6 +29,8 @@ in ''
   registration=${lib.escapeShellArg registrationPath}
   store_paths=${lib.escapeShellArg storePathsPath}
   baked_roots=${lib.escapeShellArg bakedRootsPath}
+  release_profile=${lib.escapeShellArg (rootPath "/etc/aos/release-profile")}
+  release_warning=${lib.escapeShellArg (rootPath "/etc/issue")}
   store_dir=${lib.escapeShellArg (rootPath "/nix/store")}
   state_dir=${lib.escapeShellArg (rootPath "/nix/var/nix")}
   gcroots_dir=${lib.escapeShellArg (rootPath "/nix/var/nix/gcroots")}
@@ -84,6 +86,16 @@ in ''
       || fail "embedded baked-root inventory is empty"
   }
 
+  show_release_warning() {
+    if [ -r "$release_profile" ] \
+        && grep -Fx 'tier=testing' "$release_profile" >/dev/null \
+        && [ -r "$release_warning" ]; then
+      printf '\n' >&2
+      cat "$release_warning" >&2
+      printf '\n' >&2
+    fi
+  }
+
   probe_directory() {
     probe="$1/.aos-container-write-probe.$$"
     if mkdir "$probe" 2>/dev/null; then
@@ -122,6 +134,7 @@ in ''
   }
 
   validate_embedded_inventory
+  show_release_warning
 
   # Probe actual mutations rather than mode bits: root can pass `test -w` on an
   # EROFS mount. A writable state mount can rebuild the local database even when

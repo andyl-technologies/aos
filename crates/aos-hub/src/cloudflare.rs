@@ -728,6 +728,184 @@ pub async fn bootstrap_root_remote(
         .ok_or_else(|| anyhow::anyhow!("bootstrap-root response missing user_id: {body}"))
 }
 
+/// Captures a Cloudflare SQLite Durable Object recovery bookmark.
+///
+/// The request is sent directly to the seal-gated HubDb endpoint. Omitting
+/// `timestamp_ms` captures the current state; supplying it requests the nearest
+/// retained point in time.
+///
+/// # Errors
+///
+/// Returns an error when the request fails, the seal or timestamp is rejected,
+/// or the Worker does not return the closed recovery-bookmark schema.
+pub async fn recovery_bookmark_remote(
+    base: &str,
+    seal: &str,
+    timestamp_ms: Option<f64>,
+) -> Result<serde_json::Value> {
+    if timestamp_ms.is_some_and(|timestamp| !timestamp.is_finite() || timestamp < 0.0) {
+        bail!("HubDb recovery timestamp must be finite and non-negative");
+    }
+    let url = format!("{}/_admin/recovery/bookmark", base.trim_end_matches('/'));
+    let response = reqwest::Client::new()
+        .post(&url)
+        .header("x-hub-seal", seal)
+        .json(&serde_json::json!({ "timestamp_ms": timestamp_ms }))
+        .send()
+        .await
+        .with_context(|| format!("POST {url}"))?;
+    let value = parse_recovery_response(response, "aos.hub.worker-recovery-bookmark/v1").await?;
+    let returned_timestamp = value
+        .get("requested_timestamp_ms")
+        .and_then(serde_json::Value::as_f64);
+    if returned_timestamp != timestamp_ms {
+        bail!("HubDb recovery response changed the requested timestamp");
+    }
+    Ok(value)
+}
+
+/// Schedules a confirmed Cloudflare SQLite Durable Object recovery.
+///
+/// Cloudflare applies the restore when the Durable Object next starts a new
+/// session. The response includes the provider-issued undo bookmark that must
+/// be retained before restarting the object.
+///
+/// # Errors
+///
+/// Returns an error when the request fails, confirmation differs from the live
+/// deployment, the bookmark is rejected, or the response schema is invalid.
+pub async fn schedule_recovery_restore_remote(
+    base: &str,
+    seal: &str,
+    bookmark: &str,
+    confirm_database_instance: &str,
+    confirm_deployment_id: &str,
+) -> Result<serde_json::Value> {
+    let url = format!("{}/_admin/recovery/restore", base.trim_end_matches('/'));
+    let response = reqwest::Client::new()
+        .post(&url)
+        .header("x-hub-seal", seal)
+        .json(&serde_json::json!({
+            "bookmark": bookmark,
+            "confirm_database_instance": confirm_database_instance,
+            "confirm_deployment_id": confirm_deployment_id,
+        }))
+        .send()
+        .await
+        .with_context(|| format!("POST {url}"))?;
+    let value = parse_recovery_response(response, "aos.hub.worker-recovery-restore/v1").await?;
+    require_recovery_match(&value, "database_instance", confirm_database_instance)?;
+    require_recovery_match(&value, "deployment_id", confirm_deployment_id)?;
+    require_recovery_match(&value, "restore_bookmark", bookmark)?;
+    Ok(value)
+}
+
+async fn parse_recovery_response(
+    response: reqwest::Response,
+    expected_schema: &str,
+) -> Result<serde_json::Value> {
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .context("reading HubDb recovery response")?;
+    if !status.is_success() {
+        bail!("HubDb recovery request failed ({status}): {body}");
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(&body).context("decoding HubDb recovery response")?;
+    validate_recovery_response(&value, expected_schema)?;
+    Ok(value)
+}
+
+fn validate_recovery_response(value: &serde_json::Value, expected_schema: &str) -> Result<()> {
+    let object = value
+        .as_object()
+        .context("HubDb recovery response is not a JSON object")?;
+    let expected_fields: &[&str] = match expected_schema {
+        "aos.hub.worker-recovery-bookmark/v1" => &[
+            "schema_version",
+            "database_instance",
+            "deployment_id",
+            "bookmark",
+            "requested_timestamp_ms",
+            "captured_at_ms",
+        ],
+        "aos.hub.worker-recovery-restore/v1" => &[
+            "schema_version",
+            "database_instance",
+            "deployment_id",
+            "restore_bookmark",
+            "undo_bookmark",
+            "restart_required",
+        ],
+        _ => bail!("unsupported HubDb recovery response schema"),
+    };
+    if object.len() != expected_fields.len()
+        || object
+            .keys()
+            .any(|field| !expected_fields.contains(&field.as_str()))
+    {
+        bail!("HubDb recovery response does not match the closed schema");
+    }
+    if value
+        .get("schema_version")
+        .and_then(serde_json::Value::as_str)
+        != Some(expected_schema)
+    {
+        bail!("HubDb recovery response has an unexpected schema");
+    }
+    for field in ["database_instance", "deployment_id"] {
+        require_recovery_string(&value, field)?;
+    }
+    match expected_schema {
+        "aos.hub.worker-recovery-bookmark/v1" => {
+            require_recovery_string(&value, "bookmark")?;
+            match value.get("requested_timestamp_ms") {
+                Some(serde_json::Value::Null) => {}
+                Some(serde_json::Value::Number(timestamp))
+                    if timestamp.as_f64().is_some_and(f64::is_finite) => {}
+                _ => bail!("HubDb recovery bookmark response has an invalid requested time"),
+            }
+            if value
+                .get("captured_at_ms")
+                .and_then(serde_json::Value::as_u64)
+                .is_none()
+            {
+                bail!("HubDb recovery bookmark response lacks a capture time");
+            }
+        }
+        "aos.hub.worker-recovery-restore/v1" => {
+            require_recovery_string(&value, "restore_bookmark")?;
+            require_recovery_string(&value, "undo_bookmark")?;
+            if value
+                .get("restart_required")
+                .and_then(serde_json::Value::as_bool)
+                != Some(true)
+            {
+                bail!("HubDb recovery restore response lacks the restart requirement");
+            }
+        }
+        _ => unreachable!("expected schema was checked above"),
+    }
+    Ok(())
+}
+
+fn require_recovery_string<'a>(value: &'a serde_json::Value, field: &str) -> Result<&'a str> {
+    value
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .with_context(|| format!("HubDb recovery response lacks non-empty {field}"))
+}
+
+fn require_recovery_match(value: &serde_json::Value, field: &str, expected: &str) -> Result<()> {
+    if require_recovery_string(value, field)? != expected {
+        bail!("HubDb recovery response changed confirmed {field}");
+    }
+    Ok(())
+}
+
 // ── live orchestration (operator-validated) ─────────────────────────────────
 
 /// Runs the bundled `wrangler` with `args`, optionally piping `stdin`, and
@@ -2061,5 +2239,55 @@ mod tests {
         assert!(require_fresh_challenge_timestamp(39, 100).is_err());
         assert!(require_fresh_challenge_timestamp(40, 100).is_ok());
         assert!(require_fresh_challenge_timestamp(100, 100).is_ok());
+    }
+
+    #[test]
+    fn recovery_responses_are_closed_and_identity_bound() {
+        let bookmark = serde_json::json!({
+            "schema_version": "aos.hub.worker-recovery-bookmark/v1",
+            "database_instance": "hub-v2",
+            "deployment_id": "deployment-1",
+            "bookmark": "0000007b-0000b26e",
+            "requested_timestamp_ms": null,
+            "captured_at_ms": 1_788_541_200_000_u64,
+        });
+        assert!(
+            validate_recovery_response(&bookmark, "aos.hub.worker-recovery-bookmark/v1").is_ok()
+        );
+
+        let mut missing_identity = bookmark.clone();
+        missing_identity["deployment_id"] = serde_json::Value::String(String::new());
+        assert!(validate_recovery_response(
+            &missing_identity,
+            "aos.hub.worker-recovery-bookmark/v1"
+        )
+        .is_err());
+
+        let mut unexpected_field = bookmark.clone();
+        unexpected_field["untrusted"] = serde_json::Value::Bool(true);
+        assert!(validate_recovery_response(
+            &unexpected_field,
+            "aos.hub.worker-recovery-bookmark/v1"
+        )
+        .is_err());
+
+        let restore = serde_json::json!({
+            "schema_version": "aos.hub.worker-recovery-restore/v1",
+            "database_instance": "hub-v2",
+            "deployment_id": "deployment-1",
+            "restore_bookmark": "0000007b-0000b26e",
+            "undo_bookmark": "0000007c-0000b270",
+            "restart_required": true,
+        });
+        assert!(validate_recovery_response(&restore, "aos.hub.worker-recovery-restore/v1").is_ok());
+
+        let mut no_restart = restore;
+        no_restart["restart_required"] = serde_json::Value::Bool(false);
+        assert!(
+            validate_recovery_response(&no_restart, "aos.hub.worker-recovery-restore/v1").is_err()
+        );
+
+        assert!(require_recovery_match(&bookmark, "deployment_id", "deployment-1").is_ok());
+        assert!(require_recovery_match(&bookmark, "deployment_id", "deployment-2").is_err());
     }
 }

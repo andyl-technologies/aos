@@ -13,6 +13,7 @@ use aos_package::registry::release::{
     RegistryGitSignature, RegistryGitSigningRequest, RegistryObjectSigner,
     RegistryPackagePublication, RegistryReleaseTransaction, require_active_signing_key,
 };
+use aos_package::registry_ops::{ContainerReleaseAttachment, load_container_release_attachment};
 use aos_package::types::ProfileScope;
 use aos_package::{DSSE_SIGNATURE_NAMESPACE, ProvenanceSignature, ProvenanceSigner};
 use aos_release::build::BuildReportV1;
@@ -50,6 +51,12 @@ pub(super) async fn run(
     let transaction: RegistryReleaseTransaction =
         canonical::from_slice(&transaction_bytes, "registry transaction")?;
     validate_transaction_binding(&transaction, &plan, &report, plan_digest)?;
+    let container_release = load_container_release_attachment(
+        &semver::Version::parse(&plan.version).context("parsing planned release version")?,
+        args.container_release.as_deref(),
+        args.container_signature_input.as_deref(),
+    )?;
+    validate_container_plan_binding(container_release.as_ref(), &plan)?;
 
     let provenance_key = read_key_spec(&args.provenance_key, "provenance")?;
     let registry_key = read_key_spec(&args.registry_key, "registry")?;
@@ -86,7 +93,14 @@ pub(super) async fn run(
             printer,
         );
         transaction
-            .prepare(&args.source_registry, &args.output, &mut author)
+            .prepare_with_container_release(
+                &args.source_registry,
+                &args.output,
+                &mut author,
+                container_release
+                    .as_ref()
+                    .map(|attachment| attachment.canonical_bytes.as_slice()),
+            )
             .await?
     };
     let identity = RegistryCommitIdentity {
@@ -115,6 +129,45 @@ pub(super) async fn run(
         "Finalized {} registry entries in signed commit {}",
         prepared.entry_count, finalized.commit
     ));
+    Ok(())
+}
+
+fn validate_container_plan_binding(
+    attachment: Option<&ContainerReleaseAttachment>,
+    plan: &ReleasePlanV1,
+) -> Result<()> {
+    let Some(attachment) = attachment else {
+        return Ok(());
+    };
+    let package = plan
+        .packages
+        .iter()
+        .find(|package| package.name == attachment.release.identity.package)
+        .and_then(|package| package.publication.as_ref())
+        .context("container sidecar package is not publishable in the release plan")?;
+    if package.version != attachment.release.identity.package_version {
+        bail!("container sidecar package version differs from the release plan");
+    }
+
+    let attribute = &attachment.release.nix.definition.attribute;
+    let system_variant = attribute
+        .strip_prefix("systems.")
+        .and_then(|rest| rest.strip_suffix(".build.containers.aos"));
+    match system_variant {
+        Some(system_variant)
+            if plan
+                .images
+                .iter()
+                .any(|image| image.system_variant == system_variant) => {}
+        Some(system_variant) => bail!(
+            "container sidecar system variant '{system_variant}' is absent from the release plan"
+        ),
+        None if attribute == "containerImages.aos" && plan.images.len() == 1 => {}
+        None if attribute == "containerImages.aos" => bail!(
+            "legacy container definition attributes require exactly one planned system variant"
+        ),
+        None => bail!("container sidecar has an unsupported Nix definition attribute"),
+    }
     Ok(())
 }
 

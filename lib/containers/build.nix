@@ -10,7 +10,24 @@
   oci,
   container,
   systemIdentity,
+  definitionAttribute,
 }: let
+  releaseIdentity =
+    systemIdentity.release or {
+      enabled = false;
+      tier = "production";
+      registry = "andyl/main";
+      channel = "stable";
+    };
+  releaseOsMetadata = lib.optionalString releaseIdentity.enabled (
+    lib.concatStringsSep "\n" [
+      "AOS_RELEASE_TIER=${releaseIdentity.tier}"
+      "AOS_REGISTRY=${releaseIdentity.registry}"
+      "AOS_CHANNEL=${releaseIdentity.channel}"
+      "AOS_REGISTRY_ROOT_EPOCH=${toString releaseIdentity.rootEpoch}"
+    ]
+    + "\n"
+  );
   uniqueByPath = values: let
     step = state: value: let
       path = builtins.unsafeDiscardStringContext (builtins.toString value);
@@ -43,6 +60,7 @@
     destination = "/baked-roots";
   };
   configuredDirectoryPaths = map (directory: directory.path) container.filesystem.directories;
+  configuredFilePaths = map (file: file.path) container.filesystem.files;
   standardDirectories =
     builtins.filter
     (directory: !builtins.elem directory.path configuredDirectoryPaths)
@@ -188,6 +206,7 @@
     AOS_SYSTEM=${container.platform.aosSystem}
     AOS_STATE_VERSION=${systemIdentity.stateVersion}
     AOS_MODULE_ABI=${toString systemIdentity.moduleAbi}
+    ${releaseOsMetadata}
   '';
   releaseAnnotations =
     container.annotations
@@ -198,6 +217,7 @@
       "dev.andyl.aos.state-version" = systemIdentity.stateVersion;
       "dev.andyl.aos.module-abi" = toString systemIdentity.moduleAbi;
     };
+  referenceName = "${container.publication.repository}:${container.publication.referenceTag}";
 
   packageEvidence = import ./package-evidence.nix {
     inherit lib pkgs;
@@ -229,67 +249,74 @@
       expectedCollisions = container.filesystem.allowedFacadeCollisions;
       pname = "aos-container-${container.name}-golden-facade${suffixPart}";
     };
+    standardFiles = [
+      {
+        path = "/etc/group";
+        mode = "0644";
+        text = "root:x:0:\n";
+      }
+      {
+        path = "/etc/nix/nix.conf";
+        mode = "0644";
+        text = ''
+          build-users-group =
+          experimental-features = nix-command
+          sandbox = false
+          substituters =
+        '';
+      }
+      {
+        path = "/etc/os-release";
+        mode = "0644";
+        text = osRelease;
+      }
+      {
+        path = "/etc/passwd";
+        mode = "0644";
+        text = "root:x:0:0:root:/root:/usr/bin/sh\n";
+      }
+      {
+        path = "/etc/shadow";
+        mode = "0600";
+        text = "root:!:1::::::\n";
+      }
+      {
+        path = "/aos-registration";
+        mode = "0444";
+        source = "${referenceGraph}/registration";
+      }
+      {
+        path = "/nix/var/nix/.aos-container-init.lock";
+        mode = "0600";
+        text = "";
+      }
+      {
+        path = "/usr/lib/aos-container/baked-roots";
+        mode = "0444";
+        source = "${bakedRootInventory}/baked-roots";
+      }
+      {
+        path = "/usr/lib/aos-container/store-paths";
+        mode = "0444";
+        source = "${referenceGraph}/store-paths";
+      }
+      {
+        path = "/usr/bin/aos-container-init";
+        mode = "0555";
+        source = "${initSource}/init";
+      }
+    ];
+    reservedFilePaths = map (file: file.path) standardFiles;
+    filePathCollisions = builtins.filter (path: builtins.elem path reservedFilePaths) configuredFilePaths;
+    metadataFiles =
+      if filePathCollisions == []
+      then standardFiles ++ container.filesystem.files
+      else throw "container filesystem files collide with reserved metadata paths: ${lib.concatStringsSep ", " filePathCollisions}";
     metadataLayer = oci.mkRootMetadataLayer {
       pname = "aos-container-${container.name}-root-metadata${suffixPart}";
       layerName = "root-metadata";
       directories = standardDirectories ++ container.filesystem.directories;
-      files = [
-        {
-          path = "/etc/group";
-          mode = "0644";
-          text = "root:x:0:\n";
-        }
-        {
-          path = "/etc/nix/nix.conf";
-          mode = "0644";
-          text = ''
-            build-users-group =
-            experimental-features = nix-command
-            sandbox = false
-            substituters =
-          '';
-        }
-        {
-          path = "/etc/os-release";
-          mode = "0644";
-          text = osRelease;
-        }
-        {
-          path = "/etc/passwd";
-          mode = "0644";
-          text = "root:x:0:0:root:/root:/usr/bin/sh\n";
-        }
-        {
-          path = "/etc/shadow";
-          mode = "0600";
-          text = "root:!:1::::::\n";
-        }
-        {
-          path = "/aos-registration";
-          mode = "0444";
-          source = "${referenceGraph}/registration";
-        }
-        {
-          path = "/nix/var/nix/.aos-container-init.lock";
-          mode = "0600";
-          text = "";
-        }
-        {
-          path = "/usr/lib/aos-container/baked-roots";
-          mode = "0444";
-          source = "${bakedRootInventory}/baked-roots";
-        }
-        {
-          path = "/usr/lib/aos-container/store-paths";
-          mode = "0444";
-          source = "${referenceGraph}/store-paths";
-        }
-        {
-          path = "/usr/bin/aos-container-init";
-          mode = "0555";
-          source = "${initSource}/init";
-        }
-      ];
+      files = metadataFiles;
       symlinks = compatibilitySymlinks;
       storeLayers = closureLayers;
     };
@@ -300,7 +327,7 @@
       platform = {
         inherit (container.platform) os architecture;
       };
-      referenceName = "${container.publication.repository}:latest";
+      inherit referenceName;
       annotations = releaseAnnotations;
       indexAnnotations = releaseAnnotations;
       config = {
@@ -316,12 +343,12 @@
     dockerArchive = oci.mkDockerArchive {
       pname = "aos-container-${container.name}-${container.platform.architecture}-docker${suffixPart}";
       inherit image;
-      references = ["${container.publication.repository}:latest"];
+      references = [referenceName];
     };
     ociIndex = oci.mkMultiPlatformIndex {
       pname = "aos-container-${container.name}-${container.platform.architecture}-index${suffixPart}";
       images = [image];
-      referenceName = "${container.publication.repository}:latest";
+      inherit referenceName;
       annotations = releaseAnnotations;
     };
     sourceGraph = oci.mkEvidenceSourceGraph {
@@ -345,7 +372,7 @@
       image = primary.ociIndex;
       inherit (platformBuild) referenceGraph sourceGraph closureLayers;
       packageCatalog = packageEvidence.catalog;
-      definitionAttribute = "containerImages.${container.name}";
+      inherit definitionAttribute;
       releaseIdentity = container.publication.releaseIdentity;
       packageName = pkgs.aos.pname;
       packageVersion = pkgs.aos.version;
@@ -446,7 +473,7 @@
     annotations = releaseAnnotations;
     inherit (container) platform runtime packageManagement budgets;
     publication = {
-      inherit (container.publication) repository releaseIdentity;
+      inherit (container.publication) repository releaseIdentity referenceTag;
     };
     packageRoots = map builtins.toString container.packageRoots;
     layers =
@@ -512,11 +539,11 @@ in {
   };
   coordination = {
     inherit (container) name;
-    inherit (container.publication) repository releaseIdentity;
+    inherit (container.publication) repository releaseIdentity referenceTag;
     inherit (container.platform) aosSystem os architecture;
     packageName = pkgs.aos.pname;
     packageVersion = pkgs.aos.version;
-    definitionAttribute = "containerImages.${container.name}";
+    inherit definitionAttribute;
     indexAnnotations = builtins.removeAttrs releaseAnnotations ["dev.andyl.aos.system"];
   };
   checks = {

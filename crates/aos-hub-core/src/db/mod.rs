@@ -28608,8 +28608,7 @@ source_nar_hash = ""
 
     #[test]
     fn mysql_phase5_multiline_add_columns_are_replay_safe() {
-        const OCI_UPLOAD_PUBLICATION_INDEX: usize = 25;
-        let phase5 = MIGRATIONS[OCI_UPLOAD_PUBLICATION_INDEX];
+        let phase5 = include_str!("oci_upload_publication.sql");
         let add_columns: Vec<_> = crate::backend::split_statements(phase5)
             .into_iter()
             .filter(|statement| statement.contains("ALTER TABLE "))

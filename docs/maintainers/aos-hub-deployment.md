@@ -19,10 +19,10 @@ values:
 | Public origin | `https://aos.staging.andyl.org` | `https://aos.andyl.org` |
 | Direct R2 CDN | `https://cdn.aos.staging.andyl.org` | Not configured |
 | Worker | `aos-hub-staging` | `aos-hub` |
-| R2 bucket | `aos-hub-staging-surfaces` | `aos-hub-surfaces` |
-| KV namespace title | `aos-hub-staging-sessions` | `aos-hub-sessions` |
-| Deferred-jobs Queue | `aos-hub-staging-jobs` | `aos-hub-jobs` |
-| Durable Object state | `hub-v2` on the staging Worker | `hub` on the production Worker |
+| R2 bucket | `aos-hub-staging-surfaces` | `aos-hub-v2-surfaces` |
+| KV namespace title | `aos-hub-staging-sessions` | `aos-hub-v2-sessions` |
+| Deferred-jobs Queue | `aos-hub-staging-jobs` | `aos-hub-v2-jobs` |
+| Durable Object state | `hub-v2` on the staging Worker | `hub-v2` on the production Worker |
 | Rate-limit namespace IDs | `2001` through `2003` | `1001` through `1003` |
 
 Cloudflare rate-limit namespace IDs are account-wide counter identities, not
@@ -49,15 +49,20 @@ installer on a trusted build host:
 git switch master
 git pull --ff-only origin master
 
-deployment_id="$(git rev-parse HEAD)"
+source_commit="$(git rev-parse HEAD)"
+staging_deployment_id="staging-$source_commit"
+production_deployment_id="production-$source_commit"
 installer="$(nix build .#pkg-aos-hub-cloudflare --no-link --print-out-paths)"
 test -x "$installer/bin/aos-hub"
 ```
 
-Keep `deployment_id` and `installer` unchanged through staging validation and
-production promotion. Do not rebuild between environments. If the Nix store may
-garbage-collect the closure before promotion, copy it to an operator-controlled
-binary cache or archive and restore that exact store path before continuing.
+Keep `source_commit`, both environment-qualified deployment ids, and `installer`
+unchanged through staging validation and production promotion. The release plan
+requires distinct staging and production deployment identities even though they
+bind the same source commit and installer. Do not rebuild between environments.
+If the Nix store may garbage-collect the closure before promotion, copy it to an
+operator-controlled binary cache or archive and restore that exact store path
+before continuing.
 
 ## Authenticate Wrangler with Cloudflare OAuth
 
@@ -140,6 +145,11 @@ Remove both temporary files after the deployment session.
 
 ## Deploy staging
 
+Before changing a stateful environment, capture the complete recovery set in
+[`aos-hub-backup-recovery.md`](aos-hub-backup-recovery.md). An explicitly
+approved empty testing rebuild records that decision instead of claiming a
+backup exists.
+
 Confirm that the shell contains the staging runtime values, then deploy:
 
 ```sh
@@ -147,7 +157,7 @@ Confirm that the shell contains the staging runtime values, then deploy:
   --name aos-hub-staging \
   --domain aos.staging.andyl.org \
   --external-url https://aos.staging.andyl.org \
-  --deployment-id "$deployment_id" \
+  --deployment-id "$staging_deployment_id" \
   --database-instance hub-v2 \
   --rate-limit-namespace-base 2000 \
   --email-from noreply+aos@send.andyl.org \
@@ -191,7 +201,7 @@ Keep staging identities and registry data separate from production.
 
 ## Validate staging
 
-Require the hosted deployment identity to equal the source commit:
+Require the hosted deployment identity to equal the recorded staging identity:
 
 ```sh
 curl_package="$(nix build .#pkg-curl --no-link --print-out-paths)"
@@ -202,9 +212,9 @@ actual="$(
     --silent \
     --show-error \
     --header 'cache-control: no-cache' \
-    "https://aos.staging.andyl.org/.well-known/aos-deployment?manual=$deployment_id"
+    "https://aos.staging.andyl.org/.well-known/aos-deployment?manual=$staging_deployment_id"
 )"
-test "$actual" = "$deployment_id"
+test "$actual" = "$staging_deployment_id"
 ```
 
 Also validate the stateful and authenticated paths that the identity probe does
@@ -217,18 +227,21 @@ not cover:
 - verify full and ranged image downloads, integrity metadata, and cache headers;
 - inspect Workers logs and Cloudflare metrics for errors.
 
-Record the commit SHA, installer store path, validation results, operator, and
-deployment time before production promotion.
+Record the commit SHA, both deployment ids, installer store path, validation
+results, operator, and deployment time before production promotion.
 
 ## Promote the same installer to production
 
-Keep the exact validated `installer` and `deployment_id`. Replace the shell's
-staging runtime values with production values, and explicitly remove the staging
-JWT and seal values:
+Keep the exact validated `installer`, `source_commit`, and
+`production_deployment_id`. Replace the shell's staging runtime values with
+production values. For a routine update, explicitly remove the staging JWT and
+seal values so the production values already stored by the Worker are
+preserved:
 
 ```sh
 unset HUB_JWT_SECRET HUB_SEAL_KEY
 printf '%s' "$HUB_ROUTE_RESERVATION_KEYRING" > "$keyring"
+printf '%s' "$HUB_RELEASE_EVIDENCE_CONFIG" > "$release_evidence_config"
 ```
 
 Pass the complete set of production custom domains as repeated `--domain`
@@ -238,9 +251,13 @@ would remove it from the generated Worker configuration.
 ```sh
 "$installer/bin/aos-hub" worker deploy \
   --name aos-hub \
+  --bucket aos-hub-v2-surfaces \
+  --kv-title aos-hub-v2-sessions \
+  --queue aos-hub-v2-jobs \
   --domain aos.andyl.org \
   --external-url https://aos.andyl.org \
-  --deployment-id "$deployment_id" \
+  --deployment-id "$production_deployment_id" \
+  --database-instance hub-v2 \
   --rate-limit-namespace-base 1000 \
   --email-from noreply+aos@send.andyl.org \
   --route-reservation-keys-file "$keyring" \
@@ -250,6 +267,40 @@ would remove it from the generated Worker configuration.
 Repeat `--domain DOMAIN` for every additional domain owned by the production
 Worker. Probe `https://aos.andyl.org/.well-known/aos-deployment` exactly as for
 staging, then repeat the relevant hosted acceptance tests.
+
+### First correct production setup
+
+The historical production `hub` object predates the topology hard cutover and
+is not a compatible database for the current Worker. Because the present
+production data is explicitly disposable, initialize `hub-v2` as a new empty
+logical database and new production data resources. Preserve the existing
+`aos-hub` Worker name and deploy it with `worker deploy`; deleting/reinstalling
+the Worker would discard provider migration history for its Durable Object
+classes.
+
+For this one approved reset, load newly generated production values for every
+required secret and use the explicit `aos-hub-v2-surfaces`,
+`aos-hub-v2-sessions`, and `aos-hub-v2-jobs` flags shown above. The names are
+part of every later production deployment; omitting them would silently select
+the legacy `aos-hub-*` defaults. Include `--database-instance hub-v2` and do not
+reuse staging values. `worker deploy` provisions the fresh named resources but
+requires the existing Worker, retaining its Durable Object migration history.
+After deployment, bootstrap the production owner once:
+
+```sh
+printf '%s\n' "$PRODUCTION_ROOT_PASSWORD" | \
+  HUB_SEAL_KEY="$HUB_SEAL_KEY" \
+  "$installer/bin/aos-hub" worker bootstrap-root \
+    --url https://aos.andyl.org \
+    --email ops@example.com \
+    --password-stdin
+```
+
+Recreate explicit topology/IAM resources through the Hub control surface, then
+bootstrap only `andyl/testing`. Keep `andyl/main` empty until its launch gates
+are closed. Record the reset approval, old and new resource identities, new
+secret versions, and the validation evidence. Subsequent deployments must keep
+`hub-v2` and omit JWT/seal values unless performing a reviewed rotation.
 
 ## Optional outbound router and ingress attestation
 
@@ -280,8 +331,8 @@ earlier attested deployment.
 
 To roll back code, deploy an earlier installer closure whose application and
 database expectations are compatible with the current Durable Object state.
-Use that closure's recorded source commit as `--deployment-id` and validate it
-in staging before production.
+Use environment-qualified deployment ids that bind that closure's recorded
+source commit, and validate the closure in staging before production.
 
 Deploying older Worker code does not reverse SQLite migrations, R2 writes, KV
 changes, or published content. For a state rollback, use Cloudflare backups and

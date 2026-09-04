@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
+use crate::RELEASE_MANIFEST_V1;
 use crate::artifact::{ArtifactKind, ArtifactRecord, require_identifier};
 use crate::digest::Sha256Digest;
 use crate::evidence::EvidenceRecord;
@@ -16,8 +17,8 @@ use crate::plan::{PlatformCell, ReleaseClass, ReleasePlanV1};
 use crate::platform::{
     MatrixCell, require_complete_image_platforms, require_complete_package_platforms,
 };
+use crate::registry::registry_policy;
 use crate::signing::{SignatureResponseV1, SigningRequestV1};
-use crate::{CANONICAL_REGISTRY, RELEASE_MANIFEST_V1};
 
 /// Signature domain for the final manifest payload.
 pub const MANIFEST_DOMAIN: &str = "aos.release.manifest/v1";
@@ -97,8 +98,8 @@ impl ReleaseManifestV1 {
                 self.schema_version
             );
         }
-        if self.registry != CANONICAL_REGISTRY
-            || self.registry != plan.registry
+        registry_policy(&self.registry)?;
+        if self.registry != plan.registry
             || self.release_id != plan.release_id
             || self.version != plan.version
             || self.release_class != plan.release_class
