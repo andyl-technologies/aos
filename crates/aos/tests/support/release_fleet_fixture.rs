@@ -39,6 +39,7 @@ use aos_release::state::{JournalEntryV1, ReleaseState, parse_journal};
 use base64::Engine as _;
 use ed25519_dalek::{Signer as _, SigningKey};
 use serde_json::json;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::rustls::ServerConfig;
@@ -66,6 +67,7 @@ async fn main() -> Result<()> {
         Some("sign-exchange-v1") => signer_exchange(),
         Some("completion") => completion(&arguments[1..]),
         Some("tls-proxy") => tls_proxy(&arguments[1..]).await,
+        Some("maintainer-upstream-proxy") => maintainer_upstream_proxy(&arguments[1..]).await,
         None => qualification_executor().await,
         Some(command) => bail!("unknown release fleet fixture command: {command}"),
     }
@@ -623,6 +625,105 @@ async fn tls_proxy(arguments: &[String]) -> Result<()> {
     }
 }
 
+async fn maintainer_upstream_proxy(arguments: &[String]) -> Result<()> {
+    if arguments.len() != 4 {
+        bail!("usage: maintainer-upstream-proxy LISTEN UPSTREAM CERTIFICATE PRIVATE_KEY");
+    }
+    let acceptor = tls_acceptor(&arguments[2], &arguments[3])?;
+    let listener = TcpListener::bind(&arguments[0]).await?;
+    loop {
+        let (socket, _) = listener.accept().await?;
+        let acceptor = acceptor.clone();
+        let upstream = arguments[1].clone();
+        tokio::spawn(async move {
+            let result = async {
+                let mut client = acceptor.accept(socket).await?;
+                let request = read_http_head(&mut client).await?;
+                if is_fixture_github_tags_request(&request) {
+                    let body = br#"[{"name":"v1.1.0"},{"name":"v1.0.0"}]"#;
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    client.write_all(response.as_bytes()).await?;
+                    client.write_all(body).await?;
+                    client.shutdown().await?;
+                    return Result::<()>::Ok(());
+                }
+                if request_host(&request) == Some("api.github.com") {
+                    client
+                        .write_all(
+                            b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                        )
+                        .await?;
+                    client.shutdown().await?;
+                    return Ok(());
+                }
+
+                let mut server = TcpStream::connect(upstream).await?;
+                server.write_all(&request).await?;
+                tokio::io::copy_bidirectional(&mut client, &mut server).await?;
+                Result::<()>::Ok(())
+            }
+            .await;
+            if let Err(error) = result {
+                eprintln!("maintainer upstream proxy connection failed: {error:#}");
+            }
+        });
+    }
+}
+
+fn tls_acceptor(certificate: &str, private_key: &str) -> Result<TlsAcceptor> {
+    tokio_rustls::rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .map_err(|_| {
+            anyhow::anyhow!("a process-wide Rustls crypto provider is already installed")
+        })?;
+    let certificates = rustls_pemfile::certs(&mut BufReader::new(File::open(certificate)?))
+        .collect::<std::io::Result<Vec<CertificateDer<'static>>>>()?;
+    let key = rustls_pemfile::private_key(&mut BufReader::new(File::open(private_key)?))?
+        .context("TLS fixture private key is absent")?;
+    let config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certificates, key)?;
+    Ok(TlsAcceptor::from(Arc::new(config)))
+}
+
+async fn read_http_head(stream: &mut (impl tokio::io::AsyncRead + Unpin)) -> Result<Vec<u8>> {
+    const MAX_HEAD_BYTES: usize = 64 * 1024;
+    let mut request = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+        let count = stream.read(&mut buffer).await?;
+        if count == 0 {
+            bail!("TLS client closed before sending an HTTP header");
+        }
+        if request.len().saturating_add(count) > MAX_HEAD_BYTES {
+            bail!("TLS fixture request header exceeds {MAX_HEAD_BYTES} bytes");
+        }
+        request.extend_from_slice(&buffer[..count]);
+    }
+    Ok(request)
+}
+
+fn is_fixture_github_tags_request(request: &[u8]) -> bool {
+    let Some(line) = request.split(|byte| *byte == b'\n').next() else {
+        return false;
+    };
+    request_host(request) == Some("api.github.com")
+        && line.starts_with(b"GET /repos/andyl-technologies/maintain-fixture/tags?")
+        && line.ends_with(b" HTTP/1.1\r")
+}
+
+fn request_host(request: &[u8]) -> Option<&str> {
+    std::str::from_utf8(request)
+        .ok()?
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .find(|(name, _)| name.eq_ignore_ascii_case("host"))
+        .map(|(_, value)| value.trim())
+}
+
 fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
     fs::create_dir(destination)?;
     let mut entries = fs::read_dir(source)?.collect::<std::io::Result<Vec<_>>>()?;
@@ -693,6 +794,18 @@ mod tests {
     use aos_release::verify::CapturedFile;
 
     use super::*;
+
+    #[test]
+    fn maintainer_fixture_intercepts_only_the_exact_github_tags_route() {
+        let request = b"GET /repos/andyl-technologies/maintain-fixture/tags?per_page=100&page=1 HTTP/1.1\r\nHost: api.github.com\r\n\r\n";
+        assert!(is_fixture_github_tags_request(request));
+        assert!(!is_fixture_github_tags_request(
+            b"GET /repos/other/project/tags?page=1 HTTP/1.1\r\nHost: api.github.com\r\n\r\n"
+        ));
+        assert!(!is_fixture_github_tags_request(
+            b"GET /repos/andyl-technologies/maintain-fixture/tags?page=1 HTTP/1.1\r\nHost: aos.andyl.org\r\n\r\n"
+        ));
+    }
 
     #[test]
     fn prepared_four_platform_surface_verifies_offline() -> Result<()> {
