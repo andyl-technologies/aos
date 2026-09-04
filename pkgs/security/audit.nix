@@ -3,6 +3,7 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  stdenv,
   linux-headers,
   libcap,
 }: let
@@ -78,6 +79,11 @@ in
             --without-python \
             --without-python3 \
             --without-golang \
+            ${
+            if stdenv.hostPlatform.isAarch64
+            then "--with-aarch64"
+            else ""
+          } \
             --enable-shared \
             --disable-static
         '';

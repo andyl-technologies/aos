@@ -26,7 +26,7 @@ use aos_hub_core::web::console::{dispatch_nested, ConsoleDeps};
 /// console dispatcher.
 #[must_use]
 pub(crate) fn is_streaming_upload_request(method: &Method, uri: &Uri) -> bool {
-    if !matches!(*method, Method::PUT | Method::POST) {
+    if !matches!(*method, Method::PUT | Method::POST | Method::PATCH) {
         return false;
     }
 
@@ -185,7 +185,234 @@ mod tests {
             Arc::new(DatabaseTopologyProbeScheduler::new(Arc::clone(&state.db))),
             Some(Arc::clone(&state.sealer)),
         )
+        .with_container_rollout(state.container_rollout)
         .with_secret_versions(Arc::clone(&state.secret_versions))
+    }
+
+    #[tokio::test]
+    async fn worker_bridge_service_enforces_every_disabled_container_capability() {
+        use aos_hub_core::db::TokenAuth;
+        use aos_hub_core::domain::{Permission, Principal, Scope};
+        use aos_hub_core::oci::{OciRequest, ResolvedOciRoute};
+        use aos_oci_types::{RepositoryName, Sha256Digest};
+        use aos_proto_types as pb;
+
+        let db = Arc::new(aos_hub_core::db::Database::open_in_memory().await.unwrap());
+        let org_id = db
+            .create_org("worker-rollout", "Worker Rollout")
+            .await
+            .unwrap();
+        let org = db.org_by_id(org_id).await.unwrap().unwrap();
+        let registry_id = db
+            .create_managed_registry(org_id, "", "containers", "private", &[], false)
+            .await
+            .unwrap();
+        let registry = db.registry_by_id(registry_id).await.unwrap().unwrap();
+        let user_id = db
+            .create_user("worker-rollout@example.test", None)
+            .await
+            .unwrap();
+        db.grant_membership("user", user_id, &org.stable_id, "owner")
+            .await
+            .unwrap();
+        let state =
+            Arc::new(aos_hub::server::AppState::new(db, "http://worker.test".to_string()).await);
+        assert_eq!(
+            state.container_rollout,
+            aos_hub_core::container_rollout::ContainerRollout::default()
+        );
+        let scope = state
+            .db
+            .registry_authorization_scope(registry_id)
+            .await
+            .unwrap();
+        let token = state
+            .auth
+            .jwt_keys
+            .mint(
+                &TokenAuth {
+                    token_id: "worker-rollout".to_string(),
+                    owner: Principal::user(user_id),
+                    scope: Scope::parse(&scope),
+                    permissions: vec![
+                        Permission::Read,
+                        Permission::Publish,
+                        Permission::RegistryConfigure,
+                    ],
+                },
+                900,
+            )
+            .unwrap();
+        let bearer = format!("Bearer {token}");
+        let service = Arc::new(worker_rpc_service(&state));
+
+        for (method, request) in [
+            (
+                Method::GET,
+                OciRequest::Blob {
+                    repository: RepositoryName::parse("aos").unwrap(),
+                    digest: Sha256Digest::digest(b"pull-disabled"),
+                },
+            ),
+            (
+                Method::POST,
+                OciRequest::BlobUploadCollection {
+                    repository: RepositoryName::parse("aos").unwrap(),
+                },
+            ),
+        ] {
+            let response = Arc::clone(&service)
+                .serve_oci(
+                    ResolvedOciRoute {
+                        registry_id,
+                        authority: "worker.test".to_string(),
+                        scheme: "https".to_string(),
+                        access_policy_kind: "hub_auth".to_string(),
+                        request,
+                    },
+                    method,
+                    HeaderMap::new(),
+                    None,
+                    Body::empty(),
+                )
+                .await;
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        }
+
+        assert!(matches!(
+            service
+                .plan_create_container_repository(
+                    Some(&bearer),
+                    pb::PlanCreateContainerRepositoryRequest {
+                        registry: registry.slug.clone(),
+                        repository: "disabled/admin".to_string(),
+                        idempotency_key: "worker-admin-disabled".to_string(),
+                        ..Default::default()
+                    },
+                )
+                .await,
+            Err(aos_hub_core::service::RpcError::Unavailable(_))
+        ));
+        assert!(matches!(
+            service
+                .begin_container_publication(
+                    Some(&bearer),
+                    pb::BeginContainerPublicationRequest {
+                        registry: registry.slug.clone(),
+                        repository: "aos".to_string(),
+                        idempotency_key: "worker-publication-disabled".to_string(),
+                        ..Default::default()
+                    },
+                )
+                .await,
+            Err(aos_hub_core::service::RpcError::Unavailable(_))
+        ));
+        assert!(matches!(
+            service
+                .plan_run_container_gc(
+                    Some(&bearer),
+                    pb::PlanRunContainerGcRequest {
+                        registry: registry.slug.clone(),
+                        expected_resource_version: "0".to_string(),
+                        idempotency_key: "worker-gc-disabled".to_string(),
+                    },
+                )
+                .await,
+            Err(aos_hub_core::service::RpcError::Unavailable(_))
+        ));
+        assert!(matches!(
+            service
+                .list_container_untracked_inventory(
+                    Some(&bearer),
+                    pb::ListContainerUntrackedInventoryRequest {
+                        registry: registry.slug.clone(),
+                        ..Default::default()
+                    },
+                )
+                .await,
+            Err(aos_hub_core::service::RpcError::Unavailable(_))
+        ));
+        assert!(matches!(
+            service
+                .plan_repair_container_untracked_object(
+                    Some(&bearer),
+                    pb::PlanRepairContainerUntrackedObjectRequest {
+                        registry: registry.slug.clone(),
+                        placement_id: 1,
+                        inventory_generation_id: "inventory".to_string(),
+                        object_key: "oci/blobs/sha256/missing".to_string(),
+                        expected_resource_version: "0".to_string(),
+                        idempotency_key: "worker-untracked-repair-disabled".to_string(),
+                    },
+                )
+                .await,
+            Err(aos_hub_core::service::RpcError::Unavailable(_))
+        ));
+        assert!(matches!(
+            service
+                .get_container_untracked_repair(
+                    Some(&bearer),
+                    pb::GetContainerUntrackedRepairRequest {
+                        plan_id: "missing-worker-untracked-repair".to_string(),
+                    },
+                )
+                .await,
+            Err(aos_hub_core::service::RpcError::NotFound(_))
+        ));
+        assert!(matches!(
+            service
+                .plan_container_registry_purge_fence(
+                    Some(&bearer),
+                    pb::PlanContainerRegistryPurgeFenceRequest {
+                        registry: registry.slug.clone(),
+                        action: pb::ContainerRegistryPurgeFenceAction::Begin as i32,
+                        expected_resource_version: "1".to_string(),
+                        idempotency_key: "worker-purge-fence-disabled".to_string(),
+                    },
+                )
+                .await,
+            Err(aos_hub_core::service::RpcError::Unavailable(_))
+        ));
+        assert!(matches!(
+            service
+                .apply_container_registry_purge_fence(
+                    Some(&bearer),
+                    pb::ApplyContainerRegistryPurgeFenceRequest {
+                        plan_id: "missing-worker-purge-fence".to_string(),
+                        idempotency_key: "worker-purge-fence-apply-disabled".to_string(),
+                        confirmation_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+                        expected_resource_version: "1".to_string(),
+                    },
+                )
+                .await,
+            Err(aos_hub_core::service::RpcError::NotFound(_))
+        ));
+        assert!(matches!(
+            service
+                .get_container_registry_purge_fence(
+                    Some(&bearer),
+                    pb::GetContainerRegistryPurgeFenceRequest {
+                        plan_id: "missing-worker-purge-fence".to_string(),
+                    },
+                )
+                .await,
+            Err(aos_hub_core::service::RpcError::NotFound(_))
+        ));
+        assert!(matches!(
+            service
+                .requeue_container_gc_placement_action(
+                    Some(&bearer),
+                    pb::RequeueContainerGcPlacementActionRequest {
+                        registry: registry.slug,
+                        run_id: "gc-run".to_string(),
+                        action_id: "gc-action".to_string(),
+                        expected_resource_version: "1".to_string(),
+                        idempotency_key: "worker-gc-requeue-disabled".to_string(),
+                    },
+                )
+                .await,
+            Err(aos_hub_core::service::RpcError::Unavailable(_))
+        ));
     }
 
     async fn worker_console_request(
@@ -361,6 +588,10 @@ mod tests {
             &"/andyl/main/nar/object.nar?size=99&uploads"
                 .parse()
                 .unwrap()
+        ));
+        assert!(is_streaming_upload_request(
+            &Method::PATCH,
+            &"/v2/aos/blobs/uploads/upload-1".parse().unwrap()
         ));
     }
 

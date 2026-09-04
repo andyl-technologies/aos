@@ -159,12 +159,17 @@ dependencies = [
  "aos-core",
  "aos-doc",
  "aos-doc-model",
+ "aos-hub",
+ "aos-hub-core",
  "aos-image-finalizer",
  "aos-maintain",
  "aos-net",
+ "aos-oci",
+ "aos-oci-types",
  "aos-package",
  "aos-profile",
  "aos-proto-types",
+ "aos-registry-surface",
  "aos-release",
  "aos-remote",
  "aos-server",
@@ -177,6 +182,7 @@ dependencies = [
  "console",
  "crossterm",
  "ed25519-dalek",
+ "flate2",
  "futures-util",
  "glob",
  "hex",
@@ -195,6 +201,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tar",
  "tempfile",
  "tokio",
  "tokio-rustls 0.26.4",
@@ -202,6 +209,7 @@ dependencies = [
  "tower",
  "tracing",
  "url",
+ "uuid",
  "zeroize",
 ]
 
@@ -260,6 +268,7 @@ dependencies = [
  "ignore",
  "indicatif",
  "regex",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -304,6 +313,8 @@ dependencies = [
  "aos-cache",
  "aos-core",
  "aos-hub-core",
+ "aos-oci",
+ "aos-oci-types",
  "aos-package",
  "aos-proto-types",
  "aos-registry-surface",
@@ -385,6 +396,7 @@ dependencies = [
  "anyhow",
  "aos-doc-model",
  "aos-hub-console-contract",
+ "aos-oci-types",
  "aos-proto-types",
  "aos-registry-surface",
  "aos-release",
@@ -435,6 +447,8 @@ dependencies = [
  "anyhow",
  "aos-hub",
  "aos-hub-core",
+ "aos-oci-types",
+ "aos-proto-types",
  "aos-registry-surface",
  "async-trait",
  "axum",
@@ -517,6 +531,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-oci"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-oci-types",
+ "aos-registry-surface",
+ "axum",
+ "base64 0.22.1",
+ "bytes",
+ "ed25519-dalek",
+ "flate2",
+ "futures-util",
+ "hex",
+ "reqwest",
+ "rustix 1.1.4",
+ "rustls-native-certs",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tar",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "url",
+ "zeroize",
+ "zstd",
+]
+
+[[package]]
+name = "aos-oci-types"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "aos-package"
 version = "0.1.0"
 dependencies = [
@@ -526,6 +580,7 @@ dependencies = [
  "aos-core",
  "aos-doc-model",
  "aos-net",
+ "aos-oci-types",
  "aos-proto-types",
  "aos-registry-surface",
  "aos-remote",

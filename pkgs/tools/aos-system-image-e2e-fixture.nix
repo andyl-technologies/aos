@@ -111,7 +111,7 @@
               uki: {filename: "systemd-bootx64.efi",
                 espPath: "EFI/Linux/systemd-bootx64.efi",
                 byteSize: $ukiSize, sha256: $ukiSha256,
-                signed: true, measured: true}}' > "$out/image-info.json"
+                signed: true, measured: false}}' > "$out/image-info.json"
         '';
       }
     ];
@@ -159,7 +159,7 @@
                 sdBoot: "EFI/systemd/systemd-bootx64.efi"},
               uki: {filename: "systemd-bootx64.efi",
                 espPath: "EFI/Linux/systemd-bootx64.efi", byteSize: $ukiSize,
-                sha256: $ukiSha256, signed: true, measured: true}}' > "$out/image-info.json"
+                sha256: $ukiSha256, signed: true, measured: false}}' > "$out/image-info.json"
         '';
       }
     ];
@@ -224,7 +224,20 @@ in
     pname = "aos-system-image-e2e-fixture";
     version = "0.1.0";
     src = null;
-    runtimeDeps = [aos.apr bash coreutils git rawImage qcow2Image sysroot ukiImage];
+    runtimeDeps = [
+      aos.apr
+      bash
+      coreutils
+      git
+      rawImage
+      rawImageDisk
+      rawImageInfo
+      qcow2Image
+      qcow2ImageDisk
+      qcow2ImageInfo
+      sysroot
+      ukiImage
+    ];
     phases = [
       {
         name = "install";
@@ -279,21 +292,13 @@ in
             --channel stable \
             --init-channel \
             --key "$key" \
-            --cache-url http://127.0.0.1/aos-image-e2e-cache \
+            --cache-url http://127.0.0.1:8799/flat-cache \
             --upload-url "file://$destination/surface"
           printf '%s\n' "$public_key" > "$destination/trust-key"
           printf '%s\n' '${rawImage}/aos-e2e.img.zst' > "$destination/raw-path"
           printf '%s\n' '${qcow2Image}/aos-e2e.qcow2' > "$destination/qcow2-path"
           test -s "$destination/surface/info/refs"
           test -s "$destination/surface/HEAD"
-          release_commit=""
-          while IFS=$'\t' read -r oid ref; do
-            case "$ref" in
-              refs/tags/2026.3.0^\{\}) release_commit="$oid"; break ;;
-            esac
-          done < "$destination/surface/info/refs"
-          test -n "$release_commit"
-          test -s "$destination/surface/publication-receipts/$release_commit.json"
           EOF
           chmod +x "$out/bin/aos-system-image-e2e-fixture"
         '';

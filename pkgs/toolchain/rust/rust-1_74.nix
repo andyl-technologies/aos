@@ -140,15 +140,23 @@ in
         {
           name = "build-mrustc";
           script = ''
+            # Rust/LLVM amplifies each scheduler slot into several compiler
+            # processes. Bound this bootstrap tier to avoid native GCC frontend
+            # corruption under otherwise valid 128-core package builds.
+            rustJobs=$NIX_BUILD_CORES
+            test "$rustJobs" -le 64 || rustJobs=64
             # Build mrustc (the C++ Rust compiler)
-            make -j$NIX_BUILD_CORES V=
+            make -j$rustJobs V=
             # Build minicargo (minimal cargo replacement)
-            make -C tools/minicargo -j$NIX_BUILD_CORES V=
+            make -C tools/minicargo -j$rustJobs V=
           '';
         }
         {
           name = "build-rustc";
           script = ''
+            # Keep Rust's nested compiler fan-out below the proven stable bound.
+            rustJobs=$NIX_BUILD_CORES
+            test "$rustJobs" -le 64 || rustJobs=64
             # Fix arc4random: cmake detects it in glibc but the header doesn't declare it.
             # Add cmake flag to prevent LLVM from trying to use arc4random.
             sed -i '/LLVM_CMAKE_OPTS += CMAKE_BUILD_TYPE/a LLVM_CMAKE_OPTS += HAVE_DECL_ARC4RANDOM=0\nLLVM_CMAKE_OPTS += BUILD_SHARED_LIBS=OFF\nLLVM_CMAKE_OPTS += LLVM_BUILD_EXAMPLES=OFF\nLLVM_CMAKE_OPTS += LLVM_ENABLE_PLUGINS=OFF\nLLVM_CMAKE_OPTS += LLVM_ENABLE_PIC=ON' minicargo.mk
@@ -156,7 +164,7 @@ in
             export RUSTC_VERSION=${version}
             export MRUSTC_TARGET_VER=1.74
             export OUTDIR_SUF=-${version}
-            export PARLEVEL=$NIX_BUILD_CORES
+            export PARLEVEL=$rustJobs
 
             # openssl-sys build script needs these to find OpenSSL
             export OPENSSL_DIR=${openssl}
@@ -166,18 +174,21 @@ in
             export OPENSSL_STATIC=0
 
             # Build standard libraries
-            make -f minicargo.mk LIBS -j$NIX_BUILD_CORES
+            make -f minicargo.mk LIBS -j$rustJobs
 
             # Build rustc using mrustc (this also builds LLVM via cmake)
-            RUSTC_INSTALL_BINDIR=bin make -f minicargo.mk "output-${version}/rustc" -j$NIX_BUILD_CORES
+            RUSTC_INSTALL_BINDIR=bin make -f minicargo.mk "output-${version}/rustc" -j$rustJobs
 
             # Build cargo using mrustc
-            LIBGIT2_SYS_USE_PKG_CONFIG=1 make -f minicargo.mk "output-${version}/cargo" -j$NIX_BUILD_CORES
+            LIBGIT2_SYS_USE_PKG_CONFIG=1 make -f minicargo.mk "output-${version}/cargo" -j$rustJobs
           '';
         }
         {
           name = "build-bootstrap";
           script = ''
+            # Self-hosting repeats the same nested Rust/LLVM scheduler pattern.
+            rustJobs=$NIX_BUILD_CORES
+            test "$rustJobs" -le 64 || rustJobs=64
             cd run_rustc
 
             # The Makefile sets LD_LIBRARY_PATH=$(abspath $(LIBDIR)), overriding any
@@ -189,7 +200,7 @@ in
             # 2. Build libstd again with cargo
             # 3. Build rustc with cargo (optimized)
             # 4. Build libstd with new rustc (matching ABI)
-            make -j$NIX_BUILD_CORES RUSTC_VERSION=${version} PARLEVEL=$NIX_BUILD_CORES
+            make -j$rustJobs RUSTC_VERSION=${version} PARLEVEL=$rustJobs
 
             cd ..
           '';

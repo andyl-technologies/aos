@@ -27,6 +27,18 @@ use sha2::{Digest as _, Sha256};
 
 use crate::backend::BackendBounds;
 
+/// Builds bounded, non-secret durable failure evidence for a background job.
+///
+/// Provider and transport errors can contain credential-bearing URLs, request
+/// headers, or secret references. Durable job rows therefore retain only a
+/// stable digest which operators can correlate with redacted runtime logs;
+/// they never persist the original error string.
+#[must_use]
+pub fn redacted_job_failure(error: &str) -> String {
+    let fingerprint = hex::encode(Sha256::digest(error.as_bytes()));
+    format!("job failed; detail redacted; fingerprint={fingerprint}")
+}
+
 /// One deferred unit of post-write propagation.
 ///
 /// Enqueued synchronously by a write handler and run asynchronously by the
@@ -41,8 +53,16 @@ pub enum Job {
     RunTopologyProbes,
     /// Recovers one bounded page of expired cache writes and tombstones.
     RecoverCacheWrites,
+    /// Expires OCI sessions and retries exact-placement staging cleanup.
+    RecoverOciUploads,
     /// Runs one bounded page of due cache physical-deletion work.
     RunCacheGc,
+    /// Runs one bounded page of exact OCI placement-deletion work.
+    RunOciGc,
+    /// Reconciles a bounded page of provider conditional-delete observations.
+    ProbeOciConditionalDeletes,
+    /// Enumerates provider OCI blobs into exact GC inventory heads.
+    InventoryOciProviders,
     /// Regenerate a registry's machine surface (NAR/narinfo pointers) after a
     /// publish.
     RegenerateSurface {
@@ -234,7 +254,11 @@ impl JobEnvelope {
             Job::DispatchMaintenance => "dispatch_maintenance",
             Job::RunTopologyProbes => "run_topology_probes",
             Job::RecoverCacheWrites => "recover_cache_writes",
+            Job::RecoverOciUploads => "recover_oci_uploads",
             Job::RunCacheGc => "run_cache_gc",
+            Job::RunOciGc => "run_oci_gc",
+            Job::ProbeOciConditionalDeletes => "probe_oci_conditional_deletes",
+            Job::InventoryOciProviders => "inventory_oci_providers",
             Job::RegenerateSurface { .. } => "regenerate_surface",
             Job::RebuildDirectory => "rebuild_directory",
             Job::Reindex { .. } => "reindex",
@@ -242,6 +266,19 @@ impl JobEnvelope {
             Job::ResetIndex { .. } => "reset_index",
             Job::RefreshPublicationObject { .. } => "refresh_publication_object",
             Job::DeliverWebhook { .. } => "deliver_webhook",
+        }
+    }
+}
+
+impl Job {
+    /// Returns whether rollout policy permits this job's provider effects.
+    #[must_use]
+    pub fn enabled_for(&self, rollout: crate::container_rollout::ContainerRollout) -> bool {
+        match self {
+            Self::RunOciGc | Self::ProbeOciConditionalDeletes | Self::InventoryOciProviders => {
+                rollout.garbage_collection
+            }
+            _ => true,
         }
     }
 }
@@ -315,7 +352,35 @@ impl Queue for InMemoryQueue {
 
 #[cfg(test)]
 mod tests {
-    use super::{InMemoryQueue, Job, JobEnvelope, Queue};
+    use super::{redacted_job_failure, InMemoryQueue, Job, JobEnvelope, Queue};
+
+    #[test]
+    fn durable_failure_evidence_is_bounded_deterministic_and_secret_free() {
+        let error = "request https://user:password@example.test/object?token=secret failed; Authorization: Bearer abc";
+        let first = redacted_job_failure(error);
+        assert_eq!(first, redacted_job_failure(error));
+        assert!(first.len() < 128);
+        for secret in ["user", "password", "example.test", "token", "secret"] {
+            assert!(!first.contains(secret));
+        }
+    }
+
+    #[test]
+    fn gc_provider_jobs_are_disabled_with_the_gc_rollout() {
+        let disabled = crate::container_rollout::ContainerRollout::default();
+        assert!(!Job::RunOciGc.enabled_for(disabled));
+        assert!(!Job::ProbeOciConditionalDeletes.enabled_for(disabled));
+        assert!(!Job::InventoryOciProviders.enabled_for(disabled));
+        assert!(Job::RecoverOciUploads.enabled_for(disabled));
+
+        let enabled = crate::container_rollout::ContainerRollout {
+            garbage_collection: true,
+            ..disabled
+        };
+        assert!(Job::RunOciGc.enabled_for(enabled));
+        assert!(Job::ProbeOciConditionalDeletes.enabled_for(enabled));
+        assert!(Job::InventoryOciProviders.enabled_for(enabled));
+    }
 
     #[tokio::test]
     async fn records_jobs_in_order() {

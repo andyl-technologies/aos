@@ -28,6 +28,21 @@ in
         script = ''
           tar xf $src
           cd libsodium-${version}-RELEASE
+
+          # The 1.0.21 AArch64 IPcrypt implementation computes byte-vector
+          # intermediates but declares them as the surrounding 64-bit block
+          # type. GCC 14 correctly rejects those incompatible NEON types.
+          source=src/libsodium/crypto_ipcrypt/ipcrypt_armcrypto.c
+          grep -F "vreinterpretq_u64_u8(vextq_s8" "$source"
+          grep -F "const BlockVec carries = vextq_u8(vreinterpretq_u8_u64(msb), zero, 1)" "$source"
+          sed -i \
+            -e "s/vreinterpretq_u64_u8(vextq_s8/vreinterpretq_u64_s8(vextq_s8/" \
+            -e "s/const BlockVec shl     = vshlq_n_u8/const uint8x16_t shl     = vshlq_n_u8/" \
+            -e "s/const BlockVec msb     = vshrq_n_u8/const uint8x16_t msb     = vshrq_n_u8/" \
+            -e "s/const BlockVec zero    = vdupq_n_u8/const uint8x16_t zero    = vdupq_n_u8/" \
+            -e "s/const BlockVec carries = vextq_u8(vreinterpretq_u8_u64(msb), zero, 1)/const uint8x16_t carries = vextq_u8(msb, zero, 1)/" \
+            "$source"
+          grep -F "const uint8x16_t carries = vextq_u8(msb, zero, 1)" "$source"
         '';
       }
       {

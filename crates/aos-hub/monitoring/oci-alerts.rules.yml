@@ -1,0 +1,69 @@
+{
+  "groups": [
+    {
+      "name": "aos-hub-oci",
+      "rules": [
+        {
+          "alert": "AosHubOciDigestMismatch",
+          "expr": "aos_hub_oci_digest_mismatches > 0",
+          "for": "1m",
+          "labels": { "severity": "page", "component": "aos-hub-oci" },
+          "annotations": {
+            "summary": "AOS Hub OCI digest evidence is inconsistent",
+            "description": "Current provider inventory or catalog evidence contains an exact digest mismatch. Disable OCI GC and preserve the affected inventory evidence."
+          }
+        },
+        {
+          "alert": "AosHubOciPublicationStuck",
+          "expr": "aos_hub_oci_publications{state=\"stuck\"} > 0",
+          "for": "10m",
+          "labels": { "severity": "ticket", "component": "aos-hub-oci" },
+          "annotations": {
+            "summary": "AOS Hub OCI publication is stuck",
+            "description": "At least one publication remains nonterminal beyond the bounded publication-stuck threshold. Inspect upload cleanup and publication verification jobs."
+          }
+        },
+        {
+          "alert": "AosHubOciInventoryStale",
+          "expr": "aos_hub_oci_gc_stale_inventories > 0 or aos_hub_oci_inventory_age_seconds{stat=\"max\"} > 900",
+          "for": "5m",
+          "labels": { "severity": "page", "component": "aos-hub-oci" },
+          "annotations": {
+            "summary": "AOS Hub OCI placement inventory is stale",
+            "description": "A planner-eligible placement lacks a complete inventory at the current registry epoch and topology, or its inventory exceeds the 15-minute freshness fence. Keep OCI GC disabled until a fresh matching inventory is sealed."
+          }
+        },
+        {
+          "alert": "AosHubOciPlacementLoss",
+          "expr": "aos_hub_oci_placements{health=\"unhealthy\"} > 0",
+          "for": "5m",
+          "labels": { "severity": "page", "component": "aos-hub-oci" },
+          "annotations": {
+            "summary": "AOS Hub OCI placement is unhealthy",
+            "description": "A serving registry placement is absent, incomplete, degraded, or lacks a current inventory. Retired and intentionally offline placements are excluded. Investigate placement repair before publication or GC."
+          }
+        },
+        {
+          "alert": "AosHubOciConditionalDeleteFailed",
+          "expr": "aos_hub_oci_gc_failed_actions > 0",
+          "for": "1m",
+          "labels": { "severity": "page", "component": "aos-hub-oci" },
+          "annotations": {
+            "summary": "AOS Hub OCI conditional deletion exhausted retries",
+            "description": "A frozen placement action is failed. Preserve the applying run and use exact actor-bound maintenance requeue only after repairing its reviewed identity."
+          }
+        },
+        {
+          "alert": "AosHubOciGcPlanningBlocked",
+          "expr": "aos_hub_oci_gc_blockers > 0",
+          "for": "5m",
+          "labels": { "severity": "ticket", "component": "aos-hub-oci" },
+          "annotations": {
+            "summary": "AOS Hub OCI garbage collection is blocked",
+            "description": "A durable planned or failed GC review contains fail-closed blockers. Inspect the reviewed blocker evidence; do not apply or bypass the plan."
+          }
+        }
+      ]
+    }
+  ]
+}

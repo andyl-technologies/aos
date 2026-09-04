@@ -1143,6 +1143,14 @@ mod tests {
             Ok(Box::new(RecoveryWriter))
         }
 
+        async fn placement_writer_at_revision(
+            &self,
+            _placement: &SurfacePlacementRecord,
+            _revision: &crate::db::BindingWriteRevisionRecord,
+        ) -> Result<Box<dyn SurfaceWrite>> {
+            Ok(Box::new(RecoveryWriter))
+        }
+
         async fn placement_deleter(
             &self,
             _placement: &SurfacePlacementRecord,

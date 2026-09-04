@@ -4,6 +4,8 @@
   mkGithubUpstream,
   gnumake,
   stdenv,
+  lib,
+  libatomic_ops,
 }: let
   upstream = mkGithubUpstream {
     unitId = "gc-8";
@@ -52,6 +54,7 @@
   };
   inherit (upstream) version;
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  needsExternalAtomicOps = stdenv.isCross && stdenv.hostPlatform.isLinux;
 in
   mkDerivation {
     pname = "gc";
@@ -61,7 +64,7 @@ in
     update = upstream.update;
 
     buildDeps = [gnumake];
-    runtimeDeps = [];
+    runtimeDeps = lib.optional needsExternalAtomicOps libatomic_ops;
     propagatedDeps = [];
 
     # The upstream compiler-intrinsics probe is an AC_RUN_IFELSE and is

@@ -7,6 +7,7 @@
   perl,
   pkg-config,
   protobuf,
+  zlib,
 }: let
   version = "0.1.0";
   repoRoot = ../..;
@@ -49,7 +50,10 @@ in
       openssl
       protobuf
     ];
-    runtimeDeps = [openssl];
+    runtimeDeps = [
+      openssl
+      zlib
+    ];
     installBins = false;
     doCheck = false;
 
@@ -97,6 +101,7 @@ in
           pkgs.postgresql
           pkgs.mariadb
           pkgs.iproute2
+          pkgs.sed
           pkgs.util-linux
         ];
         testScript = ''
@@ -125,15 +130,16 @@ in
           trap 'exit 143' TERM
 
           test "$(id -u nobody)" -gt 0
+          test -x ${pkgs.mariadb}/scripts/mariadb-install-db
           for tool in initdb postgres pg_isready createdb \
-            mariadb-install-db mariadbd mariadb-admin mariadb setpriv; do
+            mariadbd mariadb-admin mariadb chroot; do
             command -v "$tool"
           done
 
-          setpriv --reuid=nobody --regid=nobody --clear-groups \
+          chroot --userspec=nobody:nobody / \
             initdb --no-locale --encoding=UTF8 --auth=trust \
               --username=postgres --pgdata=/tmp/pg-data
-          setpriv --reuid=nobody --regid=nobody --clear-groups \
+          chroot --userspec=nobody:nobody / \
             postgres -D /tmp/pg-data -h 127.0.0.1 -k /tmp/pg-socket -p 55432 &
           postgres_pid=$!
 
@@ -151,10 +157,11 @@ in
           fi
           createdb -h 127.0.0.1 -p 55432 -U postgres hubtest
 
-          setpriv --reuid=nobody --regid=nobody --clear-groups \
-            mariadb-install-db --no-defaults --datadir=/tmp/mysql-data \
-              --auth-root-authentication-method=normal --skip-test-db
-          setpriv --reuid=nobody --regid=nobody --clear-groups \
+          chroot --userspec=nobody:nobody / \
+            ${pkgs.mariadb}/scripts/mariadb-install-db \
+              --no-defaults --datadir=/tmp/mysql-data \
+              --auth-root-authentication-method=normal --skip-test-db --force
+          chroot --userspec=nobody:nobody / \
             mariadbd --no-defaults --datadir=/tmp/mysql-data \
               --socket=/tmp/mariadb.sock --pid-file=/tmp/mariadb.pid \
               --bind-address=127.0.0.1 --port=55306 --skip-networking=0 &
@@ -162,7 +169,8 @@ in
 
           mariadb_ready=0
           for attempt in $(seq 1 60); do
-            if mariadb-admin --protocol=tcp --host=127.0.0.1 --port=55306 \
+            if mariadb-admin --no-defaults \
+              --protocol=tcp --host=127.0.0.1 --port=55306 \
               --user=root ping; then
               mariadb_ready=1
               break
@@ -173,7 +181,8 @@ in
             echo "MariaDB did not become ready" >&2
             exit 1
           fi
-          mariadb --protocol=tcp --host=127.0.0.1 --port=55306 \
+          mariadb --no-defaults \
+            --protocol=tcp --host=127.0.0.1 --port=55306 \
             --user=root -e 'CREATE DATABASE hubtest'
 
           export AOS_HUB_TEST_PG_URL="postgresql://postgres@127.0.0.1:55432/hubtest"

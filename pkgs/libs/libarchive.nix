@@ -11,7 +11,6 @@
   lz4,
   expat,
   xz,
-  stdenv,
 }: let
   version = "3.8.5";
 in
@@ -31,23 +30,18 @@ in
       gnumake
       pkg-config
     ];
-    runtimeDeps =
-      [
-        openssl
-        zlib
-        zstd
-        bzip2
-        lz4
-        expat
-      ]
-      ++ (
-        # The native xz unpacker is visible while configure probes liblzma,
-        # but its ELF library cannot satisfy a Mach-O link. Make the matching
-        # target library explicit so libarchive retains LZMA/XZ support.
-        if stdenv.isCross && stdenv.hostPlatform.isDarwin
-        then [xz]
-        else []
-      );
+    runtimeDeps = [
+      openssl
+      zlib
+      zstd
+      bzip2
+      lz4
+      expat
+      # Configure probes liblzma whenever the xz unpacker is visible. Keep
+      # the matching host-platform library explicit so cross links never
+      # fall back to the native build tool's archive.
+      xz
+    ];
     propagatedDeps = [];
 
     # libarchive still uses legacy trailing-array layouts internally. GCC's

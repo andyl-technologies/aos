@@ -60,6 +60,382 @@
     "external_effects": false
   },
   {
+    "service": "ContainerService",
+    "method": "ListContainerRepositories",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "GetContainerRepository",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "PlanCreateContainerRepository",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "plan", "pair": "create_container_repository" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "CreateContainerRepository",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "apply", "pair": "create_container_repository", "outcome": "immediate" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "PlanUpdateContainerRepository",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "plan", "pair": "update_container_repository" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "UpdateContainerRepository",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "apply", "pair": "update_container_repository", "outcome": "immediate" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "PlanDeleteContainerRepository",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "plan", "pair": "delete_container_repository" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "DeleteContainerRepository",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "apply", "pair": "delete_container_repository", "outcome": "immediate" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "ListContainerTags",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "GetContainerTag",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "ResolveContainerTag",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "ListContainerTagHistory",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "PlanSetContainerTag",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "plan", "pair": "set_container_tag" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "SetContainerTag",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "apply", "pair": "set_container_tag", "outcome": "immediate" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "PlanUnsetContainerTag",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "plan", "pair": "unset_container_tag" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "UnsetContainerTag",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "apply", "pair": "unset_container_tag", "outcome": "immediate" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "GetContainerManifest",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "ListContainerPlatforms",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "GetContainerPlatform",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "ListContainerLayers",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "GetContainerLayer",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "ListContainerReferrers",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "ListContainerPublications",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "GetContainerProvenance",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "GetContainerRetentionPolicy",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "PlanSetContainerRetentionPolicy",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "plan", "pair": "set_container_retention_policy" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "SetContainerRetentionPolicy",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "apply", "pair": "set_container_retention_policy", "outcome": "immediate" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "PlanRunContainerGc",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "plan", "pair": "run_container_gc" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "RunContainerGc",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "apply", "pair": "run_container_gc", "outcome": "operation" },
+    "external_effects": true
+  },
+  {
+    "service": "ContainerService",
+    "method": "GetContainerGcRun",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "ListContainerGcRuns",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "ListContainerGcCandidates",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "ListContainerGcBlockers",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "ListContainerGcPlacementActions",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "RequeueContainerGcPlacementAction",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "maintenance_replay" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "ListContainerUntrackedInventory",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "PlanRepairContainerUntrackedObject",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "plan", "pair": "repair_container_untracked_object" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "RepairContainerUntrackedObject",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "apply", "pair": "repair_container_untracked_object", "outcome": "operation" },
+    "external_effects": true
+  },
+  {
+    "service": "ContainerService",
+    "method": "GetContainerUntrackedRepair",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "PlanContainerRegistryPurgeFence",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "plan", "pair": "container_registry_purge_fence" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "ApplyContainerRegistryPurgeFence",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "apply", "pair": "container_registry_purge_fence", "outcome": "immediate" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "GetContainerRegistryPurgeFence",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "BeginContainerPublication",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "data_plane_write"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "GetContainerPublication",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": {
+      "class": "read"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "CommitContainerPublication",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "data_plane_write"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "AbortContainerPublication",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "data_plane_write"
+    },
+    "external_effects": false
+  },
+  {
     "service": "PublishService",
     "method": "BeginRegistryPublication",
     "exposure": "public",

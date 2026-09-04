@@ -4590,7 +4590,7 @@ fn topology_message_kind<T>() -> String {
 }
 
 /// Prints one generated Connect response in stable CLI form.
-fn print_topology_message<T: Serialize>(printer: &Printer, message: &T) -> Result<()> {
+pub(super) fn print_topology_message<T: Serialize>(printer: &Printer, message: &T) -> Result<()> {
     let value = snake_case_json(serde_json::to_value(message)?);
     if print_hub_json(printer, &topology_message_kind::<T>(), value.clone()) {
         return Ok(());
@@ -4600,7 +4600,7 @@ fn print_topology_message<T: Serialize>(printer: &Printer, message: &T) -> Resul
 }
 
 /// Calls and prints one read-only topology RPC.
-async fn topology_read<Req, Resp>(
+pub(super) async fn topology_read<Req, Resp>(
     printer: &Printer,
     client: &HubClient,
     method: impl HubRpc<Request = Req, Response = Resp>,
@@ -4615,7 +4615,7 @@ where
 }
 
 /// Executes the shared plan/apply protocol for one topology mutation.
-async fn topology_mutation<PlanReq, ApplyReq, Resp, BuildApply>(
+pub(super) async fn topology_mutation<PlanReq, ApplyReq, Resp, BuildApply>(
     printer: &Printer,
     client: &HubClient,
     plan_method: impl HubRpc<Request = PlanReq, Response = hub_types::TopologyPlanResponse>,
@@ -4761,7 +4761,7 @@ where
     Ok(())
 }
 
-fn new_idempotency_key() -> String {
+pub(super) fn new_idempotency_key() -> String {
     format!("aos-cli-{:032x}", rand::random::<u128>())
 }
 
@@ -4826,7 +4826,7 @@ fn required_plan_version<'a>(mutation: &'a HubMutationArgs, action: &str) -> Res
         .with_context(|| format!("{action} requires --if-version when creating a plan"))
 }
 
-fn parse_duration_seconds(value: &str, flag: &str) -> Result<i64> {
+pub(super) fn parse_duration_seconds(value: &str, flag: &str) -> Result<i64> {
     let duration: std::time::Duration = value
         .parse::<humantime::Duration>()
         .with_context(|| format!("invalid duration for {flag}"))?
@@ -7519,6 +7519,7 @@ fn route_spec(
         serves_git: input.serves.iter().any(|value| value == "git"),
         serves_cache: input.serves.iter().any(|value| value == "cache"),
         serves_web: input.serves.iter().any(|value| value == "web"),
+        serves_oci: input.serves.iter().any(|value| value == "oci"),
     };
     if require_complete && input.serves.is_empty() {
         anyhow::bail!("at least one --serves capability is required");
@@ -7682,6 +7683,7 @@ fn merge_route_spec(
             serves_git: input.serves.iter().any(|value| value == "git"),
             serves_cache: input.serves.iter().any(|value| value == "cache"),
             serves_web: input.serves.iter().any(|value| value == "web"),
+            serves_oci: input.serves.iter().any(|value| value == "oci"),
         });
     }
     let target = current
@@ -8507,6 +8509,11 @@ fn hub_client<H: HubArgument + ?Sized>(hub: &H, token: Option<&str>) -> Result<H
     }
 }
 
+/// Resolves the Hub endpoint and credential for one container-admin command.
+pub(super) fn container_hub_client(access: &HubAccessArgs) -> Result<HubClient> {
+    hub_client(&access.hub, access.token.as_deref())
+}
+
 /// Handles `aos hub registry …`.
 async fn registry_mirror(printer: &Printer, command: &HubRegistryMirrorCmd) -> Result<()> {
     match command {
@@ -8833,6 +8840,7 @@ async fn registry(printer: &Printer, command: &HubRegistryCmd) -> Result<()> {
         HubRegistryCmd::Channel { command } => channel(printer, command).await,
         HubRegistryCmd::Publish { command } => publish(printer, command).await,
         HubRegistryCmd::Configuration { command } => config(printer, command).await,
+        HubRegistryCmd::Container { command } => super::hub_container::run(printer, command).await,
     }
 }
 

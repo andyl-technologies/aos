@@ -168,4 +168,3 @@ avoids passing only because the test never reached the fault site.
 See the [schema reference](reference.md#properties-and-predicates),
 [Artifacts and replay](artifacts.md), and [Debugging](debugging.md) for the
 corresponding configuration and investigation workflows.
-

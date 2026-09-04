@@ -37,29 +37,30 @@
   buildPackages,
 }: let
   version = "0.1.0";
+  isCross = stdenv.isCross;
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   buildPerl =
-    if isDarwinCross
+    if isCross
     then buildPackages.perl
     else perl;
   buildPkgConfig =
-    if isDarwinCross
+    if isCross
     then buildPackages.pkg-config
     else pkg-config;
   buildProtobuf =
-    if isDarwinCross
+    if isCross
     then buildPackages.protobuf
     else protobuf;
   buildCmake =
-    if isDarwinCross
+    if isCross
     then buildPackages.cmake
     else cmake;
   buildGitMinimal =
-    if isDarwinCross
+    if isCross
     then buildPackages.git-minimal
     else git-minimal;
   buildOpenSsh =
-    if isDarwinCross
+    if isCross
     then buildPackages.openssh
     else openssh;
   repoRoot = ../../..;
@@ -121,6 +122,8 @@
     "aos-hub-worker"
     "aos-maintain"
     "aos-net"
+    "aos-oci"
+    "aos-oci-types"
     "aos-package"
     "aos-profile"
     "aos-proto"
@@ -184,6 +187,10 @@ in
     inherit cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
     cargoNextest = true;
+    # Compilation still uses every allocated build core. Bound concurrent test
+    # processes separately so loopback servers and SQLite workers retain enough
+    # scheduler time to satisfy their production-sized deadlines on large hosts.
+    cargoNextestMaxTestThreads = 16;
     passthru = {
       inherit cargoArtifacts cargoDeps cargoEnv;
     };
