@@ -125,6 +125,16 @@ impl RpcService {
         intent.client_base_path = Self::normalize_route_base_path(&intent.client_base_path)?;
         intent.audiences.sort();
         intent.audiences.dedup();
+        if let Some(pb::delivery_destination_intent::Endpoint::NewEndpoint(input)) =
+            intent.endpoint.as_mut()
+        {
+            if let Some(pb::delivery_endpoint_input::HostnameSource::Hostname(hostname)) =
+                input.hostname_source.as_mut()
+            {
+                *hostname = crate::db::canonical_delivery_hostname(hostname)
+                    .map_err(|error| RpcError::invalid(format!("hostname: {error:#}")))?;
+            }
+        }
         let (surface, scope) = self
             .managed_route_surface(auth, intent.surface.clone())
             .await?;
@@ -371,9 +381,16 @@ impl RpcService {
                     result.push(PrerequisiteSeal {
                         kind: "domain".into(),
                         stable_id: id.clone(),
-                        resource_version: domain.resource_version,
+                        // Domain observations share the row's CAS counter. Seal
+                        // desired configuration so successful verification does
+                        // not invalidate the workflow it is meant to advance.
+                        resource_version: 0,
                         revision: 0,
-                        content_digest: domain.hostname,
+                        content_digest: digest(&(
+                            domain.hostname,
+                            domain.dns_configuration_json,
+                            domain.certificate_configuration_json,
+                        ))?,
                         lifecycle_state: String::new(),
                     });
                 }
@@ -655,9 +672,23 @@ impl RpcService {
         if completed {
             return self.delivery_workflow_response(record).await;
         }
-        let response = self
+        let outcome = self
             .run_delivery_workflow(auth, record, &req.idempotency_key)
-            .await?;
+            .await;
+        if matches!(&outcome, Err(RpcError::FailedPrecondition(message)) if message == "workflow changed; reload before resuming")
+        {
+            // Another retry won a progress CAS. Report its durable progress
+            // without completing the still-running request on its behalf.
+            return self
+                .get_delivery_workflow(
+                    auth,
+                    pb::GetDeliveryWorkflowRequest {
+                        workflow_id: req.workflow_id,
+                    },
+                )
+                .await;
+        }
+        let response = outcome?;
         self.db
             .complete_delivery_resumption(&claims.owner_kind, claims.owner_id, &req.idempotency_key)
             .await
