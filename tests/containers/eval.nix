@@ -25,6 +25,13 @@
     evaluated = evaluate "container-system-negative" modules;
   in
     builtins.tryEval (builtins.deepSeq evaluated.config.system.build.toplevel true);
+  invalidSystemName = let
+    evaluated = mkSystem {
+      modules = [serverModule];
+      systemName = "invalid.name";
+    };
+  in
+    builtins.tryEval (builtins.deepSeq evaluated.config.system.build.toplevel true);
 
   server = evaluateServer {};
   testing = evaluate "aos-testing-eval" [testingModule];
@@ -114,11 +121,21 @@
     testingModule
     {aos.release.channel = lib.mkForce "stable";}
   ];
+  invalidTestingAlias = trySystem [
+    testingModule
+    {aos.release.clientName = lib.mkForce "testing";}
+  ];
+  invalidTestingUrl = trySystem [
+    testingModule
+    {aos.release.url = lib.mkForce "https://aos.andyl.org/andyl/main/";}
+  ];
   testingFilePaths = map (file: file.path) testingAos.filesystem.files;
   testingFileText = lib.concatMapStringsSep "\n" (file: file.text) testingAos.filesystem.files;
 in
   assert aos.name == "aos";
   assert builtins.attrNames server.config.system.build.containers == ["aos"];
+  assert server.config.system.build.defaultContainer.coordination.definitionAttribute
+  == "systems.container-eval.build.containers.aos";
   assert map builtins.toString aos.packageRoots
   == map builtins.toString (lib.unique (goldenRoots ++ [pkgs.aos pkgs.aos.apm pkgs.aos.apr]));
   assert aos.packageManagement
@@ -145,17 +162,27 @@ in
   );
   assert aos.platform.aosSystem == aosSystem;
   assert testing.config.aos.release.registry == "andyl/testing";
+  assert testing.config.aos.system.version == "2026.9.0-dev.20260904.1";
+  assert lib.hasInfix "\nID=aos\n" testing.config.environment.etc."os-release".text;
+  assert lib.hasInfix "\nAOS_REGISTRY=andyl/testing\n" testing.config.environment.etc."os-release".text;
+  assert testing.config.system.build.defaultContainer.coordination.definitionAttribute
+  == "systems.aos-testing-eval.build.containers.aos";
   assert testing.config.aos.release.channel == "edge";
   assert builtins.attrNames testing.config.aos.apm.registries == ["andyl-testing"];
   assert testingAos.publication.repository == "aos-testing";
+  assert testingAos.publication.releaseIdentity == testing.config.aos.system.version;
   assert testingAos.publication.referenceTag == "edge";
   assert testingAos.runtime.environment.AOS_RELEASE_TIER == "testing";
   assert testingAos.runtime.environment.AOS_REGISTRY == "andyl/testing";
   assert testingAos.runtime.environment.AOS_CHANNEL == "edge";
   assert testing.config.aos.release.rootEpoch == 1;
-  assert
-    testing.config.system.build.defaultContainer.definition.annotations."dev.andyl.aos.registry-root-epoch"
-    == "1";
+  assert testing.config.system.build.defaultContainer.definition.annotations."dev.andyl.aos.registry-root-epoch"
+  == "1";
+  assert testing.config.system.build.defaultContainer.definition.annotations."org.opencontainers.image.title"
+  == "AOS Testing";
+  assert lib.hasInfix
+  "not for production"
+  testing.config.system.build.defaultContainer.definition.annotations."org.opencontainers.image.description";
   assert builtins.all
   (path: builtins.elem path testingFilePaths)
   [
@@ -181,6 +208,9 @@ in
   assert !mismatchedEvidenceOverrideOutput.success;
   assert !invalidTestingRegistry.success;
   assert !invalidTestingChannel.success;
+  assert !invalidTestingAlias.success;
+  assert !invalidTestingUrl.success;
+  assert !invalidSystemName.success;
     pkgs.mkDerivation {
       pname = "aos-container-evaluator-check";
       version = "1";

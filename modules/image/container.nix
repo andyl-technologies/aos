@@ -8,6 +8,7 @@
   config,
   lib,
   pkgs,
+  systemName,
   ...
 }: let
   cfg = config.aos.containers;
@@ -106,6 +107,7 @@
     in
       import ../../lib/containers/build.nix {
         inherit lib pkgs container oci systemIdentity;
+        definitionAttribute = "systems.${systemName}.build.containers.${name}";
       })
     cfg.definitions;
 in {
@@ -149,6 +151,10 @@ in {
 
     assertions =
       [
+        {
+          assertion = builtins.match "[A-Za-z_][A-Za-z0-9_-]*" systemName != null;
+          message = "system variant names with containers must be canonical Nix attribute identifiers";
+        }
         {
           assertion = cfg.default == null || builtins.hasAttr cfg.default cfg.definitions;
           message = "aos.containers.default must name an enabled container definition";

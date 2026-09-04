@@ -13,6 +13,8 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    aos.system.version = "2026.9.0-dev.20260904.1";
+
     aos.release = {
       enabled = true;
       tier = "testing";

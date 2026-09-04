@@ -23,6 +23,11 @@
   registryToml = registryRenderer.registryToml cfg.clientName registry;
   trustedKeys = registryRenderer.trustedKeys registry;
   testingRegistryPattern = "andyl/testing(-v([2-9]|[1-9][0-9]+))?";
+  expectedClientName =
+    if cfg.registry == "andyl/main"
+    then "andyl"
+    else builtins.replaceStrings ["/"] ["-"] cfg.registry;
+  expectedUrl = "https://aos.andyl.org/${cfg.registry}/";
 in {
   options.aos.release = {
     enabled = lib.mkOption {
@@ -102,6 +107,14 @@ in {
         message = "testing artifacts must follow only the edge channel";
       }
       {
+        assertion = cfg.clientName == expectedClientName;
+        message = "release artifact client alias must match its signed registry identity";
+      }
+      {
+        assertion = cfg.url == expectedUrl;
+        message = "public release artifacts must use the canonical production Hub registry URL";
+      }
+      {
         assertion =
           if cfg.rootEpoch == 1
           then cfg.registry == "andyl/main" || cfg.registry == "andyl/testing"
@@ -131,33 +144,45 @@ in {
     aos.services.ssh.banner = lib.mkIf (cfg.warning != "") "/etc/issue.net";
 
     aos.containers.definitions.aos = {
-      filesystem.files = [
-        {
-          path = "/etc/aos/release-profile";
+      filesystem.files =
+        [
+          {
+            path = "/etc/aos/release-profile";
+            mode = "0444";
+            text = config.environment.etc."aos/release-profile".text;
+          }
+          {
+            path = "/etc/apm/registries.d/${cfg.clientName}.toml";
+            mode = "0444";
+            text = registryToml;
+          }
+          {
+            path = "/etc/apm/trusted-keys.d/${cfg.clientName}.pub";
+            mode = "0444";
+            text = trustedKeys;
+          }
+        ]
+        ++ lib.optional (cfg.warning != "") {
+          path = "/etc/issue";
           mode = "0444";
-          text = config.environment.etc."aos/release-profile".text;
-        }
-        {
-          path = "/etc/apm/registries.d/${cfg.clientName}.toml";
-          mode = "0444";
-          text = registryToml;
-        }
-        {
-          path = "/etc/apm/trusted-keys.d/${cfg.clientName}.pub";
-          mode = "0444";
-          text = trustedKeys;
-        }
-      ] ++ lib.optional (cfg.warning != "") {
-        path = "/etc/issue";
-        mode = "0444";
-        text = cfg.warning;
-      };
+          text = cfg.warning;
+        };
       runtime.environment = {
         AOS_RELEASE_TIER = cfg.tier;
         AOS_REGISTRY = cfg.registry;
         AOS_CHANNEL = cfg.channel;
       };
       annotations = {
+        "org.opencontainers.image.title" = lib.mkForce (
+          if cfg.tier == "testing"
+          then "AOS Testing"
+          else "AOS"
+        );
+        "org.opencontainers.image.description" = lib.mkForce (
+          if cfg.tier == "testing"
+          then "Experimental AOS testing userland; not for production workloads or important data"
+          else "AOS base userland built entirely from AOS packages"
+        );
         "dev.andyl.aos.release.tier" = cfg.tier;
         "dev.andyl.aos.registry" = cfg.registry;
         "dev.andyl.aos.channel" = cfg.channel;
@@ -169,6 +194,7 @@ in {
         else "aos"
       );
       publication.referenceTag = lib.mkForce cfg.channel;
+      publication.releaseIdentity = lib.mkForce config.aos.system.version;
     };
   };
 }
