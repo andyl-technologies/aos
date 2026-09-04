@@ -25,7 +25,7 @@ use crate::{
 /// same static ceiling enforced by [`crate::MAX_LOCAL_EXECUTOR_WORKERS`].
 pub const MAX_QEMU_HOT_FORK_TEMPLATE_POOL_SLOTS: usize = crate::MAX_LOCAL_EXECUTOR_WORKERS;
 
-mod sealed {
+pub(crate) mod sealed {
     pub trait QemuHotForkKeyedLifecycleFactory {}
 }
 
@@ -87,6 +87,26 @@ where
     F: QemuHotForkKeyedLifecycleFactory,
     Q: QemuHotForkLifecycleQuarantine<QemuHotForkTemplatePoolLifecycle<F::Lifecycle>>,
 {
+    /// Creates an empty bounded pool ready for managed source admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuHotForkTemplatePoolCapacityError`] when `maximum_slots` is
+    /// zero or exceeds [`MAX_QEMU_HOT_FORK_TEMPLATE_POOL_SLOTS`].
+    pub fn empty(
+        maximum_slots: usize,
+        quarantine: Q,
+    ) -> Result<Self, QemuHotForkTemplatePoolCapacityError> {
+        validate_pool_capacity(maximum_slots)?;
+        Ok(Self {
+            identity: Arc::new(()),
+            maximum_slots,
+            slot_count: 0,
+            slots: BTreeMap::new(),
+            quarantine,
+        })
+    }
+
     /// Creates a nonempty bounded pool around its first retained worker.
     ///
     /// # Errors
@@ -99,19 +119,8 @@ where
         first: F,
         quarantine: Q,
     ) -> Result<Self, QemuHotForkTemplatePoolConstructionError<F>> {
-        if maximum_slots == 0 {
-            return Err(QemuHotForkTemplatePoolConstructionError::new(
-                first,
-                QemuHotForkTemplatePoolCapacityError::Zero,
-            ));
-        }
-        if maximum_slots > MAX_QEMU_HOT_FORK_TEMPLATE_POOL_SLOTS {
-            return Err(QemuHotForkTemplatePoolConstructionError::new(
-                first,
-                QemuHotForkTemplatePoolCapacityError::AboveMaximum {
-                    requested: maximum_slots,
-                },
-            ));
+        if let Err(error) = validate_pool_capacity(maximum_slots) {
+            return Err(QemuHotForkTemplatePoolConstructionError::new(first, error));
         }
 
         let key = first.template_key();
@@ -241,11 +250,56 @@ where
             .count()
     }
 
+    /// Returns whether an exact retained coordinate is currently idle.
+    #[must_use]
+    pub fn slot_available(&self, coordinate: QemuHotForkTemplatePoolSlot) -> Option<bool> {
+        self.slots
+            .get(&coordinate.key)
+            .and_then(|slots| slots.get(coordinate.slot))
+            .and_then(Option::as_ref)
+            .map(QemuHotForkKeyedLifecycleFactory::template_available)
+    }
+
+    pub(crate) fn restore_retired(
+        &mut self,
+        coordinate: QemuHotForkTemplatePoolSlot,
+        factory: F,
+    ) -> Result<(), F> {
+        if factory.template_key() != coordinate.key || self.slot_count >= self.maximum_slots {
+            return Err(factory);
+        }
+        let slots = self.slots.entry(coordinate.key).or_default();
+        if slots.len() <= coordinate.slot {
+            slots.resize_with(coordinate.slot + 1, || None);
+        }
+        let entry = &mut slots[coordinate.slot];
+        if entry.is_some() {
+            return Err(factory);
+        }
+        *entry = Some(factory);
+        self.slot_count += 1;
+        Ok(())
+    }
+
     /// Returns the pool-level terminal quarantine.
     #[must_use]
     pub const fn quarantine_sink(&self) -> &Q {
         &self.quarantine
     }
+}
+
+fn validate_pool_capacity(
+    maximum_slots: usize,
+) -> Result<(), QemuHotForkTemplatePoolCapacityError> {
+    if maximum_slots == 0 {
+        return Err(QemuHotForkTemplatePoolCapacityError::Zero);
+    }
+    if maximum_slots > MAX_QEMU_HOT_FORK_TEMPLATE_POOL_SLOTS {
+        return Err(QemuHotForkTemplatePoolCapacityError::AboveMaximum {
+            requested: maximum_slots,
+        });
+    }
+    Ok(())
 }
 
 /// Stable coordinate of one retained source worker within a template pool.

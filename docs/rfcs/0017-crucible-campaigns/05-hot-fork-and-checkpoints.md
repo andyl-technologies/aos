@@ -2329,4 +2329,8 @@ realizations intact.
   realization tier, never semantic proposal priority in strict mode. Fork rate
   is measured over one configured fixed-duration monotonic host-time window;
   every admitted process-fork attempt is charged even when later preparation
-  fails.
+  fails. The retained-pool owner MUST secure and authenticate the selected
+  exact/thin fallback and reap the idle source before releasing its accounting;
+  partial multi-source demotion failure MUST preserve completed releases,
+  restore the failed source at its exact stable coordinate, and leave the
+  candidate uninstalled.

@@ -129,7 +129,7 @@ pub struct HotCheckpointLimits {
     maximum_templates: usize,
     maximum_resources: HotCheckpointResourceProfile,
     maximum_forks_per_window: u32,
-    fork_rate_window_ticks: u64,
+    fork_rate_window_nanos: u64,
 }
 
 impl HotCheckpointLimits {
@@ -142,12 +142,12 @@ impl HotCheckpointLimits {
     ///
     /// Returns [`HotCheckpointLimitsError`] when the template ceiling is zero
     /// or above the daemon's static worker bound, or when the fork-rate ceiling
-    /// or monotonic window width is zero.
+    /// or monotonic nanosecond window width is zero.
     pub const fn new(
         maximum_templates: usize,
         maximum_resources: HotCheckpointResourceProfile,
         maximum_forks_per_window: u32,
-        fork_rate_window_ticks: u64,
+        fork_rate_window_nanos: u64,
     ) -> Result<Self, HotCheckpointLimitsError> {
         if maximum_templates == 0 {
             return Err(HotCheckpointLimitsError::ZeroTemplates);
@@ -160,14 +160,14 @@ impl HotCheckpointLimits {
         if maximum_forks_per_window == 0 {
             return Err(HotCheckpointLimitsError::ZeroForkRate);
         }
-        if fork_rate_window_ticks == 0 {
+        if fork_rate_window_nanos == 0 {
             return Err(HotCheckpointLimitsError::ZeroForkRateWindow);
         }
         Ok(Self {
             maximum_templates,
             maximum_resources,
             maximum_forks_per_window,
-            fork_rate_window_ticks,
+            fork_rate_window_nanos,
         })
     }
 
@@ -189,10 +189,10 @@ impl HotCheckpointLimits {
         self.maximum_forks_per_window
     }
 
-    /// Returns the configured fixed window width in monotonic clock ticks.
+    /// Returns the configured fixed window width in monotonic nanoseconds.
     #[must_use]
-    pub const fn fork_rate_window_ticks(self) -> u64 {
-        self.fork_rate_window_ticks
+    pub const fn fork_rate_window_nanos(self) -> u64 {
+        self.fork_rate_window_nanos
     }
 }
 
@@ -213,8 +213,8 @@ pub enum HotCheckpointLimitsError {
     /// A rate window must admit at least one fork start.
     #[error("hot-checkpoint fork-rate limit is zero")]
     ZeroForkRate,
-    /// A rate window must span at least one monotonic clock tick.
-    #[error("hot-checkpoint fork-rate window is zero ticks")]
+    /// A rate window must span at least one monotonic nanosecond.
+    #[error("hot-checkpoint fork-rate window is zero nanoseconds")]
     ZeroForkRateWindow,
 }
 
@@ -799,6 +799,13 @@ pub struct HotCheckpointPlannedDemotion {
 }
 
 impl HotCheckpointPlannedDemotion {
+    pub(crate) const fn new(
+        status: HotCheckpointStatus,
+        reason: HotCheckpointDemotionReason,
+    ) -> Self {
+        Self { status, reason }
+    }
+
     /// Returns the exact retained source that must be retired.
     #[must_use]
     pub const fn status(self) -> HotCheckpointStatus {
@@ -934,7 +941,7 @@ pub struct HotCheckpointManager {
     generation: u64,
     usage: HotCheckpointUsage,
     retained: BTreeMap<QemuHotForkTemplatePoolSlot, HotCheckpointStatus>,
-    last_fork_tick: Option<u64>,
+    last_fork_nanos: Option<u64>,
     fork_window: Option<u64>,
     forks_in_window: u32,
 }
@@ -949,7 +956,7 @@ impl HotCheckpointManager {
             generation: 0,
             usage: HotCheckpointUsage::default(),
             retained: BTreeMap::new(),
-            last_fork_tick: None,
+            last_fork_nanos: None,
             fork_window: None,
             forks_in_window: 0,
         }
@@ -993,13 +1000,17 @@ impl HotCheckpointManager {
     ///
     /// # Errors
     ///
-    /// Returns [`HotCheckpointAdmissionRejection`] when the candidate alone
-    /// exceeds a limit, aggregate accounting overflows, or no eligible set of
-    /// colder sources can create enough capacity. Planning never mutates state.
+    /// Returns [`HotCheckpointAdmissionRejection`] when no unambiguous commit
+    /// generation remains, the candidate alone exceeds a limit, aggregate
+    /// accounting overflows, or no eligible set of colder sources can create
+    /// enough capacity. Planning never mutates state.
     pub fn plan_admission(
         &self,
         candidate: HotCheckpointCandidate,
     ) -> Result<HotCheckpointAdmissionPlan, HotCheckpointAdmissionRejection> {
+        self.generation
+            .checked_add(1)
+            .ok_or(HotCheckpointAdmissionRejection::GenerationExhausted)?;
         let individual = HotCheckpointUsage::default()
             .add(candidate.resources)
             .ok_or(HotCheckpointAdmissionRejection::AccountingOverflow)?;
@@ -1182,12 +1193,17 @@ impl HotCheckpointManager {
     /// # Errors
     ///
     /// Returns [`HotCheckpointInventoryError::MissingSlot`] when the exact
-    /// coordinate is not currently retained.
+    /// coordinate is not currently retained, or
+    /// [`HotCheckpointInventoryError::GenerationExhausted`] before external
+    /// work when no unambiguous commit generation remains.
     pub fn plan_orderly_demotion(
         &self,
         slot: QemuHotForkTemplatePoolSlot,
         reason: HotCheckpointDemotionReason,
     ) -> Result<HotCheckpointOrderlyDemotionPlan, HotCheckpointInventoryError> {
+        self.generation
+            .checked_add(1)
+            .ok_or(HotCheckpointInventoryError::GenerationExhausted)?;
         let status = self
             .retained
             .get(&slot)
@@ -1199,6 +1215,42 @@ impl HotCheckpointManager {
             status,
             reason,
         })
+    }
+
+    // Reconciles a physically completed prefix with one atomic generation
+    // advance, so partial admission failure cannot expose half-accounting.
+    pub(crate) fn commit_completed_demotions(
+        &mut self,
+        completed: &[HotCheckpointPlannedDemotion],
+    ) -> Result<Vec<HotCheckpointDemotion>, HotCheckpointInventoryError> {
+        if completed.is_empty() {
+            return Ok(Vec::new());
+        }
+        let next_generation = self
+            .generation
+            .checked_add(1)
+            .ok_or(HotCheckpointInventoryError::GenerationExhausted)?;
+        let mut next_usage = self.usage;
+        for demotion in completed {
+            if self.retained.get(&demotion.slot()).copied() != Some(demotion.status()) {
+                return Err(HotCheckpointInventoryError::MissingSlot);
+            }
+            next_usage = next_usage
+                .remove(demotion.status().resources())
+                .ok_or(HotCheckpointInventoryError::AccountingInconsistent)?;
+        }
+
+        let mut committed = Vec::with_capacity(completed.len());
+        for demotion in completed {
+            self.retained.remove(&demotion.slot());
+            committed.push(HotCheckpointDemotion {
+                status: demotion.status(),
+                reason: demotion.reason(),
+            });
+        }
+        self.usage = next_usage;
+        self.generation = next_generation;
+        Ok(committed)
     }
 
     /// Commits one plan after the exact idle source authority was retired.
@@ -1255,18 +1307,18 @@ impl HotCheckpointManager {
     /// configured number of starts has already been admitted in this window.
     pub fn admit_fork(
         &mut self,
-        monotonic_tick: u64,
+        monotonic_nanos: u64,
     ) -> Result<HotCheckpointForkPermit, HotCheckpointForkRateError> {
-        if let Some(current) = self.last_fork_tick
-            && monotonic_tick < current
+        if let Some(current) = self.last_fork_nanos
+            && monotonic_nanos < current
         {
             return Err(HotCheckpointForkRateError::StaleClock {
-                requested: monotonic_tick,
+                requested: monotonic_nanos,
                 current,
             });
         }
-        self.last_fork_tick = Some(monotonic_tick);
-        let window = monotonic_tick / self.limits.fork_rate_window_ticks;
+        self.last_fork_nanos = Some(monotonic_nanos);
+        let window = monotonic_nanos / self.limits.fork_rate_window_nanos;
         match self.fork_window {
             Some(current) if window == current => {}
             _ => {
@@ -1313,6 +1365,9 @@ fn saturating_combined_usage(
 /// Admission refusal that leaves the manager unchanged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum HotCheckpointAdmissionRejection {
+    /// No further inventory transition can be identified without ambiguity.
+    #[error("hot-checkpoint inventory generation is exhausted")]
+    GenerationExhausted,
     /// The candidate alone exceeds one or more process-wide ceilings.
     #[error("hot-checkpoint candidate exceeds an individual resource ceiling")]
     IndividualLimit {
@@ -1423,11 +1478,11 @@ impl HotCheckpointForkPermit {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum HotCheckpointForkRateError {
     /// A caller attempted to roll the monotonic operational clock backward.
-    #[error("hot-checkpoint fork-rate clock tick {requested} is stale at {current}")]
+    #[error("hot-checkpoint monotonic nanoseconds {requested} are stale at {current}")]
     StaleClock {
-        /// Rejected monotonic clock tick.
+        /// Rejected monotonic nanosecond reading.
         requested: u64,
-        /// Latest manager clock tick.
+        /// Latest manager monotonic nanosecond reading.
         current: u64,
     },
     /// This window already admitted the configured number of starts.

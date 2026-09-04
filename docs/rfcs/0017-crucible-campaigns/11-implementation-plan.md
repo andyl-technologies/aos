@@ -2514,12 +2514,22 @@ intervening signal, pin, or inventory change. Focused regressions cover every
 resource dimension, multi-source pressure, pins, deterministic ties, signal
 updates, foreign/stale/wrong-key plans, orderly accounting release, and fork-
 rate rollover. Pool insertion now returns the stable coordinate consumed by
-that boundary. The owner that executes a plan and atomically composes idle
-source retirement with exact/thin fallback has not yet been wired, so resource
-accounting is not yet the production launch boundary and T-CAM-7.5 remains
-unchecked. Atomic multi-node host-continuation installation, the concrete
-modeled driver, and a real QEMU flight also remain open; this checkpoint
-therefore does not mark T-CAM-6.2 or T-CAM-6.3 complete.
+that boundary. A single managed-pool owner now executes those plans under one
+mutable authority: it preflights every victim as idle, transfers each exact
+factory to a fallback-and-reap sink, restores a failed source at its stable
+coordinate, reconciles earlier successful releases after a partial failure,
+installs the candidate only after all required releases, and supports explicit
+operator, shutdown, or invalidation demotion through the same order. It also
+charges a process-local monotonic-nanosecond fork-rate window before every pool
+start attempt. Focused regressions cover exact manager/pool coordinates,
+pressure replacement, busy-victim read-only rejection, partial-demotion
+reconciliation, sink-failure restoration, explicit orderly demotion, candidate
+key mismatch, and rate rejection before a second pool start. The production
+fallback router and demotion sink have not yet been composed with the concrete
+daemon/QEMU owner, so this is not yet the production launch boundary and
+T-CAM-7.5 remains unchecked. Atomic multi-node host-continuation installation,
+the concrete modeled driver, and a real QEMU flight also remain open; this
+checkpoint therefore does not mark T-CAM-6.2 or T-CAM-6.3 complete.
 The internal registry now has safe RCU and internal-monitor dispositions, while
 other AIO owners and every generic or external thread remain unresolved. The
 retained AIO/BH/timer and RCU

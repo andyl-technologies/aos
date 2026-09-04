@@ -2367,9 +2367,17 @@ the complete factory/source authority to the caller for orderly reap or durable
 fallback. Removal leaves a stable tombstone while sibling children exist, so
 their recovery coordinates cannot shift; a later same-key insertion may reuse
 that slot only after the old idle authority has been transferred. Hotness
-scoring and the policy that chooses such demotions, the atomic world-
-continuation installer, modeled private-child driver, and real QEMU campaign
-flight remain required before hot fork is advertised.
+scoring and pressure selection are enforced by a single managed-pool owner. It
+preflights all exact victims as idle, requires the demotion sink to preserve the
+planned exact/thin fallback and attest source reap before accounting release,
+restores a failed source at its exact coordinate, and reconciles any earlier
+successful releases when a multi-victim plan fails partway through. Explicit
+operator, shutdown, and source-invalidation demotions use the same ordering.
+Every attempted child start consumes the owner's process-wide monotonic-time
+fork-rate admission before source-pool routing. A concrete production demotion
+sink and fallback router, the atomic world-continuation installer, modeled
+private-child driver, and real QEMU campaign flight remain required before hot
+fork is advertised.
 
 Exactly one attempt-owned watcher blocks on the same sticky eventfd, and child
 contracts cannot be minted before that watcher is live. Terminal cancellation

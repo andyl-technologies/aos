@@ -71,6 +71,8 @@
 //! installs target guards, and owns terminal quarantine handoff;
 //! [`hot_checkpoint_manager`] bounds and ranks those retained sources while
 //! producing generation-fenced exact/thin demotion plans;
+//! [`managed_hot_checkpoint_pool`] composes those plans with exact source-pool
+//! authority and process-wide fork-rate admission;
 //! [`qemu_resource_guard`] binds one indivisible host process/filesystem owner
 //! to signal-driven cancellation and exact quantum accounting;
 //! [`planner_loopback`] owns
@@ -115,6 +117,8 @@ pub mod executor_worker;
 mod guest_selectable;
 #[cfg(target_os = "linux")]
 pub mod hot_checkpoint_manager;
+#[cfg(target_os = "linux")]
+pub mod managed_hot_checkpoint_pool;
 pub mod packaged_qemu_executor;
 #[cfg(target_os = "linux")]
 pub mod paused_checkpoint_promotion;
@@ -352,6 +356,14 @@ pub use hot_checkpoint_manager::{
     HotCheckpointPlannedDemotion, HotCheckpointPressure, HotCheckpointResourceProfile,
     HotCheckpointResourceProfileError, HotCheckpointRetentionReason, HotCheckpointScore,
     HotCheckpointStatus, HotCheckpointUsage, MAX_HOT_CHECKPOINT_SCORE_COMPONENT,
+};
+#[cfg(target_os = "linux")]
+pub use managed_hot_checkpoint_pool::{
+    HotCheckpointTemplateDemotionFailure, HotCheckpointTemplateDemotionSink,
+    ManagedHotCheckpointAdmissionError, ManagedHotCheckpointAdmissionFailure,
+    ManagedHotCheckpointDemotionError, ManagedHotCheckpointDemotionFailure,
+    ManagedHotCheckpointStartError, ManagedQemuHotForkTemplatePool,
+    ManagedQemuHotForkTemplatePoolConstructionError,
 };
 pub use packaged_qemu_executor::{
     AttachedPackagedQemuExecutor, MAX_PACKAGED_SCENARIO_CATALOG_BYTES,

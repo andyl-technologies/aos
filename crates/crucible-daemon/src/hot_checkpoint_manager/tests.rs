@@ -405,6 +405,30 @@ fn limits_match_the_static_pool_ceiling() {
     );
 }
 
+#[test]
+fn exhausted_generation_rejects_plans_before_external_work() {
+    let mut manager = manager(1, unit_resources(), 1);
+    manager.generation = u64::MAX;
+    assert!(matches!(
+        manager.plan_admission(candidate(1, 1, false, unit_resources())),
+        Err(HotCheckpointAdmissionRejection::GenerationExhausted)
+    ));
+
+    manager.generation = 0;
+    let coordinate = slot(1, 0);
+    retain(
+        &mut manager,
+        candidate(1, 1, false, unit_resources()),
+        coordinate,
+    );
+    manager.generation = u64::MAX;
+    assert!(matches!(
+        manager.plan_orderly_demotion(coordinate, HotCheckpointDemotionReason::OperatorRequest),
+        Err(HotCheckpointInventoryError::GenerationExhausted)
+    ));
+    assert!(manager.status(coordinate).is_some());
+}
+
 fn manager(
     maximum_templates: usize,
     maximum_resources: HotCheckpointResourceProfile,
