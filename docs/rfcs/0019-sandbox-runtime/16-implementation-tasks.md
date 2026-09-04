@@ -735,6 +735,24 @@ completes. The Git history remains authoritative for code details.
   replanning. The implementation passes 114 sandbox unit tests, one downstream
   public-API integration test, 14 ownership-protocol tests, all doctests, strict
   Clippy, warning-denied rustdoc, formatting, and adversarial review.
+- `b2a56efd2` — foundation toward `SBX-BPROTO-04`, `SBX-CTRL-03`, and
+  `SBX-MULTI-01`: a transport-neutral service now maps the negotiated ownership
+  protocol onto the protected durable authority. Query observes only an exact
+  request-ID/claim-digest binding, Begin durably records unsigned intent, and
+  CompleteOrResume rechecks that binding under the same exclusive borrow before
+  allowing a still-pending transaction to contact the issuer and protected
+  authority clock. Completed Begin, Query, and completion replay return the
+  exact historical four artifacts without issuer or clock calls. A same-TCB
+  in-process adapter composes this service with the node controller without
+  claiming a process security boundary; future local or remote carriers retain
+  peer authentication, pre-allocation framing bounds, and hostile decoding.
+  Negotiation accepts the protocol's full sufficient response-ceiling range
+  while binding each exchange to the selected value. A dual-journal integration
+  test activates through the real controller and durable authority, reopens
+  both journals, and proves replay performs no additional issuance or protected
+  clock read. The slice passes 117 sandbox unit tests, one downstream API test,
+  doctests, strict Clippy, warning-denied rustdoc, formatting, and independent
+  adversarial review.
 
 The post-`727da7f3e` x86_64 `sandbox-filesystem-capability-proof` rerun built the
 complete hermetic Rust closure, AOS system, initrd, and VM disk and launched
