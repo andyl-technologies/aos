@@ -1880,11 +1880,17 @@ state was not changed.
 The current daemon implements the all-or-nothing admission half of this
 transaction. It keeps each installed node child private until all running
 nodes exact-match the captured installed-node, source-process, configuration,
-event-prefix, private-channel, scheduler-node, and process-local assembly-incarnation basis;
-partial assembly drop quarantines all children already admitted. Construction
-of the authoritative scheduler
-lifecycle and one shared aggregate target-resource owner remain mandatory
-before this path is enabled or T-CAM-7.4 is marked complete.
+event-prefix, private-channel, scheduler-node, and process-local
+assembly-incarnation basis; partial assembly drop quarantines all children
+already admitted. One bounded aggregate target owner now reserves every node
+before its fork and keeps CPU, memory, writable storage, sticky cancellation,
+and execution-quanta enforcement indivisible across the child set. An explicit
+pre-fork rejection rolls back only the unused node reservation; every ambiguous
+or post-fork failure quarantines the complete owner. Per-node reconciliation
+may record exact child cleanup, but only the aggregate owner can release the
+underlying attempt guard after all issued nodes finish. Construction of the
+authoritative scheduler lifecycle and its final handoff from this owner remain
+mandatory before this path is enabled or T-CAM-7.4 is marked complete.
 
 - **[HFORK-13]** A campaign branch is a world, not a bag of independently
   visible node forks. No consumer may observe a partially forked world.
