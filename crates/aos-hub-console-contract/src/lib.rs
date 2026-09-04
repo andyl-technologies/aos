@@ -182,6 +182,10 @@ pub fn owner_controls_visible(
 /// Permissions that determine which delivery-destination setup paths are usable.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DeliverySetupAccess {
+    /// Whether an existing-endpoint workflow can be resumed.
+    pub can_resume_existing: bool,
+    /// Whether a new-endpoint workflow can be resumed.
+    pub can_resume_new: bool,
     /// Whether an existing endpoint can be connected to the surface.
     pub can_use_existing_endpoint: bool,
     /// Whether a hostname, domain, and endpoint can be created inline.
@@ -211,6 +215,8 @@ pub fn delivery_setup_access(permissions: &[String]) -> DeliverySetupAccess {
     let can_create_endpoint = common && allows("endpoint.manage") && allows("network_policy.read");
 
     DeliverySetupAccess {
+        can_resume_existing: common,
+        can_resume_new: common && allows("endpoint.manage"),
         can_use_existing_endpoint: common && allows("endpoint.read"),
         can_create_hostname_endpoint: can_create_endpoint && allows("domain.manage"),
         can_create_managed_domain_endpoint: can_create_endpoint && allows("domain.read"),
@@ -1516,6 +1522,8 @@ mod tests {
             "gateway.manage".to_string(),
         ]);
         assert!(existing.can_use_existing_endpoint);
+        assert!(existing.can_resume_existing);
+        assert!(!existing.can_resume_new);
         assert!(!existing.can_create_hostname_endpoint);
 
         let hostname = delivery_setup_access(&[

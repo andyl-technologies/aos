@@ -66,7 +66,7 @@ pub(super) fn DeliveryDestinationWorkflows(
                     Suspend::new(async move {
                         match workflows.await.as_ref() {
                             Ok(workflows) if workflows.is_empty() => view! { <p class="muted">"No delivery setup is in progress."</p> }.into_any(),
-                            Ok(workflows) => view! { <div class="binding-list">{workflows.iter().cloned().map(|workflow| view! { <DeliveryWorkflowCard client=client.clone() workflow=workflow can_manage=can_manage/> }).collect_view()}</div> }.into_any(),
+                            Ok(workflows) => view! { <div class="binding-list">{workflows.iter().cloned().map(|workflow| view! { <DeliveryWorkflowCard client=client.clone() workflow=workflow can_manage=can_manage access=access/> }).collect_view()}</div> }.into_any(),
                             Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any(),
                         }
                     })
@@ -313,7 +313,7 @@ fn DeliveryDestinationForm(
                         </fieldset>
                     }.into_any()
                 }}
-                <label><span>"Client base path"</span><input required prop:value=move || client_base_path.get() on:input=move |event| client_base_path.set(event_target_value(&event))/></label>
+                <label><span>"CDN URL prefix"</span><input required prop:value=move || client_base_path.get() on:input=move |event| client_base_path.set(event_target_value(&event))/><small>"The selected placement's storage prefix is appended to this path for the final public URL."</small></label>
                 <AccessPolicyFields signals=access allow_hub_auth=false boundaries=boundaries_for_access/>
                 <fieldset class="choice-field"><legend>"Capabilities"</legend><label class="choice-row"><input type="checkbox" prop:checked=move || serves_git.get() on:change=move |event| serves_git.set(event_target_checked(&event))/><span>"Git"</span></label><label class="choice-row"><input type="checkbox" prop:checked=move || serves_cache.get() on:change=move |event| serves_cache.set(event_target_checked(&event))/><span>"Nix cache"</span></label><label class="choice-row"><input type="checkbox" prop:checked=move || serves_web.get() on:change=move |event| serves_web.set(event_target_checked(&event))/><span>"Web"</span></label><label class="choice-row"><input type="checkbox" prop:checked=move || serves_oci.get() on:change=move |event| serves_oci.set(event_target_checked(&event))/><span>"OCI"</span></label></fieldset>
                 <fieldset class="choice-field"><legend>"Make canonical for"</legend><label class="choice-row"><input type="checkbox" prop:checked=move || advertise_git.get() on:change=move |event| advertise_git.set(event_target_checked(&event))/><span>"Git clients"</span></label><label class="choice-row"><input type="checkbox" prop:checked=move || advertise_cache.get() on:change=move |event| advertise_cache.set(event_target_checked(&event))/><span>"Nix clients"</span></label><label class="choice-row"><input type="checkbox" prop:checked=move || advertise_web.get() on:change=move |event| advertise_web.set(event_target_checked(&event))/><span>"Web clients"</span></label></fieldset>
@@ -539,6 +539,7 @@ fn DeliveryWorkflowCard(
     client: ApiClient,
     workflow: aos_proto_types::DeliveryWorkflow,
     can_manage: bool,
+    access: DeliverySetupAccess,
 ) -> impl IntoView {
     let state = if workflow.state.is_empty() {
         "unknown".to_string()
@@ -547,6 +548,17 @@ fn DeliveryWorkflowCard(
     };
     let positive = state == "ready" || state == "active";
     let action = delivery_workflow_action(&state);
+    let resumes_new_endpoint = workflow.intent.as_ref().is_some_and(|intent| {
+        matches!(
+            intent.endpoint.as_ref(),
+            Some(aos_proto_types::delivery_destination_intent::Endpoint::NewEndpoint(_))
+        )
+    });
+    let can_resume = if resumes_new_endpoint {
+        access.can_resume_new
+    } else {
+        access.can_resume_existing
+    };
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
@@ -658,7 +670,8 @@ fn DeliveryWorkflowCard(
             {(!workflow.blockers.is_empty()).then(|| view! { <div class="workflow-blockers"><strong>"Waiting on"</strong><ul>{workflow.blockers.into_iter().map(|blocker| view! { <li>{blocker}</li> }).collect_view()}</ul></div> })}
             {(!workflow.next_actions.is_empty()).then(|| view! { <div class="workflow-next-actions"><strong>"Next actions"</strong><ul>{workflow.next_actions.into_iter().map(|next| view! { <li>{next}</li> }).collect_view()}</ul></div> })}
             {can_manage.then(|| match action {
-                Some(DeliveryWorkflowAction::Resume) => view! { <button class="secondary-button" type="button" disabled=move || busy.get() on:click=on_resume>"Check and continue"</button> }.into_any(),
+                Some(DeliveryWorkflowAction::Resume) if can_resume => view! { <button class="secondary-button" type="button" disabled=move || busy.get() on:click=on_resume>"Check and continue"</button> }.into_any(),
+                Some(DeliveryWorkflowAction::Resume) => view! { <p class="muted">"Continuing this workflow requires gateway management and binding read access; new endpoints also require endpoint management."</p> }.into_any(),
                 Some(DeliveryWorkflowAction::ReviewActivation) => view! { <button class="button" type="button" disabled=move || busy.get() on:click=on_plan_activate>"Review activation"</button> }.into_any(),
                 None => ().into_any(),
             })}
