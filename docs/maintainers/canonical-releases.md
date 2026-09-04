@@ -746,10 +746,19 @@ inside the bundle it is meant to authenticate is not a trust anchor.
 
 ## Exercise the complete Hub transition in a fleet
 
+Native Hub deployments terminate TLS in `aos-hub` itself. Configure
+`aos.registry-hub.listen` for the public listener, set an HTTPS `externalUrl`,
+and supply the `tlsCertificate` and `tlsPrivateKey` credential names. The
+listener rejects missing or unexpected SNI and injects HTTPS route evidence
+only after a successful rustls handshake; the Hub does not infer security from
+forgeable forwarding headers. Keep the private key in the deployment secret
+provider and rotate it by replacing the systemd credential followed by a
+service restart.
+
 `checks.fleet.native-hub-release-pipeline` is the production-shaped acceptance
 test for the online half of this runbook. It boots separate native staging and
 production Hub machines with distinct deployment identities, publication keys,
-and channel keys behind TLS at the canonical hostnames. The Hub system module
+and channel keys using native TLS at the canonical hostnames. The Hub system module
 loads every private signing seed and trust map through systemd credentials; a
 partial release-evidence configuration fails evaluation.
 

@@ -61,7 +61,6 @@ regex = { workspace = true }
 serde = { workspace = true }
 rand = { workspace = true }
 axum = { workspace = true }
-tokio-rustls = { workspace = true }
 rustls-pemfile = { workspace = true }
 tokio-util = { workspace = true }
 hyper-util = { workspace = true }

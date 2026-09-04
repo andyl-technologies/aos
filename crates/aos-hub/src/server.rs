@@ -218,6 +218,25 @@ impl crate::validation::RepairAuthorizer for HubRepairAuthorizer {
 /// delivery-route dispatcher, which rewrites a selected endpoint to the
 /// internal delivery handler shared with the Worker runtime.
 pub async fn router(state: Arc<AppState>) -> Router {
+    router_with_transport(state, None).await
+}
+
+/// Builds the native router with optional listener-authenticated transport evidence.
+///
+/// # Examples
+///
+/// ```no_run
+/// # use std::sync::Arc;
+/// # use aos_hub::server::AppState;
+/// # async fn example(state: Arc<AppState>) {
+/// let router = aos_hub::server::router_with_transport(state, None).await;
+/// # let _ = router;
+/// # }
+/// ```
+pub async fn router_with_transport(
+    state: Arc<AppState>,
+    transport: Option<aos_hub_core::connect::DeliveryTransportEvidence>,
+) -> Router {
     // The shared Connect-JSON RPC service, built over the hub's database, signing
     // keys, and base URL (the same fields the old per-hub service held), with the
     // in-process limiter adapted to the core `RateLimiter` port and the native
@@ -360,11 +379,19 @@ pub async fn router(state: Arc<AppState>) -> Router {
         ));
     // Typed domain/IP endpoints select the most-specific route before
     // any internal handler matches. Outermost so it runs first on the way in.
-    aos_hub_core::connect::with_route_dispatch(
-        app,
-        dispatch_service,
-        state.delivery_attestation_verifier.clone(),
-    )
+    match transport {
+        Some(transport) => aos_hub_core::connect::with_route_dispatch_transport(
+            app,
+            dispatch_service,
+            state.delivery_attestation_verifier.clone(),
+            transport,
+        ),
+        None => aos_hub_core::connect::with_route_dispatch(
+            app,
+            dispatch_service,
+            state.delivery_attestation_verifier.clone(),
+        ),
+    }
 }
 
 /// Dispatches a nested registry console request ahead of browse wildcards.
@@ -504,7 +531,13 @@ async fn inject_client_ip(
     let peer = request
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
-        .map(|ci| ci.0);
+        .map(|ci| ci.0)
+        .or_else(|| {
+            request
+                .extensions()
+                .get::<ConnectInfo<crate::native_tls::NativeTlsPeer>>()
+                .map(|ci| (ci.0).0)
+        });
     let ip = client_ip_for(request.headers(), peer, state.trusted_proxy);
     if let Ok(value) = HeaderValue::from_str(&ip) {
         request
