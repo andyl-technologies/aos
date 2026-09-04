@@ -314,6 +314,9 @@ async fn invoke_executor(
         let write = async {
             stdin.write_all(&input).await?;
             stdin.shutdown().await?;
+            // The executor reads one canonical JSON document through EOF. A
+            // successful flush is not EOF while the pipe handle remains live.
+            drop(stdin);
             Result::<()>::Ok(())
         };
         let read = read_limited(stdout, MAX_EXECUTOR_RESPONSE_BYTES);
