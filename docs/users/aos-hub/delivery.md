@@ -48,14 +48,16 @@ the immutable owner scope, not an organization slug.
     "generation": "1"
   },
   "placementName": "primary",
-  "clientBasePath": "/acme/builds",
+  "clientBasePath": "/",
   "accessPolicy": { "public": true },
   "capabilities": { "servesCache": true },
   "audiences": ["nix_cache"]
 }
 ```
 
-Save it as `delivery.json`, then review the returned effects:
+`clientBasePath` is the CDN URL prefix. The placement's object prefix is
+appended to it; review the complete destination URL in the setup plan.
+Save the document as `delivery.json`, then review the returned effects:
 
 ```sh
 aos --json hub delivery plan --intent-file delivery.json --idempotency-key setup-review-1

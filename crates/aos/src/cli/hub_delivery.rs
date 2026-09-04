@@ -132,4 +132,20 @@ mod tests {
             .is_ok()
         );
     }
+
+    #[test]
+    fn granted_gateway_inventory_requires_an_explicit_consumer_scope() {
+        let command = ["aos", "hub", "gateway", "list", "--include-granted"];
+        assert!(Cli::try_parse_from(command).is_err());
+        assert!(Cli::try_parse_from(command.into_iter().chain(["--scope", "instance"])).is_ok());
+        assert!(
+            Cli::try_parse_from(command.into_iter().chain([
+                "--scope",
+                "instance",
+                "--binding",
+                "instance:primary",
+            ]))
+            .is_err()
+        );
+    }
 }
