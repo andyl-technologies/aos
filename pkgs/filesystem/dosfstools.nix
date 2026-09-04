@@ -1,22 +1,63 @@
 ##! dosfstools — Utilities for making and checking FAT filesystems
 {
   mkDerivation,
-  fetchurl,
+  mkGithubUpstream,
   gnumake,
   stdenv,
 }: let
   version = "4.2";
-in
-  mkDerivation {
-    pname = "dosfstools";
+  upstream = mkGithubUpstream {
+    unitId = "dosfstools-4";
+    family = "dosfstools";
+    stream = "4";
+    owner = "pkgs/filesystem/dosfstools.nix";
     inherit version;
-
-    src = fetchurl {
-      urls = [
-        "https://github.com/dosfstools/dosfstools/releases/download/v${version}/dosfstools-${version}.tar.gz"
+    upstreamId = "v4.2";
+    repository = "dosfstools/dosfstools";
+    tagPrefix = "v";
+    major = 4;
+    versionScheme = "numeric";
+    source = {
+      authority = "github.com";
+      path = [
+        "dosfstools"
+        "dosfstools"
+        "releases"
+        "download"
+        {
+          parts = [
+            {literal = "v";}
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+          ];
+        }
+        {
+          parts = [
+            {literal = "dosfstools-";}
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+            {literal = ".tar.gz";}
+          ];
+        }
       ];
       hash = "sha256-ZJJu6/kAktyiGxQlmlMBt7mOexlD6KIBx9cmCEgJtSc=";
     };
+  };
+in
+  mkDerivation {
+    pname = "dosfstools";
+    inherit (upstream) version;
+
+    src = upstream.components.main.sources.source;
+    update = upstream.update;
 
     patches =
       if stdenv.hostPlatform.isDarwin

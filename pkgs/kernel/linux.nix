@@ -43,6 +43,7 @@ in
   mkDerivation {
     pname = "linux";
     inherit (linuxSource) version src;
+    update = linuxSource.updateFor "linux";
 
     # `out` is the slim runtime kernel (compressed vmlinuz + modules). The
     # separate `vmlinux` output carries the uncompressed ELF that test VMMs

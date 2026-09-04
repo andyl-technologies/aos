@@ -1,24 +1,62 @@
 ##! jemalloc — general-purpose scalable concurrent malloc implementation
 {
   mkDerivation,
-  fetchurl,
+  mkGithubUpstream,
   gnumake,
   bash,
   perl,
   stdenv,
 }: let
-  version = "5.3.0";
+  upstream = mkGithubUpstream {
+    unitId = "jemalloc-5";
+    family = "jemalloc";
+    stream = "5";
+    owner = "pkgs/libs/jemalloc.nix";
+    version = "5.3.0";
+    upstreamId = "5.3.0";
+    repository = "jemalloc/jemalloc";
+    major = 5;
+    source = {
+      authority = "github.com";
+      path = [
+        "jemalloc"
+        "jemalloc"
+        "releases"
+        "download"
+        {
+          parts = [
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+          ];
+        }
+        {
+          parts = [
+            {literal = "jemalloc-";}
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+            {literal = ".tar.bz2";}
+          ];
+        }
+      ];
+      hash = "sha256-LbgtHnEZ3z5xt2QCGbbf6EeJvAU3mDw7esT3GJrs/qo=";
+    };
+  };
+  inherit (upstream) version;
 in
   mkDerivation {
     pname = "jemalloc";
     inherit version;
 
-    src = fetchurl {
-      urls = [
-        "https://github.com/jemalloc/jemalloc/releases/download/${version}/jemalloc-${version}.tar.bz2"
-      ];
-      hash = "sha256-LbgtHnEZ3z5xt2QCGbbf6EeJvAU3mDw7esT3GJrs/qo=";
-    };
+    src = upstream.components.main.sources.source;
+    update = upstream.update;
 
     buildDeps = [gnumake];
     runtimeDeps =

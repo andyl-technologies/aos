@@ -27,14 +27,14 @@ pub struct ImageManifest {
     /// Optional outer document media type.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media_type: Option<MediaType>,
-    /// Required artifact type for an RFC-0018 artifact manifest.
+    /// Required artifact type for an RFC-0019 artifact manifest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifact_type: Option<MediaType>,
     /// Descriptor of the image or empty artifact configuration.
     pub config: Descriptor,
     /// Ordered filesystem layers or type-specific artifact payload descriptors.
     pub layers: Vec<Descriptor>,
-    /// Optional referred manifest; required for RFC-0018 artifacts.
+    /// Optional referred manifest; required for RFC-0019 artifacts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subject: Option<Descriptor>,
     /// Unknown and standard annotations retained in key order.
@@ -241,7 +241,7 @@ pub struct ImageIndex {
     /// Optional outer document media type.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media_type: Option<MediaType>,
-    /// Reserved artifact type, not admitted on indexes in RFC-0018 v1.
+    /// Reserved artifact type, not admitted on indexes in RFC-0019 v1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifact_type: Option<MediaType>,
     /// Ordered descriptors of platform manifests or nested indexes.
@@ -293,7 +293,7 @@ impl ImageIndex {
         if self.artifact_type.is_some() {
             return Err(Error::invalid(
                 "index artifactType",
-                "artifact indexes are not admitted in RFC-0018 v1",
+                "artifact indexes are not admitted in RFC-0019 v1",
             ));
         }
         let descriptor_count = self

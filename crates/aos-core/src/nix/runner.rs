@@ -56,6 +56,29 @@ impl NixRunner {
         })
     }
 
+    /// Creates a runner bound to one explicit candidate repository root.
+    ///
+    /// This constructor prevents maintenance and release controllers from
+    /// accidentally evaluating their own checkout when validating an isolated
+    /// worktree.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AosError::NixNotFound`] when `nix-build` is unavailable, or
+    /// [`AosError::RootNotFound`] when `root` does not contain `default.nix`.
+    pub fn for_root(root: impl Into<PathBuf>, verbose: u8, quiet: bool) -> Result<Self> {
+        which("nix-build").map_err(|_| AosError::NixNotFound)?;
+        let root = root.into();
+        if !root.join("default.nix").is_file() {
+            return Err(AosError::RootNotFound.into());
+        }
+        Ok(Self {
+            root,
+            verbose,
+            quiet,
+        })
+    }
+
     /// Returns the project root path (the directory containing
     /// `default.nix`).
     pub fn root(&self) -> &Path {

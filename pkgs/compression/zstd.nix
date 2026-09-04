@@ -1,25 +1,65 @@
 ##! Zstandard — Fast real-time compression algorithm
 {
   mkDerivation,
-  fetchurl,
+  mkGithubUpstream,
   gnumake,
   zlib,
   xz,
   lz4,
   stdenv,
 }: let
-  version = "1.5.7";
+  upstream = mkGithubUpstream {
+    unitId = "zstd-1";
+    family = "zstd";
+    stream = "1";
+    owner = "pkgs/compression/zstd.nix";
+    version = "1.5.7";
+    upstreamId = "v1.5.7";
+    repository = "facebook/zstd";
+    tagPrefix = "v";
+    major = 1;
+    source = {
+      authority = "github.com";
+      path = [
+        "facebook"
+        "zstd"
+        "releases"
+        "download"
+        {
+          parts = [
+            {literal = "v";}
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+          ];
+        }
+        {
+          parts = [
+            {literal = "zstd-";}
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+            {literal = ".tar.gz";}
+          ];
+        }
+      ];
+      hash = "sha256-6zPlH0mhXgI5UM14Jcp0pKK0Pbg1SCWsJPwbfuCeb6M=";
+    };
+  };
+  inherit (upstream) version;
 in
   mkDerivation {
     pname = "zstd";
     inherit version;
 
-    src = fetchurl {
-      urls = [
-        "https://github.com/facebook/zstd/releases/download/v${version}/zstd-${version}.tar.gz"
-      ];
-      hash = "sha256-6zPlH0mhXgI5UM14Jcp0pKK0Pbg1SCWsJPwbfuCeb6M=";
-    };
+    src = upstream.components.main.sources.source;
+    update = upstream.update;
 
     buildDeps = [gnumake];
     # Keep the CLI's gzip, legacy lzma, and lz4 stream support enabled.

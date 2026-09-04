@@ -568,6 +568,9 @@ let
     "build-support/_expose-module.nix" = "target-independent-source";
     "build-support/_expose-renderer.nix" = "native-build-helper";
     "build-support/_generated-expose-config-module.nix" = "target-independent-source";
+    "build-support/_github-upstream.nix" = "native-build-helper";
+    "build-support/_manual-upstream.nix" = "native-build-helper";
+    "build-support/_upstream.nix" = "native-build-helper";
     "darwin/_apple-libtapi.nix" = "linux-only-build-helper";
     "darwin/_darwin-binutils.nix" = "cross-build-helper";
     "darwin/_darwin-cc.nix" = "cross-build-helper";

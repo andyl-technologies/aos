@@ -182,7 +182,7 @@
     }
   '';
 
-  # Layer ABI v1, frozen by RFC-0018 and tests/containers/phase0.nix.
+  # Layer ABI v1, frozen by RFC-0019 and tests/containers/phase0.nix.
   archiveScript = ''
     verify_archive_tools() {
       tar_version=$(tar --version | head -n 1)

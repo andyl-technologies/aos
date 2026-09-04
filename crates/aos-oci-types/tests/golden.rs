@@ -1,4 +1,4 @@
-//! Golden wire-format vectors for the frozen RFC-0018 contract.
+//! Golden wire-format vectors for the frozen RFC-0019 contract.
 
 #![allow(clippy::expect_used)]
 

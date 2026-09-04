@@ -1,25 +1,55 @@
 ##! jansson — C library for encoding, decoding and manipulating JSON data
 {
   mkDerivation,
-  fetchurl,
+  mkGithubUpstream,
   stdenv,
   gnumake,
   cmake,
   ninja,
 }: let
-  version = "2.15.0";
+  upstream = mkGithubUpstream {
+    unitId = "jansson-2";
+    family = "jansson";
+    stream = "2";
+    owner = "pkgs/libs/jansson.nix";
+    version = "2.15.0";
+    upstreamId = "v2.15.0";
+    repository = "akheron/jansson";
+    tagPrefix = "v";
+    major = 2;
+    source = {
+      authority = "github.com";
+      path = [
+        "akheron"
+        "jansson"
+        "archive"
+        "refs"
+        "tags"
+        {
+          parts = [
+            {literal = "v";}
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+            {literal = ".tar.gz";}
+          ];
+        }
+      ];
+      hash = "sha256-c6wSu8Yv9TbkDHo+Fe0AeZPFyk0jiX3iPxkG+JG1pLs=";
+    };
+  };
+  inherit (upstream) version;
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
 in
   mkDerivation {
     pname = "jansson";
     inherit version;
 
-    src = fetchurl {
-      urls = [
-        "https://github.com/akheron/jansson/archive/refs/tags/v${version}.tar.gz"
-      ];
-      hash = "sha256-c6wSu8Yv9TbkDHo+Fe0AeZPFyk0jiX3iPxkG+JG1pLs=";
-    };
+    src = upstream.components.main.sources.source;
+    update = upstream.update;
 
     buildDeps = [
       gnumake
