@@ -10,6 +10,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
+
 use anyhow::{Context as _, Result, bail};
 use aos_contract::Sha256Digest;
 use aos_maintain::run::ConfinementEvidence;
@@ -55,7 +58,7 @@ impl ResourceLimits {
             processes: 1_024,
             open_files: 4_096,
             file_bytes: 32 * 1024 * 1024 * 1024,
-            address_bytes: 32 * 1024 * 1024 * 1024,
+            address_bytes: 256 * 1024 * 1024 * 1024,
             cpu_seconds: 6 * 60 * 60,
         }
     }
@@ -66,7 +69,7 @@ impl ResourceLimits {
             processes: 64,
             open_files: 256,
             file_bytes: 16 * 1024 * 1024,
-            address_bytes: 8 * 1024 * 1024 * 1024,
+            address_bytes: 128 * 1024 * 1024 * 1024,
             cpu_seconds: 45 * 60,
         }
     }
@@ -143,8 +146,8 @@ impl Backend {
         }
         add_if_present(&mut ro, Path::new("/etc/ssl"))?;
         add_if_present(&mut ro, Path::new("/proc"))?;
-        add_if_present(&mut rw, Path::new("/dev/null"))?;
-        add_if_present(&mut ro, Path::new("/dev/urandom"))?;
+        add_character_device_if_present(&mut rw, Path::new("/dev/null"))?;
+        add_character_device_if_present(&mut ro, Path::new("/dev/urandom"))?;
         if !path_covered(&executable, &ro) && !path_covered(&executable, &rw) {
             ro.push(executable.clone());
         }
@@ -159,8 +162,14 @@ impl Backend {
         };
         let policy_digest =
             Sha256Digest::of_canonical("aos.maintain.confinement-filesystem-policy/v1", &policy)?;
-        let resource_limits_digest =
-            Sha256Digest::of_canonical("aos.maintain.confinement-resource-limits/v1", &limits)?;
+        let mut effective_limits = limits;
+        effective_limits.processes = current_uid_thread_count()?
+            .checked_add(limits.processes)
+            .ok_or_else(|| anyhow::anyhow!("process resource ceiling overflow"))?;
+        let resource_limits_digest = Sha256Digest::of_canonical(
+            "aos.maintain.confinement-resource-limits/v1",
+            &effective_limits,
+        )?;
 
         let mut command = Command::new(&self.unshare);
         command.args([
@@ -180,11 +189,12 @@ impl Backend {
         ]);
         command
             .arg(&self.prlimit)
-            .arg(format!("--nproc={}", limits.processes))
-            .arg(format!("--nofile={}", limits.open_files))
-            .arg(format!("--fsize={}", limits.file_bytes))
-            .arg(format!("--as={}", limits.address_bytes))
-            .arg(format!("--cpu={}", limits.cpu_seconds))
+            .arg(format!("--nproc={}", effective_limits.processes))
+            .arg(format!("--nofile={}", effective_limits.open_files))
+            .arg(format!("--fsize={}", effective_limits.file_bytes))
+            .arg(format!("--as={}", effective_limits.address_bytes))
+            .arg(format!("--cpu={}", effective_limits.cpu_seconds))
+            .arg("--core=0")
             .arg("--");
         command.arg(&self.landlock).args([
             OsString::from("--require-abi"),
@@ -301,6 +311,87 @@ fn add_if_present(paths: &mut Vec<PathBuf>, path: &Path) -> Result<()> {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn current_uid_thread_count() -> Result<u64> {
+    let uid = u64::from(rustix::process::getuid().as_raw());
+    let mut threads = 0_u64;
+    for entry in fs::read_dir("/proc").context("enumerating processes for the worker limit")? {
+        let entry = entry?;
+        if !entry
+            .file_name()
+            .as_encoded_bytes()
+            .iter()
+            .all(u8::is_ascii_digit)
+        {
+            continue;
+        }
+        let metadata = match entry.metadata() {
+            Ok(metadata) => metadata,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+                ) =>
+            {
+                continue;
+            }
+            Err(error) => return Err(error).context("inspecting process ownership"),
+        };
+        if u64::from(metadata.uid()) != uid {
+            continue;
+        }
+        let task = entry.path().join("task");
+        let count = match fs::read_dir(task) {
+            Ok(entries) => entries.count(),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+                ) =>
+            {
+                continue;
+            }
+            Err(error) => return Err(error).context("counting process threads"),
+        };
+        threads = threads
+            .checked_add(u64::try_from(count).context("thread count overflow")?)
+            .ok_or_else(|| anyhow::anyhow!("thread count overflow"))?;
+    }
+    Ok(threads.max(1))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn current_uid_thread_count() -> Result<u64> {
+    bail!("process resource accounting is unavailable on this platform")
+}
+
+#[cfg(target_os = "linux")]
+fn add_character_device_if_present(paths: &mut Vec<PathBuf>, path: &Path) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata)
+            if !metadata.file_type().is_symlink() && metadata.file_type().is_char_device() =>
+        {
+            paths.push(path.to_path_buf());
+            Ok(())
+        }
+        Ok(_) => bail!(
+            "confinement support path is not a character device: {}",
+            path.display()
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error)
+            .with_context(|| format!("inspecting confinement support path {}", path.display())),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn add_character_device_if_present(_paths: &mut Vec<PathBuf>, path: &Path) -> Result<()> {
+    bail!(
+        "character-device confinement is unavailable on this platform: {}",
+        path.display()
+    )
+}
+
 fn path_covered(path: &Path, grants: &[PathBuf]) -> bool {
     grants
         .iter()
@@ -321,5 +412,12 @@ mod tests {
         let grants = vec![PathBuf::from("/allowed/tree")];
         assert!(path_covered(Path::new("/allowed/tree/file"), &grants));
         assert!(!path_covered(Path::new("/allowed/treehouse"), &grants));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn current_user_process_accounting_has_a_controller_thread() -> Result<()> {
+        assert!(current_uid_thread_count()? >= 1);
+        Ok(())
     }
 }

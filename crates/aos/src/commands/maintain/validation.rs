@@ -4,6 +4,9 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Instant;
 
+#[cfg(unix)]
+use std::os::unix::process::ExitStatusExt as _;
+
 use anyhow::{Context as _, Result, bail};
 use aos_maintain::PACKAGE_UPDATE_GATE_RESULTS_V1;
 use aos_maintain::plan::{GateSpec, PackageUpdatePlanV1};
@@ -60,6 +63,7 @@ pub(super) fn quick(
 
     let backend = Backend::detect().context("verifying local gate confinement")?;
     let scratch = store.scratch_directory(run.run_id.as_str(), "quick")?;
+    let candidate_status = git_status(Path::new(&run.worktree))?;
     let mut results = Vec::with_capacity(plan.quick_gates.len());
     let mut logs = Vec::with_capacity(plan.quick_gates.len());
     let mut confinement = None;
@@ -72,6 +76,9 @@ pub(super) fn quick(
         confinement = Some(evidence);
         results.push(result);
         logs.push((gate.id.clone(), log));
+    }
+    if git_status(Path::new(&run.worktree))? != candidate_status {
+        bail!("a planned quick gate changed the candidate worktree");
     }
     let record = GateResultsV1 {
         schema: PACKAGE_UPDATE_GATE_RESULTS_V1.to_string(),
@@ -155,6 +162,9 @@ pub(super) fn final_gates(
         &backend,
         &plan.final_gates,
     )?;
+    if !git_status(Path::new(&run.worktree))?.is_empty() {
+        bail!("a planned final gate changed the committed candidate worktree");
+    }
     let record = GateResultsV1 {
         schema: PACKAGE_UPDATE_GATE_RESULTS_V1.to_string(),
         run_id: run.run_id.clone(),
@@ -280,6 +290,13 @@ fn execute_gate(
     if stdout_truncated || stderr_truncated {
         append_log(&mut log, b"\n", b"[output truncated by aos maintain]\n");
     }
+    if !status.success() {
+        append_log(
+            &mut log,
+            b"\ntermination:\n",
+            termination_description(&status).as_bytes(),
+        );
+    }
     let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let result = GateResult {
         gate_id: gate.id.clone(),
@@ -321,6 +338,22 @@ fn append_log(output: &mut Vec<u8>, label: &[u8], bytes: &[u8]) {
     output.extend_from_slice(&bytes[..bytes.len().min(remaining)]);
 }
 
+#[cfg(unix)]
+fn termination_description(status: &std::process::ExitStatus) -> String {
+    status.code().map_or_else(
+        || format!("signal={}\n", status.signal().unwrap_or_default()),
+        |code| format!("exit-code={code}\n"),
+    )
+}
+
+#[cfg(not(unix))]
+fn termination_description(status: &std::process::ExitStatus) -> String {
+    status.code().map_or_else(
+        || "unknown\n".to_string(),
+        |code| format!("exit-code={code}\n"),
+    )
+}
+
 fn verified_existing(
     store: &StateStore,
     run: &PackageUpdateRunV1,
@@ -354,6 +387,14 @@ fn git(root: &Path, arguments: &[&str]) -> Result<std::process::Output> {
         .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .with_context(|| format!("running git {}", arguments.join(" ")))
+}
+
+fn git_status(root: &Path) -> Result<Vec<u8>> {
+    let output = git(root, &["status", "--porcelain=v2", "-z"])?;
+    if !output.status.success() {
+        bail!("Git could not verify the candidate worktree after planned gates");
+    }
+    Ok(output.stdout)
 }
 
 #[cfg(test)]
