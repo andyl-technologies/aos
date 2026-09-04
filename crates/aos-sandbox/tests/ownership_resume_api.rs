@@ -1,8 +1,8 @@
 //! Verifies that ownership-gated admission is reachable through the public API.
 
 use aos_sandbox::{
-    AuthorityPublicationDraftV1, EffectPlan, IdempotencyKey, OperationPlan, OwnershipClaimV1,
-    ReconcilerError,
+    AuthorityBoundEffectPlanV2, AuthorityPublicationDraftV1, IdempotencyKey, OperationPlan,
+    OwnershipClaimV1, ReconcilerError,
 };
 use aos_sandbox_core::OperationId;
 
@@ -15,7 +15,7 @@ fn downstream_code_can_name_the_safe_gated_constructor() {
         [u8; 32],
         Vec<u8>,
         Vec<u8>,
-        Vec<EffectPlan>,
+        Vec<AuthorityBoundEffectPlanV2>,
         OwnershipClaimV1,
         AuthorityPublicationDraftV1,
     ) -> Result<OperationPlan, ReconcilerError> = OperationPlan::ownership_gated;

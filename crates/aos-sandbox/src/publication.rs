@@ -31,10 +31,10 @@ use aos_sandbox_core::{
 use sha2::{Digest as _, Sha256};
 
 use crate::{
-    BrokerDispatchAttemptError, BrokerDispatchAttemptV1, BrokerDispatchSemanticIdentityV1,
-    BrokerDispatchTemplateV1, IdempotencyKey, IdempotencyOutcome, Journal, JournalError,
-    JournalRecord, JournalTransaction, OwnershipTransactionReceiptV1, RecordNamespace,
-    SignedOwnershipLease,
+    AuthorityBoundEffectPlanV2, BrokerDispatchAttemptError, BrokerDispatchAttemptV1,
+    BrokerDispatchSemanticIdentityV1, BrokerDispatchTemplateV1, IdempotencyKey, IdempotencyOutcome,
+    Journal, JournalError, JournalRecord, JournalTransaction, OwnershipTransactionReceiptV1,
+    PreparedAuthorityEffectV2, RecordNamespace, SignedOwnershipLease,
 };
 use aos_sandbox_ownership_protocol::{OwnershipClaimAction, OwnershipClaimV1};
 
@@ -160,6 +160,38 @@ impl AuthorityPublicationDraftV1 {
     #[must_use]
     pub fn canonical_bytes(&self) -> &[u8] {
         &self.bytes
+    }
+
+    /// Binds one ordered effect to an exact immutable template in this draft.
+    ///
+    /// The audience, broker method, deadline-free body, and semantic identity
+    /// are derived from the selected template and cannot be substituted by the
+    /// caller.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthorityPublicationError::TemplateAbsent`] when the digest
+    /// is not present, or [`AuthorityPublicationError::InvalidDraft`] if a
+    /// recovered template cannot produce a bounded effect binding.
+    pub fn bind_effect(
+        &self,
+        template_digest: ObjectDigest,
+    ) -> Result<AuthorityBoundEffectPlanV2, AuthorityPublicationError> {
+        let template = self
+            .templates
+            .iter()
+            .find(|template| template.digest == template_digest)
+            .ok_or(AuthorityPublicationError::TemplateAbsent)?;
+        AuthorityBoundEffectPlanV2::from_template(
+            self.digest,
+            template.audience,
+            template.method,
+            template.digest,
+            &template.body_without_deadline,
+            template.semantics,
+            template.descriptor_roles.is_empty(),
+        )
+        .map_err(|_| AuthorityPublicationError::InvalidDraft)
     }
 
     /// Binds checked ownership artifacts and prepares the current V3 publication.
@@ -799,6 +831,77 @@ pub(crate) fn validate_durable_gate_publication(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn validate_durable_effect_attempt(
+    journal: &Journal,
+    sandbox: SandboxId,
+    activated_publication_digest: ObjectDigest,
+    binding_digest: ObjectDigest,
+    source_draft_digest: ObjectDigest,
+    audience: BrokerAudience,
+    template_digest: ObjectDigest,
+    body_without_deadline: &[u8],
+    prepared_effect: &PreparedAuthorityEffectV2,
+) -> Result<(), AuthorityPublicationError> {
+    validate_publication_namespace(journal)?;
+    if prepared_effect.binding_digest() != binding_digest {
+        return Err(AuthorityPublicationError::CorruptCurrent);
+    }
+    let activated = journal
+        .get(
+            RecordNamespace::AuthorityPublication,
+            &prepared_key(activated_publication_digest),
+        )
+        .map(|bytes| decode_prepared(bytes, activated_publication_digest))
+        .transpose()?
+        .ok_or(AuthorityPublicationError::CorruptCurrent)?;
+    let digest = prepared_effect.publication_digest();
+    let prepared = journal
+        .get(RecordNamespace::AuthorityPublication, &prepared_key(digest))
+        .map(|bytes| decode_prepared(bytes, digest))
+        .transpose()?
+        .ok_or(AuthorityPublicationError::CorruptCurrent)?;
+    if prepared.sandbox != sandbox || prepared.source_draft_digest != source_draft_digest {
+        return Err(AuthorityPublicationError::CorruptCurrent);
+    }
+    validate_successor(&activated, &prepared)
+        .map_err(|_| AuthorityPublicationError::CorruptCurrent)?;
+    let artifacts = validate_encoded_publication(
+        &prepared.bytes,
+        prepared.sandbox,
+        prepared.incarnation,
+        prepared.epoch,
+        prepared.desired_generation,
+        prepared.assignment_digest,
+        prepared.node,
+        prepared.lease_generation,
+        prepared.lease_digest,
+    )?;
+    let template = artifacts
+        .templates
+        .iter()
+        .find(|template| template.digest == template_digest)
+        .ok_or(AuthorityPublicationError::CorruptCurrent)?;
+    if template.audience != audience
+        || template.body_without_deadline != body_without_deadline
+        || !template.descriptor_roles.is_empty()
+    {
+        return Err(AuthorityPublicationError::CorruptCurrent);
+    }
+    let reconstructed = BrokerDispatchAttemptV1::from_recovered_current_at(
+        template,
+        &artifacts.lease,
+        prepared_effect.attempt().deadline_boottime_nanoseconds(),
+        prepared_effect.preparation_wall_seconds(),
+        prepared_effect.preparation_boottime_nanoseconds(),
+    )
+    .map_err(AuthorityPublicationError::DispatchAttempt)?;
+    if &reconstructed != prepared_effect.attempt() {
+        return Err(AuthorityPublicationError::CorruptCurrent);
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_publication_namespace(
     journal: &Journal,
 ) -> Result<(), AuthorityPublicationError> {
@@ -902,8 +1005,9 @@ impl<'a> AuthorityPublicationStore<'a> {
     /// Returns [`AuthorityPublicationError`] when current state is absent,
     /// stale, corrupt, lacks the template, assigns it to another audience, or
     /// rejects fresh deadline attenuation.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
-    pub fn select_current_attempt(
+    fn select_current_attempt(
         &self,
         sandbox: SandboxId,
         expected_publication: ObjectDigest,
@@ -933,6 +1037,50 @@ impl<'a> AuthorityPublicationStore<'a> {
             clock,
         )
         .map_err(AuthorityPublicationError::DispatchAttempt)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn select_bound_current_attempt(
+        &self,
+        sandbox: SandboxId,
+        activated_publication: ObjectDigest,
+        source_draft_digest: ObjectDigest,
+        audience: BrokerAudience,
+        template_digest: ObjectDigest,
+        deadline_boottime_nanoseconds: u64,
+        clock: RawPairedClockSample,
+    ) -> Result<(ObjectDigest, BrokerDispatchAttemptV1), AuthorityPublicationError> {
+        let activated = self
+            .prepared(activated_publication)?
+            .ok_or(AuthorityPublicationError::CorruptCurrent)?;
+        let current = self
+            .current(sandbox)?
+            .ok_or(AuthorityPublicationError::CurrentAbsent)?;
+        validate_successor(&activated, &current.prepared)?;
+        if activated.source_draft_digest != source_draft_digest
+            || current.prepared.source_draft_digest != source_draft_digest
+        {
+            return Err(AuthorityPublicationError::StaleCurrent);
+        }
+        let template = current
+            .templates
+            .iter()
+            .find(|candidate| candidate.digest == template_digest)
+            .ok_or(AuthorityPublicationError::TemplateAbsent)?;
+        if template.audience != audience {
+            return Err(AuthorityPublicationError::WrongAudience);
+        }
+        if !template.descriptor_roles.is_empty() {
+            return Err(AuthorityPublicationError::DescriptorExecutionUnsupported);
+        }
+        let attempt = BrokerDispatchAttemptV1::from_recovered_current(
+            template,
+            &current.lease,
+            deadline_boottime_nanoseconds,
+            clock,
+        )
+        .map_err(AuthorityPublicationError::DispatchAttempt)?;
+        Ok((current.digest(), attempt))
     }
 }
 
@@ -984,6 +1132,9 @@ pub enum AuthorityPublicationError {
     /// The selected current template belongs to another broker audience.
     #[error("dispatch template does not belong to the requested broker audience")]
     WrongAudience,
+    /// Descriptor-bearing dispatch awaits a durable FD reacquisition contract.
+    #[error("descriptor-bearing authority effect execution is unsupported")]
+    DescriptorExecutionUnsupported,
     /// Fresh lease and deadline attenuation rejected the current template.
     #[error("current dispatch attempt is invalid: {0}")]
     DispatchAttempt(#[from] BrokerDispatchAttemptError),

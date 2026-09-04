@@ -26,10 +26,13 @@ use aos_sandbox_protocol::{
 };
 use sha2::{Digest as _, Sha256};
 
+use crate::SignedBrokerPlan;
+#[cfg(test)]
+use crate::SignedOwnershipLease;
 use crate::publication::{RecoveredBrokerDispatchTemplateV1, RecoveredOwnershipLeaseV1};
-use crate::{SignedBrokerPlan, SignedOwnershipLease};
 
 const TEMPLATE_DOMAIN: &[u8] = b"aos.sandbox.broker-dispatch-template.v1\0";
+const SEMANTIC_IDENTITY_DOMAIN: &[u8] = b"aos.sandbox.broker-semantic-identity.v1\0";
 const MAXIMUM_DEADLINE_FIELD_BYTES: usize = 11;
 const NANOS_PER_SECOND: u64 = 1_000_000_000;
 
@@ -217,7 +220,8 @@ impl BrokerDispatchAttemptV1 {
     /// Returns [`BrokerDispatchAttemptError`] for assignment or node
     /// substitution, expired plan/lease authority, an unsafe deadline, wire
     /// overflow, or failure to preserve the template's signed grant bounds.
-    pub fn new(
+    #[cfg(test)]
+    pub(crate) fn new(
         template: &BrokerDispatchTemplateV1,
         lease: &SignedOwnershipLease,
         deadline_boottime_nanoseconds: u64,
@@ -287,6 +291,22 @@ impl BrokerDispatchAttemptV1 {
         deadline_boottime_nanoseconds: u64,
         clock: RawPairedClockSample,
     ) -> Result<Self, BrokerDispatchAttemptError> {
+        Self::from_recovered_current_at(
+            template,
+            lease,
+            deadline_boottime_nanoseconds,
+            clock.wall_seconds(),
+            clock.boottime_nanoseconds(),
+        )
+    }
+
+    pub(crate) fn from_recovered_current_at(
+        template: &RecoveredBrokerDispatchTemplateV1,
+        lease: &RecoveredOwnershipLeaseV1,
+        deadline_boottime_nanoseconds: u64,
+        wall_seconds: i64,
+        boottime_nanoseconds: u64,
+    ) -> Result<Self, BrokerDispatchAttemptError> {
         let plan = template.plan();
         let recovered_lease = lease.lease();
         if plan.assignment().sandbox() != recovered_lease.assignment().sandbox()
@@ -297,18 +317,17 @@ impl BrokerDispatchAttemptV1 {
         {
             return Err(BrokerDispatchAttemptError::LeaseContextMismatch);
         }
-        if clock.wall_seconds() < plan.issued_seconds()
-            || clock.wall_seconds() >= plan.expires_seconds()
-        {
+        if wall_seconds < plan.issued_seconds() || wall_seconds >= plan.expires_seconds() {
             return Err(BrokerDispatchAttemptError::PlanExpired);
         }
-        let maximum_deadline = conservative_lease_deadline_fields(
+        let maximum_deadline = conservative_lease_deadline_scalar_fields(
             recovered_lease.authority_issued_seconds(),
             recovered_lease.authority_expires_seconds(),
             recovered_lease.maximum_clock_skew_seconds(),
-            clock,
+            wall_seconds,
+            boottime_nanoseconds,
         )?;
-        if deadline_boottime_nanoseconds <= clock.boottime_nanoseconds()
+        if deadline_boottime_nanoseconds <= boottime_nanoseconds
             || deadline_boottime_nanoseconds > maximum_deadline
         {
             return Err(BrokerDispatchAttemptError::UnsafeDeadline);
@@ -381,6 +400,24 @@ impl BrokerDispatchAttemptV1 {
     #[must_use]
     pub fn packet(&self) -> &[u8] {
         &self.packet
+    }
+
+    pub(crate) fn from_durable_parts(
+        template_digest: ObjectDigest,
+        lease_digest: ObjectDigest,
+        lease_generation: u64,
+        deadline_boottime_nanoseconds: u64,
+        body: Vec<u8>,
+        packet: Vec<u8>,
+    ) -> Self {
+        Self {
+            template_digest,
+            lease_digest,
+            lease_generation,
+            deadline_boottime_nanoseconds,
+            body,
+            packet,
+        }
     }
 }
 
@@ -485,6 +522,7 @@ fn match_plan_grant(
     }
 }
 
+#[cfg(test)]
 fn validate_context(
     template: &BrokerDispatchTemplateV1,
     lease: &SignedOwnershipLease,
@@ -503,6 +541,7 @@ fn validate_context(
     Ok(())
 }
 
+#[cfg(test)]
 fn conservative_lease_deadline(
     lease: &SignedOwnershipLease,
     clock: RawPairedClockSample,
@@ -515,16 +554,32 @@ fn conservative_lease_deadline(
     )
 }
 
+#[cfg(test)]
 fn conservative_lease_deadline_fields(
     authority_issued_seconds: i64,
     authority_expires_seconds: i64,
     maximum_clock_skew_seconds: u64,
     clock: RawPairedClockSample,
 ) -> Result<u64, BrokerDispatchAttemptError> {
+    conservative_lease_deadline_scalar_fields(
+        authority_issued_seconds,
+        authority_expires_seconds,
+        maximum_clock_skew_seconds,
+        clock.wall_seconds(),
+        clock.boottime_nanoseconds(),
+    )
+}
+
+fn conservative_lease_deadline_scalar_fields(
+    authority_issued_seconds: i64,
+    authority_expires_seconds: i64,
+    maximum_clock_skew_seconds: u64,
+    wall_seconds: i64,
+    boottime_nanoseconds: u64,
+) -> Result<u64, BrokerDispatchAttemptError> {
     let skew = i64::try_from(maximum_clock_skew_seconds)
         .map_err(|_| BrokerDispatchAttemptError::LeaseExpired)?;
-    let earliest = clock
-        .wall_seconds()
+    let earliest = wall_seconds
         .checked_sub(skew)
         .ok_or(BrokerDispatchAttemptError::LeaseExpired)?;
     if earliest < authority_issued_seconds {
@@ -536,13 +591,12 @@ fn conservative_lease_deadline_fields(
         .ok_or(BrokerDispatchAttemptError::LeaseExpired)?;
     let remaining = authority_expires_seconds
         .checked_sub(guard)
-        .and_then(|end| end.checked_sub(clock.wall_seconds()))
+        .and_then(|end| end.checked_sub(wall_seconds))
         .filter(|remaining| *remaining > 0)
         .and_then(|remaining| u64::try_from(remaining).ok())
         .and_then(|remaining| remaining.checked_mul(NANOS_PER_SECOND))
         .ok_or(BrokerDispatchAttemptError::LeaseExpired)?;
-    clock
-        .boottime_nanoseconds()
+    boottime_nanoseconds
         .checked_add(remaining)
         .ok_or(BrokerDispatchAttemptError::LeaseExpired)
 }
@@ -573,6 +627,17 @@ fn template_digest(
     for role in roles {
         digest.update((*role as i32).to_be_bytes());
     }
+    ObjectDigest::from_bytes(digest.finalize().into())
+}
+
+pub(crate) fn semantic_identity_digest(
+    semantics: BrokerDispatchSemanticIdentityV1,
+) -> ObjectDigest {
+    let mut digest = Sha256::new();
+    digest.update(SEMANTIC_IDENTITY_DOMAIN);
+    digest.update(semantics.verb.get().to_be_bytes());
+    encode_target(&mut digest, semantics.target);
+    digest.update(semantics.argument_commitment.digest().as_bytes());
     ObjectDigest::from_bytes(digest.finalize().into())
 }
 

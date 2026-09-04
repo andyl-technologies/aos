@@ -697,9 +697,49 @@ pub fn decode_query_runtime_effect_response(
     }
 }
 
+/// Validates a stored Host completion receipt against its exact Apply body.
+///
+/// This recovery-oriented path deliberately does not re-evaluate the expired
+/// request deadline. It decodes the original body only to recover the exact
+/// assignment fence that the receipt must name.
+///
+/// # Errors
+///
+/// Returns [`ProtocolValidationError`] when either object is malformed, has
+/// unknown fields, or the receipt's runtime handle and fence do not match the
+/// original Apply request.
+pub fn validate_runtime_effect_receipt_for_apply(
+    receipt: &[u8],
+    original_apply_body: &[u8],
+) -> Result<(), ProtocolValidationError> {
+    use aos_proto::aos::sandbox::local::v1::ApplyRuntimeRequest;
+
+    if original_apply_body.len() > MAXIMUM_REQUEST_BYTES {
+        return Err(ProtocolValidationError::RequestTooLarge);
+    }
+    let request = ApplyRuntimeRequest::decode_from_slice(original_apply_body)
+        .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
+    if !request.__buffa_unknown_fields.is_empty() {
+        return Err(ProtocolValidationError::UnknownFields);
+    }
+    let fence = request
+        .fence
+        .as_option()
+        .ok_or(ProtocolValidationError::MissingField("fence"))?;
+    let expected_fence = crate::validate_fence(fence)?;
+    validate_runtime_effect_receipt_against_fence(receipt, &expected_fence)
+}
+
 fn validate_runtime_effect_receipt(
     bytes: &[u8],
     original_request: &crate::ValidatedRuntimeRequest,
+) -> Result<(), ProtocolValidationError> {
+    validate_runtime_effect_receipt_against_fence(bytes, original_request.fence())
+}
+
+fn validate_runtime_effect_receipt_against_fence(
+    bytes: &[u8],
+    expected_fence: &crate::ValidatedAssignmentFence,
 ) -> Result<(), ProtocolValidationError> {
     let observation = RuntimeObservation::decode_from_slice(bytes)
         .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
@@ -718,9 +758,9 @@ fn validate_runtime_effect_receipt(
     let runtime_handle =
         exact_nonzero::<32>(&observation.runtime_handle, "receipt.runtime_handle")?;
     let expected_handle = crate::semantics::host::runtime_handle_v1(
-        original_request.fence().incarnation_id(),
-        original_request.fence().assignment_epoch(),
-        original_request.fence().assignment_digest(),
+        expected_fence.incarnation_id(),
+        expected_fence.assignment_epoch(),
+        expected_fence.assignment_digest(),
     );
     if runtime_handle != expected_handle {
         return Err(ProtocolValidationError::InvalidField(
@@ -734,8 +774,7 @@ fn validate_runtime_effect_receipt(
         .fence
         .as_option()
         .ok_or(ProtocolValidationError::MissingField("receipt.fence"))?;
-    if !fence.__buffa_unknown_fields.is_empty()
-        || crate::validate_fence(fence)? != *original_request.fence()
+    if !fence.__buffa_unknown_fields.is_empty() || crate::validate_fence(fence)? != *expected_fence
     {
         return Err(ProtocolValidationError::InvalidField("receipt.fence"));
     }

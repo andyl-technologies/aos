@@ -30,6 +30,7 @@ pub use session::{
     decode_response_envelope, decode_server_hello, encode_authorized_request_envelope,
     encode_error_response_envelope, encode_success_response_envelope, failed_server_hello,
     negotiate_client_hello, validate_request_descriptor_roles,
+    validate_runtime_effect_receipt_for_apply,
 };
 
 use aos_proto::aos::sandbox::local::v1::{
@@ -1315,6 +1316,8 @@ mod tests {
             decode_query_runtime_effect_response(&complete.encode_to_vec(), &validated).unwrap(),
             ValidatedRuntimeEffectStatus::Complete(receipt)
         );
+        validate_runtime_effect_receipt_for_apply(&complete.receipt, &original.encode_to_vec())
+            .unwrap();
 
         for response in [
             QueryRuntimeEffectResponse::default(),
@@ -1347,6 +1350,26 @@ mod tests {
             ..Default::default()
         };
         assert!(decode_query_runtime_effect_response(&wrong.encode_to_vec(), &validated).is_err());
+        assert!(
+            validate_runtime_effect_receipt_for_apply(&wrong.receipt, &original.encode_to_vec())
+                .is_err()
+        );
+
+        let mut coherent = RuntimeObservation::decode_from_slice(&complete.receipt).unwrap();
+        coherent.fence.get_or_insert_default().assignment_digest = vec![11; 32];
+        coherent.runtime_handle = semantics::host::runtime_handle_v1(
+            validated.fence().incarnation_id(),
+            validated.fence().assignment_epoch(),
+            &[11; 32],
+        )
+        .to_vec();
+        assert!(
+            validate_runtime_effect_receipt_for_apply(
+                &coherent.encode_to_vec(),
+                &original.encode_to_vec(),
+            )
+            .is_err()
+        );
 
         let mut wrong_handle = RuntimeObservation::decode_from_slice(&complete.receipt).unwrap();
         wrong_handle.runtime_handle = vec![9; 32];

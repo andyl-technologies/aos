@@ -6,10 +6,12 @@
 //! ambiguous `Applying` effect is observed by its stable operation/step key;
 //! an absent effect is retried with the exact request bytes, while an applied
 //! effect is completed from its durable executor receipt. This requires every
-//! executor implementation to make one effect key idempotent.
+//! executor implementation to make one effect key idempotent. Ownership-gated
+//! effects additionally retain the exact selected publication and broker
+//! packet before `Applying` becomes externally visible.
 
 use aos_sandbox_core::model::{KeyReference, KeyUsage, StableKeyId};
-use aos_sandbox_core::{ObjectDigest, OperationId};
+use aos_sandbox_core::{ObjectDigest, OperationId, SandboxId};
 use aos_sandbox_ownership_protocol::{CLAIM_BYTES, OwnershipClaimV1};
 
 use crate::journal::{
@@ -18,8 +20,18 @@ use crate::journal::{
 };
 use crate::publication::{
     AuthorityPublicationActivationPartsV1, AuthorityPublicationActivationV1,
-    AuthorityPublicationDraftV1, AuthorityPublicationStore, validate_durable_gate_publication,
-    validate_publication_namespace,
+    AuthorityPublicationDraftV1, AuthorityPublicationStore, validate_durable_effect_attempt,
+    validate_durable_gate_publication, validate_publication_namespace,
+};
+
+mod effect;
+
+pub use effect::{
+    AuthorityBoundEffectPlanV2, AuthorityEffectAttemptTimingV1, AuthorityEffectObservationV2,
+    EffectDomain, EffectPlan, PreparedAuthorityEffectV2, ValidatedHostEffectReceiptV1,
+};
+use effect::{
+    EffectLedgerRecord, EffectState, MAXIMUM_DIAGNOSTIC_BYTES, decode_effect, encode_effect,
 };
 
 const RECORD_VERSION: u8 = 1;
@@ -31,80 +43,10 @@ const EFFECT_KEY_BYTES: usize = 20;
 // carries desired-state, operation, and idempotency records atomically.
 const MAXIMUM_EFFECTS: usize = 4093;
 const MAXIMUM_GATED_EFFECTS: usize = 4092;
-const MAXIMUM_REQUEST_BYTES: usize = 1024 * 1024;
 const MAXIMUM_RECEIPT_BYTES: usize = 64 * 1024;
-const MAXIMUM_DIAGNOSTIC_BYTES: usize = 4096;
 const MAXIMUM_OWNERSHIP_DRAFT_BYTES: usize = 15 * 1024 * 1024;
 const OWNERSHIP_GATE_MAGIC: &[u8; 8] = b"AOSOGT01";
 const OWNERSHIP_GATE_VERSION: u16 = 1;
-
-/// Selects the sole fixed-function boundary allowed to execute an effect.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u8)]
-pub enum EffectDomain {
-    /// Typed systemd, cgroup, runtime, and freeze operations.
-    Host = 1,
-    /// Typed dataset, snapshot, hold, clone, quota, and destroy operations.
-    Storage = 2,
-    /// Descriptor-only mount preparation and namespace publication.
-    Mount = 3,
-    /// Typed network namespace, link, route, and packet-gate operations.
-    Network = 4,
-    /// Assignment ownership and fail-stop lease operations.
-    Guardian = 5,
-    /// Authenticated in-guest readiness, execution, and quiesce operations.
-    Guest = 6,
-}
-
-impl EffectDomain {
-    fn from_byte(value: u8) -> Result<Self, ReconcilerError> {
-        match value {
-            1 => Ok(Self::Host),
-            2 => Ok(Self::Storage),
-            3 => Ok(Self::Mount),
-            4 => Ok(Self::Network),
-            5 => Ok(Self::Guardian),
-            6 => Ok(Self::Guest),
-            _ => Err(ReconcilerError::CorruptLedger("unknown effect domain")),
-        }
-    }
-}
-
-/// Defines one ordered, idempotent request to a fixed effect boundary.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct EffectPlan {
-    domain: EffectDomain,
-    request: Vec<u8>,
-}
-
-impl EffectPlan {
-    /// Constructs a bounded effect plan from already validated request bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ReconcilerError::InvalidPlan`] for an empty request or one
-    /// exceeding the local broker protocol request bound.
-    pub fn new(domain: EffectDomain, request: Vec<u8>) -> Result<Self, ReconcilerError> {
-        if request.is_empty() || request.len() > MAXIMUM_REQUEST_BYTES {
-            return Err(ReconcilerError::InvalidPlan(
-                "invalid effect request length",
-            ));
-        }
-        Ok(Self { domain, request })
-    }
-
-    /// Returns the fixed boundary selected for this effect.
-    #[must_use]
-    pub const fn domain(&self) -> EffectDomain {
-        self.domain
-    }
-
-    /// Returns the exact idempotent request bytes sent to the executor.
-    #[must_use]
-    pub fn request(&self) -> &[u8] {
-        &self.request
-    }
-}
 
 /// Defines one atomically admitted desired mutation and its ordered effects.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -138,6 +80,7 @@ impl OperationPlan {
             || desired_value.is_empty()
             || effects.is_empty()
             || effects.len() > MAXIMUM_EFFECTS
+            || effects.iter().any(|effect| effect.authority().is_some())
         {
             return Err(ReconcilerError::InvalidPlan("invalid operation plan"));
         }
@@ -163,7 +106,8 @@ impl OperationPlan {
     /// # Errors
     ///
     /// Returns [`ReconcilerError::InvalidPlan`] for the ordinary operation
-    /// invariants, more than 4092 effects, or an invalid or mismatched gate.
+    /// invariants, more than 4092 effects, an effect not derived from the exact
+    /// publication draft, or an invalid or mismatched gate.
     #[allow(clippy::too_many_arguments)]
     pub fn ownership_gated(
         operation_id: OperationId,
@@ -171,7 +115,7 @@ impl OperationPlan {
         request_digest: [u8; 32],
         desired_key: Vec<u8>,
         desired_value: Vec<u8>,
-        effects: Vec<EffectPlan>,
+        effects: Vec<AuthorityBoundEffectPlanV2>,
         claim: OwnershipClaimV1,
         publication_draft: AuthorityPublicationDraftV1,
     ) -> Result<Self, ReconcilerError> {
@@ -180,14 +124,44 @@ impl OperationPlan {
                 "ownership-gated operation has too many effects",
             ));
         }
-        let mut plan = Self::new(
+        if effects.iter().any(|effect| {
+            !effect.is_supported_host_apply()
+                || effect.source_draft_digest() != publication_draft.digest()
+        }) {
+            return Err(ReconcilerError::InvalidPlan(
+                "ownership-gated effects must be descriptor-free Host Apply templates",
+            ));
+        }
+        let effects: Vec<EffectPlan> = effects
+            .into_iter()
+            .enumerate()
+            .map(|(step, effect)| {
+                effect.into_inner(operation_id, u32::try_from(step).unwrap_or(u32::MAX))
+            })
+            .collect();
+        if operation_id.as_bytes() == &[0; 16]
+            || desired_key.is_empty()
+            || desired_value.is_empty()
+            || effects.is_empty()
+            || effects.iter().any(|effect| {
+                effect
+                    .authority()
+                    .is_none_or(|binding| binding.source_draft_digest != publication_draft.digest())
+            })
+        {
+            return Err(ReconcilerError::InvalidPlan(
+                "invalid ownership-gated operation plan",
+            ));
+        }
+        let mut plan = Self {
             operation_id,
             idempotency_key,
             request_digest,
             desired_key,
             desired_value,
             effects,
-        )?;
+            ownership_gate: None,
+        };
         plan.ownership_gate = Some(OwnershipGatePlanV1::new(
             operation_id,
             plan.idempotency_key.clone(),
@@ -383,6 +357,19 @@ impl EffectFailure {
 
 /// Executes idempotent single-node effects through fixed local boundaries.
 pub trait SingleNodeEffectExecutor {
+    /// Supplies advisory timing for one authority-bound attempt preparation.
+    ///
+    /// Returning `None` explicitly leaves authority-bound execution disabled.
+    /// This hook must not perform external effects; the resulting attempt has
+    /// not yet been made durable.
+    fn authority_effect_timing(
+        &mut self,
+        _operation_id: OperationId,
+        _step: u32,
+    ) -> Option<AuthorityEffectAttemptTimingV1> {
+        None
+    }
+
     /// Observes whether one stable effect key is already applied.
     ///
     /// # Errors
@@ -408,6 +395,41 @@ pub trait SingleNodeEffectExecutor {
         step: u32,
         plan: &EffectPlan,
     ) -> Result<EffectReceipt, EffectFailure>;
+
+    /// Observes one exact durably recorded authority-bound broker attempt.
+    ///
+    /// # Errors
+    ///
+    /// Returns a retryable failure when authenticated observation is
+    /// temporarily unavailable or a permanent failure for contradictory
+    /// durable broker state.
+    fn observe_authority(
+        &mut self,
+        _operation_id: OperationId,
+        _step: u32,
+        _prepared: &PreparedAuthorityEffectV2,
+    ) -> Result<AuthorityEffectObservationV2, EffectFailure> {
+        Err(EffectFailure::Permanent(
+            "authority-bound effect execution is unsupported".to_owned(),
+        ))
+    }
+
+    /// Applies one exact durably recorded authority-bound broker attempt.
+    ///
+    /// # Errors
+    ///
+    /// Returns a retryable failure for transient transport or broker errors,
+    /// or a permanent failure when the exact request is rejected.
+    fn apply_authority(
+        &mut self,
+        _operation_id: OperationId,
+        _step: u32,
+        _prepared: &PreparedAuthorityEffectV2,
+    ) -> Result<ValidatedHostEffectReceiptV1, EffectFailure> {
+        Err(EffectFailure::Permanent(
+            "authority-bound effect execution is unsupported".to_owned(),
+        ))
+    }
 }
 
 /// Reports one bounded reconciliation pass outcome.
@@ -457,12 +479,18 @@ pub enum ReconcilerError {
     /// A new activation would replace current authority with older state.
     #[error("ownership publication is not a valid current successor")]
     OwnershipPublicationNotSuccessor,
-    /// Durable operation or effect bytes violate the closed v1 schema.
+    /// Durable operation or effect bytes violate the closed versioned schema.
     #[error("corrupt durable effect ledger: {0}")]
     CorruptLedger(&'static str),
+    /// A legacy ownership-gated effect requires an explicit durable migration.
+    #[error("legacy ownership-gated effects require migration")]
+    MigrationRequired,
     /// An executor returned unbounded or empty evidence.
     #[error("effect executor violated its output contract: {0}")]
     InvalidExecutorOutput(&'static str),
+    /// Current publication selection or attempt attenuation failed.
+    #[error("authority-bound effect preparation failed: {0}")]
+    AuthorityPublication(#[from] crate::AuthorityPublicationError),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -502,29 +530,6 @@ pub enum OwnershipGateActivationOutcome {
     Activated,
     /// The exact activation facts were already durable.
     Replay,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum EffectState {
-    Planned,
-    Applying {
-        attempt: u32,
-        diagnostic: String,
-    },
-    Applied {
-        attempt: u32,
-        receipt: EffectReceipt,
-    },
-    PermanentlyBlocked {
-        attempt: u32,
-        diagnostic: String,
-    },
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct EffectLedgerRecord {
-    plan: EffectPlan,
-    state: EffectState,
 }
 
 /// Reconciles one exclusively owned single-node journal.
@@ -766,6 +771,7 @@ where
                 encode_effect(&EffectLedgerRecord {
                     plan: effect.clone(),
                     state: EffectState::Planned,
+                    dispatch: None,
                 })?,
             ));
         }
@@ -805,7 +811,7 @@ where
     ) -> Result<ReconcileOutcome, ReconcilerError> {
         self.ensure_ledger_validated()?;
         let operation = self.load_operation(operation_id)?;
-        self.load_and_validate_ownership_gate(operation_id, operation)?;
+        let gate = self.load_and_validate_ownership_gate(operation_id, operation)?;
         match operation.state {
             OperationState::OwnershipPending => return Ok(ReconcileOutcome::OwnershipPending),
             OperationState::Succeeded => return Ok(ReconcileOutcome::Succeeded),
@@ -833,12 +839,53 @@ where
                     return Ok(ReconcileOutcome::PermanentlyBlocked);
                 }
                 EffectState::Planned => {
+                    let dispatch = if let Some(binding) = record.plan.authority() {
+                        let OwnershipGateStatusV1::Activated {
+                            plan: gate_plan,
+                            publication_digest,
+                            ..
+                        } = gate.as_ref().ok_or(ReconcilerError::CorruptLedger(
+                            "authority effect has no activated ownership gate",
+                        ))?
+                        else {
+                            return Err(ReconcilerError::CorruptLedger(
+                                "authority effect advanced while ownership is pending",
+                            ));
+                        };
+                        let timing = self
+                            .executor
+                            .authority_effect_timing(operation_id, step)
+                            .ok_or(ReconcilerError::InvalidExecutorOutput(
+                                "authority-bound effect execution is unsupported",
+                            ))?;
+                        let sandbox = gate_plan.claim().assignment().sandbox();
+                        let (selected_publication, attempt) =
+                            AuthorityPublicationStore::new(&mut self.journal)
+                                .select_bound_current_attempt(
+                                    sandbox,
+                                    *publication_digest,
+                                    binding.source_draft_digest,
+                                    binding.audience,
+                                    binding.template_digest,
+                                    timing.deadline(),
+                                    timing.clock(),
+                                )?;
+                        Some(PreparedAuthorityEffectV2::new(
+                            binding.digest,
+                            selected_publication,
+                            timing.clock(),
+                            attempt,
+                        ))
+                    } else {
+                        None
+                    };
                     let applying = EffectLedgerRecord {
                         plan: record.plan,
                         state: EffectState::Applying {
                             attempt: 1,
                             diagnostic: String::new(),
                         },
+                        dispatch,
                     };
                     self.store_effect(operation_id, step, &applying, Some(operation.effect_count))?;
                     return Ok(ReconcileOutcome::Progressed);
@@ -850,6 +897,15 @@ where
                         operation.effect_count,
                         attempt,
                         record.plan,
+                        record.dispatch,
+                        match gate.as_ref() {
+                            Some(OwnershipGateStatusV1::Activated {
+                                plan,
+                                publication_digest,
+                                ..
+                            }) => Some((plan.claim().assignment().sandbox(), *publication_digest)),
+                            _ => None,
+                        },
                     );
                 }
             }
@@ -1006,6 +1062,12 @@ where
                     "ownership-gated operation has no gate",
                 ))
             } else {
+                self.validate_effect_authority_bindings(
+                    operation_id,
+                    operation.effect_count,
+                    None,
+                    None,
+                )?;
                 Ok(None)
             };
         };
@@ -1028,6 +1090,17 @@ where
                 "ungated operation has an ownership gate",
             ));
         }
+        self.validate_effect_authority_bindings(
+            operation_id,
+            operation.effect_count,
+            Some(plan.publication_draft()),
+            match &gate {
+                OwnershipGateStatusV1::Activated {
+                    publication_digest, ..
+                } => Some(*publication_digest),
+                OwnershipGateStatusV1::Pending(_) => None,
+            },
+        )?;
         match (&gate, operation.state) {
             (OwnershipGateStatusV1::Pending(_), OperationState::OwnershipPending) => Ok(Some(gate)),
             (
@@ -1063,6 +1136,104 @@ where
         }
     }
 
+    fn validate_effect_authority_bindings(
+        &self,
+        operation_id: OperationId,
+        effect_count: u32,
+        draft: Option<&AuthorityPublicationDraftV1>,
+        activated_publication: Option<ObjectDigest>,
+    ) -> Result<(), ReconcilerError> {
+        for step in 0..effect_count {
+            let bytes = self
+                .journal
+                .get(RecordNamespace::Effect, &effect_key(operation_id, step))
+                .ok_or(ReconcilerError::CorruptLedger("missing effect record"))?;
+            let effect = decode_effect(bytes)?;
+            match (draft, effect.plan.authority()) {
+                (None, None) => {}
+                (Some(draft), Some(binding)) => {
+                    let template = draft
+                        .templates()
+                        .iter()
+                        .find(|template| template.digest() == binding.template_digest)
+                        .ok_or(ReconcilerError::CorruptLedger(
+                            "authority effect template is absent from gate draft",
+                        ))?;
+                    if binding.source_draft_digest != draft.digest()
+                        || binding.operation_id != operation_id
+                        || binding.step != step
+                        || binding.audience != template.audience()
+                        || binding.method != template.method()
+                        || binding.body_digest
+                            != effect::effect_body_digest(template.body_without_deadline())
+                        || binding.semantic_digest
+                            != crate::dispatch::semantic_identity_digest(template.semantics())
+                        || !binding.descriptor_free
+                        || !template.descriptor_roles().is_empty()
+                        || effect.plan.request() != template.body_without_deadline()
+                    {
+                        return Err(ReconcilerError::CorruptLedger(
+                            "authority effect does not match gate draft template",
+                        ));
+                    }
+                    if let Some(dispatch) = &effect.dispatch {
+                        validate_durable_effect_attempt(
+                            &self.journal,
+                            draft.manifest().manifest().sandbox(),
+                            activated_publication.ok_or(ReconcilerError::CorruptLedger(
+                                "authority dispatch exists before gate activation",
+                            ))?,
+                            binding.digest,
+                            binding.source_draft_digest,
+                            binding.audience,
+                            binding.template_digest,
+                            effect.plan.request(),
+                            dispatch,
+                        )
+                        .map_err(|_| {
+                            ReconcilerError::CorruptLedger(
+                                "authority effect dispatch is missing or corrupt",
+                            )
+                        })?;
+                        if let EffectState::Applied { receipt, .. } = &effect.state {
+                            dispatch
+                                .validate_host_receipt(receipt.as_bytes().to_vec())
+                                .map_err(|_| {
+                                    ReconcilerError::CorruptLedger(
+                                        "authority effect receipt is malformed or substituted",
+                                    )
+                                })?;
+                        }
+                    }
+                }
+                (Some(_), None) => return Err(ReconcilerError::MigrationRequired),
+                (None, Some(_)) => {
+                    return Err(ReconcilerError::CorruptLedger(
+                        "effect record version does not match operation provenance",
+                    ));
+                }
+            }
+        }
+        for (key, _) in self.journal.records(RecordNamespace::Effect) {
+            if key.len() >= OPERATION_KEY_BYTES
+                && &key[..OPERATION_KEY_BYTES] == operation_id.as_bytes()
+            {
+                let step: [u8; 4] = key
+                    .get(OPERATION_KEY_BYTES..)
+                    .ok_or(ReconcilerError::CorruptLedger("invalid effect key"))?
+                    .try_into()
+                    .map_err(|_| ReconcilerError::CorruptLedger("invalid effect key"))?;
+                if u32::from_be_bytes(step) >= effect_count {
+                    return Err(ReconcilerError::CorruptLedger(
+                        "operation has an extra effect",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn reconcile_applying(
         &mut self,
         operation_id: OperationId,
@@ -1070,24 +1241,15 @@ where
         effect_count: u32,
         attempt: u32,
         plan: EffectPlan,
+        dispatch: Option<PreparedAuthorityEffectV2>,
+        authority_gate: Option<(SandboxId, ObjectDigest)>,
     ) -> Result<ReconcileOutcome, ReconcilerError> {
-        let observed = match self.executor.observe(operation_id, step, &plan) {
-            Ok(value) => value,
-            Err(failure) => {
-                return self.handle_failure(
-                    operation_id,
-                    step,
-                    effect_count,
-                    attempt,
-                    plan,
-                    failure,
-                );
-            }
-        };
-        let receipt = match observed {
-            EffectObservation::Applied(receipt) => receipt,
-            EffectObservation::Absent => match self.executor.apply(operation_id, step, &plan) {
-                Ok(receipt) => receipt,
+        let receipt = if let Some(prepared) = dispatch.as_ref() {
+            let observed = match self
+                .executor
+                .observe_authority(operation_id, step, prepared)
+            {
+                Ok(value) => value,
                 Err(failure) => {
                     return self.handle_failure(
                         operation_id,
@@ -1095,19 +1257,134 @@ where
                         effect_count,
                         attempt,
                         plan,
+                        dispatch.clone(),
                         failure,
                     );
                 }
-            },
+            };
+            match observed {
+                AuthorityEffectObservationV2::Applied(receipt) => {
+                    receipt.into_effect_receipt_for(prepared)?
+                }
+                AuthorityEffectObservationV2::Pending => return Ok(ReconcileOutcome::RetryPending),
+                AuthorityEffectObservationV2::Absent => {
+                    let binding = plan.authority().ok_or(ReconcilerError::CorruptLedger(
+                        "authority dispatch has no binding",
+                    ))?;
+                    let (sandbox, activated_publication) = authority_gate.ok_or(
+                        ReconcilerError::CorruptLedger("authority dispatch has no activated gate"),
+                    )?;
+                    let timing = self
+                        .executor
+                        .authority_effect_timing(operation_id, step)
+                        .ok_or(ReconcilerError::InvalidExecutorOutput(
+                            "authority-bound effect execution is unsupported",
+                        ))?;
+                    let (publication_digest, fresh_attempt) =
+                        AuthorityPublicationStore::new(&mut self.journal)
+                            .select_bound_current_attempt(
+                                sandbox,
+                                activated_publication,
+                                binding.source_draft_digest,
+                                binding.audience,
+                                binding.template_digest,
+                                timing.deadline(),
+                                timing.clock(),
+                            )?;
+                    let fresh = PreparedAuthorityEffectV2::new(
+                        binding.digest,
+                        publication_digest,
+                        timing.clock(),
+                        fresh_attempt,
+                    );
+                    let next_attempt =
+                        attempt
+                            .checked_add(1)
+                            .ok_or(ReconcilerError::InvalidExecutorOutput(
+                                "effect retry counter exhausted",
+                            ))?;
+                    let refreshed = EffectLedgerRecord {
+                        plan: plan.clone(),
+                        state: EffectState::Applying {
+                            attempt: next_attempt,
+                            diagnostic: String::new(),
+                        },
+                        dispatch: Some(fresh.clone()),
+                    };
+                    // This commit is the crash boundary: no Apply may use the
+                    // fresh packet until its exact replacement is durable.
+                    self.store_effect(operation_id, step, &refreshed, None)?;
+                    match self.executor.apply_authority(operation_id, step, &fresh) {
+                        Ok(receipt) => {
+                            let receipt = receipt.into_effect_receipt_for(&fresh)?;
+                            let applied = EffectLedgerRecord {
+                                plan,
+                                state: EffectState::Applied {
+                                    attempt: next_attempt,
+                                    receipt,
+                                },
+                                dispatch: Some(fresh),
+                            };
+                            self.store_effect(operation_id, step, &applied, None)?;
+                            return Ok(ReconcileOutcome::EffectApplied);
+                        }
+                        Err(failure) => {
+                            return self.handle_failure(
+                                operation_id,
+                                step,
+                                effect_count,
+                                next_attempt,
+                                plan,
+                                Some(fresh),
+                                failure,
+                            );
+                        }
+                    }
+                }
+            }
+        } else {
+            let observed = match self.executor.observe(operation_id, step, &plan) {
+                Ok(value) => value,
+                Err(failure) => {
+                    return self.handle_failure(
+                        operation_id,
+                        step,
+                        effect_count,
+                        attempt,
+                        plan,
+                        None,
+                        failure,
+                    );
+                }
+            };
+            match observed {
+                EffectObservation::Applied(receipt) => receipt,
+                EffectObservation::Absent => match self.executor.apply(operation_id, step, &plan) {
+                    Ok(receipt) => receipt,
+                    Err(failure) => {
+                        return self.handle_failure(
+                            operation_id,
+                            step,
+                            effect_count,
+                            attempt,
+                            plan,
+                            None,
+                            failure,
+                        );
+                    }
+                },
+            }
         };
         let applied = EffectLedgerRecord {
             plan,
             state: EffectState::Applied { attempt, receipt },
+            dispatch,
         };
         self.store_effect(operation_id, step, &applied, None)?;
         Ok(ReconcileOutcome::EffectApplied)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn handle_failure(
         &mut self,
         operation_id: OperationId,
@@ -1115,6 +1392,7 @@ where
         effect_count: u32,
         attempt: u32,
         plan: EffectPlan,
+        dispatch: Option<PreparedAuthorityEffectV2>,
         failure: EffectFailure,
     ) -> Result<ReconcileOutcome, ReconcilerError> {
         failure.validate()?;
@@ -1132,6 +1410,7 @@ where
                         attempt: next_attempt,
                         diagnostic,
                     },
+                    dispatch,
                 };
                 self.store_effect(operation_id, step, &applying, None)?;
                 Ok(ReconcileOutcome::RetryPending)
@@ -1143,6 +1422,7 @@ where
                         attempt,
                         diagnostic,
                     },
+                    dispatch,
                 };
                 self.store_effect(operation_id, step, &blocked, Some(effect_count))?;
                 Ok(ReconcileOutcome::PermanentlyBlocked)
@@ -1532,124 +1812,6 @@ fn gate_slice<'a>(
     Ok(value)
 }
 
-fn encode_effect(record: &EffectLedgerRecord) -> Result<Vec<u8>, ReconcilerError> {
-    let (state, attempt, receipt, diagnostic) = match &record.state {
-        EffectState::Planned => (1_u8, 0_u32, &[][..], ""),
-        EffectState::Applying {
-            attempt,
-            diagnostic,
-        } => (2, *attempt, &[][..], diagnostic.as_str()),
-        EffectState::Applied { attempt, receipt } => (3, *attempt, receipt.as_bytes(), ""),
-        EffectState::PermanentlyBlocked {
-            attempt,
-            diagnostic,
-        } => (4, *attempt, &[][..], diagnostic.as_str()),
-    };
-    if record.plan.request.is_empty()
-        || record.plan.request.len() > MAXIMUM_REQUEST_BYTES
-        || receipt.len() > MAXIMUM_RECEIPT_BYTES
-        || diagnostic.len() > MAXIMUM_DIAGNOSTIC_BYTES
-    {
-        return Err(ReconcilerError::InvalidPlan("effect record exceeds bounds"));
-    }
-    let request_length = u32::try_from(record.plan.request.len())
-        .map_err(|_| ReconcilerError::InvalidPlan("effect request exceeds bounds"))?;
-    let receipt_length = u32::try_from(receipt.len())
-        .map_err(|_| ReconcilerError::InvalidPlan("effect receipt exceeds bounds"))?;
-    let diagnostic_length = u16::try_from(diagnostic.len())
-        .map_err(|_| ReconcilerError::InvalidPlan("effect diagnostic exceeds bounds"))?;
-    let mut bytes =
-        Vec::with_capacity(16 + record.plan.request.len() + receipt.len() + diagnostic.len());
-    bytes.push(RECORD_VERSION);
-    bytes.push(record.plan.domain as u8);
-    bytes.push(state);
-    bytes.push(0);
-    bytes.extend_from_slice(&attempt.to_le_bytes());
-    bytes.extend_from_slice(&request_length.to_le_bytes());
-    bytes.extend_from_slice(&receipt_length.to_le_bytes());
-    bytes.extend_from_slice(&diagnostic_length.to_le_bytes());
-    bytes.extend_from_slice(&record.plan.request);
-    bytes.extend_from_slice(receipt);
-    bytes.extend_from_slice(diagnostic.as_bytes());
-    Ok(bytes)
-}
-
-fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, ReconcilerError> {
-    if bytes.len() < 18 || bytes[0] != RECORD_VERSION || bytes[3] != 0 {
-        return Err(ReconcilerError::CorruptLedger(
-            "invalid effect record header",
-        ));
-    }
-    let domain = EffectDomain::from_byte(bytes[1])?;
-    let state = bytes[2];
-    let attempt = u32::from_le_bytes(
-        bytes[4..8]
-            .try_into()
-            .map_err(|_| ReconcilerError::CorruptLedger("invalid effect attempt"))?,
-    );
-    let request_length = u32::from_le_bytes(
-        bytes[8..12]
-            .try_into()
-            .map_err(|_| ReconcilerError::CorruptLedger("invalid request length"))?,
-    ) as usize;
-    let receipt_length = u32::from_le_bytes(
-        bytes[12..16]
-            .try_into()
-            .map_err(|_| ReconcilerError::CorruptLedger("invalid receipt length"))?,
-    ) as usize;
-    let diagnostic_length = u16::from_le_bytes(
-        bytes[16..18]
-            .try_into()
-            .map_err(|_| ReconcilerError::CorruptLedger("invalid diagnostic length"))?,
-    ) as usize;
-    let expected = 18_usize
-        .checked_add(request_length)
-        .and_then(|length| length.checked_add(receipt_length))
-        .and_then(|length| length.checked_add(diagnostic_length))
-        .ok_or(ReconcilerError::CorruptLedger("effect length overflow"))?;
-    if expected != bytes.len()
-        || request_length == 0
-        || request_length > MAXIMUM_REQUEST_BYTES
-        || receipt_length > MAXIMUM_RECEIPT_BYTES
-        || diagnostic_length > MAXIMUM_DIAGNOSTIC_BYTES
-    {
-        return Err(ReconcilerError::CorruptLedger("invalid effect lengths"));
-    }
-    let request_end = 18 + request_length;
-    let receipt_end = request_end + receipt_length;
-    let request = bytes[18..request_end].to_vec();
-    let receipt = bytes[request_end..receipt_end].to_vec();
-    let diagnostic = std::str::from_utf8(&bytes[receipt_end..])
-        .map_err(|_| ReconcilerError::CorruptLedger("diagnostic is not UTF-8"))?
-        .to_owned();
-    let state = match state {
-        1 if attempt == 0 && receipt.is_empty() && diagnostic.is_empty() => EffectState::Planned,
-        2 if attempt > 0 && receipt.is_empty() => EffectState::Applying {
-            attempt,
-            diagnostic,
-        },
-        3 if attempt > 0 && !receipt.is_empty() && diagnostic.is_empty() => EffectState::Applied {
-            attempt,
-            receipt: EffectReceipt(receipt),
-        },
-        4 if attempt > 0 && receipt.is_empty() && !diagnostic.is_empty() => {
-            EffectState::PermanentlyBlocked {
-                attempt,
-                diagnostic,
-            }
-        }
-        _ => {
-            return Err(ReconcilerError::CorruptLedger(
-                "invalid effect state fields",
-            ));
-        }
-    };
-    Ok(EffectLedgerRecord {
-        plan: EffectPlan { domain, request },
-        state,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -1658,12 +1820,19 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    use aos_sandbox_core::{LeaseAssignment, NodeId};
+    use aos_proto::aos::sandbox::local::v1::{
+        ApplyRuntimeRequest, RuntimeObservation, RuntimeState,
+    };
+    use aos_sandbox_core::{LeaseAssignment, NodeId, RawClockProvenance, RawPairedClockSample};
+    use buffa::Message as _;
 
     use super::*;
+    use crate::BrokerDispatchAttemptV1;
     use crate::journal::JournalLimits;
     use crate::publication::tests::{
-        activation_claim, activation_fixture, alternate_activation_fixture,
+        activation_claim, alternate_descriptor_free_activation_fixture,
+        descriptor_free_activation_fixture, descriptor_free_mount_activation_fixture,
+        descriptor_host_activation_fixture,
     };
     use crate::publication::{AuthorityPublicationDraftV1, AuthorityPublicationStore};
 
@@ -1696,9 +1865,48 @@ mod tests {
         applied: BTreeMap<(OperationId, u32), EffectReceipt>,
         failures: VecDeque<EffectFailure>,
         apply_calls: usize,
+        authority_pending: bool,
+        authority_receipt_override: Option<ValidatedHostEffectReceiptV1>,
+    }
+
+    fn host_receipt_bytes(prepared: &PreparedAuthorityEffectV2) -> Vec<u8> {
+        let request = ApplyRuntimeRequest::decode_from_slice(prepared.attempt().body()).unwrap();
+        let fence = request.fence.as_option().unwrap();
+        let incarnation: [u8; 16] = fence.incarnation_id.as_slice().try_into().unwrap();
+        let assignment_digest: [u8; 32] = fence.assignment_digest.as_slice().try_into().unwrap();
+        let observation = RuntimeObservation {
+            runtime_handle: aos_sandbox_protocol::semantics::host::runtime_handle_v1(
+                &incarnation,
+                fence.assignment_epoch,
+                &assignment_digest,
+            )
+            .to_vec(),
+            state: RuntimeState::RUNTIME_STATE_READY.into(),
+            observation_sequence: 1,
+            fence: Some(fence.clone()).into(),
+            ..Default::default()
+        };
+        observation.encode_to_vec()
+    }
+
+    fn host_receipt(prepared: &PreparedAuthorityEffectV2) -> ValidatedHostEffectReceiptV1 {
+        prepared
+            .validate_host_receipt(host_receipt_bytes(prepared))
+            .unwrap()
     }
 
     impl SingleNodeEffectExecutor for Executor {
+        fn authority_effect_timing(
+            &mut self,
+            _operation_id: OperationId,
+            _step: u32,
+        ) -> Option<AuthorityEffectAttemptTimingV1> {
+            let provenance = RawClockProvenance::new_untrusted([0x91; 16]).unwrap();
+            let clock =
+                RawPairedClockSample::new_untrusted(provenance, [0x92; 16], 150, 1_000).unwrap();
+            Some(AuthorityEffectAttemptTimingV1::new(clock, 2_000))
+        }
+
         fn observe(
             &mut self,
             operation_id: OperationId,
@@ -1726,6 +1934,43 @@ mod tests {
             self.applied.insert((operation_id, step), receipt.clone());
             Ok(receipt)
         }
+
+        fn observe_authority(
+            &mut self,
+            operation_id: OperationId,
+            step: u32,
+            prepared: &PreparedAuthorityEffectV2,
+        ) -> Result<AuthorityEffectObservationV2, EffectFailure> {
+            Ok(if self.authority_pending {
+                AuthorityEffectObservationV2::Pending
+            } else if self.applied.contains_key(&(operation_id, step)) {
+                AuthorityEffectObservationV2::Applied(
+                    self.authority_receipt_override
+                        .take()
+                        .unwrap_or_else(|| host_receipt(prepared)),
+                )
+            } else {
+                AuthorityEffectObservationV2::Absent
+            })
+        }
+
+        fn apply_authority(
+            &mut self,
+            operation_id: OperationId,
+            step: u32,
+            prepared: &PreparedAuthorityEffectV2,
+        ) -> Result<ValidatedHostEffectReceiptV1, EffectFailure> {
+            self.apply_calls += 1;
+            if let Some(failure) = self.failures.pop_front() {
+                return Err(failure);
+            }
+            let receipt = EffectReceipt::new(vec![step as u8 + 1]).unwrap();
+            self.applied.insert((operation_id, step), receipt);
+            Ok(self
+                .authority_receipt_override
+                .take()
+                .unwrap_or_else(|| host_receipt(prepared)))
+        }
     }
 
     fn operation() -> OperationPlan {
@@ -1750,14 +1995,15 @@ mod tests {
         AuthorityPublicationDraftV1,
         crate::publication::PreparedAuthorityPublicationV1,
     ) {
-        let (draft, prepared) = activation_fixture(lease_generation);
+        let (draft, prepared) = descriptor_free_activation_fixture(lease_generation);
+        let effect = draft.bind_effect(draft.templates()[0].digest()).unwrap();
         let plan = OperationPlan::ownership_gated(
             OperationId::from_bytes([0x31; 16]),
             IdempotencyKey::new(b"gated-request".to_vec()).unwrap(),
             [0x32; 32],
             b"gated-sandbox".to_vec(),
             b"pending-ownership".to_vec(),
-            vec![EffectPlan::new(EffectDomain::Guardian, b"arm".to_vec()).unwrap()],
+            vec![effect],
             activation_claim(&draft, lease_generation),
             draft.clone(),
         )
@@ -1836,6 +2082,57 @@ mod tests {
     }
 
     #[test]
+    fn authority_effect_values_are_bound_to_operation_and_step_keys() {
+        let directory = TestDirectory::new();
+        let (journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+        let mut reconciler = Reconciler::new(journal, Executor::default());
+        let (draft, _) = descriptor_free_activation_fixture(1);
+        let effect = draft.bind_effect(draft.templates()[0].digest()).unwrap();
+        let operation_id = OperationId::from_bytes([0xc1; 16]);
+        let plan = OperationPlan::ownership_gated(
+            operation_id,
+            IdempotencyKey::new(b"location-bound-effects".to_vec()).unwrap(),
+            [0xc2; 32],
+            b"location-sandbox".to_vec(),
+            b"pending".to_vec(),
+            vec![effect.clone(), effect],
+            activation_claim(&draft, 1),
+            draft,
+        )
+        .unwrap();
+        reconciler.accept(&plan).unwrap();
+        let first_key = effect_key(operation_id, 0);
+        let second_key = effect_key(operation_id, 1);
+        let first = reconciler
+            .journal
+            .get(RecordNamespace::Effect, &first_key)
+            .unwrap()
+            .to_vec();
+        let second = reconciler
+            .journal
+            .get(RecordNamespace::Effect, &second_key)
+            .unwrap()
+            .to_vec();
+        reconciler
+            .journal_mut()
+            .commit(
+                &JournalTransaction::new(
+                    [0xc3; 16],
+                    vec![
+                        JournalRecord::put(RecordNamespace::Effect, first_key.to_vec(), second),
+                        JournalRecord::put(RecordNamespace::Effect, second_key.to_vec(), first),
+                    ],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(matches!(
+            reconciler.ownership_gate(operation_id),
+            Err(ReconcilerError::CorruptLedger(_))
+        ));
+    }
+
+    #[test]
     fn ownership_gate_activation_commits_publication_and_release_atomically() {
         let directory = TestDirectory::new();
         let path = directory.journal();
@@ -1881,7 +2178,7 @@ mod tests {
                 .unwrap(),
             OwnershipGateActivationOutcome::Replay
         );
-        let (changed_draft, changed_prepared) = activation_fixture(2);
+        let (changed_draft, changed_prepared) = descriptor_free_activation_fixture(2);
         let conflicting = gate_activation(&mut reconciler, &changed_draft, &changed_prepared);
         assert!(matches!(
             reconciler.activate_ownership_gate(plan.operation_id(), conflicting),
@@ -1895,12 +2192,427 @@ mod tests {
     }
 
     #[test]
+    fn authority_attempt_is_durable_before_io_and_reused_after_restart() {
+        let directory = TestDirectory::new();
+        let path = directory.journal();
+        let (plan, draft, prepared) = gated_operation_with_publication(1);
+        let durable_attempt;
+        {
+            let (journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
+            let mut reconciler = Reconciler::new(journal, Executor::default());
+            reconciler.accept(&plan).unwrap();
+            let activation = gate_activation(&mut reconciler, &draft, &prepared);
+            reconciler
+                .activate_ownership_gate(plan.operation_id(), activation)
+                .unwrap();
+            assert_eq!(
+                reconciler.reconcile_once(plan.operation_id()).unwrap(),
+                ReconcileOutcome::Progressed
+            );
+            assert_eq!(reconciler.executor.apply_calls, 0);
+            let record = decode_effect(
+                reconciler
+                    .journal
+                    .get(RecordNamespace::Effect, &effect_key(plan.operation_id(), 0))
+                    .unwrap(),
+            )
+            .unwrap();
+            durable_attempt = record.dispatch.unwrap();
+        }
+
+        let (journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
+        let mut reconciler = Reconciler::new(journal, Executor::default());
+        let recovered = decode_effect(
+            reconciler
+                .journal
+                .get(RecordNamespace::Effect, &effect_key(plan.operation_id(), 0))
+                .unwrap(),
+        )
+        .unwrap()
+        .dispatch
+        .unwrap();
+        assert_eq!(recovered, durable_attempt);
+        assert_eq!(
+            reconciler.reconcile_once(plan.operation_id()).unwrap(),
+            ReconcileOutcome::EffectApplied
+        );
+        assert_eq!(reconciler.executor.apply_calls, 1);
+    }
+
+    #[test]
+    fn authenticated_pending_retains_the_exact_durable_attempt() {
+        let directory = TestDirectory::new();
+        let (journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+        let mut reconciler = Reconciler::new(journal, Executor::default());
+        let (plan, draft, prepared) = gated_operation_with_publication(1);
+        reconciler.accept(&plan).unwrap();
+        let activation = gate_activation(&mut reconciler, &draft, &prepared);
+        reconciler
+            .activate_ownership_gate(plan.operation_id(), activation)
+            .unwrap();
+        assert_eq!(
+            reconciler.reconcile_once(plan.operation_id()).unwrap(),
+            ReconcileOutcome::Progressed
+        );
+        let before = decode_effect(
+            reconciler
+                .journal
+                .get(RecordNamespace::Effect, &effect_key(plan.operation_id(), 0))
+                .unwrap(),
+        )
+        .unwrap();
+        reconciler.executor.authority_pending = true;
+        assert_eq!(
+            reconciler.reconcile_once(plan.operation_id()).unwrap(),
+            ReconcileOutcome::RetryPending
+        );
+        let after = decode_effect(
+            reconciler
+                .journal
+                .get(RecordNamespace::Effect, &effect_key(plan.operation_id(), 0))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(before, after);
+        assert_eq!(reconciler.executor.apply_calls, 0);
+    }
+
+    #[test]
+    fn v2_durable_bytes_omit_raw_clock_provenance_and_boot_identity() {
+        let directory = TestDirectory::new();
+        let (journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+        let mut reconciler = Reconciler::new(journal, Executor::default());
+        let (plan, draft, prepared) = gated_operation_with_publication(1);
+        reconciler.accept(&plan).unwrap();
+        let activation = gate_activation(&mut reconciler, &draft, &prepared);
+        reconciler
+            .activate_ownership_gate(plan.operation_id(), activation)
+            .unwrap();
+        reconciler.reconcile_once(plan.operation_id()).unwrap();
+        let record = decode_effect(
+            reconciler
+                .journal
+                .get(RecordNamespace::Effect, &effect_key(plan.operation_id(), 0))
+                .unwrap(),
+        )
+        .unwrap();
+        let durable = record.dispatch.as_ref().unwrap();
+        let alternate_clock = RawPairedClockSample::new_untrusted(
+            RawClockProvenance::new_untrusted([0xee; 16]).unwrap(),
+            [0xef; 16],
+            durable.preparation_wall_seconds(),
+            durable.preparation_boottime_nanoseconds(),
+        )
+        .unwrap();
+        let mut alternate = record.clone();
+        alternate.dispatch = Some(PreparedAuthorityEffectV2::new(
+            durable.binding_digest(),
+            durable.publication_digest(),
+            alternate_clock,
+            durable.attempt().clone(),
+        ));
+        assert_eq!(
+            encode_effect(&record).unwrap(),
+            encode_effect(&alternate).unwrap()
+        );
+    }
+
+    #[test]
+    fn authenticated_absent_persists_current_replacement_before_failed_apply() {
+        let directory = TestDirectory::new();
+        let (journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+        let mut reconciler = Reconciler::new(journal, Executor::default());
+        let (plan, draft, prepared) = gated_operation_with_publication(1);
+        reconciler.accept(&plan).unwrap();
+        let activation = gate_activation(&mut reconciler, &draft, &prepared);
+        reconciler
+            .activate_ownership_gate(plan.operation_id(), activation)
+            .unwrap();
+        reconciler.reconcile_once(plan.operation_id()).unwrap();
+        let (_, renewed) = descriptor_free_activation_fixture(2);
+        AuthorityPublicationStore::new(reconciler.journal_mut())
+            .publish(
+                &renewed,
+                &IdempotencyKey::new("absent-renewal").unwrap(),
+                OperationId::new(),
+                [0xd1; 16],
+            )
+            .unwrap();
+        reconciler
+            .executor
+            .failures
+            .push_back(EffectFailure::Retryable("transport lost".to_owned()));
+        assert_eq!(
+            reconciler.reconcile_once(plan.operation_id()).unwrap(),
+            ReconcileOutcome::RetryPending
+        );
+        let effect = decode_effect(
+            reconciler
+                .journal
+                .get(RecordNamespace::Effect, &effect_key(plan.operation_id(), 0))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            effect.dispatch.unwrap().publication_digest(),
+            renewed.digest()
+        );
+        assert_eq!(reconciler.executor.apply_calls, 1);
+    }
+
+    #[test]
+    fn validated_receipt_tokens_cannot_cross_attempts_on_apply_or_observe() {
+        let directory = TestDirectory::new();
+        let (journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+        let mut reconciler = Reconciler::new(journal, Executor::default());
+        let (plan, draft, prepared) = gated_operation_with_publication(1);
+        reconciler.accept(&plan).unwrap();
+        let activation = gate_activation(&mut reconciler, &draft, &prepared);
+        reconciler
+            .activate_ownership_gate(plan.operation_id(), activation)
+            .unwrap();
+        reconciler.reconcile_once(plan.operation_id()).unwrap();
+        let old = decode_effect(
+            reconciler
+                .journal
+                .get(RecordNamespace::Effect, &effect_key(plan.operation_id(), 0))
+                .unwrap(),
+        )
+        .unwrap()
+        .dispatch
+        .unwrap();
+        let old_apply_token = host_receipt(&old);
+        let old_observe_token = host_receipt(&old);
+        let (_, renewed) = descriptor_free_activation_fixture(2);
+        AuthorityPublicationStore::new(reconciler.journal_mut())
+            .publish(
+                &renewed,
+                &IdempotencyKey::new("token-renewal").unwrap(),
+                OperationId::new(),
+                [0xda; 16],
+            )
+            .unwrap();
+
+        reconciler.executor.authority_receipt_override = Some(old_apply_token);
+        assert!(matches!(
+            reconciler.reconcile_once(plan.operation_id()),
+            Err(ReconcilerError::InvalidExecutorOutput(_))
+        ));
+        let fresh = decode_effect(
+            reconciler
+                .journal
+                .get(RecordNamespace::Effect, &effect_key(plan.operation_id(), 0))
+                .unwrap(),
+        )
+        .unwrap()
+        .dispatch
+        .unwrap();
+        assert_eq!(fresh.publication_digest(), renewed.digest());
+
+        reconciler.executor.authority_receipt_override = Some(old_observe_token);
+        assert!(matches!(
+            reconciler.reconcile_once(plan.operation_id()),
+            Err(ReconcilerError::InvalidExecutorOutput(_))
+        ));
+    }
+
+    #[test]
+    fn substituted_durable_authority_attempt_fails_before_executor_io() {
+        let directory = TestDirectory::new();
+        let (journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+        let mut reconciler = Reconciler::new(journal, Executor::default());
+        let (plan, draft, prepared) = gated_operation_with_publication(1);
+        reconciler.accept(&plan).unwrap();
+        let activation = gate_activation(&mut reconciler, &draft, &prepared);
+        reconciler
+            .activate_ownership_gate(plan.operation_id(), activation)
+            .unwrap();
+        assert_eq!(
+            reconciler.reconcile_once(plan.operation_id()).unwrap(),
+            ReconcileOutcome::Progressed
+        );
+        let mut record = decode_effect(
+            reconciler
+                .journal
+                .get(RecordNamespace::Effect, &effect_key(plan.operation_id(), 0))
+                .unwrap(),
+        )
+        .unwrap();
+        let durable = record.dispatch.as_ref().unwrap();
+        let mut packet = durable.attempt().packet().to_vec();
+        packet.push(0xff);
+        let substituted = BrokerDispatchAttemptV1::from_durable_parts(
+            durable.attempt().template_digest(),
+            durable.attempt().lease_digest(),
+            durable.attempt().lease_generation(),
+            durable.attempt().deadline_boottime_nanoseconds(),
+            durable.attempt().body().to_vec(),
+            packet,
+        );
+        record.dispatch = Some(PreparedAuthorityEffectV2::from_durable_parts(
+            durable.binding_digest(),
+            durable.publication_digest(),
+            durable.preparation_wall_seconds(),
+            durable.preparation_boottime_nanoseconds(),
+            substituted,
+        ));
+        let replacement = JournalRecord::put(
+            RecordNamespace::Effect,
+            effect_key(plan.operation_id(), 0).to_vec(),
+            encode_effect(&record).unwrap(),
+        );
+        reconciler
+            .journal_mut()
+            .commit(&JournalTransaction::new([0xd7; 16], vec![replacement]).unwrap())
+            .unwrap();
+
+        assert!(matches!(
+            reconciler.reconcile_once(plan.operation_id()),
+            Err(ReconcilerError::CorruptLedger(_))
+        ));
+        assert_eq!(reconciler.executor.apply_calls, 0);
+    }
+
+    #[test]
+    fn substituted_applied_host_receipt_fails_recovery_before_executor_io() {
+        let directory = TestDirectory::new();
+        let (journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+        let mut reconciler = Reconciler::new(journal, Executor::default());
+        let (plan, draft, prepared) = gated_operation_with_publication(1);
+        reconciler.accept(&plan).unwrap();
+        let activation = gate_activation(&mut reconciler, &draft, &prepared);
+        reconciler
+            .activate_ownership_gate(plan.operation_id(), activation)
+            .unwrap();
+        reconciler.reconcile_once(plan.operation_id()).unwrap();
+        reconciler.reconcile_once(plan.operation_id()).unwrap();
+        let key = effect_key(plan.operation_id(), 0);
+        let mut record = decode_effect(
+            reconciler
+                .journal
+                .get(RecordNamespace::Effect, &key)
+                .unwrap(),
+        )
+        .unwrap();
+        let EffectState::Applied { attempt, .. } = record.state else {
+            panic!("effect was not applied");
+        };
+        record.state = EffectState::Applied {
+            attempt,
+            receipt: EffectReceipt::new(vec![0xff]).unwrap(),
+        };
+        reconciler
+            .journal_mut()
+            .commit(
+                &JournalTransaction::new(
+                    [0xd8; 16],
+                    vec![JournalRecord::put(
+                        RecordNamespace::Effect,
+                        key.to_vec(),
+                        encode_effect(&record).unwrap(),
+                    )],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(matches!(
+            reconciler.reconcile_once(plan.operation_id()),
+            Err(ReconcilerError::CorruptLedger(_))
+        ));
+        assert_eq!(reconciler.executor.apply_calls, 1);
+    }
+
+    #[test]
+    fn descriptor_bearing_authority_effect_is_explicitly_blocked_before_io() {
+        let (draft, _) = descriptor_host_activation_fixture(1);
+        let effect = draft.bind_effect(draft.templates()[0].digest()).unwrap();
+        assert!(matches!(
+            OperationPlan::ownership_gated(
+                OperationId::from_bytes([0xa1; 16]),
+                IdempotencyKey::new(b"descriptor-gated".to_vec()).unwrap(),
+                [0xa2; 32],
+                b"descriptor-sandbox".to_vec(),
+                b"pending".to_vec(),
+                vec![effect],
+                activation_claim(&draft, 1),
+                draft,
+            ),
+            Err(ReconcilerError::InvalidPlan(_))
+        ));
+    }
+
+    #[test]
+    fn descriptor_free_non_host_authority_effect_is_rejected_at_admission() {
+        let (draft, _) = descriptor_free_mount_activation_fixture();
+        let effect = draft.bind_effect(draft.templates()[0].digest()).unwrap();
+        assert!(matches!(
+            OperationPlan::ownership_gated(
+                OperationId::from_bytes([0xa3; 16]),
+                IdempotencyKey::new(b"mount-gated".to_vec()).unwrap(),
+                [0xa4; 32],
+                b"mount-sandbox".to_vec(),
+                b"pending".to_vec(),
+                vec![effect],
+                activation_claim(&draft, 1),
+                draft,
+            ),
+            Err(ReconcilerError::InvalidPlan(_))
+        ));
+    }
+
+    #[test]
+    fn crafted_non_host_v2_planned_and_applying_records_fail_before_executor_io() {
+        for applying in [false, true] {
+            let directory = TestDirectory::new();
+            let (journal, _) =
+                Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+            let mut reconciler = Reconciler::new(journal, Executor::default());
+            let (plan, draft, prepared) = gated_operation_with_publication(1);
+            reconciler.accept(&plan).unwrap();
+            if applying {
+                let activation = gate_activation(&mut reconciler, &draft, &prepared);
+                reconciler
+                    .activate_ownership_gate(plan.operation_id(), activation)
+                    .unwrap();
+                reconciler.reconcile_once(plan.operation_id()).unwrap();
+            }
+            let key = effect_key(plan.operation_id(), 0);
+            let mut bytes = reconciler
+                .journal
+                .get(RecordNamespace::Effect, &key)
+                .unwrap()
+                .to_vec();
+            // V2 fixed header + operation + step + source digest precede audience.
+            bytes[70] = 2;
+            reconciler
+                .journal_mut()
+                .commit(
+                    &JournalTransaction::new(
+                        [0xa5 + u8::from(applying); 16],
+                        vec![JournalRecord::put(
+                            RecordNamespace::Effect,
+                            key.to_vec(),
+                            bytes,
+                        )],
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            assert!(matches!(
+                reconciler.reconcile_once(plan.operation_id()),
+                Err(ReconcilerError::CorruptLedger(_))
+            ));
+            assert_eq!(reconciler.executor.apply_calls, 0);
+        }
+    }
+
+    #[test]
     fn ownership_gate_rejects_a_different_draft_with_the_same_claim_context() {
         let directory = TestDirectory::new();
         let (journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
         let mut reconciler = Reconciler::new(journal, Executor::default());
         let (plan, draft, _) = gated_operation_with_publication(1);
-        let (alternate_draft, alternate_prepared) = alternate_activation_fixture();
+        let (alternate_draft, alternate_prepared) = alternate_descriptor_free_activation_fixture();
         assert_eq!(
             activation_claim(&draft, 1),
             activation_claim(&alternate_draft, 1)
@@ -1940,7 +2652,7 @@ mod tests {
             OwnershipGateActivationOutcome::Activated
         );
 
-        let (renewed_draft, renewed) = activation_fixture(2);
+        let (renewed_draft, renewed) = descriptor_free_activation_fixture(2);
         assert_eq!(renewed_draft.digest(), draft.digest());
         AuthorityPublicationStore::new(reconciler.journal_mut())
             .publish(
@@ -1965,6 +2677,21 @@ mod tests {
                 .digest(),
             renewed.digest()
         );
+        assert_eq!(
+            reconciler.reconcile_once(plan.operation_id()).unwrap(),
+            ReconcileOutcome::Progressed
+        );
+        let effect = decode_effect(
+            reconciler
+                .journal
+                .get(RecordNamespace::Effect, &effect_key(plan.operation_id(), 0))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            effect.dispatch.unwrap().publication_digest(),
+            renewed.digest()
+        );
     }
 
     #[test]
@@ -1976,7 +2703,7 @@ mod tests {
         reconciler.accept(&plan).unwrap();
         let stale_activation = gate_activation(&mut reconciler, &draft, &prepared);
 
-        let (_, newer) = activation_fixture(2);
+        let (_, newer) = descriptor_free_activation_fixture(2);
         AuthorityPublicationStore::new(reconciler.journal_mut())
             .publish(
                 &newer,
@@ -2258,7 +2985,7 @@ mod tests {
 
     #[test]
     fn activation_requires_the_exact_unadvanced_planned_effect_set() {
-        for corruption in 0..5 {
+        for corruption in 0..6 {
             let directory = TestDirectory::new();
             let (journal, _) =
                 Journal::open(directory.journal(), JournalLimits::default()).unwrap();
@@ -2277,6 +3004,7 @@ mod tests {
                     encode_effect(&EffectLedgerRecord {
                         plan: effect,
                         state: EffectState::Planned,
+                        dispatch: None,
                     })
                     .unwrap(),
                 ),
@@ -2289,6 +3017,7 @@ mod tests {
                             attempt: 1,
                             diagnostic: String::new(),
                         },
+                        dispatch: None,
                     })
                     .unwrap(),
                 ),
@@ -2301,6 +3030,7 @@ mod tests {
                             attempt: 1,
                             receipt: EffectReceipt::new(b"receipt".to_vec()).unwrap(),
                         },
+                        dispatch: None,
                     })
                     .unwrap(),
                 ),
@@ -2313,6 +3043,17 @@ mod tests {
                             attempt: 1,
                             diagnostic: "blocked".to_owned(),
                         },
+                        dispatch: None,
+                    })
+                    .unwrap(),
+                ),
+                5 => JournalRecord::put(
+                    RecordNamespace::Effect,
+                    effect_key(gated.operation_id(), 0).to_vec(),
+                    encode_effect(&EffectLedgerRecord {
+                        plan: effect,
+                        state: EffectState::Planned,
+                        dispatch: None,
                     })
                     .unwrap(),
                 ),
@@ -2326,27 +3067,39 @@ mod tests {
                 .unwrap();
 
             let activation = gate_activation(&mut reconciler, &draft, &prepared);
-            assert!(matches!(
-                reconciler.activate_ownership_gate(gated.operation_id(), activation),
-                Err(ReconcilerError::CorruptLedger(_))
-            ));
+            let activation_error = reconciler
+                .activate_ownership_gate(gated.operation_id(), activation)
+                .unwrap_err();
+            if corruption >= 2 {
+                assert!(matches!(
+                    activation_error,
+                    ReconcilerError::MigrationRequired
+                ));
+            } else {
+                assert!(matches!(
+                    activation_error,
+                    ReconcilerError::CorruptLedger(_)
+                ));
+            }
             assert!(
                 AuthorityPublicationStore::new(reconciler.journal_mut())
                     .current(draft.manifest().manifest().sandbox())
                     .unwrap()
                     .is_none()
             );
-            assert!(matches!(
-                reconciler.ownership_gate(gated.operation_id()).unwrap(),
-                Some(OwnershipGateStatusV1::Pending(_))
-            ));
+            let recovered = reconciler.ownership_gate(gated.operation_id());
+            if corruption >= 2 {
+                assert!(matches!(recovered, Err(ReconcilerError::MigrationRequired)));
+            } else {
+                assert!(matches!(recovered, Err(ReconcilerError::CorruptLedger(_))));
+            }
         }
     }
 
     #[test]
     fn ownership_gate_bounds_and_pending_backpressure_fail_before_effects() {
         let ordinary = operation();
-        let (draft, _) = activation_fixture(1);
+        let (draft, _) = descriptor_free_activation_fixture(1);
         let manifest = draft.manifest();
         let semantics = manifest.manifest();
         let mismatched_claim = OwnershipClaimV1::acquire(
@@ -2370,13 +3123,13 @@ mod tests {
                 ordinary.request_digest,
                 ordinary.desired_key.clone(),
                 ordinary.desired_value.clone(),
-                ordinary.effects.clone(),
+                vec![draft.bind_effect(draft.templates()[0].digest()).unwrap()],
                 mismatched_claim,
                 draft.clone(),
             ),
             Err(ReconcilerError::InvalidPlan(_))
         ));
-        let effect = EffectPlan::new(EffectDomain::Guardian, b"arm".to_vec()).unwrap();
+        let effect = draft.bind_effect(draft.templates()[0].digest()).unwrap();
         assert!(matches!(
             OperationPlan::ownership_gated(
                 ordinary.operation_id,

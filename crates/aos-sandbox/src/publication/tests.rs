@@ -2,7 +2,10 @@
 
 use std::path::PathBuf;
 
-use aos_proto::aos::sandbox::local::v1::{BrokerDescriptorRole, BrokerMethod};
+use aos_proto::aos::sandbox::local::v1::{
+    ApplyRuntimeRequest, AssignmentFence, Audience, BrokerDescriptorRole, BrokerMethod,
+    RequestHeader, RuntimeAction,
+};
 use aos_sandbox_core::format::{encode_signature, encode_trust_policy};
 use aos_sandbox_core::model::{
     AssignmentManifestV1, KeyReference, KeyUsage, SandboxAncestry, SignaturePurpose,
@@ -16,6 +19,7 @@ use aos_sandbox_core::{
     RawClockProvenance, ResourceDimension, ResourceVector, RevocationScopeId, TrustScopeId,
     sign_statement,
 };
+use buffa::Message as _;
 use ed25519_dalek::SigningKey;
 
 use crate::{
@@ -170,6 +174,85 @@ fn signed_plan(
         .complete(ReturnedSignature::Bytes(signature.signature()), 150)
         .unwrap_or_else(|error| panic!("test signed plan failed: {error}"));
     (signed, semantics)
+}
+
+fn signed_host_plan(
+    manifest: &CanonicalAssignmentManifestV1,
+    lease_signer: KeyReference,
+) -> (SignedBrokerPlan, BrokerDispatchSemanticIdentityV1, Vec<u8>) {
+    let key = SigningKey::from_bytes(&[40; 32]);
+    let assignment = manifest
+        .broker_assignment()
+        .unwrap_or_else(|error| panic!("test broker assignment failed: {error}"));
+    let handle = aos_sandbox_protocol::semantics::host::runtime_handle_v1(
+        assignment.incarnation().as_bytes(),
+        assignment.epoch().get(),
+        assignment.digest().as_bytes(),
+    );
+    let semantics = BrokerDispatchSemanticIdentityV1::new(
+        BrokerVerb::HostStop,
+        BrokerGrantTarget::Resource(
+            aos_sandbox_core::BrokerResourceHandle::from_bytes(handle)
+                .unwrap_or_else(|error| panic!("test runtime handle failed: {error}")),
+        ),
+        BrokerArgumentCommitment::for_canonical_bytes(b"host-stop"),
+    );
+    let plan = BrokerAuthorizationPlan::new(
+        BrokerAudience::Host,
+        ProtocolId::HostBroker,
+        ProtocolVersion::new(1, 1),
+        assignment,
+        manifest.manifest().node(),
+        lease_signer,
+        vec![
+            BrokerGrant::new(
+                semantics.verb(),
+                semantics.target(),
+                semantics.argument_commitment(),
+                4096,
+                1,
+            )
+            .unwrap_or_else(|error| panic!("test Host grant failed: {error}")),
+        ],
+        ObjectDigest::from_bytes([50; 32]),
+        RevocationScopeId::from_bytes([51; 16]),
+        100,
+        200,
+        Vec::new(),
+    )
+    .unwrap_or_else(|error| panic!("test Host plan failed: {error}"));
+    let preparation = BrokerPlanPreparation::new(plan, authority(&key))
+        .unwrap_or_else(|error| panic!("test Host plan preparation failed: {error}"));
+    let signature = sign_statement(preparation.signing_request().statement().clone(), &key)
+        .unwrap_or_else(|error| panic!("test Host signing failed: {error}"));
+    let signed = preparation
+        .complete(ReturnedSignature::Bytes(signature.signature()), 150)
+        .unwrap_or_else(|error| panic!("test signed Host plan failed: {error}"));
+    let body = ApplyRuntimeRequest {
+        header: Some(RequestHeader {
+            protocol_major: 1,
+            protocol_minor: 1,
+            request_id: vec![0x44; 16],
+            audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+            deadline_boottime_nanoseconds: 0,
+            maximum_response_bytes: 4096,
+            ..Default::default()
+        })
+        .into(),
+        fence: Some(AssignmentFence {
+            sandbox_id: assignment.sandbox().as_bytes().to_vec(),
+            incarnation_id: assignment.incarnation().as_bytes().to_vec(),
+            assignment_epoch: assignment.epoch().get(),
+            desired_generation: assignment.desired_generation().get(),
+            assignment_digest: assignment.digest().as_bytes().to_vec(),
+            ..Default::default()
+        })
+        .into(),
+        action: RuntimeAction::RUNTIME_ACTION_STOP.into(),
+        ..Default::default()
+    }
+    .encode_to_vec();
+    (signed, semantics, body)
 }
 
 fn signed_ownership_lease(
@@ -341,23 +424,125 @@ pub(crate) fn activation_fixture(
     (draft, prepared)
 }
 
-pub(crate) fn alternate_activation_fixture()
+pub(crate) fn descriptor_free_activation_fixture(
+    lease_generation: u64,
+) -> (AuthorityPublicationDraftV1, PreparedAuthorityPublicationV1) {
+    let mut source = proposal(lease_generation, 190);
+    let lease_signer = source.lease.signer().clone();
+    let (plan, semantics, body) = signed_host_plan(&source.manifest, lease_signer);
+    source.templates = vec![
+        BrokerDispatchTemplateV1::new(
+            plan,
+            BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
+            body,
+            Vec::new(),
+            semantics,
+        )
+        .unwrap_or_else(|error| panic!("descriptor-free test template failed: {error}")),
+    ];
+    source.required_audiences = vec![BrokerAudience::Host];
+    let lease = source.lease.clone();
+    let draft = AuthorityPublicationDraftV1::new(
+        source.manifest,
+        source.required_audiences,
+        source.templates,
+    )
+    .unwrap_or_else(|error| panic!("test draft failed: {error}"));
+    let claim = activation_claim(&draft, lease_generation);
+    let prepared = draft
+        .clone()
+        .bind_lease(&claim, lease)
+        .unwrap_or_else(|error| panic!("test bind failed: {error}"));
+    (draft, prepared)
+}
+
+pub(crate) fn descriptor_host_activation_fixture(
+    lease_generation: u64,
+) -> (AuthorityPublicationDraftV1, PreparedAuthorityPublicationV1) {
+    let mut source = proposal(lease_generation, 190);
+    let lease_signer = source.lease.signer().clone();
+    let (plan, semantics, body) = signed_host_plan(&source.manifest, lease_signer);
+    source.templates = vec![
+        BrokerDispatchTemplateV1::new(
+            plan,
+            BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
+            body,
+            vec![BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_TARGET_ROOT],
+            semantics,
+        )
+        .unwrap_or_else(|error| panic!("descriptor Host test template failed: {error}")),
+    ];
+    source.required_audiences = vec![BrokerAudience::Host];
+    let lease = source.lease.clone();
+    let draft = AuthorityPublicationDraftV1::new(
+        source.manifest,
+        source.required_audiences,
+        source.templates,
+    )
+    .unwrap_or_else(|error| panic!("descriptor Host draft failed: {error}"));
+    let claim = activation_claim(&draft, lease_generation);
+    let prepared = draft
+        .clone()
+        .bind_lease(&claim, lease)
+        .unwrap_or_else(|error| panic!("descriptor Host bind failed: {error}"));
+    (draft, prepared)
+}
+
+pub(crate) fn descriptor_free_mount_activation_fixture()
 -> (AuthorityPublicationDraftV1, PreparedAuthorityPublicationV1) {
     let mut source = proposal(1, 190);
-    let original = source
-        .templates
-        .first()
-        .unwrap_or_else(|| panic!("missing test template"));
+    let original = source.templates[0].clone();
     source.templates = vec![
         BrokerDispatchTemplateV1::new(
             original.signed_plan().clone(),
             original.method(),
-            vec![0x0a, 0x02, 0x08, 0x01, 0x12, 0x01, 0xab],
-            original.descriptor_roles().to_vec(),
+            original.body_without_deadline().to_vec(),
+            Vec::new(),
             original.semantics(),
         )
-        .unwrap_or_else(|error| panic!("alternate test template failed: {error}")),
+        .unwrap_or_else(|error| panic!("descriptor-free Mount template failed: {error}")),
     ];
+    let lease = source.lease.clone();
+    let draft = AuthorityPublicationDraftV1::new(
+        source.manifest,
+        source.required_audiences,
+        source.templates,
+    )
+    .unwrap_or_else(|error| panic!("descriptor-free Mount draft failed: {error}"));
+    let claim = activation_claim(&draft, 1);
+    let prepared = draft
+        .clone()
+        .bind_lease(&claim, lease)
+        .unwrap_or_else(|error| panic!("descriptor-free Mount bind failed: {error}"));
+    (draft, prepared)
+}
+
+pub(crate) fn alternate_descriptor_free_activation_fixture()
+-> (AuthorityPublicationDraftV1, PreparedAuthorityPublicationV1) {
+    let mut source = proposal(1, 190);
+    let lease_signer = source.lease.signer().clone();
+    let (plan, semantics, body) = signed_host_plan(&source.manifest, lease_signer);
+    let mut request = ApplyRuntimeRequest::decode_from_slice(&body)
+        .unwrap_or_else(|error| panic!("alternate Host body decode failed: {error}"));
+    let mut header = request
+        .header
+        .as_option()
+        .unwrap_or_else(|| panic!("alternate Host header missing"))
+        .clone();
+    header.request_id = vec![0x45; 16];
+    request.header = Some(header).into();
+    let body = request.encode_to_vec();
+    source.templates = vec![
+        BrokerDispatchTemplateV1::new(
+            plan,
+            BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
+            body,
+            Vec::new(),
+            semantics,
+        )
+        .unwrap_or_else(|error| panic!("alternate descriptor-free template failed: {error}")),
+    ];
+    source.required_audiences = vec![BrokerAudience::Host];
     let lease = source.lease.clone();
     let draft = AuthorityPublicationDraftV1::new(
         source.manifest,
@@ -959,6 +1144,21 @@ fn draft_roundtrips_multiple_templates_for_one_audience() {
     )
     .unwrap_or_else(|error| panic!("test draft failed: {error}"));
     assert_eq!(draft.templates().len(), 2);
+    let first_binding = draft
+        .bind_effect(draft.templates()[0].digest())
+        .unwrap_or_else(|error| panic!("first effect binding failed: {error}"));
+    let second_binding = draft
+        .bind_effect(draft.templates()[1].digest())
+        .unwrap_or_else(|error| panic!("second effect binding failed: {error}"));
+    assert_eq!(first_binding.audience(), BrokerAudience::Mount);
+    assert_ne!(
+        first_binding.template_digest(),
+        second_binding.template_digest()
+    );
+    assert_ne!(
+        first_binding.body_without_deadline(),
+        second_binding.body_without_deadline()
+    );
     let decoded = AuthorityPublicationDraftV1::from_canonical_bytes(draft.canonical_bytes())
         .unwrap_or_else(|error| panic!("test draft decode failed: {error}"));
     assert_eq!(decoded, draft);

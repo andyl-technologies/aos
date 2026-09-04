@@ -54,7 +54,9 @@ pub use publication::{
     PreparedAuthorityPublicationV1, RecoveredBrokerDispatchTemplateV1, RecoveredOwnershipLeaseV1,
 };
 pub use reconciler::{
-    AcceptOutcome, EffectDomain, EffectFailure, EffectObservation, EffectPlan, EffectReceipt,
-    OperationPlan, OwnershipGateActivationOutcome, OwnershipGatePlanV1, OwnershipGateStatusV1,
-    ReconcileOutcome, Reconciler, ReconcilerError, SingleNodeEffectExecutor,
+    AcceptOutcome, AuthorityBoundEffectPlanV2, AuthorityEffectAttemptTimingV1,
+    AuthorityEffectObservationV2, EffectDomain, EffectFailure, EffectObservation, EffectPlan,
+    EffectReceipt, OperationPlan, OwnershipGateActivationOutcome, OwnershipGatePlanV1,
+    OwnershipGateStatusV1, PreparedAuthorityEffectV2, ReconcileOutcome, Reconciler,
+    ReconcilerError, SingleNodeEffectExecutor, ValidatedHostEffectReceiptV1,
 };

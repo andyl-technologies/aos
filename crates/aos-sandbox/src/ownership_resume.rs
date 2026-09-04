@@ -382,11 +382,11 @@ mod tests {
     use sha2::{Digest as _, Sha256};
 
     use super::*;
-    use crate::publication::tests::{activation_claim, activation_fixture};
+    use crate::publication::tests::{activation_claim, descriptor_free_activation_fixture};
     use crate::{
-        ActivatedOperationCompiler, EffectDomain, EffectFailure, EffectObservation, EffectPlan,
-        EffectReceipt, IdempotencyKey, Journal, JournalLimits, NodeController,
-        NodeControllerLimits, OperationCompilationError, OperationPlan,
+        ActivatedOperationCompiler, EffectFailure, EffectObservation, EffectPlan, EffectReceipt,
+        IdempotencyKey, Journal, JournalLimits, NodeController, NodeControllerLimits,
+        OperationCompilationError, OperationPlan,
     };
 
     struct TestDirectory(PathBuf);
@@ -555,15 +555,16 @@ mod tests {
         crate::AuthorityPublicationDraftV1,
     ) {
         let directory = TestDirectory::new();
-        let (draft, _) = activation_fixture(1);
+        let (draft, _) = descriptor_free_activation_fixture(1);
         let claim = activation_claim(&draft, 1);
+        let effect = draft.bind_effect(draft.templates()[0].digest()).unwrap();
         let plan = OperationPlan::ownership_gated(
             OperationId::from_bytes([0x71; 16]),
             IdempotencyKey::new(b"ownership-resume".to_vec()).unwrap(),
             [0x72; 32],
             b"sandbox".to_vec(),
             b"ownership-pending".to_vec(),
-            vec![EffectPlan::new(EffectDomain::Guardian, b"arm".to_vec()).unwrap()],
+            vec![effect],
             claim,
             draft.clone(),
         )

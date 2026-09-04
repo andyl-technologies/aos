@@ -954,11 +954,11 @@ mod tests {
 
     use super::*;
     use crate::journal::IdempotencyKey;
-    use crate::publication::tests::{activation_claim, activation_fixture};
+    use crate::publication::tests::{activation_claim, descriptor_free_activation_fixture};
     use crate::{
-        ActivatedOperationCompiler, EffectDomain, EffectFailure, EffectObservation, EffectPlan,
-        EffectReceipt, NodeController, NodeControllerLimits, OperationCompilationError,
-        OperationPlan, OwnershipResumeOutcomeV1, Reconciler, SingleNodeEffectExecutor,
+        ActivatedOperationCompiler, EffectFailure, EffectObservation, EffectPlan, EffectReceipt,
+        NodeController, NodeControllerLimits, OperationCompilationError, OperationPlan,
+        OwnershipResumeOutcomeV1, Reconciler, SingleNodeEffectExecutor,
     };
 
     struct TestDirectory(PathBuf);
@@ -2666,7 +2666,7 @@ mod tests {
         }
 
         let directory = TestDirectory::new("controller-service-composition");
-        let (draft, _) = activation_fixture(1);
+        let (draft, _) = descriptor_free_activation_fixture(1);
         let claim = activation_claim(&draft, 1);
         let transaction = OwnershipTransactionReferenceV1::from_claim(&claim);
         let signing_key = SigningKey::from_bytes(&[41; 32]);
@@ -2724,13 +2724,14 @@ mod tests {
         };
 
         let operation_id = aos_sandbox_core::OperationId::from_bytes([0x81; 16]);
+        let effect = draft.bind_effect(draft.templates()[0].digest()).unwrap();
         let plan = OperationPlan::ownership_gated(
             operation_id,
             IdempotencyKey::new(b"controller-service-composition".to_vec()).unwrap(),
             [0x82; 32],
             b"sandbox".to_vec(),
             b"ownership-pending".to_vec(),
-            vec![EffectPlan::new(EffectDomain::Guardian, b"arm".to_vec()).unwrap()],
+            vec![effect],
             claim,
             draft,
         )

@@ -315,6 +315,67 @@ that exact current publication or a valid successor. Renewal may change only
 the lease-bound artifacts for the same authority and source draft at an
 unchanged assignment epoch and desired generation.
 
+The generic effect ledger retains its exact V1 encoding for ungated effects.
+An ownership-gated operation instead requires an Effect V2 record for every
+step. A V2 plan is constructed only from a template in the gate's exact
+publication draft; it records and recomputes the source-draft digest, broker
+audience and method, template digest, deadline-free request body digest, and
+portable semantic-identity commitment. Its binding digest also commits the
+operation ID and ordered step, preventing valid values from being exchanged
+between journal keys. Callers cannot provide those fields independently. V2
+currently admits only descriptor-free Host `ApplyRuntime`; Mount, Storage,
+Network, Guardian, Guest, other methods, and every descriptor-bearing template
+are rejected before journal admission. Recovery reports legacy V1 records under
+ownership-gated operation provenance as migration-required rather than silently
+reinterpreting them. It rejects a missing or extra
+effect, a template absent from the gate draft, and any substituted body or
+semantic commitment.
+
+Before the first external broker call, the sole journal-owning reconciler
+selects the current publication. It accepts the activated publication or a
+valid successor only when the source draft and exact effect template remain
+unchanged. It then injects a bounded deadline and durably changes the effect
+from `Planned` to `Applying` together with the selected publication digest,
+lease generation and digest, only the wall-seconds/boottime scalar projection
+used for deadline attenuation, exact deadline-bearing body, and exact encoded
+authorization packet. Raw clock provenance and boot identity are deliberately
+not persisted: they are unauthenticated advisory input and are not part of the
+reconstruction theorem. The executor
+receives that owned recovered attempt and never opens the controller journal.
+After a crash it queries the broker with the byte-exact original Apply request
+and signed quartet. Authenticated `Pending` and indeterminate transport results
+retain that exact attempt. Only authenticated `Absent` permits reselection: the
+reconciler consults current authority, constructs a fresh attenuated attempt,
+and durably replaces the dispatch record before issuing its Apply. A crash at
+that boundary therefore recovers by querying the replacement rather than
+replaying an unrecorded request.
+
+Each durable dispatch also commits the Effect V2 binding digest. Recovery
+reconstructs the selected publication relative to the gate's permanent
+activated publication, not relative to whichever publication is current at
+query time; a same-draft lease renewal may therefore leave historical attempts
+queryable. Current is consulted only for initial selection and authenticated
+`Absent` replacement. A first completion may return any canonical Host
+`RuntimeObservation` whose fence and derived runtime handle match the exact
+persisted Apply; mutable observation fields are not implied to have been
+precommitted by the request. The `Applied` record retains the exact accepted
+bytes. Recovery deterministically decodes those stored bytes and rechecks the
+same fence and handle invariant. The in-memory validation token is additionally
+bound to the effect binding and exact attempt packet, so a valid observation
+from another attempt cannot cross the commit boundary. Any substitution that
+changes the reconstructed packet, lease, publication, binding, or body fails
+before executor I/O. Stored attenuation scalars are rechecked for consistency,
+and stored receipt bytes are revalidated for the fence/handle invariant.
+Descriptor-bearing attempts remain disabled until a
+durable, deterministic FD-reacquisition contract is defined; descriptor
+integers are never persisted as capabilities.
+
+The Effect V2 layout is not yet released and therefore has no compatibility
+decoder for earlier experimental bytes. Its current canonical layout omits raw
+clock provenance and boot ID. Legacy Effect V1 golden encodings remain frozen
+for all four states; finding V1 under gated provenance requires explicit
+migration.
+
 The protocol error code is the single source of truth for recovery behavior.
 Wrong authority epoch, already-owned acquisition, and stale renewal fences
 require refresh and replan; unavailable, deadline, and internal indeterminacy
