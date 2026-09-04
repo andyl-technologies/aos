@@ -809,6 +809,7 @@ in rec {
   };
   phase4 = {
     projectQuotaVm = import ./phase4-project-quota-vm.nix {inherit pkgs lib;};
+    qemuHostOwnerVm = import ./phase4-qemu-host-owner-vm.nix {inherit pkgs lib;};
     eventGraphControlFlow = import ./phase4-event-graph-control-flow.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase4.eventGraphControlFlow";
