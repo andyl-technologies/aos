@@ -39,7 +39,7 @@
 
     aosFor = system: import ./. {inherit system;};
 
-    productionContainer = _: let
+    coordinatedContainer = variant: _: let
       # The bootstrap ladder starts on x86_64 and performs its reviewed
       # x86_64→aarch64 transition at gcc4_8_cross. Post-cross target tools run
       # through the build host's configured QEMU binfmt handler while Nix keeps
@@ -47,11 +47,13 @@
       coordinatorSystem = "x86_64-linux";
       coordinator = aosFor coordinatorSystem;
       platformBuilds = [
-        coordinator.containerImages.aos
+        coordinator.systems.${variant}.build.defaultContainer
         (import ./. {
           system = coordinatorSystem;
           crossSystem = "aarch64-linux";
-        }).containerImages.aos
+        }).systems.${
+          variant
+        }.build.defaultContainer
       ];
       oci = import ./lib/build/oci {
         inherit (coordinator) lib;
@@ -63,6 +65,9 @@
         inherit oci platformBuilds;
         name = "aos";
       };
+
+    productionContainer = coordinatedContainer "server";
+    testingContainer = coordinatedContainer "aos-testing";
 
     # Flatten systems into flake packages:
     #   server-image-raw, server-image-qcow2, edge-image-raw, etc.
@@ -150,6 +155,20 @@
           ]
         ) (builtins.attrNames aos.containerImages)
       );
+
+    testingContainerPackages = system: aos: coordinated: let
+      container = aos.systems.aos-testing.build.defaultContainer;
+      platform = container.platforms.${system};
+    in {
+      container-aos-testing-oci = platform.ociLayout;
+      container-aos-testing-docker = platform.dockerArchive;
+      container-aos-testing-metadata = platform.metadata;
+      container-aos-testing-index = coordinated.ociIndex;
+      container-aos-testing-platform-index = container.ociIndex;
+      container-aos-testing-evidence = coordinated.evidence;
+      container-aos-testing-publication-inputs = coordinated.publicationInputs;
+      container-aos-testing-qualification = coordinated.check;
+    };
   in {
     aosSystems = genAttrs systems (system: (aosFor system).systems);
 
@@ -157,8 +176,11 @@
       system: let
         aos = aosFor system;
         production = productionContainer system;
+        testing = testingContainer system;
         individualPackages = pkgPackages aos;
-        containers = containerPackages system aos production;
+        containers =
+          containerPackages system aos production
+          // testingContainerPackages system aos testing;
         allPackages = aos.pkgs.mkDerivation {
           pname = "aos-all-packages";
           version = "0";

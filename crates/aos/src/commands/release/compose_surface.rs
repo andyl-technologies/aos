@@ -75,6 +75,7 @@ pub(super) fn run(args: &ReleaseComposeSurfaceArgs, printer: &Printer) -> Result
         previous_root.as_ref(),
         now,
         &TufReleaseExpectation {
+            registry: &plan.registry,
             release_id: &plan.release_id,
             release_class: plan.release_class,
             manifest_digest: manifest_envelope_digest,
