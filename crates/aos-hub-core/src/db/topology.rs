@@ -16,6 +16,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::backend::Statement;
+use crate::value::Row;
 
 use super::{unix_now, Database, SurfaceTarget};
 
@@ -550,6 +551,10 @@ fn normalize_base_path(path: &str) -> Result<String> {
     Ok(path.to_owned())
 }
 
+/// Joins a gateway client prefix and a placement prefix into a canonical path.
+///
+/// # Errors
+/// Returns an error for malformed paths or traversal segments.
 pub(crate) fn join_route_segments(base: &str, prefix: &str) -> Result<String> {
     let base = normalize_base_path(base)?;
     let prefix = prefix.trim_matches('/');
@@ -557,6 +562,27 @@ pub(crate) fn join_route_segments(base: &str, prefix: &str) -> Result<String> {
         return Ok(base);
     }
     normalize_base_path(&format!("{base}/{prefix}"))
+}
+
+/// Decodes the shared route inventory projection for one resolved surface.
+///
+/// # Errors
+/// Returns an error when a projected column has an unexpected representation.
+pub(crate) fn route_list_record(row: &Row, surface: SurfaceTarget) -> Result<RouteRecord> {
+    Ok(RouteRecord {
+        id: row.get(0)?,
+        configuration_generation: row.get(1)?,
+        configuration_digest: row.get(2)?,
+        endpoint_id: row.get(3)?,
+        endpoint_generation: row.get(4)?,
+        base_path: row.get(5)?,
+        surface,
+        mode: row.get(8)?,
+        enabled: row.get(9)?,
+        resource_version: row.get(10)?,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
+    })
 }
 
 fn validate_gateway_revision_spec(spec: &GatewayRevisionSpec) -> Result<()> {
@@ -3305,22 +3331,7 @@ impl Database {
             )
             .await?
             .iter()
-            .map(|row| {
-                Ok(RouteRecord {
-                    id: row.get(0)?,
-                    configuration_generation: row.get(1)?,
-                    configuration_digest: row.get(2)?,
-                    endpoint_id: row.get(3)?,
-                    endpoint_generation: row.get(4)?,
-                    base_path: row.get(5)?,
-                    surface,
-                    mode: row.get(8)?,
-                    enabled: row.get(9)?,
-                    resource_version: row.get(10)?,
-                    created_at: row.get(11)?,
-                    updated_at: row.get(12)?,
-                })
-            })
+            .map(|row| route_list_record(row, surface))
             .collect()
     }
 

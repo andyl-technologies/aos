@@ -5,9 +5,56 @@
 
 use anyhow::{bail, Result};
 
-use super::{Database, DeliveryIdentityPage, GatewayRecord};
+use super::{Database, DeliveryIdentityPage, GatewayRecord, RouteRecord, SurfaceTarget};
 
 impl Database {
+    /// Lists a bounded route page for one surface in stable identity order.
+    ///
+    /// Callers authorize the surface before querying. The exclusive continuation
+    /// cursor is a route id; full topology snapshots use `list_routes` instead.
+    ///
+    /// # Errors
+    /// Returns an error on database failure or malformed persisted route data.
+    pub async fn list_routes_page(
+        &self,
+        surface: SurfaceTarget,
+        page_size: u32,
+        after_id: &str,
+    ) -> Result<DeliveryIdentityPage<RouteRecord>> {
+        let (registry, cache) = surface.ids();
+        let limit = i64::from(if page_size == 0 {
+            50
+        } else {
+            page_size.min(200)
+        });
+        let rows = self
+            .backend
+            .query(
+                "SELECT r.id, h.configuration_generation, h.configuration_digest,
+            r.endpoint_id, r.endpoint_generation, r.base_path, r.registry_id, r.cache_id,
+            r.mode, r.enabled, r.resource_version, r.created_at, r.updated_at
+            FROM routes r JOIN route_heads h ON h.route_id = r.id
+            WHERE (r.registry_id = ?1 OR r.cache_id = ?2) AND r.id > ?3
+            ORDER BY r.id LIMIT ?4",
+                &vals![registry, cache, after_id, limit + 1],
+            )
+            .await?;
+        let mut records = rows
+            .iter()
+            .map(|row| super::topology::route_list_record(row, surface))
+            .collect::<Result<Vec<_>>>()?;
+        let next_cursor = if records.len() > limit as usize {
+            records.pop();
+            records.last().map(|route| route.id.clone())
+        } else {
+            None
+        };
+        Ok(DeliveryIdentityPage {
+            records,
+            next_cursor,
+        })
+    }
+
     /// Lists a stable page of owned gateways and optionally granted generations.
     ///
     /// A grant only exposes a gateway when it covers its current desired
@@ -83,5 +130,68 @@ impl Database {
             records,
             next_cursor,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn route_pages_are_bounded_and_resume_in_stable_identity_order() {
+        let (db, registry_id, mut spec, _, _) = crate::db::topology::tests::route_fixture().await;
+        let surface = SurfaceTarget::Registry(registry_id);
+        for (name, byte) in [("z", 3), ("a", 1), ("m", 2)] {
+            spec.base_path = format!("/cache-{name}");
+            let reservation = [byte; 32];
+            db.create_route(
+                &format!("route:{name}"),
+                surface,
+                &spec,
+                &format!("https://route-probes.example.test/cache-{name}"),
+                1,
+                &reservation,
+                &[(1, reservation.to_vec())],
+                None,
+                "test",
+            )
+            .await
+            .unwrap();
+        }
+        let first = db.list_routes_page(surface, 2, "").await.unwrap();
+        assert_eq!(
+            first
+                .records
+                .iter()
+                .map(|route| route.id.as_str())
+                .collect::<Vec<_>>(),
+            ["route:a", "route:m"]
+        );
+        let second = db
+            .list_routes_page(surface, 2, first.next_cursor.as_deref().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            second
+                .records
+                .iter()
+                .map(|route| route.id.as_str())
+                .collect::<Vec<_>>(),
+            ["route:z"]
+        );
+        assert!(second.next_cursor.is_none());
+        assert!(db
+            .list_routes_page(surface, 2, "route:z")
+            .await
+            .unwrap()
+            .records
+            .is_empty());
+        assert!(db
+            .list_routes_page(SurfaceTarget::Registry(registry_id + 1000), 2, "")
+            .await
+            .unwrap()
+            .records
+            .is_empty());
+        assert_eq!(db.list_routes(surface).await.unwrap().len(), 3);
     }
 }
