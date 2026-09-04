@@ -13,6 +13,7 @@
 //! observed GUID before publishing a resolved object.
 
 use aos_sandbox_core::ObjectDigest;
+use aos_sandbox_protocol::semantics::CatalogBindingV1;
 use sha2::{Digest as _, Sha256};
 
 const FORMAT_MAGIC: &[u8; 8] = b"AOSSCAT1";
@@ -39,47 +40,6 @@ pub enum CatalogSemanticError {
     /// Canonical bytes exceeded the fixed V1 ceiling.
     #[error("resolved storage catalog semantics exceed the V1 byte ceiling")]
     EncodingTooLarge,
-}
-
-/// Carries the only resolved-catalog association permitted in portable authority.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct CatalogBindingV1 {
-    generation: u64,
-    digest: ObjectDigest,
-}
-
-impl CatalogBindingV1 {
-    /// Adopts a publisher-supplied versioned opaque catalog digest.
-    ///
-    /// The controller may sign this association with request handles, but it
-    /// does not learn or reinterpret the node-local bytes behind the digest.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CatalogSemanticError::InvalidValue`] for generation zero or
-    /// the all-zero digest.
-    pub fn from_publisher(
-        generation: u64,
-        digest: ObjectDigest,
-    ) -> Result<Self, CatalogSemanticError> {
-        if generation == 0 || digest.as_bytes() == &[0; 32] {
-            Err(CatalogSemanticError::InvalidValue)
-        } else {
-            Ok(Self { generation, digest })
-        }
-    }
-
-    /// Returns the exact catalog generation.
-    #[must_use]
-    pub const fn generation(self) -> u64 {
-        self.generation
-    }
-
-    /// Returns the opaque digest recomputed by the root broker.
-    #[must_use]
-    pub const fn digest(self) -> ObjectDigest {
-        self.digest
-    }
 }
 
 /// Identifies the kind of one exact ZFS catalog object.
@@ -852,6 +812,7 @@ pub struct ResolvedCatalogCommitmentV1 {
     plan: CatalogPlanV1,
     bytes: Vec<u8>,
     digest: ObjectDigest,
+    binding: CatalogBindingV1,
 }
 
 impl ResolvedCatalogCommitmentV1 {
@@ -878,12 +839,15 @@ impl ResolvedCatalogCommitmentV1 {
         hasher.update(DIGEST_DOMAIN);
         hasher.update(&bytes);
         let digest = ObjectDigest::from_bytes(hasher.finalize().into());
+        let binding = CatalogBindingV1::from_publisher(generation, digest)
+            .map_err(|_| CatalogSemanticError::InvalidValue)?;
         Ok(Self {
             generation,
             domains,
             plan,
             bytes,
             digest,
+            binding,
         })
     }
 
@@ -923,10 +887,7 @@ impl ResolvedCatalogCommitmentV1 {
     /// Returns the opaque generation/digest association used by portable authority.
     #[must_use]
     pub const fn binding(&self) -> CatalogBindingV1 {
-        CatalogBindingV1 {
-            generation: self.generation,
-            digest: self.digest,
-        }
+        self.binding
     }
 }
 

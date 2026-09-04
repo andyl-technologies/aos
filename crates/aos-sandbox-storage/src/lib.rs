@@ -21,12 +21,15 @@ pub mod request;
 pub mod zfs;
 
 pub use catalog::{
-    ActiveHoldEvidence, CatalogBindingV1, CatalogObjectKind, CatalogPlanV1, HoldId,
-    ManagedDatasetRoot, PlannedDataset, PlannedSnapshot, PostconditionPolicyV1,
-    ProjectAncestorPolicyV1, ReservationPolicy, ResolvedCatalogCommitmentV1, ResolvedDataset,
-    ResolvedSnapshot, StorageDomainsV1, WorkspaceSpacePolicyV1,
+    ActiveHoldEvidence, CatalogObjectKind, CatalogPlanV1, HoldId, ManagedDatasetRoot,
+    PlannedDataset, PlannedSnapshot, PostconditionPolicyV1, ProjectAncestorPolicyV1,
+    ReservationPolicy, ResolvedCatalogCommitmentV1, ResolvedDataset, ResolvedSnapshot,
+    StorageDomainsV1, WorkspaceSpacePolicyV1,
 };
-pub use request::{CanonicalStorageSemanticsV1, StorageOperation, StorageRequestError};
+pub use request::{
+    CanonicalStorageSemanticsV1, CatalogBindingV1, StorageOperation, StorageRequestError,
+    StorageSemanticsError, decode_resolved,
+};
 pub use zfs::{
     AncestorPolicyTransaction, ZfsHelperContract, ZfsPrecondition, ZfsTransaction,
     ZfsTransactionError,

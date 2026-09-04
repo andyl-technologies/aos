@@ -10,9 +10,11 @@
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 
+use aos_sandbox_protocol::semantics::CatalogBindingV1;
+
 use crate::catalog::{
-    CatalogBindingV1, CatalogPlanV1, HoldId, PostconditionPolicyV1, ProjectAncestorPolicyV1,
-    ReservationPolicy, ResolvedCatalogCommitmentV1, WorkspaceSpacePolicyV1,
+    CatalogPlanV1, HoldId, PostconditionPolicyV1, ProjectAncestorPolicyV1, ReservationPolicy,
+    ResolvedCatalogCommitmentV1, WorkspaceSpacePolicyV1,
 };
 
 const MAXIMUM_EXECUTABLE_BYTES: usize = 4096;

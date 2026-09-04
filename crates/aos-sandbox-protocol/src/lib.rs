@@ -5,10 +5,13 @@
 //! audience, rejects unknown protobuf fields and enums, applies message and
 //! response bounds, validates assignment fences, and resolves portable
 //! descriptors through the closed role registry before privileged code sees a
-//! request.
+//! request. [`semantics`] contains pure portable authority compilers;
+//! [`fencing`], [`inventory`], and [`session`] own their respective validated
+//! protocol state and envelopes.
 
 pub mod fencing;
 pub mod inventory;
+pub mod semantics;
 pub mod session;
 
 pub use inventory::{
