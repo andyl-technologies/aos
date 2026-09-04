@@ -142,10 +142,11 @@ impl<C: MountCatalog, H: NamespaceHelper> MountWorker for DescriptorMountWorker<
                     let requested = request.detached_mount_handle().copied().ok_or_else(|| {
                         MountError::Worker("install operation lost its detached handle".to_owned())
                     })?;
-                    let mount = match self.detached.remove(&requested) {
-                        Some(mount) => mount,
-                        None => prepare_mount(request, &resources)?,
-                    };
+                    let mount = self.detached.remove(&requested).ok_or_else(|| {
+                        MountError::Worker(
+                            "detached mount handle is not owned by this broker".to_owned(),
+                        )
+                    })?;
                     let beneath = request.action() == MountAction::MOUNT_ACTION_REPLACE;
                     if let Err(error) =
                         self.helper
@@ -216,16 +217,18 @@ fn prepare_mount(
 pub(crate) fn expected_handles(
     action: MountAction,
     request_digest: [u8; 32],
-    _supplied_detached: Option<[u8; 32]>,
-) -> EffectHandles {
-    match action {
+    supplied_detached: Option<[u8; 32]>,
+) -> Result<EffectHandles> {
+    let handles = match action {
         MountAction::MOUNT_ACTION_CREATE_DETACHED => EffectHandles {
             detached: Some(derive_handle(b"detached", request_digest)),
             installed: None,
         },
         MountAction::MOUNT_ACTION_INSTALL | MountAction::MOUNT_ACTION_REPLACE => EffectHandles {
             detached: None,
-            installed: Some(derive_handle(b"installed", request_digest)),
+            installed: Some(supplied_detached.ok_or_else(|| {
+                MountError::Worker("install operation has no detached handle".to_owned())
+            })?),
         },
         MountAction::MOUNT_ACTION_DETACH
         | MountAction::MOUNT_ACTION_RELEASE
@@ -233,7 +236,8 @@ pub(crate) fn expected_handles(
             detached: None,
             installed: None,
         },
-    }
+    };
+    Ok(handles)
 }
 
 fn derive_handle(label: &[u8], request_digest: [u8; 32]) -> [u8; 32] {
@@ -244,4 +248,29 @@ fn derive_handle(label: &[u8], request_digest: [u8; 32]) -> [u8; 32] {
     digest.update(label);
     digest.update(request_digest);
     digest.finalize().into()
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    #[test]
+    fn publication_preserves_the_broker_owned_resource_handle() {
+        let handle = [7; 32];
+        for action in [
+            MountAction::MOUNT_ACTION_INSTALL,
+            MountAction::MOUNT_ACTION_REPLACE,
+        ] {
+            assert_eq!(
+                expected_handles(action, [9; 32], Some(handle)).unwrap(),
+                EffectHandles {
+                    detached: None,
+                    installed: Some(handle),
+                }
+            );
+            assert!(expected_handles(action, [9; 32], None).is_err());
+        }
+    }
 }
