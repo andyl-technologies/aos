@@ -74,8 +74,12 @@ Admin manages organization settings, while Maintainer owns publishing,
 channels, and keys. Owner has both sets of permissions; Developer and Viewer
 are narrower roles.
 
-Registry and cache **Placements** pages show desired placement state separately
-from controller observations and effective read/write authority. The request
+Registry and cache settings start with effective configuration. **Delivery**
+shows selected client destinations and offers a [coordinated setup workflow](delivery.md).
+**Storage & replicas** shows effective read and write locations before offering
+storage setup and replication. Advanced policies and diagnostics load when
+opened; per-location controls retain desired state, controller observations,
+and reviewed promotion, drain, and deletion. The request
 explainer tests an absolute URL, optional machine-path override, and `web`,
 `git`, or `nix_cache` access class against the live simultaneous route set. The
 object-presence lookup shows the reported digest, size, and state at every

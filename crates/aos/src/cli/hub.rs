@@ -1514,13 +1514,19 @@ pub enum HubEndpointCmd {
 
 #[derive(Subcommand)]
 pub enum HubGatewayCmd {
-    /// List visible gateways, optionally filtered by binding
+    /// List visible gateways by owner scope or binding
     List {
         #[command(flatten)]
         access: HubAccessArgs,
         /// Restrict results to an instance or organization binding reference
-        #[arg(long)]
+        #[arg(long, conflicts_with = "scope")]
         binding: Option<String>,
+        /// Select an immutable owner scope, such as instance or org:ID
+        #[arg(long)]
+        scope: Option<String>,
+        /// Include current gateway generations explicitly granted to this scope
+        #[arg(long, requires = "scope")]
+        include_granted: bool,
         #[command(flatten)]
         pagination: HubPaginationArgs,
     },

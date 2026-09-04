@@ -9,12 +9,12 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use crate::components::{HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
-use crate::mutation::{idempotency_key, watch_draft, PendingPlan};
-use crate::route::{route_selection_for_audience, ConsoleRoute, ConsoleScope};
+use crate::mutation::{PendingPlan, idempotency_key, watch_draft};
+use crate::route::{ConsoleRoute, ConsoleScope, route_selection_for_audience};
 use crate::transport::ApiClient;
 
 use super::access_policy::{
-    access_policy_name, canonical_path, AccessPolicyFields, AccessPolicySignals,
+    AccessPolicyFields, AccessPolicySignals, access_policy_name, canonical_path,
 };
 use super::cache_integrations::CacheIntegrationWorkflow;
 use super::delivery_workflow::DeliveryDestinationWorkflows;
@@ -129,6 +129,35 @@ fn DeliverySummary(topology: aos_proto_types::GetSurfaceTopologyResponse) -> imp
         })
         .count();
     let audiences = topology.route_advertisements.len();
+    let destinations = topology.route_advertisements.iter().map(|selection| {
+        let route = topology.routes.iter().find(|route| route.stable_id == selection.route_id);
+        let Some(route) = route else {
+            return view! { <article class="revision-card"><h3>{selection.audience.clone()}</h3><p>"The selected route is unavailable. Inspect the audience selection below."</p></article> }.into_any();
+        };
+        let spec = route.spec.clone().unwrap_or_default();
+        let endpoint = topology.canonical_endpoints.iter()
+            .find(|endpoint| endpoint.stable_id == spec.endpoint_id);
+        let target = target_name(&spec);
+        let observation = route.observation.as_ref();
+        let current = observation.is_some_and(|observed|
+            observed.configuration_generation == route.configuration_generation
+                && observed.configuration_digest == route.configuration_digest);
+        let state = if !spec.enabled { "disabled" } else if !current { "awaiting observation" }
+            else { observation.map(|value| value.state.as_str()).unwrap_or("unknown") };
+        view! {
+            <article class="revision-card">
+                <div class="section-heading"><h3>{selection.audience.clone()}</h3><StatusBadge state=state.to_string() positive=state == "healthy"/></div>
+                <div class="resource-identity">
+                    <div><span>"Selected client URL"</span><code>{route.canonical_rendered_url.clone()}</code></div>
+                    <div><span>"Access policy"</span><strong>{access_policy_name(spec.access_policy.as_ref())}</strong></div>
+                    <div><span>"Storage target"</span><strong>{target}</strong></div>
+                    <div><span>"Endpoint"</span><code>{format!("{} · generation {}", spec.endpoint_id, spec.endpoint_generation)}</code></div>
+                    {endpoint.map(|endpoint| view! { <div><span>"Endpoint owner"</span><code>{endpoint.owner_scope_key.clone()}</code></div> })}
+                </div>
+                {observation.filter(|observed| current && !observed.error.is_empty()).map(|observed| view! { <p>{observed.error.clone()}</p> })}
+            </article>
+        }.into_any()
+    }).collect_view();
 
     view! {
         <section class="panel delivery-summary" aria-labelledby="effective-delivery-title">
@@ -136,7 +165,7 @@ fn DeliverySummary(topology: aos_proto_types::GetSurfaceTopologyResponse) -> imp
                 <div>
                     <p class="section-kicker">"Effective configuration"</p>
                     <h2 id="effective-delivery-title">"Delivery at a glance"</h2>
-                    <p>"These routes and audience selections are active for this surface now."</p>
+                    <p>"See the URL selected for each client audience and the infrastructure behind it. Observed state is shown separately from the selection."</p>
                 </div>
             </div>
             <div class="resource-identity">
@@ -145,6 +174,8 @@ fn DeliverySummary(topology: aos_proto_types::GetSurfaceTopologyResponse) -> imp
                 <div><span>"Audience defaults"</span><strong>{audiences}</strong></div>
                 <div><span>"Storage placements"</span><strong>{topology.placements.len()}</strong></div>
             </div>
+            <div class="binding-list">{destinations}</div>
+            {(audiences == 0).then(|| view! { <p class="muted">"No audience has a selected destination. Add and verify delivery, then review activation."</p> })}
         </section>
     }
 }

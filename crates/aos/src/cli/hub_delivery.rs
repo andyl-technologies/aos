@@ -67,3 +67,69 @@ pub enum HubDeliveryActivationCmd {
     /// Activate the exact reviewed audience changes.
     Apply(HubReviewedApplyArgs),
 }
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser as _;
+
+    use super::*;
+    use crate::cli::{Cli, Commands, HubCmd};
+
+    #[test]
+    fn delivery_setup_and_activation_keep_review_separate_from_apply() {
+        let parsed = Cli::try_parse_from([
+            "aos",
+            "--json",
+            "hub",
+            "delivery",
+            "plan",
+            "--intent-file",
+            "delivery.json",
+            "--idempotency-key",
+            "review-1",
+        ])
+        .unwrap();
+        assert!(matches!(
+            parsed.command,
+            Commands::Hub {
+                command: HubCmd::Delivery {
+                    command: HubDeliveryCmd::Plan { .. }
+                },
+            }
+        ));
+        let apply = [
+            "aos",
+            "hub",
+            "delivery",
+            "activate",
+            "apply",
+            "--plan-id",
+            "plan:1",
+            "--confirm-hash",
+            "reviewed-hash",
+            "--idempotency-key",
+            "apply-1",
+            "--yes",
+        ];
+        assert!(Cli::try_parse_from(apply).is_ok());
+        assert!(
+            Cli::try_parse_from(apply.into_iter().chain(["--intent-file", "changed.json"]))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn resume_requires_revision_and_idempotency_without_new_intent() {
+        let resume = ["aos", "hub", "delivery", "resume", "workflow:1"];
+        assert!(Cli::try_parse_from(resume).is_err());
+        assert!(
+            Cli::try_parse_from(resume.into_iter().chain([
+                "--if-version",
+                "3",
+                "--idempotency-key",
+                "resume-1",
+            ]))
+            .is_ok()
+        );
+    }
+}
