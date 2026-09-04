@@ -125,6 +125,8 @@ pub mod qemu_exact_resume_executor;
 #[cfg(target_os = "linux")]
 pub mod qemu_hot_fork_factory;
 #[cfg(target_os = "linux")]
+pub mod qemu_hot_fork_pool;
+#[cfg(target_os = "linux")]
 pub mod qemu_hot_fork_reconciliation;
 #[cfg(target_os = "linux")]
 pub mod qemu_hot_fork_runner;
@@ -402,9 +404,17 @@ pub use qemu_hot_fork_factory::{
     FixedQemuHotForkTemplateFactory, FixedQemuHotForkTemplateFactoryConstructionError,
     FixedQemuHotForkTemplateFactoryError, LinuxQemuHotForkTemplateLauncher,
     LinuxQemuHotForkTemplateLauncherError, ProcessLifetimeQemuHotForkQuarantine,
-    QemuHotForkBoundTemplate, QemuHotForkFactoryQuarantine, QemuHotForkPooledLifecycle,
-    QemuHotForkTemplateKey, QemuHotForkTemplateLaunchFailure, QemuHotForkTemplateLauncher,
-    QemuHotForkTemplateSource, QemuHotForkTemplateSourceRecoveryFailure,
+    QemuHotForkBoundTemplate, QemuHotForkFactoryQuarantine, QemuHotForkLifecycleQuarantine,
+    QemuHotForkPooledLifecycle, QemuHotForkTemplateKey, QemuHotForkTemplateLaunchFailure,
+    QemuHotForkTemplateLauncher, QemuHotForkTemplateSource,
+    QemuHotForkTemplateSourceRecoveryFailure,
+};
+#[cfg(target_os = "linux")]
+pub use qemu_hot_fork_pool::{
+    MAX_QEMU_HOT_FORK_TEMPLATE_POOL_SLOTS, QemuHotForkKeyedLifecycleFactory,
+    QemuHotForkTemplatePool, QemuHotForkTemplatePoolCapacityError,
+    QemuHotForkTemplatePoolConstructionError, QemuHotForkTemplatePoolError,
+    QemuHotForkTemplatePoolInsertionError, QemuHotForkTemplatePoolLifecycle,
 };
 #[cfg(target_os = "linux")]
 pub use qemu_hot_fork_reconciliation::{

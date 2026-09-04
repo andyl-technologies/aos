@@ -28,7 +28,7 @@ use crate::{
 };
 
 /// Exact semantic basis of one retained source template.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct QemuHotForkTemplateKey {
     lineage: CampaignLineageId,
     configuration: ContentHash,
@@ -56,7 +56,7 @@ impl QemuHotForkTemplateKey {
         self.configuration
     }
 
-    fn for_execution(
+    pub(crate) fn for_execution(
         input: &CrucibleAttemptExecution,
         runtime_basis: AttemptExecutionRuntimeBasis,
     ) -> Self {
@@ -216,6 +216,12 @@ pub trait QemuHotForkFactoryQuarantine<T, L> {
     fn retain_lifecycle(&mut self, lifecycle: L);
 }
 
+/// Terminal owner for a lifecycle rejected by a multi-template pool.
+pub trait QemuHotForkLifecycleQuarantine<L> {
+    /// Retains one incomplete, foreign, or failed lifecycle.
+    fn retain_lifecycle(&mut self, lifecycle: L);
+}
+
 /// Process-lifetime fail-closed quarantine for a fixed template pool.
 ///
 /// The sink deliberately leaks each accepted authority for the remaining
@@ -249,6 +255,15 @@ where
         self.retain_forever(template);
     }
 
+    fn retain_lifecycle(&mut self, lifecycle: L) {
+        self.retain_forever(lifecycle);
+    }
+}
+
+impl<L> QemuHotForkLifecycleQuarantine<L> for ProcessLifetimeQemuHotForkQuarantine
+where
+    L: 'static,
+{
     fn retain_lifecycle(&mut self, lifecycle: L) {
         self.retain_forever(lifecycle);
     }
@@ -323,6 +338,7 @@ where
     Q: QemuHotForkFactoryQuarantine<X::Template, QemuHotForkPooledLifecycle<X::Lifecycle>>,
 {
     factory: Arc<()>,
+    key: QemuHotForkTemplateKey,
     template: Option<QemuHotForkBoundTemplate<X::Template>>,
     resources: R,
     launcher: X,
@@ -387,6 +403,7 @@ where
         }
         Ok(Self {
             factory: Arc::new(()),
+            key,
             template: Some(QemuHotForkBoundTemplate {
                 key,
                 source: template,
@@ -401,6 +418,12 @@ where
     #[must_use]
     pub fn template_available(&self) -> bool {
         self.template.is_some()
+    }
+
+    /// Returns the exact immutable key assigned to this worker.
+    #[must_use]
+    pub const fn template_key(&self) -> QemuHotForkTemplateKey {
+        self.key
     }
 
     /// Takes an idle template for explicit daemon-shutdown cleanup.
