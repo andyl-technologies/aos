@@ -7,7 +7,7 @@
 }: let
   cfg = config.aos.sandbox.hostBroker;
   controller = config.aos.sandbox.controller;
-  credentialFields = {
+  authorityCredentialFields = {
     brokerPlanPolicy = "broker-plan-policy.cbor";
     brokerPlanPublicKey = "broker-plan-public-key";
     brokerRevocationScope = "broker-revocation-scope";
@@ -16,6 +16,9 @@
     nodeId = "node-id";
     journalMacKey = "journal-mac-key";
   };
+  credentialFields =
+    authorityCredentialFields
+    // {backendReadiness = "backend-readiness.json";};
   configuredCredentials =
     lib.filterAttrs (name: _: cfg.credentials.${name} != null) credentialFields;
   # Sources are names in the platform credential namespace, not paths or
@@ -54,7 +57,10 @@ in {
       lib.mkOption {
         type = lib.types.nullOr lib.serviceTypes.credentialName;
         default = null;
-        description = "External system credential loaded as ${credentialFile}; its bytes never enter the Nix store.";
+        description =
+          if name == "backendReadiness"
+          then "Optional protected boot-local readiness claims published externally as ${credentialFile}; ingestion alone never enables Apply."
+          else "External system credential loaded as ${credentialFile}; its bytes never enter the Nix store.";
       })
     credentialFields;
   };
@@ -65,7 +71,7 @@ in {
         assertion = cfg.credentials.${name} != null;
         message = "aos.sandbox.hostBroker.credentials.${name} is required for ${credentialFile}";
       })
-      credentialFields;
+      authorityCredentialFields;
 
     systemd.sockets.aos-sandbox-hostd = {
       description = "AOS sandbox host broker socket";
@@ -102,6 +108,9 @@ in {
         RuntimeDirectoryMode = "0710";
         UMask = "0077";
 
+        # Do not grant CAP_SYS_PTRACE merely to make pidfd namespace ioctls
+        # succeed. Launch stays gated until the worker proves the exact narrow
+        # access needed for its pinned nspawn supervisor under this empty set.
         CapabilityBoundingSet = "";
         DevicePolicy = "closed";
         LockPersonality = true;

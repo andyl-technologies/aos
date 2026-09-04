@@ -4,7 +4,7 @@
   pkgs,
   mkSystem,
 }: let
-  credentials = prefix: {
+  authorityCredentials = prefix: {
     brokerPlanPolicy = "${prefix}-plan-policy";
     brokerPlanPublicKey = "${prefix}-plan-public-key";
     brokerRevocationScope = "${prefix}-revocation-scope";
@@ -13,7 +13,10 @@
     nodeId = "${prefix}-node-id";
     journalMacKey = "${prefix}-journal-mac-key";
   };
-  expected = prefix: [
+  hostCredentialNames = prefix:
+    authorityCredentials prefix
+    // {backendReadiness = "${prefix}-backend-readiness";};
+  expectedAuthority = prefix: [
     "broker-plan-policy.cbor:/run/credentials/@system/${prefix}-plan-policy"
     "broker-plan-public-key:/run/credentials/@system/${prefix}-plan-public-key"
     "broker-revocation-scope:/run/credentials/@system/${prefix}-revocation-scope"
@@ -22,15 +25,26 @@
     "ownership-lease-policy.cbor:/run/credentials/@system/${prefix}-lease-policy"
     "ownership-lease-public-key:/run/credentials/@system/${prefix}-lease-public-key"
   ];
+  expectedHost = prefix:
+    ["backend-readiness.json:/run/credentials/@system/${prefix}-backend-readiness"]
+    ++ expectedAuthority prefix;
   configured = mkSystem [
     {
       aos.sandbox.hostBroker = {
         enable = true;
-        credentials = credentials "host";
+        credentials = hostCredentialNames "host";
       };
       aos.sandbox.mountBroker = {
         enable = true;
-        credentials = credentials "mount";
+        credentials = authorityCredentials "mount";
+      };
+    }
+  ];
+  observationOnly = mkSystem [
+    {
+      aos.sandbox.hostBroker = {
+        enable = true;
+        credentials = authorityCredentials "observe";
       };
     }
   ];
@@ -52,11 +66,11 @@
       {
         aos.sandbox.hostBroker = {
           enable = true;
-          credentials = credentials "shared";
+          credentials = hostCredentialNames "shared";
         };
         aos.sandbox.mountBroker = {
           enable = true;
-          credentials = credentials "mount" // {journalMacKey = "shared-journal-mac-key";};
+          credentials = authorityCredentials "mount" // {journalMacKey = "shared-journal-mac-key";};
         };
       }
     ])
@@ -66,7 +80,7 @@
       {
         aos.sandbox.hostBroker = {
           enable = true;
-          credentials = credentials "host" // {nodeId = "../host:node";};
+          credentials = hostCredentialNames "host" // {nodeId = "../host:node";};
         };
       }
     ])
@@ -77,13 +91,15 @@
     configured.config.systemd.services.aos-sandbox-mountd.serviceConfig.LoadCredential;
   hostUnit = configured.config.systemd.units."aos-sandbox-hostd.service".text;
   mountUnit = configured.config.systemd.units."aos-sandbox-mountd.service".text;
+  observationOnlyUnit = observationOnly.config.systemd.units."aos-sandbox-hostd.service".text;
   credentialLineCount = unit: builtins.length (lib.splitString "LoadCredential=" unit) - 1;
   passed =
     hostCredentials
-    == expected "host"
-    && mountCredentials == expected "mount"
-    && credentialLineCount hostUnit == 7
+    == expectedHost "host"
+    && mountCredentials == expectedAuthority "mount"
+    && credentialLineCount hostUnit == 8
     && credentialLineCount mountUnit == 7
+    && credentialLineCount observationOnlyUnit == 7
     && missingRejected
     && partialRejected
     && sharedJournalRejected

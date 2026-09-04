@@ -14,6 +14,7 @@ use aos_sandbox_host::authorization::HostAuthorityV1;
 use aos_sandbox_host::broker::HostBroker;
 use aos_sandbox_host::catalog::FileHostCatalog;
 use aos_sandbox_host::peer::ControllerPeerVerifier;
+use aos_sandbox_host::plan::{BackendReadinessBlocker, ProtectedBackendReadinessEvidence};
 use aos_sandbox_host::service::HostService;
 use aos_sandbox_host::state::FileHostStateStore;
 use aos_sandbox_host::worker::SystemdOneShotWorker;
@@ -40,8 +41,7 @@ fn run() -> Result<()> {
             "host broker must start with real and effective UID zero".to_owned(),
         ));
     }
-    let (controller_identity, discarded_nspawn_executable) = arguments()?;
-    drop(discarded_nspawn_executable);
+    let (controller_identity, nspawn_executable) = arguments()?;
 
     // Adopt FD 3 before Tokio or another dependency can create a thread.
     let listener = take_systemd_listener()?;
@@ -50,14 +50,34 @@ fn run() -> Result<()> {
     let credential_directory = env::var_os("CREDENTIALS_DIRECTORY").ok_or_else(|| {
         HostError::State("systemd authority credential directory is absent".to_owned())
     })?;
-    let authority = HostAuthorityV1::from_protected_directory(credential_directory)
+    let authority = HostAuthorityV1::from_protected_directory(&credential_directory)
         .map_err(|error| HostError::State(error.to_string()))?;
+    let readiness = ProtectedBackendReadinessEvidence::load_protected_optional(
+        &credential_directory,
+        STATE_ROOT,
+        &nspawn_executable,
+    )?;
+    if let Some(readiness) = readiness {
+        let blockers = readiness.runtime_blockers();
+        if blockers
+            != [
+                BackendReadinessBlocker::Phase0ClaimVerification,
+                BackendReadinessBlocker::SupervisorPidfdNamespaceInspection,
+                BackendReadinessBlocker::PayloadRootIdentity,
+            ]
+        {
+            return Err(HostError::State(
+                "host backend readiness boundary changed without launch wiring".to_owned(),
+            ));
+        }
+        drop(readiness);
+    }
     let worker = SystemdOneShotWorker::new(open_cgroup_root()?);
     let verifier = ControllerPeerVerifier::new(open_cgroup_root()?);
-    // Launch remains unavailable until the phase-0 evidence publisher can
-    // construct an opaque BackendReadiness token bound to the configured
-    // executable. The argv value above is intentionally discarded rather than
-    // being treated as evidence that an arbitrary path is safe to launch.
+    // Any present phase-0 artifact is protected, boot-bound, and
+    // rollback-protected above. Its declared digests are not yet independently
+    // verified, and live supervisor/payload proofs are also absent, so it
+    // cannot be promoted into BackendReadiness and Apply remains unadvertised.
     let broker = HostBroker::open(catalog, state, worker, None, authority)?;
     let mut service = HostService::new(broker, verifier, controller_identity);
 
