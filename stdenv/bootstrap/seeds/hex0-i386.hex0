@@ -1,0 +1,206 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Canonical byte source for the AOS i386 hex0 bootstrap seed.
+# The normative contract, register invariants, and audit procedure are in
+# README.md. hex0-i386.S is an independently assembled readability cross-check.
+#
+# Each instruction line records its offset within the code region. The code
+# region begins at file offset 0x0074 and virtual address 0x08048074.
+
+## ELF32 header, file offsets 0x0000-0x0033
+7F 45 4C 46                     # 0x0000: ELF magic
+01                              # 0x0004: 32-bit objects
+01                              # 0x0005: little endian
+01                              # 0x0006: ELF version 1
+00                              # 0x0007: System V ABI
+00                              # 0x0008: ABI version 0
+00 00 00 00 00 00 00            # 0x0009: identification padding
+02 00                           # 0x0010: ET_EXEC
+03 00                           # 0x0012: EM_386
+01 00 00 00                     # 0x0014: ELF version 1
+74 80 04 08                     # 0x0018: entry point 0x08048074
+34 00 00 00                     # 0x001c: program headers at 0x34
+00 00 00 00                     # 0x0020: no section headers
+00 00 00 00                     # 0x0024: no processor flags
+34 00                           # 0x0028: ELF header size 52
+20 00                           # 0x002a: program header size 32
+02 00                           # 0x002c: two program headers
+00 00                           # 0x002e: no section header entries
+00 00                           # 0x0030: no sections
+00 00                           # 0x0032: no section-name table
+
+## PT_LOAD program header, file offsets 0x0034-0x0053
+01 00 00 00                     # 0x0034: PT_LOAD
+00 00 00 00                     # 0x0038: load from file offset zero
+00 80 04 08                     # 0x003c: virtual address 0x08048000
+00 80 04 08                     # 0x0040: physical address 0x08048000
+F5 01 00 00                     # 0x0044: file size 501 bytes
+F5 01 00 00                     # 0x0048: memory size 501 bytes
+05 00 00 00                     # 0x004c: PF_R | PF_X; never writable
+00 10 00 00                     # 0x0050: page alignment
+
+## PT_GNU_STACK program header, file offsets 0x0054-0x0073
+51 E5 74 64                     # 0x0054: PT_GNU_STACK
+00 00 00 00                     # 0x0058: no file contents
+00 00 00 00                     # 0x005c: no virtual address
+00 00 00 00                     # 0x0060: no physical address
+00 00 00 00                     # 0x0064: no file size
+00 00 00 00                     # 0x0068: no memory size
+06 00 00 00                     # 0x006c: PF_R | PF_W; never executable
+10 00 00 00                     # 0x0070: 16-byte alignment
+
+## _start: validate argc and open input read-only
+58                              # +0x0000: pop eax                     ; argc
+83 F8 03                        # +0x0001: cmp eax, 3
+0F 85 6B 01 00 00               # +0x0004: jne fail_without_output
+58                              # +0x000a: pop eax                     ; discard argv[0]
+5B                              # +0x000b: pop ebx                     ; argv[1]
+31 C9                           # +0x000c: xor ecx, ecx                ; O_RDONLY
+31 D2                           # +0x000e: xor edx, edx                ; mode unused
+B8 05 00 00 00                  # +0x0010: mov eax, SYS_open
+CD 80                           # +0x0015: int 0x80
+85 C0                           # +0x0017: test eax, eax
+0F 88 56 01 00 00               # +0x0019: js fail_without_output
+89 C6                           # +0x001f: mov esi, eax                ; input fd
+
+## Open a new output without following or truncating an existing path
+5B                              # +0x0021: pop ebx                     ; argv[2]
+53                              # +0x0022: push ebx                    ; preserve output path
+B9 C1 00 00 00                  # +0x0023: mov ecx, O_WRONLY|O_CREAT|O_EXCL
+BA C0 01 00 00                  # +0x0028: mov edx, 0700
+B8 05 00 00 00                  # +0x002d: mov eax, SYS_open
+CD 80                           # +0x0032: int 0x80
+85 C0                           # +0x0034: test eax, eax
+0F 88 39 01 00 00               # +0x0036: js fail_without_output
+89 C7                           # +0x003c: mov edi, eax                ; output fd
+
+## Allocate a fixed read/write byte and make output permissions deterministic
+83 EC 04                        # +0x003e: sub esp, 4                  ; byte buffer
+89 FB                           # +0x0041: mov ebx, edi
+B9 C0 01 00 00                  # +0x0043: mov ecx, 0700
+B8 5E 00 00 00                  # +0x0048: mov eax, SYS_fchmod
+CD 80                           # +0x004d: int 0x80
+85 C0                           # +0x004f: test eax, eax
+0F 88 0E 01 00 00               # +0x0051: js fail_with_output
+BD FF FF FF FF                  # +0x0057: mov ebp, -1                ; no high nibble
+
+## read_next: read exactly one byte, retrying interrupted reads
+E8 D4 00 00 00                  # +0x005c: call read_byte
+83 F8 01                        # +0x0061: cmp eax, 1
+74 0D                           # +0x0064: je classify_byte
+85 C0                           # +0x0066: test eax, eax
+0F 84 9A 00 00 00               # +0x0068: je end_of_input
+E9 F2 00 00 00                  # +0x006e: jmp fail_with_output
+
+## classify_byte: comments take precedence over hexadecimal digits
+0F B6 04 24                     # +0x0073: movzx eax, byte [esp]
+3C 23                           # +0x0077: cmp al, '#'
+74 72                           # +0x0079: je skip_comment
+3C 3B                           # +0x007b: cmp al, ';'
+74 6E                           # +0x007d: je skip_comment
+3C 30                           # +0x007f: cmp al, '0'
+72 50                           # +0x0081: jb classify_separator
+3C 39                           # +0x0083: cmp al, '9'
+76 24                           # +0x0085: jbe decimal_digit
+3C 41                           # +0x0087: cmp al, 'A'
+0F 82 D6 00 00 00               # +0x0089: jb fail_with_output
+3C 46                           # +0x008f: cmp al, 'F'
+76 14                           # +0x0091: jbe uppercase_digit
+3C 61                           # +0x0093: cmp al, 'a'
+0F 82 CA 00 00 00               # +0x0095: jb fail_with_output
+3C 66                           # +0x009b: cmp al, 'f'
+0F 87 C2 00 00 00               # +0x009d: ja fail_with_output
+2C 57                           # +0x00a3: sub al, 'a' - 10
+EB 06                           # +0x00a5: jmp accept_nibble
+
+2C 37                           # +0x00a7: sub al, 'A' - 10           ; uppercase_digit
+EB 02                           # +0x00a9: jmp accept_nibble
+2C 30                           # +0x00ab: sub al, '0'                ; decimal_digit
+
+## accept_nibble: pair nibbles without carrying stale register bits
+83 FD FF                        # +0x00ad: cmp ebp, -1
+75 04                           # +0x00b0: jne emit_byte
+89 C5                           # +0x00b2: mov ebp, eax               ; save high nibble
+EB A6                           # +0x00b4: jmp read_next
+
+C1 E5 04                        # +0x00b6: shl ebp, 4                 ; emit_byte
+09 E8                           # +0x00b9: or eax, ebp
+88 04 24                        # +0x00bb: mov byte [esp], al
+E8 8A 00 00 00                  # +0x00be: call write_byte
+83 F8 01                        # +0x00c3: cmp eax, 1
+0F 85 99 00 00 00               # +0x00c6: jne fail_with_output
+BD FF FF FF FF                  # +0x00cc: mov ebp, -1
+EB 89                           # +0x00d1: jmp read_next
+
+## Accept only space, horizontal tab, line feed, and carriage return
+3C 20                           # +0x00d3: cmp al, ' '                ; classify_separator
+74 85                           # +0x00d5: je read_next
+3C 09                           # +0x00d7: cmp al, horizontal-tab
+74 81                           # +0x00d9: je read_next
+3C 0A                           # +0x00db: cmp al, line-feed
+0F 84 79 FF FF FF               # +0x00dd: je read_next
+3C 0D                           # +0x00e3: cmp al, carriage-return
+0F 84 71 FF FF FF               # +0x00e5: je read_next
+EB 78                           # +0x00eb: jmp fail_with_output       ; reject all else
+
+## skip_comment: ignore through line feed; EOF remains valid input termination
+E8 43 00 00 00                  # +0x00ed: call read_byte
+83 F8 01                        # +0x00f2: cmp eax, 1
+75 0B                           # +0x00f5: jne comment_read_ended
+80 3C 24 0A                     # +0x00f7: cmp byte [esp], line-feed
+75 F0                           # +0x00fb: jne skip_comment
+E9 5A FF FF FF                  # +0x00fd: jmp read_next
+
+85 C0                           # +0x0102: test eax, eax              ; comment_read_ended
+74 02                           # +0x0104: je end_of_input
+EB 5D                           # +0x0106: jmp fail_with_output
+
+## Commit only complete input after fsync and close both report success
+83 FD FF                        # +0x0108: cmp ebp, -1                ; end_of_input
+75 58                           # +0x010b: jne fail_with_output       ; reject odd nibble
+B8 76 00 00 00                  # +0x010d: mov eax, SYS_fsync         ; sync_output
+89 FB                           # +0x0112: mov ebx, edi
+CD 80                           # +0x0114: int 0x80
+83 F8 FC                        # +0x0116: cmp eax, -EINTR
+74 F2                           # +0x0119: je sync_output
+85 C0                           # +0x011b: test eax, eax
+78 46                           # +0x011d: js fail_with_output
+B8 06 00 00 00                  # +0x011f: mov eax, SYS_close
+89 FB                           # +0x0124: mov ebx, edi
+CD 80                           # +0x0126: int 0x80
+85 C0                           # +0x0128: test eax, eax
+78 39                           # +0x012a: js fail_with_output
+31 DB                           # +0x012c: xor ebx, ebx               ; status 0
+B8 01 00 00 00                  # +0x012e: mov eax, SYS_exit
+CD 80                           # +0x0133: int 0x80
+
+## read_byte: return 1, 0 for EOF, or a negative errno
+B8 03 00 00 00                  # +0x0135: mov eax, SYS_read
+89 F3                           # +0x013a: mov ebx, esi
+8D 4C 24 04                     # +0x013c: lea ecx, [esp + 4]         ; caller's buffer
+BA 01 00 00 00                  # +0x0140: mov edx, 1
+CD 80                           # +0x0145: int 0x80
+83 F8 FC                        # +0x0147: cmp eax, -EINTR
+74 E9                           # +0x014a: je read_byte
+C3                              # +0x014c: ret
+
+## write_byte: return 1 or a negative errno
+B8 04 00 00 00                  # +0x014d: mov eax, SYS_write
+89 FB                           # +0x0152: mov ebx, edi
+8D 4C 24 04                     # +0x0154: lea ecx, [esp + 4]         ; caller's buffer
+BA 01 00 00 00                  # +0x0158: mov edx, 1
+CD 80                           # +0x015d: int 0x80
+83 F8 FC                        # +0x015f: cmp eax, -EINTR
+74 E9                           # +0x0162: je write_byte
+C3                              # +0x0164: ret
+
+## Remove partial output on every post-creation failure
+B8 0A 00 00 00                  # +0x0165: mov eax, SYS_unlink        ; fail_with_output
+8B 5C 24 04                     # +0x016a: mov ebx, [esp + 4]         ; saved output path
+CD 80                           # +0x016e: int 0x80
+83 F8 FC                        # +0x0170: cmp eax, -EINTR
+74 F0                           # +0x0173: je fail_with_output
+
+BB 01 00 00 00                  # +0x0175: mov ebx, 1                 ; fail_without_output
+B8 01 00 00 00                  # +0x017a: mov eax, SYS_exit
+CD 80                           # +0x017f: int 0x80

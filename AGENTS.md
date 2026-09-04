@@ -69,8 +69,10 @@ All packages in this repository MUST be built hermetically from source using
 only the bootstrap tools (gcc, glibc, coreutils, make, tar, bash, etc.) and
 previously-built AOS packages. **No host tools. No upstream nixpkgs.**
 
-- The bootstrap tools tarball (`stdenv/bootstrap-tools.nix`) provides the
-  initial compiler toolchain (gcc, glibc, binutils) and core POSIX utilities.
+- The compiler toolchain begins with the audited Linux/i386 `hex0` executable
+  in `stdenv/bootstrap/seeds/`. It decodes checked-in source for the first
+  stage0 tools; those tools build Mes, TinyCC, historical GCC and glibc stages,
+  and finally the current AOS toolchain.
 - Every other tool — flex, bison, gperf, elfutils, python3, meson, ninja, go —
   must be built as an AOS package from source, using only bootstrap tools and
   other AOS packages as build dependencies.

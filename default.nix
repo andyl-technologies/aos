@@ -1103,6 +1103,10 @@ in {
       ];
     };
     build = let
+      bootstrap-seed =
+        if buildPlatform.isLinux && buildPlatform.isx86_64
+        then import ./tests/build/bootstrap-seed.nix {pkgs = buildPackages;}
+        else null;
       critical-pkgs = import ./tests/build/critical-pkgs.nix {inherit pkgs lib;};
       cross-platform-foundation = import ./tests/build/cross-platform-foundation.nix {
         pkgs = buildPackages;
@@ -1131,28 +1135,35 @@ in {
       package-root-image = import ./lib/testing/package-root-image.nix {inherit pkgs lib;};
       systemd-verity = import ./lib/testing/systemd-verity.nix {inherit pkgs lib;};
       golden-image-budgets = lib.mapAttrs (_: system: system.checks.image-budget) discoverSystems;
-    in {
-      inherit critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe kernel-config package-platform-support package-root-image systemd-verity golden-image-budgets;
-      # Single target that pulls in the whole build-check group.
-      all = pkgs.mkDerivation {
-        pname = "aos-build-checks-all";
-        version = "0";
-        src = null;
-        buildDeps =
-          [critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell kernel-config package-platform-support package-root-image systemd-verity]
-          ++ builtins.attrValues hardening-probe
-          ++ builtins.attrValues golden-image-budgets;
-        phases = [
-          {
-            name = "check";
-            script = ''
-              mkdir -p $out
-              echo "PASS" > $out/result
-            '';
-          }
-        ];
-      };
-    };
+    in
+      {
+        inherit critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe kernel-config package-platform-support package-root-image systemd-verity golden-image-budgets;
+        # Single target that pulls in the whole build-check group.
+        all = pkgs.mkDerivation {
+          pname = "aos-build-checks-all";
+          version = "0";
+          src = null;
+          buildDeps =
+            (
+              if bootstrap-seed != null
+              then [bootstrap-seed]
+              else []
+            )
+            ++ [critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell kernel-config package-platform-support package-root-image systemd-verity]
+            ++ builtins.attrValues hardening-probe
+            ++ builtins.attrValues golden-image-budgets;
+          phases = [
+            {
+              name = "check";
+              script = ''
+                mkdir -p $out
+                echo "PASS" > $out/result
+              '';
+            }
+          ];
+        };
+      }
+      // lib.optionalAttrs (bootstrap-seed != null) {inherit bootstrap-seed;};
     tla = import ./lib/testing/tla.nix {inherit pkgs lib;};
     trivial-builders = import ./lib/testing/trivial-builders.nix {inherit pkgs lib;};
     module-args = import ./lib/testing/module-args.nix {inherit pkgs lib;};
