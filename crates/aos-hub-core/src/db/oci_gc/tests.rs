@@ -21,9 +21,26 @@ use crate::db::{
 };
 use crate::dialect::Dialect;
 
+fn unique_migration_containing(marker: &str) -> (usize, &'static str) {
+    let mut matches = MIGRATIONS
+        .iter()
+        .copied()
+        .enumerate()
+        .filter(|(_, migration)| migration.contains(marker));
+    let matched = matches
+        .next()
+        .unwrap_or_else(|| panic!("migration marker is absent: {marker}"));
+    assert!(
+        matches.next().is_none(),
+        "migration marker is ambiguous: {marker}"
+    );
+    matched
+}
+
 #[test]
-fn v25_schema_contains_transactional_gc_evidence_and_fences() {
-    let migration = MIGRATIONS.get(24).expect("v25 migration is present");
+fn gc_schema_contains_transactional_evidence_and_fences() {
+    let (_, migration) =
+        unique_migration_containing("CREATE TABLE oci_provider_inventory_generations(");
     for table in [
         "oci_provider_inventory_generations",
         "oci_provider_inventory_entries",
@@ -39,7 +56,7 @@ fn v25_schema_contains_transactional_gc_evidence_and_fences() {
     ] {
         assert!(
             migration.contains(&format!("CREATE TABLE {table}")),
-            "v25 omits {table}"
+            "OCI GC migration omits {table}"
         );
     }
     assert!(migration.contains("UNIQUE(placement_id, active_slot)"));
@@ -47,8 +64,8 @@ fn v25_schema_contains_transactional_gc_evidence_and_fences() {
 }
 
 #[test]
-fn v26_schema_contains_review_remediation_authorities() {
-    let migration = MIGRATIONS.get(25).expect("v26 migration is present");
+fn gc_remediation_schema_contains_review_authorities() {
+    let (_, migration) = unique_migration_containing("CREATE TABLE oci_registry_purge_fences(");
     for identity in [
         "unreferenced_since",
         "oci_registry_purge_fences",
@@ -57,30 +74,34 @@ fn v26_schema_contains_review_remediation_authorities() {
         "oci_untracked_repair_plans",
         "oci_untracked_repair_evidence",
     ] {
-        assert!(migration.contains(identity), "v26 omits {identity}");
+        assert!(
+            migration.contains(identity),
+            "OCI GC remediation migration omits {identity}"
+        );
     }
 }
 
 #[test]
-fn v26_schema_statements_translate_for_postgres_and_mysql() {
-    let migration = MIGRATIONS.get(25).expect("v26 migration is present");
+fn gc_remediation_schema_statements_translate_for_postgres_and_mysql() {
+    let (_, migration) = unique_migration_containing("CREATE TABLE oci_registry_purge_fences(");
     for dialect in [Dialect::Postgres, Dialect::Mysql] {
         for sql in crate::backend::split_statements(migration) {
-            dialect
-                .translate(&sql)
-                .unwrap_or_else(|error| panic!("{dialect:?} rejected v26 SQL: {error:#}"));
+            dialect.translate(&sql).unwrap_or_else(|error| {
+                panic!("{dialect:?} rejected GC remediation SQL: {error:#}")
+            });
         }
     }
 }
 
 #[test]
-fn v25_schema_statements_translate_for_postgres_and_mysql() {
-    let migration = MIGRATIONS.get(24).expect("v25 migration is present");
+fn gc_schema_statements_translate_for_postgres_and_mysql() {
+    let (_, migration) =
+        unique_migration_containing("CREATE TABLE oci_provider_inventory_generations(");
     for statement in crate::backend::split_statements(migration) {
         for dialect in [Dialect::Postgres, Dialect::Mysql] {
             dialect
                 .translate(&statement)
-                .unwrap_or_else(|error| panic!("{dialect:?} rejected v25 SQL: {error:#}"));
+                .unwrap_or_else(|error| panic!("{dialect:?} rejected GC SQL: {error:#}"));
         }
     }
 }
@@ -2085,17 +2106,22 @@ async fn snapshot_lease_acquisition_cannot_race_an_applying_candidate() {
 }
 
 #[tokio::test]
-async fn v25_concurrent_start_from_v24_applies_once_and_reopens() {
+async fn gc_concurrent_start_from_pre_gc_applies_once_and_reopens() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("v24-to-v25.db");
+    let path = directory.path().join("pre-gc-to-current.db");
+    let (gc_index, _) =
+        unique_migration_containing("CREATE TABLE oci_provider_inventory_generations(");
     let connection = rusqlite::Connection::open(&path).unwrap();
-    for migration in &MIGRATIONS[..24] {
+    for migration in &MIGRATIONS[..gc_index] {
         connection.execute_batch(migration).unwrap();
     }
     connection
-        .execute_batch(
-            "CREATE TABLE schema_version(version INTEGER NOT NULL);
-             INSERT INTO schema_version(version) VALUES(24);",
+        .execute_batch("CREATE TABLE schema_version(version INTEGER NOT NULL);")
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO schema_version(version) VALUES(?1)",
+            [i64::try_from(gc_index).unwrap()],
         )
         .unwrap();
     drop(connection);
@@ -2112,7 +2138,7 @@ async fn v25_concurrent_start_from_v24_applies_once_and_reopens() {
         .unwrap()
         .get(0)
         .unwrap();
-    assert_eq!(version, 26);
+    assert_eq!(version, MIGRATIONS.len() as i64);
 }
 
 #[tokio::test]

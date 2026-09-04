@@ -28604,8 +28604,17 @@ source_nar_hash = ""
 
     #[test]
     fn mysql_phase5_multiline_add_columns_are_replay_safe() {
-        const OCI_UPLOAD_PUBLICATION_INDEX: usize = 25;
-        let phase5 = MIGRATIONS[OCI_UPLOAD_PUBLICATION_INDEX];
+        let mut matching = MIGRATIONS
+            .iter()
+            .copied()
+            .filter(|migration| migration.contains("CREATE TABLE oci_publication_sessions("));
+        let phase5 = matching
+            .next()
+            .expect("OCI upload-publication migration is present");
+        assert!(
+            matching.next().is_none(),
+            "OCI upload-publication migration marker is ambiguous"
+        );
         let add_columns: Vec<_> = crate::backend::split_statements(phase5)
             .into_iter()
             .filter(|statement| statement.contains("ALTER TABLE "))
