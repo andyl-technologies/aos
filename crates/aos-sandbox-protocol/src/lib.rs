@@ -12,11 +12,12 @@ pub mod fencing;
 use aos_proto::aos::sandbox::local::v1::{
     ApplyGuardianRequest, ApplyGuestExecutionRequest, ApplyMountRequest, ApplyNetworkRequest,
     ApplyRuntimeRequest, ApplyStorageRequest, AssignmentFence, Audience, Descriptor, MountAction,
-    RequestHeader,
+    RequestHeader, RuntimeAction, RuntimePlan,
 };
 use aos_sandbox_core::{
-    DescriptorRole, MediaType, ObjectDescriptor, ObjectDigest, ProtocolId, ProtocolVersion,
-    RegistryError, negotiate_protocol, validate_descriptor_role,
+    DescriptorRole, FeatureRef, MediaType, ObjectDescriptor, ObjectDigest, ProtocolId,
+    ProtocolVersion, RegistryError, negotiate_protocol, validate_descriptor_role,
+    validate_required_features,
 };
 use buffa::Message as _;
 
@@ -24,6 +25,10 @@ use buffa::Message as _;
 pub const MAXIMUM_REQUEST_BYTES: usize = 1024 * 1024;
 /// Default maximum response allocation a request may ask a broker to produce.
 pub const MAXIMUM_RESPONSE_BYTES: u32 = 16 * 1024 * 1024;
+const OPAQUE_HANDLE_BYTES: usize = 32;
+const MAXIMUM_ATTACHMENTS: usize = 256;
+const MAXIMUM_RESOURCE_LIMITS: usize = 16;
+const MAXIMUM_REQUIRED_FEATURES: usize = 64;
 
 /// Carries credentials obtained from the accepted Unix socket.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -72,6 +77,167 @@ impl ValidatedHeader {
     #[must_use]
     pub const fn maximum_response_bytes(&self) -> u32 {
         self.maximum_response_bytes
+    }
+}
+
+/// Carries a complete assignment fence after fixed-width and monotonic checks.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ValidatedAssignmentFence {
+    sandbox_id: [u8; 16],
+    incarnation_id: [u8; 16],
+    assignment_epoch: u64,
+    desired_generation: u64,
+    assignment_digest: [u8; 32],
+}
+
+impl ValidatedAssignmentFence {
+    /// Returns the logical sandbox identifier.
+    #[must_use]
+    pub const fn sandbox_id(&self) -> &[u8; 16] {
+        &self.sandbox_id
+    }
+
+    /// Returns the runtime incarnation identifier.
+    #[must_use]
+    pub const fn incarnation_id(&self) -> &[u8; 16] {
+        &self.incarnation_id
+    }
+
+    /// Returns the monotonically increasing assignment epoch.
+    #[must_use]
+    pub const fn assignment_epoch(&self) -> u64 {
+        self.assignment_epoch
+    }
+
+    /// Returns the desired-state generation within the assignment.
+    #[must_use]
+    pub const fn desired_generation(&self) -> u64 {
+        self.desired_generation
+    }
+
+    /// Returns the digest of immutable assignment semantics.
+    #[must_use]
+    pub const fn assignment_digest(&self) -> &[u8; 32] {
+        &self.assignment_digest
+    }
+}
+
+/// Carries one canonical closed-dimension resource limit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ValidatedResourceLimit {
+    dimension: u8,
+    value: u64,
+}
+
+impl ValidatedResourceLimit {
+    /// Returns the registered portable resource dimension in `0..=15`.
+    #[must_use]
+    pub const fn dimension(self) -> u8 {
+        self.dimension
+    }
+
+    /// Returns the resolved finite limit value.
+    #[must_use]
+    pub const fn value(self) -> u64 {
+        self.value
+    }
+}
+
+/// Carries a launch plan after nested hostile-input validation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ValidatedRuntimePlan {
+    root_image: ObjectDescriptor,
+    workspace_handle: [u8; OPAQUE_HANDLE_BYTES],
+    network_handle: [u8; OPAQUE_HANDLE_BYTES],
+    uid_range_start: u32,
+    uid_range_size: u32,
+    limits: Vec<ValidatedResourceLimit>,
+    attachment_handles: Vec<[u8; OPAQUE_HANDLE_BYTES]>,
+    required_features: Vec<FeatureRef>,
+}
+
+impl ValidatedRuntimePlan {
+    /// Returns the immutable root filesystem-view descriptor.
+    #[must_use]
+    pub const fn root_image(&self) -> &ObjectDescriptor {
+        &self.root_image
+    }
+
+    /// Returns the broker-minted private workspace handle.
+    #[must_use]
+    pub const fn workspace_handle(&self) -> &[u8; OPAQUE_HANDLE_BYTES] {
+        &self.workspace_handle
+    }
+
+    /// Returns the broker-minted prepared network handle.
+    #[must_use]
+    pub const fn network_handle(&self) -> &[u8; OPAQUE_HANDLE_BYTES] {
+        &self.network_handle
+    }
+
+    /// Returns the first host UID in the private user-namespace allocation.
+    #[must_use]
+    pub const fn uid_range_start(&self) -> u32 {
+        self.uid_range_start
+    }
+
+    /// Returns the number of IDs in the private user-namespace allocation.
+    #[must_use]
+    pub const fn uid_range_size(&self) -> u32 {
+        self.uid_range_size
+    }
+
+    /// Returns resource limits in strict dimension order.
+    #[must_use]
+    pub fn limits(&self) -> &[ValidatedResourceLimit] {
+        &self.limits
+    }
+
+    /// Returns the broker-minted attachment handles in canonical byte order.
+    #[must_use]
+    pub fn attachment_handles(&self) -> &[[u8; OPAQUE_HANDLE_BYTES]] {
+        &self.attachment_handles
+    }
+
+    /// Returns the exact validated and registered required feature set.
+    #[must_use]
+    pub fn required_features(&self) -> &[FeatureRef] {
+        &self.required_features
+    }
+}
+
+/// Carries a host-broker request only after all nested fields are validated.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ValidatedRuntimeRequest {
+    header: ValidatedHeader,
+    fence: ValidatedAssignmentFence,
+    action: RuntimeAction,
+    launch_plan: Option<ValidatedRuntimePlan>,
+}
+
+impl ValidatedRuntimeRequest {
+    /// Returns the validated common header.
+    #[must_use]
+    pub const fn header(&self) -> &ValidatedHeader {
+        &self.header
+    }
+
+    /// Returns the validated assignment fence.
+    #[must_use]
+    pub const fn fence(&self) -> &ValidatedAssignmentFence {
+        &self.fence
+    }
+
+    /// Returns the closed runtime action.
+    #[must_use]
+    pub const fn action(&self) -> RuntimeAction {
+        self.action
+    }
+
+    /// Returns the validated launch plan, present only for launch.
+    #[must_use]
+    pub const fn launch_plan(&self) -> Option<&ValidatedRuntimePlan> {
+        self.launch_plan.as_ref()
     }
 }
 
@@ -144,9 +310,84 @@ pub enum ProtocolValidationError {
     /// A closed action is absent or unknown.
     #[error("local request action is unspecified or unknown")]
     UnknownAction,
+    /// A field combination violates the selected closed operation contract.
+    #[error("invalid local request field {0}")]
+    InvalidField(&'static str),
+    /// A bounded repeated field exceeds its fixed protocol ceiling.
+    #[error("local request collection {field} exceeds {maximum} entries")]
+    TooManyEntries {
+        /// Repeated field whose count exceeded its ceiling.
+        field: &'static str,
+        /// Maximum accepted element count.
+        maximum: usize,
+    },
     /// A descriptor is malformed or appears in the wrong semantic role.
     #[error("invalid local descriptor: {0}")]
     InvalidDescriptor(String),
+}
+
+/// Decodes and validates one host-broker runtime request from hostile bytes.
+///
+/// The returned value contains no caller-selected command, path, systemd
+/// property, or untyped resource dimension. Launch handles remain opaque and
+/// must be resolved through the host broker's trusted catalog.
+///
+/// # Errors
+///
+/// Returns [`ProtocolValidationError`] for size/wire failures, unknown nested
+/// fields or enums, peer/audience mismatch, stale deadlines, malformed fences,
+/// noncanonical bounded collections, invalid descriptors, or a launch plan
+/// whose presence does not exactly match the selected action.
+pub fn decode_runtime_request(
+    bytes: &[u8],
+    peer: PeerCredentials,
+    policy: PeerPolicy,
+    now_boottime_nanoseconds: u64,
+) -> Result<ValidatedRuntimeRequest, ProtocolValidationError> {
+    if bytes.len() > MAXIMUM_REQUEST_BYTES {
+        return Err(ProtocolValidationError::RequestTooLarge);
+    }
+    let request = ApplyRuntimeRequest::decode_from_slice(bytes)
+        .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
+    if !request.__buffa_unknown_fields.is_empty() {
+        return Err(ProtocolValidationError::UnknownFields);
+    }
+    let header = validate_request_header(
+        request
+            .header
+            .as_option()
+            .ok_or(ProtocolValidationError::MissingField("header"))?,
+        peer,
+        policy,
+        ProtocolId::HostBroker,
+        now_boottime_nanoseconds,
+    )?;
+    let fence = validate_fence(
+        request
+            .fence
+            .as_option()
+            .ok_or(ProtocolValidationError::MissingField("fence"))?,
+    )?;
+    let action = request
+        .action
+        .as_known()
+        .filter(|action| *action != RuntimeAction::RUNTIME_ACTION_UNSPECIFIED)
+        .ok_or(ProtocolValidationError::UnknownAction)?;
+    let launch_plan = match (action, request.launch_plan.as_option()) {
+        (RuntimeAction::RUNTIME_ACTION_LAUNCH, Some(plan)) => Some(validate_runtime_plan(plan)?),
+        (RuntimeAction::RUNTIME_ACTION_LAUNCH, None) => {
+            return Err(ProtocolValidationError::MissingField("launch_plan"));
+        }
+        (_, Some(_)) => return Err(ProtocolValidationError::InvalidField("launch_plan")),
+        (_, None) => None,
+    };
+
+    Ok(ValidatedRuntimeRequest {
+        header,
+        fence,
+        action,
+        launch_plan,
+    })
 }
 
 /// Decodes and validates one mount-broker request from hostile wire bytes.
@@ -283,14 +524,162 @@ pub fn validate_request_header(
     })
 }
 
-fn validate_fence(fence: &AssignmentFence) -> Result<(), ProtocolValidationError> {
+fn validate_fence(
+    fence: &AssignmentFence,
+) -> Result<ValidatedAssignmentFence, ProtocolValidationError> {
     if !fence.__buffa_unknown_fields.is_empty() {
         return Err(ProtocolValidationError::UnknownFields);
     }
-    exact_nonzero::<16>(&fence.sandbox_id, "fence.sandbox_id")?;
-    exact_nonzero::<16>(&fence.incarnation_id, "fence.incarnation_id")?;
-    exact_nonzero::<32>(&fence.assignment_digest, "fence.assignment_digest")?;
-    Ok(())
+    if fence.assignment_epoch == 0 {
+        return Err(ProtocolValidationError::InvalidField(
+            "fence.assignment_epoch",
+        ));
+    }
+    if fence.desired_generation == 0 {
+        return Err(ProtocolValidationError::InvalidField(
+            "fence.desired_generation",
+        ));
+    }
+    Ok(ValidatedAssignmentFence {
+        sandbox_id: exact_nonzero::<16>(&fence.sandbox_id, "fence.sandbox_id")?,
+        incarnation_id: exact_nonzero::<16>(&fence.incarnation_id, "fence.incarnation_id")?,
+        assignment_epoch: fence.assignment_epoch,
+        desired_generation: fence.desired_generation,
+        assignment_digest: exact_nonzero::<32>(
+            &fence.assignment_digest,
+            "fence.assignment_digest",
+        )?,
+    })
+}
+
+fn validate_runtime_plan(
+    plan: &RuntimePlan,
+) -> Result<ValidatedRuntimePlan, ProtocolValidationError> {
+    if !plan.__buffa_unknown_fields.is_empty() {
+        return Err(ProtocolValidationError::UnknownFields);
+    }
+    let root_image = validate_descriptor(
+        plan.root_image
+            .as_option()
+            .ok_or(ProtocolValidationError::MissingField(
+                "launch_plan.root_image",
+            ))?,
+        DescriptorRole::SandboxRootView,
+    )?;
+    let workspace_handle = exact_nonzero::<OPAQUE_HANDLE_BYTES>(
+        &plan.workspace_handle,
+        "launch_plan.workspace_handle",
+    )?;
+    let network_handle =
+        exact_nonzero::<OPAQUE_HANDLE_BYTES>(&plan.network_handle, "launch_plan.network_handle")?;
+    if plan.uid_range_size == 0
+        || plan
+            .uid_range_start
+            .checked_add(plan.uid_range_size)
+            .is_none()
+    {
+        return Err(ProtocolValidationError::InvalidField(
+            "launch_plan.uid_range",
+        ));
+    }
+    let limits = validate_resource_limits(&plan.limits)?;
+    let attachment_handles = validate_attachment_handles(&plan.attachment_handles)?;
+    let required_features = validate_features(&plan.required_features)?;
+
+    Ok(ValidatedRuntimePlan {
+        root_image,
+        workspace_handle,
+        network_handle,
+        uid_range_start: plan.uid_range_start,
+        uid_range_size: plan.uid_range_size,
+        limits,
+        attachment_handles,
+        required_features,
+    })
+}
+
+fn validate_resource_limits(
+    source: &[aos_proto::aos::sandbox::local::v1::ResourceLimit],
+) -> Result<Vec<ValidatedResourceLimit>, ProtocolValidationError> {
+    if source.len() > MAXIMUM_RESOURCE_LIMITS {
+        return Err(ProtocolValidationError::TooManyEntries {
+            field: "launch_plan.limits",
+            maximum: MAXIMUM_RESOURCE_LIMITS,
+        });
+    }
+    let mut limits = Vec::with_capacity(source.len());
+    for limit in source {
+        if !limit.__buffa_unknown_fields.is_empty() {
+            return Err(ProtocolValidationError::UnknownFields);
+        }
+        let dimension = u8::try_from(limit.dimension)
+            .ok()
+            .filter(|dimension| *dimension < 16)
+            .ok_or(ProtocolValidationError::InvalidField(
+                "launch_plan.limits.dimension",
+            ))?;
+        if limits
+            .last()
+            .is_some_and(|previous: &ValidatedResourceLimit| previous.dimension >= dimension)
+        {
+            return Err(ProtocolValidationError::InvalidField("launch_plan.limits"));
+        }
+        limits.push(ValidatedResourceLimit {
+            dimension,
+            value: limit.value,
+        });
+    }
+    Ok(limits)
+}
+
+fn validate_attachment_handles(
+    source: &[Vec<u8>],
+) -> Result<Vec<[u8; OPAQUE_HANDLE_BYTES]>, ProtocolValidationError> {
+    if source.len() > MAXIMUM_ATTACHMENTS {
+        return Err(ProtocolValidationError::TooManyEntries {
+            field: "launch_plan.attachment_handles",
+            maximum: MAXIMUM_ATTACHMENTS,
+        });
+    }
+    let mut handles = Vec::with_capacity(source.len());
+    for handle in source {
+        let handle =
+            exact_nonzero::<OPAQUE_HANDLE_BYTES>(handle, "launch_plan.attachment_handles")?;
+        if handles.last().is_some_and(|previous| previous >= &handle) {
+            return Err(ProtocolValidationError::InvalidField(
+                "launch_plan.attachment_handles",
+            ));
+        }
+        handles.push(handle);
+    }
+    Ok(handles)
+}
+
+fn validate_features(
+    source: &[aos_proto::aos::sandbox::local::v1::Feature],
+) -> Result<Vec<FeatureRef>, ProtocolValidationError> {
+    if source.len() > MAXIMUM_REQUIRED_FEATURES {
+        return Err(ProtocolValidationError::TooManyEntries {
+            field: "launch_plan.required_features",
+            maximum: MAXIMUM_REQUIRED_FEATURES,
+        });
+    }
+    let mut features = Vec::with_capacity(source.len());
+    for feature in source {
+        if !feature.__buffa_unknown_fields.is_empty() {
+            return Err(ProtocolValidationError::UnknownFields);
+        }
+        let feature = FeatureRef::new(feature.namespace.clone(), feature.major, feature.minor)
+            .map_err(|error| ProtocolValidationError::InvalidDescriptor(error.to_string()))?;
+        if features.last().is_some_and(|previous| previous >= &feature) {
+            return Err(ProtocolValidationError::InvalidField(
+                "launch_plan.required_features",
+            ));
+        }
+        features.push(feature);
+    }
+    validate_required_features(&features)?;
+    Ok(features)
 }
 
 fn validate_descriptor(
@@ -349,6 +738,50 @@ pub fn exercise_malformed_request_decoders(bytes: &[u8]) {
 mod tests {
     use super::*;
 
+    fn valid_runtime_request() -> ApplyRuntimeRequest {
+        let mut request = ApplyRuntimeRequest::default();
+        let header = request.header.get_or_insert_default();
+        header.protocol_major = 1;
+        header.protocol_minor = 0;
+        header.request_id = vec![1; 16];
+        header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
+        header.deadline_boottime_nanoseconds = 101;
+        header.maximum_response_bytes = 4096;
+        let fence = request.fence.get_or_insert_default();
+        fence.sandbox_id = vec![2; 16];
+        fence.incarnation_id = vec![3; 16];
+        fence.assignment_epoch = 1;
+        fence.desired_generation = 2;
+        fence.assignment_digest = vec![4; 32];
+        request.action = RuntimeAction::RUNTIME_ACTION_LAUNCH.into();
+        let plan = request.launch_plan.get_or_insert_default();
+        let root = plan.root_image.get_or_insert_default();
+        root.media_type = "application/vnd.aos.sandbox.view.v1+cbor".to_owned();
+        root.sha256 = vec![5; 32];
+        root.encoded_size = 10;
+        plan.workspace_handle = vec![6; OPAQUE_HANDLE_BYTES];
+        plan.network_handle = vec![7; OPAQUE_HANDLE_BYTES];
+        plan.uid_range_start = 65_536;
+        plan.uid_range_size = 65_536;
+        for (dimension, value) in [(2, 128), (3, 1 << 30), (4, 100)] {
+            plan.limits
+                .push(aos_proto::aos::sandbox::local::v1::ResourceLimit {
+                    dimension,
+                    value,
+                    ..Default::default()
+                });
+        }
+        plan.attachment_handles.push(vec![8; OPAQUE_HANDLE_BYTES]);
+        plan.required_features
+            .push(aos_proto::aos::sandbox::local::v1::Feature {
+                namespace: "aos.sandbox.runtime.linux-systemd".to_owned(),
+                major: 1,
+                minor: 0,
+                ..Default::default()
+            });
+        request
+    }
+
     fn valid_mount_request() -> Vec<u8> {
         let mut request = ApplyMountRequest::default();
         let header = request.header.get_or_insert_default();
@@ -406,6 +839,50 @@ mod tests {
     }
 
     #[test]
+    fn runtime_validation_closes_plan_and_returns_typed_fence() {
+        let request = valid_runtime_request();
+        let validated = decode_runtime_request(&request.encode_to_vec(), peer(), policy(), 100)
+            .unwrap_or_else(|error| panic!("valid runtime request failed: {error}"));
+        assert_eq!(validated.action(), RuntimeAction::RUNTIME_ACTION_LAUNCH);
+        assert_eq!(validated.fence().incarnation_id(), &[3; 16]);
+        let plan = validated
+            .launch_plan()
+            .unwrap_or_else(|| panic!("launch plan was lost"));
+        assert_eq!(plan.workspace_handle(), &[6; OPAQUE_HANDLE_BYTES]);
+        assert_eq!(plan.limits()[1].dimension(), 3);
+    }
+
+    #[test]
+    fn runtime_action_smuggling_and_noncanonical_collections_fail_closed() {
+        let mut request = valid_runtime_request();
+        request.action = RuntimeAction::RUNTIME_ACTION_FREEZE.into();
+        assert_eq!(
+            decode_runtime_request(&request.encode_to_vec(), peer(), policy(), 100),
+            Err(ProtocolValidationError::InvalidField("launch_plan"))
+        );
+
+        let mut request = valid_runtime_request();
+        request
+            .launch_plan
+            .get_or_insert_default()
+            .limits
+            .swap(0, 1);
+        assert_eq!(
+            decode_runtime_request(&request.encode_to_vec(), peer(), policy(), 100),
+            Err(ProtocolValidationError::InvalidField("launch_plan.limits"))
+        );
+
+        let mut request = valid_runtime_request();
+        request.fence.get_or_insert_default().desired_generation = 0;
+        assert_eq!(
+            decode_runtime_request(&request.encode_to_vec(), peer(), policy(), 100),
+            Err(ProtocolValidationError::InvalidField(
+                "fence.desired_generation"
+            ))
+        );
+    }
+
+    #[test]
     fn malformed_request_corpus_never_panics_or_allocates_unboundedly() {
         let seed = valid_mount_request();
         for length in 0..seed.len() {
@@ -419,7 +896,7 @@ mod tests {
                 state ^= state << 13;
                 state ^= state >> 17;
                 state ^= state << 5;
-                *byte = state as u8;
+                *byte = state.to_le_bytes()[0];
             }
             exercise_malformed_request_decoders(&bytes);
         }
