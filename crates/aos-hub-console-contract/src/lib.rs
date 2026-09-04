@@ -101,6 +101,25 @@ pub fn container_pull_commands(distribution_reference: &str) -> Vec<ContainerPul
     .collect()
 }
 
+/// Selects the effective enabled route for one delivery audience.
+///
+/// The current advertisement wins when it still names an enabled route. An
+/// absent or stale advertisement falls back to the first enabled route so a
+/// browser form and its submitted value begin in the same state.
+#[must_use]
+pub fn route_selection_for_audience(
+    audience: &str,
+    advertisements: &[(String, String)],
+    enabled_route_ids: &[String],
+) -> String {
+    advertisements
+        .iter()
+        .find(|(candidate, route_id)| candidate == audience && enabled_route_ids.contains(route_id))
+        .map(|(_, route_id)| route_id.clone())
+        .or_else(|| enabled_route_ids.first().cloned())
+        .unwrap_or_default()
+}
+
 /// One page in a scope's deterministic settings navigation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PageSpec {
@@ -1320,6 +1339,32 @@ mod tests {
                 "pull command inferred a browser origin: {forbidden}"
             );
         }
+    }
+
+    #[test]
+    fn route_selection_starts_from_the_current_audience_advertisement() {
+        let advertisements = vec![
+            ("git".to_string(), "route-git".to_string()),
+            ("web".to_string(), "route-web".to_string()),
+        ];
+        let enabled = vec!["route-other".to_string(), "route-git".to_string()];
+
+        assert_eq!(
+            route_selection_for_audience("git", &advertisements, &enabled),
+            "route-git"
+        );
+    }
+
+    #[test]
+    fn route_selection_falls_back_when_the_advertisement_is_not_enabled() {
+        let advertisements = vec![("git".to_string(), "route-disabled".to_string())];
+        let enabled = vec!["route-ready".to_string()];
+
+        assert_eq!(
+            route_selection_for_audience("git", &advertisements, &enabled),
+            "route-ready"
+        );
+        assert!(route_selection_for_audience("web", &[], &[]).is_empty());
     }
 
     #[test]

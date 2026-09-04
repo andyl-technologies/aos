@@ -10,7 +10,7 @@ use leptos::task::spawn_local;
 
 use crate::components::{HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
-use crate::route::{ConsoleRoute, ConsoleScope};
+use crate::route::{route_selection_for_audience, ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
 
 use super::access_policy::{
@@ -38,34 +38,7 @@ pub(super) fn RouteWorkflow(route: ConsoleRoute, client: ApiClient) -> impl Into
 
 #[component]
 fn Routes(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl IntoView {
-    let read_client = client.clone();
-    let read_surface = surface.clone();
-    let routes = LocalResource::new(move || {
-        let client = read_client.clone();
-        let surface = read_surface.clone();
-        async move {
-            client
-                .collect_pages::<_, aos_proto_types::ListRoutesResponse, _, _, _>(
-                    aos_proto_types::ROUTE_SERVICE_LIST_ROUTES_PATH,
-                    move |page_token| aos_proto_types::ListRoutesRequest {
-                        surface: Some(surface.clone()),
-                        page_size: 100,
-                        page_token,
-                    },
-                    |response| (response.routes, response.next_page_token),
-                )
-                .await
-        }
-    });
-    let view_client = client.clone();
-    let view_surface = surface.clone();
-    let choices_client = client.clone();
-    let choices_surface = surface.clone();
-    let choices = LocalResource::new(move || {
-        let client = choices_client.clone();
-        let surface = choices_surface.clone();
-        async move { load_route_create_choices(&client, &surface).await }
-    });
+    let can_manage = client.allows("route.manage");
     let topology_client = client.clone();
     let topology_surface = surface.clone();
     let topology = LocalResource::new(move || {
@@ -82,13 +55,95 @@ fn Routes(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl IntoV
                 .await
         }
     });
-    let canonical_client = client.clone();
-    let canonical_surface = surface.clone();
-    let create_client = client;
-    let create_surface = surface;
+    let choices_client = client.clone();
+    let choices_surface = surface.clone();
+    let choices_topology = topology;
+    let choices = LocalResource::new(move || {
+        let client = choices_client.clone();
+        let surface = choices_surface.clone();
+        async move {
+            if !can_manage {
+                return Ok(None);
+            }
+            let topology = choices_topology
+                .await
+                .as_ref()
+                .map_err(ToString::to_string)?
+                .clone();
+            load_route_create_choices(&client, &surface, topology)
+                .await
+                .map(Some)
+        }
+    });
+    let view_client = client.clone();
+    let view_surface = surface.clone();
 
     view! {
-        <div class="workflow-stack"><section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Simultaneous delivery paths"</p><div class="section-title"><h2>"Routes"</h2><HelpTooltip term="Routes" summary="Multiple Hub-proxied, redirected, CDN-fronted, and direct routes can serve the same logical surface concurrently."/></div></div></div><Suspense fallback=move || view! { <p class="loading-row">"Loading routes…"</p> }>{move || { let client = view_client.clone(); let surface = view_surface.clone(); Suspend::new(async move { match (routes.await.as_ref(), choices.await.as_ref()) { (Ok(routes), Ok(_)) if routes.is_empty() => view! { <p class="muted">"No routes for this surface."</p> }.into_any(), (Ok(routes), Ok(choices)) => view! { <div class="binding-list">{routes.iter().cloned().map(|route| view! { <RouteCard client=client.clone() surface=surface.clone() route=route choices=choices.clone()/> }).collect_view()}</div> }.into_any(), (Err(failure), _) => view! { <InlineError detail=failure.to_string()/> }.into_any(), (_, Err(detail)) => view! { <InlineError detail=detail.clone()/> }.into_any() } }) }}</Suspense></section><Suspense fallback=move || view! { <section class="panel"><p class="loading-row">"Loading route advertisements…"</p></section> }>{move || { let client = canonical_client.clone(); let surface = canonical_surface.clone(); Suspend::new(async move { match topology.await.as_ref() { Ok(response) => view! { <RouteAdvertisements client=client surface=surface canonical=response.route_advertisements.clone() routes=response.routes.clone()/> }.into_any(), Err(failure) => view! { <section class="panel"><InlineError detail=failure.to_string()/></section> }.into_any() } }) }}</Suspense><RouteCreate client=create_client surface=create_surface/></div>
+        <div class="workflow-stack">
+            <Suspense fallback=move || view! { <p class="loading-row">"Loading effective delivery…"</p> }>
+                {move || {
+                    let client = view_client.clone();
+                    let surface = view_surface.clone();
+                    Suspend::new(async move {
+                        match topology.await.as_ref() {
+                            Ok(response) => view! {
+                                <DeliverySummary topology=response.clone()/>
+                                <section class="panel resource-panel">
+                                    <div class="section-heading"><div><p class="section-kicker">"Simultaneous delivery paths"</p><div class="section-title"><h2>"Routes"</h2><HelpTooltip term="Routes" summary="Multiple Hub-proxied, redirected, CDN-fronted, and direct routes can serve the same logical surface concurrently."/></div></div></div>
+                                    {if response.routes.is_empty() {
+                                        view! { <p class="muted">"No routes for this surface."</p> }.into_any()
+                                    } else {
+                                        view! { <div class="binding-list">{response.routes.iter().cloned().map(|route| view! { <RouteCard client=client.clone() surface=surface.clone() route=route choices=choices can_manage=can_manage/> }).collect_view()}</div> }.into_any()
+                                    }}
+                                </section>
+                                <RouteAdvertisements client=client surface=surface canonical=response.route_advertisements.clone() routes=response.routes.clone() can_manage=can_manage/>
+                            }.into_any(),
+                            Err(failure) => view! { <section class="panel"><InlineError detail=failure.to_string()/></section> }.into_any(),
+                        }
+                    })
+                }}
+            </Suspense>
+            {can_manage.then(|| view! { <RouteCreate client=client surface=surface choices=choices/> })}
+        </div>
+    }
+}
+
+#[component]
+fn DeliverySummary(topology: aos_proto_types::GetSurfaceTopologyResponse) -> impl IntoView {
+    let enabled = topology
+        .routes
+        .iter()
+        .filter(|route| route.spec.as_ref().is_some_and(|spec| spec.enabled))
+        .count();
+    let healthy = topology
+        .routes
+        .iter()
+        .filter(|route| {
+            route.spec.as_ref().is_some_and(|spec| spec.enabled)
+                && route
+                    .observation
+                    .as_ref()
+                    .is_some_and(|observation| observation.state == "healthy")
+        })
+        .count();
+    let audiences = topology.route_advertisements.len();
+
+    view! {
+        <section class="panel delivery-summary" aria-labelledby="effective-delivery-title">
+            <div class="section-heading">
+                <div>
+                    <p class="section-kicker">"Effective configuration"</p>
+                    <h2 id="effective-delivery-title">"Delivery at a glance"</h2>
+                    <p>"These routes and audience selections are active for this surface now."</p>
+                </div>
+            </div>
+            <div class="resource-identity">
+                <div><span>"Enabled routes"</span><strong>{enabled}</strong></div>
+                <div><span>"Healthy routes"</span><strong>{format!("{healthy} of {enabled}")}</strong></div>
+                <div><span>"Audience defaults"</span><strong>{audiences}</strong></div>
+                <div><span>"Storage placements"</span><strong>{topology.placements.len()}</strong></div>
+            </div>
+        </section>
     }
 }
 
@@ -178,6 +233,25 @@ impl RouteSignals {
         }
         signals
     }
+
+    fn draft_key(self) -> String {
+        [
+            self.endpoint_id.get(),
+            self.endpoint_generation.get(),
+            self.base_path.get(),
+            self.mode.get(),
+            self.target_kind.get(),
+            self.target_ref.get(),
+            self.gateway_ref.get(),
+            self.serves_git.get().to_string(),
+            self.serves_cache.get().to_string(),
+            self.serves_web.get().to_string(),
+            self.serves_oci.get().to_string(),
+            self.enabled.get().to_string(),
+            self.access.draft_key(),
+        ]
+        .join("\u{1f}")
+    }
 }
 
 #[component]
@@ -227,15 +301,11 @@ fn RouteFields(
 }
 
 #[component]
-fn RouteCreate(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl IntoView {
-    let choices_client = client.clone();
-    let choices_surface = surface.clone();
-    let choices = LocalResource::new(move || {
-        let client = choices_client.clone();
-        let surface = choices_surface.clone();
-        async move { load_route_create_choices(&client, &surface).await }
-    });
-
+fn RouteCreate(
+    client: ApiClient,
+    surface: aos_proto_types::SurfaceRef,
+    choices: LocalResource<Result<Option<RouteCreateChoices>, String>>,
+) -> impl IntoView {
     view! {
         <Suspense fallback=move || view! { <section class="panel editor-panel"><p class="loading-row">"Loading endpoints, placements, and gateways…"</p></section> }>
             {move || {
@@ -243,7 +313,8 @@ fn RouteCreate(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl 
                 let surface = surface.clone();
                 Suspend::new(async move {
                     match choices.await.as_ref() {
-                        Ok(choices) => view! { <RouteCreateForm client=client surface=surface choices=choices.clone()/> }.into_any(),
+                        Ok(Some(choices)) => view! { <RouteCreateForm client=client surface=surface choices=choices.clone()/> }.into_any(),
+                        Ok(None) => ().into_any(),
                         Err(detail) => view! { <section class="panel editor-panel"><InlineError detail=detail.clone()/></section> }.into_any(),
                     }
                 })
@@ -255,16 +326,8 @@ fn RouteCreate(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl 
 async fn load_route_create_choices(
     client: &ApiClient,
     surface: &aos_proto_types::SurfaceRef,
+    topology: aos_proto_types::GetSurfaceTopologyResponse,
 ) -> Result<RouteCreateChoices, String> {
-    let topology = client
-        .call::<_, aos_proto_types::GetSurfaceTopologyResponse>(
-            aos_proto_types::TOPOLOGY_SERVICE_GET_SURFACE_TOPOLOGY_PATH,
-            &aos_proto_types::GetSurfaceTopologyRequest {
-                surface: Some(surface.clone()),
-            },
-        )
-        .await
-        .map_err(|failure| failure.to_string())?;
     let (owner_scope_key, organization) = surface_authorization_scope(client, surface).await?;
     let endpoint_scope = owner_scope_key.clone();
     let endpoints = client
@@ -379,6 +442,14 @@ fn RouteCreateForm(
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
+    let draft_epoch = watch_draft(
+        move || {
+            let _ = stable_id.get();
+            let _ = signals.draft_key();
+        },
+        pending,
+        error,
+    );
     let endpoint_choices = choices.endpoints.clone();
     let selected_endpoints = choices.endpoints;
     let direct_placement_choices = choices.placements.clone();
@@ -448,6 +519,7 @@ fn RouteCreateForm(
             pending,
             error,
             busy,
+            Some(draft_epoch),
         );
     };
     let on_apply = apply_route(
@@ -465,12 +537,51 @@ fn RouteCard(
     client: ApiClient,
     surface: aos_proto_types::SurfaceRef,
     route: aos_proto_types::Route,
-    choices: RouteCreateChoices,
+    choices: LocalResource<Result<Option<RouteCreateChoices>, String>>,
+    can_manage: bool,
 ) -> impl IntoView {
     let spec = route.spec.clone().unwrap_or_default();
     let observation = route.observation.clone().unwrap_or_default();
     let mode = route_mode(&spec);
-    view! { <details class="binding-card"><summary><div><span class="resource-kind">{mode}</span><h3>{route.canonical_rendered_url.clone()}</h3><code>{route.stable_id.clone()}</code></div><StatusBadge state=observation.state.clone() positive=observation.state == "healthy"/></summary><div class="binding-details"><div class="resource-identity"><div><span>"Endpoint"</span><code>{format!("{}@{}", spec.endpoint_id, spec.endpoint_generation)}</code></div><div><span>"Target"</span><code>{target_name(&spec)}</code></div><div><span>"Access"</span><strong>{access_policy_name(spec.access_policy.as_ref())}</strong></div><div><span>"Configuration generation"</span><strong>{route.configuration_generation}</strong></div><div><span>"Observed generation"</span><strong>{observation.configuration_generation}</strong></div><div><span>"Version"</span><code>{route.resource_version.clone()}</code></div></div>{(!observation.error.is_empty()).then(|| view! { <InlineError detail=observation.error/> })}<div class="subworkflow-grid"><RouteUpdate client=client.clone() surface=surface.clone() route=route.clone() choices=choices.clone()/><RouteLifecycle client=client.clone() route=route.clone()/></div><RouteExplain client=client.clone() route=route.clone()/><RouteReplace client=client surface=surface route=route choices=choices/></div></details> }
+    view! {
+        <details class="binding-card">
+            <summary><div><span class="resource-kind">{mode}</span><h3>{route.canonical_rendered_url.clone()}</h3><code>{route.stable_id.clone()}</code></div><StatusBadge state=observation.state.clone() positive=observation.state == "healthy"/></summary>
+            <div class="binding-details">
+                <div class="topology-path" aria-label="Effective route topology">
+                    <span><small>"Endpoint"</small><code>{format!("{}@{}", spec.endpoint_id, spec.endpoint_generation)}</code></span>
+                    <b aria-hidden="true">"→"</b>
+                    <span><small>"Target"</small><code>{target_name(&spec)}</code></span>
+                    <b aria-hidden="true">"→"</b>
+                    <span><small>"Public URL"</small><code>{route.canonical_rendered_url.clone()}</code></span>
+                </div>
+                <div class="resource-identity"><div><span>"Access"</span><strong>{access_policy_name(spec.access_policy.as_ref())}</strong></div><div><span>"Configuration generation"</span><strong>{route.configuration_generation}</strong></div><div><span>"Observed generation"</span><strong>{observation.configuration_generation}</strong></div><div><span>"Version"</span><code>{route.resource_version.clone()}</code></div></div>
+                {(!observation.error.is_empty()).then(|| view! { <InlineError detail=observation.error/> })}
+                <RouteExplain client=client.clone() route=route.clone()/>
+                {can_manage.then(|| view! {
+                    <details class="advanced-controls">
+                        <summary>"Advanced route controls"</summary>
+                        <Suspense fallback=move || view! { <p class="loading-row">"Loading route controls…"</p> }>
+                            {move || {
+                                let client = client.clone();
+                                let surface = surface.clone();
+                                let route = route.clone();
+                                Suspend::new(async move {
+                                    match choices.await.as_ref() {
+                                        Ok(Some(choices)) => view! {
+                                            <div class="subworkflow-grid"><RouteUpdate client=client.clone() surface=surface.clone() route=route.clone() choices=choices.clone()/><RouteLifecycle client=client.clone() route=route.clone()/></div>
+                                            <RouteReplace client=client surface=surface route=route choices=choices.clone()/>
+                                        }.into_any(),
+                                        Ok(None) => ().into_any(),
+                                        Err(detail) => view! { <InlineError detail=detail.clone()/> }.into_any(),
+                                    }
+                                })
+                            }}
+                        </Suspense>
+                    </details>
+                })}
+            </div>
+        </details>
+    }
 }
 
 #[component]
@@ -484,6 +595,13 @@ fn RouteUpdate(
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
+    let draft_epoch = watch_draft(
+        move || {
+            let _ = signals.draft_key();
+        },
+        pending,
+        error,
+    );
     let route_id = route.stable_id;
     let version = route.resource_version;
     let plan_client = client.clone();
@@ -517,6 +635,7 @@ fn RouteUpdate(
             pending,
             error,
             busy,
+            Some(draft_epoch),
         );
     };
     let on_apply = apply_route(
@@ -561,6 +680,7 @@ fn RouteLifecycle(client: ApiClient, route: aos_proto_types::Route) -> impl Into
             pending,
             error,
             busy,
+            None,
         );
     });
     let on_apply = Callback::new(move |()| {
@@ -640,6 +760,14 @@ fn RouteReplace(
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
+    let draft_epoch = watch_draft(
+        move || {
+            let _ = successor_id.get();
+            let _ = signals.draft_key();
+        },
+        pending,
+        error,
+    );
     let predecessor_id = route.stable_id;
     let version = route.resource_version;
     let plan_client = client.clone();
@@ -668,6 +796,7 @@ fn RouteReplace(
             pending,
             error,
             busy,
+            Some(draft_epoch),
         );
     };
     let on_apply = apply_route(
@@ -686,21 +815,38 @@ fn RouteAdvertisements(
     surface: aos_proto_types::SurfaceRef,
     canonical: Vec<aos_proto_types::RouteAdvertisement>,
     routes: Vec<aos_proto_types::Route>,
+    can_manage: bool,
 ) -> impl IntoView {
     // Keep the initial signal aligned with the first server-rendered option.
     // Otherwise hydration displays Git while submissions retain Web until the
     // user changes the select to a different value and back.
     let audience = RwSignal::new("git".to_string());
-    let initial_route = routes
+    let enabled_route_ids = routes
         .iter()
-        .find(|value| value.spec.as_ref().is_some_and(|spec| spec.enabled))
+        .filter(|value| value.spec.as_ref().is_some_and(|spec| spec.enabled))
         .map(|value| value.stable_id.clone())
-        .unwrap_or_default();
+        .collect::<Vec<_>>();
+    let advertisement_choices = canonical
+        .iter()
+        .map(|value| (value.audience.clone(), value.route_id.clone()))
+        .collect::<Vec<_>>();
+    let initial_route =
+        route_selection_for_audience("git", &advertisement_choices, &enabled_route_ids);
     let route_id = RwSignal::new(initial_route);
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
+    let draft_epoch = watch_draft(
+        move || {
+            let _ = audience.get();
+            let _ = route_id.get();
+        },
+        pending,
+        error,
+    );
     let request_canonical = canonical.clone();
+    let selected_advertisements = advertisement_choices;
+    let selected_enabled_routes = enabled_route_ids;
     let plan_client = client.clone();
     let on_plan = move |event: SubmitEvent| {
         event.prevent_default();
@@ -726,6 +872,7 @@ fn RouteAdvertisements(
             pending,
             error,
             busy,
+            Some(draft_epoch),
         );
     };
     let on_apply = Callback::new(move |()| {
@@ -748,7 +895,7 @@ fn RouteAdvertisements(
             busy.set(false);
         });
     });
-    view! { <section class="panel editor-panel"><div class="section-heading"><div><p class="section-kicker">"Audience defaults"</p><div class="section-title"><h2>"Route advertisements"</h2><HelpTooltip term="Route advertisements" summary="Each audience resolves to one enabled route while alternate routes remain simultaneously available."/></div></div></div><div class="compact-list">{canonical.into_iter().map(|value| view! { <div class="compact-list-row"><div><strong>{value.audience}</strong><code>{value.route_id}</code></div></div> }).collect_view()}</div><form class="editor-form" on:submit=on_plan><label><span>"Audience"</span><select prop:value=move || audience.get() on:change=move |event| audience.set(event_target_value(&event))><option value="git">"Git"</option><option value="nix_cache">"Nix cache"</option><option value="web">"Web"</option></select></label><label><span>"Enabled route"</span><select prop:value=move || route_id.get() on:change=move |event| route_id.set(event_target_value(&event))>{routes.iter().filter(|route| route.spec.as_ref().is_some_and(|spec| spec.enabled)).map(|route| view! { <option value=route.stable_id.clone()>{route.canonical_rendered_url.clone()}</option> }).collect_view()}</select></label><div class="form-actions"><button class="secondary-button" type="submit" disabled=move || busy.get()>"Review canonical selection"</button></div></form><PlanReview pending=pending error=error busy=busy on_apply=on_apply/></section> }
+    view! { <section class="panel editor-panel"><div class="section-heading"><div><p class="section-kicker">"Audience defaults"</p><div class="section-title"><h2>"Route advertisements"</h2><HelpTooltip term="Route advertisements" summary="Each audience resolves to one enabled route while alternate routes remain simultaneously available."/></div></div></div><div class="compact-list">{canonical.into_iter().map(|value| view! { <div class="compact-list-row"><div><strong>{value.audience}</strong><code>{value.route_id}</code></div></div> }).collect_view()}</div>{can_manage.then(|| view! { <form class="editor-form" on:submit=on_plan><label><span>"Audience"</span><select prop:value=move || audience.get() on:change=move |event| { let selected = event_target_value(&event); audience.set(selected.clone()); route_id.set(route_selection_for_audience(&selected, &selected_advertisements, &selected_enabled_routes)); }><option value="git">"Git"</option><option value="nix_cache">"Nix cache"</option><option value="web">"Web"</option></select></label><label><span>"Enabled route"</span><select prop:value=move || route_id.get() on:change=move |event| route_id.set(event_target_value(&event))>{routes.iter().filter(|route| route.spec.as_ref().is_some_and(|spec| spec.enabled)).map(|route| view! { <option value=route.stable_id.clone()>{route.canonical_rendered_url.clone()}</option> }).collect_view()}</select></label><div class="form-actions"><button class="secondary-button" type="submit" disabled=move || busy.get()>"Review canonical selection"</button></div></form><PlanReview pending=pending error=error busy=busy on_apply=on_apply/> })}</section> }
 }
 
 fn build_spec(
@@ -907,9 +1054,12 @@ fn plan<Req: serde::Serialize + 'static>(
     pending: RwSignal<Option<PendingPlan>>,
     error: RwSignal<Option<String>>,
     busy: RwSignal<bool>,
+    draft_epoch: Option<RwSignal<u64>>,
 ) {
+    let planned_epoch = draft_epoch.map(|epoch| (epoch, epoch.get_untracked()));
     busy.set(true);
     error.set(None);
+    pending.set(None);
     spawn_local(async move {
         let result = client
             .call::<_, aos_proto_types::TopologyPlanResponse>(path, &request)
@@ -917,11 +1067,33 @@ fn plan<Req: serde::Serialize + 'static>(
             .map_err(|failure| failure.to_string())
             .and_then(|response| PendingPlan::from_response(response, idempotency_key));
         match result {
-            Ok(reviewed) => pending.set(Some(reviewed)),
+            Ok(reviewed)
+                if planned_epoch
+                    .as_ref()
+                    .map_or(true, |(epoch, planned)| epoch.get_untracked() == *planned) =>
+            {
+                pending.set(Some(reviewed));
+            }
+            Ok(_) => {}
             Err(detail) => error.set(Some(detail)),
         }
         busy.set(false);
     });
+}
+
+fn watch_draft(
+    observe: impl Fn() + 'static,
+    pending: RwSignal<Option<PendingPlan>>,
+    error: RwSignal<Option<String>>,
+) -> RwSignal<u64> {
+    let epoch = RwSignal::new(0_u64);
+    Effect::new(move |_| {
+        observe();
+        epoch.update(|value| *value = value.wrapping_add(1));
+        pending.set(None);
+        error.set(None);
+    });
+    epoch
 }
 fn apply_route(
     client: ApiClient,
