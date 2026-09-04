@@ -764,7 +764,9 @@ fn validate_method(
                 | BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME
         ) | (
             ProtocolId::MountBroker,
-            BrokerMethod::BROKER_METHOD_MOUNT_APPLY | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY
+            BrokerMethod::BROKER_METHOD_MOUNT_APPLY
+                | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY
+                | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES
         )
     );
     if !valid {

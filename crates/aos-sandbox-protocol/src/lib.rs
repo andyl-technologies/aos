@@ -8,7 +8,16 @@
 //! request.
 
 pub mod fencing;
+pub mod inventory;
 pub mod session;
+
+pub use inventory::{
+    MAXIMUM_MOUNT_INVENTORY_RECORDS, ValidatedMountAssignmentBinding,
+    ValidatedMountFaultCorrelation, ValidatedMountInventory, ValidatedMountInventoryRecord,
+    ValidatedMountKernelObservation, ValidatedMountOperationCorrelation,
+    ValidatedMountPublicationCorrelation, ValidatedMountRecipe, decode_mount_inventory_request,
+    decode_mount_inventory_response,
+};
 
 pub use session::{
     MAXIMUM_HANDSHAKE_BYTES, MAXIMUM_PACKET_DESCRIPTORS, NegotiatedBrokerSession,
@@ -437,12 +446,18 @@ pub enum ProtocolValidationError {
     /// The response ceiling is zero or exceeds the broker bound.
     #[error("local request response-byte ceiling is invalid")]
     InvalidResponseBound,
+    /// An encoded response exceeds the response-byte ceiling negotiated by the client.
+    #[error("local response exceeds the negotiated encoded byte length")]
+    ResponseTooLarge,
     /// An authority-bearing local message contains unregistered fields.
     #[error("authority-bearing local message contains unknown protobuf fields")]
     UnknownFields,
     /// A closed action is absent or unknown.
     #[error("local request action is unspecified or unknown")]
     UnknownAction,
+    /// A closed observation lifecycle is absent or unknown.
+    #[error("local response lifecycle is unspecified or unknown")]
+    UnknownState,
     /// A field combination violates the selected closed operation contract.
     #[error("invalid local request field {0}")]
     InvalidField(&'static str),
@@ -640,7 +655,7 @@ pub fn decode_mount_request(
     })
 }
 
-fn validate_mount_attributes(
+pub(crate) fn validate_mount_attributes(
     attributes: &aos_proto::aos::sandbox::local::v1::MountAttributes,
 ) -> Result<ValidatedMountAttributes, ProtocolValidationError> {
     if !attributes.__buffa_unknown_fields.is_empty()
@@ -768,7 +783,7 @@ pub fn validate_request_header(
     })
 }
 
-fn validate_fence(
+pub(crate) fn validate_fence(
     fence: &AssignmentFence,
 ) -> Result<ValidatedAssignmentFence, ProtocolValidationError> {
     if !fence.__buffa_unknown_fields.is_empty() {
@@ -947,7 +962,7 @@ pub(crate) fn validate_feature_set(
     Ok(features)
 }
 
-fn validate_descriptor(
+pub(crate) fn validate_descriptor(
     descriptor: &Descriptor,
     role: DescriptorRole,
 ) -> Result<ObjectDescriptor, ProtocolValidationError> {

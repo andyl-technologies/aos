@@ -63,6 +63,7 @@ enum BrokerMethod {
   BROKER_METHOD_HOST_INVENTORY_RUNTIME = 3;
   BROKER_METHOD_MOUNT_APPLY = 4;
   BROKER_METHOD_MOUNT_INVENTORY = 5;
+  BROKER_METHOD_MOUNT_INVENTORY_RESOURCES = 6;
 }
 
 // Semantic roles for SCM_RIGHTS descriptors carried beside one packet.
@@ -308,11 +309,128 @@ enum MountState {
 }
 
 message InventoryMountsRequest { RequestHeader header = 1; }
+
+// Durable assignment identity attached to an inventoried mount resource.
+// namespace_generation is deliberately outside AssignmentFence because an
+// internal payload reboot does not create a new control-plane assignment.
+message MountAssignmentBinding {
+  AssignmentFence fence = 1;
+  uint64 namespace_generation = 2;
+}
+
+// Immutable recipe from which the broker created the detached mount.
+message MountRecipe {
+  bytes attachment_id = 1; // Exactly 16 bytes.
+  bytes destination_slot_id = 2; // Exactly 16 bytes.
+  Descriptor view_revision = 3;
+  uint64 source_generation = 4;
+  MountAttributes attributes = 5;
+}
+
+// Kernel identity observed for an installed mount. Paths are raw, NUL-free
+// kernel path bytes rather than caller-selected lookup paths.
+message MountKernelObservation {
+  uint64 unique_mount_id = 1;
+  uint64 parent_mount_id = 2;
+  uint64 mount_namespace_id = 3;
+  uint32 device_major = 4;
+  uint32 device_minor = 5;
+  uint64 superblock_magic = 6;
+  uint32 superblock_flags = 7;
+  uint64 mount_attributes = 8;
+  uint64 propagation = 9;
+  bytes root = 10; // 1..4096 bytes, no NUL.
+  bytes mount_point = 11; // 1..4096 bytes, no NUL.
+  bytes identity_map_digest = 12; // Exactly 32 bytes.
+}
+
+enum MountLifecycle {
+  MOUNT_LIFECYCLE_UNSPECIFIED = 0;
+  MOUNT_LIFECYCLE_ALLOCATED = 1;
+  MOUNT_LIFECYCLE_PREPARED = 2;
+  MOUNT_LIFECYCLE_PUBLISHING = 3;
+  MOUNT_LIFECYCLE_INSTALLED = 4;
+  MOUNT_LIFECYCLE_DRAINING = 5;
+  MOUNT_LIFECYCLE_RELEASED = 6;
+  MOUNT_LIFECYCLE_FAULTED = 7;
+  MOUNT_LIFECYCLE_DETACHING = 8;
+}
+
+// Correlates detached-mount creation before the kernel object exists and while
+// it is retained but not yet submitted for publication.
+message MountOperationCorrelation {
+  bytes operation_id = 1; // Exactly 16 bytes.
+  bytes request_digest = 2; // Exactly 32 bytes.
+}
+
+// Correlates a publication with its distinct operation, exact target, and
+// optional resource generation it replaces.
+message MountPublicationCorrelation {
+  MountOperationCorrelation operation = 1;
+  uint64 target_mount_namespace_id = 2;
+  uint64 target_namespace_generation = 3;
+  bytes replaces_mount_handle = 4; // Empty or exactly 32 bytes.
+}
+
+enum MountFaultPhase {
+  MOUNT_FAULT_PHASE_UNSPECIFIED = 0;
+  MOUNT_FAULT_PHASE_ALLOCATED = 1;
+  MOUNT_FAULT_PHASE_PREPARED = 2;
+  MOUNT_FAULT_PHASE_PUBLISHING = 3;
+  MOUNT_FAULT_PHASE_INSTALLED = 4;
+  MOUNT_FAULT_PHASE_DRAINING = 5;
+  MOUNT_FAULT_PHASE_DETACHING = 6;
+}
+
+// Correlates a terminal fault with the phase and sanitized failure identity.
+// It is present exactly in FAULTED; no diagnostic string crosses this boundary.
+message MountFaultCorrelation {
+  MountFaultPhase from = 1;
+  bytes failure_digest = 2; // Exactly 32 bytes.
+}
+
+// One lossless durable resource-table row. detached_unique_mount_id is absent
+// before a kernel mount exists and may be absent after release. An installed
+// observation is present in INSTALLED and DRAINING and retained by faults from
+// those phases. RELEASED retains the last detached and installed IDs when they
+// existed, without claiming those kernel resources remain live.
+message MountInventoryRecord {
+  bytes mount_handle = 1; // Stable, exactly 32 bytes.
+  uint64 resource_revision = 2;
+  MountAssignmentBinding binding = 3;
+  MountRecipe recipe = 4;
+  MountLifecycle lifecycle = 5;
+  bytes resource_kernel_boot_id = 6; // Exactly 16 bytes.
+  optional uint64 detached_unique_mount_id = 7;
+  MountKernelObservation installed_observation = 8;
+  MountPublicationCorrelation publication = 9;
+  // Present in DRAINING and retained by a fault originating there.
+  bytes replaced_by_mount_handle = 10; // Empty or exactly 32 bytes.
+  MountFaultCorrelation fault = 11;
+  // Present only in RELEASED when an installed mount once existed.
+  optional uint64 last_installed_unique_mount_id = 12;
+  // Present in ALLOCATED and PREPARED and retained by faults from those phases.
+  MountOperationCorrelation creation = 13;
+  // Present in DETACHING and retained by a fault from that phase.
+  MountOperationCorrelation detachment = 14;
+}
+
+// Preserved protocol-1.0 action-summary inventory.
 message InventoryMountsResponse { repeated MountResult mounts = 1; }
+
+// Authoritative inventory is a distinct, explicitly negotiated method so a
+// protocol-1.0 peer can never decode resource records as MountResult values.
+message InventoryMountResourcesResponse {
+  bytes kernel_boot_id = 2; // Current Linux boot ID, exactly 16 bytes.
+  uint64 journal_sequence = 3;
+  repeated MountInventoryRecord mounts = 4; // At most 1024, strict handle order.
+  bytes broker_instance_id = 5; // Exactly 16 bytes; changes on broker start.
+}
 
 service MountBroker {
   rpc ApplyMount(ApplyMountRequest) returns (MountResult);
   rpc InventoryMounts(InventoryMountsRequest) returns (InventoryMountsResponse);
+  rpc InventoryMountResources(InventoryMountsRequest) returns (InventoryMountResourcesResponse);
 }
 
 enum NetworkAction {
