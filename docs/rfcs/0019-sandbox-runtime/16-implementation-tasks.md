@@ -23,6 +23,21 @@ they gate any affected runtime backend.
 - [ ] **SBX-P0-05** Prove user namespaces, prepared network-namespace entry,
   payload leader discovery, internal reboot, fixed unit properties, and
   `--settings=no` in an AOS VM (`SBX-P0-01`, `SBX-P0-04`).
+
+  The checked-in `sandbox-nspawn-platform-proof` VM test is the first
+  executable evidence slice for `SBX-P0-04` and `SBX-P0-05`. It boots the exact
+  packaged nspawn with the compiled payload profile, verifies the filter on
+  guest PID 1 and an independently started service, exercises argument-aware
+  syscall outcomes, checks the explicit private-user map, proves inheritance
+  of a service-manager-selected default-drop network namespace, and places a
+  hostile matching `.nspawn` file behind `--settings=no`. The test emits the
+  versioned `aos.sandbox.nspawn-platform-proof/v1` JSON record even on a failed
+  capability assertion. These tasks remain open until the same gate also
+  covers payload-leader discovery, internal reboot, the production transient
+  unit compiler, cgroup identity, and both supported architectures. The first
+  execution attempt and the existing `boot-basics` control both timed out at
+  the pre-test guest-agent readiness boundary, so the build/evaluation result
+  does not yet count as runtime evidence.
 - [ ] **SBX-P0-06** Prove the tc-BPF `CLOCK_BOOTTIME` lease gate fails closed
   across daemon death and host suspend/resume (`SBX-P0-05`).
 - [ ] **SBX-P0-07** Package OpenZFS 2.4 and prove snapshot, hold, clone, quota,
@@ -409,3 +424,20 @@ completes. The Git history remains authoritative for code details.
   namespace helper immediately before every irreversible operation. Equivalent
   admission and dispatch remain open for the other privileged audiences, and
   the mount broker still requires its end-to-end namespace VM proof.
+- `c78c88d76` — foundation toward `SBX-BPROTO-04`: exact grants are canonicalized
+  by verb, target, and argument commitment, so one signed assignment plan can
+  authorize multiple distinct create semantics without ambiguity; portable
+  signed semantics exclude node-local response and `CLOCK_BOOTTIME` attenuation.
+- `4a2ac51da` — foundation toward `SBX-BPROTO-04` and `SBX-CTRL-03`: bounded
+  outbound effect envelopes now preserve the exact canonical plan, plan
+  signature, ownership lease, and lease signature bytes while enforcing closed
+  methods, descriptor tables, individual artifact ceilings, and the final
+  encoded packet bound. Controller compilation and broker dispatch remain open.
+- `ba8924eaf` — foundation toward `SBX-BPROTO-04`, `SBX-CTRL-03`,
+  `SBX-HOST-01`, and `SBX-MOUNT-01`: a shared privileged-broker authority crate
+  owns protected trust loading, signed plan/lease intersection, paired-clock
+  expiry, and location-authenticated durable fences/effects while preserving
+  existing mount record bytes. The public-only controller preparation path
+  freezes exact plan and lease bytes, emits core-defined signing messages for
+  external protected signers, and rejects mismatched or invalid returned
+  signatures without importing private keys.
