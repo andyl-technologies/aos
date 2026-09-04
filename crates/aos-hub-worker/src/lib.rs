@@ -2895,11 +2895,11 @@ mod entry {
                             );
                         }
                         if body.bookmark.is_empty()
-                            || body.bookmark.len() > 256
-                            || !body
+                            || body.bookmark.len() > 4096
+                            || body
                                 .bookmark
-                                .bytes()
-                                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                                .chars()
+                                .any(|character| character.is_control())
                         {
                             return Response::error("invalid recovery bookmark", 400);
                         }

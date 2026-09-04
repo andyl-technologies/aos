@@ -94,11 +94,7 @@ async fn promise_string(promise: Promise, description: &str) -> worker::Result<S
         .as_string()
         .filter(|value| !value.is_empty())
         .ok_or_else(|| worker_error(&format!("PITR returned an invalid {description}")))?;
-    if value.len() > 256
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-    {
+    if value.len() > 4096 || value.chars().any(|character| character.is_control()) {
         return Err(worker_error(&format!(
             "PITR returned a malformed {description}"
         )));
