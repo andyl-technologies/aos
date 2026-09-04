@@ -64,6 +64,8 @@
 //! campaign opportunities and replies;
 //! [`qemu_hot_fork_reconciliation`] retains one forked child's source-parent,
 //! target cgroup/pidfd, private-channel, accounting, and publication authority;
+//! [`qemu_hot_fork_world`] withholds those children until every running node is
+//! exact-bound to one complete process-neutral world continuation;
 //! [`qemu_hot_fork_runner`] orders modeled child driving, process teardown,
 //! semantic publication, and source-template recovery without overlapping
 //! execution incarnations;
@@ -150,6 +152,8 @@ pub mod qemu_hot_fork_pool;
 pub mod qemu_hot_fork_reconciliation;
 #[cfg(target_os = "linux")]
 pub mod qemu_hot_fork_runner;
+#[cfg(target_os = "linux")]
+pub mod qemu_hot_fork_world;
 pub mod qemu_lifecycle_launcher;
 pub mod qemu_resource_guard;
 pub mod repository_admission;
@@ -499,7 +503,7 @@ pub use qemu_hot_fork_reconciliation::{
     QemuHotForkChildObservation, QemuHotForkChildObservationError,
     QemuHotForkPublicationDisposition, QemuHotForkReconciliationBackend,
     QemuHotForkReconciliationChildBasis, QemuHotForkReconciliationPhase,
-    QemuHotForkReconciliationStep,
+    QemuHotForkReconciliationStep, QemuHotForkWorldChildSourceBasis,
 };
 #[cfg(target_os = "linux")]
 pub use qemu_hot_fork_runner::{
@@ -507,6 +511,12 @@ pub use qemu_hot_fork_runner::{
     QemuHotForkAttemptLifecycleFactory, QemuHotForkAttemptLifecycleRecoveryError,
     QemuHotForkChildExitPolicy, QemuHotForkChildExitPolicyError, QemuHotForkExecutionRunner,
     QemuHotForkExecutionRunnerError, QemuHotForkLiveExecution,
+};
+#[cfg(target_os = "linux")]
+pub use qemu_hot_fork_world::{
+    QemuHotForkCompleteWorldAssembly, QemuHotForkWorldAssembly, QemuHotForkWorldAssemblyToken,
+    QemuHotForkWorldChild, QemuHotForkWorldChildAdmissionError,
+    QemuHotForkWorldChildAdmissionFailure, QemuHotForkWorldIncomplete,
 };
 pub use qemu_lifecycle_launcher::QemuAttemptProductionVmNodeLauncher;
 pub use qemu_resource_guard::{
