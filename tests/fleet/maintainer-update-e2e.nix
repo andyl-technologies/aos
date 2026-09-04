@@ -268,8 +268,14 @@ in {
           {NIX_STORE} --check-validity {SOURCE_DERIVATION}
           {NIX} derivation show {PACKAGE_DERIVATION} > /tmp/package-derivation.json
           {NIX} derivation show {SOURCE_DERIVATION} > /tmp/source-derivation.json
-          test -s /tmp/package-derivation.json
-          test -s /tmp/source-derivation.json
+          {JQ} -e --arg path {shlex.quote(PACKAGE_DERIVATION)} \
+            --arg key "$(basename {PACKAGE_DERIVATION})" \
+            '(.derivations[$key] // .[$path]) | type == "object"' \
+            /tmp/package-derivation.json > /dev/null
+          {JQ} -e --arg path {shlex.quote(SOURCE_DERIVATION)} \
+            --arg key "$(basename {SOURCE_DERIVATION})" \
+            '(.derivations[$key] // .[$path]) | type == "object"' \
+            /tmp/source-derivation.json > /dev/null
           {FINDMNT} -rn -t 9p -o OPTIONS /run/aos-host-store | grep -qw ro
           ! touch {TOOLS}/host-store-write-must-fail
       """), timeout=240)
