@@ -87,6 +87,11 @@ they gate any affected runtime backend.
   validation with malformed-message fuzz targets (`SBX-BPROTO-01`).
 - [x] **SBX-BPROTO-03** Simulate multi-node assignment and ownership-lease
   fencing, including stale coordinator and partition cases (`SBX-CORE-03`).
+- [ ] **SBX-BPROTO-04** Implement the local broker session protocol: bounded
+  version and required-feature negotiation, closed method envelopes, exact
+  descriptor-role tables, signed audience-specific authorization plans,
+  ownership leases, response ceilings, and observe/inventory dispatch
+  (`SBX-BPROTO-01`..`SBX-BPROTO-03`).
 
 ## P2: durable control and privilege boundaries
 
@@ -99,19 +104,23 @@ they gate any affected runtime backend.
   effect ledger (`SBX-JRN-02`, `SBX-BPROTO-01`; `8eb2d4ee8`).
 - [x] **SBX-CTRL-02** Add crash injection at every record/effect boundary and
   prove convergence (`SBX-CTRL-01`; `ec3a23d4f`).
+- [ ] **SBX-CTRL-03** Implement and package the unprivileged node controller,
+  public client service, broker catalog publisher, assignment-plan compiler,
+  and production reconciler loop (`SBX-CTRL-02`, `SBX-BPROTO-04`).
 - [x] **SBX-SD-01** Extend `aos-systemd` with typed transient sandbox unit,
   cgroup, freeze/thaw, leader, and observation operations (`d1e40ea28`).
 - [x] **SBX-LINUX-01** Add safe, owned pidfd, namespace FD, `openat2`, mount FD,
   idmap, `statmount`, and `listmount` wrappers (`SBX-P0-03`; `362732f96`).
-- [x] **SBX-HOST-01** Implement the root-only fixed host broker and one-shot
-  workers (`SBX-BPROTO-02`, `SBX-SD-01`, `SBX-LINUX-01`;
-  `b024bb612`..`eda7b29b9`).
+- [ ] **SBX-HOST-01** Implement the root-only fixed host broker, one-shot
+  workers, complete session dispatch, and authoritative runtime inventory
+  (`SBX-BPROTO-04`, `SBX-SD-01`, `SBX-LINUX-01`).
 - [ ] **SBX-STOR-01** Implement the root-only fixed storage broker with opaque
-  handles and typed ZFS verbs (`SBX-BPROTO-02`, `SBX-P0-07`).
+  handles and typed ZFS verbs (`SBX-BPROTO-04`, `SBX-P0-07`).
 - [ ] **SBX-MOUNT-01** Implement the root-only descriptor mount broker and
-  short-lived namespace helper (`SBX-BPROTO-02`, `SBX-LINUX-01`).
+  short-lived namespace helper with durable handle identity and authoritative
+  mount inventory (`SBX-BPROTO-04`, `SBX-LINUX-01`).
 - [ ] **SBX-NET-01** Implement the root-only typed network broker and fixed
-  default-drop lease gate (`SBX-BPROTO-02`, `SBX-P0-06`).
+  default-drop lease gate (`SBX-BPROTO-04`, `SBX-P0-06`).
 - [ ] **SBX-GUARD-01** Implement the per-assignment ownership-lease guardian
   with fail-stop systemd and network coupling (`SBX-HOST-01`, `SBX-NET-01`).
 - [ ] **SBX-BOUND-01** Add MAC, seccomp, privilege, hostile-parser, and residual
@@ -321,10 +330,15 @@ completes. The Git history remains authoritative for code details.
 - `ec3a23d4f` — `SBX-CTRL-02`: exhaustive transaction-frame and durable-effect
   restart matrices, including the external-apply-before-receipt ambiguity,
   prove atomic recovery and convergence without duplicate effect application.
-- `b024bb612`..`eda7b29b9` — `SBX-HOST-01`: bounded sequence-packet ingress,
-  closed runtime decoding, exact assignment-bound atomic launch catalogs,
-  durable fencing and replay, typed one-shot systemd effects, pidfd/cgroup
-  leader and controller identity checks, safe bounded errors, hermetic hostd
-  packaging, and hardened systemd socket activation. Focused tests, strict
-  pedantic lint, the package build, enabled unit materialization, and
-  `systemd-analyze verify` pass.
+- `b024bb612`..`eda7b29b9` — foundation toward `SBX-HOST-01`: bounded
+  sequence-packet ingress, closed runtime decoding, exact assignment-bound
+  atomic launch catalogs, durable fencing and replay, typed one-shot systemd
+  effects, pidfd/cgroup leader and controller identity checks, safe bounded
+  errors, hermetic hostd packaging, and hardened systemd socket activation.
+  Complete session dispatch and authoritative runtime inventory remain open.
+- `393b76e17`..`39dd3381c` — foundation toward `SBX-MOUNT-01`: closed request
+  decoding, durable request fencing and replay, descriptor catalogs, detached
+  mounts, sealed helper plans, fixed-FD helper spawning, namespace mutation,
+  peer-authenticated daemon ingress, hermetic packaging, and hardened systemd
+  integration. Durable handle identity, exact topology verification, complete
+  session dispatch, and authoritative inventory remain open.
