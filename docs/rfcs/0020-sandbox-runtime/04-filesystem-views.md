@@ -442,6 +442,21 @@ inode coordinate one registration and retain it until the final associated
 open releases. Userspace closes redundant descriptors promptly; it does not
 retain one ordinary FD per open after the kernel owns the backing reference.
 
+Backing IDs are connection-local selectors, not kernel-enforced per-node
+capabilities. A compromised worker can select another backing ID registered on
+its connection regardless of the broker's logical-inode bookkeeping. Therefore
+all registrations on one connection must remain inside that attachment's exact
+disclosure and presentation domain. A typed Rust token helps enforce the
+implementation's lifecycle; it cannot impose a stronger kernel authorization
+boundary on arbitrary FUSE replies.
+
+The kernel retains registration credentials when opening backing objects for
+passthrough, rather than adopting the eventual reader's credentials. An
+`O_RDONLY` descriptor supplied for registration is not by itself the complete
+write policy. The read-only mount, rejection of write/truncate OPEN flags, and
+authorization before backing selection are independent mandatory checks. See
+the pinned [Linux passthrough implementation](https://github.com/torvalds/linux/blob/v6.18/fs/fuse/passthrough.c).
+
 Before `FUSE_DEV_IOC_BACKING_OPEN`, the broker reserves one per-connection and
 node registration slot and persists a `Pending` record binding connection
 generation, attachment, logical inode, backing descriptor identity, and
@@ -451,6 +466,14 @@ open. The final release consumes that ID exactly once through
 ambiguous pending/close window, or loss of the authoritative
 connection-generation mapping, aborts and remounts that connection; the broker
 does not reconstruct ownership from cache paths or ordinary process FD tables.
+
+Closing a backing registration removes that selector; it does not revoke
+already-open kernel files or mappings. Registration-slot credit and physical
+backing reclamation credit are separate. The cache must retain conservative
+pins until outstanding consumer references are known to have drained or the
+consumer has been stopped. A successful OPEN reply likewise does not guarantee
+client-side open success: kernel post-reply setup can fail and issue RELEASE,
+so activation must finish before the next request is dispatched.
 
 Shared page cache follows the backing filesystem inode. FUSE presentation
 inode numbers do not create sharing. Content that arrives in chunks or a
