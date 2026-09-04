@@ -2394,6 +2394,20 @@ generation in the fork request. The Linux attempt owner then opens a pidfd for
 the reported PID and brackets its bounded process-identity/cgroup-membership
 proof with checks that the pidfd still names the same live generation.
 
+The source node now exposes one composite child-resource preparation operation
+instead of requiring a production caller to sequence the private ring,
+diagnostics, child QMP, child console, and plugin endpoint primitives itself.
+It accepts only the exact empty active transaction awaiting resource proof,
+stages those resources in dependency order, and authenticates QEMU's complete
+final report against the node-owned stages. The daemon reconciliation launch
+owner—not its modeled child driver—then obtains and installs the target
+attempt's sealed process contract against that template generation. Explicit
+pre-fork rejection rolls the contract back; every other failure retains the
+source and target authorities for reconciliation or quarantine. Focused
+regression coverage checks both the enforced stage order and the final exact
+resource basis. Target-owner construction, child execution, candidate
+production, and the real fork flight remain open.
+
 This is still an executable T-CAM-6.1 audit checkpoint rather than completion
 of T-CAM-6.2 or T-CAM-6.3. The daemon reconciliation owner now retains the
 complete target attempt guard, including its aggregate filesystem quota,
