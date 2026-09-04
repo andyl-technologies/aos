@@ -1,23 +1,53 @@
 ##! nlohmann-json — JSON for Modern C++ (header-only)
 {
   mkDerivation,
-  fetchurl,
+  mkGithubUpstream,
   gnumake,
   cmake,
   ninja,
 }: let
-  version = "3.12.0";
+  upstream = mkGithubUpstream {
+    unitId = "nlohmann-json-3";
+    family = "nlohmann-json";
+    stream = "3";
+    owner = "pkgs/libs/nlohmann-json.nix";
+    version = "3.12.0";
+    upstreamId = "v3.12.0";
+    repository = "nlohmann/json";
+    tagPrefix = "v";
+    major = 3;
+    source = {
+      authority = "github.com";
+      path = [
+        "nlohmann"
+        "json"
+        "archive"
+        "refs"
+        "tags"
+        {
+          parts = [
+            {literal = "v";}
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+            {literal = ".tar.gz";}
+          ];
+        }
+      ];
+      hash = "sha256-S5LrDAbRBoP3RHzpQGy5fNS0U74Y1yeTIPey8CXBAYc=";
+    };
+  };
+  inherit (upstream) version;
 in
   mkDerivation {
     pname = "nlohmann-json";
     inherit version;
 
-    src = fetchurl {
-      urls = [
-        "https://github.com/nlohmann/json/archive/refs/tags/v${version}.tar.gz"
-      ];
-      hash = "sha256-S5LrDAbRBoP3RHzpQGy5fNS0U74Y1yeTIPey8CXBAYc=";
-    };
+    src = upstream.components.main.sources.source;
+    update = upstream.update;
 
     buildDeps = [
       gnumake

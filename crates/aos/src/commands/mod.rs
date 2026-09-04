@@ -19,6 +19,7 @@ pub(crate) mod hub_auth;
 pub mod hub_cutover_verify;
 pub mod image;
 pub mod lint;
+pub mod maintain;
 pub mod metadata;
 pub mod prefetch;
 pub mod profile;

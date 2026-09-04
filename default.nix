@@ -1057,6 +1057,10 @@ in {
     pkgs
     pkgs.allPackageNames;
 
+  # Pure package-maintenance content. Git and local-clone identities are added
+  # only by the local controller after strict canonical evaluation.
+  maintenanceInventory = pkgs.maintenanceInventory;
+
   # Auto-discovered golden image systems.
   # Each system has .config, .options, .build, and .checks.
   systems = discoverSystems;
@@ -1075,6 +1079,7 @@ in {
       inherit pkgs lib mkSystem packagesWithExpose;
       system = serverSystem;
     };
+    package-maintenance = import ./lib/testing/package-maintenance.nix {inherit pkgs lib;};
     # Pure evaluation and focused all-variant output contracts are one gate.
     # Rendered store paths remain contextual Nix references rather than
     # duplicated source snapshots.
@@ -1091,6 +1096,7 @@ in {
         config-materialize
         config-parity
         darling-harness
+        package-maintenance
       ];
       phases = [
         {

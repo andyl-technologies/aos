@@ -155,10 +155,12 @@ dependencies = [
  "alejandra",
  "anyhow",
  "aos-cache",
+ "aos-contract",
  "aos-core",
  "aos-doc",
  "aos-doc-model",
  "aos-image-finalizer",
+ "aos-maintain",
  "aos-net",
  "aos-package",
  "aos-profile",
@@ -173,6 +175,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "console",
+ "crossterm",
  "ed25519-dalek",
  "futures-util",
  "glob",
@@ -183,8 +186,10 @@ dependencies = [
  "indicatif",
  "libc",
  "rand 0.9.4",
+ "ratatui",
  "regex",
  "reqwest",
+ "rnix",
  "rustix 1.1.4",
  "rustls-pemfile",
  "serde",
@@ -227,6 +232,16 @@ dependencies = [
  "tokio-util",
  "url",
  "zstd",
+]
+
+[[package]]
+name = "aos-contract"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -465,6 +480,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-maintain"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-contract",
+ "semver",
+ "serde",
+ "serde_json",
+ "url",
+]
+
+[[package]]
 name = "aos-net"
 version = "0.1.0"
 dependencies = [
@@ -622,6 +649,7 @@ name = "aos-release"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aos-contract",
  "base64 0.22.1",
  "ed25519-dalek",
  "humantime",
