@@ -213,6 +213,7 @@ and compatibility rule:
 | `aos.sandbox.symlink.parent-escape, 1, 0` | permits a relative target whose lexical components can escape the view root; it grants no extra destination access |
 | `aos.sandbox.enforcement.cgroup-v2, 1, 0` | limit enforcement for memory, CPU, process, and I/O dimensions under the cgroup contract |
 | `aos.sandbox.enforcement.broker-ledger, 1, 0` | limit enforcement for mount, FD, FUSE, cache, child, snapshot, and execution admissions |
+| `aos.sandbox.authorization.signed-plan-lease, 1, 0` | exact signed plan and ownership-lease artifacts on authority-bearing local broker requests |
 | `aos.sandbox.enforcement.zfs-quota, 1, 0` | storage/snapshot dimensions under the stated ZFS quota and reservation contract |
 | `aos.sandbox.residency.node-bounded-shared, 1, 0` | shared immutable cache residency is bounded at node scope with logical consumer reservations; no fair physical memcg attribution claim |
 | `aos.sandbox.residency.hard-isolated, 1, 0` | requires a separately proven backing cache identity and enforceable tenant/domain residency bound or placement fails |

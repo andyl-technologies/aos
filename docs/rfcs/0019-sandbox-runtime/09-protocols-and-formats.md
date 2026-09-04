@@ -275,6 +275,20 @@ serializes descriptor integers as reusable references. Extra, missing,
 duplicated, wrong-type, writable, or unexpectedly mounted descriptors are
 rejected.
 
+Host- and mount-broker protocol 1.1 defines a generic request-envelope carrier
+for the exact canonical broker plan, detached plan signature, ownership lease,
+and detached lease signature. The carrier is negotiated with
+`aos.sandbox.authorization.signed-plan-lease, 1, 0` and is mandatory on effect
+methods. Legacy 1.0 is observation/inventory-only; it rejects effect methods
+and the carrier. Protocol 1.1 observation and inventory methods also reject the
+carrier. The transport validator applies independent and aggregate byte limits,
+fully decodes each canonical object, and preserves the received bytes exactly;
+that structural validation grants no authority. Trust anchors, public keys,
+trusted clock samples, revocation state, and node-local records never cross in
+the request. The same portable artifact quartet can later be placed in a
+distinct authenticated remote wrapper, but the local `SOCK_SEQPACKET` framing,
+peer credentials, and descriptor table are not a remote protocol.
+
 Caller role derives from peer credentials, socket activation, and the expected
 service-unit identity; a serialized role is descriptive only. Unknown
 operations, features, or FD roles fail before effects. An exact request replay

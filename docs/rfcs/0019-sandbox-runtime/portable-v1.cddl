@@ -319,7 +319,7 @@ broker-authorization-plan-v1 = [
   audience: 0..1,                    ; host, mount
   protocol: 0..1,                    ; host-broker, mount-broker
   protocol-major: 1,
-  protocol-minor: 0,
+  protocol-minor: 0..1,
   assignment: broker-assignment-v1,
   node: id,
   ownership-authority: key-reference,

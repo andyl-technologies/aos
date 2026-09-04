@@ -7,12 +7,16 @@
 //! its exact role sequence before using any descriptor.
 
 use aos_proto::aos::sandbox::local::v1::{
-    Audience, BrokerClientHello, BrokerDescriptorDisposition, BrokerDescriptorDispositionEntry,
-    BrokerDescriptorEntry, BrokerDescriptorRole, BrokerError, BrokerErrorCode, BrokerMethod,
-    BrokerRequestEnvelope, BrokerResponseEnvelope, BrokerServerHello,
+    Audience, BrokerAuthorizationArtifactsV1, BrokerClientHello, BrokerDescriptorDisposition,
+    BrokerDescriptorDispositionEntry, BrokerDescriptorEntry, BrokerDescriptorRole, BrokerError,
+    BrokerErrorCode, BrokerMethod, BrokerRequestEnvelope, BrokerResponseEnvelope,
+    BrokerServerHello,
+};
+use aos_sandbox_core::format::{
+    decode_broker_authorization_plan, decode_ownership_lease, decode_signature,
 };
 use aos_sandbox_core::{
-    FeatureRef, ProtocolId, ProtocolVersion, RegistryError, negotiate_protocol,
+    DecodeLimits, FeatureRef, ProtocolId, ProtocolVersion, RegistryError, negotiate_protocol,
     validate_required_features,
 };
 use buffa::Message as _;
@@ -27,6 +31,15 @@ use crate::{
 pub const MAXIMUM_HANDSHAKE_BYTES: usize = 64 * 1024;
 /// Maximum number of descriptors accepted in one ancillary descriptor table.
 pub const MAXIMUM_PACKET_DESCRIPTORS: usize = 16;
+/// Feature that makes signed plan and lease artifacts mandatory for effects.
+pub const SIGNED_PLAN_LEASE_FEATURE_NAMESPACE: &str = "aos.sandbox.authorization.signed-plan-lease";
+/// Maximum canonical broker-plan bytes carried in one local request.
+pub const MAXIMUM_BROKER_PLAN_BYTES: usize = 768 * 1024;
+/// Maximum canonical ownership-lease bytes carried in one local request.
+pub const MAXIMUM_OWNERSHIP_LEASE_BYTES: usize = 64 * 1024;
+/// Maximum canonical detached-signature bytes carried in one local request.
+pub const MAXIMUM_AUTHORIZATION_SIGNATURE_BYTES: usize = 64 * 1024;
+const MAXIMUM_AUTHORIZATION_ARTIFACT_BYTES: usize = 960 * 1024;
 const MAXIMUM_BROKER_METHODS: usize = 16;
 const MAXIMUM_REQUIRED_FEATURES: usize = 64;
 const MAXIMUM_SAFE_ERROR_MESSAGE_BYTES: usize = 1024;
@@ -128,6 +141,7 @@ impl NegotiatedBrokerSession {
         if !self.advertised_methods.contains(&request.method) {
             return Err(ProtocolValidationError::MethodMismatch);
         }
+        validate_authorization_profile(self.version, &self.required_features, &request)?;
         Ok(request)
     }
 
@@ -190,6 +204,7 @@ pub struct ValidatedBrokerRequestEnvelope {
     method: BrokerMethod,
     body: Vec<u8>,
     descriptors: Vec<ValidatedDescriptorEntry>,
+    authorization: Option<ValidatedUntrustedAuthorizationArtifacts>,
 }
 
 impl ValidatedBrokerRequestEnvelope {
@@ -209,6 +224,47 @@ impl ValidatedBrokerRequestEnvelope {
     #[must_use]
     pub fn descriptors(&self) -> &[ValidatedDescriptorEntry] {
         &self.descriptors
+    }
+
+    /// Returns exact canonical artifacts that still carry no authority.
+    #[must_use]
+    pub const fn authorization(&self) -> Option<&ValidatedUntrustedAuthorizationArtifacts> {
+        self.authorization.as_ref()
+    }
+}
+
+/// Preserves one structurally valid but explicitly untrusted artifact quartet.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ValidatedUntrustedAuthorizationArtifacts {
+    broker_plan: Vec<u8>,
+    broker_plan_signature: Vec<u8>,
+    ownership_lease: Vec<u8>,
+    ownership_lease_signature: Vec<u8>,
+}
+
+impl ValidatedUntrustedAuthorizationArtifacts {
+    /// Returns the exact received canonical broker-plan bytes.
+    #[must_use]
+    pub fn broker_plan(&self) -> &[u8] {
+        &self.broker_plan
+    }
+
+    /// Returns the exact received canonical detached plan signature bytes.
+    #[must_use]
+    pub fn broker_plan_signature(&self) -> &[u8] {
+        &self.broker_plan_signature
+    }
+
+    /// Returns the exact received canonical ownership-lease bytes.
+    #[must_use]
+    pub fn ownership_lease(&self) -> &[u8] {
+        &self.ownership_lease
+    }
+
+    /// Returns the exact received canonical detached lease signature bytes.
+    #[must_use]
+    pub fn ownership_lease_signature(&self) -> &[u8] {
+        &self.ownership_lease_signature
     }
 }
 
@@ -341,6 +397,7 @@ pub fn negotiate_client_hello(
     let required_methods =
         validate_proto_methods(&hello.required_methods, protocol, "hello.required_methods")?;
     ensure_method_subset(&required_methods, advertised_methods)?;
+    validate_negotiated_authorization_profile(version, &required_features, &required_methods)?;
 
     Ok(NegotiatedBrokerSession {
         protocol,
@@ -409,6 +466,11 @@ pub fn decode_server_hello(
     let advertised_methods =
         validate_proto_methods(&hello.methods, protocol, "server_hello.methods")?;
     ensure_method_subset(required_methods, &advertised_methods)?;
+    validate_negotiated_authorization_profile(
+        offered_version,
+        required_features,
+        required_methods,
+    )?;
 
     Ok(NegotiatedBrokerSession {
         protocol,
@@ -450,11 +512,146 @@ pub fn decode_request_envelope(
         return Err(ProtocolValidationError::InvalidField("envelope.body"));
     }
     let descriptors = validate_descriptor_table(&envelope.descriptors, ancillary_descriptor_count)?;
+    let authorization = envelope
+        .authorization
+        .as_option()
+        .map(validate_authorization_artifacts)
+        .transpose()?;
     Ok(ValidatedBrokerRequestEnvelope {
         method,
         body: envelope.body,
         descriptors,
+        authorization,
     })
+}
+
+fn validate_authorization_artifacts(
+    artifacts: &BrokerAuthorizationArtifactsV1,
+) -> Result<ValidatedUntrustedAuthorizationArtifacts, ProtocolValidationError> {
+    if !artifacts.__buffa_unknown_fields.is_empty()
+        || artifacts.broker_plan.is_empty()
+        || artifacts.broker_plan.len() > MAXIMUM_BROKER_PLAN_BYTES
+        || artifacts.broker_plan_signature.is_empty()
+        || artifacts.broker_plan_signature.len() > MAXIMUM_AUTHORIZATION_SIGNATURE_BYTES
+        || artifacts.ownership_lease.is_empty()
+        || artifacts.ownership_lease.len() > MAXIMUM_OWNERSHIP_LEASE_BYTES
+        || artifacts.ownership_lease_signature.is_empty()
+        || artifacts.ownership_lease_signature.len() > MAXIMUM_AUTHORIZATION_SIGNATURE_BYTES
+    {
+        return Err(ProtocolValidationError::InvalidField(
+            "envelope.authorization",
+        ));
+    }
+    let aggregate = artifacts
+        .broker_plan
+        .len()
+        .checked_add(artifacts.broker_plan_signature.len())
+        .and_then(|size| size.checked_add(artifacts.ownership_lease.len()))
+        .and_then(|size| size.checked_add(artifacts.ownership_lease_signature.len()))
+        .ok_or(ProtocolValidationError::RequestTooLarge)?;
+    if aggregate > MAXIMUM_AUTHORIZATION_ARTIFACT_BYTES {
+        return Err(ProtocolValidationError::RequestTooLarge);
+    }
+
+    let limits = authorization_decode_limits(MAXIMUM_BROKER_PLAN_BYTES);
+    decode_broker_authorization_plan(&artifacts.broker_plan, limits)
+        .map_err(|_| ProtocolValidationError::InvalidField("envelope.authorization.plan"))?;
+    decode_signature(
+        &artifacts.broker_plan_signature,
+        authorization_decode_limits(MAXIMUM_AUTHORIZATION_SIGNATURE_BYTES),
+    )
+    .map_err(|_| ProtocolValidationError::InvalidField("envelope.authorization.plan_signature"))?;
+    decode_ownership_lease(
+        &artifacts.ownership_lease,
+        authorization_decode_limits(MAXIMUM_OWNERSHIP_LEASE_BYTES),
+    )
+    .map_err(|_| ProtocolValidationError::InvalidField("envelope.authorization.lease"))?;
+    decode_signature(
+        &artifacts.ownership_lease_signature,
+        authorization_decode_limits(MAXIMUM_AUTHORIZATION_SIGNATURE_BYTES),
+    )
+    .map_err(|_| ProtocolValidationError::InvalidField("envelope.authorization.lease_signature"))?;
+
+    Ok(ValidatedUntrustedAuthorizationArtifacts {
+        broker_plan: artifacts.broker_plan.clone(),
+        broker_plan_signature: artifacts.broker_plan_signature.clone(),
+        ownership_lease: artifacts.ownership_lease.clone(),
+        ownership_lease_signature: artifacts.ownership_lease_signature.clone(),
+    })
+}
+
+const fn authorization_decode_limits(maximum_bytes: usize) -> DecodeLimits {
+    DecodeLimits {
+        maximum_bytes,
+        maximum_collection_items: 2_048,
+        maximum_total_items: 65_536,
+        maximum_byte_string_bytes: maximum_bytes,
+        maximum_text_bytes: 64 * 1024,
+        maximum_depth: 128,
+    }
+}
+
+fn validate_negotiated_authorization_profile(
+    version: ProtocolVersion,
+    required_features: &[FeatureRef],
+    required_methods: &[BrokerMethod],
+) -> Result<(), ProtocolValidationError> {
+    let requires_effect_authority = required_methods
+        .iter()
+        .copied()
+        .any(method_requires_authorization);
+    let feature_required = required_features.iter().any(is_signed_plan_lease_feature);
+    if version.minor() == 0 {
+        if feature_required || requires_effect_authority {
+            return Err(ProtocolValidationError::RequiredFeatureUnavailable(
+                SIGNED_PLAN_LEASE_FEATURE_NAMESPACE.to_owned(),
+            ));
+        }
+        return Ok(());
+    }
+    if requires_effect_authority && !feature_required {
+        return Err(ProtocolValidationError::RequiredFeatureUnavailable(
+            SIGNED_PLAN_LEASE_FEATURE_NAMESPACE.to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_authorization_profile(
+    version: ProtocolVersion,
+    required_features: &[FeatureRef],
+    request: &ValidatedBrokerRequestEnvelope,
+) -> Result<(), ProtocolValidationError> {
+    if method_requires_authorization(request.method) {
+        if version.minor() < 1 || !required_features.iter().any(is_signed_plan_lease_feature) {
+            return Err(ProtocolValidationError::RequiredFeatureUnavailable(
+                SIGNED_PLAN_LEASE_FEATURE_NAMESPACE.to_owned(),
+            ));
+        }
+        if request.authorization.is_none() {
+            return Err(ProtocolValidationError::InvalidField(
+                "envelope.authorization profile",
+            ));
+        }
+    } else if request.authorization.is_some() {
+        return Err(ProtocolValidationError::InvalidField(
+            "envelope.authorization profile",
+        ));
+    }
+    Ok(())
+}
+
+const fn method_requires_authorization(method: BrokerMethod) -> bool {
+    matches!(
+        method,
+        BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME | BrokerMethod::BROKER_METHOD_MOUNT_APPLY
+    )
+}
+
+fn is_signed_plan_lease_feature(feature: &FeatureRef) -> bool {
+    feature.namespace() == SIGNED_PLAN_LEASE_FEATURE_NAMESPACE
+        && feature.major() == 1
+        && feature.minor() == 0
 }
 
 /// Validates the exact descriptor role sequence selected by a fixed method.
@@ -979,6 +1176,21 @@ fn proto_feature(feature: &FeatureRef) -> aos_proto::aos::sandbox::local::v1::Fe
 
 #[cfg(test)]
 mod tests {
+    use aos_sandbox_core::format::{
+        descriptor_for_bytes, encode_broker_authorization_plan, encode_ownership_lease,
+        encode_signature,
+    };
+    use aos_sandbox_core::model::{
+        KeyReference, KeyUsage, Signature, SignatureBytes, SignaturePurpose, SignatureStatement,
+        StableKeyId,
+    };
+    use aos_sandbox_core::{
+        AssignmentEpoch, BrokerArgumentCommitment, BrokerAssignment, BrokerAudience,
+        BrokerAuthorizationPlan, BrokerGrant, BrokerGrantTarget, BrokerVerb, DesiredGeneration,
+        IncarnationId, LeaseAssignment, MediaType, NodeId, ObjectDescriptor, ObjectDigest,
+        OwnershipLease, PortableMediaType, RevocationScopeId, SandboxId, TrustScopeId,
+    };
+
     use super::*;
 
     fn feature(namespace: &str) -> FeatureRef {
@@ -1002,22 +1214,331 @@ mod tests {
         }
     }
 
+    fn client_features() -> Vec<FeatureRef> {
+        let mut features = vec![
+            feature("aos.sandbox.enforcement.broker-ledger"),
+            feature(SIGNED_PLAN_LEASE_FEATURE_NAMESPACE),
+        ];
+        features.sort();
+        features
+    }
+
     fn client_hello() -> BrokerClientHello {
+        let features = client_features();
         BrokerClientHello {
             protocol_major: 1,
+            protocol_minor: 1,
             audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
-            required_features: vec![proto_feature(&feature(
-                "aos.sandbox.enforcement.broker-ledger",
-            ))],
+            required_features: features.iter().map(proto_feature).collect(),
             maximum_response_bytes: 8192,
             required_methods: vec![BrokerMethod::BROKER_METHOD_MOUNT_APPLY.into()],
             ..Default::default()
         }
     }
 
+    fn descriptor(kind: PortableMediaType, bytes: &[u8]) -> ObjectDescriptor {
+        descriptor_for_bytes(
+            MediaType::new(kind.as_str().to_owned())
+                .unwrap_or_else(|error| panic!("test media type failed: {error}")),
+            bytes,
+        )
+    }
+
+    fn key(name: &str, usage: KeyUsage, byte: u8) -> KeyReference {
+        KeyReference::new(
+            StableKeyId::new(name.to_owned())
+                .unwrap_or_else(|error| panic!("test key ID failed: {error}")),
+            1,
+            ObjectDigest::from_bytes([byte; 32]),
+            usage,
+        )
+    }
+
+    fn signature(
+        subject: ObjectDescriptor,
+        signer: KeyReference,
+        purpose: SignaturePurpose,
+        policy_byte: u8,
+    ) -> Vec<u8> {
+        let policy = ObjectDescriptor::new(
+            MediaType::new(PortableMediaType::TrustPolicy.as_str().to_owned())
+                .unwrap_or_else(|error| panic!("test media type failed: {error}")),
+            ObjectDigest::from_bytes([policy_byte; 32]),
+            1,
+        );
+        let statement = SignatureStatement::new(
+            subject,
+            TrustScopeId::from_bytes([21; 16]),
+            signer,
+            purpose,
+            100,
+            Some(200),
+            policy,
+        )
+        .unwrap_or_else(|error| panic!("test signature statement failed: {error}"));
+        encode_signature(&Signature::new(statement, SignatureBytes::new([22; 64])))
+    }
+
+    fn authorization_artifacts() -> BrokerAuthorizationArtifactsV1 {
+        let assignment = BrokerAssignment::new(
+            SandboxId::from_bytes([1; 16]),
+            IncarnationId::from_bytes([2; 16]),
+            AssignmentEpoch::new(3),
+            DesiredGeneration::new(4),
+            ObjectDigest::from_bytes([5; 32]),
+        )
+        .unwrap_or_else(|error| panic!("test assignment failed: {error}"));
+        let authority = key("ownership-authority", KeyUsage::OwnershipLease, 6);
+        let plan = BrokerAuthorizationPlan::new(
+            BrokerAudience::Mount,
+            ProtocolId::MountBroker,
+            ProtocolVersion::new(1, 1),
+            assignment,
+            NodeId::from_bytes([7; 16]),
+            authority.clone(),
+            vec![
+                BrokerGrant::new(
+                    BrokerVerb::MountCreate,
+                    BrokerGrantTarget::Assignment,
+                    BrokerArgumentCommitment::for_canonical_bytes(b"mount create"),
+                    4096,
+                    0,
+                )
+                .unwrap_or_else(|error| panic!("test grant failed: {error}")),
+            ],
+            ObjectDigest::from_bytes([8; 32]),
+            RevocationScopeId::from_bytes([9; 16]),
+            100,
+            200,
+            Vec::new(),
+        )
+        .unwrap_or_else(|error| panic!("test plan failed: {error}"));
+        let broker_plan = encode_broker_authorization_plan(&plan);
+        let broker_plan_signature = signature(
+            descriptor(PortableMediaType::BrokerAuthorizationPlan, &broker_plan),
+            key("broker-controller", KeyUsage::BrokerAuthorization, 10),
+            SignaturePurpose::BrokerAuthorization,
+            11,
+        );
+
+        let lease = OwnershipLease::new(
+            LeaseAssignment::new(
+                assignment.sandbox(),
+                assignment.incarnation(),
+                assignment.epoch(),
+                assignment.digest(),
+            )
+            .unwrap_or_else(|error| panic!("test lease assignment failed: {error}")),
+            NodeId::from_bytes([7; 16]),
+            1,
+            100,
+            200,
+            10,
+            [12; 16],
+        )
+        .unwrap_or_else(|error| panic!("test lease failed: {error}"));
+        let ownership_lease = encode_ownership_lease(&lease);
+        let ownership_lease_signature = signature(
+            descriptor(PortableMediaType::OwnershipLease, &ownership_lease),
+            authority,
+            SignaturePurpose::OwnershipLease,
+            13,
+        );
+
+        BrokerAuthorizationArtifactsV1 {
+            broker_plan,
+            broker_plan_signature,
+            ownership_lease,
+            ownership_lease_signature,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn protocol_1_1_effects_require_exact_untrusted_authorization_artifacts() {
+        let mut features = vec![
+            feature(SIGNED_PLAN_LEASE_FEATURE_NAMESPACE),
+            feature("aos.sandbox.enforcement.broker-ledger"),
+        ];
+        features.sort();
+        let methods = [
+            BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
+            BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY,
+        ];
+        let hello = BrokerClientHello {
+            protocol_major: 1,
+            protocol_minor: 1,
+            audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+            required_features: features.iter().map(proto_feature).collect(),
+            maximum_response_bytes: 8192,
+            required_methods: methods.iter().copied().map(Into::into).collect(),
+            ..Default::default()
+        };
+        let session = negotiate_client_hello(
+            &hello.encode_to_vec(),
+            peer(),
+            policy(),
+            ProtocolId::MountBroker,
+            &features,
+            &methods,
+        )
+        .unwrap_or_else(|error| panic!("valid 1.1 hello failed: {error}"));
+
+        let artifacts = authorization_artifacts();
+        let envelope = BrokerRequestEnvelope {
+            method: BrokerMethod::BROKER_METHOD_MOUNT_APPLY.into(),
+            body: vec![1],
+            authorization: Some(artifacts.clone()).into(),
+            ..Default::default()
+        };
+        let request = session
+            .decode_request(&envelope.encode_to_vec(), 0)
+            .unwrap_or_else(|error| panic!("valid authorized request failed: {error}"));
+        let preserved = request
+            .authorization()
+            .unwrap_or_else(|| panic!("authorization artifacts missing"));
+        assert_eq!(preserved.broker_plan(), artifacts.broker_plan);
+        assert_eq!(
+            preserved.ownership_lease_signature(),
+            artifacts.ownership_lease_signature
+        );
+
+        let missing = BrokerRequestEnvelope {
+            method: BrokerMethod::BROKER_METHOD_MOUNT_APPLY.into(),
+            body: vec![1],
+            ..Default::default()
+        };
+        assert!(matches!(
+            session.decode_request(&missing.encode_to_vec(), 0),
+            Err(ProtocolValidationError::InvalidField(
+                "envelope.authorization profile"
+            ))
+        ));
+
+        let inventory = BrokerRequestEnvelope {
+            method: BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY.into(),
+            body: vec![1],
+            ..Default::default()
+        };
+        session
+            .decode_request(&inventory.encode_to_vec(), 0)
+            .unwrap_or_else(|error| panic!("inventory must not require authority: {error}"));
+    }
+
+    #[test]
+    fn authorization_carrier_rejects_noncanonical_and_legacy_smuggling() {
+        let mut artifacts = authorization_artifacts();
+        artifacts.broker_plan.push(0);
+        let malformed = BrokerRequestEnvelope {
+            method: BrokerMethod::BROKER_METHOD_MOUNT_APPLY.into(),
+            body: vec![1],
+            authorization: Some(artifacts).into(),
+            ..Default::default()
+        };
+        assert!(matches!(
+            decode_request_envelope(&malformed.encode_to_vec(), ProtocolId::MountBroker, 0),
+            Err(ProtocolValidationError::InvalidField(
+                "envelope.authorization.plan"
+            ))
+        ));
+
+        let features = [feature("aos.sandbox.enforcement.broker-ledger")];
+        let methods = [BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY];
+        let legacy_hello = BrokerClientHello {
+            protocol_major: 1,
+            audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+            required_features: features.iter().map(proto_feature).collect(),
+            maximum_response_bytes: 8192,
+            required_methods: methods.iter().copied().map(Into::into).collect(),
+            ..Default::default()
+        };
+        let session = negotiate_client_hello(
+            &legacy_hello.encode_to_vec(),
+            peer(),
+            policy(),
+            ProtocolId::MountBroker,
+            &features,
+            &methods,
+        )
+        .unwrap_or_else(|error| panic!("valid legacy hello failed: {error}"));
+        let smuggled = BrokerRequestEnvelope {
+            method: BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY.into(),
+            body: vec![1],
+            authorization: Some(authorization_artifacts()).into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            session.decode_request(&smuggled.encode_to_vec(), 0),
+            Err(ProtocolValidationError::InvalidField(
+                "envelope.authorization profile"
+            ))
+        );
+    }
+
+    #[test]
+    fn inventory_only_negotiation_cannot_smuggle_a_later_effect() {
+        let features = [feature("aos.sandbox.enforcement.broker-ledger")];
+        let methods = [
+            BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
+            BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY,
+        ];
+        let hello = BrokerClientHello {
+            protocol_major: 1,
+            protocol_minor: 1,
+            audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+            required_features: features.iter().map(proto_feature).collect(),
+            maximum_response_bytes: 8192,
+            required_methods: vec![BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY.into()],
+            ..Default::default()
+        };
+        let session = negotiate_client_hello(
+            &hello.encode_to_vec(),
+            peer(),
+            policy(),
+            ProtocolId::MountBroker,
+            &features,
+            &methods,
+        )
+        .unwrap_or_else(|error| panic!("valid inventory-only hello failed: {error}"));
+        let effect = BrokerRequestEnvelope {
+            method: BrokerMethod::BROKER_METHOD_MOUNT_APPLY.into(),
+            body: vec![1],
+            authorization: Some(authorization_artifacts()).into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            session.decode_request(&effect.encode_to_vec(), 0),
+            Err(ProtocolValidationError::RequiredFeatureUnavailable(
+                SIGNED_PLAN_LEASE_FEATURE_NAMESPACE.to_owned()
+            ))
+        );
+
+        let legacy_effect = BrokerClientHello {
+            protocol_major: 1,
+            audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+            required_features: features.iter().map(proto_feature).collect(),
+            maximum_response_bytes: 8192,
+            required_methods: vec![BrokerMethod::BROKER_METHOD_MOUNT_APPLY.into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            negotiate_client_hello(
+                &legacy_effect.encode_to_vec(),
+                peer(),
+                policy(),
+                ProtocolId::MountBroker,
+                &features,
+                &methods,
+            ),
+            Err(ProtocolValidationError::RequiredFeatureUnavailable(
+                SIGNED_PLAN_LEASE_FEATURE_NAMESPACE.to_owned()
+            ))
+        );
+    }
+
     #[test]
     fn hello_round_trip_negotiates_exact_capabilities() {
-        let features = [feature("aos.sandbox.enforcement.broker-ledger")];
+        let features = client_features();
         let methods = [
             BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
             BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY,
@@ -1035,7 +1556,7 @@ mod tests {
             &session.server_hello().encode_to_vec(),
             ProtocolId::MountBroker,
             Audience::AUDIENCE_NODE_CONTROLLER,
-            ProtocolVersion::new(1, 0),
+            ProtocolVersion::new(1, 1),
             session.required_features(),
             session.required_methods(),
             8192,
@@ -1047,7 +1568,7 @@ mod tests {
 
     #[test]
     fn hello_rejects_cross_protocol_and_noncanonical_methods() {
-        let features = [feature("aos.sandbox.enforcement.broker-ledger")];
+        let features = client_features();
         let methods = [BrokerMethod::BROKER_METHOD_MOUNT_APPLY];
         let mut hello = client_hello();
         hello.required_methods = vec![BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME.into()];
@@ -1065,6 +1586,7 @@ mod tests {
 
         let mut server = BrokerServerHello {
             protocol_major: 1,
+            protocol_minor: 1,
             maximum_request_bytes: 4096,
             maximum_response_bytes: 4096,
             features: features.iter().map(proto_feature).collect(),
@@ -1079,7 +1601,7 @@ mod tests {
                 &server.encode_to_vec(),
                 ProtocolId::MountBroker,
                 Audience::AUDIENCE_NODE_CONTROLLER,
-                ProtocolVersion::new(1, 0),
+                ProtocolVersion::new(1, 1),
                 &features,
                 &methods,
                 4096,
@@ -1094,7 +1616,7 @@ mod tests {
                 &server.encode_to_vec(),
                 ProtocolId::MountBroker,
                 Audience::AUDIENCE_NODE_CONTROLLER,
-                ProtocolVersion::new(1, 0),
+                ProtocolVersion::new(1, 1),
                 &features,
                 &methods,
                 4096,
@@ -1144,7 +1666,7 @@ mod tests {
 
     #[test]
     fn session_rejects_a_registered_but_unadvertised_method() {
-        let features = [feature("aos.sandbox.enforcement.broker-ledger")];
+        let features = client_features();
         let methods = [BrokerMethod::BROKER_METHOD_MOUNT_APPLY];
         let session = negotiate_client_hello(
             &client_hello().encode_to_vec(),

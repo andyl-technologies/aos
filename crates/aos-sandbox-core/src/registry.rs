@@ -335,7 +335,7 @@ struct FeatureDefinition {
     minor: u32,
 }
 
-const BASE_FEATURES: [FeatureDefinition; 14] = [
+const BASE_FEATURES: [FeatureDefinition; 15] = [
     feature("aos.sandbox.runtime.linux-systemd"),
     feature("aos.sandbox.identity.posix32"),
     feature("aos.sandbox.metadata.posix-acl"),
@@ -343,6 +343,7 @@ const BASE_FEATURES: [FeatureDefinition; 14] = [
     feature("aos.sandbox.symlink.parent-escape"),
     feature("aos.sandbox.enforcement.cgroup-v2"),
     feature("aos.sandbox.enforcement.broker-ledger"),
+    feature("aos.sandbox.authorization.signed-plan-lease"),
     feature("aos.sandbox.enforcement.zfs-quota"),
     feature("aos.sandbox.residency.node-bounded-shared"),
     feature("aos.sandbox.residency.hard-isolated"),
@@ -436,8 +437,16 @@ pub fn negotiate_protocol(
     }
 }
 
-const fn protocol_version(_protocol: ProtocolId) -> ProtocolVersion {
-    ProtocolVersion::new(1, 0)
+const fn protocol_version(protocol: ProtocolId) -> ProtocolVersion {
+    match protocol {
+        ProtocolId::HostBroker | ProtocolId::MountBroker => ProtocolVersion::new(1, 1),
+        ProtocolId::PublicApi
+        | ProtocolId::CoordinatorNode
+        | ProtocolId::StorageBroker
+        | ProtocolId::NetworkBroker
+        | ProtocolId::Guardian
+        | ProtocolId::GuestAgent => ProtocolVersion::new(1, 0),
+    }
 }
 
 #[cfg(test)]
@@ -456,6 +465,10 @@ mod tests {
 
     #[test]
     fn unknown_feature_versions_fail_closed() {
+        let authorization = FeatureRef::new("aos.sandbox.authorization.signed-plan-lease", 1, 0)
+            .unwrap_or_else(|error| panic!("test feature failed: {error}"));
+        assert_eq!(validate_required_features(&[authorization]), Ok(()));
+
         let feature = FeatureRef::new("aos.sandbox.runtime.linux-systemd", 1, 1)
             .unwrap_or_else(|error| panic!("test feature failed: {error}"));
 
@@ -507,6 +520,18 @@ mod tests {
             negotiate_protocol(ProtocolId::MountBroker, ProtocolVersion::new(1, 0)),
             Ok(ProtocolVersion::new(1, 0))
         );
+        assert_eq!(
+            negotiate_protocol(ProtocolId::MountBroker, ProtocolVersion::new(1, 1)),
+            Ok(ProtocolVersion::new(1, 1))
+        );
+        assert_eq!(
+            negotiate_protocol(ProtocolId::HostBroker, ProtocolVersion::new(1, 1)),
+            Ok(ProtocolVersion::new(1, 1))
+        );
+        assert!(matches!(
+            negotiate_protocol(ProtocolId::MountBroker, ProtocolVersion::new(1, 2)),
+            Err(RegistryError::IncompatibleProtocol { .. })
+        ));
         assert!(matches!(
             negotiate_protocol(ProtocolId::PublicApi, ProtocolVersion::new(2, 0)),
             Err(RegistryError::IncompatibleProtocol { .. })

@@ -51,8 +51,10 @@ pub fn decode_broker_authorization_plan(
     decoder.exact("broker authorization plan version", 1)?;
     let audience = decode_audience(&mut decoder)?;
     let protocol = decode_protocol(&mut decoder)?;
-    decoder.exact("broker protocol major", 1)?;
-    decoder.exact("broker protocol minor", 0)?;
+    let protocol_major = u16::try_from(decoder.unsigned()?)
+        .map_err(|_| semantics("broker protocol", "major exceeds its schema width"))?;
+    let protocol_minor = u16::try_from(decoder.unsigned()?)
+        .map_err(|_| semantics("broker protocol", "minor exceeds its schema width"))?;
     if protocol != audience.protocol() {
         return Err(CanonicalCborError::InvalidSemantics {
             object: "broker protocol",
@@ -73,7 +75,7 @@ pub fn decode_broker_authorization_plan(
     BrokerAuthorizationPlan::new(
         audience,
         protocol,
-        ProtocolVersion::new(1, 0),
+        ProtocolVersion::new(protocol_major, protocol_minor),
         assignment,
         node,
         ownership_authority,
@@ -337,11 +339,28 @@ mod tests {
         ));
 
         let original = plan();
-        assert!(matches!(
+        assert!(
             BrokerAuthorizationPlan::new(
                 original.audience(),
                 original.protocol(),
                 ProtocolVersion::new(1, 1),
+                original.assignment(),
+                original.node(),
+                original.ownership_authority().clone(),
+                original.grants().to_vec(),
+                original.policy_commitment(),
+                original.revocation_scope(),
+                original.issued_seconds(),
+                original.expires_seconds(),
+                original.required_features().to_vec(),
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            BrokerAuthorizationPlan::new(
+                original.audience(),
+                original.protocol(),
+                ProtocolVersion::new(1, 2),
                 original.assignment(),
                 original.node(),
                 original.ownership_authority().clone(),

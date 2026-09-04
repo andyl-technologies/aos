@@ -101,11 +101,24 @@ message BrokerDescriptorDispositionEntry {
   BrokerDescriptorDisposition disposition = 3;
 }
 
+// Exact portable signed artifacts carried by protocol-1.1 authority-bearing
+// methods. These bytes are untrusted until the selected broker verifies them
+// against protected node-local trust, clock, revocation, and durable-fence
+// state. Trust policies, public keys, local deadlines, and journal records are
+// never supplied by the requester.
+message BrokerAuthorizationArtifactsV1 {
+  bytes broker_plan = 1; // Canonical BrokerAuthorizationPlan CBOR.
+  bytes broker_plan_signature = 2; // Canonical detached Signature CBOR.
+  bytes ownership_lease = 3; // Canonical OwnershipLease CBOR.
+  bytes ownership_lease_signature = 4; // Canonical detached Signature CBOR.
+}
+
 // One request packet after a successful two-packet hello exchange.
 message BrokerRequestEnvelope {
   BrokerMethod method = 1;
   bytes body = 2;
   repeated BrokerDescriptorEntry descriptors = 3;
+  BrokerAuthorizationArtifactsV1 authorization = 4;
 }
 
 // One response packet. request_id repeats the validated body header ID.

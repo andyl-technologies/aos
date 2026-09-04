@@ -519,7 +519,7 @@ impl BrokerAuthorizationPlan {
         if protocol != audience.protocol() {
             return Err(InvalidBrokerAuthorizationPlan::ProtocolAudienceMismatch);
         }
-        if protocol_version != ProtocolVersion::new(1, 0) {
+        if crate::negotiate_protocol(protocol, protocol_version).is_err() {
             return Err(InvalidBrokerAuthorizationPlan::ProtocolAudienceMismatch);
         }
         if node.as_bytes() == &[0; 16]
