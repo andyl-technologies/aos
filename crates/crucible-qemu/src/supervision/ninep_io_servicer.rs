@@ -65,6 +65,36 @@ pub struct QemuLive9pIoTransactionCheckpoint {
 }
 
 impl QemuLive9pIoServicer {
+    /// Clones this quiescent device onto one branch-private shared-memory ring.
+    ///
+    /// The immutable filesystem tree is shared by value. Session state, fids,
+    /// visibility frontiers, directives, transport cursors, and pending replies
+    /// are restored into an independent device continuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLive9pIoServicerError`] when the source is not quiescent,
+    /// the private mapping differs from the captured topology, or the complete
+    /// continuation cannot be restored.
+    pub(crate) fn clone_hot_fork_continuation(
+        &mut self,
+        shmem_fd: BorrowedFd<'_>,
+        region_len: u64,
+        execution_binding: ContentHash,
+    ) -> Result<Self, QemuLive9pIoServicerError> {
+        let checkpoint = self.checkpoint(execution_binding)?;
+        let mut continuation = Self::from_shmem_fd_with_tree(
+            shmem_fd,
+            region_len,
+            checkpoint.vm_slot,
+            checkpoint.device.core.shift_bits,
+            self.tree.clone(),
+            checkpoint.device.latency,
+        )?;
+        continuation.restore_checkpoint(execution_binding, &checkpoint)?;
+        Ok(continuation)
+    }
+
     /// Returns pending operation count and the largest retained request.
     ///
     /// # Errors

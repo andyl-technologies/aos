@@ -132,6 +132,7 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
                 fault_results: VecDeque::from([result.clone()]),
                 staged_fault_events: Vec::new(),
                 fingerprint_fault_events: VecDeque::new(),
+                fail_hot_fork_clone: false,
             },
             2,
         )

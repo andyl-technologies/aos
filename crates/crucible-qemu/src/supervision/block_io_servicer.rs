@@ -719,6 +719,38 @@ impl QemuLiveBlockIoServicer {
         self.device.clone()
     }
 
+    /// Clones this quiescent device onto one branch-private shared-memory ring.
+    ///
+    /// The immutable base image is shared, while [`BlockDevice::restore`]
+    /// reconstructs an independent copy-on-write overlay, durability frontier,
+    /// request queue, and in-flight response continuation. The source servicer
+    /// and its notification channel remain unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError`] when the source is not
+    /// quiescent, the private mapping differs from the captured topology, the
+    /// device lock is poisoned, or the continuation cannot be restored.
+    pub(crate) fn clone_hot_fork_continuation(
+        &mut self,
+        shmem_fd: BorrowedFd<'_>,
+        region_len: u64,
+        execution_binding: ContentHash,
+    ) -> Result<Self, QemuLiveBlockIoServicerError> {
+        let checkpoint = self.checkpoint(execution_binding)?;
+        let base = self.device.lock()?.base().clone();
+        let mut continuation = Self::from_shmem_fd_with_base_and_latency(
+            shmem_fd,
+            region_len,
+            checkpoint.vm_slot,
+            checkpoint.device.core.shift_bits,
+            base,
+            checkpoint.device.latency,
+        )?;
+        continuation.restore_checkpoint(execution_binding, &checkpoint)?;
+        Ok(continuation)
+    }
+
     /// Maps `shmem_fd` read-write and binds a deterministic block device to `vm_slot`.
     ///
     /// The `icount_shift` must equal the guest's launch-profile icount shift so
