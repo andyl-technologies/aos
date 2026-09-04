@@ -2478,8 +2478,16 @@ transfers that token to factory quarantine, and a driver failure quarantines
 the source lifecycle rather than inventing a semantic failure acknowledgement.
 Scripted regressions cover success ordering, all driver failure classes,
 foreign runtime identity, bounded exit policy, recovery retry, second-launch
-exclusion, and pending-owner drop. Realization now also converts an exact active
-node into a non-forgeable prepared-template capability only after QEMU has
+exclusion, and pending-owner drop. The materialization-independent modeled
+scheduler boundary is now explicit, and a concrete hot-fork semantic driver
+reuses the fresh/exact bounded drive and observation projection only after the
+live owner supplies that process-owner-neutral lifecycle. Raw child channels
+fail before guest progress, an exact checkpoint request fails closed until the
+hot lifecycle owns capture/handoff, and the launch path retains the complete
+resolved campaign input needed to assemble the exact scenario/start world.
+Focused regressions prove common-loop candidate production and raw-channel
+rejection. Linux child node/world assembly remains open. Realization now also
+converts an exact active node into a non-forgeable prepared-template capability only after QEMU has
 completed the retained-template and branch-resource transaction. The capability
 keeps the realized configuration and unified event-log prefix paired with the
 source while reconciliation temporarily owns the raw node; preparation failure

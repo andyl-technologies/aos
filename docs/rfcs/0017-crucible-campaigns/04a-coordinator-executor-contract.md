@@ -2343,9 +2343,18 @@ source reuse.
 
 A modeled driver receives only the admitted private child, non-releasing
 operational boundary, branch-private clone of the exact event-log prefix, and
-branch-local host continuation. Driving and result sealing are separate phases
-at one exact paused boundary. The runner then terminates the child, polls the
-source-owned status under a finite configured cadence, proves target-resource
+branch-local host continuation. Raw QMP, shared-memory, and host-I/O handles do
+not by themselves authorize modeled execution. Before driving, the owner MUST
+assemble a process-owner-neutral scheduler lifecycle that exposes quantum
+progress, terminal state, exact-boundary readiness, selectable request/reply,
+and pending-network inspection while exposing no process termination, resource
+release, VMState restore, or template-recovery authority. The same bounded
+semantic loop and observation projection used by fresh and exact execution then
+drives the hot child from its already-authenticated start configuration. A
+missing assembled lifecycle fails closed before guest progress. Driving and
+result sealing are separate phases at one exact paused boundary. The runner
+then terminates the child, polls the source-owned status under a finite
+configured cadence, proves target-resource
 release, and retains the source lifecycle until the worker supplies its durable
 semantic disposition. Retryable source-template recovery returns the unchanged
 lifecycle token. Dropping a pending runner transfers that token to the
@@ -3084,13 +3093,18 @@ with sticky cancellation and quantum accounting; the process-only owner is not
 an accepted reconciliation target. The daemon reconciliation launch derives
 that request internally and consumes the launch token without exposing a
 PID-only success state and retains the source, complete target guard, private QMP and
-console channels, exact attempt/execution basis, and semantic publication disposition
-through ordered cleanup. It lends modeled execution only the child QMP channel
+console channels, exact attempt/execution basis, and semantic publication
+disposition through ordered cleanup. It lends modeled execution only the child QMP channel
 and a non-releasing operational boundary, so modeled code cannot finish the
-guard early. The worker-pool post-execution contract now carries that exact
-basis and durable disposition through bounded cleanup before worker reuse.
-Concrete hot-fork runner construction, complete private-channel driving, and
-modeled candidate production remain open.
+guard early. The concrete hot-fork semantic driver now reuses the fresh/exact
+bounded scheduler and candidate projection only through the narrow assembled
+lifecycle above, treats the hot start as the beginning of the attempt-local
+scheduler segment, and rejects checkpoint handoff until the lifecycle supplies
+an exact hot-child capture operation. The worker-pool post-execution contract
+now carries the exact basis and durable disposition through bounded cleanup
+before worker reuse. Linux branch-private node/world assembly, complete
+private-channel driving, hot-child checkpoint capture, and a real modeled QEMU
+flight remain open.
 
 The source QEMU now reserves the request's unique nonzero child-process
 generation in a fixed 4,096-record table before forking. The version-1

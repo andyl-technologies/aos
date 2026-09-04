@@ -1,11 +1,14 @@
-//! Concrete modeled driving and observation projection for fresh campaign QEMU attempts.
+//! Concrete modeled driving and observation projection for campaign QEMU attempts.
 //!
-//! The driver advances only through [`crate::QemuFreshAttemptLifecycle`], stops
-//! on the attempt's exact semantic boundary or a modeled terminal verdict, and
-//! retains a bounded dense event log until runner-owned shutdown contributes
-//! its final observational suffix. Sealing then reconstructs the exact child
-//! artifact, evaluates scenario properties offline, derives grow-only coverage
-//! identities, and produces one self-contained campaign observation candidate.
+//! The shared semantic core advances only through [`QemuModeledAttemptLifecycle`],
+//! stops on the attempt's exact semantic boundary or a modeled terminal verdict,
+//! and retains a bounded dense event log. Fresh and exact execution seal after
+//! runner-owned shutdown contributes its final observational suffix. Hot-fork
+//! execution seals the already-paused branch-private child before runner-owned
+//! termination, which is forbidden from resuming guest execution. Both paths
+//! reconstruct the exact child artifact, evaluate scenario properties offline,
+//! derive grow-only coverage identities, and produce one self-contained
+//! campaign observation candidate.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -42,6 +45,8 @@ use crate::{
     QemuFreshStartMaterialization, encode_crucible_configuration_artifact,
     encode_crucible_scenario_artifact, evaluate_crucible_measurement_set,
 };
+#[cfg(target_os = "linux")]
+use crate::{QemuHotForkAttemptDriver, QemuHotForkLiveExecution};
 
 /// Maximum scheduler entries retained by one in-memory fresh-attempt projection.
 pub const MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES: usize = 1_000_000;
@@ -126,6 +131,31 @@ impl From<OfflineAssertionCheckError> for QemuFreshModeledDriverError {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct QemuFreshModeledDriver;
 
+/// Concrete semantic driver for one already-materialized hot-fork child.
+///
+/// This driver reuses the same bounded scheduler and observation projection as
+/// fresh and exact execution. The live-child owner must first assemble a
+/// process-owner-neutral [`QemuModeledAttemptLifecycle`]; raw QMP, shared-memory,
+/// and host-I/O capabilities alone are rejected before guest progress.
+#[derive(Clone, Copy, Debug, Default)]
+#[cfg(target_os = "linux")]
+pub struct QemuHotForkModeledDriver;
+
+/// Failure while driving or sealing one modeled hot-fork child.
+#[derive(Debug, Error)]
+#[cfg(target_os = "linux")]
+pub enum QemuHotForkModeledDriverError {
+    /// The live child has not installed its process-owner-neutral scheduler view.
+    #[error("hot-fork child has no assembled modeled-execution lifecycle: {0}")]
+    LifecycleUnavailable(#[source] crucible_qemu::QemuVmRealizationError),
+    /// The modeled core requested an exact checkpoint unsupported by this phase contract.
+    #[error("hot-fork modeled execution requested an exact checkpoint handoff")]
+    CheckpointRequested,
+    /// Shared semantic driving or observation projection failed.
+    #[error(transparent)]
+    Modeled(#[from] QemuFreshModeledDriverError),
+}
+
 /// Bounded modeled state retained until runner-owned final drain completes.
 #[derive(Debug)]
 pub struct QemuFreshPendingObservation {
@@ -158,26 +188,58 @@ impl QemuFreshModeledDriver {
 ///
 /// Fresh execution and exact resume have different process and checkpoint
 /// owners, but they must interpret an admitted attempt and project its result
-/// identically. This private boundary keeps that semantic loop independent of
+/// identically. This narrow boundary keeps that semantic loop independent of
 /// how the live scheduler was materialized while exposing no shutdown,
 /// checkpoint-publication, or resource-release authority.
-trait QemuModeledAttemptLifecycle {
+/// Process-owner-neutral scheduler operations required by modeled campaign execution.
+///
+/// Implementations expose semantic progress, selectable delivery, quiescence,
+/// and network settlement without exposing process termination, resource
+/// release, VMState restore, or template recovery authority. Fresh, exact, and
+/// hot materialization must implement this same boundary before the common
+/// modeled driver can produce campaign evidence.
+pub trait QemuModeledAttemptLifecycle {
+    /// Advances exactly one scheduler quantum.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the guarded scheduler cannot complete
+    /// the requested quantum.
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError>;
 
+    /// Observes the current modeled terminal verdict, if any.
     fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict>;
 
+    /// Returns whether every live node is at an exact checkpoint boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when quiescence cannot be authenticated.
     fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError>;
 
+    /// Drains node-qualified guest selectable requests at the paused boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the selectable transport is malformed.
     fn drain_pending_selectable_requests(
         &mut self,
     ) -> Result<Vec<QemuNodeSelectablePendingRequest>, SchedulerError>;
 
+    /// Enqueues one exact host-authorized selectable reply.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the request is stale or the reply is
+    /// incompatible with its retained reservation.
     fn enqueue_selectable_reply(
         &mut self,
         pending: &QemuNodeSelectablePendingRequest,
         reply: &SelectionReply,
     ) -> Result<(), SchedulerError>;
 
+    /// Returns the number of guest frames not yet globally committed.
+    #[must_use]
     fn pending_network_output_count(&self) -> usize;
 }
 
@@ -244,8 +306,99 @@ impl QemuFreshAttemptDriver for QemuFreshModeledDriver {
     }
 }
 
+#[cfg(target_os = "linux")]
+impl QemuHotForkAttemptDriver for QemuHotForkModeledDriver {
+    type Pending = QemuFreshPendingObservation;
+    type Error = QemuHotForkModeledDriverError;
+
+    fn drive<L>(
+        &mut self,
+        live: &mut L,
+        input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+    ) -> Result<Self::Pending, AttemptWorkerFailure<Self::Error>>
+    where
+        L: QemuHotForkLiveExecution,
+    {
+        let lifecycle = live
+            .modeled_lifecycle()
+            .map_err(classify_hot_lifecycle_failure)?;
+        match drive_modeled_attempt(
+            lifecycle,
+            input,
+            context,
+            QemuFreshStartMaterialization::genesis(),
+        )
+        .map_err(map_hot_modeled_failure)?
+        {
+            QemuFreshDriveOutcome::Observation(pending) => Ok(pending),
+            QemuFreshDriveOutcome::CheckpointRequested => Err(AttemptWorkerFailure::Terminal(
+                QemuHotForkModeledDriverError::CheckpointRequested,
+            )),
+        }
+    }
+
+    fn seal<L>(
+        &mut self,
+        pending: Self::Pending,
+        live: &mut L,
+        _input: &CrucibleAttemptExecution,
+        _context: &AttemptExecutionContext,
+    ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>>
+    where
+        L: QemuHotForkLiveExecution,
+    {
+        live.check_operational_boundary()
+            .map_err(classify_hot_lifecycle_failure)?;
+        build_observation_candidate(pending)
+            .map(AttemptExecutionProduct::observation)
+            .map_err(QemuHotForkModeledDriverError::Modeled)
+            .map_err(AttemptWorkerFailure::Terminal)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn classify_hot_lifecycle_failure(
+    error: crucible_qemu::QemuVmRealizationError,
+) -> AttemptWorkerFailure<QemuHotForkModeledDriverError> {
+    let retryable = matches!(
+        error,
+        crucible_qemu::QemuVmRealizationError::StoreUnavailable { .. }
+            | crucible_qemu::QemuVmRealizationError::ExecutorUnavailable { .. }
+    );
+    let canceled = matches!(
+        error,
+        crucible_qemu::QemuVmRealizationError::Canceled { .. }
+    );
+    let error = QemuHotForkModeledDriverError::LifecycleUnavailable(error);
+    if retryable {
+        AttemptWorkerFailure::Retryable(error)
+    } else if canceled {
+        AttemptWorkerFailure::Canceled(error)
+    } else {
+        AttemptWorkerFailure::Terminal(error)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn map_hot_modeled_failure(
+    failure: AttemptWorkerFailure<QemuFreshModeledDriverError>,
+) -> AttemptWorkerFailure<QemuHotForkModeledDriverError> {
+    match failure {
+        AttemptWorkerFailure::Retryable(error) => {
+            AttemptWorkerFailure::Retryable(QemuHotForkModeledDriverError::Modeled(error))
+        }
+        AttemptWorkerFailure::Canceled(error) => {
+            AttemptWorkerFailure::Canceled(QemuHotForkModeledDriverError::Modeled(error))
+        }
+        AttemptWorkerFailure::Terminal(error) => {
+            AttemptWorkerFailure::Terminal(QemuHotForkModeledDriverError::Modeled(error))
+        }
+    }
+}
+
 fn drive_modeled_attempt(
-    lifecycle: &mut impl QemuModeledAttemptLifecycle,
+    lifecycle: &mut (impl QemuModeledAttemptLifecycle + ?Sized),
     input: &CrucibleAttemptExecution,
     context: &AttemptExecutionContext,
     materialization: QemuFreshStartMaterialization,
@@ -372,7 +525,7 @@ fn drive_modeled_attempt(
 }
 
 fn resolve_pending_guest_choices(
-    lifecycle: &mut impl QemuModeledAttemptLifecycle,
+    lifecycle: &mut (impl QemuModeledAttemptLifecycle + ?Sized),
     input: &CrucibleAttemptExecution,
     outcome: &mut QuantumOutcome,
     discoveries: &mut RetainedChoiceDiscoveries,
@@ -426,7 +579,7 @@ fn resolve_pending_guest_choices(
 }
 
 fn require_settled_network(
-    lifecycle: &impl QemuModeledAttemptLifecycle,
+    lifecycle: &(impl QemuModeledAttemptLifecycle + ?Sized),
 ) -> Result<(), AttemptWorkerFailure<QemuFreshModeledDriverError>> {
     let pending = lifecycle.pending_network_output_count();
     if pending == 0 {
@@ -439,7 +592,7 @@ fn require_settled_network(
 }
 
 fn check_operational_signals(
-    lifecycle: &mut impl QemuModeledAttemptLifecycle,
+    lifecycle: &mut (impl QemuModeledAttemptLifecycle + ?Sized),
     context: &AttemptExecutionContext,
 ) -> Result<bool, AttemptWorkerFailure<QemuFreshModeledDriverError>> {
     check_cancellation(context)?;
@@ -458,7 +611,7 @@ fn check_cancellation(
 }
 
 fn checkpoint_is_ready(
-    lifecycle: &mut impl QemuModeledAttemptLifecycle,
+    lifecycle: &mut (impl QemuModeledAttemptLifecycle + ?Sized),
     context: &AttemptExecutionContext,
 ) -> Result<bool, AttemptWorkerFailure<QemuFreshModeledDriverError>> {
     if context.checkpoint_request().is_requested() {

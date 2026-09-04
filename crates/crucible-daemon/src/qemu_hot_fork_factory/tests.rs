@@ -253,6 +253,7 @@ impl QemuHotForkTemplateLauncher<ScriptedGuard> for ScriptedLauncher {
         template: Self::Template,
         target: ScriptedGuard,
         runtime_basis: AttemptExecutionRuntimeBasis,
+        _input: &CrucibleAttemptExecution,
     ) -> Result<
         Self::Lifecycle,
         QemuHotForkTemplateLaunchFailure<Self::Template, ScriptedGuard, Self::Error>,
