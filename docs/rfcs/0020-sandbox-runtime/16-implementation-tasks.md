@@ -1159,6 +1159,25 @@ completes. The Git history remains authoritative for code details.
   containers. Directory links and textual RFC references change; portable
   protocol identifiers, wire versions, and golden commitments do not.
 
+- `38d22a948` — implements the narrow C transport library toward `SBX-FS-03`
+  using packaged libfuse public APIs. A fixed-width versioned ABI carries
+  synchronous borrowed callbacks and bounded scalar/buffer outputs; the
+  library borrows the caller's FUSE descriptor and owns a close-on-exec
+  duplicate. A single-threaded loop bounds metadata reply storage, qualifies
+  INIT, preserves complete directory records and progressing cookies, and
+  terminates on failed or partial record writes, malformed successful core
+  outputs, fatal callbacks, and invalid OPENDIR responder use. Fatal batch
+  FORGET fallback suppresses later core calls. Reply writes use absolute
+  `CLOCK_BOOTTIME` deadlines while idle receive remains cancellation-aware
+  without expiring an unused mount. Argument storage, descriptors, and callback
+  teardown have explicit ownership. Adversarial fixture tests, exact closure
+  and output manifest checks, installed link/ABI, exported-symbol and SONAME
+  Firecracker tests, Nix parsing, and scoped Alejandra pass after independent
+  review and repairs. Successful protocol fixtures use trusted socket records;
+  a real `/dev/fuse` mount, cross-identity kernel permission proof, Rust adapter,
+  file data, and worker process integration remain open. No task is checked
+  from the library alone.
+
 The post-`727da7f3e` x86_64 `sandbox-filesystem-capability-proof` rerun built the
 complete hermetic Rust closure, AOS system, initrd, and VM disk and launched
 QEMU with KVM. The guest agent timed out before readiness with a blank serial
