@@ -40,8 +40,8 @@ pub use crypto::{
     verify_signature,
 };
 pub use format::{
-    CanonicalCborError, DecodeLimits, StreamingDirectory, descriptor_for_bytes,
-    hardlink_group_digest, validate_canonical_cbor,
+    CanonicalCborError, DecodeLimits, ObjectDescriptorVerificationError, ObjectDescriptorVerifier,
+    StreamingDirectory, descriptor_for_bytes, hardlink_group_digest, validate_canonical_cbor,
 };
 pub use identity::{
     AttachmentId, AttachmentSlotId, AuditId, CacheDomainId, CapabilityId, ExecutionId, ExportId,
