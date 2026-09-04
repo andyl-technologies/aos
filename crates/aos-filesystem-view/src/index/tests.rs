@@ -1,6 +1,7 @@
 //! Structural-index encoding, validation, compatibility, and limit tests.
 
 use super::builder::*;
+use super::semantic::*;
 use super::validate::*;
 use super::view::*;
 use super::wire::*;
@@ -247,6 +248,15 @@ fn validate_fresh<'a>(
     tree: &ObjectDescriptor,
     root: &ObjectDescriptor,
 ) -> Result<ValidatedIndex<'a>, IndexError> {
+    validate_fresh_with_features(bytes, tree, root, 0)
+}
+
+fn validate_fresh_with_features<'a>(
+    bytes: &'a [u8],
+    tree: &ObjectDescriptor,
+    root: &ObjectDescriptor,
+    tree_features: u32,
+) -> Result<ValidatedIndex<'a>, IndexError> {
     let media = index_media_for(bytes);
     let index = descriptor_for_bytes(media, bytes);
     validate_index(
@@ -258,7 +268,7 @@ fn validate_fresh<'a>(
             compiler_abi: [3; 32],
             tree,
             root,
-            tree_features: 0,
+            tree_features,
         },
     )
 }
@@ -426,6 +436,576 @@ fn iterable_index() -> (Vec<u8>, ObjectDescriptor, ObjectDescriptor) {
         .unwrap_or_else(|error| panic!("finish failed: {error}"))
         .into_parts();
     (writer.into_inner(), tree, root)
+}
+
+fn semantic_index() -> (Vec<u8>, ObjectDescriptor, ObjectDescriptor) {
+    let tree = descriptor();
+    let root = directory_descriptor();
+    let root_metadata = FilesystemMetadata::new(0o755, 0, 0, 0, 0, Vec::new(), None)
+        .unwrap_or_else(|error| panic!("metadata failed: {error}"));
+    let xattrs = vec![
+        Xattr::new(b"a".to_vec(), Vec::new())
+            .unwrap_or_else(|error| panic!("xattr failed: {error}")),
+        Xattr::new(vec![0x80], b"value".to_vec())
+            .unwrap_or_else(|error| panic!("xattr failed: {error}")),
+    ];
+    let acl = Acl::new(vec![
+        AclEntry::UserObject(7),
+        AclEntry::NamedUser {
+            uid: 42,
+            permissions: 6,
+        },
+        AclEntry::GroupObject(5),
+        AclEntry::NamedGroup {
+            gid: 43,
+            permissions: 4,
+        },
+        AclEntry::Mask(5),
+        AclEntry::Other(4),
+    ])
+    .unwrap_or_else(|error| panic!("ACL failed: {error}"));
+    let file_metadata = FilesystemMetadata::new(0o754, 7, 8, 9, 10, xattrs, Some(acl))
+        .unwrap_or_else(|error| panic!("metadata failed: {error}"));
+    let first_content = ObjectDescriptor::new(
+        MediaType::new("application/vnd.aos.sandbox.content.v1")
+            .unwrap_or_else(|error| panic!("media failed: {error}")),
+        ObjectDigest::from_bytes([4; 32]),
+        3,
+    );
+    let second_content = ObjectDescriptor::new(
+        first_content.media_type().clone(),
+        ObjectDigest::from_bytes([5; 32]),
+        4,
+    );
+    let sparse = SparseContent::new(
+        20,
+        vec![
+            Extent::new(2, 3, first_content)
+                .unwrap_or_else(|error| panic!("extent failed: {error}")),
+            Extent::new(10, 4, second_content)
+                .unwrap_or_else(|error| panic!("extent failed: {error}")),
+        ],
+    )
+    .unwrap_or_else(|error| panic!("sparse content failed: {error}"));
+    let content = ContentLayout::Sparse(sparse);
+    let empty_sparse = SparseContent::new(0, Vec::new())
+        .unwrap_or_else(|error| panic!("empty sparse content failed: {error}"));
+    let empty_content = ContentLayout::Sparse(empty_sparse);
+    let mut builder = StructuralIndexBuilder::new_v3(
+        IndexStaging::new(IoCursor::new(Vec::new()), 64 * 1024, 16 * 1024),
+        [3; 32],
+        tree.clone(),
+        root.clone(),
+        FEATURE_ACL,
+    )
+    .unwrap_or_else(|error| panic!("builder failed: {error}"));
+    for record in [
+        IndexRecord {
+            parent: u64::MAX,
+            depth: 0,
+            sibling_ordinal: 0,
+            name: &[],
+            metadata: &root_metadata,
+            node: IndexNode::Directory { descriptor: &root },
+        },
+        IndexRecord {
+            parent: 0,
+            depth: 1,
+            sibling_ordinal: 0,
+            name: b"file",
+            metadata: &file_metadata,
+            node: IndexNode::File {
+                content: &content,
+                hardlink_group: None,
+            },
+        },
+        IndexRecord {
+            parent: 0,
+            depth: 1,
+            sibling_ordinal: 1,
+            name: b"link",
+            metadata: &root_metadata,
+            node: IndexNode::Symlink {
+                target: b"\x80/target",
+            },
+        },
+        IndexRecord {
+            parent: 0,
+            depth: 1,
+            sibling_ordinal: 2,
+            name: b"zero",
+            metadata: &root_metadata,
+            node: IndexNode::File {
+                content: &empty_content,
+                hardlink_group: None,
+            },
+        },
+    ] {
+        builder
+            .push(&record)
+            .unwrap_or_else(|error| panic!("push failed: {error}"));
+    }
+    let (writer, _) = builder
+        .finish()
+        .unwrap_or_else(|error| panic!("finish failed: {error}"))
+        .into_parts();
+    (writer.into_inner(), tree, root)
+}
+
+#[test]
+fn authenticated_semantic_views_borrow_every_record_body_without_allocation() {
+    let (bytes, tree, root_descriptor) = semantic_index();
+    let validated = validate_fresh_with_features(&bytes, &tree, &root_descriptor, FEATURE_ACL)
+        .unwrap_or_else(|error| panic!("validation failed: {error}"));
+    let root = validated
+        .root()
+        .unwrap_or_else(|error| panic!("root failed: {error}"));
+    let root_semantics = validated
+        .record_semantics(&root)
+        .unwrap_or_else(|error| panic!("root semantics failed: {error}"));
+    let IndexNodeBodyView::Directory { descriptor } = root_semantics.body() else {
+        panic!("root body was not a directory");
+    };
+    assert_eq!(
+        descriptor.media_type(),
+        root_descriptor.media_type().as_str()
+    );
+    assert_eq!(descriptor.digest(), root_descriptor.digest());
+    assert_eq!(descriptor.encoded_size(), root_descriptor.encoded_size());
+    assert!(root_semantics.xattrs().is_empty());
+    assert!(root_semantics.acl().is_none());
+    assert_eq!(root_semantics.logical_size(), None);
+
+    let file_name =
+        PathName::new(b"file".to_vec()).unwrap_or_else(|error| panic!("name failed: {error}"));
+    let file = validated
+        .lookup_child(&root, &file_name)
+        .unwrap_or_else(|error| panic!("lookup failed: {error}"))
+        .unwrap_or_else(|| panic!("file missing"));
+    let semantics = validated
+        .record_semantics(&file)
+        .unwrap_or_else(|error| panic!("file semantics failed: {error}"));
+    assert_eq!(semantics.logical_size(), Some(20));
+
+    let mut xattrs = semantics.xattrs().iter();
+    assert_eq!(xattrs.len(), 2);
+    let first = xattrs
+        .next()
+        .unwrap_or_else(|| panic!("first xattr missing"))
+        .unwrap_or_else(|error| panic!("xattr failed: {error}"));
+    assert_eq!(
+        (first.name(), first.value()),
+        (b"a".as_slice(), b"".as_slice())
+    );
+    assert_eq!(xattrs.size_hint(), (1, Some(1)));
+    let second = xattrs
+        .next()
+        .unwrap_or_else(|| panic!("second xattr missing"))
+        .unwrap_or_else(|error| panic!("xattr failed: {error}"));
+    assert_eq!(
+        (second.name(), second.value()),
+        ([0x80].as_slice(), b"value".as_slice())
+    );
+    assert!(xattrs.next().is_none());
+    assert!(xattrs.next().is_none());
+
+    let acl = semantics.acl().unwrap_or_else(|| panic!("ACL missing"));
+    assert_eq!(acl.len(), 6);
+    let mut acl_entries = acl.iter();
+    assert_eq!(acl_entries.size_hint(), (6, Some(6)));
+    let entries = acl_entries
+        .by_ref()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap_or_else(|error| panic!("ACL iteration failed: {error}"));
+    assert_eq!(
+        entries,
+        vec![
+            AclEntry::UserObject(7),
+            AclEntry::NamedUser {
+                uid: 42,
+                permissions: 6,
+            },
+            AclEntry::GroupObject(5),
+            AclEntry::NamedGroup {
+                gid: 43,
+                permissions: 4,
+            },
+            AclEntry::Mask(5),
+            AclEntry::Other(4),
+        ]
+    );
+    assert!(acl_entries.next().is_none());
+    assert!(acl_entries.next().is_none());
+
+    let IndexNodeBodyView::File(file) = semantics.body() else {
+        panic!("file body missing");
+    };
+    assert_eq!(file.logical_size(), 20);
+    assert_eq!(file.hardlink_group(), None);
+    let IndexContentView::Sparse(sparse) = file.content() else {
+        panic!("sparse body missing");
+    };
+    assert_eq!(sparse.logical_size(), 20);
+    let mut extents = sparse.extents().iter();
+    assert_eq!(extents.len(), 2);
+    let first = extents
+        .next()
+        .unwrap_or_else(|| panic!("first extent missing"))
+        .unwrap_or_else(|error| panic!("extent failed: {error}"));
+    assert_eq!((first.offset(), first.length(), first.end()), (2, 3, 5));
+    assert_eq!(first.content().encoded_size(), 3);
+    let second = extents
+        .next()
+        .unwrap_or_else(|| panic!("second extent missing"))
+        .unwrap_or_else(|error| panic!("extent failed: {error}"));
+    assert_eq!(
+        (second.offset(), second.length(), second.end()),
+        (10, 4, 14)
+    );
+    assert_eq!(second.content().digest(), ObjectDigest::from_bytes([5; 32]));
+    assert!(extents.next().is_none());
+    assert!(extents.next().is_none());
+
+    let link_name =
+        PathName::new(b"link".to_vec()).unwrap_or_else(|error| panic!("name failed: {error}"));
+    let link = validated
+        .lookup_child(&root, &link_name)
+        .unwrap_or_else(|error| panic!("lookup failed: {error}"))
+        .unwrap_or_else(|| panic!("link missing"));
+    let link_semantics = validated
+        .record_semantics(&link)
+        .unwrap_or_else(|error| panic!("link semantics failed: {error}"));
+    assert!(matches!(
+        link_semantics.body(),
+        IndexNodeBodyView::Symlink {
+            target: b"\x80/target"
+        }
+    ));
+
+    let zero_name =
+        PathName::new(b"zero".to_vec()).unwrap_or_else(|error| panic!("name failed: {error}"));
+    let zero = validated
+        .lookup_child(&root, &zero_name)
+        .unwrap_or_else(|error| panic!("lookup failed: {error}"))
+        .unwrap_or_else(|| panic!("zero-length file missing"));
+    let zero_semantics = validated
+        .record_semantics(&zero)
+        .unwrap_or_else(|error| panic!("zero-length semantics failed: {error}"));
+    let IndexNodeBodyView::File(zero_file) = zero_semantics.body() else {
+        panic!("zero-length file body missing");
+    };
+    let IndexContentView::Sparse(zero_sparse) = zero_file.content() else {
+        panic!("zero-length sparse body missing");
+    };
+    assert_eq!(zero_sparse.logical_size(), 0);
+    assert!(zero_sparse.extents().is_empty());
+}
+
+#[test]
+fn semantic_records_are_shared_by_v1_v2_and_v3_and_reject_foreign_nodes() {
+    let (foreign_bytes, foreign_tree, foreign_root) = semantic_index();
+    let foreign =
+        validate_fresh_with_features(&foreign_bytes, &foreign_tree, &foreign_root, FEATURE_ACL)
+            .unwrap_or_else(|error| panic!("foreign validation failed: {error}"));
+    let foreign_node = foreign
+        .root()
+        .unwrap_or_else(|error| panic!("foreign root failed: {error}"));
+    let indexes = [
+        root_index_v1(),
+        {
+            let (bytes, _, _, tree, root) = root_index();
+            (bytes, tree, root)
+        },
+        root_index_v3(),
+    ];
+    for (bytes, tree, root_descriptor) in &indexes {
+        let validated = validate_fresh(bytes, tree, root_descriptor)
+            .unwrap_or_else(|error| panic!("validation failed: {error}"));
+        let root = validated
+            .root()
+            .unwrap_or_else(|error| panic!("root failed: {error}"));
+        let semantics = validated
+            .record_semantics(&root)
+            .unwrap_or_else(|error| panic!("semantics failed: {error}"));
+        let IndexNodeBodyView::Directory { descriptor } = semantics.body() else {
+            panic!("root body was not a directory");
+        };
+        assert_eq!(descriptor.digest(), root_descriptor.digest());
+        assert_eq!(descriptor.encoded_size(), root_descriptor.encoded_size());
+        assert!(matches!(
+            validated.record_semantics(&foreign_node),
+            Err(IndexError::ForeignNode)
+        ));
+    }
+
+    let (whole_bytes, whole_tree, whole_root) = iterable_index();
+    let whole_index = validate_fresh(&whole_bytes, &whole_tree, &whole_root)
+        .unwrap_or_else(|error| panic!("whole validation failed: {error}"));
+    let whole_root_view = whole_index
+        .root()
+        .unwrap_or_else(|error| panic!("whole root failed: {error}"));
+    let name = PathName::new(b"b".to_vec())
+        .unwrap_or_else(|error| panic!("whole-file name failed: {error}"));
+    let whole_node = whole_index
+        .lookup_child(&whole_root_view, &name)
+        .unwrap_or_else(|error| panic!("whole-file lookup failed: {error}"))
+        .unwrap_or_else(|| panic!("whole file missing"));
+    let whole_semantics = whole_index
+        .record_semantics(&whole_node)
+        .unwrap_or_else(|error| panic!("whole-file semantics failed: {error}"));
+    let IndexNodeBodyView::File(whole_file) = whole_semantics.body() else {
+        panic!("whole-file body missing");
+    };
+    let IndexContentView::Whole { content } = whole_file.content() else {
+        panic!("whole content missing");
+    };
+    assert_eq!(whole_file.logical_size(), 0);
+    assert_eq!(content.encoded_size(), 0);
+    assert_eq!(
+        content.media_type(),
+        "application/vnd.aos.sandbox.content.v1"
+    );
+    assert!(whole_file.hardlink_group().is_some());
+}
+
+fn assert_semantic_identity_forgery_is_rejected(
+    index: &ValidatedIndex<'_>,
+    node: IndexNodeView<'_>,
+) {
+    let mut forged = node;
+    forged.id = forged.id.wrapping_add(1);
+    assert!(matches!(
+        index.record_semantics(&forged),
+        Err(IndexError::InvalidRecord)
+    ));
+
+    let mut forged = node;
+    forged.record_offset = forged.record_offset.wrapping_add(1);
+    assert!(matches!(
+        index.record_semantics(&forged),
+        Err(IndexError::InvalidRecord)
+    ));
+
+    let mut forged = node;
+    forged.sibling_ordinal = forged.sibling_ordinal.wrapping_add(1);
+    assert!(matches!(
+        index.record_semantics(&forged),
+        Err(IndexError::InvalidRecord)
+    ));
+
+    let mut forged = node;
+    forged.parent = forged.parent.wrapping_add(1);
+    assert!(matches!(
+        index.record_semantics(&forged),
+        Err(IndexError::InvalidRecord)
+    ));
+
+    let mut forged = node;
+    forged.name = b"forged";
+    assert!(matches!(
+        index.record_semantics(&forged),
+        Err(IndexError::InvalidRecord)
+    ));
+
+    let mut forged = node;
+    forged.depth = forged.depth.wrapping_add(1);
+    assert!(matches!(
+        index.record_semantics(&forged),
+        Err(IndexError::InvalidRecord)
+    ));
+
+    let mut forged = node;
+    forged.kind = match forged.kind {
+        IndexNodeKind::File => IndexNodeKind::Directory,
+        IndexNodeKind::Directory | IndexNodeKind::Symlink => IndexNodeKind::File,
+    };
+    assert!(matches!(
+        index.record_semantics(&forged),
+        Err(IndexError::InvalidRecord)
+    ));
+
+    let mut forged = node;
+    forged.mode ^= 1;
+    assert!(matches!(
+        index.record_semantics(&forged),
+        Err(IndexError::InvalidRecord)
+    ));
+
+    let mut forged = node;
+    forged.uid = forged.uid.wrapping_add(1);
+    assert!(matches!(
+        index.record_semantics(&forged),
+        Err(IndexError::InvalidRecord)
+    ));
+
+    let mut forged = node;
+    forged.gid = forged.gid.wrapping_add(1);
+    assert!(matches!(
+        index.record_semantics(&forged),
+        Err(IndexError::InvalidRecord)
+    ));
+
+    let mut forged = node;
+    forged.mtime_seconds = forged.mtime_seconds.wrapping_add(1);
+    assert!(matches!(
+        index.record_semantics(&forged),
+        Err(IndexError::InvalidRecord)
+    ));
+
+    let mut forged = node;
+    forged.mtime_nanos = forged.mtime_nanos.wrapping_add(1);
+    assert!(matches!(
+        index.record_semantics(&forged),
+        Err(IndexError::InvalidRecord)
+    ));
+
+    let mut forged = node;
+    forged.encoded_record = &[];
+    assert!(matches!(
+        index.record_semantics(&forged),
+        Err(IndexError::InvalidRecord)
+    ));
+}
+
+#[test]
+fn semantic_identity_is_authenticated_by_each_format_structure() {
+    let (v1_bytes, v1_tree, v1_root) = root_index_v1();
+    let v1 = validate_fresh(&v1_bytes, &v1_tree, &v1_root)
+        .unwrap_or_else(|error| panic!("V1 validation failed: {error}"));
+    let v1_node = v1
+        .root()
+        .unwrap_or_else(|error| panic!("V1 root failed: {error}"));
+    assert_semantic_identity_forgery_is_rejected(&v1, v1_node);
+
+    let (v2_bytes, v2_tree, v2_root) = lookup_index();
+    let v2 = validate_fresh(&v2_bytes, &v2_tree, &v2_root)
+        .unwrap_or_else(|error| panic!("V2 validation failed: {error}"));
+    let v2_root_node = v2
+        .root()
+        .unwrap_or_else(|error| panic!("V2 root failed: {error}"));
+    let v2_name =
+        PathName::new(b"z".to_vec()).unwrap_or_else(|error| panic!("V2 name failed: {error}"));
+    let v2_node = v2
+        .lookup_child(&v2_root_node, &v2_name)
+        .unwrap_or_else(|error| panic!("V2 lookup failed: {error}"))
+        .unwrap_or_else(|| panic!("V2 child missing"));
+    assert_semantic_identity_forgery_is_rejected(&v2, v2_node);
+
+    let (v3_bytes, v3_tree, v3_root) = iterable_index();
+    let v3 = validate_fresh(&v3_bytes, &v3_tree, &v3_root)
+        .unwrap_or_else(|error| panic!("V3 validation failed: {error}"));
+    let v3_root_node = v3
+        .root()
+        .unwrap_or_else(|error| panic!("V3 root failed: {error}"));
+    let v3_name =
+        PathName::new(b"b".to_vec()).unwrap_or_else(|error| panic!("V3 name failed: {error}"));
+    let v3_node = v3
+        .lookup_child(&v3_root_node, &v3_name)
+        .unwrap_or_else(|error| panic!("V3 lookup failed: {error}"))
+        .unwrap_or_else(|| panic!("V3 child missing"));
+    assert_semantic_identity_forgery_is_rejected(&v3, v3_node);
+}
+
+#[test]
+fn borrowed_semantic_parser_fails_closed_on_structural_corruption() {
+    let metadata = FilesystemMetadata::new(0o644, 0, 0, 0, 0, Vec::new(), None)
+        .unwrap_or_else(|error| panic!("metadata failed: {error}"));
+    let descriptor = ObjectDescriptor::new(
+        MediaType::new("application/vnd.aos.sandbox.content.v1")
+            .unwrap_or_else(|error| panic!("media failed: {error}")),
+        ObjectDigest::from_bytes([5; 32]),
+        0,
+    );
+    let content = ContentLayout::whole(descriptor);
+    let mut record = Vec::new();
+    encode_record(
+        &mut record,
+        &IndexRecord {
+            parent: 0,
+            depth: 1,
+            sibling_ordinal: 0,
+            name: b"f",
+            metadata: &metadata,
+            node: IndexNode::File {
+                content: &content,
+                hardlink_group: None,
+            },
+        },
+    )
+    .unwrap_or_else(|error| panic!("record failed: {error}"));
+    assert!(decode_record_semantics(&record, IndexNodeKind::File, 0o644).is_ok());
+
+    let mut truncated = record.clone();
+    truncated.pop();
+    assert!(matches!(
+        decode_record_semantics(&truncated, IndexNodeKind::File, 0o644),
+        Err(IndexError::InvalidRecord)
+    ));
+
+    let mut impossible_xattrs = record.clone();
+    let xattr_count = RECORD_FIXED_BYTES + 4 + 1;
+    impossible_xattrs[xattr_count..xattr_count + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert!(matches!(
+        decode_record_semantics(&impossible_xattrs, IndexNodeKind::File, 0o644),
+        Err(IndexError::InvalidRecord)
+    ));
+
+    let mut invalid_content = record.clone();
+    let content_tag = RECORD_FIXED_BYTES + 4 + 1 + 4 + 4;
+    invalid_content[content_tag] = 9;
+    assert!(matches!(
+        decode_record_semantics(&invalid_content, IndexNodeKind::File, 0o644),
+        Err(IndexError::InvalidRecord)
+    ));
+
+    let mut trailing = record;
+    trailing.push(0);
+    let length =
+        u32::try_from(trailing.len()).unwrap_or_else(|_| panic!("record length does not fit u32"));
+    trailing[..4].copy_from_slice(&length.to_le_bytes());
+    assert!(matches!(
+        decode_record_semantics(&trailing, IndexNodeKind::File, 0o644),
+        Err(IndexError::InvalidRecord)
+    ));
+
+    let extent_descriptor = ObjectDescriptor::new(
+        MediaType::new("application/vnd.aos.sandbox.content.v1")
+            .unwrap_or_else(|error| panic!("media failed: {error}")),
+        ObjectDigest::from_bytes([6; 32]),
+        3,
+    );
+    let sparse = SparseContent::new(
+        20,
+        vec![
+            Extent::new(2, 3, extent_descriptor)
+                .unwrap_or_else(|error| panic!("extent failed: {error}")),
+        ],
+    )
+    .unwrap_or_else(|error| panic!("sparse content failed: {error}"));
+    let sparse_content = ContentLayout::Sparse(sparse);
+    let mut sparse_record = Vec::new();
+    encode_record(
+        &mut sparse_record,
+        &IndexRecord {
+            parent: 0,
+            depth: 1,
+            sibling_ordinal: 0,
+            name: b"f",
+            metadata: &metadata,
+            node: IndexNode::File {
+                content: &sparse_content,
+                hardlink_group: None,
+            },
+        },
+    )
+    .unwrap_or_else(|error| panic!("sparse record failed: {error}"));
+    let first_extent_offset = content_tag + 1 + 8 + 4;
+    sparse_record[first_extent_offset..first_extent_offset + 8]
+        .copy_from_slice(&u64::MAX.to_le_bytes());
+    assert!(matches!(
+        decode_record_semantics(&sparse_record, IndexNodeKind::File, 0o644),
+        Err(IndexError::InvalidRecord)
+    ));
 }
 
 #[test]

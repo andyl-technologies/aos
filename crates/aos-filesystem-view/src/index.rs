@@ -33,9 +33,10 @@
 //! Builder working-byte limits account for fallible heap allocations. Header
 //! encoding instead uses one fixed 248-byte stack object, which is part of the
 //! compiler's constant stack budget and never scales with hostile input.
-//! V3 exposes structural ranges and link counts only. FUSE cookie translation,
-//! READDIRPLUS policy, checked `u64`-to-`u32` protocol conversion, and borrowed
-//! record-body/xattr/ACL views belong to later worker-facing increments.
+//! V3 adds structural ranges and link counts, while every version exposes the
+//! shared record body through allocation-free borrowed semantic views. FUSE
+//! cookie translation, READDIRPLUS policy, and checked `u64`-to-`u32` protocol
+//! conversion belong to later worker-facing increments.
 
 use std::io::{Seek, SeekFrom, Write};
 
@@ -49,11 +50,17 @@ use aos_sandbox_core::{
 use sha2::{Digest, Sha256};
 
 mod builder;
+mod semantic;
 mod validate;
 mod view;
 mod wire;
 
 pub use builder::{IndexNode, IndexRecord, IndexStaging, StagedIndex};
+pub use semantic::{
+    IndexAclEntries, IndexAclRange, IndexContentView, IndexExtentRange, IndexExtentView,
+    IndexExtents, IndexFileView, IndexNodeBodyView, IndexNodeSemantics, IndexObjectDescriptorView,
+    IndexSparseContentView, IndexXattrRange, IndexXattrView, IndexXattrs,
+};
 pub use validate::{IndexCrosslinks, IndexError, IndexExpectation, validate_index};
 pub use view::{
     DirectoryEntries, DirectoryEntryView, DirectoryRange, IndexNodeKind, IndexNodeView,

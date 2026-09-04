@@ -106,6 +106,111 @@ impl<'bytes> ValidatedIndex<'bytes> {
         decode_record_view(self.bytes, offset, 0, self.descriptor.digest())
     }
 
+    /// Re-resolves a private node handle through the authenticated format index.
+    pub(super) fn authenticate_node(
+        &self,
+        node: &IndexNodeView<'_>,
+    ) -> Result<IndexNodeView<'bytes>, IndexError> {
+        if node.artifact != self.descriptor.digest() {
+            return Err(IndexError::ForeignNode);
+        }
+
+        let authenticated_offset = if node.id == 0 {
+            let root_offset = match self.layout {
+                IndexLayout::SequentialV1 => HEADER_BYTES_V1,
+                IndexLayout::PointLookupV2 { .. } => HEADER_BYTES_V2,
+                IndexLayout::IterableV3 { .. } => HEADER_BYTES_V3,
+            };
+            let root_offset = u64::try_from(root_offset).map_err(|_| IndexError::InvalidRecord)?;
+            if node.record_offset != root_offset {
+                return Err(IndexError::InvalidRecord);
+            }
+            root_offset
+        } else {
+            match self.layout {
+                IndexLayout::SequentialV1 => return Err(IndexError::InvalidRecord),
+                IndexLayout::PointLookupV2 {
+                    records_bytes,
+                    lookup_slots,
+                } => self.authenticate_v2_node(node, records_bytes, lookup_slots)?,
+                IndexLayout::IterableV3 {
+                    records_bytes,
+                    lookup_slots,
+                    directory_slots,
+                    ..
+                } => {
+                    self.authenticate_v3_node(node, records_bytes, lookup_slots, directory_slots)?
+                }
+            }
+        };
+        let offset =
+            usize::try_from(authenticated_offset).map_err(|_| IndexError::InvalidRecord)?;
+        let decoded = decode_record_view(self.bytes, offset, node.id, self.descriptor.digest())?;
+        if !same_node_identity(&decoded, node) {
+            return Err(IndexError::InvalidRecord);
+        }
+        Ok(decoded)
+    }
+
+    fn authenticate_v2_node(
+        &self,
+        node: &IndexNodeView<'_>,
+        records_bytes: u64,
+        lookup_slots: u64,
+    ) -> Result<u64, IndexError> {
+        let table_offset = (HEADER_BYTES_V2 as u64)
+            .checked_add(records_bytes)
+            .ok_or(IndexError::InvalidRecord)?;
+        let target_hash = lookup_hash(node.parent, node.name);
+        let mut left = 0_u64;
+        let mut right = lookup_slots;
+        while left < right {
+            let middle = left + (right - left) / 2;
+            let slot = read_lookup_slot(self.bytes, table_offset, middle)?;
+            if (slot.parent, slot.name_hash) < (node.parent, target_hash) {
+                left = middle + 1;
+            } else {
+                right = middle;
+            }
+        }
+        while left < lookup_slots {
+            let slot = read_lookup_slot(self.bytes, table_offset, left)?;
+            if (slot.parent, slot.name_hash) != (node.parent, target_hash) {
+                break;
+            }
+            if slot.record_id == node.id && slot.record_offset == node.record_offset {
+                return Ok(slot.record_offset);
+            }
+            left += 1;
+        }
+        Err(IndexError::InvalidRecord)
+    }
+
+    fn authenticate_v3_node(
+        &self,
+        node: &IndexNodeView<'_>,
+        records_bytes: u64,
+        lookup_slots: u64,
+        directory_slots: u64,
+    ) -> Result<u64, IndexError> {
+        let table_offset = directory_table_offset(records_bytes, lookup_slots)?;
+        let start = directory_lower_bound(self.bytes, table_offset, directory_slots, node.parent)?;
+        let position = start
+            .checked_add(u64::from(node.sibling_ordinal))
+            .ok_or(IndexError::InvalidRecord)?;
+        if position >= directory_slots {
+            return Err(IndexError::InvalidRecord);
+        }
+        let slot = read_directory_slot(self.bytes, table_offset, position)?;
+        if slot.parent != node.parent
+            || slot.record_id != node.id
+            || slot.record_offset != node.record_offset
+        {
+            return Err(IndexError::InvalidRecord);
+        }
+        Ok(slot.record_offset)
+    }
+
     /// Finds one byte-exact child by parent and portable path component.
     ///
     /// The lookup performs binary search over the authenticated fixed-width
@@ -290,6 +395,23 @@ impl<'bytes> ValidatedIndex<'bytes> {
         }
         Ok(slot.nlink)
     }
+}
+
+fn same_node_identity(left: &IndexNodeView<'_>, right: &IndexNodeView<'_>) -> bool {
+    left.artifact == right.artifact
+        && left.id == right.id
+        && left.record_offset == right.record_offset
+        && left.parent == right.parent
+        && left.depth == right.depth
+        && left.sibling_ordinal == right.sibling_ordinal
+        && left.kind == right.kind
+        && left.mode == right.mode
+        && left.uid == right.uid
+        && left.gid == right.gid
+        && left.mtime_seconds == right.mtime_seconds
+        && left.mtime_nanos == right.mtime_nanos
+        && left.name == right.name
+        && left.encoded_record == right.encoded_record
 }
 
 pub(super) fn directory_table_offset(

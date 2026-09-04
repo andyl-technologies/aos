@@ -295,7 +295,7 @@ pub(super) fn decode_record_view<'a>(
 ) -> Result<IndexNodeView<'a>, IndexError> {
     let encoded = bytes.get(offset..).ok_or(IndexError::InvalidRecord)?;
     let mut cursor = Cursor::new(encoded);
-    let length = cursor.u32()? as usize;
+    let length = usize::try_from(cursor.u32()?).map_err(|_| IndexError::InvalidRecord)?;
     if length < RECORD_FIXED_BYTES || length - 4 > cursor.remaining() {
         return Err(IndexError::InvalidRecord);
     }
@@ -362,7 +362,7 @@ pub(super) fn record_hardlink_group(
         return Ok(None);
     }
     let mut record = Cursor::new(encoded);
-    let length = record.u32()? as usize;
+    let length = usize::try_from(record.u32()?).map_err(|_| IndexError::InvalidRecord)?;
     if length != encoded.len() {
         return Err(IndexError::InvalidRecord);
     }
@@ -470,7 +470,7 @@ pub(super) fn validate_record(
     cursor: &mut Cursor<'_>,
     expected_id: u64,
 ) -> Result<ParsedRecord, IndexError> {
-    let length = cursor.u32()? as usize;
+    let length = usize::try_from(cursor.u32()?).map_err(|_| IndexError::InvalidRecord)?;
     if length < RECORD_FIXED_BYTES || length - 4 > cursor.remaining() {
         return Err(IndexError::InvalidRecord);
     }
@@ -841,7 +841,7 @@ impl<'a> Cursor<'a> {
         Ok(i64::from_le_bytes(self.array()?))
     }
     pub(super) fn length_bytes(&mut self) -> Result<&'a [u8], IndexError> {
-        let length = self.u32()? as usize;
+        let length = usize::try_from(self.u32()?).map_err(|_| IndexError::InvalidRecord)?;
         self.take(length)
     }
 }
