@@ -43,6 +43,13 @@ impl RpcService {
             .await?;
         self.require_delivery_scope(auth, &record.owner_scope_key, Permission::BindingRead)
             .await?;
+        if matches!(
+            seal.intent.endpoint,
+            Some(pb::delivery_destination_intent::Endpoint::NewEndpoint(_))
+        ) {
+            self.require_delivery_scope(auth, &record.owner_scope_key, Permission::EndpointManage)
+                .await?;
+        }
         self.require_workflow_grant(
             GrantResource::Binding {
                 id: seal.binding_id,
