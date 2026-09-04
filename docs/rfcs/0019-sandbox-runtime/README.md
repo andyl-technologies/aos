@@ -1,6 +1,6 @@
 # RFC-0019: Generic sandboxes and filesystem views
 
-- **Status:** Proposed (design-only)
+- **Status:** Proposed; implementation in progress
 - **Date:** 2026-09-03
 - **Audience:** maintainers of `aos`, AOS system images, systemd integration,
   package and cache infrastructure, storage, security policy, and distributed

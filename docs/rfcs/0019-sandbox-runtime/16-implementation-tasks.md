@@ -342,3 +342,25 @@ completes. The Git history remains authoritative for code details.
   peer-authenticated daemon ingress, hermetic packaging, and hardened systemd
   integration. Durable handle identity, exact topology verification, complete
   session dispatch, and authoritative inventory remain open.
+- `d9dad8faa`, `25b015ddf` — foundation toward `SBX-BPROTO-04`,
+  `SBX-HOST-01`, and `SBX-MOUNT-01`: bounded two-packet session negotiation,
+  session-bound method admission, exact empty descriptor tables, canonical
+  success/error envelopes, and closed response ceilings for the implemented
+  host and mount methods. Signed plans, leases, and inventory dispatch remain
+  open.
+- `22e19a5cf`, `461bea8c3` — foundation toward `SBX-MOUNT-01`: one stable
+  handle across preparation and publication plus a pluggable synchronous
+  systemd descriptor-store keeper with canonical names, restart adoption,
+  removal, barriers, and bounded service configuration. Daemon adoption and
+  durable resource reconciliation remain open.
+- `bf0e7dcc6` — foundation toward `SBX-MOUNT-01` and `SBX-LIFE-06`: strict
+  current-kernel boot identity for rejecting numerically reused mount IDs after
+  reboot.
+- `c52198db8` — foundation toward `SBX-MOUNT-01`: release no longer depends on
+  a catalog entry, while teardown lookup accepts the action's intentionally
+  absent view descriptor.
+- `dd9eaadaf` — foundation toward `SBX-BPROTO-04`, `SBX-MOUNT-01`, and
+  `SBX-LIFE-06`: separately negotiated authoritative mount-resource inventory
+  with complete bounded lifecycle evidence, boot and journal ordering,
+  canonical identities, and reciprocal replacement validation. Broker
+  dispatch and durable state projection remain open.
