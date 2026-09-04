@@ -974,4 +974,4 @@ impl ProductionVmLifecycleLoop {
 
 #[cfg(test)]
 #[path = "runtime/tests.rs"]
-mod tests;
+pub(super) mod tests;

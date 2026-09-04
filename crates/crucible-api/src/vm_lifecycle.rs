@@ -75,6 +75,13 @@ mod fault_implementation;
 pub use fault_implementation::{
     network_effect_implementation_registry, storage_effect_implementation_registry,
 };
+#[cfg(target_os = "linux")]
+mod hot_fork;
+#[cfg(target_os = "linux")]
+pub use hot_fork::{
+    ProductionVmHotForkNodeBoundary, ProductionVmHotForkNodeServiceState,
+    ProductionVmHotForkWorldContinuation,
+};
 
 /// Default final icount available to one production CLI lifecycle session.
 const DEFAULT_RUN_CEILING_ICOUNT: u64 = 16_000_000;
