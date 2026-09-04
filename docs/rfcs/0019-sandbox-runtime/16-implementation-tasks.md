@@ -579,6 +579,45 @@ completes. The Git history remains authoritative for code details.
   1.0 remains inventory-only. A future remote transport must authenticate the
   broker audience and define a separately versioned non-SCM_RIGHTS carrier
   profile; local descriptor integers are never portable.
+- `ffb886353` — foundation toward `SBX-CTRL-03`: an unprivileged controller
+  boundary now bounds candidate request bytes before parsing, requires an
+  injected endpoint compiler to retain the service-computed scoped digest,
+  atomically admits durable work with exact replay under saturation, and runs
+  fair fixed-size reconciliation quanta without a volatile queue. Public and
+  coordinator transports, a recovery-built capacity index, durable fairness
+  across repeated restarts, and broker execution remain open.
+- `58433c809` — foundation toward `SBX-P0-04` and `SBX-HOST-01`: the closed
+  launch specification now witnesses payload-root continuity from the pinned
+  reviewed nspawn binary, removal of `CAP_SYS_ADMIN` and `CAP_SYS_CHROOT`, NNP,
+  and inherited generic plus final compiled syscall filters. The compiled AOS
+  filter now redundantly denies `chroot`, and its patched C test passes. A
+  retained hostd self-probe checks pidfd namespace ioctls under the hardened
+  service without adding capabilities. Apply remains unavailable because
+  shifted-payload ptrace access and independent deployed-profile verification
+  are still blockers.
+- `23220e41a` — foundation toward `SBX-STOR-01`: exact resolved storage
+  semantics, signed plan, and ownership lease can now be admitted into one
+  journal transaction containing the authenticated fence, non-authorizing
+  admission intent, and storage operation. Recovery authenticates and
+  cross-links all locations and surfaces pending or ambiguous work without
+  live readmission. Storage Apply remains unadvertised; no ZFS observation or
+  execution path exists yet.
+- `c5169944c` — foundation toward `SBX-BPROTO-04`, `SBX-CTRL-03`, and
+  `SBX-NET-01`: a shared portable Network V1 compiler now owns closed action
+  shapes, opaque handles, bounded canonical endpoint sets, and exact
+  assignment/resource grant semantics. Lease digest, lease generation,
+  fail-stop BOOTTIME, and transport fields remain validated attempt-local facts
+  outside the reusable signed-plan commitment; a future netd must compare them
+  with the separately verified lease and durable fence immediately before an
+  effect.
+- `1b9c9e869` — foundation toward `SBX-CTRL-03`: durable current-authority
+  recovery now retains typed immutable lease and per-audience template
+  artifacts alongside their exact bytes after one structural parse. Dispatch
+  selection re-reads the current record, requires the caller's expected
+  publication and template digests, rejects audience or renewal substitution,
+  and injects only fresh local deadline attenuation through the reconciler's
+  sole journal owner. The resulting packet is explicitly non-authorizing until
+  a protected broker verifies it and resolves its descriptor catalog.
 
 The post-`727da7f3e` x86_64 `sandbox-filesystem-capability-proof` rerun built the
 complete hermetic Rust closure, AOS system, initrd, and VM disk and launched
