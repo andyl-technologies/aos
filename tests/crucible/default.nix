@@ -295,6 +295,17 @@ in rec {
         };
         dependencies = [layer0Determinism];
       };
+      campaignModel = greenBeforeAdvance {
+        attrPath = "checks.crucible.phase1.gates.campaignModel";
+        # lint needle: campaignModel = import ./phase1-campaign-model.nix
+        gate = import ./phase1-campaign-model.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase1.gates.campaignModel";
+          taskIds = ["T-CAM-1.1" "T-CAM-1.2" "T-CAM-1.3" "T-CAM-1.4" "T-CAM-1.5" "T-CAM-1.6"];
+          dependencies = [contentAddress.rawGate];
+        };
+        dependencies = [contentAddress];
+      };
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase1.gates.replayOracle";
         # lint needle: replayOracle = import ./phase1-replay-oracle.nix
@@ -466,6 +477,7 @@ in rec {
             phase1.gates.harnessLint.rawGate
             phase1.gates.layer0Determinism.rawGate
             phase1.gates.contentAddress.rawGate
+            phase1.gates.campaignModel.rawGate
             phase1.gates.replayOracle.rawGate
             phase1.gates.singleVmFingerprint.rawGate
             phase1.gates.divergenceBisect.rawGate
@@ -476,6 +488,7 @@ in rec {
           phase1.gates.harnessLint
           phase1.gates.layer0Determinism
           phase1.gates.contentAddress
+          phase1.gates.campaignModel
           phase1.gates.replayOracle
           phase1.gates.singleVmFingerprint
           phase1.gates.divergenceBisect
