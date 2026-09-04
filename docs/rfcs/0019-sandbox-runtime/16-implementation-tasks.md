@@ -1047,6 +1047,25 @@ completes. The Git history remains authoritative for code details.
   scoped formatting, and independent adversarial review. Attribute
   presentation, protocol dispatch, and a real kernel FUSE connection remain
   open, so neither task is checked.
+- `c50405864` — further foundation toward `SBX-FS-02` and `SBX-FS-03`: a
+  validation-scoped sequential iterator exposes every V1/V2/V3 record without
+  allocation, and a V3-only prepared-presentation capability scans the exact
+  immutable index before worker readiness. Admission bounds retained identity
+  map capacity, records, and aggregate ACL entries; validates every owner and
+  named qualifier; preserves translated ACL canonical order; and narrows every
+  authenticated link count to the target FUSE ABI. Identity maps validate
+  disjoint destination ranges in place in `O(n log n)`, restore portable order
+  for binary lookup, and allocate no scratch. The cache identity binds the
+  exact index descriptor, identity/ACL plan, generation, and policy digest,
+  while live user-namespace descriptors, mount flags, and kernel ACL proof
+  remain connection-local broker state. Hot record authentication, attributes,
+  xattrs, and lazy ACL translation allocate nothing and reject same-artifact
+  structural/scalar substitution. The slice passes 86 filesystem tests, the
+  harness-free allocator binary, eight compile-fail doctests, strict Clippy,
+  warning-denied rustdoc, scoped formatting, and independent adversarial
+  review. FUSE protocol dispatch, connection ownership, cancellation, backing
+  registration, and kernel runtime proof remain open, so neither task is
+  checked.
 
 The post-`727da7f3e` x86_64 `sandbox-filesystem-capability-proof` rerun built the
 complete hermetic Rust closure, AOS system, initrd, and VM disk and launched
