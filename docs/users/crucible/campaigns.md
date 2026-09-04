@@ -431,6 +431,22 @@ slot ceiling, and the checkpoint ceiling cannot exceed writable-disk capacity.
 The configured lifecycle run root is partitioned into stable fixed-worker
 subdirectories so recovery state is not shared between concurrent workers.
 
+The host must provide a dedicated cgroup-v2 root with the `cpu`, `memory`, and
+`pids` controllers enabled for children. CPU accounting alone is insufficient:
+the kernel must expose `cpu.max` (`CONFIG_CFS_BANDWIDTH`). The storage root must
+be an empty, supervisor-owned mode-`0700` directory on ext4 with active project
+quotas, with the configured project-ID range reserved exclusively for this
+allocator. ZFS and an ordinary temporary directory do not satisfy this
+contract. The AOS kernel builds in CPU bandwidth control and project-quota
+support; the operator still provisions the dedicated roots and enables the
+mount's project quotas. The supervisor must also be authorized to place
+processes in the cgroup and switch to the distinct non-root child credentials.
+
+`checks.crucible.phase4.qemuHostOwnerVm` exercises this boundary in a disposable
+VM, including real guarded QEMU/image-helper launch and resource cleanup,
+without reconfiguring the build host. It does not certify a complete campaign
+or replace the recovery and operator acceptance flights.
+
 On service shutdown, the executor stops admission, signals cancellation, and
 waits up to thirty seconds for semantic-worker cleanup. A `cleanup is pending`
 error means unresolved work still owns its capacity, ledger, repository, and
