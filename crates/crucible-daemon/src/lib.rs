@@ -67,6 +67,8 @@
 //! [`qemu_hot_fork_runner`] orders modeled child driving, process teardown,
 //! semantic publication, and source-template recovery without overlapping
 //! execution incarnations;
+//! [`qemu_hot_fork_factory`] exact-binds one prepared source per fixed worker,
+//! installs target guards, and owns terminal quarantine handoff;
 //! [`qemu_resource_guard`] binds one indivisible host process/filesystem owner
 //! to signal-driven cancellation and exact quantum accounting;
 //! [`planner_loopback`] owns
@@ -120,6 +122,8 @@ pub mod qemu_campaign_lifecycle;
 pub mod qemu_campaign_resume;
 #[cfg(target_os = "linux")]
 pub mod qemu_exact_resume_executor;
+#[cfg(target_os = "linux")]
+pub mod qemu_hot_fork_factory;
 #[cfg(target_os = "linux")]
 pub mod qemu_hot_fork_reconciliation;
 #[cfg(target_os = "linux")]
@@ -393,6 +397,15 @@ pub use qemu_campaign_resume::{
 };
 #[cfg(target_os = "linux")]
 pub use qemu_exact_resume_executor::QemuExactResumeLiveRealizationExecutor;
+#[cfg(target_os = "linux")]
+pub use qemu_hot_fork_factory::{
+    FixedQemuHotForkTemplateFactory, FixedQemuHotForkTemplateFactoryConstructionError,
+    FixedQemuHotForkTemplateFactoryError, LinuxQemuHotForkTemplateLauncher,
+    LinuxQemuHotForkTemplateLauncherError, ProcessLifetimeQemuHotForkQuarantine,
+    QemuHotForkBoundTemplate, QemuHotForkFactoryQuarantine, QemuHotForkPooledLifecycle,
+    QemuHotForkTemplateKey, QemuHotForkTemplateLaunchFailure, QemuHotForkTemplateLauncher,
+    QemuHotForkTemplateSource, QemuHotForkTemplateSourceRecoveryFailure,
+};
 #[cfg(target_os = "linux")]
 pub use qemu_hot_fork_reconciliation::{
     LinuxQemuHotForkAttemptLaunchError, LinuxQemuHotForkLiveChild,
