@@ -8,6 +8,7 @@
 
 mod graph;
 mod index;
+mod inode;
 mod limits;
 mod presentation;
 mod source;
@@ -17,6 +18,10 @@ pub use index::{
     INDEX_MEDIA_TYPE, INDEX_MEDIA_TYPE_V1, INDEX_MEDIA_TYPE_V2, IndexCrosslinks, IndexError,
     IndexExpectation, IndexNodeKind, IndexNodeView, IndexStaging, IndexSummary, StagedIndex,
     ValidatedIndex, validate_index,
+};
+pub use inode::{
+    ForgetRequest, ForgetSummary, InodeAttributes, InodeError, InodeLookup, InodeTable,
+    InodeTableLimits, ROOT_NODE_ID,
 };
 pub use limits::TreeCompileLimits;
 pub use presentation::{

@@ -682,7 +682,7 @@ enum IndexLayout {
     },
 }
 
-impl ValidatedIndex<'_> {
+impl<'bytes> ValidatedIndex<'bytes> {
     /// Returns the exact immutable bytes covered by validation.
     #[must_use]
     pub const fn bytes(&self) -> &[u8] {
@@ -717,6 +717,11 @@ impl ValidatedIndex<'_> {
     /// Returns [`IndexError::InvalidRecord`] if the validated byte slice was
     /// replaced internally, which safe callers cannot do.
     pub fn root(&self) -> Result<IndexNodeView<'_>, IndexError> {
+        self.retained_root()
+    }
+
+    /// Decodes a root whose byte lifetime is retained by an internal owner.
+    pub(crate) fn retained_root(&self) -> Result<IndexNodeView<'bytes>, IndexError> {
         let offset = match self.layout {
             IndexLayout::SequentialV1 => HEADER_BYTES_V1,
             IndexLayout::PointLookupV2 { .. } => HEADER_BYTES_V2,
@@ -736,11 +741,20 @@ impl ValidatedIndex<'_> {
     /// Returns [`IndexError::PointLookupUnavailable`] for a V1 artifact,
     /// [`IndexError::ForeignNode`] for a parent from another artifact, or
     /// [`IndexError::InvalidRecord`] if an internal validated offset is invalid.
-    pub fn lookup_child<'a>(
-        &'a self,
+    pub fn lookup_child<'index>(
+        &'index self,
         parent: &IndexNodeView<'_>,
         name: &PathName,
-    ) -> Result<Option<IndexNodeView<'a>>, IndexError> {
+    ) -> Result<Option<IndexNodeView<'index>>, IndexError> {
+        self.retained_lookup_child(parent, name)
+    }
+
+    /// Looks up a child whose byte lifetime is retained by an internal owner.
+    pub(crate) fn retained_lookup_child(
+        &self,
+        parent: &IndexNodeView<'_>,
+        name: &PathName,
+    ) -> Result<Option<IndexNodeView<'bytes>>, IndexError> {
         let IndexLayout::PointLookupV2 {
             records_bytes,
             lookup_slots,
@@ -782,6 +796,12 @@ impl ValidatedIndex<'_> {
             left += 1;
         }
         Ok(None)
+    }
+
+    /// Reports whether this artifact supports immutable point lookup.
+    #[must_use]
+    pub const fn supports_point_lookup(&self) -> bool {
+        matches!(self.layout, IndexLayout::PointLookupV2 { .. })
     }
 }
 
@@ -2040,6 +2060,15 @@ mod tests {
         let root_view = validated
             .root()
             .unwrap_or_else(|error| panic!("root decode failed: {error}"));
+        assert!(!validated.supports_point_lookup());
+        assert!(matches!(
+            crate::InodeTable::new(
+                &validated,
+                [0; 32],
+                crate::InodeTableLimits::new(1, 4096, 1, 1),
+            ),
+            Err(crate::InodeError::Index(IndexError::PointLookupUnavailable))
+        ));
         let name = PathName::new(b"child".to_vec())
             .unwrap_or_else(|error| panic!("path name failed: {error}"));
         assert!(matches!(

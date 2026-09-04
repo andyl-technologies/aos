@@ -184,9 +184,11 @@ higher-ranked scoped callback. A future filesystem worker must validate the
 descriptor and cross-links once inside that callback, then may retain the
 resulting `ValidatedIndex` for its complete request loop; neither the byte slice
 nor a proof borrowing it can escape after unmap. The generic mapping boundary
-has no dependency on the filesystem-view object model. Per-connection inode
-numbers and FUSE request authority are not implemented yet. V1 remains
-validation-compatible but does not offer point lookup.
+has no dependency on the filesystem-view object model. A backend-neutral table
+now lazily assigns connection-local node IDs after positive V2 lookup, while
+negative lookup retains no node state. FUSE request framing, open handles, and
+kernel connection authority are not implemented yet. V1 remains
+validation-compatible but does not offer point lookup or inode-table creation.
 
 Immutable mapping proofs are distinct backend capabilities. A transient memfd
 is accepted only with `F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW |
@@ -228,13 +230,36 @@ The runtime index contract is:
 - composable with the scoped file-opening and mapping layer without allowing a
   byte borrow or validation proof to outlive immutable backing.
 
-The future FUSE layer will instantiate per-connection inode numbers only after
-kernel lookup and remove or compact them after `FORGET`. V2 record IDs are
-stable only within the exact derived artifact and compiler ABI; they are not
-portable inode numbers and are not stable across recompilation. A portable
-hard-link group digest identifies equal file identity in the source model but
-is likewise not itself an `ino_t`. The implementation must not create one heap
-object or protobuf object per path at mount time.
+The inode table pins root as node 1 and allocates monotonically increasing IDs
+that are never reused during a connection. A validated hard-link group shares
+one node ID; otherwise identity is the exact artifact-local record occurrence.
+The table retains the `ValidatedIndex` proof for its lifetime, so its private
+long-lived node views do not become detached validation authority. V2 record
+IDs remain stable only within the exact derived artifact and compiler ABI; they
+are not portable inode numbers and are not stable across recompilation. A
+portable hard-link group digest is likewise not itself an `ino_t`.
+
+Two fixed-slot open-addressed maps maintain the live node/semantic bijection.
+The semantic map uses a per-connection keyed SHA-256 partition whose key must
+be unpredictable to the immutable-tree producer; exact semantic comparison,
+not the hash, decides equality. Live load remains at most one half and
+occupied-plus-tombstone load at most three quarters. Growth or compaction
+pre-admits retained old arrays plus requested replacements, observes the first
+allocation's actual capacity before allocating the second, and rejects the
+combined actual capacities before commit. Allocator metadata and transient
+size-class over-allocation remain contained by the worker cgroup rather than
+being mislabeled exact language-runtime accounting.
+
+Lookup references have an independent aggregate ceiling. Bounded batch
+`FORGET` sorts and coalesces caller-owned request scratch without allocation,
+preflights every count, reverse-map removal, and resulting counter before its
+first table mutation, then applies with no fallible branch. Zero, stale,
+over-forget, duplicate overflow, and mixed valid/invalid batches leave inode
+state unchanged. The future FUSE worker must preserve these semantics when it
+wires kernel lookup/forget messages, and must add independently admitted open
+handles so a final forget cannot invalidate an active file description. The
+implementation creates no heap object or protobuf object per path at mount
+time; memory grows only with the bounded touched set.
 
 The index is accepted only when its exact media type, encoded length, and digest
 match an authenticated `ObjectDescriptor` obtained from the sealed publication.
