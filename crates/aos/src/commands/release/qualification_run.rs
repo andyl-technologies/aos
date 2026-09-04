@@ -83,7 +83,6 @@ pub(super) async fn run(args: &ReleaseQualifyRunArgs, printer: &Printer) -> Resu
     let executors = platform_paths(&args.executors)?;
     let identities = platform_values(&args.executor_identities, "executor identity")?;
     let timeout = bounded_timeout(args.executor_timeout_seconds, "executor")?;
-    let objects = public_objects(&plan.registry, &manifest, &captured.manifest_bytes)?;
     let platform_subjects = artifact_platform_subjects(&manifest);
 
     let mut evidence = Vec::new();
@@ -100,7 +99,12 @@ pub(super) async fn run(args: &ReleaseQualifyRunArgs, printer: &Printer) -> Resu
                 policy_digest: gate.policy_digest,
                 platform: *platform,
                 subjects: subjects.clone(),
-                objects: objects.clone(),
+                objects: public_objects(
+                    &plan.registry,
+                    &manifest,
+                    &captured.manifest_bytes,
+                    subjects,
+                )?,
                 nonce: executor_nonce(&args.executor_nonce, &gate.policy_id, *platform),
             };
             request.validate()?;
@@ -209,12 +213,15 @@ fn public_objects(
     registry: &str,
     manifest: &ManifestEnvelopeV1,
     manifest_bytes: &[u8],
+    subjects: &[String],
 ) -> Result<Vec<QualificationObjectV1>> {
     let base = url::Url::parse(&format!("{STAGING_HUB}/{registry}/"))?;
+    let subjects = subjects.iter().map(String::as_str).collect::<BTreeSet<_>>();
     let mut objects = manifest
         .payload
         .artifacts
         .iter()
+        .filter(|artifact| subjects.contains(artifact.id.as_str()))
         .map(|artifact| {
             Ok(QualificationObjectV1 {
                 artifact_id: artifact.id.clone(),
@@ -224,6 +231,13 @@ fn public_objects(
             })
         })
         .collect::<Result<Vec<_>>>()?;
+    let resolved = objects
+        .iter()
+        .map(|object| object.artifact_id.as_str())
+        .collect::<BTreeSet<_>>();
+    if resolved != subjects {
+        bail!("qualification subjects do not resolve to the signed release artifacts");
+    }
     objects.push(QualificationObjectV1 {
         artifact_id: "control/release-manifest-envelope".to_owned(),
         url: base
