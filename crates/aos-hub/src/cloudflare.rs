@@ -204,6 +204,8 @@ pub struct DeployConfig {
     pub external_url: String,
     /// Immutable source/build identity exposed by the deployed Worker.
     pub deployment_id: Option<String>,
+    /// Independent, fail-closed OCI capability rollout policy.
+    pub container_rollout: aos_hub_core::container_rollout::ContainerRollout,
     /// Stable named Durable Object instance containing the Hub database.
     pub database_instance: String,
     /// The magic-link email relay endpoint (`HUB_EMAIL_API_URL` `[vars]`).
@@ -289,6 +291,14 @@ pub fn render_wrangler_toml(cfg: &DeployConfig) -> String {
     // operator may temporarily change this to `read` or `off` for a staged
     // rollback without migrating or reconciling any database rows.
     vars.push_str("HUB_REQUEST_SHARDING = \"on\"\n");
+    vars.push_str(&format!(
+        "HUB_OCI_PULL_ENABLED = \"{}\"\nHUB_OCI_PUSH_ENABLED = \"{}\"\nHUB_OCI_VERIFIED_PUBLICATION_ENABLED = \"{}\"\nHUB_OCI_ADMINISTRATION_ENABLED = \"{}\"\nHUB_OCI_GC_ENABLED = \"{}\"\n",
+        cfg.container_rollout.pull,
+        cfg.container_rollout.push,
+        cfg.container_rollout.verified_publication,
+        cfg.container_rollout.administration,
+        cfg.container_rollout.garbage_collection,
+    ));
     if let Some(relay) = &cfg.email_relay_url {
         vars.push_str(&format!("HUB_EMAIL_API_URL = {}\n", toml_string(relay)));
     }
@@ -885,6 +895,8 @@ pub struct Secrets {
     pub domain_probe_signer_manifest: Option<String>,
     /// `HUB_ROUTE_RESERVATION_KEYRING` — active and retained route HMAC keys.
     pub route_reservation_keyring: Option<String>,
+    /// `HUB_RELEASE_EVIDENCE_CONFIG` — atomic role-separated release keys.
+    pub release_evidence_config: Option<String>,
 }
 
 impl Secrets {
@@ -928,6 +940,13 @@ impl Secrets {
         if let Some(keyring) = &self.route_reservation_keyring {
             aos_hub_core::service::ConfiguredRouteReservationKeyring::from_json(keyring)
                 .context("invalid Worker route reservation keyring")?;
+        }
+        if let Some(config) = &self.release_evidence_config {
+            aos_hub_core::release_evidence::Ed25519ReleaseEvidenceAuthority::from_json(
+                "deployment-validation",
+                config,
+            )
+            .context("invalid Worker release evidence configuration")?;
         }
         Ok(())
     }
@@ -1066,6 +1085,7 @@ pub async fn provision(
         egress_gateway_url: egress_gateway_url.map(str::to_string),
         external_url: external_url.to_string(),
         deployment_id: deployment_id.map(str::to_string),
+        container_rollout: aos_hub_core::container_rollout::ContainerRollout::default(),
         database_instance: database_instance.to_string(),
         email_relay_url: email_relay_url.map(str::to_string),
         // The `worker` CLI overrides this from its `--email-from` flag before
@@ -1214,6 +1234,14 @@ pub async fn deploy(
 
     let listed = run_wrangler(assets, &secret_list_args(&secret_config), None, None).await?;
     let existing = parse_secret_names(&listed)?;
+    let release_evidence_present = secrets.release_evidence_config.is_some()
+        || existing
+            .iter()
+            .any(|name| name == "HUB_RELEASE_EVIDENCE_CONFIG");
+    anyhow::ensure!(
+        !release_evidence_present || cfg.deployment_id.is_some(),
+        "--deployment-id is required when release evidence signing is configured"
+    );
 
     // Secrets survive `wrangler deploy` when omitted from configuration. The
     // pre-cutover name is never consumed by either transport.
@@ -1317,6 +1345,21 @@ pub async fn deploy(
         None => bail!(
             "HUB_ROUTE_RESERVATION_KEYRING is required on first deploy; pass --route-reservation-keys-file"
         ),
+    }
+    match &secrets.release_evidence_config {
+        Some(config) => {
+            put_secret(
+                assets,
+                "HUB_RELEASE_EVIDENCE_CONFIG",
+                config,
+                &secret_config,
+            )
+            .await?;
+        }
+        None if existing
+            .iter()
+            .any(|name| name == "HUB_RELEASE_EVIDENCE_CONFIG") => {}
+        None => {}
     }
 
     if mode == DeployMode::Update || cfg.egress_gateway_url.is_some() {
@@ -1613,6 +1656,7 @@ mod tests {
             egress_gateway_url: None,
             external_url: "https://aos.example.com".into(),
             deployment_id: Some("0123456789abcdef".into()),
+            container_rollout: aos_hub_core::container_rollout::ContainerRollout::all_enabled(),
             database_instance: "hub".into(),
             email_relay_url: None,
             email_from: None,
@@ -1628,6 +1672,23 @@ mod tests {
         assert_eq!(parsed["name"].as_str(), Some("aos-hub"));
         assert_eq!(parsed["main"].as_str(), Some("shim.mjs"));
         assert_eq!(parsed["vars"]["HUB_REQUEST_SHARDING"].as_str(), Some("on"));
+        assert_eq!(
+            parsed["vars"]["HUB_OCI_PULL_ENABLED"].as_str(),
+            Some("true")
+        );
+        assert_eq!(
+            parsed["vars"]["HUB_OCI_PUSH_ENABLED"].as_str(),
+            Some("true")
+        );
+        assert_eq!(
+            parsed["vars"]["HUB_OCI_VERIFIED_PUBLICATION_ENABLED"].as_str(),
+            Some("true")
+        );
+        assert_eq!(
+            parsed["vars"]["HUB_OCI_ADMINISTRATION_ENABLED"].as_str(),
+            Some("true")
+        );
+        assert_eq!(parsed["vars"]["HUB_OCI_GC_ENABLED"].as_str(), Some("true"));
         assert_eq!(
             parsed["vars"]["HUB_EXTERNAL_URL"].as_str(),
             Some("https://aos.example.com")
@@ -1759,6 +1820,7 @@ mod tests {
             egress_gateway_url: None,
             external_url: "https://aos.example.com".into(),
             deployment_id: None,
+            container_rollout: aos_hub_core::container_rollout::ContainerRollout::default(),
             database_instance: "hub".into(),
             email_relay_url: None,
             email_from: None,
@@ -1785,6 +1847,7 @@ mod tests {
             egress_gateway_url: None,
             external_url: "https://aos.example.com".into(),
             deployment_id: None,
+            container_rollout: aos_hub_core::container_rollout::ContainerRollout::default(),
             database_instance: "hub".into(),
             email_relay_url: None,
             email_from: None,
@@ -1812,6 +1875,7 @@ mod tests {
             egress_gateway_url: None,
             external_url: "https://aos.example.com".into(),
             deployment_id: None,
+            container_rollout: aos_hub_core::container_rollout::ContainerRollout::default(),
             database_instance: "hub".into(),
             email_relay_url: None,
             email_from: Some("noreply@example.com".into()),
@@ -1857,6 +1921,7 @@ mod tests {
             egress_gateway_url: Some("https://egress.example.com/v1/fetch".into()),
             external_url: "https://aos.example.com".into(),
             deployment_id: None,
+            container_rollout: aos_hub_core::container_rollout::ContainerRollout::default(),
             database_instance: "hub".into(),
             email_relay_url: None,
             email_from: None,
@@ -1907,6 +1972,7 @@ mod tests {
             disable_delivery_attestation: false,
             domain_probe_signer_manifest: None,
             route_reservation_keyring: None,
+            release_evidence_config: None,
         };
         assert!(valid().validate().is_ok());
 
@@ -1932,6 +1998,10 @@ mod tests {
 
         let mut secrets = valid();
         secrets.route_reservation_keyring = Some("not-json".into());
+        assert!(secrets.validate().is_err());
+
+        let mut secrets = valid();
+        secrets.release_evidence_config = Some("not-json".into());
         assert!(secrets.validate().is_err());
     }
 
@@ -1960,6 +2030,7 @@ mod tests {
             egress_gateway_url: None,
             external_url: "https://aos.example.com".into(),
             deployment_id: None,
+            container_rollout: aos_hub_core::container_rollout::ContainerRollout::default(),
             database_instance: "hub".into(),
             email_relay_url: None,
             email_from: None,

@@ -509,6 +509,7 @@ in rec {
     cargoArtifactContract ? {},
     cargoNextest ? null,
     cargoNextestOpenFilesLimit ? null,
+    cargoNextestMaxTestThreads ? null,
     nextestFlags ? "",
     cargoFlags ? "",
     buildType ? "release",
@@ -528,6 +529,12 @@ in rec {
       else if builtins.isInt cargoNextestOpenFilesLimit && cargoNextestOpenFilesLimit > 0
       then cargoNextestOpenFilesLimit
       else throw "cargoNextestOpenFilesLimit must be a positive integer";
+    validatedNextestMaxTestThreads =
+      if cargoNextestMaxTestThreads == null
+      then null
+      else if builtins.isInt cargoNextestMaxTestThreads && cargoNextestMaxTestThreads > 0
+      then cargoNextestMaxTestThreads
+      else throw "cargoNextestMaxTestThreads must be a positive integer";
     shellQuote = value: "'${builtins.replaceStrings ["'"] ["'\"'\"'"] (toString value)}'";
     cargoEnvExports = builtins.concatStringsSep "\n" (
       builtins.map
@@ -641,6 +648,16 @@ in rec {
               if cargoNextest != null
               then ''
                 ${
+                  if validatedNextestMaxTestThreads == null
+                  then ""
+                  else ''
+                    nextestTestThreads="$NIX_BUILD_CORES"
+                    if [ "$nextestTestThreads" -gt ${toString validatedNextestMaxTestThreads} ]; then
+                      nextestTestThreads=${toString validatedNextestMaxTestThreads}
+                    fi
+                  ''
+                }
+                ${
                   if validatedNextestOpenFilesLimit == null
                   then ""
                   else ''
@@ -669,6 +686,11 @@ in rec {
                   ${noDefaultFlag} \
                   ${featuresFlag} \
                   ${cargoTestFlags} \
+                  ${
+                  if validatedNextestMaxTestThreads == null
+                  then ""
+                  else ''--test-threads "$nextestTestThreads"''
+                } \
                   ${nextestFlags}
               ''
               else ''

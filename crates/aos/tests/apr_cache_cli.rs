@@ -625,6 +625,17 @@ async fn apr_release_store_path_publishes_signed_cache_channel_and_installs() ->
             key_path.to_str().context("release key path utf-8")?,
         ],
     )?;
+    let registry_dir = registry_dir(&maintainer_home, registry_name);
+    let config_dir = maintainer_home.join(".config/apm/registries.d");
+    fs::create_dir_all(&config_dir)?;
+    fs::write(
+        config_dir.join(format!("{registry_name}.toml")),
+        format!(
+            "[registry]\nname = \"{registry_name}\"\nurl = \"file://{}\"\n\n[registry.signing_keys]\ninitial = \"{}\"\n",
+            registry_dir.display(),
+            key_path.display(),
+        ),
+    )?;
 
     let upload_dir = tmp.path().join("release-origin-upload");
     let cache_server = StaticHttpServer::spawn(upload_dir.clone()).await?;
@@ -647,8 +658,8 @@ async fn apr_release_store_path_publishes_signed_cache_channel_and_installs() ->
             "MIT",
             "--maintainer",
             "registry@example.com",
-            "--key",
-            key_path.to_str().context("release key path utf-8")?,
+            "--key-id",
+            "initial",
             "--cache-url",
             &cache_server.base_url(),
             "--cache-priority",
@@ -669,7 +680,7 @@ async fn apr_release_store_path_publishes_signed_cache_channel_and_installs() ->
         "{release}",
     );
     assert!(
-        release.contains("Generated static cache: 2 narinfos, 2 NARs"),
+        release.contains("Generated static cache: 3 narinfos, 3 NARs"),
         "{release}",
     );
     assert!(
@@ -680,9 +691,8 @@ async fn apr_release_store_path_publishes_signed_cache_channel_and_installs() ->
         release.contains("Released release-store-path-cache 1.0.0"),
         "{release}",
     );
-    assert_cache_entry_count(&upload_dir, 2)?;
+    assert_cache_entry_count(&upload_dir, 3)?;
 
-    let registry_dir = registry_dir(&maintainer_home, registry_name);
     let package_toml = fs::read_to_string(registry_dir.join("packages/f/fixture-tool.toml"))?;
     assert!(
         package_toml.contains(&format!("store_path = \"{}\"", fixture.tool_store_path)),
@@ -761,8 +771,8 @@ async fn apr_release_store_path_publishes_signed_cache_channel_and_installs() ->
     )?;
     assert_eq!(installed["action"], "install");
     assert_eq!(installed["status"], "installed", "{installed}");
-    assert_eq!(installed["downloads"]["downloaded"], 2, "{installed}");
-    assert_eq!(installed["downloads"]["imported"], 2, "{installed}");
+    assert_eq!(installed["downloads"]["downloaded"], 3, "{installed}");
+    assert_eq!(installed["downloads"]["imported"], 3, "{installed}");
     assert_eq!(
         run_profile_tool(&profile_root, "fixture-tool")?,
         "fixture-helper 1.0.0\nfixture-tool 1.0.0\n"

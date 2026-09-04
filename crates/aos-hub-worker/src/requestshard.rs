@@ -75,6 +75,9 @@ pub(crate) fn anonymous_browse_route<'a>(
     if path == "/" {
         return Some(AnonymousBrowseRoute::Instance);
     }
+    if path == "/v2/" {
+        return None;
+    }
     browse_registry_slug(path).map(AnonymousBrowseRoute::Registry)
 }
 
@@ -163,11 +166,87 @@ pub(crate) fn classify_request(
     }
 }
 
+/// Extracts a canonical repository from one supported OCI Distribution path.
+///
+/// Ping and token requests intentionally return `None`: they remain on HubDb
+/// unless the caller has another authoritative registry identity. Malformed or
+/// encoded aliases also return `None` and are rejected later by the shared
+/// router rather than influencing execution affinity.
+#[must_use]
+pub(crate) fn oci_repository_from_path(path: &str) -> Option<aos_oci_types::RepositoryName> {
+    aos_hub_core::oci::parse_oci_path(path)
+        .ok()
+        .and_then(|request| request.repository().cloned())
+}
+
+/// Routes one already-resolved registry/repository pair to a stable shard.
+///
+/// The outer Worker obtains the stable registry incarnation from an
+/// eventually-consistent authority projection. This value is affinity only;
+/// the shared router re-resolves authority and authorization from SQL.
+#[must_use]
+pub(crate) fn classify_oci_repository(
+    method: &str,
+    registry_stable_id: &str,
+    repository: &aos_oci_types::RepositoryName,
+) -> RequestShardRoute {
+    RequestShardRoute {
+        kind: RequestShardKind::Registry,
+        key: aos_hub_core::oci::oci_repository_affinity(registry_stable_id, repository),
+        read_only: matches!(method, "GET" | "HEAD"),
+        resource_specific: true,
+    }
+}
+
+/// Renders the canonical OCI token audience for one parsed request URL.
+///
+/// User information and non-HTTP schemes are rejected. Default ports are
+/// omitted and IPv6 literals retain the brackets required in authorities.
+#[must_use]
+pub(crate) fn canonical_oci_authority(url: &url::Url) -> Option<String> {
+    if !url.username().is_empty() || url.password().is_some() {
+        return None;
+    }
+    let host = match url.host()? {
+        url::Host::Domain(domain) => domain.to_ascii_lowercase(),
+        url::Host::Ipv4(address) => address.to_string(),
+        url::Host::Ipv6(address) => format!("[{address}]"),
+    };
+    let port = url.port_or_known_default()?;
+    let default_port = match url.scheme() {
+        "http" => 80,
+        "https" => 443,
+        _ => return None,
+    };
+    Some(if port == default_port {
+        host
+    } else {
+        format!("{host}:{port}")
+    })
+}
+
+/// Validates one persisted stable registry incarnation identifier.
+#[must_use]
+pub(crate) fn canonical_registry_stable_id(value: &str) -> bool {
+    value.len() == "registry:".len() + 32
+        && value.strip_prefix("registry:").is_some_and(|opaque| {
+            opaque
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+        })
+}
+
 fn is_connect_path(path: &str) -> bool {
     path.starts_with("/aos.hub.v1.")
 }
 
 fn request_kind(path: &str, body: Option<&[u8]>) -> RequestShardKind {
+    // ContainerService remains on the control shard through Phase 7. Moving its
+    // reviewed administration surface requires an explicit migration because
+    // publication transactions already use this authority.
+    if path.contains(".ContainerService/") {
+        return RequestShardKind::Control;
+    }
     if path.contains(".BinaryCacheService/")
         || path.contains(".CacheIntegrationService/")
         || path.contains(".BinaryCacheUploadControllerService/")
@@ -427,17 +506,94 @@ mod tests {
     }
 
     #[test]
+    fn oci_affinity_is_registry_and_repository_specific() {
+        let repository = oci_repository_from_path(
+            "/v2/team/runtime/manifests/sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        )
+        .unwrap();
+        assert_eq!(repository.as_str(), "team/runtime");
+        let first = classify_oci_repository(
+            "GET",
+            "registry:00000000000000000000000000000001",
+            &repository,
+        );
+        assert_eq!(first.kind, RequestShardKind::Registry);
+        assert!(first.read_only);
+        assert!(first.resource_specific);
+        assert_eq!(first.key.len(), 32);
+        assert_ne!(
+            first,
+            classify_oci_repository(
+                "GET",
+                "registry:00000000000000000000000000000002",
+                &repository,
+            )
+        );
+        assert_ne!(
+            first,
+            classify_oci_repository(
+                "GET",
+                "registry:00000000000000000000000000000001",
+                &aos_oci_types::RepositoryName::parse("team/other").unwrap(),
+            )
+        );
+        assert!(
+            !classify_oci_repository(
+                "PATCH",
+                "registry:00000000000000000000000000000001",
+                &repository,
+            )
+            .read_only
+        );
+        for path in [
+            "/v2/",
+            "/v2/token",
+            "/v2/team%2fruntime/blobs/sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "/v2/team//runtime/tags/list",
+        ] {
+            assert!(oci_repository_from_path(path).is_none(), "accepted {path}");
+        }
+    }
+
+    #[test]
+    fn oci_authorities_and_registry_incarnations_are_canonical() {
+        assert_eq!(
+            canonical_oci_authority(&url::Url::parse("https://EXAMPLE.test:443/v2/").unwrap()),
+            Some("example.test".to_string())
+        );
+        assert_eq!(
+            canonical_oci_authority(&url::Url::parse("http://[::1]:8080/v2/").unwrap()),
+            Some("[::1]:8080".to_string())
+        );
+        assert!(
+            canonical_oci_authority(&url::Url::parse("ftp://example.test/v2/").unwrap()).is_none()
+        );
+        assert!(canonical_registry_stable_id(
+            "registry:0123456789abcdef0123456789abcdef"
+        ));
+        assert!(!canonical_registry_stable_id(
+            "registry:0123456789ABCDEF0123456789ABCDEF"
+        ));
+    }
+
+    #[test]
     fn registry_home_and_browse_pages_share_affinity() {
         let home = classify_request("GET", "/andyl/main/", "hub.example", None);
         let packages = classify_request("GET", "/andyl/main/-/packages", "hub.example", None);
         let images = classify_request("GET", "/andyl/main/-/images", "hub.example", None);
+        let containers = classify_request("GET", "/andyl/main/-/containers", "hub.example", None);
 
         assert!(home.resource_specific);
         assert_eq!(home.key, packages.key);
         assert_eq!(home.key, images.key);
+        assert_eq!(home.key, containers.key);
         assert_eq!(browse_registry_slug("/andyl/main/"), Some("andyl/main"));
         assert_eq!(
             browse_registry_slug("/andyl/main/-/packages"),
+            Some("andyl/main")
+        );
+        assert_eq!(
+            browse_registry_slug("/andyl/main/-/containers/tag"),
             Some("andyl/main")
         );
         assert_eq!(browse_registry_slug("/"), None);
@@ -476,6 +632,10 @@ mod tests {
                 false,
                 false,
             ),
+            None
+        );
+        assert_eq!(
+            anonymous_browse_route("GET", "/v2/", Some("*/*"), false, false),
             None
         );
     }
@@ -534,6 +694,7 @@ mod tests {
             ("ImageService", RequestShardKind::Registry),
             ("PublishService", RequestShardKind::Registry),
             ("GitService", RequestShardKind::Registry),
+            ("ContainerService", RequestShardKind::Control),
             ("BinaryCacheService", RequestShardKind::Cache),
             ("CacheIntegrationService", RequestShardKind::Cache),
             (
@@ -566,6 +727,37 @@ mod tests {
                 expected,
                 "{service}"
             );
+        }
+    }
+
+    #[test]
+    fn phase_seven_container_service_remains_on_the_control_shard() {
+        for method in [
+            "ListContainerRepositories",
+            "PlanSetContainerTag",
+            "BeginContainerPublication",
+            "PlanRunContainerGc",
+            "ListContainerGcCandidates",
+            "ListContainerGcBlockers",
+            "ListContainerGcPlacementActions",
+            "RequeueContainerGcPlacementAction",
+            "ListContainerUntrackedInventory",
+            "PlanRepairContainerUntrackedObject",
+            "RepairContainerUntrackedObject",
+            "GetContainerUntrackedRepair",
+            "PlanContainerRegistryPurgeFence",
+            "ApplyContainerRegistryPurgeFence",
+            "GetContainerRegistryPurgeFence",
+        ] {
+            let path = format!("/aos.hub.v1.ContainerService/{method}");
+            let classified = classify_request(
+                "POST",
+                &path,
+                "hub.example",
+                Some(br#"{"registry":"andyl/main","repository":"aos"}"#),
+            );
+            assert_eq!(classified.kind, RequestShardKind::Control, "{method}");
+            assert!(!classified.resource_specific, "{method}");
         }
     }
 }

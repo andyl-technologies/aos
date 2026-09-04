@@ -38,6 +38,8 @@
 //!   storage, and the sysroot-lock divergence check.
 //! - [`profile`] / [`store`] / [`download`] — profile generations, the local
 //!   store, and the NAR download engine.
+//! - `runtime_boundary` — fail-closed container and read-only command
+//!   admission before configuration, profile, or host-service access.
 
 pub mod attestation;
 pub mod clean;
@@ -137,12 +139,15 @@ pub mod platform {
 pub mod policy;
 pub mod profile;
 pub(crate) mod provenance;
+#[doc(hidden)]
+pub use provenance::{DSSE_SIGNATURE_NAMESPACE, ProvenanceSignature, ProvenanceSigner};
 pub mod query;
 pub mod registry;
 pub mod registry_ops;
 pub mod remove;
 pub mod resolve;
 pub mod rollback;
+mod runtime_boundary;
 pub mod secret_ref;
 pub mod security;
 pub mod source;
@@ -180,6 +185,12 @@ const PACKAGE_ATTESTATION_SEED_CATALOG: &str = "/etc/aos/package-attestation-cat
 
 /// Environment-variable documentation appended to `apm`/`apr` long help.
 pub const ENVIRONMENT_HELP: &str = "Environment:
+  AOS_RUNTIME            Runtime kind. AOS containers set this to `container`;
+                         system scope and host boot/systemd/TPM/activation
+                         operations are unavailable in that runtime.
+  AOS_CONTAINER_READ_ONLY
+                         Set to `1` by container init when package state cannot
+                         be mutated. Read-only package queries remain available.
   APM_SYSTEM_CONFIG_DIR  Override the system configuration root (default
                          /etc/apm). Affects every derived system path,
                          including registries.d and trusted-keys.d, in both
@@ -850,7 +861,8 @@ pub enum PackageCommand {
 pub enum DocumentationCommand {
     /// Search installed documentation or a Hub index
     Search {
-        /// Terms to search for
+        /// Terms to search for; omit to browse documented packages
+        #[arg(default_value = "")]
         query: String,
         /// Restrict results to package, option, service, credential, or capability
         #[arg(long)]
@@ -1944,6 +1956,12 @@ pub enum RegistryCommand {
     Release {
         /// Semver release tag, with no `v` prefix
         semver: String,
+        /// Canonical signed container release sidecar to commit in the release
+        #[arg(long = "container-release")]
+        container_release: Option<PathBuf>,
+        /// Canonical Nix signature input bound by the container release
+        #[arg(long = "container-signature-input")]
+        container_signature_input: Option<PathBuf>,
         /// Optional Nix store path to publish before tagging
         #[arg(long)]
         store_path: Option<String>,
@@ -3405,16 +3423,20 @@ fn exit_for_eval_failure(error: &anyhow::Error, verbose: u8) {
 ///
 /// # Errors
 ///
-/// Returns an error when configuration loading fails or when the dispatched
-/// subcommand fails (resolution, download, verification, activation,
-/// registry operations, ...). User cancellation at a confirmation prompt is
-/// reported as [`aos_core::error::AosError::UserCancelled`].
+/// Returns an error before configuration loading when the process runtime
+/// prohibits system or host operations, or when read-only container state
+/// prohibits a mutation. It also returns an error when configuration loading
+/// fails or when the dispatched subcommand fails (resolution, download,
+/// verification, activation, registry operations, ...). User cancellation at
+/// a confirmation prompt is reported as
+/// [`aos_core::error::AosError::UserCancelled`].
 pub async fn run(
     command: &PackageCommand,
     dry_run: bool,
     yes: bool,
     printer: &Printer,
 ) -> Result<()> {
+    runtime_boundary::validate(command)?;
     command.runtime_requirement().validate()?;
 
     // The hidden systemd-client test vehicle talks to systemd over D-Bus and
@@ -4388,7 +4410,7 @@ fn run_verify_package_attestation(
             )?,
             rederived_manifest,
             quoted_generation_quote.as_ref().context(
-                "--generation-attestation requires --quote-dir; a bare PCR 15 value does not authenticate PCR 7/11 or the AK",
+                "--generation-attestation requires --quote-dir; a bare PCR 15 value does not authenticate PCR 7/11/12 or the AK",
             )?,
             &trust,
             &verified,
@@ -5248,6 +5270,7 @@ pub async fn run_apr(
     dry_run: bool,
     printer: &Printer,
 ) -> Result<()> {
+    runtime_boundary::validate_registry(command, system)?;
     if system {
         environment::RuntimeRequirement::AosRoot.validate()?;
     }
@@ -5573,6 +5596,8 @@ async fn run_registry(
         RegistryCommand::Web { command } => registry_ops::run_web(config, command, printer).await,
         RegistryCommand::Release {
             semver,
+            container_release,
+            container_signature_input,
             store_path,
             name,
             version,
@@ -5612,6 +5637,8 @@ async fn run_registry(
             registry_ops::release(
                 config,
                 semver,
+                container_release.as_deref(),
+                container_signature_input.as_deref(),
                 store_path.as_deref(),
                 name.as_deref(),
                 version.as_deref(),

@@ -1,6 +1,6 @@
 //! Canonical portable-object encoding, validation, and identity.
 //!
-//! The low-level validator implements the RFC-0019 deterministic CBOR subset
+//! The low-level validator implements the RFC-0020 deterministic CBOR subset
 //! independently of Serde. Schema codecs build only fixed arrays from these
 //! primitives, while arbitrary input is rejected for indefinite values,
 //! non-shortest integers, tags, floating point, duplicate/noncanonical map

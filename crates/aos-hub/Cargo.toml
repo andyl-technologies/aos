@@ -39,6 +39,8 @@ tower-http = { workspace = true, features = ["catch-panic", "limit"] }
 clap = { workspace = true }
 url = { workspace = true }
 reqwest = { workspace = true }
+rustls-pemfile = { workspace = true }
+tokio-rustls = { workspace = true }
 async-trait = { workspace = true }
 tempfile = { workspace = true }
 aos-core = { workspace = true }
@@ -62,6 +64,8 @@ test-support = []
 
 [dev-dependencies]
 aos-hub-core = { workspace = true, features = ["test-fixtures"] }
+aos-oci = { workspace = true }
+aos-oci-types = { workspace = true }
 aos-proto-types = { workspace = true }
 aos-cache = { workspace = true }
 aos-remote = { workspace = true }

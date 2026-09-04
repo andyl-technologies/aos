@@ -53,16 +53,16 @@ pub const MAX_CACHE_NARINFO_BYTES: usize = 256 * 1024;
 /// then indexed into bounded maps. This ceiling keeps those simultaneous
 /// structures comfortably inside the Worker isolate memory limit. Native
 /// deployments retain the larger general-purpose ceiling above.
-pub const WORKER_MAX_SURFACE_LIST_OBJECTS: usize = 20_000;
+pub const WORKER_MAX_SURFACE_LIST_OBJECTS: usize = 50_000;
 
 /// Maximum aggregate key bytes retained by a Worker inventory operation.
-pub const WORKER_MAX_SURFACE_LIST_PATH_BYTES: usize = 2 * 1024 * 1024;
+pub const WORKER_MAX_SURFACE_LIST_PATH_BYTES: usize = 8 * 1024 * 1024;
 
 /// Maximum keys retained in one Worker listing page.
 pub const WORKER_MAX_SURFACE_LIST_PAGE_OBJECTS: usize = 256;
 
 /// Maximum backend pages traversed by one Worker enumeration.
-pub const WORKER_MAX_SURFACE_LIST_PAGES: usize = 128;
+pub const WORKER_MAX_SURFACE_LIST_PAGES: usize = 256;
 
 /// Maximum bytes accepted for a Worker backend cursor.
 pub const WORKER_MAX_SURFACE_LIST_CURSOR_BYTES: usize = 1024;
@@ -249,6 +249,19 @@ pub struct SurfaceObjectEvidence {
     pub size: i64,
     /// Backend-issued strong entity tag, if the backend exposes one.
     pub strong_etag: Option<String>,
+}
+
+/// One exact ranged object chunk used by resumable provider inventory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceInventoryChunk {
+    /// Exact bytes in the requested inclusive range.
+    pub bytes: Vec<u8>,
+    /// Full object size observed by the same ranged response.
+    pub total: u64,
+    /// Inclusive byte range served by the provider.
+    pub range: (u64, u64),
+    /// Provider-issued strong entity tag for this object snapshot.
+    pub strong_etag: String,
 }
 
 /// Read access to a registry surface by relative path (the "Blobs" read port).
@@ -505,6 +518,74 @@ pub trait SurfaceFetch: BackendBounds {
         }))
     }
 
+    /// Reads one exact bounded range for resumable provider inventory hashing.
+    ///
+    /// The default uses the provider's streaming range implementation and
+    /// rejects a response whose total, served range, strong identity, or byte
+    /// count differs from the request. Production placement adapters override
+    /// [`fetch_stream`](Self::fetch_stream), so this never requires retaining a
+    /// complete large object in the Worker or native Hub.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid range, transport failure, missing strong
+    /// entity tag, response identity mismatch, or a body exceeding the exact
+    /// requested range.
+    async fn inventory_chunk_bounded(
+        &self,
+        path: &str,
+        offset: u64,
+        expected_total: u64,
+        maximum_bytes: u64,
+    ) -> Result<Option<SurfaceInventoryChunk>> {
+        if maximum_bytes == 0 || offset >= expected_total {
+            bail!("surface inventory chunk range is invalid");
+        }
+        let end = offset
+            .checked_add(maximum_bytes.saturating_sub(1))
+            .context("surface inventory chunk range overflowed")?
+            .min(expected_total.saturating_sub(1));
+        let expected_len = end
+            .checked_sub(offset)
+            .and_then(|length| length.checked_add(1))
+            .context("surface inventory chunk length overflowed")?;
+        let Some(read) = self.fetch_stream(path, Some((offset, end))).await? else {
+            return Ok(None);
+        };
+        if read.total != expected_total || read.range != Some((offset, end)) {
+            bail!("surface inventory chunk response range or total changed");
+        }
+        let strong_etag = crate::surface_write::strong_if_match_etag(
+            &read
+                .strong_etag
+                .context("surface inventory chunk has no strong entity tag")?,
+        )?;
+
+        let mut stream = read.body.into_data_stream();
+        let mut bytes = Vec::with_capacity(
+            usize::try_from(expected_len).context("surface inventory chunk exceeds usize")?,
+        );
+        while let Some(chunk) = stream.try_next().await? {
+            let next_len = bytes
+                .len()
+                .checked_add(chunk.len())
+                .context("surface inventory chunk size overflowed")?;
+            if u64::try_from(next_len)? > expected_len {
+                bail!("surface inventory chunk exceeded its requested range");
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        if u64::try_from(bytes.len())? != expected_len {
+            bail!("surface inventory chunk did not fill its requested range");
+        }
+        Ok(Some(SurfaceInventoryChunk {
+            bytes,
+            total: read.total,
+            range: (offset, end),
+            strong_etag,
+        }))
+    }
+
     /// A human-readable description of the source (for health/audit text).
     fn describe(&self) -> String;
 }
@@ -561,6 +642,24 @@ pub trait SurfaceProvider: BackendBounds {
         &self,
         placement: &SurfacePlacementRecord,
     ) -> Result<Box<dyn SurfaceFetch>>;
+
+    /// Opens a reader at one immutable durable-work physical address.
+    ///
+    /// Implementations may reopen the exact frozen binding revision, but must
+    /// not consult current write authority or substitute a current placement.
+    /// The frozen prefix is the only permitted backend address.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the frozen fence is malformed, its exact binding
+    /// version/revision is unavailable, or the runtime cannot address it.
+    async fn frozen_placement_fetcher(
+        &self,
+        access: &crate::surface_write::FrozenSurfaceAccess,
+    ) -> Result<Box<dyn SurfaceFetch>> {
+        let _ = access;
+        anyhow::bail!("this provider does not support frozen placement reads")
+    }
 }
 
 #[cfg(test)]
@@ -576,6 +675,10 @@ mod tests {
 
     struct InconsistentStream {
         declared: u64,
+        body: Vec<u8>,
+    }
+
+    struct ExactRangeFetch {
         body: Vec<u8>,
     }
 
@@ -617,6 +720,32 @@ mod tests {
 
         fn describe(&self) -> String {
             "inconsistent-stream-test".into()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SurfaceFetch for ExactRangeFetch {
+        async fn fetch(&self, _path: &str) -> Result<Option<Vec<u8>>> {
+            Ok(Some(self.body.clone()))
+        }
+
+        async fn fetch_stream(
+            &self,
+            _path: &str,
+            range: Option<(u64, u64)>,
+        ) -> Result<Option<StreamedRead>> {
+            let (start, end) = range.context("range test requires a range")?;
+            Ok(Some(StreamedRead {
+                body: axum::body::Body::from(self.body[start as usize..=end as usize].to_vec()),
+                total: self.body.len() as u64,
+                range: Some((start, end)),
+                strong_etag: Some("range-version".into()),
+                snapshot_lease_id: None,
+            }))
+        }
+
+        fn describe(&self) -> String {
+            "exact-range-test".into()
         }
     }
 
@@ -698,6 +827,31 @@ mod tests {
             body_reads: AtomicUsize::new(0),
         };
         assert_eq!(exact.fetch_bounded("x", 4).await.unwrap(), Some(vec![7; 4]));
+    }
+
+    #[tokio::test]
+    async fn inventory_chunk_requires_and_returns_one_exact_strong_range() {
+        let fetch = ExactRangeFetch {
+            body: b"abcdefgh".to_vec(),
+        };
+        let chunk = fetch
+            .inventory_chunk_bounded("object", 2, 8, 3)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(chunk.bytes, b"cde");
+        assert_eq!(chunk.range, (2, 4));
+        assert_eq!(chunk.total, 8);
+        assert_eq!(chunk.strong_etag, "\"range-version\"");
+
+        let mismatched = InconsistentStream {
+            declared: 8,
+            body: b"abc".to_vec(),
+        };
+        assert!(mismatched
+            .inventory_chunk_bounded("object", 2, 8, 3)
+            .await
+            .is_err());
     }
 
     #[tokio::test]

@@ -1,22 +1,87 @@
 ##! libffi — Foreign Function Interface library
 {
   mkDerivation,
-  fetchurl,
+  mkGithubUpstream,
   gnumake,
 }: let
-  version = "3.5.2";
+  upstream = mkGithubUpstream {
+    unitId = "libffi-3";
+    family = "libffi";
+    stream = "3";
+    owner = "pkgs/libs/libffi.nix";
+    version = "3.5.2";
+    upstreamId = "v3.5.2";
+    repository = "libffi/libffi";
+    tagPrefix = "v";
+    major = 3;
+    source = {
+      urlTemplates = [
+        {
+          scheme = "https";
+          authority = "github.com";
+          path = [
+            "libffi"
+            "libffi"
+            "releases"
+            "download"
+            {
+              parts = [
+                {literal = "v";}
+                {
+                  componentField = {
+                    component = "main";
+                    field = "comparisonVersion";
+                  };
+                }
+              ];
+            }
+            {
+              parts = [
+                {literal = "libffi-";}
+                {
+                  componentField = {
+                    component = "main";
+                    field = "comparisonVersion";
+                  };
+                }
+                {literal = ".tar.gz";}
+              ];
+            }
+          ];
+        }
+        {
+          scheme = "https";
+          authority = "gcc.gnu.org";
+          path = [
+            "pub"
+            "libffi"
+            {
+              parts = [
+                {literal = "libffi-";}
+                {
+                  componentField = {
+                    component = "main";
+                    field = "comparisonVersion";
+                  };
+                }
+                {literal = ".tar.gz";}
+              ];
+            }
+          ];
+        }
+      ];
+      hash = "sha256-86MIKiOzfCk6T80QUxR7Nx8v+R+n6hsqUuM1Z2usgtw=";
+      allowedRedirectHosts = ["gcc.gnu.org" "github.com" "release-assets.githubusercontent.com"];
+    };
+  };
+  inherit (upstream) version;
 in
   mkDerivation {
     pname = "libffi";
     inherit version;
 
-    src = fetchurl {
-      urls = [
-        "https://github.com/libffi/libffi/releases/download/v${version}/libffi-${version}.tar.gz"
-        "https://gcc.gnu.org/pub/libffi/libffi-${version}.tar.gz"
-      ];
-      hash = "sha256-86MIKiOzfCk6T80QUxR7Nx8v+R+n6hsqUuM1Z2usgtw=";
-    };
+    src = upstream.components.main.sources.source;
+    update = upstream.update;
 
     buildDeps = [gnumake];
     runtimeDeps = [];

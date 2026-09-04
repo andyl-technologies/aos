@@ -60,7 +60,7 @@ pub const IMAGES_PER_PAGE: usize = 25;
 /// rather than searched.
 pub const LIST_PER_PAGE: usize = 50;
 
-fn state_line(status: Option<&IndexStatus>, started: Instant) -> StateLine {
+pub(crate) fn state_line(status: Option<&IndexStatus>, started: Instant) -> StateLine {
     match status {
         Some(status) => StateLine {
             surface_commit: status.last_indexed_commit.clone(),
@@ -72,7 +72,7 @@ fn state_line(status: Option<&IndexStatus>, started: Instant) -> StateLine {
     }
 }
 
-fn registry_crumbs(slug: &str, tail: &[(String, String)]) -> Vec<(String, String)> {
+pub(crate) fn registry_crumbs(slug: &str, tail: &[(String, String)]) -> Vec<(String, String)> {
     let mut crumbs = vec![
         ("/".to_string(), "registries".to_string()),
         (format!("/{slug}/"), slug.to_string()),
@@ -81,12 +81,13 @@ fn registry_crumbs(slug: &str, tail: &[(String, String)]) -> Vec<(String, String
     crumbs
 }
 
-fn registry_nav(slug: &str, active: &str) -> String {
+pub(crate) fn registry_nav(slug: &str, active: &str) -> String {
     let items = [
         ("overview", format!("/{slug}/"), "Overview"),
         ("packages", format!("/{slug}/-/packages"), "Packages"),
         ("docs", format!("/{slug}/-/docs"), "Docs"),
         ("images", format!("/{slug}/-/images"), "Images"),
+        ("containers", format!("/{slug}/-/containers"), "Containers"),
         ("channels", format!("/{slug}/-/channels"), "Channels"),
         ("releases", format!("/{slug}/-/releases"), "Releases"),
         ("health", format!("/{slug}/-/health"), "Health"),
@@ -1565,6 +1566,8 @@ pub fn documentation_index_page(
     results: &[crate::db::PackageDocumentationSearchResult],
     query: Option<&str>,
     kind: Option<&str>,
+    page_number: usize,
+    total_results: usize,
     started: Instant,
     session: &SessionIndicator,
 ) -> String {
@@ -1598,8 +1601,8 @@ pub fn documentation_index_page(
         let _ = write!(
             body,
             "<p class=\"dim\">{} ranked result{} for <strong>{}</strong></p>",
-            results.len(),
-            if results.len() == 1 { "" } else { "s" },
+            total_results,
+            if total_results == 1 { "" } else { "s" },
             escape(query.unwrap_or_default()),
         );
     } else if results.is_empty() {
@@ -1608,8 +1611,8 @@ pub fn documentation_index_page(
         let _ = write!(
             body,
             "<p class=\"dim\">Browse {} indexed documentation entr{}.</p>",
-            results.len(),
-            if results.len() == 1 { "y" } else { "ies" },
+            total_results,
+            if total_results == 1 { "y" } else { "ies" },
         );
     }
 
@@ -1633,6 +1636,15 @@ pub fn documentation_index_page(
         }
         body.push_str("</ol>");
     }
+    let mut params = Vec::new();
+    if let Some(query) = query.filter(|query| !query.trim().is_empty()) {
+        params.push(format!("q={}", urlencode(query)));
+    }
+    if let Some(kind) = kind {
+        params.push(format!("kind={}", urlencode(kind)));
+    }
+    let pager = Pager::new(page_number, PACKAGES_PER_PAGE, total_results);
+    body.push_str(&pager.nav(&format!("/{slug}/-/docs"), &params.join("&")));
     let _ = write!(
         body,
         "<p class=\"docs-tools\"><a href=\"/{}/-/api/docs/schema\">JSON Schema</a> · <code>apm docs search &lt;query&gt;</code> · editor completion via <code>apm docs lsp</code></p>",
@@ -3876,6 +3888,8 @@ mod tests {
             }],
             Some("enable"),
             Some("option"),
+            1,
+            1,
             Instant::now(),
             &anon(),
         );
@@ -3900,11 +3914,30 @@ mod tests {
             }],
             Some(""),
             None,
+            1,
+            1,
             Instant::now(),
             &anon(),
         );
         assert!(browse_html.contains("Browse 1 indexed documentation entry."));
         assert!(browse_html.contains("HTTP server"));
+
+        let paged_html = documentation_index_page(
+            &registry,
+            None,
+            &[],
+            Some("tls proxy"),
+            Some("option"),
+            2,
+            150,
+            Instant::now(),
+            &anon(),
+        );
+        assert!(paged_html.contains("150 ranked results"));
+        assert!(paged_html.contains("page 2 of 2"));
+        assert!(paged_html.contains("q=tls+proxy"));
+        assert!(paged_html.contains("kind=option"));
+        assert!(paged_html.contains("page=1"));
     }
 
     #[tokio::test]

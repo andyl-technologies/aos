@@ -1,10 +1,9 @@
-##! Linux-hosted Rust compiler with an AOS-built Darwin standard library.
+##! Linux-hosted Rust compiler with an AOS-built cross standard library.
 ##!
-##! A Darwin package build cannot execute the Darwin-hosted compiler that is
-##! published for target users.  This derivation augments the matching native
-##! AOS compiler with a source-built Darwin sysroot and exposes Linux wrapper
-##! commands.  Package-set splicing can therefore use `rust.buildTool` while
-##! the ordinary `rust` output remains a genuine Darwin toolchain.
+##! A cross package build must execute its compiler on the Linux scheduler.
+##! This derivation augments the matching native AOS compiler with a
+##! source-built target sysroot and exposes Linux wrapper commands. Package-set
+##! splicing can therefore use `rust.buildTool` without executing target tools.
 {
   buildPackages,
   crossCc,
@@ -20,7 +19,7 @@
   hostTriple = hostPlatform.config;
 in
   buildPackages.mkDerivation {
-    pname = "rust-darwin-build-tool-${hostPlatform.system}";
+    pname = "rust-cross-build-tool-${hostPlatform.system}";
     inherit version src;
     targetPlatform = hostPlatform;
 
@@ -105,7 +104,7 @@ in
           # under Rust's canonical virtual source prefix instead.
           rustflags = ["--remap-path-prefix=$PWD=/rustc/${version}"]
           optimized-compiler-builtins = true
-          split-debuginfo = "unpacked"
+          ${buildPackages.lib.optionalString hostPlatform.isDarwin ''split-debuginfo = "unpacked"''}
           TOML
         '';
       }
@@ -114,6 +113,11 @@ in
         script = ''
           export PATH="$PWD/.fake-bin:$PATH"
           export RUST_BACKTRACE=1
+          # This derivation itself uses the native stdenv, whose process-wide
+          # hardening selection contains build-architecture flags such as
+          # x86 CET. Let each native or cross compiler wrapper select its own
+          # platform defaults instead of forwarding that selection.
+          unset AOS_HARDENING_ENABLE AOS_HARDENING_DISABLE
 
           # local-rebuild permits the matching source-built AOS compiler to
           # produce a stage-0 standard library for another target.  Only the
@@ -149,7 +153,7 @@ in
             ln -s "$entry" "$out/lib/rustlib/$name"
           done
           mkdir -p "$target_lib"
-          for library in "$target_artifacts"/*.rlib "$target_artifacts"/*.dylib; do
+          for library in "$target_artifacts"/*.rlib "$target_artifacts"/*.dylib "$target_artifacts"/*.so; do
             if [ -f "$library" ]; then
               cp -a "$library" "$target_lib/"
             fi

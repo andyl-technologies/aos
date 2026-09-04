@@ -62,6 +62,10 @@ use aos_doc_model::{
     OptionOwner, OptionType, PackageDocumentation, PathSegment, ProseBlock, RuntimeCapability,
     RuntimeConfigArtifact, RuntimeListener, RuntimeSurface, RuntimeUnit, Section, Visibility,
 };
+use aos_oci_types::{
+    CONTAINER_RELEASE_SIDECAR_PATH, ContainerRelease, ContainerSignatureInput,
+    limits::MAX_JSON_BYTES,
+};
 use clap::ValueEnum as _;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -71,9 +75,12 @@ use aos_core::output::{OutputMode, Printer};
 
 use crate::config::ApmConfig;
 use crate::platform::native_platform;
+#[cfg(test)]
+use crate::provenance::sign_statement_dsse_jsonl;
 use crate::provenance::{
-    TrustedProvenanceKey, builder_id as provenance_builder_id, digest_map as provenance_digest_map,
-    sha256_hex_payload, sign_statement_dsse_jsonl,
+    ProvenanceSignature, ProvenanceSigner, TrustedProvenanceKey,
+    builder_id as provenance_builder_id, digest_map as provenance_digest_map, sha256_hex_payload,
+    sign_statement_dsse_jsonl_external,
 };
 use crate::registry::channel::{self, PartitionMap};
 use crate::registry::keys::{self, KeysToml, RevokedKey, RosterKey};
@@ -1353,6 +1360,16 @@ fn commit_staged_registry(dir: &Path, message: &str, signing_key: Option<&str>) 
     Ok(())
 }
 
+/// Applies the deep staged-index checks shared by legacy APR commits and the
+/// canonical isolated release transaction.
+pub(crate) fn validate_canonical_release_registry_index(dir: &Path) -> Result<()> {
+    validate_staged_package_toml_provenance_requirements(dir)?;
+    if staged_package_provenance_transparency_validation_needed(dir)? {
+        validate_staged_package_provenance_transparency_log(dir)?;
+    }
+    Ok(())
+}
+
 /// Create an SSH-signed commit of the current index, attaching the armored
 /// signature in the `gpgsig-sha256` header git uses for SHA-256 repositories.
 ///
@@ -1470,7 +1487,7 @@ fn commit_registry(dir: &Path, message: &str, signing_key: Option<&str>) -> Resu
 }
 
 /// Refresh the static dumb-HTTP object indexes after refs or commits change.
-fn refresh_registry_object_store(dir: &Path) -> Result<()> {
+pub(crate) fn refresh_registry_object_store(dir: &Path) -> Result<()> {
     let _publish_lock = RegistryPublishLock::acquire_or_join_current_process(dir)?;
     objectstore::assert_sha256(dir)?;
     let releases = semver_tag_versions(dir)?;
@@ -1803,21 +1820,101 @@ pub async fn publish(
     registry: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
+    let registry_name = resolve_registry_name(config, registry)?;
+    let registry_dir = config.scope.registries_path().join(&registry_name);
+
+    publish_to_registry_directory(
+        config,
+        &registry_dir,
+        &registry_name,
+        store_path,
+        name_override,
+        version_override,
+        platform_override,
+        description,
+        homepage,
+        license,
+        maintainer,
+        sysroot,
+        previous,
+        source_drv,
+        image_payload_paths,
+        image_disk_paths,
+        image_info_paths,
+        image_formats,
+        image_uki_paths,
+        expose_manifest_path,
+        config_module_path,
+        config_base_lib_path,
+        documentation_base_lib_path,
+        config_dependencies,
+        bless,
+        no_ca,
+        no_commit,
+        message,
+        key,
+        key_id,
+        None,
+        printer,
+    )
+    .await
+}
+
+/// Publishes one store output into an explicitly selected registry directory.
+///
+/// This is the package-materialization primitive used by an isolated release
+/// transaction. The ordinary CLI resolves its configured authoring clone
+/// before entering this function; release orchestration instead supplies its
+/// private clone. Callers must hold the appropriate outer transaction lock.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn publish_to_registry_directory(
+    config: &ApmConfig,
+    dir: &Path,
+    name: &str,
+    store_path: &str,
+    name_override: Option<&str>,
+    version_override: Option<&str>,
+    platform_override: Option<&str>,
+    description: Option<&str>,
+    homepage: Option<&str>,
+    license: Option<&str>,
+    maintainer: Option<&str>,
+    sysroot: bool,
+    previous: Option<&str>,
+    source_drv: Option<&str>,
+    image_payload_paths: &[String],
+    image_disk_paths: &[String],
+    image_info_paths: &[String],
+    image_formats: &[String],
+    image_uki_paths: &[String],
+    expose_manifest_path: Option<&str>,
+    config_module_path: Option<&str>,
+    config_base_lib_path: Option<&str>,
+    documentation_base_lib_path: Option<&str>,
+    config_dependencies: &[String],
+    bless: bool,
+    no_ca: bool,
+    no_commit: bool,
+    message: Option<&str>,
+    key: Option<&str>,
+    key_id: Option<&str>,
+    external_provenance_signer: Option<&mut dyn ProvenanceSigner>,
+    printer: &Printer,
+) -> Result<()> {
     let description = required_publish_metadata(description, "--description", "No description")?;
     let license = required_publish_metadata(license, "--license", "unknown")?;
     let maintainer = required_publish_metadata(maintainer, "--maintainer", "unknown")?;
 
-    let name = resolve_registry_name(config, registry)?;
-    let dir = config.scope.registries_path().join(&name);
-    ensure_writable_registry_clone(&name, &dir)?;
+    validate_registry_name(name)?;
+    ensure_writable_registry_clone(name, dir)?;
     let require_signed_ukis =
-        read_registry_toml(&dir)?.is_some_and(|root| root.registry.require_signed_ukis);
+        read_registry_toml(dir)?.is_some_and(|root| root.registry.require_signed_ukis);
     if let Some(name) = name_override {
         validate_package_name(name)?;
     }
     let signing_key = if key.is_some() || key_id.is_some() {
         Some(resolve_producer_signing_key(
-            config, &dir, &name, key, key_id,
+            config, dir, name, key, key_id,
         )?)
     } else {
         None
@@ -1897,7 +1994,7 @@ pub async fn publish(
     // Bind the exact disk, canonical per-format metadata, and paired UKI
     // before catalog construction. Committed Secure Boot policy is enforced
     // below.
-    let sb_db_cert = sb_db_cert_path(config, &name);
+    let sb_db_cert = sb_db_cert_path(config, name);
     let mut image_infos: Vec<PublishedImage> = Vec::new();
     for ((((payload_path, disk_path), info_path), img_fmt), uki_path) in image_payload_paths
         .iter()
@@ -1921,7 +2018,7 @@ pub async fn publish(
             sb_db_cert.as_deref(),
         )?);
     }
-    let sb_catalog = sb_certs::load_sb_certs_toml(&dir)?;
+    let sb_catalog = sb_certs::load_sb_certs_toml(dir)?;
     apply_publish_sb_policy(
         &mut image_infos,
         sb_catalog.as_ref(),
@@ -1964,12 +2061,16 @@ pub async fn publish(
         expose_artifact_info.as_ref(),
         &documentation_declarations,
     )?;
-    let provenance_signer = Some(resolve_package_provenance_signer(
-        &dir,
-        &name,
-        signing_key.as_ref(),
-        key_id,
-    )?);
+    let mut local_provenance_signer;
+    let provenance_signer: &mut dyn ProvenanceSigner =
+        if let Some(signer) = external_provenance_signer {
+            validate_external_provenance_signer(dir, signer)?;
+            signer
+        } else {
+            local_provenance_signer =
+                resolve_package_provenance_signer(dir, name, signing_key.as_ref(), key_id)?;
+            &mut local_provenance_signer
+        };
 
     let _publish_lock = RegistryPublishLock::acquire(&dir)?;
 
@@ -2037,21 +2138,22 @@ pub async fn publish(
     )?;
     let provenance_artifact =
         if let (Some(module), Some(attestation)) = (config_module, config_attestation.as_ref()) {
-            Some(publish_config_provenance_artifact_with_documentation(
-                &name,
-                pkg_name,
-                pkg_version,
-                &platform,
-                &info,
-                source_info.as_ref(),
-                module,
-                expose_manifest_digest.as_deref(),
-                attestation,
-                &documentation.metadata,
-                provenance_signer
-                    .as_ref()
-                    .context("provenance signer missing for config-module package")?,
-            )?)
+            Some(
+                publish_config_provenance_artifact_with_documentation(
+                    &name,
+                    pkg_name,
+                    pkg_version,
+                    &platform,
+                    &info,
+                    source_info.as_ref(),
+                    module,
+                    expose_manifest_digest.as_deref(),
+                    attestation,
+                    &documentation.metadata,
+                    provenance_signer,
+                )
+                .await?,
+            )
         } else {
             match (expose_manifest.as_ref(), expose_manifest_digest.as_deref()) {
                 (Some(manifest), Some(manifest_digest)) => {
@@ -2065,26 +2167,26 @@ pub async fn publish(
                         manifest,
                         manifest_digest,
                         &documentation.metadata,
-                        provenance_signer
-                            .as_ref()
-                            .context("provenance signer missing for exposed package")?,
-                    )?
+                        provenance_signer,
+                    )
+                    .await?
                 }
-                _ => Some(publish_documentation_provenance_artifact(
-                    &name,
-                    pkg_name,
-                    pkg_version,
-                    &platform,
-                    &info,
-                    source_info.as_ref(),
-                    &documentation.metadata,
-                    documentation_attestation
-                        .as_ref()
-                        .context("documentation-only package is missing attestation metadata")?,
-                    provenance_signer
-                        .as_ref()
-                        .context("provenance signer missing for documented package")?,
-                )?),
+                _ => Some(
+                    publish_documentation_provenance_artifact(
+                        &name,
+                        pkg_name,
+                        pkg_version,
+                        &platform,
+                        &info,
+                        source_info.as_ref(),
+                        &documentation.metadata,
+                        documentation_attestation.as_ref().context(
+                            "documentation-only package is missing attestation metadata",
+                        )?,
+                        provenance_signer,
+                    )
+                    .await?,
+                ),
             }
         };
 
@@ -2345,6 +2447,70 @@ pub async fn publish(
     }
 
     Ok(())
+}
+
+/// Materializes one canonical package-platform entry without committing it.
+///
+/// This is the narrow bridge used by an isolated registry release transaction.
+/// It deliberately exposes neither producer key paths nor ordinary authoring
+/// clone discovery; provenance is supplied by the caller's external adapter.
+///
+/// # Errors
+///
+/// Returns an error when package introspection, metadata validation,
+/// provenance signing, documentation generation, or store-graph authoring
+/// fails.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn publish_canonical_release_entry(
+    config: &ApmConfig,
+    dir: &Path,
+    registry: &str,
+    store_path: &str,
+    package: &str,
+    version: &str,
+    platform: &str,
+    description: &str,
+    homepage: Option<&str>,
+    license: &str,
+    maintainer: &str,
+    provenance_signer: &mut dyn ProvenanceSigner,
+    printer: &Printer,
+) -> Result<()> {
+    publish_to_registry_directory(
+        config,
+        dir,
+        registry,
+        store_path,
+        Some(package),
+        Some(version),
+        Some(platform),
+        Some(description),
+        homepage,
+        Some(license),
+        Some(maintainer),
+        false,
+        None,
+        None,
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        None,
+        None,
+        None,
+        None,
+        &[],
+        false,
+        false,
+        true,
+        None,
+        None,
+        None,
+        Some(provenance_signer),
+        printer,
+    )
+    .await
 }
 
 /// Returns required package distribution metadata after rejecting historical
@@ -3408,7 +3574,11 @@ fn publish_package_documentation(
         },
         sections,
         options,
-        runtime: documentation_runtime_surface(expose_manifest, system_documentation),
+        runtime: documentation_runtime_surface(
+            expose_manifest,
+            expose_artifact,
+            system_documentation,
+        )?,
     };
     document.identity.semantic_schema_sha256 = document
         .computed_semantic_schema_sha256()
@@ -3503,8 +3673,9 @@ fn documented_option_declarations(
 
 fn documentation_runtime_surface(
     manifest: Option<&PublishExposeManifest>,
+    expose_artifact: Option<&StorePathInfo>,
     system_documentation: Option<&PublishedSystemDocumentation>,
-) -> RuntimeSurface {
+) -> Result<RuntimeSurface> {
     let Some(manifest) = manifest else {
         let units = system_documentation
             .into_iter()
@@ -3519,11 +3690,13 @@ fn documentation_runtime_surface(
                 requires: Vec::new(),
             })
             .collect();
-        return RuntimeSurface {
+        return Ok(RuntimeSurface {
             units,
             ..RuntimeSurface::default()
-        };
+        });
     };
+    let expose_artifact =
+        expose_artifact.context("exposed package documentation has no expose artifact")?;
     let expose = &manifest.expose;
     let permissions = &manifest.permissions;
     let network = match permissions.network {
@@ -3534,16 +3707,18 @@ fn documentation_runtime_surface(
     let mut units = expose
         .units
         .iter()
-        .map(|name| RuntimeUnit {
-            name: name.clone(),
-            kind: name
-                .rsplit_once('.')
-                .map_or("unit", |(_, kind)| kind)
-                .to_string(),
-            summary: String::new(),
-            requires: Vec::new(),
+        .map(|name| {
+            Ok(RuntimeUnit {
+                name: name.clone(),
+                kind: name
+                    .rsplit_once('.')
+                    .map_or("unit", |(_, kind)| kind)
+                    .to_string(),
+                summary: exposed_unit_description(&expose_artifact.path, name)?,
+                requires: Vec::new(),
+            })
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>>>()?;
     if !units.iter().any(|unit| unit.name == expose.target) {
         units.push(RuntimeUnit {
             name: expose.target.clone(),
@@ -3659,7 +3834,7 @@ fn documentation_runtime_surface(
         ConfinementClass::Unconfined => "unconfined",
     };
 
-    RuntimeSurface {
+    Ok(RuntimeSurface {
         units,
         listeners,
         managed_paths,
@@ -3671,7 +3846,75 @@ fn documentation_runtime_surface(
             network: network.to_string(),
             private_root: computed.class != ConfinementClass::Unconfined,
         }),
+    })
+}
+
+/// Extracts the human-facing unit description from an authenticated expose artifact.
+fn exposed_unit_description(expose_artifact: &str, unit: &str) -> Result<String> {
+    crate::types::validate_unit_name(unit)
+        .with_context(|| format!("validating documented runtime unit '{unit}'"))?;
+    let path = Path::new(expose_artifact).join("units").join(unit);
+    let link_metadata = fs::symlink_metadata(&path)
+        .with_context(|| format!("inspecting documented runtime unit {}", path.display()))?;
+    let source = if link_metadata.file_type().is_symlink() {
+        let target = fs::read_link(&path)
+            .with_context(|| format!("resolving documented runtime unit {}", path.display()))?;
+        let expose_store_dir = store_dir_from_store_path(expose_artifact);
+        let target_store_path = target.parent().and_then(Path::to_str);
+        if target.file_name() != Some(std::ffi::OsStr::new(unit))
+            || expose_store_dir.is_none()
+            || target_store_path.and_then(store_dir_from_store_path) != expose_store_dir
+        {
+            bail!(
+                "documented runtime unit symlink must select the same unit from one direct store object: {}",
+                path.display()
+            );
+        }
+        target
+    } else {
+        path.clone()
+    };
+    let metadata = fs::metadata(&source)
+        .with_context(|| format!("inspecting documented runtime unit {}", source.display()))?;
+    if !metadata.is_file() {
+        bail!(
+            "documented runtime unit must be one regular file: {}",
+            source.display()
+        );
     }
+
+    const MAX_DOCUMENTED_UNIT_BYTES: u64 = 1024 * 1024;
+    let mut content = String::new();
+    fs::File::open(&source)?
+        .take(MAX_DOCUMENTED_UNIT_BYTES + 1)
+        .read_to_string(&mut content)
+        .with_context(|| format!("reading documented runtime unit {}", source.display()))?;
+    if content.len() as u64 > MAX_DOCUMENTED_UNIT_BYTES {
+        bail!(
+            "documented runtime unit exceeds {MAX_DOCUMENTED_UNIT_BYTES} bytes: {}",
+            source.display()
+        );
+    }
+
+    let mut in_unit_section = false;
+    let mut description = None;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            in_unit_section = line == "[Unit]";
+            continue;
+        }
+        if in_unit_section && let Some(value) = line.strip_prefix("Description=") {
+            let value = value.trim();
+            description = (!value.is_empty()).then(|| value.to_string());
+        }
+    }
+    description.with_context(|| {
+        format!(
+            "documented runtime unit '{}' has no non-empty [Unit] Description",
+            source.display()
+        )
+    })
 }
 
 fn nix_publish_string(value: &str) -> String {
@@ -3724,6 +3967,7 @@ fn scan_config_module_interface(
         if relative == Path::new("config-meta.json")
             || relative == Path::new("expose-config.json")
             || relative == Path::new("generated/expose-config.json")
+            || relative == Path::new(TARGET_PLATFORM_RELATIVE_PATH)
         {
             continue;
         }
@@ -4795,13 +5039,17 @@ where
     {
         let entry = entry?;
         let file_type = entry.file_type()?;
+        let name = entry.file_name();
+        if name == std::ffi::OsStr::new("nix-support") {
+            validate_image_target_platform_metadata(&entry.path(), &file_type, platform)?;
+            continue;
+        }
         if file_type.is_symlink() || !file_type.is_file() {
             bail!(
                 "image output contains a symlink, directory, or special entry: {}",
                 entry.path().display()
             );
         }
-        let name = entry.file_name();
         let is_primary = name == std::ffi::OsStr::new("image-info.json")
             || name == std::ffi::OsStr::new(producer.filename.as_str());
         let is_auxiliary = name.to_str().is_some_and(|name| {
@@ -5093,6 +5341,63 @@ where
         root_range,
         virtual_size_bytes: producer.virtual_size_bytes,
     })
+}
+
+/// Validates the sole derivation metadata entry admitted beside image files.
+fn validate_image_target_platform_metadata(
+    support: &Path,
+    support_type: &fs::FileType,
+    platform: &str,
+) -> Result<()> {
+    if support_type.is_symlink() || !support_type.is_dir() {
+        bail!(
+            "image output target-platform metadata is not a real directory: {}",
+            support.display()
+        );
+    }
+
+    let mut entries = fs::read_dir(support)
+        .with_context(|| format!("enumerating image metadata {}", support.display()))?;
+    let marker = entries
+        .next()
+        .transpose()?
+        .context("image output nix-support directory is empty")?;
+    if entries.next().transpose()?.is_some()
+        || marker.file_name() != std::ffi::OsStr::new("aos-target-platform")
+    {
+        bail!(
+            "image output nix-support must contain only aos-target-platform: {}",
+            support.display()
+        );
+    }
+    let marker_type = marker.file_type()?;
+    if marker_type.is_symlink() || !marker_type.is_file() {
+        bail!(
+            "image output target-platform marker is not a regular file: {}",
+            marker.path().display()
+        );
+    }
+    const MAX_TARGET_PLATFORM_MARKER_BYTES: u64 = 128;
+    let mut stamped = String::new();
+    fs::File::open(marker.path())?
+        .take(MAX_TARGET_PLATFORM_MARKER_BYTES + 1)
+        .read_to_string(&mut stamped)
+        .with_context(|| {
+            format!(
+                "reading image target-platform marker {}",
+                marker.path().display()
+            )
+        })?;
+    if stamped.len() as u64 > MAX_TARGET_PLATFORM_MARKER_BYTES {
+        bail!("image output target-platform marker exceeds 128 bytes");
+    }
+    if stamped.trim() != platform {
+        bail!(
+            "image output target-platform marker '{}' disagrees with published platform '{platform}'",
+            stamped.trim()
+        );
+    }
+    Ok(())
 }
 
 fn validate_lower_sha256(value: &str, label: &str) -> Result<()> {
@@ -6983,9 +7288,29 @@ struct PublishProvenanceArtifact {
     attestation: AttestationMeta,
 }
 
-struct PackageProvenanceSigner {
+struct LocalPackageProvenanceSigner {
     key_id: String,
     key_path: PathBuf,
+}
+
+#[async_trait::async_trait]
+impl ProvenanceSigner for LocalPackageProvenanceSigner {
+    fn key_id(&self) -> &str {
+        &self.key_id
+    }
+
+    async fn sign_provenance(&mut self, payload: &[u8]) -> Result<ProvenanceSignature> {
+        let armored_signature = crate::security::sign_payload_signature(
+            &self.key_path,
+            crate::provenance::DSSE_SIGNATURE_NAMESPACE,
+            payload,
+        )?;
+        Ok(ProvenanceSignature {
+            key_id: self.key_id.clone(),
+            provider_operation_id: "local-file-key".to_string(),
+            armored_signature,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -7070,7 +7395,7 @@ struct StagedPackageRfc0001Meta {
     bpf_lsm: Option<BpfLsmPolicyMeta>,
 }
 
-fn publish_provenance_artifact_inner(
+fn unsigned_publish_provenance_artifact(
     registry_name: &str,
     name: &str,
     version: &str,
@@ -7080,8 +7405,8 @@ fn publish_provenance_artifact_inner(
     manifest: &PublishExposeManifest,
     manifest_digest: &str,
     documentation: Option<&DocumentationArtifactMeta>,
-    signer: &PackageProvenanceSigner,
-) -> Result<Option<PublishProvenanceArtifact>> {
+    key_id: &str,
+) -> Result<Option<(String, Value, AttestationMeta)>> {
     let Some(attestation) = publish_attestation_meta(
         name,
         version,
@@ -7112,7 +7437,7 @@ fn publish_provenance_artifact_inner(
         source_info,
         manifest_digest,
         &attestation,
-        &signer.key_id,
+        key_id,
     )?;
     if let Some(documentation) = documentation {
         append_documentation_provenance_subject(
@@ -7123,9 +7448,40 @@ fn publish_provenance_artifact_inner(
             documentation,
         )?;
     }
-    let jsonl = sign_statement_dsse_jsonl(&statement, &signer.key_id, &signer.key_path)?;
+    Ok(Some((provenance, statement, attestation)))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn publish_provenance_artifact_inner(
+    registry_name: &str,
+    name: &str,
+    version: &str,
+    platform: &str,
+    info: &StorePathInfo,
+    source_info: Option<&StorePathInfo>,
+    manifest: &PublishExposeManifest,
+    manifest_digest: &str,
+    documentation: Option<&DocumentationArtifactMeta>,
+    signer: &mut dyn ProvenanceSigner,
+) -> Result<Option<PublishProvenanceArtifact>> {
+    let Some((path, statement, attestation)) = unsigned_publish_provenance_artifact(
+        registry_name,
+        name,
+        version,
+        platform,
+        info,
+        source_info,
+        manifest,
+        manifest_digest,
+        documentation,
+        signer.key_id(),
+    )?
+    else {
+        return Ok(None);
+    };
+    let jsonl = sign_statement_dsse_jsonl_external(&statement, signer).await?;
     Ok(Some(PublishProvenanceArtifact {
-        path: provenance,
+        path,
         jsonl,
         attestation,
     }))
@@ -7142,9 +7498,9 @@ fn publish_provenance_artifact(
     source_info: Option<&StorePathInfo>,
     manifest: &PublishExposeManifest,
     manifest_digest: &str,
-    signer: &PackageProvenanceSigner,
+    signer: &LocalPackageProvenanceSigner,
 ) -> Result<Option<PublishProvenanceArtifact>> {
-    publish_provenance_artifact_inner(
+    let Some((path, statement, attestation)) = unsigned_publish_provenance_artifact(
         registry_name,
         name,
         version,
@@ -7154,12 +7510,21 @@ fn publish_provenance_artifact(
         manifest,
         manifest_digest,
         None,
-        signer,
-    )
+        &signer.key_id,
+    )?
+    else {
+        return Ok(None);
+    };
+    let jsonl = sign_statement_dsse_jsonl(&statement, &signer.key_id, &signer.key_path)?;
+    Ok(Some(PublishProvenanceArtifact {
+        path,
+        jsonl,
+        attestation,
+    }))
 }
 
 #[allow(clippy::too_many_arguments)]
-fn publish_provenance_artifact_with_documentation(
+async fn publish_provenance_artifact_with_documentation(
     registry_name: &str,
     name: &str,
     version: &str,
@@ -7169,7 +7534,7 @@ fn publish_provenance_artifact_with_documentation(
     manifest: &PublishExposeManifest,
     manifest_digest: &str,
     documentation: &DocumentationArtifactMeta,
-    signer: &PackageProvenanceSigner,
+    signer: &mut dyn ProvenanceSigner,
 ) -> Result<Option<PublishProvenanceArtifact>> {
     publish_provenance_artifact_inner(
         registry_name,
@@ -7183,10 +7548,11 @@ fn publish_provenance_artifact_with_documentation(
         Some(documentation),
         signer,
     )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
-fn publish_config_provenance_artifact_inner(
+fn unsigned_config_provenance_artifact(
     registry_name: &str,
     name: &str,
     version: &str,
@@ -7197,8 +7563,8 @@ fn publish_config_provenance_artifact_inner(
     expose_manifest_digest: Option<&str>,
     attestation: &AttestationMeta,
     documentation: Option<&DocumentationArtifactMeta>,
-    signer: &PackageProvenanceSigner,
-) -> Result<PublishProvenanceArtifact> {
+    key_id: &str,
+) -> Result<(String, Value, AttestationMeta)> {
     let provenance = attestation
         .provenance
         .clone()
@@ -7216,7 +7582,7 @@ fn publish_config_provenance_artifact_inner(
         source_info,
         &config_publish_binding_digest(module, expose_manifest_digest)?,
         attestation,
-        &signer.key_id,
+        key_id,
     )?;
     let subjects = statement
         .get_mut("subject")
@@ -7257,11 +7623,41 @@ fn publish_config_provenance_artifact_inner(
             documentation,
         )?;
     }
-    let jsonl = sign_statement_dsse_jsonl(&statement, &signer.key_id, &signer.key_path)?;
+    Ok((provenance, statement, attestation.clone()))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn publish_config_provenance_artifact_inner(
+    registry_name: &str,
+    name: &str,
+    version: &str,
+    platform: &str,
+    info: &StorePathInfo,
+    source_info: Option<&StorePathInfo>,
+    module: &ConfigModuleMeta,
+    expose_manifest_digest: Option<&str>,
+    attestation: &AttestationMeta,
+    documentation: Option<&DocumentationArtifactMeta>,
+    signer: &mut dyn ProvenanceSigner,
+) -> Result<PublishProvenanceArtifact> {
+    let (path, statement, attestation) = unsigned_config_provenance_artifact(
+        registry_name,
+        name,
+        version,
+        platform,
+        info,
+        source_info,
+        module,
+        expose_manifest_digest,
+        attestation,
+        documentation,
+        signer.key_id(),
+    )?;
+    let jsonl = sign_statement_dsse_jsonl_external(&statement, signer).await?;
     Ok(PublishProvenanceArtifact {
-        path: provenance,
+        path,
         jsonl,
-        attestation: attestation.clone(),
+        attestation,
     })
 }
 
@@ -7277,9 +7673,9 @@ fn publish_config_provenance_artifact(
     module: &ConfigModuleMeta,
     expose_manifest_digest: Option<&str>,
     attestation: &AttestationMeta,
-    signer: &PackageProvenanceSigner,
+    signer: &LocalPackageProvenanceSigner,
 ) -> Result<PublishProvenanceArtifact> {
-    publish_config_provenance_artifact_inner(
+    let (path, statement, attestation) = unsigned_config_provenance_artifact(
         registry_name,
         name,
         version,
@@ -7290,12 +7686,18 @@ fn publish_config_provenance_artifact(
         expose_manifest_digest,
         attestation,
         None,
-        signer,
-    )
+        &signer.key_id,
+    )?;
+    let jsonl = sign_statement_dsse_jsonl(&statement, &signer.key_id, &signer.key_path)?;
+    Ok(PublishProvenanceArtifact {
+        path,
+        jsonl,
+        attestation,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
-fn publish_config_provenance_artifact_with_documentation(
+async fn publish_config_provenance_artifact_with_documentation(
     registry_name: &str,
     name: &str,
     version: &str,
@@ -7306,7 +7708,7 @@ fn publish_config_provenance_artifact_with_documentation(
     expose_manifest_digest: Option<&str>,
     attestation: &AttestationMeta,
     documentation: &DocumentationArtifactMeta,
-    signer: &PackageProvenanceSigner,
+    signer: &mut dyn ProvenanceSigner,
 ) -> Result<PublishProvenanceArtifact> {
     publish_config_provenance_artifact_inner(
         registry_name,
@@ -7321,10 +7723,11 @@ fn publish_config_provenance_artifact_with_documentation(
         Some(documentation),
         signer,
     )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
-fn publish_documentation_provenance_artifact(
+async fn publish_documentation_provenance_artifact(
     registry_name: &str,
     name: &str,
     version: &str,
@@ -7333,7 +7736,7 @@ fn publish_documentation_provenance_artifact(
     source_info: Option<&StorePathInfo>,
     documentation: &DocumentationArtifactMeta,
     attestation: &AttestationMeta,
-    signer: &PackageProvenanceSigner,
+    signer: &mut dyn ProvenanceSigner,
 ) -> Result<PublishProvenanceArtifact> {
     let provenance = attestation
         .provenance
@@ -7349,7 +7752,7 @@ fn publish_documentation_provenance_artifact(
         source_info,
         &binding_digest,
         attestation,
-        &signer.key_id,
+        signer.key_id(),
     )?;
     append_documentation_provenance_subject(
         &mut statement,
@@ -7358,7 +7761,7 @@ fn publish_documentation_provenance_artifact(
         platform,
         documentation,
     )?;
-    let jsonl = sign_statement_dsse_jsonl(&statement, &signer.key_id, &signer.key_path)?;
+    let jsonl = sign_statement_dsse_jsonl_external(&statement, signer).await?;
     Ok(PublishProvenanceArtifact {
         path: provenance,
         jsonl,
@@ -7405,7 +7808,7 @@ fn resolve_package_provenance_signer(
     registry_name: &str,
     signing_key: Option<&ResolvedSigningKey>,
     key_id: Option<&str>,
-) -> Result<PackageProvenanceSigner> {
+) -> Result<LocalPackageProvenanceSigner> {
     let key_id = key_id.context(
         "publishing privileged package provenance requires --key-id so the DSSE builder \
          identity is tied to keys.toml",
@@ -7427,10 +7830,38 @@ fn resolve_package_provenance_signer(
             active.key
         );
     }
-    Ok(PackageProvenanceSigner {
+    Ok(LocalPackageProvenanceSigner {
         key_id: key_id.to_string(),
         key_path: PathBuf::from(signing_key.path()),
     })
+}
+
+fn validate_external_provenance_signer(dir: &Path, signer: &dyn ProvenanceSigner) -> Result<()> {
+    let trusted_key = signer
+        .trusted_key_line()
+        .context("external provenance signer must expose its pinned roster trust line")?;
+    require_active_registry_key(dir, signer.key_id(), trusted_key)
+}
+
+pub(crate) fn require_active_registry_key(
+    dir: &Path,
+    key_id: &str,
+    trusted_key: &str,
+) -> Result<()> {
+    validate_roster_key_id(key_id)?;
+    let roster = load_committed_roster(dir)?;
+    if keys::is_revoked(&roster, key_id) {
+        bail!("signing key id '{}' is revoked in keys.toml", key_id);
+    }
+    let active = keys::active_key_by_id(&roster, key_id)
+        .ok_or_else(|| anyhow::anyhow!("signing key id '{}' is not active in keys.toml", key_id))?;
+    if trusted_key != active.key {
+        bail!(
+            "external signing key for '{}' differs from keys.toml",
+            key_id
+        );
+    }
+    Ok(())
 }
 
 fn package_provenance_trusted_keys(dir: &Path) -> Result<(String, Vec<TrustedProvenanceKey>)> {
@@ -14953,8 +15384,19 @@ pub struct ReleaseTreeOptions {
     pub jobs: Option<usize>,
     /// Optional package publish payload to run under the release lock.
     pub store_publish: Option<ReleaseStorePublish>,
+    /// Canonical signed container sidecar validated against its Nix input.
+    pub container_release: Option<ContainerReleaseAttachment>,
     /// Staged cache retention after a successful release.
     pub cache_max_age_days: u64,
+}
+
+/// Validated final container sidecar bytes to attach to one signed release.
+#[derive(Debug, Clone)]
+pub struct ContainerReleaseAttachment {
+    /// Strict parsed sidecar used for release identity checks and reporting.
+    pub release: ContainerRelease,
+    /// Exact canonical bytes committed to [`CONTAINER_RELEASE_SIDECAR_PATH`].
+    pub canonical_bytes: Vec<u8>,
 }
 
 /// Optional `--store-path` publish payload carried into the locked release.
@@ -15056,8 +15498,10 @@ impl Drop for ReleaseLock {
 ///
 /// When `--store-path` is given, first publishes that store path into the
 /// release metadata under the release version (committed and SSH-signed),
-/// including explicit `--source-drv` provenance when provided, then
-/// delegates to [`release_registry_tree`] to create the signed
+/// including explicit `--source-drv` provenance when provided. Paired
+/// `--container-release` and `--container-signature-input` paths bind and
+/// attach one externally finalized canonical container sidecar. The command
+/// then delegates to [`release_registry_tree`] to create the signed
 /// release tag, generate pack artifacts, and run the optional cache,
 /// channel, and upload steps. `--dry-run` prints the plan without changing
 /// anything.
@@ -15074,6 +15518,8 @@ impl Drop for ReleaseLock {
 pub async fn release(
     config: &ApmConfig,
     semver: &str,
+    container_release: Option<&Path>,
+    container_signature_input: Option<&Path>,
     store_path: Option<&str>,
     name: Option<&str>,
     version_override: Option<&str>,
@@ -15116,6 +15562,8 @@ pub async fn release(
 
     let version = semver::Version::parse(semver)
         .with_context(|| format!("parsing release semver '{semver}'"))?;
+    let container_release =
+        load_container_release_attachment(&version, container_release, container_signature_input)?;
     if let Some(store_path) = store_path {
         let info = introspect_store_path(store_path)?;
         validate_store_path_release_policy(&info)?;
@@ -15181,11 +15629,87 @@ pub async fn release(
         resume,
         jobs,
         store_publish,
+        container_release,
         cache_max_age_days: registry_cache_max_age_days(config, &registry_name),
     };
 
     release_registry_tree(&dir, &registry_name, &options, printer).await?;
     Ok(())
+}
+
+fn load_container_release_attachment(
+    version: &semver::Version,
+    release_path: Option<&Path>,
+    signature_input_path: Option<&Path>,
+) -> Result<Option<ContainerReleaseAttachment>> {
+    let (release_path, signature_input_path) = match (release_path, signature_input_path) {
+        (None, None) => return Ok(None),
+        (Some(_), None) => {
+            bail!("--container-release requires the paired --container-signature-input")
+        }
+        (None, Some(_)) => {
+            bail!("--container-signature-input requires the paired --container-release")
+        }
+        (Some(release_path), Some(signature_input_path)) => (release_path, signature_input_path),
+    };
+
+    let canonical_bytes = read_bounded_container_json(release_path, "container release sidecar")?;
+    let release = ContainerRelease::from_canonical_json(&canonical_bytes)
+        .context("validating --container-release")?;
+    let signature_input_bytes =
+        read_bounded_container_json(signature_input_path, "container signature input")?;
+    let signature_input = ContainerSignatureInput::from_canonical_json(&signature_input_bytes)
+        .context("validating --container-signature-input")?;
+    signature_input
+        .validate_final_release(&release)
+        .context("binding container release to its Nix signature input")?;
+
+    let release_version = version.to_string();
+    if release.identity.release != release_version {
+        bail!(
+            "container release identity '{}' does not match apr release semver '{}'",
+            release.identity.release,
+            release_version,
+        );
+    }
+    if release.identity.package != "aos" || release.identity.image != "aos" {
+        bail!("the initial container release policy requires package 'aos' and image 'aos'");
+    }
+    if release.nix.definition.attribute != "containerImages.aos" {
+        bail!("the initial container release policy requires Nix attribute 'containerImages.aos'");
+    }
+
+    Ok(Some(ContainerReleaseAttachment {
+        release,
+        canonical_bytes,
+    }))
+}
+
+fn read_bounded_container_json(path: &Path, label: &str) -> Result<Vec<u8>> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("reading {label} metadata {}", path.display()))?;
+    if !metadata.file_type().is_file() {
+        bail!(
+            "{label} is not a non-symlink regular file: {}",
+            path.display()
+        );
+    }
+    let size = usize::try_from(metadata.len()).unwrap_or(usize::MAX);
+    if size > MAX_JSON_BYTES {
+        bail!(
+            "{label} is {size} bytes; the limit is {MAX_JSON_BYTES} bytes: {}",
+            path.display()
+        );
+    }
+    let bytes = fs::read(path).with_context(|| format!("reading {label} {}", path.display()))?;
+    if bytes.len() > MAX_JSON_BYTES {
+        bail!(
+            "{label} grew to {} bytes; the limit is {MAX_JSON_BYTES} bytes: {}",
+            bytes.len(),
+            path.display()
+        );
+    }
+    Ok(bytes)
 }
 
 /// Publish a release's `--store-path` into the registry tree.
@@ -15238,9 +15762,10 @@ async fn publish_release_store_path(
 ///
 /// Under an exclusive release lock, this: rejects up front a release whose
 /// tag already exists (unless `resume`), so a doomed release fails before any
-/// mutating work; optionally publishes `--store-path` (whose package version
-/// comes from the store path, independent of the release tag); optionally
-/// commits a `registry.toml` cache pointer; creates the signed semver release
+/// mutating work; optionally commits a canonical container sidecar and
+/// publishes `--store-path` (whose package version comes from the store path,
+/// independent of the release tag); optionally commits a `registry.toml`
+/// cache pointer; creates the signed semver release
 /// tag at HEAD (or reuses an existing tag there when `resume` is set);
 /// generates the release pack artifacts under `.git/releases/<version>/` — a
 /// full pack for major/minor releases plus zstd-compressed thin deltas from
@@ -15287,6 +15812,7 @@ pub async fn release_registry_tree(
     objectstore::assert_sha256(dir)?;
     ensure_release_worktree_clean(dir)?;
     ensure_release_tag_available(dir, &options.version, options.resume)?;
+    attach_container_release(dir, registry_name, options, printer)?;
 
     if let Some(publish) = &options.store_publish {
         publish_release_store_path(publish, printer).await?;
@@ -15725,6 +16251,9 @@ fn static_cache_report_json(report: &nixcache::StaticCacheReport) -> serde_json:
 
 fn release_plan_steps_json(options: &ReleaseTreeOptions) -> Vec<&'static str> {
     let mut steps = vec!["ensure_clean_worktree"];
+    if options.container_release.is_some() {
+        steps.push("commit_container_release_sidecar");
+    }
     if options.store_publish.is_some() {
         steps.push("publish_store_path");
     }
@@ -15761,6 +16290,9 @@ fn print_release_plan(
     printer.kv("Directory", &dir.display().to_string());
     printer.kv("Release", &options.version.to_string());
     printer.plain("- ensure registry working tree is clean");
+    if options.container_release.is_some() {
+        printer.plain("- commit canonical containers/v1/index.json with the release signing key");
+    }
     if options.store_publish.is_some() {
         printer.plain("- publish store path into release metadata");
     }
@@ -15786,6 +16318,148 @@ fn print_release_plan(
     if !options.upload_urls.is_empty() {
         printer.plain("- upload static git origin (immutable objects first, refs last)");
     }
+}
+
+fn attach_container_release(
+    dir: &Path,
+    registry_name: &str,
+    options: &ReleaseTreeOptions,
+    printer: &Printer,
+) -> Result<()> {
+    let Some(attachment) = &options.container_release else {
+        return Ok(());
+    };
+
+    if let Some(tagged_commit) = existing_release_tag_commit(dir, &options.version)? {
+        if !options.resume {
+            bail!(
+                "release tag {} already exists; container sidecar attachment requires --resume",
+                options.version
+            );
+        }
+        let head = git(dir, &["rev-parse", "HEAD"])?;
+        if tagged_commit != head {
+            bail!(
+                "release tag {} points at {}, but HEAD is {}; refusing to mutate a divergent resume",
+                options.version,
+                tagged_commit,
+                head,
+            );
+        }
+        let tagged_bytes = crate::registry::repo::read_blob_at_blocking(
+            dir,
+            &tagged_commit,
+            CONTAINER_RELEASE_SIDECAR_PATH,
+        )?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "release tag {} does not contain {}; refusing container resume",
+                options.version,
+                CONTAINER_RELEASE_SIDECAR_PATH,
+            )
+        })?;
+        if tagged_bytes != attachment.canonical_bytes {
+            bail!(
+                "release tag {} contains different {} bytes; refusing container resume",
+                options.version,
+                CONTAINER_RELEASE_SIDECAR_PATH,
+            );
+        }
+        printer.info(&format!(
+            "Release tag {} already contains the requested container sidecar; resuming.",
+            options.version
+        ));
+        return Ok(());
+    }
+
+    let path = dir.join(CONTAINER_RELEASE_SIDECAR_PATH);
+    if path.exists() {
+        let existing_bytes =
+            read_bounded_container_json(&path, "committed container release sidecar")?;
+        if existing_bytes == attachment.canonical_bytes {
+            let path_commit = git(
+                dir,
+                &[
+                    "log",
+                    "-1",
+                    "--format=%H",
+                    "--",
+                    CONTAINER_RELEASE_SIDECAR_PATH,
+                ],
+            )?;
+            if path_commit.is_empty() {
+                bail!(
+                    "{} exists but is not committed; refusing container release retry",
+                    CONTAINER_RELEASE_SIDECAR_PATH
+                );
+            }
+            let committed_bytes = crate::registry::repo::read_blob_at_blocking(
+                dir,
+                &path_commit,
+                CONTAINER_RELEASE_SIDECAR_PATH,
+            )?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "commit {path_commit} does not contain {}; refusing container release retry",
+                    CONTAINER_RELEASE_SIDECAR_PATH
+                )
+            })?;
+            if committed_bytes != attachment.canonical_bytes {
+                bail!(
+                    "working-tree {} does not match its introducing commit {path_commit}",
+                    CONTAINER_RELEASE_SIDECAR_PATH
+                );
+            }
+            let trusted_key = derive_trust_key(registry_name, &options.signing_key)?;
+            if !crate::security::verify_commit_signature(
+                dir,
+                &path_commit,
+                std::slice::from_ref(&trusted_key),
+            )? {
+                bail!(
+                    "commit {path_commit} containing {} is not signed by the selected release key",
+                    CONTAINER_RELEASE_SIDECAR_PATH
+                );
+            }
+            printer.info(&format!(
+                "Canonical container sidecar is already committed at {path_commit}; continuing release {}.",
+                options.version
+            ));
+            return Ok(());
+        }
+
+        let existing = ContainerRelease::from_canonical_json(&existing_bytes)
+            .context("validating the existing committed container sidecar before replacement")?;
+        if existing.identity.release == attachment.release.identity.release {
+            bail!(
+                "committed {} has different bytes for release {}; refusing container release retry",
+                CONTAINER_RELEASE_SIDECAR_PATH,
+                options.version
+            );
+        }
+    }
+
+    let parent = path.parent().ok_or_else(|| {
+        anyhow::anyhow!(
+            "container release sidecar path has no parent: {}",
+            path.display()
+        )
+    })?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("creating container release directory {}", parent.display()))?;
+    fs::write(&path, &attachment.canonical_bytes)
+        .with_context(|| format!("staging canonical container release {}", path.display()))?;
+    commit_registry_paths(
+        dir,
+        &format!("registry: attach container release {}", options.version),
+        &[path],
+        Some(&options.signing_key),
+    )?;
+    printer.success(&format!(
+        "Attached canonical container sidecar for release {}.",
+        options.version
+    ));
+    Ok(())
 }
 
 /// Require a clean working tree before releasing; bare repositories pass
@@ -16548,6 +17222,14 @@ mod tests {
         ApmSettings, ConfigOutputMeta, ModuleAbiCompat, OwnedRoot, ProfileScope, RegistryConfig,
         RegistryUploadAuthConfig,
     };
+    use aos_oci_types::{
+        Annotations, CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA, CONTAINER_RELEASE_SCHEMA_VERSION,
+        CONTAINER_SIGNATURE_INPUT_SCHEMA, ContainerEvidenceMappingQualification,
+        ContainerEvidenceQualification, ContainerEvidenceQualificationCheck,
+        ContainerNixProvenance, ContainerOciRelease, ContainerReleaseEvidence,
+        ContainerReleaseIdentity, ContainerSignatureInputEvidence, Descriptor, MediaType,
+        NixDefinitionIdentity, NixOutputIdentity, Platform, Sha256Digest, to_canonical_json,
+    };
     use std::fs;
     use tempfile::TempDir;
 
@@ -16591,6 +17273,81 @@ mod tests {
 
         let nix_base32 = format!("sha256:{}", "0".repeat(52));
         assert_eq!(documentation_nar_identity(&nix_base32).unwrap(), expected);
+    }
+
+    #[test]
+    fn package_documentation_extracts_exposed_unit_descriptions() {
+        let expose = TempDir::new().unwrap();
+        fs::create_dir(expose.path().join("units")).unwrap();
+        fs::write(
+            expose.path().join("units/example.service"),
+            "[Unit]\nDescription=Example workload service\n\n[Service]\nExecStart=/bin/true\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            exposed_unit_description(expose.path().to_str().unwrap(), "example.service").unwrap(),
+            "Example workload service"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn package_documentation_accepts_only_store_owned_unit_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let root = TempDir::new().unwrap();
+        let store = root.path().join("nix/store");
+        let expose = store.join("00000000000000000000000000000000-expose");
+        let unit_output = store.join("11111111111111111111111111111111-unit");
+        fs::create_dir_all(expose.join("units")).unwrap();
+        fs::create_dir_all(&unit_output).unwrap();
+        let unit = unit_output.join("example.service");
+        fs::write(&unit, "[Unit]\nDescription=Store-owned unit\n").unwrap();
+        symlink(&unit, expose.join("units/example.service")).unwrap();
+
+        assert_eq!(
+            exposed_unit_description(expose.to_str().unwrap(), "example.service").unwrap(),
+            "Store-owned unit"
+        );
+
+        fs::remove_file(expose.join("units/example.service")).unwrap();
+        symlink("/etc/passwd", expose.join("units/example.service")).unwrap();
+        assert!(
+            exposed_unit_description(expose.to_str().unwrap(), "example.service")
+                .unwrap_err()
+                .to_string()
+                .contains("same unit from one direct store object")
+        );
+    }
+
+    #[test]
+    fn package_documentation_rejects_undocumented_or_oversized_units() {
+        let expose = TempDir::new().unwrap();
+        fs::create_dir(expose.path().join("units")).unwrap();
+        fs::write(
+            expose.path().join("units/missing.service"),
+            "[Unit]\nAfter=network.target\n",
+        )
+        .unwrap();
+        assert!(
+            exposed_unit_description(expose.path().to_str().unwrap(), "missing.service")
+                .unwrap_err()
+                .to_string()
+                .contains("has no non-empty [Unit] Description")
+        );
+
+        fs::write(
+            expose.path().join("units/large.service"),
+            vec![b'x'; 1024 * 1024 + 1],
+        )
+        .unwrap();
+        assert!(
+            exposed_unit_description(expose.path().to_str().unwrap(), "large.service")
+                .unwrap_err()
+                .to_string()
+                .contains("exceeds 1048576 bytes")
+        );
     }
 
     #[test]
@@ -16958,6 +17715,54 @@ mod tests {
         public_info_file.read_to_string(&mut public_info).unwrap();
         assert!(!public_info.contains("ukiStorePath"));
         assert_eq!(image.image_info.identity.len, public_info.len() as u64);
+    }
+
+    #[test]
+    fn image_publisher_accepts_only_exact_target_platform_metadata() {
+        let accepted = TempDir::new().unwrap();
+        let store = write_direct_image_output(
+            accepted.path(),
+            "qcow2",
+            serde_json::json!(["qemu-kvm", "openstack"]),
+        );
+        let support = Path::new(&store.path).join("nix-support");
+        fs::create_dir(&support).unwrap();
+        fs::write(support.join("aos-target-platform"), "x86_64-linux\n").unwrap();
+        inspect_test_image("qcow2", store, "2026.08", "x86_64-linux").unwrap();
+
+        let wrong = TempDir::new().unwrap();
+        let store = write_direct_image_output(
+            wrong.path(),
+            "qcow2",
+            serde_json::json!(["qemu-kvm", "openstack"]),
+        );
+        let support = Path::new(&store.path).join("nix-support");
+        fs::create_dir(&support).unwrap();
+        fs::write(support.join("aos-target-platform"), "aarch64-linux\n").unwrap();
+        assert!(inspect_test_image("qcow2", store, "2026.08", "x86_64-linux").is_err());
+
+        let extra = TempDir::new().unwrap();
+        let store = write_direct_image_output(
+            extra.path(),
+            "qcow2",
+            serde_json::json!(["qemu-kvm", "openstack"]),
+        );
+        let support = Path::new(&store.path).join("nix-support");
+        fs::create_dir(&support).unwrap();
+        fs::write(support.join("aos-target-platform"), "x86_64-linux\n").unwrap();
+        fs::write(support.join("unexpected"), "metadata\n").unwrap();
+        assert!(inspect_test_image("qcow2", store, "2026.08", "x86_64-linux").is_err());
+
+        let oversized = TempDir::new().unwrap();
+        let store = write_direct_image_output(
+            oversized.path(),
+            "qcow2",
+            serde_json::json!(["qemu-kvm", "openstack"]),
+        );
+        let support = Path::new(&store.path).join("nix-support");
+        fs::create_dir(&support).unwrap();
+        fs::write(support.join("aos-target-platform"), "x".repeat(129)).unwrap();
+        assert!(inspect_test_image("qcow2", store, "2026.08", "x86_64-linux").is_err());
     }
 
     #[test]
@@ -17476,6 +18281,27 @@ mod tests {
     }
 
     #[test]
+    fn config_interface_scan_accepts_only_the_canonical_target_platform_marker() {
+        let tmp = TempDir::new().expect("temporary config module");
+        fs::create_dir(tmp.path().join("nix-support")).expect("create nix-support directory");
+        fs::write(tmp.path().join("module.nix"), "{ ... }: {}\n").expect("write module");
+        fs::write(
+            tmp.path().join(TARGET_PLATFORM_RELATIVE_PATH),
+            "x86_64-linux\n",
+        )
+        .expect("write target platform marker");
+
+        scan_config_module_interface(tmp.path(), "web", &[], &[])
+            .expect("scan canonical target platform metadata");
+
+        fs::write(tmp.path().join("nix-support/helper"), "not Nix\n")
+            .expect("write unauthorized nix-support helper");
+        let error = scan_config_module_interface(tmp.path(), "web", &[], &[])
+            .expect_err("reject neighboring nix-support helper");
+        assert!(error.to_string().contains("non-Nix helper"), "{error:#}");
+    }
+
+    #[test]
     fn config_attestation_binds_config_base_lib_and_expose_independently() {
         let payload = StorePathInfo {
             path: "/nix/store/0000000000000000000000000000000a-web-1".to_string(),
@@ -17776,8 +18602,99 @@ mod tests {
             resume: false,
             jobs: None,
             store_publish: None,
+            container_release: None,
             cache_max_age_days: 30,
         }
+    }
+
+    fn container_release_inputs(version: &str) -> (ContainerRelease, ContainerSignatureInput) {
+        fn descriptor(media_type: MediaType, label: &str) -> Descriptor {
+            Descriptor {
+                media_type,
+                digest: Sha256Digest::digest(label.as_bytes()),
+                size: u64::try_from(label.len()).expect("fixture size"),
+                urls: Vec::new(),
+                annotations: Annotations::new(),
+                data: None,
+                artifact_type: None,
+                platform: None,
+            }
+        }
+
+        fn evidence_descriptor(artifact_type: MediaType, label: &str) -> Descriptor {
+            Descriptor {
+                artifact_type: Some(artifact_type),
+                ..descriptor(MediaType::OciImageManifest, label)
+            }
+        }
+
+        let mut manifest = descriptor(MediaType::OciImageManifest, "manifest");
+        manifest.platform = Some(Platform::linux_amd64());
+        let qualification = ContainerEvidenceQualification {
+            schema: CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA.to_string(),
+            mapping: ContainerEvidenceMappingQualification {
+                complete: true,
+                unknown_paths: Vec::new(),
+            },
+            corresponding_source: ContainerEvidenceQualificationCheck {
+                complete: true,
+                unknown_paths: Vec::new(),
+            },
+            licensing: ContainerEvidenceQualificationCheck {
+                complete: true,
+                unknown_paths: Vec::new(),
+            },
+            ready_for_verified_publication: true,
+        };
+        let release = ContainerRelease {
+            schema_version: CONTAINER_RELEASE_SCHEMA_VERSION,
+            media_type: MediaType::AosContainerRelease,
+            identity: ContainerReleaseIdentity {
+                release: version.to_string(),
+                package: "aos".to_string(),
+                package_version: "0.1.0".to_string(),
+                image: "aos".to_string(),
+            },
+            oci: ContainerOciRelease {
+                index: descriptor(MediaType::OciImageIndex, "index"),
+                platform_manifests: vec![manifest],
+            },
+            nix: ContainerNixProvenance {
+                definition: NixDefinitionIdentity {
+                    attribute: "containerImages.aos".to_string(),
+                    derivation_path:
+                        "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-aos-container.drv".to_string(),
+                },
+                output: NixOutputIdentity {
+                    name: "out".to_string(),
+                    store_path: "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-aos-container"
+                        .to_string(),
+                },
+                closure: evidence_descriptor(MediaType::AosNixClosure, "closure"),
+            },
+            qualification: qualification.clone(),
+            evidence: ContainerReleaseEvidence {
+                sbom: evidence_descriptor(MediaType::SpdxJson, "sbom"),
+                source: evidence_descriptor(MediaType::AosSourceClosure, "source"),
+                license: evidence_descriptor(MediaType::AosLicenseReport, "license"),
+                provenance: evidence_descriptor(MediaType::InTotoJson, "provenance"),
+                signature: evidence_descriptor(MediaType::DsseEnvelope, "signature"),
+            },
+        };
+        let input = ContainerSignatureInput {
+            schema: CONTAINER_SIGNATURE_INPUT_SCHEMA.to_string(),
+            identity: release.identity.clone(),
+            oci: release.oci.clone(),
+            nix: release.nix.clone(),
+            evidence: ContainerSignatureInputEvidence {
+                sbom: release.evidence.sbom.clone(),
+                source: release.evidence.source.clone(),
+                license: release.evidence.license.clone(),
+                provenance: release.evidence.provenance.clone(),
+            },
+            qualification,
+        };
+        (release, input)
     }
 
     fn release_policy_info(path: &Path, references: Vec<String>) -> StorePathInfo {
@@ -18473,6 +19390,131 @@ mod tests {
     }
 
     #[test]
+    fn container_release_attachment_requires_paired_canonical_inputs() {
+        let tmp = TempDir::new().unwrap();
+        let release_path = tmp.path().join("containers-v1-index.json");
+        let input_path = tmp.path().join("signature-input.json");
+        let version = semver::Version::parse("1.0.0").unwrap();
+
+        assert!(
+            load_container_release_attachment(&version, None, None)
+                .unwrap()
+                .is_none()
+        );
+
+        let error = load_container_release_attachment(&version, Some(&release_path), None)
+            .expect_err("missing signature input");
+        assert!(format!("{error:#}").contains("paired --container-signature-input"));
+        let error = load_container_release_attachment(&version, None, Some(&input_path))
+            .expect_err("missing release sidecar");
+        assert!(format!("{error:#}").contains("paired --container-release"));
+
+        let (release, input) = container_release_inputs("1.0.0");
+        fs::write(&release_path, serde_json::to_vec_pretty(&release).unwrap()).unwrap();
+        fs::write(&input_path, to_canonical_json(&input).unwrap()).unwrap();
+        let error =
+            load_container_release_attachment(&version, Some(&release_path), Some(&input_path))
+                .expect_err("noncanonical sidecar");
+        assert!(format!("{error:#}").contains("canonical JSON"));
+    }
+
+    #[test]
+    fn container_release_attachment_rejects_unsigned_mismatch_and_release_identity() {
+        let tmp = TempDir::new().unwrap();
+        let release_path = tmp.path().join("containers-v1-index.json");
+        let input_path = tmp.path().join("signature-input.json");
+        let version = semver::Version::parse("1.0.0").unwrap();
+        let (release, mut input) = container_release_inputs("1.0.0");
+        fs::write(&release_path, to_canonical_json(&release).unwrap()).unwrap();
+        input.identity.package_version = "0.2.0".to_string();
+        fs::write(&input_path, to_canonical_json(&input).unwrap()).unwrap();
+
+        let error =
+            load_container_release_attachment(&version, Some(&release_path), Some(&input_path))
+                .expect_err("unsigned identity mismatch");
+        assert!(format!("{error:#}").contains("final sidecar identity differs"));
+
+        let (release, input) = container_release_inputs("2.0.0");
+        fs::write(&release_path, to_canonical_json(&release).unwrap()).unwrap();
+        fs::write(&input_path, to_canonical_json(&input).unwrap()).unwrap();
+        let error =
+            load_container_release_attachment(&version, Some(&release_path), Some(&input_path))
+                .expect_err("release semver mismatch");
+        assert!(format!("{error:#}").contains("does not match apr release semver '1.0.0'"));
+
+        let (mut release, mut input) = container_release_inputs("1.0.0");
+        release.identity.image = "other".to_string();
+        input.identity.image = "other".to_string();
+        fs::write(&release_path, to_canonical_json(&release).unwrap()).unwrap();
+        fs::write(&input_path, to_canonical_json(&input).unwrap()).unwrap();
+        let error =
+            load_container_release_attachment(&version, Some(&release_path), Some(&input_path))
+                .expect_err("initial image policy");
+        assert!(format!("{error:#}").contains("requires package 'aos' and image 'aos'"));
+    }
+
+    #[test]
+    fn container_release_attachment_retries_exact_signed_head_before_tag() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        git(
+            tmp.path(),
+            &[
+                "init",
+                "--object-format=sha256",
+                "--initial-branch=main",
+                repo.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        git(&repo, &["config", "user.name", "AOS Registry"]).unwrap();
+        git(&repo, &["config", "user.email", "registry@example.com"]).unwrap();
+        git(&repo, &["config", "commit.gpgsign", "false"]).unwrap();
+        fs::write(
+            repo.join("registry.toml"),
+            "[registry]\nname = \"aos-core\"\n",
+        )
+        .unwrap();
+        git(&repo, &["add", "."]).unwrap();
+        git(&repo, &["commit", "-m", "init"]).unwrap();
+
+        let signing = write_test_signing_key(tmp.path(), "aos-core");
+        let (release, _) = container_release_inputs("1.0.0");
+        let attachment = ContainerReleaseAttachment {
+            canonical_bytes: to_canonical_json(&release).unwrap(),
+            release,
+        };
+        let mut options = test_release_options(&tmp);
+        options.signing_key = signing.private_key.to_string_lossy().into_owned();
+        options.container_release = Some(attachment.clone());
+        let printer = Printer::new(0, true, false);
+
+        attach_container_release(&repo, "aos-core", &options, &printer).unwrap();
+        let committed_head = git(&repo, &["rev-parse", "HEAD"]).unwrap();
+        assert!(
+            existing_release_tag_commit(&repo, &options.version)
+                .unwrap()
+                .is_none()
+        );
+
+        attach_container_release(&repo, "aos-core", &options, &printer).unwrap();
+        assert_eq!(git(&repo, &["rev-parse", "HEAD"]).unwrap(), committed_head);
+        ensure_release_worktree_clean(&repo).unwrap();
+
+        options
+            .container_release
+            .as_mut()
+            .unwrap()
+            .canonical_bytes
+            .push(b' ');
+        let error = attach_container_release(&repo, "aos-core", &options, &printer)
+            .expect_err("same-release conflicting retry");
+        assert!(format!("{error:#}").contains("different bytes for release 1.0.0"));
+        assert_eq!(git(&repo, &["rev-parse", "HEAD"]).unwrap(), committed_head);
+        ensure_release_worktree_clean(&repo).unwrap();
+    }
+
+    #[test]
     fn release_validation_rejects_cache_flags_when_publishing_without_roots() {
         let tmp = TempDir::new().unwrap();
         let mut options = test_release_options(&tmp);
@@ -18987,7 +20029,7 @@ mod tests {
 
     struct TestProvenanceSigner {
         _tmp: TempDir,
-        signer: PackageProvenanceSigner,
+        signer: LocalPackageProvenanceSigner,
         trusted_key: String,
     }
 
@@ -19003,7 +20045,7 @@ mod tests {
             TEST_PROVENANCE_KEY_ID,
         );
         TestProvenanceSigner {
-            signer: PackageProvenanceSigner {
+            signer: LocalPackageProvenanceSigner {
                 key_id: TEST_PROVENANCE_KEY_ID.to_string(),
                 key_path: key.private_key.clone(),
             },

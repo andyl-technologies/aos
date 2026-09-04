@@ -59,6 +59,33 @@ enum Command {
         /// Externally reachable base URL for setup snippets.
         #[arg(long)]
         external_url: Option<String>,
+        /// PEM certificate chain for native TLS termination.
+        #[arg(long, env = "HUB_TLS_CERTIFICATE_FILE")]
+        tls_certificate_file: Option<PathBuf>,
+        /// PEM private key matching the native TLS certificate.
+        #[arg(long, env = "HUB_TLS_PRIVATE_KEY_FILE")]
+        tls_private_key_file: Option<PathBuf>,
+        /// Immutable deployment identity used by canonical release plans.
+        #[arg(long, env = "HUB_DEPLOYMENT_ID")]
+        deployment_id: Option<String>,
+        /// Stable public key id for environment release receipts.
+        #[arg(long, env = "HUB_RELEASE_RECEIPT_KEY_ID")]
+        release_receipt_key_id: Option<String>,
+        /// Owner-private file containing a standard-base64 Ed25519 signing seed.
+        #[arg(long, env = "HUB_RELEASE_RECEIPT_KEY_FILE")]
+        release_receipt_key_file: Option<PathBuf>,
+        /// Stable public key id for signed channel receipts.
+        #[arg(long, env = "HUB_CHANNEL_RECEIPT_KEY_ID")]
+        channel_receipt_key_id: Option<String>,
+        /// Owner-private file containing the channel Ed25519 signing seed.
+        #[arg(long, env = "HUB_CHANNEL_RECEIPT_KEY_FILE")]
+        channel_receipt_key_file: Option<PathBuf>,
+        /// Owner-private JSON map of trusted Hub receipt key ids to public keys.
+        #[arg(long, env = "HUB_RELEASE_PUBLICATION_KEYS_FILE")]
+        release_publication_keys_file: Option<PathBuf>,
+        /// Owner-private JSON map of qualification key ids to base64 public keys.
+        #[arg(long, env = "HUB_QUALIFICATION_KEYS_FILE")]
+        qualification_keys_file: Option<PathBuf>,
         /// Seconds between background re-index runs (0 disables).
         #[arg(long, default_value_t = 60)]
         reindex_interval: u64,
@@ -88,6 +115,25 @@ enum Command {
         /// Scoped Cloudflare API token used by authenticated CDN route probes.
         #[arg(long, env = "HUB_CLOUDFLARE_API_TOKEN")]
         cloudflare_api_token: Option<String>,
+        /// Enable OCI Distribution discovery and repository pulls.
+        #[arg(long, env = "HUB_OCI_PULL_ENABLED", default_value_t = false)]
+        oci_pull_enabled: bool,
+        /// Enable OCI Distribution discovery and repository pushes.
+        #[arg(long, env = "HUB_OCI_PUSH_ENABLED", default_value_t = false)]
+        oci_push_enabled: bool,
+        /// Enable verified AOS container publication transactions.
+        #[arg(
+            long,
+            env = "HUB_OCI_VERIFIED_PUBLICATION_ENABLED",
+            default_value_t = false
+        )]
+        oci_verified_publication_enabled: bool,
+        /// Enable reviewed container repository, tag, and retention mutations.
+        #[arg(long, env = "HUB_OCI_ADMINISTRATION_ENABLED", default_value_t = false)]
+        oci_administration_enabled: bool,
+        /// Enable reviewed OCI garbage collection.
+        #[arg(long, env = "HUB_OCI_GC_ENABLED", default_value_t = false)]
+        oci_gc_enabled: bool,
         /// File containing the scoped Cloudflare API token.
         #[arg(
             long,
@@ -254,6 +300,25 @@ struct WorkerArgs {
     /// Immutable source/build identity exposed for deployment verification.
     #[arg(long, env = "HUB_DEPLOYMENT_ID")]
     deployment_id: Option<String>,
+    /// Enable OCI Distribution discovery and repository pulls.
+    #[arg(long, env = "HUB_OCI_PULL_ENABLED", default_value_t = false)]
+    oci_pull_enabled: bool,
+    /// Enable OCI Distribution discovery and repository pushes.
+    #[arg(long, env = "HUB_OCI_PUSH_ENABLED", default_value_t = false)]
+    oci_push_enabled: bool,
+    /// Enable verified AOS container publication transactions.
+    #[arg(
+        long,
+        env = "HUB_OCI_VERIFIED_PUBLICATION_ENABLED",
+        default_value_t = false
+    )]
+    oci_verified_publication_enabled: bool,
+    /// Enable reviewed container repository, tag, and retention mutations.
+    #[arg(long, env = "HUB_OCI_ADMINISTRATION_ENABLED", default_value_t = false)]
+    oci_administration_enabled: bool,
+    /// Enable reviewed OCI garbage collection.
+    #[arg(long, env = "HUB_OCI_GC_ENABLED", default_value_t = false)]
+    oci_gc_enabled: bool,
     /// Stable name of the colocated SQLite Durable Object instance.
     ///
     /// Changing this selects a fresh database and is intended for explicit
@@ -293,6 +358,9 @@ struct WorkerArgs {
     /// At-rest AES-GCM sealing key; minted randomly when omitted.
     #[arg(long, env = "HUB_SEAL_KEY")]
     seal_key: Option<String>,
+    /// Owner-private atomic release evidence configuration uploaded as a secret.
+    #[arg(long, env = "HUB_RELEASE_EVIDENCE_CONFIG_FILE")]
+    release_evidence_config_file: Option<PathBuf>,
     /// `KEY_ID:KEY` already active on the optional egress router.
     #[arg(long, env = "HUB_EGRESS_GATEWAY_KEY", requires = "egress_gateway_url")]
     egress_gateway_key: Option<String>,
@@ -397,6 +465,15 @@ async fn main() -> Result<()> {
             dev,
             seed,
             external_url,
+            tls_certificate_file,
+            tls_private_key_file,
+            deployment_id,
+            release_receipt_key_id,
+            release_receipt_key_file,
+            channel_receipt_key_id,
+            channel_receipt_key_file,
+            release_publication_keys_file,
+            qualification_keys_file,
             reindex_interval,
             jwt_secret_file,
             delivery_attestation_key_file,
@@ -406,6 +483,11 @@ async fn main() -> Result<()> {
             route_reservation_keys_file,
             secret_version_manifest_file,
             cloudflare_api_token,
+            oci_pull_enabled,
+            oci_push_enabled,
+            oci_verified_publication_enabled,
+            oci_administration_enabled,
+            oci_gc_enabled,
             cloudflare_api_token_file,
         } => {
             let root = resolve_root(cli.root, dev)?;
@@ -416,6 +498,28 @@ async fn main() -> Result<()> {
                 .local_addr()
                 .context("reading bound listen address")?;
             let external_url = external_url.unwrap_or_else(|| format!("http://{listen_addr}"));
+            let tls = match (tls_certificate_file, tls_private_key_file) {
+                (Some(certificate), Some(private_key)) => {
+                    let public_url = url::Url::parse(&external_url)
+                        .context("parsing the native TLS external URL")?;
+                    anyhow::ensure!(
+                        public_url.scheme() == "https",
+                        "native TLS requires an https external URL"
+                    );
+                    let server_name = public_url
+                        .host_str()
+                        .context("native TLS external URL has no hostname")?;
+                    anyhow::ensure!(
+                        server_name.parse::<std::net::IpAddr>().is_err(),
+                        "native TLS external URL must use a DNS hostname for SNI"
+                    );
+                    Some((certificate, private_key, server_name.to_owned()))
+                }
+                (None, None) => None,
+                _ => anyhow::bail!(
+                    "HUB_TLS_CERTIFICATE_FILE and HUB_TLS_PRIVATE_KEY_FILE must be configured together"
+                ),
+            };
             let db = Arc::new(Database::open(&root.join("hub.db")).await?);
             let storage_root = root.join("storage");
             std::fs::create_dir_all(&storage_root).with_context(|| {
@@ -483,6 +587,54 @@ async fn main() -> Result<()> {
                 }
             }
             let mut app_state = AppState::new(db, external_url).await;
+            app_state.container_rollout = aos_hub_core::container_rollout::ContainerRollout {
+                pull: oci_pull_enabled,
+                push: oci_push_enabled,
+                verified_publication: oci_verified_publication_enabled,
+                administration: oci_administration_enabled,
+                garbage_collection: oci_gc_enabled,
+            };
+            app_state.deployment_id = deployment_id.clone();
+            match (
+                deployment_id,
+                release_receipt_key_id,
+                release_receipt_key_file,
+                channel_receipt_key_id,
+                channel_receipt_key_file,
+                release_publication_keys_file,
+                qualification_keys_file,
+            ) {
+                (Some(deployment_id), Some(key_id), Some(seed_path), Some(channel_key_id), Some(channel_seed_path), Some(publication_keys_path), Some(qualification_keys_path)) => {
+                    let seed = std::fs::read_to_string(&seed_path)
+                        .with_context(|| format!("reading release receipt key at {}", seed_path.display()))?;
+                    let channel_seed = std::fs::read_to_string(&channel_seed_path)
+                        .with_context(|| format!("reading channel receipt key at {}", channel_seed_path.display()))?;
+                    let publication_keys_source = std::fs::read_to_string(&publication_keys_path)
+                        .with_context(|| format!("reading publication keys at {}", publication_keys_path.display()))?;
+                    let publication_keys = serde_json::from_str(&publication_keys_source)
+                        .context("parsing publication public-key map")?;
+                    let qualification_keys_source = std::fs::read_to_string(&qualification_keys_path)
+                        .with_context(|| format!("reading qualification keys at {}", qualification_keys_path.display()))?;
+                    let qualification_keys = serde_json::from_str(&qualification_keys_source)
+                        .context("parsing qualification public-key map")?;
+                    app_state.release_evidence = Some(Arc::new(
+                        aos_hub_core::release_evidence::Ed25519ReleaseEvidenceAuthority::from_base64(
+                            deployment_id,
+                            key_id,
+                            seed.trim(),
+                            channel_key_id,
+                            channel_seed.trim(),
+                            publication_keys,
+                            qualification_keys,
+                        )
+                        .context("configuring release evidence authority")?,
+                    ));
+                }
+                (None, None, None, None, None, None, None) => {}
+                _ => anyhow::bail!(
+                    "HUB_DEPLOYMENT_ID, HUB_RELEASE_RECEIPT_KEY_ID, HUB_RELEASE_RECEIPT_KEY_FILE, HUB_CHANNEL_RECEIPT_KEY_ID, HUB_CHANNEL_RECEIPT_KEY_FILE, HUB_RELEASE_PUBLICATION_KEYS_FILE, and HUB_QUALIFICATION_KEYS_FILE must be configured together"
+                ),
+            }
             if let Some(path) = jwt_secret_file {
                 let secret = aos_hub::auth::seal::read_secret_file(&path)
                     .with_context(|| format!("reading JWT signing secret at {}", path.display()))?;
@@ -755,21 +907,56 @@ async fn main() -> Result<()> {
                 }
             });
             let inventory_db = Arc::clone(&app_state.db);
-            let inventory_surfaces = aos_hub::coreports::HubSurfaceProvider::new(
+            let inventory_surfaces = Arc::new(
+                aos_hub::coreports::HubSurfaceProvider::new(
+                    Arc::clone(&inventory_db),
+                    app_state.http.clone(),
+                    app_state.image_snapshots.clone(),
+                )
+                .with_credentials(Arc::clone(&app_state.secret_versions)),
+            );
+            let inventory_writers = Arc::new(
+                aos_hub::coreports::HubSurfaceWriteProvider::new(
+                    Arc::clone(&inventory_db),
+                    app_state.http.clone(),
+                )
+                .with_credentials(Arc::clone(&app_state.secret_versions)),
+            );
+            let conditional_delete_probes =
+                aos_hub_core::conditional_delete_probe::ConditionalDeleteProbeController::new(
+                    Arc::clone(&inventory_db),
+                    Arc::clone(&inventory_surfaces)
+                        as Arc<dyn aos_hub_core::fetch::SurfaceProvider>,
+                    Arc::clone(&inventory_writers)
+                        as Arc<dyn aos_hub_core::surface_write::SurfaceWriteProvider>,
+                );
+            let oci_provider_inventory =
+                aos_hub_core::oci_inventory_controller::OciProviderInventoryController::new(
+                    Arc::clone(&inventory_db),
+                    Arc::clone(&inventory_surfaces)
+                        as Arc<dyn aos_hub_core::fetch::SurfaceProvider>,
+                );
+            let oci_gc_controller = aos_hub_core::oci_gc_controller::OciGcDeletionController::new(
                 Arc::clone(&inventory_db),
-                app_state.http.clone(),
-                app_state.image_snapshots.clone(),
-            )
-            .with_credentials(Arc::clone(&app_state.secret_versions));
-            let inventory_writers = aos_hub::coreports::HubSurfaceWriteProvider::new(
-                Arc::clone(&inventory_db),
-                app_state.http.clone(),
-            )
-            .with_credentials(Arc::clone(&app_state.secret_versions));
+                Arc::clone(&inventory_surfaces) as Arc<dyn aos_hub_core::fetch::SurfaceProvider>,
+                Arc::clone(&inventory_writers)
+                    as Arc<dyn aos_hub_core::surface_write::SurfaceWriteProvider>,
+            );
             tokio::spawn(async move {
                 let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+                let mut oci_inventory_continuation: Option<String> = None;
                 loop {
                     tick.tick().await;
+                    if let Err(error) = aos_hub_core::oci::recover_expired_oci_work(
+                        &inventory_db,
+                        inventory_writers.as_ref(),
+                        now_secs(),
+                        100,
+                    )
+                    .await
+                    {
+                        tracing::warn!(error = %format!("{error:#}"), "expired OCI work recovery failed");
+                    }
                     if let Err(error) = aos_hub_core::cache_scan::reap_due_cache_tombstones(
                         &inventory_db,
                         now_secs(),
@@ -780,14 +967,43 @@ async fn main() -> Result<()> {
                     }
                     if let Err(error) = aos_hub_core::cache_scan::recover_expired_cache_writes(
                         &inventory_db,
-                        &inventory_surfaces,
-                        &inventory_writers,
+                        inventory_surfaces.as_ref(),
+                        inventory_writers.as_ref(),
                         now_secs(),
                         aos_hub_core::cache_scan::MAX_CLEANUP_ITEMS_PER_PASS,
                     )
                     .await
                     {
                         tracing::warn!(error = %format!("{error:#}"), "expired cache write recovery failed");
+                    }
+                    if oci_gc_enabled {
+                        let inventory_now = now_secs();
+                        match oci_provider_inventory
+                            .run_due_bounded(
+                                "native-oci-inventory",
+                                &format!("native-inventory-{}", inventory_now / 60),
+                                inventory_now,
+                                100,
+                                oci_inventory_continuation.as_deref(),
+                                aos_hub_core::oci_inventory_controller::NATIVE_OCI_INVENTORY_DISPATCH_BUDGET,
+                            )
+                            .await
+                        {
+                            Ok(stats) => oci_inventory_continuation = stats.continuation,
+                            Err(error) => {
+                                tracing::warn!(error = %format!("{error:#}"), "OCI provider inventory pass failed");
+                            }
+                        }
+                        if let Err(error) = oci_gc_controller
+                            .run_due("native-oci-gc", now_secs(), 100)
+                            .await
+                        {
+                            tracing::warn!(error = %format!("{error:#}"), "OCI GC deletion controller pass failed");
+                        }
+                        if let Err(error) = conditional_delete_probes.run_due(now_secs(), 10).await
+                        {
+                            tracing::warn!(error = %format!("{error:#}"), "conditional-delete capability probe failed");
+                        }
                     }
                     let caches = match inventory_db.list_binary_caches().await {
                         Ok(caches) => caches,
@@ -802,7 +1018,7 @@ async fn main() -> Result<()> {
                     {
                         if let Err(error) = aos_hub_core::cache_scan::rescan_cache(
                             &inventory_db,
-                            &inventory_surfaces,
+                            inventory_surfaces.as_ref(),
                             &cache,
                         )
                         .await
@@ -827,13 +1043,35 @@ async fn main() -> Result<()> {
             // `into_make_service_with_connect_info` injects the TCP peer
             // address as `ConnectInfo<SocketAddr>` so the rate limiter keys on
             // the real client when no trusted proxy fronts the hub.
-            axum::serve(
-                listener,
-                router(state)
-                    .await
-                    .into_make_service_with_connect_info::<std::net::SocketAddr>(),
-            )
-            .await?;
+            if let Some((certificate, private_key, server_name)) = tls {
+                let tls_listener = aos_hub::native_tls::NativeTlsListener::new(
+                    listener,
+                    &certificate,
+                    &private_key,
+                    server_name.clone(),
+                )?;
+                let transport = aos_hub_core::connect::DeliveryTransportEvidence {
+                    scheme: "https".to_owned(),
+                    ingress_kind: "hub".to_owned(),
+                    tls_identity: Some(aos_hub_core::db::InboundEndpointHost::Domain(server_name)),
+                };
+                axum::serve(
+                    tls_listener,
+                    aos_hub::server::router_with_transport(state, Some(transport))
+                        .await
+                        .into_make_service_with_connect_info::<aos_hub::native_tls::NativeTlsPeer>(
+                        ),
+                )
+                .await?;
+            } else {
+                axum::serve(
+                    listener,
+                    router(state)
+                        .await
+                        .into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                )
+                .await?;
+            }
         }
         Command::Validate { command } => {
             let db = open_db(&cli.root, &cli.target).await?;
@@ -1160,6 +1398,13 @@ async fn provision_worker(
     cfg.observability = !args.no_observability;
     cfg.head_sampling_rate = args.head_sampling_rate;
     cfg.logpush = args.logpush;
+    cfg.container_rollout = aos_hub_core::container_rollout::ContainerRollout {
+        pull: args.oci_pull_enabled,
+        push: args.oci_push_enabled,
+        verified_publication: args.oci_verified_publication_enabled,
+        administration: args.oci_administration_enabled,
+        garbage_collection: args.oci_gc_enabled,
+    };
     // Email Service binding: emitted only when a verified sender is supplied.
     cfg.email_from = args.email_from.clone();
     Ok(cfg)
@@ -1208,6 +1453,24 @@ async fn deploy_worker(
                 .with_context(|| format!("reading route reservation keyring at {}", path.display()))
         })
         .transpose()?;
+    let release_evidence_config = args
+        .release_evidence_config_file
+        .as_ref()
+        .map(|path| {
+            aos_hub::auth::seal::read_secret_file(path)
+                .and_then(|bytes| {
+                    String::from_utf8(bytes)
+                        .map_err(anyhow::Error::from)
+                        .context("release evidence configuration is not UTF-8")
+                })
+                .with_context(|| {
+                    format!(
+                        "reading release evidence configuration at {}",
+                        path.display()
+                    )
+                })
+        })
+        .transpose()?;
     let secrets = cloudflare::Secrets {
         jwt_secret: args.jwt_secret.clone(),
         seal_key: args.seal_key.clone(),
@@ -1218,6 +1481,7 @@ async fn deploy_worker(
         disable_delivery_attestation: args.disable_delivery_attestation,
         domain_probe_signer_manifest,
         route_reservation_keyring,
+        release_evidence_config,
     };
     secrets.validate()?;
     let cfg = provision_worker(assets, args).await?;

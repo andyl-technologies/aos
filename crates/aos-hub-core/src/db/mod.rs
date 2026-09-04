@@ -427,6 +427,83 @@ fn extend_release_artifact_inserts(
     Ok(())
 }
 
+fn extend_release_documentation_inserts(
+    statements: &mut Vec<Statement>,
+    snapshot_id: &str,
+    rows: &[Vec<Value>],
+) -> Result<()> {
+    const ROW_COLUMNS: usize = 13;
+    anyhow::ensure!(
+        rows.iter().all(|row| row.len() == ROW_COLUMNS),
+        "release documentation insert has an inconsistent row width"
+    );
+    let rows_per_insert = (SNAPSHOT_MAX_BOUND_PARAMETERS - 1) / ROW_COLUMNS;
+    for chunk in rows.chunks(rows_per_insert) {
+        let mut parameter = 2;
+        let mut tuples = Vec::with_capacity(chunk.len());
+        let mut params = vals![snapshot_id];
+        for row in chunk {
+            let placeholders = (0..row.len())
+                .map(|_| {
+                    let placeholder = format!("?{parameter}");
+                    parameter += 1;
+                    placeholder
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            tuples.push(format!("({placeholders})"));
+            params.extend(row.iter().cloned());
+        }
+        statements.push(Statement::new(
+            format!(
+                "WITH input(package_name, package_version, platform, store_hash,
+                            format, store_path, nar_hash, nar_size,
+                            document_sha256, document_size,
+                            semantic_schema_sha256, system_module_nar_hash,
+                            metadata_digest) AS
+                   (VALUES {})
+                 INSERT INTO release_package_documentation
+                   (snapshot_id, release_id, registry_id, package_name,
+                    package_version, platform, store_hash, format, store_path,
+                    nar_hash, nar_size, document_sha256, document_size,
+                    semantic_schema_sha256, system_module_nar_hash,
+                    metadata_digest)
+                 SELECT ?1, ras.release_id, ras.registry_id, input.package_name,
+                        input.package_version, input.platform, input.store_hash,
+                        input.format, input.store_path, input.nar_hash,
+                        input.nar_size, input.document_sha256,
+                        input.document_size, input.semantic_schema_sha256,
+                        input.system_module_nar_hash, input.metadata_digest
+                   FROM release_artifact_snapshots ras CROSS JOIN input
+                 WHERE ras.snapshot_id = ?1
+                    AND ras.state IN ('building', 'complete')
+                 ON CONFLICT(snapshot_id, package_name, package_version, platform)
+                 DO UPDATE SET
+                   metadata_digest = CASE
+                     WHEN release_package_documentation.release_id = excluded.release_id
+                      AND release_package_documentation.registry_id = excluded.registry_id
+                      AND release_package_documentation.store_hash = excluded.store_hash
+                      AND release_package_documentation.format = excluded.format
+                      AND release_package_documentation.store_path = excluded.store_path
+                      AND release_package_documentation.nar_hash = excluded.nar_hash
+                      AND release_package_documentation.nar_size = excluded.nar_size
+                      AND release_package_documentation.document_sha256 = excluded.document_sha256
+                      AND release_package_documentation.document_size = excluded.document_size
+                      AND release_package_documentation.semantic_schema_sha256 = excluded.semantic_schema_sha256
+                      AND COALESCE(release_package_documentation.system_module_nar_hash, '') =
+                          COALESCE(excluded.system_module_nar_hash, '')
+                      AND release_package_documentation.metadata_digest = excluded.metadata_digest
+                     THEN release_package_documentation.metadata_digest
+                     ELSE NULL
+                   END",
+                tuples.join(", ")
+            ),
+            params,
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod snapshot_insert_tests {
     use super::{
@@ -468,16 +545,24 @@ pub use delivery_identity::*;
 mod egress_nonce;
 mod gc_topology;
 pub use gc_topology::*;
+mod oci;
+pub use oci::*;
+mod oci_admin;
+pub use oci_admin::*;
+mod oci_gc;
+pub use oci_gc::*;
 mod placement_policy;
 mod publication_admission;
 mod registry_delete;
 mod registry_index_build;
+mod release_publication;
 mod signing_keys;
 mod topology;
 mod worker_jobs;
 pub use placement_policy::*;
 pub use publication_admission::*;
 pub use registry_index_build::*;
+pub use release_publication::*;
 pub use signing_keys::*;
 pub use topology::*;
 pub use worker_jobs::*;
@@ -538,6 +623,15 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("placement_policy_publication_history.sql"),
     EXPLICIT_TOPOLOGY_MIGRATION,
     include_str!("package_documentation.sql"),
+    include_str!("package_documentation_system_module.sql"),
+    include_str!("release_package_documentation.sql"),
+    include_str!("release_documentation_projection_generation.sql"),
+    include_str!("release_publication.sql"),
+    include_str!("oci_catalog.sql"),
+    include_str!("oci_upload_publication.sql"),
+    include_str!("oci_admin.sql"),
+    include_str!("oci_gc.sql"),
+    include_str!("oci_gc_remediation.sql"),
 ];
 
 /// Identity stamped into databases created by the topology hard-cutover
@@ -582,8 +676,11 @@ fn mysql_replay_safe_migration_sql(sql: &str) -> String {
     if sql.contains("CREATE VIEW ") {
         return sql.replacen("CREATE VIEW ", "CREATE OR REPLACE VIEW ", 1);
     }
-    if sql.contains(" ADD COLUMN ") && !sql.contains(" ADD COLUMN IF NOT EXISTS ") {
-        return sql.replacen(" ADD COLUMN ", " ADD COLUMN IF NOT EXISTS ", 1);
+    if sql.contains("ALTER TABLE ")
+        && sql.contains("ADD COLUMN ")
+        && !sql.contains("ADD COLUMN IF NOT EXISTS ")
+    {
+        return sql.replacen("ADD COLUMN ", "ADD COLUMN IF NOT EXISTS ", 1);
     }
     if sql.contains("INSERT INTO ") && !sql.contains("ON CONFLICT") {
         return sql.replacen("INSERT INTO ", "INSERT IGNORE INTO ", 1);
@@ -1532,6 +1629,159 @@ pub struct ReleaseArtifactSnapshot {
     pub manifest_digest: String,
     /// Complete artifact set, including a valid empty set.
     pub artifacts: Vec<ReleaseSnapshotArtifact>,
+    /// Signed container root carried by this release, when present.
+    pub container_release: Option<ContainerReleaseRootSnapshot>,
+    /// Complete documentation locators bound to documentation artifacts.
+    pub documentation: Vec<ReleasePackageDocumentation>,
+}
+
+/// One OCI root bound to an exact signed AOS release sidecar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerReleaseRootSnapshot {
+    /// Registry-local OCI repository name.
+    pub repository: String,
+    /// Logical AOS container definition name.
+    pub container_name: String,
+    /// Exact publishable OCI index digest.
+    pub index_digest: String,
+    /// Exact OCI index media type.
+    pub index_media_type: String,
+    /// Exact OCI index byte length.
+    pub index_size: u64,
+    /// SHA-256 of the exact committed `containers/v1/index.json` bytes.
+    pub catalog_digest: String,
+    /// AOS package identity carried by the signed release sidecar.
+    pub package_name: String,
+    /// Complete signed Nix closure projection.
+    pub closure_members: Vec<ContainerReleaseClosureMemberSnapshot>,
+    /// Independently verified closure-layer measurements.
+    pub layers: Vec<ContainerReleaseLayerSnapshot>,
+    /// Complete signed evidence-role projection.
+    pub evidence: Vec<ContainerReleaseEvidenceSnapshot>,
+    /// Exact placement observations for the index, every platform manifest,
+    /// and every signed evidence referrer required by the release sidecar.
+    pub required_descriptors: Vec<VerifiedContainerReleaseDescriptor>,
+}
+
+/// One Nix closure member verified from signed OCI evidence.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ContainerReleaseClosureMemberSnapshot {
+    /// Full Nix store path.
+    pub store_path: String,
+    /// Exact NAR hash.
+    pub nar_hash: String,
+    /// Uncompressed NAR byte length.
+    pub nar_size: u64,
+    /// Image layer containing this path.
+    pub layer_digest: String,
+    /// Whether the path is one of the release closure's direct roots.
+    pub direct: bool,
+}
+
+/// One signed closure-layer identity and exact size projection.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ContainerReleaseLayerSnapshot {
+    /// Signed closure group name.
+    pub name: String,
+    /// Compressed layer digest.
+    pub digest: String,
+    /// Uncompressed layer DiffID.
+    pub diff_id: String,
+    /// Exact compressed byte length.
+    pub compressed_size: u64,
+    /// Exact uncompressed byte length.
+    pub uncompressed_size: u64,
+}
+
+/// One evidence role carried by a verified OCI referrer.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ContainerReleaseEvidenceSnapshot {
+    /// Stable evidence role.
+    pub kind: String,
+    /// Exact evidence payload digest.
+    pub digest: String,
+    /// Exact evidence payload media type.
+    pub media_type: String,
+    /// OCI referrer manifest digest carrying the payload.
+    pub referrer_digest: String,
+}
+
+/// Signed role of one OCI descriptor required by a container release root.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ContainerReleaseDescriptorRole {
+    /// Publishable multi-platform image index.
+    Index,
+    /// Runnable manifest for one declared platform.
+    PlatformManifest,
+    /// Nix runtime-closure evidence manifest.
+    NixClosure,
+    /// SPDX software-bill-of-materials evidence manifest.
+    Sbom,
+    /// Corresponding-source evidence manifest.
+    Source,
+    /// Full-closure license evidence manifest.
+    License,
+    /// In-toto provenance evidence manifest.
+    Provenance,
+    /// Producer-signature evidence manifest.
+    Signature,
+}
+
+impl ContainerReleaseDescriptorRole {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Index => "index",
+            Self::PlatformManifest => "platform_manifest",
+            Self::NixClosure => "nix_closure",
+            Self::Sbom => "sbom",
+            Self::Source => "source",
+            Self::License => "license",
+            Self::Provenance => "provenance",
+            Self::Signature => "signature",
+        }
+    }
+}
+
+/// One signed OCI descriptor and the exact physical observation that admitted it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedContainerReleaseDescriptor {
+    /// Signed role assigned to the descriptor by the release sidecar.
+    pub role: ContainerReleaseDescriptorRole,
+    /// Canonical `sha256:<hex>` content digest.
+    pub digest: String,
+    /// Exact descriptor media type.
+    pub media_type: String,
+    /// Exact descriptor byte length.
+    pub byte_size: u64,
+    /// Backing logical surface-object identity.
+    pub surface_object_id: i64,
+    /// Logical object revision against which the observation was recorded.
+    pub object_resource_version: i64,
+    /// Physical placement carrying the observed bytes.
+    pub placement_id: i64,
+    /// Placement desired-topology revision observed during validation.
+    pub placement_resource_version: i64,
+    /// Placement controller-observation revision observed during validation.
+    pub placement_observation_version: i64,
+    /// Inventory generation that observed the exact bytes.
+    pub observed_inventory_generation: i64,
+    /// Time at which the exact object observation was recorded.
+    pub observed_at: i64,
+    /// Strong backend entity tag for the observed object version.
+    pub strong_etag: String,
+}
+
+/// One immutable documentation locator authenticated by a release snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ReleasePackageDocumentation {
+    /// Package owning the documentation.
+    pub package_name: String,
+    /// Package version owning the documentation.
+    pub package_version: String,
+    /// Platform triple.
+    pub platform: String,
+    /// Complete signed documentation artifact identity.
+    pub artifact: aos_registry_surface::manifest::DocumentationArtifactMeta,
 }
 
 /// Verified documentation locator and deterministic search projection.
@@ -1583,6 +1833,12 @@ pub struct PackageDocumentationLocator {
     pub platform: String,
     /// Signed immutable artifact identity.
     pub artifact: aos_registry_surface::manifest::DocumentationArtifactMeta,
+    /// Signed release tag retaining this locator, when selected historically.
+    pub release: Option<String>,
+    /// Verified tag object retaining this locator, when selected historically.
+    pub verified_tag_oid: Option<String>,
+    /// Complete release snapshot retaining this locator, when selected historically.
+    pub release_snapshot_id: Option<String>,
 }
 
 /// One image catalog authenticated by an exact signed release tag.
@@ -3513,6 +3769,8 @@ impl Database {
             // concurrently, and the legacy one-column marker cannot prevent
             // duplicate rows. Seed the keyed marker from an existing install's
             // maximum legacy version; the upsert is atomic under the primary key.
+            // The sentinel is 1 because MySQL assigns a generated identity when
+            // zero is inserted into an AUTO_INCREMENT primary key.
             self.backend
                 .execute(
                     "CREATE TABLE IF NOT EXISTS hub_schema_version (
@@ -3523,14 +3781,14 @@ impl Database {
             self.backend
                 .execute(
                     "INSERT INTO hub_schema_version(id, version)
-                     SELECT 0, COALESCE(MAX(version), 0) FROM schema_version
+                     SELECT 1, COALESCE(MAX(version), 0) FROM schema_version
                      ON CONFLICT(id) DO NOTHING",
                     &[],
                 )
                 .await?;
         }
         let marker_query = if mysql {
-            "SELECT version FROM hub_schema_version WHERE id = 0"
+            "SELECT version FROM hub_schema_version WHERE id = 1"
         } else {
             "SELECT version FROM schema_version"
         };
@@ -3640,7 +3898,7 @@ impl Database {
                     }
                     self.backend
                         .execute(
-                            "UPDATE hub_schema_version SET version = ?1 WHERE id = 0",
+                            "UPDATE hub_schema_version SET version = ?1 WHERE id = 1",
                             &vals![migration_version],
                         )
                         .await?;
@@ -3664,7 +3922,7 @@ impl Database {
                     .map(|sql| Statement::new(sql, Vec::new()))
                     .collect::<Vec<_>>();
                 self.backend
-                    .batch(&statements)
+                    .migration_batch(current, target, &statements)
                     .await
                     .with_context(|| format!("applying migrations v{}..=v{target}", current + 1))?;
             }
@@ -4046,6 +4304,19 @@ impl Database {
         };
         let indexed_at = unix_now();
         let index_digest = index_snapshot_digest(snapshot)?;
+        let had_container_admin_projections = self
+            .backend
+            .query_opt(
+                "SELECT 1 FROM oci_release_provenance
+                 WHERE registry_id = ?1 LIMIT 1",
+                &vals![registry_id],
+            )
+            .await?
+            .is_some();
+        let has_container_admin_projections = snapshot
+            .release_artifact_snapshots
+            .iter()
+            .any(|release| release.container_release.is_some());
         // Assign surrogate ids client-side so the whole snapshot is one
         // self-contained batch (HubDb has no mid-batch `last_insert_rowid`). The
         // bases are read once before the batch; the indexer runs sequentially
@@ -4077,6 +4348,14 @@ impl Database {
         ));
         stmts.push(Statement::new(
             "DELETE FROM registry_system_images WHERE registry_id = ?1",
+            vals![registry_id].to_vec(),
+        ));
+        stmts.push(Statement::new(
+            "DELETE FROM oci_release_provenance WHERE registry_id = ?1",
+            vals![registry_id].to_vec(),
+        ));
+        stmts.push(Statement::new(
+            "DELETE FROM oci_release_roots WHERE registry_id = ?1",
             vals![registry_id].to_vec(),
         ));
         // Presence is placement-local evidence. Re-indexing one authoritative
@@ -4512,6 +4791,57 @@ impl Database {
             if computed_manifest_digest != release_snapshot.manifest_digest {
                 bail!("release artifact snapshot manifest digest does not match its artifacts");
             }
+            let mut canonical_documentation = release_snapshot.documentation.clone();
+            canonical_documentation.sort_by(|left, right| {
+                (&left.package_name, &left.package_version, &left.platform).cmp(&(
+                    &right.package_name,
+                    &right.package_version,
+                    &right.platform,
+                ))
+            });
+            canonical_documentation.dedup();
+            if canonical_documentation != release_snapshot.documentation {
+                bail!(
+                    "release documentation projection must be canonically sorted and deduplicated"
+                );
+            }
+            if canonical_documentation.windows(2).any(|pair| {
+                pair[0].package_name == pair[1].package_name
+                    && pair[0].package_version == pair[1].package_version
+                    && pair[0].platform == pair[1].platform
+            }) {
+                bail!("release documentation projection contains duplicate package identities");
+            }
+            let documentation_artifacts = release_snapshot
+                .artifacts
+                .iter()
+                .filter(|artifact| artifact.artifact_kind == "documentation")
+                .collect::<Vec<_>>();
+            if documentation_artifacts.len() != release_snapshot.documentation.len() {
+                bail!("release documentation projection is incomplete");
+            }
+            for documentation in &release_snapshot.documentation {
+                let artifact = &documentation.artifact;
+                if artifact.format != aos_doc_model::DOCUMENT_FORMAT
+                    || artifact.references.len() != 0
+                    || artifact.nar_size == 0
+                    || artifact.nar_size > 4 * 1024 * 1024
+                    || artifact.document_size == 0
+                    || artifact.document_size > 4 * 1024 * 1024
+                {
+                    bail!("release documentation locator is malformed");
+                }
+                let store_hash = store_hash_component(&artifact.store_path);
+                if !documentation_artifacts.iter().any(|candidate| {
+                    candidate.package_name == documentation.package_name
+                        && candidate.package_version == documentation.package_version
+                        && candidate.platform == documentation.platform
+                        && candidate.store_path == artifact.store_path
+                        && candidate.store_hash == store_hash
+                }) {
+                    bail!("release documentation locator does not match its retained artifact");
+                }
+            }
             let expected_count = i64::try_from(release_snapshot.artifacts.len())
                 .context("release artifact snapshot is too large")?;
             let snapshot_id = hex::encode(sha2::Sha256::digest(
@@ -4603,6 +4933,28 @@ impl Database {
                 ]);
             }
             extend_release_artifact_inserts(&mut stmts, &snapshot_id, &artifact_rows)?;
+            let mut documentation_rows = Vec::with_capacity(release_snapshot.documentation.len());
+            for documentation in &release_snapshot.documentation {
+                let artifact = &documentation.artifact;
+                let metadata_digest =
+                    hex::encode(sha2::Sha256::digest(serde_json::to_vec(documentation)?));
+                documentation_rows.push(vals![
+                    documentation.package_name,
+                    documentation.package_version,
+                    documentation.platform,
+                    store_hash_component(&artifact.store_path),
+                    artifact.format,
+                    artifact.store_path,
+                    artifact.nar_hash,
+                    artifact.nar_size,
+                    artifact.document_sha256,
+                    artifact.document_size,
+                    artifact.semantic_schema_sha256,
+                    artifact.system_module_nar_hash,
+                    metadata_digest,
+                ]);
+            }
+            extend_release_documentation_inserts(&mut stmts, &snapshot_id, &documentation_rows)?;
             stmts.push(Statement::new(
                 "UPDATE release_artifact_snapshots
                  SET actual_artifact_count = (SELECT COUNT(*)
@@ -4747,8 +5099,9 @@ impl Database {
         stmts.push(Statement::new(
             "INSERT INTO registry_index
              (registry_id, state, error, last_indexed_commit, name, description, readme,
-              indexed_at, refs_digest, cache_stack, generation, content_digest)
-             VALUES (?1, 'fresh', NULL, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9)
+              indexed_at, refs_digest, cache_stack, generation, content_digest,
+              documentation_projection_generation)
+             VALUES (?1, 'fresh', NULL, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, 1)
              ON CONFLICT(registry_id) DO UPDATE SET
                  state = 'fresh', error = NULL,
                  last_indexed_commit = excluded.last_indexed_commit,
@@ -4758,7 +5111,8 @@ impl Database {
                  refs_digest = excluded.refs_digest,
                  cache_stack = excluded.cache_stack,
                  generation = registry_index.generation + 1,
-                 content_digest = excluded.content_digest",
+                 content_digest = excluded.content_digest,
+                 documentation_projection_generation = 1",
             vals![
                 registry_id,
                 snapshot.commit,
@@ -4813,6 +5167,42 @@ impl Database {
             indexed_placement_id,
         )];
         checked_stmts.extend(stmts.into_iter().map(Statement::unchecked));
+        if had_container_admin_projections || has_container_admin_projections {
+            checked_stmts.extend([
+                Statement::new(
+                    "INSERT INTO oci_registry_state
+                       (registry_id, mutation_epoch, charged_bytes,
+                        charged_objects, updated_at)
+                     SELECT ?1, 0, 0, 0, ?2
+                     WHERE EXISTS (SELECT 1 FROM registries WHERE id = ?1)
+                     ON CONFLICT(registry_id) DO NOTHING",
+                    vals![registry_id, indexed_at],
+                )
+                .unchecked(),
+                Statement::new(
+                    "UPDATE oci_registry_state
+                     SET mutation_epoch = mutation_epoch + 1, updated_at = ?2
+                     WHERE registry_id = ?1
+                       AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
+                         WHERE registry_lock.registry_id = ?1)",
+                    vals![registry_id, indexed_at],
+                )
+                .expecting(1),
+            ]);
+        }
+        for release in &snapshot.release_artifact_snapshots {
+            if let Some(root) = &release.container_release {
+                let placement_id = indexed_placement_id
+                    .context("signed container release requires an exact indexed placement")?;
+                checked_stmts.extend(oci_release_root_statements(
+                    registry_id,
+                    release,
+                    root,
+                    placement_id,
+                    indexed_at,
+                )?);
+            }
+        }
         if let Some((objects, observed_at)) = image_presence {
             let placement_id = indexed_placement_id
                 .context("signed image presence requires an exact indexed placement")?;
@@ -5027,6 +5417,10 @@ impl Database {
                 vals![registry_id].to_vec(),
             ),
             Statement::new(
+                "DELETE FROM package_documentation WHERE registry_id = ?1",
+                vals![registry_id].to_vec(),
+            ),
+            Statement::new(
                 "DELETE FROM packages WHERE registry_id = ?1",
                 vals![registry_id].to_vec(),
             ),
@@ -5062,9 +5456,9 @@ impl Database {
                 "INSERT INTO registry_index
                      (registry_id, state, error, last_indexed_commit, name,
                       description, readme, indexed_at, refs_digest, cache_stack,
-                      generation, content_digest)
+                      generation, content_digest, documentation_projection_generation)
                      VALUES (?1, 'empty', NULL, NULL, NULL, NULL, NULL, ?2,
-                             NULL, NULL, ?3, ?4)",
+                             NULL, NULL, ?3, ?4, 1)",
                 vals![registry_id, unix_now(), next_generation, digest].to_vec(),
             ),
         ];
@@ -9781,18 +10175,45 @@ impl Database {
         {
             bail!("binding-write revision is still the binding's current revision");
         }
+        if self
+            .backend
+            .query_opt(
+                "SELECT 1 FROM oci_gc_placement_snapshots snapshot
+                 JOIN oci_gc_runs run ON run.id = snapshot.run_id
+                 WHERE snapshot.binding_id = ?1
+                   AND snapshot.binding_write_revision = ?2
+                   AND run.state = 'applying' LIMIT 1",
+                &vals![binding_id, revision],
+            )
+            .await?
+            .is_some()
+        {
+            bail!("binding-write revision remains pinned by applying OCI GC");
+        }
         self.backend
             .batch(&[
                 Statement::new(
                     "DELETE FROM surface_placement_write_capabilities
-                     WHERE binding_id = ?1 AND binding_write_revision = ?2",
+                     WHERE binding_id = ?1 AND binding_write_revision = ?2
+                       AND NOT EXISTS (SELECT 1
+                         FROM oci_gc_placement_snapshots snapshot
+                         JOIN oci_gc_runs run ON run.id = snapshot.run_id
+                         WHERE snapshot.binding_id = ?1
+                           AND snapshot.binding_write_revision = ?2
+                           AND run.state = 'applying')",
                     vals![binding_id, revision].to_vec(),
                 ),
                 Statement::new(
                     "DELETE FROM binding_write_revisions
                      WHERE binding_id = ?1 AND revision = ?2
                        AND NOT EXISTS (SELECT 1 FROM binding_write_state s
-                         WHERE s.binding_id = ?1 AND s.current_write_revision = ?2)",
+                         WHERE s.binding_id = ?1 AND s.current_write_revision = ?2)
+                       AND NOT EXISTS (SELECT 1
+                         FROM oci_gc_placement_snapshots snapshot
+                         JOIN oci_gc_runs run ON run.id = snapshot.run_id
+                         WHERE snapshot.binding_id = ?1
+                           AND snapshot.binding_write_revision = ?2
+                           AND run.state = 'applying')",
                     vals![binding_id, revision].to_vec(),
                 ),
             ])
@@ -9856,6 +10277,9 @@ impl Database {
              WHERE b.id = ?4
                AND ((?1 IS NOT NULL AND r.id IS NOT NULL)
                  OR (?2 IS NOT NULL AND c.id IS NOT NULL))
+               AND (?1 IS NULL OR NOT EXISTS (
+                 SELECT 1 FROM oci_gc_registry_locks registry_lock
+                 WHERE registry_lock.registry_id = ?1))
                AND NOT EXISTS (SELECT 1 FROM surface_placements existing
                  WHERE existing.binding_id = b.id
                    AND (existing.prefix = '' OR ?5 = ''
@@ -10379,7 +10803,14 @@ impl Database {
                      WHERE placement_id = ?1
                    UNION ALL
                    SELECT policy_revision_id FROM placement_policy_shard_members
-                     WHERE placement_id = ?1))";
+                     WHERE placement_id = ?1))
+               AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
+                 JOIN surface_placements gc_placement
+                   ON gc_placement.registry_id = registry_lock.registry_id
+                 WHERE gc_placement.id = ?1)
+               AND NOT EXISTS (SELECT 1 FROM oci_gc_placement_snapshots snapshot
+                 JOIN oci_gc_runs run ON run.id = snapshot.run_id
+                 WHERE snapshot.placement_id = ?1 AND run.state = 'applying')";
         let values = vals![
             id,
             input.expected_version,
@@ -10458,7 +10889,14 @@ impl Database {
                          AND o.primary_target_stable_id = ?3)
                        OR EXISTS (SELECT 1 FROM operation_secondary_targets t
                          WHERE t.operation_id = o.operation_id
-                           AND t.target_kind = 'placement' AND t.stable_id = ?3)))",
+                           AND t.target_kind = 'placement' AND t.stable_id = ?3)))
+                   AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
+                     JOIN surface_placements gc_placement
+                       ON gc_placement.registry_id = registry_lock.registry_id
+                     WHERE gc_placement.id = ?1)
+                   AND NOT EXISTS (SELECT 1 FROM oci_gc_placement_snapshots snapshot
+                     JOIN oci_gc_runs run ON run.id = snapshot.run_id
+                     WHERE snapshot.placement_id = ?1 AND run.state = 'applying')",
                 &vals![id, expected_version, placement_target_id],
             )
             .await?
@@ -13799,6 +14237,9 @@ impl Database {
                 system_module_nar_hash: row.get(8)?,
                 references: Vec::new(),
             },
+            release: None,
+            verified_tag_oid: None,
+            release_snapshot_id: None,
         }))
     }
 
@@ -13856,6 +14297,9 @@ impl Database {
                 system_module_nar_hash: row.get(10)?,
                 references: Vec::new(),
             },
+            release: None,
+            verified_tag_oid: None,
+            release_snapshot_id: None,
         }))
     }
 
@@ -13881,25 +14325,111 @@ impl Database {
                 &vals![registry_id, document_sha256],
             )
             .await?;
+        if let Some(row) = row {
+            return Ok(Some(PackageDocumentationLocator {
+                indexed_commit: row.get(0)?,
+                package_name: row.get(1)?,
+                package_version: row.get(2)?,
+                platform: row.get(3)?,
+                artifact: aos_registry_surface::manifest::DocumentationArtifactMeta {
+                    format: row.get(4)?,
+                    store_path: row.get(5)?,
+                    nar_hash: row.get(6)?,
+                    nar_size: row.get(7)?,
+                    document_sha256: document_sha256.to_string(),
+                    document_size: row.get(8)?,
+                    semantic_schema_sha256: row.get(9)?,
+                    system_module_nar_hash: row.get(10)?,
+                    references: Vec::new(),
+                },
+                release: None,
+                verified_tag_oid: None,
+                release_snapshot_id: None,
+            }));
+        }
+
+        let row = self
+            .backend
+            .query_opt(
+                "SELECT ras.source_commit, documentation.package_name,
+                        documentation.package_version, documentation.platform,
+                        documentation.format, documentation.store_path,
+                        documentation.nar_hash, documentation.nar_size,
+                        documentation.document_size,
+                        documentation.semantic_schema_sha256,
+                        documentation.system_module_nar_hash, rel.semver,
+                        ras.verified_tag_oid, ras.snapshot_id,
+                        documentation.metadata_digest
+                 FROM release_package_documentation documentation
+                 JOIN release_artifacts artifact
+                   ON artifact.snapshot_id = documentation.snapshot_id
+                  AND artifact.release_id = documentation.release_id
+                  AND artifact.registry_id = documentation.registry_id
+                  AND artifact.package_name = documentation.package_name
+                  AND artifact.package_version = documentation.package_version
+                  AND artifact.platform = documentation.platform
+                  AND artifact.artifact_kind = 'documentation'
+                  AND artifact.store_path = documentation.store_path
+                  AND artifact.store_hash = documentation.store_hash
+                 JOIN release_artifact_snapshots ras
+                   ON ras.snapshot_id = documentation.snapshot_id
+                  AND ras.release_id = documentation.release_id
+                  AND ras.registry_id = documentation.registry_id
+                  AND ras.state = 'complete'
+                 JOIN release_artifact_snapshot_heads head
+                   ON head.complete_artifact_snapshot_id = ras.snapshot_id
+                  AND head.release_id = ras.release_id
+                  AND head.registry_id = ras.registry_id
+                 JOIN releases rel
+                   ON rel.id = ras.release_id AND rel.registry_id = ras.registry_id
+                  AND rel.commit_oid = ras.source_commit
+                  AND rel.tag_oid = ras.verified_tag_oid
+                 WHERE documentation.registry_id = ?1
+                   AND documentation.document_sha256 = ?2
+                 ORDER BY rel.tagged_at DESC, rel.semver DESC,
+                          documentation.package_name,
+                          documentation.package_version, documentation.platform
+                 LIMIT 1",
+                &vals![registry_id, document_sha256],
+            )
+            .await?;
         let Some(row) = row else {
             return Ok(None);
         };
+        let package_name: String = row.get(1)?;
+        let package_version: String = row.get(2)?;
+        let platform: String = row.get(3)?;
+        let artifact = aos_registry_surface::manifest::DocumentationArtifactMeta {
+            format: row.get(4)?,
+            store_path: row.get(5)?,
+            nar_hash: row.get(6)?,
+            nar_size: row.get(7)?,
+            document_sha256: document_sha256.to_string(),
+            document_size: row.get(8)?,
+            semantic_schema_sha256: row.get(9)?,
+            system_module_nar_hash: row.get(10)?,
+            references: Vec::new(),
+        };
+        let projection = ReleasePackageDocumentation {
+            package_name: package_name.clone(),
+            package_version: package_version.clone(),
+            platform: platform.clone(),
+            artifact: artifact.clone(),
+        };
+        let expected_digest = hex::encode(sha2::Sha256::digest(serde_json::to_vec(&projection)?));
+        let stored_digest: String = row.get(14)?;
+        if stored_digest != expected_digest {
+            bail!("release documentation metadata digest does not match its locator");
+        }
         Ok(Some(PackageDocumentationLocator {
             indexed_commit: row.get(0)?,
-            package_name: row.get(1)?,
-            package_version: row.get(2)?,
-            platform: row.get(3)?,
-            artifact: aos_registry_surface::manifest::DocumentationArtifactMeta {
-                format: row.get(4)?,
-                store_path: row.get(5)?,
-                nar_hash: row.get(6)?,
-                nar_size: row.get(7)?,
-                document_sha256: document_sha256.to_string(),
-                document_size: row.get(8)?,
-                semantic_schema_sha256: row.get(9)?,
-                system_module_nar_hash: row.get(10)?,
-                references: Vec::new(),
-            },
+            package_name,
+            package_version,
+            platform,
+            artifact,
+            release: Some(row.get(11)?),
+            verified_tag_oid: Some(row.get(12)?),
+            release_snapshot_id: Some(row.get(13)?),
         }))
     }
 
@@ -13985,7 +14515,7 @@ impl Database {
                     ))
             })
         });
-        results.truncate(limit.min(100));
+        results.truncate(limit.min(10_000));
         Ok(results)
     }
 
@@ -14007,7 +14537,8 @@ impl Database {
         if limit == 0 {
             return Ok(Vec::new());
         }
-        let limit = i64::try_from(limit.min(100)).context("documentation browse limit overflow")?;
+        let limit =
+            i64::try_from(limit.min(10_000)).context("documentation browse limit overflow")?;
         let rows = if let Some(kind) = kind.filter(|kind| *kind != "package") {
             self.backend
                 .query(
@@ -14321,6 +14852,25 @@ impl Database {
             .backend
             .query_opt(
                 "SELECT 1 FROM registry_system_images WHERE registry_id = ?1 LIMIT 1",
+                &vals![registry_id],
+            )
+            .await?
+            .is_some())
+    }
+
+    /// Returns whether the last good index contains a signed container root.
+    ///
+    /// The indexer uses this to force exact placement revalidation on every
+    /// refresh of a container-bearing registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn has_container_release_catalog(&self, registry_id: i64) -> Result<bool> {
+        Ok(self
+            .backend
+            .query_opt(
+                "SELECT 1 FROM oci_release_roots WHERE registry_id = ?1 LIMIT 1",
                 &vals![registry_id],
             )
             .await?
@@ -14706,7 +15256,16 @@ impl Database {
                 Statement::new(
                     "INSERT INTO image_snapshot_leases(lease_id, digest, expires_at)
                      SELECT ?1, digest, ?3 FROM image_snapshots
-                     WHERE digest = ?2 AND byte_size = ?4",
+                     WHERE digest = ?2 AND byte_size = ?4
+                       AND NOT EXISTS (SELECT 1
+                         FROM image_snapshot_references reference
+                         JOIN oci_gc_candidates candidate
+                           ON candidate.registry_id = reference.registry_id
+                          AND candidate.object_key = reference.object_key
+                         JOIN oci_gc_runs run ON run.id = candidate.run_id
+                         WHERE reference.digest = image_snapshots.digest
+                           AND run.state = 'applying'
+                           AND candidate.state IN('deleting', 'physically_absent'))",
                     vals![lease_id, digest, expires_at, byte_size].to_vec(),
                 ),
             ])
@@ -15137,6 +15696,172 @@ impl Database {
         Ok(releases)
     }
 
+    /// Reports whether every current complete release snapshot has its full
+    /// immutable documentation projection.
+    ///
+    /// Legacy databases deliberately fail this check after the forward
+    /// migration so the indexer reloads the exact signed release trees and
+    /// backfills their locators before taking the unchanged-refs fast path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn release_documentation_projection_complete(
+        &self,
+        registry_id: i64,
+    ) -> Result<bool> {
+        let generation = self
+            .backend
+            .query_opt(
+                "SELECT documentation_projection_generation
+                 FROM registry_index WHERE registry_id = ?1",
+                &vals![registry_id],
+            )
+            .await?
+            .map(|row| row.get::<i64>(0))
+            .transpose()?;
+        if generation != Some(1) {
+            return Ok(false);
+        }
+
+        let incomplete = self
+            .backend
+            .query_opt(
+                "SELECT 1
+                 FROM release_artifact_snapshot_heads head
+                 JOIN release_artifact_snapshots snapshot
+                   ON snapshot.snapshot_id = head.complete_artifact_snapshot_id
+                  AND snapshot.release_id = head.release_id
+                  AND snapshot.registry_id = head.registry_id
+                  AND snapshot.state = 'complete'
+                 JOIN releases rel
+                   ON rel.id = snapshot.release_id
+                  AND rel.registry_id = snapshot.registry_id
+                  AND rel.commit_oid = snapshot.source_commit
+                  AND rel.tag_oid = snapshot.verified_tag_oid
+                 JOIN release_artifacts artifact
+                   ON artifact.snapshot_id = snapshot.snapshot_id
+                  AND artifact.release_id = snapshot.release_id
+                  AND artifact.registry_id = snapshot.registry_id
+                  AND artifact.artifact_kind = 'documentation'
+                 LEFT JOIN release_package_documentation documentation
+                   ON documentation.snapshot_id = artifact.snapshot_id
+                  AND documentation.release_id = artifact.release_id
+                  AND documentation.registry_id = artifact.registry_id
+                  AND documentation.package_name = artifact.package_name
+                  AND documentation.package_version = artifact.package_version
+                  AND documentation.platform = artifact.platform
+                  AND documentation.artifact_kind = artifact.artifact_kind
+                  AND documentation.store_path = artifact.store_path
+                  AND documentation.store_hash = artifact.store_hash
+                 WHERE head.registry_id = ?1 AND documentation.snapshot_id IS NULL
+                 LIMIT 1",
+                &vals![registry_id],
+            )
+            .await?;
+        if incomplete.is_some() {
+            return Ok(false);
+        }
+
+        // The anti-join above proves every signed documentation artifact has
+        // a locator with the same immutable path identity. Reading the full
+        // projection additionally verifies every locator metadata digest.
+        self.list_release_package_documentation(registry_id).await?;
+        Ok(true)
+    }
+
+    /// Lists immutable documentation locators grouped by their exact release tag.
+    ///
+    /// Only locators reachable through the current complete snapshot head and
+    /// matching signed release-artifact row are returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or malformed stored metadata.
+    pub async fn list_release_package_documentation(
+        &self,
+        registry_id: i64,
+    ) -> Result<Vec<(String, Vec<ReleasePackageDocumentation>)>> {
+        let rows = self
+            .backend
+            .query(
+                "SELECT rel.semver, documentation.package_name,
+                        documentation.package_version, documentation.platform,
+                        documentation.format, documentation.store_path,
+                        documentation.nar_hash, documentation.nar_size,
+                        documentation.document_sha256,
+                        documentation.document_size,
+                        documentation.semantic_schema_sha256,
+                        documentation.system_module_nar_hash,
+                        documentation.metadata_digest
+                 FROM release_package_documentation documentation
+                 JOIN release_artifacts artifact
+                   ON artifact.snapshot_id = documentation.snapshot_id
+                  AND artifact.release_id = documentation.release_id
+                  AND artifact.registry_id = documentation.registry_id
+                  AND artifact.package_name = documentation.package_name
+                  AND artifact.package_version = documentation.package_version
+                  AND artifact.platform = documentation.platform
+                  AND artifact.artifact_kind = documentation.artifact_kind
+                  AND artifact.store_path = documentation.store_path
+                  AND artifact.store_hash = documentation.store_hash
+                 JOIN release_artifact_snapshots snapshot
+                   ON snapshot.snapshot_id = documentation.snapshot_id
+                  AND snapshot.release_id = documentation.release_id
+                  AND snapshot.registry_id = documentation.registry_id
+                  AND snapshot.state = 'complete'
+                 JOIN release_artifact_snapshot_heads head
+                   ON head.complete_artifact_snapshot_id = snapshot.snapshot_id
+                  AND head.release_id = snapshot.release_id
+                  AND head.registry_id = snapshot.registry_id
+                 JOIN releases rel
+                   ON rel.id = snapshot.release_id
+                  AND rel.registry_id = snapshot.registry_id
+                  AND rel.commit_oid = snapshot.source_commit
+                  AND rel.tag_oid = snapshot.verified_tag_oid
+                 WHERE documentation.registry_id = ?1
+                 ORDER BY rel.semver, documentation.package_name,
+                          documentation.package_version, documentation.platform",
+                &vals![registry_id],
+            )
+            .await?;
+        let mut grouped = Vec::<(String, Vec<ReleasePackageDocumentation>)>::new();
+        for row in &rows {
+            let release: String = row.get(0)?;
+            let documentation = ReleasePackageDocumentation {
+                package_name: row.get(1)?,
+                package_version: row.get(2)?,
+                platform: row.get(3)?,
+                artifact: aos_registry_surface::manifest::DocumentationArtifactMeta {
+                    format: row.get(4)?,
+                    store_path: row.get(5)?,
+                    nar_hash: row.get(6)?,
+                    nar_size: row.get(7)?,
+                    document_sha256: row.get(8)?,
+                    document_size: row.get(9)?,
+                    semantic_schema_sha256: row.get(10)?,
+                    system_module_nar_hash: row.get(11)?,
+                    references: Vec::new(),
+                },
+            };
+            let expected_digest =
+                hex::encode(sha2::Sha256::digest(serde_json::to_vec(&documentation)?));
+            let stored_digest: String = row.get(12)?;
+            if stored_digest != expected_digest {
+                bail!("release documentation metadata digest does not match its locator");
+            }
+            if grouped.last().map(|(tag, _)| tag) != Some(&release) {
+                grouped.push((release, Vec::new()));
+            }
+            grouped
+                .last_mut()
+                .context("release documentation grouping lost its parent")?
+                .1
+                .push(documentation);
+        }
+        Ok(grouped)
+    }
+
     /// Lists live channel partitions whose target owns a complete release snapshot.
     ///
     /// # Errors
@@ -15183,11 +15908,11 @@ impl Database {
         Ok(partitions)
     }
 
-    /// Lists output and image artifacts in the current verified catalog.
+    /// Lists every artifact in the exact current verified catalog revision.
     ///
     /// # Errors
     ///
-    /// Returns an error on database failure or malformed indexed image JSON.
+    /// Returns an error on database failure.
     pub async fn list_current_catalog_retention_artifacts(
         &self,
         registry_id: i64,
@@ -15195,93 +15920,33 @@ impl Database {
         let rows = self
             .backend
             .query(
-                "SELECT p.name, pv.version, vp.platform, vp.store_path, vp.images
-                 FROM version_platforms vp
-                 JOIN package_versions pv ON pv.id = vp.version_id
-                 JOIN packages p ON p.id = pv.package_id
-                 WHERE p.registry_id = ?1
-                 ORDER BY p.name, pv.version, vp.platform",
+                "SELECT artifact.package_name, artifact.package_version,
+                        artifact.platform, artifact.artifact_kind,
+                        artifact.store_path, artifact.store_hash
+                 FROM registry_catalog_artifacts artifact
+                 JOIN registry_index index_state
+                   ON index_state.registry_id = artifact.registry_id
+                  AND index_state.state = 'fresh'
+                  AND index_state.last_indexed_commit = artifact.source_revision
+                 WHERE artifact.registry_id = ?1
+                 ORDER BY artifact.package_name, artifact.package_version,
+                          artifact.platform, artifact.artifact_kind,
+                          artifact.store_path, artifact.store_hash",
                 &vals![registry_id],
             )
             .await?;
-        let mut artifacts = Vec::new();
-        for row in &rows {
-            let package_name: String = row.get(0)?;
-            let package_version: String = row.get(1)?;
-            let platform: String = row.get(2)?;
-            let store_path: String = row.get(3)?;
-            artifacts.push(ReleaseSnapshotArtifact {
-                package_name: package_name.clone(),
-                package_version: package_version.clone(),
-                platform: platform.clone(),
-                artifact_kind: "output".to_string(),
-                store_hash: store_hash_component(&store_path),
-                store_path,
-            });
-            let images: String = row.get(4)?;
-            for image in serde_json::from_str::<Vec<serde_json::Value>>(&images)? {
-                let image_path = image
-                    .get("store_path")
-                    .and_then(serde_json::Value::as_str)
-                    .context("indexed image is missing store_path")?;
-                artifacts.push(ReleaseSnapshotArtifact {
-                    package_name: package_name.clone(),
-                    package_version: package_version.clone(),
-                    platform: platform.clone(),
-                    artifact_kind: "image".to_string(),
-                    store_hash: store_hash_component(image_path),
-                    store_path: image_path.to_string(),
-                });
-                if let Some(image_info_path) = image
-                    .get("delivery")
-                    .and_then(|delivery| delivery.get("image_info"))
-                    .and_then(|image_info| image_info.get("store_path"))
-                    .and_then(serde_json::Value::as_str)
-                {
-                    artifacts.push(ReleaseSnapshotArtifact {
-                        package_name: package_name.clone(),
-                        package_version: package_version.clone(),
-                        platform: platform.clone(),
-                        artifact_kind: "image".to_string(),
-                        store_hash: store_hash_component(image_info_path),
-                        store_path: image_info_path.to_string(),
-                    });
-                }
-                if let Some(update_payload_path) = image
-                    .get("delivery")
-                    .and_then(|delivery| delivery.get("update_payload"))
-                    .and_then(|payload| payload.get("store_path"))
-                    .and_then(serde_json::Value::as_str)
-                {
-                    artifacts.push(ReleaseSnapshotArtifact {
-                        package_name: package_name.clone(),
-                        package_version: package_version.clone(),
-                        platform: platform.clone(),
-                        artifact_kind: "image".to_string(),
-                        store_hash: store_hash_component(update_payload_path),
-                        store_path: update_payload_path.to_string(),
-                    });
-                }
-            }
-        }
-        artifacts.sort_by(|left, right| {
-            (
-                &left.package_name,
-                &left.package_version,
-                &left.platform,
-                &left.artifact_kind,
-                &left.store_hash,
-            )
-                .cmp(&(
-                    &right.package_name,
-                    &right.package_version,
-                    &right.platform,
-                    &right.artifact_kind,
-                    &right.store_hash,
-                ))
-        });
-        artifacts.dedup();
-        Ok(artifacts)
+        rows.iter()
+            .map(|row| {
+                Ok(ReleaseSnapshotArtifact {
+                    package_name: row.get(0)?,
+                    package_version: row.get(1)?,
+                    platform: row.get(2)?,
+                    artifact_kind: row.get(3)?,
+                    store_path: row.get(4)?,
+                    store_hash: row.get(5)?,
+                })
+            })
+            .collect()
     }
 
     /// The `info/refs` digest the current index was built from, when set.
@@ -25717,6 +26382,494 @@ fn store_hash_component(path: &str) -> String {
     base.split('-').next().unwrap_or(base).to_string()
 }
 
+fn oci_release_root_statements(
+    registry_id: i64,
+    release: &ReleaseArtifactSnapshot,
+    root: &ContainerReleaseRootSnapshot,
+    placement_id: i64,
+    created_at: i64,
+) -> Result<Vec<CheckedStatement>> {
+    let repository = aos_oci_types::RepositoryName::parse(&root.repository)
+        .context("signed container release repository is malformed")?;
+    anyhow::ensure!(
+        root.container_name == repository.as_str(),
+        "signed container name does not match its OCI repository"
+    );
+    let index_digest = aos_oci_types::Sha256Digest::parse(&root.index_digest)
+        .context("signed container release index digest is malformed")?;
+    let media_type = aos_oci_types::MediaType::parse(&root.index_media_type)
+        .context("signed container release index media type is malformed")?;
+    anyhow::ensure!(
+        media_type == aos_oci_types::MediaType::OciImageIndex,
+        "signed container release root is not an OCI image index"
+    );
+    let index_size = i64::try_from(root.index_size)
+        .context("signed container release index size exceeds int64")?;
+    anyhow::ensure!(index_size > 0, "signed container release index is empty");
+    anyhow::ensure!(
+        root.catalog_digest.len() == 64
+            && root
+                .catalog_digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+        "signed container release catalog digest is not lowercase SHA-256"
+    );
+    validate_container_release_descriptor_snapshot(root, placement_id)?;
+
+    let mut statements = oci_release_placement_fence_statements(root, registry_id, placement_id)?;
+    statements.push(
+        Statement::new(
+            "INSERT INTO oci_release_roots
+           (registry_id, release_id, release_tag, repository_id, container_name,
+            index_digest, source_commit, verified_tag_oid, catalog_digest,
+            created_at)
+         SELECT ?1, rel.id, rel.semver, repository.id, ?4, ?5,
+                rel.commit_oid, rel.tag_oid, ?9, ?10
+         FROM releases rel
+         JOIN oci_repositories repository
+           ON repository.registry_id = rel.registry_id
+          AND repository.name = ?3 AND repository.lifecycle_state = 'active'
+         JOIN oci_repository_objects link
+           ON link.repository_id = repository.id
+          AND link.registry_id = repository.registry_id
+          AND link.digest = ?5 AND link.object_kind = 'manifest'
+         JOIN oci_manifests manifest
+           ON manifest.registry_id = link.registry_id
+          AND manifest.digest = link.digest
+          AND manifest.media_type = ?6 AND manifest.byte_size = ?7
+         JOIN oci_blobs blob
+           ON blob.registry_id = link.registry_id AND blob.digest = link.digest
+          AND link.media_type = ?6 AND blob.byte_size = ?7
+          AND blob.lifecycle_state = 'active'
+         JOIN surface_objects object
+           ON object.id = blob.surface_object_id
+          AND object.registry_id = blob.registry_id
+          AND object.object_kind = 'immutable'
+          AND object.lifecycle_state = 'active'
+          AND object.content_hash = ?12 AND object.size = ?7
+         JOIN object_placements presence
+           ON presence.surface_object_id = object.id
+          AND presence.registry_id = object.registry_id
+          AND presence.placement_id = ?13
+          AND presence.state = 'present'
+          AND presence.observed_hash = ?12
+          AND presence.observed_size = ?7
+          AND presence.etag IS NOT NULL
+          AND presence.catalog_object_resource_version = object.resource_version
+         WHERE rel.registry_id = ?1 AND rel.semver = ?2
+           AND rel.commit_oid = ?8 AND rel.tag_oid = ?11",
+            vals![
+                registry_id,
+                release.release_tag,
+                repository.as_str(),
+                root.container_name,
+                index_digest.to_string(),
+                media_type.as_str(),
+                index_size,
+                release.source_commit,
+                root.catalog_digest,
+                created_at,
+                release.verified_tag_oid,
+                index_digest.encoded(),
+                placement_id
+            ]
+            .to_vec(),
+        )
+        .expecting(1),
+    );
+    statements.push(
+        Statement::new(
+            "INSERT INTO oci_release_provenance
+               (registry_id, repository_id, root_digest, package_name,
+                release_tag, channel_name, signed_release_root,
+                catalog_digest, verification, verified_at)
+             SELECT ?1, repository.id, ?3, ?4, ?5, NULL, ?6, ?7,
+                    'verified', ?8
+             FROM oci_repositories repository
+             WHERE repository.registry_id = ?1 AND repository.name = ?2
+               AND repository.lifecycle_state = 'active'",
+            vals![
+                registry_id,
+                repository.as_str(),
+                index_digest.to_string(),
+                root.package_name,
+                release.release_tag,
+                release.verified_tag_oid,
+                format!("sha256:{}", root.catalog_digest),
+                created_at
+            ]
+            .to_vec(),
+        )
+        .expecting(1),
+    );
+    for member in &root.closure_members {
+        let layer_digest = aos_oci_types::Sha256Digest::parse(&member.layer_digest)
+            .context("signed closure member layer digest is malformed")?;
+        let nar_size = i64::try_from(member.nar_size)
+            .context("signed closure member NAR size exceeds int64")?;
+        statements.push(
+            Statement::new(
+                "INSERT INTO oci_release_closure_members
+                   (registry_id, repository_id, root_digest, release_tag,
+                    store_path, nar_hash, nar_size, layer_digest, is_direct)
+                 SELECT ?1, repository.id, ?3, ?4, ?5, ?6, ?7, ?8, ?9
+                 FROM oci_repositories repository
+                 WHERE repository.registry_id = ?1 AND repository.name = ?2
+                   AND repository.lifecycle_state = 'active'",
+                vals![
+                    registry_id,
+                    repository.as_str(),
+                    index_digest.to_string(),
+                    release.release_tag,
+                    member.store_path,
+                    member.nar_hash,
+                    nar_size,
+                    layer_digest.to_string(),
+                    member.direct
+                ]
+                .to_vec(),
+            )
+            .expecting(1),
+        );
+    }
+    for evidence in &root.evidence {
+        anyhow::ensure!(
+            matches!(
+                evidence.kind.as_str(),
+                "closure" | "sbom" | "source" | "license" | "provenance" | "signature"
+            ),
+            "signed container evidence kind is invalid"
+        );
+        let digest = aos_oci_types::Sha256Digest::parse(&evidence.digest)
+            .context("signed container evidence digest is malformed")?;
+        let media_type = aos_oci_types::MediaType::parse(&evidence.media_type)
+            .context("signed container evidence media type is malformed")?;
+        let referrer_digest = aos_oci_types::Sha256Digest::parse(&evidence.referrer_digest)
+            .context("signed container evidence referrer digest is malformed")?;
+        statements.push(
+            Statement::new(
+                "INSERT INTO oci_release_evidence
+                   (registry_id, repository_id, root_digest, release_tag,
+                    evidence_kind, digest, media_type, verification,
+                    referrer_digest)
+                 SELECT ?1, repository.id, ?3, ?4, ?5, ?6, ?7, 'verified', ?8
+                 FROM oci_repositories repository
+                 WHERE repository.registry_id = ?1 AND repository.name = ?2
+                   AND repository.lifecycle_state = 'active'",
+                vals![
+                    registry_id,
+                    repository.as_str(),
+                    index_digest.to_string(),
+                    release.release_tag,
+                    evidence.kind,
+                    digest.to_string(),
+                    media_type.as_str(),
+                    referrer_digest.to_string()
+                ]
+                .to_vec(),
+            )
+            .expecting(1),
+        );
+    }
+    for layer in &root.layers {
+        let digest = aos_oci_types::Sha256Digest::parse(&layer.digest)
+            .context("signed closure layer digest is malformed")?;
+        let diff_id = aos_oci_types::Sha256Digest::parse(&layer.diff_id)
+            .context("signed closure layer DiffID is malformed")?;
+        let compressed_size = i64::try_from(layer.compressed_size)
+            .context("signed closure layer compressed size exceeds int64")?;
+        let uncompressed_size = i64::try_from(layer.uncompressed_size)
+            .context("signed closure layer uncompressed size exceeds int64")?;
+        statements.push(
+            Statement::new(
+                "UPDATE oci_release_layers
+                 SET unpacked_byte_size = ?5, diff_id = ?6,
+                     closure_group = ?7, verified_at = ?8
+                 WHERE registry_id = ?1 AND root_digest = ?3 AND digest = ?4
+                   AND compressed_byte_size = ?9
+                   AND repository_id = (SELECT id FROM oci_repositories
+                     WHERE registry_id = ?1 AND name = ?2
+                       AND lifecycle_state = 'active')",
+                vals![
+                    registry_id,
+                    repository.as_str(),
+                    index_digest.to_string(),
+                    digest.to_string(),
+                    uncompressed_size,
+                    diff_id.to_string(),
+                    layer.name,
+                    created_at,
+                    compressed_size
+                ]
+                .to_vec(),
+            )
+            .unchecked(),
+        );
+        statements.push(
+            Statement::new(
+                "UPDATE oci_repositories SET updated_at = updated_at
+                 WHERE registry_id = ?1 AND name = ?2
+                   AND lifecycle_state = 'active'
+                   AND EXISTS (SELECT 1 FROM oci_release_layers projected
+                     WHERE projected.repository_id = oci_repositories.id
+                       AND projected.root_digest = ?3 AND projected.digest = ?4
+                       AND projected.compressed_byte_size = ?5
+                       AND projected.unpacked_byte_size = ?6
+                       AND projected.diff_id = ?7
+                       AND projected.closure_group = ?8)",
+                vals![
+                    registry_id,
+                    repository.as_str(),
+                    index_digest.to_string(),
+                    digest.to_string(),
+                    compressed_size,
+                    uncompressed_size,
+                    diff_id.to_string(),
+                    layer.name
+                ]
+                .to_vec(),
+            )
+            .expecting(1),
+        );
+    }
+    statements.push(
+        Statement::new(
+            "UPDATE oci_image_config_projections
+             SET compressed_byte_size = (SELECT COALESCE(SUM(compressed_byte_size), 0)
+                   FROM oci_release_layers layer
+                   WHERE layer.repository_id = oci_image_config_projections.repository_id
+                     AND layer.root_digest = oci_image_config_projections.root_digest
+                     AND layer.manifest_digest = oci_image_config_projections.manifest_digest)
+                   + (SELECT byte_size FROM oci_blobs config
+                       WHERE config.registry_id = oci_image_config_projections.registry_id
+                         AND config.digest = oci_image_config_projections.config_digest),
+                 unpacked_byte_size = (SELECT COALESCE(SUM(unpacked_byte_size), 0)
+                   FROM oci_release_layers layer
+                   WHERE layer.repository_id = oci_image_config_projections.repository_id
+                     AND layer.root_digest = oci_image_config_projections.root_digest
+                     AND layer.manifest_digest = oci_image_config_projections.manifest_digest),
+                 verified_at = ?4
+             WHERE registry_id = ?1 AND root_digest = ?3
+               AND repository_id = (SELECT id FROM oci_repositories
+                 WHERE registry_id = ?1 AND name = ?2 AND lifecycle_state = 'active')",
+            vals![
+                registry_id,
+                repository.as_str(),
+                index_digest.to_string(),
+                created_at
+            ]
+            .to_vec(),
+        )
+        .unchecked(),
+    );
+    for descriptor in &root.required_descriptors {
+        statements.push(oci_release_descriptor_placement_guard(
+            registry_id,
+            repository.as_str(),
+            descriptor,
+        )?);
+    }
+    Ok(statements)
+}
+
+fn oci_release_placement_fence_statements(
+    root: &ContainerReleaseRootSnapshot,
+    registry_id: i64,
+    placement_id: i64,
+) -> Result<Vec<CheckedStatement>> {
+    let descriptor = root
+        .required_descriptors
+        .first()
+        .context("signed container release has no required descriptor placement")?;
+    Ok(vec![
+        Statement::new(
+            "UPDATE surface_placements SET updated_at = updated_at
+             WHERE id = ?1 AND registry_id = ?2 AND resource_version = ?3",
+            vals![
+                placement_id,
+                registry_id,
+                descriptor.placement_resource_version
+            ]
+            .to_vec(),
+        )
+        .expecting(1),
+        Statement::new(
+            "UPDATE surface_placement_observations SET observed_at = observed_at
+             WHERE placement_id = ?1 AND observation_version = ?2
+               AND state = 'ready' AND completeness = 'complete'",
+            vals![placement_id, descriptor.placement_observation_version].to_vec(),
+        )
+        .expecting(1),
+    ])
+}
+
+fn validate_container_release_descriptor_snapshot(
+    root: &ContainerReleaseRootSnapshot,
+    placement_id: i64,
+) -> Result<()> {
+    let index_digest = aos_oci_types::Sha256Digest::parse(&root.index_digest)
+        .context("signed container release index digest is malformed")?;
+    let mut digests = std::collections::BTreeSet::new();
+    let mut roles = std::collections::BTreeMap::<ContainerReleaseDescriptorRole, usize>::new();
+    let mut placement_fence = None;
+
+    for descriptor in &root.required_descriptors {
+        let digest = aos_oci_types::Sha256Digest::parse(&descriptor.digest)
+            .context("signed container descriptor digest is malformed")?;
+        let media_type = aos_oci_types::MediaType::parse(&descriptor.media_type)
+            .context("signed container descriptor media type is malformed")?;
+        anyhow::ensure!(
+            descriptor.byte_size > 0,
+            "signed container descriptor is empty"
+        );
+        anyhow::ensure!(
+            descriptor.surface_object_id > 0
+                && descriptor.object_resource_version > 0
+                && descriptor.placement_resource_version > 0
+                && descriptor.placement_observation_version > 0
+                && descriptor.observed_inventory_generation > 0
+                && descriptor.observed_at > 0
+                && !descriptor.strong_etag.is_empty(),
+            "signed container descriptor placement fence is malformed"
+        );
+        anyhow::ensure!(
+            descriptor.placement_id == placement_id,
+            "signed container descriptor was observed on a different placement"
+        );
+        anyhow::ensure!(
+            digests.insert(digest),
+            "signed container descriptor snapshot repeats digest {digest}"
+        );
+        *roles.entry(descriptor.role).or_default() += 1;
+
+        let fence = (
+            descriptor.placement_id,
+            descriptor.placement_resource_version,
+            descriptor.placement_observation_version,
+        );
+        if let Some(expected) = placement_fence {
+            anyhow::ensure!(
+                fence == expected,
+                "signed container descriptor observations cross a placement revision"
+            );
+        } else {
+            placement_fence = Some(fence);
+        }
+
+        match descriptor.role {
+            ContainerReleaseDescriptorRole::Index => anyhow::ensure!(
+                digest == index_digest
+                    && media_type == aos_oci_types::MediaType::OciImageIndex
+                    && descriptor.byte_size == root.index_size,
+                "signed container index placement conflicts with its release root"
+            ),
+            ContainerReleaseDescriptorRole::PlatformManifest
+            | ContainerReleaseDescriptorRole::NixClosure
+            | ContainerReleaseDescriptorRole::Sbom
+            | ContainerReleaseDescriptorRole::Source
+            | ContainerReleaseDescriptorRole::License
+            | ContainerReleaseDescriptorRole::Provenance
+            | ContainerReleaseDescriptorRole::Signature => anyhow::ensure!(
+                media_type == aos_oci_types::MediaType::OciImageManifest,
+                "signed container required descriptor is not an OCI image manifest"
+            ),
+        }
+    }
+
+    anyhow::ensure!(
+        roles.get(&ContainerReleaseDescriptorRole::Index) == Some(&1),
+        "signed container descriptor snapshot requires exactly one index"
+    );
+    let platform_count = roles
+        .get(&ContainerReleaseDescriptorRole::PlatformManifest)
+        .copied()
+        .unwrap_or_default();
+    anyhow::ensure!(
+        (1..=aos_oci_types::limits::MAX_PLATFORMS_PER_INDEX).contains(&platform_count),
+        "signed container descriptor snapshot has an invalid platform count"
+    );
+    for role in [
+        ContainerReleaseDescriptorRole::NixClosure,
+        ContainerReleaseDescriptorRole::Sbom,
+        ContainerReleaseDescriptorRole::Source,
+        ContainerReleaseDescriptorRole::License,
+        ContainerReleaseDescriptorRole::Provenance,
+        ContainerReleaseDescriptorRole::Signature,
+    ] {
+        anyhow::ensure!(
+            roles.get(&role) == Some(&1),
+            "signed container descriptor snapshot has an incomplete evidence set"
+        );
+    }
+    Ok(())
+}
+
+fn oci_release_descriptor_placement_guard(
+    registry_id: i64,
+    repository: &str,
+    descriptor: &VerifiedContainerReleaseDescriptor,
+) -> Result<CheckedStatement> {
+    let digest = aos_oci_types::Sha256Digest::parse(&descriptor.digest)
+        .context("signed container descriptor digest is malformed")?;
+    let media_type = aos_oci_types::MediaType::parse(&descriptor.media_type)
+        .context("signed container descriptor media type is malformed")?;
+    let byte_size = i64::try_from(descriptor.byte_size)
+        .context("signed container descriptor size exceeds int64")?;
+
+    Ok(Statement::new(
+        "UPDATE object_placements SET observed_at = observed_at
+         WHERE surface_object_id = ?1 AND placement_id = ?2
+           AND registry_id = ?3 AND state = 'present'
+           AND observed_hash = ?4 AND observed_size = ?5
+           AND etag = ?6
+           AND observed_inventory_generation = ?7
+           AND observed_at = ?8
+           AND catalog_object_resource_version = ?9
+           AND EXISTS (
+             SELECT 1
+             FROM oci_repositories repository
+             JOIN oci_repository_objects link
+               ON link.repository_id = repository.id
+              AND link.registry_id = repository.registry_id
+             JOIN oci_manifests manifest
+               ON manifest.registry_id = link.registry_id
+              AND manifest.digest = link.digest
+             JOIN oci_blobs blob
+               ON blob.registry_id = link.registry_id
+              AND blob.digest = link.digest
+             JOIN surface_objects object
+               ON object.id = blob.surface_object_id
+              AND object.registry_id = blob.registry_id
+             WHERE repository.registry_id = ?3
+               AND repository.name = ?10
+               AND repository.lifecycle_state = 'active'
+               AND link.digest = ?11 AND link.object_kind = 'manifest'
+               AND manifest.media_type = ?12 AND manifest.byte_size = ?5
+               AND link.media_type = ?12 AND blob.byte_size = ?5
+               AND blob.lifecycle_state = 'active'
+               AND object.id = ?1 AND object.object_kind = 'immutable'
+               AND object.lifecycle_state = 'active'
+               AND object.content_hash = ?4 AND object.size = ?5
+               AND object.resource_version = ?9)",
+        vals![
+            descriptor.surface_object_id,
+            descriptor.placement_id,
+            registry_id,
+            digest.encoded(),
+            byte_size,
+            descriptor.strong_etag,
+            descriptor.observed_inventory_generation,
+            descriptor.observed_at,
+            descriptor.object_resource_version,
+            repository,
+            digest.to_string(),
+            media_type.as_str()
+        ]
+        .to_vec(),
+    )
+    .expecting(1))
+}
+
 /// Computes the immutable identity of every retention-relevant index row.
 fn index_snapshot_digest(snapshot: &IndexSnapshot) -> Result<String> {
     let releases = snapshot
@@ -25743,6 +26896,33 @@ fn index_snapshot_digest(snapshot: &IndexSnapshot) -> Result<String> {
                 "verified_tag_oid": release.verified_tag_oid,
                 "manifest_digest": release.manifest_digest,
                 "artifacts": release.artifacts,
+                "container_release": release.container_release.as_ref().map(|root| serde_json::json!({
+                    "repository": root.repository,
+                    "container_name": root.container_name,
+                    "index_digest": root.index_digest,
+                    "index_media_type": root.index_media_type,
+                    "index_size": root.index_size,
+                    "catalog_digest": root.catalog_digest,
+                    "package_name": root.package_name,
+                    "closure_members": root.closure_members,
+                    "layers": root.layers,
+                    "evidence": root.evidence,
+                    "required_descriptors": root.required_descriptors.iter().map(|descriptor| serde_json::json!({
+                        "role": descriptor.role.as_str(),
+                        "digest": descriptor.digest,
+                        "media_type": descriptor.media_type,
+                        "byte_size": descriptor.byte_size,
+                        "surface_object_id": descriptor.surface_object_id,
+                        "object_resource_version": descriptor.object_resource_version,
+                        "placement_id": descriptor.placement_id,
+                        "placement_resource_version": descriptor.placement_resource_version,
+                        "placement_observation_version": descriptor.placement_observation_version,
+                        "observed_inventory_generation": descriptor.observed_inventory_generation,
+                        "observed_at": descriptor.observed_at,
+                        "strong_etag": descriptor.strong_etag,
+                    })).collect::<Vec<_>>(),
+                })),
+                "documentation": release.documentation,
             })
         })
         .collect::<Vec<_>>();
@@ -26609,6 +27789,449 @@ source_nar_hash = ""
         assert_eq!(public_boundary, (1, "active".to_string()));
     }
 
+    fn seed_oci_migration_registry(connection: &Connection) {
+        const REGISTRY_STABLE_ID: &str = "registry:0123456789abcdef0123456789abcdef";
+
+        connection
+            .execute(
+                "INSERT INTO authorization_scopes(
+                   scope_key, kind, parent_scope_key, resource_stable_id, created_at)
+                 VALUES(?1, 'registry', 'instance', ?1, 1)",
+                [REGISTRY_STABLE_ID],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO registries(
+                   id, stable_id, slug, trust_keys, require_signatures,
+                   created_at, scope_key, owner_scope_key)
+                 VALUES(1, ?1, 'oci-migration', '[]', 1, 1, ?1, 'instance')",
+                [REGISTRY_STABLE_ID],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO oci_repositories(
+                   id, registry_id, name, created_at, updated_at)
+                 VALUES(4, 1, 'aos', 1, 1)",
+                [],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn oci_phase5_v23_migration_upgrades_v22_and_backfills_contextual_media() {
+        const OCI_UPLOAD_PUBLICATION_INDEX: usize = 26;
+
+        assert_eq!(MIGRATIONS.len(), 30, "reviewed schema version changed");
+        let connection = Connection::open_in_memory().unwrap();
+        for migration in &MIGRATIONS[..OCI_UPLOAD_PUBLICATION_INDEX] {
+            connection.execute_batch(migration).unwrap();
+        }
+        seed_oci_migration_registry(&connection);
+
+        connection
+            .execute(
+                "INSERT INTO surface_objects(
+                   id, registry_id, object_key, object_kind, partition_key,
+                   content_hash, size, created_at, updated_at)
+                 VALUES(2, 1, 'oci/blobs/sha256/phase4', 'immutable',
+                        zeroblob(32), 'sha256:phase4', 11, 2, 2)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO oci_blobs(
+                   registry_id, digest, byte_size, media_type,
+                   surface_object_id, quota_bytes, created_at, updated_at)
+                 VALUES(1, 'sha256:phase4', 11,
+                        'application/vnd.oci.image.manifest.v1+json',
+                        2, 11, 3, 3)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO oci_repository_objects(
+                   repository_id, registry_id, digest, object_kind, linked_at)
+                 VALUES(4, 1, 'sha256:phase4', 'manifest', 5)",
+                [],
+            )
+            .unwrap();
+
+        connection
+            .execute_batch(MIGRATIONS[OCI_UPLOAD_PUBLICATION_INDEX])
+            .unwrap();
+
+        let media_type: String = connection
+            .query_row(
+                "SELECT media_type FROM oci_repository_objects
+                 WHERE repository_id = 4 AND digest = 'sha256:phase4'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(media_type, "application/vnd.oci.image.manifest.v1+json");
+
+        let upload_columns: Vec<String> = connection
+            .prepare("PRAGMA table_info(oci_upload_sessions)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        for required in [
+            "quota_reservation_id",
+            "writer_id",
+            "token_id",
+            "maximum_size",
+            "sha256_h0",
+            "sha256_tail_hex",
+        ] {
+            assert!(
+                upload_columns.iter().any(|column| column == required),
+                "phase 5 upload column {required} is missing"
+            );
+        }
+
+        let publication_fence_default: String = connection
+            .query_row(
+                "SELECT dflt_value FROM pragma_table_info('oci_release_roots')
+                 WHERE name = 'publication_fence'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(publication_fence_default, "0");
+    }
+
+    #[test]
+    fn oci_phase5_v23_migration_refuses_unknown_placeholder_state() {
+        const OCI_UPLOAD_PUBLICATION_INDEX: usize = 26;
+
+        let connection = Connection::open_in_memory().unwrap();
+        for migration in &MIGRATIONS[..OCI_UPLOAD_PUBLICATION_INDEX] {
+            connection.execute_batch(migration).unwrap();
+        }
+        seed_oci_migration_registry(&connection);
+        connection
+            .execute(
+                "INSERT INTO oci_publications(
+                   id, registry_id, repository_id, root_digest, source_kind,
+                   state, idempotency_key, expires_at, created_at)
+                 VALUES('phase4-publication', 1, 4, 'sha256:unknown', 'manual',
+                        'preparing', 'phase4-idempotency', 3, 3)",
+                [],
+            )
+            .unwrap();
+
+        let error = connection
+            .execute_batch(MIGRATIONS[OCI_UPLOAD_PUBLICATION_INDEX])
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("CHECK constraint failed"),
+            "unexpected phase 5 upgrade error: {error}"
+        );
+        let publications: i64 = connection
+            .query_row("SELECT COUNT(*) FROM oci_publications", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            publications, 1,
+            "failed upgrade discarded placeholder state"
+        );
+    }
+
+    fn seed_v21_oci_admin_upgrade_state(connection: &Connection, tag_history_limit: i64) {
+        seed_oci_migration_registry(connection);
+        let config = format!("sha256:{}", "c".repeat(64));
+        let layer = format!("sha256:{}", "d".repeat(64));
+        let manifest = format!("sha256:{}", "e".repeat(64));
+        for (id, digest, size, media_type) in [
+            (
+                10_i64,
+                config.as_str(),
+                64_i64,
+                "application/vnd.oci.image.config.v1+json",
+            ),
+            (
+                11,
+                layer.as_str(),
+                128,
+                "application/vnd.oci.image.layer.v1.tar",
+            ),
+            (
+                12,
+                manifest.as_str(),
+                256,
+                "application/vnd.oci.image.manifest.v1+json",
+            ),
+        ] {
+            let encoded = digest.strip_prefix("sha256:").unwrap();
+            connection
+                .execute(
+                    "INSERT INTO surface_objects(
+                       id, registry_id, object_key, object_kind, partition_key,
+                       content_hash, size, created_at, updated_at)
+                     VALUES(?1, 1, ?2, 'immutable', zeroblob(32), ?3, ?4, 2, 2)",
+                    rusqlite::params![id, format!("oci/blobs/sha256/{encoded}"), encoded, size],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO oci_blobs(
+                       registry_id, digest, byte_size, media_type,
+                       surface_object_id, quota_bytes, lifecycle_state,
+                       created_at, updated_at)
+                     VALUES(1, ?1, ?2, ?3, ?4, ?2, 'active', 2, 2)",
+                    rusqlite::params![digest, size, media_type, id],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO oci_repository_objects(
+                       repository_id, registry_id, digest, object_kind,
+                       media_type, linked_at)
+                     VALUES(4, 1, ?1, ?2, ?3, 2)",
+                    rusqlite::params![
+                        digest,
+                        if id == 12 { "manifest" } else { "blob" },
+                        media_type
+                    ],
+                )
+                .unwrap();
+        }
+        connection
+            .execute(
+                "INSERT INTO oci_manifests(
+                   registry_id, digest, media_type, byte_size, schema_version,
+                   artifact_type, subject_digest, config_digest, platform_os,
+                   platform_architecture, platform_variant, annotations_json,
+                   descriptor_count, created_at)
+                 VALUES(1, ?1, 'application/vnd.oci.image.manifest.v1+json',
+                        256, 2, NULL, NULL, ?2, 'linux', 'amd64', NULL,
+                        '{}', 2, 2)",
+                rusqlite::params![manifest, config],
+            )
+            .unwrap();
+        for (role, digest, media_type, size) in [
+            (
+                "config",
+                config.as_str(),
+                "application/vnd.oci.image.config.v1+json",
+                64_i64,
+            ),
+            (
+                "layer",
+                layer.as_str(),
+                "application/vnd.oci.image.layer.v1.tar",
+                128_i64,
+            ),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO oci_descriptor_edges(
+                       registry_id, manifest_digest, edge_role, ordinal,
+                       target_digest, media_type, byte_size, annotations_json)
+                     VALUES(1, ?1, ?2, 0, ?3, ?4, ?5, '{}')",
+                    rusqlite::params![manifest, role, digest, media_type, size],
+                )
+                .unwrap();
+        }
+        connection
+            .execute(
+                "INSERT INTO oci_retention_policies(
+                   registry_id, untagged_grace_seconds, tag_history_limit,
+                   retain_referrers, resource_version, updated_at)
+                 VALUES(1, 86400, ?1, 1, 1, 2)",
+                [tag_history_limit],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn oci_admin_v24_upgrade_backfills_policy_and_queues_exact_byte_reconciliation() {
+        const OCI_ADMIN_INDEX: usize = 27;
+
+        let connection = Connection::open_in_memory().unwrap();
+        for migration in &MIGRATIONS[..OCI_ADMIN_INDEX] {
+            connection.execute_batch(migration).unwrap();
+        }
+        seed_v21_oci_admin_upgrade_state(&connection, 37);
+        connection
+            .execute_batch(MIGRATIONS[OCI_ADMIN_INDEX])
+            .unwrap();
+
+        let recent: i64 = connection
+            .query_row(
+                "SELECT recent_manual_tag_revisions FROM oci_retention_policies
+                 WHERE registry_id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(recent, 37);
+        let pending: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM oci_admin_projection_reconciliations
+                 WHERE registry_id = 1 AND repository_id = 4 AND state = 'pending'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(pending, 1, "legacy runnable manifest was not queued");
+        let projected: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM oci_image_config_projections",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(projected, 0, "upgrade fabricated an exact-byte projection");
+    }
+
+    #[test]
+    fn oci_admin_v24_upgrade_fails_closed_and_rolls_back_out_of_range_history() {
+        const OCI_ADMIN_INDEX: usize = 27;
+
+        let connection = Connection::open_in_memory().unwrap();
+        for migration in &MIGRATIONS[..OCI_ADMIN_INDEX] {
+            connection.execute_batch(migration).unwrap();
+        }
+        seed_v21_oci_admin_upgrade_state(&connection, 1_000_001);
+        connection.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let error = connection
+            .execute_batch(MIGRATIONS[OCI_ADMIN_INDEX])
+            .unwrap_err();
+        connection.execute_batch("ROLLBACK").unwrap();
+        assert!(
+            error.to_string().contains("CHECK constraint failed"),
+            "{error}"
+        );
+        let v22_tables: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name = 'oci_repository_metadata'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(v22_tables, 0, "failed v22 migration committed partial DDL");
+    }
+
+    #[tokio::test]
+    async fn oci_admin_v24_concurrent_start_and_reopen_apply_once() {
+        const OCI_ADMIN_INDEX: usize = 27;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("v21-concurrent.db");
+        let connection = Connection::open(&path).unwrap();
+        for migration in &MIGRATIONS[..OCI_ADMIN_INDEX] {
+            connection.execute_batch(migration).unwrap();
+        }
+        seed_v21_oci_admin_upgrade_state(&connection, 9);
+        connection
+            .execute_batch(
+                "CREATE TABLE schema_version(version INTEGER NOT NULL);
+                 INSERT INTO schema_version(version) VALUES(27);",
+            )
+            .unwrap();
+        drop(connection);
+
+        let (left, right) = tokio::join!(Database::open(&path), Database::open(&path));
+        drop(left.unwrap());
+        drop(right.unwrap());
+        let reopened = Database::open(&path).await.unwrap();
+        let version: i64 = reopened
+            .backend
+            .query_opt("SELECT version FROM schema_version", &[])
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(version, 30);
+    }
+
+    #[test]
+    fn package_documentation_system_module_identity_is_forward_migrated() {
+        let documentation_index = MIGRATIONS
+            .iter()
+            .position(|migration| migration.contains("CREATE TABLE package_documentation("))
+            .unwrap();
+        let system_module_index = MIGRATIONS
+            .iter()
+            .position(|migration| {
+                migration.contains("ADD COLUMN system_module_nar_hash KEYTEXT128")
+            })
+            .unwrap();
+        let release_documentation_index = MIGRATIONS
+            .iter()
+            .position(|migration| migration.contains("CREATE TABLE release_package_documentation("))
+            .unwrap();
+        let projection_generation_index = MIGRATIONS
+            .iter()
+            .position(|migration| {
+                migration.contains("ADD COLUMN documentation_projection_generation")
+            })
+            .unwrap();
+        assert_eq!(system_module_index, documentation_index + 1);
+        assert_eq!(release_documentation_index, system_module_index + 1);
+        assert_eq!(projection_generation_index, release_documentation_index + 1);
+
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .unwrap();
+        for migration in &MIGRATIONS[..=documentation_index] {
+            connection.execute_batch(migration).unwrap();
+        }
+        let before: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('package_documentation')
+                 WHERE name = 'system_module_nar_hash'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(before, 0);
+
+        connection
+            .execute_batch(MIGRATIONS[system_module_index])
+            .unwrap();
+        let after: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('package_documentation')
+                 WHERE name = 'system_module_nar_hash'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(after, 1);
+
+        connection
+            .execute_batch(MIGRATIONS[release_documentation_index])
+            .unwrap();
+        let release_table: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name = 'release_package_documentation'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(release_table, 1);
+
+        connection
+            .execute_batch(MIGRATIONS[projection_generation_index])
+            .unwrap();
+        connection
+            .prepare("SELECT documentation_projection_generation FROM registry_index")
+            .unwrap();
+    }
+
     #[test]
     fn explicit_topology_migration_adopts_the_previous_schema_identity() {
         let connection = Connection::open_in_memory().unwrap();
@@ -26959,12 +28582,55 @@ source_nar_hash = ""
             if sql.contains("CREATE VIEW ") {
                 assert!(replay_safe.contains("CREATE OR REPLACE VIEW "));
             }
-            if sql.contains(" ADD COLUMN ") {
-                assert!(replay_safe.contains(" ADD COLUMN IF NOT EXISTS "));
+            if sql.contains("ADD COLUMN ") {
+                assert!(replay_safe.contains("ADD COLUMN IF NOT EXISTS "));
             }
             if sql.contains("INSERT INTO ") && !sql.contains("ON CONFLICT") {
                 assert!(replay_safe.contains("INSERT IGNORE INTO "));
             }
+        }
+    }
+
+    #[test]
+    fn migration_statements_translate_for_postgres_and_mysql() {
+        for sql in migration_statements() {
+            for dialect in [Dialect::Postgres, Dialect::Mysql] {
+                dialect.translate(&sql).unwrap_or_else(|error| {
+                    panic!("{dialect:?} migration SQL failed: {error}\n{sql}")
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn mysql_phase5_multiline_add_columns_are_replay_safe() {
+        const OCI_UPLOAD_PUBLICATION_INDEX: usize = 25;
+        let phase5 = MIGRATIONS[OCI_UPLOAD_PUBLICATION_INDEX];
+        let add_columns: Vec<_> = crate::backend::split_statements(phase5)
+            .into_iter()
+            .filter(|statement| statement.contains("ALTER TABLE "))
+            .collect();
+
+        assert_eq!(add_columns.len(), 2, "unexpected Phase 5 ALTER statements");
+        for statement in add_columns {
+            assert!(
+                statement.contains("\nADD COLUMN "),
+                "the regression requires the multiline migration shape: {statement}"
+            );
+            let translated = crate::dialect::Dialect::Mysql
+                .translate(&statement)
+                .expect("translating Phase 5 ALTER statement");
+            let replay_safe = mysql_replay_safe_migration_sql(&translated.sql);
+
+            assert!(
+                replay_safe.contains("\nADD COLUMN IF NOT EXISTS "),
+                "MySQL implicit-commit replay remained non-idempotent: {replay_safe}"
+            );
+            assert_eq!(
+                mysql_replay_safe_migration_sql(&replay_safe),
+                replay_safe,
+                "the replay transform itself must be idempotent"
+            );
         }
     }
 
@@ -27134,21 +28800,40 @@ source_nar_hash = ""
             closure_size = 20
             source_drv = "/var/lib/store/abc.drv"
             source_nar_hash = "sha256:bb"
+
+            [versions.platforms.x86_64-linux.documentation]
+            format = "aos.package-documentation/v1+json"
+            store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-curl-docs.json"
+            nar_hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            nar_size = 4096
+            document_sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            document_size = 2048
+            semantic_schema_sha256 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
             "#,
         )
         .unwrap();
-        let release_snapshot_artifacts = vec![ReleaseSnapshotArtifact {
-            package_name: "curl".into(),
-            package_version: "8.5.0".into(),
-            platform: "x86_64-linux".into(),
-            artifact_kind: "output".into(),
-            store_path: "/nix/store/abc-curl".into(),
-            store_hash: "abc".into(),
-        }];
+        let release_snapshot_artifacts = vec![
+            ReleaseSnapshotArtifact {
+                package_name: "curl".into(),
+                package_version: "8.5.0".into(),
+                platform: "x86_64-linux".into(),
+                artifact_kind: "documentation".into(),
+                store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-curl-docs.json".into(),
+                store_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            },
+            ReleaseSnapshotArtifact {
+                package_name: "curl".into(),
+                package_version: "8.5.0".into(),
+                platform: "x86_64-linux".into(),
+                artifact_kind: "output".into(),
+                store_path: "/nix/store/abc-curl".into(),
+                store_hash: "abc".into(),
+            },
+        ];
         let release_manifest_digest = hex::encode(sha2::Sha256::digest(
             serde_json::to_vec(&release_snapshot_artifacts).unwrap(),
         ));
-        let documentation = IndexedPackageDocumentation {
+        let mut documentation = IndexedPackageDocumentation {
             package_name: "curl".into(),
             package_version: "8.5.0".into(),
             platform: "x86_64-linux".into(),
@@ -27175,6 +28860,15 @@ source_nar_hash = ""
                 ]),
             }],
         };
+        documentation
+            .search
+            .extend((0..150).map(|index| aos_doc_model::SearchDocument {
+                kind: "option".into(),
+                key: format!("curl.pagination{index:03}"),
+                title: format!("curl.pagination{index:03}"),
+                summary: "Pagination fixture".into(),
+                terms: std::collections::BTreeMap::from([("pagination".into(), 50)]),
+            }));
         let mut snapshot = IndexSnapshot {
             commit: "c".repeat(64),
             name: "demo".into(),
@@ -27201,6 +28895,13 @@ source_nar_hash = ""
                 verified_tag_oid: "a".repeat(64),
                 manifest_digest: release_manifest_digest,
                 artifacts: release_snapshot_artifacts,
+                container_release: None,
+                documentation: vec![ReleasePackageDocumentation {
+                    package_name: "curl".into(),
+                    package_version: "8.5.0".into(),
+                    platform: "x86_64-linux".into(),
+                    artifact: documentation.artifact.clone(),
+                }],
             }],
             release_images: Vec::new(),
             channels: vec![ChannelSummary {
@@ -27212,6 +28913,98 @@ source_nar_hash = ""
             cache_stack: None,
         };
         db.apply_snapshot(id, &snapshot).await.unwrap();
+        let projection_generation: i64 = db
+            .backend
+            .query_opt(
+                "SELECT documentation_projection_generation
+                 FROM registry_index WHERE registry_id = ?1",
+                &vals![id],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(projection_generation, 1);
+        db.backend
+            .execute(
+                "UPDATE registry_index SET documentation_projection_generation = 0
+                 WHERE registry_id = ?1",
+                &vals![id],
+            )
+            .await
+            .unwrap();
+        assert!(!db
+            .release_documentation_projection_complete(id)
+            .await
+            .unwrap());
+        db.backend
+            .execute(
+                "UPDATE registry_index SET documentation_projection_generation = 1
+                 WHERE registry_id = ?1",
+                &vals![id],
+            )
+            .await
+            .unwrap();
+
+        let mut conflicting_snapshot = snapshot.clone();
+        conflicting_snapshot.release_artifact_snapshots[0].documentation[0]
+            .artifact
+            .semantic_schema_sha256 = "f".repeat(64);
+        assert!(db.apply_snapshot(id, &conflicting_snapshot).await.is_err());
+        db.backend
+            .execute(
+                "INSERT INTO registry_catalog_artifacts
+                 (registry_id, source_revision, package_name, package_version,
+                  platform, artifact_kind, store_path, store_hash, metadata_digest)
+                 VALUES (?1, ?2, 'stale', '1.0', 'x86_64-linux', 'output',
+                         '/nix/store/stale-output', 'stale', 'stale')",
+                &vals![id, "0".repeat(64)],
+            )
+            .await
+            .unwrap();
+        for artifact_kind in ["config", "evaluation_base_lib", "expose", "image"] {
+            db.backend
+                .execute(
+                    "INSERT INTO registry_catalog_artifacts
+                     (registry_id, source_revision, package_name, package_version,
+                      platform, artifact_kind, store_path, store_hash, metadata_digest)
+                     VALUES (?1, ?2, 'curl', '8.5.0', 'x86_64-linux', ?3,
+                             ?4, ?5, ?6)",
+                    &vals![
+                        id,
+                        snapshot.commit.clone(),
+                        artifact_kind,
+                        format!("/nix/store/{artifact_kind}-curl"),
+                        format!("{artifact_kind}-hash"),
+                        format!("{artifact_kind}-metadata")
+                    ],
+                )
+                .await
+                .unwrap();
+        }
+        let current_artifacts = db
+            .list_current_catalog_retention_artifacts(id)
+            .await
+            .unwrap();
+        assert_eq!(
+            current_artifacts
+                .iter()
+                .map(|artifact| artifact.artifact_kind.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "config",
+                "documentation",
+                "evaluation_base_lib",
+                "expose",
+                "image",
+                "output",
+                "source_derivation"
+            ]
+        );
+        assert!(current_artifacts
+            .iter()
+            .all(|artifact| artifact.package_name == "curl"));
         let exact = db
             .package_documentation_locator(id, "curl", "8.5.0", "x86_64-linux")
             .await
@@ -27231,6 +29024,12 @@ source_nar_hash = ""
         assert_eq!(search.len(), 1);
         assert_eq!(search[0].key, "curl.listenPort");
         assert_eq!(search[0].score, 180);
+        let paginated_search = db
+            .search_package_documentation(id, "pagination", Some("option"), 150)
+            .await
+            .unwrap();
+        assert_eq!(paginated_search.len(), 150);
+        assert_eq!(paginated_search[100].key, "curl.pagination100");
         let browse = db.browse_package_documentation(id, None, 10).await.unwrap();
         assert_eq!(browse.len(), 1);
         assert_eq!(browse[0].package_name, "curl");
@@ -27238,7 +29037,10 @@ source_nar_hash = ""
         assert_eq!(browse[0].summary, "URL transfers");
         let retention_releases = db.list_retention_release_snapshots(id).await.unwrap();
         assert_eq!(retention_releases.len(), 1);
-        assert_eq!(retention_releases[0].artifacts[0].store_hash, "abc");
+        assert!(retention_releases[0]
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.artifact_kind == "output" && artifact.store_hash == "abc"));
         let release_packages = db.list_packages_at_release(id, "1.0.0").await.unwrap();
         assert_eq!(release_packages.len(), 1);
         assert_eq!(release_packages[0].name, "curl");
@@ -27288,7 +29090,7 @@ source_nar_hash = ""
             .unwrap()
             .get(0)
             .unwrap();
-        assert_eq!(artifact_count, 1);
+        assert_eq!(artifact_count, 2);
 
         snapshot.package_documentation.clear();
         db.apply_snapshot(id, &snapshot).await.unwrap();
@@ -27307,6 +29109,71 @@ source_nar_hash = ""
             .await
             .unwrap()
             .is_empty());
+        let retained = db
+            .package_documentation_locator_by_digest(id, &"b".repeat(64))
+            .await
+            .unwrap()
+            .expect("signed release retains immutable documentation locator");
+        assert_eq!(retained.release.as_deref(), Some("1.0.0"));
+        assert_eq!(retained.verified_tag_oid, Some("a".repeat(64)));
+        assert_eq!(retained.indexed_commit, "c".repeat(64));
+        assert!(db
+            .release_documentation_projection_complete(id)
+            .await
+            .unwrap());
+        let metadata_digest: String = db
+            .backend
+            .query_opt(
+                "SELECT metadata_digest FROM release_package_documentation
+                 WHERE registry_id = ?1",
+                &vals![id],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        db.backend
+            .execute(
+                "UPDATE release_package_documentation
+                 SET metadata_digest = 'corrupt' WHERE registry_id = ?1",
+                &vals![id],
+            )
+            .await
+            .unwrap();
+        assert!(db
+            .release_documentation_projection_complete(id)
+            .await
+            .is_err());
+        db.backend
+            .execute(
+                "UPDATE release_package_documentation
+                 SET metadata_digest = ?2 WHERE registry_id = ?1",
+                &vals![id, metadata_digest],
+            )
+            .await
+            .unwrap();
+        db.backend
+            .execute(
+                "DELETE FROM release_package_documentation WHERE registry_id = ?1",
+                &vals![id],
+            )
+            .await
+            .unwrap();
+        assert!(!db
+            .release_documentation_projection_complete(id)
+            .await
+            .unwrap());
+        db.apply_snapshot(id, &snapshot).await.unwrap();
+        assert!(db
+            .release_documentation_projection_complete(id)
+            .await
+            .unwrap());
+        assert!(db
+            .package_documentation_locator_by_digest(id, &"b".repeat(64))
+            .await
+            .unwrap()
+            .is_some());
         snapshot.package_documentation.push(documentation);
         db.apply_snapshot(id, &snapshot).await.unwrap();
 
@@ -27389,7 +29256,7 @@ source_nar_hash = ""
             .unwrap()
             .get(0)
             .unwrap();
-        assert_eq!(artifact_count_after_retag, 1);
+        assert_eq!(artifact_count_after_retag, 2);
 
         let packages = db.list_packages(id).await.unwrap();
         assert_eq!(packages.len(), 1);
@@ -27415,6 +29282,522 @@ source_nar_hash = ""
             db.all_store_hashes(id).await.unwrap(),
             vec!["abc".to_string()]
         );
+    }
+
+    #[tokio::test]
+    async fn snapshot_materializes_only_the_exact_signed_container_root() {
+        let db = Database::open_in_memory().await.unwrap();
+        let org_id = db
+            .create_org("container-release-root", "Container Release Root")
+            .await
+            .unwrap();
+        let registry_id = db
+            .create_managed_registry(org_id, "", "containers", "public", &[], false)
+            .await
+            .unwrap();
+        let binding_id = create_test_binding(&db, org_id, "container-root", "containers").await;
+        let placement = db
+            .create_surface_placement(&NewSurfacePlacementSpec {
+                surface: SurfaceTarget::Registry(registry_id),
+                name: "primary".to_string(),
+                binding_id,
+                prefix: "containers".to_string(),
+                kind: "complete".to_string(),
+                desired_state: "active".to_string(),
+                hash_range: None,
+                desired_read_enabled: true,
+                read_order: 0,
+                requires_conditional_writes: false,
+            })
+            .await
+            .unwrap();
+        let placement = db
+            .observe_surface_placement(placement.id, "ready", "complete", 1)
+            .await
+            .unwrap();
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let object = db
+            .create_surface_object(&SetSurfaceObject {
+                surface: SurfaceTarget::Registry(registry_id),
+                object_key: format!("oci/blobs/sha256/{}", "a".repeat(64)),
+                content_hash: Some("a".repeat(64)),
+                size: Some(512),
+                object_kind: "immutable".to_string(),
+                mutable_publication_id: None,
+            })
+            .await
+            .unwrap();
+        db.backend
+            .batch(&[
+                Statement::new(
+                    "INSERT INTO oci_repositories
+                       (id, registry_id, name, visibility, lifecycle_state,
+                        resource_version, created_at, updated_at)
+                     VALUES (42001, ?1, 'aos', 'inherit', 'active', 1, 1, 1)",
+                    vals![registry_id].to_vec(),
+                ),
+                Statement::new(
+                    "INSERT INTO oci_blobs
+                       (registry_id, digest, byte_size, media_type,
+                        surface_object_id, quota_bytes, lifecycle_state,
+                        created_at, updated_at)
+                     VALUES (?1, ?2, 512,
+                       'application/vnd.oci.image.index.v1+json', ?3, 512,
+                       'active', 1, 1)",
+                    vals![registry_id, digest, object.id].to_vec(),
+                ),
+                Statement::new(
+                    "INSERT INTO oci_repository_objects
+                       (repository_id, registry_id, digest, object_kind,
+                        media_type, linked_at)
+                     VALUES (42001, ?1, ?2, 'manifest',
+                       'application/vnd.oci.image.index.v1+json', 1)",
+                    vals![registry_id, digest].to_vec(),
+                ),
+                Statement::new(
+                    "INSERT INTO oci_manifests
+                       (registry_id, digest, media_type, byte_size,
+                        schema_version, artifact_type, subject_digest,
+                        config_digest, annotations_json, descriptor_count,
+                        created_at)
+                     VALUES (?1, ?2,
+                       'application/vnd.oci.image.index.v1+json', 512, 2,
+                       NULL, NULL, NULL, '{}', 0, 1)",
+                    vals![registry_id, digest].to_vec(),
+                ),
+                Statement::new(
+                    "INSERT INTO object_placements
+                       (surface_object_id, cache_id, registry_id, placement_id,
+                        state, observed_hash, observed_size, etag,
+                        observed_inventory_generation, observed_at,
+                        catalog_object_resource_version)
+                     VALUES (?1, NULL, ?2, ?3, 'present', ?4, 512,
+                             'fixture-etag', 1, 1, ?5)",
+                    vals![
+                        object.id,
+                        registry_id,
+                        placement.id,
+                        "a".repeat(64),
+                        object.resource_version
+                    ]
+                    .to_vec(),
+                ),
+            ])
+            .await
+            .unwrap();
+
+        let placement_observation_version = placement.observation_version.unwrap();
+        let mut required_descriptors = vec![VerifiedContainerReleaseDescriptor {
+            role: ContainerReleaseDescriptorRole::Index,
+            digest: digest.clone(),
+            media_type: "application/vnd.oci.image.index.v1+json".to_string(),
+            byte_size: 512,
+            surface_object_id: object.id,
+            object_resource_version: object.resource_version,
+            placement_id: placement.id,
+            placement_resource_version: placement.resource_version,
+            placement_observation_version,
+            observed_inventory_generation: 1,
+            observed_at: 1,
+            strong_etag: "fixture-etag".to_string(),
+        }];
+        let required_roles = [
+            ContainerReleaseDescriptorRole::PlatformManifest,
+            ContainerReleaseDescriptorRole::NixClosure,
+            ContainerReleaseDescriptorRole::Sbom,
+            ContainerReleaseDescriptorRole::Source,
+            ContainerReleaseDescriptorRole::License,
+            ContainerReleaseDescriptorRole::Provenance,
+            ContainerReleaseDescriptorRole::Signature,
+        ];
+        for (ordinal, role) in required_roles.into_iter().enumerate() {
+            let encoded = format!("{:064x}", ordinal + 11);
+            let descriptor_digest = format!("sha256:{encoded}");
+            let byte_size = 513 + i64::try_from(ordinal).unwrap();
+            let descriptor_object = db
+                .create_surface_object(&SetSurfaceObject {
+                    surface: SurfaceTarget::Registry(registry_id),
+                    object_key: format!("oci/blobs/sha256/{encoded}"),
+                    content_hash: Some(encoded.clone()),
+                    size: Some(byte_size),
+                    object_kind: "immutable".to_string(),
+                    mutable_publication_id: None,
+                })
+                .await
+                .unwrap();
+            db.backend
+                .batch(&[
+                    Statement::new(
+                        "INSERT INTO oci_blobs
+                           (registry_id, digest, byte_size, media_type,
+                            surface_object_id, quota_bytes, lifecycle_state,
+                            created_at, updated_at)
+                         VALUES (?1, ?2, ?3,
+                           'application/vnd.oci.image.manifest.v1+json', ?4, ?3,
+                           'active', 1, 1)",
+                        vals![
+                            registry_id,
+                            descriptor_digest,
+                            byte_size,
+                            descriptor_object.id
+                        ]
+                        .to_vec(),
+                    ),
+                    Statement::new(
+                        "INSERT INTO oci_repository_objects
+                           (repository_id, registry_id, digest, object_kind,
+                            media_type, linked_at)
+                         VALUES (42001, ?1, ?2, 'manifest',
+                           'application/vnd.oci.image.manifest.v1+json', 1)",
+                        vals![registry_id, descriptor_digest].to_vec(),
+                    ),
+                    Statement::new(
+                        "INSERT INTO oci_manifests
+                           (registry_id, digest, media_type, byte_size,
+                            schema_version, artifact_type, subject_digest,
+                            config_digest, annotations_json, descriptor_count,
+                            created_at)
+                         VALUES (?1, ?2,
+                           'application/vnd.oci.image.manifest.v1+json', ?3, 2,
+                           NULL, NULL, NULL, '{}', 0, 1)",
+                        vals![registry_id, descriptor_digest, byte_size].to_vec(),
+                    ),
+                    Statement::new(
+                        "INSERT INTO object_placements
+                           (surface_object_id, cache_id, registry_id, placement_id,
+                            state, observed_hash, observed_size, etag,
+                            observed_inventory_generation, observed_at,
+                            catalog_object_resource_version)
+                         VALUES (?1, NULL, ?2, ?3, 'present', ?4, ?5,
+                                 ?6, 1, 1, ?7)",
+                        vals![
+                            descriptor_object.id,
+                            registry_id,
+                            placement.id,
+                            encoded,
+                            byte_size,
+                            format!("fixture-etag-{ordinal}"),
+                            descriptor_object.resource_version
+                        ]
+                        .to_vec(),
+                    ),
+                ])
+                .await
+                .unwrap();
+            required_descriptors.push(VerifiedContainerReleaseDescriptor {
+                role,
+                digest: descriptor_digest,
+                media_type: "application/vnd.oci.image.manifest.v1+json".to_string(),
+                byte_size: u64::try_from(byte_size).unwrap(),
+                surface_object_id: descriptor_object.id,
+                object_resource_version: descriptor_object.resource_version,
+                placement_id: placement.id,
+                placement_resource_version: placement.resource_version,
+                placement_observation_version,
+                observed_inventory_generation: 1,
+                observed_at: 1,
+                strong_etag: format!("fixture-etag-{ordinal}"),
+            });
+        }
+
+        let closure_layer_digest = required_descriptors[1].digest.clone();
+        let evidence_kinds = [
+            "closure",
+            "sbom",
+            "source",
+            "license",
+            "provenance",
+            "signature",
+        ];
+        let evidence = evidence_kinds
+            .iter()
+            .zip(&required_descriptors[2..])
+            .map(|(kind, descriptor)| ContainerReleaseEvidenceSnapshot {
+                kind: (*kind).to_string(),
+                digest: descriptor.digest.clone(),
+                media_type: "application/vnd.aos.nix-closure.v1+json".to_string(),
+                referrer_digest: descriptor.digest.clone(),
+            })
+            .collect::<Vec<_>>();
+        let artifacts = Vec::<ReleaseSnapshotArtifact>::new();
+        let snapshot = IndexSnapshot {
+            commit: "c".repeat(64),
+            name: "container-release-root".to_string(),
+            releases: vec![ReleaseRow {
+                semver: "1.0.0".to_string(),
+                tag_oid: "b".repeat(64),
+                commit_oid: "c".repeat(64),
+                signer: Some("fixture-key".to_string()),
+                tagged_at: Some(1),
+                pack_present: true,
+            }],
+            release_artifact_snapshots: vec![ReleaseArtifactSnapshot {
+                release_tag: "1.0.0".to_string(),
+                source_commit: "c".repeat(64),
+                verified_tag_oid: "b".repeat(64),
+                manifest_digest: hex::encode(sha2::Sha256::digest(
+                    serde_json::to_vec(&artifacts).unwrap(),
+                )),
+                artifacts,
+                container_release: Some(ContainerReleaseRootSnapshot {
+                    repository: "aos".to_string(),
+                    container_name: "aos".to_string(),
+                    index_digest: digest.clone(),
+                    index_media_type: "application/vnd.oci.image.index.v1+json".to_string(),
+                    index_size: 512,
+                    catalog_digest: "d".repeat(64),
+                    package_name: "aos".to_string(),
+                    closure_members: vec![ContainerReleaseClosureMemberSnapshot {
+                        store_path: "/nix/store/fixture-aos".to_string(),
+                        nar_hash: "sha256:fixture".to_string(),
+                        nar_size: 123,
+                        layer_digest: closure_layer_digest,
+                        direct: true,
+                    }],
+                    layers: Vec::new(),
+                    evidence,
+                    required_descriptors,
+                }),
+                documentation: Vec::new(),
+            }],
+            ..IndexSnapshot::default()
+        };
+        let mut changed_observation = snapshot.clone();
+        changed_observation.release_artifact_snapshots[0]
+            .container_release
+            .as_mut()
+            .unwrap()
+            .required_descriptors[0]
+            .observed_inventory_generation += 1;
+        assert_ne!(
+            index_snapshot_digest(&snapshot).unwrap(),
+            index_snapshot_digest(&changed_observation).unwrap(),
+            "the index digest must bind exact signed-root placement evidence"
+        );
+        db.apply_snapshot_from_placement(registry_id, &snapshot, Some(placement.id))
+            .await
+            .unwrap();
+        assert!(db.has_container_release_catalog(registry_id).await.unwrap());
+
+        let root = db
+            .backend
+            .query_opt(
+                "SELECT release_id, release_tag, repository_id, container_name,
+                        index_digest, source_commit, verified_tag_oid,
+                        catalog_digest
+                 FROM oci_release_roots WHERE registry_id = ?1",
+                &vals![registry_id],
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let release_id: i64 = db
+            .backend
+            .query_opt(
+                "SELECT id FROM releases WHERE registry_id = ?1 AND semver = '1.0.0'",
+                &vals![registry_id],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(root.get::<i64>(0).unwrap(), release_id);
+        assert_eq!(root.get::<String>(1).unwrap(), "1.0.0");
+        assert_eq!(root.get::<i64>(2).unwrap(), 42001);
+        assert_eq!(root.get::<String>(3).unwrap(), "aos");
+        assert_eq!(root.get::<String>(4).unwrap(), digest);
+        assert_eq!(root.get::<String>(5).unwrap(), "c".repeat(64));
+        assert_eq!(root.get::<String>(6).unwrap(), "b".repeat(64));
+        assert_eq!(root.get::<String>(7).unwrap(), "d".repeat(64));
+        let provenance = db
+            .oci_admin_release_provenance(
+                registry_id,
+                &aos_oci_types::RepositoryName::parse("aos").unwrap(),
+                aos_oci_types::Sha256Digest::parse(&digest).unwrap(),
+                "1.0.0",
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(provenance.package, "aos");
+        assert_eq!(provenance.closure_members.len(), 1);
+        assert_eq!(provenance.evidence.len(), 6);
+        assert!(provenance
+            .evidence
+            .iter()
+            .all(|evidence| evidence.verification == "verified"));
+
+        let epoch_before_shared_root: i64 = db
+            .backend
+            .query_opt(
+                "SELECT mutation_epoch FROM oci_registry_state WHERE registry_id = ?1",
+                &vals![registry_id],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        let mut shared_root = snapshot.clone();
+        shared_root.releases.push(ReleaseRow {
+            semver: "2.0.0".to_string(),
+            tag_oid: "f".repeat(64),
+            commit_oid: "c".repeat(64),
+            signer: Some("fixture-key".to_string()),
+            tagged_at: Some(2),
+            pack_present: true,
+        });
+        let mut second_release = shared_root.release_artifact_snapshots[0].clone();
+        second_release.release_tag = "2.0.0".to_string();
+        second_release.verified_tag_oid = "f".repeat(64);
+        shared_root.release_artifact_snapshots.push(second_release);
+        db.apply_snapshot_from_placement(registry_id, &shared_root, Some(placement.id))
+            .await
+            .unwrap();
+        let all_provenance = db
+            .list_oci_admin_release_provenance(
+                registry_id,
+                &aos_oci_types::RepositoryName::parse("aos").unwrap(),
+                aos_oci_types::Sha256Digest::parse(&digest).unwrap(),
+                10,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            all_provenance
+                .items
+                .iter()
+                .map(|record| record.release.as_str())
+                .collect::<Vec<_>>(),
+            vec!["1.0.0", "2.0.0"]
+        );
+        assert_eq!(all_provenance.items[1].closure_members.len(), 1);
+        assert_eq!(all_provenance.items[1].evidence.len(), 6);
+        let epoch_after_shared_root: i64 = db
+            .backend
+            .query_opt(
+                "SELECT mutation_epoch FROM oci_registry_state WHERE registry_id = ?1",
+                &vals![registry_id],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(epoch_after_shared_root, epoch_before_shared_root + 1);
+        db.apply_snapshot_from_placement(registry_id, &snapshot, Some(placement.id))
+            .await
+            .unwrap();
+
+        db.backend
+            .execute(
+                "UPDATE object_placements SET state = 'missing'
+                 WHERE surface_object_id = ?1 AND placement_id = ?2",
+                &vals![object.id, placement.id],
+            )
+            .await
+            .unwrap();
+        assert!(db
+            .apply_snapshot_from_placement(registry_id, &snapshot, Some(placement.id))
+            .await
+            .is_err());
+        db.backend
+            .execute(
+                "UPDATE object_placements SET state = 'present'
+                 WHERE surface_object_id = ?1 AND placement_id = ?2",
+                &vals![object.id, placement.id],
+            )
+            .await
+            .unwrap();
+
+        let platform_object_id = snapshot.release_artifact_snapshots[0]
+            .container_release
+            .as_ref()
+            .unwrap()
+            .required_descriptors[1]
+            .surface_object_id;
+        db.backend
+            .execute(
+                "UPDATE object_placements
+                 SET observed_inventory_generation = 2
+                 WHERE surface_object_id = ?1 AND placement_id = ?2",
+                &vals![platform_object_id, placement.id],
+            )
+            .await
+            .unwrap();
+        assert!(db
+            .apply_snapshot_from_placement(registry_id, &snapshot, Some(placement.id))
+            .await
+            .is_err());
+        let retained_after_object_interleaving: i64 = db
+            .backend
+            .query_opt(
+                "SELECT COUNT(*) FROM oci_release_roots
+                 WHERE registry_id = ?1 AND index_digest = ?2",
+                &vals![registry_id, digest],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(retained_after_object_interleaving, 1);
+        db.backend
+            .execute(
+                "UPDATE object_placements
+                 SET observed_inventory_generation = 1
+                 WHERE surface_object_id = ?1 AND placement_id = ?2",
+                &vals![platform_object_id, placement.id],
+            )
+            .await
+            .unwrap();
+
+        let mut mismatched = snapshot.clone();
+        mismatched.release_artifact_snapshots[0]
+            .container_release
+            .as_mut()
+            .unwrap()
+            .index_size += 1;
+        assert!(db
+            .apply_snapshot_from_placement(registry_id, &mismatched, Some(placement.id))
+            .await
+            .is_err());
+        let retained: i64 = db
+            .backend
+            .query_opt(
+                "SELECT COUNT(*) FROM oci_release_roots
+                 WHERE registry_id = ?1 AND index_digest = ?2",
+                &vals![registry_id, digest],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(retained, 1);
+
+        db.observe_surface_placement(placement.id, "ready", "complete", 2)
+            .await
+            .unwrap();
+        assert!(db
+            .apply_snapshot_from_placement(registry_id, &snapshot, Some(placement.id))
+            .await
+            .is_err());
+        let retained_after_placement_interleaving: i64 = db
+            .backend
+            .query_opt(
+                "SELECT COUNT(*) FROM oci_release_roots
+                 WHERE registry_id = ?1 AND index_digest = ?2",
+                &vals![registry_id, digest],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(retained_after_placement_interleaving, 1);
     }
 
     #[tokio::test]
@@ -30272,6 +32655,14 @@ source_nar_hash = ""
         db.observe_binding_write_revision(binding_id, write_revision.revision, "valid", None, None)
             .await
             .unwrap();
+        let write_state = db.binding_write_state(binding_id).await.unwrap().unwrap();
+        db.set_current_binding_write_revision(
+            binding_id,
+            write_revision.revision,
+            write_state.resource_version,
+        )
+        .await
+        .unwrap();
         db.bind_surface_placement_write_capability(placement.id, write_revision.revision)
             .await
             .unwrap();
@@ -30427,6 +32818,74 @@ source_nar_hash = ""
             .await
             .unwrap();
         db.materialize_topology_events().await.unwrap();
+        let purge_now = unix_now();
+        let purge_plan = db
+            .plan_oci_registry_purge_fence(&PlanOciRegistryPurgeFence {
+                registry_id: id,
+                action: OciRegistryPurgeFenceAction::Begin,
+                actor_id: "release-controller".to_string(),
+                idempotency_key: "retired-purge-plan".to_string(),
+                expected_resource_version: registry.resource_version,
+                now: purge_now,
+            })
+            .await
+            .unwrap();
+        db.apply_oci_registry_purge_fence(&ApplyOciRegistryPurgeFence {
+            plan_id: purge_plan.id,
+            actor_id: "release-controller".to_string(),
+            idempotency_key: "retired-purge-apply".to_string(),
+            confirmation_hash: purge_plan.confirmation_hash,
+            expected_resource_version: purge_plan.resource_version,
+            now: purge_now + 1,
+        })
+        .await
+        .unwrap();
+
+        let placement = db.surface_placement(placement.id).await.unwrap().unwrap();
+        let inventory = db
+            .begin_oci_provider_inventory(&BeginOciProviderInventory {
+                registry_id: id,
+                placement_id: placement.id,
+                expected_placement_resource_version: placement.resource_version,
+                expected_placement_observation_version: placement.observation_version.unwrap(),
+                collector_id: "retired-purge-collector".to_string(),
+                collector_claim_token: "retired-purge-claim".to_string(),
+                collector_lease_seconds: 100,
+                idempotency_key: "retired-purge-inventory".to_string(),
+                now: purge_now + 2,
+            })
+            .await
+            .unwrap();
+        db.append_oci_provider_inventory_page(&AppendOciProviderInventoryPage {
+            generation_id: inventory.id.clone(),
+            collector_id: "retired-purge-collector".to_string(),
+            collector_claim_token: "retired-purge-claim".to_string(),
+            expected_checkpoint_ordinal: 0,
+            expected_provider_cursor: None,
+            next_provider_cursor: None,
+            last_listed_key: None,
+            entries: Vec::new(),
+            now: purge_now + 3,
+            lease_seconds: 100,
+        })
+        .await
+        .unwrap();
+        db.complete_oci_provider_inventory(&CompleteOciProviderInventory {
+            generation_id: inventory.id,
+            collector_id: "retired-purge-collector".to_string(),
+            collector_claim_token: "retired-purge-claim".to_string(),
+            expected_checkpoint_ordinal: 1,
+            observed_at: purge_now + 3,
+            now: purge_now + 4,
+        })
+        .await
+        .unwrap();
+        assert!(!db
+            .oci_registry_purge_blockers(id, purge_now + 4)
+            .await
+            .unwrap()
+            .any());
+
         let change_id = uuid::Uuid::new_v4().to_string();
 
         assert!(db

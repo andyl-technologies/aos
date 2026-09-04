@@ -16,11 +16,12 @@
       "gateway",
       "route",
       "operation",
-      "image"
+      "image",
+      "container"
    ],
    "cli_nested_families" : {
       "org" : [ "audit", "domain", "identity", "identity-provider", "invitation", "member", "project", "service-account", "webhook" ],
-      "registry" : [ "cache-stack", "channel", "configuration", "mirror", "package", "publish" ]
+      "registry" : [ "cache-stack", "channel", "configuration", "container", "mirror", "package", "publish" ]
    },
    "cli_json_schema" : {
       "bundle_node_id" : "manifest/cli",
@@ -69,6 +70,328 @@
          "request" : "ResolveImageRequest",
          "response" : "GetImageResponse",
          "service" : "ImageService"
+      },
+      {
+         "method" : "ListContainerRepositories",
+         "path" : "aos.hub.v1.ContainerService/ListContainerRepositories",
+         "request" : "ListContainerRepositoriesRequest",
+         "response" : "ListContainerRepositoriesResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "GetContainerRepository",
+         "path" : "aos.hub.v1.ContainerService/GetContainerRepository",
+         "request" : "GetContainerRepositoryRequest",
+         "response" : "ContainerRepositoryResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "PlanCreateContainerRepository",
+         "path" : "aos.hub.v1.ContainerService/PlanCreateContainerRepository",
+         "request" : "PlanCreateContainerRepositoryRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "CreateContainerRepository",
+         "path" : "aos.hub.v1.ContainerService/CreateContainerRepository",
+         "request" : "ApplyContainerMutationRequest",
+         "response" : "ContainerRepositoryResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "PlanUpdateContainerRepository",
+         "path" : "aos.hub.v1.ContainerService/PlanUpdateContainerRepository",
+         "request" : "PlanUpdateContainerRepositoryRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "UpdateContainerRepository",
+         "path" : "aos.hub.v1.ContainerService/UpdateContainerRepository",
+         "request" : "ApplyContainerMutationRequest",
+         "response" : "ContainerRepositoryResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "PlanDeleteContainerRepository",
+         "path" : "aos.hub.v1.ContainerService/PlanDeleteContainerRepository",
+         "request" : "PlanDeleteContainerRepositoryRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "DeleteContainerRepository",
+         "path" : "aos.hub.v1.ContainerService/DeleteContainerRepository",
+         "request" : "ApplyContainerMutationRequest",
+         "response" : "ContainerDeletionResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "ListContainerTags",
+         "path" : "aos.hub.v1.ContainerService/ListContainerTags",
+         "request" : "ListContainerTagsRequest",
+         "response" : "ListContainerTagsResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "GetContainerTag",
+         "path" : "aos.hub.v1.ContainerService/GetContainerTag",
+         "request" : "GetContainerTagRequest",
+         "response" : "ContainerTagResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "ResolveContainerTag",
+         "path" : "aos.hub.v1.ContainerService/ResolveContainerTag",
+         "request" : "ResolveContainerTagRequest",
+         "response" : "ContainerTagResolutionResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "ListContainerTagHistory",
+         "path" : "aos.hub.v1.ContainerService/ListContainerTagHistory",
+         "request" : "ListContainerTagHistoryRequest",
+         "response" : "ListContainerTagHistoryResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "PlanSetContainerTag",
+         "path" : "aos.hub.v1.ContainerService/PlanSetContainerTag",
+         "request" : "PlanSetContainerTagRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "SetContainerTag",
+         "path" : "aos.hub.v1.ContainerService/SetContainerTag",
+         "request" : "ApplyContainerMutationRequest",
+         "response" : "ContainerTagResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "PlanUnsetContainerTag",
+         "path" : "aos.hub.v1.ContainerService/PlanUnsetContainerTag",
+         "request" : "PlanUnsetContainerTagRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "UnsetContainerTag",
+         "path" : "aos.hub.v1.ContainerService/UnsetContainerTag",
+         "request" : "ApplyContainerMutationRequest",
+         "response" : "ContainerDeletionResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "GetContainerManifest",
+         "path" : "aos.hub.v1.ContainerService/GetContainerManifest",
+         "request" : "GetContainerManifestRequest",
+         "response" : "ContainerManifestResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "ListContainerPlatforms",
+         "path" : "aos.hub.v1.ContainerService/ListContainerPlatforms",
+         "request" : "ListContainerPlatformsRequest",
+         "response" : "ListContainerPlatformsResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "GetContainerPlatform",
+         "path" : "aos.hub.v1.ContainerService/GetContainerPlatform",
+         "request" : "GetContainerPlatformRequest",
+         "response" : "ContainerPlatformResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "ListContainerLayers",
+         "path" : "aos.hub.v1.ContainerService/ListContainerLayers",
+         "request" : "ListContainerLayersRequest",
+         "response" : "ListContainerLayersResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "GetContainerLayer",
+         "path" : "aos.hub.v1.ContainerService/GetContainerLayer",
+         "request" : "GetContainerLayerRequest",
+         "response" : "ContainerLayerResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "ListContainerReferrers",
+         "path" : "aos.hub.v1.ContainerService/ListContainerReferrers",
+         "request" : "ListContainerReferrersRequest",
+         "response" : "ListContainerReferrersResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "ListContainerPublications",
+         "path" : "aos.hub.v1.ContainerService/ListContainerPublications",
+         "request" : "ListContainerPublicationsRequest",
+         "response" : "ListContainerPublicationsResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "GetContainerProvenance",
+         "path" : "aos.hub.v1.ContainerService/GetContainerProvenance",
+         "request" : "GetContainerProvenanceRequest",
+         "response" : "ContainerProvenanceResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "GetContainerRetentionPolicy",
+         "path" : "aos.hub.v1.ContainerService/GetContainerRetentionPolicy",
+         "request" : "GetContainerRetentionPolicyRequest",
+         "response" : "ContainerRetentionPolicyResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "PlanSetContainerRetentionPolicy",
+         "path" : "aos.hub.v1.ContainerService/PlanSetContainerRetentionPolicy",
+         "request" : "PlanSetContainerRetentionPolicyRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "SetContainerRetentionPolicy",
+         "path" : "aos.hub.v1.ContainerService/SetContainerRetentionPolicy",
+         "request" : "ApplyContainerMutationRequest",
+         "response" : "ContainerRetentionPolicyResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "PlanRunContainerGc",
+         "path" : "aos.hub.v1.ContainerService/PlanRunContainerGc",
+         "request" : "PlanRunContainerGcRequest",
+         "response" : "ContainerGcPlanResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "RunContainerGc",
+         "path" : "aos.hub.v1.ContainerService/RunContainerGc",
+         "request" : "ApplyContainerMutationRequest",
+         "response" : "OperationResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "GetContainerGcRun",
+         "path" : "aos.hub.v1.ContainerService/GetContainerGcRun",
+         "request" : "GetContainerGcRunRequest",
+         "response" : "ContainerGcRunResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "ListContainerGcRuns",
+         "path" : "aos.hub.v1.ContainerService/ListContainerGcRuns",
+         "request" : "ListContainerGcRunsRequest",
+         "response" : "ListContainerGcRunsResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "ListContainerGcCandidates",
+         "path" : "aos.hub.v1.ContainerService/ListContainerGcCandidates",
+         "request" : "ListContainerGcCandidatesRequest",
+         "response" : "ListContainerGcCandidatesResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "ListContainerGcBlockers",
+         "path" : "aos.hub.v1.ContainerService/ListContainerGcBlockers",
+         "request" : "ListContainerGcBlockersRequest",
+         "response" : "ListContainerGcBlockersResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "ListContainerGcPlacementActions",
+         "path" : "aos.hub.v1.ContainerService/ListContainerGcPlacementActions",
+         "request" : "ListContainerGcPlacementActionsRequest",
+         "response" : "ListContainerGcPlacementActionsResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "RequeueContainerGcPlacementAction",
+         "path" : "aos.hub.v1.ContainerService/RequeueContainerGcPlacementAction",
+         "request" : "RequeueContainerGcPlacementActionRequest",
+         "response" : "ContainerGcPlacementActionResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "ListContainerUntrackedInventory",
+         "path" : "aos.hub.v1.ContainerService/ListContainerUntrackedInventory",
+         "request" : "ListContainerUntrackedInventoryRequest",
+         "response" : "ListContainerUntrackedInventoryResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "PlanRepairContainerUntrackedObject",
+         "path" : "aos.hub.v1.ContainerService/PlanRepairContainerUntrackedObject",
+         "request" : "PlanRepairContainerUntrackedObjectRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "RepairContainerUntrackedObject",
+         "path" : "aos.hub.v1.ContainerService/RepairContainerUntrackedObject",
+         "request" : "RepairContainerUntrackedObjectRequest",
+         "response" : "OperationResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "GetContainerUntrackedRepair",
+         "path" : "aos.hub.v1.ContainerService/GetContainerUntrackedRepair",
+         "request" : "GetContainerUntrackedRepairRequest",
+         "response" : "ContainerUntrackedRepairResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "PlanContainerRegistryPurgeFence",
+         "path" : "aos.hub.v1.ContainerService/PlanContainerRegistryPurgeFence",
+         "request" : "PlanContainerRegistryPurgeFenceRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "ApplyContainerRegistryPurgeFence",
+         "path" : "aos.hub.v1.ContainerService/ApplyContainerRegistryPurgeFence",
+         "request" : "ApplyContainerRegistryPurgeFenceRequest",
+         "response" : "ContainerRegistryPurgeFenceResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "GetContainerRegistryPurgeFence",
+         "path" : "aos.hub.v1.ContainerService/GetContainerRegistryPurgeFence",
+         "request" : "GetContainerRegistryPurgeFenceRequest",
+         "response" : "ContainerRegistryPurgeFenceResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "BeginContainerPublication",
+         "path" : "aos.hub.v1.ContainerService/BeginContainerPublication",
+         "request" : "BeginContainerPublicationRequest",
+         "response" : "ContainerPublication",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "GetContainerPublication",
+         "path" : "aos.hub.v1.ContainerService/GetContainerPublication",
+         "request" : "GetContainerPublicationRequest",
+         "response" : "ContainerPublication",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "CommitContainerPublication",
+         "path" : "aos.hub.v1.ContainerService/CommitContainerPublication",
+         "request" : "CommitContainerPublicationRequest",
+         "response" : "ContainerPublication",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "AbortContainerPublication",
+         "path" : "aos.hub.v1.ContainerService/AbortContainerPublication",
+         "request" : "AbortContainerPublicationRequest",
+         "response" : "ContainerPublication",
+         "service" : "ContainerService"
       },
       {
          "method" : "PlanCreateRegistry",
@@ -1611,6 +1934,55 @@
          "service" : "PublishService"
       },
       {
+         "method" : "BeginReleasePublication",
+         "path" : "aos.hub.v1.PublishService/BeginReleasePublication",
+         "request" : "BeginReleasePublicationRequest",
+         "response" : "ReleasePublicationState",
+         "service" : "PublishService"
+      },
+      {
+         "method" : "CommitReleasePublication",
+         "path" : "aos.hub.v1.PublishService/CommitReleasePublication",
+         "request" : "CommitReleasePublicationRequest",
+         "response" : "ReleaseReceipt",
+         "service" : "PublishService"
+      },
+      {
+         "method" : "RecordReleaseQualification",
+         "path" : "aos.hub.v1.PublishService/RecordReleaseQualification",
+         "request" : "RecordReleaseQualificationRequest",
+         "response" : "ReleaseQualificationState",
+         "service" : "PublishService"
+      },
+      {
+         "method" : "PromoteReleasePublication",
+         "path" : "aos.hub.v1.PublishService/PromoteReleasePublication",
+         "request" : "PromoteReleasePublicationRequest",
+         "response" : "ReleaseReceipt",
+         "service" : "PublishService"
+      },
+      {
+         "method" : "GetReleaseReceipt",
+         "path" : "aos.hub.v1.PublishService/GetReleaseReceipt",
+         "request" : "GetReleaseReceiptRequest",
+         "response" : "ReleaseReceipt",
+         "service" : "PublishService"
+      },
+      {
+         "method" : "PublishReleaseTimestamp",
+         "path" : "aos.hub.v1.PublishService/PublishReleaseTimestamp",
+         "request" : "PublishReleaseTimestampRequest",
+         "response" : "ReleaseTimestampState",
+         "service" : "PublishService"
+      },
+      {
+         "method" : "AdvanceReleaseChannel",
+         "path" : "aos.hub.v1.PublishService/AdvanceReleaseChannel",
+         "request" : "AdvanceReleaseChannelRequest",
+         "response" : "ReleaseReceipt",
+         "service" : "PublishService"
+      },
+      {
          "method" : "GitLog",
          "path" : "aos.hub.v1.GitService/GitLog",
          "request" : "GitLogRequest",
@@ -2555,6 +2927,7 @@
       "DocumentationService",
       "ChannelService",
       "ImageService",
+      "ContainerService",
       "PublishService",
       "GitService",
       "WebhookService",

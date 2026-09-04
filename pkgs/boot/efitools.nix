@@ -19,8 +19,16 @@
   gnumake,
   openssl,
   gnu-efi,
+  stdenv,
 }: let
   version = "1.9.2";
+  hostPlatform = stdenv.hostPlatform;
+  efiArch =
+    if hostPlatform.isx86_64
+    then "x86_64"
+    else if hostPlatform.isAarch64
+    then "aarch64"
+    else throw "efitools: unsupported architecture ${hostPlatform.system}";
   # Host tools only — each links lib/lib.a + -lcrypto, no EFI crt.
   hostTools = "cert-to-efi-sig-list sign-efi-sig-list efi-updatevar efi-readvar cert-to-efi-hash-list hash-to-efi-sig-list sig-list-to-certs";
 in
@@ -64,15 +72,15 @@ in
           # efitools' mixed styles and gnu-efi's own relative includes:
           #   include          → <efi/efi.h>, <efi/efilib.h> (lib/)
           #   include/efi      → bare <efi.h> (efi-updatevar.c)
-          #   include/efi/x86_64 → efisetjmp.h's "efisetjmp_arch.h"
+          #   include/efi/${efiArch} → efisetjmp.h's "efisetjmp_arch.h"
           #   include/efi/protocol → EFI protocol headers
           # efilib.h pulls legacy/efilib.h, now shipped by gnu-efi.
           # -D_GNU_SOURCE declares strptime() (sign-efi-sig-list.c).
-          # -DCONFIG_x86_64 is restated because overriding CPPFLAGS
-          # replaces the Makefile default. x86_64-only — all the SB
-          # path targets.
+          # -DCONFIG_${efiArch} is restated because overriding CPPFLAGS
+          # replaces the Makefile default.
           make -j$NIX_BUILD_CORES ${hostTools} \
-            CPPFLAGS="-DCONFIG_x86_64 -D_GNU_SOURCE -I${gnu-efi}/include -I${gnu-efi}/include/efi -I${gnu-efi}/include/efi/x86_64 -I${gnu-efi}/include/efi/protocol"
+            ARCH=${efiArch} \
+            CPPFLAGS="-DCONFIG_${efiArch} -D_GNU_SOURCE -I${gnu-efi}/include -I${gnu-efi}/include/efi -I${gnu-efi}/include/efi/${efiArch} -I${gnu-efi}/include/efi/protocol"
         '';
       }
       {

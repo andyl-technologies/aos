@@ -1,22 +1,63 @@
 ##! libseccomp — Seccomp (secure computing) userspace library
 {
   mkDerivation,
-  fetchurl,
+  mkGithubUpstream,
   gnumake,
   gperf,
 }: let
-  version = "2.6.0";
+  upstream = mkGithubUpstream {
+    unitId = "libseccomp-2";
+    family = "libseccomp";
+    stream = "2";
+    owner = "pkgs/libs/libseccomp.nix";
+    version = "2.6.0";
+    upstreamId = "v2.6.0";
+    repository = "seccomp/libseccomp";
+    tagPrefix = "v";
+    major = 2;
+    riskFloor = "high";
+    source = {
+      authority = "github.com";
+      path = [
+        "seccomp"
+        "libseccomp"
+        "releases"
+        "download"
+        {
+          parts = [
+            {literal = "v";}
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+          ];
+        }
+        {
+          parts = [
+            {literal = "libseccomp-";}
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+            {literal = ".tar.gz";}
+          ];
+        }
+      ];
+      hash = "sha256-g7YIUjLRWIw3ncm5yuR7s3QHzyYubnSZPGG6ctKnhNw=";
+    };
+  };
+  inherit (upstream) version;
 in
   mkDerivation {
     pname = "libseccomp";
     inherit version;
 
-    src = fetchurl {
-      urls = [
-        "https://github.com/seccomp/libseccomp/releases/download/v${version}/libseccomp-${version}.tar.gz"
-      ];
-      hash = "sha256-g7YIUjLRWIw3ncm5yuR7s3QHzyYubnSZPGG6ctKnhNw=";
-    };
+    src = upstream.components.main.sources.source;
+    update = upstream.update;
 
     # Linux 6.16 added open_tree_attr(2) after libseccomp 2.6.0 cut its
     # syscall table at Linux 6.13. Keep the name resolver synchronized with

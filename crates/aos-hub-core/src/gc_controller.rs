@@ -205,11 +205,10 @@ impl CacheGcDeletionController {
             .delete_if_matches(&receipt.object_key, &expected)
             .await
         {
-            Ok(SurfaceDeleteOutcome::Deleted {
-                etag,
-                content_hash,
-                size,
-            }) => ("deleted".to_string(), etag, content_hash, size, None, None),
+            Ok(outcome @ SurfaceDeleteOutcome::Deleted { .. })
+            | Ok(outcome @ SurfaceDeleteOutcome::ConditionalDeleteAcknowledged { .. }) => {
+                verified_delete_response(outcome, &expected)
+            }
             Ok(SurfaceDeleteOutcome::NotFound) => {
                 ("not_found".to_string(), None, None, None, None, None)
             }
@@ -223,6 +222,61 @@ impl CacheGcDeletionController {
             ),
             Err(error) => backend_failure("backend_error", &format!("{error:#}")),
         }
+    }
+}
+
+#[allow(clippy::type_complexity)]
+fn verified_delete_response(
+    outcome: SurfaceDeleteOutcome,
+    expected: &SurfaceDeletePrecondition,
+) -> (
+    String,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+    Option<String>,
+    Option<String>,
+) {
+    match outcome {
+        SurfaceDeleteOutcome::Deleted {
+            etag,
+            content_hash,
+            size,
+        } if expected
+            .etag
+            .as_ref()
+            .is_none_or(|expected| etag.as_ref() == Some(expected))
+            && expected
+                .content_hash
+                .as_ref()
+                .is_none_or(|expected| content_hash.as_ref() == Some(expected))
+            && expected.size.is_none_or(|expected| size == Some(expected)) =>
+        {
+            ("deleted".to_string(), etag, content_hash, size, None, None)
+        }
+        SurfaceDeleteOutcome::ConditionalDeleteAcknowledged { etag }
+            if expected
+                .etag
+                .as_deref()
+                .and_then(|value| crate::surface_write::strong_if_match_etag(value).ok())
+                .as_deref()
+                == Some(etag.as_str())
+                && expected.content_hash.is_some()
+                && expected.size.is_some() =>
+        {
+            ("deleted".to_string(), Some(etag), None, None, None, None)
+        }
+        SurfaceDeleteOutcome::Deleted { .. }
+        | SurfaceDeleteOutcome::ConditionalDeleteAcknowledged { .. }
+        | SurfaceDeleteOutcome::NotFound
+        | SurfaceDeleteOutcome::PreconditionFailed { .. } => (
+            "precondition_failed".to_string(),
+            None,
+            None,
+            None,
+            Some("identity_mismatch".to_string()),
+            Some("backend deletion proof did not match the frozen inventory identity".to_string()),
+        ),
     }
 }
 
@@ -272,5 +326,47 @@ mod tests {
         assert_eq!(retry_delay(5, 60, 1), 5);
         assert_eq!(retry_delay(5, 60, 4), 40);
         assert_eq!(retry_delay(5, 60, i64::MAX), 60);
+    }
+
+    #[test]
+    fn cache_delete_distinguishes_observed_identity_from_s3_acknowledgment() {
+        let expected = SurfaceDeletePrecondition {
+            etag: Some("\"etag-1\"".into()),
+            content_hash: Some("sha256:object".into()),
+            size: Some(12),
+        };
+        let local = verified_delete_response(
+            SurfaceDeleteOutcome::Deleted {
+                etag: Some("\"etag-1\"".into()),
+                content_hash: Some("sha256:object".into()),
+                size: Some(12),
+            },
+            &expected,
+        );
+        assert_eq!(local.0, "deleted");
+        assert_eq!(local.2.as_deref(), Some("sha256:object"));
+        assert_eq!(local.3, Some(12));
+
+        let acknowledged = verified_delete_response(
+            SurfaceDeleteOutcome::ConditionalDeleteAcknowledged {
+                etag: "\"etag-1\"".into(),
+            },
+            &expected,
+        );
+        assert_eq!(acknowledged.0, "deleted");
+        assert_eq!(acknowledged.1.as_deref(), Some("\"etag-1\""));
+        assert_eq!(acknowledged.2, None);
+        assert_eq!(acknowledged.3, None);
+
+        let mismatch = verified_delete_response(
+            SurfaceDeleteOutcome::Deleted {
+                etag: Some("\"etag-1\"".into()),
+                content_hash: Some("sha256:replacement".into()),
+                size: Some(12),
+            },
+            &expected,
+        );
+        assert_eq!(mismatch.0, "precondition_failed");
+        assert_eq!(mismatch.4.as_deref(), Some("identity_mismatch"));
     }
 }

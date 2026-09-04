@@ -2,6 +2,10 @@
 resolver = "2"
 members = [
     "aos",
+    "aos-oci",
+    "aos-oci-types",
+    "aos-contract",
+    "aos-maintain",
     "aos-core",
     "aos-boot-identity",
     "aos-recovery",
@@ -18,6 +22,8 @@ members = [
     "aos-hub-core",
     "aos-hub",
     "aos-registry-surface",
+    "aos-release",
+    "aos-image-finalizer",
     "aos-registry-spa",
     "aos-hub-worker",
     "aos-hub-console",
@@ -76,6 +82,7 @@ base64 = "0.22"
 aes-gcm = "0.10"
 zeroize = "1"
 regex = "1"
+rnix = "0.10"
 glob = "0.3"
 ignore = "0.4"
 hex = "0.4"
@@ -91,7 +98,7 @@ alejandra = "3.1.0"
 bytes = "1"
 http-body-util = "0.1"
 http = "1"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json", "stream"] }
 url = "2"
 unicode-normalization = "0.1"
 async-trait = "0.1"
@@ -203,8 +210,12 @@ tokio-rustls = "0.26"
 rcgen = "0.14"
 
 # Internal crates
+aos-contract = { path = "aos-contract" }
+aos-maintain = { path = "aos-maintain" }
 crucible-cas = { path = "crucible-cas" }
 aos-core = { path = "aos-core" }
+aos-oci-types = { path = "aos-oci-types" }
+aos-oci = { path = "aos-oci" }
 aos-boot-identity = { path = "aos-boot-identity" }
 aos-net = { path = "aos-net" }
 aos-proto = { path = "aos-proto" }
@@ -219,6 +230,8 @@ aos-hub-console-contract = { path = "aos-hub-console-contract" }
 aos-hub-core = { path = "aos-hub-core" }
 aos-hub = { path = "aos-hub" }
 aos-registry-surface = { path = "aos-registry-surface" }
+aos-release = { path = "aos-release" }
+aos-image-finalizer = { path = "aos-image-finalizer" }
 aos-profile = { path = "aos-profile" }
 aos-systemd = { path = "aos-systemd" }
 aos-filesystem-view = { path = "aos-filesystem-view" }

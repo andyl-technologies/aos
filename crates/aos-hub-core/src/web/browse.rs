@@ -25,6 +25,10 @@
 //! /{slug}/-/packages               package index (HTML; ?filter/?sort/?page)
 //! /{slug}/-/packages/{name}        package detail (HTML)
 //! /{slug}/-/images                 signed system-image downloads (HTML)
+//! /{slug}/-/containers             public OCI repository index (HTML)
+//! /{slug}/-/containers/repository  repository and tags (?repository=)
+//! /{slug}/-/containers/tag         tag, digest, and platforms (?repository=&tag=)
+//! /{slug}/-/containers/manifest    immutable manifest (?repository=&digest=)
 //! /{slug}/-/channels               channel index (HTML)
 //! /{slug}/-/channels/{name}        channel 256-partition grid (HTML; ?bucket)
 //! /{slug}/-/releases               releases (HTML)
@@ -65,7 +69,7 @@ use crate::ratelimit::{RateClass, RateDecision};
 use crate::service::RpcService;
 use crate::web::browse_pages as pages;
 use crate::web::console::handlers::resolved_client_ip;
-use crate::web::console_render::SessionIndicator;
+use crate::web::console_render::{Pager, SessionIndicator};
 use crate::web::session;
 
 /// The outcome of a browse handler: an HTML page, a JSON document, a redirect,
@@ -84,6 +88,8 @@ pub enum Rendered {
     Html(String),
     /// A serialized JSON document.
     Json(String),
+    /// A mutable selected JSON resource with a strong current entity tag.
+    RevalidatedJson { body: String, etag: String },
     /// An immutable serialized JSON object and its strong SHA-256 entity tag.
     ImmutableJson { body: String, etag: String },
     /// A permanent redirect to the carried location (`/{slug}` → `/{slug}/`).
@@ -112,6 +118,12 @@ pub enum Rendered {
 /// force. Sized far above any realistic registry so normal browsing is never
 /// truncated.
 const MAX_BROWSE_PACKAGES: usize = 10_000;
+
+/// Maximum documentation projections ranked for one request.
+const MAX_DOCUMENTATION_RESULTS: usize = 10_000;
+
+/// Documentation rows per server-rendered browse page.
+const DOCUMENTATION_RESULTS_PER_PAGE: usize = 100;
 
 /// Display cap for the package detail's "required by" reverse-dependency list.
 const REVERSE_DEP_CAP: usize = 100;
@@ -351,6 +363,10 @@ pub struct BrowseQuery {
     pub dir: Option<String>,
     /// Requested 1-based page.
     pub page: Option<usize>,
+    /// Requested public JSON API page size.
+    pub page_size: Option<u32>,
+    /// Opaque public JSON API page token.
+    pub page_token: Option<String>,
     /// Channel-calculator bucket (`?bucket=`).
     pub bucket: Option<String>,
     /// Exact system-image release filter.
@@ -379,6 +395,14 @@ pub struct BrowseQuery {
     pub platform: Option<String>,
     /// Exact package version selection.
     pub version: Option<String>,
+    /// Exact OCI repository selected on a public container detail page.
+    pub repository: Option<String>,
+    /// Exact OCI tag selected on a public container tag page.
+    pub tag: Option<String>,
+    /// Exact OCI manifest digest selected on a public container manifest page.
+    pub digest: Option<String>,
+    /// Opaque OCI administration cursor for the next public result page.
+    pub cursor: Option<String>,
 }
 
 impl BrowseQuery {
@@ -411,7 +435,13 @@ impl BrowseQuery {
                 "to" => out.to = Some(value.into_owned()),
                 "platform" => out.platform = Some(value.into_owned()),
                 "version" => out.version = Some(value.into_owned()),
+                "repository" => out.repository = Some(value.into_owned()),
+                "tag" => out.tag = Some(value.into_owned()),
+                "digest" => out.digest = Some(value.into_owned()),
+                "cursor" => out.cursor = Some(value.into_owned()),
                 "page" => out.page = value.parse().ok(),
+                "page_size" => out.page_size = value.parse().ok(),
+                "page_token" => out.page_token = Some(value.into_owned()),
                 _ => {}
             }
         }
@@ -662,6 +692,263 @@ pub async fn images(
     ))
 }
 
+/// Lists OCI repositories visible through one registry.
+///
+/// Anonymous callers can open this page only for public registries. Internal
+/// and private registries retain the same session-aware non-disclosure policy
+/// as every other browse page.
+pub async fn containers(
+    svc: &RpcService,
+    headers: &HeaderMap,
+    slug: &str,
+    query: &BrowseQuery,
+) -> Rendered {
+    if let Some(limited) = browse_rate_limited(svc, headers).await {
+        return limited;
+    }
+    let started = Instant::now();
+    let Some((registry, status)) = load_visible(svc, headers, slug).await else {
+        return Rendered::NotFound;
+    };
+    if !svc.container_rollout.pull {
+        return Rendered::ServiceUnavailable;
+    }
+    let filter = crate::db::OciRepositoryListFilter {
+        repository_prefix: query.query().map(str::to_string),
+        lifecycle_state: Some("active".to_string()),
+    };
+    let Ok(page) = svc
+        .db
+        .list_oci_admin_repositories(
+            registry.id,
+            &filter,
+            crate::db::OCI_ADMIN_MAX_PAGE_SIZE,
+            query.cursor.as_deref(),
+        )
+        .await
+    else {
+        return Rendered::NotFound;
+    };
+    let authority = svc
+        .container_distribution_authority(registry.id)
+        .await
+        .ok()
+        .flatten();
+    let session = session_indicator(svc, headers).await;
+    Rendered::Html(crate::web::container_browse_pages::repository_index(
+        &registry,
+        status.as_ref(),
+        &page.items,
+        authority.as_deref(),
+        query.query(),
+        page.next_cursor.as_deref(),
+        started,
+        &session,
+    ))
+}
+
+/// Shows one OCI repository and its current public tag pointers.
+pub async fn container_repository(
+    svc: &RpcService,
+    headers: &HeaderMap,
+    slug: &str,
+    query: &BrowseQuery,
+) -> Rendered {
+    if let Some(limited) = browse_rate_limited(svc, headers).await {
+        return limited;
+    }
+    let Some(repository_name) = query.repository.as_deref() else {
+        return Rendered::NotFound;
+    };
+    let Ok(repository_name) = aos_oci_types::RepositoryName::parse(repository_name) else {
+        return Rendered::NotFound;
+    };
+    let started = Instant::now();
+    let Some((registry, status)) = load_visible(svc, headers, slug).await else {
+        return Rendered::NotFound;
+    };
+    if !svc.container_rollout.pull {
+        return Rendered::ServiceUnavailable;
+    }
+    let Ok(Some(repository)) = svc
+        .db
+        .oci_admin_repository(registry.id, &repository_name)
+        .await
+    else {
+        return Rendered::NotFound;
+    };
+    let Ok(page) = svc
+        .db
+        .list_oci_admin_tags(
+            registry.id,
+            &repository_name,
+            &crate::db::OciTagListFilter::default(),
+            crate::db::OCI_ADMIN_MAX_PAGE_SIZE,
+            query.cursor.as_deref(),
+        )
+        .await
+    else {
+        return Rendered::NotFound;
+    };
+    let authority = svc
+        .container_distribution_authority(registry.id)
+        .await
+        .ok()
+        .flatten();
+    let session = session_indicator(svc, headers).await;
+    Rendered::Html(crate::web::container_browse_pages::repository(
+        &registry,
+        status.as_ref(),
+        &repository,
+        &page.items,
+        authority.as_deref(),
+        page.next_cursor.as_deref(),
+        started,
+        &session,
+    ))
+}
+
+/// Shows one current OCI tag, its immutable target, and runnable platforms.
+pub async fn container_tag(
+    svc: &RpcService,
+    headers: &HeaderMap,
+    slug: &str,
+    query: &BrowseQuery,
+) -> Rendered {
+    if let Some(limited) = browse_rate_limited(svc, headers).await {
+        return limited;
+    }
+    let (Some(repository), Some(tag)) = (query.repository.as_deref(), query.tag.as_deref()) else {
+        return Rendered::NotFound;
+    };
+    let (Ok(repository), Ok(tag)) = (
+        aos_oci_types::RepositoryName::parse(repository),
+        aos_oci_types::Tag::parse(tag),
+    ) else {
+        return Rendered::NotFound;
+    };
+    let started = Instant::now();
+    let Some((registry, status)) = load_visible(svc, headers, slug).await else {
+        return Rendered::NotFound;
+    };
+    if !svc.container_rollout.pull {
+        return Rendered::ServiceUnavailable;
+    }
+    let Ok(Some(tag_record)) = svc
+        .db
+        .resolve_oci_admin_tag(registry.id, &repository, &tag)
+        .await
+    else {
+        return Rendered::NotFound;
+    };
+    let reference = aos_oci_types::ManifestReference::Digest(tag_record.digest);
+    let Ok(Some(manifest)) = svc
+        .db
+        .oci_admin_manifest(registry.id, &repository, &reference)
+        .await
+    else {
+        return Rendered::NotFound;
+    };
+    let Ok(page) = svc
+        .db
+        .list_oci_admin_platforms(
+            registry.id,
+            &repository,
+            tag_record.digest,
+            crate::db::OCI_ADMIN_MAX_PAGE_SIZE,
+            query.cursor.as_deref(),
+        )
+        .await
+    else {
+        return Rendered::NotFound;
+    };
+    let authority = svc
+        .container_distribution_authority(registry.id)
+        .await
+        .ok()
+        .flatten();
+    let session = session_indicator(svc, headers).await;
+    Rendered::Html(crate::web::container_browse_pages::tag(
+        &registry,
+        status.as_ref(),
+        &repository,
+        &tag_record,
+        &manifest,
+        &page.items,
+        authority.as_deref(),
+        page.next_cursor.as_deref(),
+        started,
+        &session,
+    ))
+}
+
+/// Shows one immutable OCI manifest and its runnable platform projections.
+pub async fn container_manifest(
+    svc: &RpcService,
+    headers: &HeaderMap,
+    slug: &str,
+    query: &BrowseQuery,
+) -> Rendered {
+    if let Some(limited) = browse_rate_limited(svc, headers).await {
+        return limited;
+    }
+    let (Some(repository), Some(digest)) = (query.repository.as_deref(), query.digest.as_deref())
+    else {
+        return Rendered::NotFound;
+    };
+    let (Ok(repository), Ok(digest)) = (
+        aos_oci_types::RepositoryName::parse(repository),
+        aos_oci_types::Sha256Digest::parse(digest),
+    ) else {
+        return Rendered::NotFound;
+    };
+    let reference = aos_oci_types::ManifestReference::Digest(digest);
+    let started = Instant::now();
+    let Some((registry, status)) = load_visible(svc, headers, slug).await else {
+        return Rendered::NotFound;
+    };
+    if !svc.container_rollout.pull {
+        return Rendered::ServiceUnavailable;
+    }
+    let Ok(Some(manifest)) = svc
+        .db
+        .oci_admin_manifest(registry.id, &repository, &reference)
+        .await
+    else {
+        return Rendered::NotFound;
+    };
+    let Ok(page) = svc
+        .db
+        .list_oci_admin_platforms(
+            registry.id,
+            &repository,
+            manifest.digest,
+            crate::db::OCI_ADMIN_MAX_PAGE_SIZE,
+            query.cursor.as_deref(),
+        )
+        .await
+    else {
+        return Rendered::NotFound;
+    };
+    let authority = svc
+        .container_distribution_authority(registry.id)
+        .await
+        .ok()
+        .flatten();
+    let session = session_indicator(svc, headers).await;
+    Rendered::Html(crate::web::container_browse_pages::manifest(
+        &registry,
+        status.as_ref(),
+        &repository,
+        &manifest,
+        &page.items,
+        authority.as_deref(),
+        page.next_cursor.as_deref(),
+        started,
+        &session,
+    ))
+}
+
 /// Render the package index for one registry from the parsed query.
 async fn package_index_html(
     svc: &RpcService,
@@ -889,22 +1176,30 @@ pub async fn documentation_search(
     let results = match query.query() {
         Some(term) => svc
             .db
-            .search_package_documentation(registry.id, term, kind, 100)
+            .search_package_documentation(registry.id, term, kind, MAX_DOCUMENTATION_RESULTS)
             .await
             .unwrap_or_default(),
         None => svc
             .db
-            .browse_package_documentation(registry.id, kind, 100)
+            .browse_package_documentation(registry.id, kind, MAX_DOCUMENTATION_RESULTS)
             .await
             .unwrap_or_default(),
     };
+    let total_results = results.len();
+    let pager = Pager::new(
+        query.page_number(),
+        DOCUMENTATION_RESULTS_PER_PAGE,
+        total_results,
+    );
     let session = session_indicator(svc, headers).await;
     Rendered::Html(pages::documentation_index_page(
         &registry,
         status.as_ref(),
-        &results,
+        pager.slice(&results),
         query.q.as_deref(),
         kind,
+        pager.page(),
+        total_results,
         started,
         &session,
     ))
@@ -1149,6 +1444,9 @@ pub async fn health(svc: &RpcService, headers: &HeaderMap, slug: &str) -> Render
         }
         if snapshot.spec.serves_web {
             capabilities.push("web".to_string());
+        }
+        if snapshot.spec.serves_oci {
+            capabilities.push("oci".to_string());
         }
         routes.push(pages::RouteHealthRow {
             id: route.id,
@@ -1509,24 +1807,20 @@ pub async fn api_documentation_search(
     if registry(svc, slug).await.is_none() {
         return Rendered::NotFound;
     }
-    let Some(registry_record) = svc.db.registry_by_slug(slug).await.ok().flatten() else {
-        return Rendered::NotFound;
-    };
-    let Some(term) = query.query() else {
-        return json(&Vec::<crate::db::PackageDocumentationSearchResult>::new());
-    };
-    let kind = query.kind.as_deref().filter(|kind| {
-        matches!(
-            *kind,
-            "package" | "option" | "service" | "credential" | "capability"
-        )
-    });
     match svc
-        .db
-        .search_package_documentation(registry_record.id, term, kind, 100)
+        .search_package_documentation(
+            None,
+            pb::SearchPackageDocumentationRequest {
+                registry: slug.to_string(),
+                query: query.query().unwrap_or_default().to_string(),
+                kind: query.kind.clone().unwrap_or_default(),
+                page_size: query.page_size.unwrap_or_default(),
+                page_token: query.page_token.clone().unwrap_or_default(),
+            },
+        )
         .await
     {
-        Ok(results) => json(&results),
+        Ok(response) => json(&response),
         Err(_) => Rendered::NotFound,
     }
 }
@@ -1569,26 +1863,24 @@ pub async fn api_package_documentation(
     package: &str,
     query: &BrowseQuery,
 ) -> Rendered {
-    let Some((locator, document)) = svc
-        .load_package_documentation_for_registry(
-            match svc.db.registry_by_slug(slug).await.ok().flatten() {
-                Some(registry) => registry.id,
-                None => return Rendered::NotFound,
+    let Some(response) = or_not_found(
+        svc.get_package_documentation(
+            None,
+            pb::GetPackageDocumentationRequest {
+                registry: slug.to_string(),
+                package: package.to_string(),
+                version: query.version.clone().unwrap_or_default(),
+                platform: query.platform.clone().unwrap_or_default(),
             },
-            package,
-            query.version.as_deref().unwrap_or(""),
-            query.platform.as_deref().unwrap_or(""),
         )
-        .await
-        .ok()
-        .flatten()
-    else {
+        .await,
+    ) else {
         return Rendered::NotFound;
     };
-    match String::from_utf8(document.canonical_json().unwrap_or_default()) {
-        Ok(body) => Rendered::ImmutableJson {
+    match String::from_utf8(response.canonical_json) {
+        Ok(body) => Rendered::RevalidatedJson {
             body,
-            etag: locator.artifact.document_sha256,
+            etag: response.etag,
         },
         Err(_) => Rendered::NotFound,
     }
@@ -1632,6 +1924,9 @@ pub async fn api_package_option(
     display_path: &str,
     query: &BrowseQuery,
 ) -> Rendered {
+    if registry(svc, slug).await.is_none() {
+        return Rendered::NotFound;
+    }
     let Some(registry) = svc.db.registry_by_slug(slug).await.ok().flatten() else {
         return Rendered::NotFound;
     };

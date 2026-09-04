@@ -90,6 +90,42 @@ pub async fn prepare_active_profile() -> Result<()> {
     }))
 }
 
+/// Loads and refreshes the active profile only when it matches a registry origin.
+///
+/// An unrelated active profile is deliberately ignored, so a stale AOS Hub
+/// login cannot block anonymous access to a public OCI registry.
+///
+/// # Errors
+///
+/// Returns an error when the matching profile is malformed, refresh fails, or
+/// rotated credentials cannot be persisted.
+pub async fn prepare_registry_profile(origin: &str) -> Result<()> {
+    let origin = normalize_origin(origin)?;
+    let Some(path) = profile_path()? else {
+        return replace_active(None);
+    };
+    let mut store = load_store(&path)?;
+    if store.active_origin.as_deref() != Some(origin.as_str()) {
+        return replace_active(None);
+    }
+    let Some(mut profile) = store.profiles.get(&origin).cloned() else {
+        anyhow::bail!("active Hub profile '{origin}' is missing");
+    };
+    let now = now_secs();
+    if profile.access_expires_at <= now.saturating_add(REFRESH_SKEW_SECS) {
+        let grant = aos_remote::refresh_token(&origin, &profile.refresh_token)
+            .await
+            .with_context(|| format!("refreshing Hub profile {origin}"))?;
+        update_profile_from_grant(&mut profile, grant, now)?;
+        store.profiles.insert(origin.clone(), profile.clone());
+        save_store(&path, &store)?;
+    }
+    replace_active(Some(ResolvedProfile {
+        origin,
+        access_token: profile.access_token,
+    }))
+}
+
 /// Persists an interactive device grant and makes its origin active.
 ///
 /// # Errors
@@ -192,6 +228,46 @@ pub fn resolve_access(hub: Option<&str>, token: Option<&str>) -> Result<(String,
             ))
         }
     }
+}
+
+/// Resolves registry flags against the active profile or a reference-derived origin.
+///
+/// Explicit `hub` and `token` values still win independently. When neither an
+/// explicit Hub nor an active profile supplies an origin, `default_origin` is
+/// used; this lets public OCI pulls work with a standard registry reference and
+/// no stored AOS profile.
+///
+/// # Errors
+///
+/// Returns an error when an explicit or default origin is invalid or the
+/// in-process profile lock is poisoned.
+pub fn resolve_registry_access(
+    hub: Option<&str>,
+    token: Option<&str>,
+    default_origin: &str,
+) -> Result<(String, Option<String>)> {
+    let active = active_slot()
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Hub profile lock is poisoned"))?
+        .clone();
+    if let Some(hub) = hub {
+        let origin = normalize_origin(hub)?;
+        let resolved_token = token.map(str::to_owned).or_else(|| {
+            active
+                .as_ref()
+                .filter(|profile| profile.origin == origin)
+                .map(|profile| profile.access_token.clone())
+        });
+        return Ok((origin, resolved_token));
+    }
+    let default_origin = normalize_origin(default_origin)?;
+    if let Some(profile) = active.filter(|profile| profile.origin == default_origin) {
+        return Ok((
+            profile.origin,
+            token.map(str::to_owned).or(Some(profile.access_token)),
+        ));
+    }
+    Ok((default_origin, token.map(str::to_owned)))
 }
 
 fn update_profile_from_grant(

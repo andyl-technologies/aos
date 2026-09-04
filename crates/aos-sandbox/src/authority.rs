@@ -119,7 +119,7 @@ impl SigningAuthority {
 /// Describes one exact statement submitted to a protected signer.
 ///
 /// Both byte slices are owned by the enclosing preparation object.
-/// `signing_message` is the precise Ed25519 input, including the RFC-0019
+/// `signing_message` is the precise Ed25519 input, including the RFC-0020
 /// domain separator. Signing only `canonical_statement` is invalid.
 #[derive(Clone, Copy, Debug)]
 pub struct PreparedSigningRequest<'a> {

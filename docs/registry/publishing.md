@@ -202,7 +202,7 @@ The Nix binary-cache / NAR substituter location lives in the committed repo-root
 tag), with the consumer's client-side `registries.d/<name>.toml` as an optional
 override/supplement — never embedded in the signed tag itself. The origin **MAY**
 serve `nix-cache-info` / `<storehash>.narinfo` / `nar`
-as the stock-nix superset; narinfo signing reuses the one Ed25519 key.
+as the stock-Nix superset; a separate cache-role key signs narinfo.
 
 ---
 

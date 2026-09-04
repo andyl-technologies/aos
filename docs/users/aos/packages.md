@@ -5,68 +5,18 @@ profiles. User packages, machine-wide runtime packages, configuration
 generations, and A/B image generations are separate scopes. The distinction is
 important: `--system` does not simply make a normal user install global.
 
-## Configure a trusted registry
+## Establish package policy first
 
-Obtain the registry's Ed25519 trust key over an independent trusted channel,
-then add and synchronize it in the system scope used by supported host
-operations:
+Before installing a package, configure and verify its source as described in
+[Configure package registries](registries.md). Registry signatures and the
+signed store graph authenticate the publisher and exact closure bytes; they do
+not establish that a program is benign.
 
-```sh
-apm registry --system add https://packages.example.com/index \
-  --name acme \
-  --trust-key 'acme:Ed25519:BASE64_KEY'
-
-apm update --system --registry acme
-apm search nginx --system --registry acme
-apm show nginx --system --registry acme
-apm info nginx --system --permissions
-apm policy nginx --system
-```
-
-When a registry's package closures are served from a separate binary-cache
-route, declare that bootstrap endpoint with the registry in image policy or
-authenticated `host.nix`. This makes the cache available during the same
-configuration transaction that first selects packages from the registry:
-
-```nix
-{
-  aos.apm.registries.acme = {
-    url = "https://packages.example.com/index";
-    trustKeys = ["acme:Ed25519:BASE64_KEY"];
-    caches = [
-      {
-        url = "https://cache.example.com";
-        priority = 100;
-      }
-    ];
-  };
-}
-```
-
-The bootstrap list supplements the signed `[caches]` stack committed in
-`registry.toml`; normal cache selection merges and de-duplicates both sources.
-
-Signature verification fails closed by default. `--no-verify` exists for local
-registry development; do not use it in normal installation or upgrade
-procedures.
-
-Registry configuration is layered:
-
-| Path | Purpose |
-| --- | --- |
-| `/etc/apm` | Read-only registry and trust seed built into the image |
-| `/var/lib/apm/config` | Writable machine-wide overlay |
-| `~/.config/apm` | Per-user overlay with highest precedence |
-
-Use `apm registry --system ...` for machine-wide changes. A registry seeded in
-`/etc/apm` can be disabled at runtime. To remove its effective definition, a
-trusted host configuration can materialize an empty higher-precedence
-`registries.d/<name>.toml` during generation activation; rebuilding without the
-seed is the other option.
-
-User and system scopes load different writable configuration. A user-scope
-registry does not configure machine-wide packages, configuration generations,
-or image generations.
+For packages that activate services, inspect the signed permissions and local
+policy described in [Understand the package sandbox](package-sandbox.md). On
+measured-boot systems, [Secure Boot and package trust](secure-boot.md) explains
+how the image-baked registry anchors and PCR 15 measurements connect package
+admission to the boot chain.
 
 ## Manage user packages
 

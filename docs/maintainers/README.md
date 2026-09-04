@@ -51,6 +51,19 @@ release policy, output formats, and image validation.
 the packaged Wrangler and Cloudflare OAuth, isolated staging and production
 configuration, validation, promotion, and rollback.
 
+[Plan and verify canonical releases](canonical-releases.md) documents the
+fail-closed four-platform release plan, source and authorization preconditions,
+and offline bundle verification. It also identifies which RFC-0017 publication
+phases are not yet authorized for production use.
+
+[Maintain the AOS trust model](trust-model.md) defines the chain from source and
+release authorization through verified boot, image-baked anchors, signed
+registries, store realizations, and runtime measurements.
+
+[Review package security](package-security.md) defines the maintainer's role in
+package build isolation, declared privileges, generated service confinement,
+host effects, and security regression testing.
+
 ## Use the repository CLI
 
 Run the packaged repository command through the flake:

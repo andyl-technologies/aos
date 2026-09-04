@@ -31,6 +31,17 @@
     else "config.toml";
   pname = "rust-${builtins.replaceStrings ["."] ["_"] (builtins.substring 0 4 version)}";
   llvmMajor = builtins.elemAt (builtins.match "([0-9]+).*" llvm.version) 0;
+  # Rust 1.75-1.78 are stable at 64-way native bootstrap. Rust 1.79's
+  # stage-2 compiler corrupts its allocator at 64 codegen units while
+  # compiling Cargo (generic-array), and Rust 1.81 repeats that failure at
+  # 32 units (git2). Later tiers therefore use progressively proven bounds.
+  # Other packages still see NIX_BUILD_CORES=128.
+  rustParallelism =
+    if builtins.compareVersions version "1.81.0" >= 0
+    then 16
+    else if builtins.compareVersions version "1.79.0" >= 0
+    then 32
+    else 64;
   src = fetchurl {
     urls = [
       "https://static.rust-lang.org/dist/rustc-${version}-src.tar.gz"
@@ -139,7 +150,9 @@ in
 
             [rust]
             channel = "stable"
-            codegen-units = 0
+            # Auto-detection expands to all 512 host CPUs independently of
+            # x.py's job limit and has corrupted native bootstrap compilers.
+            codegen-units = ${toString rustParallelism}
             rpath = true
             omit-git-hash = true
             ${
@@ -158,6 +171,10 @@ in
         {
           name = "build";
           script = ''
+            # x.py creates nested compiler work beyond its nominal job count;
+            # cap Rust alone while other packages may consume all 128 cores.
+            rustJobs=$NIX_BUILD_CORES
+            test "$rustJobs" -le ${toString rustParallelism} || rustJobs=${toString rustParallelism}
             export PATH="$PWD/.fake-bin:$PATH"
             export RUST_BACKTRACE=1
 
@@ -168,19 +185,24 @@ in
             export OPENSSL_NO_VENDOR=1
             export OPENSSL_STATIC=0
 
-            python3 x.py build -j $NIX_BUILD_CORES
+            python3 x.py build -j $rustJobs
           '';
         }
         {
           name = "install";
           script = ''
+                    # `x.py install` rebuilds extended tools and otherwise
+                    # auto-detects the whole host (512 CPUs here), bypassing
+                    # the bounded build invocation above.
+                    rustJobs=$NIX_BUILD_CORES
+                    test "$rustJobs" -le ${toString rustParallelism} || rustJobs=${toString rustParallelism}
                     export PATH="$PWD/.fake-bin:$PATH"
                     export OPENSSL_DIR=${openssl}
                     export OPENSSL_LIB_DIR=${openssl}/lib
                     export OPENSSL_INCLUDE_DIR=${openssl}/include
                     export OPENSSL_NO_VENDOR=1
                     export OPENSSL_STATIC=0
-                    python3 x.py install
+                    python3 x.py install -j $rustJobs
 
                     # No patchelf available — use wrapper scripts (same pattern as rust-1_74.nix)
                     LIB_PATH="$out/lib:$out/lib/rustlib/x86_64-unknown-linux-gnu/lib:${llvm}/lib:${zlib}/lib:${openssl}/lib"

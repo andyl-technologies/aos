@@ -292,6 +292,15 @@ fn browse_response(rendered: Rendered) -> Response {
         Rendered::Json(body) => {
             ([(header::CONTENT_TYPE, "application/json")], body).into_response()
         }
+        Rendered::RevalidatedJson { body, etag } => (
+            [
+                (header::CONTENT_TYPE, "application/json"),
+                (header::CACHE_CONTROL, "public, max-age=60, must-revalidate"),
+                (header::ETAG, &format!("\"{etag}\"")),
+            ],
+            body,
+        )
+            .into_response(),
         Rendered::ImmutableJson { body, etag } => (
             [
                 (header::CONTENT_TYPE, "application/json"),
@@ -418,6 +427,12 @@ async fn browse_dispatch(
             "packages" => browse::packages(&svc, &headers, &slug, &q).await,
             "docs" => browse::documentation_search(&svc, &headers, &slug, &q).await,
             "images" => browse::images(&svc, &headers, &slug, &q).await,
+            "containers" => browse::containers(&svc, &headers, &slug, &q).await,
+            "containers/repository" => {
+                browse::container_repository(&svc, &headers, &slug, &q).await
+            }
+            "containers/tag" => browse::container_tag(&svc, &headers, &slug, &q).await,
+            "containers/manifest" => browse::container_manifest(&svc, &headers, &slug, &q).await,
             "channels" => browse::channels(&svc, &headers, &slug, &q).await,
             "releases" => browse::releases(&svc, &headers, &slug, &q).await,
             "health" => browse::health(&svc, &headers, &slug).await,
@@ -1122,6 +1137,146 @@ pub async fn rewrite_for_route(
             Err(StatusCode::MISDIRECTED_REQUEST.into_response())
         };
     };
+    if surface_path == "v2" || surface_path.starts_with("v2/") {
+        let head = *request.method() == Method::HEAD;
+        if !route.serves_oci {
+            return Err(crate::oci::distribution_error_response(
+                StatusCode::NOT_FOUND,
+                aos_oci_types::DistributionErrorCode::Unsupported,
+                "OCI Distribution is not enabled on this route",
+                None,
+                head,
+            ));
+        }
+        let parsed = match crate::oci::parse_oci_path(surface_path) {
+            Ok(parsed) => parsed,
+            Err(crate::oci::OciPathError::InvalidReference) => {
+                return Err(crate::oci::distribution_error_response(
+                    StatusCode::BAD_REQUEST,
+                    aos_oci_types::DistributionErrorCode::NameInvalid,
+                    "invalid OCI repository, tag, or digest",
+                    None,
+                    head,
+                ));
+            }
+            Err(crate::oci::OciPathError::Unknown) => {
+                return Err(crate::oci::distribution_error_response(
+                    StatusCode::NOT_FOUND,
+                    aos_oci_types::DistributionErrorCode::Unsupported,
+                    "unsupported Distribution endpoint",
+                    None,
+                    head,
+                ));
+            }
+        };
+        let crate::db::SurfaceTarget::Registry(registry_id) = route.surface else {
+            return Err(crate::oci::distribution_error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                aos_oci_types::DistributionErrorCode::Unsupported,
+                "OCI route target is unavailable",
+                None,
+                head,
+            ));
+        };
+        if route.mode != "hub_proxy" {
+            return Err(crate::oci::distribution_error_response(
+                StatusCode::MISDIRECTED_REQUEST,
+                aos_oci_types::DistributionErrorCode::Unsupported,
+                "OCI route mode is unsupported",
+                None,
+                head,
+            ));
+        }
+        if !route.ready {
+            return Err(crate::oci::distribution_error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                aos_oci_types::DistributionErrorCode::Unsupported,
+                "OCI route is temporarily unavailable",
+                None,
+                head,
+            ));
+        }
+        if matches!(
+            route.access_policy_kind.as_str(),
+            "private_network" | "external_provider"
+        ) {
+            let access_headers = request.headers().clone();
+            let attestation = request
+                .extensions()
+                .get::<crate::delivery_attestation::VerifiedDeliveryAttestation>()
+                .cloned();
+            if let Err(error) = require_route_access(svc, route, access_headers, attestation).await
+            {
+                let (status, code, message) = match error {
+                    RpcError::Internal | RpcError::Unavailable(_) => (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        aos_oci_types::DistributionErrorCode::Unsupported,
+                        "OCI route access is temporarily unavailable",
+                    ),
+                    _ => (
+                        StatusCode::FORBIDDEN,
+                        aos_oci_types::DistributionErrorCode::Denied,
+                        "OCI route access denied",
+                    ),
+                };
+                return Err(crate::oci::distribution_error_response(
+                    status, code, message, None, head,
+                ));
+            }
+        }
+        let authority = match crate::oci::canonical_service_authority(&scheme, &host, port) {
+            Ok(authority) => authority,
+            Err(_) => {
+                return Err(crate::oci::distribution_error_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    aos_oci_types::DistributionErrorCode::Unsupported,
+                    "OCI service authority is unavailable",
+                    None,
+                    head,
+                ));
+            }
+        };
+        if let Some(kv) = &svc.kv {
+            if let Ok(Some(registry)) = svc.db.registry_by_id(registry_id).await {
+                let key = crate::oci::oci_route_projection_key(&authority);
+                if let Err(error) = kv.put_str(&key, &registry.stable_id, None).await {
+                    tracing::warn!(
+                        authority,
+                        registry_id,
+                        error = %format!("{error:#}"),
+                        "OCI route projection write-through failed"
+                    );
+                }
+            }
+        }
+        request
+            .extensions_mut()
+            .insert(crate::oci::ResolvedOciRoute {
+                registry_id,
+                authority,
+                scheme: scheme.clone(),
+                access_policy_kind: route.access_policy_kind.clone(),
+                request: parsed,
+            });
+        let mut rewritten = "/_aos-internal/delivery".to_owned();
+        if let Some(query) = request.uri().query() {
+            rewritten.push('?');
+            rewritten.push_str(query);
+        }
+        return match Uri::try_from(rewritten) {
+            Ok(uri) => {
+                *request.uri_mut() = uri;
+                Ok(request)
+            }
+            Err(_) => Err(crate::oci::distribution_error_response(
+                StatusCode::BAD_REQUEST,
+                aos_oci_types::DistributionErrorCode::Unsupported,
+                "OCI request routing failed",
+                None,
+                head,
+            )),
+        };
+    }
     if !matches!(*request.method(), Method::GET | Method::HEAD) {
         return Err((
             StatusCode::METHOD_NOT_ALLOWED,
@@ -1420,11 +1575,36 @@ async fn resolved_delivery_handler(
     request: Request,
 ) -> Response {
     let method = request.method().clone();
+    if let Some(resolved) = request
+        .extensions()
+        .get::<crate::oci::ResolvedOciRoute>()
+        .cloned()
+    {
+        let query = request.uri().query().map(str::to_owned);
+        let body = request.into_body();
+        return from_state(state)
+            .serve_oci(resolved, method, headers, query.as_deref(), body)
+            .await;
+    }
     let Some(resolved) = request.extensions().get::<ResolvedRoute>().cloned() else {
         return StatusCode::NOT_FOUND.into_response();
     };
     let query = request.uri().query().map(str::to_owned);
     serve_resolved_delivery(from_state(state), method, headers, resolved, query).await
+}
+
+/// Bridges an explicitly admitted internal delivery method to the shared handler.
+///
+/// The route remains private because typed dispatch must attach a resolved route
+/// extension before the handler will serve it. Listing the Distribution methods
+/// here keeps the native transport boundary auditable rather than accepting any
+/// method on the reserved internal path.
+async fn internal_delivery_handler(
+    state: State<SharedState>,
+    headers: HeaderMap,
+    request: Request,
+) -> Response {
+    send_bridge(resolved_delivery_handler(state, headers, request)).await
 }
 
 /// Runs typed delivery-route rewriting before native router dispatch.
@@ -1436,6 +1616,7 @@ async fn resolved_delivery_handler(
 async fn dispatch_route(
     svc: Arc<RpcService>,
     verifier: Option<Arc<crate::delivery_attestation::DeliveryAttestationVerifier>>,
+    default_transport: DeliveryTransportEvidence,
     request: Request,
     next: Next,
 ) -> Response {
@@ -1452,14 +1633,7 @@ async fn dispatch_route(
         .get::<DeliveryTransportEvidence>()
         .is_none()
     {
-        request.extensions_mut().insert(DeliveryTransportEvidence {
-            // The native server currently binds a plain TCP HTTP listener. An
-            // HTTPS/layer-7 deployment must insert authenticated evidence at
-            // its TLS/proxy adapter rather than trusting request-target text.
-            scheme: "http".to_owned(),
-            ingress_kind: "hub".to_owned(),
-            tls_identity: None,
-        });
+        request.extensions_mut().insert(default_transport);
     }
     match rewrite_for_route(&svc, request).await {
         Ok(request) => next.run(request).await,
@@ -1483,6 +1657,31 @@ pub fn with_route_dispatch(
     service: Arc<RpcService>,
     verifier: Option<Arc<crate::delivery_attestation::DeliveryAttestationVerifier>>,
 ) -> Router {
+    with_route_dispatch_transport(
+        router,
+        service,
+        verifier,
+        DeliveryTransportEvidence {
+            scheme: "http".to_owned(),
+            ingress_kind: "hub".to_owned(),
+            tls_identity: None,
+        },
+    )
+}
+
+/// Wraps `router` with route dispatch using listener-authenticated transport facts.
+///
+/// Native TLS listeners use this entry point only after completing the TLS
+/// handshake and enforcing the configured SNI identity. Plain listeners use
+/// [`with_route_dispatch`].
+#[cfg(not(target_arch = "wasm32"))]
+#[must_use]
+pub fn with_route_dispatch_transport(
+    router: Router,
+    service: Arc<RpcService>,
+    verifier: Option<Arc<crate::delivery_attestation::DeliveryAttestationVerifier>>,
+    default_transport: DeliveryTransportEvidence,
+) -> Router {
     // The middleware must run *before* routing so its URI rewrite changes which
     // route matches. `Router::layer` runs *after* routing, so instead the inner
     // router becomes the fallback of a fresh outer router carrying the
@@ -1493,7 +1692,8 @@ pub fn with_route_dispatch(
         .layer(axum::middleware::from_fn(move |request, next| {
             let svc = Arc::clone(&service);
             let verifier = verifier.as_ref().map(Arc::clone);
-            async move { dispatch_route(svc, verifier, request, next).await }
+            let transport = default_transport.clone();
+            async move { dispatch_route(svc, verifier, transport, request, next).await }
         }))
 }
 
@@ -1529,11 +1729,12 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
     let mut r = Router::new()
         .route(
             "/_aos-internal/delivery",
-            get(
-                |state: State<SharedState>, headers: HeaderMap, request: Request| {
-                    send_bridge(resolved_delivery_handler(state, headers, request))
-                },
-            ),
+            get(internal_delivery_handler)
+                .head(internal_delivery_handler)
+                .post(internal_delivery_handler)
+                .patch(internal_delivery_handler)
+                .put(internal_delivery_handler)
+                .delete(internal_delivery_handler),
         )
         .route(
             DOMAIN_PROBE_PATH,
@@ -2407,6 +2608,237 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
     r = rpc_route!(r, "/aos.hub.v1.ImageService/ListImages", list_images);
     r = rpc_route!(r, "/aos.hub.v1.ImageService/GetImage", get_image);
     r = rpc_route!(r, "/aos.hub.v1.ImageService/ResolveImage", resolve_image);
+    // ContainerService - OCI administration and verified publication.
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/ListContainerRepositories",
+        list_container_repositories
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/GetContainerRepository",
+        get_container_repository
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/PlanCreateContainerRepository",
+        plan_create_container_repository
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/CreateContainerRepository",
+        create_container_repository
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/PlanUpdateContainerRepository",
+        plan_update_container_repository
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/UpdateContainerRepository",
+        update_container_repository
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/PlanDeleteContainerRepository",
+        plan_delete_container_repository
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/DeleteContainerRepository",
+        delete_container_repository
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/ListContainerTags",
+        list_container_tags
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/GetContainerTag",
+        get_container_tag
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/ResolveContainerTag",
+        resolve_container_tag
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/ListContainerTagHistory",
+        list_container_tag_history
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/PlanSetContainerTag",
+        plan_set_container_tag
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/SetContainerTag",
+        set_container_tag
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/PlanUnsetContainerTag",
+        plan_unset_container_tag
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/UnsetContainerTag",
+        unset_container_tag
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/GetContainerManifest",
+        get_container_manifest
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/ListContainerPlatforms",
+        list_container_platforms
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/GetContainerPlatform",
+        get_container_platform
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/ListContainerLayers",
+        list_container_layers
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/GetContainerLayer",
+        get_container_layer
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/ListContainerReferrers",
+        list_container_referrers
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/ListContainerPublications",
+        list_container_publications
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/GetContainerProvenance",
+        get_container_provenance
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/GetContainerRetentionPolicy",
+        get_container_retention_policy
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/PlanSetContainerRetentionPolicy",
+        plan_set_container_retention_policy
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/SetContainerRetentionPolicy",
+        set_container_retention_policy
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/PlanRunContainerGc",
+        plan_run_container_gc
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/RunContainerGc",
+        run_container_gc
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/GetContainerGcRun",
+        get_container_gc_run
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/ListContainerGcRuns",
+        list_container_gc_runs
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/ListContainerGcCandidates",
+        list_container_gc_candidates
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/ListContainerGcBlockers",
+        list_container_gc_blockers
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/ListContainerGcPlacementActions",
+        list_container_gc_placement_actions
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/RequeueContainerGcPlacementAction",
+        requeue_container_gc_placement_action
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/ListContainerUntrackedInventory",
+        list_container_untracked_inventory
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/PlanRepairContainerUntrackedObject",
+        plan_repair_container_untracked_object
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/RepairContainerUntrackedObject",
+        repair_container_untracked_object
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/GetContainerUntrackedRepair",
+        get_container_untracked_repair
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/PlanContainerRegistryPurgeFence",
+        plan_container_registry_purge_fence
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/ApplyContainerRegistryPurgeFence",
+        apply_container_registry_purge_fence
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/GetContainerRegistryPurgeFence",
+        get_container_registry_purge_fence
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/BeginContainerPublication",
+        begin_container_publication
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/GetContainerPublication",
+        get_container_publication
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/CommitContainerPublication",
+        commit_container_publication
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/AbortContainerPublication",
+        abort_container_publication
+    );
     // AuditService
     r = rpc_route!(r, "/aos.hub.v1.AuditService/ListAudit", list_audit);
     // InstanceService
@@ -2696,6 +3128,41 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         r,
         "/aos.hub.v1.PublishService/AbortRegistryPublication",
         abort_registry_publication
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.PublishService/BeginReleasePublication",
+        begin_release_publication
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.PublishService/CommitReleasePublication",
+        commit_release_publication
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.PublishService/RecordReleaseQualification",
+        record_release_qualification
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.PublishService/PromoteReleasePublication",
+        promote_release_publication
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.PublishService/GetReleaseReceipt",
+        get_release_receipt
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.PublishService/PublishReleaseTimestamp",
+        publish_release_timestamp
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.PublishService/AdvanceReleaseChannel",
+        advance_release_channel
     );
     r = r.route(
         "/aos.hub.v1.PublishService/UploadObject/{publication_id}/{object_id}",
@@ -3775,6 +4242,39 @@ mod tests {
     }
 
     #[test]
+    fn documentation_responses_distinguish_mutable_selectors_from_content_addresses() {
+        let selected = browse_response(Rendered::RevalidatedJson {
+            body: "{}".into(),
+            etag: "selected".into(),
+        });
+        assert_eq!(
+            selected.headers().get(header::CACHE_CONTROL),
+            Some(&HeaderValue::from_static(
+                "public, max-age=60, must-revalidate"
+            ))
+        );
+        assert_eq!(
+            selected.headers().get(header::ETAG),
+            Some(&HeaderValue::from_static("\"selected\""))
+        );
+
+        let content_addressed = browse_response(Rendered::ImmutableJson {
+            body: "{}".into(),
+            etag: "digest".into(),
+        });
+        assert_eq!(
+            content_addressed.headers().get(header::CACHE_CONTROL),
+            Some(&HeaderValue::from_static(
+                "public, max-age=31536000, immutable"
+            ))
+        );
+        assert_eq!(
+            content_addressed.headers().get(header::ETAG),
+            Some(&HeaderValue::from_static("\"digest\""))
+        );
+    }
+
+    #[test]
     fn unconfigured_delivery_assertion_is_rejected_not_ignored() {
         let request = Request::builder()
             .method("GET")
@@ -3812,6 +4312,7 @@ mod tests {
             serves_git: false,
             serves_cache: true,
             serves_web: false,
+            serves_oci: false,
             ready: true,
         };
         let verified = crate::delivery_attestation::VerifiedDeliveryAttestation {

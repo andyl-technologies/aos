@@ -15,8 +15,9 @@ use clap::{Args, Subcommand};
 use std::path::PathBuf;
 
 use super::{
-    HubAccessTokenCmd, HubIdentityProviderCmd, HubInstanceSettingsSectionCmd, HubInvitationCmd,
-    HubOrgMemberCmd, HubOrganizationDomainCmd, HubServiceAccountCmd, HubSigningKeyCmd,
+    HubAccessTokenCmd, HubContainerCmd, HubIdentityProviderCmd, HubInstanceSettingsSectionCmd,
+    HubInvitationCmd, HubOrgMemberCmd, HubOrganizationDomainCmd, HubServiceAccountCmd,
+    HubSigningKeyCmd,
 };
 
 #[derive(Args, Debug, Clone)]
@@ -1636,7 +1637,7 @@ pub struct HubRouteSpecArgs {
     #[arg(long)]
     pub gateway: Option<String>,
     /// Replace the complete route capability set
-    #[arg(long = "serves", value_parser = ["git", "cache", "web"])]
+    #[arg(long = "serves", value_parser = ["git", "cache", "web", "oci"])]
     pub serves: Vec<String>,
     #[command(flatten)]
     pub policy: HubAccessPolicyArgs,
@@ -2826,6 +2827,11 @@ pub enum HubRegistryCmd {
         #[command(subcommand)]
         command: HubConfigCmd,
     },
+    /// Inspect and administer OCI container repositories
+    Container {
+        #[command(subcommand)]
+        command: HubContainerCmd,
+    },
 }
 
 #[derive(Subcommand)]
@@ -3109,18 +3115,20 @@ mod tests {
             _ => panic!("unexpected command shape"),
         }
 
-        assert!(parse_cli([
-            "aos",
-            "hub",
-            "surface",
-            "explain",
-            "cache:andyl/nix",
-            "--url",
-            "https://cache.example",
-            "--access-class",
-            "smtp",
-        ])
-        .is_err());
+        assert!(
+            parse_cli([
+                "aos",
+                "hub",
+                "surface",
+                "explain",
+                "cache:andyl/nix",
+                "--url",
+                "https://cache.example",
+                "--access-class",
+                "smtp",
+            ])
+            .is_err()
+        );
     }
 
     #[test]
@@ -3235,17 +3243,19 @@ mod tests {
                 }
             }
         ));
-        assert!(parse_cli([
-            "aos",
-            "hub",
-            "storage-binding",
-            "list",
-            "--hub",
-            "https://aos.example",
-            "--org",
-            "andyl",
-        ])
-        .is_err());
+        assert!(
+            parse_cli([
+                "aos",
+                "hub",
+                "storage-binding",
+                "list",
+                "--hub",
+                "https://aos.example",
+                "--org",
+                "andyl",
+            ])
+            .is_err()
+        );
     }
 
     #[test]
@@ -3361,6 +3371,39 @@ mod tests {
     }
 
     #[test]
+    fn route_accepts_oci_capability() {
+        let cli = parse_cli([
+            "aos",
+            "hub",
+            "route",
+            "add",
+            "--hub",
+            "https://aos.example",
+            "registry:andyl/main",
+            "--endpoint",
+            "registry.example@3",
+            "--mode",
+            "hub-proxy",
+            "--placement",
+            "primary",
+            "--serves",
+            "oci",
+            "--plan",
+        ])
+        .unwrap();
+        let Commands::Hub {
+            command:
+                HubCmd::Route {
+                    command: HubRouteCmd::Add { spec, .. },
+                },
+        } = cli.command
+        else {
+            panic!("expected route add command");
+        };
+        assert_eq!(spec.serves, vec!["oci"]);
+    }
+
+    #[test]
     fn route_advertisement_requires_a_typed_surface() {
         let cli = parse_cli([
             "aos",
@@ -3393,19 +3436,21 @@ mod tests {
 
     #[test]
     fn boundary_activation_requires_an_explicit_default_choice() {
-        assert!(parse_cli([
-            "aos",
-            "hub",
-            "network-policy",
-            "revision",
-            "activate",
-            "--hub",
-            "https://aos.example",
-            "corp@2",
-            "--mode",
-            "overlap",
-        ])
-        .is_err());
+        assert!(
+            parse_cli([
+                "aos",
+                "hub",
+                "network-policy",
+                "revision",
+                "activate",
+                "--hub",
+                "https://aos.example",
+                "corp@2",
+                "--mode",
+                "overlap",
+            ])
+            .is_err()
+        );
         let parsed = parse_cli([
             "aos",
             "hub",
@@ -3517,21 +3562,23 @@ mod tests {
                 }
             }
         ));
-        assert!(parse_cli([
-            "aos",
-            "hub",
-            "registry",
-            "cache-stack",
-            "add",
-            "andyl/main",
-            "--hub",
-            "https://aos.example",
-            "--cache",
-            "nix",
-            "--url",
-            "https://cache.example",
-        ])
-        .is_err());
+        assert!(
+            parse_cli([
+                "aos",
+                "hub",
+                "registry",
+                "cache-stack",
+                "add",
+                "andyl/main",
+                "--hub",
+                "https://aos.example",
+                "--cache",
+                "nix",
+                "--url",
+                "https://cache.example",
+            ])
+            .is_err()
+        );
     }
 
     #[test]
@@ -3792,17 +3839,19 @@ mod tests {
         ));
 
         assert!(parse_cli(["aos", "hub", "operation", "list", "registry:andyl/main"]).is_err());
-        assert!(parse_cli([
-            "aos",
-            "hub",
-            "operation",
-            "list",
-            "--target",
-            "registry:andyl/main",
-            "--scope",
-            "instance",
-        ])
-        .is_err());
+        assert!(
+            parse_cli([
+                "aos",
+                "hub",
+                "operation",
+                "list",
+                "--target",
+                "registry:andyl/main",
+                "--scope",
+                "instance",
+            ])
+            .is_err()
+        );
     }
 
     #[test]

@@ -20,16 +20,27 @@ path = "src/apm.rs"
 name = "aos-package-runtime"
 path = "src/package_runtime.rs"
 
+[[bin]]
+name = "aos-release-fleet-fixture"
+path = "tests/support/release_fleet_fixture.rs"
+
 [dependencies]
 rustix = { workspace = true }
+aos-contract = { workspace = true }
 aos-core = { workspace = true }
 aos-net = { workspace = true }
+aos-oci = { workspace = true }
+aos-oci-types = { workspace = true }
 aos-server = { workspace = true }
 aos-cache = { workspace = true }
 aos-remote = { workspace = true }
+aos-proto-types = { workspace = true }
 aos-doc = { workspace = true }
 aos-doc-model = { workspace = true }
 aos-package = { workspace = true }
+aos-maintain = { workspace = true }
+aos-release = { workspace = true }
+aos-image-finalizer = { workspace = true }
 aos-profile = { workspace = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }
@@ -51,10 +62,12 @@ base64 = { workspace = true }
 hex = { workspace = true }
 glob = { workspace = true }
 regex = { workspace = true }
+rnix = { workspace = true }
 serde = { workspace = true }
 rand = { workspace = true }
 axum = { workspace = true }
 tokio-rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
 tokio-util = { workspace = true }
 hyper-util = { workspace = true }
 tower = { workspace = true }
@@ -63,3 +76,13 @@ ed25519-dalek = { workspace = true }
 url = { workspace = true }
 zeroize = { workspace = true }
 tempfile = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+
+[dev-dependencies]
+aos-hub = { workspace = true }
+aos-hub-core = { workspace = true, features = ["test-fixtures"] }
+aos-registry-surface = { workspace = true }
+flate2 = { workspace = true }
+tar = { workspace = true }
+uuid = { workspace = true }

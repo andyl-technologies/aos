@@ -6,6 +6,12 @@
 ##! matrix.  Build dependencies are selected through package-set splicing;
 ##! `selectTargetPackages` filters only the roots advertised for a target.
 let
+  canonicalSystems = [
+    "x86_64-linux"
+    "aarch64-linux"
+    "x86_64-darwin"
+    "aarch64-darwin"
+  ];
   darwinSystems = [
     "x86_64-darwin"
     "aarch64-darwin"
@@ -59,6 +65,7 @@ let
     "inih"
     "jansson"
     "json-c"
+    "libatomic_ops"
     "libffi"
     "libmpc"
     "libtool"
@@ -93,6 +100,7 @@ let
   # but are first-class publication roots for both Darwin architectures.
   darwinOnly = [
     "darwin-runtimes"
+    "java-native-foundation"
   ];
 
   # Wave 2: portable native libraries and conventional Unix tools.  Most need
@@ -165,6 +173,7 @@ let
     "sbsigntools"
     "smartmontools"
     "socat"
+    "soelim"
     "sqlite"
     "swtpm"
     "tcpdump"
@@ -288,7 +297,6 @@ let
     "bazel-8"
     "bazel-9"
     "envoy"
-    "java-native-foundation"
     "openjdk"
     "openjdk-10"
     "openjdk-11"
@@ -563,6 +571,9 @@ let
     "build-support/_expose-module.nix" = "target-independent-source";
     "build-support/_expose-renderer.nix" = "native-build-helper";
     "build-support/_generated-expose-config-module.nix" = "target-independent-source";
+    "build-support/_github-upstream.nix" = "native-build-helper";
+    "build-support/_manual-upstream.nix" = "native-build-helper";
+    "build-support/_upstream.nix" = "native-build-helper";
     "darwin/_apple-libtapi.nix" = "linux-only-build-helper";
     "darwin/_darwin-binutils.nix" = "cross-build-helper";
     "darwin/_darwin-cc.nix" = "cross-build-helper";
@@ -604,11 +615,38 @@ let
   # Source fragments kept below underscore-prefixed directories are also
   # excluded from discovery, but are consumed by package factories.
   resourceInventory = {
+    "containers/_containerd-config/module.nix" = "linux-only-config-source";
+    "containers/_containerd-tests/contract.nix" = "linux-only-test-source";
+    "containers/_containerd-tests/lifecycle.nix" = "linux-only-test-source";
+    "db/_etcd-config/module.nix" = "linux-only-config-source";
+    "kubernetes/_cilium-config/module.nix" = "linux-only-config-source";
+    "kubernetes/_cloudcore-config/module.nix" = "linux-only-config-source";
+    "kubernetes/_edgecore-config/module.nix" = "linux-only-config-source";
+    "kubernetes/_k3s-config/module.nix" = "linux-only-config-source";
+    "kubernetes/_kubelet-config/module.nix" = "linux-only-config-source";
+    "networking/_envoy-config/module.nix" = "linux-only-config-source";
+    "networking/_envoy-config/render.nix" = "linux-only-config-source";
+    "networking/_envoy-config/types.nix" = "linux-only-config-source";
+    "networking/_nginx-config/module.nix" = "linux-only-config-source";
+    "networking/_openldap-config/module.nix" = "linux-only-config-source";
+    "security/_krb5-kdc-config/module.nix" = "linux-only-config-source";
+    "storage/_garage-config/module.nix" = "linux-only-config-source";
+    "storage/_garage-tests/lifecycle.nix" = "linux-only-test-source";
+    "storage/_longhorn-config/module.nix" = "linux-only-config-source";
+    "storage/_mariadb-config/module.nix" = "linux-only-config-source";
+    "storage/_mariadb-tests/lifecycle.nix" = "linux-only-test-source";
+    "storage/_postgresql-config/module.nix" = "linux-only-config-source";
+    "storage/_postgresql-tests/expose.nix" = "linux-only-test-source";
+    "storage/_postgresql-tests/lifecycle.nix" = "linux-only-test-source";
+    "storage/_postgresql-tests/module.nix" = "linux-only-test-source";
     "system/_dbus-conf-xsl/make-session-conf.xsl" = "target-independent-source";
     "system/_dbus-conf-xsl/make-system-conf.xsl" = "target-independent-source";
+    "tests/_aos-registry-server-config/module.nix" = "linux-only-config-source";
     "tests/_aos-test-agent-config/module.nix" = "linux-only-test-source";
     "tests/_config-module-smoke/module.nix" = "linux-only-test-source";
     "tests/_config-module-smoke/private.nix" = "linux-only-test-source";
+    "tools/_conntrackd-config/module.nix" = "linux-only-config-source";
+    "tools/_rsyncd-config/module.nix" = "linux-only-config-source";
   };
 
   isLinux = system: builtins.match "[a-zA-Z0-9_]+-linux" system != null;
@@ -621,7 +659,7 @@ let
     else builtins.head matched;
 in rec {
   schema = "aos.package-platform-support/v1";
-  inherit darwinSystems packageInventory helperInventory factoryInventory resourceInventory;
+  inherit canonicalSystems darwinSystems packageInventory helperInventory factoryInventory resourceInventory;
 
   packageSupport = name:
     packageInventory.${name}
@@ -640,13 +678,109 @@ in rec {
 
   targetPackageNames = system: names: builtins.filter (supportsTarget system) names;
 
+  publicationDecision = system: name: let
+    entry = packageSupport name;
+    architecture = systemCpu system;
+    architectureSupported = builtins.elem architecture entry.architectures;
+    eligible =
+      if isLinux system
+      then builtins.elem entry.disposition ["target" "independent" "linux-only"] && architectureSupported
+      else if isDarwin system
+      then builtins.elem entry.disposition ["target" "independent" "darwin-only"] && architectureSupported
+      else throw "package platform support: unsupported publication system '${system}'";
+    rule =
+      if entry.disposition == "build-only"
+      then "package-build-input-only/v1"
+      else if entry.disposition == "linux-only" && isDarwin system
+      then "package-linux-interface/v1"
+      else if entry.disposition == "darwin-only" && isLinux system
+      then "package-darwin-runtime/v1"
+      else "package-architecture-support/v1";
+    reason =
+      if entry.disposition == "build-only"
+      then "This derivation is a build or test input, not a public package root."
+      else if entry.disposition == "linux-only" && isDarwin system
+      then "This package implements a Linux-specific interface."
+      else if entry.disposition == "darwin-only" && isLinux system
+      then "This package implements a Darwin-specific runtime interface."
+      else "This package does not support the target architecture.";
+  in
+    if eligible
+    then {
+      state = "eligible";
+      inherit (entry) disposition wave blockers;
+    }
+    else {
+      state = "not-applicable";
+      inherit rule reason;
+    };
+
+  releaseInventory = names: {
+    schema_version = "aos.release.package-inventory/v1";
+    platforms = canonicalSystems;
+    packages =
+      map (name: {
+        inherit name;
+        platforms =
+          map (platform: {
+            inherit platform;
+            decision = publicationDecision platform name;
+          })
+          canonicalSystems;
+      })
+      names;
+  };
+
+  releaseDerivations = system: packages: names: {
+    schema_version = "aos.release.derivation-inventory/v1";
+    platform = system;
+    packages = map (
+      name: let
+        package = packages.${name};
+      in {
+        inherit name;
+        source_store_paths = let
+          source =
+            if package ? src
+            then builtins.unsafeDiscardStringContext (toString package.src)
+            else "";
+        in
+          if builtins.substring 0 11 source == "/nix/store/"
+          then [source]
+          else [];
+        publication = let
+          license = package.meta.license or null;
+          licenseExpression =
+            if builtins.isList license
+            then builtins.concatStringsSep " AND " license
+            else license;
+          version = package.version or null;
+          description = package.meta.description or null;
+          maintainers = package.meta.maintainers or [];
+        in
+          if version == null || description == null || licenseExpression == null || maintainers == []
+          then null
+          else {
+            inherit version description maintainers;
+            homepage = package.meta.homepage or null;
+            license_expression = licenseExpression;
+          };
+        derivation = builtins.unsafeDiscardStringContext package.drvPath;
+        outputs = map (output: {
+          name = output;
+          store_path = builtins.unsafeDiscardStringContext (toString package.${output});
+        }) (package.outputs or ["out"]);
+      }
+    ) (builtins.filter (name: (publicationDecision system name).state == "eligible") names);
+  };
+
   publicationMatrix = names:
     builtins.listToAttrs (
       map (system: {
         name = system;
         value = targetPackageNames system names;
       })
-      darwinSystems
+      canonicalSystems
     );
 
   selectTargetPackages = system: packages: names:

@@ -151,14 +151,16 @@ in
       {
         name = "patch-source";
         script = ''
+          nativePython=$(command -v python3)
+
           # Fix shebangs: /usr/bin/env and /bin/bash don't exist in the sandbox
           for f in $(find . -type f \( -name '*.sh' -o -name '*.py' \)); do
             if head -1 "$f" | grep -q '^#!'; then
               sed -i "1s|#!/usr/bin/env bash|#!$CONFIG_SHELL|" "$f"
               sed -i "1s|#!/bin/bash|#!$CONFIG_SHELL|" "$f"
               sed -i "1s|#!/usr/bin/bash|#!$CONFIG_SHELL|" "$f"
-              sed -i "1s|#!/usr/bin/env python3|#!${python3}/bin/python3|" "$f"
-              sed -i "1s|#!/usr/bin/python3|#!${python3}/bin/python3|" "$f"
+              sed -i "1s|#!/usr/bin/env python3|#!$nativePython|" "$f"
+              sed -i "1s|#!/usr/bin/python3|#!$nativePython|" "$f"
             fi
           done
 
@@ -194,7 +196,8 @@ in
                   # ninja later invokes patched python3 scripts (e.g.
                   # src/boot/generate-hwids-section.py which imports
                   # ukify → pefile).
-                  export PYTHONPATH="${meson}/lib/python3/site-packages:${ukifyPythonPath}''${PYTHONPATH:+:$PYTHONPATH}"
+                  nativeMesonRoot=$(dirname "$(dirname "$(command -v meson)")")
+                  export PYTHONPATH="$nativeMesonRoot/lib/python3/site-packages:${ukifyPythonPath}''${PYTHONPATH:+:$PYTHONPATH}"
 
                   # systemd's meson.build uses `pymod.find_installation(
                   # 'python3', modules: ['elftools'])` — meson's python
@@ -211,7 +214,7 @@ in
                   cat > .python-wrapper/bin/python3 << PYW
           #!$CONFIG_SHELL
           export PYTHONPATH="${ukifyPythonPath}\''${PYTHONPATH:+:\$PYTHONPATH}"
-          exec ${python3}/bin/python3 "\$@"
+          exec $(command -v python3) "\$@"
           PYW
                   chmod +x .python-wrapper/bin/python3
                   export PATH="$(pwd)/.python-wrapper/bin:$PATH"
@@ -233,6 +236,7 @@ in
 
                   mkdir -p build && cd build
                   meson setup .. \
+                    $mesonFlags \
                     --prefix=$out \
                     --sysconfdir=$out/etc \
                     -Dwerror=false \
@@ -377,6 +381,20 @@ in
         # is effectively a no-op for prefix-relative targets.
         script = ''
           DESTDIR=/ ninja install
+
+          # Source generators must run with native Python during the cross
+          # build. Retarget installed scripts to the AArch64 interpreter.
+          nativePythonRoot=$(dirname "$(dirname "$(command -v python3)")")
+          nativePythonRefs=$(mktemp)
+          if grep -IrlZ -F "$nativePythonRoot" "$out" > "$nativePythonRefs" 2>/dev/null; then
+            xargs -0 -r sed -i "s|$nativePythonRoot|${python3}|g" < "$nativePythonRefs"
+          else
+            grepStatus=$?
+            # No references is expected when upstream installed scripts
+            # already use the target interpreter. Preserve real grep errors.
+            [ "$grepStatus" -eq 1 ] || exit "$grepStatus"
+          fi
+          rm -f "$nativePythonRefs"
         '';
       }
       {
