@@ -11,8 +11,8 @@ use leptos::task::spawn_local;
 use crate::components::{InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, watch_draft, PendingPlan};
 use crate::route::{
-    delivery_draft_prerequisites, delivery_workflow_action, DeliverySetupAccess,
-    DeliveryWorkflowAction,
+    delivery_draft_prerequisites, delivery_public_path, delivery_workflow_action,
+    DeliverySetupAccess, DeliveryWorkflowAction,
 };
 use crate::transport::ApiClient;
 
@@ -190,7 +190,8 @@ fn DeliveryDestinationForm(
     let selected_endpoints = choices.endpoints;
     let domain_choices = choices.domains.clone();
     let selected_domains = choices.domains;
-    let placement_choices = choices.placements;
+    let placement_choices = choices.placements.clone();
+    let preview_placements = choices.placements;
     let boundary_choices = choices.boundaries.clone();
     let selected_boundaries = choices.boundaries;
     let boundaries_for_access = selected_boundaries.clone();
@@ -314,6 +315,7 @@ fn DeliveryDestinationForm(
                     }.into_any()
                 }}
                 <label><span>"CDN URL prefix"</span><input required prop:value=move || client_base_path.get() on:input=move |event| client_base_path.set(event_target_value(&event))/><small>"The selected placement's storage prefix is appended to this path for the final public URL."</small></label>
+                <div class="field-note"><span>"Final public path"</span><code>{move || { let placement_prefix = preview_placements.iter().find(|placement| placement.name == placement_name.get()).map(|placement| placement.prefix.as_str()).unwrap_or_default(); delivery_public_path(&client_base_path.get(), placement_prefix) }}</code></div>
                 <AccessPolicyFields signals=access allow_hub_auth=false boundaries=boundaries_for_access/>
                 <fieldset class="choice-field"><legend>"Capabilities"</legend><label class="choice-row"><input type="checkbox" prop:checked=move || serves_git.get() on:change=move |event| serves_git.set(event_target_checked(&event))/><span>"Git"</span></label><label class="choice-row"><input type="checkbox" prop:checked=move || serves_cache.get() on:change=move |event| serves_cache.set(event_target_checked(&event))/><span>"Nix cache"</span></label><label class="choice-row"><input type="checkbox" prop:checked=move || serves_web.get() on:change=move |event| serves_web.set(event_target_checked(&event))/><span>"Web"</span></label><label class="choice-row"><input type="checkbox" prop:checked=move || serves_oci.get() on:change=move |event| serves_oci.set(event_target_checked(&event))/><span>"OCI"</span></label></fieldset>
                 <fieldset class="choice-field"><legend>"Make canonical for"</legend><label class="choice-row"><input type="checkbox" prop:checked=move || advertise_git.get() on:change=move |event| advertise_git.set(event_target_checked(&event))/><span>"Git clients"</span></label><label class="choice-row"><input type="checkbox" prop:checked=move || advertise_cache.get() on:change=move |event| advertise_cache.set(event_target_checked(&event))/><span>"Nix clients"</span></label><label class="choice-row"><input type="checkbox" prop:checked=move || advertise_web.get() on:change=move |event| advertise_web.set(event_target_checked(&event))/><span>"Web clients"</span></label></fieldset>
