@@ -279,7 +279,7 @@ impl NamespaceFd {
     ///
     /// Returns an error if the namespace cannot be entered, access is denied,
     /// or the descriptor became invalid.
-    pub fn enter(&self, _worker: SingleThreadedProcess) -> Result<()> {
+    pub fn enter(&self, _worker: &SingleThreadedProcess) -> Result<()> {
         uapi::setns(self.fd.as_fd(), self.kind.clone_flag())
     }
 }

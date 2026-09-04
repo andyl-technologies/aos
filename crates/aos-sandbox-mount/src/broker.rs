@@ -79,7 +79,7 @@ impl<W: MountWorker> MountBroker<W> {
 
         let supplied = request.detached_mount_handle().copied();
         let handles = expected_handles(request.action(), request_digest, supplied);
-        let observation = self.worker.execute(&request, handles)?;
+        let observation = self.worker.execute(&request, request_digest, handles)?;
         validate_observation(request.action(), handles, observation)?;
         let response = encode_result(&request, observation)?;
         let response_limit = usize::try_from(request.header().maximum_response_bytes())
@@ -259,6 +259,7 @@ mod tests {
         fn execute(
             &mut self,
             request: &ValidatedMountRequest,
+            _request_digest: [u8; 32],
             handles: EffectHandles,
         ) -> Result<WorkerObservation> {
             self.calls += 1;

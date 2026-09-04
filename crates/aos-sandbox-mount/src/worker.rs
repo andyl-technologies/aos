@@ -43,6 +43,7 @@ pub trait MountWorker {
     fn execute(
         &mut self,
         request: &ValidatedMountRequest,
+        request_digest: [u8; 32],
         handles: EffectHandles,
     ) -> Result<WorkerObservation>;
 }
@@ -57,6 +58,7 @@ pub trait NamespaceHelper {
     fn is_installed(
         &self,
         request: &ValidatedMountRequest,
+        request_digest: [u8; 32],
         resources: &ResolvedMountResources,
     ) -> Result<bool>;
 
@@ -69,6 +71,7 @@ pub trait NamespaceHelper {
     fn install(
         &self,
         request: &ValidatedMountRequest,
+        request_digest: [u8; 32],
         resources: &ResolvedMountResources,
         mount: &DetachedMount,
         beneath: bool,
@@ -83,6 +86,7 @@ pub trait NamespaceHelper {
     fn detach(
         &self,
         request: &ValidatedMountRequest,
+        request_digest: [u8; 32],
         resources: &ResolvedMountResources,
     ) -> Result<()>;
 }
@@ -110,6 +114,7 @@ impl<C: MountCatalog, H: NamespaceHelper> MountWorker for DescriptorMountWorker<
     fn execute(
         &mut self,
         request: &ValidatedMountRequest,
+        request_digest: [u8; 32],
         handles: EffectHandles,
     ) -> Result<WorkerObservation> {
         let resources = self.catalog.resolve(request)?;
@@ -130,7 +135,10 @@ impl<C: MountCatalog, H: NamespaceHelper> MountWorker for DescriptorMountWorker<
                 })
             }
             MountAction::MOUNT_ACTION_INSTALL | MountAction::MOUNT_ACTION_REPLACE => {
-                if !self.helper.is_installed(request, &resources)? {
+                if !self
+                    .helper
+                    .is_installed(request, request_digest, &resources)?
+                {
                     let requested = request.detached_mount_handle().copied().ok_or_else(|| {
                         MountError::Worker("install operation lost its detached handle".to_owned())
                     })?;
@@ -139,7 +147,10 @@ impl<C: MountCatalog, H: NamespaceHelper> MountWorker for DescriptorMountWorker<
                         None => prepare_mount(request, &resources)?,
                     };
                     let beneath = request.action() == MountAction::MOUNT_ACTION_REPLACE;
-                    if let Err(error) = self.helper.install(request, &resources, &mount, beneath) {
+                    if let Err(error) =
+                        self.helper
+                            .install(request, request_digest, &resources, &mount, beneath)
+                    {
                         self.detached.insert(requested, mount);
                         return Err(error);
                     }
@@ -150,8 +161,11 @@ impl<C: MountCatalog, H: NamespaceHelper> MountWorker for DescriptorMountWorker<
                 })
             }
             MountAction::MOUNT_ACTION_DETACH => {
-                if self.helper.is_installed(request, &resources)? {
-                    self.helper.detach(request, &resources)?;
+                if self
+                    .helper
+                    .is_installed(request, request_digest, &resources)?
+                {
+                    self.helper.detach(request, request_digest, &resources)?;
                 }
                 Ok(WorkerObservation {
                     state: MountState::MOUNT_STATE_REVOKED,

@@ -10,6 +10,7 @@ use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path};
 
+use crate::pidfd::SingleThreadedProcess;
 use crate::pidfd::{NamespaceFd, NamespaceKind};
 use crate::uapi::{
     self, OpenHow, RESOLVE_BENEATH, RESOLVE_NO_MAGICLINKS, RESOLVE_NO_SYMLINKS, RESOLVE_NO_XDEV,
@@ -44,10 +45,42 @@ impl BeneathRoot {
         Ok(Self { fd, identity })
     }
 
+    /// Converts an already-validated directory path into a resolution root.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless `path` names a directory.
+    pub fn from_resolved(path: ResolvedPath) -> Result<Self> {
+        if path.identity.file_type != FileType::Directory {
+            return Err(Error::WrongDescriptorType {
+                expected: "directory",
+            });
+        }
+        Ok(Self {
+            fd: path.fd,
+            identity: path.identity,
+        })
+    }
+
     /// Borrows the root descriptor.
     #[must_use]
     pub fn as_fd(&self) -> BorrowedFd<'_> {
         self.fd.as_fd()
+    }
+
+    /// Makes this directory the short-lived helper's filesystem root.
+    ///
+    /// This is path hygiene after the helper has entered the payload mount
+    /// namespace. It is not a security boundary; the exact inherited
+    /// descriptor set and the helper's MAC/capability state are authoritative.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when changing directory or root fails.
+    pub fn confine_helper_root(&self, _worker: &SingleThreadedProcess) -> Result<()> {
+        uapi::fchdir(self.fd.as_fd())?;
+        uapi::chroot_dot()?;
+        uapi::chdir_root()
     }
 
     /// Returns the root's device/inode identity captured at construction.
@@ -261,6 +294,25 @@ impl ResolvedFile {
 }
 
 impl ResolvedPath {
+    /// Validates and adopts an inherited `O_PATH` descriptor.
+    ///
+    /// This constructor is intended for the exact descriptor table inherited
+    /// by a fixed helper. Higher-level brokers must resolve caller-independent
+    /// paths through [`BeneathRoot`] instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when descriptor inspection fails or it is a symlink.
+    pub fn from_inherited(fd: OwnedFd) -> Result<Self> {
+        uapi::ensure_cloexec(fd.as_fd())?;
+        let identity = inspect(fd.as_fd())?;
+        if identity.file_type == FileType::Symlink {
+            return Err(Error::WrongDescriptorType {
+                expected: "non-symlink object",
+            });
+        }
+        Ok(Self { fd, identity })
+    }
     /// Borrows the pinned object descriptor.
     #[must_use]
     pub fn as_fd(&self) -> BorrowedFd<'_> {

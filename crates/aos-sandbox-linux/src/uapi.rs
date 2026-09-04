@@ -279,6 +279,30 @@ pub(crate) fn setns(fd: BorrowedFd<'_>, namespace_type: i32) -> Result<()> {
     }
 }
 
+pub(crate) fn fchdir(fd: BorrowedFd<'_>) -> Result<()> {
+    // SAFETY: the descriptor remains borrowed for the complete libc call.
+    let result = unsafe { libc::fchdir(fd.as_raw_fd()) };
+    unit_result(result.into(), "fchdir")
+}
+
+pub(crate) fn chroot_dot() -> Result<()> {
+    // SAFETY: the static C string is NUL terminated and valid for the call.
+    let result = unsafe { libc::chroot(c".".as_ptr()) };
+    unit_result(result.into(), "chroot")
+}
+
+pub(crate) fn chdir_root() -> Result<()> {
+    // SAFETY: the static C string is NUL terminated and valid for the call.
+    let result = unsafe { libc::chdir(c"/".as_ptr()) };
+    unit_result(result.into(), "chdir")
+}
+
+pub(crate) fn umount_detach(path: &CStr) -> Result<()> {
+    // SAFETY: the path remains a live NUL-terminated C string for the call.
+    let result = unsafe { libc::umount2(path.as_ptr(), libc::MNT_DETACH | libc::UMOUNT_NOFOLLOW) };
+    unit_result(result.into(), "umount2")
+}
+
 pub(crate) fn fstat(fd: BorrowedFd<'_>) -> Result<libc::stat> {
     // SAFETY: `stat` is an output structure with an all-zero valid bit pattern.
     let mut stat: libc::stat = unsafe { std::mem::zeroed() };

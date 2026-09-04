@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 license.workspace = true
 
+[[bin]]
+name = "aos-sandbox-mount-helper"
+path = "src/bin/aos-sandbox-mount-helper.rs"
+
 [dependencies]
 aos-proto.workspace = true
 aos-sandbox.workspace = true
@@ -11,6 +15,7 @@ aos-sandbox-core.workspace = true
 aos-sandbox-linux.workspace = true
 aos-sandbox-protocol.workspace = true
 buffa.workspace = true
+libc.workspace = true
 rustix = { workspace = true, features = ["fs", "process"] }
 serde.workspace = true
 serde_json.workspace = true

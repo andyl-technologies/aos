@@ -78,6 +78,12 @@ impl DescriptorRoles {
     pub const fn bits(self) -> u8 {
         self.0
     }
+
+    /// Reports whether one fixed descriptor role is required.
+    #[must_use]
+    pub const fn contains(self, role: u8) -> bool {
+        self.0 & role != 0
+    }
 }
 
 /// Captures a file descriptor's expected device and inode identity.

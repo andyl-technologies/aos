@@ -8,6 +8,7 @@ use std::ffi::CString;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 
 use crate::path::ResolvedPath;
+use crate::pidfd::SingleThreadedProcess;
 use crate::pidfd::{NamespaceFd, NamespaceKind};
 use crate::uapi::{
     self, FSCONFIG_CMD_CREATE, FSCONFIG_SET_FD, FSCONFIG_SET_FLAG, FSCONFIG_SET_STRING,
@@ -15,6 +16,8 @@ use crate::uapi::{
     MOUNT_ATTR_RDONLY, RawMountAttr,
 };
 use crate::{Error, Result};
+use std::os::unix::ffi::OsStrExt as _;
+use std::path::Path;
 
 const MAX_FILESYSTEM_NAME_BYTES: usize = 64;
 const MAX_PARAMETER_NAME_BYTES: usize = 128;
@@ -28,6 +31,35 @@ pub struct MountAttributes {
     no_device: bool,
     no_exec: Option<bool>,
     no_atime: bool,
+}
+
+/// Lazily detaches one canonical relative mountpoint in a confined helper.
+///
+/// The caller must first resolve and verify the same path beneath its pinned
+/// root, then call [`crate::path::BeneathRoot::confine_helper_root`]. Linux has
+/// no descriptor-only unmount operation, so this is the sole narrow pathname
+/// operation in the mount helper.
+///
+/// # Errors
+///
+/// Returns an error for an empty, absolute, parent-containing, NUL-containing,
+/// or overlong path, or when `umount2` refuses the exact mountpoint.
+pub fn detach_relative(path: &Path, _worker: &SingleThreadedProcess) -> Result<()> {
+    let bytes = path.as_os_str().as_bytes();
+    if bytes.is_empty()
+        || bytes.len() > 4096
+        || path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(Error::invalid(
+            "unmount path",
+            "must be a canonical relative path",
+        ));
+    }
+    let path = CString::new(bytes).map_err(|_| Error::invalid("unmount path", "contains NUL"))?;
+    uapi::umount_detach(&path)
 }
 
 impl MountAttributes {
@@ -125,6 +157,22 @@ pub struct DetachedMount {
 }
 
 impl DetachedMount {
+    /// Validates and adopts a detached-mount descriptor inherited by a helper.
+    ///
+    /// The descriptor must originate in the broker's exact spawn table. The
+    /// kernel performs the final mount-object check when `move_mount` consumes
+    /// the child-side reference; arbitrary callers cannot reach this helper
+    /// interface.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the descriptor cannot be inspected or secured
+    /// with close-on-exec semantics.
+    pub fn from_inherited(fd: OwnedFd) -> Result<Self> {
+        uapi::ensure_cloexec(fd.as_fd())?;
+        let _ = uapi::fstat(fd.as_fd())?;
+        Ok(Self { fd })
+    }
     /// Clones the mount containing `source` without publishing it.
     ///
     /// # Errors
