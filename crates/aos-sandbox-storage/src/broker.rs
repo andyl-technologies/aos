@@ -755,7 +755,7 @@ mod tests {
     }
 
     #[test]
-    fn authenticated_cross_linked_intent_is_rejected() {
+    fn cross_linked_intent_cannot_be_sealed_for_another_request() {
         let directory = TempDir::new().unwrap();
         let fixture = Fixture::new();
         let original = request(7, 8);
@@ -797,29 +797,12 @@ mod tests {
                     .authority_record(RecordNamespace::DesiredState, &[2; 16]),
             )
             .unwrap();
-        let (_, cross_linked) = broker
-            .authority
-            .seal(&[2; 16], &[7; 16], &admission)
-            .unwrap();
-        broker.transactions.replace_authority_record_for_test(
-            RecordNamespace::Effect,
-            &[7; 16],
-            cross_linked,
+        assert!(
+            broker
+                .authority
+                .seal(&[2; 16], &[7; 16], &admission)
+                .is_err()
         );
-        assert!(matches!(
-            broker.admit_apply_intent(
-                &original,
-                &artifacts,
-                &catalog,
-                ProtocolVersion::new(1, 1),
-                peer(),
-                peer_policy(),
-                &clock()
-            ),
-            Err(StorageBrokerError::State(
-                crate::StorageStateError::AuthorityLinkMismatch
-            ))
-        ));
     }
 
     #[test]

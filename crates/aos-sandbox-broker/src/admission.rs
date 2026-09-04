@@ -23,8 +23,9 @@ use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
 use crate::record::{
-    BrokerAuthorizationFenceV1, BrokerDomain, BrokerEffectIntentV2, NodeJournalMacKey,
-    open_authorization_fence, open_effect_intent, seal_authorization_fence, seal_effect_intent,
+    BrokerAuthorizationFenceV1, BrokerDomain, BrokerEffectIntentV2, BrokerLocalRecordDomain,
+    NodeJournalMacKey, open_authorization_fence, open_effect_intent, open_local_record,
+    seal_authorization_fence, seal_effect_intent, seal_local_record,
 };
 
 /// Reports a closed failure before broker effect authority can be consumed.
@@ -341,6 +342,9 @@ impl BrokerAuthority {
         sandbox_id: &[u8; 16],
         fence: &BrokerAuthorizationFenceV1,
     ) -> Result<Vec<u8>, BrokerAdmissionError> {
+        if fence.assignment().sandbox().as_bytes() != sandbox_id {
+            return Err(BrokerAdmissionError::FenceRejected);
+        }
         seal_authorization_fence(
             &self.journal_mac_key,
             RecordNamespace::DesiredState,
@@ -360,6 +364,9 @@ impl BrokerAuthority {
         request_id: &[u8; 16],
         effect: &BrokerEffectIntentV2,
     ) -> Result<Vec<u8>, BrokerAdmissionError> {
+        if effect.request_id() != request_id {
+            return Err(BrokerAdmissionError::FenceRejected);
+        }
         seal_effect_intent(
             &self.journal_mac_key,
             RecordNamespace::Effect,
@@ -367,6 +374,45 @@ impl BrokerAuthority {
             effect,
         )
         .map_err(|_| BrokerAdmissionError::FenceRejected)
+    }
+
+    /// Authenticates an audience-specific local record at one exact journal location.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BrokerAdmissionError::FenceRejected`] for invalid bounds or key state.
+    pub fn seal_local_record(
+        &self,
+        namespace: RecordNamespace,
+        journal_key: &[u8],
+        domain: BrokerLocalRecordDomain,
+        payload: &[u8],
+    ) -> Result<Vec<u8>, BrokerAdmissionError> {
+        seal_local_record(
+            &self.journal_mac_key,
+            namespace,
+            journal_key,
+            domain,
+            payload,
+        )
+        .map_err(|_| BrokerAdmissionError::FenceRejected)
+    }
+
+    /// Authenticates an audience-specific record before returning its payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BrokerAdmissionError::FenceRejected`] for tampering, relocation,
+    /// a wrong application domain, or malformed framing.
+    pub fn open_local_record<'a>(
+        &self,
+        namespace: RecordNamespace,
+        journal_key: &[u8],
+        domain: BrokerLocalRecordDomain,
+        bytes: &'a [u8],
+    ) -> Result<&'a [u8], BrokerAdmissionError> {
+        open_local_record(&self.journal_mac_key, namespace, journal_key, domain, bytes)
+            .map_err(|_| BrokerAdmissionError::FenceRejected)
     }
 }
 

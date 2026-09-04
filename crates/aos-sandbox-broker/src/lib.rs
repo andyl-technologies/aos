@@ -16,5 +16,5 @@ pub use admission::{
 pub use config::BrokerAuthorityConfigError;
 pub use record::{
     AuthorizationRecordError, BrokerAuthorizationFenceV1, BrokerDomain, BrokerEffectIntentV2,
-    BrokerEffectStatusV2,
+    BrokerEffectStatusV2, BrokerLocalRecordDomain,
 };

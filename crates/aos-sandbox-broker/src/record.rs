@@ -45,6 +45,7 @@ const AUTHENTICATED_FIXED_BYTES: usize = 8 + 2 + 1 + 1 + 16 + 4 + 32;
 const MAXIMUM_JOURNAL_KEY_BYTES: usize = 1_024;
 const MAXIMUM_RECEIPT_BYTES: usize = 1_024 * 1_024;
 const MAXIMUM_AUTHENTICATED_PAYLOAD_BYTES: usize = MAXIMUM_RECEIPT_BYTES + 2_048;
+const LOCAL_RECORD_DOMAIN_BYTES: usize = 16;
 
 const FENCE_VERSION: u16 = 1;
 const LOCAL_LEASE_RECORD_BYTES: usize = 234;
@@ -173,6 +174,26 @@ impl NodeJournalMacKey {
 enum AuthenticatedValueKind {
     AuthorizationFence = 1,
     EffectIntent = 2,
+    LocalRecord = 3,
+}
+
+/// Domain-separates one audience-specific authenticated local record format.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BrokerLocalRecordDomain([u8; 16]);
+
+impl BrokerLocalRecordDomain {
+    /// Constructs a nonzero fixed-width application record domain.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthorizationRecordError::InvalidPayload`] for the zero sentinel.
+    pub fn new(bytes: [u8; 16]) -> Result<Self, AuthorizationRecordError> {
+        if bytes == [0; 16] {
+            Err(AuthorizationRecordError::InvalidPayload)
+        } else {
+            Ok(Self(bytes))
+        }
+    }
 }
 
 /// Stores the highest plan and lease fence accepted for one assignment.
@@ -374,7 +395,6 @@ impl BrokerEffectIntentV2 {
 
     /// Returns the exact consumed request identifier.
     #[must_use]
-    #[cfg(test)]
     pub const fn request_id(&self) -> &[u8; 16] {
         &self.request_id
     }
@@ -666,6 +686,49 @@ pub fn open_effect_intent(
     decode_effect(payload, mac_key.domain)
 }
 
+pub(crate) fn seal_local_record(
+    mac_key: &NodeJournalMacKey,
+    namespace: RecordNamespace,
+    journal_key: &[u8],
+    domain: BrokerLocalRecordDomain,
+    payload: &[u8],
+) -> Result<Vec<u8>, AuthorizationRecordError> {
+    let framed_length = LOCAL_RECORD_DOMAIN_BYTES
+        .checked_add(payload.len())
+        .filter(|length| *length <= MAXIMUM_AUTHENTICATED_PAYLOAD_BYTES)
+        .ok_or(AuthorizationRecordError::InvalidFraming)?;
+    let mut framed = Vec::with_capacity(framed_length);
+    framed.extend_from_slice(&domain.0);
+    framed.extend_from_slice(payload);
+    seal(
+        mac_key,
+        namespace,
+        journal_key,
+        AuthenticatedValueKind::LocalRecord,
+        &framed,
+    )
+}
+
+pub(crate) fn open_local_record<'a>(
+    mac_key: &NodeJournalMacKey,
+    namespace: RecordNamespace,
+    journal_key: &[u8],
+    domain: BrokerLocalRecordDomain,
+    bytes: &'a [u8],
+) -> Result<&'a [u8], AuthorizationRecordError> {
+    let framed = open(
+        mac_key,
+        namespace,
+        journal_key,
+        AuthenticatedValueKind::LocalRecord,
+        bytes,
+    )?;
+    if framed.len() < LOCAL_RECORD_DOMAIN_BYTES || framed[..LOCAL_RECORD_DOMAIN_BYTES] != domain.0 {
+        return Err(AuthorizationRecordError::WrongKind);
+    }
+    Ok(&framed[LOCAL_RECORD_DOMAIN_BYTES..])
+}
+
 fn seal(
     mac_key: &NodeJournalMacKey,
     namespace: RecordNamespace,
@@ -737,6 +800,7 @@ fn open<'a>(
     let actual_kind = match bytes[10] {
         1 => AuthenticatedValueKind::AuthorizationFence,
         2 => AuthenticatedValueKind::EffectIntent,
+        3 => AuthenticatedValueKind::LocalRecord,
         _ => return Err(AuthorizationRecordError::WrongKind),
     };
     if actual_kind != expected_kind {
@@ -1206,6 +1270,77 @@ mod tests {
     fn local_lease() -> LocalLeaseRecord {
         let bytes = hex::decode(LOCAL_LEASE_HEX).unwrap_or_else(|error| panic!("hex: {error}"));
         decode_local_lease_record(&bytes).unwrap_or_else(|error| panic!("lease: {error}"))
+    }
+
+    #[test]
+    fn local_records_are_bound_to_domain_location_and_payload() {
+        let domain = BrokerLocalRecordDomain::new(*b"AOSNETSTATEV0001")
+            .unwrap_or_else(|error| panic!("domain: {error}"));
+        let other = BrokerLocalRecordDomain::new(*b"AOSNETSTATEV0002")
+            .unwrap_or_else(|error| panic!("domain: {error}"));
+        let sealed = seal_local_record(
+            &mac_key(),
+            RecordNamespace::Operation,
+            b"request-a",
+            domain,
+            b"payload",
+        )
+        .unwrap_or_else(|error| panic!("seal: {error}"));
+        assert_eq!(
+            open_local_record(
+                &mac_key(),
+                RecordNamespace::Operation,
+                b"request-a",
+                domain,
+                &sealed,
+            )
+            .unwrap_or_else(|error| panic!("open: {error}")),
+            b"payload"
+        );
+        assert!(
+            open_local_record(
+                &mac_key(),
+                RecordNamespace::Operation,
+                b"request-b",
+                domain,
+                &sealed,
+            )
+            .is_err()
+        );
+        assert!(
+            open_local_record(
+                &mac_key(),
+                RecordNamespace::Operation,
+                b"request-a",
+                other,
+                &sealed,
+            )
+            .is_err()
+        );
+        let maximum_local_payload =
+            vec![0; MAXIMUM_AUTHENTICATED_PAYLOAD_BYTES - LOCAL_RECORD_DOMAIN_BYTES];
+        assert!(
+            seal_local_record(
+                &mac_key(),
+                RecordNamespace::Operation,
+                b"request-a",
+                domain,
+                &maximum_local_payload,
+            )
+            .is_ok()
+        );
+        let oversized_local_payload =
+            vec![0; MAXIMUM_AUTHENTICATED_PAYLOAD_BYTES - LOCAL_RECORD_DOMAIN_BYTES + 1];
+        assert_eq!(
+            seal_local_record(
+                &mac_key(),
+                RecordNamespace::Operation,
+                b"request-a",
+                domain,
+                &oversized_local_payload,
+            ),
+            Err(AuthorizationRecordError::InvalidFraming)
+        );
     }
 
     fn assignment() -> BrokerAssignment {
