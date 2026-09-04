@@ -3,6 +3,47 @@
 use super::*;
 use crate::db::{GatewayRevisionSpec, NewRegistryPublication};
 
+#[tokio::test]
+async fn endpoint_selector_does_not_expose_an_ungranted_successor_generation() {
+    let (db, _, spec, _, _) = crate::db::topology::tests::route_fixture().await;
+    let consumer_id = db
+        .create_org("endpoint-selector", "Endpoint selector")
+        .await
+        .unwrap();
+    let consumer = db.org_by_id(consumer_id).await.unwrap().unwrap();
+    db.grant_consumer_scope(
+        crate::db::GrantResource::Endpoint {
+            id: &spec.endpoint_id,
+            generation: 1,
+        },
+        &consumer.stable_id,
+        "explicit",
+        "test",
+        "request:selector-endpoint",
+    )
+    .await
+    .unwrap();
+    let visible = db
+        .list_endpoints_page(&consumer.stable_id, 10, None, true)
+        .await
+        .unwrap();
+    assert_eq!(visible.records.len(), 1);
+    assert_eq!(visible.records[0].desired_generation, Some(1));
+    db.backend
+        .execute(
+            "UPDATE endpoints SET desired_generation = 2 WHERE id = ?1",
+            &vals![spec.endpoint_id],
+        )
+        .await
+        .unwrap();
+    assert!(db
+        .list_endpoints_page(&consumer.stable_id, 10, None, true)
+        .await
+        .unwrap()
+        .records
+        .is_empty());
+}
+
 async fn verified_fixture() -> (Database, DeliveryWorkflowRecord, DeliveryActivationRoute) {
     let (db, registry_id, mut spec, url, reservation) =
         crate::db::topology::tests::route_fixture().await;
