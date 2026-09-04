@@ -396,7 +396,8 @@ class HubSettingsSmoke:
 
     def assert_settings_page(self, description):
         self.wait_for(
-            "document.querySelector('.scope-header') !== null && document.querySelector('.workflow-stack') !== null",
+            "document.querySelector('.scope-header') !== null && "
+            "document.querySelector('.workflow-stack, .panel, .editor-form') !== null",
             description,
         )
         self.wait_for(
@@ -487,6 +488,91 @@ class HubSettingsSmoke:
             }})()
         """)
 
+    def set_labeled_value(self, label, value):
+        """Updates the form control whose visible label has the given text."""
+        label_literal = json.dumps(label)
+        value_literal = json.dumps(value)
+        return self.chrome.evaluate(f"""
+            (() => {{
+                const label = Array.from(document.querySelectorAll('.workflow-editor label'))
+                    .find(item => {{
+                        const caption = Array.from(item.children)
+                            .find(child => child.tagName === 'SPAN');
+                        return caption && caption.textContent.trim() === {label_literal};
+                    }});
+                if (!label) return false;
+                const control = label.querySelector('input, select, textarea');
+                if (!control) return false;
+                const prototype = control instanceof HTMLSelectElement
+                    ? HTMLSelectElement.prototype
+                    : control instanceof HTMLTextAreaElement
+                        ? HTMLTextAreaElement.prototype
+                        : HTMLInputElement.prototype;
+                Object.getOwnPropertyDescriptor(prototype, 'value').set.call(
+                    control, {value_literal});
+                control.dispatchEvent(new Event('input', {{bubbles: true}}));
+                control.dispatchEvent(new Event('change', {{bubbles: true}}));
+                return control.value === {value_literal};
+            }})()
+        """)
+
+    def review_delivery_destination(self):
+        """Plans a fixture CDN destination and verifies stale-review invalidation."""
+        probe = json.dumps({
+            "provider": "native_file",
+            "signerSecretRef": "fixture-probe-key",
+            "publicKey": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo",
+        }, separators=(",", ":"))
+        values = (
+            ("Endpoint", "new"),
+            ("Public hostname", "cdn.browser.example.test"),
+            ("Provider listener", "listener:local-e2e"),
+            ("TLS provider", "external"),
+            ("TLS certificate", "secret:fixture"),
+            ("Provider probe", probe),
+            ("CDN URL prefix", "/cdn"),
+        )
+        for label, value in values:
+            self.check(
+                self.set_labeled_value(label, value),
+                f"guided delivery accepts {label.lower()}",
+            )
+        submitted = self.chrome.evaluate("""
+            (() => {
+                const button = Array.from(
+                    document.querySelectorAll('.workflow-editor button'))
+                    .find(item => item.textContent.trim() === 'Review destination');
+                if (!button || button.disabled) return false;
+                button.click();
+                return true;
+            })()
+        """)
+        self.check(submitted, "guided delivery prerequisites enable review")
+        self.wait_for(
+            "document.querySelector('.workflow-editor .review-card, "
+            ".workflow-editor .inline-error') !== null",
+            "delivery destination review",
+        )
+        self.check(
+            self.chrome.evaluate("document.querySelector('.workflow-editor .inline-error') === null"),
+            "delivery destination planning succeeds",
+        )
+        self.check(
+            self.chrome.evaluate("document.querySelector('.workflow-editor .review-card') !== null"),
+            "delivery destination renders immutable review effects",
+        )
+        self.screenshot_pair("registry-delivery-review")
+
+        self.check(
+            self.set_labeled_value("CDN URL prefix", "/edge"),
+            "guided delivery draft remains editable after review",
+        )
+        self.wait_for(
+            "document.querySelector('.workflow-editor .review-card') === null",
+            "stale delivery review to clear after editing",
+        )
+        self.check(True, "editing the delivery draft invalidates its stale review")
+
     def review_identity_and_invalidate(self):
         self.navigate("/-/instance/identity-and-signup")
         self.assert_settings_page("instance identity settings")
@@ -569,7 +655,7 @@ class HubSettingsSmoke:
             "guided delivery workflow",
         )
         self.check(
-            self.chrome.evaluate("document.body.innerText.includes('Delivery destinations')"),
+            self.chrome.evaluate("document.body.textContent.includes('Delivery destinations')"),
             "delivery destination workflow rendered",
         )
         guided_selector = "details.guided-workflow"
@@ -584,6 +670,7 @@ class HubSettingsSmoke:
                 "guided delivery editor",
             )
             self.check(True, "guided delivery workflow mounts its editor on demand")
+            self.review_delivery_destination()
             self.screenshot_pair("registry-delivery")
             self.check(
                 self.set_details_open(guided_selector, False),
@@ -596,7 +683,7 @@ class HubSettingsSmoke:
         caches_path = organization_path + "/caches"
         self.navigate(caches_path)
         self.assert_settings_page("organization cache inventory")
-        cache_path = self.discover_path(re.escape(caches_path) + r"/[^/]+")
+        cache_path = self.discover_path(re.escape(caches_path) + r"/(?!new$)[^/]+")
         if cache_path is None:
             self.skip("cache resource pages: native fixture contains no binary cache")
             self.screenshot_pair("cache-inventory")
@@ -608,7 +695,7 @@ class HubSettingsSmoke:
             self.navigate(cache_path + "/integrations")
             self.assert_settings_page("cache integration settings")
             self.check(
-                self.chrome.evaluate("document.body.innerText.includes('Connect this cache')"),
+                self.chrome.evaluate("document.body.textContent.includes('Connect this cache')"),
                 "guided cache integration outcomes rendered",
             )
             self.navigate(cache_path + "/retention")
