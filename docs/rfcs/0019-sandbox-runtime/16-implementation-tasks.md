@@ -772,6 +772,25 @@ completes. The Git history remains authoritative for code details.
   protocol, and 65 host tests plus proto/doctests, strict Clippy,
   warning-denied rustdoc, formatting, and two-round adversarial review. A
   controller broker client and effect-template binding remain open.
+- `a12219f4f` — foundation toward `SBX-FS-01` and `SBX-FS-02`: a new
+  backend-neutral filesystem-view crate now streams exact authenticated
+  portable tree objects through an iterative, cycle-checking graph compiler
+  into a deterministic architecture-neutral structural index. Graph expansion,
+  decoded objects, queued paths and ancestors, hard-link membership, output
+  records, and hostile index collections are all admitted before allocation
+  under compiler-authoritative byte and count ceilings. Staging is a consuming
+  fresh-empty capability; failed or rootless output cannot become a staged
+  index. Validation requires an authenticated index descriptor and exact
+  tree/root/compiler/feature cross-links, then returns a non-cloneable proof
+  borrowing the precise immutable bytes rather than a replayable detached
+  token. Portable owners and ACL qualifiers remain structural data; exact ID
+  translation is separately cache-partitioned and rejects gaps, overflow, and
+  unsupported ACLs. Fixed index and hard-link digest vectors pin the derived
+  formats. The slice passes 28 filesystem-view and 140 sandbox-core unit tests,
+  doctests, strict all-target Clippy, warning-denied rustdoc, formatting, and
+  two-round independent adversarial review. mmap lookup, lazy inode
+  instantiation, cache management, FUSE request handling, sealed publication,
+  and mount realization remain open, so both task boxes remain unchecked.
 
 The post-`727da7f3e` x86_64 `sandbox-filesystem-capability-proof` rerun built the
 complete hermetic Rust closure, AOS system, initrd, and VM disk and launched
