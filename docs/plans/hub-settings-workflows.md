@@ -27,8 +27,9 @@ success. Existing working delivery remains selected until activation succeeds.
 - Worker and native deployments share orchestration and authorization logic.
 - Inventory reads are independent of optional editor prerequisites and bound
   their database work before expanding detail.
-- Existing canonical deep links remain usable. Settings and advanced views
-  read the same authoritative configuration.
+- Settings and advanced views read the same authoritative configuration.
+  Superseded paths may be removed in a direct cutover; development databases
+  may be reset instead of requiring compatibility migrations.
 
 ## Implementation sequence
 

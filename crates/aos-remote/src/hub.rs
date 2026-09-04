@@ -68,6 +68,20 @@ pub struct HubClient {
 /// CLI to exchange the generated request and response messages directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HubTopologyMethod {
+    /// Selects the coordinated delivery `PlanDeliveryDestination` operation.
+    PlanDeliveryDestination,
+    /// Selects the coordinated delivery `ApplyDeliveryDestination` operation.
+    ApplyDeliveryDestination,
+    /// Selects the coordinated delivery `GetDeliveryWorkflow` operation.
+    GetDeliveryWorkflow,
+    /// Selects the coordinated delivery `ListDeliveryWorkflows` operation.
+    ListDeliveryWorkflows,
+    /// Selects the coordinated delivery `ResumeDeliveryDestination` operation.
+    ResumeDeliveryDestination,
+    /// Selects the coordinated delivery `PlanActivateDeliveryDestination` operation.
+    PlanActivateDeliveryDestination,
+    /// Selects the coordinated delivery `ActivateDeliveryDestination` operation.
+    ActivateDeliveryDestination,
     /// Selects the normalized `PlanUpdateOrganization` Connect operation.
     PlanUpdateOrganization,
     /// Selects the normalized `UpdateOrganization` Connect operation.
@@ -877,6 +891,13 @@ impl HubTopologyMethod {
             DeleteEndpoint => "aos.hub.v1.DeliveryService/DeleteEndpoint",
             ListGateways => "aos.hub.v1.DeliveryService/ListGateways",
             GetGateway => "aos.hub.v1.DeliveryService/GetGateway",
+            PlanDeliveryDestination => "aos.hub.v1.DeliveryService/PlanDeliveryDestination",
+            ApplyDeliveryDestination => "aos.hub.v1.DeliveryService/ApplyDeliveryDestination",
+            GetDeliveryWorkflow => "aos.hub.v1.DeliveryService/GetDeliveryWorkflow",
+            ListDeliveryWorkflows => "aos.hub.v1.DeliveryService/ListDeliveryWorkflows",
+            ResumeDeliveryDestination => "aos.hub.v1.DeliveryService/ResumeDeliveryDestination",
+            PlanActivateDeliveryDestination => "aos.hub.v1.DeliveryService/PlanActivateDeliveryDestination",
+            ActivateDeliveryDestination => "aos.hub.v1.DeliveryService/ActivateDeliveryDestination",
             PlanCreateGateway => "aos.hub.v1.DeliveryService/PlanCreateGateway",
             CreateGateway => "aos.hub.v1.DeliveryService/CreateGateway",
             PlanUpdateGateway => "aos.hub.v1.DeliveryService/PlanUpdateGateway",
@@ -1356,6 +1377,13 @@ macro_rules! typed_hub_rpcs {
 /// Closed typed selectors for normalized Hub Connect operations.
 pub mod hub_rpc {
     typed_hub_rpcs! {
+        PlanDeliveryDestination: PlanDeliveryDestinationRequest => TopologyPlanResponse;
+        ApplyDeliveryDestination: ApplyDeliveryDestinationRequest => DeliveryWorkflowResponse;
+        GetDeliveryWorkflow: GetDeliveryWorkflowRequest => DeliveryWorkflowResponse;
+        ListDeliveryWorkflows: ListDeliveryWorkflowsRequest => ListDeliveryWorkflowsResponse;
+        ResumeDeliveryDestination: ResumeDeliveryDestinationRequest => DeliveryWorkflowResponse;
+        PlanActivateDeliveryDestination: PlanActivateDeliveryDestinationRequest => TopologyPlanResponse;
+        ActivateDeliveryDestination: ApplyDeliveryDestinationRequest => DeliveryWorkflowResponse;
         PlanUpdateOrganization: PlanUpdateOrganizationRequest => TopologyPlanResponse;
         UpdateOrganization: ApplyOrganizationMutationRequest => OrganizationResponse;
         ListBindings: ListBindingsRequest => ListBindingsResponse;

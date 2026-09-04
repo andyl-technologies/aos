@@ -21,7 +21,9 @@ offering replication, policy, or authority changes. Configuration history is
 identified as history, distinct from editing current settings.
 
 Canonical settings paths remain explicit in the closed route registry.
-Changes to labels or page composition preserve existing deep links.
+Superseded paths and deprecated APIs can be removed in an immediate cutover.
+Development databases are disposable; incompatible schema changes document
+their reset requirements instead of retaining compatibility-only machinery.
 
 ## Guided and advanced access
 
