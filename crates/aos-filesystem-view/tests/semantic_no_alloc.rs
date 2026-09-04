@@ -10,9 +10,11 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use aos_filesystem_view::{
     AclCapability, DirectoryHandleLimits, INDEX_MEDIA_TYPE, IdMapExtent, IdentityMap,
-    IndexContentView, IndexExpectation, IndexNodeBodyView, IndexStaging, InodeError, InodeTable,
-    InodeTableLimits, ObjectSource, PreparedPresentation, PresentationError, PresentationLimits,
-    PresentationPlan, ROOT_NODE_ID, TreeCompileLimits, TreeCompiler, validate_index,
+    IndexContentView, IndexExpectation, IndexNodeBodyView, IndexStaging, InitRequest, InodeError,
+    InodeTable, InodeTableLimits, LookupReply, MetadataConnection, ObjectSource,
+    PreparedPresentation, PresentationError, PresentationLimits, PresentationPlan, ROOT_NODE_ID,
+    ReplyScratch, RequestBudget, TreeCompileLimits, TreeCompiler, Uninterrupted, WorkerError,
+    WorkerLimits, validate_index,
 };
 use aos_sandbox_core::format::{encode_directory, encode_tree};
 use aos_sandbox_core::model::{
@@ -319,6 +321,80 @@ fn main() {
     });
     hot_result.unwrap_or_else(|error| panic!("hot presentation failed: {error}"));
     assert_eq!(hot_allocations, 0);
+
+    let worker_limits =
+        WorkerLimits::new(4096, 16, 1024, 1_048_576).with_maximum_forget_entries(16);
+    let worker_budget = RequestBudget::new(4096, 16, 1024).with_forget_entries(16);
+    let mut worker = MetadataConnection::new(
+        &prepared,
+        [60; 32],
+        InodeTableLimits::new(16, 1_048_576, 16, 16, 8),
+        DirectoryHandleLimits::new(2, 8),
+        worker_limits,
+    )
+    .unwrap_or_else(|error| panic!("worker failed: {error}"));
+    worker
+        .initialize(
+            InitRequest {
+                batch_forget: true,
+                directory_handles: true,
+                readdir_plus: false,
+            },
+            worker_budget,
+            &Uninterrupted,
+        )
+        .unwrap_or_else(|error| panic!("worker initialization failed: {error}"));
+    let LookupReply::Positive {
+        attributes: link_attributes,
+        ..
+    } = worker
+        .lookup(ROOT_NODE_ID, b"link", worker_budget, &Uninterrupted)
+        .unwrap_or_else(|error| panic!("worker link lookup failed: {error}"))
+    else {
+        panic!("worker link lookup was negative");
+    };
+    let mut pending_directory = worker
+        .prepare_opendir(ROOT_NODE_ID, worker_budget, &Uninterrupted)
+        .unwrap_or_else(|error| panic!("worker OPENDIR failed: {error}"));
+    let directory = worker
+        .publish_opendir(&mut pending_directory)
+        .unwrap_or_else(|error| panic!("worker OPENDIR publication failed: {error}"));
+    let mut worker_scratch = ReplyScratch::new(worker_limits)
+        .unwrap_or_else(|error| panic!("worker scratch failed: {error}"));
+    let (worker_result, worker_allocations) = measure_allocations(|| {
+        black_box(worker.getattr(ROOT_NODE_ID, worker_budget, &Uninterrupted)?);
+        black_box(worker.lookup(
+            ROOT_NODE_ID,
+            black_box(b"absent"),
+            worker_budget,
+            &Uninterrupted,
+        )?);
+        black_box(
+            worker
+                .readlink(
+                    link_attributes.node_id,
+                    worker_budget,
+                    &mut worker_scratch,
+                    &Uninterrupted,
+                )?
+                .target(),
+        );
+        for entry in worker
+            .readdir(
+                directory.handle.get(),
+                0,
+                worker_budget,
+                &mut worker_scratch,
+                &Uninterrupted,
+            )?
+            .entries()
+        {
+            black_box(entry);
+        }
+        Ok::<(), WorkerError>(())
+    });
+    worker_result.unwrap_or_else(|error| panic!("worker access failed: {error}"));
+    assert_eq!(worker_allocations, 0);
 
     let mut inode_table = InodeTable::new_with_directory_limits(
         &index,

@@ -235,6 +235,37 @@ pub struct ForgetRequest {
     remaining_references: u64,
 }
 
+/// Holds a fully checked FORGET batch before its first table mutation.
+pub(crate) struct PreparedForget<'table, 'batch, 'index, 'bytes> {
+    table: &'table mut InodeTable<'index, 'bytes>,
+    batch: &'batch [ForgetRequest],
+    coalesced: usize,
+    summary: ForgetSummary,
+    next_total: u64,
+    next_live: usize,
+    next_node_tombstones: usize,
+    next_semantic_tombstones: usize,
+}
+
+impl PreparedForget<'_, '_, '_, '_> {
+    /// Applies the already validated transition without another fallible step.
+    pub(crate) fn commit(self) -> ForgetSummary {
+        for item in &self.batch[..self.coalesced] {
+            if item.semantic_slot != usize::MAX {
+                self.table.nodes[item.node_slot] = NodeSlot::Tombstone;
+                self.table.semantics[item.semantic_slot] = SemanticSlot::Tombstone;
+            } else if let NodeSlot::Occupied(entry) = &mut self.table.nodes[item.node_slot] {
+                entry.lookup_references = item.remaining_references;
+            }
+        }
+        self.table.total_lookup_references = self.next_total;
+        self.table.live = self.next_live;
+        self.table.node_tombstones = self.next_node_tombstones;
+        self.table.semantic_tombstones = self.next_semantic_tombstones;
+        self.summary
+    }
+}
+
 impl ForgetRequest {
     /// Creates one FORGET item.
     #[must_use]
@@ -604,6 +635,14 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
     /// Returns [`InodeError`] for an oversized batch, zero count, stale node,
     /// aggregate underflow, or arithmetic overflow. Failure changes nothing.
     pub fn forget(&mut self, batch: &mut [ForgetRequest]) -> Result<ForgetSummary, InodeError> {
+        Ok(self.prepare_forget(batch)?.commit())
+    }
+
+    /// Sorts and fully checks a bounded batch without mutating table state.
+    pub(crate) fn prepare_forget<'table, 'batch>(
+        &'table mut self,
+        batch: &'batch mut [ForgetRequest],
+    ) -> Result<PreparedForget<'table, 'batch, 'index, 'bytes>, InodeError> {
         if batch.len() > self.limits.maximum_forget_batch {
             return Err(InodeError::LimitExceeded("FORGET batch"));
         }
@@ -695,19 +734,16 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
             .checked_add(evicted)
             .ok_or(InodeError::InternalInvariant)?;
 
-        for item in &batch[..coalesced] {
-            if item.semantic_slot != usize::MAX {
-                self.nodes[item.node_slot] = NodeSlot::Tombstone;
-                self.semantics[item.semantic_slot] = SemanticSlot::Tombstone;
-            } else if let NodeSlot::Occupied(entry) = &mut self.nodes[item.node_slot] {
-                entry.lookup_references = item.remaining_references;
-            }
-        }
-        self.total_lookup_references = next_total;
-        self.live = next_live;
-        self.node_tombstones = next_node_tombstones;
-        self.semantic_tombstones = next_semantic_tombstones;
-        Ok(summary)
+        Ok(PreparedForget {
+            table: self,
+            batch,
+            coalesced,
+            summary,
+            next_total,
+            next_live,
+            next_node_tombstones,
+            next_semantic_tombstones,
+        })
     }
 
     fn insert_new(

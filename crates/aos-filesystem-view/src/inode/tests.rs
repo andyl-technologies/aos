@@ -2170,3 +2170,48 @@ fn directory_churn_rebuilds_and_exact_tombstone_reuse_needs_no_heap_growth() {
         .abort_directory(&mut reservation)
         .unwrap_or_else(|error| panic!("tombstone abort failed: {error}"));
 }
+
+#[test]
+fn prepared_forget_commit_matches_the_public_atomic_operation() {
+    let fixture = fixture_v3();
+    let index = fixture.validate();
+    let mut public = InodeTable::new(&index, [72; 32], generous_limits())
+        .unwrap_or_else(|error| panic!("public table failed: {error}"));
+    let mut prepared = InodeTable::new(&index, [73; 32], generous_limits())
+        .unwrap_or_else(|error| panic!("prepared table failed: {error}"));
+    let (public_file, _) = positive_parts(
+        public
+            .lookup_bytes(ROOT_NODE_ID, b"c")
+            .unwrap_or_else(|error| panic!("public lookup failed: {error}")),
+    );
+    let (prepared_file, _) = positive_parts(
+        prepared
+            .lookup_bytes(ROOT_NODE_ID, b"c")
+            .unwrap_or_else(|error| panic!("prepared lookup failed: {error}")),
+    );
+    assert_eq!(public_file.node_id, prepared_file.node_id);
+
+    let mut public_batch = [ForgetRequest::new(public_file.node_id, 1)];
+    let mut prepared_batch = [ForgetRequest::new(prepared_file.node_id, 1)];
+    let public_summary = public
+        .forget(&mut public_batch)
+        .unwrap_or_else(|error| panic!("public forget failed: {error}"));
+    let transaction = prepared
+        .prepare_forget(&mut prepared_batch)
+        .unwrap_or_else(|error| panic!("prepare failed: {error}"));
+    let prepared_summary = transaction.commit();
+
+    assert_eq!(public_summary, prepared_summary);
+    assert_eq!(
+        (
+            public.live_nodes(),
+            public.total_lookup_references(),
+            public_batch,
+        ),
+        (
+            prepared.live_nodes(),
+            prepared.total_lookup_references(),
+            prepared_batch,
+        )
+    );
+}

@@ -12,6 +12,7 @@ mod inode;
 mod limits;
 mod presentation;
 mod source;
+mod worker;
 
 pub use graph::{CompileError, CompileSummary, TreeCompiler};
 pub use index::{
@@ -35,3 +36,10 @@ pub use presentation::{
     PresentedAclRange, PresentedInodeAttributes, PresentedMetadata,
 };
 pub use source::{ExactObject, ObjectSource, SourceError, load_exact};
+pub use worker::{
+    InitReply, InitRequest, LookupReply, MetadataConnection, OpenDirectoryReply,
+    PendingDirectoryReply, ReadDirEntry, ReadDirPage, ReadDirPageEntries, ReadlinkReply,
+    RejectedOperation, ReplyScratch, RequestBudget, RequestCheckpoint, RequestControl,
+    RequestControlState, TeardownSummary, Uninterrupted, WorkerAttributes, WorkerError,
+    WorkerLimits,
+};
