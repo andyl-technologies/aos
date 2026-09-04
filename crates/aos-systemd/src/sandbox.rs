@@ -20,6 +20,13 @@ use crate::client::{JobOutcome, SystemdClient};
 use crate::error::{Error, Result, is_no_such_unit};
 use crate::manager_proxy::{AuxiliaryUnit, ServiceProxy, TransientProperty, UnitProxy};
 
+mod discovery;
+pub use discovery::{
+    DiscoveredSandboxUnit, SandboxDiscoveryComparison, SandboxDiscoveryConflict,
+    SandboxDiscoveryIndeterminate, SandboxDiscoveryOutcome, SandboxQuarantineEvidence,
+    SandboxUnitDiscoverySnapshot,
+};
+
 const UNIT_PREFIX: &str = "aos-sandbox-";
 const UNIT_SUFFIX: &str = ".service";
 const GUARD_PREFIX: &str = "aos-lease-guard-";

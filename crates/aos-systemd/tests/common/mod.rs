@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use aos_systemd::SystemdClient;
+use aos_systemd::{ListUnitsEntry, SystemdClient};
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
@@ -42,6 +42,13 @@ pub struct FakeState {
     pub transient_request: Arc<Mutex<Option<RecordedTransientRequest>>>,
     /// Unit name most recently resolved through `GetUnit`.
     pub observed_unit: Arc<Mutex<String>>,
+    /// Synthetic response returned by `ListUnitsByPatterns`.
+    pub discovery_units: Arc<Mutex<Vec<ListUnitsEntry>>>,
+    /// Optional response used from the second discovery pass onward.
+    pub discovery_alternate: Arc<Mutex<Option<Vec<ListUnitsEntry>>>>,
+    discovery_calls: Arc<AtomicU32>,
+    /// Optional hostile `Unit.Id` substitution.
+    pub unit_id_override: Arc<Mutex<Option<String>>>,
     job_counter: Arc<AtomicU32>,
 }
 
@@ -55,6 +62,10 @@ impl FakeState {
             suppress_emit: Arc::new(AtomicBool::new(false)),
             transient_request: Arc::new(Mutex::new(None)),
             observed_unit: Arc::new(Mutex::new(String::new())),
+            discovery_units: Arc::new(Mutex::new(Vec::new())),
+            discovery_alternate: Arc::new(Mutex::new(None)),
+            discovery_calls: Arc::new(AtomicU32::new(0)),
+            unit_id_override: Arc::new(Mutex::new(None)),
             job_counter: Arc::new(AtomicU32::new(0)),
         }
     }
@@ -155,6 +166,22 @@ impl FakeSystemd {
         OwnedObjectPath::try_from(UNIT_PATH).unwrap()
     }
 
+    async fn list_units_by_patterns(
+        &self,
+        _states: Vec<String>,
+        patterns: Vec<String>,
+    ) -> Vec<ListUnitsEntry> {
+        self.record("list_units_by_patterns");
+        assert_eq!(patterns, vec!["aos-sandbox-*.service"]);
+        let call = self.state.discovery_calls.fetch_add(1, Ordering::SeqCst);
+        if call > 0
+            && let Some(units) = self.state.discovery_alternate.lock().unwrap().clone()
+        {
+            return units;
+        }
+        self.state.discovery_units.lock().unwrap().clone()
+    }
+
     async fn reload(&self) {
         self.record("reload");
     }
@@ -184,10 +211,20 @@ impl FakeSystemd {
     async fn reloading(emitter: &SignalEmitter<'_>, active: bool) -> zbus::Result<()>;
 }
 
-struct FakeUnit;
+struct FakeUnit {
+    state: FakeState,
+}
 
 #[zbus::interface(name = "org.freedesktop.systemd1.Unit")]
 impl FakeUnit {
+    #[zbus(property)]
+    fn id(&self) -> String {
+        if let Some(value) = self.state.unit_id_override.lock().unwrap().clone() {
+            return value;
+        }
+        self.state.observed_unit.lock().unwrap().clone()
+    }
+
     #[zbus(property)]
     fn active_state(&self) -> &str {
         "active"
@@ -294,7 +331,12 @@ impl Harness {
             .p2p()
             .serve_at(MANAGER_PATH, fake)
             .unwrap()
-            .serve_at(UNIT_PATH, FakeUnit)
+            .serve_at(
+                UNIT_PATH,
+                FakeUnit {
+                    state: state.clone(),
+                },
+            )
             .unwrap()
             .serve_at(
                 UNIT_PATH,
@@ -351,6 +393,22 @@ impl Harness {
             .lock()
             .unwrap()
             .insert(unit.to_string(), result.to_string());
+    }
+
+    pub fn set_discovery_units(&self, units: Vec<ListUnitsEntry>) {
+        *self.state.discovery_units.lock().unwrap() = units;
+        *self.state.discovery_alternate.lock().unwrap() = None;
+        self.state.discovery_calls.store(0, Ordering::SeqCst);
+    }
+
+    pub fn set_discovery_sequence(&self, first: Vec<ListUnitsEntry>, second: Vec<ListUnitsEntry>) {
+        *self.state.discovery_units.lock().unwrap() = first;
+        *self.state.discovery_alternate.lock().unwrap() = Some(second);
+        self.state.discovery_calls.store(0, Ordering::SeqCst);
+    }
+
+    pub fn set_unit_id_override(&self, value: &str) {
+        *self.state.unit_id_override.lock().unwrap() = Some(value.to_owned());
     }
 
     /// Emit a standalone `JobRemoved` (no corresponding method call) — used to

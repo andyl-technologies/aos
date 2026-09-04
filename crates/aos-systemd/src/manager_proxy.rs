@@ -118,6 +118,9 @@ pub trait Manager {
     default_service = "org.freedesktop.systemd1"
 )]
 pub trait Unit {
+    /// Canonical primary name by which systemd loaded this unit.
+    #[zbus(property)]
+    fn id(&self) -> zbus::Result<String>;
     /// High-level activation state (`"active"`, `"failed"`, ...).
     #[zbus(property)]
     fn active_state(&self) -> zbus::Result<String>;
