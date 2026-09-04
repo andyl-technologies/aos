@@ -1,22 +1,61 @@
 ##! editline — Small line editing library (troglobit editline)
 {
   mkDerivation,
-  fetchurl,
+  mkGithubUpstream,
   gnumake,
   ncurses,
 }: let
-  version = "1.17.1";
+  upstream = mkGithubUpstream {
+    unitId = "editline-1";
+    family = "editline";
+    stream = "1";
+    owner = "pkgs/libs/editline.nix";
+    version = "1.17.1";
+    upstreamId = "1.17.1";
+    repository = "troglobit/editline";
+    tagPrefix = "";
+    major = 1;
+    source = {
+      authority = "github.com";
+      path = [
+        "troglobit"
+        "editline"
+        "releases"
+        "download"
+        {
+          parts = [
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+          ];
+        }
+        {
+          parts = [
+            {literal = "editline-";}
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+            {literal = ".tar.xz";}
+          ];
+        }
+      ];
+      hash = "sha256-3yI7MzOlRf3bxntJ3tPSQsZvrfegS+s62iCVf80f/A4=";
+    };
+  };
+  inherit (upstream) version;
 in
   mkDerivation {
     pname = "editline";
     inherit version;
 
-    src = fetchurl {
-      urls = [
-        "https://github.com/troglobit/editline/releases/download/${version}/editline-${version}.tar.xz"
-      ];
-      hash = "sha256-3yI7MzOlRf3bxntJ3tPSQsZvrfegS+s62iCVf80f/A4=";
-    };
+    src = upstream.components.main.sources.source;
+    update = upstream.update;
 
     buildDeps = [gnumake];
     runtimeDeps = [ncurses];

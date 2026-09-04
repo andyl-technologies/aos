@@ -139,9 +139,9 @@ fn campaign_hashes_are_domain_separated_and_text_is_canonical() {
 
 #[test]
 fn schema_registry_is_unique_complete_and_names_real_gates() {
-    let registry = include_str!("../../../docs/rfcs/0017-crucible-campaigns/schema-registry.tsv");
+    let registry = include_str!("../../../docs/rfcs/0019-crucible-campaigns/schema-registry.tsv");
     let implementation_plan =
-        include_str!("../../../docs/rfcs/0017-crucible-campaigns/11-implementation-plan.md");
+        include_str!("../../../docs/rfcs/0019-crucible-campaigns/11-implementation-plan.md");
     let mut rows = BTreeMap::<&str, Vec<&str>>::new();
     for (line_number, line) in registry.lines().enumerate() {
         if line.is_empty() || line.starts_with('#') {

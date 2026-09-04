@@ -56,6 +56,29 @@ impl NixRunner {
         })
     }
 
+    /// Creates a runner bound to one explicit candidate repository root.
+    ///
+    /// This constructor prevents maintenance and release controllers from
+    /// accidentally evaluating their own checkout when validating an isolated
+    /// worktree.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AosError::NixNotFound`] when `nix-build` is unavailable, or
+    /// [`AosError::RootNotFound`] when `root` does not contain `default.nix`.
+    pub fn for_root(root: impl Into<PathBuf>, verbose: u8, quiet: bool) -> Result<Self> {
+        which("nix-build").map_err(|_| AosError::NixNotFound)?;
+        let root = root.into();
+        if !root.join("default.nix").is_file() {
+            return Err(AosError::RootNotFound.into());
+        }
+        Ok(Self {
+            root,
+            verbose,
+            quiet,
+        })
+    }
+
     /// Returns the project root path (the directory containing
     /// `default.nix`).
     pub fn root(&self) -> &Path {
@@ -254,6 +277,23 @@ impl NixRunner {
     /// error if `nix-instantiate` cannot be spawned or its output is
     /// not valid JSON.
     pub fn eval_json(&self, attr: &str) -> Result<serde_json::Value> {
+        self.eval_json_for_target(attr, None)
+    }
+
+    /// Evaluates an attribute for an explicit cross target to strict JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AosError::NixBuild`] if evaluation fails, an error when the
+    /// target name is unsafe, or another error when output is not valid JSON.
+    pub fn eval_json_for_target(
+        &self,
+        attr: &str,
+        target: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        if target.is_some_and(|target| !target_platform_name_is_safe(target)) {
+            anyhow::bail!("invalid target platform");
+        }
         let args: Vec<String> = vec![
             "--eval".to_string(),
             "--strict".to_string(),
@@ -262,6 +302,9 @@ impl NixRunner {
             "-A".to_string(),
             attr.to_string(),
         ];
+
+        let mut args = args;
+        add_cross_system_arg(&mut args, target);
 
         let output = self.run_nix("nix-instantiate", &args)?;
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -335,6 +378,73 @@ impl NixRunner {
 
         let output = self.run_nix("nix-store", &full_args)?;
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    /// Realizes exact derivation paths in bounded command-line batches.
+    ///
+    /// With `check` set, Nix rebuilds already-realized derivations and fails
+    /// when any output is not byte-for-byte reproducible.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty or non-store derivation path, or when a
+    /// `nix-store --realise` batch fails. Nix's check-mode nondeterminism exit
+    /// status is preserved as a build failure.
+    pub fn realise_derivations(&self, derivations: &[PathBuf], check: bool) -> Result<()> {
+        for derivation in derivations {
+            let text = derivation.to_string_lossy();
+            if !text.starts_with("/nix/store/") || !text.ends_with(".drv") {
+                anyhow::bail!("invalid exact derivation path: {text}");
+            }
+        }
+        for batch in derivations.chunks(128) {
+            let mut arguments = vec!["--realise".to_string()];
+            if check {
+                arguments.push("--check".to_string());
+            }
+            arguments.extend(batch.iter().map(|path| path.to_string_lossy().into_owned()));
+            self.run_nix("nix-store", &arguments)?;
+        }
+        Ok(())
+    }
+
+    /// Returns Nix JSON path information for exact realized store paths.
+    ///
+    /// The result is one object keyed by store path and includes NAR hash,
+    /// NAR size, recursive closure size, deriver, and direct references.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a non-store path, a failed `nix path-info` batch,
+    /// invalid JSON, a non-object response, or a duplicate response key.
+    pub fn path_info_json(&self, paths: &[PathBuf]) -> Result<serde_json::Value> {
+        let mut combined = serde_json::Map::new();
+        for path in paths {
+            if !path.to_string_lossy().starts_with("/nix/store/") {
+                anyhow::bail!("invalid exact Nix store path: {}", path.display());
+            }
+        }
+        for batch in paths.chunks(128) {
+            let mut arguments = vec![
+                "path-info".to_string(),
+                "--json-format".to_string(),
+                "1".to_string(),
+                "--closure-size".to_string(),
+            ];
+            arguments.extend(batch.iter().map(|path| path.to_string_lossy().into_owned()));
+            let output = self.run_nix("nix", &arguments)?;
+            let value: serde_json::Value =
+                serde_json::from_slice(&output.stdout).context("parsing Nix path-info JSON")?;
+            let object = value
+                .as_object()
+                .context("Nix path-info JSON is not an object")?;
+            for (path, info) in object {
+                if combined.insert(path.clone(), info.clone()).is_some() {
+                    anyhow::bail!("Nix path-info repeated store path {path}");
+                }
+            }
+        }
+        Ok(serde_json::Value::Object(combined))
     }
 
     /// Instantiates (but does not build) a derivation from `default.nix`,

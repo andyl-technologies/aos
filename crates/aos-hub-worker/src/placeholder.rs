@@ -112,7 +112,8 @@ mod tests {
     #[test]
     fn worker_sql_accepts_documentation_projection_generation_migration() {
         let migration = MIGRATIONS
-            .last()
+            .iter()
+            .find(|migration| migration.contains("documentation_projection_generation"))
             .expect("documentation projection migration");
         let statements = split_statements(migration);
         assert_eq!(statements.len(), 1);

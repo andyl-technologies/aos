@@ -1,22 +1,88 @@
 ##! zlib — Lossless data compression library
 {
   mkDerivation,
-  fetchurl,
+  mkUpstream,
   gnumake,
   stdenv,
 }: let
-  version = "1.3.1";
+  upstream = mkUpstream {
+    schema = "aos.package-update/v1";
+    unitId = "zlib-1";
+    family = "zlib";
+    stream = "1";
+    owner = "pkgs/compression/zlib.nix";
+    classification = "automatic";
+
+    package = {
+      currentVersion = "1.3.1";
+      versionProjection = {
+        kind = "component-field";
+        component = "main";
+        field = "comparisonVersion";
+      };
+    };
+
+    components.main = {
+      current = {
+        upstreamId = "v1.3.1";
+        comparisonVersion = "1.3.1";
+      };
+      discovery = {
+        primary = {
+          provider = "github-tags";
+          repository = "madler/zlib";
+          tagPrefix = "v";
+        };
+        advisors.repology.project = "zlib";
+      };
+      releasePolicy = {
+        strategy = "latest-in-series";
+        versionScheme = "semver";
+        series.major = 1;
+        allowPrerelease = false;
+        minimumAgeDays = 3;
+      };
+      sources.source = {
+        fetcher = "fetchurl";
+        urlTemplates = [
+          {
+            scheme = "https";
+            authority = "zlib.net";
+            path = [
+              {
+                parts = [
+                  {literal = "zlib-";}
+                  {
+                    componentField = {
+                      component = "main";
+                      field = "comparisonVersion";
+                    };
+                  }
+                  {literal = ".tar.xz";}
+                ];
+              }
+            ];
+          }
+        ];
+        hash = "sha256-OO+WuN/lENQnB9nHgYd5FHklQRM+GHCEFGO/pz+IPjI=";
+        hashMode = "flat";
+        allowedRedirectHosts = ["zlib.net"];
+      };
+    };
+
+    policy = {
+      lifecycle = "supported";
+      riskFloor = "normal";
+    };
+  };
+  version = upstream.version;
 in
   mkDerivation {
     pname = "zlib";
     inherit version;
 
-    src = fetchurl {
-      urls = [
-        "https://zlib.net/zlib-${version}.tar.xz"
-      ];
-      hash = "sha256-OO+WuN/lENQnB9nHgYd5FHklQRM+GHCEFGO/pz+IPjI=";
-    };
+    src = upstream.components.main.sources.source;
+    update = upstream.forPackage {member = "zlib";};
 
     buildDeps = [gnumake];
     runtimeDeps = [];

@@ -1,6 +1,6 @@
 # 04a — Component contracts and local executor boundary
 
-RFC-0017 implements one single-host campaign coordinator and one local Crucible
+RFC-0019 implements one single-host campaign coordinator and one local Crucible
 executor. It does not implement distributed scheduling. It nevertheless treats
 the boundary between campaign policy and host execution as a production
 interface from the first implementation, so local mode does not acquire hidden

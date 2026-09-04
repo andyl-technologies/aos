@@ -1,23 +1,63 @@
 ##! nghttp2 — HTTP/2 C library
 {
   mkDerivation,
-  fetchurl,
+  mkGithubUpstream,
   gnumake,
   pkg-config,
   stdenv,
 }: let
-  version = "1.68.0";
+  upstream = mkGithubUpstream {
+    unitId = "nghttp2-1";
+    family = "nghttp2";
+    stream = "1";
+    owner = "pkgs/networking/nghttp2.nix";
+    version = "1.68.0";
+    upstreamId = "v1.68.0";
+    repository = "nghttp2/nghttp2";
+    tagPrefix = "v";
+    major = 1;
+    source = {
+      authority = "github.com";
+      path = [
+        "nghttp2"
+        "nghttp2"
+        "releases"
+        "download"
+        {
+          parts = [
+            {literal = "v";}
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+          ];
+        }
+        {
+          parts = [
+            {literal = "nghttp2-";}
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+            {literal = ".tar.bz2";}
+          ];
+        }
+      ];
+      hash = "sha256-jYDLTkWtylRqIAW4YlG6Wntj9eoyIiiuKOmWl0P5lwc=";
+    };
+  };
+  inherit (upstream) version;
 in
   mkDerivation {
     pname = "nghttp2";
     inherit version;
 
-    src = fetchurl {
-      urls = [
-        "https://github.com/nghttp2/nghttp2/releases/download/v${version}/nghttp2-${version}.tar.bz2"
-      ];
-      hash = "sha256-jYDLTkWtylRqIAW4YlG6Wntj9eoyIiiuKOmWl0P5lwc=";
-    };
+    src = upstream.components.main.sources.source;
+    update = upstream.update;
 
     buildDeps = [
       gnumake

@@ -15,13 +15,16 @@
 //! - **Client-side**: `cache` (binary cache push/pull/prefetch/list,
 //!   implemented in `aos-cache`) and the `--remote` modes of `build` and
 //!   `gc` (via `aos-remote`).
+//! - **Maintenance**: `maintain` (local, repository-bound package-update
+//!   inventory and workflows).
 //! - **Misc**: `completions` (shell completion scripts).
 //!
 //! # Exit codes
 //!
 //! `0` success; `1` build/test failure (and unknown errors); `2` user
-//! error; `3` Nix not found — see `handle_error` and
-//! `aos_core::error::AosError::exit_code`.
+//! error; `3` Nix not found. Maintenance commands additionally use stable
+//! outcome codes `10` through `14` and `130`; see
+//! `aos_maintain::presentation::CommandDisposition`.
 
 /// Runs the `aos` CLI.
 #[tokio::main]

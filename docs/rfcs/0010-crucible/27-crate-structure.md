@@ -88,7 +88,7 @@ One-line responsibilities:
 | L2 | `crucible-linux-resource` | Pinned Linux kernel resource capabilities shared by host-side QEMU and daemon composition. |
 | L3 | `crucible` | The engine: scenario model, the single authoritative scheduler, fault injection, assertion evaluation, temporal graph, event log — the pure `reduce`. |
 | L3 | `crucible-cas` | The standalone content-addressed store, fleet-visible DAG store, and campaign-continuity substrate. |
-| L3 | `crucible-campaign` | RFC-0017's portable campaign model, authenticated repository, and component-message contracts. |
+| L3 | `crucible-campaign` | RFC-0019's portable campaign model, authenticated repository, and component-message contracts. |
 | L4 | `crucible-session` | The session actor: owns one live `RuntimeState`, drives the engine quantum loop, services control messages at quantum boundaries. |
 | L4 | `crucible-api` | The versioned programmatic API surface (session lifecycle, stepping, event-log query, temporal-graph ops). |
 | L4 | `crucible-daemon` | The long-lived host process that hosts sessions and serves the API over a transport. |
@@ -325,7 +325,7 @@ behind the same trait (§4, `CRATE-7`). This is the load-bearing boundary: it is
 `gate:layer0-determinism` and the engine-level gates can run with no QEMU
 present.
 
-**`crucible-campaign`** owns RFC-0017's portable, content-addressed campaign
+**`crucible-campaign`** owns RFC-0019's portable, content-addressed campaign
 model, component-message contracts, authenticated repository, and deterministic
 planning semantics. It depends on the L3 content store but contains no live
 process handles or QEMU-private state. The L4 daemon composes it with local
@@ -359,7 +359,7 @@ reimplement scheduler ordering policy.
 
 **`crucible-daemon`** owns the **long-lived host process** that hosts sessions,
 serves `crucible-api` over a transport, and composes host-side executor workers
-that drive the L3 `QuantumLoop` boundary without owning scheduler policy. RFC-0017
+that drive the L3 `QuantumLoop` boundary without owning scheduler policy. RFC-0019
 adds the campaign coordinator and local executor composition to this crate. *Not
 in it:* the API *definition* (that's `crucible-api`), canonical campaign state
 (that's `crucible-campaign`), scheduler algorithms, or the CLI.
@@ -375,7 +375,7 @@ client; it owns no algorithms.
   host crates and drive the public L3 `QuantumLoop` boundary for an admitted
   attempt, but MUST NOT reimplement scheduler policy or call private reduction
   internals. *Gate:* `gate:control-responsive`. *Satisfies* `INV-8`, `ARCH-9`.
-  *Spec:* §3 and RFC-0017 file 04a.
+  *Spec:* §3 and RFC-0019 file 04a.
 
 ## 4. Feature flags — the backend trait and the in-process double
 
@@ -709,7 +709,7 @@ primitives.
   execution through the API/session/campaign/daemon composition, while
   `crucible-daemon` may drive only the public L3 quantum-loop boundary and never
   owns scheduler policy or private reduction internals. — satisfies [CRATE-8];
-  spec §3 and RFC-0017 file 04a.
+  spec §3 and RFC-0019 file 04a.
 - [x] **T-CRATE-10** Configure crate artifact types: `crucible-qemu-plugin` as the
   sole `cdylib`, `crucible-cli` as `[[bin]] name = "crucible"`, `crucible-cas` as
   `[[bin]] name = "crucible-fleet-store"`, and the rest as libs. — satisfies

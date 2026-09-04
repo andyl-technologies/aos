@@ -1445,6 +1445,7 @@ async fn resolved_delivery_handler(
 async fn dispatch_route(
     svc: Arc<RpcService>,
     verifier: Option<Arc<crate::delivery_attestation::DeliveryAttestationVerifier>>,
+    default_transport: DeliveryTransportEvidence,
     request: Request,
     next: Next,
 ) -> Response {
@@ -1461,14 +1462,7 @@ async fn dispatch_route(
         .get::<DeliveryTransportEvidence>()
         .is_none()
     {
-        request.extensions_mut().insert(DeliveryTransportEvidence {
-            // The native server currently binds a plain TCP HTTP listener. An
-            // HTTPS/layer-7 deployment must insert authenticated evidence at
-            // its TLS/proxy adapter rather than trusting request-target text.
-            scheme: "http".to_owned(),
-            ingress_kind: "hub".to_owned(),
-            tls_identity: None,
-        });
+        request.extensions_mut().insert(default_transport);
     }
     match rewrite_for_route(&svc, request).await {
         Ok(request) => next.run(request).await,
@@ -1492,6 +1486,31 @@ pub fn with_route_dispatch(
     service: Arc<RpcService>,
     verifier: Option<Arc<crate::delivery_attestation::DeliveryAttestationVerifier>>,
 ) -> Router {
+    with_route_dispatch_transport(
+        router,
+        service,
+        verifier,
+        DeliveryTransportEvidence {
+            scheme: "http".to_owned(),
+            ingress_kind: "hub".to_owned(),
+            tls_identity: None,
+        },
+    )
+}
+
+/// Wraps `router` with route dispatch using listener-authenticated transport facts.
+///
+/// Native TLS listeners use this entry point only after completing the TLS
+/// handshake and enforcing the configured SNI identity. Plain listeners use
+/// [`with_route_dispatch`].
+#[cfg(not(target_arch = "wasm32"))]
+#[must_use]
+pub fn with_route_dispatch_transport(
+    router: Router,
+    service: Arc<RpcService>,
+    verifier: Option<Arc<crate::delivery_attestation::DeliveryAttestationVerifier>>,
+    default_transport: DeliveryTransportEvidence,
+) -> Router {
     // The middleware must run *before* routing so its URI rewrite changes which
     // route matches. `Router::layer` runs *after* routing, so instead the inner
     // router becomes the fallback of a fresh outer router carrying the
@@ -1502,7 +1521,8 @@ pub fn with_route_dispatch(
         .layer(axum::middleware::from_fn(move |request, next| {
             let svc = Arc::clone(&service);
             let verifier = verifier.as_ref().map(Arc::clone);
-            async move { dispatch_route(svc, verifier, request, next).await }
+            let transport = default_transport.clone();
+            async move { dispatch_route(svc, verifier, transport, request, next).await }
         }))
 }
 
@@ -2705,6 +2725,41 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         r,
         "/aos.hub.v1.PublishService/AbortRegistryPublication",
         abort_registry_publication
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.PublishService/BeginReleasePublication",
+        begin_release_publication
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.PublishService/CommitReleasePublication",
+        commit_release_publication
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.PublishService/RecordReleaseQualification",
+        record_release_qualification
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.PublishService/PromoteReleasePublication",
+        promote_release_publication
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.PublishService/GetReleaseReceipt",
+        get_release_receipt
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.PublishService/PublishReleaseTimestamp",
+        publish_release_timestamp
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.PublishService/AdvanceReleaseChannel",
+        advance_release_channel
     );
     r = r.route(
         "/aos.hub.v1.PublishService/UploadObject/{publication_id}/{object_id}",

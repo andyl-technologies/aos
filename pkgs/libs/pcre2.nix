@@ -1,21 +1,62 @@
 ##! pcre2 — Perl Compatible Regular Expressions (version 2)
 {
   mkDerivation,
-  fetchurl,
+  mkGithubUpstream,
   gnumake,
 }: let
-  version = "10.47";
+  upstream = mkGithubUpstream {
+    unitId = "pcre2-10";
+    family = "pcre2";
+    stream = "10";
+    owner = "pkgs/libs/pcre2.nix";
+    version = "10.47";
+    upstreamId = "pcre2-10.47";
+    repository = "PCRE2Project/pcre2";
+    tagPrefix = "pcre2-";
+    major = 10;
+    versionScheme = "numeric";
+    source = {
+      authority = "github.com";
+      path = [
+        "PCRE2Project"
+        "pcre2"
+        "releases"
+        "download"
+        {
+          parts = [
+            {literal = "pcre2-";}
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+          ];
+        }
+        {
+          parts = [
+            {literal = "pcre2-";}
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+            {literal = ".tar.bz2";}
+          ];
+        }
+      ];
+      hash = "sha256-R/6MmUYSUNQviebo/a66naBXhV0G63/AjZygP9CNe8c=";
+    };
+  };
+  inherit (upstream) version;
 in
   mkDerivation {
     pname = "pcre2";
     inherit version;
 
-    src = fetchurl {
-      urls = [
-        "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-${version}/pcre2-${version}.tar.bz2"
-      ];
-      hash = "sha256-R/6MmUYSUNQviebo/a66naBXhV0G63/AjZygP9CNe8c=";
-    };
+    src = upstream.components.main.sources.source;
+    update = upstream.update;
 
     buildDeps = [gnumake];
     runtimeDeps = [];

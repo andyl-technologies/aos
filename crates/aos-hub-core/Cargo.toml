@@ -39,6 +39,7 @@ ed25519-dalek = { workspace = true }
 futures-util = { workspace = true }
 hex = { workspace = true }
 hmac = { workspace = true }
+humantime = { workspace = true }
 md-5 = { workspace = true }
 rand = { workspace = true }
 semver = { workspace = true }
@@ -64,6 +65,7 @@ aos-hub-console-contract = { workspace = true }
 # aos.hub.v1 API. The shared `service` layer speaks these on both the
 # native hub and the Cloudflare Worker (RFC-0004 Phase 5, single transport).
 aos-proto-types = { workspace = true }
+aos-release = { workspace = true }
 # axum *types only* (default-features = false drops the hyper server) — the
 # shared Connect-JSON router (`connect` module) is plain axum handlers served
 # natively via axum::serve and on the Worker via axum-cloudflare-adapter. This
