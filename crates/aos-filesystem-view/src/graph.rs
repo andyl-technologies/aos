@@ -13,7 +13,8 @@ use aos_sandbox_core::{
 
 use crate::index::{
     FEATURE_ABSOLUTE_SYMLINK, FEATURE_ACL, FEATURE_PARENT_SYMLINK, IndexError, IndexNode,
-    IndexRecord, IndexStaging, StagedIndex, StructuralIndexBuilder, record_encoded_len,
+    IndexRecord, IndexStaging, StagedIndex, StructuralIndexBuilder, byte_vector_charge,
+    record_encoded_len,
 };
 use crate::limits::TreeCompileLimits;
 use crate::source::{ObjectSource, SourceError, load_exact};
@@ -69,7 +70,7 @@ impl TreeCompiler {
         let maximum_tree_bytes = tree_reservation.max(retained_tree);
         drop(tree);
         drop(tree_bytes);
-        let mut index = StructuralIndexBuilder::new(
+        let mut index = StructuralIndexBuilder::new_v3(
             staging.narrow(
                 self.limits.index_bytes,
                 self.limits.index_record_bytes,
@@ -134,18 +135,26 @@ impl TreeCompiler {
             hardlink_groups: state.hardlinks.len() as u64,
             maximum_working_bytes: state.maximum_working_bytes,
         };
+        let index_retained = index.retained_working_bytes()?;
+        let external_working = state
+            .working_bytes
+            .checked_sub(index_retained)
+            .ok_or(CompileError::InternalAccounting)?;
         let finish_working = checked_add(
             state.working_bytes,
             index.finish_temporary_working_bytes()?,
             "working bytes",
         )?;
         enforce(finish_working, self.limits.working_bytes, "working bytes")?;
+        let finished = index.finish_with_external(external_working, self.limits.working_bytes)?;
         let summary = CompileSummary {
-            maximum_working_bytes: summary.maximum_working_bytes.max(finish_working),
+            maximum_working_bytes: summary
+                .maximum_working_bytes
+                .max(finish_working)
+                .max(finished.peak_working_bytes),
             ..summary
         };
-        let staged = index.finish()?;
-        Ok((summary, staged))
+        Ok((summary, finished.staged))
     }
 
     fn visit_directory<S, W>(
@@ -844,8 +853,8 @@ where
     E: std::error::Error + 'static,
     W: Write + Seek,
 {
-    let reservation = u64::try_from(record_encoded_len(record)?)
-        .map_err(|_| CompileError::LimitExceeded("working bytes"))?;
+    let encoded_len = record_encoded_len(record)?;
+    let reservation = byte_vector_charge(encoded_len)?;
     let current_index = index.retained_working_bytes()?;
     let next_index = index.retained_working_bytes_after_push()?;
     let retained_delta = next_index
@@ -855,9 +864,18 @@ where
     let with_record = checked_add(with_retained, reservation, "working bytes")?;
     enforce(with_record, maximum_working_bytes, "working bytes")?;
     state.maximum_working_bytes = state.maximum_working_bytes.max(with_record);
-    let id = index.push(record)?;
-    state.working_bytes = with_retained;
-    Ok(id)
+    let external_working = state
+        .working_bytes
+        .checked_sub(current_index)
+        .ok_or(CompileError::InternalAccounting)?;
+    let pushed = index.push_with_external(record, external_working, maximum_working_bytes)?;
+    state.maximum_working_bytes = state.maximum_working_bytes.max(pushed.peak_working_bytes);
+    state.working_bytes = checked_add(
+        external_working,
+        pushed.retained_working_bytes,
+        "working bytes",
+    )?;
+    Ok(pushed.record_id)
 }
 
 fn enforce<E>(value: u64, maximum: u64, name: &'static str) -> Result<(), CompileError<E>>
@@ -880,7 +898,7 @@ mod tests {
     use aos_sandbox_core::MediaType;
     use aos_sandbox_core::format::{descriptor_for_bytes, encode_directory, encode_tree};
     use aos_sandbox_core::model::{
-        Acl, Directory, DirectoryEntry, Extent, FileNode, SparseContent, Tree, Xattr,
+        Acl, Directory, DirectoryEntry, Extent, FileNode, SparseContent, SymlinkNode, Tree, Xattr,
     };
 
     use super::*;
@@ -1072,16 +1090,37 @@ mod tests {
     #[test]
     fn mixed_and_multiple_directory_siblings_validate_independent_of_walk_order() {
         let mut source = MemorySource::default();
-        let empty = Directory::new(metadata(), Vec::new())
-            .unwrap_or_else(|error| panic!("directory failed: {error}"));
-        let child = source.insert(
+        let child_a_value = Directory::new(
+            metadata(),
+            vec![DirectoryEntry {
+                name: PathName::new(b"aa".to_vec())
+                    .unwrap_or_else(|error| panic!("name failed: {error}")),
+                node: Node::Symlink(
+                    SymlinkNode::new(metadata(), b"target-a".to_vec())
+                        .unwrap_or_else(|error| panic!("symlink failed: {error}")),
+                ),
+            }],
+        )
+        .unwrap_or_else(|error| panic!("directory failed: {error}"));
+        let child_b_value = Directory::new(
+            metadata(),
+            vec![DirectoryEntry {
+                name: PathName::new(b"bb".to_vec())
+                    .unwrap_or_else(|error| panic!("name failed: {error}")),
+                node: Node::Symlink(
+                    SymlinkNode::new(metadata(), b"target-b".to_vec())
+                        .unwrap_or_else(|error| panic!("symlink failed: {error}")),
+                ),
+            }],
+        )
+        .unwrap_or_else(|error| panic!("directory failed: {error}"));
+        let child_a = source.insert(
             "application/vnd.aos.sandbox.directory.v1+cbor",
-            encode_directory(&empty),
+            encode_directory(&child_a_value),
         );
-        let content = descriptor_for_bytes(
-            MediaType::new("application/vnd.aos.sandbox.content.v1")
-                .unwrap_or_else(|error| panic!("content media failed: {error}")),
-            b"",
+        let child_b = source.insert(
+            "application/vnd.aos.sandbox.directory.v1+cbor",
+            encode_directory(&child_b_value),
         );
         let root = Directory::new(
             metadata(),
@@ -1089,21 +1128,12 @@ mod tests {
                 DirectoryEntry {
                     name: PathName::new(b"a".to_vec())
                         .unwrap_or_else(|error| panic!("name failed: {error}")),
-                    node: Node::Directory(child.clone()),
+                    node: Node::Directory(child_a),
                 },
                 DirectoryEntry {
                     name: PathName::new(b"b".to_vec())
                         .unwrap_or_else(|error| panic!("name failed: {error}")),
-                    node: Node::File(FileNode {
-                        metadata: metadata(),
-                        content: ContentLayout::whole(content),
-                        hardlink_group: None,
-                    }),
-                },
-                DirectoryEntry {
-                    name: PathName::new(b"c".to_vec())
-                        .unwrap_or_else(|error| panic!("name failed: {error}")),
-                    node: Node::Directory(child),
+                    node: Node::Directory(child_b),
                 },
             ],
         )
@@ -1123,7 +1153,7 @@ mod tests {
         let index_media = MediaType::new(INDEX_MEDIA_TYPE)
             .unwrap_or_else(|error| panic!("index media failed: {error}"));
         let index_descriptor = descriptor_for_bytes(index_media, &bytes);
-        validate_index(
+        let validated = validate_index(
             &bytes,
             TreeCompileLimits::default().index_bytes,
             u64::MAX,
@@ -1136,6 +1166,44 @@ mod tests {
             },
         )
         .unwrap_or_else(|error| panic!("index validation failed: {error}"));
+        let root_view = validated
+            .root()
+            .unwrap_or_else(|error| panic!("root failed: {error}"));
+        assert_eq!(
+            validated
+                .nlink(&root_view)
+                .unwrap_or_else(|error| panic!("root nlink failed: {error}")),
+            4
+        );
+        let root_range = validated
+            .directory_range(&root_view)
+            .unwrap_or_else(|error| panic!("root range failed: {error}"));
+        assert_eq!(root_range.len(), 2);
+        for (ordinal, (directory_name, child_name)) in
+            [(b"a".as_slice(), b"aa".as_slice()), (b"b", b"bb")]
+                .into_iter()
+                .enumerate()
+        {
+            let directory = root_range
+                .get(ordinal as u64)
+                .unwrap_or_else(|error| panic!("directory seek failed: {error}"))
+                .unwrap_or_else(|| panic!("directory missing"))
+                .into_node();
+            assert_eq!(directory.name(), directory_name);
+            assert_eq!(
+                validated
+                    .nlink(&directory)
+                    .unwrap_or_else(|error| panic!("directory nlink failed: {error}")),
+                2
+            );
+            let child = validated
+                .directory_range(&directory)
+                .unwrap_or_else(|error| panic!("child range failed: {error}"))
+                .get(0)
+                .unwrap_or_else(|error| panic!("child seek failed: {error}"))
+                .unwrap_or_else(|| panic!("child missing"));
+            assert_eq!(child.node().name(), child_name);
+        }
     }
 
     #[test]
@@ -1390,7 +1458,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("tree decode failed: {error}"))
             .root()
             .clone();
-        let mut index = StructuralIndexBuilder::new(
+        let mut index = StructuralIndexBuilder::new_v3(
             IndexStaging::new(Cursor::new(Vec::new()), 4096, 4096),
             [9; 32],
             tree,
@@ -1608,7 +1676,7 @@ mod tests {
             .root()
             .clone();
         let staging = IndexStaging::new(Cursor::new(Vec::new()), 4096, 4096);
-        let mut builder = StructuralIndexBuilder::new(staging, [1; 32], tree, root.clone(), 0)
+        let mut builder = StructuralIndexBuilder::new_v3(staging, [1; 32], tree, root.clone(), 0)
             .unwrap_or_else(|error| panic!("builder failed: {error}"));
         let work = Work {
             descriptor: root.clone(),

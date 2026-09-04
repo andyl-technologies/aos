@@ -1,7 +1,8 @@
 //! Architecture-neutral structural-index staging and validation.
 //!
-//! Formats v1 and v2 are little-endian derived caches. V2 leaves the v1
-//! record encoding unchanged and appends a fixed-width point-lookup table:
+//! Formats v1, v2, and v3 are little-endian derived caches. V2 leaves the v1
+//! record encoding unchanged and appends a fixed-width point-lookup table. V3
+//! adds a canonical directory table without changing either older format:
 //!
 //! ```text
 //! header = magic[8], version:u32, header-bytes:u32, compiler-abi[32],
@@ -13,6 +14,11 @@
 //!                  lookup-hash:u32, reserved:u64
 //! v2-payload = record*, lookup-entry*
 //! lookup-entry = parent:u64, name-sha256[32], record-offset:u64, record-id:u64
+//! v3-header-tail = v2-header-tail, directory-slots:u64,
+//!                  directory-slot-bytes:u32, reserved:u32, root-nlink:u64,
+//!                  reserved:u64
+//! v3-payload = record*, lookup-entry*, directory-entry*
+//! directory-entry = parent:u64, record-offset:u64, record-id:u64, nlink:u64
 //! record = record-bytes:u32, parent:u64, depth:u32, sibling-ordinal:u32,
 //!          kind:u8, reserved[3],
 //!          mode:u16, reserved:u16, uid:u32, gid:u32, mtime-sec:i64,
@@ -23,6 +29,13 @@
 //! digest, and record ID. All variable fields are length-prefixed and the
 //! validator rejects unknown tags, nonzero reserved bytes, non-canonical
 //! tables, overflow, truncation, and trailing data.
+//!
+//! Builder working-byte limits account for fallible heap allocations. Header
+//! encoding instead uses one fixed 248-byte stack object, which is part of the
+//! compiler's constant stack budget and never scales with hostile input.
+//! V3 exposes structural ranges and link counts only. FUSE cookie translation,
+//! READDIRPLUS policy, checked `u64`-to-`u32` protocol conversion, and borrowed
+//! record-body/xattr/ACL views belong to later worker-facing increments.
 
 use std::io::{Seek, SeekFrom, Write};
 
@@ -38,18 +51,23 @@ use sha2::{Digest, Sha256};
 const MAGIC: &[u8; 8] = b"AOSVIDX\0";
 const VERSION_V1: u32 = 1;
 const VERSION_V2: u32 = 2;
+const VERSION_V3: u32 = 3;
 const HEADER_BYTES_V1: usize = 184;
 const HEADER_BYTES_V2: usize = 216;
+const HEADER_BYTES_V3: usize = 248;
 const RECORD_FIXED_BYTES: usize = 48;
 const LOOKUP_SLOT_BYTES: usize = 56;
 const LOOKUP_HASH_SHA256: u32 = 1;
+const DIRECTORY_SLOT_BYTES: usize = 32;
 
 /// Media type emitted for new node-local structural indexes.
-pub const INDEX_MEDIA_TYPE: &str = INDEX_MEDIA_TYPE_V2;
+pub const INDEX_MEDIA_TYPE: &str = INDEX_MEDIA_TYPE_V3;
 /// Media type of the validation-only sequential structural-index format.
 pub const INDEX_MEDIA_TYPE_V1: &str = "application/vnd.aos.filesystem-view.index.v1";
 /// Media type of the point-lookup structural-index format.
 pub const INDEX_MEDIA_TYPE_V2: &str = "application/vnd.aos.filesystem-view.index.v2";
+/// Media type of the iterable structural-index format.
+pub const INDEX_MEDIA_TYPE_V3: &str = "application/vnd.aos.filesystem-view.index.v3";
 
 pub(crate) const FEATURE_ACL: u32 = 1 << 0;
 pub(crate) const FEATURE_ABSOLUTE_SYMLINK: u32 = 1 << 1;
@@ -155,7 +173,30 @@ pub(crate) struct StructuralIndexBuilder<W> {
     records: u64,
     payload_bytes: u64,
     payload_hash: Sha256,
-    lookup_entries: Vec<LookupSlot>,
+    entries: Vec<BuildEntry>,
+    format: BuildFormat,
+    #[cfg(test)]
+    refuse_record_scratch_allocation: bool,
+    #[cfg(test)]
+    lookup_capacity_floor: usize,
+    #[cfg(test)]
+    directory_capacity_floor: usize,
+    #[cfg(test)]
+    refuse_hardlink_allocation: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BuildFormat {
+    V2,
+    V3,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct BuildEntry {
+    lookup: LookupSlot,
+    sibling_ordinal: u32,
+    kind: IndexNodeKind,
+    hardlink_group: Option<ObjectDigest>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -166,34 +207,138 @@ struct LookupSlot {
     record_id: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DirectorySlot {
+    parent: u64,
+    record_offset: u64,
+    record_id: u64,
+    nlink: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DirectoryBuildSlot {
+    slot: DirectorySlot,
+    sibling_ordinal: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct HardlinkSlot {
+    group: ObjectDigest,
+    record_id: u64,
+}
+
+struct HeaderEncoder {
+    bytes: [u8; HEADER_BYTES_V3],
+    position: usize,
+}
+
+impl HeaderEncoder {
+    const fn new() -> Self {
+        Self {
+            bytes: [0; HEADER_BYTES_V3],
+            position: 0,
+        }
+    }
+
+    fn put(&mut self, value: &[u8]) -> Result<(), IndexError> {
+        let end = self
+            .position
+            .checked_add(value.len())
+            .ok_or(IndexError::InvalidHeader)?;
+        let destination = self
+            .bytes
+            .get_mut(self.position..end)
+            .ok_or(IndexError::InvalidHeader)?;
+        destination.copy_from_slice(value);
+        self.position = end;
+        Ok(())
+    }
+
+    fn u32(&mut self, value: u32) -> Result<(), IndexError> {
+        self.put(&value.to_le_bytes())
+    }
+
+    fn u64(&mut self, value: u64) -> Result<(), IndexError> {
+        self.put(&value.to_le_bytes())
+    }
+
+    fn finish(&self, expected: usize) -> Result<&[u8], IndexError> {
+        if self.position != expected {
+            return Err(IndexError::InvalidHeader);
+        }
+        self.bytes.get(..expected).ok_or(IndexError::InvalidHeader)
+    }
+}
+
+pub(crate) struct PushIndexResult {
+    pub(crate) record_id: u64,
+    pub(crate) retained_working_bytes: u64,
+    pub(crate) peak_working_bytes: u64,
+}
+
+pub(crate) struct FinishIndexResult<W> {
+    pub(crate) staged: StagedIndex<W>,
+    pub(crate) peak_working_bytes: u64,
+}
+
 impl<W: Write + Seek> StructuralIndexBuilder<W> {
     pub(crate) fn retained_working_bytes(&self) -> Result<u64, IndexError> {
-        lookup_vector_charge(self.lookup_entries.len())
+        build_vector_charge(self.entries.capacity())
     }
 
     pub(crate) fn retained_working_bytes_after_push(&self) -> Result<u64, IndexError> {
         if self.records == 0 {
             return self.retained_working_bytes();
         }
-        let entries = self
-            .lookup_entries
+        let required = self
+            .entries
             .len()
             .checked_add(1)
             .ok_or(IndexError::LimitExceeded)?;
-        lookup_vector_charge(entries)
+        build_vector_charge(self.entries.capacity().max(required))
     }
 
     pub(crate) fn finish_working_bytes(&self) -> Result<u64, IndexError> {
         let slots = lookup_slot_count(self.records)?;
-        self.retained_working_bytes()?
+        let lookup_peak = self
+            .retained_working_bytes()?
             .checked_add(lookup_vector_charge(slots)?)
-            .ok_or(IndexError::LimitExceeded)
+            .ok_or(IndexError::LimitExceeded)?;
+        if self.format == BuildFormat::V2 {
+            return Ok(lookup_peak);
+        }
+        let hardlinks = self
+            .entries
+            .iter()
+            .filter(|entry| entry.hardlink_group.is_some())
+            .count();
+        let directory_peak = self
+            .retained_working_bytes()?
+            .checked_add(directory_vector_charge(slots)?)
+            .and_then(|bytes| bytes.checked_add(hardlink_vector_charge(hardlinks).ok()?))
+            .ok_or(IndexError::LimitExceeded)?;
+        Ok(lookup_peak.max(directory_peak))
     }
 
     pub(crate) fn finish_temporary_working_bytes(&self) -> Result<u64, IndexError> {
-        lookup_vector_charge(lookup_slot_count(self.records)?)
+        let slots = lookup_slot_count(self.records)?;
+        let lookup = lookup_vector_charge(slots)?;
+        if self.format == BuildFormat::V2 {
+            return Ok(lookup);
+        }
+        let hardlinks = self
+            .entries
+            .iter()
+            .filter(|entry| entry.hardlink_group.is_some())
+            .count();
+        Ok(lookup.max(
+            directory_vector_charge(slots)?
+                .checked_add(hardlink_vector_charge(hardlinks)?)
+                .ok_or(IndexError::LimitExceeded)?,
+        ))
     }
 
+    #[cfg(test)]
     pub(crate) fn new(
         staging: IndexStaging<W>,
         compiler_abi: [u8; 32],
@@ -201,13 +346,52 @@ impl<W: Write + Seek> StructuralIndexBuilder<W> {
         root: ObjectDescriptor,
         tree_features: u32,
     ) -> Result<Self, IndexError> {
+        Self::new_with_format(
+            staging,
+            compiler_abi,
+            tree,
+            root,
+            tree_features,
+            BuildFormat::V2,
+        )
+    }
+
+    pub(crate) fn new_v3(
+        staging: IndexStaging<W>,
+        compiler_abi: [u8; 32],
+        tree: ObjectDescriptor,
+        root: ObjectDescriptor,
+        tree_features: u32,
+    ) -> Result<Self, IndexError> {
+        Self::new_with_format(
+            staging,
+            compiler_abi,
+            tree,
+            root,
+            tree_features,
+            BuildFormat::V3,
+        )
+    }
+
+    fn new_with_format(
+        staging: IndexStaging<W>,
+        compiler_abi: [u8; 32],
+        tree: ObjectDescriptor,
+        root: ObjectDescriptor,
+        tree_features: u32,
+        format: BuildFormat,
+    ) -> Result<Self, IndexError> {
         let IndexStaging {
             mut writer,
             maximum_bytes,
             maximum_record_bytes,
             maximum_working_bytes,
         } = staging;
-        if maximum_bytes < HEADER_BYTES_V2 as u64 || maximum_record_bytes == 0 {
+        let header_bytes = match format {
+            BuildFormat::V2 => HEADER_BYTES_V2,
+            BuildFormat::V3 => HEADER_BYTES_V3,
+        };
+        if maximum_bytes < header_bytes as u64 || maximum_record_bytes == 0 {
             return Err(IndexError::LimitExceeded);
         }
         validate_descriptor_role(DescriptorRole::ImmutableViewSource, &tree)
@@ -218,9 +402,11 @@ impl<W: Write + Seek> StructuralIndexBuilder<W> {
             return Err(IndexError::NonEmptyStaging);
         }
         writer.seek(SeekFrom::Start(0)).map_err(IndexError::Io)?;
-        writer
-            .write_all(&[0; HEADER_BYTES_V2])
-            .map_err(IndexError::Io)?;
+        match format {
+            BuildFormat::V2 => writer.write_all(&[0; HEADER_BYTES_V2]),
+            BuildFormat::V3 => writer.write_all(&[0; HEADER_BYTES_V3]),
+        }
+        .map_err(IndexError::Io)?;
         Ok(Self {
             writer,
             compiler_abi,
@@ -233,7 +419,16 @@ impl<W: Write + Seek> StructuralIndexBuilder<W> {
             records: 0,
             payload_bytes: 0,
             payload_hash: Sha256::new(),
-            lookup_entries: Vec::new(),
+            entries: Vec::new(),
+            format,
+            #[cfg(test)]
+            refuse_record_scratch_allocation: false,
+            #[cfg(test)]
+            lookup_capacity_floor: 0,
+            #[cfg(test)]
+            directory_capacity_floor: 0,
+            #[cfg(test)]
+            refuse_hardlink_allocation: false,
         })
     }
 
@@ -242,7 +437,18 @@ impl<W: Write + Seek> StructuralIndexBuilder<W> {
     /// # Errors
     ///
     /// Returns [`IndexError`] for arithmetic/format limits or staging I/O.
+    #[cfg(test)]
     pub(crate) fn push(&mut self, record: &IndexRecord<'_>) -> Result<u64, IndexError> {
+        self.push_with_external(record, 0, self.maximum_working_bytes)
+            .map(|result| result.record_id)
+    }
+
+    pub(crate) fn push_with_external(
+        &mut self,
+        record: &IndexRecord<'_>,
+        external_working_bytes: u64,
+        aggregate_maximum_working_bytes: u64,
+    ) -> Result<PushIndexResult, IndexError> {
         let encoded_len = record_encoded_len(record)?;
         let record_bytes = u64::try_from(encoded_len).map_err(|_| IndexError::LimitExceeded)?;
         if record_bytes > self.maximum_record_bytes {
@@ -252,37 +458,83 @@ impl<W: Write + Seek> StructuralIndexBuilder<W> {
             .payload_bytes
             .checked_add(record_bytes)
             .ok_or(IndexError::LimitExceeded)?;
-        let total = (HEADER_BYTES_V2 as u64)
+        let header_bytes = self.header_bytes();
+        let total = (header_bytes as u64)
             .checked_add(next_payload)
             .ok_or(IndexError::LimitExceeded)?;
         if total > self.maximum_bytes {
             return Err(IndexError::LimitExceeded);
         }
 
+        let id = self.records;
+        if id != 0 {
+            let next_entries = self
+                .entries
+                .len()
+                .checked_add(1)
+                .ok_or(IndexError::LimitExceeded)?;
+            let retained_bytes = build_vector_charge(self.entries.capacity().max(next_entries))?;
+            if retained_bytes > self.maximum_working_bytes
+                || external_working_bytes
+                    .checked_add(retained_bytes)
+                    .ok_or(IndexError::LimitExceeded)?
+                    > aggregate_maximum_working_bytes
+            {
+                return Err(IndexError::LimitExceeded);
+            }
+            self.entries
+                .try_reserve_exact(1)
+                .map_err(|_| IndexError::AllocationRefused)?;
+            let actual_retained = self.retained_working_bytes()?;
+            if actual_retained > self.maximum_working_bytes
+                || external_working_bytes
+                    .checked_add(actual_retained)
+                    .ok_or(IndexError::LimitExceeded)?
+                    > aggregate_maximum_working_bytes
+            {
+                return Err(IndexError::LimitExceeded);
+            }
+        }
+
+        let retained_before_scratch = self.retained_working_bytes()?;
+        let modeled_peak = external_working_bytes
+            .checked_add(retained_before_scratch)
+            .and_then(|bytes| bytes.checked_add(byte_vector_charge(encoded_len).ok()?))
+            .ok_or(IndexError::LimitExceeded)?;
+        let modeled_internal_peak = retained_before_scratch
+            .checked_add(byte_vector_charge(encoded_len)?)
+            .ok_or(IndexError::LimitExceeded)?;
+        if modeled_internal_peak > self.maximum_working_bytes
+            || modeled_peak > aggregate_maximum_working_bytes
+        {
+            return Err(IndexError::LimitExceeded);
+        }
+        #[cfg(test)]
+        if self.refuse_record_scratch_allocation {
+            return Err(IndexError::AllocationRefused);
+        }
         let mut bytes = Vec::new();
         bytes
             .try_reserve_exact(encoded_len)
             .map_err(|_| IndexError::AllocationRefused)?;
+        let retained_working_bytes = self.retained_working_bytes()?;
+        let peak_working_bytes = external_working_bytes
+            .checked_add(retained_working_bytes)
+            .and_then(|total| total.checked_add(byte_vector_charge(bytes.capacity()).ok()?))
+            .ok_or(IndexError::LimitExceeded)?;
+        let internal_peak = retained_working_bytes
+            .checked_add(byte_vector_charge(bytes.capacity())?)
+            .ok_or(IndexError::LimitExceeded)?;
+        if internal_peak > self.maximum_working_bytes
+            || peak_working_bytes > aggregate_maximum_working_bytes
+        {
+            return Err(IndexError::LimitExceeded);
+        }
         encode_record(&mut bytes, record)?;
         if bytes.len() != encoded_len {
             return Err(IndexError::InvalidRecord);
         }
-        let id = self.records;
-        if id != 0 {
-            let next_entries = self
-                .lookup_entries
-                .len()
-                .checked_add(1)
-                .ok_or(IndexError::LimitExceeded)?;
-            let retained_bytes = lookup_vector_charge(next_entries)?;
-            if retained_bytes > self.maximum_working_bytes {
-                return Err(IndexError::LimitExceeded);
-            }
-            self.lookup_entries
-                .try_reserve_exact(1)
-                .map_err(|_| IndexError::AllocationRefused)?;
-        }
-        let record_offset = (HEADER_BYTES_V2 as u64)
+        let record_offset = (header_bytes as u64)
             .checked_add(self.payload_bytes)
             .ok_or(IndexError::LimitExceeded)?;
         self.writer.write_all(&bytes).map_err(IndexError::Io)?;
@@ -293,14 +545,28 @@ impl<W: Write + Seek> StructuralIndexBuilder<W> {
             .checked_add(1)
             .ok_or(IndexError::LimitExceeded)?;
         if id != 0 {
-            self.lookup_entries.push(LookupSlot {
-                parent: record.parent,
-                name_hash: lookup_hash(record.parent, record.name),
-                record_offset,
-                record_id: id,
+            let (kind, hardlink_group) = match record.node {
+                IndexNode::File { hardlink_group, .. } => (IndexNodeKind::File, hardlink_group),
+                IndexNode::Directory { .. } => (IndexNodeKind::Directory, None),
+                IndexNode::Symlink { .. } => (IndexNodeKind::Symlink, None),
+            };
+            self.entries.push(BuildEntry {
+                lookup: LookupSlot {
+                    parent: record.parent,
+                    name_hash: lookup_hash(record.parent, record.name),
+                    record_offset,
+                    record_id: id,
+                },
+                sibling_ordinal: record.sibling_ordinal,
+                kind,
+                hardlink_group,
             });
         }
-        Ok(id)
+        Ok(PushIndexResult {
+            record_id: id,
+            retained_working_bytes,
+            peak_working_bytes,
+        })
     }
 
     /// Finalizes the header and returns the writer and index summary.
@@ -308,21 +574,46 @@ impl<W: Write + Seek> StructuralIndexBuilder<W> {
     /// # Errors
     ///
     /// Returns [`IndexError::Io`] when seeking, writing, or flushing fails.
-    pub(crate) fn finish(mut self) -> Result<StagedIndex<W>, IndexError> {
+    #[cfg(test)]
+    pub(crate) fn finish(self) -> Result<StagedIndex<W>, IndexError> {
+        let maximum = self.maximum_working_bytes;
+        self.finish_with_external(0, maximum)
+            .map(|result| result.staged)
+    }
+
+    pub(crate) fn finish_with_external(
+        mut self,
+        external_working_bytes: u64,
+        aggregate_maximum_working_bytes: u64,
+    ) -> Result<FinishIndexResult<W>, IndexError> {
         if self.records == 0 {
             return Err(IndexError::InvalidRecord);
         }
         let records_bytes = self.payload_bytes;
         let lookup_slots = lookup_slot_count(self.records)?;
+        let lookup_slots_u64 =
+            u64::try_from(lookup_slots).map_err(|_| IndexError::LimitExceeded)?;
         let lookup_bytes = lookup_allocation_bytes(lookup_slots)?;
+        let directory_bytes = if self.format == BuildFormat::V3 {
+            directory_allocation_bytes(lookup_slots)?
+        } else {
+            0
+        };
         let peak_lookup_working = self.finish_working_bytes()?;
-        if peak_lookup_working > self.maximum_working_bytes {
+        if peak_lookup_working > self.maximum_working_bytes
+            || external_working_bytes
+                .checked_add(peak_lookup_working)
+                .ok_or(IndexError::LimitExceeded)?
+                > aggregate_maximum_working_bytes
+        {
             return Err(IndexError::LimitExceeded);
         }
         let next_payload = records_bytes
             .checked_add(lookup_bytes)
+            .and_then(|bytes| bytes.checked_add(directory_bytes))
             .ok_or(IndexError::LimitExceeded)?;
-        let total_bytes = (HEADER_BYTES_V2 as u64)
+        let header_bytes = self.header_bytes();
+        let total_bytes = (header_bytes as u64)
             .checked_add(next_payload)
             .ok_or(IndexError::LimitExceeded)?;
         if total_bytes > self.maximum_bytes {
@@ -330,63 +621,257 @@ impl<W: Write + Seek> StructuralIndexBuilder<W> {
         }
 
         let mut table = Vec::new();
+        #[cfg(test)]
+        let lookup_capacity = lookup_slots.max(self.lookup_capacity_floor);
+        #[cfg(not(test))]
+        let lookup_capacity = lookup_slots;
         table
-            .try_reserve_exact(lookup_slots)
+            .try_reserve_exact(lookup_capacity)
             .map_err(|_| IndexError::AllocationRefused)?;
-        table.extend_from_slice(&self.lookup_entries);
+        let actual_internal_lookup = self
+            .retained_working_bytes()?
+            .checked_add(lookup_vector_charge(table.capacity())?)
+            .ok_or(IndexError::LimitExceeded)?;
+        let actual_lookup_peak = external_working_bytes
+            .checked_add(actual_internal_lookup)
+            .ok_or(IndexError::LimitExceeded)?;
+        if actual_internal_lookup > self.maximum_working_bytes
+            || actual_lookup_peak > aggregate_maximum_working_bytes
+        {
+            return Err(IndexError::LimitExceeded);
+        }
+        table.extend(self.entries.iter().map(|entry| entry.lookup));
         table.sort_unstable_by_key(|entry| (entry.parent, entry.name_hash, entry.record_id));
         for slot in table {
             let encoded = encode_lookup_slot(slot);
             self.writer.write_all(&encoded).map_err(IndexError::Io)?;
             self.payload_hash.update(encoded);
         }
+        let root_nlink = if self.format == BuildFormat::V3 {
+            self.write_directory_table(
+                lookup_slots,
+                external_working_bytes,
+                aggregate_maximum_working_bytes,
+            )?
+        } else {
+            (0, actual_lookup_peak)
+        };
+        let (root_nlink, directory_peak) = root_nlink;
+        let peak_working_bytes = actual_lookup_peak.max(directory_peak);
         self.payload_bytes = next_payload;
 
         let payload_digest: [u8; 32] = self.payload_hash.finalize().into();
-        let mut header = Vec::with_capacity(HEADER_BYTES_V2);
-        header.extend_from_slice(MAGIC);
-        put_u32(&mut header, VERSION_V2);
-        put_u32(&mut header, HEADER_BYTES_V2 as u32);
-        header.extend_from_slice(&self.compiler_abi);
-        header.extend_from_slice(self.tree.digest().as_bytes());
-        put_u64(&mut header, self.tree.encoded_size());
-        header.extend_from_slice(self.root.digest().as_bytes());
-        put_u64(&mut header, self.root.encoded_size());
-        put_u32(&mut header, self.tree_features);
-        put_u32(&mut header, 0);
-        put_u64(&mut header, self.records);
-        put_u64(&mut header, self.payload_bytes);
-        header.extend_from_slice(&payload_digest);
-        put_u64(&mut header, records_bytes);
-        put_u64(&mut header, lookup_slots as u64);
-        put_u32(&mut header, LOOKUP_SLOT_BYTES as u32);
-        put_u32(&mut header, LOOKUP_HASH_SHA256);
-        put_u64(&mut header, 0);
-        if header.len() != HEADER_BYTES_V2 {
-            return Err(IndexError::InvalidHeader);
+        let mut header = HeaderEncoder::new();
+        header.put(MAGIC)?;
+        header.u32(match self.format {
+            BuildFormat::V2 => VERSION_V2,
+            BuildFormat::V3 => VERSION_V3,
+        })?;
+        header.u32(header_bytes as u32)?;
+        header.put(&self.compiler_abi)?;
+        header.put(self.tree.digest().as_bytes())?;
+        header.u64(self.tree.encoded_size())?;
+        header.put(self.root.digest().as_bytes())?;
+        header.u64(self.root.encoded_size())?;
+        header.u32(self.tree_features)?;
+        header.u32(0)?;
+        header.u64(self.records)?;
+        header.u64(self.payload_bytes)?;
+        header.put(&payload_digest)?;
+        header.u64(records_bytes)?;
+        header.u64(lookup_slots_u64)?;
+        header.u32(LOOKUP_SLOT_BYTES as u32)?;
+        header.u32(LOOKUP_HASH_SHA256)?;
+        header.u64(0)?;
+        if self.format == BuildFormat::V3 {
+            header.u64(lookup_slots_u64)?;
+            header.u32(DIRECTORY_SLOT_BYTES as u32)?;
+            header.u32(0)?;
+            header.u64(root_nlink)?;
+            header.u64(0)?;
         }
+        let header = header.finish(header_bytes)?;
         self.writer
             .seek(SeekFrom::Start(0))
-            .and_then(|_| self.writer.write_all(&header))
+            .and_then(|_| self.writer.write_all(header))
             .and_then(|_| self.writer.flush())
             .map_err(IndexError::Io)?;
-        let expected_end = HEADER_BYTES_V2 as u64 + self.payload_bytes;
+        let expected_end = header_bytes as u64 + self.payload_bytes;
         let actual_end = self.writer.seek(SeekFrom::End(0)).map_err(IndexError::Io)?;
         if actual_end != expected_end {
             return Err(IndexError::UnexpectedStagingLength);
         }
-        Ok(StagedIndex {
-            writer: self.writer,
-            summary: IndexSummary {
-                compiler_abi: self.compiler_abi,
-                tree_digest: self.tree.digest(),
-                tree_size: self.tree.encoded_size(),
-                root_digest: self.root.digest(),
-                root_size: self.root.encoded_size(),
-                records: self.records,
-                bytes: HEADER_BYTES_V2 as u64 + self.payload_bytes,
+        Ok(FinishIndexResult {
+            staged: StagedIndex {
+                writer: self.writer,
+                summary: IndexSummary {
+                    compiler_abi: self.compiler_abi,
+                    tree_digest: self.tree.digest(),
+                    tree_size: self.tree.encoded_size(),
+                    root_digest: self.root.digest(),
+                    root_size: self.root.encoded_size(),
+                    records: self.records,
+                    bytes: header_bytes as u64 + self.payload_bytes,
+                },
             },
+            peak_working_bytes,
         })
+    }
+
+    fn header_bytes(&self) -> usize {
+        match self.format {
+            BuildFormat::V2 => HEADER_BYTES_V2,
+            BuildFormat::V3 => HEADER_BYTES_V3,
+        }
+    }
+
+    fn write_directory_table(
+        &mut self,
+        slots: usize,
+        external_working_bytes: u64,
+        aggregate_maximum_working_bytes: u64,
+    ) -> Result<(u64, u64), IndexError> {
+        let mut directory = Vec::new();
+        #[cfg(test)]
+        let slots = slots.max(self.directory_capacity_floor);
+        directory
+            .try_reserve_exact(slots)
+            .map_err(|_| IndexError::AllocationRefused)?;
+        directory.extend(self.entries.iter().map(|entry| DirectoryBuildSlot {
+            slot: DirectorySlot {
+                parent: entry.lookup.parent,
+                record_offset: entry.lookup.record_offset,
+                record_id: entry.lookup.record_id,
+                nlink: if entry.kind == IndexNodeKind::Directory {
+                    2
+                } else {
+                    1
+                },
+            },
+            sibling_ordinal: entry.sibling_ordinal,
+        }));
+        let with_directory = external_working_bytes
+            .checked_add(self.retained_working_bytes()?)
+            .and_then(|bytes| {
+                bytes.checked_add(directory_vector_charge(directory.capacity()).ok()?)
+            })
+            .ok_or(IndexError::LimitExceeded)?;
+        let internal_with_directory = self
+            .retained_working_bytes()?
+            .checked_add(directory_vector_charge(directory.capacity())?)
+            .ok_or(IndexError::LimitExceeded)?;
+        if internal_with_directory > self.maximum_working_bytes
+            || with_directory > aggregate_maximum_working_bytes
+        {
+            return Err(IndexError::LimitExceeded);
+        }
+
+        let mut hardlinks = Vec::new();
+        let hardlink_count = self
+            .entries
+            .iter()
+            .filter(|entry| entry.hardlink_group.is_some())
+            .count();
+        let modeled_with_hardlinks = with_directory
+            .checked_add(hardlink_vector_charge(hardlink_count)?)
+            .ok_or(IndexError::LimitExceeded)?;
+        let modeled_internal = internal_with_directory
+            .checked_add(hardlink_vector_charge(hardlink_count)?)
+            .ok_or(IndexError::LimitExceeded)?;
+        if modeled_internal > self.maximum_working_bytes
+            || modeled_with_hardlinks > aggregate_maximum_working_bytes
+        {
+            return Err(IndexError::LimitExceeded);
+        }
+        #[cfg(test)]
+        if self.refuse_hardlink_allocation {
+            return Err(IndexError::AllocationRefused);
+        }
+        hardlinks
+            .try_reserve_exact(hardlink_count)
+            .map_err(|_| IndexError::AllocationRefused)?;
+        hardlinks.extend(self.entries.iter().filter_map(|entry| {
+            entry.hardlink_group.map(|group| HardlinkSlot {
+                group,
+                record_id: entry.lookup.record_id,
+            })
+        }));
+        let actual = with_directory
+            .checked_add(hardlink_vector_charge(hardlinks.capacity())?)
+            .ok_or(IndexError::LimitExceeded)?;
+        let actual_internal = internal_with_directory
+            .checked_add(hardlink_vector_charge(hardlinks.capacity())?)
+            .ok_or(IndexError::LimitExceeded)?;
+        if actual_internal > self.maximum_working_bytes || actual > aggregate_maximum_working_bytes
+        {
+            return Err(IndexError::LimitExceeded);
+        }
+
+        let mut root_nlink = 2_u64;
+        for entry in &self.entries {
+            if entry.kind == IndexNodeKind::Directory {
+                if entry.lookup.parent == 0 {
+                    root_nlink = root_nlink.checked_add(1).ok_or(IndexError::LimitExceeded)?;
+                } else {
+                    // Before the final canonical sort, slot `record_id - 1`
+                    // is the corresponding non-root record. Preserve this
+                    // direct checked mapping so fanout accounting stays O(n).
+                    let parent = usize::try_from(
+                        entry
+                            .lookup
+                            .parent
+                            .checked_sub(1)
+                            .ok_or(IndexError::InvalidRecord)?,
+                    )
+                    .map_err(|_| IndexError::LimitExceeded)?;
+                    let slot = directory.get_mut(parent).ok_or(IndexError::InvalidRecord)?;
+                    slot.slot.nlink = slot
+                        .slot
+                        .nlink
+                        .checked_add(1)
+                        .ok_or(IndexError::LimitExceeded)?;
+                }
+            }
+        }
+        hardlinks.sort_unstable();
+        let mut start = 0;
+        while start < hardlinks.len() {
+            let mut end = start + 1;
+            while end < hardlinks.len() && hardlinks[end].group == hardlinks[start].group {
+                end += 1;
+            }
+            let nlink = u64::try_from(end - start).map_err(|_| IndexError::LimitExceeded)?;
+            for member in &hardlinks[start..end] {
+                // The same record-order invariant permits O(1) assignment of
+                // every member count before the directory table is reordered.
+                let index = usize::try_from(
+                    member
+                        .record_id
+                        .checked_sub(1)
+                        .ok_or(IndexError::InvalidRecord)?,
+                )
+                .map_err(|_| IndexError::LimitExceeded)?;
+                directory
+                    .get_mut(index)
+                    .ok_or(IndexError::InvalidRecord)?
+                    .slot
+                    .nlink = nlink;
+            }
+            start = end;
+        }
+        directory.sort_unstable_by_key(|entry| {
+            (
+                entry.slot.parent,
+                entry.sibling_ordinal,
+                entry.slot.record_id,
+            )
+        });
+        for slot in directory {
+            let encoded = encode_directory_slot(slot.slot);
+            self.writer.write_all(&encoded).map_err(IndexError::Io)?;
+            self.payload_hash.update(encoded);
+        }
+        Ok((root_nlink, actual))
     }
 }
 
@@ -467,13 +952,40 @@ fn lookup_allocation_bytes(slots: usize) -> Result<u64, IndexError> {
 }
 
 fn lookup_vector_charge(slots: usize) -> Result<u64, IndexError> {
+    vector_charge::<LookupSlot>(slots)
+}
+
+fn build_vector_charge(slots: usize) -> Result<u64, IndexError> {
+    vector_charge::<BuildEntry>(slots)
+}
+
+fn directory_vector_charge(slots: usize) -> Result<u64, IndexError> {
+    vector_charge::<DirectoryBuildSlot>(slots)
+}
+
+fn hardlink_vector_charge(slots: usize) -> Result<u64, IndexError> {
+    vector_charge::<HardlinkSlot>(slots)
+}
+
+pub(crate) fn byte_vector_charge(bytes: usize) -> Result<u64, IndexError> {
+    vector_charge::<u8>(bytes)
+}
+
+fn vector_charge<T>(slots: usize) -> Result<u64, IndexError> {
     let payload = slots
-        .checked_mul(std::mem::size_of::<LookupSlot>())
+        .checked_mul(std::mem::size_of::<T>())
         .ok_or(IndexError::LimitExceeded)?;
     payload
-        .checked_add(std::mem::size_of::<Vec<LookupSlot>>())
+        .checked_add(std::mem::size_of::<Vec<T>>())
         .and_then(|bytes| u64::try_from(bytes).ok())
         .ok_or(IndexError::LimitExceeded)
+}
+
+fn directory_allocation_bytes(slots: usize) -> Result<u64, IndexError> {
+    let bytes = slots
+        .checked_mul(DIRECTORY_SLOT_BYTES)
+        .ok_or(IndexError::LimitExceeded)?;
+    u64::try_from(bytes).map_err(|_| IndexError::LimitExceeded)
 }
 
 fn lookup_hash(parent: u64, name: &[u8]) -> [u8; 32] {
@@ -510,6 +1022,37 @@ fn read_lookup_slot(bytes: &[u8], table_offset: u64, slot: u64) -> Result<Lookup
         name_hash: cursor.array::<32>()?,
         record_offset: cursor.u64()?,
         record_id: cursor.u64()?,
+    })
+}
+
+fn encode_directory_slot(slot: DirectorySlot) -> [u8; DIRECTORY_SLOT_BYTES] {
+    let mut bytes = [0_u8; DIRECTORY_SLOT_BYTES];
+    bytes[0..8].copy_from_slice(&slot.parent.to_le_bytes());
+    bytes[8..16].copy_from_slice(&slot.record_offset.to_le_bytes());
+    bytes[16..24].copy_from_slice(&slot.record_id.to_le_bytes());
+    bytes[24..32].copy_from_slice(&slot.nlink.to_le_bytes());
+    bytes
+}
+
+fn read_directory_slot(
+    bytes: &[u8],
+    table_offset: u64,
+    slot: u64,
+) -> Result<DirectorySlot, IndexError> {
+    let offset = slot
+        .checked_mul(DIRECTORY_SLOT_BYTES as u64)
+        .and_then(|value| table_offset.checked_add(value))
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or(IndexError::InvalidRecord)?;
+    let end = offset
+        .checked_add(DIRECTORY_SLOT_BYTES)
+        .ok_or(IndexError::InvalidRecord)?;
+    let mut cursor = Cursor::new(bytes.get(offset..end).ok_or(IndexError::InvalidRecord)?);
+    Ok(DirectorySlot {
+        parent: cursor.u64()?,
+        record_offset: cursor.u64()?,
+        record_id: cursor.u64()?,
+        nlink: cursor.u64()?,
     })
 }
 
@@ -565,6 +1108,7 @@ fn decode_record_view<'a>(
     Ok(IndexNodeView {
         artifact,
         id,
+        record_offset: u64::try_from(offset).map_err(|_| IndexError::InvalidRecord)?,
         parent,
         depth,
         sibling_ordinal,
@@ -680,6 +1224,12 @@ enum IndexLayout {
         records_bytes: u64,
         lookup_slots: u64,
     },
+    IterableV3 {
+        records_bytes: u64,
+        lookup_slots: u64,
+        directory_slots: u64,
+        root_nlink: u64,
+    },
 }
 
 impl<'bytes> ValidatedIndex<'bytes> {
@@ -725,6 +1275,7 @@ impl<'bytes> ValidatedIndex<'bytes> {
         let offset = match self.layout {
             IndexLayout::SequentialV1 => HEADER_BYTES_V1,
             IndexLayout::PointLookupV2 { .. } => HEADER_BYTES_V2,
+            IndexLayout::IterableV3 { .. } => HEADER_BYTES_V3,
         };
         decode_record_view(self.bytes, offset, 0, self.descriptor.digest())
     }
@@ -755,19 +1306,24 @@ impl<'bytes> ValidatedIndex<'bytes> {
         parent: &IndexNodeView<'_>,
         name: &PathName,
     ) -> Result<Option<IndexNodeView<'bytes>>, IndexError> {
-        let IndexLayout::PointLookupV2 {
-            records_bytes,
-            lookup_slots,
-        } = self.layout
-        else {
-            return Err(IndexError::PointLookupUnavailable);
+        let (header_bytes, records_bytes, lookup_slots) = match self.layout {
+            IndexLayout::SequentialV1 => return Err(IndexError::PointLookupUnavailable),
+            IndexLayout::PointLookupV2 {
+                records_bytes,
+                lookup_slots,
+            } => (HEADER_BYTES_V2, records_bytes, lookup_slots),
+            IndexLayout::IterableV3 {
+                records_bytes,
+                lookup_slots,
+                ..
+            } => (HEADER_BYTES_V3, records_bytes, lookup_slots),
         };
         if parent.artifact != self.descriptor.digest() || parent.kind != IndexNodeKind::Directory {
             return Err(IndexError::ForeignNode);
         }
 
         let target_hash = lookup_hash(parent.id, name.as_bytes());
-        let table_offset = (HEADER_BYTES_V2 as u64)
+        let table_offset = (header_bytes as u64)
             .checked_add(records_bytes)
             .ok_or(IndexError::InvalidRecord)?;
         let mut left = 0_u64;
@@ -801,7 +1357,271 @@ impl<'bytes> ValidatedIndex<'bytes> {
     /// Reports whether this artifact supports immutable point lookup.
     #[must_use]
     pub const fn supports_point_lookup(&self) -> bool {
-        matches!(self.layout, IndexLayout::PointLookupV2 { .. })
+        !matches!(self.layout, IndexLayout::SequentialV1)
+    }
+
+    /// Reports whether this artifact supports authenticated directory iteration.
+    #[must_use]
+    pub const fn supports_directory_iteration(&self) -> bool {
+        matches!(self.layout, IndexLayout::IterableV3 { .. })
+    }
+
+    /// Returns a borrowed allocation-free range over canonical children.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IndexError::DirectoryIterationUnavailable`] for V1/V2,
+    /// [`IndexError::ForeignNode`] for a foreign or non-directory node, or
+    /// [`IndexError::InvalidRecord`] if internally authenticated offsets fail.
+    pub fn directory_range<'index>(
+        &'index self,
+        directory: &IndexNodeView<'_>,
+    ) -> Result<DirectoryRange<'index>, IndexError> {
+        let IndexLayout::IterableV3 {
+            records_bytes,
+            lookup_slots,
+            directory_slots,
+            ..
+        } = self.layout
+        else {
+            return Err(IndexError::DirectoryIterationUnavailable);
+        };
+        if directory.artifact != self.descriptor.digest()
+            || directory.kind != IndexNodeKind::Directory
+        {
+            return Err(IndexError::ForeignNode);
+        }
+        let table_offset = directory_table_offset(records_bytes, lookup_slots)?;
+        let start = directory_lower_bound(self.bytes, table_offset, directory_slots, directory.id)?;
+        let end = directory_lower_bound(
+            self.bytes,
+            table_offset,
+            directory_slots,
+            directory.id.saturating_add(1),
+        )?;
+        Ok(DirectoryRange {
+            bytes: self.bytes,
+            artifact: self.descriptor.digest(),
+            table_offset,
+            start,
+            length: end.checked_sub(start).ok_or(IndexError::InvalidRecord)?,
+            parent: directory.id,
+        })
+    }
+
+    /// Returns a borrowed allocation-free iterator over canonical children.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::directory_range`].
+    pub fn directory_entries<'index>(
+        &'index self,
+        directory: &IndexNodeView<'_>,
+    ) -> Result<DirectoryEntries<'index>, IndexError> {
+        Ok(self.directory_range(directory)?.iter())
+    }
+
+    /// Returns the exact portable link count authenticated for a node.
+    ///
+    /// This operation is allocation-free and takes one parent-range binary
+    /// search plus one direct sibling-ordinal slot access.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IndexError::DirectoryIterationUnavailable`] for V1/V2,
+    /// [`IndexError::ForeignNode`] for a node from another artifact, or
+    /// [`IndexError::InvalidRecord`] if the node is absent from the table.
+    pub fn nlink(&self, node: &IndexNodeView<'_>) -> Result<u64, IndexError> {
+        let IndexLayout::IterableV3 {
+            records_bytes,
+            lookup_slots,
+            directory_slots,
+            root_nlink,
+        } = self.layout
+        else {
+            return Err(IndexError::DirectoryIterationUnavailable);
+        };
+        if node.artifact != self.descriptor.digest() {
+            return Err(IndexError::ForeignNode);
+        }
+        if node.id == 0 {
+            return Ok(root_nlink);
+        }
+        let table_offset = directory_table_offset(records_bytes, lookup_slots)?;
+        let start = directory_lower_bound(self.bytes, table_offset, directory_slots, node.parent)?;
+        let position = start
+            .checked_add(u64::from(node.sibling_ordinal))
+            .ok_or(IndexError::InvalidRecord)?;
+        if position >= directory_slots {
+            return Err(IndexError::InvalidRecord);
+        }
+        let slot = read_directory_slot(self.bytes, table_offset, position)?;
+        if slot.parent != node.parent
+            || slot.record_id != node.id
+            || slot.record_offset != node.record_offset
+        {
+            return Err(IndexError::InvalidRecord);
+        }
+        Ok(slot.nlink)
+    }
+}
+
+fn directory_table_offset(records_bytes: u64, lookup_slots: u64) -> Result<u64, IndexError> {
+    (HEADER_BYTES_V3 as u64)
+        .checked_add(records_bytes)
+        .and_then(|offset| {
+            lookup_slots
+                .checked_mul(LOOKUP_SLOT_BYTES as u64)
+                .and_then(|bytes| offset.checked_add(bytes))
+        })
+        .ok_or(IndexError::InvalidRecord)
+}
+
+fn directory_lower_bound(
+    bytes: &[u8],
+    table_offset: u64,
+    slots: u64,
+    parent: u64,
+) -> Result<u64, IndexError> {
+    let mut left = 0;
+    let mut right = slots;
+    while left < right {
+        let middle = left + (right - left) / 2;
+        if read_directory_slot(bytes, table_offset, middle)?.parent < parent {
+            left = middle + 1;
+        } else {
+            right = middle;
+        }
+    }
+    Ok(left)
+}
+
+/// Borrows a V3 directory's canonical child range without allocating.
+#[derive(Clone, Copy)]
+pub struct DirectoryRange<'a> {
+    bytes: &'a [u8],
+    artifact: ObjectDigest,
+    table_offset: u64,
+    start: u64,
+    length: u64,
+    parent: u64,
+}
+
+impl<'a> DirectoryRange<'a> {
+    /// Returns the exact child count.
+    #[must_use]
+    pub const fn len(&self) -> u64 {
+        self.length
+    }
+
+    /// Reports whether the directory has no children.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.length == 0
+    }
+
+    /// Returns one child by canonical sibling ordinal.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IndexError::InvalidRecord`] if an authenticated internal slot
+    /// cannot be decoded or no longer matches its parent and ordinal.
+    pub fn get(&self, ordinal: u64) -> Result<Option<DirectoryEntryView<'a>>, IndexError> {
+        if ordinal >= self.length {
+            return Ok(None);
+        }
+        let position = self
+            .start
+            .checked_add(ordinal)
+            .ok_or(IndexError::InvalidRecord)?;
+        let slot = read_directory_slot(self.bytes, self.table_offset, position)?;
+        let offset = usize::try_from(slot.record_offset).map_err(|_| IndexError::InvalidRecord)?;
+        let node = decode_record_view(self.bytes, offset, slot.record_id, self.artifact)?;
+        if slot.parent != self.parent
+            || node.parent != self.parent
+            || u64::from(node.sibling_ordinal) != ordinal
+        {
+            return Err(IndexError::InvalidRecord);
+        }
+        Ok(Some(DirectoryEntryView {
+            node,
+            nlink: slot.nlink,
+        }))
+    }
+
+    /// Iterates from the first canonical child without allocating.
+    #[must_use]
+    pub const fn iter(self) -> DirectoryEntries<'a> {
+        DirectoryEntries {
+            range: self,
+            next: 0,
+        }
+    }
+}
+
+impl<'a> IntoIterator for DirectoryRange<'a> {
+    type Item = Result<DirectoryEntryView<'a>, IndexError>;
+    type IntoIter = DirectoryEntries<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+/// Iterates borrowed V3 directory children without allocating.
+pub struct DirectoryEntries<'a> {
+    range: DirectoryRange<'a>,
+    next: u64,
+}
+
+impl<'a> Iterator for DirectoryEntries<'a> {
+    type Item = Result<DirectoryEntryView<'a>, IndexError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.next == self.range.length {
+            return None;
+        }
+        let ordinal = self.next;
+        self.next += 1;
+        Some(
+            self.range
+                .get(ordinal)
+                .and_then(|entry| entry.ok_or(IndexError::InvalidRecord)),
+        )
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = usize::try_from(self.range.length - self.next).unwrap_or(usize::MAX);
+        (remaining, Some(remaining))
+    }
+}
+
+impl ExactSizeIterator for DirectoryEntries<'_> {}
+
+/// Borrows one canonical directory entry and its exact link count.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DirectoryEntryView<'a> {
+    node: IndexNodeView<'a>,
+    nlink: u64,
+}
+
+impl<'a> DirectoryEntryView<'a> {
+    /// Returns the lazily decoded child record.
+    #[must_use]
+    pub const fn node(&self) -> &IndexNodeView<'a> {
+        &self.node
+    }
+
+    /// Consumes the entry and returns its lazily decoded child record.
+    #[must_use]
+    pub const fn into_node(self) -> IndexNodeView<'a> {
+        self.node
+    }
+
+    /// Returns the exact portable link count.
+    #[must_use]
+    pub const fn nlink(&self) -> u64 {
+        self.nlink
     }
 }
 
@@ -825,6 +1645,7 @@ pub enum IndexNodeKind {
 pub struct IndexNodeView<'a> {
     artifact: ObjectDigest,
     id: u64,
+    record_offset: u64,
     parent: u64,
     depth: u32,
     sibling_ordinal: u32,
@@ -838,7 +1659,7 @@ pub struct IndexNodeView<'a> {
     encoded_record: &'a [u8],
 }
 
-impl IndexNodeView<'_> {
+impl<'a> IndexNodeView<'a> {
     /// Returns the artifact-scoped record identifier.
     #[must_use]
     pub const fn record_id(&self) -> u64 {
@@ -901,7 +1722,7 @@ impl IndexNodeView<'_> {
 
     /// Returns the byte-exact final path component, empty only for the root.
     #[must_use]
-    pub const fn name(&self) -> &[u8] {
+    pub const fn name(&self) -> &'a [u8] {
         self.name
     }
 
@@ -969,6 +1790,9 @@ pub enum IndexError {
     /// Point lookup was requested from a validation-only V1 artifact.
     #[error("point lookup is unavailable for structural-index V1")]
     PointLookupUnavailable,
+    /// Directory iteration or exact link counts were requested from V1/V2.
+    #[error("directory iteration is unavailable before structural-index V3")]
+    DirectoryIterationUnavailable,
     /// A lookup parent came from another artifact or was not a directory.
     #[error("lookup parent does not belong to this index or is not a directory")]
     ForeignNode,
@@ -989,6 +1813,7 @@ struct ParsedRecord {
 struct IndexNodeRecord {
     parent: u64,
     depth: u32,
+    sibling_ordinal: u32,
     directory: bool,
     name: Vec<u8>,
     record_offset: u64,
@@ -1019,6 +1844,12 @@ pub struct IndexExpectation<'a> {
 }
 
 /// Validates a complete index before a worker maps or serves it.
+///
+/// Validation uses a conservative input-scaled model for its heterogeneous
+/// maps and decoded records; it does not claim allocator-exact accounting for
+/// those containers. The runtime cgroup memory ceiling remains the final
+/// allocator/OOM backstop. Builder table and scratch peaks are accounted from
+/// observed `Vec` capacities separately.
 ///
 /// # Errors
 ///
@@ -1053,6 +1884,7 @@ pub fn validate_index<'a>(
     let (index_media_type, expected_header_bytes) = match version {
         VERSION_V1 => (INDEX_MEDIA_TYPE_V1, HEADER_BYTES_V1),
         VERSION_V2 => (INDEX_MEDIA_TYPE_V2, HEADER_BYTES_V2),
+        VERSION_V3 => (INDEX_MEDIA_TYPE_V3, HEADER_BYTES_V3),
         _ => return Err(IndexError::InvalidHeader),
     };
     if header_bytes != expected_header_bytes || bytes.len() < header_bytes {
@@ -1079,26 +1911,52 @@ pub fn validate_index<'a>(
     }
     let payload_bytes = cursor.u64()?;
     let expected_hash = cursor.array::<32>()?;
-    let (records_bytes, lookup_slots, layout) = if version == VERSION_V2 {
-        let records_bytes = cursor.u64()?;
-        let lookup_slots = cursor.u64()?;
-        if cursor.u32()? as usize != LOOKUP_SLOT_BYTES
-            || cursor.u32()? != LOOKUP_HASH_SHA256
-            || cursor.u64()? != 0
-        {
-            return Err(IndexError::InvalidHeader);
-        }
-        (
-            records_bytes,
-            lookup_slots,
-            IndexLayout::PointLookupV2 {
-                records_bytes,
-                lookup_slots,
-            },
-        )
-    } else {
-        (payload_bytes, 0, IndexLayout::SequentialV1)
-    };
+    let (records_bytes, lookup_slots, directory_slots, root_nlink, layout) =
+        if version >= VERSION_V2 {
+            let records_bytes = cursor.u64()?;
+            let lookup_slots = cursor.u64()?;
+            if cursor.u32()? as usize != LOOKUP_SLOT_BYTES
+                || cursor.u32()? != LOOKUP_HASH_SHA256
+                || cursor.u64()? != 0
+            {
+                return Err(IndexError::InvalidHeader);
+            }
+            if version == VERSION_V3 {
+                let directory_slots = cursor.u64()?;
+                if cursor.u32()? as usize != DIRECTORY_SLOT_BYTES || cursor.u32()? != 0 {
+                    return Err(IndexError::InvalidHeader);
+                }
+                let root_nlink = cursor.u64()?;
+                if root_nlink < 2 || cursor.u64()? != 0 {
+                    return Err(IndexError::InvalidHeader);
+                }
+                (
+                    records_bytes,
+                    lookup_slots,
+                    directory_slots,
+                    root_nlink,
+                    IndexLayout::IterableV3 {
+                        records_bytes,
+                        lookup_slots,
+                        directory_slots,
+                        root_nlink,
+                    },
+                )
+            } else {
+                (
+                    records_bytes,
+                    lookup_slots,
+                    0,
+                    0,
+                    IndexLayout::PointLookupV2 {
+                        records_bytes,
+                        lookup_slots,
+                    },
+                )
+            }
+        } else {
+            (payload_bytes, 0, 0, 0, IndexLayout::SequentialV1)
+        };
     if compiler_abi != expected.compiler_abi
         || tree_digest != expected.tree.digest()
         || tree_size != expected.tree.encoded_size()
@@ -1123,20 +1981,52 @@ pub fn validate_index<'a>(
     if records_len > payload.len() {
         return Err(IndexError::InvalidHeader);
     }
-    let (records_payload, lookup_payload) = payload.split_at(records_len);
-    if version == VERSION_V2 {
+    let table_slots = lookup_slot_count(records)?;
+    let lookup_bytes = if version >= VERSION_V2 {
+        lookup_allocation_bytes(table_slots)?
+    } else {
+        0
+    };
+    let lookup_len = usize::try_from(lookup_bytes).map_err(|_| IndexError::LimitExceeded)?;
+    if records_len
+        .checked_add(lookup_len)
+        .ok_or(IndexError::LimitExceeded)?
+        > payload.len()
+    {
+        return Err(IndexError::InvalidHeader);
+    }
+    let records_payload = &payload[..records_len];
+    let lookup_payload = &payload[records_len..records_len + lookup_len];
+    let directory_payload = &payload[records_len + lookup_len..];
+    if version >= VERSION_V2 {
         let canonical_slots = lookup_slot_count(records)?;
         let table_bytes = lookup_allocation_bytes(canonical_slots)?;
-        if lookup_slots != canonical_slots as u64
-            || table_bytes != lookup_payload.len() as u64
-            || records_bytes
-                .checked_add(table_bytes)
-                .ok_or(IndexError::LimitExceeded)?
-                != payload_bytes
+        let canonical_slots_u64 =
+            u64::try_from(canonical_slots).map_err(|_| IndexError::LimitExceeded)?;
+        if lookup_slots != canonical_slots_u64 || table_bytes != lookup_payload.len() as u64 {
+            return Err(IndexError::InvalidHeader);
+        }
+        let directory_bytes = if version == VERSION_V3 {
+            let bytes = directory_allocation_bytes(canonical_slots)?;
+            if directory_slots != canonical_slots_u64 || bytes != directory_payload.len() as u64 {
+                return Err(IndexError::InvalidHeader);
+            }
+            bytes
+        } else {
+            if !directory_payload.is_empty() {
+                return Err(IndexError::InvalidHeader);
+            }
+            0
+        };
+        if records_bytes
+            .checked_add(table_bytes)
+            .and_then(|bytes| bytes.checked_add(directory_bytes))
+            .ok_or(IndexError::LimitExceeded)?
+            != payload_bytes
         {
             return Err(IndexError::InvalidHeader);
         }
-    } else if !lookup_payload.is_empty() {
+    } else if !lookup_payload.is_empty() || !directory_payload.is_empty() {
         return Err(IndexError::InvalidHeader);
     }
     let mut records_cursor = Cursor::new(records_payload);
@@ -1206,6 +2096,7 @@ pub fn validate_index<'a>(
         nodes.push(IndexNodeRecord {
             parent,
             depth,
+            sibling_ordinal: record.sibling_ordinal,
             directory,
             name: record.name,
             record_offset: record_offset as u64,
@@ -1226,8 +2117,11 @@ pub fn validate_index<'a>(
         return Err(IndexError::LimitExceeded);
     }
     validate_index_hardlinks(&hardlinks, &nodes)?;
-    if version == VERSION_V2 {
+    if version >= VERSION_V2 {
         validate_lookup_table(lookup_payload, &nodes)?;
+    }
+    if version == VERSION_V3 {
+        validate_directory_table(directory_payload, root_nlink, &nodes, &hardlinks)?;
     }
     let hardlink_groups = u64::try_from(hardlinks.len()).map_err(|_| IndexError::LimitExceeded)?;
     let hardlink_members = hardlinks.values().try_fold(0_u64, |total, members| {
@@ -1648,6 +2542,70 @@ fn validate_lookup_table(bytes: &[u8], nodes: &[IndexNodeRecord]) -> Result<(), 
     Ok(())
 }
 
+fn validate_directory_table(
+    bytes: &[u8],
+    root_nlink: u64,
+    nodes: &[IndexNodeRecord],
+    hardlinks: &std::collections::BTreeMap<ObjectDigest, Vec<IndexHardlinkMember>>,
+) -> Result<(), IndexError> {
+    if !bytes.len().is_multiple_of(DIRECTORY_SLOT_BYTES) {
+        return Err(IndexError::InvalidHeader);
+    }
+    let mut nlinks = Vec::new();
+    nlinks
+        .try_reserve_exact(nodes.len())
+        .map_err(|_| IndexError::AllocationRefused)?;
+    nlinks.extend(
+        nodes
+            .iter()
+            .map(|node| if node.directory { 2_u64 } else { 1_u64 }),
+    );
+    for node in nodes.iter().skip(1).filter(|node| node.directory) {
+        let parent = usize::try_from(node.parent).map_err(|_| IndexError::InvalidRecord)?;
+        let value = nlinks.get_mut(parent).ok_or(IndexError::InvalidRecord)?;
+        *value = value.checked_add(1).ok_or(IndexError::LimitExceeded)?;
+    }
+    for members in hardlinks.values() {
+        let count = u64::try_from(members.len()).map_err(|_| IndexError::LimitExceeded)?;
+        for member in members {
+            let index = usize::try_from(member.node).map_err(|_| IndexError::InvalidRecord)?;
+            *nlinks.get_mut(index).ok_or(IndexError::InvalidRecord)? = count;
+        }
+    }
+    if nlinks.first().copied() != Some(root_nlink) {
+        return Err(IndexError::InvalidRecord);
+    }
+
+    let mut expected = Vec::new();
+    expected
+        .try_reserve_exact(nodes.len().saturating_sub(1))
+        .map_err(|_| IndexError::AllocationRefused)?;
+    for (record_id, node) in nodes.iter().enumerate().skip(1) {
+        let record_id = u64::try_from(record_id).map_err(|_| IndexError::LimitExceeded)?;
+        let nlink = nlinks
+            .get(usize::try_from(record_id).map_err(|_| IndexError::LimitExceeded)?)
+            .copied()
+            .ok_or(IndexError::InvalidRecord)?;
+        expected.push((
+            node.parent,
+            node.sibling_ordinal,
+            DirectorySlot {
+                parent: node.parent,
+                record_offset: node.record_offset,
+                record_id,
+                nlink,
+            },
+        ));
+    }
+    expected.sort_unstable_by_key(|(parent, ordinal, slot)| (*parent, *ordinal, slot.record_id));
+    for (encoded, (_, _, expected)) in bytes.chunks_exact(DIRECTORY_SLOT_BYTES).zip(expected) {
+        if encoded != encode_directory_slot(expected) {
+            return Err(IndexError::InvalidRecord);
+        }
+    }
+    Ok(())
+}
+
 fn validate_index_hardlinks(
     groups: &std::collections::BTreeMap<ObjectDigest, Vec<IndexHardlinkMember>>,
     nodes: &[IndexNodeRecord],
@@ -1905,6 +2863,21 @@ mod tests {
         )
     }
 
+    fn index_media_for(bytes: &[u8]) -> MediaType {
+        let version = u32::from_le_bytes(
+            bytes[8..12]
+                .try_into()
+                .unwrap_or_else(|_| panic!("index version missing")),
+        );
+        let media = match version {
+            VERSION_V1 => INDEX_MEDIA_TYPE_V1,
+            VERSION_V2 => INDEX_MEDIA_TYPE_V2,
+            VERSION_V3 => INDEX_MEDIA_TYPE_V3,
+            _ => panic!("unexpected index version"),
+        };
+        MediaType::new(media).unwrap_or_else(|error| panic!("media failed: {error}"))
+    }
+
     fn root_index() -> (
         Vec<u8>,
         u64,
@@ -1936,6 +2909,36 @@ mod tests {
         let (writer, summary) = staged.into_parts();
         let position = writer.position();
         (writer.into_inner(), position, summary, tree, root)
+    }
+
+    fn root_index_v3() -> (Vec<u8>, ObjectDescriptor, ObjectDescriptor) {
+        let tree = descriptor();
+        let root = directory_descriptor();
+        let metadata = FilesystemMetadata::new(0o755, 0, 0, 0, 0, Vec::new(), None)
+            .unwrap_or_else(|error| panic!("metadata failed: {error}"));
+        let mut builder = StructuralIndexBuilder::new_v3(
+            IndexStaging::new(IoCursor::new(Vec::new()), 4096, 4096),
+            [3; 32],
+            tree.clone(),
+            root.clone(),
+            0,
+        )
+        .unwrap_or_else(|error| panic!("builder failed: {error}"));
+        builder
+            .push(&IndexRecord {
+                parent: u64::MAX,
+                depth: 0,
+                sibling_ordinal: 0,
+                name: &[],
+                metadata: &metadata,
+                node: IndexNode::Directory { descriptor: &root },
+            })
+            .unwrap_or_else(|error| panic!("root push failed: {error}"));
+        let (writer, _) = builder
+            .finish()
+            .unwrap_or_else(|error| panic!("finish failed: {error}"))
+            .into_parts();
+        (writer.into_inner(), tree, root)
     }
 
     fn root_index_v1() -> (Vec<u8>, ObjectDescriptor, ObjectDescriptor) {
@@ -2017,8 +3020,7 @@ mod tests {
         assert_eq!(bytes.len() as u64, summary.bytes);
         assert_eq!(summary.records, 1);
         assert_eq!(summary.bytes, 365);
-        let media = MediaType::new(INDEX_MEDIA_TYPE)
-            .unwrap_or_else(|error| panic!("media failed: {error}"));
+        let media = index_media_for(&bytes);
         assert_eq!(
             descriptor_for_bytes(media, &bytes).digest().as_bytes(),
             &[
@@ -2082,8 +3084,7 @@ mod tests {
         tree: &ObjectDescriptor,
         root: &ObjectDescriptor,
     ) -> Result<ValidatedIndex<'a>, IndexError> {
-        let media = MediaType::new(INDEX_MEDIA_TYPE)
-            .unwrap_or_else(|error| panic!("media failed: {error}"));
+        let media = index_media_for(bytes);
         let index = descriptor_for_bytes(media, bytes);
         validate_index(
             bytes,
@@ -2159,6 +3160,879 @@ mod tests {
         (writer.into_inner(), tree, root)
     }
 
+    fn iterable_index() -> (Vec<u8>, ObjectDescriptor, ObjectDescriptor) {
+        let tree = descriptor();
+        let root = directory_descriptor();
+        let directory = ObjectDescriptor::new(
+            root.media_type().clone(),
+            ObjectDigest::from_bytes([9; 32]),
+            17,
+        );
+        let metadata = FilesystemMetadata::new(0o755, 7, 8, 9, 10, Vec::new(), None)
+            .unwrap_or_else(|error| panic!("metadata failed: {error}"));
+        let content_descriptor = ObjectDescriptor::new(
+            MediaType::new("application/vnd.aos.sandbox.content.v1")
+                .unwrap_or_else(|error| panic!("media failed: {error}")),
+            ObjectDigest::from_bytes([5; 32]),
+            0,
+        );
+        let content = ContentLayout::whole(content_descriptor);
+        let paths = [b"b".as_slice(), b"c".as_slice()]
+            .into_iter()
+            .map(|name| {
+                RelativePath::new(vec![
+                    PathName::new(name.to_vec())
+                        .unwrap_or_else(|error| panic!("name failed: {error}")),
+                ])
+                .unwrap_or_else(|error| panic!("path failed: {error}"))
+            })
+            .collect::<Vec<_>>();
+        let group = hardlink_group_digest(&paths, &metadata, &content)
+            .unwrap_or_else(|error| panic!("hard-link group failed: {error}"));
+        let mut builder = StructuralIndexBuilder::new_v3(
+            IndexStaging::new(IoCursor::new(Vec::new()), 32 * 1024, 8192),
+            [3; 32],
+            tree.clone(),
+            root.clone(),
+            0,
+        )
+        .unwrap_or_else(|error| panic!("builder failed: {error}"));
+        for record in [
+            IndexRecord {
+                parent: u64::MAX,
+                depth: 0,
+                sibling_ordinal: 0,
+                name: &[],
+                metadata: &metadata,
+                node: IndexNode::Directory { descriptor: &root },
+            },
+            IndexRecord {
+                parent: 0,
+                depth: 1,
+                sibling_ordinal: 0,
+                name: b"a",
+                metadata: &metadata,
+                node: IndexNode::Directory {
+                    descriptor: &directory,
+                },
+            },
+            IndexRecord {
+                parent: 0,
+                depth: 1,
+                sibling_ordinal: 1,
+                name: b"b",
+                metadata: &metadata,
+                node: IndexNode::File {
+                    content: &content,
+                    hardlink_group: Some(group),
+                },
+            },
+            IndexRecord {
+                parent: 0,
+                depth: 1,
+                sibling_ordinal: 2,
+                name: b"c",
+                metadata: &metadata,
+                node: IndexNode::File {
+                    content: &content,
+                    hardlink_group: Some(group),
+                },
+            },
+            IndexRecord {
+                parent: 0,
+                depth: 1,
+                sibling_ordinal: 3,
+                name: b"d",
+                metadata: &metadata,
+                node: IndexNode::Symlink { target: b"target" },
+            },
+            IndexRecord {
+                parent: 1,
+                depth: 2,
+                sibling_ordinal: 0,
+                name: b"nested",
+                metadata: &metadata,
+                node: IndexNode::Symlink { target: b"target" },
+            },
+        ] {
+            builder
+                .push(&record)
+                .unwrap_or_else(|error| panic!("push failed: {error}"));
+        }
+        let (writer, _) = builder
+            .finish()
+            .unwrap_or_else(|error| panic!("finish failed: {error}"))
+            .into_parts();
+        (writer.into_inner(), tree, root)
+    }
+
+    #[test]
+    fn v3_directory_ranges_and_exact_nlink_are_lazy_and_canonical() {
+        let (bytes, tree, root) = iterable_index();
+        assert_eq!(
+            descriptor_for_bytes(index_media_for(&bytes), &bytes)
+                .digest()
+                .as_bytes(),
+            &[
+                118, 109, 109, 56, 7, 22, 111, 231, 229, 148, 152, 44, 86, 236, 184, 171, 14, 134,
+                234, 50, 21, 157, 220, 226, 157, 1, 17, 27, 140, 35, 253, 9,
+            ]
+        );
+        let validated = validate_fresh(&bytes, &tree, &root)
+            .unwrap_or_else(|error| panic!("validation failed: {error}"));
+        assert!(validated.supports_point_lookup());
+        assert!(validated.supports_directory_iteration());
+        let root = validated
+            .root()
+            .unwrap_or_else(|error| panic!("root failed: {error}"));
+        assert_eq!(
+            validated
+                .nlink(&root)
+                .unwrap_or_else(|error| panic!("root nlink failed: {error}")),
+            3
+        );
+        let mut entries = validated
+            .directory_entries(&root)
+            .unwrap_or_else(|error| panic!("iteration failed: {error}"));
+        assert_eq!(entries.len(), 4);
+        let observed = entries
+            .by_ref()
+            .map(|entry| {
+                let entry = entry.unwrap_or_else(|error| panic!("entry failed: {error}"));
+                (entry.node().name(), entry.nlink())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            observed,
+            vec![
+                (b"a".as_slice(), 2),
+                (b"b".as_slice(), 2),
+                (b"c".as_slice(), 2),
+                (b"d".as_slice(), 1),
+            ]
+        );
+        assert_eq!(entries.len(), 0);
+        let a = validated
+            .lookup_child(
+                &root,
+                &PathName::new(b"a".to_vec())
+                    .unwrap_or_else(|error| panic!("name failed: {error}")),
+            )
+            .unwrap_or_else(|error| panic!("lookup failed: {error}"))
+            .unwrap_or_else(|| panic!("a missing"));
+        assert_eq!(
+            validated
+                .nlink(&a)
+                .unwrap_or_else(|error| panic!("a nlink failed: {error}")),
+            2
+        );
+        let nested = validated
+            .directory_entries(&a)
+            .unwrap_or_else(|error| panic!("nested iteration failed: {error}"))
+            .next()
+            .unwrap_or_else(|| panic!("nested entry missing"))
+            .unwrap_or_else(|error| panic!("nested entry failed: {error}"));
+        assert_eq!(
+            (nested.node().name(), nested.nlink()),
+            (b"nested".as_slice(), 1)
+        );
+        assert!(
+            bytes
+                .as_ptr_range()
+                .contains(&nested.node().name().as_ptr())
+        );
+    }
+
+    #[test]
+    fn v3_empty_root_and_foreign_nodes_fail_closed() {
+        let (empty_bytes, empty_tree, empty_root_descriptor) = root_index_v3();
+        let empty = validate_fresh(&empty_bytes, &empty_tree, &empty_root_descriptor)
+            .unwrap_or_else(|error| panic!("empty validation failed: {error}"));
+        let empty_root = empty
+            .root()
+            .unwrap_or_else(|error| panic!("empty root failed: {error}"));
+        assert_eq!(
+            empty
+                .nlink(&empty_root)
+                .unwrap_or_else(|error| panic!("empty nlink failed: {error}")),
+            2
+        );
+        let empty_range = empty
+            .directory_range(&empty_root)
+            .unwrap_or_else(|error| panic!("empty range failed: {error}"));
+        assert!(empty_range.is_empty());
+        assert_eq!(empty_range.len(), 0);
+        assert!(empty_range.iter().next().is_none());
+
+        let (other_bytes, other_tree, other_root) = iterable_index();
+        let other = validate_fresh(&other_bytes, &other_tree, &other_root)
+            .unwrap_or_else(|error| panic!("other validation failed: {error}"));
+        let foreign = other
+            .root()
+            .unwrap_or_else(|error| panic!("foreign root failed: {error}"));
+        assert!(matches!(
+            empty.directory_range(&foreign),
+            Err(IndexError::ForeignNode)
+        ));
+        assert!(matches!(
+            empty.nlink(&foreign),
+            Err(IndexError::ForeignNode)
+        ));
+    }
+
+    #[test]
+    fn v3_hardlink_counts_span_distinct_parent_ranges() {
+        let tree = descriptor();
+        let root = directory_descriptor();
+        let directory_a = ObjectDescriptor::new(
+            root.media_type().clone(),
+            ObjectDigest::from_bytes([10; 32]),
+            10,
+        );
+        let directory_b = ObjectDescriptor::new(
+            root.media_type().clone(),
+            ObjectDigest::from_bytes([11; 32]),
+            11,
+        );
+        let metadata = FilesystemMetadata::new(0o644, 0, 0, 0, 0, Vec::new(), None)
+            .unwrap_or_else(|error| panic!("metadata failed: {error}"));
+        let content = ContentLayout::whole(ObjectDescriptor::new(
+            MediaType::new("application/vnd.aos.sandbox.content.v1")
+                .unwrap_or_else(|error| panic!("media failed: {error}")),
+            ObjectDigest::from_bytes([5; 32]),
+            0,
+        ));
+        let paths = [(b"a".as_slice(), b"x".as_slice()), (b"b", b"y")]
+            .into_iter()
+            .map(|(parent, name)| {
+                RelativePath::new(vec![
+                    PathName::new(parent.to_vec())
+                        .unwrap_or_else(|error| panic!("parent failed: {error}")),
+                    PathName::new(name.to_vec())
+                        .unwrap_or_else(|error| panic!("name failed: {error}")),
+                ])
+                .unwrap_or_else(|error| panic!("path failed: {error}"))
+            })
+            .collect::<Vec<_>>();
+        let group = hardlink_group_digest(&paths, &metadata, &content)
+            .unwrap_or_else(|error| panic!("group failed: {error}"));
+        let mut builder = StructuralIndexBuilder::new_v3(
+            IndexStaging::new(IoCursor::new(Vec::new()), 16 * 1024, 16 * 1024),
+            [3; 32],
+            tree.clone(),
+            root.clone(),
+            0,
+        )
+        .unwrap_or_else(|error| panic!("builder failed: {error}"));
+        for record in [
+            IndexRecord {
+                parent: u64::MAX,
+                depth: 0,
+                sibling_ordinal: 0,
+                name: &[],
+                metadata: &metadata,
+                node: IndexNode::Directory { descriptor: &root },
+            },
+            IndexRecord {
+                parent: 0,
+                depth: 1,
+                sibling_ordinal: 0,
+                name: b"a",
+                metadata: &metadata,
+                node: IndexNode::Directory {
+                    descriptor: &directory_a,
+                },
+            },
+            IndexRecord {
+                parent: 0,
+                depth: 1,
+                sibling_ordinal: 1,
+                name: b"b",
+                metadata: &metadata,
+                node: IndexNode::Directory {
+                    descriptor: &directory_b,
+                },
+            },
+            IndexRecord {
+                parent: 1,
+                depth: 2,
+                sibling_ordinal: 0,
+                name: b"x",
+                metadata: &metadata,
+                node: IndexNode::File {
+                    content: &content,
+                    hardlink_group: Some(group),
+                },
+            },
+            IndexRecord {
+                parent: 2,
+                depth: 2,
+                sibling_ordinal: 0,
+                name: b"y",
+                metadata: &metadata,
+                node: IndexNode::File {
+                    content: &content,
+                    hardlink_group: Some(group),
+                },
+            },
+        ] {
+            builder
+                .push(&record)
+                .unwrap_or_else(|error| panic!("push failed: {error}"));
+        }
+        let (writer, _) = builder
+            .finish()
+            .unwrap_or_else(|error| panic!("finish failed: {error}"))
+            .into_parts();
+        let bytes = writer.into_inner();
+        let validated = validate_fresh(&bytes, &tree, &root)
+            .unwrap_or_else(|error| panic!("validation failed: {error}"));
+        let root_view = validated
+            .root()
+            .unwrap_or_else(|error| panic!("root failed: {error}"));
+        for ordinal in 0..2 {
+            let directory = validated
+                .directory_range(&root_view)
+                .unwrap_or_else(|error| panic!("root range failed: {error}"))
+                .get(ordinal)
+                .unwrap_or_else(|error| panic!("directory seek failed: {error}"))
+                .unwrap_or_else(|| panic!("directory missing"))
+                .into_node();
+            let member = validated
+                .directory_range(&directory)
+                .unwrap_or_else(|error| panic!("member range failed: {error}"))
+                .get(0)
+                .unwrap_or_else(|error| panic!("member seek failed: {error}"))
+                .unwrap_or_else(|| panic!("member missing"));
+            assert_eq!(member.nlink(), 2);
+            assert_eq!(
+                validated
+                    .nlink(member.node())
+                    .unwrap_or_else(|error| panic!("member nlink failed: {error}")),
+                2
+            );
+        }
+    }
+
+    #[test]
+    fn v3_validator_reconstructs_directory_order_offsets_and_link_counts() {
+        let (bytes, tree, root) = iterable_index();
+        let exact_index = descriptor_for_bytes(index_media_for(&bytes), &bytes);
+        assert!(matches!(
+            validate_index(
+                &bytes,
+                bytes.len() as u64 - 1,
+                1_048_576,
+                &IndexExpectation {
+                    index: &exact_index,
+                    compiler_abi: [3; 32],
+                    tree: &tree,
+                    root: &root,
+                    tree_features: 0,
+                },
+            ),
+            Err(IndexError::LimitExceeded)
+        ));
+        let wrong_media = descriptor_for_bytes(
+            MediaType::new(INDEX_MEDIA_TYPE_V2)
+                .unwrap_or_else(|error| panic!("media failed: {error}")),
+            &bytes,
+        );
+        assert!(matches!(
+            validate_index(
+                &bytes,
+                bytes.len() as u64,
+                1_048_576,
+                &IndexExpectation {
+                    index: &wrong_media,
+                    compiler_abi: [3; 32],
+                    tree: &tree,
+                    root: &root,
+                    tree_features: 0,
+                },
+            ),
+            Err(IndexError::DescriptorMismatch)
+        ));
+        let records_bytes = u64::from_le_bytes(
+            bytes[HEADER_BYTES_V1..HEADER_BYTES_V1 + 8]
+                .try_into()
+                .unwrap_or_else(|_| panic!("records length missing")),
+        ) as usize;
+        let slots = u64::from_le_bytes(
+            bytes[HEADER_BYTES_V1 + 8..HEADER_BYTES_V1 + 16]
+                .try_into()
+                .unwrap_or_else(|_| panic!("slot count missing")),
+        ) as usize;
+        let table = HEADER_BYTES_V3 + records_bytes + slots * LOOKUP_SLOT_BYTES;
+
+        let mut swapped = bytes.clone();
+        let second = table + DIRECTORY_SLOT_BYTES;
+        let (prefix, suffix) = swapped.split_at_mut(second);
+        prefix[table..second].swap_with_slice(&mut suffix[..DIRECTORY_SLOT_BYTES]);
+        resign_payload(&mut swapped);
+        assert!(matches!(
+            validate_fresh(&swapped, &tree, &root),
+            Err(IndexError::InvalidRecord)
+        ));
+
+        let mut forged_nlink = bytes.clone();
+        forged_nlink[table + 24..table + 32].copy_from_slice(&99_u64.to_le_bytes());
+        resign_payload(&mut forged_nlink);
+        assert!(matches!(
+            validate_fresh(&forged_nlink, &tree, &root),
+            Err(IndexError::InvalidRecord)
+        ));
+
+        let mut forged_offset = bytes.clone();
+        forged_offset[table + 8..table + 16]
+            .copy_from_slice(&((HEADER_BYTES_V3 + 1) as u64).to_le_bytes());
+        resign_payload(&mut forged_offset);
+        assert!(matches!(
+            validate_fresh(&forged_offset, &tree, &root),
+            Err(IndexError::InvalidRecord)
+        ));
+
+        let mut forged_record = bytes.clone();
+        forged_record[table + 16..table + 24].copy_from_slice(&u64::MAX.to_le_bytes());
+        resign_payload(&mut forged_record);
+        assert!(matches!(
+            validate_fresh(&forged_record, &tree, &root),
+            Err(IndexError::InvalidRecord)
+        ));
+
+        let mut forged_root = bytes;
+        forged_root[HEADER_BYTES_V3 - 16..HEADER_BYTES_V3 - 8]
+            .copy_from_slice(&4_u64.to_le_bytes());
+        assert!(matches!(
+            validate_fresh(&forged_root, &tree, &root),
+            Err(IndexError::InvalidRecord)
+        ));
+
+        let mut open_extension = iterable_index().0;
+        open_extension[HEADER_BYTES_V3 - 1] = 1;
+        assert!(matches!(
+            validate_fresh(&open_extension, &tree, &root),
+            Err(IndexError::InvalidHeader)
+        ));
+
+        let mut wrong_count = iterable_index().0;
+        wrong_count[HEADER_BYTES_V2..HEADER_BYTES_V2 + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert!(matches!(
+            validate_fresh(&wrong_count, &tree, &root),
+            Err(IndexError::InvalidHeader)
+        ));
+        let mut wrong_width = iterable_index().0;
+        wrong_width[HEADER_BYTES_V2 + 8..HEADER_BYTES_V2 + 12]
+            .copy_from_slice(&31_u32.to_le_bytes());
+        assert!(matches!(
+            validate_fresh(&wrong_width, &tree, &root),
+            Err(IndexError::InvalidHeader)
+        ));
+        let mut wrong_version = iterable_index().0;
+        wrong_version[8..12].copy_from_slice(&VERSION_V2.to_le_bytes());
+        assert!(matches!(
+            validate_fresh(&wrong_version, &tree, &root),
+            Err(IndexError::InvalidHeader)
+        ));
+    }
+
+    #[test]
+    fn v3_nlink_rejects_a_corrupted_direct_ordinal_position() {
+        let (mut bytes, tree, root) = iterable_index();
+        let descriptor = descriptor_for_bytes(index_media_for(&bytes), &bytes);
+        let records_bytes = u64::from_le_bytes(
+            bytes[HEADER_BYTES_V1..HEADER_BYTES_V1 + 8]
+                .try_into()
+                .unwrap_or_else(|_| panic!("records length missing")),
+        );
+        let lookup_slots = u64::from_le_bytes(
+            bytes[HEADER_BYTES_V1 + 8..HEADER_BYTES_V1 + 16]
+                .try_into()
+                .unwrap_or_else(|_| panic!("slot count missing")),
+        );
+        let table_offset = directory_table_offset(records_bytes, lookup_slots)
+            .unwrap_or_else(|error| panic!("table offset failed: {error}"));
+        let table = usize::try_from(table_offset)
+            .unwrap_or_else(|_| panic!("table offset is not representable"));
+        let b_slot = read_directory_slot(&bytes, table_offset, 1)
+            .unwrap_or_else(|error| panic!("b slot failed: {error}"));
+        let second = table + 2 * DIRECTORY_SLOT_BYTES;
+        let (prefix, suffix) = bytes.split_at_mut(second);
+        prefix[table + DIRECTORY_SLOT_BYTES..second]
+            .swap_with_slice(&mut suffix[..DIRECTORY_SLOT_BYTES]);
+
+        // Safe construction never permits bytes to change after validation.
+        // This deliberately forged internal wrapper proves the O(1) direct
+        // ordinal access still fails closed if that invariant is violated.
+        let forged = ValidatedIndex {
+            bytes: &bytes,
+            descriptor: descriptor.clone(),
+            summary: IndexSummary {
+                compiler_abi: [3; 32],
+                tree_digest: tree.digest(),
+                tree_size: tree.encoded_size(),
+                root_digest: root.digest(),
+                root_size: root.encoded_size(),
+                records: 6,
+                bytes: bytes.len() as u64,
+            },
+            crosslinks: IndexCrosslinks {
+                compiler_abi: [3; 32],
+                tree,
+                root,
+                tree_features: 0,
+                hardlink_groups: 1,
+                hardlink_members: 2,
+            },
+            layout: IndexLayout::IterableV3 {
+                records_bytes,
+                lookup_slots,
+                directory_slots: lookup_slots,
+                root_nlink: 3,
+            },
+        };
+        let b = decode_record_view(
+            forged.bytes,
+            usize::try_from(b_slot.record_offset)
+                .unwrap_or_else(|_| panic!("record offset is not representable")),
+            b_slot.record_id,
+            descriptor.digest(),
+        )
+        .unwrap_or_else(|error| panic!("b decode failed: {error}"));
+        assert!(matches!(forged.nlink(&b), Err(IndexError::InvalidRecord)));
+    }
+
+    #[test]
+    fn v3_high_fanout_iteration_is_bounded_and_byte_exact() {
+        let tree = descriptor();
+        let root = directory_descriptor();
+        let metadata = FilesystemMetadata::new(0o755, 0, 0, 0, 0, Vec::new(), None)
+            .unwrap_or_else(|error| panic!("metadata failed: {error}"));
+        let mut builder = StructuralIndexBuilder::new_v3(
+            IndexStaging::new(IoCursor::new(Vec::new()), 2 * 1024 * 1024, 4096),
+            [3; 32],
+            tree.clone(),
+            root.clone(),
+            0,
+        )
+        .unwrap_or_else(|error| panic!("builder failed: {error}"));
+        builder
+            .push(&IndexRecord {
+                parent: u64::MAX,
+                depth: 0,
+                sibling_ordinal: 0,
+                name: &[],
+                metadata: &metadata,
+                node: IndexNode::Directory { descriptor: &root },
+            })
+            .unwrap_or_else(|error| panic!("root push failed: {error}"));
+        for ordinal in 0..1024_u32 {
+            let name = format!("entry-{ordinal:04}");
+            builder
+                .push(&IndexRecord {
+                    parent: 0,
+                    depth: 1,
+                    sibling_ordinal: ordinal,
+                    name: name.as_bytes(),
+                    metadata: &metadata,
+                    node: IndexNode::Symlink { target: b"target" },
+                })
+                .unwrap_or_else(|error| panic!("child push failed: {error}"));
+        }
+        let (writer, _) = builder
+            .finish()
+            .unwrap_or_else(|error| panic!("finish failed: {error}"))
+            .into_parts();
+        let bytes = writer.into_inner();
+        let index = descriptor_for_bytes(index_media_for(&bytes), &bytes);
+        let validated = validate_index(
+            &bytes,
+            2 * 1024 * 1024,
+            128 * 1024 * 1024,
+            &IndexExpectation {
+                index: &index,
+                compiler_abi: [3; 32],
+                tree: &tree,
+                root: &root,
+                tree_features: 0,
+            },
+        )
+        .unwrap_or_else(|error| panic!("validation failed: {error}"));
+        let root = validated
+            .root()
+            .unwrap_or_else(|error| panic!("root failed: {error}"));
+        let range = validated
+            .directory_range(&root)
+            .unwrap_or_else(|error| panic!("range failed: {error}"));
+        assert_eq!(range.len(), 1024);
+        assert!(!range.is_empty());
+        for ordinal in [0_u64, 511, 1023] {
+            let entry = range
+                .get(ordinal)
+                .unwrap_or_else(|error| panic!("seek failed: {error}"))
+                .unwrap_or_else(|| panic!("entry {ordinal} missing"));
+            assert_eq!(
+                entry.node().name(),
+                format!("entry-{ordinal:04}").as_bytes()
+            );
+        }
+        assert!(
+            range
+                .get(1024)
+                .unwrap_or_else(|error| panic!("end seek failed: {error}"))
+                .is_none()
+        );
+        assert!(
+            range
+                .get(u64::MAX)
+                .unwrap_or_else(|error| panic!("large seek failed: {error}"))
+                .is_none()
+        );
+        let mut entries = range.iter();
+        assert_eq!(entries.len(), 1024);
+        for ordinal in 0..1024_u32 {
+            let entry = entries
+                .next()
+                .unwrap_or_else(|| panic!("entry {ordinal} missing"))
+                .unwrap_or_else(|error| panic!("entry failed: {error}"));
+            assert_eq!(entry.node().sibling_ordinal(), ordinal);
+            assert_eq!(
+                entry.node().name(),
+                format!("entry-{ordinal:04}").as_bytes()
+            );
+            assert_eq!(entry.nlink(), 1);
+        }
+        assert!(entries.next().is_none());
+    }
+
+    #[test]
+    fn v3_finish_admits_aggregate_actual_table_capacity() {
+        let tree = descriptor();
+        let root = directory_descriptor();
+        let metadata = FilesystemMetadata::new(0o755, 0, 0, 0, 0, Vec::new(), None)
+            .unwrap_or_else(|error| panic!("metadata failed: {error}"));
+        let mut builder = StructuralIndexBuilder::new_v3(
+            IndexStaging::new(IoCursor::new(Vec::new()), 4096, 4096),
+            [3; 32],
+            tree,
+            root.clone(),
+            0,
+        )
+        .unwrap_or_else(|error| panic!("builder failed: {error}"));
+        for record in [
+            IndexRecord {
+                parent: u64::MAX,
+                depth: 0,
+                sibling_ordinal: 0,
+                name: &[],
+                metadata: &metadata,
+                node: IndexNode::Directory { descriptor: &root },
+            },
+            IndexRecord {
+                parent: 0,
+                depth: 1,
+                sibling_ordinal: 0,
+                name: b"child",
+                metadata: &metadata,
+                node: IndexNode::Symlink { target: b"target" },
+            },
+        ] {
+            builder
+                .push(&record)
+                .unwrap_or_else(|error| panic!("push failed: {error}"));
+        }
+        let exact = builder
+            .finish_working_bytes()
+            .unwrap_or_else(|error| panic!("working charge failed: {error}"));
+        assert!(exact > builder.retained_working_bytes().unwrap_or(0));
+        builder.maximum_working_bytes = exact - 1;
+        assert!(matches!(builder.finish(), Err(IndexError::LimitExceeded)));
+    }
+
+    #[test]
+    fn push_actual_retained_capacity_blocks_scratch_allocation_and_write() {
+        let tree = descriptor();
+        let root = directory_descriptor();
+        let metadata = FilesystemMetadata::new(0o755, 0, 0, 0, 0, Vec::new(), None)
+            .unwrap_or_else(|error| panic!("metadata failed: {error}"));
+        let mut builder = StructuralIndexBuilder::new_v3(
+            IndexStaging::new(IoCursor::new(Vec::new()), 16 * 1024, 16 * 1024),
+            [3; 32],
+            tree,
+            root.clone(),
+            0,
+        )
+        .unwrap_or_else(|error| panic!("builder failed: {error}"));
+        builder
+            .push(&IndexRecord {
+                parent: u64::MAX,
+                depth: 0,
+                sibling_ordinal: 0,
+                name: &[],
+                metadata: &metadata,
+                node: IndexNode::Directory { descriptor: &root },
+            })
+            .unwrap_or_else(|error| panic!("root push failed: {error}"));
+        builder.entries = Vec::with_capacity(8);
+        builder.refuse_record_scratch_allocation = true;
+        let child = IndexRecord {
+            parent: 0,
+            depth: 1,
+            sibling_ordinal: 0,
+            name: b"child",
+            metadata: &metadata,
+            node: IndexNode::Symlink { target: b"target" },
+        };
+        let external = 500_u64;
+        let actual_retained = builder
+            .retained_working_bytes()
+            .unwrap_or_else(|error| panic!("retained charge failed: {error}"));
+        let scratch = byte_vector_charge(
+            record_encoded_len(&child)
+                .unwrap_or_else(|error| panic!("record length failed: {error}")),
+        )
+        .unwrap_or_else(|error| panic!("scratch charge failed: {error}"));
+        let maximum = external + actual_retained + scratch - 1;
+        let position = builder
+            .writer
+            .stream_position()
+            .unwrap_or_else(|error| panic!("position failed: {error}"));
+        assert!(matches!(
+            builder.push_with_external(&child, external, maximum),
+            Err(IndexError::LimitExceeded)
+        ));
+        assert_eq!(builder.records, 1);
+        assert!(builder.entries.is_empty());
+        assert_eq!(
+            builder
+                .writer
+                .stream_position()
+                .unwrap_or_else(|error| panic!("position failed: {error}")),
+            position
+        );
+    }
+
+    #[test]
+    fn finish_actual_directory_capacity_blocks_hardlink_allocation() {
+        let tree = descriptor();
+        let root = directory_descriptor();
+        let metadata = FilesystemMetadata::new(0o644, 0, 0, 0, 0, Vec::new(), None)
+            .unwrap_or_else(|error| panic!("metadata failed: {error}"));
+        let content = ContentLayout::whole(ObjectDescriptor::new(
+            MediaType::new("application/vnd.aos.sandbox.content.v1")
+                .unwrap_or_else(|error| panic!("media failed: {error}")),
+            ObjectDigest::from_bytes([5; 32]),
+            0,
+        ));
+        let mut builder = StructuralIndexBuilder::new_v3(
+            IndexStaging::new(IoCursor::new(Vec::new()), 16 * 1024, 16 * 1024),
+            [3; 32],
+            tree,
+            root.clone(),
+            0,
+        )
+        .unwrap_or_else(|error| panic!("builder failed: {error}"));
+        for record in [
+            IndexRecord {
+                parent: u64::MAX,
+                depth: 0,
+                sibling_ordinal: 0,
+                name: &[],
+                metadata: &metadata,
+                node: IndexNode::Directory { descriptor: &root },
+            },
+            IndexRecord {
+                parent: 0,
+                depth: 1,
+                sibling_ordinal: 0,
+                name: b"child",
+                metadata: &metadata,
+                node: IndexNode::File {
+                    content: &content,
+                    hardlink_group: Some(ObjectDigest::from_bytes([4; 32])),
+                },
+            },
+        ] {
+            builder
+                .push(&record)
+                .unwrap_or_else(|error| panic!("push failed: {error}"));
+        }
+        builder.directory_capacity_floor = 8;
+        builder.refuse_hardlink_allocation = true;
+        let external = 500_u64;
+        let retained = builder
+            .retained_working_bytes()
+            .unwrap_or_else(|error| panic!("retained charge failed: {error}"));
+        let maximum = external
+            + retained
+            + directory_vector_charge(8)
+                .unwrap_or_else(|error| panic!("directory charge failed: {error}"))
+            + hardlink_vector_charge(1)
+                .unwrap_or_else(|error| panic!("hardlink charge failed: {error}"))
+            - 1;
+        assert!(matches!(
+            builder.finish_with_external(external, maximum),
+            Err(IndexError::LimitExceeded)
+        ));
+    }
+
+    #[test]
+    fn finish_actual_lookup_capacity_obeys_staging_local_limit() {
+        let tree = descriptor();
+        let root = directory_descriptor();
+        let metadata = FilesystemMetadata::new(0o755, 0, 0, 0, 0, Vec::new(), None)
+            .unwrap_or_else(|error| panic!("metadata failed: {error}"));
+        let mut builder = StructuralIndexBuilder::new_v3(
+            IndexStaging::new(IoCursor::new(Vec::new()), 16 * 1024, 16 * 1024),
+            [3; 32],
+            tree,
+            root.clone(),
+            0,
+        )
+        .unwrap_or_else(|error| panic!("builder failed: {error}"));
+        for record in [
+            IndexRecord {
+                parent: u64::MAX,
+                depth: 0,
+                sibling_ordinal: 0,
+                name: &[],
+                metadata: &metadata,
+                node: IndexNode::Directory { descriptor: &root },
+            },
+            IndexRecord {
+                parent: 0,
+                depth: 1,
+                sibling_ordinal: 0,
+                name: b"child",
+                metadata: &metadata,
+                node: IndexNode::Symlink { target: b"target" },
+            },
+        ] {
+            builder
+                .push(&record)
+                .unwrap_or_else(|error| panic!("push failed: {error}"));
+        }
+        builder.lookup_capacity_floor = 8;
+        let retained = builder
+            .retained_working_bytes()
+            .unwrap_or_else(|error| panic!("retained charge failed: {error}"));
+        let local_maximum = retained
+            + lookup_vector_charge(8)
+                .unwrap_or_else(|error| panic!("lookup charge failed: {error}"))
+            - 1;
+        assert!(
+            builder
+                .finish_working_bytes()
+                .unwrap_or_else(|error| panic!("forecast failed: {error}"))
+                < local_maximum
+        );
+        builder.maximum_working_bytes = local_maximum;
+        assert!(matches!(
+            builder.finish_with_external(10_000, u64::MAX),
+            Err(IndexError::LimitExceeded)
+        ));
+    }
+
     #[test]
     fn v2_point_lookup_is_byte_exact_lazy_and_allocation_free() {
         let (bytes, tree, root) = lookup_index();
@@ -2178,6 +4052,15 @@ mod tests {
             .unwrap_or_else(|error| panic!("root failed: {error}"));
         assert_eq!(root_view.kind(), IndexNodeKind::Directory);
         assert_eq!(root_view.record_id(), 0);
+        assert!(!validated.supports_directory_iteration());
+        assert!(matches!(
+            validated.directory_entries(&root_view),
+            Err(IndexError::DirectoryIterationUnavailable)
+        ));
+        assert!(matches!(
+            validated.nlink(&root_view),
+            Err(IndexError::DirectoryIterationUnavailable)
+        ));
 
         let z = PathName::new(b"z".to_vec()).unwrap_or_else(|error| panic!("name failed: {error}"));
         let file = validated
@@ -2262,11 +4145,7 @@ mod tests {
         let root = directory_descriptor();
         let metadata = FilesystemMetadata::new(0o755, 0, 0, 0, 0, Vec::new(), None)
             .unwrap_or_else(|error| panic!("metadata failed: {error}"));
-        let staging = IndexStaging::new(IoCursor::new(Vec::new()), 4096, 4096).narrow(
-            4096,
-            4096,
-            lookup_vector_charge(1).unwrap_or(u64::MAX) - 1,
-        );
+        let staging = IndexStaging::new(IoCursor::new(Vec::new()), 4096, 4096);
         let mut builder = StructuralIndexBuilder::new(staging, [3; 32], tree, root.clone(), 0)
             .unwrap_or_else(|error| panic!("builder failed: {error}"));
         builder
@@ -2279,6 +4158,7 @@ mod tests {
                 node: IndexNode::Directory { descriptor: &root },
             })
             .unwrap_or_else(|error| panic!("root push failed: {error}"));
+        builder.maximum_working_bytes = build_vector_charge(1).unwrap_or(u64::MAX) - 1;
         assert!(matches!(
             builder.push(&IndexRecord {
                 parent: 0,
@@ -2293,7 +4173,12 @@ mod tests {
     }
 
     fn resign_payload(bytes: &mut [u8]) {
-        let digest: [u8; 32] = Sha256::digest(&bytes[HEADER_BYTES_V2..]).into();
+        let header_bytes = u32::from_le_bytes(
+            bytes[12..16]
+                .try_into()
+                .unwrap_or_else(|_| panic!("header length missing")),
+        ) as usize;
+        let digest: [u8; 32] = Sha256::digest(&bytes[header_bytes..]).into();
         bytes[152..HEADER_BYTES_V1].copy_from_slice(&digest);
     }
 
@@ -2390,8 +4275,7 @@ mod tests {
     #[test]
     fn authenticated_descriptor_is_required_before_semantic_parsing() {
         let (mut bytes, _, summary, tree, root) = root_index();
-        let media = MediaType::new(INDEX_MEDIA_TYPE)
-            .unwrap_or_else(|error| panic!("media failed: {error}"));
+        let media = index_media_for(&bytes);
         let index = descriptor_for_bytes(media.clone(), &bytes);
         let expected = IndexExpectation {
             index: &index,
@@ -2467,8 +4351,7 @@ mod tests {
         bytes[HEADER_BYTES_V2 + 17] = 1;
         let digest: [u8; 32] = Sha256::digest(&bytes[HEADER_BYTES_V2..]).into();
         bytes[152..184].copy_from_slice(&digest);
-        let media = MediaType::new(INDEX_MEDIA_TYPE)
-            .unwrap_or_else(|error| panic!("media failed: {error}"));
+        let media = index_media_for(&bytes);
         let index = descriptor_for_bytes(media, &bytes);
         let expected = IndexExpectation {
             index: &index,
@@ -2685,8 +4568,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("finish failed: {error}"))
             .into_parts();
         let bytes = writer.get_ref();
-        let media = MediaType::new(INDEX_MEDIA_TYPE)
-            .unwrap_or_else(|error| panic!("media failed: {error}"));
+        let media = index_media_for(bytes);
         let index = descriptor_for_bytes(media, bytes);
         let expected = IndexExpectation {
             index: &index,

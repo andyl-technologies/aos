@@ -15,9 +15,10 @@ mod source;
 
 pub use graph::{CompileError, CompileSummary, TreeCompiler};
 pub use index::{
-    INDEX_MEDIA_TYPE, INDEX_MEDIA_TYPE_V1, INDEX_MEDIA_TYPE_V2, IndexCrosslinks, IndexError,
-    IndexExpectation, IndexNodeKind, IndexNodeView, IndexStaging, IndexSummary, StagedIndex,
-    ValidatedIndex, validate_index,
+    DirectoryEntries, DirectoryEntryView, DirectoryRange, INDEX_MEDIA_TYPE, INDEX_MEDIA_TYPE_V1,
+    INDEX_MEDIA_TYPE_V2, INDEX_MEDIA_TYPE_V3, IndexCrosslinks, IndexError, IndexExpectation,
+    IndexNodeKind, IndexNodeView, IndexStaging, IndexSummary, StagedIndex, ValidatedIndex,
+    validate_index,
 };
 pub use inode::{
     ForgetRequest, ForgetSummary, InodeAttributes, InodeError, InodeLookup, InodeTable,
