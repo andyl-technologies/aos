@@ -21,6 +21,21 @@ enum ReviewedStage {
 /// # Errors
 /// Returns an error for invalid input, unavailable credentials, or a rejected Hub request.
 pub(super) async fn run(printer: &Printer, command: &HubDeliveryCmd) -> Result<()> {
+    let access = match command {
+        HubDeliveryCmd::Plan { request, .. } | HubDeliveryCmd::Resume { request, .. } => {
+            &request.access
+        }
+        HubDeliveryCmd::Apply(apply) => &apply.access,
+        HubDeliveryCmd::Show { access, .. } | HubDeliveryCmd::List { access, .. } => access,
+        HubDeliveryCmd::Activate { command } => match command {
+            HubDeliveryActivationCmd::Plan { request, .. } => &request.access,
+            HubDeliveryActivationCmd::Apply(apply) => &apply.access,
+        },
+    };
+    // Explicit credentials must not refresh an unrelated stored login. This
+    // also keeps a stale staging profile from blocking a local recovery task.
+    crate::commands::hub_auth::prepare_hub_access(access.hub.as_deref(), access.token.as_deref())
+        .await?;
     match command {
         HubDeliveryCmd::Plan {
             request,

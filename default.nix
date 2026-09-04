@@ -266,6 +266,9 @@
   hubNativeOperationsTest = import ./tests/vm/hub-native-operations.nix {
     inherit testing pkgs;
   };
+  hubSettingsTest = import ./tests/vm/hub-settings.nix {
+    inherit testing pkgs;
+  };
 
   # ---------------------------------------------------------------------------
   # Package integration checks (Firecracker-based, defined on packages)
@@ -1394,6 +1397,7 @@ in {
       // {
         apm = apmTests;
         hub-native-operations = hubNativeOperationsTest;
+        hub-settings = hubSettingsTest;
         apm-install-at-boot = apmInstallAtBootCheck;
         package-expose-lifecycle = packageExposeLifecycleCheck;
         package-preset = packagePresetCheck;
