@@ -839,6 +839,22 @@
       kind = "recorded";
       symbols = [];
     };
+    "0192-crucible-fork-retained-templates-through-private-qmp.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0193-crucible-retain-hot-fork-child-status.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0194-crucible-contain-hot-fork-children-from-birth.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0195-crucible-replace-fork-child-console-endpoint.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

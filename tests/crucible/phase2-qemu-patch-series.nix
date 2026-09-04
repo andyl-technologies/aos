@@ -1336,6 +1336,34 @@
       enforces = "HFORK-3,HFORK-4,HFORK-22";
       capability = "a raw notifier submits one exact operation from a non-main-loop owner, while the source main loop alone prepares, forks, and performs parent disposition and the immediate child disables the copied notifier before reconstruction; no public QMP command supplies the operation yet, and parent-death containment, quarantine, guest admission, and readiness bits 7 and 8 remain open";
     }
+    {
+      file = "0192-crucible-fork-retained-templates-through-private-qmp.patch";
+      catalogName = "crucible-hot-fork-private-qmp-transaction";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
+      capability = "the public generation-bound QMP command now submits one retained template to the source main-loop coordinator, authenticates the immediate child, closes and exactly proves every inherited descriptor disposition, reconstructs the registered runtime and private plugin/QMP endpoints, releases the copied block barrier, and leaves the child paused behind a separately authenticated private-QMP readiness report; the parent preserves the exact child PID across disposition failure, while daemon direct-child quarantine, hard resource containment, modeled guest admission, and the full production flight remain open";
+    }
+    {
+      file = "0193-crucible-retain-hot-fork-child-status.patch";
+      catalogName = "crucible-hot-fork-parent-reap-status";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-11,HFORK-22";
+      capability = "the source QEMU reserves one of 4096 unique child-process generations before fork, performs at most one nonblocking waitpid operation for each query or release, retains exact exit or signal status after reap, and requires explicit release before reuse so PID recycling cannot change the record; branch cgroup/pidfd transfer, daemon reconciliation, private-channel admission, and the full production flight remain open";
+    }
+    {
+      file = "0194-crucible-contain-hot-fork-children-from-birth.patch";
+      catalogName = "crucible-hot-fork-child-process-contract";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-11,HFORK-22";
+      capability = "one generation-bound QMP transaction authenticates and retains a target cgroup-v2 directory, sticky nonblocking cancellation eventfd, and file-size ceiling; the main-loop coordinator creates the child with clone3(CLONE_INTO_CGROUP), and the child observes cancellation plus RLIMIT_FSIZE before runtime reconstruction, so no hot-fork instruction runs outside the target process contract; the Rust target owner then retains an exact pidfd and brackets bounded process-identity and cgroup-membership authentication with live-pidfd checks, while terminal source/target reconciliation, modeled guest admission, and the full production flight remain open";
+    }
+    {
+      file = "0195-crucible-replace-fork-child-console-endpoint.patch";
+      catalogName = "crucible-hot-fork-child-console";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-8,HFORK-11,HFORK-22";
+      capability = "one exact branch-private nonblocking Unix stream is generation-bound to the retained template and source console chardev; the complete child resource transaction closes the inherited console connection and listener, attaches only the replacement endpoint, releases input after reconstruction, and preserves the source console unchanged; Rust stages the exact generation, moves a one-shot reader and spool into the successful child continuation, and rejects cross-generation or reused endpoints, while modeled guest admission and the full production flight remain open";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;
