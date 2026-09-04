@@ -367,6 +367,12 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
         assert_eq!(record[2], expected_owner);
         assert_eq!(record[3], kind);
     }
+    let hot_fallback = rows
+        .get("crucible.executor.hot-checkpoint-fallback")
+        .unwrap_or_else(|| panic!("missing hot-checkpoint fallback schema"));
+    assert_eq!(hot_fallback[1], "1");
+    assert_eq!(hot_fallback[2], "crucible-daemon::hot_checkpoint_retention");
+    assert_eq!(hot_fallback[3], "operational-record");
     for (schema, version, owner, kind) in [
         (
             "crucible.qemu.vm-snapshot",

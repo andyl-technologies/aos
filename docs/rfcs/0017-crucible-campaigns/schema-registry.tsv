@@ -114,6 +114,7 @@ crucible.executor.assignment-record	1	crucible-daemon::assignment_ledger	operati
 crucible.executor.attempt-state-record	6	crucible-daemon::assignment_ledger	operational-record	gate:component-contract
 crucible.executor.assignment-retention-state	1	crucible-daemon::assignment_ledger	administrative-record	gate:campaign-store-composition
 crucible.executor.exact-pin-materialization-selection	1	crucible-daemon::exact_pin_retention	administrative-record	gate:campaign-store-composition
+crucible.executor.hot-checkpoint-fallback	1	crucible-daemon::hot_checkpoint_retention	operational-record	gate:campaign-store-composition
 crucible.qemu.vm-snapshot	2	crucible-qemu::realization	device-state	gate:content-address,gate:exact-closure-streaming
 crucible.qemu.vmstate	1	crucible-daemon::exact_checkpoint_store	device-state	gate:content-address,gate:exact-closure-streaming
 crucible.executor.scheduler-continuation	3	crucible-daemon::exact_checkpoint_store	device-state	gate:content-address,gate:exact-closure-streaming
