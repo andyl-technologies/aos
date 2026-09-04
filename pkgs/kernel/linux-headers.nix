@@ -16,6 +16,7 @@ in
   mkDerivation {
     pname = "linux-headers";
     inherit (linuxSource) version src;
+    update = linuxSource.updateFor "linux-headers";
 
     buildDeps = [gnumake];
     runtimeDeps = [];

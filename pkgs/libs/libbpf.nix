@@ -1,25 +1,56 @@
 ##! libbpf - userspace library for loading and managing BPF programs
 {
   mkDerivation,
-  fetchurl,
+  mkGithubUpstream,
   gnumake,
   pkg-config,
   elfutils,
   zlib,
   zstd,
 }: let
-  version = "1.7.0";
+  upstream = mkGithubUpstream {
+    unitId = "libbpf-1";
+    family = "libbpf";
+    stream = "1";
+    owner = "pkgs/libs/libbpf.nix";
+    version = "1.7.0";
+    upstreamId = "v1.7.0";
+    repository = "libbpf/libbpf";
+    tagPrefix = "v";
+    major = 1;
+    source = {
+      authority = "github.com";
+      path = [
+        "libbpf"
+        "libbpf"
+        "archive"
+        "refs"
+        "tags"
+        {
+          parts = [
+            {literal = "v";}
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+            {literal = ".tar.gz";}
+          ];
+        }
+      ];
+      hash = "sha256-erX+/794VX9iby4+MgR4hSg5RJRxWjD8IHD83cIFG3s=";
+    };
+    riskFloor = "high";
+  };
+  inherit (upstream) version;
 in
   mkDerivation {
     pname = "libbpf";
     inherit version;
 
-    src = fetchurl {
-      urls = [
-        "https://github.com/libbpf/libbpf/archive/refs/tags/v${version}.tar.gz"
-      ];
-      hash = "sha256-erX+/794VX9iby4+MgR4hSg5RJRxWjD8IHD83cIFG3s=";
-    };
+    src = upstream.components.main.sources.source;
+    update = upstream.update;
 
     buildDeps = [
       gnumake

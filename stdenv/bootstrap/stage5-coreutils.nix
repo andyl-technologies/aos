@@ -85,8 +85,6 @@ in
         chmod -R u+w $TMPDIR/src
         cd $TMPDIR/src
 
-        ${lib.freezeAutotoolsMtimes}
-
         # Bypass automake sanity check (coreutils-tcc's ls -t is broken)
         ${bash}/bin/bash ${lib.bypassSanityCheck} configure
 
@@ -97,6 +95,38 @@ in
           < configure > configure.patched
         mv configure.patched configure
         chmod +x configure
+
+        # The stage-4 touch cannot set exact timestamps because Mes libc has
+        # incomplete timestamp handling. Build a glibc-linked helper, then
+        # give all checked-in inputs and generated artifacts one fixed mtime.
+        # Equal mtimes keep maintainer-only regeneration rules dormant.
+        ${gcc}/bin/gcc \
+          -I${glibc}/include \
+          -static \
+          -L${glibc}/lib \
+          -o $TMPDIR/set-mtime \
+          ${./set-mtime.c} \
+          -Wl,--start-group -lc -Wl,--end-group
+
+        normalize_mtimes() {
+          local directory="$1"
+          local path
+
+          for path in "$directory"/* "$directory"/.[!.]* "$directory"/..?*; do
+            if test ! -e "$path" && test ! -L "$path"; then
+              continue
+            fi
+            if test -L "$path"; then
+              continue
+            fi
+            if test -d "$path"; then
+              normalize_mtimes "$path"
+            fi
+            $TMPDIR/set-mtime "$path"
+          done
+        }
+        normalize_mtimes .
+        unset -f normalize_mtimes
 
         CC="${gcc}/bin/gcc" \
         CFLAGS="-I${glibc}/include -I${linuxHeaders}/include" \

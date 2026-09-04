@@ -39,6 +39,7 @@
   version,
   srcHash,
   vendorDepsHash,
+  update ? null,
   # Major version string for the version check test (e.g. "7.7", "8.6", "9.0")
   versionCheck ? builtins.substring 0 3 version,
 }: let
@@ -1206,6 +1207,7 @@ in
   mkDerivation {
     pname = "bazel";
     inherit version;
+    inherit update;
 
     # The binary is an ELF+zip self-extractor. Generic ELF mutation and
     # line-oriented reference scrubbing both corrupt the appended zip payload.

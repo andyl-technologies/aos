@@ -1,21 +1,52 @@
 ##! liburing — Linux io_uring userspace library
 {
   mkDerivation,
-  fetchurl,
+  mkGithubUpstream,
   gnumake,
 }: let
-  version = "2.12";
+  upstream = mkGithubUpstream {
+    unitId = "liburing-2";
+    family = "liburing";
+    stream = "2";
+    owner = "pkgs/libs/liburing.nix";
+    version = "2.12";
+    upstreamId = "liburing-2.12";
+    repository = "axboe/liburing";
+    tagPrefix = "liburing-";
+    major = 2;
+    versionScheme = "numeric";
+    source = {
+      authority = "github.com";
+      path = [
+        "axboe"
+        "liburing"
+        "archive"
+        "refs"
+        "tags"
+        {
+          parts = [
+            {literal = "liburing-";}
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+            {literal = ".tar.gz";}
+          ];
+        }
+      ];
+      hash = "sha256-8dEMsFjJfJU7TAxEaxHpF36MizKlqIswnyP904niY3A=";
+    };
+  };
+  inherit (upstream) version;
 in
   mkDerivation {
     pname = "liburing";
     inherit version;
 
-    src = fetchurl {
-      urls = [
-        "https://github.com/axboe/liburing/archive/refs/tags/liburing-${version}.tar.gz"
-      ];
-      hash = "sha256-8dEMsFjJfJU7TAxEaxHpF36MizKlqIswnyP904niY3A=";
-    };
+    src = upstream.components.main.sources.source;
+    update = upstream.update;
 
     buildDeps = [gnumake];
     runtimeDeps = [];

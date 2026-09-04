@@ -1,21 +1,61 @@
 ##! numactl — NUMA policy tools and libnuma
 {
   mkDerivation,
-  fetchurl,
+  mkGithubUpstream,
   gnumake,
 }: let
-  version = "2.0.19";
+  upstream = mkGithubUpstream {
+    unitId = "numactl-2";
+    family = "numactl";
+    stream = "2";
+    owner = "pkgs/libs/numactl.nix";
+    version = "2.0.19";
+    upstreamId = "v2.0.19";
+    repository = "numactl/numactl";
+    tagPrefix = "v";
+    major = 2;
+    source = {
+      authority = "github.com";
+      path = [
+        "numactl"
+        "numactl"
+        "releases"
+        "download"
+        {
+          parts = [
+            {literal = "v";}
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+          ];
+        }
+        {
+          parts = [
+            {literal = "numactl-";}
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+            {literal = ".tar.gz";}
+          ];
+        }
+      ];
+      hash = "sha256-8mcqA4HLWRlunCRr+LzEPVVovEV3AKaX8aHfdiua+IQ=";
+    };
+  };
+  inherit (upstream) version;
 in
   mkDerivation {
     pname = "numactl";
     inherit version;
 
-    src = fetchurl {
-      urls = [
-        "https://github.com/numactl/numactl/releases/download/v${version}/numactl-${version}.tar.gz"
-      ];
-      hash = "sha256-8mcqA4HLWRlunCRr+LzEPVVovEV3AKaX8aHfdiua+IQ=";
-    };
+    src = upstream.components.main.sources.source;
+    update = upstream.update;
 
     buildDeps = [gnumake];
     runtimeDeps = [];

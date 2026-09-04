@@ -114,6 +114,17 @@
         '';
       };
 
+      hostAliases = mkOption {
+        type = types.listOf (types.strMatching "[A-Za-z0-9][A-Za-z0-9.-]*");
+        default = [];
+        description = ''
+          Additional DNS-style names mapped to this machine's fleet address
+          in every guest's generated /etc/hosts. Use aliases when a protocol
+          under test binds authority to a canonical hostname rather than the
+          fleet machine's local name.
+        '';
+      };
+
       extraModules = mkOption {
         type = types.listOf unspecifiedType;
         default = [];

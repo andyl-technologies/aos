@@ -32,6 +32,8 @@ topic files.
 | [0014](0014-signal-driven-fault-model/README.md) | 2026-08-18 | Signal-driven, cross-domain fault modeling for Crucible | Proposed; implementation in progress |
 | [0015](0015-hermetic-cargo-artifacts.md) | 2026-08-21 | Hermetic Cargo artifact graphs and parallel Rust testing | Implemented |
 | [0016](0016-package-documentation/README.md) | 2026-08-28 | Package documentation as authenticated Nix objects | Implemented and staged in PR #219 |
-| [0017](0017-crucible-campaigns/README.md) | 2026-08-21 | Crucible campaigns — adaptive exploration, lazy frontiers, and hot QEMU forking | Proposed; implementation in progress |
+| [0017](0017-canonical-hub-publishing/README.md) | 2026-09-02 | Canonical AOS Hub publishing — one registry, signed channels, exact-byte promotion, and production key custody | Proposed (design-only; production blockers, code architecture, delivery sequence, and maintainer-host runbook defined) |
+| [0018](0018-maintainer-package-upgrades/README.md) | 2026-09-03 | Local maintainer package upgrades — upstream discovery, deterministic source updates, bounded agent repair, complete validation, and maintainer UX | Proposed (design-only) |
+| [0019](0019-crucible-campaigns/README.md) | 2026-09-04 | Crucible campaigns — adaptive exploration, lazy frontiers, and hot QEMU forking | Proposed; implementation in progress |
 
 Numbering is chronological by the date the design entered the tree.

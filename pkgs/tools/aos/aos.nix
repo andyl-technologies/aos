@@ -70,7 +70,7 @@
   # invoke. Nix therefore computes a distinct runtime closure for every output.
   # The caller's PATH is retained solely for explicit user-supplied commands;
   # internal subprocesses always use the corresponding hermetic PATH.
-  aosRuntimeTools = [bash nix qemu-img zstd];
+  aosRuntimeTools = [bash git-minimal nix qemu-img zstd];
   aprRuntimeTools = [bash nix openssl sbsigntools mtools qemu-img zstd];
   apmPortableRuntimeTools = [bash nix openssl sbsigntools mtools qemu-img tpm2-tools zstd which];
   apmRuntimeTools =
@@ -92,8 +92,11 @@
     policycoreutils
     semodule-utils
   ];
+  nonAosLinuxRuntimeDeps = builtins.filter (dependency: dependency != aos-landlock) linuxRuntimeDeps;
   linuxToolEnvironment = ''
     export AOS_LANDLOCK_WRAPPER="${aos-landlock}/bin/aos-landlock"
+    export AOS_UNSHARE="${util-linux}/bin/unshare"
+    export AOS_PRLIMIT="${util-linux}/bin/prlimit"
     export AOS_SERVICE_ROOT_HELPER="${aos-service-root}/bin/aos-service-root"
     export AOS_SELINUX_RUNNER="${aos-selinux-run}/bin/aos-selinux-run"
     export AOS_VERITY_ROOT_GUARD="${aos-verity-root-guard}/bin/aos-verity-root-guard"
@@ -109,12 +112,14 @@
   applicationTestPackages = [
     "aos"
     "aos-cache"
+    "aos-contract"
     "aos-core"
     "aos-doc"
     "aos-doc-model"
     "aos-hub"
     "aos-hub-core"
     "aos-hub-worker"
+    "aos-maintain"
     "aos-net"
     "aos-package"
     "aos-profile"
@@ -122,6 +127,7 @@
     "aos-proto-types"
     "aos-registry-spa"
     "aos-registry-surface"
+    "aos-release"
     "aos-remote"
     "aos-server"
     "aos-systemd"
@@ -171,7 +177,7 @@ in
     pname = "aos";
     inherit version src;
 
-    outputs = ["out" "apm" "apr" "packageRuntime"];
+    outputs = ["out" "apm" "apr" "packageRuntime" "testSupport"];
 
     cargoFlags = "-p aos";
 
@@ -185,11 +191,10 @@ in
     # cmake + libssh2: git2's vendored libgit2 is compiled from source here
     # (CMake build) with SSH smart-transport support against system libssh2.
     #
-    # git-minimal + openssh are *build-only* (the `doCheck` workspace tests use
-    # the host `git`/`ssh-keygen` to build repository fixtures via the test-only
-    # `gitcmd`/`testutil` helpers). They are deliberately NOT in `runtimeDeps`,
-    # so scrubPhase nukes their references and they never enter the runtime
-    # closure — production code uses libgit2 + ssh-key, never these binaries.
+    # openssh is build-only: the `doCheck` workspace tests use `ssh-keygen` to
+    # build repository fixtures. `git-minimal` is also used by those tests, but
+    # remains in the `aos` runtime closure because maintainer commands create,
+    # inspect, commit, and publish isolated Git worktrees without host tools.
     buildDeps =
       [buildPerl buildPkgConfig openssl buildProtobuf buildCmake libssh2 buildGitMinimal buildOpenSsh]
       ++ lib.optionals isDarwinCross [buildPackages.aos];
@@ -295,6 +300,11 @@ in
                 aos)
                   cat << 'AOS_ENVIRONMENT'
       export AOS_QEMU_IMG="${qemu-img}/bin/qemu-img"
+      ${lib.optionalString (!isDarwinCross) ''
+        export AOS_LANDLOCK_WRAPPER="${aos-landlock}/bin/aos-landlock"
+        export AOS_UNSHARE="${util-linux}/bin/unshare"
+        export AOS_PRLIMIT="${util-linux}/bin/prlimit"
+      ''}
       AOS_ENVIRONMENT
                   ;;
                 apr)
@@ -333,6 +343,12 @@ in
           install_cli apr "$apr" ${lib.escapeShellArg (runtimeBinPath aprRuntimeTools)} 0
           install_cli aos-package-runtime "$packageRuntime" ${lib.escapeShellArg (runtimeBinPath apmRuntimeTools)} 1
 
+          # This deterministic signer/fixture process exists only for the
+          # isolated fleet release exercise. Keep it out of every shipped CLI
+          # output and expose it solely through the explicit testSupport output.
+          mkdir -p "$testSupport/bin"
+          mv "$out/bin/aos-release-fleet-fixture" "$testSupport/bin/"
+
           # Cargo links the binaries before they are distributed among the
           # named outputs, so its default install-prefix RPATH names $out/lib.
           # No output ships Rust shared libraries. Remove that nonexistent
@@ -365,7 +381,7 @@ in
           }
           for dependency in \
             ${sbsigntools} ${mtools} ${tpm2-tools} ${which} \
-            ${lib.optionalString (!isDarwinCross) "${systemd} ${util-linux} ${builtins.concatStringsSep " " (map toString linuxRuntimeDeps)}"}; do
+            ${lib.optionalString (!isDarwinCross) "${systemd} ${builtins.concatStringsSep " " (map toString nonAosLinuxRuntimeDeps)}"}; do
             reject_output_reference "$out" "$dependency"
           done
           # APR validates package-owned SELinux modules at publication time,

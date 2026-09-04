@@ -16,8 +16,49 @@ use aos_core::output::{Printer, ProgressMode};
 pub async fn aos_main() {
     install_panic_hook("aos");
     let cli = Cli::parse();
-    let printer = printer(cli.verbose, cli.quiet, cli.json, cli.progress, cli.color);
+    let (progress, color) = maintenance_output_policy(&cli);
+    let printer = printer(cli.verbose, cli.quiet, cli.json, progress, color);
+    if let Commands::Maintain(args) = &cli.command {
+        let result = tokio::select! {
+            result = commands::maintain::run(&cli, args, &printer) => result,
+            signal = tokio::signal::ctrl_c() => match signal {
+                Ok(()) => commands::maintain::interrupted("maintain"),
+                Err(error) => Err(error.into()),
+            },
+        };
+        let exit_code = match result {
+            Ok(completion) => {
+                let exit_code = i32::from(completion.exit_code());
+                if let Err(error) = commands::maintain::render(&cli, args, &completion, &printer) {
+                    exit_with_result(Err(error), &printer);
+                }
+                exit_code
+            }
+            Err(error) => handle_error(&printer, error),
+        };
+        process::exit(exit_code);
+    }
     exit_with_result(run(&cli, &printer).await, &printer);
+}
+
+/// Resolves accessibility and machine-output modes before constructing a printer.
+fn maintenance_output_policy(cli: &Cli) -> (ProgressChoice, ColorChoice) {
+    let Commands::Maintain(args) = &cli.command else {
+        return (cli.progress, cli.color);
+    };
+
+    if cli.json || args.jsonl {
+        return (ProgressChoice::Off, ColorChoice::Never);
+    }
+    if args.screen_reader || std::env::var("TERM").is_ok_and(|term| term == "dumb") {
+        let progress = match cli.progress {
+            ProgressChoice::Off => ProgressChoice::Off,
+            _ => ProgressChoice::Plain,
+        };
+        return (progress, ColorChoice::Never);
+    }
+
+    (cli.progress, cli.color)
 }
 
 /// Parses and runs the `apm` package-consumer CLI.
@@ -275,12 +316,111 @@ async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
         return commands::image::run(command, printer).await;
     }
 
+    // Offline release verification uses captured files and public keys only.
+    if let Commands::Release {
+        command: crate::cli::ReleaseCommand::Verify(args),
+    } = &cli.command
+    {
+        return commands::release::verify_offline(args, printer);
+    }
+    if let Commands::Release {
+        command: crate::cli::ReleaseCommand::Status(args),
+    } = &cli.command
+    {
+        return commands::release::status_offline(args, printer);
+    }
+    if let Commands::Release {
+        command: crate::cli::ReleaseCommand::ComposeSurface(args),
+    } = &cli.command
+    {
+        return commands::release::compose_surface_offline(args, printer);
+    }
+    if let Commands::Release {
+        command: crate::cli::ReleaseCommand::Signer { command },
+    } = &cli.command
+    {
+        return commands::release::signer_offline(command, printer).await;
+    }
+    if let Commands::Release {
+        command: crate::cli::ReleaseCommand::Stage(args),
+    } = &cli.command
+    {
+        return commands::release::stage_offline(args, printer).await;
+    }
+    if let Commands::Release {
+        command: crate::cli::ReleaseCommand::Qualify(args),
+    } = &cli.command
+    {
+        return commands::release::qualify_offline(args, printer).await;
+    }
+    if let Commands::Release {
+        command: crate::cli::ReleaseCommand::QualifyRun(args),
+    } = &cli.command
+    {
+        return commands::release::qualification_run_offline(args, printer).await;
+    }
+    if let Commands::Release {
+        command: crate::cli::ReleaseCommand::Promote(args),
+    } = &cli.command
+    {
+        return commands::release::promote_offline(args, printer).await;
+    }
+    if let Commands::Release {
+        command: crate::cli::ReleaseCommand::Bootstrap(args),
+    } = &cli.command
+    {
+        return commands::release::bootstrap_offline(args, printer).await;
+    }
+    if let Commands::Release {
+        command: crate::cli::ReleaseCommand::Channel { command },
+    } = &cli.command
+    {
+        return commands::release::channel_offline(command, printer).await;
+    }
+    if let Commands::Release {
+        command: crate::cli::ReleaseCommand::Timestamp { command },
+    } = &cli.command
+    {
+        return commands::release::timestamp_offline(command, printer).await;
+    }
+    if let Commands::Release {
+        command: crate::cli::ReleaseCommand::Tuf(args),
+    } = &cli.command
+    {
+        return commands::release::tuf_offline(args, printer).await;
+    }
+    if let Commands::Release {
+        command: crate::cli::ReleaseCommand::FinalizeRegistry(args),
+    } = &cli.command
+    {
+        return commands::release::finalize_registry(args, printer).await;
+    }
+    if let Commands::Release {
+        command: crate::cli::ReleaseCommand::Finalize(args),
+    } = &cli.command
+    {
+        return commands::release::finalize(args, printer).await;
+    }
+    if let Commands::Release {
+        command: crate::cli::ReleaseCommand::FinalizeCache(args),
+    } = &cli.command
+    {
+        return commands::release::finalize_cache(args, printer).await;
+    }
+
     // Local VM runs use downloaded artifacts and host-side QEMU tools.
     if let Commands::Vm { command } = &cli.command {
         return commands::vm::run(command, printer);
     }
 
     let nix = NixRunner::new(cli.verbose, cli.quiet)?;
+
+    if let Commands::Release {
+        command: crate::cli::ReleaseCommand::FinalizeImage(args),
+    } = &cli.command
+    {
+        return commands::release::finalize_image(args, &nix, printer).await;
+    }
 
     match &cli.command {
         Commands::Build {
@@ -365,6 +505,8 @@ async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
             *min_speed,
         ),
         Commands::Fmt { check, files } => commands::fmt::run(&nix, printer, *check, files),
+        Commands::Release { command } => commands::release::run(command, &nix, printer),
+        Commands::Maintain(_) => unreachable!(),
         Commands::Doc {
             source,
             path,

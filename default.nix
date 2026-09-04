@@ -1048,6 +1048,19 @@
 in {
   inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem packagesWithExpose;
 
+  # Pure, fail-closed release eligibility data. The release coordinator reads
+  # this value with strict JSON evaluation before resolving any derivation.
+  releasePackageInventory = pkgs.platformSupport.releaseInventory pkgs.allPackageNames;
+  releasePackageDerivations =
+    pkgs.platformSupport.releaseDerivations
+    hostPlatform.system
+    pkgs
+    pkgs.allPackageNames;
+
+  # Pure package-maintenance content. Git and local-clone identities are added
+  # only by the local controller after strict canonical evaluation.
+  maintenanceInventory = pkgs.maintenanceInventory;
+
   # Auto-discovered golden image systems.
   # Each system has .config, .options, .build, and .checks.
   systems = discoverSystems;
@@ -1066,6 +1079,7 @@ in {
       inherit pkgs lib mkSystem packagesWithExpose;
       system = serverSystem;
     };
+    package-maintenance = import ./lib/testing/package-maintenance.nix {inherit pkgs lib;};
     # Pure evaluation and focused all-variant output contracts are one gate.
     # Rendered store paths remain contextual Nix references rather than
     # duplicated source snapshots.
@@ -1082,6 +1096,7 @@ in {
         config-materialize
         config-parity
         darling-harness
+        package-maintenance
       ];
       phases = [
         {
@@ -1094,6 +1109,10 @@ in {
       ];
     };
     build = let
+      bootstrap-seed =
+        if buildPlatform.isLinux && buildPlatform.isx86_64
+        then import ./tests/build/bootstrap-seed.nix {pkgs = buildPackages;}
+        else null;
       critical-pkgs = import ./tests/build/critical-pkgs.nix {inherit pkgs lib;};
       cross-platform-foundation = import ./tests/build/cross-platform-foundation.nix {
         pkgs = buildPackages;
@@ -1116,31 +1135,41 @@ in {
       package-platform-support = import ./tests/build/package-platform-support.nix {
         pkgs = buildPackages;
       };
+      external-image-assembly = import ./tests/build/external-image-assembly.nix {
+        inherit pkgs lib mkSystem;
+      };
       package-root-image = import ./lib/testing/package-root-image.nix {inherit pkgs lib;};
       systemd-verity = import ./lib/testing/systemd-verity.nix {inherit pkgs lib;};
       golden-image-budgets = lib.mapAttrs (_: system: system.checks.image-budget) discoverSystems;
-    in {
-      inherit critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix gcc-config-shell hardening-probe kernel-config package-platform-support package-root-image systemd-verity golden-image-budgets;
-      # Single target that pulls in the whole build-check group.
-      all = pkgs.mkDerivation {
-        pname = "aos-build-checks-all";
-        version = "0";
-        src = null;
-        buildDeps =
-          [critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all gcc-config-shell kernel-config package-platform-support package-root-image systemd-verity]
-          ++ builtins.attrValues hardening-probe
-          ++ builtins.attrValues golden-image-budgets;
-        phases = [
-          {
-            name = "check";
-            script = ''
-              mkdir -p $out
-              echo "PASS" > $out/result
-            '';
-          }
-        ];
-      };
-    };
+    in
+      {
+        inherit critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe kernel-config package-platform-support package-root-image systemd-verity golden-image-budgets;
+        # Single target that pulls in the whole build-check group.
+        all = pkgs.mkDerivation {
+          pname = "aos-build-checks-all";
+          version = "0";
+          src = null;
+          buildDeps =
+            (
+              if bootstrap-seed != null
+              then [bootstrap-seed]
+              else []
+            )
+            ++ [critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell kernel-config package-platform-support package-root-image systemd-verity]
+            ++ builtins.attrValues hardening-probe
+            ++ builtins.attrValues golden-image-budgets;
+          phases = [
+            {
+              name = "check";
+              script = ''
+                mkdir -p $out
+                echo "PASS" > $out/result
+              '';
+            }
+          ];
+        };
+      }
+      // lib.optionalAttrs (bootstrap-seed != null) {inherit bootstrap-seed;};
     tla = import ./lib/testing/tla.nix {inherit pkgs lib;};
     trivial-builders = import ./lib/testing/trivial-builders.nix {inherit pkgs lib;};
     module-args = import ./lib/testing/module-args.nix {inherit pkgs lib;};

@@ -43,6 +43,8 @@ pub struct AppState {
     pub db: Arc<Database>,
     /// The externally reachable base URL, used in setup snippets.
     pub external_url: String,
+    /// Immutable deployment identity exposed by the well-known probe.
+    pub deployment_id: Option<String>,
     /// Authentication state: JWT keys and the access-token TTL, shared with
     /// the `/oauth2/token` exchange and the mutating ConnectRPC services.
     pub auth: Arc<AuthState>,
@@ -94,6 +96,8 @@ pub struct AppState {
         Option<Arc<dyn aos_hub_core::topology_probe::IdentityDomainVerifier>>,
     /// Active and retained privacy keys for permanent route URL reservations.
     pub route_reservation_keyring: Option<Arc<dyn aos_hub_core::service::RouteReservationKeyring>>,
+    /// Deployment-owned release receipt authority.
+    pub release_evidence: Option<Arc<dyn aos_hub_core::release_evidence::ReleaseEvidenceAuthority>>,
 }
 
 impl AppState {
@@ -117,6 +121,7 @@ impl AppState {
         AppState {
             db,
             external_url,
+            deployment_id: None,
             auth,
             leases: Arc::new(aos_hub_core::lease::InMemoryLease::new()),
             mailer: Arc::new(crate::auth::magic::LogMailer),
@@ -133,6 +138,7 @@ impl AppState {
             domain_probe_terminator: None,
             identity_domain_verifier: None,
             route_reservation_keyring: None,
+            release_evidence: None,
         }
     }
 }
@@ -212,6 +218,25 @@ impl crate::validation::RepairAuthorizer for HubRepairAuthorizer {
 /// delivery-route dispatcher, which rewrites a selected endpoint to the
 /// internal delivery handler shared with the Worker runtime.
 pub async fn router(state: Arc<AppState>) -> Router {
+    router_with_transport(state, None).await
+}
+
+/// Builds the native router with optional listener-authenticated transport evidence.
+///
+/// # Examples
+///
+/// ```no_run
+/// # use std::sync::Arc;
+/// # use aos_hub::server::AppState;
+/// # async fn example(state: Arc<AppState>) {
+/// let router = aos_hub::server::router_with_transport(state, None).await;
+/// # let _ = router;
+/// # }
+/// ```
+pub async fn router_with_transport(
+    state: Arc<AppState>,
+    transport: Option<aos_hub_core::connect::DeliveryTransportEvidence>,
+) -> Router {
     // The shared Connect-JSON RPC service, built over the hub's database, signing
     // keys, and base URL (the same fields the old per-hub service held), with the
     // in-process limiter adapted to the core `RateLimiter` port and the native
@@ -274,6 +299,9 @@ pub async fn router(state: Arc<AppState>) -> Router {
     if let Some(keyring) = &state.route_reservation_keyring {
         rpc_service = rpc_service.with_route_reservation_keyring(Arc::clone(keyring));
     }
+    if let Some(authority) = &state.release_evidence {
+        rpc_service = rpc_service.with_release_evidence(Arc::clone(authority));
+    }
     let rpc_service = Arc::new(rpc_service);
     // The shared router owns `/aos.hub.v1.*` and browse routes and carries its
     // own `Arc<RpcService>` state. It has no resource-slug delivery wildcard.
@@ -288,6 +316,7 @@ pub async fn router(state: Arc<AppState>) -> Router {
     // handler; this router owns only control-plane routes and console pages.
     let router = Router::new()
         .route("/healthz", get(healthz))
+        .route("/.well-known/aos-deployment", get(deployment_identity))
         .route("/metrics", get(metrics));
     // The shared browser boundary owns identity ceremonies and the management
     // application shell. Resource reads and mutations leave the shell through
@@ -350,11 +379,19 @@ pub async fn router(state: Arc<AppState>) -> Router {
         ));
     // Typed domain/IP endpoints select the most-specific route before
     // any internal handler matches. Outermost so it runs first on the way in.
-    aos_hub_core::connect::with_route_dispatch(
-        app,
-        dispatch_service,
-        state.delivery_attestation_verifier.clone(),
-    )
+    match transport {
+        Some(transport) => aos_hub_core::connect::with_route_dispatch_transport(
+            app,
+            dispatch_service,
+            state.delivery_attestation_verifier.clone(),
+            transport,
+        ),
+        None => aos_hub_core::connect::with_route_dispatch(
+            app,
+            dispatch_service,
+            state.delivery_attestation_verifier.clone(),
+        ),
+    }
 }
 
 /// Dispatches a nested registry console request ahead of browse wildcards.
@@ -494,7 +531,13 @@ async fn inject_client_ip(
     let peer = request
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
-        .map(|ci| ci.0);
+        .map(|ci| ci.0)
+        .or_else(|| {
+            request
+                .extensions()
+                .get::<ConnectInfo<crate::native_tls::NativeTlsPeer>>()
+                .map(|ci| (ci.0).0)
+        });
     let ip = client_ip_for(request.headers(), peer, state.trusted_proxy);
     if let Ok(value) = HeaderValue::from_str(&ip) {
         request
@@ -515,6 +558,30 @@ async fn healthz(State(state): State<Arc<AppState>>) -> Response {
         Ok(regs) => (StatusCode::OK, format!("ok ({} registries)\n", regs.len())).into_response(),
         Err(err) => internal(err),
     }
+}
+
+async fn deployment_identity(State(state): State<Arc<AppState>>) -> Response {
+    let Some(deployment_id) = state.deployment_id.as_deref() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "deployment identity is not configured\n",
+        )
+            .into_response();
+    };
+    let Ok(value) = HeaderValue::from_str(deployment_id) else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "deployment identity is invalid\n",
+        )
+            .into_response();
+    };
+    let mut response = (StatusCode::OK, deployment_id.to_owned()).into_response();
+    response.headers_mut().insert("x-aos-deployment-id", value);
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store, max-age=0"),
+    );
+    response
 }
 
 /// The Prometheus text-exposition `/metrics` endpoint.

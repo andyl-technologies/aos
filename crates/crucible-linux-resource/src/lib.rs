@@ -1,6 +1,6 @@
 //! Linux host-resource enforcement shared by Crucible daemon components.
 //!
-//! Spec index: RFC-0017 files 04a, 06.
+//! Spec index: RFC-0019 files 04a, 06.
 //!
 //! This crate owns the narrow raw-kernel boundary for ext4 project quotas.
 //! [`LinuxProjectQuotaReservation`] installs and later releases an ephemeral

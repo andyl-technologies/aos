@@ -92,6 +92,7 @@ Every staging deployment supplies its independently generated values for:
 - `HUB_JWT_SECRET`
 - `HUB_SEAL_KEY`
 - `HUB_ROUTE_RESERVATION_KEYRING`
+- `HUB_RELEASE_EVIDENCE_CONFIG`
 
 Production requires its own `HUB_CLOUDFLARE_API_TOKEN` and
 `HUB_ROUTE_RESERVATION_KEYRING`. Routine production updates deliberately leave
@@ -107,9 +108,35 @@ permission-restricted temporary file for the installer:
 umask 077
 keyring="$(mktemp)"
 printf '%s' "$HUB_ROUTE_RESERVATION_KEYRING" > "$keyring"
+release_evidence_config="$(mktemp)"
+printf '%s' "$HUB_RELEASE_EVIDENCE_CONFIG" > "$release_evidence_config"
 ```
 
-Remove the temporary file after the deployment session.
+The atomic release-evidence secret has this closed schema:
+
+```json
+{
+  "schema_version": "aos.hub.release-evidence-config/v1",
+  "publication_key_id": "environment-publication-key-id",
+  "publication_signing_seed_base64": "...",
+  "channel_key_id": "environment-channel-key-id",
+  "channel_signing_seed_base64": "...",
+  "publication_keys": {"trusted-staging-key-id": "..."},
+  "qualification_keys": {"qualification-authority-id": "..."}
+}
+```
+
+Publication and channel key identities and material must differ. Staging may
+use an empty `publication_keys` map because it does not import another Hub's
+receipt. Production pins the staging publication key in that map. Both
+environments pin only approved qualification authorities. Each environment has
+different signing seeds and a different secret document. The installer
+validates the entire document before provider mutation and uploads it with one
+atomic secret write; omitting the file on a routine update preserves the
+existing secret. Never place the document in Wrangler variables, generated
+configuration, logs, or the repository.
+
+Remove both temporary files after the deployment session.
 
 ## Deploy staging
 
@@ -124,7 +151,8 @@ Confirm that the shell contains the staging runtime values, then deploy:
   --database-instance hub-v2 \
   --rate-limit-namespace-base 2000 \
   --email-from noreply+aos@send.andyl.org \
-  --route-reservation-keys-file "$keyring"
+  --route-reservation-keys-file "$keyring" \
+  --release-evidence-config-file "$release_evidence_config"
 ```
 
 Use `worker install` instead of `worker deploy` only when the staging Worker has
@@ -215,7 +243,8 @@ would remove it from the generated Worker configuration.
   --deployment-id "$deployment_id" \
   --rate-limit-namespace-base 1000 \
   --email-from noreply+aos@send.andyl.org \
-  --route-reservation-keys-file "$keyring"
+  --route-reservation-keys-file "$keyring" \
+  --release-evidence-config-file "$release_evidence_config"
 ```
 
 Repeat `--domain DOMAIN` for every additional domain owned by the production

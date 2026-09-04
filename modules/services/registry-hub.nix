@@ -4,17 +4,17 @@
 ##! deploy the multi-tenant registry management WebUI *with* AOS, per RFC-0004's
 ##! operations section. The hub is local-first and self-contained: a single
 ##! binary plus a sqlite database under `--root`, listening on `--listen`. It
-##! shells out to nothing, so — unlike the registry *server* role — it needs no
-##! PATH wiring.
+##! can terminate TLS in-process so authenticated listener evidence reaches the
+##! typed route dispatcher without trusting forwarding headers.
 ##!
 ##! This contributes:
 ##!   * aos.users.users.aos-hub + group (a dedicated service account)
 ##!   * systemd.services.aos-hub running `aos-hub serve`
 ##!     under StateDirectory=aos-hub, with strict sandboxing
 ##!
-##! Enable with `aos.registry-hub.enable = true`. The defaults bind localhost
-##! (front a real instance behind a TLS-terminating reverse proxy and set
-##! `externalUrl` to the public origin so setup snippets render correctly).
+##! Enable with `aos.registry-hub.enable = true`. The defaults bind localhost;
+##! production deployments provide the native TLS credentials, bind their
+##! public listener, and set `externalUrl` to the matching HTTPS origin.
 {
   config,
   lib,
@@ -55,6 +55,30 @@
       handle = "cloudflare-api-token";
       environment = "HUB_CLOUDFLARE_API_TOKEN_FILE";
     };
+    releaseReceiptKey = {
+      handle = "release-receipt-key";
+      environment = "HUB_RELEASE_RECEIPT_KEY_FILE";
+    };
+    channelReceiptKey = {
+      handle = "channel-receipt-key";
+      environment = "HUB_CHANNEL_RECEIPT_KEY_FILE";
+    };
+    releasePublicationKeys = {
+      handle = "release-publication-keys";
+      environment = "HUB_RELEASE_PUBLICATION_KEYS_FILE";
+    };
+    qualificationKeys = {
+      handle = "qualification-keys";
+      environment = "HUB_QUALIFICATION_KEYS_FILE";
+    };
+    tlsCertificate = {
+      handle = "tls-certificate";
+      environment = "HUB_TLS_CERTIFICATE_FILE";
+    };
+    tlsPrivateKey = {
+      handle = "tls-private-key";
+      environment = "HUB_TLS_PRIVATE_KEY_FILE";
+    };
   };
   configuredCredentials = lib.filterAttrs (name: _: cfg.credentials.${name} != null) credentialFields;
   loadCredentials =
@@ -67,6 +91,17 @@
       _: spec: "${spec.environment}=${credentialDirectory}/${spec.handle}"
     )
     configuredCredentials;
+  releaseEvidenceFields = [
+    cfg.deploymentId
+    cfg.releaseReceiptKeyId
+    cfg.channelReceiptKeyId
+    cfg.credentials.releaseReceiptKey
+    cfg.credentials.channelReceiptKey
+    cfg.credentials.releasePublicationKeys
+    cfg.credentials.qualificationKeys
+  ];
+  releaseEvidenceConfigured = builtins.any (value: value != null) releaseEvidenceFields;
+  releaseEvidenceComplete = builtins.all (value: value != null) releaseEvidenceFields;
 in {
   options.aos.registry-hub = {
     enable = lib.mkEnableOption "the AOS registry management hub (aos-hub)";
@@ -83,9 +118,8 @@ in {
       default = "127.0.0.1:8420";
       example = "0.0.0.0:8420";
       description = ''
-        Address the hub's HTTP server binds. Defaults to localhost; expose it
-        through a TLS-terminating reverse proxy rather than binding a public
-        interface directly.
+        Address the Hub listener binds. Defaults to localhost. Production
+        deployments enable native TLS before binding a public interface.
       '';
     };
 
@@ -130,6 +164,29 @@ in {
       description = "Pinned non-secret Ed25519 key for the signed route-publication manifest.";
     };
 
+    deploymentId = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "aos-production-us-west-v1";
+      description = ''
+        Immutable public deployment identity bound into canonical release
+        plans and receipts. Configuring it enables the release evidence
+        authority and requires every role-separated key input below.
+      '';
+    };
+
+    releaseReceiptKeyId = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Public key identity used to sign environment publication receipts.";
+    };
+
+    channelReceiptKeyId = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Distinct public key identity used to sign channel receipts.";
+    };
+
     credentials = lib.mapAttrs (_: _:
       lib.mkOption {
         type = lib.types.nullOr lib.serviceTypes.credentialName;
@@ -154,6 +211,31 @@ in {
           (cfg.credentials.routePublicationManifest == null)
           == (cfg.routePublicationPublicKey == null);
         message = "routePublicationManifest and routePublicationPublicKey must be configured together";
+      }
+      {
+        assertion = !releaseEvidenceConfigured || releaseEvidenceComplete;
+        message = "native Hub release evidence requires deploymentId, both receipt key ids, both receipt key credentials, releasePublicationKeys, and qualificationKeys together";
+      }
+      {
+        assertion =
+          (cfg.credentials.tlsCertificate == null)
+          == (cfg.credentials.tlsPrivateKey == null);
+        message = "native Hub TLS certificate and private-key credentials must be configured together";
+      }
+      {
+        assertion =
+          cfg.credentials.tlsCertificate
+          == null
+          || (cfg.externalUrl != null && lib.hasPrefix "https://" cfg.externalUrl);
+        message = "native Hub TLS requires an HTTPS externalUrl";
+      }
+      {
+        assertion =
+          cfg.releaseReceiptKeyId
+          == null
+          || cfg.channelReceiptKeyId == null
+          || cfg.releaseReceiptKeyId != cfg.channelReceiptKeyId;
+        message = "releaseReceiptKeyId and channelReceiptKeyId must be distinct";
       }
     ];
     aos.users.users.aos-hub = {
@@ -203,6 +285,11 @@ in {
         Environment =
           credentialEnvironment
           ++ ["HUB_DNS_JSON_ENDPOINT=${cfg.dnsJsonEndpoint}"]
+          ++ lib.optionals releaseEvidenceComplete [
+            "HUB_DEPLOYMENT_ID=${cfg.deploymentId}"
+            "HUB_RELEASE_RECEIPT_KEY_ID=${cfg.releaseReceiptKeyId}"
+            "HUB_CHANNEL_RECEIPT_KEY_ID=${cfg.channelReceiptKeyId}"
+          ]
           ++ lib.optional (cfg.routePublicationPublicKey != null)
           "HUB_ROUTE_PUBLICATION_PUBLIC_KEY=${cfg.routePublicationPublicKey}";
         Restart = "always";
@@ -224,6 +311,8 @@ in {
         ProtectKernelTunables = true;
         ProtectControlGroups = true;
         RestrictAddressFamilies = ["AF_INET" "AF_INET6" "AF_UNIX"];
+        AmbientCapabilities = lib.optional (cfg.credentials.tlsCertificate != null) "CAP_NET_BIND_SERVICE";
+        CapabilityBoundingSet = lib.optional (cfg.credentials.tlsCertificate != null) "CAP_NET_BIND_SERVICE";
       };
     };
   };
