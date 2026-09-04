@@ -538,6 +538,29 @@ fn DeliveryWorkflowCard(
     let busy = RwSignal::new(false);
     let workflow_id = workflow.workflow_id.clone();
     let version = workflow.resource_version.clone();
+    let refresh_client = client.clone();
+    let refresh_id = workflow.workflow_id.clone();
+    let on_refresh = move |_| {
+        let client = refresh_client.clone();
+        let request = aos_proto_types::GetDeliveryWorkflowRequest {
+            workflow_id: refresh_id.clone(),
+        };
+        busy.set(true);
+        error.set(None);
+        spawn_local(async move {
+            match client
+                .call::<_, aos_proto_types::DeliveryWorkflowResponse>(
+                    aos_proto_types::DELIVERY_SERVICE_GET_DELIVERY_WORKFLOW_PATH,
+                    &request,
+                )
+                .await
+            {
+                Ok(_) => super::routes::reload(),
+                Err(failure) => error.set(Some(failure.to_string())),
+            }
+            busy.set(false);
+        });
+    };
     let action_client = client.clone();
     let on_resume = move |_| {
         let client = action_client.clone();
@@ -625,6 +648,7 @@ fn DeliveryWorkflowCard(
                 Some(DeliveryWorkflowAction::ReviewActivation) => view! { <button class="button" type="button" disabled=move || busy.get() on:click=on_plan_activate>"Review activation"</button> }.into_any(),
                 None => ().into_any(),
             })}
+            <button class="table-action" type="button" disabled=move || busy.get() on:click=on_refresh>"Refresh status"</button>
             {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
             {move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}
             <details class="advanced-controls"><summary>"Inspect workflow resources"</summary><div class="resource-identity"><div><span>"Domain"</span><code>{workflow.domain_id}</code></div><div><span>"Endpoint"</span><code>{format!("{}@{}", workflow.endpoint_id, workflow.endpoint_generation)}</code></div><div><span>"Gateway"</span><code>{workflow.gateway_id}</code></div><div><span>"Route"</span><code>{workflow.route_id}</code></div><div><span>"Version"</span><code>{workflow.resource_version}</code></div></div></details>

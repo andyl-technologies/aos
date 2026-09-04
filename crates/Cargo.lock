@@ -370,6 +370,7 @@ dependencies = [
  "aos-doc-model",
  "aos-hub-console-contract",
  "aos-proto-types",
+ "futures",
  "gloo-net",
  "js-sys",
  "leptos",
