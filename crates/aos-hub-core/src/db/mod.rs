@@ -556,6 +556,7 @@ mod publication_admission;
 mod registry_delete;
 mod registry_index_build;
 mod release_publication;
+mod settings_reads;
 mod signing_keys;
 mod topology;
 mod worker_jobs;

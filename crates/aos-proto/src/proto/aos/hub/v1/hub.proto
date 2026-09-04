@@ -5223,6 +5223,12 @@ message ListGatewaysRequest {
   BindingRef binding = 1;
   uint32 page_size = 2;
   string page_token = 3;
+  // Selects an exact owner/consumer scope. Empty preserves the legacy inventory.
+  // Scoped requests cannot also specify binding and use stable-id page cursors.
+  string owner_scope_key = 4;
+  // Includes gateways whose desired generation has an active grant to this scope.
+  // Requires owner_scope_key; grants do not confer permission to manage the owner.
+  bool include_granted = 5;
 }
 message GatewayResponse { Gateway gateway = 1; }
 message PlanGatewayMutationRequest {

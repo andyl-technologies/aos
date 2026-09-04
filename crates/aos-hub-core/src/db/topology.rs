@@ -699,38 +699,56 @@ impl Database {
     ) -> Result<Vec<ConsumerScopeGrantRecord>> {
         let (sql, params) = match resource {
             GrantResource::Binding { id, .. } => (
-                "SELECT consumer_scope_key FROM binding_consumer_scopes
+                "SELECT consumer_scope_key, grant_generation, grant_kind, state,
+                        granted_by, granted_at, revoked_by, revoked_at, resource_version
+                   FROM binding_consumer_scopes
                  WHERE binding_id = ?1 ORDER BY consumer_scope_key",
                 vals![id],
             ),
             GrantResource::NetworkPolicy { id } => (
-                "SELECT consumer_scope_key FROM network_policy_consumer_scopes
+                "SELECT consumer_scope_key, grant_generation, grant_kind, state,
+                        granted_by, granted_at, revoked_by, revoked_at, resource_version
+                   FROM network_policy_consumer_scopes
                  WHERE boundary_id = ?1 ORDER BY consumer_scope_key",
                 vals![id],
             ),
             GrantResource::Endpoint { id, generation } => (
-                "SELECT consumer_scope_key FROM endpoint_route_scopes
+                "SELECT consumer_scope_key, grant_generation, grant_kind, state,
+                        granted_by, granted_at, revoked_by, revoked_at, resource_version
+                   FROM endpoint_route_scopes
                  WHERE endpoint_id = ?1 AND endpoint_generation = ?2
                  ORDER BY consumer_scope_key",
                 vals![id, generation],
             ),
             GrantResource::Gateway { id, generation } => (
-                "SELECT consumer_scope_key FROM gateway_revision_route_scopes
+                "SELECT consumer_scope_key, grant_generation, grant_kind, state,
+                        granted_by, granted_at, revoked_by, revoked_at, resource_version
+                   FROM gateway_revision_route_scopes
                  WHERE gateway_id = ?1 AND generation = ?2 ORDER BY consumer_scope_key",
                 vals![id, generation],
             ),
         };
-        let rows = self.backend.query(sql, &params).await?;
-        let mut records = Vec::with_capacity(rows.len());
-        for row in rows {
-            let scope: String = row.get(0)?;
-            records.push(
-                self.load_consumer_scope_grant(resource, &scope)
-                    .await?
-                    .context("grant disappeared while listing")?,
-            );
-        }
-        Ok(records)
+        self.backend
+            .query(sql, &params)
+            .await?
+            .iter()
+            .map(|row| {
+                Ok(ConsumerScopeGrantRecord {
+                    resource_kind: resource.kind().to_owned(),
+                    resource_stable_id: resource.stable_id(),
+                    resource_generation: resource.generation(),
+                    consumer_scope_key: row.get(0)?,
+                    grant_generation: row.get(1)?,
+                    grant_kind: row.get(2)?,
+                    state: row.get(3)?,
+                    granted_by: row.get(4)?,
+                    granted_at: row.get(5)?,
+                    revoked_by: row.get(6)?,
+                    revoked_at: row.get(7)?,
+                    resource_version: row.get(8)?,
+                })
+            })
+            .collect()
     }
 
     /// Lists live pin descriptions blocking revocation of an exact grant.
@@ -4868,6 +4886,146 @@ mod tests {
         assert!(first.is_ok());
         assert!(second.is_ok());
         assert_ne!(first.ok(), second.ok());
+    }
+
+    #[tokio::test]
+    async fn gateway_inventory_preserves_owner_and_requires_current_active_grant() {
+        let (db, _, _, _, _) = route_fixture().await;
+        db.backend
+            .execute(
+                "UPDATE endpoint_revisions SET ingress_kind = 'layer7'
+                 WHERE endpoint_id = 'endpoint:route-probes' AND generation = 1",
+                &[],
+            )
+            .await
+            .unwrap();
+        let owner = db.org_by_slug("route-probes").await.unwrap().unwrap();
+        db.create_org("gateway-consumer", "Gateway consumer")
+            .await
+            .unwrap();
+        let consumer = db.org_by_slug("gateway-consumer").await.unwrap().unwrap();
+        let binding = db
+            .binding_by_stable_id("binding:route-probes")
+            .await
+            .unwrap()
+            .unwrap();
+        for name in ["a", "b", "c"] {
+            let id = format!("gateway:{name}");
+            db.create_gateway(
+                &id,
+                &owner.stable_id,
+                Some(owner.id),
+                &GatewayRevisionSpec {
+                    binding_id: binding.id,
+                    endpoint_id: "endpoint:route-probes".into(),
+                    endpoint_generation: 1,
+                    client_base_path: format!("/{name}"),
+                    origin_prefix: "/objects".into(),
+                    access_policy_kind: "public".into(),
+                    access_boundary_id: None,
+                    access_boundary_revision: None,
+                    external_provider_kind: None,
+                    external_provider_resource_id: None,
+                    external_provider_revision: None,
+                    access_policy_json: r#"{"public":true}"#.into(),
+                },
+                "test",
+            )
+            .await
+            .unwrap();
+            db.grant_consumer_scope(
+                GrantResource::Gateway {
+                    id: &id,
+                    generation: 1,
+                },
+                &consumer.stable_id,
+                "explicit",
+                "test",
+                &format!("request:grant-{name}"),
+            )
+            .await
+            .unwrap();
+        }
+
+        let owned = db
+            .list_gateways_page(&owner.stable_id, 0, None, false)
+            .await
+            .unwrap();
+        assert_eq!(owned.records.len(), 3);
+        assert!(db
+            .list_gateways_page(&consumer.stable_id, 10, None, false)
+            .await
+            .unwrap()
+            .records
+            .is_empty());
+        let first = db
+            .list_gateways_page(&consumer.stable_id, 1, None, true)
+            .await
+            .unwrap();
+        assert_eq!(first.records[0].id, "gateway:a");
+        assert_eq!(first.records[0].owner_scope_key, owner.stable_id);
+        let second = db
+            .list_gateways_page(&consumer.stable_id, 2, first.next_cursor.as_deref(), true)
+            .await
+            .unwrap();
+        assert_eq!(
+            second
+                .records
+                .iter()
+                .map(|record| record.id.as_str())
+                .collect::<Vec<_>>(),
+            ["gateway:b", "gateway:c"]
+        );
+        assert!(second.next_cursor.is_none());
+
+        db.backend
+            .execute(
+                "UPDATE gateway_revision_route_scopes
+                SET state = 'revoked', revoked_by = 'test', revoked_at = 1
+              WHERE gateway_id = 'gateway:a' AND consumer_scope_key = ?1",
+                &vals![consumer.stable_id.clone()],
+            )
+            .await
+            .unwrap();
+        // The desired-generation pointer moves independently of old grants.
+        db.backend
+            .execute(
+                "UPDATE gateways SET desired_generation = 2 WHERE id = 'gateway:b'",
+                &[],
+            )
+            .await
+            .unwrap();
+        let visible = db
+            .list_gateways_page(&consumer.stable_id, 10, None, true)
+            .await
+            .unwrap();
+        assert_eq!(
+            visible
+                .records
+                .iter()
+                .map(|record| record.id.as_str())
+                .collect::<Vec<_>>(),
+            ["gateway:c"]
+        );
+        assert!(db
+            .list_gateways_page("gateway-consumer", 10, None, true)
+            .await
+            .is_err());
+
+        let resource = GrantResource::Gateway {
+            id: "gateway:a",
+            generation: 1,
+        };
+        let listed = db.list_consumer_scope_grants(resource).await.unwrap();
+        assert_eq!(listed.len(), 2);
+        for grant in listed {
+            assert_eq!(
+                Some(grant.clone()),
+                db.load_consumer_scope_grant(resource, &grant.consumer_scope_key)
+                    .await
+                    .unwrap()
+            );
+        }
     }
 
     #[tokio::test]

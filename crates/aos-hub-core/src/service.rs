@@ -7460,6 +7460,36 @@ impl RpcService {
         auth: Option<&str>,
         req: pb::ListGatewaysRequest,
     ) -> Result<pb::ListGatewaysResponse, RpcError> {
+        if !req.owner_scope_key.is_empty() {
+            if req.binding.is_some() {
+                return Err(RpcError::invalid(
+                    "scoped gateway requests cannot also specify a binding",
+                ));
+            }
+            self.require_delivery_scope(auth, &req.owner_scope_key, Permission::GatewayRead)
+                .await?;
+            let page = self
+                .db
+                .list_gateways_page(
+                    &req.owner_scope_key,
+                    req.page_size,
+                    (!req.page_token.is_empty()).then_some(req.page_token.as_str()),
+                    req.include_granted,
+                )
+                .await
+                .map_err(RpcError::internal)?;
+            let mut gateways = Vec::with_capacity(page.records.len());
+            for record in page.records {
+                gateways.push(self.gateway_message(record).await?);
+            }
+            return Ok(pb::ListGatewaysResponse {
+                gateways,
+                next_page_token: page.next_cursor.unwrap_or_default(),
+            });
+        }
+        if req.include_granted {
+            return Err(RpcError::invalid("includeGranted requires ownerScopeKey"));
+        }
         let claims = self.require_claims(auth)?;
         let binding_id = match req.binding {
             Some(reference) => Some(
@@ -7483,10 +7513,14 @@ impl RpcService {
                 .claims_allow(Some(&claims), Permission::GatewayRead, &scope)
                 .await
             {
-                gateways.push(self.gateway_message(record).await?);
+                gateways.push(record);
             }
         }
-        let (gateways, next_page_token) = paginate(gateways, req.page_size, &req.page_token)?;
+        let (records, next_page_token) = paginate(gateways, req.page_size, &req.page_token)?;
+        let mut gateways = Vec::with_capacity(records.len());
+        for record in records {
+            gateways.push(self.gateway_message(record).await?);
+        }
         Ok(pb::ListGatewaysResponse {
             gateways,
             next_page_token,
@@ -8641,11 +8675,11 @@ impl RpcService {
             .list_routes(surface)
             .await
             .map_err(RpcError::internal)?;
+        let (records, next_page_token) = paginate(records, req.page_size, &req.page_token)?;
         let mut routes = Vec::with_capacity(records.len());
         for record in records {
             routes.push(self.route_message(record).await?);
         }
-        let (routes, next_page_token) = paginate(routes, req.page_size, &req.page_token)?;
         Ok(pb::ListRoutesResponse {
             routes,
             next_page_token,
