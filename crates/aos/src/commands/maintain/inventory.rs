@@ -256,19 +256,44 @@ fn derivation<'a>(documents: &'a serde_json::Value, path: &str) -> Result<&'a se
         .file_name()
         .and_then(|value| value.to_str())
         .ok_or_else(|| anyhow::anyhow!("derivation identity is not a valid store path"))?;
-    documents
+    let modern = documents
         .get("derivations")
-        .and_then(|value| value.get(key))
-        .ok_or_else(|| anyhow::anyhow!("Nix omitted inspected derivation {path}"))
+        .and_then(|value| value.get(key));
+    let legacy = documents.get(path);
+    modern.or(legacy).ok_or_else(|| {
+        let available = documents
+            .get("derivations")
+            .and_then(serde_json::Value::as_object)
+            .or_else(|| documents.as_object())
+            .map(|derivations| derivations.keys().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        anyhow::anyhow!(
+            "Nix omitted inspected derivation {path}; returned derivations={available:?}"
+        )
+    })
 }
 
 fn direct_derivation_inputs(documents: &serde_json::Value, path: &str) -> Result<BTreeSet<String>> {
     let value = derivation(documents, path)?;
-    let drvs = value
+    let modern = value
         .pointer("/inputs/drvs")
-        .and_then(serde_json::Value::as_object)
+        .and_then(serde_json::Value::as_object);
+    let legacy = value
+        .get("inputDrvs")
+        .and_then(serde_json::Value::as_object);
+    let drvs = modern
+        .or(legacy)
         .ok_or_else(|| anyhow::anyhow!("Nix derivation has no typed direct-input map"))?;
-    Ok(drvs.keys().map(|key| format!("/nix/store/{key}")).collect())
+    Ok(drvs
+        .keys()
+        .map(|key| {
+            if key.starts_with('/') {
+                key.clone()
+            } else {
+                format!("/nix/store/{key}")
+            }
+        })
+        .collect())
 }
 
 fn is_fixed_output(documents: &serde_json::Value, path: &str) -> bool {
@@ -531,6 +556,31 @@ mod tests {
         });
         let package = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-package.drv";
         let source = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-source.drv";
+        assert_eq!(
+            direct_derivation_inputs(&documents, package)?,
+            BTreeSet::from([source.to_string()])
+        );
+        assert!(is_fixed_output(&documents, source));
+        assert!(!is_fixed_output(&documents, package));
+        Ok(())
+    }
+
+    #[test]
+    fn parses_legacy_nix_derivation_inputs_and_fixed_output_identity() -> Result<()> {
+        let package = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-package.drv";
+        let source = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-source.drv";
+        let documents = serde_json::json!({
+            (package): {
+                "inputDrvs": {
+                    (source): {"dynamicOutputs": {}, "outputs": ["out"]}
+                },
+                "env": {}
+            },
+            (source): {
+                "inputDrvs": {},
+                "env": {"outputHash": "sha256-value", "outputHashMode": "flat"}
+            }
+        });
         assert_eq!(
             direct_derivation_inputs(&documents, package)?,
             BTreeSet::from([source.to_string()])
