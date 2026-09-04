@@ -113,10 +113,12 @@ pub(super) async fn execute(
         &scratch,
         &backend,
         [
-            "--eval",
-            "--strict",
+            "--extra-experimental-features",
+            "nix-command",
+            "eval",
+            "--impure",
             "--json",
-            "-E",
+            "--expr",
             "builtins.currentSystem",
         ],
     )?;
@@ -459,11 +461,13 @@ fn confined_inventory(
         scratch,
         backend,
         [
-            OsString::from("--eval"),
-            OsString::from("--strict"),
+            OsString::from("--extra-experimental-features"),
+            OsString::from("nix-command"),
+            OsString::from("eval"),
+            OsString::from("--impure"),
             OsString::from("--json"),
+            OsString::from("--file"),
             default_nix.into_os_string(),
-            OsString::from("-A"),
             OsString::from("maintenanceInventory"),
         ],
     )?;
@@ -472,10 +476,12 @@ fn confined_inventory(
         scratch,
         backend,
         [
-            "--eval",
-            "--strict",
+            "--extra-experimental-features",
+            "nix-command",
+            "eval",
+            "--impure",
             "--json",
-            "-E",
+            "--expr",
             "builtins.currentSystem",
         ],
     )?;
@@ -495,7 +501,7 @@ fn confined_nix_json(
     backend: &Backend,
     arguments: impl IntoIterator<Item = impl AsRef<OsStr>>,
 ) -> Result<(serde_json::Value, aos_maintain::run::ConfinementEvidence)> {
-    let executable = resolve_executable("nix-instantiate")?;
+    let executable = resolve_executable("nix")?;
     let (mut command, confinement) = backend.command(
         &executable,
         arguments,
