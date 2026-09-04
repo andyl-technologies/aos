@@ -378,6 +378,24 @@ impl<R> ProductionBakedGenesisReplayCatalogFactory<R> {
     pub fn is_empty(&self) -> bool {
         self.baked_by_basis.is_empty()
     }
+
+    /// Authenticates that this catalog retains one exact World/scenario basis.
+    ///
+    /// This read-only check neither allocates an attempt resource guard nor
+    /// opens a replay target. Hot-checkpoint demotion uses it to prove that a
+    /// thin fallback remains realizable before releasing its live source.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError`] when no admitted native baked
+    /// checkpoint has the exact requested World and scenario identities.
+    pub fn require_basis(
+        &self,
+        world: ContentHash,
+        scenario: ContentHash,
+    ) -> Result<(), QemuVmRealizationError> {
+        select_baked_catalog_entry(&self.baked_by_basis, world, scenario).map(|_| ())
+    }
 }
 
 /// Invalid native baked-genesis replay catalog.

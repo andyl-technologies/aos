@@ -436,6 +436,28 @@ where
         self.template.take()
     }
 
+    /// Transfers a source that failed explicit retirement into quarantine.
+    ///
+    /// This is intentionally crate-private: only the daemon's authenticated
+    /// demotion composition may empty a managed slot and then return a
+    /// partially shut down source. The source is never reinstalled as reusable.
+    pub(crate) fn quarantine_failed_demotion(
+        &mut self,
+        template: QemuHotForkBoundTemplate<X::Template>,
+    ) {
+        self.quarantine.retain_template(template);
+    }
+
+    /// Rebinds and quarantines a source returned by consuming teardown.
+    pub(crate) fn quarantine_failed_demotion_source(
+        &mut self,
+        key: QemuHotForkTemplateKey,
+        source: X::Template,
+    ) {
+        self.quarantine
+            .retain_template(QemuHotForkBoundTemplate { key, source });
+    }
+
     /// Returns the terminal quarantine's retained-authority count when exposed
     /// by the concrete sink.
     #[must_use]

@@ -2376,8 +2376,12 @@ authority at its exact coordinate and reconciles any earlier successful
 releases when a multi-victim plan fails partway through. Explicit
 operator, shutdown, and source-invalidation demotions use the same ordering.
 Every attempted child start consumes the owner's process-wide monotonic-time
-fork-rate admission before source-pool routing. A concrete production demotion
-sink and fallback router, the atomic world-continuation installer, modeled
+fork-rate admission before source-pool routing. The single-host demotion sink
+now authenticates exact checkpoint or fully resolved thin replay identities,
+then consumes the fixed prepared-QEMU source and requires final-drain/reap
+attestation; failure transfers the mutated source into the factory's terminal
+quarantine before stable-coordinate restoration. Durable GC/restart ownership
+of fallback roots, the atomic world-continuation installer, modeled
 private-child driver, and real QEMU campaign flight remain required before hot
 fork is advertised.
 

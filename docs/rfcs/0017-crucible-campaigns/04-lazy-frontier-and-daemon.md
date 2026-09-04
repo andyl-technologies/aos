@@ -454,6 +454,18 @@ its process-local monotonic-nanosecond rate window before every source-pool
 start attempt, so missing, busy, and failed launches cannot bypass the
 configured start rate.
 
+The concrete single-host sink authenticates exact fallbacks by loading the
+complete exact checkpoint and requiring the retained configuration, lineage
+scenario, and campaign scheduler continuation. It authenticates thin fallbacks
+by loading the exact lineage/scenario/configuration artifacts, resolving every
+selection, and requiring the matching native baked-genesis World/scenario
+basis. The fixed-source demoter consumes the prepared QEMU template, drains
+final observable events, and releases manager accounting only after backend
+shutdown attests reap. A shutdown failure moves the exact partially shut-down
+source to the factory's terminal quarantine before the factory is restored at
+its stable coordinate. Durable retention of these fallback identities across
+GC and restart remains a separate required composition.
+
 - **[LAZY-15]** Materialization policy MUST expose why a checkpoint is hot,
   pinned, demoted, or evicted. Those reasons are telemetry, not canonical
   campaign evidence.

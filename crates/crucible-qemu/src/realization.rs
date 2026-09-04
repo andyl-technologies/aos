@@ -31,9 +31,10 @@ pub use node_executor::{
     QemuHotForkTemplateIdentity, QemuHotForkTemplatePreparer, QemuLiveAttemptBackend,
     QemuLiveBackendShutdown, QemuNodeLauncher, QemuNodeRealizationExecutor,
     QemuNodeRealizationLauncher, QemuPreparedHotForkTemplate,
-    QemuPreparedThinWarmRestoreNodeLauncher, QemuRealizedNodeBackend,
-    QemuReplayValidationNodeLauncher, QemuThinProfileWarmRestoreNodeLauncher,
-    QemuVmLiveRealizationExecutor, QemuWarmRestoreNodeLauncher,
+    QemuPreparedHotForkTemplateShutdownFailure, QemuPreparedThinWarmRestoreNodeLauncher,
+    QemuRealizedNodeBackend, QemuReplayValidationNodeLauncher,
+    QemuThinProfileWarmRestoreNodeLauncher, QemuVmLiveRealizationExecutor,
+    QemuWarmRestoreNodeLauncher,
 };
 
 /// An exact QEMU VM snapshot cached for one configuration.
