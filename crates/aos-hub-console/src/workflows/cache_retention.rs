@@ -8,7 +8,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use crate::components::{InlineError, ReviewedPlanCard, StatusBadge};
-use crate::mutation::{idempotency_key, PendingPlan};
+use crate::mutation::{idempotency_key, watch_draft, PendingPlan};
 use crate::transport::ApiClient;
 
 use super::cache_manual_roots::ManualRetentionRoots;
@@ -402,9 +402,30 @@ fn RetentionEditor(
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
+    let draft_epoch = watch_draft(
+        move || {
+            let _ = (
+                fields.registry_id.get(),
+                fields.current_catalog.get(),
+                fields.all_channels.get(),
+                fields.channels.get(),
+                fields.recent_count.get(),
+                fields.recent_prereleases.get(),
+                fields.release_tags.get(),
+                fields.semver.get(),
+                fields.semver_prereleases.get(),
+                fields.all_releases.get(),
+                fields.removal_grace.get(),
+                fields.expected_version.get(),
+            );
+        },
+        pending,
+        error,
+    );
     let plan_client = client.clone();
     let on_submit = move |event: SubmitEvent| {
         event.prevent_default();
+        pending.set(None);
         let desired = match fields.desired() {
             Ok(desired) => desired,
             Err(detail) => {
@@ -429,6 +450,7 @@ fn RetentionEditor(
         pending.set(None);
         busy.set(true);
         let client = plan_client.clone();
+        let planned_epoch = draft_epoch.get_untracked();
         spawn_local(async move {
             let result = client
                 .call::<_, aos_proto_types::TopologyPlanResponse>(
@@ -439,7 +461,10 @@ fn RetentionEditor(
                 .map_err(|failure| failure.to_string())
                 .and_then(|response| PendingPlan::from_response(response, key));
             match result {
-                Ok(reviewed) => pending.set(Some(reviewed)),
+                Ok(reviewed) if draft_epoch.get_untracked() == planned_epoch => {
+                    pending.set(Some(reviewed));
+                }
+                Ok(_) => {}
                 Err(detail) => error.set(Some(detail)),
             }
             busy.set(false);

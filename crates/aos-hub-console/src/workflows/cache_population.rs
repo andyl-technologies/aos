@@ -9,7 +9,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use crate::components::{HashValue, InlineError, ReviewedPlanCard, StatusBadge};
-use crate::mutation::{idempotency_key, PendingPlan};
+use crate::mutation::{idempotency_key, watch_draft, PendingPlan};
 use crate::transport::ApiClient;
 
 /// Renders population targets, observed coverage, and the reviewed set editor.
@@ -184,6 +184,13 @@ fn PopulationAction(
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
+    let draft_epoch = watch_draft(
+        move || {
+            let _ = release_tag.get();
+        },
+        pending,
+        error,
+    );
     let plan_client = client.clone();
     let on_plan = move |_| {
         let key = idempotency_key(match action {
@@ -197,6 +204,7 @@ fn PopulationAction(
         let registry_id = registry_id.clone();
         let version = version.clone();
         let tag = nonempty(&release_tag.get_untracked());
+        let planned_epoch = draft_epoch.get_untracked();
         error.set(None);
         pending.set(None);
         busy.set(true);
@@ -225,7 +233,10 @@ fn PopulationAction(
                 .map_err(|failure| failure.to_string())
                 .and_then(|response| PendingPlan::from_response(response, key));
             match result {
-                Ok(reviewed) => pending.set(Some(reviewed)),
+                Ok(reviewed) if draft_epoch.get_untracked() == planned_epoch => {
+                    pending.set(Some(reviewed));
+                }
+                Ok(_) => {}
                 Err(detail) => error.set(Some(detail)),
             }
             busy.set(false);
@@ -325,9 +336,24 @@ fn PopulationEditor(
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
+    let draft_epoch = watch_draft(
+        move || {
+            let _ = (
+                registry_id.get(),
+                trigger.get(),
+                required.get(),
+                placement_policy.get(),
+                validation_gate.get(),
+                expected_version.get(),
+            );
+        },
+        pending,
+        error,
+    );
     let plan_client = client.clone();
     let on_plan = move |event: SubmitEvent| {
         event.prevent_default();
+        pending.set(None);
         let registry = registry_id.get_untracked().trim().to_string();
         if registry.is_empty() {
             error.set(Some("Registry stable ID is required".to_string()));
@@ -347,6 +373,7 @@ fn PopulationEditor(
             idempotency_key: key.clone(),
         };
         let client = plan_client.clone();
+        let planned_epoch = draft_epoch.get_untracked();
         error.set(None);
         pending.set(None);
         busy.set(true);
@@ -360,7 +387,10 @@ fn PopulationEditor(
                 .map_err(|failure| failure.to_string())
                 .and_then(|response| PendingPlan::from_response(response, key));
             match result {
-                Ok(reviewed) => pending.set(Some(reviewed)),
+                Ok(reviewed) if draft_epoch.get_untracked() == planned_epoch => {
+                    pending.set(Some(reviewed));
+                }
+                Ok(_) => {}
                 Err(detail) => error.set(Some(detail)),
             }
             busy.set(false);
