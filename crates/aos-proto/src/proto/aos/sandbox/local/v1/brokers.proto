@@ -193,7 +193,7 @@ message ApplyMountRequest {
   bytes attachment_id = 4;
   bytes destination_slot_id = 5;
   Descriptor view_revision = 6;
-  // New detached handle for install/replace; installed handle for detach/release.
+  // New detached handle for install/replace, installed for detach, staged for release.
   bytes detached_mount_handle = 7; // Exactly 32 bytes when required by action.
   // Current installed handle replaced by MOUNT_ACTION_REPLACE.
   bytes replacement_mount_handle = 8; // Exactly 32 bytes only for replace.
