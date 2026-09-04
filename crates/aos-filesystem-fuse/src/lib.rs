@@ -16,7 +16,8 @@
 use std::os::fd::{AsRawFd, BorrowedFd};
 
 use aos_filesystem_view::{
-    InitRequest, MetadataConnection, ReplyScratch, RequestBudget, TeardownSummary, WorkerError,
+    InitRequest, MetadataConnection, MetadataTransportError, MetadataTransportLimits, ReplyScratch,
+    RequestBudget, TeardownSummary, WorkerError,
 };
 
 mod abi;
@@ -26,7 +27,14 @@ mod control;
 /// Configures the independently bounded C transport buffers and reply policy.
 #[derive(Clone, Copy, Debug)]
 pub struct TransportLimits {
-    /// Maximum byte length of a child name, between 1 and 255.
+    /// Maximum immutable records inspected during startup ABI qualification.
+    ///
+    /// This independently bounds startup work; request output budgets do not
+    /// authorize a scan of an arbitrarily large presentation.
+    pub maximum_metadata_records: u64,
+    /// Maximum byte length of a child name, between 2 and 255.
+    ///
+    /// The minimum also admits the synthetic parent-directory entry `..`.
     pub maximum_name_bytes: u32,
     /// Maximum symlink-target bytes, between 1 and 4096.
     pub maximum_symlink_bytes: u32,
@@ -53,7 +61,8 @@ impl TransportLimits {
         let valid_granularity = self.time_granularity_ns != 0
             && self.time_granularity_ns <= 1_000_000_000
             && (0..=9).any(|power| 10_u32.pow(power) == self.time_granularity_ns);
-        if !(1..=255).contains(&self.maximum_name_bytes)
+        if self.maximum_metadata_records == 0
+            || !(2..=255).contains(&self.maximum_name_bytes)
             || !(1..=4096).contains(&self.maximum_symlink_bytes)
             || !(1..=1_048_576).contains(&self.maximum_readdir_bytes)
             || !(1..=65_536).contains(&self.maximum_readdir_entries)
@@ -85,6 +94,23 @@ impl TransportLimits {
             attribute_valid_ns: self.attribute_valid_ns,
         })
     }
+
+    fn metadata(self) -> MetadataTransportLimits {
+        MetadataTransportLimits {
+            maximum_records: self.maximum_metadata_records,
+            maximum_uid: libc::uid_t::MAX,
+            maximum_gid: libc::gid_t::MAX,
+            maximum_link_count: u32::try_from(libc::nlink_t::MAX).unwrap_or(u32::MAX),
+            maximum_size: libc::off_t::MAX as u64,
+            allocation_unit_bytes: 512,
+            maximum_allocation_units: libc::blkcnt_t::MAX as u64,
+            minimum_timestamp_seconds: libc::time_t::MIN,
+            maximum_timestamp_seconds: libc::time_t::MAX,
+            maximum_name_bytes: u64::from(self.maximum_name_bytes),
+            maximum_symlink_bytes: u64::from(self.maximum_symlink_bytes),
+            maximum_directory_cookie: i64::MAX as u64,
+        }
+    }
 }
 
 /// Reports admission, metadata initialization, or terminal session failure.
@@ -93,6 +119,9 @@ pub enum RunError {
     /// The configured transport limits are outside the supported ABI profile.
     #[error("invalid FUSE transport limits")]
     InvalidLimits,
+    /// The immutable presentation cannot be represented by this transport profile.
+    #[error("metadata transport qualification failed: {0}")]
+    Representation(#[source] MetadataTransportError),
     /// The fixed metadata profile could not be initialized.
     #[error("metadata initialization failed: {0}")]
     Initialize(#[source] WorkerError),
@@ -111,6 +140,10 @@ pub enum RunError {
 /// independently qualifies kernel INIT before dispatch. `budget` accounts for
 /// Rust typed storage; it is never interpreted as a packed FUSE reply length.
 /// C applies its own wire budget after complete entries have been produced.
+/// Before initialization or transport entry, the complete immutable presentation
+/// is checked against the target C scalar ranges and configured name/target
+/// lengths. This scan uses `maximum_metadata_records` and one cooperative
+/// cancellation-aware startup deadline of `request_timeout_seconds`.
 ///
 /// Both descriptors remain owned by the caller on every return path. The C
 /// transport duplicates the connected descriptor and requires nonblocking
@@ -179,6 +212,9 @@ fn run_with(
     }
     let control = control::Control::new(cancellation.as_raw_fd(), limits.request_timeout_seconds)
         .map_err(RunError::Transport)?;
+    connection
+        .validate_transport_representation(limits.metadata(), &control)
+        .map_err(RunError::Representation)?;
     let profile = connection
         .initialize(
             InitRequest {

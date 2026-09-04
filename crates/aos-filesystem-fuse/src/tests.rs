@@ -24,6 +24,7 @@ use super::*;
 
 fn limits() -> TransportLimits {
     TransportLimits {
+        maximum_metadata_records: 4,
         maximum_name_bytes: 255,
         maximum_symlink_bytes: 4096,
         maximum_readdir_bytes: 4096,
@@ -39,14 +40,6 @@ fn limits() -> TransportLimits {
 
 fn budget() -> RequestBudget {
     RequestBudget::new(4096, 16, 4096).with_forget_entries(16)
-}
-
-fn descriptor(media: &str, byte: u8) -> ObjectDescriptor {
-    ObjectDescriptor::new(
-        MediaType::new(media).unwrap(),
-        ObjectDigest::from_bytes([byte; 32]),
-        1,
-    )
 }
 
 #[derive(Default)]
@@ -83,7 +76,23 @@ fn with_connection(
         BorrowedFd<'_>,
     ),
 ) {
-    let content = ContentLayout::whole(descriptor("application/vnd.aos.sandbox.content.v1", 3));
+    with_file_size(1, action);
+}
+
+fn with_file_size(
+    file_size: u64,
+    action: impl FnOnce(
+        MetadataConnection<'_, '_, '_, '_>,
+        &mut ReplyScratch,
+        BorrowedFd<'_>,
+        BorrowedFd<'_>,
+    ),
+) {
+    let content = ContentLayout::whole(ObjectDescriptor::new(
+        MediaType::new("application/vnd.aos.sandbox.content.v1").unwrap(),
+        ObjectDigest::from_bytes([3; 32]),
+        file_size,
+    ));
     let metadata = FilesystemMetadata::new(0o755, 0, 0, 0, 0, vec![], None).unwrap();
     let mut source = Source::default();
     let child = source.insert(
@@ -555,6 +564,176 @@ fn unretryable_release_failure_discards_the_connection() {
                 failed_release_run
             ),
             Err(RunError::Integrity)
+        ));
+    });
+}
+
+unsafe extern "C" fn admission_only_run(
+    _: c_int,
+    _: c_int,
+    operations: *const abi::Operations,
+    context: *mut c_void,
+    _: *const abi::Limits,
+) -> c_int {
+    // SAFETY: The scoped runner supplies this live operation table and context;
+    // no other callback is active when the fixture reports orderly teardown.
+    unsafe {
+        ((*operations).destroy)(context);
+    }
+    0
+}
+
+#[test]
+fn startup_qualification_rejects_signed_size_overflow_before_transport_entry() {
+    with_file_size(
+        i64::MAX as u64 + 1,
+        |worker, scratch, connected, cancellation| {
+            assert!(matches!(
+                run_with(
+                    worker,
+                    scratch,
+                    connected,
+                    cancellation,
+                    limits(),
+                    budget(),
+                    admission_only_run
+                ),
+                Err(RunError::Representation(
+                    MetadataTransportError::Unrepresentable(_)
+                ))
+            ));
+        },
+    );
+    with_file_size(
+        i64::MAX as u64,
+        |worker, scratch, connected, cancellation| {
+            assert!(
+                run_with(
+                    worker,
+                    scratch,
+                    connected,
+                    cancellation,
+                    limits(),
+                    budget(),
+                    admission_only_run
+                )
+                .is_ok()
+            );
+        },
+    );
+}
+
+#[test]
+fn startup_qualification_checks_every_name_target_and_record_budget() {
+    with_connection(|worker, scratch, connected, cancellation| {
+        let unusable = TransportLimits {
+            maximum_name_bytes: 1,
+            ..limits()
+        };
+        assert!(matches!(
+            run_with(
+                worker,
+                scratch,
+                connected,
+                cancellation,
+                unusable,
+                budget(),
+                admission_only_run
+            ),
+            Err(RunError::InvalidLimits)
+        ));
+    });
+    for smaller in [
+        TransportLimits {
+            maximum_name_bytes: 3,
+            ..limits()
+        },
+        TransportLimits {
+            maximum_symlink_bytes: 5,
+            ..limits()
+        },
+    ] {
+        with_connection(|worker, scratch, connected, cancellation| {
+            assert!(matches!(
+                run_with(
+                    worker,
+                    scratch,
+                    connected,
+                    cancellation,
+                    smaller,
+                    budget(),
+                    admission_only_run
+                ),
+                Err(RunError::Representation(
+                    MetadataTransportError::Unrepresentable(_)
+                ))
+            ));
+        });
+    }
+    with_connection(|worker, scratch, connected, cancellation| {
+        let smaller = TransportLimits {
+            maximum_metadata_records: 3,
+            ..limits()
+        };
+        assert!(matches!(
+            run_with(
+                worker,
+                scratch,
+                connected,
+                cancellation,
+                smaller,
+                budget(),
+                admission_only_run
+            ),
+            Err(RunError::Representation(
+                MetadataTransportError::LimitExceeded(_)
+            ))
+        ));
+    });
+    with_connection(|worker, scratch, connected, cancellation| {
+        let exact = TransportLimits {
+            maximum_name_bytes: 4,
+            maximum_symlink_bytes: 6,
+            maximum_metadata_records: 4,
+            ..limits()
+        };
+        assert!(
+            run_with(
+                worker,
+                scratch,
+                connected,
+                cancellation,
+                exact,
+                budget(),
+                admission_only_run
+            )
+            .is_ok()
+        );
+    });
+}
+
+#[test]
+fn startup_cancellation_is_observed_during_qualification_before_initialization() {
+    with_connection(|worker, scratch, connected, cancellation| {
+        // SAFETY: Both borrowed descriptors are live paired UnixStreams in the
+        // fixture. The one-byte input lives through this synchronous write.
+        assert_eq!(
+            unsafe { libc::write(connected.as_raw_fd(), b"x".as_ptr().cast(), 1) },
+            1
+        );
+        assert!(matches!(
+            run_with(
+                worker,
+                scratch,
+                connected,
+                cancellation,
+                limits(),
+                budget(),
+                admission_only_run
+            ),
+            Err(RunError::Representation(
+                MetadataTransportError::Interrupted
+            ))
         ));
     });
 }

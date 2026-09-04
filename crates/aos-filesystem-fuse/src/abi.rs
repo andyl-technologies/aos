@@ -101,6 +101,9 @@ unsafe extern "C" {
 }
 
 const _: () = {
+    // The supported AOS Linux ABIs represent every dynamically allocated u64
+    // connection inode. A whole-index scan cannot bound future connection IDs.
+    assert!(libc::ino_t::MAX == u64::MAX);
     assert!(size_of::<Attributes>() == 48);
     assert!(size_of::<DirectoryEntry>() == 24);
     assert!(size_of::<Limits>() == 64);
