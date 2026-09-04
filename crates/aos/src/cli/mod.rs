@@ -21,6 +21,7 @@ mod gc;
 mod hub;
 mod hub_retained_control;
 mod image;
+mod maintain;
 mod prefetch;
 mod release;
 mod server;
@@ -31,6 +32,7 @@ pub use cache::*;
 pub use hub::*;
 pub use hub_retained_control::*;
 pub use image::*;
+pub use maintain::*;
 pub use release::*;
 pub use server::*;
 pub use test::*;
@@ -40,7 +42,7 @@ use std::path::PathBuf;
 
 use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 
-#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum ProgressChoice {
     /// Select terminal or stable-line rendering automatically.
     #[default]
@@ -53,7 +55,7 @@ pub enum ProgressChoice {
     Off,
 }
 
-#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum ColorChoice {
     /// Use color only when standard error is an interactive terminal.
     #[default]
@@ -339,6 +341,8 @@ pub enum Commands {
         #[command(subcommand)]
         command: ReleaseCommand,
     },
+    /// Inspect and advance local package-maintenance campaigns
+    Maintain(MaintainArgs),
     /// Run downloaded AOS images locally with QEMU
     Vm {
         #[command(subcommand)]

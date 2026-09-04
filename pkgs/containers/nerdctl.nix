@@ -1,28 +1,84 @@
 ##! nerdctl — Docker-compatible CLI for containerd
 {
   mkGoPackage,
-  fetchurl,
+  mkGithubUpstream,
   fetchGoModules,
   cni-plugins,
   bash,
   stdenv,
 }: let
-  version = "2.2.1";
-  src = fetchurl {
-    urls = [
-      "https://github.com/containerd/nerdctl/archive/v${version}/nerdctl-${version}.tar.gz"
-    ];
-    hash = "sha256-85w006KF4IfysoafBv6jQ9goWtm/uUF7nFtt1OeNb60=";
+  upstream = mkGithubUpstream {
+    unitId = "nerdctl-2";
+    family = "nerdctl";
+    stream = "2";
+    owner = "pkgs/containers/nerdctl.nix";
+    version = "2.2.1";
+    upstreamId = "v2.2.1";
+    repository = "containerd/nerdctl";
+    tagPrefix = "v";
+    major = 2;
+    source = {
+      authority = "github.com";
+      path = [
+        "containerd"
+        "nerdctl"
+        "archive"
+        {
+          parts = [
+            {literal = "v";}
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+          ];
+        }
+        {
+          parts = [
+            {literal = "nerdctl-";}
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+            {literal = ".tar.gz";}
+          ];
+        }
+      ];
+      hash = "sha256-85w006KF4IfysoafBv6jQ9goWtm/uUF7nFtt1OeNb60=";
+    };
+    artifacts.goModules = {
+      inputs = [
+        {
+          kind = "source";
+          component = "main";
+          slot = "source";
+        }
+      ];
+      hash = "sha256-TitWJFzldbNExet5WHAQMc+mDZzlI28fpAC8a1/0XVo=";
+      materializer = {
+        kind = "go-modules";
+        sourceRoot = ".";
+        moduleRoots = ["."];
+        builder = "fetchGoModules/v1";
+      };
+    };
+  };
+  inherit (upstream) version;
+  src = upstream.components.main.sources.source;
+  goModules = fetchGoModules {
+    inherit src;
+    hash = upstream.artifacts.goModules.hash;
   };
 in
   mkGoPackage {
     pname = "nerdctl";
     inherit version src;
 
-    goModules = fetchGoModules {
-      inherit src;
-      hash = "sha256-TitWJFzldbNExet5WHAQMc+mDZzlI28fpAC8a1/0XVo=";
-    };
+    inherit goModules;
+    update = upstream.updateWithArtifacts {inherit goModules;};
 
     goPackage = "./cmd/nerdctl";
     goOutput = "nerdctl";

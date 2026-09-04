@@ -2,6 +2,8 @@
 resolver = "2"
 members = [
     "aos",
+    "aos-contract",
+    "aos-maintain",
     "aos-core",
     "aos-boot-identity",
     "aos-recovery",
@@ -67,6 +69,7 @@ base64 = "0.22"
 aes-gcm = "0.10"
 zeroize = "1"
 regex = "1"
+rnix = "0.10"
 glob = "0.3"
 ignore = "0.4"
 hex = "0.4"
@@ -194,6 +197,8 @@ tokio-rustls = "0.26"
 rcgen = "0.14"
 
 # Internal crates
+aos-contract = { path = "aos-contract" }
+aos-maintain = { path = "aos-maintain" }
 crucible-cas = { path = "crucible-cas" }
 aos-core = { path = "aos-core" }
 aos-boot-identity = { path = "aos-boot-identity" }
