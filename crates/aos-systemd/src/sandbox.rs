@@ -108,6 +108,12 @@ impl SandboxUnitName {
         &self.guardian
     }
 
+    /// Returns the sole cgroup-v2 path permitted for this incarnation.
+    #[must_use]
+    pub fn cgroup_path(&self) -> SandboxCgroupPath {
+        SandboxCgroupPath(self.expected_cgroup())
+    }
+
     fn expected_cgroup(&self) -> String {
         format!("/{SANDBOX_SLICE}/{}", self.service)
     }
@@ -128,6 +134,22 @@ impl SandboxCgroupPath {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// Derives the fixed delegated subgroup containing the nspawn supervisor.
+    #[must_use]
+    pub fn supervisor_subgroup(&self) -> Self {
+        Self(format!("{}/supervisor", self.0))
+    }
+
+    /// Derives the fixed delegated subtree containing the container payload.
+    ///
+    /// The name is part of the reviewed nspawn/systemd cgroup topology. This
+    /// method identifies the only subtree the host may inspect for guest PID 1;
+    /// it does not assert that a live or unique payload exists there.
+    #[must_use]
+    pub fn payload_subgroup(&self) -> Self {
+        Self(format!("{}/payload", self.0))
     }
 }
 
@@ -287,6 +309,9 @@ pub struct SandboxNspawnCommand {
 ///
 /// Values cannot be parsed from strings. The constructor accepts a live
 /// borrowed descriptor and derives both the process and descriptor numbers.
+/// The procfs pathname is only an alias for the descriptor retained by this
+/// value: after the final owner is dropped, the descriptor number may be
+/// reused immediately and the same pathname may name an unrelated object.
 #[derive(Clone, Debug)]
 pub struct SandboxDescriptorPath {
     path: String,
@@ -415,6 +440,12 @@ impl SandboxDevice {
 }
 
 /// The complete typed input used to create one sandbox transient service.
+///
+/// The specification owns every descriptor named by its procfs launch paths.
+/// It must remain alive through systemd's initial activation and the broker's
+/// post-launch identity proof. The generated service disables automatic
+/// restart; callers must never manually restart or start a retained sandbox
+/// unit from its stored procfs path strings after releasing this value.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SandboxUnitSpec {
     name: SandboxUnitName,
@@ -531,6 +562,9 @@ impl SandboxUnitSpec {
             bool_property("Delegate", true),
             string_property("DelegateSubgroup", "supervisor"),
             string_property("Slice", SANDBOX_SLICE),
+            // Procfs descriptor aliases are valid only while the launching
+            // specification owns its pins. An automatic restart could resolve
+            // a recycled descriptor number after those pins are released.
             string_property("Restart", "no"),
             string_property("CollectMode", "inactive-or-failed"),
             string_property("KillMode", "mixed"),
@@ -676,6 +710,12 @@ pub struct SandboxUnitObservation {
 impl SystemdClient {
     /// Creates and starts one typed transient sandbox service, then awaits its
     /// start job result.
+    ///
+    /// The borrowed specification keeps all procfs-addressed descriptors alive
+    /// until the initial systemd activation finishes. Sandbox units use
+    /// `Restart=no`; invoking a later generic start or restart on such a unit is
+    /// outside this API's security contract because its stored descriptor
+    /// aliases may no longer be owned by the broker.
     ///
     /// # Errors
     ///
@@ -1001,15 +1041,19 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_launch_paths_are_derived_and_expire_with_ownership() {
+    fn descriptor_launch_paths_retain_the_exact_owned_identities() {
+        use std::os::unix::fs::MetadataExt as _;
+
         let executable = std::fs::File::open("/proc/self/exe").unwrap();
         let root = std::fs::File::open("/").unwrap();
         let network = std::fs::File::open("/proc/self/ns/net").unwrap();
+        let executable_identity = executable.metadata().unwrap();
+        let root_identity = root.metadata().unwrap();
+        let network_identity = network.metadata().unwrap();
         let executable_path =
             SandboxDescriptorPath::for_current_process(executable.as_fd()).unwrap();
         let root_path = SandboxDescriptorPath::for_current_process(root.as_fd()).unwrap();
         let network_path = SandboxDescriptorPath::for_current_process(network.as_fd()).unwrap();
-        let expired = root_path.as_str().to_owned();
         let spec = SandboxUnitSpec::new_nspawn(
             SandboxUnitName::from_incarnation([1; 16]),
             SandboxNspawnCommand::private_user_descriptor_v1(
@@ -1035,10 +1079,23 @@ mod tests {
                 .any(|argument| argument == &format!("--directory={}", spec.root_directory()))
         );
 
-        drop(root);
-        assert!(std::fs::metadata(&expired).is_ok());
+        let retained = spec.clone();
         drop(spec);
-        assert!(std::fs::metadata(expired).is_err());
+        drop(executable);
+        drop(root);
+        drop(network);
+
+        for (path, identity) in [
+            (retained.executable(), executable_identity),
+            (retained.root_directory(), root_identity),
+            (retained.network_namespace_path(), network_identity),
+        ] {
+            let current = std::fs::metadata(path).unwrap();
+            assert_eq!(
+                (current.dev(), current.ino()),
+                (identity.dev(), identity.ino())
+            );
+        }
     }
 
     #[test]
@@ -1113,6 +1170,20 @@ mod tests {
         assert!(signatures.contains(&("ReadWritePaths", "as".to_string())));
         assert!(signatures.contains(&("MemorySwapMax", "t".to_string())));
         assert!(signatures.contains(&("LimitNOFILE", "t".to_string())));
+
+        let restart = properties
+            .iter()
+            .find(|(name, _)| name == "Restart")
+            .unwrap();
+        assert_eq!(<&str>::try_from(&restart.1).unwrap(), "no");
+        let collect_mode = properties
+            .iter()
+            .find(|(name, _)| name == "CollectMode")
+            .unwrap();
+        assert_eq!(
+            <&str>::try_from(&collect_mode.1).unwrap(),
+            "inactive-or-failed"
+        );
     }
 
     #[test]
@@ -1126,6 +1197,15 @@ mod tests {
         assert_eq!(
             parse_cgroup(&name, path.clone()).unwrap().unwrap().as_str(),
             path
+        );
+        let parsed = parse_cgroup(&name, path).unwrap().unwrap();
+        assert_eq!(
+            parsed.supervisor_subgroup().as_str(),
+            format!("{}/supervisor", parsed.as_str())
+        );
+        assert_eq!(
+            parsed.payload_subgroup().as_str(),
+            format!("{}/payload", parsed.as_str())
         );
         assert!(parse_cgroup(&name, "/system.slice/other.service".into()).is_err());
     }

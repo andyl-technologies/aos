@@ -272,10 +272,10 @@ pub struct BackendReadiness {
 pub enum BackendReadinessBlocker {
     /// No trusted implementation has verified the declared probe and profile digests.
     Phase0ClaimVerification,
-    /// The deployed service has not proven namespace inspection on an nspawn supervisor pidfd.
-    SupervisorPidfdNamespaceInspection,
-    /// The worker cannot yet prove the launched payload PID 1 uses the pinned root object.
-    PayloadRootIdentity,
+    /// The deployed service has not proven supervisor and payload pidfd namespace inspection.
+    PidfdNamespaceInspection,
+    /// Point-in-time root identity is not yet paired with proven root-change prevention.
+    PayloadRootContinuity,
 }
 
 /// Holds protected, boot-bound phase-0 publisher claims without authorizing launch.
@@ -373,8 +373,8 @@ impl ProtectedBackendReadinessEvidence {
     pub const fn runtime_blockers(&self) -> [BackendReadinessBlocker; 3] {
         [
             BackendReadinessBlocker::Phase0ClaimVerification,
-            BackendReadinessBlocker::SupervisorPidfdNamespaceInspection,
-            BackendReadinessBlocker::PayloadRootIdentity,
+            BackendReadinessBlocker::PidfdNamespaceInspection,
+            BackendReadinessBlocker::PayloadRootContinuity,
         ]
     }
 }
@@ -1101,8 +1101,8 @@ mod tests {
             evidence.runtime_blockers(),
             [
                 BackendReadinessBlocker::Phase0ClaimVerification,
-                BackendReadinessBlocker::SupervisorPidfdNamespaceInspection,
-                BackendReadinessBlocker::PayloadRootIdentity,
+                BackendReadinessBlocker::PidfdNamespaceInspection,
+                BackendReadinessBlocker::PayloadRootContinuity,
             ]
         );
 

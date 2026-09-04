@@ -62,8 +62,8 @@ fn run() -> Result<()> {
         if blockers
             != [
                 BackendReadinessBlocker::Phase0ClaimVerification,
-                BackendReadinessBlocker::SupervisorPidfdNamespaceInspection,
-                BackendReadinessBlocker::PayloadRootIdentity,
+                BackendReadinessBlocker::PidfdNamespaceInspection,
+                BackendReadinessBlocker::PayloadRootContinuity,
             ]
         {
             return Err(HostError::State(
