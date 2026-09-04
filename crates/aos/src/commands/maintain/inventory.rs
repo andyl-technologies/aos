@@ -30,12 +30,34 @@ const MAX_DIRTY_CONTENT_BYTES: usize = 64 * 1024 * 1024;
 /// validation fails.
 pub(super) fn evaluate(nix: &NixRunner, target: Option<&str>) -> Result<InventoryEnvelopeV1> {
     let value = nix.eval_json_for_target("maintenanceInventory", target)?;
+    let target = match target {
+        Some(target) => target.to_string(),
+        None => nix
+            .eval_expr_json("builtins.currentSystem")?
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| anyhow::anyhow!("builtins.currentSystem did not evaluate to text"))?,
+    };
+    bind_evaluated(nix.root(), value, target)
+}
+
+/// Binds already-confined Nix inventory output to exact repository state.
+///
+/// # Errors
+///
+/// Returns an error when strict inventory decoding, Git inspection,
+/// dirty-content capture, controller hashing, or envelope validation fails.
+pub(super) fn bind_evaluated(
+    root: &Path,
+    value: serde_json::Value,
+    target: String,
+) -> Result<InventoryEnvelopeV1> {
     let bytes = canonical::canonical_json(&value)?;
     let inventory = MaintenanceInventoryV1::from_slice(&bytes)?;
     let inventory_digest =
         Sha256Digest::of_canonical(aos_maintain::MAINTENANCE_INVENTORY_V1, &inventory)?;
 
-    let coordinates = repository_coordinates(nix.root())?;
+    let coordinates = repository_coordinates(root)?;
     let repository_root = coordinates.root;
     let common_dir = coordinates.common_dir;
     let remote = coordinates.canonical_remote;
@@ -73,14 +95,6 @@ pub(super) fn evaluate(nix: &NixRunner, target: Option<&str>) -> Result<Inventor
         }
     };
 
-    let target = match target {
-        Some(target) => target.to_string(),
-        None => nix
-            .eval_expr_json("builtins.currentSystem")?
-            .as_str()
-            .map(str::to_string)
-            .ok_or_else(|| anyhow::anyhow!("builtins.currentSystem did not evaluate to text"))?,
-    };
     let controller = controller_identity()?;
     let envelope = InventoryEnvelopeV1 {
         schema: MAINTENANCE_INVENTORY_ENVELOPE_V1.to_string(),

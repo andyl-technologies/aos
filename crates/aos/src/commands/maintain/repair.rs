@@ -131,6 +131,7 @@ pub(super) fn accept(
         .cloned()
         .collect::<BTreeSet<_>>();
     validate_proposal_patch(patch, &allowed)?;
+    let backend = Backend::detect().context("verifying repair validation confinement")?;
     let scratch = store.scratch_directory(run.run_id.as_str(), "apply-repair")?;
     let original = apply_in_disposable_view(root, &scratch, patch, &allowed)?;
     let owner = allowed
@@ -140,7 +141,9 @@ pub(super) fn accept(
     let candidate = fs::read(&candidate_path).context("reading gateway candidate output")?;
     let real_path = root.join(owner);
     if let Err(error) = atomic_replace(&real_path, &candidate)
-        .and_then(|()| materialize::verify_post_inventory(root, plan, verbose, quiet))
+        .and_then(|()| {
+            materialize::verify_post_inventory(root, plan, &backend, &scratch, verbose, quiet)
+        })
         .and_then(|()| validate_cumulative_diff(root, &allowed))
     {
         atomic_replace(&real_path, &original).context("restoring rejected repair candidate")?;
