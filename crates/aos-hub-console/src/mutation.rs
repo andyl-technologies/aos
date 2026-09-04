@@ -7,6 +7,9 @@
 #[cfg(target_arch = "wasm32")]
 use std::sync::atomic::{AtomicU32, Ordering};
 
+#[cfg(target_arch = "wasm32")]
+use leptos::prelude::*;
+
 /// One exact reviewed mutation awaiting confirmation.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct PendingPlan {
@@ -14,6 +17,26 @@ pub(crate) struct PendingPlan {
     pub(crate) plan: aos_proto_types::TopologyPlan,
     /// Idempotency key shared by the plan and apply request.
     pub(crate) idempotency_key: String,
+}
+
+/// Invalidates a reviewed plan whenever any signal observed by `observe` changes.
+///
+/// The returned epoch lets an asynchronous planning request discard a response
+/// when the draft changed while the request was in flight.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn watch_draft(
+    observe: impl Fn() + 'static,
+    pending: RwSignal<Option<PendingPlan>>,
+    error: RwSignal<Option<String>>,
+) -> RwSignal<u64> {
+    let epoch = RwSignal::new(0_u64);
+    Effect::new(move |_| {
+        observe();
+        epoch.update(|value| *value = value.wrapping_add(1));
+        pending.set(None);
+        error.set(None);
+    });
+    epoch
 }
 
 /// Returns whether a tag ownership class accepts manual CAS mutation.
@@ -289,6 +312,17 @@ impl PendingPlan {
         &self,
     ) -> aos_proto_types::ApplyRouteAdvertisementRequest {
         aos_proto_types::ApplyRouteAdvertisementRequest {
+            plan_id: self.plan.plan_id.clone(),
+            idempotency_key: self.idempotency_key.clone(),
+            confirmation_hash: self.plan.confirmation_hash.clone(),
+        }
+    }
+
+    /// Builds a coordinated delivery-workflow apply envelope for this plan.
+    pub(crate) fn delivery_workflow_apply(
+        &self,
+    ) -> aos_proto_types::ApplyDeliveryDestinationRequest {
+        aos_proto_types::ApplyDeliveryDestinationRequest {
             plan_id: self.plan.plan_id.clone(),
             idempotency_key: self.idempotency_key.clone(),
             confirmation_hash: self.plan.confirmation_hash.clone(),

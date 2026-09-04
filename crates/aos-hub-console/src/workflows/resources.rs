@@ -10,7 +10,7 @@ use leptos::task::spawn_local;
 
 use crate::app::navigate;
 use crate::components::{EmptyState, HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
-use crate::mutation::{idempotency_key, PendingPlan};
+use crate::mutation::{idempotency_key, watch_draft, PendingPlan};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
 use crate::workflows::infrastructure::InfrastructureWorkflow;
@@ -941,19 +941,32 @@ fn RegistryOverview(client: ApiClient, slug: String) -> impl IntoView {
         let client = resource_client.clone();
         let slug = request_slug.clone();
         async move {
-            client
-                .call::<_, aos_proto_types::GetRegistryResponse>(
-                    aos_proto_types::REGISTRY_SERVICE_GET_REGISTRY_PATH,
-                    &aos_proto_types::GetRegistryRequest { slug },
-                )
-                .await
+            let registry = client.call::<_, aos_proto_types::GetRegistryResponse>(
+                aos_proto_types::REGISTRY_SERVICE_GET_REGISTRY_PATH,
+                &aos_proto_types::GetRegistryRequest { slug: slug.clone() },
+            );
+            let topology = client.call::<_, aos_proto_types::GetSurfaceTopologyResponse>(
+                aos_proto_types::TOPOLOGY_SERVICE_GET_SURFACE_TOPOLOGY_PATH,
+                &aos_proto_types::GetSurfaceTopologyRequest {
+                    surface: Some(aos_proto_types::SurfaceRef {
+                        target: Some(aos_proto_types::surface_ref::Target::RegistrySlug(slug)),
+                    }),
+                },
+            );
+            let (registry, topology) = futures::join!(registry, topology);
+            Ok::<_, crate::transport::TransportError>((registry?, topology?))
         }
     });
-    view! { <Suspense fallback=move || view! { <p class="loading-row">"Loading registry…"</p> }>{move || { let client = client.clone(); Suspend::new(async move { match resource.await.as_ref() { Ok(response) => match response.registry.clone() { Some(registry) => view! { <RegistryEditor client=client registry=registry/> }.into_any(), None => view! { <InlineError detail="The Hub omitted the registry.".to_string()/> }.into_any() }, Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense> }
+    view! { <Suspense fallback=move || view! { <p class="loading-row">"Loading registry…"</p> }>{move || { let client = client.clone(); Suspend::new(async move { match resource.await.as_ref() { Ok((response, topology)) => match response.registry.clone() { Some(registry) => view! { <RegistryEditor client=client registry=registry topology=topology.clone()/> }.into_any(), None => view! { <InlineError detail="The Hub omitted the registry.".to_string()/> }.into_any() }, Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense> }
 }
 
 #[component]
-fn RegistryEditor(client: ApiClient, registry: aos_proto_types::Registry) -> impl IntoView {
+fn RegistryEditor(
+    client: ApiClient,
+    registry: aos_proto_types::Registry,
+    topology: aos_proto_types::GetSurfaceTopologyResponse,
+) -> impl IntoView {
+    let can_manage = client.allows("registry.configure");
     let visibility = RwSignal::new(registry.visibility.clone());
     let crawl_policy = RwSignal::new(registry.crawl_policy.clone());
     let llms = RwSignal::new(registry.llms_txt_body.clone());
@@ -965,12 +978,24 @@ fn RegistryEditor(client: ApiClient, registry: aos_proto_types::Registry) -> imp
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
+    let draft_epoch = watch_draft(
+        move || {
+            let _ = visibility.get();
+            let _ = crawl_policy.get();
+            let _ = llms.get();
+            let _ = llms_mode.get();
+        },
+        pending,
+        error,
+    );
     let slug = registry.slug.clone();
     let version = registry.resource_version.clone();
+    let trust_keys = registry.trust_keys.clone();
     let plan_client = client.clone();
     let plan_slug = slug.clone();
     let on_plan = move |event: SubmitEvent| {
         event.prevent_default();
+        pending.set(None);
         let llms_txt_body = match llms_override(llms_mode.get_untracked(), &llms.get_untracked()) {
             Ok(body) => body,
             Err(detail) => {
@@ -979,13 +1004,14 @@ fn RegistryEditor(client: ApiClient, registry: aos_proto_types::Registry) -> imp
             }
         };
         let client = plan_client.clone();
+        let planned_epoch = draft_epoch.get_untracked();
         let idempotency_key = idempotency_key("registry-update");
         let request = aos_proto_types::PlanUpdateRegistryRequest {
             slug: plan_slug.clone(),
             visibility: visibility.get_untracked(),
             crawl_policy: crawl_policy.get_untracked(),
             llms_txt_body,
-            trust_keys: registry.trust_keys.clone(),
+            trust_keys: trust_keys.clone(),
             update_mask: vec![
                 "visibility".into(),
                 "crawl_policy".into(),
@@ -1006,7 +1032,10 @@ fn RegistryEditor(client: ApiClient, registry: aos_proto_types::Registry) -> imp
                 .map_err(|failure| failure.to_string())
                 .and_then(|response| PendingPlan::from_response(response, idempotency_key));
             match result {
-                Ok(reviewed) => pending.set(Some(reviewed)),
+                Ok(reviewed) if draft_epoch.get_untracked() == planned_epoch => {
+                    pending.set(Some(reviewed));
+                }
+                Ok(_) => {}
                 Err(detail) => error.set(Some(detail)),
             };
             busy.set(false);
@@ -1036,13 +1065,43 @@ fn RegistryEditor(client: ApiClient, registry: aos_proto_types::Registry) -> imp
             busy.set(false);
         });
     });
-    view! { <section class="panel editor-panel"><div class="resource-identity"><div><span>"Registry"</span><code>{slug}</code></div><div><span>"Index"</span><StatusBadge state=registry.index_state.clone() positive=registry.index_state == "fresh"/></div><div><span>"Version"</span><code>{registry.resource_version}</code></div></div><form class="editor-form" on:submit=on_plan><label><span>"Visibility"</span><select prop:value=move || visibility.get() on:change=move |event| visibility.set(event_target_value(&event))><VisibilityOptions value=visibility/></select></label><label><span>"Crawler policy"</span><select prop:value=move || crawl_policy.get() on:change=move |event| crawl_policy.set(event_target_value(&event))><option value="allow_all">"Allow all"</option><option value="allow_no_ai">"Allow search; deny AI crawlers"</option><option value="deny_all">"Deny all"</option></select></label><fieldset class="full-field choice-field"><legend>"llms.txt"</legend><label class="choice-row"><input type="radio" name="llms-mode" value="automatic" prop:checked=move || llms_mode.get() == LlmsMode::Automatic on:change=move |_| llms_mode.set(LlmsMode::Automatic)/><span><strong>"Automatic"</strong>" — generated from the signed package and channel index."</span></label><label class="choice-row"><input type="radio" name="llms-mode" value="custom" prop:checked=move || llms_mode.get() == LlmsMode::Custom on:change=move |_| llms_mode.set(LlmsMode::Custom)/><span><strong>"Custom override"</strong>" — serve operator-authored Markdown verbatim."</span></label>{move || (llms_mode.get() == LlmsMode::Custom).then(|| view! { <label class="llms-custom"><span>"Custom Markdown"</span><textarea rows="8" required prop:value=move || llms.get() on:input=move |event| llms.set(event_target_value(&event))></textarea></label> })}{move || (visibility.get() == "public").then(|| view! { <p class="field-note">"Public document: "<a href=llms_url.clone() target="_blank">{llms_url.clone()}</a></p> })}</fieldset><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review update"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
+    view! { <div class="workflow-stack"><section class="panel effective-overview"><div class="section-heading"><div><p class="section-kicker">"Effective registry"</p><h2>{if registry.name.is_empty() { registry.slug.clone() } else { registry.name.clone() }}</h2><p>{if registry.description.is_empty() { "Registry publication and delivery status".to_string() } else { registry.description.clone() }}</p></div><StatusBadge state=registry.index_state.clone() positive=registry.index_state == "fresh"/></div><div class="resource-identity"><div><span>"Registry"</span><code>{slug.clone()}</code></div><div><span>"Visibility"</span><strong>{registry.visibility.clone()}</strong></div><div><span>"Infrastructure owner"</span><code>{registry.owner_scope_key.clone()}</code></div><div><span>"Consumer caches"</span><strong>{registry.consumer_cache_stack.len()}</strong></div><div><span>"Trust keys"</span><strong>{registry.trust_keys.len()}</strong></div><div><span>"Version"</span><code>{registry.resource_version.clone()}</code></div></div><EffectiveDelivery routes=topology.routes advertisements=topology.route_advertisements/>{(!registry.index_error.is_empty()).then(|| view! { <InlineError detail=registry.index_error.clone()/> })}<div class="overview-actions"><a class="button" href=format!("/{slug}/-/settings/delivery")>"View delivery"</a><a class="secondary-button" href=format!("/{slug}/-/settings/placements")>"View storage & replicas"</a><a class="secondary-button" href=format!("/{slug}/-/settings/caches")>"View binary caches"</a></div></section><details class="panel advanced-controls"><summary>"Edit registry policy"</summary>{if can_manage { view! { <form class="editor-form" on:submit=on_plan><label><span>"Visibility"</span><select prop:value=move || visibility.get() on:change=move |event| visibility.set(event_target_value(&event))><VisibilityOptions value=visibility/></select></label><label><span>"Crawler policy"</span><select prop:value=move || crawl_policy.get() on:change=move |event| crawl_policy.set(event_target_value(&event))><option value="allow_all">"Allow all"</option><option value="allow_no_ai">"Allow search; deny AI crawlers"</option><option value="deny_all">"Deny all"</option></select></label><fieldset class="full-field choice-field"><legend>"llms.txt"</legend><label class="choice-row"><input type="radio" name="llms-mode" value="automatic" prop:checked=move || llms_mode.get() == LlmsMode::Automatic on:change=move |_| llms_mode.set(LlmsMode::Automatic)/><span><strong>"Automatic"</strong>" — generated from the signed package and channel index."</span></label><label class="choice-row"><input type="radio" name="llms-mode" value="custom" prop:checked=move || llms_mode.get() == LlmsMode::Custom on:change=move |_| llms_mode.set(LlmsMode::Custom)/><span><strong>"Custom override"</strong>" — serve operator-authored Markdown verbatim."</span></label>{move || (llms_mode.get() == LlmsMode::Custom).then(|| view! { <label class="llms-custom"><span>"Custom Markdown"</span><textarea rows="8" required prop:value=move || llms.get() on:input=move |event| llms.set(event_target_value(&event))></textarea></label> })}{move || (visibility.get() == "public").then(|| view! { <p class="field-note">"Public document: "<a href=llms_url.clone() target="_blank">{llms_url.clone()}</a></p> })}</fieldset><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review update"</button></div></form> }.into_any() } else { view! { <p class="muted">"You have read-only access to this registry."</p> }.into_any() }}{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</details></div> }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LlmsMode {
     Automatic,
     Custom,
+}
+
+#[component]
+fn EffectiveDelivery(
+    routes: Vec<aos_proto_types::Route>,
+    advertisements: Vec<aos_proto_types::RouteAdvertisement>,
+) -> impl IntoView {
+    let enabled = routes
+        .into_iter()
+        .filter(|route| route.spec.as_ref().is_some_and(|spec| spec.enabled))
+        .collect::<Vec<_>>();
+
+    view! {
+        <section class="effective-delivery">
+            <h3>"Effective client URLs"</h3>
+            {if enabled.is_empty() {
+                view! { <p class="muted">"No delivery route is enabled."</p> }.into_any()
+            } else {
+                view! { <div class="compact-list">{enabled.into_iter().map(|route| {
+                    let audiences = advertisements
+                        .iter()
+                        .filter(|advertisement| advertisement.route_id == route.stable_id)
+                        .map(|advertisement| advertisement.audience.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    view! { <div class="compact-list-row"><div><code>{route.canonical_rendered_url}</code><span>{if audiences.is_empty() { "Alternate route".to_string() } else { format!("Canonical for {audiences}") }}</span></div></div> }
+                }).collect_view()}</div> }.into_any()
+            }}
+        </section>
+    }
 }
 
 fn llms_override(mode: LlmsMode, body: &str) -> Result<String, String> {
@@ -1063,19 +1122,34 @@ fn CacheOverview(client: ApiClient, stable_id: String) -> impl IntoView {
         let client = resource_client.clone();
         let cache_id = request_id.clone();
         async move {
-            client
-                .call::<_, aos_proto_types::BinaryCacheResponse>(
-                    aos_proto_types::BINARY_CACHE_SERVICE_GET_BINARY_CACHE_PATH,
-                    &aos_proto_types::GetBinaryCacheRequest { cache_id },
-                )
-                .await
+            let cache = client.call::<_, aos_proto_types::BinaryCacheResponse>(
+                aos_proto_types::BINARY_CACHE_SERVICE_GET_BINARY_CACHE_PATH,
+                &aos_proto_types::GetBinaryCacheRequest {
+                    cache_id: cache_id.clone(),
+                },
+            );
+            let topology = client.call::<_, aos_proto_types::GetSurfaceTopologyResponse>(
+                aos_proto_types::TOPOLOGY_SERVICE_GET_SURFACE_TOPOLOGY_PATH,
+                &aos_proto_types::GetSurfaceTopologyRequest {
+                    surface: Some(aos_proto_types::SurfaceRef {
+                        target: Some(aos_proto_types::surface_ref::Target::CacheSlug(cache_id)),
+                    }),
+                },
+            );
+            let (cache, topology) = futures::join!(cache, topology);
+            Ok::<_, crate::transport::TransportError>((cache?, topology?))
         }
     });
-    view! { <Suspense fallback=move || view! { <p class="loading-row">"Loading cache…"</p> }>{move || { let client = client.clone(); Suspend::new(async move { match resource.await.as_ref() { Ok(response) => match response.cache.clone() { Some(cache) => view! { <CacheEditor client=client cache=cache/> }.into_any(), None => view! { <InlineError detail="The Hub omitted the binary cache.".to_string()/> }.into_any() }, Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense> }
+    view! { <Suspense fallback=move || view! { <p class="loading-row">"Loading cache…"</p> }>{move || { let client = client.clone(); Suspend::new(async move { match resource.await.as_ref() { Ok((response, topology)) => match response.cache.clone() { Some(cache) => view! { <CacheEditor client=client cache=cache topology=topology.clone()/> }.into_any(), None => view! { <InlineError detail="The Hub omitted the binary cache.".to_string()/> }.into_any() }, Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense> }
 }
 
 #[component]
-fn CacheEditor(client: ApiClient, cache: aos_proto_types::BinaryCache) -> impl IntoView {
+fn CacheEditor(
+    client: ApiClient,
+    cache: aos_proto_types::BinaryCache,
+    topology: aos_proto_types::GetSurfaceTopologyResponse,
+) -> impl IntoView {
+    let can_manage = client.allows("registry.configure");
     let name = RwSignal::new(cache.name.clone());
     let visibility = RwSignal::new(cache.visibility.clone());
     let priority = RwSignal::new(cache.nix_priority.to_string());
@@ -1084,6 +1158,17 @@ fn CacheEditor(client: ApiClient, cache: aos_proto_types::BinaryCache) -> impl I
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
+    let draft_epoch = watch_draft(
+        move || {
+            let _ = name.get();
+            let _ = visibility.get();
+            let _ = priority.get();
+            let _ = compression.get();
+            let _ = mass_query.get();
+        },
+        pending,
+        error,
+    );
     let stable_id = cache.stable_id.clone();
     let slug = cache.slug.clone();
     let version = cache.resource_version.clone();
@@ -1091,6 +1176,7 @@ fn CacheEditor(client: ApiClient, cache: aos_proto_types::BinaryCache) -> impl I
     let plan_id = stable_id.clone();
     let on_plan = move |event: SubmitEvent| {
         event.prevent_default();
+        pending.set(None);
         let parsed_priority = match priority.get_untracked().parse::<u32>() {
             Ok(value) => value,
             Err(_) => {
@@ -1099,6 +1185,7 @@ fn CacheEditor(client: ApiClient, cache: aos_proto_types::BinaryCache) -> impl I
             }
         };
         let client = plan_client.clone();
+        let planned_epoch = draft_epoch.get_untracked();
         let idempotency_key = idempotency_key("cache-update");
         let request = aos_proto_types::PlanBinaryCacheMutationRequest {
             stable_id: plan_id.clone(),
@@ -1133,7 +1220,10 @@ fn CacheEditor(client: ApiClient, cache: aos_proto_types::BinaryCache) -> impl I
                 .map_err(|failure| failure.to_string())
                 .and_then(|response| PendingPlan::from_response(response, idempotency_key));
             match result {
-                Ok(reviewed) => pending.set(Some(reviewed)),
+                Ok(reviewed) if draft_epoch.get_untracked() == planned_epoch => {
+                    pending.set(Some(reviewed));
+                }
+                Ok(_) => {}
                 Err(detail) => error.set(Some(detail)),
             };
             busy.set(false);
@@ -1141,12 +1231,13 @@ fn CacheEditor(client: ApiClient, cache: aos_proto_types::BinaryCache) -> impl I
     };
     let apply_client = client;
     let destination = cache_path(&slug);
+    let apply_destination = destination.clone();
     let on_apply = Callback::new(move |()| {
         let Some(reviewed) = pending.get_untracked() else {
             return;
         };
         let client = apply_client.clone();
-        let destination = destination.clone();
+        let destination = apply_destination.clone();
         busy.set(true);
         spawn_local(async move {
             match client
@@ -1162,7 +1253,7 @@ fn CacheEditor(client: ApiClient, cache: aos_proto_types::BinaryCache) -> impl I
             busy.set(false);
         });
     });
-    view! { <section class="panel editor-panel"><div class="resource-identity"><div><span>"Cache"</span><code>{cache.slug}</code></div><div><span>"Usage"</span><strong>{format_bytes(cache.used_bytes)}</strong></div><div><span>"Objects"</span><strong>{cache.object_count}</strong></div><div><span>"Roots"</span><strong>{cache.retention_root_count}</strong></div></div><form class="editor-form" on:submit=on_plan><label><span>"Display name"</span><input required prop:value=move || name.get() on:input=move |event| name.set(event_target_value(&event))/></label><label><span>"Visibility"</span><select prop:value=move || visibility.get() on:change=move |event| visibility.set(event_target_value(&event))><VisibilityOptions value=visibility/></select></label><label><span>"Nix priority"</span><input type="number" min="0" prop:value=move || priority.get() on:input=move |event| priority.set(event_target_value(&event))/></label><label><span>"Compression"</span><select prop:value=move || compression.get() on:change=move |event| compression.set(event_target_value(&event))><option value="zstd">"Zstandard"</option><option value="xz">"XZ"</option><option value="none">"None"</option></select></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || mass_query.get() on:change=move |event| mass_query.set(event_target_checked(&event))/><span>"Advertise WantMassQuery"</span></label><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review update"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
+    view! { <div class="workflow-stack"><section class="panel effective-overview"><div class="section-heading"><div><p class="section-kicker">"Effective binary cache"</p><h2>{cache.name.clone()}</h2><p>"Client, storage, signing, and retention status for this cache."</p></div><StatusBadge state=if cache.signed { "signed".to_string() } else { "unsigned".to_string() } positive=cache.signed/></div><div class="resource-identity"><div><span>"Cache"</span><code>{cache.slug.clone()}</code></div><div><span>"Visibility"</span><strong>{cache.visibility.clone()}</strong></div><div><span>"Infrastructure owner"</span><code>{cache.owner_scope_key.clone()}</code></div><div><span>"Usage"</span><strong>{format_bytes(cache.used_bytes)}</strong></div><div><span>"Objects"</span><strong>{cache.object_count}</strong></div><div><span>"Placements"</span><strong>{cache.placement_count}</strong></div><div><span>"Retention roots"</span><strong>{cache.retention_root_count}</strong></div><div><span>"Compression"</span><strong>{cache.compression.clone()}</strong></div></div><EffectiveDelivery routes=topology.routes advertisements=topology.route_advertisements/><div class="overview-actions"><a class="button" href=format!("{destination}/delivery")>"View delivery"</a><a class="secondary-button" href=format!("{destination}/placements")>"View storage & replicas"</a><a class="secondary-button" href=format!("{destination}/signing-keys")>"View signing keys"</a></div></section><details class="panel advanced-controls"><summary>"Edit cache policy"</summary>{if can_manage { view! { <form class="editor-form" on:submit=on_plan><label><span>"Display name"</span><input required prop:value=move || name.get() on:input=move |event| name.set(event_target_value(&event))/></label><label><span>"Visibility"</span><select prop:value=move || visibility.get() on:change=move |event| visibility.set(event_target_value(&event))><VisibilityOptions value=visibility/></select></label><label><span>"Nix priority"</span><input type="number" min="0" prop:value=move || priority.get() on:input=move |event| priority.set(event_target_value(&event))/></label><label><span>"Compression"</span><select prop:value=move || compression.get() on:change=move |event| compression.set(event_target_value(&event))><option value="zstd">"Zstandard"</option><option value="xz">"XZ"</option><option value="none">"None"</option></select></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || mass_query.get() on:change=move |event| mass_query.set(event_target_checked(&event))/><span>"Advertise WantMassQuery"</span></label><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review update"</button></div></form> }.into_any() } else { view! { <p class="muted">"You have read-only access to this cache."</p> }.into_any() }}{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</details></div> }
 }
 
 #[component]

@@ -305,6 +305,101 @@
   cursor: pointer;
 }
 
+.guided-workflow {
+  margin-top: 1.2rem;
+  padding: 0.8rem;
+  border: 2px solid var(--rule-strong);
+}
+
+.guided-workflow > summary {
+  color: var(--accent);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.workflow-editor {
+  padding-top: 0.8rem;
+}
+
+.workflow-card {
+  padding: 0.9rem;
+  border: 1px solid var(--rule);
+}
+
+.workflow-card-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.workflow-card-heading h3 {
+  margin: 0.25rem 0;
+}
+
+.workflow-steps {
+  display: grid;
+  gap: 0.5rem;
+  margin: 1rem 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: workflow-step;
+}
+
+.workflow-step {
+  display: grid;
+  grid-template-columns: minmax(8rem, 0.45fr) minmax(0, 1fr);
+  gap: 0.3rem 0.8rem;
+  padding-left: 1.8rem;
+  position: relative;
+  counter-increment: workflow-step;
+}
+
+.workflow-step::before {
+  position: absolute;
+  left: 0;
+  content: counter(workflow-step);
+  color: var(--dim);
+}
+
+.workflow-step span,
+.workflow-step code {
+  overflow-wrap: anywhere;
+}
+
+.workflow-step code {
+  grid-column: 2;
+}
+
+.workflow-operation {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  grid-column: 2;
+  color: var(--dim);
+  font-size: 0.82rem;
+}
+
+.workflow-operation code {
+  grid-column: auto;
+}
+
+.workflow-step.complete strong,
+.workflow-step.active strong {
+  color: var(--ok);
+}
+
+.workflow-blockers,
+.workflow-prerequisites {
+  margin: 0.8rem 0;
+  padding: 0.7rem;
+  border-left: 3px solid var(--warn);
+}
+
+.workflow-next-actions {
+  margin: 0.8rem 0;
+}
+
 .review-columns > div,
 .subworkflow {
   padding: 0.8rem;
@@ -324,6 +419,18 @@
 .review-actions {
   justify-content: flex-end;
   margin-top: 1rem;
+}
+
+.overview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-top: 1rem;
+}
+
+.overview-actions .button,
+.overview-actions .secondary-button {
+  margin: 0;
 }
 
 .fatal-page {

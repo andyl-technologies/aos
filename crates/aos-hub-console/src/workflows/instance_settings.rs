@@ -90,6 +90,15 @@ fn InstanceOverview(settings: aos_proto_types::InstanceSettings, version: String
                 <a class="resource-card" href="/-/instance/resource-defaults"><div><span class="resource-kind">"Policy"</span><h3>"Resource defaults"</h3><p>"Upload limits, cache discovery, and registry crawl policy."</p></div></a>
                 <a class="resource-card" href="/-/instance/branding"><div><span class="resource-kind">"Appearance"</span><h3>"Branding"</h3><p>"Site identity, announcements, legal links, and support."</p></div></a>
             </section>
+            <section class="panel resource-panel">
+                <div class="section-heading"><div><p class="section-kicker">"Shared infrastructure"</p><h2>"Delivery and storage"</h2><p>"Resources owned by the instance and granted to organizations, registries, and caches."</p></div></div>
+                <div class="resource-grid">
+                    <a class="resource-card" href="/-/instance/bindings"><div><span class="resource-kind">"Storage"</span><h3>"Bindings"</h3><p>"Credentials and object-store connections."</p></div></a>
+                    <a class="resource-card" href="/-/instance/domains"><div><span class="resource-kind">"Delivery"</span><h3>"Domains"</h3><p>"Hostname ownership and certificate intent."</p></div></a>
+                    <a class="resource-card" href="/-/instance/endpoints"><div><span class="resource-kind">"Delivery"</span><h3>"Endpoints"</h3><p>"Ingress identity, listener state, and verification."</p></div></a>
+                    <a class="resource-card" href="/-/instance/gateways"><div><span class="resource-kind">"Delivery"</span><h3>"Gateways"</h3><p>"Exact storage-to-endpoint generations."</p></div></a>
+                </div>
+            </section>
         </div>
     }
 }
