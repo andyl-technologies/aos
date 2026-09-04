@@ -101,8 +101,8 @@ they gate any affected runtime backend.
   prove convergence (`SBX-CTRL-01`; `ec3a23d4f`).
 - [x] **SBX-SD-01** Extend `aos-systemd` with typed transient sandbox unit,
   cgroup, freeze/thaw, leader, and observation operations (`d1e40ea28`).
-- [ ] **SBX-LINUX-01** Add safe, owned pidfd, namespace FD, `openat2`, mount FD,
-  idmap, `statmount`, and `listmount` wrappers (`SBX-P0-03`).
+- [x] **SBX-LINUX-01** Add safe, owned pidfd, namespace FD, `openat2`, mount FD,
+  idmap, `statmount`, and `listmount` wrappers (`SBX-P0-03`; `362732f96`).
 - [ ] **SBX-HOST-01** Implement the root-only fixed host broker and one-shot
   workers (`SBX-BPROTO-02`, `SBX-SD-01`, `SBX-LINUX-01`).
 - [ ] **SBX-STOR-01** Implement the root-only fixed storage broker with opaque
