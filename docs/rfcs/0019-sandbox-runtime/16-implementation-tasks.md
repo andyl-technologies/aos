@@ -377,3 +377,9 @@ completes. The Git history remains authoritative for code details.
   profile, catalogued nonoverlapping identity allocation, and bounded resource
   policy. Production launch remains unavailable until executable, MAC,
   namespace, immutable-pin, and post-launch identity probes mint readiness.
+- `017edc0e3` — foundation toward `SBX-MOUNT-01`, `SBX-VIEW-03`, and
+  `SBX-LIFE-06`: durable mount resources now preserve exact descriptor custody,
+  pre-effect lifecycle intent, boot-scoped kernel identity, reciprocal atomic
+  replacement, bounded authoritative inventory, and restart reconciliation.
+  Broker authorization admission and end-to-end namespace VM tests remain
+  open.
