@@ -66,8 +66,8 @@ Every phase is committed separately and pushed to `dplecki/aos-containers`.
 
 ### Exit criteria
 
-- [x] Pure evaluation proves `systems.server` package roots are available to a
-  separate container evaluator without retaining the system toplevel.
+- [x] Pure evaluation proves `systems.server` package roots are available to
+  its OCI projection without retaining the system toplevel.
 - [x] Two independent hand-built spike archives have identical uncompressed and
   gzip-compressed SHA-256 digests.
 - [x] One adversarial review is complete and all blocking Phase-0 findings are
@@ -117,7 +117,8 @@ used.
 
 ### Evaluation and exports
 
-- [x] Add the separate typed container module evaluator.
+- [x] Add the typed container definition schema (later unified into each system
+  evaluation and exposed through `system.build.containers`).
 - [x] Reject base images, host roots, secrets, unsafe paths, duplicate layers,
   duplicate store paths, facade collisions, and invalid exec-form config.
 - [x] Map AOS targets to OCI platforms and preserve AOS identity annotations.

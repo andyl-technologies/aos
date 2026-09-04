@@ -65,6 +65,7 @@
     else if
       !lib.all sameCoordination [
         "repository"
+        "referenceTag"
         "releaseIdentity"
         "packageName"
         "packageVersion"
@@ -76,7 +77,7 @@
 
   primaryImages = map (build: build.qualification.primaryImage) sortedBuilds;
   repeatImages = map (build: build.qualification.repeatImage) sortedBuilds;
-  referenceName = "${first.coordination.repository}:latest";
+  referenceName = "${first.coordination.repository}:${first.coordination.referenceTag}";
   primaryIndex = oci.mkMultiPlatformIndex {
     pname = "aos-container-${name}-production-index";
     images = primaryImages;

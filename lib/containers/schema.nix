@@ -86,6 +86,25 @@
     };
   };
 
+  fileType = types.submodule {
+    config._module.strict = true;
+    options = {
+      path = mkOption {
+        type = absoluteContainerPath;
+        description = "Absolute regular-file path in the scratch root.";
+      };
+      mode = mkOption {
+        type = validatedString;
+        default = "0644";
+        description = "Four-digit octal file mode.";
+      };
+      text = mkOption {
+        type = validatedString;
+        description = "Non-secret text written verbatim to the file.";
+      };
+    };
+  };
+
   facadeType = types.submodule {
     config._module.strict = true;
     options = {
@@ -148,6 +167,11 @@ in {
     };
 
     filesystem = {
+      files = mkOption {
+        type = types.listOf fileType;
+        default = [];
+        description = "Additional deterministic non-secret text files in the metadata layer.";
+      };
       directories = mkOption {
         type = types.listOf directoryType;
         default = [];
@@ -264,6 +288,11 @@ in {
         type = validatedString;
         description = "Stable signed-release identity for Hub publication.";
       };
+      referenceTag = mkOption {
+        type = safeName;
+        default = "latest";
+        description = "Mutable OCI reference included in local archives; release publication also emits an immutable version tag.";
+      };
       evidenceOverrides = mkOption {
         type = types.listOf evidenceOverrideType;
         default = [];
@@ -289,6 +318,7 @@ in {
     _module.strict = true;
     assertions = let
       layerNames = map (layer: layer.name) config.layers;
+      filePaths = map (file: file.path) config.filesystem.files;
       directoryPaths = map (directory: directory.path) config.filesystem.directories;
       facadeNames = map (entry: entry.name) config.filesystem.facade;
       allowedFacadeCollisions = config.filesystem.allowedFacadeCollisions;
@@ -356,12 +386,23 @@ in {
         message = "container evidence overrides require non-empty licenses and exact source inputs";
       }
       {
+        assertion = builtins.length filePaths == builtins.length (lib.unique filePaths);
+        message = "container filesystem file paths must be unique";
+      }
+      {
         assertion = builtins.length directoryPaths == builtins.length (lib.unique directoryPaths);
         message = "container filesystem directory paths must be unique";
       }
       {
         assertion = builtins.length facadeNames == builtins.length (lib.unique facadeNames);
         message = "container executable facade names must be unique";
+      }
+      {
+        assertion =
+          builtins.all
+          (file: builtins.match "[0-7][0-7][0-7][0-7]" file.mode != null)
+          config.filesystem.files;
+        message = "container file modes must be four-digit octal strings";
       }
       {
         assertion =
