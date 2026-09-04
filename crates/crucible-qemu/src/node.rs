@@ -94,8 +94,9 @@ use hot_fork_diagnostics::QemuHotForkChildDiagnosticStage;
 #[cfg(target_os = "linux")]
 pub use hot_fork_diagnostics::{
     MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_BYTES, QemuHotForkChildDiagnosticCapture,
-    QemuHotForkChildDiagnosticDrain, QemuHotForkChildDiagnosticStageError,
-    QemuHotForkChildDiagnosticStageProof, QemuHotForkChildDiagnosticStageState,
+    QemuHotForkChildDiagnosticConsumer, QemuHotForkChildDiagnosticDrain,
+    QemuHotForkChildDiagnosticStageError, QemuHotForkChildDiagnosticStageProof,
+    QemuHotForkChildDiagnosticStageState,
 };
 #[cfg(target_os = "linux")]
 pub use hot_fork_operation::{

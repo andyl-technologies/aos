@@ -1958,7 +1958,12 @@ fn hot_fork_success_transfers_child_qmp_and_private_host_continuation() -> Resul
     assert_ne!(launch.host_continuation().ring_identity().inode(), 0);
     assert_eq!(node.lifecycle_state(), QemuNodeLifecycleState::Running);
     assert!(node.take_hot_fork_child_qmp_host_endpoint().is_err());
-    let (_parent, _process, _child_qmp, mut continuation) = launch.into_parts();
+    let (_parent, _process, child_qmp, mut diagnostics, mut continuation) = launch.into_parts();
+    assert_eq!(diagnostics.template_generation(), 1);
+    let drain = diagnostics.drain_available()?;
+    assert_eq!(drain.bytes_read(), 26);
+    assert_eq!(drain.total_retained(), 26);
+    assert!(!drain.eof());
     assert!(continuation.console_observation_available());
     continuation.attach_console_observation(&mut node, node_id("fork-child"))?;
     assert!(!continuation.console_observation_available());
@@ -1968,6 +1973,13 @@ fn hot_fork_success_transfers_child_qmp_and_private_host_continuation() -> Resul
             .is_err()
     );
     drop(continuation);
+    drop(child_qmp);
+    node.release_hot_fork_plugin_endpoints()?;
+    node.release_hot_fork_child_console()?;
+    node.release_hot_fork_child_qmp()?;
+    let capture = node.release_hot_fork_child_diagnostics_with_consumer(&mut diagnostics)?;
+    assert_eq!(capture.bytes(), b"scripted child diagnostics");
+    drop(node.release_hot_fork_private_ring_mapping()?);
     node.shutdown_child()?;
     Ok(())
 }

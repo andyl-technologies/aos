@@ -4,7 +4,8 @@
 //! becomes ambiguous, or QEMU reports a parent-disposition failure after
 //! creating the child, the source node retains every staged descriptor and is
 //! quarantined as one process authority. A successful transaction alone moves
-//! the branch-private child QMP endpoint into the returned launch token.
+//! the branch-private child QMP endpoint and sole diagnostics reader into the
+//! returned launch token.
 
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use thiserror::Error;
@@ -209,14 +210,15 @@ impl QemuHotForkHostContinuation {
 /// Backward-compatible name for the plugin portion's original continuation type.
 pub type QemuHotForkPluginHostContinuation = QemuHotForkHostContinuation;
 
-/// Linear successful parent result, process authority, and private child endpoint.
+/// Linear successful parent result, process authority, and private child channels.
 #[derive(Debug)]
-#[must_use = "the forked child endpoint must be authenticated or transferred to quarantine"]
+#[must_use = "the forked child authorities must be reconciled or transferred to quarantine"]
 pub struct QemuHotForkChildLaunch<A> {
     parent_state: crate::QmpHotForkState,
     child_process_id: u32,
     process_authority: A,
     child_qmp: QemuHotForkChildQmpHostEndpoint,
+    diagnostics: QemuHotForkChildDiagnosticConsumer,
     host_continuation: QemuHotForkHostContinuation,
 }
 
@@ -245,24 +247,31 @@ impl<A> QemuHotForkChildLaunch<A> {
         &self.child_qmp
     }
 
+    /// Returns the exact branch-private diagnostics consumer.
+    pub const fn diagnostics(&self) -> &QemuHotForkChildDiagnosticConsumer {
+        &self.diagnostics
+    }
+
     /// Returns the exact branch-private host continuation.
     pub const fn host_continuation(&self) -> &QemuHotForkHostContinuation {
         &self.host_continuation
     }
 
-    /// Separates the exact parent result from the linear private child endpoint.
+    /// Separates the exact parent result from all linear child authorities.
     pub fn into_parts(
         self,
     ) -> (
         crate::QmpHotForkState,
         A,
         QemuHotForkChildQmpHostEndpoint,
+        QemuHotForkChildDiagnosticConsumer,
         QemuHotForkHostContinuation,
     ) {
         (
             self.parent_state,
             self.process_authority,
             self.child_qmp,
+            self.diagnostics,
             self.host_continuation,
         )
     }
@@ -378,14 +387,15 @@ impl QemuNode {
             .release_hot_fork_child_process(generation)
     }
 
-    /// Forks a prepared template and transfers its private child-QMP endpoint.
+    /// Forks a prepared template and transfers its private child channels.
     ///
     /// The caller supplies the request derived from the exact prepared template
     /// and sealed child-QMP reports. QEMU revalidates all request generations on
     /// its source main loop. An explicit pre-fork rejection leaves this node and
     /// its endpoint reusable. Every post-fork or ambiguous failure quarantines
     /// this node with all staged ownership still retained. A successful result
-    /// moves the endpoint exactly once into [`QemuHotForkChildLaunch`].
+    /// moves the QMP endpoint and diagnostics reader exactly once into
+    /// [`QemuHotForkChildLaunch`].
     ///
     /// The returned positive PID is not by itself process ownership. Before
     /// connecting the endpoint or admitting guest work, the daemon must bind
@@ -522,6 +532,22 @@ impl QemuNode {
                 ),
             });
         }
+        if !self
+            .hot_fork_child_diagnostic_stage
+            .as_ref()
+            .is_some_and(|diagnostics| {
+                diagnostics.consumer_available()
+                    && diagnostics.replacement_plan_bound()
+                    && diagnostics.template_generation() == request.template_generation()
+            })
+        {
+            return Err(QemuHotForkLaunchError::Rejected {
+                source: QemuNodeChannelError::new(
+                    "fork retained hot-fork template",
+                    "branch-private child diagnostics consumer was already transferred",
+                ),
+            });
+        }
         let mapping = match self.hot_fork_private_ring_stage.as_ref() {
             Some(QemuHotForkPrivateRingStage::Installed(mapping)) => mapping,
             Some(QemuHotForkPrivateRingStage::TransferUncertain(_)) | None => {
@@ -653,6 +679,15 @@ impl QemuNode {
                     source,
                 }
             })?;
+        let diagnostics = self
+            .take_hot_fork_child_diagnostic_consumer()
+            .map_err(|source| {
+                self.lifecycle_state = QemuNodeLifecycleState::Quarantined;
+                QemuHotForkLaunchError::EndpointTransfer {
+                    parent_state: Box::new(parent_state),
+                    source,
+                }
+            })?;
         let host_continuation = QemuHotForkHostContinuation {
             endpoint: host_endpoint,
             ring_descriptor,
@@ -668,6 +703,7 @@ impl QemuNode {
             child_process_id,
             process_authority,
             child_qmp,
+            diagnostics,
             host_continuation,
         })
     }

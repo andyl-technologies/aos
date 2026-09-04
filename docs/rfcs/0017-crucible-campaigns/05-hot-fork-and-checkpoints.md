@@ -1155,11 +1155,19 @@ QEMU duplicate before the monitor name and host owners. The node exposes a
 nonblocking host drain that retains at most 16 MiB cumulatively for one
 diagnostics generation. Repeated drains do not reset that bound, and an
 available byte beyond it fails the node closed instead of truncating the
-stream. Exact release shuts down the final node-owned writer, drains through
-EOF, and returns the complete capture bound to the descriptor name,
-`SO_COOKIE`, and template generation. The eventual production fork owner MUST
-drive the drain often enough to release socket backpressure while a child is
-live. This supplies
+stream. A known successful fork transfers the sole host consumer into the
+linear child launch authority; explicit pre-fork rejection leaves it with the
+reusable source. The daemon reconciliation owner drains it before every
+child-QMP admission and source-parent status query, and the live-child
+operational capability drains it before every cancellation check or
+scheduler-quantum charge. A driver MUST use
+that capability between bounded guest quanta and MAY request additional
+nonblocking drains while idle. Diagnostic I/O or capacity failure is terminal
+and transfers the indivisible child owner to quarantine before another status
+query. Exact release shuts down the final source-owned writer, returns the
+matching child-owned consumer, drains through EOF, and produces the complete
+capture bound to the descriptor name, `SO_COOKIE`, and template generation.
+This supplies
 branch-private child diagnostics without enumerating the remaining QMP, block,
 AIO, console, or filesystem resources, invoking `fork(2)`, or acknowledging
 proof bit 7 or 8.

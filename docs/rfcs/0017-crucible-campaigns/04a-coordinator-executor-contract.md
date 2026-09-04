@@ -2298,9 +2298,18 @@ attempt authority; it MUST NOT synthesize `std::process::Child` from the numeric
 PID or split the process owner from the target's complete resource guard.
 The daemon reconciliation owner also binds the lineage-qualified `AttemptId`
 and process-local `ExecutionId`. It admits modeled execution only after the
-private child QMP endpoint authenticates the complete retained generation
-basis. Reconciliation is monotonic and performs at most one bounded operation
-per step: observe source-parent status, release child-private resources, prove
+sole diagnostic reader is serviced and the private child QMP endpoint
+authenticates the complete retained generation basis. A successful fork
+transfers the sole branch-private diagnostic reader
+into that same linear owner while the source retains the ordered writers. The
+owner performs one nonblocking diagnostic drain as its own bounded step before
+every source-parent status query. The live-child capability also drains before
+every cancellation check and scheduler-quantum charge; modeled guest progress
+outside that capability is nonconforming. Diagnostic I/O or cumulative
+capacity failure is terminal and quarantines the indivisible owner before any
+later status observation. Reconciliation is otherwise monotonic and performs
+at most one bounded operation per step: observe source-parent status, release
+child-private resources, prove
 the target cgroup empty, reconcile an authoritative observation/cancellation/
 terminal-failure outcome, release the exact source status, and finally release
 the QEMU-owned process-contract descriptors. An observation is invalid if the
@@ -2977,9 +2986,10 @@ observation integration remain mandatory before the executor may report
 
 The Rust node boundary enforces that rule with a linear launch token. A
 successful result contains the exact parent response, one nonduplicable
-child-process authority, the single branch-private QMP endpoint, and the
-branch-private console continuation; the node cannot return success with only a
-PID. The source console reader is duplicated into retry-safe private host state
+child-process authority, the single branch-private QMP endpoint, the sole
+bounded diagnostic reader, and the branch-private console continuation; the
+node cannot return success with only a PID. The source console reader is
+duplicated into retry-safe private host state
 before the QMP fork, but its original endpoint is consumed only after a known
 successful ownership transfer. The returned host continuation owns the child
 observation spool, and attaching it to the child node cannot expose source
