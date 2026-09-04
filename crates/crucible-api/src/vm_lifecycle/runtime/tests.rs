@@ -643,7 +643,9 @@ fn durable_run_state_fails_closed_on_a_corrupt_manifest() {
     assert!(error.to_string().contains("preflight"));
 }
 
-fn production_loop_without_backends(source: &ScenarioDefForm) -> ProductionVmLifecycleLoop {
+pub(in crate::vm_lifecycle) fn production_loop_without_backends(
+    source: &ScenarioDefForm,
+) -> ProductionVmLifecycleLoop {
     let scenario = source.scenario_def();
     let runtime_scenario = SchedulerLivenessScenario::from_runnable_world(
         &scenario.id().to_hex(),
@@ -771,7 +773,7 @@ fn production_loop_without_backends(source: &ScenarioDefForm) -> ProductionVmLif
     lifecycle
 }
 
-fn nonterminal_signal_replay_scenario() -> ScenarioDefForm {
+pub(in crate::vm_lifecycle) fn nonterminal_signal_replay_scenario() -> ScenarioDefForm {
     let base = crucible::crash_restart_scenario()
         .unwrap_or_else(|error| panic!("built-in scenario should validate: {error}"))
         .scenario;

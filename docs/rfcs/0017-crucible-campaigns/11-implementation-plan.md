@@ -2486,7 +2486,14 @@ fail before guest progress, an exact checkpoint request fails closed until the
 hot lifecycle owns capture/handoff, and the launch path retains the complete
 resolved campaign input needed to assemble the exact scenario/start world.
 Focused regressions prove common-loop candidate production and raw-channel
-rejection. Linux child node/world assembly remains open. Realization now also
+rejection. The production lifecycle now also emits an opaque process-neutral
+world continuation only at an exact checkpoint boundary. That token captures
+the complete scheduler and event-log closure plus fault/network, trigger,
+assertion, selectable, terminal, and node-generation state, and sandwiches the
+capture between identical process/time inventories. It rejects unsettled
+network output, debug/checkpoint ownership, and lifecycle cleanup debt before
+any QEMU fork can begin. Linux child-node assembly and the atomic all-node
+installation transaction remain open. Realization now also
 converts an exact active node into a non-forgeable prepared-template capability only after QEMU has
 completed the retained-template and branch-resource transaction. The capability
 keeps the realized configuration and unified event-log prefix paired with the
