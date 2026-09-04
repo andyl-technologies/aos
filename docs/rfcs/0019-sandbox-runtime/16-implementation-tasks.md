@@ -389,3 +389,8 @@ completes. The Git history remains authoritative for code details.
   intersection, and a bounded corruption-detecting local record. Production
   brokers must still authenticate the record under a node-local key and
   atomically consume the non-authorizing intersection before any effect.
+- `26911b96c` — foundation toward `SBX-MOUNT-01` and `SBX-LIFE-06`: durable
+  recovery and wire inventory now share one boot-scoped replacement theorem;
+  stale terminal history cannot claim current slots or hide dangling,
+  cross-boot, or nonreciprocal edges, and descriptor-store keys are canonical
+  to mount handles. Bounded tombstone retirement remains open.
