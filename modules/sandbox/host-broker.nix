@@ -6,6 +6,7 @@
   ...
 }: let
   cfg = config.aos.sandbox.hostBroker;
+  controller = config.aos.sandbox.controller;
 in {
   options.aos.sandbox.hostBroker = {
     enable = lib.mkEnableOption "the fixed AOS sandbox host broker";
@@ -20,41 +21,17 @@ in {
     controllerUid = lib.mkOption {
       type = lib.types.int;
       default = 811;
-      description = "Stable UID of the unprivileged sandbox controller.";
+      description = "Compatibility default for aos.sandbox.controller.uid.";
     };
 
     controllerGid = lib.mkOption {
       type = lib.types.int;
       default = 811;
-      description = "Stable GID of the unprivileged sandbox controller.";
+      description = "Compatibility default for aos.sandbox.controller.gid.";
     };
   };
 
   config = lib.mkIf cfg.enable {
-    assertions = [
-      {
-        assertion = cfg.controllerUid > 0 && cfg.controllerUid < 65536;
-        message = "aos.sandbox.hostBroker.controllerUid must be in 1..65535";
-      }
-      {
-        assertion = cfg.controllerGid > 0 && cfg.controllerGid < 65536;
-        message = "aos.sandbox.hostBroker.controllerGid must be in 1..65535";
-      }
-    ];
-
-    aos.users.users.aos-sandboxd = {
-      uid = cfg.controllerUid;
-      group = "aos-sandboxd";
-      home = "/var/lib/aos/sandboxd";
-      shell = "/sbin/nologin";
-      description = "AOS sandbox node controller";
-      extraGroups = [];
-    };
-    aos.users.groups.aos-sandboxd = {
-      gid = cfg.controllerGid;
-      members = [];
-    };
-
     systemd.sockets.aos-sandbox-hostd = {
       description = "AOS sandbox host broker socket";
       wantedBy = ["sockets.target"];
@@ -80,7 +57,7 @@ in {
       };
       serviceConfig = {
         Type = "simple";
-        ExecStart = "${cfg.package}/bin/aos-sandbox-hostd ${toString cfg.controllerUid} ${toString cfg.controllerGid} ${pkgs.systemd}/bin/systemd-nspawn";
+        ExecStart = "${cfg.package}/bin/aos-sandbox-hostd ${toString controller.uid} ${toString controller.gid} ${pkgs.systemd}/bin/systemd-nspawn";
         Restart = "on-failure";
         RestartSec = "2s";
         StateDirectory = "aos/sandbox-host";

@@ -8,6 +8,10 @@ license.workspace = true
 name = "aos-sandbox-mount-helper"
 path = "src/bin/aos-sandbox-mount-helper.rs"
 
+[[bin]]
+name = "aos-sandbox-mountd"
+path = "src/bin/aos-sandbox-mountd.rs"
+
 [dependencies]
 aos-proto.workspace = true
 aos-sandbox.workspace = true
@@ -16,7 +20,7 @@ aos-sandbox-linux.workspace = true
 aos-sandbox-protocol.workspace = true
 buffa.workspace = true
 libc.workspace = true
-rustix = { workspace = true, features = ["fs", "process"] }
+rustix = { workspace = true, features = ["fs", "net", "process", "time"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

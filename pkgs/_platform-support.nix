@@ -345,6 +345,7 @@ let
     "aos-recovery"
     "aos-registry-server"
     "aos-sandbox-hostd"
+    "aos-sandbox-mountd"
     "aos-service-root"
     "aos-selinux-run"
     "aos-var-policy-migrate"

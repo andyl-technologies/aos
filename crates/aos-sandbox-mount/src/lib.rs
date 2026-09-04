@@ -10,15 +10,20 @@
 //! - [`plan`] defines the sealed, fixed helper handoff;
 //! - [`spawn`] performs the sole audited `posix_spawn` descriptor mapping;
 //! - [`helper`] executes one namespace-local syscall plan and exits;
+//! - [`transport`] and [`peer`] authenticate bounded local requests;
+//! - [`service`] owns the synchronous broker loop.
 //! - [`state`] encodes the broker's bounded journal records;
 //! - [`worker`] defines the closed effect interface.
 
 pub mod broker;
 pub mod catalog;
 pub mod helper;
+pub mod peer;
 pub mod plan;
+pub mod service;
 pub mod spawn;
 mod state;
+pub mod transport;
 pub mod worker;
 
 /// Errors returned by the fixed mount broker.
