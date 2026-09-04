@@ -25,9 +25,11 @@ pub const MOUNT_NAMESPACE_FD: i32 = 5;
 pub const TARGET_ROOT_FD: i32 = 6;
 /// Fixed child descriptor carrying the pre-effect target slot.
 pub const TARGET_SLOT_FD: i32 = 7;
+/// Fixed child descriptor carrying its bounded kernel observation report.
+pub const OBSERVATION_FD: i32 = 8;
 
 const FIRST_ROLE_FD: i32 = PLAN_FD;
-const LAST_ROLE_FD: i32 = TARGET_SLOT_FD;
+const LAST_ROLE_FD: i32 = OBSERVATION_FD;
 const DUPLICATE_FD_MINIMUM: i32 = 64;
 
 /// Maps one broker-owned descriptor to a fixed helper role.
@@ -206,7 +208,13 @@ fn validate(executable: &Path, mappings: &[DescriptorMapping<'_>]) -> Result<()>
             ));
         }
     }
-    for mandatory in [PLAN_FD, MOUNT_NAMESPACE_FD, TARGET_ROOT_FD, TARGET_SLOT_FD] {
+    for mandatory in [
+        PLAN_FD,
+        MOUNT_NAMESPACE_FD,
+        TARGET_ROOT_FD,
+        TARGET_SLOT_FD,
+        OBSERVATION_FD,
+    ] {
         if !targets.contains(&mandatory) {
             return Err(MountError::Worker(
                 "mount helper descriptor role table is incomplete".to_owned(),

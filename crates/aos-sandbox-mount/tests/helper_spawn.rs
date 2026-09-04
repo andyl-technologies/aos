@@ -4,7 +4,7 @@ use std::os::fd::AsFd as _;
 use std::path::Path;
 
 use aos_sandbox_mount::spawn::{
-    DescriptorMapping, MOUNT_NAMESPACE_FD, PLAN_FD, TARGET_ROOT_FD, TARGET_SLOT_FD,
+    DescriptorMapping, MOUNT_NAMESPACE_FD, OBSERVATION_FD, PLAN_FD, TARGET_ROOT_FD, TARGET_SLOT_FD,
     run_helper_status,
 };
 
@@ -26,6 +26,10 @@ fn spawned_helper_gets_exact_fds_and_empty_environment() {
         },
         DescriptorMapping {
             target: TARGET_SLOT_FD,
+            source: file.as_fd(),
+        },
+        DescriptorMapping {
+            target: OBSERVATION_FD,
             source: file.as_fd(),
         },
     ];

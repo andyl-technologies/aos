@@ -7,6 +7,7 @@
 use std::ffi::CString;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 
+use crate::inventory::MountId;
 use crate::path::ResolvedPath;
 use crate::pidfd::SingleThreadedProcess;
 use crate::pidfd::{NamespaceFd, NamespaceKind};
@@ -154,6 +155,7 @@ impl MountAttributes {
 #[derive(Debug)]
 pub struct DetachedMount {
     fd: OwnedFd,
+    mount_id: MountId,
 }
 
 impl DetachedMount {
@@ -171,7 +173,8 @@ impl DetachedMount {
     pub fn from_inherited(fd: OwnedFd) -> Result<Self> {
         uapi::ensure_cloexec(fd.as_fd())?;
         let _ = uapi::fstat(fd.as_fd())?;
-        Ok(Self { fd })
+        let mount_id = MountId::from_fd(fd.as_fd())?;
+        Ok(Self { fd, mount_id })
     }
     /// Clones the mount containing `source` without publishing it.
     ///
@@ -180,9 +183,9 @@ impl DetachedMount {
     /// Returns an error if `source` is not a mountable object, cloning is
     /// denied, or the kernel lacks the new mount API.
     pub fn clone_from(source: &ResolvedPath, recursive: bool) -> Result<Self> {
-        Ok(Self {
-            fd: uapi::open_tree(source.as_fd(), recursive)?,
-        })
+        let fd = uapi::open_tree(source.as_fd(), recursive)?;
+        let mount_id = MountId::from_fd(fd.as_fd())?;
+        Ok(Self { fd, mount_id })
     }
 
     /// Clones and attributes a mount atomically with `open_tree_attr(2)`.
@@ -198,15 +201,21 @@ impl DetachedMount {
         user_namespace: Option<&NamespaceFd>,
     ) -> Result<Self> {
         let raw = attributes.raw(user_namespace)?;
-        Ok(Self {
-            fd: uapi::open_tree_attr(source.as_fd(), recursive, &raw)?,
-        })
+        let fd = uapi::open_tree_attr(source.as_fd(), recursive, &raw)?;
+        let mount_id = MountId::from_fd(fd.as_fd())?;
+        Ok(Self { fd, mount_id })
     }
 
     /// Borrows the detached mount descriptor.
     #[must_use]
     pub fn as_fd(&self) -> BorrowedFd<'_> {
         self.fd.as_fd()
+    }
+
+    /// Returns the kernel-lifetime unique identity of this mount object.
+    #[must_use]
+    pub const fn mount_id(&self) -> MountId {
+        self.mount_id
     }
 
     /// Applies attributes and an optional idmap while the mount is detached.
@@ -357,9 +366,9 @@ impl CreatedFileSystem {
     /// Returns an error for access denial, an invalid context, or syscall
     /// failure.
     pub fn mount(self) -> Result<DetachedMount> {
-        Ok(DetachedMount {
-            fd: uapi::fsmount(self.fd.as_fd())?,
-        })
+        let fd = uapi::fsmount(self.fd.as_fd())?;
+        let mount_id = MountId::from_fd(fd.as_fd())?;
+        Ok(DetachedMount { fd, mount_id })
     }
 }
 

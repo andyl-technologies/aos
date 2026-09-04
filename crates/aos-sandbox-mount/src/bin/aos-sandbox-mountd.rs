@@ -1,7 +1,7 @@
 //! Runs the root-only, systemd-activated sandbox mount broker.
 
 use std::env;
-use std::os::fd::{FromRawFd as _, OwnedFd};
+use std::os::fd::OwnedFd;
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::Path;
 use std::process::ExitCode;
@@ -11,14 +11,15 @@ use aos_sandbox_linux::path::BeneathRoot;
 use aos_sandbox_mount::broker::MountBroker;
 use aos_sandbox_mount::catalog::FileMountCatalog;
 use aos_sandbox_mount::helper::PosixSpawnNamespaceHelper;
+use aos_sandbox_mount::keeper::SystemdFdStore;
 use aos_sandbox_mount::peer::ControllerPeerVerifier;
 use aos_sandbox_mount::service::MountService;
 use aos_sandbox_mount::transport::ActivatedSeqpacketListener;
 use aos_sandbox_mount::worker::DescriptorMountWorker;
 use aos_sandbox_mount::{MountError, Result};
 
-const ACTIVATION_FD: i32 = 3;
 const EXPECTED_FD_NAME: &str = "aos-sandbox-mount";
+const MAXIMUM_RETAINED_MOUNTS: usize = 1_024;
 const CATALOG_ROOT: &str = "/run/aos/sandbox-mount-catalog";
 const STATE_ROOT: &str = "/var/lib/aos/sandbox-mount";
 const CGROUP_ROOT: &str = "/sys/fs/cgroup";
@@ -39,8 +40,11 @@ fn run() -> Result<()> {
             "mount broker must start with real and effective UID zero".to_owned(),
         ));
     }
+    let activation =
+        SystemdFdStore::adopt_service_activation(EXPECTED_FD_NAME, MAXIMUM_RETAINED_MOUNTS)?;
+    let listener = ActivatedSeqpacketListener::from_owned(activation.listener)?;
+    let keeper = SystemdFdStore::from_environment()?;
     let (controller_identity, helper_executable) = arguments()?;
-    let listener = take_systemd_listener()?;
     validate_private_root(Path::new(STATE_ROOT))?;
     let (journal, _) = Journal::open(
         Path::new(STATE_ROOT).join("mount.journal"),
@@ -48,7 +52,7 @@ fn run() -> Result<()> {
     )?;
     let catalog = FileMountCatalog::open_root_owned(CATALOG_ROOT)?;
     let helper = PosixSpawnNamespaceHelper::new(helper_executable)?;
-    let worker = DescriptorMountWorker::new(catalog, helper);
+    let worker = DescriptorMountWorker::new(catalog, helper, keeper, activation.mounts)?;
     let broker = MountBroker::new(journal, worker);
     let verifier = ControllerPeerVerifier::new(open_cgroup_root()?);
     let mut service = MountService::new(broker, verifier, controller_identity);
@@ -78,31 +82,6 @@ fn parse_identity(value: Option<String>, label: &str) -> Result<u32> {
         .ok_or_else(|| MountError::State(format!("{label} is absent")))?
         .parse()
         .map_err(|_| MountError::State(format!("{label} is not a decimal u32")))
-}
-
-fn take_systemd_listener() -> Result<ActivatedSeqpacketListener> {
-    let listen_pid = environment_u32("LISTEN_PID")?;
-    let current_pid = u32::try_from(rustix::process::getpid().as_raw_nonzero().get())
-        .map_err(|_| MountError::State("current PID does not fit u32".to_owned()))?;
-    if listen_pid != current_pid
-        || environment_u32("LISTEN_FDS")? != 1
-        || std::env::var_os("LISTEN_FDNAMES").is_some_and(|name| name != EXPECTED_FD_NAME)
-    {
-        return Err(MountError::State(
-            "mount broker socket activation contract is invalid".to_owned(),
-        ));
-    }
-    // SAFETY: the validated systemd activation contract transfers unique
-    // ownership of descriptor 3, which the typed constructor verifies.
-    let fd = unsafe { OwnedFd::from_raw_fd(ACTIVATION_FD) };
-    ActivatedSeqpacketListener::from_owned(fd)
-}
-
-fn environment_u32(name: &'static str) -> Result<u32> {
-    std::env::var(name)
-        .map_err(|_| MountError::State(format!("{name} is absent")))?
-        .parse()
-        .map_err(|_| MountError::State(format!("{name} is not a decimal u32")))
 }
 
 fn validate_private_root(path: &Path) -> Result<()> {

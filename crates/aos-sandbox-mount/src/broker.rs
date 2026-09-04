@@ -80,8 +80,8 @@ impl<W: MountWorker> MountBroker<W> {
         let supplied = request.detached_mount_handle().copied();
         let handles = expected_handles(request.action(), request_digest, supplied)?;
         let observation = self.worker.execute(&request, request_digest, handles)?;
-        validate_observation(request.action(), handles, observation)?;
-        let response = encode_result(&request, observation)?;
+        validate_observation(request.action(), handles, &observation)?;
+        let response = encode_result(&request, &observation)?;
         let response_limit = usize::try_from(request.header().maximum_response_bytes())
             .map_err(|_| MountError::State("response limit does not fit usize".to_owned()))?;
         if response.len() > response_limit {
@@ -150,7 +150,7 @@ impl<W: MountWorker> MountBroker<W> {
 fn validate_observation(
     action: MountAction,
     expected: EffectHandles,
-    observed: WorkerObservation,
+    observed: &WorkerObservation,
 ) -> Result<()> {
     let state_valid = match action {
         MountAction::MOUNT_ACTION_CREATE_DETACHED => {
@@ -177,7 +177,7 @@ fn validate_observation(
 
 fn encode_result(
     request: &ValidatedMountRequest,
-    observation: WorkerObservation,
+    observation: &WorkerObservation,
 ) -> Result<Vec<u8>> {
     let result = MountResult {
         attachment_id: request.attachment_id().to_vec(),
@@ -276,7 +276,12 @@ mod tests {
                 MountAction::MOUNT_ACTION_RELEASE => MountState::MOUNT_STATE_ABSENT,
                 MountAction::MOUNT_ACTION_UNSPECIFIED => MountState::MOUNT_STATE_FAILED,
             };
-            Ok(WorkerObservation { state, handles })
+            Ok(WorkerObservation {
+                state,
+                handles,
+                detached_mount_id: None,
+                installed: None,
+            })
         }
     }
 

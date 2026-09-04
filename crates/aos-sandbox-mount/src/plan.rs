@@ -23,8 +23,8 @@ use sha2::{Digest as _, Sha256};
 use crate::{MountError, Result};
 
 const MAGIC: &[u8; 8] = b"AOSMNT01";
-const VERSION: u16 = 1;
-const FIXED_PREFIX_BYTES: usize = 8 + 2 + 1 + 1 + 8 + 8 + 16 + 16 + 32 + (10 * 8) + 2;
+const VERSION: u16 = 2;
+const FIXED_PREFIX_BYTES: usize = 8 + 2 + 1 + 1 + 8 + 8 + 16 + 16 + 32 + (11 * 8) + 2;
 const CHECKSUM_BYTES: usize = 32;
 const MAXIMUM_TARGET_PATH_BYTES: usize = 4096;
 const MAXIMUM_PLAN_BYTES: usize = FIXED_PREFIX_BYTES + MAXIMUM_TARGET_PATH_BYTES + CHECKSUM_BYTES;
@@ -139,6 +139,12 @@ pub struct HelperPlan {
     pub destination_slot_id: [u8; 16],
     /// Digest of the exact admitted request bytes.
     pub request_digest: [u8; 32],
+    /// Exact unique mount identity that may be observed or published.
+    pub expected_mount_id: u64,
+    /// Exact predecessor required before replacement, or zero otherwise.
+    pub expected_predecessor_mount_id: u64,
+    /// Exact mount identity beneath an absent destination slot.
+    pub target_slot_mount_id: u64,
     /// Source-root identity expected after attachment.
     pub source: ExpectedFileIdentity,
     /// Payload mount-namespace identity.
@@ -182,8 +188,9 @@ impl HelperPlan {
             self.target_root.inode,
             self.target_slot.device,
             self.target_slot.inode,
-            0,
-            0,
+            self.expected_mount_id,
+            self.expected_predecessor_mount_id,
+            self.target_slot_mount_id,
         ] {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
@@ -223,7 +230,7 @@ impl HelperPlan {
         if roles.0 & !DescriptorRoles::KNOWN != 0 || roles != DescriptorRoles::for_action(action) {
             return Err(invalid_plan("helper descriptor roles do not match action"));
         }
-        let plan = Self {
+        let mut plan = Self {
             action,
             roles,
             source_generation: decoder.u64()?,
@@ -231,6 +238,9 @@ impl HelperPlan {
             attachment_id: decoder.array()?,
             destination_slot_id: decoder.array()?,
             request_digest: decoder.array()?,
+            expected_mount_id: 0,
+            expected_predecessor_mount_id: 0,
+            target_slot_mount_id: 0,
             source: ExpectedFileIdentity {
                 device: decoder.u64()?,
                 inode: decoder.u64()?,
@@ -249,15 +259,14 @@ impl HelperPlan {
             },
             target_relative_path: PathBuf::new(),
         };
-        if decoder.u64()? != 0 || decoder.u64()? != 0 {
-            return Err(invalid_plan("helper reserved fields are nonzero"));
-        }
+        plan.expected_mount_id = decoder.u64()?;
+        plan.expected_predecessor_mount_id = decoder.u64()?;
+        plan.target_slot_mount_id = decoder.u64()?;
         let path_length = usize::from(decoder.u16()?);
         let path = decoder.take(path_length)?;
         if !decoder.remaining().is_empty() {
             return Err(invalid_plan("helper plan has trailing bytes"));
         }
-        let mut plan = plan;
         plan.target_relative_path = PathBuf::from(std::ffi::OsString::from_vec(path.to_vec()));
         plan.validate()?;
         Ok(plan)
@@ -270,6 +279,8 @@ impl HelperPlan {
             || self.attachment_id == [0; 16]
             || self.destination_slot_id == [0; 16]
             || self.request_digest == [0; 32]
+            || self.expected_mount_id == 0
+            || self.target_slot_mount_id == 0
             || [
                 self.source.device,
                 self.source.inode,
@@ -283,6 +294,16 @@ impl HelperPlan {
             .contains(&0)
         {
             return Err(invalid_plan("helper plan contains a sentinel"));
+        }
+        let predecessor_valid = match self.action {
+            HelperAction::Replace => self.expected_predecessor_mount_id != 0,
+            HelperAction::Observe => true,
+            HelperAction::Install | HelperAction::Detach => self.expected_predecessor_mount_id == 0,
+        };
+        if !predecessor_valid {
+            return Err(invalid_plan(
+                "helper predecessor identity does not match action",
+            ));
         }
         let path = &self.target_relative_path;
         if path.as_os_str().as_encoded_bytes().len() > MAXIMUM_TARGET_PATH_BYTES
@@ -428,6 +449,9 @@ mod tests {
             attachment_id: [1; 16],
             destination_slot_id: [2; 16],
             request_digest: [3; 32],
+            expected_mount_id: 12,
+            expected_predecessor_mount_id: 13,
+            target_slot_mount_id: 14,
             source: ExpectedFileIdentity {
                 device: 4,
                 inode: 5,

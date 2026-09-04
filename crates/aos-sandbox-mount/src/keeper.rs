@@ -7,7 +7,7 @@
 //! activation are adopted into [`ImportedKernelMount`] values with strict
 //! names and close-on-exec semantics.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::io::IoSlice;
 use std::mem::MaybeUninit;
@@ -15,6 +15,7 @@ use std::os::fd::{AsFd, BorrowedFd, FromRawFd as _, OwnedFd, RawFd};
 use std::path::Path;
 use std::time::Duration;
 
+use aos_sandbox_linux::mount::DetachedMount;
 use rustix::io::{FdFlags, fcntl_getfd, fcntl_setfd};
 use rustix::net::sockopt::{Timeout, set_socket_timeout};
 use rustix::net::{
@@ -79,13 +80,33 @@ impl KernelMountName {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// Decodes the canonical 256-bit resource digest carried by the name.
+    #[must_use]
+    pub fn digest(&self) -> [u8; 32] {
+        let bytes = self.0.as_bytes();
+        let suffix = &bytes[NAME_PREFIX.len()..];
+        let mut digest = [0_u8; 32];
+        for (index, pair) in suffix.chunks_exact(2).enumerate() {
+            digest[index] = (hex_value(pair[0]) << 4) | hex_value(pair[1]);
+        }
+        digest
+    }
+}
+
+const fn hex_value(byte: u8) -> u8 {
+    match byte {
+        b'0'..=b'9' => byte - b'0',
+        b'a'..=b'f' => byte - b'a' + 10,
+        _ => 0,
+    }
 }
 
 /// Owns one mount descriptor returned by the configured kernel descriptor keeper.
 #[derive(Debug)]
 pub struct ImportedKernelMount {
     name: KernelMountName,
-    descriptor: OwnedFd,
+    mount: DetachedMount,
 }
 
 impl ImportedKernelMount {
@@ -98,14 +119,29 @@ impl ImportedKernelMount {
     /// Borrows the close-on-exec kernel descriptor.
     #[must_use]
     pub fn as_fd(&self) -> BorrowedFd<'_> {
-        self.descriptor.as_fd()
+        self.mount.as_fd()
     }
 
-    /// Splits the typed value into its durable name and owned descriptor.
+    /// Returns the exact kernel-lifetime unique identity of the mount object.
     #[must_use]
-    pub fn into_parts(self) -> (KernelMountName, OwnedFd) {
-        (self.name, self.descriptor)
+    pub const fn mount_id(&self) -> aos_sandbox_linux::inventory::MountId {
+        self.mount.mount_id()
     }
+
+    /// Splits the typed value into its durable name and detached mount.
+    #[must_use]
+    pub fn into_parts(self) -> (KernelMountName, DetachedMount) {
+        (self.name, self.mount)
+    }
+}
+
+/// Owns the exact socket-activation table accepted by the mount daemon.
+#[derive(Debug)]
+pub struct ActivatedMountDescriptors {
+    /// The sole named service listener at descriptor 3.
+    pub listener: OwnedFd,
+    /// Canonically named, kernel-validated retained mount descriptors.
+    pub mounts: BTreeMap<KernelMountName, DetachedMount>,
 }
 
 /// Provides synchronous restart-safe custody for kernel mount descriptors.
@@ -187,29 +223,15 @@ impl SystemdFdStore {
         }
 
         let descriptor_count = environment_usize("LISTEN_FDS")?;
-        if descriptor_count < reserved_descriptors {
-            return Err(state_error("LISTEN_FDS omits reserved descriptors"));
-        }
-        let imported_count = descriptor_count - reserved_descriptors;
-        if imported_count > maximum_imported {
-            return Err(state_error("too many descriptor-store entries"));
-        }
-
         let names = std::env::var("LISTEN_FDNAMES")
             .map_err(|_| state_error("LISTEN_FDNAMES is absent or non-Unicode"))?;
-        let names: Vec<&str> = names.split(':').collect();
-        if names.len() != descriptor_count {
-            return Err(state_error("LISTEN_FDNAMES count differs from LISTEN_FDS"));
-        }
-        let imported_names = names
-            .into_iter()
-            .skip(reserved_descriptors)
-            .map(KernelMountName::parse)
-            .collect::<Result<Vec<_>>>()?;
-        let unique_names: BTreeSet<_> = imported_names.iter().collect();
-        if unique_names.len() != imported_names.len() {
-            return Err(state_error("duplicate descriptor-store name"));
-        }
+        let imported_names = validate_activation_names(
+            descriptor_count,
+            &names,
+            reserved_descriptors,
+            maximum_imported,
+        )?;
+        let imported_count = imported_names.len();
 
         let first_index = ACTIVATION_FD_BASE
             .checked_add(raw_fd_from_usize(reserved_descriptors)?)
@@ -229,9 +251,49 @@ impl SystemdFdStore {
         let mut imported = Vec::with_capacity(imported_count);
         for (name, descriptor) in imported_names.into_iter().zip(descriptors) {
             ensure_cloexec(descriptor.as_fd())?;
-            imported.push(ImportedKernelMount { name, descriptor });
+            let mount = DetachedMount::from_inherited(descriptor).map_err(|error| {
+                state_error(format!("retained descriptor is not a mount: {error}"))
+            })?;
+            imported.push(ImportedKernelMount { name, mount });
         }
         Ok(imported)
+    }
+
+    /// Atomically adopts one named listener followed by retained mounts.
+    ///
+    /// This is the mount daemon's only supported activation shape. Parsing and
+    /// ownership transfer happen in one startup call, before any inherited
+    /// descriptor may be closed or reused.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless descriptor 3 has exactly `listener_name`, every
+    /// remaining descriptor has a unique canonical kernel-mount name, the
+    /// configured bound is respected, and every retained descriptor yields an
+    /// exact `STATX_MNT_ID_UNIQUE` mount identity.
+    pub fn adopt_service_activation(
+        listener_name: &str,
+        maximum_imported: usize,
+    ) -> Result<ActivatedMountDescriptors> {
+        validate_listener_name(listener_name)?;
+        let names = std::env::var("LISTEN_FDNAMES")
+            .map_err(|_| state_error("LISTEN_FDNAMES is absent or non-Unicode"))?;
+        if names.split(':').next() != Some(listener_name) {
+            return Err(state_error(
+                "activation descriptor 3 is not the named listener",
+            ));
+        }
+        let imported = Self::adopt_activation(1, maximum_imported)?;
+        // SAFETY: `adopt_activation` validated the complete contiguous table
+        // but intentionally adopted only its retained tail. Descriptor 3 is
+        // therefore still uniquely owned by this process.
+        let listener = unsafe { OwnedFd::from_raw_fd(ACTIVATION_FD_BASE) };
+        ensure_cloexec(listener.as_fd())?;
+        let mounts = imported
+            .into_iter()
+            .map(ImportedKernelMount::into_parts)
+            .collect();
+        Ok(ActivatedMountDescriptors { listener, mounts })
     }
 
     fn from_notify_socket(value: &OsStr) -> Result<Self> {
@@ -306,6 +368,46 @@ impl SystemdFdStore {
     }
 }
 
+fn validate_listener_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || name.len() > 255
+        || name
+            .bytes()
+            .any(|byte| byte == b':' || byte == b'\n' || byte == b'\0')
+    {
+        return Err(state_error("activation listener name is not canonical"));
+    }
+    Ok(())
+}
+
+fn validate_activation_names(
+    descriptor_count: usize,
+    names: &str,
+    reserved_descriptors: usize,
+    maximum_imported: usize,
+) -> Result<Vec<KernelMountName>> {
+    if descriptor_count < reserved_descriptors {
+        return Err(state_error("LISTEN_FDS omits reserved descriptors"));
+    }
+    if descriptor_count - reserved_descriptors > maximum_imported {
+        return Err(state_error("too many descriptor-store entries"));
+    }
+    let names: Vec<&str> = names.split(':').collect();
+    if names.len() != descriptor_count {
+        return Err(state_error("LISTEN_FDNAMES count differs from LISTEN_FDS"));
+    }
+    let imported_names = names
+        .into_iter()
+        .skip(reserved_descriptors)
+        .map(KernelMountName::parse)
+        .collect::<Result<Vec<_>>>()?;
+    let unique_names: BTreeSet<_> = imported_names.iter().collect();
+    if unique_names.len() != imported_names.len() {
+        return Err(state_error("duplicate descriptor-store name"));
+    }
+    Ok(imported_names)
+}
+
 impl KernelMountStore for SystemdFdStore {
     fn store(&self, name: &KernelMountName, descriptor: BorrowedFd<'_>) -> Result<()> {
         let payload = format!("FDSTORE=1\nFDPOLL=0\nFDNAME={}", name.as_str());
@@ -371,6 +473,7 @@ mod tests {
             "aos-mount-v1-abababababababababababababababababababababababababababababababab"
         );
         assert_eq!(KernelMountName::parse(name.as_str()).unwrap(), name);
+        assert_eq!(name.digest(), [0xab; 32]);
 
         for invalid in [
             "aos-mount-v2-abababababababababababababababababababababababababababababababab",
@@ -384,6 +487,31 @@ mod tests {
                 "accepted {invalid}"
             );
         }
+    }
+
+    #[test]
+    fn listener_names_reject_activation_delimiters() {
+        for invalid in ["", "mount:other", "mount\nother", "mount\0other"] {
+            assert!(validate_listener_name(invalid).is_err());
+        }
+        assert!(validate_listener_name("aos-sandbox-mount").is_ok());
+    }
+
+    #[test]
+    fn restart_activation_names_are_bounded_unique_and_canonical() {
+        let first = KernelMountName::from_digest([1; 32]);
+        let second = KernelMountName::from_digest([2; 32]);
+        let names = format!("aos-sandbox-mount:{}:{}", first.as_str(), second.as_str());
+        assert_eq!(
+            validate_activation_names(3, &names, 1, 2).unwrap(),
+            vec![first.clone(), second]
+        );
+        assert!(validate_activation_names(3, &names, 1, 1).is_err());
+        assert!(validate_activation_names(2, &names, 1, 2).is_err());
+
+        let duplicate = format!("aos-sandbox-mount:{}:{}", first.as_str(), first.as_str());
+        assert!(validate_activation_names(3, &duplicate, 1, 2).is_err());
+        assert!(validate_activation_names(0, "", 1, 2).is_err());
     }
 
     #[test]
