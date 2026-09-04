@@ -268,6 +268,7 @@ in {
               export USER=maintainer
               export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
               export NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+              export NIX_CONFIG='experimental-features = nix-command'
               {AOS} maintain --state-dir {STATE} --json {arguments}
           """)
           status, stdout, stderr = maintainer.execute(command, timeout=timeout)
