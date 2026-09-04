@@ -1775,11 +1775,21 @@ sharing namespace authority. The managed endpoint guard remains owned until
 listener join. One coupled local-service owner obtains the listener's component
 service only from its exact semantic worker pool. Sticky service shutdown first
 closes assignment admission and signals active execution cancellation, then
-interrupts socket work; listener exit always shuts down and joins every
-semantic worker. Conversely, terminal completion of all semantic workers closes
-the listener, and a poisoned worker result takes precedence over an ordinary
-listener stop. Dropping an owner before serving performs the same synchronous
-worker join before releasing the endpoint namespace. The strict packaged
+interrupts socket work; listener exit requests semantic-worker shutdown and
+waits up to thirty seconds for their cleanup. A worker entering permanent
+fail-closed retention ends that wait immediately with `CleanupPending`.
+Expiry also returns `CleanupPending`; it does not release a reservation or
+discard a reconciliation token. Fixed workers continue to own their supervisor,
+ledger writer lock, repository, and phase resources. They additionally retain
+the managed endpoint lock until the last execution model has been dropped, so
+another incarnation cannot reuse the endpoint while cleanup remains in flight.
+The listener closes when the pool stops admission, independently of whether
+retained workers can finish. Cleanup failure takes precedence over an ordinary
+listener stop. Dropping an owner before serving uses the same bounded worker
+wait and retained endpoint ownership. This bounds worker cleanup waiting, not
+arbitrary operating-system I/O or an injected ledger call that never returns.
+Permanent quarantine still requires operator recovery; it is not reported as
+successful cleanup. The strict packaged
 deployment now wires that owner to the concrete fresh/thin-replay QEMU worker;
 exact-resume worker selection remains separate and fail-closed.
 
