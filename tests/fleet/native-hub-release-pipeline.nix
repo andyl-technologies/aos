@@ -441,6 +441,7 @@ in {
       # registry/cache snapshot. Cold two-vCPU Hub guests need explicit
       # headroom for that production-shaped object count; the narrower
       # qualification executors retain their separate 15-minute bound.
+      print("==> staging signed release publication")
       publisher.succeed(textwrap.dedent(f"""
           {AOS} release verify /var/tmp/release-surface \\
             --trusted-key release-evidence-v1={release_key}
@@ -450,6 +451,7 @@ in {
             --hub-receipt-key staging-publication-v1={staging_key} \\
             --token {shlex.quote(staging_token)} --output /var/tmp/staged
       """), timeout=1800)
+      print("==> running four-platform qualification")
       publisher.succeed(textwrap.dedent(f"""
           {AOS} release qualify-run --bundle /var/tmp/release-surface \\
             --staging-receipt /var/tmp/staged/staging-receipt.json \\
@@ -461,11 +463,15 @@ in {
             --executor-identity aarch64-linux=fleet-executor-aarch64-linux \\
             --executor-identity x86_64-darwin=fleet-executor-x86_64-darwin \\
             --executor-identity aarch64-darwin=fleet-executor-aarch64-darwin \\
+            --executor-timeout-seconds 120 \\
             --authority-executable {FIXTURE} \\
             --authority-key qualification-v1={qualification_key} \\
             --authority-verification-identity fleet-qualification-authority \\
             --executor-nonce {'3' * 64} --authority-nonce {'4' * 64} \\
             --qualified-at 2026-09-03T12:00:00Z --output /var/tmp/qualification-run
+      """), timeout=600)
+      print("==> admitting signed qualification")
+      publisher.succeed(textwrap.dedent(f"""
           {AOS} release qualify --bundle /var/tmp/release-surface \\
             --journal /var/tmp/staged/release-journal.jsonl \\
             --staging-receipt /var/tmp/staged/staging-receipt.json \\
@@ -476,6 +482,7 @@ in {
             --qualification-key qualification-v1={qualification_key} \\
             --token {shlex.quote(staging_token)} --output /var/tmp/qualified
       """), timeout=900)
+      print("==> promoting release and advancing channel")
       publisher.succeed(textwrap.dedent(f"""
           {AOS} release promote --bundle /var/tmp/release-surface \\
             --journal /var/tmp/qualified/release-journal.jsonl \\
