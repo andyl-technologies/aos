@@ -344,6 +344,7 @@ let
     "aos-landlock"
     "aos-recovery"
     "aos-registry-server"
+    "aos-sandbox-hostd"
     "aos-service-root"
     "aos-selinux-run"
     "aos-var-policy-migrate"

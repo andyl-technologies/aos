@@ -106,7 +106,8 @@ mod tests {
 
     #[test]
     fn missing_peer_pid_fails_before_cgroup_lookup() {
-        let root: OwnedFd = File::open("/sys/fs/cgroup").unwrap().into();
+        let directory = tempfile::tempdir().unwrap();
+        let root: OwnedFd = File::open(directory.path()).unwrap().into();
         let verifier = ControllerPeerVerifier::new(BeneathRoot::from_owned(root).unwrap());
         let error = verifier
             .verify(PeerCredentials {
