@@ -286,6 +286,133 @@ pub trait QemuNodeLauncher {
     type Node: QemuRealizedNodeBackend;
 }
 
+/// Paused node operation that seals one retained hot-fork template.
+///
+/// Implementations must leave the node paused and retain every template and
+/// branch-private descriptor after success. An error must leave the same node
+/// owned by its realization executor for cleanup or exact retry.
+pub trait QemuHotForkTemplatePreparer: QemuRealizedNodeBackend {
+    /// Prepares the QEMU transaction and every branch-private child resource.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError`] when the paused node cannot establish
+    /// the complete retained-template transaction or its bounded private-ring
+    /// image and child resources.
+    fn prepare_retained_hot_fork_template(
+        &mut self,
+        block_snapshot_bindings: &[crate::QmpHotForkBlockSnapshotBinding],
+        maximum_ring_image_bytes: usize,
+    ) -> Result<(), QemuVmRealizationError>;
+}
+
+impl QemuHotForkTemplatePreparer for QemuNode {
+    fn prepare_retained_hot_fork_template(
+        &mut self,
+        block_snapshot_bindings: &[crate::QmpHotForkBlockSnapshotBinding],
+        maximum_ring_image_bytes: usize,
+    ) -> Result<(), QemuVmRealizationError> {
+        self.prepare_hot_fork_template(block_snapshot_bindings)
+            .map_err(|source| QemuVmRealizationError::Executor {
+                operation: "prepare retained hot-fork template",
+                message: source.to_string(),
+            })?;
+        self.prepare_hot_fork_child_resources(maximum_ring_image_bytes)
+            .map_err(|source| QemuVmRealizationError::Executor {
+                operation: "prepare retained hot-fork child resources",
+                message: source.to_string(),
+            })?;
+        Ok(())
+    }
+}
+
+/// Linear identity retained while a prepared hot-fork source is in use.
+///
+/// Only [`QemuPreparedHotForkTemplate::into_parts`] can produce this token. It
+/// keeps the exact realized configuration and unified event-log prefix paired
+/// while daemon-side child reconciliation temporarily owns the raw source
+/// node.
+#[must_use = "reassemble the exact prepared template after child reconciliation"]
+pub struct QemuHotForkTemplateIdentity {
+    configuration: ContentHash,
+    event_log: EventLog,
+}
+
+impl QemuHotForkTemplateIdentity {
+    /// Returns the exact configuration realized by the retained source.
+    #[must_use]
+    pub const fn configuration(&self) -> ContentHash {
+        self.configuration
+    }
+
+    /// Clones the immutable event prefix for one branch-private child.
+    #[must_use]
+    pub fn fork_event_log(&self) -> EventLog {
+        self.event_log.clone()
+    }
+
+    /// Returns the retained source event-log prefix.
+    #[must_use]
+    pub const fn event_log(&self) -> &EventLog {
+        &self.event_log
+    }
+}
+
+impl std::fmt::Debug for QemuHotForkTemplateIdentity {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("QemuHotForkTemplateIdentity")
+            .field("configuration", &self.configuration)
+            .field("event_log_offset", &self.event_log.offset())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Exact paused node and observation prefix admitted as a retained template.
+///
+/// The capability is minted only by
+/// [`QemuNodeRealizationExecutor::prepare_active_hot_fork_template`], after the
+/// executor has exact-bound the active node to its realized configuration and
+/// QEMU has acknowledged the complete template/resource transaction.
+#[must_use = "launch, recover, or quarantine the retained hot-fork template"]
+pub struct QemuPreparedHotForkTemplate<N> {
+    node: N,
+    identity: QemuHotForkTemplateIdentity,
+}
+
+impl<N> QemuPreparedHotForkTemplate<N> {
+    /// Returns the exact source configuration identity.
+    #[must_use]
+    pub const fn configuration(&self) -> ContentHash {
+        self.identity.configuration()
+    }
+
+    /// Returns the retained source event-log prefix.
+    #[must_use]
+    pub const fn event_log(&self) -> &EventLog {
+        self.identity.event_log()
+    }
+
+    /// Separates the node from its non-forgeable configuration/log identity.
+    pub fn into_parts(self) -> (N, QemuHotForkTemplateIdentity) {
+        (self.node, self.identity)
+    }
+
+    /// Reassembles a reconciled source with its original exact identity token.
+    pub fn from_reconciled_parts(node: N, identity: QemuHotForkTemplateIdentity) -> Self {
+        Self { node, identity }
+    }
+}
+
+impl<N> std::fmt::Debug for QemuPreparedHotForkTemplate<N> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("QemuPreparedHotForkTemplate")
+            .field("identity", &self.identity)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Launches a QEMU node that has already been VMState-restored before assembly.
 pub trait QemuNodeRealizationLauncher: QemuNodeLauncher {
     /// Launches and assembles a node for `restore`.
@@ -999,6 +1126,61 @@ where
     #[must_use]
     pub const fn node(&self) -> &NodeId {
         &self.node
+    }
+
+    /// Converts the exact active paused node into one retained hot-fork template.
+    ///
+    /// Template coordination runs while the node, its exact realized
+    /// configuration, and unified event log remain inside this executor. Only
+    /// after QEMU and all branch-private resources are prepared successfully
+    /// are those three authorities moved into the returned capability. A
+    /// failure leaves the active node and event log installed here.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError`] when no exact active configuration is
+    /// installed or the node cannot prepare the complete bounded hot-fork
+    /// transaction.
+    pub fn prepare_active_hot_fork_template(
+        &mut self,
+        block_snapshot_bindings: &[crate::QmpHotForkBlockSnapshotBinding],
+        maximum_ring_image_bytes: usize,
+    ) -> Result<QemuPreparedHotForkTemplate<L::Node>, QemuVmRealizationError>
+    where
+        L::Node: QemuHotForkTemplatePreparer,
+    {
+        let configuration =
+            self.active_configuration
+                .ok_or_else(|| QemuVmRealizationError::Executor {
+                    operation: "prepare active retained hot-fork template",
+                    message: String::from("no exact active configuration is installed"),
+                })?;
+        let node = self
+            .active_node
+            .as_mut()
+            .ok_or_else(|| QemuVmRealizationError::Executor {
+                operation: "prepare active retained hot-fork template",
+                message: String::from("no active QEMU node is installed"),
+            })?;
+        node.prepare_retained_hot_fork_template(block_snapshot_bindings, maximum_ring_image_bytes)?;
+
+        let node = self
+            .active_node
+            .take()
+            .ok_or_else(|| QemuVmRealizationError::Executor {
+                operation: "transfer active retained hot-fork template",
+                message: String::from("prepared active QEMU node disappeared"),
+            })?;
+        self.active_configuration = None;
+        self.observation_sealed = false;
+        let event_log = std::mem::replace(&mut self.event_log, EventLog::new());
+        Ok(QemuPreparedHotForkTemplate {
+            node,
+            identity: QemuHotForkTemplateIdentity {
+                configuration,
+                event_log,
+            },
+        })
     }
 
     /// Shuts down the active realized node, when one exists.

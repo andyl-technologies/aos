@@ -2478,8 +2478,21 @@ transfers that token to factory quarantine, and a driver failure quarantines
 the source lifecycle rather than inventing a semantic failure acknowledgement.
 Scripted regressions cover success ordering, all driver failure classes,
 foreign runtime identity, bounded exit policy, recovery retry, second-launch
-exclusion, and pending-owner drop. A production template-pool factory,
-nondroppable daemon quarantine sink, atomic multi-node host-continuation
+exclusion, and pending-owner drop. Realization now also converts an exact active
+node into a non-forgeable prepared-template capability only after QEMU has
+completed the retained-template and branch-resource transaction. The capability
+keeps the realized configuration and unified event-log prefix paired with the
+source while reconciliation temporarily owns the raw node; preparation failure
+leaves all three installed in the realization executor. A fixed-worker factory
+binds that capability to one exact lineage/configuration key, admits a fresh
+target guard before fork, leaves its source slot empty while a child exists, and
+accepts the source back only from its own completely reconciled lifecycle.
+Foreign lifecycles and stable launch failures move to a bounded process-lifetime
+quarantine, while explicit daemon shutdown can take an idle source for orderly
+reap. Focused regressions cover exact identity/event-prefix transfer,
+failure-retained realization ownership, source-slot exclusion, resource-failure
+classification, foreign-factory recovery, and terminal quarantine. A
+multi-template hotness/selection pool, atomic multi-node host-continuation
 installation, concrete modeled driver, and real QEMU flight remain open; this
 checkpoint therefore does not mark T-CAM-6.2 or T-CAM-6.3 complete.
 The internal registry now has safe RCU and internal-monitor dispositions, while

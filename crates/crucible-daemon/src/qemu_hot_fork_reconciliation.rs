@@ -17,13 +17,15 @@ use std::error::Error;
 use std::fmt;
 use std::os::unix::net::UnixStream;
 
+use crucible::EventLog;
 use crucible_campaign::{ExactCheckpointId, ObservationId};
 use crucible_qemu::{
     LinuxQemuHotForkChildProcessAuthority, QemuHotForkChildDiagnosticConsumer,
     QemuHotForkChildDiagnosticDrain, QemuHotForkChildLaunch, QemuHotForkChildProcessBasis,
     QemuHotForkChildProcessOwner, QemuHotForkChildQmpHandshakeError, QemuHotForkHostContinuation,
-    QemuHotForkLaunchError, QemuNode, QemuNodeChannelError, QemuQmpVmStateControlChannel,
-    QemuVmRealizationError, QmpHotForkChildProcessPhase, QmpHotForkChildProcessState,
+    QemuHotForkLaunchError, QemuHotForkTemplateIdentity, QemuNode, QemuNodeChannelError,
+    QemuPreparedHotForkTemplate, QemuQmpVmStateControlChannel, QemuVmRealizationError,
+    QmpHotForkChildProcessPhase, QmpHotForkChildProcessState,
 };
 use thiserror::Error;
 
@@ -755,6 +757,8 @@ where
         + QemuHotForkChildProcessOwner<Authority = LinuxQemuHotForkChildProcessAuthority>,
 {
     source: QemuNode,
+    template_identity: QemuHotForkTemplateIdentity,
+    child_event_log: EventLog,
     target: G,
     process: LinuxQemuHotForkChildProcessAuthority,
     basis: QemuHotForkChildProcessBasis,
@@ -777,6 +781,7 @@ pub struct LinuxQemuHotForkLiveChild<'a> {
     child_qmp: &'a mut QemuQmpVmStateControlChannel<UnixStream>,
     diagnostics: &'a mut QemuHotForkChildDiagnosticConsumer,
     host_continuation: &'a mut QemuHotForkHostContinuation,
+    event_log: &'a mut EventLog,
     operational: &'a mut dyn crate::QemuAttemptOperationalBoundary,
 }
 
@@ -803,6 +808,12 @@ impl LinuxQemuHotForkLiveChild<'_> {
     /// Borrows the exact branch-private host continuation.
     pub fn host_continuation_mut(&mut self) -> &mut QemuHotForkHostContinuation {
         self.host_continuation
+    }
+
+    /// Borrows the branch-private clone of the source event-log prefix.
+    #[must_use]
+    pub fn event_log_mut(&mut self) -> &mut EventLog {
+        self.event_log
     }
 
     /// Drains all currently available branch-private diagnostic bytes.
@@ -873,14 +884,18 @@ where
 {
     fn from_launch(
         source: QemuNode,
+        template_identity: QemuHotForkTemplateIdentity,
         target: G,
         launch: QemuHotForkChildLaunch<LinuxQemuHotForkChildProcessAuthority>,
     ) -> Self {
         let (_parent, process, child_qmp, diagnostics_consumer, host_continuation) =
             launch.into_parts();
         let basis = process.basis();
+        let child_event_log = template_identity.fork_event_log();
         Self {
             source,
+            template_identity,
+            child_event_log,
             target,
             process,
             basis,
@@ -898,6 +913,7 @@ where
             child_qmp: self.child_qmp.as_mut()?,
             diagnostics: &mut self.diagnostics_consumer,
             host_continuation: self.host_continuation.as_mut()?,
+            event_log: &mut self.child_event_log,
             operational: &mut self.target,
         })
     }
@@ -908,10 +924,9 @@ where
         self.diagnostics.as_ref()
     }
 
-    /// Consumes a reconciled backend into its reusable source template.
-    #[must_use]
-    pub fn into_source(self) -> QemuNode {
-        self.source
+    /// Consumes a reconciled backend into its reusable exact source template.
+    pub fn into_source(self) -> QemuPreparedHotForkTemplate<QemuNode> {
+        QemuPreparedHotForkTemplate::from_reconciled_parts(self.source, self.template_identity)
     }
 }
 
@@ -1050,7 +1065,7 @@ fn qmp_child_observation(
 /// Launch failure retaining the reusable source and target attempt owner.
 pub struct LinuxQemuHotForkAttemptLaunchError<G> {
     source: Box<QemuHotForkLaunchError>,
-    template: Box<QemuNode>,
+    template: Box<QemuPreparedHotForkTemplate<QemuNode>>,
     target: Box<G>,
 }
 
@@ -1059,7 +1074,7 @@ impl<G> fmt::Debug for LinuxQemuHotForkAttemptLaunchError<G> {
         formatter
             .debug_struct("LinuxQemuHotForkAttemptLaunchError")
             .field("source", &self.source)
-            .field("template_process_id", &self.template.process_id())
+            .field("template_configuration", &self.template.configuration())
             .finish_non_exhaustive()
     }
 }
@@ -1085,7 +1100,13 @@ where
 
 impl<G> LinuxQemuHotForkAttemptLaunchError<G> {
     /// Recovers the exact launch failure, source template, and target owner.
-    pub fn into_parts(self) -> (QemuHotForkLaunchError, QemuNode, G) {
+    pub fn into_parts(
+        self,
+    ) -> (
+        QemuHotForkLaunchError,
+        QemuPreparedHotForkTemplate<QemuNode>,
+        G,
+    ) {
         (*self.source, *self.template, *self.target)
     }
 }
@@ -1113,10 +1134,11 @@ where
     /// established exactly.
     pub fn launch(
         attempt: QemuHotForkAttemptBasis,
-        mut template: QemuNode,
+        template: QemuPreparedHotForkTemplate<QemuNode>,
         mut target: G,
     ) -> Result<Self, LinuxQemuHotForkAttemptLaunchError<G>> {
-        match template.fork_prepared_hot_fork_template_into(&mut target, |target| {
+        let (mut source_node, template_identity) = template.into_parts();
+        match source_node.fork_prepared_hot_fork_template_into(&mut target, |target| {
             target.child_process_contract().map_err(|source| {
                 QemuNodeChannelError::new(
                     "obtain target hot-fork process contract",
@@ -1126,11 +1148,19 @@ where
         }) {
             Ok(launch) => Ok(Self::new(
                 attempt,
-                LinuxQemuHotForkReconciliationBackend::from_launch(template, target, launch),
+                LinuxQemuHotForkReconciliationBackend::from_launch(
+                    source_node,
+                    template_identity,
+                    target,
+                    launch,
+                ),
             )),
             Err(source) => Err(LinuxQemuHotForkAttemptLaunchError {
                 source: Box::new(source),
-                template: Box::new(template),
+                template: Box::new(QemuPreparedHotForkTemplate::from_reconciled_parts(
+                    source_node,
+                    template_identity,
+                )),
                 target: Box::new(target),
             }),
         }

@@ -48,6 +48,10 @@ enum NodeExecutorCall {
     CurrentIcount,
     Seal,
     Capture(ContentHash),
+    PrepareHotFork {
+        bindings: usize,
+        maximum_ring_image_bytes: usize,
+    },
     Snapshot,
     Restore,
     Shutdown,
@@ -83,6 +87,28 @@ struct ScriptedThinLauncher {
 
 impl QemuNodeLauncher for ScriptedLauncher {
     type Node = ScriptedNode;
+}
+
+impl QemuHotForkTemplatePreparer for ScriptedNode {
+    fn prepare_retained_hot_fork_template(
+        &mut self,
+        block_snapshot_bindings: &[crate::QmpHotForkBlockSnapshotBinding],
+        maximum_ring_image_bytes: usize,
+    ) -> Result<(), QemuVmRealizationError> {
+        self.log
+            .borrow_mut()
+            .push(NodeExecutorCall::PrepareHotFork {
+                bindings: block_snapshot_bindings.len(),
+                maximum_ring_image_bytes,
+            });
+        if self.runtime_id == ContentHash::from_bytes(b"hot-fork-preparation-failure") {
+            return Err(QemuVmRealizationError::Executor {
+                operation: "prepare scripted retained hot-fork template",
+                message: String::from("injected preparation failure"),
+            });
+        }
+        Ok(())
+    }
 }
 
 impl QemuNodeRealizationLauncher for ScriptedLauncher {
@@ -986,6 +1012,114 @@ fn live_exact_capture_rejects_a_foreign_log_after_sealing_without_capture()
     );
     executor.shutdown_live_backend()?;
     Ok(())
+}
+
+#[test]
+fn retained_hot_fork_template_moves_exact_configuration_and_event_prefix() {
+    let log = shared_log();
+    let configuration = hash("configuration", "retained-template");
+    let offset = EventLogOffset::new(hash("event-prefix", "retained-template"), 41, 7);
+    let mut executor = QemuNodeRealizationExecutor {
+        node: node_id(),
+        launcher: scripted_launcher(Rc::clone(&log), configuration, 0),
+        active_node: Some(ScriptedNode {
+            log: Rc::clone(&log),
+            runtime_id: configuration,
+            current_icount: Icount { retired: 0 },
+            shutdown_event: None,
+        }),
+        active_configuration: Some(configuration),
+        event_log: EventLog::from_offset(offset),
+        observation_sealed: false,
+    };
+
+    let prepared = executor
+        .prepare_active_hot_fork_template(&[], 8 * 1024 * 1024)
+        .expect("prepare exact retained template");
+
+    assert_eq!(prepared.configuration(), configuration);
+    assert_eq!(prepared.event_log().offset(), offset);
+    assert!(executor.active_node.is_none());
+    assert_eq!(executor.active_configuration, None);
+    assert_eq!(executor.event_log.offset(), EventLog::new().offset());
+    assert_eq!(
+        logged(&log),
+        vec![NodeExecutorCall::PrepareHotFork {
+            bindings: 0,
+            maximum_ring_image_bytes: 8 * 1024 * 1024,
+        }]
+    );
+
+    let (node, identity) = prepared.into_parts();
+    assert_eq!(identity.configuration(), configuration);
+    assert_eq!(identity.fork_event_log().offset(), offset);
+    let recovered = QemuPreparedHotForkTemplate::from_reconciled_parts(node, identity);
+    assert_eq!(recovered.configuration(), configuration);
+    assert_eq!(recovered.event_log().offset(), offset);
+}
+
+#[test]
+fn retained_hot_fork_preparation_failure_keeps_exact_active_owner() {
+    let log = shared_log();
+    let configuration = hash("configuration", "retained-template-failure");
+    let failure = ContentHash::from_bytes(b"hot-fork-preparation-failure");
+    let offset = EventLogOffset::new(hash("event-prefix", "retained-template-failure"), 9, 3);
+    let mut executor = QemuNodeRealizationExecutor {
+        node: node_id(),
+        launcher: scripted_launcher(Rc::clone(&log), failure, 0),
+        active_node: Some(ScriptedNode {
+            log: Rc::clone(&log),
+            runtime_id: failure,
+            current_icount: Icount { retired: 0 },
+            shutdown_event: None,
+        }),
+        active_configuration: Some(configuration),
+        event_log: EventLog::from_offset(offset),
+        observation_sealed: false,
+    };
+
+    assert!(
+        executor
+            .prepare_active_hot_fork_template(&[], 4096)
+            .is_err()
+    );
+    assert!(executor.active_node.is_some());
+    assert_eq!(executor.active_configuration, Some(configuration));
+    assert_eq!(executor.event_log.offset(), offset);
+    assert_eq!(
+        logged(&log),
+        vec![NodeExecutorCall::PrepareHotFork {
+            bindings: 0,
+            maximum_ring_image_bytes: 4096,
+        }]
+    );
+}
+
+#[test]
+fn retained_hot_fork_preparation_requires_exact_active_configuration() {
+    let log = shared_log();
+    let runtime = hash("runtime", "orphan-node");
+    let mut executor = QemuNodeRealizationExecutor {
+        node: node_id(),
+        launcher: scripted_launcher(Rc::clone(&log), runtime, 0),
+        active_node: Some(ScriptedNode {
+            log: Rc::clone(&log),
+            runtime_id: runtime,
+            current_icount: Icount { retired: 0 },
+            shutdown_event: None,
+        }),
+        active_configuration: None,
+        event_log: EventLog::new(),
+        observation_sealed: false,
+    };
+
+    assert!(
+        executor
+            .prepare_active_hot_fork_template(&[], 4096)
+            .is_err()
+    );
+    assert!(executor.active_node.is_some());
+    assert!(logged(&log).is_empty());
 }
 
 fn scripted_launcher(

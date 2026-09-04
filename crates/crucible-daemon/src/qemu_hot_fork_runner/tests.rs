@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use crucible::{Checkpoint, Configuration, ScenarioDef, VirtualTime};
+use crucible::{Checkpoint, Configuration, EventLog, ScenarioDef, VirtualTime};
 use crucible_campaign::{
     Attempt, AttemptResourceLimits, AttemptStart, BranchPath, CampaignHash, CampaignLineage,
     ConfigurationArtifact, ConfigurationId, ExactCheckpointId, ExecutionId,
@@ -30,6 +30,7 @@ struct ScriptedLive<'a> {
     calls: &'a Arc<Mutex<Vec<&'static str>>>,
     resources: AttemptResourceLimits,
     cancellation: &'a ExecutionCancellation,
+    event_log: &'a mut EventLog,
 }
 
 impl QemuAttemptOperationalBoundary for ScriptedLive<'_> {
@@ -69,6 +70,10 @@ impl QemuHotForkLiveExecution for ScriptedLive<'_> {
         panic!("scripted driver does not use a host continuation")
     }
 
+    fn event_log_mut(&mut self) -> &mut EventLog {
+        self.event_log
+    }
+
     fn drain_diagnostics(
         &mut self,
     ) -> Result<QemuHotForkChildDiagnosticDrain, QemuVmRealizationError> {
@@ -81,6 +86,7 @@ struct ScriptedLifecycle {
     calls: Arc<Mutex<Vec<&'static str>>>,
     resources: AttemptResourceLimits,
     cancellation: ExecutionCancellation,
+    event_log: EventLog,
     fail_stop: bool,
     stopped: bool,
     reconciliation_steps: u8,
@@ -108,6 +114,7 @@ impl QemuHotForkAttemptLifecycle for ScriptedLifecycle {
             calls: &self.calls,
             resources: self.resources,
             cancellation: &self.cancellation,
+            event_log: &mut self.event_log,
         })
     }
 
@@ -143,6 +150,8 @@ impl QemuHotForkAttemptLifecycle for ScriptedLifecycle {
             Ok(AttemptExecutionReconciliationStep::Complete)
         }
     }
+
+    fn quarantine(&mut self) {}
 }
 
 struct ScriptedFactory {
@@ -187,6 +196,7 @@ impl QemuHotForkAttemptLifecycleFactory for ScriptedFactory {
             calls: Arc::clone(&self.calls),
             resources: context.resources(),
             cancellation: context.cancellation().clone(),
+            event_log: EventLog::new(),
             fail_stop: self.fail_stop,
             stopped: false,
             reconciliation_steps: 0,

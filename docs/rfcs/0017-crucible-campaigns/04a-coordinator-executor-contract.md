@@ -2329,21 +2329,35 @@ before returning, so supervisor requeue cannot overlap the failed QEMU owner.
 
 The hot-fork runner boundary is linear. It rejects exact-resume work and any
 child whose lineage-qualified attempt/execution incarnation differs from the
-worker reservation. A factory transfers exactly one source-template and target
-guard lifecycle into the runner; a modeled driver receives only the admitted
-private child, non-releasing operational boundary, and branch-local host
-continuation. Driving and result sealing are separate phases at one exact
-paused boundary. The runner then terminates the child, polls the source-owned
-status under a finite configured cadence, proves target-resource release, and
-retains the source lifecycle until the worker supplies its durable semantic
-disposition. Retryable source-template recovery returns the unchanged lifecycle
-token. Dropping a pending runner transfers that token to the factory's
-nondroppable quarantine owner. An execution error has no durable semantic
-disposition; after target cleanup the runner MUST quarantine the remaining
-source lifecycle rather than fabricating `Failed` and releasing the source
-status. The production template-pool factory, nondroppable daemon quarantine
-sink, atomic world-continuation installer, and modeled private-child driver
-remain required before hot fork is advertised.
+worker reservation. QEMU realization can mint a prepared source capability
+only after the active node, its exact realized configuration, its unified
+event-log prefix, and the complete retained-template resource transaction have
+all been authenticated. Preparation failure leaves those authorities installed
+in the realization executor. A fixed worker factory exact-binds one such source
+to one lineage and paused configuration. It admits the target resource guard
+before consuming the source slot, transfers exactly one source-and-target
+lifecycle into the runner, and leaves that slot empty until the originating
+factory recovers the source after durable semantic reconciliation. A foreign
+factory, configuration, lineage, or execution incarnation fails closed before
+source reuse.
+
+A modeled driver receives only the admitted private child, non-releasing
+operational boundary, branch-private clone of the exact event-log prefix, and
+branch-local host continuation. Driving and result sealing are separate phases
+at one exact paused boundary. The runner then terminates the child, polls the
+source-owned status under a finite configured cadence, proves target-resource
+release, and retains the source lifecycle until the worker supplies its durable
+semantic disposition. Retryable source-template recovery returns the unchanged
+lifecycle token. Dropping a pending runner transfers that token to the
+factory's nondroppable quarantine owner. An execution error has no durable
+semantic disposition; after target cleanup the runner MUST quarantine the
+remaining source lifecycle rather than fabricating `Failed` and releasing the
+source status. The fixed factory's current fail-closed sink retains at most one
+unrecoverable authority per configured worker for the daemon process lifetime;
+an orderly daemon owner can instead take an idle source for explicit shutdown.
+A multi-template hotness/selection pool, atomic world-continuation installer,
+modeled private-child driver, and real QEMU campaign flight remain required
+before hot fork is advertised.
 
 Exactly one attempt-owned watcher blocks on the same sticky eventfd, and child
 contracts cannot be minted before that watcher is live. Terminal cancellation

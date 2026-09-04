@@ -11,6 +11,7 @@ use std::os::unix::net::UnixStream;
 use std::thread;
 use std::time::Duration;
 
+use crucible::EventLog;
 use crucible_qemu::{
     QemuHotForkChildDiagnosticDrain, QemuHotForkChildProcessOwner, QemuHotForkHostContinuation,
     QemuQmpVmStateControlChannel, QemuVmRealizationError,
@@ -114,6 +115,13 @@ pub trait QemuHotForkLiveExecution: QemuAttemptOperationalBoundary {
     /// Borrows the branch-private plugin and host-I/O continuation.
     fn host_continuation_mut(&mut self) -> &mut QemuHotForkHostContinuation;
 
+    /// Borrows the branch-private clone of the source unified event prefix.
+    ///
+    /// The modeled driver must append every child observation to this one log;
+    /// it must not create an empty or offset-only substitute.
+    #[must_use]
+    fn event_log_mut(&mut self) -> &mut EventLog;
+
     /// Drains every currently available child diagnostic byte.
     ///
     /// # Errors
@@ -132,6 +140,10 @@ impl QemuHotForkLiveExecution for LinuxQemuHotForkLiveChild<'_> {
 
     fn host_continuation_mut(&mut self) -> &mut QemuHotForkHostContinuation {
         LinuxQemuHotForkLiveChild::host_continuation_mut(self)
+    }
+
+    fn event_log_mut(&mut self) -> &mut EventLog {
+        LinuxQemuHotForkLiveChild::event_log_mut(self)
     }
 
     fn drain_diagnostics(
@@ -240,6 +252,13 @@ pub trait QemuHotForkAttemptLifecycle: Sized {
         &mut self,
         disposition: AttemptExecutionDisposition,
     ) -> Result<AttemptExecutionReconciliationStep, AttemptWorkerFailure<Self::Error>>;
+
+    /// Latches terminal cleanup and transfers process resources to quarantine.
+    ///
+    /// This operation is infallible and idempotent. The lifecycle object still
+    /// owns the retained source-template authority afterward and must itself be
+    /// transferred to the factory's nondroppable quarantine sink.
+    fn quarantine(&mut self);
 }
 
 /// Factory and terminal owner for hot-fork lifecycle authorities.
@@ -400,6 +419,10 @@ where
     ) -> Result<AttemptExecutionReconciliationStep, AttemptWorkerFailure<Self::Error>> {
         QemuHotForkAttemptReconciliation::reconcile_execution_disposition(self, disposition)
             .map_err(classify_reconciliation_failure)
+    }
+
+    fn quarantine(&mut self) {
+        QemuHotForkAttemptReconciliation::quarantine(self);
     }
 }
 
