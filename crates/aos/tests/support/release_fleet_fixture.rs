@@ -590,6 +590,11 @@ async fn tls_proxy(arguments: &[String]) -> Result<()> {
     if arguments.len() != 4 {
         bail!("usage: tls-proxy LISTEN UPSTREAM CERTIFICATE PRIVATE_KEY");
     }
+    tokio_rustls::rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .map_err(|_| {
+            anyhow::anyhow!("a process-wide Rustls crypto provider is already installed")
+        })?;
     let certificates = rustls_pemfile::certs(&mut BufReader::new(File::open(&arguments[2])?))
         .collect::<std::io::Result<Vec<CertificateDer<'static>>>>()?;
     let key = rustls_pemfile::private_key(&mut BufReader::new(File::open(&arguments[3])?))?
