@@ -26,6 +26,7 @@ use aos_release::signing::{
     SignatureAlgorithm, SignerRole, SigningContext, SigningOperation, SigningRequestV1,
     TrustedEd25519Key,
 };
+use aos_release::tuf::TufRole;
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::process::Command;
 
@@ -225,7 +226,13 @@ fn public_objects(
         .collect::<Result<Vec<_>>>()?;
     objects.push(QualificationObjectV1 {
         artifact_id: "control/release-manifest-envelope".to_owned(),
-        url: base.join("release-manifest.json")?.to_string(),
+        url: base
+            .join(&format!(
+                "releases/{}/{}/release-manifest.json",
+                TufRole::for_release(manifest.payload.release_class).as_str(),
+                manifest.payload.version
+            ))?
+            .to_string(),
         size_bytes: u64::try_from(manifest_bytes.len())?,
         sha256: Sha256Digest::of_bytes(manifest_bytes),
     });

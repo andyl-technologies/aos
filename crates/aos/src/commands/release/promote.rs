@@ -15,11 +15,12 @@ use aos_release::receipt::{
     HubEnvironment, PublicationReceiptV1, QualificationReceiptV1, verify_signed_receipt_with_key,
 };
 use aos_release::state::{JournalEntryV1, ReleaseState, parse_journal};
+use aos_release::tuf::TufRole;
 use aos_remote::hub::{HubClient, hub_rpc};
 
 use crate::cli::{HubAccessArgs, ReleasePromoteArgs};
 
-use super::{capture, hub_transition, verify};
+use super::{capture, hub_transition, stage, verify};
 
 const PRODUCTION_HUB: &str = "https://aos.andyl.org";
 
@@ -112,11 +113,22 @@ pub(super) async fn run(args: &ReleasePromoteArgs, printer: &Printer) -> Result<
         hub: Some(PRODUCTION_HUB.to_owned()),
         token: args.token.clone(),
     };
+    let manifest_public_path = format!(
+        "releases/{}/{}/release-manifest.json",
+        TufRole::for_release(plan.release_class).as_str(),
+        plan.version
+    );
+    let publication_surface = stage::publication_surface(
+        &args.bundle,
+        &captured.files,
+        &manifest_public_path,
+        &captured.manifest_bytes,
+    )?;
     let publication = crate::commands::hub::upload_registry_publication(
         &access,
         &plan.registry,
         None,
-        &args.bundle,
+        &publication_surface.path().join("surface"),
         printer,
     )
     .await?;
