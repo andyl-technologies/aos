@@ -10,6 +10,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <grp.h>
+#include <limits.h>
 #include <poll.h>
 #include <sched.h>
 #include <signal.h>
@@ -257,7 +258,7 @@ static int wait_child(pid_t child, int *status)
     }
 }
 
-static int list_directory(int parent, const char *name)
+static int list_directory(int parent, const char *name, bool rust_worker)
 {
     int fd = openat(parent, name, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (fd < 0)
@@ -274,7 +275,7 @@ static int list_directory(int parent, const char *name)
     while ((entry = readdir(directory)) != NULL) {
         entries++;
         if (strcmp(entry->d_name, "leaf") == 0)
-            leaf = entry->d_ino != 0 && entry->d_type == DT_REG;
+            leaf = (rust_worker || entry->d_ino != 0) && entry->d_type == DT_REG;
         else if (strcmp(entry->d_name, ".") != 0 &&
                  strcmp(entry->d_name, "..") != 0) {
             closedir(directory);
@@ -297,7 +298,7 @@ static int list_directory(int parent, const char *name)
     return 0;
 }
 
-static int client(const char *mountpoint, uid_t uid)
+static int client(const char *mountpoint, uid_t uid, bool rust_worker)
 {
     if (setgroups(0, NULL) < 0 || setresgid(uid, uid, uid) < 0 ||
         setresuid(uid, uid, uid) < 0 || getuid() != uid || geteuid() != uid ||
@@ -309,18 +310,35 @@ static int client(const char *mountpoint, uid_t uid)
     int result = -1;
     struct stat status;
     if (fstatat(root, "public/leaf", &status, 0) < 0 ||
-        status.st_ino != PUBLIC_LEAF || !S_ISREG(status.st_mode) ||
+        (rust_worker ? status.st_ino == 0 : status.st_ino != PUBLIC_LEAF) ||
+        !S_ISREG(status.st_mode) ||
+        status.st_size != (rust_worker ? 1 : 0) || status.st_nlink != 1 ||
         (status.st_mode & 07777U) != 0444U || status.st_uid != OWNER_ID ||
         status.st_gid != OWNER_ID || status.st_mtim.tv_sec != 17 ||
-        status.st_mtim.tv_nsec != 19 || list_directory(root, "public") < 0)
+        status.st_mtim.tv_nsec != 19 || list_directory(root, "public", rust_worker) < 0)
         goto cleanup;
+    if (rust_worker) {
+        /* O_PATH pins the dentry without unsupported file-data OPEN. The live
+         * lookup identity must remain stable while that pin prevents FORGET. */
+        int pinned = openat(root, "public/leaf", O_PATH | O_CLOEXEC);
+        if (pinned < 0)
+            goto cleanup;
+        struct stat pinned_status;
+        int stable = fstat(pinned, &pinned_status) == 0 &&
+                     fstatat(root, "public/leaf", &status, 0) == 0 &&
+                     pinned_status.st_ino != 0 &&
+                     status.st_ino == pinned_status.st_ino;
+        close(pinned);
+        if (!stable)
+            goto cleanup;
+    }
     char target[32];
     ssize_t length = readlinkat(root, "link", target, sizeof(target));
     if (length != (ssize_t)(sizeof("public/leaf") - 1U) ||
         memcmp(target, "public/leaf", sizeof("public/leaf") - 1U) != 0)
         goto cleanup;
     if (uid == OWNER_ID) {
-        if (list_directory(root, "private") < 0)
+        if (list_directory(root, "private", rust_worker) < 0)
             goto cleanup;
     } else {
         int private_fd = openat(root, "private", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
@@ -352,7 +370,7 @@ cleanup:
 }
 
 static int run_client(const char *mountpoint, uid_t uid, int cancellation_fd,
-                      int result_fd, int release_fd)
+                      int result_fd, int release_fd, bool rust_worker)
 {
     pid_t child = fork();
     if (child < 0)
@@ -362,7 +380,7 @@ static int run_client(const char *mountpoint, uid_t uid, int cancellation_fd,
         close(cancellation_fd);
         close(result_fd);
         close(release_fd);
-        int result = client(mountpoint, uid);
+        int result = client(mountpoint, uid, rust_worker);
         if (result != 0)
             fprintf(stderr, "client uid=%u failed: %s\n", (unsigned)uid,
                     strerror(errno));
@@ -457,8 +475,61 @@ cleanup:
     return result;
 }
 
-int main(void)
+/* Test-only process boundary: no transport-internal entry points are exposed.
+ * The external worker receives exactly the three descriptors it owns. */
+static _Noreturn void exec_worker(const char *worker, int fuse_fd,
+                                  int cancellation_fd, int report_fd)
 {
+    int descriptors[] = {fuse_fd, cancellation_fd, report_fd};
+    char numbers[3][32];
+    if (close_range(3, UINT_MAX, CLOSE_RANGE_CLOEXEC) < 0)
+        _exit(2);
+    for (unsigned index = 0; index < 3; index++) {
+        int length = snprintf(numbers[index], sizeof(numbers[index]), "%d",
+                              descriptors[index]);
+        int flags = fcntl(descriptors[index], F_GETFD);
+        if (length < 0 || (size_t)length >= sizeof(numbers[index]) ||
+            flags < 0 || fcntl(descriptors[index], F_SETFD, flags & ~FD_CLOEXEC) < 0)
+            _exit(2);
+    }
+    char *arguments[] = {(char *)worker, numbers[0], numbers[1], numbers[2], NULL};
+    execv(worker, arguments);
+    perror("exec Rust FUSE worker");
+    _exit(2);
+}
+
+static int validate_report(int fd, bool rust_worker)
+{
+    if (rust_worker) {
+        const char expected[] =
+            "aos.fuse-rust-worker/v1 cancelled borrowed-fds-retained\n";
+        char received[sizeof(expected)];
+        ssize_t length = read(fd, received, sizeof(received));
+        return length == (ssize_t)(sizeof(expected) - 1U) &&
+                       memcmp(received, expected, sizeof(expected) - 1U) == 0
+                   ? 0 : -1;
+    }
+    struct server_report report;
+    ssize_t received = read(fd, &report, sizeof(report));
+    return received == (ssize_t)sizeof(report) && report.status == ECANCELED &&
+                   report.original_retained && report.cancellation_retained &&
+                   report.calls.destroyed == 1 && report.calls.lookup != 0 &&
+                   report.calls.getattr != 0 && report.calls.readlink >= 3 &&
+                   report.calls.opendir == 7 && report.calls.readdir >= 2 &&
+                   report.calls.releasedir == report.calls.opendir
+               ? 0 : -1;
+}
+
+int main(int argc, char **argv)
+{
+    const char *worker = NULL;
+    if (argc == 3 && strcmp(argv[1], "--rust-worker") == 0 && argv[2][0] == '/')
+        worker = argv[2];
+    else if (argc != 1) {
+        fprintf(stderr, "usage: %s [--rust-worker ABSOLUTE_WORKER_PATH]\n", argv[0]);
+        return 2;
+    }
+    bool rust_worker = worker != NULL;
     alarm(60);
     signal(SIGPIPE, SIG_IGN);
     if (geteuid() != 0 || unshare(CLONE_NEWNS) < 0 ||
@@ -500,6 +571,10 @@ int main(void)
         alarm(45);
         close(cancel[1]);
         close(reports[0]);
+        if (rust_worker) {
+            close(release_fd);
+            exec_worker(worker, fuse_fd, cancel[0], reports[1]);
+        }
         struct fixture fixture = {.release_notifications = release_fd};
         long page_size = sysconf(_SC_PAGESIZE);
         if (page_size <= 0)
@@ -542,20 +617,25 @@ int main(void)
     cancel[0] = -1;
     close(reports[1]);
     reports[1] = -1;
-    if (run_client(mountpoint, OTHER_ID, cancel[1], reports[0], release_fd) < 0 ||
-        run_client(mountpoint, OWNER_ID, cancel[1], reports[0], release_fd) < 0)
+    if (run_client(mountpoint, OTHER_ID, cancel[1], reports[0], release_fd,
+                   rust_worker) < 0 ||
+        run_client(mountpoint, OWNER_ID, cancel[1], reports[0], release_fd,
+                   rust_worker) < 0)
         goto cleanup;
     struct timespec idle = {.tv_sec = 2};
     while (nanosleep(&idle, &idle) < 0) {
         if (errno != EINTR)
             goto cleanup;
     }
-    if (run_client(mountpoint, OTHER_ID, cancel[1], reports[0], release_fd) < 0 ||
-        await_releases(release_fd) < 0)
+    if (run_client(mountpoint, OTHER_ID, cancel[1], reports[0], release_fd,
+                   rust_worker) < 0 ||
+        (!rust_worker && await_releases(release_fd) < 0))
         goto cleanup;
     /* The callback acknowledges release before libfuse writes its reply. A
      * subsequent metadata round trip on the single-threaded connection proves
-     * those replies have completed before cancellation becomes readable. */
+     * those replies have completed before cancellation becomes readable.
+     * Rust mode exposes no callback acknowledgments: its round trip proves
+     * responsiveness after client exit, not completion of all async releases. */
     struct stat barrier;
     if (stat(mountpoint, &barrier) < 0 || !S_ISDIR(barrier.st_mode))
         goto cleanup;
@@ -565,15 +645,8 @@ int main(void)
     if (wait_child(server, &status) < 0)
         goto cleanup;
     server = -1;
-    struct server_report report;
-    ssize_t received = read(reports[0], &report, sizeof(report));
     if (!WIFEXITED(status) || WEXITSTATUS(status) != 0 ||
-        received != (ssize_t)sizeof(report) || report.status != ECANCELED ||
-        !report.original_retained || !report.cancellation_retained ||
-        report.calls.destroyed != 1 || report.calls.lookup == 0 ||
-        report.calls.getattr == 0 || report.calls.readlink < 3 ||
-        report.calls.opendir != 7 || report.calls.readdir < 2 ||
-        report.calls.releasedir != report.calls.opendir) {
+        validate_report(reports[0], rust_worker) < 0) {
         fprintf(stderr, "server report or teardown assertion failed\n");
         goto cleanup;
     }
@@ -583,13 +656,23 @@ int main(void)
     if (umount2(mountpoint, 0) < 0)
         goto cleanup;
     mounted = false;
-    printf("{\"schema_version\":\"aos.sandbox.fuse-transport-proof/v1\","
+    if (rust_worker) {
+        printf("{\"schema_version\":\"aos.sandbox.fuse-rust-metadata-proof/v1\","
+               "\"architecture\":\"%s\",\"metadata\":true,"
+               "\"mount_flags\":true,\"cross_uid_dac\":true,"
+               "\"read_only\":true,\"idle_survives\":true,"
+               "\"cancelled\":true,\"borrowed_fds_retained\":true,"
+               "\"worker_exited\":true,\"disconnected\":true,"
+               "\"unmounted\":true}\n", architecture());
+    } else {
+        printf("{\"schema_version\":\"aos.sandbox.fuse-transport-proof/v1\","
            "\"architecture\":\"%s\",\"metadata\":true,"
            "\"mount_flags\":true,\"cross_uid_dac\":true,"
            "\"read_only\":true,\"idle_survives\":true,"
            "\"cancelled\":true,\"borrowed_fds_retained\":true,"
            "\"destroyed_once\":true,\"disconnected\":true,"
            "\"unmounted\":true}\n", architecture());
+    }
     result = 0;
 cleanup:
     if (result != 0)

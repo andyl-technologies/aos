@@ -31,6 +31,7 @@ members = [
     "aos-systemd",
     "aos-filesystem-view",
     "aos-filesystem-fuse",
+    "aos-filesystem-fuse/tests/fixtures/kernel-worker",
     "aos-filesystem-fuse/tests/fixtures/link-consumer",
     "aos-sandbox-core",
     "aos-sandbox-ownership-protocol",

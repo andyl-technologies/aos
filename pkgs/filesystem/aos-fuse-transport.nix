@@ -7,6 +7,7 @@
 ##! and descriptor
 ##! acquisition remain privileged broker responsibilities.
 {
+  lib,
   mkDerivation,
   fuse3,
   linux-headers,
@@ -71,7 +72,26 @@ in
       testing,
       self,
       pkgs,
-    }: {
+    }: let
+      probeSource = builtins.path {
+        path = ../../tests/sandbox/fuse-transport-probe.c;
+        name = "aos-fuse-transport-probe.c";
+      };
+      rustWorker = pkgs.mkCargoPackage {
+        pname = "aos-filesystem-fuse-kernel-worker";
+        version = "0.0.0";
+        src = import ../tools/aos/_workspace-source.nix {inherit lib;};
+        cargoDeps = pkgs.aos.passthru.cargoDeps;
+        cargoRoot = "crates";
+        cargoFlags = "-p aos-filesystem-fuse-kernel-worker --bin aos-filesystem-fuse-kernel-worker";
+        # This executable requires inherited real mount descriptors; its test
+        # runs below inside the VM rather than in the package build sandbox.
+        doCheck = false;
+        buildDeps = [pkgs.pkg-config pkgs.fuse3];
+        runtimeDeps = [self];
+        cargoEnv.RUSTFLAGS = "-C link-arg=-Wl,-rpath,${self}/lib";
+      };
+    in {
       soname = testing.mkSONAMECheck {
         pkg = self;
         libs = ["libaos-fuse-transport.so"];
@@ -157,31 +177,42 @@ in
         ];
       };
 
-      kernel-metadata = let
-        probeSource = builtins.path {
-          path = ../../tests/sandbox/fuse-transport-probe.c;
-          name = "aos-fuse-transport-probe.c";
-        };
-      in
-        testing.mkVMTest {
-          name = "aos-fuse-transport-kernel-metadata";
-          rootfsDeps = [self probeSource];
-          memory = 256;
-          testScript = ''
-            test -c /dev/fuse
-            cd /tmp
-            gcc -std=c17 -Wall -Wextra -Werror -Wconversion -Wsign-conversion \
-              -I${self}/include ${probeSource} \
-              -L${self}/lib -Wl,-rpath,${self}/lib -laos-fuse-transport \
-              -o aos-fuse-transport-probe
+      kernel-metadata = testing.mkVMTest {
+        name = "aos-fuse-transport-kernel-metadata";
+        rootfsDeps = [self probeSource];
+        memory = 256;
+        testScript = ''
+          test -c /dev/fuse
+          cd /tmp
+          gcc -std=c17 -Wall -Wextra -Werror -Wconversion -Wsign-conversion \
+            -I${self}/include ${probeSource} \
+            -L${self}/lib -Wl,-rpath,${self}/lib -laos-fuse-transport \
+            -o aos-fuse-transport-probe
 
-            # The guest compiler uses the harness bootstrap environment. The
-            # installed bridge must resolve its own runtime closure during the
-            # proof, without LD_LIBRARY_PATH overriding those dependencies.
-            unset LD_LIBRARY_PATH
-            ./aos-fuse-transport-probe
-          '';
-        };
+          # The guest compiler uses the harness bootstrap environment. The
+          # installed bridge must resolve its own runtime closure during the
+          # proof, without LD_LIBRARY_PATH overriding those dependencies.
+          unset LD_LIBRARY_PATH
+          ./aos-fuse-transport-probe
+        '';
+      };
+
+      kernel-rust-metadata = testing.mkVMTest {
+        name = "aos-fuse-transport-kernel-rust-metadata";
+        rootfsDeps = [self probeSource rustWorker];
+        memory = 256;
+        testScript = ''
+          test -c /dev/fuse
+          cd /tmp
+          gcc -std=c17 -Wall -Wextra -Werror -Wconversion -Wsign-conversion \
+            -I${self}/include ${probeSource} \
+            -L${self}/lib -Wl,-rpath,${self}/lib -laos-fuse-transport \
+            -o aos-fuse-transport-probe
+          unset LD_LIBRARY_PATH
+          ./aos-fuse-transport-probe \
+            --rust-worker ${rustWorker}/bin/aos-filesystem-fuse-kernel-worker
+        '';
+      };
 
       closure = pkgs.mkDerivation {
         pname = "aos-fuse-transport-runtime-closure-check";
