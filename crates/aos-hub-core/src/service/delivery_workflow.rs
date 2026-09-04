@@ -761,10 +761,10 @@ impl RpcService {
         };
         let state = if progress.active {
             "active"
-        } else if ready {
-            "ready"
         } else if !progress.error.is_empty() || drift.is_some() {
             "blocked"
+        } else if ready {
+            "ready"
         } else if progress.completed.contains("route") {
             "awaiting_verification"
         } else {

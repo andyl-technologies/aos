@@ -140,8 +140,8 @@ pub struct ManifestViolation {
 ///
 /// The validator fails closed: every method needs an explicit class; every
 /// durable desired-state mutation must be one half of exactly one plan/apply
-/// pair; external reviewed effects must return an Operation; controller
-/// observations cannot be public.
+/// pair; external reviewed effects must return an operation or the explicitly
+/// declared durable workflow; controller observations cannot be public.
 #[must_use]
 pub fn validate_method_manifest(methods: &[MethodDescriptor]) -> Vec<ManifestViolation> {
     let mut violations = Vec::new();
