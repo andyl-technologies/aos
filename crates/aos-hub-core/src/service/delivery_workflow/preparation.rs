@@ -339,7 +339,7 @@ impl RpcService {
                             surface: intent.surface.clone(),
                             endpoint_id: progress.endpoint_id.clone(),
                             endpoint_generation: progress.endpoint_generation,
-                            base_path: intent.client_base_path.clone(),
+                            base_path: seal.route_base_path.clone(),
                             target: Some(pb::RouteTarget {
                                 target: Some(pb::route_target::Target::DirectGatewayPlacement(
                                     pb::DirectGatewayPlacementTarget {

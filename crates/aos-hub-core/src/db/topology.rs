@@ -550,7 +550,7 @@ fn normalize_base_path(path: &str) -> Result<String> {
     Ok(path.to_owned())
 }
 
-fn join_route_segments(base: &str, prefix: &str) -> Result<String> {
+pub(crate) fn join_route_segments(base: &str, prefix: &str) -> Result<String> {
     let base = normalize_base_path(base)?;
     let prefix = prefix.trim_matches('/');
     if prefix.is_empty() {

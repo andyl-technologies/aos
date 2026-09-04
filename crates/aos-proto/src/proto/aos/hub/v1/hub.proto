@@ -4534,6 +4534,8 @@ message DeliveryDestinationIntent {
     DeliveryEndpointInput new_endpoint = 4;
   }
   string placement_name = 5;
+  // Gateway URL prefix. The selected placement's storage prefix is appended
+  // to derive the final immutable delivery URL shown in the review plan.
   string client_base_path = 6;
   DeliveryAccessPolicy access_policy = 7;
   RouteCapabilities capabilities = 8;

@@ -6771,6 +6771,22 @@ impl RpcService {
         })
     }
 
+    async fn authorize_gateway_binding(
+        &self,
+        auth: Option<&str>,
+        binding: &crate::db::BindingRecord,
+        scope: &str,
+    ) -> Result<(), RpcError> {
+        self.require_delivery_scope(auth, scope, Permission::BindingRead).await?;
+        let grant = self.db.load_consumer_scope_grant(
+            crate::db::GrantResource::Binding { id: binding.id, stable_id: &binding.stable_id }, scope,
+        ).await.map_err(RpcError::internal)?;
+        if !grant.is_some_and(|grant| grant.state == "active") {
+            return Err(RpcError::not_found("active binding consumer grant"));
+        }
+        Ok(())
+    }
+
     async fn plan_gateway_mutation(
         &self,
         auth: Option<&str>,
@@ -6972,14 +6988,7 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("binding"))?;
-        self.require_delivery_scope(auth, &scope, Permission::BindingRead).await?;
-        let binding_grant = self.db.load_consumer_scope_grant(
-            crate::db::GrantResource::Binding { id: binding.id, stable_id: &binding.stable_id },
-            &scope,
-        ).await.map_err(RpcError::internal)?;
-        if !binding_grant.is_some_and(|grant| grant.state == "active") {
-            return Err(RpcError::not_found("active binding consumer grant"));
-        }
+        self.authorize_gateway_binding(auth, &binding, &scope).await?;
         Self::gateway_revision_spec(req.revision.clone(), binding.id)?;
         let idempotency_key = std::mem::take(&mut req.idempotency_key);
         let input = GatewayMutationPlanInput {
@@ -7094,13 +7103,7 @@ impl RpcService {
                 "binding identity changed after planning".to_string(),
             ));
         }
-        self.require_cloaked_delivery_scope(
-            auth,
-            &binding.owner_scope_key,
-            Permission::BindingRead,
-            "binding",
-        )
-        .await?;
+        self.authorize_gateway_binding(auth, &binding, &input.request.owner_scope_key).await?;
         let revision = Self::gateway_revision_spec(input.request.revision.clone(), binding.id)?;
         let claims = self.require_claims(auth)?;
         let record = if update {

@@ -45,7 +45,7 @@ async fn endpoint_selector_does_not_expose_an_ungranted_successor_generation() {
 }
 
 async fn verified_fixture() -> (Database, DeliveryWorkflowRecord, DeliveryActivationRoute) {
-    let (db, registry_id, mut spec, url, reservation) =
+    let (db, registry_id, mut spec, mut url, reservation) =
         crate::db::topology::tests::route_fixture().await;
     let surface = SurfaceTarget::Registry(registry_id);
     let owner = db.org_by_slug("route-probes").await.unwrap().unwrap();
@@ -117,6 +117,8 @@ async fn verified_fixture() -> (Database, DeliveryWorkflowRecord, DeliveryActiva
     spec.gateway_generation = Some(1);
     spec.target_binding_id = Some(placement.binding_id);
     spec.gateway_client_base_path = Some(spec.base_path.clone());
+    spec.base_path = crate::db::join_route_segments(&spec.base_path, &placement.prefix).unwrap();
+    url = format!("{url}/{}", placement.prefix);
     spec.target_placement_prefix = Some(placement.prefix);
     let route = db
         .create_route(

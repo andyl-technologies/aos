@@ -212,6 +212,22 @@ async fn shared_storage_workflow_resumes_child_plans_without_owner_authority() {
         "{:?}",
         resumed.blockers
     );
+    assert_eq!(
+        resumed.canonical_url,
+        "https://cdn.workflow.example.test/cache/delivery-workflow/main"
+    );
+    let route = service
+        .get_route(
+            Some(&auth),
+            pb::GetTopologyResourceRequest {
+                stable_id: resumed.route_id.clone(),
+            },
+        )
+        .await
+        .unwrap()
+        .route
+        .unwrap();
+    assert_eq!(route.canonical_rendered_url, resumed.canonical_url);
     let replayed = service
         .resume_delivery_destination(Some(&auth), resume)
         .await
