@@ -700,6 +700,22 @@ completes. The Git history remains authoritative for code details.
   The normative fixed-binary profile and executable golden vectors agree. The
   focused suites pass 230 unit tests plus doctests, strict all-target Clippy,
   warning-denied rustdoc, formatting, and adversarial review.
+- `b30d68311` — foundation toward `SBX-CTRL-03` and `SBX-MULTI-01`: controller
+  admission can now persist a canonical ownership claim and self-contained,
+  lease-independent authority-publication draft in the same transaction as
+  desired state, the operation, every planned effect, and idempotency. Durable
+  operation provenance prevents a missing gate from becoming runnable;
+  ordinary reconciliation skips ownership-pending effects. Explicit release
+  requires the receipt's exact action, request ID, claim digest, authority,
+  lease, and draft, then atomically installs the permanent prepared publication
+  and current pointer with the accepted operation and activated gate. Recovery
+  requires the permanent record plus the exact current publication or a valid
+  same-authority successor. Controller publication moves from the earlier V2
+  foundation to an isolated, closed V3 namespace; V1/V2 state requires explicit
+  migration, while unknown, malformed, substituted, orphaned, or colliding V3
+  state fails closed. The implementation passes 105 unit tests plus doctests,
+  strict all-target Clippy, warning-denied rustdoc, formatting, and adversarial
+  review. The production explicit authority-resume path remains open.
 
 The post-`727da7f3e` x86_64 `sandbox-filesystem-capability-proof` rerun built the
 complete hermetic Rust closure, AOS system, initrd, and VM disk and launched
