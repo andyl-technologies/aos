@@ -464,3 +464,32 @@ completes. The Git history remains authoritative for code details.
   credential names enter the Nix closure, malformed or partial configuration
   fails evaluation, and obvious cross-domain journal-key source reuse is
   rejected.
+- `f119f7237` — foundation toward `SBX-BPROTO-04` and `SBX-HOST-01`: host
+  effects now consume the negotiated signed-plan/lease quartet, use a public
+  controller-reusable portable semantic compiler, atomically persist
+  location-MACed fence and effect records, authenticate and cross-link the full
+  recovered state graph, preserve exact completed replay after deadlines, and
+  recheck paired-clock authority immediately before each systemd mutation.
+  Production launch remains unavailable until stable pin handoff and
+  post-launch identity evidence are implemented; observe and inventory dispatch
+  also remain open.
+- `b0a41d107` — foundation toward `SBX-BPROTO-04` and `SBX-HOST-01`: host
+  observation and complete runtime inventory now dispatch under both protocol
+  1.0 and 1.1, reject authorization carriers, require exact durable identity,
+  order and bound authoritative systemd observations, and commit observation
+  sequences only after complete success. The protocol permits a canonical
+  empty successful body only for an empty host inventory. Production launch
+  remains gated on stable pin handoff and post-launch identity evidence.
+- `727da7f3e` — executable evidence toward `SBX-P0-02`: an
+  architecture-neutral Linux UAPI probe now fails closed unless fs-verity can
+  enable, measure, and prevent writable reopen and FUSE passthrough can
+  register an exact backing descriptor and serve matching bytes without a
+  userspace read. The probe and both-architecture Kconfig resolution build;
+  the task remains open pending x86_64 and aarch64 VM runtime evidence.
+- `371f6d0e0` — foundation toward `SBX-HOST-01`: launch catalog resolution now
+  retains type-checked workspace and network-namespace descriptors across the
+  complete asynchronous systemd start and final observation. Descriptor
+  identity substitution and host-network selection fail closed. Apply remains
+  unadvertised because current path-valued systemd/nspawn transport does not
+  yet consume those pins and no protected boot-local readiness attestation is
+  available.
