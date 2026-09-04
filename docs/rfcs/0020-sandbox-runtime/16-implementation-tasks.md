@@ -1123,8 +1123,34 @@ completes. The Git history remains authoritative for code details.
   adversarial repair pass. Host-state reconciliation and production lifecycle
   action remain open, so all three tasks stay unchecked.
 
+- `4da505397` — closes metadata-adapter gaps toward `SBX-FS-03`: directory
+  requests can validate the kernel-supplied inode/handle association before
+  reading or releasing state, including after the last lookup reference is
+  forgotten while an open pin remains. Ordinary singleton `FORGET` uses the
+  same bounded atomic preflight as batching without requiring the optional
+  batch feature. Wrong, pending, stale, and replayed identities, failed
+  admission, underflow, and cancelled precommit retain their state. All 91
+  filesystem unit tests, the allocator harness exercising these APIs, ten
+  compile-fail doctests, strict Clippy and rustdoc, and formatting pass using
+  the realized AOS development environment. Real transport and kernel
+  integration remain open.
+- `28e7d6180` — merges master while preserving the sandbox Linux UAPI build
+  check alongside master's bootstrap, cross-platform, and image checks. The
+  sandbox RFC is now RFC-0020 because master assigned RFC-0019 to OCI
+  containers. Directory links and textual RFC references change; portable
+  protocol identifiers, wire versions, and golden commitments do not.
+
 The post-`727da7f3e` x86_64 `sandbox-filesystem-capability-proof` rerun built the
 complete hermetic Rust closure, AOS system, initrd, and VM disk and launched
 QEMU with KVM. The guest agent timed out before readiness with a blank serial
 log, so the fs-verity/FUSE runtime body never executed and `SBX-P0-02` remains
 open. This is recorded as a VM boot-boundary failure, not capability evidence.
+
+The subsequent pre-merge rerun
+(`s69hf4byw1z836lmagab4b1jw9b32f1h-aos-fleet-test-sandbox-filesystem-capability-proof-0.drv`)
+also timed out before the test body. Inspection of its retained full serial log
+showed successful kernel boot followed by credential recovery rejecting the
+offline `/sysroot` identity and entering initrd emergency mode; the printed
+tail concealed the earlier failure. Master includes target-root symlink
+resolution and Nix-overlay ordering fixes for this path. A post-merge runtime
+rerun is required before either fix counts as platform evidence.
