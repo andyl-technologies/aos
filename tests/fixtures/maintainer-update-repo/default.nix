@@ -1,5 +1,7 @@
-{crossSystem ? null}: let
-  inputs = import ./fixture-inputs.nix;
+{
+  crossSystem ? null,
+  bash ? (import ./fixture-inputs.nix).bash,
+}: let
   system =
     if crossSystem == null
     then builtins.currentSystem
@@ -8,7 +10,7 @@
   mkCheck = name:
     builtins.derivation {
       inherit name system;
-      builder = "${inputs.bash}/bin/bash";
+      builder = "${bash}/bin/bash";
       args = [
         "-c"
         ''
@@ -63,7 +65,7 @@
     (builtins.derivation {
       name = "maintain-fixture-${version}";
       inherit system src;
-      builder = "${inputs.bash}/bin/bash";
+      builder = "${bash}/bin/bash";
       args = [
         "-c"
         ''

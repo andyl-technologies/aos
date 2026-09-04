@@ -126,10 +126,15 @@
     ];
   };
 
+  hostFixture = import ../fixtures/maintainer-update-repo/default.nix {
+    bash = pkgs.bash;
+  };
+
   mountedClosure = import ../../lib/build/closure-info.nix {inherit lib pkgs;} {
     rootPaths = [
       fixtureRepository
       maintainerToolBundle
+      hostFixture.pkgs.maintain-fixture.drvPath
     ];
     pname = "maintainer-update-e2e-closure-info";
   };
