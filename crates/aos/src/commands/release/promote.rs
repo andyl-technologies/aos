@@ -136,9 +136,11 @@ pub(super) async fn run(args: &ReleasePromoteArgs, printer: &Printer) -> Result<
         &publication,
     )
     .await?;
-    let backing_publication_id = publication.parent_publication_id.as_str();
-    if backing_publication_id.is_empty() {
+    if publication.parent_publication_id.is_empty() {
         bail!("production release publication has no compare-and-swap base publication");
+    }
+    if publication.default_commit != plan.registry_base_commit {
+        bail!("production release publication does not preserve the approved registry base");
     }
 
     let token = args
@@ -156,7 +158,7 @@ pub(super) async fn run(args: &ReleasePromoteArgs, printer: &Printer) -> Result<
             registry_base_commit: plan.registry_base_commit.clone(),
             staging_deployment_id: plan.staging_deployment_id.clone(),
             production_deployment_id: plan.production_deployment_id.clone(),
-            backing_publication_id: backing_publication_id.to_owned(),
+            backing_publication_id: publication.publication_id.clone(),
         },
     )
     .await?;
