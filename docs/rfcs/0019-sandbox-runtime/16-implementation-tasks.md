@@ -383,3 +383,9 @@ completes. The Git history remains authoritative for code details.
   replacement, bounded authoritative inventory, and restart reconciliation.
   Broker authorization admission and end-to-end namespace VM tests remain
   open.
+- `a29f16196` — foundation toward `SBX-BPROTO-04`, `SBX-GUARD-01`, and
+  `SBX-MULTI-01`: signed authority-wall ownership leases, monotonic renewal
+  fencing, conservative boot-bound local deadlines, exact plan/request/lease
+  intersection, and a bounded corruption-detecting local record. Production
+  brokers must still authenticate the record under a node-local key and
+  atomically consume the non-authorizing intersection before any effect.
