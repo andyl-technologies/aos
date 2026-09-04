@@ -54,9 +54,11 @@ The current implementation provides these fail-closed operations:
 - `aos release verify` checks a closed release bundle and optional journal
   offline against explicitly supplied public keys.
 
-Production publication through this workflow remains forbidden until the
-remaining RFC-0017 launch gates and end-to-end operational exercises are
-complete.
+Supported publication to `andyl/main` remains forbidden until the remaining
+RFC-0017 launch gates and end-to-end operational exercises are complete. The
+experimental `andyl/testing` registry may be promoted to the production Hub
+only under [`registry-testing.md`](registry-testing.md); that does not satisfy
+or bypass any main-registry launch gate.
 
 The canonical release image profile enables external Secure Boot, distinct
 module and PCR-policy roles, lockdown, measured boot, encrypted state,
@@ -800,8 +802,9 @@ does not pretend that one x86 VM executes Darwin or Arm binaries.
 Do not bypass the isolated registry transaction, closed bundle finalizer,
 role-separated signing, exact-byte staging and promotion receipts, production
 read-back, or compare-and-swap channel updates with ad hoc publishes or manual
-object copies. Production remains fail-closed until immutable TUF authoring,
-qualification execution, and the remaining launch gates land.
+object copies. `andyl/main` remains fail-closed until its remaining launch gates
+and operational exercises are complete. A production-Hub testing publication
+remains explicitly experimental and cannot be promoted across registries.
 
 The normative design and rollout requirements are in
 [RFC-0017](../rfcs/0017-canonical-hub-publishing/README.md).
