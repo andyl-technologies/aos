@@ -39,6 +39,7 @@
 #define PROBE_FILE_NODE_ID 2U
 #define PROBE_FILE_NAME "payload"
 #define MAXIMUM_PROBE_FILE_BYTES 4096U
+#define PROBE_MAX_WRITE (128U * 1024U)
 
 struct server_result {
     uint64_t offered_flags;
@@ -115,13 +116,15 @@ static int reply_init(int fuse_fd, const struct fuse_in_header *header,
         struct fuse_out_header header;
         struct fuse_init_out body;
     } response;
-    const struct fuse_init_in *request = payload;
+    struct fuse_init_in decoded;
+    const struct fuse_init_in *request = &decoded;
     uint64_t flags;
 
     if (payload_length < sizeof(*request)) {
         errno = EPROTO;
         return -1;
     }
+    memcpy(&decoded, payload, sizeof(decoded));
     flags = (uint64_t)request->flags | ((uint64_t)request->flags2 << 32);
     result->offered_flags = flags;
     if ((flags & FUSE_PASSTHROUGH) == 0U) {
@@ -137,7 +140,7 @@ static int reply_init(int fuse_fd, const struct fuse_in_header *header,
                               ? request->minor
                               : FUSE_KERNEL_MINOR_VERSION;
     response.body.max_readahead = request->max_readahead;
-    response.body.max_write = 128U * 1024U;
+    response.body.max_write = PROBE_MAX_WRITE;
     response.body.flags = FUSE_INIT_EXT;
     response.body.flags2 = (uint32_t)(FUSE_PASSTHROUGH >> 32);
     response.body.max_stack_depth = 1U;
@@ -207,6 +210,10 @@ static int reply_open(int fuse_fd, const struct fuse_in_header *header,
     backing_id = ioctl(fuse_fd, FUSE_DEV_IOC_BACKING_OPEN, &mapping);
     if (backing_id < 0)
         return -1;
+    if (backing_id == 0) {
+        errno = EPROTO;
+        return -1;
+    }
 
     memset(&response, 0, sizeof(response));
     response.header.len = sizeof(response);
@@ -220,7 +227,9 @@ static int reply_open(int fuse_fd, const struct fuse_in_header *header,
 
 static int serve_fuse(int fuse_fd, int backing_fd, int result_fd)
 {
-    unsigned char request_buffer[64U * 1024U];
+    /* The kernel requires room for the negotiated write size plus request
+     * headers on every read, even when this read-only probe expects LOOKUP. */
+    unsigned char request_buffer[PROBE_MAX_WRITE + 4096U];
     struct server_result result = {.backing_id = -1};
     struct stat backing;
     bool done = false;
@@ -230,7 +239,8 @@ static int serve_fuse(int fuse_fd, int backing_fd, int result_fd)
         goto failed;
 
     while (!done) {
-        const struct fuse_in_header *header;
+        struct fuse_in_header decoded;
+        const struct fuse_in_header *header = &decoded;
         const unsigned char *payload;
         size_t payload_length;
         ssize_t length;
@@ -248,7 +258,7 @@ static int serve_fuse(int fuse_fd, int backing_fd, int result_fd)
             errno = EPROTO;
             goto failed;
         }
-        header = (const struct fuse_in_header *)request_buffer;
+        memcpy(&decoded, request_buffer, sizeof(decoded));
         if (header->len != (uint32_t)length) {
             errno = EPROTO;
             goto failed;
@@ -282,6 +292,7 @@ static int serve_fuse(int fuse_fd, int backing_fd, int result_fd)
         case FUSE_FORGET:
             break;
         case FUSE_DESTROY:
+            status = reply_error(fuse_fd, header, 0);
             done = true;
             break;
         default:
@@ -305,6 +316,8 @@ static int serve_fuse(int fuse_fd, int backing_fd, int result_fd)
 
 failed:
     result.error_number = errno == 0 ? EIO : errno;
+    fprintf(stderr, "FUSE passthrough server failed: %s\n",
+            strerror(result.error_number));
     (void)write_message(result_fd, &result, sizeof(result));
     return 1;
 }
@@ -423,10 +436,18 @@ static int probe_fuse_passthrough(const char *mountpoint,
     reaped = true;
     if (result_length != (ssize_t)sizeof(result) ||
         !WIFEXITED(server_status) || WEXITSTATUS(server_status) != 0 ||
-        result.error_number != 0 || result.backing_id < 0 ||
+        result.error_number != 0 || result.backing_id <= 0 ||
         result.read_requests != 0U || observed_length != expected_length ||
-        memcmp(observed, expected, expected_length) != 0)
+        memcmp(observed, expected, expected_length) != 0) {
+        fprintf(stderr, "passthrough proof failed: report-bytes=%zd status=%d "
+                "error=%d backing=%d reads=%u bytes=%zu/%zu\n",
+                result_length, server_status,
+                result_length == (ssize_t)sizeof(result) ? result.error_number : -1,
+                result_length == (ssize_t)sizeof(result) ? result.backing_id : -1,
+                result_length == (ssize_t)sizeof(result) ? result.read_requests : 0,
+                observed_length, expected_length);
         return 1;
+    }
 
     printf("{\"schema_version\":\"aos.sandbox.fuse-passthrough-proof/v1\","
            "\"architecture\":\"%s\",\"fuse_protocol\":\"%u.%u\","
@@ -437,6 +458,7 @@ static int probe_fuse_passthrough(const char *mountpoint,
     return 0;
 
 parent_failed:
+    perror("FUSE passthrough client");
     if (!unmounted)
         (void)umount2(mountpoint, MNT_DETACH);
     (void)kill(server, SIGKILL);
@@ -451,6 +473,9 @@ static int probe_fsverity(const char *path)
     struct fsverity_enable_arg enable = {
         .version = 1U,
         .hash_algorithm = FS_VERITY_HASH_ALG_SHA256,
+        /* The ioctl requires an explicit power-of-two block size; zero does
+         * not select a default. Both harnesses create 4 KiB ext4 blocks. */
+        .block_size = 4096U,
     };
     struct {
         struct fsverity_digest header;
@@ -467,28 +492,50 @@ static int probe_fsverity(const char *path)
     size_t index;
 
     fd = open(path, O_RDONLY | O_CLOEXEC);
-    if (fd < 0)
+    if (fd < 0) {
+        perror("open fs-verity backing");
         return 1;
-    if (ioctl(fd, FS_IOC_ENABLE_VERITY, &enable) < 0)
+    }
+    if (ioctl(fd, FS_IOC_ENABLE_VERITY, &enable) < 0) {
+        perror("FS_IOC_ENABLE_VERITY");
+        close(fd);
         return 1;
-    if (ioctl(fd, FS_IOC_MEASURE_VERITY, &digest) < 0)
+    }
+    if (ioctl(fd, FS_IOC_MEASURE_VERITY, &digest) < 0) {
+        perror("FS_IOC_MEASURE_VERITY");
+        close(fd);
         return 1;
+    }
     if (digest.header.digest_algorithm != FS_VERITY_HASH_ALG_SHA256 ||
-        digest.header.digest_size != 32U)
+        digest.header.digest_size != 32U) {
+        fprintf(stderr, "unexpected fs-verity digest algorithm or length\n");
+        close(fd);
         return 1;
+    }
     if (ioctl(fd, FS_IOC_GETFLAGS, &flags) < 0 ||
-        (flags & FS_VERITY_FL) == 0U)
+        (flags & FS_VERITY_FL) == 0U) {
+        fprintf(stderr, "fs-verity flag missing or unreadable\n");
+        close(fd);
         return 1;
-    if (close(fd) < 0)
+    }
+    if (close(fd) < 0) {
+        perror("close fs-verity backing");
         return 1;
+    }
 
     errno = 0;
     writable_fd = open(path, O_WRONLY | O_CLOEXEC);
     if (writable_fd >= 0) {
+        fprintf(stderr, "fs-verity backing unexpectedly permits writable open\n");
         close(writable_fd);
         return 1;
     }
     write_open_errno = errno;
+    if (write_open_errno != EPERM) {
+        fprintf(stderr, "unexpected writable fs-verity open error: %s\n",
+                strerror(write_open_errno));
+        return 1;
+    }
 
     printf("{\"schema_version\":\"aos.sandbox.fs-verity-proof/v1\","
            "\"architecture\":\"%s\",\"hash_algorithm\":%u,"

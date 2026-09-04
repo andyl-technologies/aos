@@ -1257,6 +1257,17 @@ completes. The Git history remains authoritative for code details.
   complete test target compiles through the realized AOS development shell.
   This removes a package-build blocker; it is not VM runtime evidence.
 
+The headless `checks.vm.sandbox-filesystem-capability` gate now passes on
+x86_64 AOS Linux 6.18.33, independently of full-system services. It qualifies
+fs-verity enable/measurement, exact `EPERM` denial of writable opens, and FUSE
+7.45 backing-file registration with successful passthrough reads and zero
+userspace READ requests. Qualification repaired the probe's explicit verity
+block size and negotiated FUSE receive-buffer contract; both harnesses use
+4 KiB ext4 blocks. The passed result is
+`a5p54a08v9v6g2rma13blw5bxzcr2y54-aos-vm-test-sandbox-filesystem-kernel-capabilities-0`.
+This does not establish aarch64 support, production backing authorization, or
+full-system boot readiness; `SBX-P0-02` remains open.
+
 The post-`727da7f3e` x86_64 `sandbox-filesystem-capability-proof` rerun built the
 complete hermetic Rust closure, AOS system, initrd, and VM disk and launched
 QEMU with KVM. The guest agent timed out before readiness with a blank serial

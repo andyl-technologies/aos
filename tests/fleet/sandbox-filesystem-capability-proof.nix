@@ -68,7 +68,7 @@ in {
     vm.succeed("test -c /dev/fuse")
     vm.succeed("mkdir -p /var/tmp/aos-fs-proof/ext4 /var/tmp/aos-fs-proof/fuse")
     vm.succeed(f"{TRUNCATE} -s 128M /var/tmp/aos-fs-proof/ext4.img")
-    vm.succeed(f"{MKFS_EXT4} -F -q -O verity /var/tmp/aos-fs-proof/ext4.img")
+    vm.succeed(f"{MKFS_EXT4} -F -q -b 4096 -O verity /var/tmp/aos-fs-proof/ext4.img")
     vm.succeed(
         f"{MOUNT} -o loop,nosuid,nodev /var/tmp/aos-fs-proof/ext4.img "
         "/var/tmp/aos-fs-proof/ext4"

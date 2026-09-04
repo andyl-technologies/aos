@@ -1443,6 +1443,9 @@ in {
       // {
         apm = apmTests;
         hub-native-operations = hubNativeOperationsTest;
+        sandbox-filesystem-capability = import ./tests/vm/sandbox-filesystem-capability.nix {
+          inherit testing pkgs;
+        };
         apm-install-at-boot = apmInstallAtBootCheck;
         package-expose-lifecycle = packageExposeLifecycleCheck;
         package-preset = packagePresetCheck;
