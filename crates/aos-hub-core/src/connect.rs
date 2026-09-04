@@ -292,6 +292,15 @@ fn browse_response(rendered: Rendered) -> Response {
         Rendered::Json(body) => {
             ([(header::CONTENT_TYPE, "application/json")], body).into_response()
         }
+        Rendered::RevalidatedJson { body, etag } => (
+            [
+                (header::CONTENT_TYPE, "application/json"),
+                (header::CACHE_CONTROL, "public, max-age=60, must-revalidate"),
+                (header::ETAG, &format!("\"{etag}\"")),
+            ],
+            body,
+        )
+            .into_response(),
         Rendered::ImmutableJson { body, etag } => (
             [
                 (header::CONTENT_TYPE, "application/json"),
@@ -4174,6 +4183,39 @@ mod tests {
         assert_eq!(
             response.headers().get(header::VARY),
             Some(&HeaderValue::from_static("Authorization, Cookie"))
+        );
+    }
+
+    #[test]
+    fn documentation_responses_distinguish_mutable_selectors_from_content_addresses() {
+        let selected = browse_response(Rendered::RevalidatedJson {
+            body: "{}".into(),
+            etag: "selected".into(),
+        });
+        assert_eq!(
+            selected.headers().get(header::CACHE_CONTROL),
+            Some(&HeaderValue::from_static(
+                "public, max-age=60, must-revalidate"
+            ))
+        );
+        assert_eq!(
+            selected.headers().get(header::ETAG),
+            Some(&HeaderValue::from_static("\"selected\""))
+        );
+
+        let content_addressed = browse_response(Rendered::ImmutableJson {
+            body: "{}".into(),
+            etag: "digest".into(),
+        });
+        assert_eq!(
+            content_addressed.headers().get(header::CACHE_CONTROL),
+            Some(&HeaderValue::from_static(
+                "public, max-age=31536000, immutable"
+            ))
+        );
+        assert_eq!(
+            content_addressed.headers().get(header::ETAG),
+            Some(&HeaderValue::from_static("\"digest\""))
         );
     }
 

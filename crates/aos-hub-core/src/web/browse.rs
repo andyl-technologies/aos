@@ -69,7 +69,7 @@ use crate::ratelimit::{RateClass, RateDecision};
 use crate::service::RpcService;
 use crate::web::browse_pages as pages;
 use crate::web::console::handlers::resolved_client_ip;
-use crate::web::console_render::SessionIndicator;
+use crate::web::console_render::{Pager, SessionIndicator};
 use crate::web::session;
 
 /// The outcome of a browse handler: an HTML page, a JSON document, a redirect,
@@ -88,6 +88,8 @@ pub enum Rendered {
     Html(String),
     /// A serialized JSON document.
     Json(String),
+    /// A mutable selected JSON resource with a strong current entity tag.
+    RevalidatedJson { body: String, etag: String },
     /// An immutable serialized JSON object and its strong SHA-256 entity tag.
     ImmutableJson { body: String, etag: String },
     /// A permanent redirect to the carried location (`/{slug}` → `/{slug}/`).
@@ -116,6 +118,12 @@ pub enum Rendered {
 /// force. Sized far above any realistic registry so normal browsing is never
 /// truncated.
 const MAX_BROWSE_PACKAGES: usize = 10_000;
+
+/// Maximum documentation projections ranked for one request.
+const MAX_DOCUMENTATION_RESULTS: usize = 10_000;
+
+/// Documentation rows per server-rendered browse page.
+const DOCUMENTATION_RESULTS_PER_PAGE: usize = 100;
 
 /// Display cap for the package detail's "required by" reverse-dependency list.
 const REVERSE_DEP_CAP: usize = 100;
@@ -355,6 +363,10 @@ pub struct BrowseQuery {
     pub dir: Option<String>,
     /// Requested 1-based page.
     pub page: Option<usize>,
+    /// Requested public JSON API page size.
+    pub page_size: Option<u32>,
+    /// Opaque public JSON API page token.
+    pub page_token: Option<String>,
     /// Channel-calculator bucket (`?bucket=`).
     pub bucket: Option<String>,
     /// Exact system-image release filter.
@@ -428,6 +440,8 @@ impl BrowseQuery {
                 "digest" => out.digest = Some(value.into_owned()),
                 "cursor" => out.cursor = Some(value.into_owned()),
                 "page" => out.page = value.parse().ok(),
+                "page_size" => out.page_size = value.parse().ok(),
+                "page_token" => out.page_token = Some(value.into_owned()),
                 _ => {}
             }
         }
@@ -1162,22 +1176,30 @@ pub async fn documentation_search(
     let results = match query.query() {
         Some(term) => svc
             .db
-            .search_package_documentation(registry.id, term, kind, 100)
+            .search_package_documentation(registry.id, term, kind, MAX_DOCUMENTATION_RESULTS)
             .await
             .unwrap_or_default(),
         None => svc
             .db
-            .browse_package_documentation(registry.id, kind, 100)
+            .browse_package_documentation(registry.id, kind, MAX_DOCUMENTATION_RESULTS)
             .await
             .unwrap_or_default(),
     };
+    let total_results = results.len();
+    let pager = Pager::new(
+        query.page_number(),
+        DOCUMENTATION_RESULTS_PER_PAGE,
+        total_results,
+    );
     let session = session_indicator(svc, headers).await;
     Rendered::Html(pages::documentation_index_page(
         &registry,
         status.as_ref(),
-        &results,
+        pager.slice(&results),
         query.q.as_deref(),
         kind,
+        pager.page(),
+        total_results,
         started,
         &session,
     ))
@@ -1785,24 +1807,20 @@ pub async fn api_documentation_search(
     if registry(svc, slug).await.is_none() {
         return Rendered::NotFound;
     }
-    let Some(registry_record) = svc.db.registry_by_slug(slug).await.ok().flatten() else {
-        return Rendered::NotFound;
-    };
-    let Some(term) = query.query() else {
-        return json(&Vec::<crate::db::PackageDocumentationSearchResult>::new());
-    };
-    let kind = query.kind.as_deref().filter(|kind| {
-        matches!(
-            *kind,
-            "package" | "option" | "service" | "credential" | "capability"
-        )
-    });
     match svc
-        .db
-        .search_package_documentation(registry_record.id, term, kind, 100)
+        .search_package_documentation(
+            None,
+            pb::SearchPackageDocumentationRequest {
+                registry: slug.to_string(),
+                query: query.query().unwrap_or_default().to_string(),
+                kind: query.kind.clone().unwrap_or_default(),
+                page_size: query.page_size.unwrap_or_default(),
+                page_token: query.page_token.clone().unwrap_or_default(),
+            },
+        )
         .await
     {
-        Ok(results) => json(&results),
+        Ok(response) => json(&response),
         Err(_) => Rendered::NotFound,
     }
 }
@@ -1845,26 +1863,24 @@ pub async fn api_package_documentation(
     package: &str,
     query: &BrowseQuery,
 ) -> Rendered {
-    let Some((locator, document)) = svc
-        .load_package_documentation_for_registry(
-            match svc.db.registry_by_slug(slug).await.ok().flatten() {
-                Some(registry) => registry.id,
-                None => return Rendered::NotFound,
+    let Some(response) = or_not_found(
+        svc.get_package_documentation(
+            None,
+            pb::GetPackageDocumentationRequest {
+                registry: slug.to_string(),
+                package: package.to_string(),
+                version: query.version.clone().unwrap_or_default(),
+                platform: query.platform.clone().unwrap_or_default(),
             },
-            package,
-            query.version.as_deref().unwrap_or(""),
-            query.platform.as_deref().unwrap_or(""),
         )
-        .await
-        .ok()
-        .flatten()
-    else {
+        .await,
+    ) else {
         return Rendered::NotFound;
     };
-    match String::from_utf8(document.canonical_json().unwrap_or_default()) {
-        Ok(body) => Rendered::ImmutableJson {
+    match String::from_utf8(response.canonical_json) {
+        Ok(body) => Rendered::RevalidatedJson {
             body,
-            etag: locator.artifact.document_sha256,
+            etag: response.etag,
         },
         Err(_) => Rendered::NotFound,
     }
@@ -1908,6 +1924,9 @@ pub async fn api_package_option(
     display_path: &str,
     query: &BrowseQuery,
 ) -> Rendered {
+    if registry(svc, slug).await.is_none() {
+        return Rendered::NotFound;
+    }
     let Some(registry) = svc.db.registry_by_slug(slug).await.ok().flatten() else {
         return Rendered::NotFound;
     };

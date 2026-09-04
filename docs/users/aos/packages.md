@@ -50,6 +50,41 @@ Signature verification fails closed by default. `--no-verify` exists for local
 registry development; do not use it in normal installation or upgrade
 procedures.
 
+## Understand verification and attestation boundaries
+
+Secure Boot, package admission, and runtime attestation are connected trust
+layers, not one signature check:
+
+1. APM verifies the registry's signed release and walks its `store/`
+   realisation graph. Every member of the selected Nix closure must match a
+   blessed NAR hash. The Hub or cache transports bytes but is not trusted to
+   choose their content.
+2. Secure and measured boot cover the firmware state, UKI, boot inputs, and the
+   dm-verity root hash of the immutable image through PCRs 7, 11, and 12. A
+   package fetched after that image was built is not retroactively part of PCR
+   11.
+3. When APM activates the machine-wide exposed package set, it extends PCR 15
+   for every explicitly installed package with `expose` metadata using
+   `H(name || version || root-digest || manifest-digest)`. A TPM quote over
+   PCRs 7, 11, 12, and 15 therefore binds that activated package identity and
+   privilege manifest to the measured boot state. The verifier replays
+   `/run/log/aos-packages.cel` and checks each tuple against the signed registry
+   catalog.
+
+This PCR-15 path does not emit one event for every object that happens to be in
+`/nix/store`. User-profile packages, downloaded but inactive packages, and
+implicit closure members are not individually measured package identities;
+their downloaded bytes remain covered by the signed realisation graph. For
+block-by-block runtime integrity, an exposed workload must use its signed
+dm-verity `RootImage=`. A non-verity store-backed workload has authenticated
+admission and an attested package identity, but not dm-verity enforcement of
+its live payload bytes.
+
+See [Secure an AOS host](security.md#understand-verified-boot-status) for the
+image and generation chain, and
+[Verify runtime attestation evidence](cli.md#verify-runtime-attestation-evidence)
+for quote verification.
+
 Registry configuration is layered:
 
 | Path | Purpose |
@@ -182,6 +217,34 @@ apm gc
 
 The latest keep window and the active generation of each independent profile
 are retained. Image generations are not affected.
+
+## Understand service confinement
+
+Runtime confinement applies to systemd services that a package publishes
+through its `expose` contract. A package without `expose` has no APM-managed
+service to activate, and directly running an executable from a package profile
+does not place that process in the service sandbox.
+
+For an exposed service, an empty or omitted permission manifest selects the
+least-privilege defaults: a package-private root and temporary directories, a
+private network and user identity, an empty capability set, restricted devices
+and system calls, and the generated Landlock and systemd hardening policy.
+Requested permissions widen that boundary. Root-equivalent grants such as
+`CAP_SYS_ADMIN`, privileged users, or writable system locations cause APM to
+label the package `unconfined` instead of presenting it as sandboxed.
+
+Inspect the signed declaration and the host-policy decision before activation:
+
+```sh
+apm info PACKAGE --system --permissions
+apm policy PACKAGE --system
+```
+
+Confinement limits what an activated service can do; it does not establish that
+the package or its registry is trustworthy. Registry signatures authenticate
+the authorized publisher and exact content, not whether that content is benign.
+Bootstrap and operate registry trust independently as described in
+[Manage registry trust and incidents](../registry/trust.md).
 
 ## Distinguish a sysroot install
 
