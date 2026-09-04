@@ -51,21 +51,21 @@ delta remains disabled.
 Primary crates: `crucible-campaign`, `crucible`, `crucible-cas`, and codec-only
 API types.
 
-- [ ] **T-CAM-1.1** Implement `CampaignLineage`, `CampaignPolicy`,
+- [x] **T-CAM-1.1** Implement `CampaignLineage`, `CampaignPolicy`,
   `CampaignSnapshot`, `CampaignPlanningView`, planner engine/artifact/state and
   invocation identities, stable IDs, canonical binary encoding, and strict
   TOML authoring DTOs.
-- [ ] **T-CAM-1.2** Implement immutable campaign facts, persistent Merkle
+- [x] **T-CAM-1.2** Implement immutable campaign facts, persistent Merkle
   sets/maps, snapshot ancestry, and content-reference walking.
-- [ ] **T-CAM-1.3** Extend the existing campaign manifest roots with graph,
+- [x] **T-CAM-1.3** Extend the existing campaign manifest roots with graph,
   exploration, observations, pins, and accounting while retaining corpus,
   coverage, findings, genesis, and provenance.
-- [ ] **T-CAM-1.4** Implement CAS snapshot advancement, conflict diagnostics,
+- [x] **T-CAM-1.4** Implement CAS snapshot advancement, conflict diagnostics,
   policy activation, budget grants, pause/resume/seal commands, and idempotent
   command IDs.
-- [ ] **T-CAM-1.5** Implement full projection rebuild and sampled cached-
+- [x] **T-CAM-1.5** Implement full projection rebuild and sampled cached-
   projection verification.
-- [ ] **T-CAM-1.6** Add schema corruption, authoring-order canonicalization,
+- [x] **T-CAM-1.6** Add schema corruption, authoring-order canonicalization,
   stale-command, single-writer ownership, crash-window, and provenance-lineage
   tests.
 - [ ] **T-CAM-1.7** Run the §14 Phase 1 offline model flight: create, inspect,
@@ -75,6 +75,13 @@ API types.
 
 **Gates:** `gate:campaign-model`, `gate:content-address`,
 `gate:campaign-continuity-v2` model tier.
+
+`gate:campaign-model` is an isolable `crucible-campaign` target. Its public-
+surface flight covers canonical authoring order, linear control, stale-command
+rejection, derivation, and restart reconstruction; the same gate runs the full
+crate suite for corrupt closure, lost-CAS, cached-projection, and provenance
+regressions. Phase 1's operator flight and evidence bundle remain separately
+open as T-CAM-1.7.
 
 **Manual gate:** accepted §14 Phase 1 campaign-model flight.
 
