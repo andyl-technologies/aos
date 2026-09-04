@@ -190,8 +190,19 @@ async fn shared_storage_workflow_resumes_child_plans_without_owner_authority() {
         expected_resource_version: prepared.resource_version,
         idempotency_key: "resume-workflow".into(),
     };
+    let (first_retry, second_retry) = tokio::join!(
+        service.resume_delivery_destination(Some(&auth), resume.clone()),
+        service.resume_delivery_destination(Some(&auth), resume.clone()),
+    );
+    first_retry.unwrap();
+    second_retry.unwrap();
     let resumed = service
-        .resume_delivery_destination(Some(&auth), resume.clone())
+        .get_delivery_workflow(
+            Some(&auth),
+            pb::GetDeliveryWorkflowRequest {
+                workflow_id: prepared.workflow_id,
+            },
+        )
         .await
         .unwrap()
         .workflow
@@ -247,6 +258,95 @@ async fn shared_storage_workflow_resumes_child_plans_without_owner_authority() {
         )
         .await
         .is_err());
+}
+
+#[tokio::test]
+async fn plan_replay_normalizes_hostname_path_and_duplicate_audiences() {
+    let (service, auth, mut intent, _) = fixture().await;
+    intent.client_base_path = "/".into();
+    intent.audiences = vec!["nix_cache".into(), "nix_cache".into()];
+    if let Some(pb::delivery_destination_intent::Endpoint::NewEndpoint(input)) =
+        intent.endpoint.as_mut()
+    {
+        input.hostname_source = Some(pb::delivery_endpoint_input::HostnameSource::Hostname(
+            "CDN.Workflow.Example.Test".into(),
+        ));
+    }
+    let request = pb::PlanDeliveryDestinationRequest {
+        intent: Some(intent),
+        idempotency_key: "normalized-replay".into(),
+        ..Default::default()
+    };
+    let first = service
+        .plan_delivery_destination(Some(&auth), request.clone())
+        .await
+        .unwrap()
+        .plan
+        .unwrap();
+    let second = service
+        .plan_delivery_destination(Some(&auth), request)
+        .await
+        .unwrap()
+        .plan
+        .unwrap();
+    assert_eq!(first.plan_id, second.plan_id);
+    assert_eq!(first.confirmation_hash, second.confirmation_hash);
+}
+
+#[tokio::test]
+async fn domain_observation_updates_do_not_change_reviewed_attachment_intent() {
+    let (service, auth, mut intent, _) = fixture().await;
+    let org = service
+        .db
+        .org_by_slug("delivery-workflow")
+        .await
+        .unwrap()
+        .unwrap();
+    let domain = service
+        .db
+        .create_delivery_domain(
+            &org.stable_id,
+            Some(org.id),
+            "existing.workflow.example.test",
+            "existing-domain-plan",
+        )
+        .await
+        .unwrap();
+    if let Some(pb::delivery_destination_intent::Endpoint::NewEndpoint(input)) =
+        intent.endpoint.as_mut()
+    {
+        input.hostname_source = Some(pb::delivery_endpoint_input::HostnameSource::DomainId(
+            domain.stable_id,
+        ));
+    }
+    let plan = service
+        .plan_delivery_destination(
+            Some(&auth),
+            pb::PlanDeliveryDestinationRequest {
+                intent: Some(intent),
+                idempotency_key: "observed-domain".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .plan
+        .unwrap();
+    service.db.backend.execute("UPDATE domains SET observed_at = 1, resource_version = resource_version + 1 WHERE hostname = 'existing.workflow.example.test'", &[]).await.unwrap();
+    let response = service
+        .apply_delivery_destination(Some(&auth), apply_request(plan, "observed-domain-apply"))
+        .await
+        .unwrap()
+        .workflow
+        .unwrap();
+    assert!(
+        response
+            .steps
+            .iter()
+            .any(|step| step.key == "endpoint" && step.state == "complete"),
+        "{:?}",
+        response.blockers
+    );
 }
 
 #[tokio::test]
