@@ -244,12 +244,13 @@ pub use node::{
     QemuHotForkChildQmpHandshakeError, QemuHotForkChildQmpHostEndpoint,
     QemuHotForkChildQmpStageError, QemuHotForkChildQmpStageProof, QemuHotForkChildQmpStageState,
     QemuHotForkChildResourcePreparationError, QemuHotForkCommandError, QemuHotForkHostContinuation,
-    QemuHotForkLaunchError, QemuHotForkPluginEndpointStageError,
+    QemuHotForkLaunchError, QemuHotForkNodeStateContinuation, QemuHotForkPluginEndpointStageError,
     QemuHotForkPluginEndpointStageProof, QemuHotForkPluginEndpointStageState,
     QemuHotForkPluginHostContinuation, QemuHotForkPluginHostEndpoint,
     QemuHotForkPreparedChildResources, QemuHotForkPrivateRingMapping,
     QemuHotForkPrivateRingStageError, QemuHotForkPrivateRingStageProof,
-    QemuHotForkPrivateRingStageState,
+    QemuHotForkPrivateRingStageState, QemuHotForkSchedulerNodeAssemblyError,
+    QemuHotForkSchedulerNodeContinuation,
 };
 pub use node::{
     QemuLogicalTimeCalibration, QemuNode, QemuNodeChannelError, QemuNodeChannelPlane,
