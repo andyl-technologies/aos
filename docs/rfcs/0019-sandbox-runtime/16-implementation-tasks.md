@@ -953,6 +953,17 @@ completes. The Git history remains authoritative for code details.
   semantic body views, FUSE cookies/`READDIRPLUS`, target-ABI link-count
   translation, directory handles, and worker lifecycle remain open, so
   `SBX-FS-02` remains unchecked.
+- `1c622188c` — mechanically splits the structural-index implementation into a
+  72-line public facade and focused builder, validation, borrowed-view, wire,
+  and test modules before further filesystem work. Public and crate-visible
+  paths, all 95 production declarations, all 114 production functions, all 33
+  test helpers, and V1/V2/V3 golden bytes and digests remain unchanged. The
+  only visibility expansion is sibling-private `pub(super)` access inside the
+  private index module. The refactor passes 62 unit tests, one compile-fail
+  doctest, strict Clippy, warning-denied rustdoc, scoped formatting, and an
+  independent adversarial inventory comparison. Explicit imports and a leaf
+  wire layer remain desirable cleanup; the current production modules are each
+  below the repository's 1,000-line design signal.
 
 The post-`727da7f3e` x86_64 `sandbox-filesystem-capability-proof` rerun built the
 complete hermetic Rust closure, AOS system, initrd, and VM disk and launched
