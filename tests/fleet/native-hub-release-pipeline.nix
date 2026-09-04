@@ -100,7 +100,6 @@
             description = "Test-only TLS edge for the native Hub release fleet";
             wantedBy = ["multi-user.target"];
             after = ["aos-hub.service"];
-            requires = ["aos-hub.service"];
             serviceConfig = {
               Type = "simple";
               ExecStart = "${releaseTool}/bin/aos-release-fleet-fixture tls-proxy 0.0.0.0:443 127.0.0.1:8420 /run/credentials/release-fleet-tls.service/certificate /run/credentials/release-fleet-tls.service/private-key";
@@ -277,7 +276,7 @@ in {
                   ${pkgs.aos-hub}/bin/aos-hub --root /var/lib/aos-hub init \\
                     --root-email fleet-root@example.test --root-password-stdin
               install -d -o aos-hub -g aos-hub -m 0750 /var/lib/aos-hub/storage/andyl
-              systemctl start aos-hub.service release-fleet-tls.service
+              systemctl start aos-hub.service
           """), timeout=180)
           machine.wait_until_succeeds(f"{CURL} -fsS {url}/healthz", timeout=120)
           return machine.succeed(textwrap.dedent(f"""
