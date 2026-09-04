@@ -28,6 +28,8 @@ mod manifest;
 mod planner;
 mod roots;
 
+#[cfg(target_os = "linux")]
+pub use apply::apply_single_host_campaign_gc_with_hot_checkpoints;
 #[cfg(test)]
 use apply::apply_single_host_campaign_gc_with_physical;
 pub use apply::{
@@ -42,8 +44,12 @@ pub use manifest::{
     CampaignGcCandidate, CampaignGcCandidateManifest, CampaignGcManifestError,
     CampaignGcRootManifest, MAX_CAMPAIGN_GC_MANIFEST_ENTRIES,
 };
+#[cfg(target_os = "linux")]
+pub use planner::plan_single_host_campaign_gc_with_hot_checkpoints;
 #[cfg(test)]
 use planner::plan_single_host_campaign_gc_with_physical;
+#[cfg(all(test, target_os = "linux"))]
+use planner::plan_single_host_campaign_gc_with_physical_and_hot_checkpoints;
 pub use planner::{
     CampaignGcPhysicalStore, CampaignGcPlanningError, CampaignGcPreparedPlan,
     plan_single_host_campaign_gc,
@@ -55,7 +61,9 @@ use crucible_cas::content_store::{
 };
 use thiserror::Error;
 
-use crate::{AssignmentRetentionGeneration, AssignmentRetentionSummary};
+#[cfg(target_os = "linux")]
+use crate::HotCheckpointFallbackRetentionAdmin;
+use crate::{AssignmentRetentionGeneration, AssignmentRetentionSummary, ExactPinRetentionAdmin};
 
 const GC_PLAN_MAGIC: &[u8] = b"crucible.campaign.gc-plan.v1\0";
 const GC_PLAN_ID_DOMAIN: &str = "crucible.campaign.gc-plan.v1";
@@ -66,6 +74,75 @@ pub const MAX_CAMPAIGN_GC_PLAN_BYTES: usize = 64 * 1024;
 pub const MAX_CAMPAIGN_GC_PHYSICAL_INVENTORIES: usize = 256;
 /// Maximum canonical byte length of one physical backend identifier.
 pub const MAX_CAMPAIGN_GC_BACKEND_ID_BYTES: usize = 64;
+
+/// Maintenance capabilities for exact-pin and hot-checkpoint GC roots.
+///
+/// The catalog-aware plan/apply entry points require this value so callers
+/// cannot select that boundary while silently omitting its fallback catalog.
+/// Exact-pin selection remains optional only for stores with no current exact
+/// semantic pins.
+#[cfg(target_os = "linux")]
+pub struct CampaignGcHotCheckpointRoots<'a> {
+    sources: CampaignGcRetentionSources<'a>,
+}
+
+#[cfg(target_os = "linux")]
+impl<'a> CampaignGcHotCheckpointRoots<'a> {
+    /// Binds one mandatory hot-checkpoint catalog without exact-pin selections.
+    #[must_use]
+    pub const fn new(hot_fallbacks: &'a dyn HotCheckpointFallbackRetentionAdmin) -> Self {
+        Self {
+            sources: CampaignGcRetentionSources::with_hot_checkpoints(None, hot_fallbacks),
+        }
+    }
+
+    /// Binds the mandatory hot-checkpoint catalog and exact-pin selections.
+    #[must_use]
+    pub const fn with_exact_pins(
+        exact_pins: &'a mut dyn ExactPinRetentionAdmin,
+        hot_fallbacks: &'a dyn HotCheckpointFallbackRetentionAdmin,
+    ) -> Self {
+        Self {
+            sources: CampaignGcRetentionSources::with_hot_checkpoints(
+                Some(exact_pins),
+                hot_fallbacks,
+            ),
+        }
+    }
+
+    pub(crate) const fn into_sources(self) -> CampaignGcRetentionSources<'a> {
+        self.sources
+    }
+}
+
+pub(super) struct CampaignGcRetentionSources<'a> {
+    pub(super) exact_pins: Option<&'a mut dyn ExactPinRetentionAdmin>,
+    #[cfg(target_os = "linux")]
+    pub(super) hot_fallbacks: Option<&'a dyn HotCheckpointFallbackRetentionAdmin>,
+}
+
+impl<'a> CampaignGcRetentionSources<'a> {
+    pub(super) const fn without_hot_checkpoints(
+        exact_pins: Option<&'a mut dyn ExactPinRetentionAdmin>,
+    ) -> Self {
+        Self {
+            exact_pins,
+            #[cfg(target_os = "linux")]
+            hot_fallbacks: None,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    const fn with_hot_checkpoints(
+        exact_pins: Option<&'a mut dyn ExactPinRetentionAdmin>,
+        hot_fallbacks: &'a dyn HotCheckpointFallbackRetentionAdmin,
+    ) -> Self {
+        Self {
+            exact_pins,
+            hot_fallbacks: Some(hot_fallbacks),
+        }
+    }
+}
 
 /// Content-derived identity of one canonical GC plan header.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

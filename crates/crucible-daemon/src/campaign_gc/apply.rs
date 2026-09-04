@@ -15,12 +15,17 @@ use crate::{
     AssignmentRetentionAdmin, AssignmentRetentionInventoryError, AssignmentRetentionRoot,
     AssignmentRetentionVisitorError, ExactPinRetentionAdmin, ExactPinRetentionError,
 };
+#[cfg(target_os = "linux")]
+use crate::{HotCheckpointFallbackRetentionAdmin, HotCheckpointFallbackRetentionError};
 
+#[cfg(target_os = "linux")]
+use super::CampaignGcHotCheckpointRoots;
 use super::roots::{CampaignGcRootInventoryError, RootAccumulator, inventory_authoritative_refs};
 use super::{
     CampaignGcBlobInventoryBasis, CampaignGcCandidateManifest, CampaignGcJournalError,
     CampaignGcJournalPhase, CampaignGcManifestError, CampaignGcPhysicalStore, CampaignGcPlanError,
-    CampaignGcRootManifest, DirectoryCampaignGcJournal, MAX_CAMPAIGN_GC_PHYSICAL_INVENTORIES,
+    CampaignGcRetentionSources, CampaignGcRootManifest, DirectoryCampaignGcJournal,
+    MAX_CAMPAIGN_GC_PHYSICAL_INVENTORIES,
 };
 
 /// Terminal disposition of one idempotent campaign GC apply request.
@@ -63,7 +68,8 @@ impl CampaignGcApplyReport {
 /// Revalidates and destructively applies one exact journaled single-host plan.
 ///
 /// Apply acquires fences in the fixed order ref publication/namespace,
-/// exact-pin selections, ledger, pending write-back transfers, then physical
+/// exact-pin selections, ledger, hot-checkpoint fallbacks, pending write-back
+/// transfers, then physical
 /// leaves in canonical backend order. It reproduces the exact ref, current
 /// exact-pin roots, ledger, root-manifest, and every
 /// physical-inventory basis before durably entering `Applying`. Root fences
@@ -75,7 +81,9 @@ impl CampaignGcApplyReport {
 /// identity and every physical leaf; independently supplied graph hashes or
 /// deletion capabilities are not accepted by this public boundary.
 /// Omitting `exact_pins` is valid only when the complete authoritative campaign
-/// inventory contains no current exact pin.
+/// inventory contains no current exact pin. This catalog-free entry point is
+/// valid only when no managed hot-checkpoint pool exists; configured pools must
+/// use `apply_single_host_campaign_gc_with_hot_checkpoints` on Linux.
 ///
 /// A journal reopened in `Applying` is intentionally not resumed because at
 /// least one backend generation may already have advanced. The operator must
@@ -113,30 +121,114 @@ where
     )
 }
 
-pub(crate) struct CampaignGcApplySources<'repository, 'refs, 'ledger, 'write_back, 'exact, L> {
+/// Applies a GC plan while retaining every durable hot-checkpoint fallback.
+///
+/// This is the production single-host boundary when a hot-checkpoint manager
+/// is configured. The fallback inventory fence remains held through physical
+/// deletion, so a catalog replacement or removal cannot race the exact root
+/// comparison and candidate deletion.
+///
+/// # Errors
+///
+/// Returns [`CampaignGcApplyError`] under the same conditions as
+/// [`apply_single_host_campaign_gc`], and additionally when the fallback
+/// catalog cannot provide a complete authenticated inventory.
+#[cfg(target_os = "linux")]
+pub fn apply_single_host_campaign_gc_with_hot_checkpoints<L>(
+    journal: &mut DirectoryCampaignGcJournal,
+    repository: &CampaignRepository,
+    refs: &dyn RefStoreAdmin,
+    ledger: &mut L,
+    write_back: Option<&dyn WriteBackRetentionAdmin>,
+    roots: CampaignGcHotCheckpointRoots<'_>,
+    store_graph: &StoreGraphAdmin,
+) -> Result<CampaignGcApplyReport, CampaignGcApplyError<L::Error>>
+where
+    L: AssignmentRetentionAdmin,
+    L::Error: StdError + Send + Sync + 'static,
+{
+    let borrowed = store_graph.physical();
+    let physical = borrowed
+        .iter()
+        .copied()
+        .map(CampaignGcPhysicalStore::from_graph_leaf)
+        .collect::<Result<Vec<_>, _>>()?;
+    apply_single_host_campaign_gc_with_physical(
+        journal,
+        CampaignGcApplySources::new_with_retention_sources(
+            repository,
+            refs,
+            ledger,
+            write_back,
+            roots.into_sources(),
+        ),
+        crucible_campaign::CampaignHash::from_bytes(store_graph.configuration_id().as_bytes()),
+        &physical,
+    )
+}
+
+pub(crate) struct CampaignGcApplySources<'repository, 'refs, 'ledger, 'write_back, 'retention, L> {
     repository: &'repository CampaignRepository,
     refs: &'refs dyn RefStoreAdmin,
     ledger: &'ledger mut L,
     write_back: Option<&'write_back dyn WriteBackRetentionAdmin>,
-    exact_pins: Option<&'exact mut dyn ExactPinRetentionAdmin>,
+    retention: CampaignGcRetentionSources<'retention>,
 }
 
-impl<'repository, 'refs, 'ledger, 'write_back, 'exact, L>
-    CampaignGcApplySources<'repository, 'refs, 'ledger, 'write_back, 'exact, L>
+impl<'repository, 'refs, 'ledger, 'write_back, 'retention, L>
+    CampaignGcApplySources<'repository, 'refs, 'ledger, 'write_back, 'retention, L>
 {
     pub(crate) const fn new(
         repository: &'repository CampaignRepository,
         refs: &'refs dyn RefStoreAdmin,
         ledger: &'ledger mut L,
         write_back: Option<&'write_back dyn WriteBackRetentionAdmin>,
-        exact_pins: Option<&'exact mut dyn ExactPinRetentionAdmin>,
+        exact_pins: Option<&'retention mut dyn ExactPinRetentionAdmin>,
     ) -> Self {
         Self {
             repository,
             refs,
             ledger,
             write_back,
-            exact_pins,
+            retention: CampaignGcRetentionSources::without_hot_checkpoints(exact_pins),
+        }
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) const fn new_with_hot_checkpoints(
+        repository: &'repository CampaignRepository,
+        refs: &'refs dyn RefStoreAdmin,
+        ledger: &'ledger mut L,
+        write_back: Option<&'write_back dyn WriteBackRetentionAdmin>,
+        exact_pins: Option<&'retention mut dyn ExactPinRetentionAdmin>,
+        hot_fallbacks: Option<&'retention dyn HotCheckpointFallbackRetentionAdmin>,
+    ) -> Self {
+        Self {
+            repository,
+            refs,
+            ledger,
+            write_back,
+            retention: CampaignGcRetentionSources {
+                exact_pins,
+                hot_fallbacks,
+            },
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    const fn new_with_retention_sources(
+        repository: &'repository CampaignRepository,
+        refs: &'refs dyn RefStoreAdmin,
+        ledger: &'ledger mut L,
+        write_back: Option<&'write_back dyn WriteBackRetentionAdmin>,
+        retention: CampaignGcRetentionSources<'retention>,
+    ) -> Self {
+        Self {
+            repository,
+            refs,
+            ledger,
+            write_back,
+            retention,
         }
     }
 }
@@ -156,8 +248,9 @@ where
         refs,
         ledger,
         write_back,
-        exact_pins,
+        retention,
     } = sources;
+    let exact_pins = retention.exact_pins;
     let summary = journal.plan().candidates();
     if journal.phase() == CampaignGcJournalPhase::Complete {
         return Ok(CampaignGcApplyReport {
@@ -184,6 +277,12 @@ where
     let mut ledger_fence = ledger
         .acquire_retention_fence()
         .map_err(CampaignGcApplyError::Ledger)?;
+    #[cfg(target_os = "linux")]
+    let mut hot_fallback_fence = retention
+        .hot_fallbacks
+        .map(HotCheckpointFallbackRetentionAdmin::acquire_hot_checkpoint_retention_fence)
+        .transpose()
+        .map_err(CampaignGcApplyError::HotFallback)?;
     let mut write_back_fence = write_back
         .map(WriteBackRetentionAdmin::acquire_write_back_retention_fence)
         .transpose()
@@ -225,6 +324,16 @@ where
         || ledger_summary.checkpoint_roots() != journal.plan().checkpoint_roots()
     {
         return Err(CampaignGcApplyError::LedgerBasisChanged);
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(fence) = hot_fallback_fence.as_mut() {
+        fence
+            .visit_roots(&mut |root| {
+                roots
+                    .insert(root)
+                    .map_err(|()| HotCheckpointFallbackRetentionError::Visitor)
+            })
+            .map_err(CampaignGcApplyError::HotFallback)?;
     }
     if let Some(fence) = write_back_fence.as_mut() {
         fence
@@ -327,6 +436,10 @@ where
     /// Pending write-back roots could not be fenced or enumerated.
     #[error("campaign GC write-back retention revalidation failed")]
     WriteBack(#[source] StoreError),
+    /// Durable hot-checkpoint fallback roots could not be fenced or enumerated.
+    #[error("campaign GC hot-checkpoint fallback revalidation failed")]
+    #[cfg(target_os = "linux")]
+    HotFallback(#[source] HotCheckpointFallbackRetentionError),
     /// One authoritative campaign snapshot or pin projection failed authentication.
     #[error(transparent)]
     Campaign(#[from] CampaignRepositoryError),

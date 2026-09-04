@@ -1590,7 +1590,8 @@ pager is implied.
 Retention roots include every campaign ref in the store namespace,
 intentionally retained historical refs, scenario/image roots, user pins,
 finding/corpus pins, active-continuation ancestors, in-progress publication or
-transfer roots, and durable write-back journals. A pin declares
+transfer roots, durable hot-checkpoint fallbacks, and durable write-back
+journals. A pin declares
 metadata, thin, or exact retention plus a durability requirement. Hot-hub
 preference and placement receipts are operational.
 
@@ -1600,6 +1601,35 @@ apply reacquires that fence, requires the exact manifest identity, and retains
 the fence through candidate deletion. No separate generation field is needed
 in the v1 GC plan header because the exact root-manifest identity binds the
 complete active set and the held fence excludes changes during apply.
+
+Hot exact/thin correctness fallbacks use a separate fixed 65,536-slot
+single-writer operational catalog. Each occupied slot stores one exact
+`QemuHotForkTemplateKey` and either an `ExactCheckpointId` or
+`ConfigurationArtifactId`; the latter roots the complete authenticated thin
+configuration/scenario closure. The registered checksummed v1 record is:
+
+```text
+"crucible.executor.hot-checkpoint-fallback.v1\0"
+slot:u16be
+lineage_text_length:u32be || lineage_text
+configuration_hash[32]
+fallback_tag:u8  # 0 exact, 1 thin
+fallback_id_text_length:u32be || fallback_id_text
+checksum[32]
+```
+
+`checksum` is `CampaignHash::derive(
+"crucible.executor.hot-checkpoint-fallback.v1", preceding_record_bytes)`.
+Directory-backed replacement/removal uses write-fsync-rename-directory-fsync,
+and reopening strictly authenticates every four-lowercase-hex slot record.
+Conditional replacement compares the complete prior record. Its inventory
+fence streams the complete bounded root set while excluding catalog mutation.
+GC planning includes those roots in the existing canonical root manifest;
+apply reacquires and retains the same fence through deletion and rejects any
+changed manifest. Thus neither a demotion nor fallback release can race a
+previous plan into deleting a newly required exact/thin closure. The catalog
+does not grant campaign-ref mutation and its summary is operational evidence,
+not modeled campaign identity.
 
 Within a campaign snapshot, the semantic pin projection is keyed by the exact
 `ConfigurationId`. Its value is the latest authenticated schema-v5
@@ -1806,8 +1836,9 @@ identity is
 `CampaignHash::derive("crucible.campaign.gc-plan.v1", canonical_header)`.
 Changing any store-graph, root-manifest, candidate-manifest, blob, ref, or ledger
 basis therefore changes the plan identity. The daemon's non-destructive
-single-host planner now fences and inventories the complete ref namespace and
-assignment ledger, deduplicates their logical roots, authenticates their union
+single-host planner now fences and inventories the complete ref namespace,
+assignment ledger, hot-checkpoint fallback catalog, and pending write-back
+transfers, deduplicates their logical roots, authenticates their union
 through the campaign repository's semantic, generic-envelope, Merkle, and
 opaque-leaf closure verifier, then inventories each named physical leaf. Every
 placement whose logical ID is absent from that authenticated reachable set is
@@ -1853,7 +1884,8 @@ root inventory or apply begins.
 Single-host physical-leaf apply requires a `Planned` journal and the exact
 construction-time `StoreGraphAdmin`. It derives and compares that capability's
 configuration hash and canonical physical-backend list before taking and
-retaining the exclusive ref/publication, ledger, and pending-write-back fences.
+retaining the exclusive ref/publication, ledger, hot-checkpoint fallback, and
+pending-write-back fences.
 It reproduces their terminal generations, counters, and exact deduplicated root
 manifest, then preflights every complete physical inventory and every
 candidate's exact observed length.
@@ -1878,7 +1910,8 @@ cache copies remain open beyond this physical-leaf apply.
 
 The single-host daemon composes these sources into one logical root inventory:
 authoritative refs, current exact-pin selections, durable observation and
-checkpoint publication roots, and pending write-back roots. Assignment-ledger
+checkpoint publication roots, durable hot-checkpoint fallbacks, and pending
+write-back roots. Assignment-ledger
 roots are lineage-qualified and host-local rather than campaign-name-qualified,
 so a planner aggregating several campaign refs enumerates the ledger once.
 Duplicate operational roots may be emitted by distinct records and are
@@ -1914,6 +1947,9 @@ exact-candidate deletion primitive. The memory and directory ref leaves provide
 the exclusive authoritative-ref inventory generation and publication-lifecycle
 fence needed by that apply step. The assignment ledger likewise provides one
 exclusive, persistent generation over its combined operational root inventory.
+The fixed hot-checkpoint fallback catalog supplies an independently fenced,
+restart-authenticated operational root inventory; its exact contents are bound
+by the root manifest rather than a new field in the v1 plan header.
 Directory, compressed-directory, encrypted-directory,
 compressed-encrypted-directory, and packed generations survive restart; memory
 generations are process-local and monotonic for their

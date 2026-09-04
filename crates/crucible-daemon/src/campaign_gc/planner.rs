@@ -17,12 +17,17 @@ use crate::{
     AssignmentRetentionSummary, AssignmentRetentionVisitorError, ExactPinRetentionAdmin,
     ExactPinRetentionError,
 };
+#[cfg(target_os = "linux")]
+use crate::{HotCheckpointFallbackRetentionAdmin, HotCheckpointFallbackRetentionError};
 
+#[cfg(target_os = "linux")]
+use super::CampaignGcHotCheckpointRoots;
 use super::roots::{CampaignGcRootInventoryError, RootAccumulator, inventory_authoritative_refs};
 use super::{
     CampaignGcBlobInventoryBasis, CampaignGcCandidate, CampaignGcCandidateManifest,
-    CampaignGcManifestError, CampaignGcPlan, CampaignGcPlanError, CampaignGcRootManifest,
-    MAX_CAMPAIGN_GC_MANIFEST_ENTRIES, MAX_CAMPAIGN_GC_PHYSICAL_INVENTORIES, validate_backend_id,
+    CampaignGcManifestError, CampaignGcPlan, CampaignGcPlanError, CampaignGcRetentionSources,
+    CampaignGcRootManifest, MAX_CAMPAIGN_GC_MANIFEST_ENTRIES, MAX_CAMPAIGN_GC_PHYSICAL_INVENTORIES,
+    validate_backend_id,
 };
 
 /// One named physical blob leaf and its separate inventory authority.
@@ -127,6 +132,9 @@ impl CampaignGcPreparedPlan {
 /// publication window and every pending write-back transfer through its
 /// children-before-journal window. Omitting `exact_pins` is valid only when the
 /// complete authoritative campaign inventory contains no current exact pin.
+/// This catalog-free entry point is valid only when no managed hot-checkpoint
+/// pool exists; configured pools must use
+/// `plan_single_host_campaign_gc_with_hot_checkpoints` on Linux.
 ///
 /// # Errors
 ///
@@ -154,17 +162,60 @@ where
         .map(CampaignGcPhysicalStore::from_graph_leaf)
         .collect::<Result<Vec<_>, _>>()
         .map_err(CampaignGcPlanningError::Plan)?;
-    plan_single_host_campaign_gc_with_physical(
+    plan_single_host_campaign_gc_with_physical_and_root_sources(
         repository,
         refs,
         ledger,
         write_back,
-        exact_pins,
+        CampaignGcRetentionSources::without_hot_checkpoints(exact_pins),
         CampaignHash::from_bytes(store_graph.configuration_id().as_bytes()),
         &physical,
     )
 }
 
+/// Builds a GC plan that also retains every durable hot-checkpoint fallback.
+///
+/// This is the production single-host boundary when a hot-checkpoint manager
+/// is configured. Its fallback fence is held through root discovery exactly
+/// like assignment and write-back operational retention sources.
+///
+/// # Errors
+///
+/// Returns [`CampaignGcPlanningError`] under the same conditions as
+/// [`plan_single_host_campaign_gc`], and additionally when the fallback
+/// catalog cannot provide a complete authenticated inventory.
+#[cfg(target_os = "linux")]
+pub fn plan_single_host_campaign_gc_with_hot_checkpoints<L>(
+    repository: &CampaignRepository,
+    refs: &dyn RefStoreAdmin,
+    ledger: &mut L,
+    write_back: Option<&dyn WriteBackRetentionAdmin>,
+    roots: CampaignGcHotCheckpointRoots<'_>,
+    store_graph: &StoreGraphAdmin,
+) -> Result<CampaignGcPreparedPlan, CampaignGcPlanningError<L::Error>>
+where
+    L: AssignmentRetentionAdmin,
+    L::Error: StdError + Send + Sync + 'static,
+{
+    let borrowed = store_graph.physical();
+    let physical = borrowed
+        .iter()
+        .copied()
+        .map(CampaignGcPhysicalStore::from_graph_leaf)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(CampaignGcPlanningError::Plan)?;
+    plan_single_host_campaign_gc_with_physical_and_root_sources(
+        repository,
+        refs,
+        ledger,
+        write_back,
+        roots.into_sources(),
+        CampaignHash::from_bytes(store_graph.configuration_id().as_bytes()),
+        &physical,
+    )
+}
+
+#[cfg(test)]
 pub(crate) fn plan_single_host_campaign_gc_with_physical<L>(
     repository: &CampaignRepository,
     refs: &dyn RefStoreAdmin,
@@ -178,7 +229,57 @@ where
     L: AssignmentRetentionAdmin,
     L::Error: StdError + Send + Sync + 'static,
 {
+    plan_single_host_campaign_gc_with_physical_and_root_sources(
+        repository,
+        refs,
+        ledger,
+        write_back,
+        CampaignGcRetentionSources::without_hot_checkpoints(exact_pins),
+        store_graph,
+        physical,
+    )
+}
+
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) fn plan_single_host_campaign_gc_with_physical_and_hot_checkpoints<L>(
+    repository: &CampaignRepository,
+    refs: &dyn RefStoreAdmin,
+    ledger: &mut L,
+    write_back: Option<&dyn WriteBackRetentionAdmin>,
+    root_sources: CampaignGcHotCheckpointRoots<'_>,
+    store_graph: CampaignHash,
+    physical: &[CampaignGcPhysicalStore<'_>],
+) -> Result<CampaignGcPreparedPlan, CampaignGcPlanningError<L::Error>>
+where
+    L: AssignmentRetentionAdmin,
+    L::Error: StdError + Send + Sync + 'static,
+{
+    plan_single_host_campaign_gc_with_physical_and_root_sources(
+        repository,
+        refs,
+        ledger,
+        write_back,
+        root_sources.into_sources(),
+        store_graph,
+        physical,
+    )
+}
+
+fn plan_single_host_campaign_gc_with_physical_and_root_sources<L>(
+    repository: &CampaignRepository,
+    refs: &dyn RefStoreAdmin,
+    ledger: &mut L,
+    write_back: Option<&dyn WriteBackRetentionAdmin>,
+    root_sources: CampaignGcRetentionSources<'_>,
+    store_graph: CampaignHash,
+    physical: &[CampaignGcPhysicalStore<'_>],
+) -> Result<CampaignGcPreparedPlan, CampaignGcPlanningError<L::Error>>
+where
+    L: AssignmentRetentionAdmin,
+    L::Error: StdError + Send + Sync + 'static,
+{
     validate_physical_inputs(physical).map_err(CampaignGcPlanningError::Plan)?;
+    let exact_pins = root_sources.exact_pins;
 
     let mut roots = RootAccumulator::default();
     let mut ref_fence = refs
@@ -192,6 +293,8 @@ where
         inventory_authoritative_refs(repository, ref_fence.as_mut(), &mut exact_fence, &mut roots)
             .map_err(map_root_inventory_error)?;
     let ledger_summary = inventory_ledger(ledger, &mut roots)?;
+    #[cfg(target_os = "linux")]
+    inventory_hot_fallbacks(root_sources.hot_fallbacks, &mut roots)?;
     inventory_write_back(write_back, &mut roots)?;
     let root_manifest = CampaignGcRootManifest::new(roots.unique.iter().copied())?;
 
@@ -277,6 +380,10 @@ where
     /// A pending write-back root set could not be fenced or enumerated.
     #[error("campaign GC write-back retention inventory failed")]
     WriteBack(#[source] StoreError),
+    /// The durable hot-checkpoint fallback catalog could not be inventoried.
+    #[error("campaign GC hot-checkpoint fallback inventory failed")]
+    #[cfg(target_os = "linux")]
+    HotFallback(#[source] HotCheckpointFallbackRetentionError),
     /// The exact-pin materialization journal could not be fenced or read.
     #[error("campaign GC exact-pin materialization inventory failed")]
     ExactPin(#[source] ExactPinRetentionError),
@@ -324,6 +431,30 @@ where
     /// The terminal plan header was inconsistent or unrepresentable.
     #[error(transparent)]
     Plan(#[from] CampaignGcPlanError),
+}
+
+#[cfg(target_os = "linux")]
+fn inventory_hot_fallbacks<E>(
+    hot_fallbacks: Option<&dyn HotCheckpointFallbackRetentionAdmin>,
+    roots: &mut RootAccumulator,
+) -> Result<(), CampaignGcPlanningError<E>>
+where
+    E: StdError + 'static,
+{
+    let Some(hot_fallbacks) = hot_fallbacks else {
+        return Ok(());
+    };
+    let mut fence = hot_fallbacks
+        .acquire_hot_checkpoint_retention_fence()
+        .map_err(CampaignGcPlanningError::HotFallback)?;
+    fence
+        .visit_roots(&mut |root| {
+            roots
+                .insert(root)
+                .map_err(|()| HotCheckpointFallbackRetentionError::Visitor)
+        })
+        .map_err(CampaignGcPlanningError::HotFallback)?;
+    Ok(())
 }
 
 fn map_root_inventory_error<E>(source: CampaignGcRootInventoryError) -> CampaignGcPlanningError<E>

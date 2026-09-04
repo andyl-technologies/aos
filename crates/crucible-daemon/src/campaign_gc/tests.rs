@@ -8,7 +8,8 @@ use std::fs;
 use std::io::Cursor;
 use std::sync::Arc;
 
-use crucible_campaign::CampaignRepository;
+use crucible::ContentHash;
+use crucible_campaign::{CampaignLineageId, CampaignRepository, ConfigurationId, ScenarioDefId};
 use crucible_cas::content_envelope::ContentEnvelope;
 use crucible_cas::content_store::{
     BlobHandle, BlobInventoryFence, BlobInventoryRecord, BlobInventorySummary, BlobStoreAdmin,
@@ -27,7 +28,10 @@ use super::{
 use crate::{
     AssignmentRetentionAdmin, AssignmentRetentionFence, AssignmentRetentionGeneration,
     AssignmentRetentionInventoryError, AssignmentRetentionRoot, AssignmentRetentionSummary,
-    AssignmentRetentionVisitorError, DirectoryAssignmentLedger, MemoryAssignmentLedger,
+    AssignmentRetentionVisitorError, DirectoryAssignmentLedger, HotCheckpointFallback,
+    HotCheckpointFallbackRecord, HotCheckpointFallbackRetentionCas,
+    HotCheckpointFallbackRetentionStore, HotCheckpointFallbackSlot, MemoryAssignmentLedger,
+    MemoryHotCheckpointFallbackRetentionStore, QemuHotForkTemplateKey,
 };
 
 mod s3;
@@ -374,6 +378,114 @@ fn planner_authenticates_roots_and_selects_only_unreachable_placements() {
         prepared.plan().candidates(),
         prepared.candidates().summary()
     );
+}
+
+#[test]
+fn hot_checkpoint_fallback_is_a_fenced_gc_root_until_durable_removal() {
+    let blobs = Arc::new(MemoryBlobBackend::new("hot-gc-primary", 8 * 1024 * 1024));
+    let refs = Arc::new(MemoryRefBackend::new());
+    let repository = CampaignRepository::new(blobs.clone(), refs.clone());
+    let scenario = ScenarioDefId::from_hash(hash("crucible.test.gc.hot-scenario.v1", 1));
+    let scenario_artifact = repository
+        .publish_scenario_artifact(scenario, 1, b"hot scenario".to_vec())
+        .expect("publish hot scenario");
+    let configuration =
+        ConfigurationId::from_hash(hash("crucible.test.gc.hot-configuration.v1", 2));
+    let configuration_artifact = repository
+        .publish_configuration_artifact(
+            scenario,
+            scenario_artifact,
+            configuration,
+            1,
+            b"hot configuration".to_vec(),
+        )
+        .expect("publish hot configuration");
+
+    let lineage_digest = hash("crucible.test.gc.hot-lineage.v1", 3);
+    let lineage = CampaignLineageId::parse(&format!(
+        "crucible.campaign.lineage@campaign-fact.1.{}",
+        lineage_digest.to_hex()
+    ))
+    .expect("lineage");
+    let record = HotCheckpointFallbackRecord::new(
+        QemuHotForkTemplateKey::new(
+            lineage,
+            ContentHash::from_bytes(b"hot configuration semantic basis"),
+        ),
+        HotCheckpointFallback::Thin(configuration_artifact),
+    );
+    let slot = HotCheckpointFallbackSlot::new(7).expect("fallback slot");
+    let hot = MemoryHotCheckpointFallbackRetentionStore::new();
+    assert_eq!(
+        hot.compare_exchange_fallback(slot, None, Some(record))
+            .expect("retain fallback"),
+        HotCheckpointFallbackRetentionCas::Advanced
+    );
+
+    let mut ledger = MemoryAssignmentLedger::default();
+    let graph = hash("crucible.test.gc.hot-store-graph.v1", 4);
+    let physical =
+        CampaignGcPhysicalStore::new("hot-gc-primary", blobs.as_ref()).expect("hot physical store");
+    let retained = plan_single_host_campaign_gc_with_physical_and_hot_checkpoints(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        CampaignGcHotCheckpointRoots::new(&hot),
+        graph,
+        &[physical],
+    )
+    .expect("plan with retained fallback");
+    assert_eq!(
+        retained.roots().iter().collect::<Vec<_>>(),
+        vec![configuration_artifact.content_id()]
+    );
+    assert!(retained.candidates().is_empty());
+
+    assert_eq!(
+        hot.compare_exchange_fallback(slot, Some(record), None)
+            .expect("release fallback"),
+        HotCheckpointFallbackRetentionCas::Advanced
+    );
+    let released = plan_single_host_campaign_gc_with_physical_and_hot_checkpoints(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        CampaignGcHotCheckpointRoots::new(&hot),
+        graph,
+        &[physical],
+    )
+    .expect("plan after fallback release");
+    assert_eq!(released.candidates().len(), 2);
+
+    let temp = tempfile::TempDir::new().expect("temporary hot GC journal");
+    let (mut journal, disposition) =
+        DirectoryCampaignGcJournal::create(temp.path().join("journal"), &released)
+            .expect("create hot GC journal");
+    assert_eq!(disposition, CampaignGcJournalCreateDisposition::Created);
+    assert_eq!(
+        hot.compare_exchange_fallback(slot, None, Some(record))
+            .expect("restore fallback before apply"),
+        HotCheckpointFallbackRetentionCas::Advanced
+    );
+    assert!(matches!(
+        apply_single_host_campaign_gc(
+            &mut journal,
+            CampaignGcApplySources::new_with_hot_checkpoints(
+                &repository,
+                refs.as_ref(),
+                &mut ledger,
+                None,
+                None,
+                Some(&hot),
+            ),
+            graph,
+            &[physical],
+        ),
+        Err(CampaignGcApplyError::RootSetChanged)
+    ));
+    assert_eq!(blobs.object_count().expect("object count"), 2);
 }
 
 #[test]
