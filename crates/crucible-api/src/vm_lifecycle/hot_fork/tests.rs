@@ -1,9 +1,6 @@
 use super::*;
 
-fn permanently_failed_continuation() -> (
-    ScenarioDefForm,
-    ProductionVmHotForkWorldContinuation,
-) {
+fn permanently_failed_continuation() -> (ScenarioDefForm, ProductionVmHotForkWorldContinuation) {
     let source = super::super::runtime::tests::nonterminal_signal_replay_scenario();
     let mut lifecycle = super::super::runtime::tests::production_loop_without_backends(&source);
     for vm in source.world().vm_nodes() {
@@ -11,9 +8,10 @@ fn permanently_failed_continuation() -> (
         lifecycle
             .node_service_states
             .insert(vm.id.clone(), ProductionNodeServiceState::PermanentlyFailed);
-        lifecycle
-            .immutable_root_images
-            .insert(vm.id.clone(), ContentHash::from_bytes(vm.id.name.as_bytes()));
+        lifecycle.immutable_root_images.insert(
+            vm.id.clone(),
+            ContentHash::from_bytes(vm.id.name.as_bytes()),
+        );
     }
     let continuation = lifecycle
         .capture_hot_fork_world_continuation()
@@ -109,7 +107,7 @@ fn hot_fork_adoption_inventory_requires_the_exact_next_generation() {
     boundary.process = Some(QemuProcessIdentity {
         process_id: 123,
         start_time_ticks: 456,
-        executable: String::from("qemu-system-test"),
+        executable: PathBuf::from("qemu-system-test"),
     });
     continuation.node_generations.insert(node.clone(), 7);
     continuation
@@ -117,9 +115,11 @@ fn hot_fork_adoption_inventory_requires_the_exact_next_generation() {
         .insert(node.clone(), ProductionNodeServiceState::Running);
 
     let accepted = BTreeMap::from([(node.clone(), 8)]);
-    let (expected_times, generations) =
-        validate_hot_fork_adoption_inventory(&continuation, &accepted)
-            .unwrap_or_else(|error| panic!("exact next generation should validate: {error}"));
+    let HotForkAdoptionInventory {
+        expected_times,
+        node_generations: generations,
+    } = validate_hot_fork_adoption_inventory(&continuation, &accepted)
+        .unwrap_or_else(|error| panic!("exact next generation should validate: {error}"));
     assert_eq!(expected_times.get(&node), Some(&VirtualTime { ticks: 41 }));
     assert_eq!(generations.get(&node), Some(&8));
 
@@ -143,7 +143,7 @@ fn hot_fork_adoption_inventory_rejects_missing_and_foreign_children() {
     boundary.process = Some(QemuProcessIdentity {
         process_id: 123,
         start_time_ticks: 456,
-        executable: String::from("qemu-system-test"),
+        executable: PathBuf::from("qemu-system-test"),
     });
     continuation
         .node_service_states
@@ -165,7 +165,9 @@ fn hot_fork_adoption_inventory_rejects_missing_and_foreign_children() {
         .unwrap_or_else(|| panic!("foreign child should fail closed"));
     assert!(
         foreign.to_string().contains("has no adopted child")
-            || foreign.to_string().contains("differs from the running-node set")
+            || foreign
+                .to_string()
+                .contains("differs from the running-node set")
     );
 }
 
@@ -185,7 +187,11 @@ fn hot_fork_adoption_inventory_rejects_powered_off_nodes() {
     let error = validate_hot_fork_adoption_inventory(&continuation, &BTreeMap::new())
         .err()
         .unwrap_or_else(|| panic!("powered-off adoption should fail closed"));
-    assert!(error.to_string().contains("does not yet support powered-off"));
+    assert!(
+        error
+            .to_string()
+            .contains("does not yet support powered-off")
+    );
 }
 
 #[test]
@@ -194,8 +200,13 @@ fn hot_fork_restore_replaces_only_the_durable_run_root() {
     let expected_roots = continuation.immutable_root_images.clone();
     let generations = continuation.node_generations.clone();
 
-    let (config, checkpoint, roots, blocks, ninep) =
-        continuation.into_restore_parts(generations.clone(), "child-run-state");
+    let ProductionVmHotForkRestoreParts {
+        config,
+        checkpoint,
+        immutable_root_images: roots,
+        block_bindings: blocks,
+        ninep_bindings: ninep,
+    } = continuation.into_restore_parts(generations.clone(), "child-run-state");
 
     assert_eq!(config.run_state_root(), Path::new("child-run-state"));
     assert_eq!(checkpoint.node_generations, generations);

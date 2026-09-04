@@ -317,6 +317,19 @@ struct ProductionVmHotForkRestore {
     ninep_bindings: BTreeMap<NodeId, storage_faults::ProductionNinepBinding>,
 }
 
+struct ProductionVmHotForkRestoreParts {
+    config: ProductionVmLifecycleConfig,
+    checkpoint: ProductionVmExactCheckpointSet,
+    immutable_root_images: BTreeMap<NodeId, ContentHash>,
+    block_bindings: BTreeMap<NodeId, storage_faults::ProductionBlockBinding>,
+    ninep_bindings: BTreeMap<NodeId, storage_faults::ProductionNinepBinding>,
+}
+
+struct HotForkAdoptionInventory {
+    expected_times: BTreeMap<NodeId, VirtualTime>,
+    node_generations: BTreeMap<NodeId, u64>,
+}
+
 fn validate_exact_checkpoint_artifact(
     artifact: &ProductionCheckpointArtifact,
     role: &str,
@@ -1818,8 +1831,7 @@ pub fn build_production_vm_lifecycle_loop_from_hot_fork_with_launcher<L>(
 where
     L: ProductionVmNodeLauncher + 'static,
 {
-    if source.scenario_def() != *scenario
-        || continuation.configuration().def.id() != scenario.id()
+    if source.scenario_def() != *scenario || continuation.configuration().def.id() != scenario.id()
     {
         return Err(loop_factory_error(
             "hot-fork continuation does not reconstruct the requested scenario",
@@ -1865,11 +1877,18 @@ where
         .iter()
         .map(|(node, adoption)| (node.clone(), adoption.identity().generation()))
         .collect::<BTreeMap<_, _>>();
-    let (expected_times, node_generations) =
-        validate_hot_fork_adoption_inventory(&continuation, &adoption_generations)?;
+    let HotForkAdoptionInventory {
+        expected_times,
+        node_generations,
+    } = validate_hot_fork_adoption_inventory(&continuation, &adoption_generations)?;
 
-    let (config, checkpoint, immutable_root_images, block_bindings, ninep_bindings) =
-        continuation.into_restore_parts(node_generations, run_state_root);
+    let ProductionVmHotForkRestoreParts {
+        config,
+        checkpoint,
+        immutable_root_images,
+        block_bindings,
+        ninep_bindings,
+    } = continuation.into_restore_parts(node_generations, run_state_root);
     build_production_vm_lifecycle_loop_with_restore(
         scenario,
         source,
@@ -1889,7 +1908,7 @@ where
 fn validate_hot_fork_adoption_inventory(
     continuation: &ProductionVmHotForkWorldContinuation,
     adoption_generations: &BTreeMap<NodeId, u64>,
-) -> Result<(BTreeMap<NodeId, VirtualTime>, BTreeMap<NodeId, u64>), LifecycleApiError> {
+) -> Result<HotForkAdoptionInventory, LifecycleApiError> {
     let mut expected_times = BTreeMap::new();
     let mut node_generations = BTreeMap::new();
     for boundary in continuation.nodes() {
@@ -1904,12 +1923,13 @@ fn validate_hot_fork_adoption_inventory(
                             boundary.node().name
                         ))
                     })?;
-                let expected_generation = boundary.generation().checked_add(1).ok_or_else(|| {
-                    loop_factory_error(format!(
-                        "hot-fork source generation for `{}` cannot advance",
-                        boundary.node().name
-                    ))
-                })?;
+                let expected_generation =
+                    boundary.generation().checked_add(1).ok_or_else(|| {
+                        loop_factory_error(format!(
+                            "hot-fork source generation for `{}` cannot advance",
+                            boundary.node().name
+                        ))
+                    })?;
                 if generation != expected_generation {
                     return Err(loop_factory_error(format!(
                         "hot-fork child generation for `{}` is {generation}, expected {expected_generation}",
@@ -1940,12 +1960,20 @@ fn validate_hot_fork_adoption_inventory(
         }
     }
     let expected_running = expected_times.keys().cloned().collect::<BTreeSet<_>>();
-    if adoption_generations.keys().cloned().collect::<BTreeSet<_>>() != expected_running {
+    if adoption_generations
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        != expected_running
+    {
         return Err(loop_factory_error(
             "hot-fork adopted child set differs from the running-node set",
         ));
     }
-    Ok((expected_times, node_generations))
+    Ok(HotForkAdoptionInventory {
+        expected_times,
+        node_generations,
+    })
 }
 
 /// Builds a production local-QEMU lifecycle loop for `scenario`.
@@ -2533,47 +2561,57 @@ fn build_production_vm_lifecycle_loop_with_restore(
             ))
         } else {
             match (restore_target, service_state) {
-            (Some(target), ProductionNodeServiceState::Running) => {
-                launch_production_node_generation(
+                (Some(target), ProductionNodeServiceState::Running) => {
+                    launch_production_node_generation(
+                        node_launcher.as_mut(),
+                        ProductionVmNodeLaunchBasis::new(
+                            &launch,
+                            &node_directory,
+                            &vm.id,
+                            generation,
+                        ),
+                        &crash_detector,
+                        preparation,
+                        ProductionVmNodeLaunchKind::Exact {
+                            snapshot: &target.snapshot,
+                            paused: false,
+                        },
+                    )
+                    .map(|launch| (launch, None))
+                }
+                (Some(target), ProductionNodeServiceState::PoweredOff) => {
+                    launch_production_node_generation(
+                        node_launcher.as_mut(),
+                        ProductionVmNodeLaunchBasis::new(
+                            &launch,
+                            &node_directory,
+                            &vm.id,
+                            generation,
+                        ),
+                        &crash_detector,
+                        preparation,
+                        ProductionVmNodeLaunchKind::Exact {
+                            snapshot: &target.snapshot,
+                            paused: true,
+                        },
+                    )
+                    .map(|launch| (launch, None))
+                }
+                (Some(_), ProductionNodeServiceState::PermanentlyFailed) => {
+                    return Err(loop_factory_error(format!(
+                        "exact checkpoint for permanently failed node `{}` unexpectedly contains a live process target",
+                        vm.id.name
+                    )));
+                }
+                (None, ProductionNodeServiceState::PermanentlyFailed) => continue,
+                (None, _) => launch_production_node_generation(
                     node_launcher.as_mut(),
                     ProductionVmNodeLaunchBasis::new(&launch, &node_directory, &vm.id, generation),
-                    &crash_detector,
+                    &format!("lifecycle-{}", vm.id.name),
                     preparation,
-                    ProductionVmNodeLaunchKind::Exact {
-                        snapshot: &target.snapshot,
-                        paused: false,
-                    },
+                    ProductionVmNodeLaunchKind::Fresh,
                 )
-                .map(|launch| (launch, None))
-            }
-            (Some(target), ProductionNodeServiceState::PoweredOff) => {
-                launch_production_node_generation(
-                    node_launcher.as_mut(),
-                    ProductionVmNodeLaunchBasis::new(&launch, &node_directory, &vm.id, generation),
-                    &crash_detector,
-                    preparation,
-                    ProductionVmNodeLaunchKind::Exact {
-                        snapshot: &target.snapshot,
-                        paused: true,
-                    },
-                )
-                .map(|launch| (launch, None))
-            }
-            (Some(_), ProductionNodeServiceState::PermanentlyFailed) => {
-                return Err(loop_factory_error(format!(
-                    "exact checkpoint for permanently failed node `{}` unexpectedly contains a live process target",
-                    vm.id.name
-                )));
-            }
-            (None, ProductionNodeServiceState::PermanentlyFailed) => continue,
-            (None, _) => launch_production_node_generation(
-                node_launcher.as_mut(),
-                ProductionVmNodeLaunchBasis::new(&launch, &node_directory, &vm.id, generation),
-                &format!("lifecycle-{}", vm.id.name),
-                preparation,
-                ProductionVmNodeLaunchKind::Fresh,
-            )
-            .map(|launch| (launch, None)),
+                .map(|launch| (launch, None)),
             }
         };
         let (mut launched, adopted_process) = launched?;

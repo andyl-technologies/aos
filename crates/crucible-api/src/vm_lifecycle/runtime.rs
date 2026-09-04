@@ -571,6 +571,7 @@ impl ProductionVmLifecycleLoop {
             &replay_config,
             None,
             replay_launcher,
+            None,
         )
         .map_err(|error| SchedulerError::BoundaryViolation {
             message: format!("construct whole-world debug replay candidate: {error}"),
