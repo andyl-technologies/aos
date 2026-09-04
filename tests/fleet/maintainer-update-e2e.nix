@@ -129,12 +129,26 @@
   hostFixture = import ../fixtures/maintainer-update-repo/default.nix {
     bash = pkgs.bash;
   };
+  mountedPackageDerivation = builtins.storePath (builtins.unsafeDiscardStringContext hostFixture.pkgs.maintain-fixture.drvPath);
+  mountedSourceDerivation =
+    builtins.storePath
+    (builtins.unsafeDiscardStringContext
+      (builtins.elemAt hostFixture.maintenanceInventory.units 0).components.main.sources.source.derivation);
+  packageDerivationRecord = builtins.path {
+    path = mountedPackageDerivation;
+    name = "maintain-fixture-package-derivation-record";
+  };
+  sourceDerivationRecord = builtins.path {
+    path = mountedSourceDerivation;
+    name = "maintain-fixture-source-derivation-record";
+  };
 
   mountedClosure = import ../../lib/build/closure-info.nix {inherit lib pkgs;} {
     rootPaths = [
       fixtureRepository
       maintainerToolBundle
-      hostFixture.pkgs.maintain-fixture.drvPath
+      packageDerivationRecord
+      sourceDerivationRecord
     ];
     pname = "maintainer-update-e2e-closure-info";
   };
@@ -179,6 +193,10 @@ in {
       NIX_STORE = "${pkgs.nix}/bin/nix-store"
       CLOSURE_INFO = "${mountedClosure}"
       FIXTURE_REPOSITORY = "${fixtureRepository}"
+      PACKAGE_DERIVATION = "${mountedPackageDerivation}"
+      SOURCE_DERIVATION = "${mountedSourceDerivation}"
+      PACKAGE_DERIVATION_RECORD = "${packageDerivationRecord}"
+      SOURCE_DERIVATION_RECORD = "${sourceDerivationRecord}"
       REPOSITORY = "/var/lib/aos-maintainer/repository"
       STATE = "/var/lib/aos-maintainer/state"
       HOME = "/var/lib/aos-maintainer/home"
@@ -194,10 +212,13 @@ in {
       """))
 
       # The dedicated tool and repository roots are absent before the 9p
-      # import. The guest mounts the host store read-only, exposes exactly the
-      # registered closure at canonical paths, and never builds those inputs.
+      # import. The guest mounts the host store read-only, exposes the
+      # registered tool closure and opaque package records at canonical paths,
+      # and never builds those inputs.
       maintainer.fail(f"{NIX_STORE} --check-validity {TOOLS}")
       maintainer.fail(f"{NIX_STORE} --check-validity {FIXTURE_REPOSITORY}")
+      maintainer.fail(f"test -e {PACKAGE_DERIVATION}")
+      maintainer.fail(f"test -e {SOURCE_DERIVATION}")
       maintainer.succeed(textwrap.dedent(f"""
           set -eu
           mkdir -p /run/aos-host-store
@@ -223,8 +244,31 @@ in {
             fi
           done < "$closure/store-paths"
           {NIX_STORE} --load-db < "$closure/registration"
+
+          : > /tmp/derivation-registration
+          register_derivation() {{
+            derivation="$1"
+            record="$2"
+            source_path="/run/aos-host-store/$(basename "$record")"
+            test -f "$source_path"
+            touch "$derivation"
+            {MOUNT} --bind "$source_path" "$derivation"
+            printf '%s\n%s\n%s\n\n0\n' \
+              "$derivation" \
+              "$({NIX_STORE} --query --hash "$record")" \
+              "$({NIX_STORE} --query --size "$record")" \
+              >> /tmp/derivation-registration
+          }}
+          register_derivation {SOURCE_DERIVATION} {SOURCE_DERIVATION_RECORD}
+          register_derivation {PACKAGE_DERIVATION} {PACKAGE_DERIVATION_RECORD}
+          {NIX_STORE} --load-db < /tmp/derivation-registration
+
           {NIX_STORE} --check-validity {TOOLS}
           {NIX_STORE} --check-validity {FIXTURE_REPOSITORY}
+          {NIX_STORE} --check-validity {PACKAGE_DERIVATION}
+          {NIX_STORE} --check-validity {SOURCE_DERIVATION}
+          {NIX} derivation show {PACKAGE_DERIVATION} | {JQ} -e '.derivations | length == 1'
+          {NIX} derivation show {SOURCE_DERIVATION} | {JQ} -e '.derivations | length == 1'
           {FINDMNT} -rn -t 9p -o OPTIONS /run/aos-host-store | grep -qw ro
           ! touch {TOOLS}/host-store-write-must-fail
       """), timeout=240)
