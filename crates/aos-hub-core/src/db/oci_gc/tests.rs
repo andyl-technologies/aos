@@ -23,7 +23,7 @@ use crate::dialect::Dialect;
 
 #[test]
 fn v25_schema_contains_transactional_gc_evidence_and_fences() {
-    let migration = MIGRATIONS.get(24).expect("v25 migration is present");
+    let migration = include_str!("../oci_gc.sql");
     for table in [
         "oci_provider_inventory_generations",
         "oci_provider_inventory_entries",
@@ -48,7 +48,7 @@ fn v25_schema_contains_transactional_gc_evidence_and_fences() {
 
 #[test]
 fn v26_schema_contains_review_remediation_authorities() {
-    let migration = MIGRATIONS.get(25).expect("v26 migration is present");
+    let migration = include_str!("../oci_gc_remediation.sql");
     for identity in [
         "unreferenced_since",
         "oci_registry_purge_fences",
@@ -63,7 +63,7 @@ fn v26_schema_contains_review_remediation_authorities() {
 
 #[test]
 fn v26_schema_statements_translate_for_postgres_and_mysql() {
-    let migration = MIGRATIONS.get(25).expect("v26 migration is present");
+    let migration = include_str!("../oci_gc_remediation.sql");
     for dialect in [Dialect::Postgres, Dialect::Mysql] {
         for sql in crate::backend::split_statements(migration) {
             dialect
@@ -75,7 +75,7 @@ fn v26_schema_statements_translate_for_postgres_and_mysql() {
 
 #[test]
 fn v25_schema_statements_translate_for_postgres_and_mysql() {
-    let migration = MIGRATIONS.get(24).expect("v25 migration is present");
+    let migration = include_str!("../oci_gc.sql");
     for statement in crate::backend::split_statements(migration) {
         for dialect in [Dialect::Postgres, Dialect::Mysql] {
             dialect
@@ -2089,13 +2089,19 @@ async fn v25_concurrent_start_from_v24_applies_once_and_reopens() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("v24-to-v25.db");
     let connection = rusqlite::Connection::open(&path).unwrap();
-    for migration in &MIGRATIONS[..24] {
+    let gc_index = MIGRATIONS
+        .iter()
+        .position(|migration| *migration == include_str!("../oci_gc.sql"))
+        .expect("GC migration is registered");
+    for migration in &MIGRATIONS[..gc_index] {
         connection.execute_batch(migration).unwrap();
     }
     connection
         .execute_batch(
-            "CREATE TABLE schema_version(version INTEGER NOT NULL);
-             INSERT INTO schema_version(version) VALUES(24);",
+            &format!(
+                "CREATE TABLE schema_version(version INTEGER NOT NULL);
+                 INSERT INTO schema_version(version) VALUES({gc_index});"
+            ),
         )
         .unwrap();
     drop(connection);
@@ -2112,7 +2118,7 @@ async fn v25_concurrent_start_from_v24_applies_once_and_reopens() {
         .unwrap()
         .get(0)
         .unwrap();
-    assert_eq!(version, 26);
+    assert_eq!(version, MIGRATIONS.len() as i64);
 }
 
 #[tokio::test]

@@ -29,13 +29,18 @@ Hub accepts conforming OCI clients without invoking Nix.
 
 ## Nix evaluation model
 
-Container definitions form a separate module evaluation from AOS system
-definitions. This avoids retaining a kernel or bootable toplevel while still
-allowing a definition to derive its package policy from a golden system.
+Container definitions are typed submodules of the same AOS system evaluation
+that produces bootable disk images. `system.build.defaultContainer` associates
+one default OCI artifact with the logical system, and
+`system.build.containers.<name>` exposes every associated definition. The OCI
+builder consumes only an explicit userland projection, so sharing evaluation
+does not retain the kernel, initrd, bootable toplevel, or disk layout.
 
-The initial evaluation exports:
+The system evaluation and compatibility aliases export:
 
 ```text
+systems.<variant>.build.defaultContainer
+systems.<variant>.build.containers.<name>
 containerImages.aos.platforms.<aos-system>.ociLayout
 containerImages.aos.platforms.<aos-system>.ociArchive
 containerImages.aos.platforms.<aos-system>.dockerArchive
@@ -44,8 +49,8 @@ containerImages.aos.ociIndex
 containerImages.aos.checks
 ```
 
-Flake aliases expose the canonical artifacts without making their derivation
-names part of the OCI identity.
+Flake aliases expose the canonical production and testing artifacts without
+making their derivation names part of the OCI identity.
 
 The option schema owns:
 

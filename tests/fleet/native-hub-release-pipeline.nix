@@ -396,7 +396,7 @@ in {
           printf '[registry]\\nname = "main"\\nurl = "file://%s"\\n\\n[registry.signing_keys]\\ninitial = "%s"\\n' "$registry" "$key" > "$HOME/.config/apm/registries.d/main.toml"
           {APR} release 1.0.0 --registry main --store-path ${builtins.elemAt matrixPackages 0} \\
             --name fleet-base --description 'Release fleet base' --license Apache-2.0 \\
-            --maintainer release@example.test --key-id initial --channel edge --init-channel \\
+            --maintainer release@example.test --key-id initial --channel candidate --init-channel \\
             --cache-url {STAGING}/andyl/main/ --upload-url file:///var/tmp/base-surface
           for path in {' '.join(PACKAGES)}; do
             {NIX_STORE} --dump "$path" > "/var/tmp/nars/$(basename "$path").nar"
@@ -498,7 +498,7 @@ in {
           {AOS} release channel advance --bundle /var/tmp/release-surface \\
             --journal /var/tmp/promoted/release-journal.jsonl \\
             --production-receipt /var/tmp/promoted/production-receipt.json \\
-            --channel edge --prior-generation 0 --first-partition 0 --last-partition 255 \\
+            --channel candidate --prior-generation 0 --first-partition 0 --last-partition 255 \\
             --trusted-key release-evidence-v1={release_key} \\
             --production-receipt-key production-publication-v1={production_key} \\
             --channel-receipt-key production-channel-v1={channel_key} \\
@@ -527,6 +527,6 @@ in {
       assert {item["platform"] for item in report["evidence"]} == {
           "x86_64-linux", "aarch64-linux", "x86_64-darwin", "aarch64-darwin",
       }, report
-      publisher.succeed(f"{CURL} -fsS {PRODUCTION}/andyl/main/channels/edge/00 >/dev/null")
+      publisher.succeed(f"{CURL} -fsS {PRODUCTION}/andyl/main/channels/candidate/00 >/dev/null")
     '';
 }

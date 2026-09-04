@@ -11,28 +11,7 @@
   systems,
 }: let
   aosSystem = pkgs.stdenv.hostPlatform.system;
-  goldenRoots = systems.server.config.environment.systemPackages;
-  oci = import ../../lib/build/oci {
-    inherit lib;
-    inherit (pkgs) mkDerivation coreutils findutils gzip jq tar;
-  };
-  container =
-    (import ../../containers {
-      inherit lib pkgs goldenRoots aosSystem;
-    })
-    .aos;
-  containerImage = import ../../lib/containers/build.nix {
-    inherit lib pkgs oci container;
-    systemIdentity = {
-      inherit
-        (systems.server.config.aos.system)
-        name
-        version
-        stateVersion
-        moduleAbi
-        ;
-    };
-  };
+  containerImage = systems.server.build.defaultContainer;
   dockerArchive = containerImage.platforms.${aosSystem}.dockerArchive;
 
   fixtures = import ../vm/apm/fixtures.nix {

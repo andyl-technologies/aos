@@ -10,10 +10,10 @@ use ed25519_dalek::pkcs8::DecodePublicKey as _;
 use ed25519_dalek::{Signature, Verifier as _, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
-use crate::CANONICAL_REGISTRY;
 use crate::artifact::{BundlePath, require_identifier};
 use crate::digest::Sha256Digest;
 use crate::platform::Platform;
+use crate::registry::registry_policy;
 
 /// Signature domain for canonical release signing requests.
 pub const SIGNING_REQUEST_DOMAIN: &str = "aos.release.signing-request/v1";
@@ -251,9 +251,7 @@ impl SigningRequestV1 {
         require_identifier(&self.release_id, "release id")?;
         require_identifier(&self.key_id, "signer key id")?;
         require_identifier(&self.provider_revision, "provider revision")?;
-        if self.registry != CANONICAL_REGISTRY {
-            bail!("canonical signing requests require registry {CANONICAL_REGISTRY}");
-        }
+        registry_policy(&self.registry)?;
         if self.nonce.len() != 64
             || !self
                 .nonce
@@ -671,7 +669,7 @@ mod tests {
             schema_version: SIGNING_REQUEST_DOMAIN.to_owned(),
             request_id: "request-1".to_owned(),
             nonce: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
-            registry: CANONICAL_REGISTRY.to_owned(),
+            registry: crate::registry::MAIN_REGISTRY.to_owned(),
             release_id: "release-2026.09.03".to_owned(),
             plan_digest: Sha256Digest::of_bytes("plan"),
             manifest_digest: Some(Sha256Digest::of_bytes("manifest")),
