@@ -664,6 +664,19 @@ completes. The Git history remains authoritative for code details.
   catalog publisher has no production implementation yet, all existing-resource
   actions fail before admission, durable history is not advertised as current
   inventory, and the service advertises no methods.
+- `008bd8981` — foundation toward `SBX-CTRL-03` and `SBX-MULTI-01`: the
+  protected ownership-authority backend now durably separates unsigned intent
+  from issuer completion, reserves completion capacity before issuance, and
+  requires exact idempotent issuer replay after a crash. Completion samples a
+  protected clock after the issuer round trip and atomically records the exact
+  signed response plus current pointer. Bounded recovery authenticates every
+  historical response against one pinned authority generation, reconstructs a
+  unique linear chain per sandbox, and rejects rollback, forks, disconnected
+  history, foreign namespaces, and deleted, relocated, or cross-sandbox-swapped
+  heads. Recovered heads remain explicitly non-authorizing; controller
+  integration, key-generation migration, release, transfer, and epoch rollover
+  remain open. The crate passes 71 unit tests, strict all-target Clippy, and
+  rustdoc with warnings denied.
 
 The post-`727da7f3e` x86_64 `sandbox-filesystem-capability-proof` rerun built the
 complete hermetic Rust closure, AOS system, initrd, and VM disk and launched
