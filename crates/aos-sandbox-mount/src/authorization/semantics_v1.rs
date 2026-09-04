@@ -172,14 +172,6 @@ pub(crate) fn canonical_mount_semantics_v1(
         request.replacement_mount_handle().map(<[u8; 32]>::as_slice),
     )?;
     encoder.roles(18, descriptor_roles)?;
-    encoder.field(
-        19,
-        &request
-            .header()
-            .deadline_boottime_nanoseconds()
-            .to_be_bytes(),
-    )?;
-    encoder.field(20, &request.header().maximum_response_bytes().to_be_bytes())?;
     let bytes = encoder.finish();
     let commitment = BrokerArgumentCommitment::for_canonical_bytes(&bytes);
     Ok(CanonicalMountSemanticsV1 {
@@ -491,14 +483,14 @@ mod tests {
         assert_eq!(semantic.target(), BrokerGrantTarget::Assignment);
         assert_eq!(
             hex(semantic.bytes()),
-            "0100000008414f534d53454d31020000000200010300000001010400000010020202020202020202020202020202020500000010030303030303030303030303030303030600000008000000000000000407000000080000000000000005080000002006060606060606060606060606060606060606060606060606060606060606060900000010070707070707070707070707070707070a00000010080808080808080808080808080808080b00000008000000000000000d0c00000008000000000000000e0d0000002031f263d3127726c7b5e3ba9ac2606c285b76280d381ffffa26b00a43c76af6790e0000005200286170706c69636174696f6e2f766e642e616f732e73616e64626f782e766965772e76312b63626f720909090909090909090909090909090909090909090909090909090909090909000000000000000a0f00000006010101010100100000000011000000001200000002000013000000080000000000002710140000000400001000"
+            "0100000008414f534d53454d31020000000200010300000001010400000010020202020202020202020202020202020500000010030303030303030303030303030303030600000008000000000000000407000000080000000000000005080000002006060606060606060606060606060606060606060606060606060606060606060900000010070707070707070707070707070707070a00000010080808080808080808080808080808080b00000008000000000000000d0c00000008000000000000000e0d0000002031f263d3127726c7b5e3ba9ac2606c285b76280d381ffffa26b00a43c76af6790e0000005200286170706c69636174696f6e2f766e642e616f732e73616e64626f782e766965772e76312b63626f720909090909090909090909090909090909090909090909090909090909090909000000000000000a0f000000060101010101001000000000110000000012000000020000"
         );
         assert_eq!(
             semantic.commitment().digest(),
             ObjectDigest::from_bytes([
-                0x4f, 0x06, 0x09, 0x5f, 0xe2, 0x62, 0xab, 0x16, 0xd4, 0xd4, 0xd1, 0xd9, 0xc3, 0x8e,
-                0xd5, 0xed, 0x40, 0xcc, 0x21, 0x0a, 0xde, 0x6a, 0xb4, 0x96, 0xd5, 0xc4, 0x9f, 0xc7,
-                0xa9, 0x09, 0x40, 0x48,
+                0x78, 0x95, 0xe5, 0x43, 0x4e, 0xb8, 0x3a, 0xab, 0xac, 0x8a, 0x72, 0x78, 0xed, 0x12,
+                0x78, 0x20, 0x8a, 0x4e, 0x3e, 0x96, 0x3d, 0xbd, 0x1e, 0x44, 0x3d, 0x70, 0xaa, 0x6c,
+                0x55, 0xf2, 0x6c, 0xb2,
             ])
         );
     }
@@ -621,7 +613,7 @@ mod tests {
     }
 
     #[test]
-    fn request_id_is_transport_only_but_bounds_are_semantic() {
+    fn transport_only_fields_are_excluded() {
         let base = request(MountAction::MOUNT_ACTION_INSTALL);
         let mut transport_mutation = base.clone();
         transport_mutation.header.get_or_insert_default().request_id = vec![20; 16];
@@ -629,21 +621,11 @@ mod tests {
             semantics(&transport_mutation, &[]).commitment(),
             semantics(&base, &[]).commitment()
         );
-        transport_mutation
-            .header
-            .get_or_insert_default()
-            .deadline_boottime_nanoseconds = 20_000;
-        assert_ne!(
+        let header = transport_mutation.header.get_or_insert_default();
+        header.deadline_boottime_nanoseconds = 20_000;
+        header.maximum_response_bytes = 8192;
+        assert_eq!(
             semantics(&transport_mutation, &[]).commitment(),
-            semantics(&base, &[]).commitment()
-        );
-        let mut response_mutation = base.clone();
-        response_mutation
-            .header
-            .get_or_insert_default()
-            .maximum_response_bytes = 8192;
-        assert_ne!(
-            semantics(&response_mutation, &[]).commitment(),
             semantics(&base, &[]).commitment()
         );
     }

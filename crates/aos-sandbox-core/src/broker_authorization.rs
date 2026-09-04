@@ -498,7 +498,7 @@ impl BrokerAuthorizationPlan {
             || grants.len() > MAX_BROKER_PLAN_GRANTS
             || !grants
                 .windows(2)
-                .all(|pair| (pair[0].verb(), pair[0].target()) < (pair[1].verb(), pair[1].target()))
+                .all(|pair| grant_key(&pair[0]) < grant_key(&pair[1]))
         {
             return Err(InvalidBrokerAuthorizationPlan::GrantsNotCanonical);
         }
@@ -822,14 +822,12 @@ impl VerifiedBrokerPlan {
         let index = self
             .plan
             .grants()
-            .binary_search_by_key(&(request.verb, request.target), |grant| {
-                (grant.verb(), grant.target())
-            })
+            .binary_search_by_key(
+                &(request.verb, request.target, request.argument_commitment),
+                grant_key,
+            )
             .map_err(|_| BrokerPlanVerificationError::RequestNotCommitted)?;
         let grant = &self.plan.grants()[index];
-        if grant.argument_commitment() != request.argument_commitment {
-            return Err(BrokerPlanVerificationError::RequestNotCommitted);
-        }
         if request.request_bytes > grant.maximum_request_bytes()
             || request.descriptor_count > grant.maximum_descriptors()
         {
@@ -840,6 +838,10 @@ impl VerifiedBrokerPlan {
             grant,
         })
     }
+}
+
+fn grant_key(grant: &BrokerGrant) -> (BrokerVerb, BrokerGrantTarget, BrokerArgumentCommitment) {
+    (grant.verb(), grant.target(), grant.argument_commitment())
 }
 
 #[cfg(test)]
@@ -1154,6 +1156,44 @@ mod tests {
             token.match_request(oversized),
             Err(BrokerPlanVerificationError::RequestBoundsExceeded)
         ));
+    }
+
+    #[test]
+    fn one_plan_can_commit_distinct_semantics_for_the_same_verb_and_target() {
+        let fixture = fixture();
+        let grant = |byte| {
+            BrokerGrant::new(
+                BrokerVerb::MountCreate,
+                BrokerGrantTarget::Assignment,
+                BrokerArgumentCommitment::from_digest(ObjectDigest::from_bytes([byte; 32]))
+                    .unwrap_or_else(|error| panic!("test commitment failed: {error}")),
+                4_096,
+                0,
+            )
+            .unwrap_or_else(|error| panic!("test grant failed: {error}"))
+        };
+        let construct = |grants| {
+            BrokerAuthorizationPlan::new(
+                BrokerAudience::Mount,
+                ProtocolId::MountBroker,
+                ProtocolVersion::new(1, 0),
+                fixture.context_assignment,
+                fixture.node,
+                fixture.ownership_authority.clone(),
+                grants,
+                ObjectDigest::from_bytes([7; 32]),
+                RevocationScopeId::from_bytes([8; 16]),
+                100,
+                200,
+                Vec::new(),
+            )
+        };
+
+        assert!(construct(vec![grant(13), grant(14)]).is_ok());
+        assert_eq!(
+            construct(vec![grant(14), grant(13)]),
+            Err(InvalidBrokerAuthorizationPlan::GrantsNotCanonical)
+        );
     }
 
     #[test]

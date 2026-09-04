@@ -1919,7 +1919,7 @@ mod tests {
                     && grant.target() == semantics.target()
                     && grant.argument_commitment() == semantics.commitment()
             }));
-            grants.sort_by_key(|grant| (grant.verb(), grant.target()));
+            grants.sort_by_key(|grant| (grant.verb(), grant.target(), grant.argument_commitment()));
             grants.dedup_by(|right, left| {
                 right.verb() == left.verb()
                     && right.target() == left.target()
