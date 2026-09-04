@@ -207,6 +207,21 @@ impl<B: Backend> Backend for TimingBackend<B> {
         r
     }
 
+    async fn migration_batch(
+        &self,
+        expected_current: i64,
+        target: i64,
+        stmts: &[Statement],
+    ) -> Result<()> {
+        let started = Instant::now();
+        let r = self
+            .inner
+            .migration_batch(expected_current, target, stmts)
+            .await;
+        self.timings.record("migration_batch", "", started);
+        r
+    }
+
     async fn checked_batch(&self, stmts: &[CheckedStatement]) -> Result<()> {
         let started = Instant::now();
         let r = self.inner.checked_batch(stmts).await;

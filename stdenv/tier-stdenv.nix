@@ -111,6 +111,9 @@
         system = args.system or system;
         hostPlatform = args.hostPlatform or hostPlatform;
         targetPlatform = args.targetPlatform or targetPlatform;
+        buildExecutionSystem =
+          args.buildExecutionSystem
+          or "${buildPlatform.constraints.cpu}-${buildPlatform.constraints.os}";
         shell = args.shell or shellPath;
         storeDir = args.storeDir or storeDir;
         stdenv = stdenvDrv;

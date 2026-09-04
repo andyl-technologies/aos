@@ -42,6 +42,30 @@ pub fn HashValue(
     }
 }
 
+/// Renders a complete shell command with the shared clipboard enhancement.
+#[component]
+pub fn CopyableCommand(
+    /// Human-facing name for the client that runs the command.
+    client: &'static str,
+    /// Complete command retained as both selectable text and clipboard data.
+    command: String,
+) -> impl IntoView {
+    view! {
+        <div class="copy-row container-pull-command">
+            <span>{client}</span>
+            <code class="merge-cmd">{command.clone()}</code>
+            <button
+                type="button"
+                class="hash-copy copy-btn"
+                data-copy-value=command
+                aria-label=format!("Copy {client} pull command")
+            >
+                "copy"
+            </button>
+        </div>
+    }
+}
+
 /// Renders secondary guidance through the shared attached-help popover.
 ///
 /// The concise heading remains visible while the explanation stays available

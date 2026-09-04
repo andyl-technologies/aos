@@ -46,8 +46,10 @@ in
       {
         name = "configure";
         script = ''
-          export PYTHONPATH="${meson}/lib/python3/site-packages''${PYTHONPATH:+:$PYTHONPATH}"
+          nativeMesonRoot=$(dirname "$(dirname "$(command -v meson)")")
+          export PYTHONPATH="$nativeMesonRoot/lib/python3/site-packages''${PYTHONPATH:+:$PYTHONPATH}"
           meson setup build \
+            $mesonFlags \
             --prefix=$out \
             -Dfuse=disabled \
             -Dman=disabled
@@ -62,7 +64,8 @@ in
       {
         name = "install";
         script = ''
-          export PYTHONPATH="${meson}/lib/python3/site-packages''${PYTHONPATH:+:$PYTHONPATH}"
+          nativeMesonRoot=$(dirname "$(dirname "$(command -v meson)")")
+          export PYTHONPATH="$nativeMesonRoot/lib/python3/site-packages''${PYTHONPATH:+:$PYTHONPATH}"
           ninja -C build install
         '';
       }

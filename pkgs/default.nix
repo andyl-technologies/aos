@@ -558,6 +558,7 @@
     "cargoArtifactContract"
     "cargoNextest"
     "cargoNextestOpenFilesLimit"
+    "cargoNextestMaxTestThreads"
     "nextestFlags"
     "cargoFlags"
     "buildType"
@@ -654,15 +655,15 @@
 
   mkCargoPackage = args: let
     # Cross-building a Rust package needs a compiler that executes on the
-    # Linux builder while carrying the selected Darwin standard library. The
-    # published `pkgs.rust` is intentionally Darwin-hosted, so its explicit
-    # build-tool role is distinct from both that output and native Rust.
+    # Linux builder while carrying the selected target standard library.
+    # `pkgs.rust.buildTool` is that explicit role; it is distinct from both a
+    # target-hosted compiler and the native compiler without the target sysroot.
     cargoBuildTool =
-      if stdenv.isCross && stdenv.hostPlatform.isDarwin
+      if stdenv.isCross
       then
         if self.rust ? passthru && self.rust.passthru ? buildTool
         then self.rust.passthru.buildTool
-        else throw "mkCargoPackage: Darwin rust package does not expose passthru.buildTool"
+        else throw "mkCargoPackage: cross Rust package does not expose passthru.buildTool"
       else resolvedBuildPackages.rust;
     cargoBuildTargetPrefix =
       lib.toUpper (builtins.replaceStrings ["-"] ["_"] stdenv.buildPlatform.config);
@@ -685,7 +686,7 @@
         );
       };
     cargoBuildToolchain =
-      if stdenv.isCross && stdenv.hostPlatform.isDarwin
+      if stdenv.isCross
       then
         resolvedBuildPackages.mkDerivation {
           pname = "cargo-native-build-toolchain";
@@ -725,7 +726,11 @@
           ];
         }
       else resolvedBuildPackages.cc;
-    cargoBuildToolchainEnv = lib.optionalAttrs (stdenv.isCross && stdenv.hostPlatform.isDarwin) {
+    # Cargo build scripts and proc macros execute on buildPlatform even when
+    # their package is compiled for hostPlatform. Give the `cc` crate explicit
+    # native tools for that role; the target-specific linker variables exported
+    # by the cross stdenv continue to select the cross compiler for host output.
+    cargoBuildToolchainEnv = lib.optionalAttrs stdenv.isCross {
       "CARGO_TARGET_${cargoBuildTargetPrefix}_LINKER" = "${cargoBuildToolchain}/bin/cc";
       "CARGO_TARGET_${cargoBuildTargetPrefix}_AR" = "${cargoBuildToolchain}/bin/ar";
       "CC_${cargoBuildCcPrefix}" = "${cargoBuildToolchain}/bin/cc";
@@ -746,13 +751,16 @@
         nativeInputs =
           map
           (dep: builtins.unsafeDiscardStringContext (toString dep))
-          ((args.buildDeps or []) ++ (args.runtimeDeps or []));
+          (
+            builtins.map spliceBuildDependency (args.buildDeps or [])
+            ++ (args.runtimeDeps or [])
+          );
       }
       // (args.cargoArtifactContract or {});
     inheritedArtifacts = args.cargoArtifacts or null;
     cargoBuildOnlyReferences =
       [args.cargoDeps cargoBuildTool]
-      ++ lib.optional (stdenv.isCross && stdenv.hostPlatform.isDarwin) cargoBuildToolchain
+      ++ lib.optional stdenv.isCross cargoBuildToolchain
       ++ lib.optional (inheritedArtifacts != null) inheritedArtifacts;
     artifactsCompatible =
       inheritedArtifacts

@@ -29,6 +29,8 @@ rustix = { workspace = true }
 aos-contract = { workspace = true }
 aos-core = { workspace = true }
 aos-net = { workspace = true }
+aos-oci = { workspace = true }
+aos-oci-types = { workspace = true }
 aos-server = { workspace = true }
 aos-cache = { workspace = true }
 aos-remote = { workspace = true }
@@ -76,3 +78,11 @@ zeroize = { workspace = true }
 tempfile = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
+
+[dev-dependencies]
+aos-hub = { workspace = true }
+aos-hub-core = { workspace = true, features = ["test-fixtures"] }
+aos-registry-surface = { workspace = true }
+flate2 = { workspace = true }
+tar = { workspace = true }
+uuid = { workspace = true }

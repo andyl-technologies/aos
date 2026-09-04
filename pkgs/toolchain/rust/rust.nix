@@ -24,7 +24,7 @@
     hash = "sha256-TCMKRLPZyfPO+VCUNxn4OABY0nyR/aXjapqUfvAT4B8=";
   };
 in
-  if stdenv.hostPlatform.isDarwin
+  if stdenv.isCross
   then let
     buildTool = import ./_rust-darwin-build-tool.nix {
       inherit buildPackages src version;
@@ -36,36 +36,43 @@ in
       nativeLlvm = buildPackages.llvm;
     };
   in
-    import ./_rust-darwin.nix {
-      inherit
-        mkDerivation
-        version
-        src
-        buildPackages
-        stdenv
-        gnumake
-        cmake
-        ninja
-        pkg-config
-        python3
-        openssl
-        zlib
-        ;
-      pname = "rust";
-      changeId = 148795;
-      configFileName = "bootstrap.toml";
-      nativeRust = buildPackages.rust-1_92;
-      nativeLlvm = buildPackages.llvm;
-      targetLlvm = llvm;
-      additionalTargets = ["wasm32-unknown-unknown"];
-      tools = ["cargo" "rustdoc" "clippy" "rustfmt" "rust-analyzer" "src"];
-      outputs = ["out" "dev"];
-      profiler = true;
-      needsDownloadRustc = true;
-      disableLld = true;
-      description = "Rust ${version} — Darwin-hosted compiler, Cargo, tools, and standard library";
-      inherit buildTool;
-    }
+    if stdenv.hostPlatform.isDarwin
+    then
+      import ./_rust-darwin.nix {
+        inherit
+          mkDerivation
+          version
+          src
+          buildPackages
+          stdenv
+          gnumake
+          cmake
+          ninja
+          pkg-config
+          python3
+          openssl
+          zlib
+          ;
+        pname = "rust";
+        changeId = 148795;
+        configFileName = "bootstrap.toml";
+        nativeRust = buildPackages.rust-1_92;
+        nativeLlvm = buildPackages.llvm;
+        targetLlvm = llvm;
+        additionalTargets = ["wasm32-unknown-unknown"];
+        tools = ["cargo" "rustdoc" "clippy" "rustfmt" "rust-analyzer" "src"];
+        outputs = ["out" "dev"];
+        profiler = true;
+        needsDownloadRustc = true;
+        disableLld = true;
+        description = "Rust ${version} — Darwin-hosted compiler, Cargo, tools, and standard library";
+        inherit buildTool;
+      }
+    else
+      buildTool
+      // {
+        passthru = (buildTool.passthru or {}) // {inherit buildTool;};
+      }
   else
     mkDerivation {
       pname = "rust";
@@ -145,7 +152,10 @@ in
 
             [rust]
             channel = "stable"
-            codegen-units = 0
+            # Later bootstrap compilers corrupt allocator state even at 32
+            # codegen units on this large host. Keep the final compiler within
+            # the same 16-way proven boundary as its immediate bootstrap tiers.
+            codegen-units = 16
             rpath = true
             omit-git-hash = true
             download-rustc = false
@@ -183,6 +193,10 @@ in
         {
           name = "build";
           script = ''
+            # x.py creates nested compiler work beyond its nominal job count;
+            # cap Rust alone while other packages may consume all 128 cores.
+            rustJobs=$NIX_BUILD_CORES
+            test "$rustJobs" -le 16 || rustJobs=16
             export PATH="$PWD/.fake-bin:$PATH"
             export OPENSSL_DIR=${openssl}
             export OPENSSL_LIB_DIR=${openssl}/lib
@@ -194,12 +208,16 @@ in
             # with the corresponding target-specific compiler environment too.
             export CFLAGS_wasm32_unknown_unknown="-ffile-prefix-map=$PWD=/rustc/${version}"
             export CXXFLAGS_wasm32_unknown_unknown="-ffile-prefix-map=$PWD=/rustc/${version}"
-            python3 x.py build -j $NIX_BUILD_CORES
+            python3 x.py build -j $rustJobs
           '';
         }
         {
           name = "install";
           script = ''
+                    # Extended-tool installation performs real compilation;
+                    # keep it under the same scheduler bound as `x.py build`.
+                    rustJobs=$NIX_BUILD_CORES
+                    test "$rustJobs" -le 16 || rustJobs=16
                     export PATH="$PWD/.fake-bin:$PATH"
                     export OPENSSL_DIR=${openssl}
                     export OPENSSL_LIB_DIR=${openssl}/lib
@@ -214,7 +232,7 @@ in
                     # `x.py install src`: that treats "src" as a path filter,
                     # matches a docs step, and panics on the absent doc dir
                     # (docs = false).
-                    python3 x.py install
+                    python3 x.py install -j $rustJobs
 
                     # Supply `rust-lld` for wasm32-unknown-unknown. rustc links the
                     # bare wasm target with the self-contained `rust-lld` found at

@@ -34,12 +34,15 @@
       ];
       # Immutable identity and every runtime dependency resolve through the
       # target root's /nix overlay. Merely waiting for /var leaves recovery
-      # racing nix-overlay-setup on first boot.
+      # racing nix-overlay-setup on first boot. Recovery also reads the mounted
+      # target root itself, so keep sysroot as an explicit ordering dependency.
       requires = [
+        "sysroot.mount"
         "mount-var.service"
         "nix-overlay-setup.service"
       ];
       after = [
+        "sysroot.mount"
         "mount-var.service"
         "nix-overlay-setup.service"
       ];

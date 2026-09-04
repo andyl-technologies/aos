@@ -1,8 +1,8 @@
 //! Atomic retirement of a registry's logical Hub state.
 //!
 //! Registry deletion removes SQL topology, publication, and derived-delivery
-//! records while intentionally retaining bytes in the configured storage
-//! provider. Restrictive composite foreign keys encode useful live-state
+//! records only after transactional OCI GC proves every provider placement
+//! empty. Restrictive composite foreign keys encode useful live-state
 //! invariants, so retirement dismantles the owned graph from leaves to roots
 //! in one checked transaction. Active publication work and cache-retention
 //! roots fail closed before that transaction begins.
@@ -15,8 +15,10 @@ use crate::backend::{CheckedStatement, Statement};
 impl Database {
     /// Deletes a quiescent registry identity and records the transition atomically.
     ///
-    /// Physical provider objects are not deleted. The registry must have no
-    /// active publication, upload, legacy publish lease, or retained cache root.
+    /// Physical provider deletion is performed before this call by reviewed
+    /// OCI GC actions. The registry must have no logical catalog identity,
+    /// provider-inventory key, active work, snapshot attribution, legacy
+    /// publish lease, or retained cache root.
     /// Terminal publication history and owned topology are retired with the
     /// registry so restrictive foreign keys cannot leave a half-deleted graph.
     ///
@@ -42,6 +44,11 @@ impl Database {
             return Ok(false);
         }
 
+        let now = unix_now();
+        let oci_blockers = self.oci_registry_purge_blockers(registry_id, now).await?;
+        if oci_blockers.any() {
+            bail!("registry still has OCI catalog, provider, session, snapshot, or GC state");
+        }
         let blocked = self
             .backend
             .query_opt(
@@ -68,7 +75,7 @@ impl Database {
             bail!("registry still supplies retained binary-cache roots");
         }
 
-        let now = unix_now();
+        let oldest_inventory = now.saturating_sub(super::OCI_GC_MAX_INVENTORY_AGE_SECONDS);
         let old_json = serde_json::to_string(&serde_json::json!({
             "stableId": &current.stable_id,
             "slug": &current.slug,
@@ -118,8 +125,94 @@ impl Database {
                        AND NOT EXISTS (SELECT 1 FROM publish_leases
                          WHERE registry_id = ?1)
                        AND NOT EXISTS (SELECT 1 FROM cache_root_reasons
-                         WHERE registry_id = ?1)",
-                    vals![registry_id, current.scope_key, expected_version],
+                         WHERE registry_id = ?1)
+                       AND NOT EXISTS (SELECT 1 FROM oci_repositories
+                         WHERE registry_id = ?1)
+                       AND NOT EXISTS (SELECT 1 FROM oci_blobs
+                         WHERE registry_id = ?1)
+                       AND NOT EXISTS (SELECT 1 FROM oci_upload_sessions
+                         WHERE registry_id = ?1 AND state IN('active', 'completing'))
+                       AND NOT EXISTS (SELECT 1 FROM oci_publication_sessions
+                         WHERE registry_id = ?1 AND state IN('preparing', 'committing'))
+                       AND NOT EXISTS (SELECT 1 FROM oci_leases
+                         WHERE registry_id = ?1 AND expires_at > ?4)
+                       AND NOT EXISTS (SELECT 1 FROM oci_gc_runs
+                         WHERE registry_id = ?1 AND state IN('planned', 'applying'))
+                       AND NOT EXISTS (SELECT 1 FROM oci_gc_placement_actions
+                         WHERE registry_id = ?1
+                           AND state IN('pending', 'claimed', 'failed'))
+                       AND NOT EXISTS (SELECT 1 FROM oci_untracked_repair_plans
+                         WHERE registry_id = ?1
+                           AND state IN('planned', 'pending', 'claimed', 'failed'))
+                       AND NOT EXISTS (SELECT 1 FROM image_snapshot_references
+                         WHERE registry_id = ?1)
+                       AND NOT EXISTS (SELECT 1 FROM oci_gc_snapshot_lease_holds
+                         WHERE registry_id = ?1)
+                       AND EXISTS (SELECT 1 FROM oci_registry_purge_fences purge
+                         WHERE purge.registry_id = ?1 AND purge.state = 'collecting'
+                           AND purge.registry_resource_version = ?3
+                           AND purge.captured_mutation_epoch =
+                             (SELECT mutation_epoch FROM oci_registry_state
+                              WHERE registry_id = ?1))
+                       AND NOT EXISTS (SELECT 1
+                         FROM oci_provider_inventory_entries entry
+                         JOIN oci_provider_inventory_heads head
+                           ON head.generation_id = entry.generation_id
+                          AND head.placement_id = entry.placement_id
+                         WHERE entry.registry_id = ?1 AND entry.deleted_at IS NULL)
+                       AND NOT EXISTS (SELECT 1
+                         FROM oci_provider_inventory_generations inventory
+                         WHERE inventory.registry_id = ?1
+                           AND inventory.state IN('collecting', 'sealing'))
+                       AND NOT EXISTS (SELECT 1 FROM surface_placements placement
+                         WHERE placement.registry_id = ?1 AND NOT EXISTS (
+                           SELECT 1 FROM oci_provider_inventory_heads head
+                           JOIN oci_provider_inventory_generations inventory
+                             ON inventory.id = head.generation_id
+                           JOIN oci_registry_state registry_state
+                             ON registry_state.registry_id = inventory.registry_id
+                           JOIN surface_placement_observations observation
+                             ON observation.placement_id = placement.id
+                           JOIN bindings binding ON binding.id = placement.binding_id
+                           JOIN binding_write_state write_state
+                             ON write_state.binding_id = binding.id
+                           WHERE head.placement_id = placement.id
+                             AND inventory.state = 'complete'
+                             AND inventory.observed_at >= ?5
+                             AND inventory.captured_mutation_epoch =
+                               registry_state.mutation_epoch
+                             AND inventory.placement_resource_version =
+                               placement.resource_version
+                             AND inventory.placement_write_spec_version =
+                               placement.write_spec_version
+                             AND inventory.placement_observation_version =
+                               observation.observation_version
+                             AND inventory.binding_resource_version =
+                               binding.resource_version
+                             AND inventory.binding_write_revision =
+                               write_state.current_write_revision
+                             AND inventory.purge_fence_resource_version =
+                               (SELECT resource_version FROM oci_registry_purge_fences purge
+                                WHERE purge.registry_id = ?1 AND purge.state = 'collecting')
+                             AND inventory.object_count = 0
+                             AND inventory.started_at >=
+                               (SELECT created_at FROM oci_registry_purge_fences purge
+                                WHERE purge.registry_id = ?1 AND purge.state = 'collecting')
+                             AND inventory.observed_at >=
+                               (SELECT created_at FROM oci_registry_purge_fences purge
+                                WHERE purge.registry_id = ?1 AND purge.state = 'collecting')
+                             AND NOT EXISTS (SELECT 1
+                               FROM oci_provider_inventory_generations failed
+                               WHERE failed.placement_id = placement.id
+                                 AND failed.state = 'failed'
+                                 AND failed.started_at > inventory.started_at)))",
+                    vals![
+                        registry_id,
+                        current.scope_key,
+                        expected_version,
+                        now,
+                        oldest_inventory
+                    ],
                 )
                 .expecting(1),
                 // Lock every owned route and placement before cancelling
@@ -296,6 +389,21 @@ impl Database {
                 .unchecked(),
                 delete("registry_publication_placements", registry_id),
                 delete("registry_publication_objects", registry_id),
+                // Reviewed OCI GC history is self-contained and may be retired
+                // only after the atomic empty-provider assertion above.
+                delete("oci_gc_runs", registry_id),
+                delete("oci_untracked_repair_plans", registry_id),
+                delete("oci_provider_inventory_heads", registry_id),
+                delete("oci_provider_inventory_generations", registry_id),
+                delete("oci_admin_mutations", registry_id),
+                delete("oci_upload_sessions", registry_id),
+                delete("oci_publication_sessions", registry_id),
+                delete("oci_quota_reservations", registry_id),
+                delete("oci_retention_policies", registry_id),
+                delete("oci_gc_generations", registry_id),
+                delete("oci_uploads", registry_id),
+                delete("oci_publications", registry_id),
+                delete("oci_registry_state", registry_id),
                 delete("registry_placement_publication_watermarks", registry_id),
                 delete("registry_index_publication_state", registry_id),
                 delete("object_placements", registry_id),

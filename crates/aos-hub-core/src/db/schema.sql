@@ -190,13 +190,13 @@ CREATE TABLE channels(
 CREATE TABLE channel_partitions(
   channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
   bucket INTEGER NOT NULL,
-  release TEXT NOT NULL,
+  release KEYTEXT255 NOT NULL,
   PRIMARY KEY(channel_id, bucket)
 );
 CREATE TABLE releases(
   id INTEGER PRIMARY KEY,
   registry_id INTEGER NOT NULL REFERENCES registries(id) ON DELETE CASCADE,
-  semver TEXT NOT NULL,
+  semver KEYTEXT255 NOT NULL,
   tag_oid TEXT NOT NULL,
   commit_oid TEXT NOT NULL,
   signer TEXT,
@@ -335,7 +335,7 @@ CREATE TABLE magic_links(
 CREATE TABLE audit_log(
   id INTEGER PRIMARY KEY,
   outbox_event_id KEYTEXT64 UNIQUE,
-  change_id TEXT, -- ties to a changeset(nullable)
+  change_id KEYTEXT64, -- ties to a changeset(nullable)
   actor_kind TEXT NOT NULL, -- user|service_account|key|system
   actor_id INTEGER, -- principal row id, when applicable
   actor_label TEXT NOT NULL, -- human string(email, sa:org/name, fpr, system)
@@ -349,7 +349,7 @@ CREATE TABLE audit_log(
 CREATE INDEX audit_log_scope_idx ON audit_log(scope, id);
 CREATE INDEX audit_log_change_idx ON audit_log(change_id);
 CREATE TABLE change_requests(
-  change_id TEXT PRIMARY KEY, -- UUID v4
+  change_id KEYTEXT64 PRIMARY KEY, -- UUID v4
   actor_kind TEXT NOT NULL,
   actor_id INTEGER,
   actor_label TEXT NOT NULL,
@@ -358,7 +358,7 @@ CREATE TABLE change_requests(
   summary TEXT,
   created_at INTEGER NOT NULL,
   applied_at INTEGER,
-  reverted_by_change_id TEXT
+  reverted_by_change_id KEYTEXT64
   ,
   git_ref TEXT,
   git_commit TEXT,
@@ -372,7 +372,7 @@ CREATE INDEX change_requests_scope_idx ON change_requests(
 );
 CREATE TABLE change_request_revisions(
   id INTEGER PRIMARY KEY,
-  change_id TEXT NOT NULL REFERENCES change_requests(change_id) ON DELETE CASCADE,
+  change_id KEYTEXT64 NOT NULL REFERENCES change_requests(change_id) ON DELETE CASCADE,
   object_type TEXT NOT NULL,
   object_id TEXT NOT NULL,
   op TEXT NOT NULL, -- create|update|delete
@@ -753,7 +753,7 @@ CREATE TABLE rate_limits(
 );
 CREATE TABLE change_comments(
   id INTEGER PRIMARY KEY,
-  change_id TEXT NOT NULL REFERENCES change_requests(change_id) ON DELETE CASCADE,
+  change_id KEYTEXT64 NOT NULL REFERENCES change_requests(change_id) ON DELETE CASCADE,
   actor_kind TEXT NOT NULL,
   actor_id INTEGER,
   actor_label TEXT NOT NULL,
@@ -763,7 +763,7 @@ CREATE TABLE change_comments(
 CREATE INDEX change_comments_change_idx ON change_comments(change_id, id);
 CREATE TABLE change_reviews(
   id INTEGER PRIMARY KEY,
-  change_id TEXT NOT NULL REFERENCES change_requests(change_id) ON DELETE CASCADE,
+  change_id KEYTEXT64 NOT NULL REFERENCES change_requests(change_id) ON DELETE CASCADE,
   actor_kind TEXT NOT NULL,
   actor_id INTEGER,
   actor_label TEXT NOT NULL,
@@ -1476,7 +1476,7 @@ OR(lifecycle_state = 'tombstoned' AND tombstoned_at IS NOT NULL)),
 CREATE INDEX surface_objects_partition_key_idx ON surface_objects(partition_key);
 CREATE TABLE registry_image_roots(
   registry_id INTEGER NOT NULL,
-  release TEXT NOT NULL,
+  release KEYTEXT255 NOT NULL,
   surface_object_id INTEGER NOT NULL,
   object_role KEYTEXT16 NOT NULL,
   expected_hash KEYTEXT128 NOT NULL,
@@ -1516,7 +1516,7 @@ CREATE INDEX image_snapshot_leases_digest_idx
 ON image_snapshot_leases(digest, expires_at);
 CREATE TABLE registry_system_images(
   registry_id INTEGER NOT NULL,
-  release TEXT NOT NULL,
+  release KEYTEXT255 NOT NULL,
   source_commit KEYTEXT128 NOT NULL,
   verified_tag_oid KEYTEXT128 NOT NULL,
   catalog_digest KEYTEXT128 NOT NULL,

@@ -7,6 +7,7 @@
   pkg-config,
   libbpf,
   json-c,
+  buildPackages,
 }: let
   targetArchBySystem = {
     "x86_64-linux" = "x86";
@@ -42,7 +43,7 @@ in
           mkdir -p $out/bin $out/lib/bpf $out/share/aos/ebpf-lsm
           cp ${bpfSource} aos-ebpf-lsm-policy.bpf.c
 
-          ${llvm}/bin/clang -target bpf -O2 -g \
+          ${buildPackages.llvm}/bin/clang -target bpf -O2 -g \
             -D__TARGET_ARCH_${targetArch} \
             -I${linux-headers}/include \
             -I${libbpf}/include \
@@ -52,7 +53,7 @@ in
 
           # clang -g emits BTF (for CO-RE) but also DWARF embedding the
           # kernel-headers path. Strip DWARF; .BTF is retained, CO-RE works.
-          ${llvm}/bin/llvm-strip -g $out/lib/bpf/aos-ebpf-lsm-task-audit.bpf.o
+          ${buildPackages.llvm}/bin/llvm-strip -g $out/lib/bpf/aos-ebpf-lsm-task-audit.bpf.o
 
           $CC -O2 -Wall -Wextra -Werror \
             -I${linux-headers}/include \
@@ -69,6 +70,21 @@ in
           JSON
         '';
       }
+    ];
+
+    passthru.evidenceSources = [
+      (builtins.path {
+        path = ./aos-ebpf-lsm-policy.nix;
+        name = "aos-ebpf-lsm-policy.nix";
+      })
+      (builtins.path {
+        path = bpfSource;
+        name = "aos-ebpf-lsm-policy.bpf.c";
+      })
+      (builtins.path {
+        path = loaderSource;
+        name = "aos-ebpf-lsm-policy.c";
+      })
     ];
 
     checks = {

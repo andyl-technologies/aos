@@ -233,6 +233,25 @@ pub trait Backend: BackendBounds {
     /// whole batch is then rolled back.
     async fn batch(&self, stmts: &[Statement]) -> Result<()>;
 
+    /// Applies a version-guarded migration batch atomically.
+    ///
+    /// Backends that can have concurrent starters should override this to lock
+    /// the schema-version row before deciding whether `stmts` still apply. The
+    /// default is sufficient for single-writer transactional backends such as
+    /// a Durable Object.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the migration batch fails.
+    async fn migration_batch(
+        &self,
+        _expected_current: i64,
+        _target: i64,
+        stmts: &[Statement],
+    ) -> Result<()> {
+        self.batch(stmts).await
+    }
+
     /// Runs an atomic batch and rolls it back when an affected-row assertion fails.
     ///
     /// # Errors

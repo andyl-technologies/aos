@@ -53,7 +53,14 @@ in
             fi
           done
 
+          build_cc=''${BUILD_CC:-$CC}
+
           make -j$NIX_BUILD_CORES \
+            CC="$CC" \
+            AR="$AR" \
+            RANLIB="$RANLIB" \
+            OBJCOPY="${binutils}/bin/objcopy" \
+            BUILD_CC="$build_cc" \
             prefix=$out \
             lib=lib \
             SHARED=yes \
@@ -65,7 +72,14 @@ in
       {
         name = "install";
         script = ''
+          build_cc=''${BUILD_CC:-$CC}
+
           make install \
+            CC="$CC" \
+            AR="$AR" \
+            RANLIB="$RANLIB" \
+            OBJCOPY="${binutils}/bin/objcopy" \
+            BUILD_CC="$build_cc" \
             prefix=$out \
             lib=lib \
             SHARED=yes \

@@ -182,6 +182,15 @@ mkDerivation {
     }
   ];
 
+  # The installed shell program is generated inline above, so the package
+  # definition is its complete corresponding source.
+  passthru.evidenceSources = [
+    (builtins.path {
+      path = ./aos-verity-root-guard.nix;
+      name = "aos-verity-root-guard.nix";
+    })
+  ];
+
   meta = {
     description = "Require service RootImage mounts to use the expected dm-verity device";
     license = "MIT";

@@ -25,6 +25,10 @@
 //! /{slug}/-/packages               package index (HTML; ?filter/?sort/?page)
 //! /{slug}/-/packages/{name}        package detail (HTML)
 //! /{slug}/-/images                 signed system-image downloads (HTML)
+//! /{slug}/-/containers             public OCI repository index (HTML)
+//! /{slug}/-/containers/repository  repository and tags (?repository=)
+//! /{slug}/-/containers/tag         tag, digest, and platforms (?repository=&tag=)
+//! /{slug}/-/containers/manifest    immutable manifest (?repository=&digest=)
 //! /{slug}/-/channels               channel index (HTML)
 //! /{slug}/-/channels/{name}        channel 256-partition grid (HTML; ?bucket)
 //! /{slug}/-/releases               releases (HTML)
@@ -391,6 +395,14 @@ pub struct BrowseQuery {
     pub platform: Option<String>,
     /// Exact package version selection.
     pub version: Option<String>,
+    /// Exact OCI repository selected on a public container detail page.
+    pub repository: Option<String>,
+    /// Exact OCI tag selected on a public container tag page.
+    pub tag: Option<String>,
+    /// Exact OCI manifest digest selected on a public container manifest page.
+    pub digest: Option<String>,
+    /// Opaque OCI administration cursor for the next public result page.
+    pub cursor: Option<String>,
 }
 
 impl BrowseQuery {
@@ -423,6 +435,10 @@ impl BrowseQuery {
                 "to" => out.to = Some(value.into_owned()),
                 "platform" => out.platform = Some(value.into_owned()),
                 "version" => out.version = Some(value.into_owned()),
+                "repository" => out.repository = Some(value.into_owned()),
+                "tag" => out.tag = Some(value.into_owned()),
+                "digest" => out.digest = Some(value.into_owned()),
+                "cursor" => out.cursor = Some(value.into_owned()),
                 "page" => out.page = value.parse().ok(),
                 "page_size" => out.page_size = value.parse().ok(),
                 "page_token" => out.page_token = Some(value.into_owned()),
@@ -671,6 +687,263 @@ pub async fn images(
             format: query.format.as_deref(),
             target: query.target.as_deref(),
         },
+        started,
+        &session,
+    ))
+}
+
+/// Lists OCI repositories visible through one registry.
+///
+/// Anonymous callers can open this page only for public registries. Internal
+/// and private registries retain the same session-aware non-disclosure policy
+/// as every other browse page.
+pub async fn containers(
+    svc: &RpcService,
+    headers: &HeaderMap,
+    slug: &str,
+    query: &BrowseQuery,
+) -> Rendered {
+    if let Some(limited) = browse_rate_limited(svc, headers).await {
+        return limited;
+    }
+    let started = Instant::now();
+    let Some((registry, status)) = load_visible(svc, headers, slug).await else {
+        return Rendered::NotFound;
+    };
+    if !svc.container_rollout.pull {
+        return Rendered::ServiceUnavailable;
+    }
+    let filter = crate::db::OciRepositoryListFilter {
+        repository_prefix: query.query().map(str::to_string),
+        lifecycle_state: Some("active".to_string()),
+    };
+    let Ok(page) = svc
+        .db
+        .list_oci_admin_repositories(
+            registry.id,
+            &filter,
+            crate::db::OCI_ADMIN_MAX_PAGE_SIZE,
+            query.cursor.as_deref(),
+        )
+        .await
+    else {
+        return Rendered::NotFound;
+    };
+    let authority = svc
+        .container_distribution_authority(registry.id)
+        .await
+        .ok()
+        .flatten();
+    let session = session_indicator(svc, headers).await;
+    Rendered::Html(crate::web::container_browse_pages::repository_index(
+        &registry,
+        status.as_ref(),
+        &page.items,
+        authority.as_deref(),
+        query.query(),
+        page.next_cursor.as_deref(),
+        started,
+        &session,
+    ))
+}
+
+/// Shows one OCI repository and its current public tag pointers.
+pub async fn container_repository(
+    svc: &RpcService,
+    headers: &HeaderMap,
+    slug: &str,
+    query: &BrowseQuery,
+) -> Rendered {
+    if let Some(limited) = browse_rate_limited(svc, headers).await {
+        return limited;
+    }
+    let Some(repository_name) = query.repository.as_deref() else {
+        return Rendered::NotFound;
+    };
+    let Ok(repository_name) = aos_oci_types::RepositoryName::parse(repository_name) else {
+        return Rendered::NotFound;
+    };
+    let started = Instant::now();
+    let Some((registry, status)) = load_visible(svc, headers, slug).await else {
+        return Rendered::NotFound;
+    };
+    if !svc.container_rollout.pull {
+        return Rendered::ServiceUnavailable;
+    }
+    let Ok(Some(repository)) = svc
+        .db
+        .oci_admin_repository(registry.id, &repository_name)
+        .await
+    else {
+        return Rendered::NotFound;
+    };
+    let Ok(page) = svc
+        .db
+        .list_oci_admin_tags(
+            registry.id,
+            &repository_name,
+            &crate::db::OciTagListFilter::default(),
+            crate::db::OCI_ADMIN_MAX_PAGE_SIZE,
+            query.cursor.as_deref(),
+        )
+        .await
+    else {
+        return Rendered::NotFound;
+    };
+    let authority = svc
+        .container_distribution_authority(registry.id)
+        .await
+        .ok()
+        .flatten();
+    let session = session_indicator(svc, headers).await;
+    Rendered::Html(crate::web::container_browse_pages::repository(
+        &registry,
+        status.as_ref(),
+        &repository,
+        &page.items,
+        authority.as_deref(),
+        page.next_cursor.as_deref(),
+        started,
+        &session,
+    ))
+}
+
+/// Shows one current OCI tag, its immutable target, and runnable platforms.
+pub async fn container_tag(
+    svc: &RpcService,
+    headers: &HeaderMap,
+    slug: &str,
+    query: &BrowseQuery,
+) -> Rendered {
+    if let Some(limited) = browse_rate_limited(svc, headers).await {
+        return limited;
+    }
+    let (Some(repository), Some(tag)) = (query.repository.as_deref(), query.tag.as_deref()) else {
+        return Rendered::NotFound;
+    };
+    let (Ok(repository), Ok(tag)) = (
+        aos_oci_types::RepositoryName::parse(repository),
+        aos_oci_types::Tag::parse(tag),
+    ) else {
+        return Rendered::NotFound;
+    };
+    let started = Instant::now();
+    let Some((registry, status)) = load_visible(svc, headers, slug).await else {
+        return Rendered::NotFound;
+    };
+    if !svc.container_rollout.pull {
+        return Rendered::ServiceUnavailable;
+    }
+    let Ok(Some(tag_record)) = svc
+        .db
+        .resolve_oci_admin_tag(registry.id, &repository, &tag)
+        .await
+    else {
+        return Rendered::NotFound;
+    };
+    let reference = aos_oci_types::ManifestReference::Digest(tag_record.digest);
+    let Ok(Some(manifest)) = svc
+        .db
+        .oci_admin_manifest(registry.id, &repository, &reference)
+        .await
+    else {
+        return Rendered::NotFound;
+    };
+    let Ok(page) = svc
+        .db
+        .list_oci_admin_platforms(
+            registry.id,
+            &repository,
+            tag_record.digest,
+            crate::db::OCI_ADMIN_MAX_PAGE_SIZE,
+            query.cursor.as_deref(),
+        )
+        .await
+    else {
+        return Rendered::NotFound;
+    };
+    let authority = svc
+        .container_distribution_authority(registry.id)
+        .await
+        .ok()
+        .flatten();
+    let session = session_indicator(svc, headers).await;
+    Rendered::Html(crate::web::container_browse_pages::tag(
+        &registry,
+        status.as_ref(),
+        &repository,
+        &tag_record,
+        &manifest,
+        &page.items,
+        authority.as_deref(),
+        page.next_cursor.as_deref(),
+        started,
+        &session,
+    ))
+}
+
+/// Shows one immutable OCI manifest and its runnable platform projections.
+pub async fn container_manifest(
+    svc: &RpcService,
+    headers: &HeaderMap,
+    slug: &str,
+    query: &BrowseQuery,
+) -> Rendered {
+    if let Some(limited) = browse_rate_limited(svc, headers).await {
+        return limited;
+    }
+    let (Some(repository), Some(digest)) = (query.repository.as_deref(), query.digest.as_deref())
+    else {
+        return Rendered::NotFound;
+    };
+    let (Ok(repository), Ok(digest)) = (
+        aos_oci_types::RepositoryName::parse(repository),
+        aos_oci_types::Sha256Digest::parse(digest),
+    ) else {
+        return Rendered::NotFound;
+    };
+    let reference = aos_oci_types::ManifestReference::Digest(digest);
+    let started = Instant::now();
+    let Some((registry, status)) = load_visible(svc, headers, slug).await else {
+        return Rendered::NotFound;
+    };
+    if !svc.container_rollout.pull {
+        return Rendered::ServiceUnavailable;
+    }
+    let Ok(Some(manifest)) = svc
+        .db
+        .oci_admin_manifest(registry.id, &repository, &reference)
+        .await
+    else {
+        return Rendered::NotFound;
+    };
+    let Ok(page) = svc
+        .db
+        .list_oci_admin_platforms(
+            registry.id,
+            &repository,
+            manifest.digest,
+            crate::db::OCI_ADMIN_MAX_PAGE_SIZE,
+            query.cursor.as_deref(),
+        )
+        .await
+    else {
+        return Rendered::NotFound;
+    };
+    let authority = svc
+        .container_distribution_authority(registry.id)
+        .await
+        .ok()
+        .flatten();
+    let session = session_indicator(svc, headers).await;
+    Rendered::Html(crate::web::container_browse_pages::manifest(
+        &registry,
+        status.as_ref(),
+        &repository,
+        &manifest,
+        &page.items,
+        authority.as_deref(),
+        page.next_cursor.as_deref(),
         started,
         &session,
     ))
@@ -1171,6 +1444,9 @@ pub async fn health(svc: &RpcService, headers: &HeaderMap, slug: &str) -> Render
         }
         if snapshot.spec.serves_web {
             capabilities.push("web".to_string());
+        }
+        if snapshot.spec.serves_oci {
+            capabilities.push("oci".to_string());
         }
         routes.push(pages::RouteHealthRow {
             id: route.id,

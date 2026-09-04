@@ -68,6 +68,39 @@ impl<'a> HashPresentation<'a> {
     }
 }
 
+/// One ready-to-copy client command for an OCI distribution reference.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContainerPullCommand {
+    /// Human-facing client name.
+    pub client: &'static str,
+    /// Complete command passed to the user's shell.
+    pub command: String,
+}
+
+/// Builds pull commands from the exact distribution reference supplied by the Hub.
+///
+/// An absent reference produces no commands. The reference is otherwise used
+/// verbatim: browser or control-plane origins are not suitable substitutes for
+/// the Distribution endpoint selected by the server.
+#[must_use]
+pub fn container_pull_commands(distribution_reference: &str) -> Vec<ContainerPullCommand> {
+    if distribution_reference.is_empty() {
+        return Vec::new();
+    }
+
+    [
+        ("Docker", "docker pull"),
+        ("nerdctl", "nerdctl pull"),
+        ("AOS", "aos container pull"),
+    ]
+    .into_iter()
+    .map(|(client, invocation)| ContainerPullCommand {
+        client,
+        command: format!("{invocation} {distribution_reference}"),
+    })
+    .collect()
+}
+
 /// One page in a scope's deterministic settings navigation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PageSpec {
@@ -682,10 +715,17 @@ pub const REGISTRY_PAGES: &[PageSpec] = &[
     ),
     PageSpec::new(
         "images",
-        "Images",
+        "System images",
         "Publishing",
         "images",
         "registry-images",
+    ),
+    PageSpec::new(
+        "containers",
+        "Containers",
+        "Publishing",
+        "containers",
+        "registry-containers",
     ),
     PageSpec::new(
         "packages",
@@ -833,6 +873,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn container_pull_commands_require_and_preserve_the_server_reference() {
+        assert!(container_pull_commands("").is_empty());
+
+        let commands = container_pull_commands("oci.example.test:5443/acme/base@sha256:0123");
+        assert_eq!(
+            commands,
+            vec![
+                ContainerPullCommand {
+                    client: "Docker",
+                    command: "docker pull oci.example.test:5443/acme/base@sha256:0123".to_string(),
+                },
+                ContainerPullCommand {
+                    client: "nerdctl",
+                    command: "nerdctl pull oci.example.test:5443/acme/base@sha256:0123".to_string(),
+                },
+                ContainerPullCommand {
+                    client: "AOS",
+                    command: "aos container pull oci.example.test:5443/acme/base@sha256:0123"
+                        .to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn compact_hash_presentation_preserves_the_full_value() {
         let full = "sha256:0123456789abcdef";
         let presentation = HashPresentation::new(full);
@@ -931,6 +996,7 @@ mod tests {
                     "signing",
                     "tokens",
                     "images",
+                    "containers",
                     "packages",
                     "docs",
                     "mirror",
@@ -1205,6 +1271,55 @@ mod tests {
 
         assert_eq!(caches.base_path, delivery.base_path);
         assert_ne!(caches.base_path, other_registry.base_path);
+    }
+
+    #[test]
+    fn registry_container_route_is_canonical_and_declared() {
+        let route = ConsoleRoute::resolve("/acme/main/-/settings/containers")
+            .expect("registry container route must resolve");
+        assert_eq!(route.page.key, "containers");
+        assert_eq!(route.page.workflow, "registry-containers");
+        assert_eq!(route.base_path, "/acme/main/-/settings");
+    }
+
+    #[test]
+    fn container_workflow_has_no_ssr_data_or_mutation_path() {
+        let source = [
+            include_str!("../../aos-hub-console/src/workflows/registry_containers/mod.rs"),
+            include_str!("../../aos-hub-console/src/workflows/registry_containers/tags.rs"),
+            include_str!("../../aos-hub-console/src/workflows/registry_containers/inspection.rs"),
+            include_str!("../../aos-hub-console/src/workflows/registry_containers/publications.rs"),
+            include_str!("../../aos-hub-console/src/workflows/registry_containers/retention.rs"),
+        ]
+        .join("\n");
+
+        assert!(source.contains("ApiClient"));
+        assert!(source.contains("CONTAINER_SERVICE_LIST_CONTAINER_REPOSITORIES_PATH"));
+        for forbidden in ["#[server", "ServerFn", "server_fn::", "<form action="] {
+            assert!(
+                !source.contains(forbidden),
+                "container workflow introduced an SSR path: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn repository_pull_commands_use_the_explicit_server_distribution_reference() {
+        let repository_source =
+            include_str!("../../aos-hub-console/src/workflows/registry_containers/mod.rs");
+        let component_source = include_str!("../../aos-hub-console/src/components.rs");
+
+        assert!(repository_source.contains(
+            "RepositoryPullCommands distribution_reference=repository.distribution_reference"
+        ));
+        assert!(repository_source.contains("container_pull_commands(&distribution_reference)"));
+        assert!(component_source.contains("data-copy-value=command"));
+        for forbidden in ["window.location", "document.location", "location.origin"] {
+            assert!(
+                !repository_source.contains(forbidden),
+                "pull command inferred a browser origin: {forbidden}"
+            );
+        }
     }
 
     #[test]

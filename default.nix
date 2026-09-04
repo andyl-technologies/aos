@@ -29,6 +29,7 @@
 {
   system ? builtins.currentSystem,
   crossSystem ? null,
+  containerPublicationInputsOverride ? null,
 }: let
   lib = import ./lib {
     inherit system;
@@ -76,8 +77,14 @@
         targetPlatform = hostPlatform;
       }
     else
-      import ./stdenv {
-        inherit buildPlatform hostPlatform;
+      import ./stdenv/linux-cross {
+        inherit
+          lib
+          buildStdenv
+          buildPackages
+          buildPlatform
+          hostPlatform
+          ;
         targetPlatform = hostPlatform;
       };
 
@@ -230,6 +237,61 @@
 
   # The default system used for eval/build checks and package integration tests.
   serverSystem = mkSystem ./systems/server.nix;
+  containerConfigurations = import ./containers {
+    inherit lib pkgs;
+    goldenRoots = discoverSystems.server.config.environment.systemPackages;
+    evidenceOverrides = let
+      artifacts = discoverSystems.server.config.aos.config.artifacts;
+      version = discoverSystems.server.config.aos.system.version;
+      retainedSource = name: source:
+        pkgs.writeTextFile {
+          name = "aos-container-source-${name}";
+          text = builtins.readFile source;
+          destination = "/source/${builtins.baseNameOf source}";
+        };
+      bootStorageSource = retainedSource "boot-storage" ./modules/base/boot-storage.nix;
+    in [
+      {
+        output = artifacts.esp-mount;
+        outputName = "out";
+        pname = "aos-mount-esp";
+        inherit version;
+        licenses = ["Apache-2.0"];
+        sources = [bootStorageSource (retainedSource "mount-esp" ./modules/base/mount-esp.sh.in)];
+      }
+      {
+        output = artifacts.esp-sync;
+        outputName = "out";
+        pname = "aos-sync-esps";
+        inherit version;
+        licenses = ["Apache-2.0"];
+        sources = [bootStorageSource (retainedSource "sync-esps" ./modules/base/sync-esps.sh.in)];
+      }
+    ];
+    aosSystem = hostPlatform.system;
+  };
+  ociBuilders = import ./lib/build/oci {
+    inherit lib;
+    inherit (pkgs) mkDerivation coreutils findutils gzip jq tar;
+  };
+  containerImages =
+    lib.mapAttrs
+    (_: container:
+      import ./lib/containers/build.nix {
+        inherit lib pkgs container;
+        oci = ociBuilders;
+        systemIdentity = {
+          inherit
+            (discoverSystems.server.config.aos.system)
+            name
+            version
+            stateVersion
+            moduleAbi
+            ;
+        };
+      })
+    containerConfigurations;
+  containerDefinitions = lib.mapAttrs (_: image: image.definition) containerImages;
 
   # Testing harness (headless mode for package integration tests)
   testing = import ./lib/testing {inherit pkgs lib;};
@@ -350,6 +412,12 @@
         inherit lib pkgs mkSystem;
         inherit (testing) dataUrl mkDarlingFleetSpec mkDarlingFleetSuite;
         systems = discoverSystems;
+        # Fleet checks consume the exact local-platform production subject and
+        # unsigned signing inputs without importing flake self recursively.
+        containerPublicationInputs =
+          if containerPublicationInputsOverride != null
+          then containerPublicationInputsOverride
+          else containerImages.aos.publicationInputs;
       };
       raw = specModule (
         lib.filterAttrs (name: _: builtins.hasAttr name (builtins.functionArgs specModule))
@@ -1046,7 +1114,7 @@
       referenceIntegrity = crucibleReferenceIntegrity;
     };
 in {
-  inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem packagesWithExpose;
+  inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem packagesWithExpose containerImages containerDefinitions;
 
   # Pure, fail-closed release eligibility data. The release coordinator reads
   # this value with strict JSON evaluation before resolving any derivation.
@@ -1132,6 +1200,9 @@ in {
       gcc-config-shell = import ./tests/build/mk-gcc-config-shell.nix {inherit pkgs lib;};
       hardening-probe = import ./tests/build/hardening-probe.nix {inherit pkgs lib;};
       kernel-config = import ./tests/build/kernel-config.nix {inherit pkgs lib;};
+      linux-cross-smoke = import ./tests/build/linux-cross-smoke.nix {
+        pkgs = buildPackages;
+      };
       package-platform-support = import ./tests/build/package-platform-support.nix {
         pkgs = buildPackages;
       };
@@ -1143,7 +1214,7 @@ in {
       golden-image-budgets = lib.mapAttrs (_: system: system.checks.image-budget) discoverSystems;
     in
       {
-        inherit critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe kernel-config package-platform-support package-root-image systemd-verity golden-image-budgets;
+        inherit critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe kernel-config linux-cross-smoke package-platform-support package-root-image systemd-verity golden-image-budgets;
         # Single target that pulls in the whole build-check group.
         all = pkgs.mkDerivation {
           pname = "aos-build-checks-all";
@@ -1162,6 +1233,9 @@ in {
             {
               name = "check";
               script = ''
+                # Retain the cross-built AArch64 smoke output without treating
+                # it as an executable build tool for this x86_64 aggregate.
+                test -e ${linux-cross-smoke}
                 mkdir -p $out
                 echo "PASS" > $out/result
               '';
@@ -1202,6 +1276,63 @@ in {
     };
     k3s-config = import ./lib/testing/k3s-config.nix {inherit pkgs lib;};
     config-source-gc = import ./lib/testing/config-source-gc.nix {inherit pkgs lib;};
+    container = rec {
+      phase0 = import ./tests/containers/phase0.nix {
+        inherit pkgs lib;
+        goldenRoots = discoverSystems.server.config.environment.systemPackages;
+      };
+      eval = import ./tests/containers/eval.nix {
+        inherit pkgs lib;
+        goldenRoots = discoverSystems.server.config.environment.systemPackages;
+        aosSystem = hostPlatform.system;
+      };
+      oci-builders = import ./tests/containers/oci-builders.nix {inherit pkgs lib;};
+      evidence = import ./tests/containers/evidence.nix {
+        inherit pkgs lib;
+        inherit (containerImages.aos.checks) evidence evidenceRepeat;
+        image = containerImages.aos.ociIndex;
+      };
+      runtime = import ./tests/containers/runtime.nix {
+        inherit pkgs lib;
+        containerImage = containerImages.aos;
+        aosSystem = hostPlatform.system;
+        goldenRoots = discoverSystems.server.config.environment.systemPackages;
+        # These are negative exact-path assertions, not test dependencies. Drop
+        # string context so proving their absence does not build or retain the
+        # bootable system artifacts the container deliberately excludes.
+        forbiddenRuntimeRoots =
+          map
+          (root: builtins.unsafeDiscardStringContext (builtins.toString root))
+          [
+            discoverSystems.server.config.system.build.kernel
+            discoverSystems.server.config.system.build.initrd
+            discoverSystems.server.config.system.build.toplevel
+          ];
+        systemIdentity = {
+          inherit
+            (discoverSystems.server.config.aos.system)
+            name
+            version
+            stateVersion
+            moduleAbi
+            ;
+        };
+      };
+      aos-runtime-closure = containerImages.aos.checks.runtimeAudit;
+      production-reproducibility = containerImages.aos.checks.reproducibility;
+      all = import ./tests/containers/default.nix {
+        inherit pkgs;
+        checks = [
+          phase0
+          eval
+          oci-builders
+          evidence
+          runtime
+          aos-runtime-closure
+          production-reproducibility
+        ];
+      };
+    };
     config-materialize = import ./lib/testing/config-materialize.nix {inherit pkgs lib;};
     config-parity = import ./lib/testing/config-parity.nix {inherit pkgs lib;};
     # Complete non-KVM on-host configuration gate. The image lifecycle and
