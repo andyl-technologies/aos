@@ -31,9 +31,10 @@ pub use inode::{
 };
 pub use limits::TreeCompileLimits;
 pub use presentation::{
-    AclCapability, IdMapExtent, IdentityMap, IdentityMapError, PreparedPresentation,
-    PresentationError, PresentationLimits, PresentationPlan, PresentedAclEntries,
-    PresentedAclRange, PresentedInodeAttributes, PresentedMetadata,
+    AclCapability, IdMapExtent, IdentityMap, IdentityMapError, MetadataTransportError,
+    MetadataTransportLimits, PreparedPresentation, PresentationError, PresentationLimits,
+    PresentationPlan, PresentedAclEntries, PresentedAclRange, PresentedInodeAttributes,
+    PresentedMetadata,
 };
 pub use source::{ExactObject, ObjectSource, SourceError, load_exact};
 pub use worker::{

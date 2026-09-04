@@ -11,10 +11,10 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use aos_filesystem_view::{
     AclCapability, DirectoryHandleLimits, ForgetRequest, INDEX_MEDIA_TYPE, IdMapExtent,
     IdentityMap, IndexContentView, IndexExpectation, IndexNodeBodyView, IndexStaging, InitRequest,
-    InodeError, InodeTable, InodeTableLimits, LookupReply, MetadataConnection, ObjectSource,
-    PreparedPresentation, PresentationError, PresentationLimits, PresentationPlan, ROOT_NODE_ID,
-    ReplyScratch, RequestBudget, TreeCompileLimits, TreeCompiler, Uninterrupted, WorkerError,
-    WorkerLimits, validate_index,
+    InodeError, InodeTable, InodeTableLimits, LookupReply, MetadataConnection,
+    MetadataTransportLimits, ObjectSource, PreparedPresentation, PresentationError,
+    PresentationLimits, PresentationPlan, ROOT_NODE_ID, ReplyScratch, RequestBudget,
+    TreeCompileLimits, TreeCompiler, Uninterrupted, WorkerError, WorkerLimits, validate_index,
 };
 use aos_sandbox_core::format::{encode_directory, encode_tree};
 use aos_sandbox_core::model::{
@@ -292,6 +292,25 @@ fn main() {
     });
     let prepared = prepared.unwrap_or_else(|error| panic!("preparation failed: {error}"));
     assert_eq!(preparation_allocations, 0);
+
+    let (transport_result, transport_allocations) = measure_allocations(|| {
+        prepared.validate_transport_representation(MetadataTransportLimits {
+            maximum_records: 3,
+            maximum_uid: u32::MAX,
+            maximum_gid: u32::MAX,
+            maximum_link_count: u32::MAX,
+            maximum_size: u64::MAX,
+            allocation_unit_bytes: 512,
+            maximum_allocation_units: u64::MAX,
+            minimum_timestamp_seconds: i64::MIN,
+            maximum_timestamp_seconds: i64::MAX,
+            maximum_name_bytes: u64::MAX,
+            maximum_symlink_bytes: u64::MAX,
+            maximum_directory_cookie: u64::MAX,
+        })
+    });
+    transport_result.unwrap_or_else(|error| panic!("transport admission failed: {error}"));
+    assert_eq!(transport_allocations, 0);
 
     let (hot_result, hot_allocations) = measure_allocations(|| {
         for record in index.records() {

@@ -2606,6 +2606,149 @@ fn prepared_presentation_translates_and_reauthenticates_hot_attributes() {
     ));
 }
 
+fn metadata_transport_limits() -> crate::MetadataTransportLimits {
+    crate::MetadataTransportLimits {
+        maximum_records: 4,
+        maximum_uid: 1_007,
+        maximum_gid: 2_008,
+        maximum_link_count: 2,
+        maximum_size: 20,
+        allocation_unit_bytes: 512,
+        maximum_allocation_units: 1,
+        minimum_timestamp_seconds: 0,
+        maximum_timestamp_seconds: 9,
+        maximum_name_bytes: 4,
+        maximum_symlink_bytes: 8,
+        maximum_directory_cookie: 5,
+    }
+}
+
+#[test]
+fn metadata_transport_preflight_checks_every_static_abi_dimension() {
+    let (bytes, tree, root_descriptor) = semantic_index();
+    let index = validate_fresh_with_features(&bytes, &tree, &root_descriptor, FEATURE_ACL)
+        .unwrap_or_else(|error| panic!("validation failed: {error}"));
+    let plan = crate::PresentationPlan::new(presentation_map(), crate::AclCapability::Posix);
+    let prepared = crate::PreparedPresentation::prepare(
+        &index,
+        &plan,
+        7,
+        [8; 32],
+        crate::PresentationLimits::new(4, 7, 2),
+    )
+    .unwrap_or_else(|error| panic!("preparation failed: {error}"));
+
+    prepared
+        .validate_transport_representation(metadata_transport_limits())
+        .unwrap_or_else(|error| panic!("exact transport profile failed: {error}"));
+
+    let reject = |limits, expected| {
+        assert!(matches!(
+            prepared.validate_transport_representation(limits),
+            Err(crate::MetadataTransportError::Unrepresentable(actual)) if actual == expected
+        ));
+    };
+
+    let mut limits = metadata_transport_limits();
+    limits.maximum_uid -= 1;
+    reject(limits, "user identifier");
+    let mut limits = metadata_transport_limits();
+    limits.maximum_gid -= 1;
+    reject(limits, "group identifier");
+    let mut limits = metadata_transport_limits();
+    limits.maximum_link_count -= 1;
+    reject(limits, "link count");
+    let mut limits = metadata_transport_limits();
+    limits.maximum_size -= 1;
+    reject(limits, "metadata size");
+    let mut limits = metadata_transport_limits();
+    limits.maximum_allocation_units = 0;
+    reject(limits, "allocation-unit count");
+    let mut limits = metadata_transport_limits();
+    limits.maximum_timestamp_seconds -= 1;
+    reject(limits, "timestamp seconds");
+    let mut limits = metadata_transport_limits();
+    limits.minimum_timestamp_seconds = 1;
+    reject(limits, "timestamp seconds");
+    let mut limits = metadata_transport_limits();
+    limits.maximum_name_bytes -= 1;
+    reject(limits, "component-name length");
+    let mut limits = metadata_transport_limits();
+    limits.maximum_name_bytes = 1;
+    reject(limits, "synthetic component-name length");
+    let mut limits = metadata_transport_limits();
+    limits.maximum_symlink_bytes -= 1;
+    reject(limits, "symbolic-link target length");
+    let mut limits = metadata_transport_limits();
+    limits.maximum_directory_cookie -= 1;
+    reject(limits, "directory cookie");
+}
+
+#[test]
+fn metadata_transport_preflight_validates_limits_before_scanning() {
+    let (bytes, tree, root_descriptor) = semantic_index();
+    let index = validate_fresh_with_features(&bytes, &tree, &root_descriptor, FEATURE_ACL)
+        .unwrap_or_else(|error| panic!("validation failed: {error}"));
+    let plan = crate::PresentationPlan::new(presentation_map(), crate::AclCapability::Posix);
+    let prepared = crate::PreparedPresentation::prepare(
+        &index,
+        &plan,
+        7,
+        [8; 32],
+        crate::PresentationLimits::new(4, 7, 2),
+    )
+    .unwrap_or_else(|error| panic!("preparation failed: {error}"));
+
+    let mut limits = metadata_transport_limits();
+    limits.maximum_records -= 1;
+    assert!(matches!(
+        prepared.validate_transport_representation(limits),
+        Err(crate::MetadataTransportError::LimitExceeded("record"))
+    ));
+    let mut limits = metadata_transport_limits();
+    limits.allocation_unit_bytes = 0;
+    assert!(matches!(
+        prepared.validate_transport_representation(limits),
+        Err(crate::MetadataTransportError::InvalidLimit(
+            "allocation-unit bytes"
+        ))
+    ));
+    let mut limits = metadata_transport_limits();
+    limits.minimum_timestamp_seconds = 10;
+    assert!(matches!(
+        prepared.validate_transport_representation(limits),
+        Err(crate::MetadataTransportError::InvalidLimit(
+            "timestamp-second range"
+        ))
+    ));
+}
+
+#[test]
+fn metadata_transport_preflight_includes_synthetic_names_for_empty_root() {
+    let (bytes, tree, root_descriptor) = root_index_v3();
+    let index = validate_fresh(&bytes, &tree, &root_descriptor)
+        .unwrap_or_else(|error| panic!("validation failed: {error}"));
+    let plan = crate::PresentationPlan::new(presentation_map(), crate::AclCapability::Posix);
+    let prepared = crate::PreparedPresentation::prepare(
+        &index,
+        &plan,
+        1,
+        [4; 32],
+        crate::PresentationLimits::new(1, 0, 2),
+    )
+    .unwrap_or_else(|error| panic!("preparation failed: {error}"));
+    let mut limits = metadata_transport_limits();
+    limits.maximum_records = 1;
+    limits.maximum_name_bytes = 1;
+
+    assert!(matches!(
+        prepared.validate_transport_representation(limits),
+        Err(crate::MetadataTransportError::Unrepresentable(
+            "synthetic component-name length"
+        ))
+    ));
+}
+
 #[test]
 fn prepared_presentation_rejects_identity_acl_and_nlink_failures() {
     let (bytes, tree, root) = semantic_index();

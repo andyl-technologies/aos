@@ -132,6 +132,62 @@ pub struct PresentationLimits {
     pub maximum_identity_extents: usize,
 }
 
+/// Describes exact scalar and length ranges accepted by a metadata transport.
+///
+/// These limits describe a backend ABI without naming a kernel or transport.
+/// Connection-local node and handle identifiers are not index metadata and
+/// remain subject to independent runtime conversion checks.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MetadataTransportLimits {
+    /// Maximum authenticated index records scanned by the preflight.
+    pub maximum_records: u64,
+    /// Greatest exactly representable presented user identifier.
+    pub maximum_uid: u32,
+    /// Greatest exactly representable presented group identifier.
+    pub maximum_gid: u32,
+    /// Greatest exactly representable link count.
+    pub maximum_link_count: u32,
+    /// Greatest exactly representable metadata size in bytes.
+    pub maximum_size: u64,
+    /// Positive byte unit used to derive allocation-unit metadata.
+    pub allocation_unit_bytes: u64,
+    /// Greatest exactly representable rounded-up allocation-unit count.
+    pub maximum_allocation_units: u64,
+    /// Least exactly representable timestamp second.
+    pub minimum_timestamp_seconds: i64,
+    /// Greatest exactly representable timestamp second.
+    pub maximum_timestamp_seconds: i64,
+    /// Greatest exactly transportable non-root component-name length.
+    pub maximum_name_bytes: u64,
+    /// Greatest exactly transportable symbolic-link target length.
+    pub maximum_symlink_bytes: u64,
+    /// Greatest exactly representable immutable directory cookie.
+    pub maximum_directory_cookie: u64,
+}
+
+/// Reports failure of whole-index metadata-transport representability admission.
+#[derive(Debug, thiserror::Error)]
+pub enum MetadataTransportError {
+    /// The transport profile contains a zero unit or inverted timestamp range.
+    #[error("invalid metadata transport {0} limit")]
+    InvalidLimit(&'static str),
+    /// Admission exceeded the caller-controlled whole-index scan ceiling.
+    #[error("metadata transport admission exceeds its {0} ceiling")]
+    LimitExceeded(&'static str),
+    /// Authenticated metadata cannot be represented by the target profile.
+    #[error("metadata transport cannot represent {0}")]
+    Unrepresentable(&'static str),
+    /// Cooperative admission control cancelled the scan.
+    #[error("metadata transport admission was interrupted")]
+    Interrupted,
+    /// Cooperative admission control's deadline expired.
+    #[error("metadata transport admission timed out")]
+    TimedOut,
+    /// Prepared presentation or authenticated-index validation failed.
+    #[error("metadata transport admission failed: {0}")]
+    Presentation(#[from] PresentationError),
+}
+
 impl PresentationLimits {
     /// Constructs explicit hard limits for presentation admission.
     #[must_use]
@@ -278,6 +334,120 @@ impl<'index, 'bytes, 'plan> PreparedPresentation<'index, 'bytes, 'plan> {
         self.cache_identity
     }
 
+    /// Validates every exposed metadata value against one transport profile.
+    ///
+    /// Validation performs no allocation and begins only after authenticating
+    /// the record-count ceiling. Success covers immutable index metadata; it
+    /// does not cover connection-local node or handle identifiers assigned at
+    /// runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MetadataTransportError`] for an invalid profile, an exceeded
+    /// scan ceiling, metadata outside an admitted scalar or length range, or
+    /// an authenticated-index inconsistency.
+    pub fn validate_transport_representation(
+        &self,
+        limits: MetadataTransportLimits,
+    ) -> Result<(), MetadataTransportError> {
+        self.validate_transport_representation_with(limits, |_| Ok(()))
+    }
+
+    pub(crate) fn validate_transport_representation_with(
+        &self,
+        limits: MetadataTransportLimits,
+        mut checkpoint: impl FnMut(MetadataTransportCheckpoint) -> Result<(), MetadataTransportError>,
+    ) -> Result<(), MetadataTransportError> {
+        if limits.allocation_unit_bytes == 0 {
+            return Err(MetadataTransportError::InvalidLimit(
+                "allocation-unit bytes",
+            ));
+        }
+        if limits.minimum_timestamp_seconds > limits.maximum_timestamp_seconds {
+            return Err(MetadataTransportError::InvalidLimit(
+                "timestamp-second range",
+            ));
+        }
+        if self.index.summary().records > limits.maximum_records {
+            return Err(MetadataTransportError::LimitExceeded("record"));
+        }
+
+        checkpoint(MetadataTransportCheckpoint::BeforeScan)?;
+        for node in self.index.records() {
+            checkpoint(MetadataTransportCheckpoint::DuringScan)?;
+            let node = node.map_err(PresentationError::from)?;
+            let attributes = self.present(&node)?;
+            if attributes.uid() > limits.maximum_uid {
+                return Err(MetadataTransportError::Unrepresentable("user identifier"));
+            }
+            if attributes.gid() > limits.maximum_gid {
+                return Err(MetadataTransportError::Unrepresentable("group identifier"));
+            }
+            if attributes.nlink() > limits.maximum_link_count {
+                return Err(MetadataTransportError::Unrepresentable("link count"));
+            }
+            if attributes.size() > limits.maximum_size {
+                return Err(MetadataTransportError::Unrepresentable("metadata size"));
+            }
+            let allocation_units = attributes.size() / limits.allocation_unit_bytes
+                + u64::from(attributes.size() % limits.allocation_unit_bytes != 0);
+            if allocation_units > limits.maximum_allocation_units {
+                return Err(MetadataTransportError::Unrepresentable(
+                    "allocation-unit count",
+                ));
+            }
+            if !(limits.minimum_timestamp_seconds..=limits.maximum_timestamp_seconds)
+                .contains(&attributes.mtime_seconds())
+            {
+                return Err(MetadataTransportError::Unrepresentable("timestamp seconds"));
+            }
+
+            let name_bytes = u64::try_from(node.name().len())
+                .map_err(|_| MetadataTransportError::Unrepresentable("component-name length"))?;
+            if node.record_id() != 0 && name_bytes > limits.maximum_name_bytes {
+                return Err(MetadataTransportError::Unrepresentable(
+                    "component-name length",
+                ));
+            }
+            match self
+                .index
+                .record_semantics(&node)
+                .map_err(PresentationError::from)?
+                .body()
+            {
+                IndexNodeBodyView::Directory { .. } => {
+                    if limits.maximum_name_bytes < 2 {
+                        return Err(MetadataTransportError::Unrepresentable(
+                            "synthetic component-name length",
+                        ));
+                    }
+                    let maximum_cookie = self
+                        .index
+                        .directory_range(&node)
+                        .map_err(PresentationError::from)?
+                        .len()
+                        .checked_add(2)
+                        .ok_or(MetadataTransportError::Unrepresentable("directory cookie"))?;
+                    if maximum_cookie > limits.maximum_directory_cookie {
+                        return Err(MetadataTransportError::Unrepresentable("directory cookie"));
+                    }
+                }
+                IndexNodeBodyView::Symlink { target } => {
+                    let target_bytes = u64::try_from(target.len()).map_err(|_| {
+                        MetadataTransportError::Unrepresentable("symbolic-link target length")
+                    })?;
+                    if target_bytes > limits.maximum_symlink_bytes {
+                        return Err(MetadataTransportError::Unrepresentable(
+                            "symbolic-link target length",
+                        ));
+                    }
+                }
+                IndexNodeBodyView::File(_) => {}
+            }
+        }
+        checkpoint(MetadataTransportCheckpoint::Complete)
+    }
+
     /// Presents one reauthenticated record without allocating.
     ///
     /// # Errors
@@ -315,6 +485,13 @@ impl<'index, 'bytes, 'plan> PreparedPresentation<'index, 'bytes, 'plan> {
             acl,
         })
     }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum MetadataTransportCheckpoint {
+    BeforeScan,
+    DuringScan,
+    Complete,
 }
 
 /// Borrows allocation-free attributes for one reauthenticated index record.

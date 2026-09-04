@@ -7,11 +7,12 @@
 
 use std::mem::size_of;
 
+use crate::presentation::MetadataTransportCheckpoint;
 use crate::{
     DirectoryHandleId, DirectoryHandleLimits, DirectoryReadKind, DirectoryReservation,
     ForgetRequest, ForgetSummary, IndexError, IndexNodeBodyView, IndexNodeKind, InodeError,
-    InodeLookup, InodeTable, InodeTableLimits, PreparedPresentation, PresentationError,
-    PresentedInodeAttributes, ValidatedIndex,
+    InodeLookup, InodeTable, InodeTableLimits, MetadataTransportError, MetadataTransportLimits,
+    PreparedPresentation, PresentationError, PresentedInodeAttributes, ValidatedIndex,
 };
 
 mod scratch;
@@ -390,6 +391,40 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
     #[must_use]
     pub const fn inode_table(&self) -> &InodeTable<'index, 'bytes> {
         &self.inodes
+    }
+
+    /// Validates all immutable metadata against one transport profile.
+    ///
+    /// The scan observes cooperative cancellation before work, during every
+    /// record, and after the final record. Connection-local node and handle
+    /// identifiers are assigned dynamically and remain subject to independent
+    /// runtime conversion checks.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MetadataTransportError`] when the profile is invalid, the
+    /// bounded scan cannot be admitted, control interrupts or expires, or any
+    /// exposed index metadata is not exactly representable.
+    pub fn validate_transport_representation(
+        &self,
+        limits: MetadataTransportLimits,
+        control: &impl RequestControl,
+    ) -> Result<(), MetadataTransportError> {
+        self.presentation
+            .validate_transport_representation_with(limits, |checkpoint| {
+                let checkpoint = match checkpoint {
+                    MetadataTransportCheckpoint::BeforeScan => RequestCheckpoint::BeforeWork,
+                    MetadataTransportCheckpoint::DuringScan => {
+                        RequestCheckpoint::DuringReadOnlyWork
+                    }
+                    MetadataTransportCheckpoint::Complete => RequestCheckpoint::BeforeCommit,
+                };
+                match control.state(checkpoint) {
+                    RequestControlState::Continue => Ok(()),
+                    RequestControlState::Cancelled => Err(MetadataTransportError::Interrupted),
+                    RequestControlState::DeadlineExpired => Err(MetadataTransportError::TimedOut),
+                }
+            })
     }
 
     /// Negotiates the conservative metadata feature intersection exactly once.

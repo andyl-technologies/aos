@@ -209,6 +209,78 @@ impl RequestControl for StopOnNth {
     }
 }
 
+fn metadata_transport_limits() -> MetadataTransportLimits {
+    MetadataTransportLimits {
+        maximum_records: 5,
+        maximum_uid: u32::MAX,
+        maximum_gid: u32::MAX,
+        maximum_link_count: u32::MAX,
+        maximum_size: u64::MAX,
+        allocation_unit_bytes: 512,
+        maximum_allocation_units: u64::MAX,
+        minimum_timestamp_seconds: i64::MIN,
+        maximum_timestamp_seconds: i64::MAX,
+        maximum_name_bytes: 255,
+        maximum_symlink_bytes: 4096,
+        maximum_directory_cookie: i64::MAX as u64,
+    }
+}
+
+#[test]
+fn transport_preflight_is_controlled_and_does_not_initialize_connection() {
+    let fixture = fixture();
+    let index = fixture.validate();
+    let plan = plan();
+    let presentation =
+        PreparedPresentation::prepare(&index, &plan, 1, [89; 32], PresentationLimits::new(5, 0, 2))
+            .unwrap_or_else(|error| panic!("presentation failed: {error}"));
+    let make_worker = |key| {
+        MetadataConnection::new(
+            &presentation,
+            key,
+            inode_limits(),
+            DirectoryHandleLimits::new(8, 16),
+            worker_limits(),
+        )
+        .unwrap_or_else(|error| panic!("worker failed: {error}"))
+    };
+
+    for (checkpoint, state, interrupted) in [
+        (
+            RequestCheckpoint::BeforeWork,
+            RequestControlState::Cancelled,
+            true,
+        ),
+        (
+            RequestCheckpoint::DuringReadOnlyWork,
+            RequestControlState::DeadlineExpired,
+            false,
+        ),
+        (
+            RequestCheckpoint::BeforeCommit,
+            RequestControlState::Cancelled,
+            true,
+        ),
+    ] {
+        let worker = make_worker([checkpoint as u8; 32]);
+        let result = worker.validate_transport_representation(
+            metadata_transport_limits(),
+            &StopAt { checkpoint, state },
+        );
+        if interrupted {
+            assert!(matches!(result, Err(MetadataTransportError::Interrupted)));
+        } else {
+            assert!(matches!(result, Err(MetadataTransportError::TimedOut)));
+        }
+    }
+
+    let mut worker = make_worker([90; 32]);
+    worker
+        .validate_transport_representation(metadata_transport_limits(), &Uninterrupted)
+        .unwrap_or_else(|error| panic!("transport preflight failed: {error}"));
+    initialize(&mut worker);
+}
+
 #[test]
 fn opendir_synchronous_reply_commits_once_without_post_reply_cancellation() {
     let fixture = fixture();
