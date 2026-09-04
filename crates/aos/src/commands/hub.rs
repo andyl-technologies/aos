@@ -908,7 +908,10 @@ mod tests {
 pub async fn run(printer: &Printer, command: &HubCmd) -> Result<()> {
     if !matches!(
         command,
-        HubCmd::Login { .. } | HubCmd::Logout { .. } | HubCmd::Topology { .. }
+        HubCmd::Login { .. }
+            | HubCmd::Logout { .. }
+            | HubCmd::Topology { .. }
+            | HubCmd::Delivery { .. }
     ) {
         crate::commands::hub_auth::prepare_active_profile().await?;
     }
