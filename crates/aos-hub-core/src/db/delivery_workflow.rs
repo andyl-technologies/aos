@@ -37,12 +37,26 @@ const READY_ROUTE: &str = "SELECT 1 FROM routes r
       AND g.desired_generation = de.gateway_generation
       AND g.observed_generation = de.gateway_generation AND g.reconciliation_state = 'ready'
     JOIN endpoints e ON e.id = de.endpoint_id
+    JOIN endpoint_route_scopes eg ON eg.endpoint_id = r.endpoint_id
+      AND eg.endpoint_generation = r.endpoint_generation
+      AND eg.consumer_scope_key = r.consumer_scope_key AND eg.state = 'active'
+    JOIN gateway_revision_route_scopes gg ON gg.gateway_id = r.gateway_id
+      AND gg.generation = r.gateway_generation
+      AND gg.consumer_scope_key = r.consumer_scope_key AND gg.state = 'active'
+    JOIN binding_consumer_scopes bg ON bg.binding_id = r.target_binding_id
+      AND bg.consumer_scope_key = r.consumer_scope_key AND bg.state = 'active'
+    JOIN network_policy_consumer_scopes ng ON ng.boundary_id = e.network_policy_id
+      AND ng.consumer_scope_key = e.owner_scope_key AND ng.state = 'active'
     JOIN endpoint_observations eo ON eo.endpoint_id = de.endpoint_id
       AND eo.observed_generation = de.endpoint_generation AND eo.state = 'healthy'
       AND eo.listener_observed = 1 AND (e.scheme = 'http' OR eo.tls_observed = 1)
     WHERE r.id = ?1 AND r.enabled = 1 AND r.mode = 'direct'
       AND h.configuration_generation = ?2 AND h.configuration_digest = ?3
-      AND r.resource_version = ?4";
+      AND r.resource_version = ?4
+      AND (r.access_boundary_id IS NULL OR EXISTS (
+        SELECT 1 FROM network_policy_consumer_scopes ag
+        WHERE ag.boundary_id = r.access_boundary_id
+          AND ag.consumer_scope_key = r.consumer_scope_key AND ag.state = 'active'))";
 
 /// One durable delivery destination workflow.
 #[derive(Debug, Clone)]
@@ -108,6 +122,58 @@ fn from_row(row: &Row) -> Result<DeliveryWorkflowRecord> {
 }
 
 impl Database {
+    /// Reserves a resume request or identifies a completed exact replay.
+    ///
+    /// # Errors
+    /// Returns an error for stale initial progress, idempotency-key reuse with
+    /// different input, or database failure.
+    pub async fn begin_delivery_resumption(
+        &self,
+        actor_kind: &str,
+        actor_id: i64,
+        key: &str,
+        workflow_id: &str,
+        expected: i64,
+    ) -> Result<bool> {
+        self.backend
+            .execute(
+                "INSERT INTO delivery_workflow_resumptions
+            (actor_kind, actor_id, request_key, workflow_id, expected_resource_version)
+            SELECT ?1, ?2, ?3, workflow_id, ?5 FROM delivery_workflows
+            WHERE workflow_id = ?4 AND resource_version = ?5
+            ON CONFLICT(actor_kind, actor_id, request_key) DO NOTHING",
+                &vals![actor_kind, actor_id, key, workflow_id, expected],
+            )
+            .await?;
+        let row = self.backend.query_opt("SELECT workflow_id, expected_resource_version, completed
+            FROM delivery_workflow_resumptions WHERE actor_kind = ?1 AND actor_id = ?2 AND request_key = ?3",
+            &vals![actor_kind, actor_id, key]).await?.context("workflow changed; reload before resuming")?;
+        anyhow::ensure!(
+            row.get::<String>(0)? == workflow_id && row.get::<i64>(1)? == expected,
+            "resume idempotency key has different workflow or resource version"
+        );
+        row.get(2)
+    }
+
+    /// Marks a resume request complete after its progress is durably saved.
+    ///
+    /// # Errors
+    /// Returns an error on database failure.
+    pub async fn complete_delivery_resumption(
+        &self,
+        actor_kind: &str,
+        actor_id: i64,
+        key: &str,
+    ) -> Result<()> {
+        self.backend
+            .execute(
+                "UPDATE delivery_workflow_resumptions SET completed = 1
+            WHERE actor_kind = ?1 AND actor_id = ?2 AND request_key = ?3",
+                &vals![actor_kind, actor_id, key],
+            )
+            .await?;
+        Ok(())
+    }
     /// Loads a workflow by immutable identity.
     ///
     /// # Errors
