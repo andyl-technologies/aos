@@ -26,6 +26,7 @@ use aos_release::signing::{
     SignatureAlgorithm, SignerRole, SigningContext, SigningOperation, SigningRequestV1,
     TrustedEd25519Key,
 };
+use aos_release::tuf::TufRole;
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::process::Command;
 
@@ -82,7 +83,6 @@ pub(super) async fn run(args: &ReleaseQualifyRunArgs, printer: &Printer) -> Resu
     let executors = platform_paths(&args.executors)?;
     let identities = platform_values(&args.executor_identities, "executor identity")?;
     let timeout = bounded_timeout(args.executor_timeout_seconds, "executor")?;
-    let objects = public_objects(&plan.registry, &manifest, &captured.manifest_bytes)?;
     let platform_subjects = artifact_platform_subjects(&manifest);
 
     let mut evidence = Vec::new();
@@ -99,7 +99,12 @@ pub(super) async fn run(args: &ReleaseQualifyRunArgs, printer: &Printer) -> Resu
                 policy_digest: gate.policy_digest,
                 platform: *platform,
                 subjects: subjects.clone(),
-                objects: objects.clone(),
+                objects: public_objects(
+                    &plan.registry,
+                    &manifest,
+                    &captured.manifest_bytes,
+                    subjects,
+                )?,
                 nonce: executor_nonce(&args.executor_nonce, &gate.policy_id, *platform),
             };
             request.validate()?;
@@ -208,12 +213,15 @@ fn public_objects(
     registry: &str,
     manifest: &ManifestEnvelopeV1,
     manifest_bytes: &[u8],
+    subjects: &[String],
 ) -> Result<Vec<QualificationObjectV1>> {
     let base = url::Url::parse(&format!("{STAGING_HUB}/{registry}/"))?;
+    let subjects = subjects.iter().map(String::as_str).collect::<BTreeSet<_>>();
     let mut objects = manifest
         .payload
         .artifacts
         .iter()
+        .filter(|artifact| subjects.contains(artifact.id.as_str()))
         .map(|artifact| {
             Ok(QualificationObjectV1 {
                 artifact_id: artifact.id.clone(),
@@ -223,9 +231,22 @@ fn public_objects(
             })
         })
         .collect::<Result<Vec<_>>>()?;
+    let resolved = objects
+        .iter()
+        .map(|object| object.artifact_id.as_str())
+        .collect::<BTreeSet<_>>();
+    if resolved != subjects {
+        bail!("qualification subjects do not resolve to the signed release artifacts");
+    }
     objects.push(QualificationObjectV1 {
         artifact_id: "control/release-manifest-envelope".to_owned(),
-        url: base.join("release-manifest.json")?.to_string(),
+        url: base
+            .join(&format!(
+                "releases/{}/{}/release-manifest.json",
+                TufRole::for_release(manifest.payload.release_class).as_str(),
+                manifest.payload.version
+            ))?
+            .to_string(),
         size_bytes: u64::try_from(manifest_bytes.len())?,
         sha256: Sha256Digest::of_bytes(manifest_bytes),
     });
@@ -293,6 +314,9 @@ async fn invoke_executor(
         let write = async {
             stdin.write_all(&input).await?;
             stdin.shutdown().await?;
+            // The executor reads one canonical JSON document through EOF. A
+            // successful flush is not EOF while the pipe handle remains live.
+            drop(stdin);
             Result::<()>::Ok(())
         };
         let read = read_limited(stdout, MAX_EXECUTOR_RESPONSE_BYTES);

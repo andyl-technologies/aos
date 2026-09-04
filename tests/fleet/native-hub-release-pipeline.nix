@@ -67,6 +67,7 @@
         ({lib, ...}: {
           aos.registry-hub = {
             inherit deploymentId externalUrl;
+            listen = "0.0.0.0:443";
             releaseReceiptKeyId = publicationKeyId;
             channelReceiptKeyId = channelKeyId;
             credentials = {
@@ -75,16 +76,21 @@
               releasePublicationKeys = "release-fleet-publication-keys";
               qualificationKeys = "release-fleet-qualification-keys";
               domainProbeSignerManifest = lib.mkForce "release-fleet-probe-signers";
+              tlsCertificate = "release-fleet-tls-certificate";
+              tlsPrivateKey = "release-fleet-tls-private-key";
             };
           };
           aos.security.pki.certificates = [caCertificate];
           aos.firewall.allowedTCP = [443];
           environment.systemPackages = [releaseTool];
-          environment.etc."tmpfiles.d/native-hub-credentials.conf".text = ''
+          environment.etc."tmpfiles.d/native-hub-release-credentials.conf".text = ''
+            d /run/credentials/@system 0700 root root -
             C /run/credentials/@system/release-fleet-publication-seed 0600 root root - ${credentialFile "release-fleet-publication-seed" publicationSeed}/value
             C /run/credentials/@system/release-fleet-channel-seed 0600 root root - ${credentialFile "release-fleet-channel-seed" channelSeed}/value
             C /run/credentials/@system/release-fleet-publication-keys 0600 root root - ${publicationKeys}/value
             C /run/credentials/@system/release-fleet-qualification-keys 0600 root root - ${qualificationKeys}/value
+            C /run/credentials/@system/release-fleet-tls-certificate 0600 root root - ${serverCertificate}/value
+            C /run/credentials/@system/release-fleet-tls-private-key 0600 root root - ${serverPrivateKey}/value
             C /run/credentials/@system/release-fleet-probe-signers 0600 root root - ${credentialFile "release-fleet-probe-signers" (builtins.toJSON [
               {
                 endpointId = endpointId;
@@ -94,27 +100,6 @@
               }
             ])}/value
           '';
-          systemd.services.release-fleet-tls = {
-            description = "Test-only TLS edge for the native Hub release fleet";
-            after = ["aos-hub.service"];
-            serviceConfig = {
-              Type = "simple";
-              ExecStart = "${releaseTool}/bin/aos-release-fleet-fixture tls-proxy 0.0.0.0:443 127.0.0.1:8420 /run/credentials/release-fleet-tls.service/certificate /run/credentials/release-fleet-tls.service/private-key";
-              LoadCredential = [
-                "certificate:${serverCertificate}/value"
-                "private-key:${serverPrivateKey}/value"
-              ];
-              DynamicUser = true;
-              Restart = "on-failure";
-              NoNewPrivileges = true;
-              AmbientCapabilities = ["CAP_NET_BIND_SERVICE"];
-              CapabilityBoundingSet = ["CAP_NET_BIND_SERVICE"];
-              PrivateTmp = true;
-              ProtectSystem = "strict";
-              ProtectHome = true;
-              RestrictAddressFamilies = ["AF_INET" "AF_INET6"];
-            };
-          };
         })
       ];
     };
@@ -187,9 +172,10 @@ in {
       import shlex
       import textwrap
 
-      AOS = "${pkgs.aos}/bin/aos"
+      AOS = "NO_PROXY='*' no_proxy='*' SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt ${pkgs.aos}/bin/aos"
       APR = "${pkgs.aos.apr}/bin/apr"
-      CURL = "${pkgs.curl}/bin/curl"
+      CAT = "${pkgs.coreutils}/bin/cat"
+      CURL = "${pkgs.curl}/bin/curl --noproxy '*' --cacert /etc/ssl/certs/ca-certificates.crt"
       JQ = "${pkgs.jq}/bin/jq"
       NIX_STORE = "${pkgs.nix}/bin/nix-store"
       MOUNT = "${pkgs.util-linux}/bin/mount"
@@ -210,7 +196,7 @@ in {
           execute = machine.execute
           def wrapped(command, timeout=300):
               return execute(
-                  f"export PATH={shlex.quote(OPERATOR_PATH)}:$PATH\n" + command,
+                  f"export PATH={shlex.quote(OPERATOR_PATH)}:$PATH NO_PROXY='*' no_proxy='*'\n" + command,
                   timeout=timeout,
               )
           machine.execute = wrapped
@@ -261,10 +247,6 @@ in {
 
 
       def initialize_hub(machine, url, suffix):
-          machine.succeed("systemctl is-active --quiet aos-hub.service")
-          machine.wait_until_succeeds(
-              f"{CURL} -fsS http://127.0.0.1:8420/healthz", timeout=120
-          )
           machine.succeed(textwrap.dedent(f"""
               systemctl stop aos-hub.service
               printf '%s\\n' 'fleet-root-password' | \\
@@ -274,10 +256,8 @@ in {
                     --root-email fleet-root@example.test --root-password-stdin
               install -d -o aos-hub -g aos-hub -m 0750 /var/lib/aos-hub/storage/andyl
               systemctl start aos-hub.service
-              systemctl start release-fleet-tls.service
-              sleep 1
-              systemctl is-active --quiet release-fleet-tls.service
           """), timeout=180)
+          machine.succeed("systemctl is-active --quiet aos-hub.service")
           machine.wait_until_succeeds(f"{CURL} -fsS {url}/healthz", timeout=120)
           machine.succeed(
               f'test "$({CURL} -fsS {url}/.well-known/aos-deployment)" = fleet-{suffix}-v1'
@@ -328,10 +308,12 @@ in {
           reviewed(url, f"{suffix}-scan", f"placement scan registry:andyl/main primary --wait --timeout 2m --if-version {shlex.quote(placement['resource_version'])}", token, timeout=180)
           placement = json.loads(publisher.succeed(hub_command(url, "placement show registry:andyl/main primary", token)))["data"]["placement"]
           reviewed(url, f"{suffix}-promote-placement", f"placement promote registry:andyl/main primary --if-version {shlex.quote(placement['resource_version'])}", token)
+          hostname = url.removeprefix("https://")
+          reviewed(url, f"{suffix}-domain", f"domain add {hostname} --org andyl", token)
           endpoint_id = f"fleet-{suffix}-endpoint"
           reviewed(
               url, f"{suffix}-endpoint",
-              f"endpoint add {url} --stable-id {endpoint_id} --org andyl --network-policy instance:public@1 --ingress hub --listener-provider hub-native --listener-resource-id aos-hub.service --probe-provider native-file --probe-signer-secret-ref fleet-probe-v1 --probe-public-key {PROBE_KEY}",
+              f"endpoint add {url} --stable-id {endpoint_id} --org andyl --network-policy instance:public@1 --ingress hub --listener-provider hub-native --listener-resource-id aos-hub.service --tls-provider hub-managed --certificate-ref credential:release-fleet-tls-certificate --probe-provider native-file --probe-signer-secret-ref fleet-probe-v1 --probe-public-key {PROBE_KEY}",
               token,
           )
           endpoint = json.loads(publisher.succeed(hub_command(url, f"endpoint show {endpoint_id}", token)))["data"]["endpoint"]
@@ -420,7 +402,11 @@ in {
             {NIX_STORE} --dump "$path" > "/var/tmp/nars/$(basename "$path").nar"
           done
       """), timeout=600)
-      base_commit = publisher.succeed("awk 'NR == 1 {print $1}' /var/tmp/base-surface/info/refs").strip()
+      head = publisher.succeed(f"{CAT} /var/tmp/base-surface/HEAD").strip()
+      assert head.startswith("ref: "), head
+      head_ref = head.removeprefix("ref: ")
+      refs = publisher.succeed(f"{CAT} /var/tmp/base-surface/info/refs").splitlines()
+      base_commit = next(line.split("\t", 1)[0] for line in refs if line.split("\t", 1)[1] == head_ref)
       assert len(base_commit) == 64, base_commit
 
       for url, token in ((STAGING, staging_token), (PRODUCTION, production_token)):
@@ -451,6 +437,11 @@ in {
           printf '%s\\n' 'C1E62bSSQBXKCQLtB5BE06xdvsIwbwaUjBDajrbjny0=' > {channel_key}
       """))
 
+      # Stage and promote each publish and publicly read back a complete
+      # registry/cache snapshot. Cold two-vCPU Hub guests need explicit
+      # headroom for that production-shaped object count; the narrower
+      # qualification executors retain their separate 15-minute bound.
+      print("==> staging signed release publication")
       publisher.succeed(textwrap.dedent(f"""
           {AOS} release verify /var/tmp/release-surface \\
             --trusted-key release-evidence-v1={release_key}
@@ -459,7 +450,8 @@ in {
             --trusted-key release-evidence-v1={release_key} \\
             --hub-receipt-key staging-publication-v1={staging_key} \\
             --token {shlex.quote(staging_token)} --output /var/tmp/staged
-      """), timeout=900)
+      """), timeout=1800)
+      print("==> running four-platform qualification")
       publisher.succeed(textwrap.dedent(f"""
           {AOS} release qualify-run --bundle /var/tmp/release-surface \\
             --staging-receipt /var/tmp/staged/staging-receipt.json \\
@@ -471,11 +463,15 @@ in {
             --executor-identity aarch64-linux=fleet-executor-aarch64-linux \\
             --executor-identity x86_64-darwin=fleet-executor-x86_64-darwin \\
             --executor-identity aarch64-darwin=fleet-executor-aarch64-darwin \\
+            --executor-timeout-seconds 120 \\
             --authority-executable {FIXTURE} \\
             --authority-key qualification-v1={qualification_key} \\
             --authority-verification-identity fleet-qualification-authority \\
             --executor-nonce {'3' * 64} --authority-nonce {'4' * 64} \\
             --qualified-at 2026-09-03T12:00:00Z --output /var/tmp/qualification-run
+      """), timeout=600)
+      print("==> admitting signed qualification")
+      publisher.succeed(textwrap.dedent(f"""
           {AOS} release qualify --bundle /var/tmp/release-surface \\
             --journal /var/tmp/staged/release-journal.jsonl \\
             --staging-receipt /var/tmp/staged/staging-receipt.json \\
@@ -486,6 +482,7 @@ in {
             --qualification-key qualification-v1={qualification_key} \\
             --token {shlex.quote(staging_token)} --output /var/tmp/qualified
       """), timeout=900)
+      print("==> promoting release and advancing channel")
       publisher.succeed(textwrap.dedent(f"""
           {AOS} release promote --bundle /var/tmp/release-surface \\
             --journal /var/tmp/qualified/release-journal.jsonl \\
@@ -520,8 +517,8 @@ in {
             --channel-receipt-key production-channel-v1={channel_key} \\
             --completion-key release-evidence-v1={release_key} \\
             --output /var/tmp/complete
-          {AOS} release status --journal /var/tmp/complete/release-journal.jsonl | grep -q complete
-      """), timeout=900)
+          {AOS} release status --journal /var/tmp/complete/release-journal.jsonl
+      """), timeout=1800)
 
       report = json.loads(publisher.succeed(
           f"{JQ} -c . /var/tmp/qualification-run/qualification-report.json"

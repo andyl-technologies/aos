@@ -3,13 +3,14 @@
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
-use futures_util::StreamExt as _;
+use futures_util::{StreamExt as _, TryStreamExt as _, stream};
 use reqwest::header::{CONTENT_RANGE, RANGE};
 use sha2::{Digest as _, Sha256};
 
 const DEPLOYMENT_ID_PATH: &str = "/.well-known/aos-deployment";
 const MAX_DEPLOYMENT_ID_BYTES: usize = 1024;
 const RANGE_PROBE_BYTES: usize = 64 * 1024;
+const PUBLIC_READ_BACK_CONCURRENCY: usize = 16;
 
 pub(super) fn public_client() -> Result<reqwest::Client> {
     reqwest::Client::builder()
@@ -54,32 +55,44 @@ pub(super) async fn read_back_publication(
     publication: &aos_remote::hub_types::RegistryPublication,
 ) -> Result<()> {
     let base = url::Url::parse(&format!("{hub}/{registry}/"))?;
-    for object in &publication.objects {
-        if !object.verified || object.byte_size < 0 {
-            bail!("Hub publication contains an unverified object");
-        }
-        aos_release::artifact::BundlePath::parse(&object.path)
-            .context("Hub returned an invalid publication path")?;
-        let url = base.join(&object.path)?;
-        if !url.as_str().starts_with(base.as_str()) {
-            bail!("Hub returned a path outside the registry surface");
-        }
-        let expected_size = u64::try_from(object.byte_size)?;
-        let (prefix, suffix) = read_full(client, &url, expected_size, &object.sha256)
-            .await
-            .with_context(|| format!("reading back complete Hub object {}", object.path))?;
-        if expected_size > 0 {
-            verify_range(client, &url, 0, &prefix, expected_size)
-                .await
-                .with_context(|| format!("reading back prefix of Hub object {}", object.path))?;
-            let suffix_start = expected_size
-                .checked_sub(u64::try_from(suffix.len())?)
-                .context("range suffix exceeded object size")?;
-            verify_range(client, &url, suffix_start, &suffix, expected_size)
-                .await
-                .with_context(|| format!("reading back suffix of Hub object {}", object.path))?;
-        }
-    }
+    stream::iter(&publication.objects)
+        .map(|object| {
+            let base = &base;
+            async move {
+                if !object.verified || object.byte_size < 0 {
+                    bail!("Hub publication contains an unverified object");
+                }
+                aos_release::artifact::BundlePath::parse(&object.path)
+                    .context("Hub returned an invalid publication path")?;
+                let url = base.join(&object.path)?;
+                if !url.as_str().starts_with(base.as_str()) {
+                    bail!("Hub returned a path outside the registry surface");
+                }
+                let expected_size = u64::try_from(object.byte_size)?;
+                let (prefix, suffix) = read_full(client, &url, expected_size, &object.sha256)
+                    .await
+                    .with_context(|| format!("reading back complete Hub object {}", object.path))?;
+                if expected_size > 0 {
+                    verify_range(client, &url, 0, &prefix, expected_size)
+                        .await
+                        .with_context(|| {
+                            format!("reading back prefix of Hub object {}", object.path)
+                        })?;
+                    let suffix_start = expected_size
+                        .checked_sub(u64::try_from(suffix.len())?)
+                        .context("range suffix exceeded object size")?;
+                    verify_range(client, &url, suffix_start, &suffix, expected_size)
+                        .await
+                        .with_context(|| {
+                            format!("reading back suffix of Hub object {}", object.path)
+                        })?;
+                }
+                Result::<()>::Ok(())
+            }
+        })
+        .buffer_unordered(PUBLIC_READ_BACK_CONCURRENCY)
+        .try_collect::<Vec<_>>()
+        .await?;
     Ok(())
 }
 
