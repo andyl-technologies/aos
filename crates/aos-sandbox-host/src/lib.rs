@@ -8,13 +8,17 @@
 //!
 //! Modules divide the privilege boundary as follows:
 //!
+//! - [`activation`] adopts the sole systemd-owned broker socket;
 //! - [`plan`] resolves catalog handles and compiles the fixed nspawn launch;
+//! - [`catalog`] resolves launch resources from one atomic root-owned snapshot;
 //! - [`state`] persists fences, pending effects, and replay receipts;
 //! - [`transport`] validates systemd-activated local packet sockets;
 //! - [`worker`] performs idempotent typed systemd and pidfd operations;
 //! - [`broker`] orders validation, durability, effects, and replies.
 
+pub mod activation;
 pub mod broker;
+pub mod catalog;
 pub mod plan;
 pub mod state;
 pub mod transport;

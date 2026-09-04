@@ -31,28 +31,27 @@ pub struct ResolvedNetwork {
     pub namespace_path: String,
 }
 
+/// Carries one assignment-bound, atomically resolved launch resource tuple.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResolvedLaunchResources {
+    /// Private assembled runtime root.
+    pub workspace: ResolvedWorkspace,
+    /// Prepared default-drop network namespace.
+    pub network: ResolvedNetwork,
+}
+
 /// Resolves only broker-minted node-local handles into privileged resources.
 pub trait HostCatalog {
-    /// Resolves a workspace and verifies its exact immutable root descriptor.
+    /// Resolves and verifies one atomic workspace/network/attachment snapshot.
     ///
     /// # Errors
     ///
     /// Returns an error for an unknown, stale, mismatched, or unready handle.
-    fn resolve_workspace(&self, plan: &ValidatedRuntimePlan) -> Result<ResolvedWorkspace>;
-
-    /// Resolves a prepared, default-drop network namespace.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an unknown, stale, mismatched, or unready handle.
-    fn resolve_network(&self, plan: &ValidatedRuntimePlan) -> Result<ResolvedNetwork>;
-
-    /// Verifies every attachment handle is installed for this exact launch.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an unknown, stale, mismatched, or unready handle.
-    fn validate_attachments(&self, plan: &ValidatedRuntimePlan) -> Result<()>;
+    fn resolve(
+        &self,
+        fence: &ValidatedAssignmentFence,
+        plan: &ValidatedRuntimePlan,
+    ) -> Result<ResolvedLaunchResources>;
 }
 
 /// Selects the immutable nspawn payload security profile compiled into AOS.
@@ -116,9 +115,9 @@ impl NspawnConfig {
         fence: &ValidatedAssignmentFence,
         plan: &ValidatedRuntimePlan,
     ) -> Result<SandboxUnitSpec> {
-        let workspace = catalog.resolve_workspace(plan)?;
-        let network = catalog.resolve_network(plan)?;
-        catalog.validate_attachments(plan)?;
+        let resolved = catalog.resolve(fence, plan)?;
+        let workspace = resolved.workspace;
+        let network = resolved.network;
         validate_absolute(&workspace.root_directory, "workspace root")?;
         validate_absolute(&network.namespace_path, "network namespace")?;
 

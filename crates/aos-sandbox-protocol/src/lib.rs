@@ -25,6 +25,8 @@ use buffa::Message as _;
 pub const MAXIMUM_REQUEST_BYTES: usize = 1024 * 1024;
 /// Default maximum response allocation a request may ask a broker to produce.
 pub const MAXIMUM_RESPONSE_BYTES: u32 = 16 * 1024 * 1024;
+/// Minimum response budget that can carry every fixed broker observation.
+pub const MINIMUM_RESPONSE_BYTES: u32 = 4 * 1024;
 const OPAQUE_HANDLE_BYTES: usize = 32;
 const MAXIMUM_ATTACHMENTS: usize = 256;
 const MAXIMUM_RESOURCE_LIMITS: usize = 16;
@@ -513,8 +515,7 @@ pub fn validate_request_header(
     if header.deadline_boottime_nanoseconds <= now_boottime_nanoseconds {
         return Err(ProtocolValidationError::DeadlineExpired);
     }
-    if header.maximum_response_bytes == 0 || header.maximum_response_bytes > MAXIMUM_RESPONSE_BYTES
-    {
+    if !(MINIMUM_RESPONSE_BYTES..=MAXIMUM_RESPONSE_BYTES).contains(&header.maximum_response_bytes) {
         return Err(ProtocolValidationError::InvalidResponseBound);
     }
     Ok(ValidatedHeader {
@@ -879,6 +880,19 @@ mod tests {
             Err(ProtocolValidationError::InvalidField(
                 "fence.desired_generation"
             ))
+        );
+    }
+
+    #[test]
+    fn response_budget_must_carry_a_fixed_broker_observation() {
+        let mut request = valid_runtime_request();
+        request
+            .header
+            .get_or_insert_default()
+            .maximum_response_bytes = MINIMUM_RESPONSE_BYTES - 1;
+        assert_eq!(
+            decode_runtime_request(&request.encode_to_vec(), peer(), policy(), 100),
+            Err(ProtocolValidationError::InvalidResponseBound)
         );
     }
 

@@ -90,6 +90,13 @@ where
         let observation = self.worker.execute(request.fence(), operation).await?;
         let sequence = proposed.next_observation_sequence(*request.fence().incarnation_id())?;
         let response = self.encode_observation(request.fence(), sequence, observation)?;
+        let response_limit = usize::try_from(request.header().maximum_response_bytes())
+            .map_err(|_| HostError::State("response limit does not fit usize".to_owned()))?;
+        if response.len() > response_limit {
+            return Err(HostError::State(
+                "runtime observation exceeds the admitted response bound".to_owned(),
+            ));
+        }
         proposed.complete(request_id, request_digest, response.clone())?;
         self.store.commit(&proposed)?;
         self.state = proposed;
@@ -211,7 +218,9 @@ mod tests {
     use async_trait::async_trait;
 
     use super::*;
-    use crate::plan::{PayloadSecurityProfile, ResolvedNetwork, ResolvedWorkspace};
+    use crate::plan::{
+        PayloadSecurityProfile, ResolvedLaunchResources, ResolvedNetwork, ResolvedWorkspace,
+    };
 
     #[derive(Clone, Default)]
     struct MemoryStore(Arc<Mutex<HostState>>);
@@ -230,35 +239,25 @@ mod tests {
     struct FixedCatalog;
 
     impl HostCatalog for FixedCatalog {
-        fn resolve_workspace(
+        fn resolve(
             &self,
+            _fence: &ValidatedAssignmentFence,
             plan: &aos_sandbox_protocol::ValidatedRuntimePlan,
-        ) -> Result<ResolvedWorkspace> {
+        ) -> Result<ResolvedLaunchResources> {
             if plan.workspace_handle() != &[6; 32] {
                 return Err(HostError::Catalog("unknown workspace".to_owned()));
             }
-            Ok(ResolvedWorkspace {
-                root_directory: "/var/lib/aos/sandboxes/root".to_owned(),
-            })
-        }
-
-        fn resolve_network(
-            &self,
-            plan: &aos_sandbox_protocol::ValidatedRuntimePlan,
-        ) -> Result<ResolvedNetwork> {
             if plan.network_handle() != &[7; 32] {
                 return Err(HostError::Catalog("unknown network".to_owned()));
             }
-            Ok(ResolvedNetwork {
-                namespace_path: "/run/aos/netns/pinned".to_owned(),
+            Ok(ResolvedLaunchResources {
+                workspace: ResolvedWorkspace {
+                    root_directory: "/var/lib/aos/sandboxes/root".to_owned(),
+                },
+                network: ResolvedNetwork {
+                    namespace_path: "/run/aos/netns/pinned".to_owned(),
+                },
             })
-        }
-
-        fn validate_attachments(
-            &self,
-            _plan: &aos_sandbox_protocol::ValidatedRuntimePlan,
-        ) -> Result<()> {
-            Ok(())
         }
     }
 

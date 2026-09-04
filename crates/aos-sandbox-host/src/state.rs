@@ -327,7 +327,10 @@ impl FileHostStateStore {
         let directory = directory.into();
         let metadata = fs::symlink_metadata(&directory)
             .map_err(|error| HostError::State(error.to_string()))?;
-        if !metadata.file_type().is_dir() || metadata.permissions().mode() & 0o077 != 0 {
+        if !metadata.file_type().is_dir()
+            || metadata.uid() != rustix::process::getuid().as_raw()
+            || metadata.permissions().mode() & 0o077 != 0
+        {
             return Err(HostError::State(
                 "host state directory must be a private real directory".to_owned(),
             ));

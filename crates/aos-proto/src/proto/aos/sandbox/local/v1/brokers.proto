@@ -9,7 +9,7 @@ message RequestHeader {
   bytes request_id = 3; // Exactly 16 bytes.
   Audience audience = 4;
   uint64 deadline_boottime_nanoseconds = 5;
-  uint32 maximum_response_bytes = 6;
+  uint32 maximum_response_bytes = 6; // Inclusive range 4096..16777216.
 }
 
 enum Audience {

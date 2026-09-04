@@ -5,6 +5,7 @@
 //! by the kernel in one operation rather than by a check-then-open sequence.
 
 use std::ffi::CString;
+use std::io::Read as _;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path};
@@ -15,6 +16,7 @@ use crate::uapi::{
 use crate::{Error, Result};
 
 const MAX_RELATIVE_PATH_BYTES: usize = 4096;
+const MAXIMUM_BOUNDED_READ_BYTES: usize = 16 * 1024 * 1024;
 
 /// A pre-opened directory beneath which untrusted relative paths are resolved.
 #[derive(Debug)]
@@ -102,6 +104,43 @@ impl BeneathRoot {
         }
         Ok(ResolvedPath { fd, identity })
     }
+
+    /// Opens a regular descendant for a bounded read without a path race.
+    ///
+    /// Resolution rejects symlinks, magic links, traversal, and mount
+    /// crossings exactly like [`BeneathRoot::resolve`], but returns a readable
+    /// descriptor rather than `O_PATH`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid paths, resolution failures, non-regular
+    /// results, or descriptor inspection failures.
+    pub fn open_regular(&self, relative: &Path) -> Result<ResolvedFile> {
+        let bytes = validate_relative_path(relative)?;
+        let path =
+            CString::new(bytes).map_err(|_| Error::invalid("relative path", "contains NUL"))?;
+        let flags = u64::try_from(libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW)
+            .map_err(|_| Error::invalid("open flags", "platform flag conversion failed"))?;
+        let fd = uapi::openat2(
+            self.fd.as_fd(),
+            &path,
+            &OpenHow {
+                flags,
+                mode: 0,
+                resolve: RESOLVE_BENEATH
+                    | RESOLVE_NO_MAGICLINKS
+                    | RESOLVE_NO_SYMLINKS
+                    | RESOLVE_NO_XDEV,
+            },
+        )?;
+        let identity = inspect(fd.as_fd())?;
+        if identity.file_type != FileType::Regular {
+            return Err(Error::WrongDescriptorType {
+                expected: "regular file",
+            });
+        }
+        Ok(ResolvedFile { fd, identity })
+    }
 }
 
 /// Kernel-enforced constraints for descendant resolution.
@@ -138,6 +177,58 @@ impl ResolveOptions {
 pub struct ResolvedPath {
     fd: OwnedFd,
     identity: FileIdentity,
+}
+
+/// A regular file pinned by an owned readable descriptor.
+#[derive(Debug)]
+pub struct ResolvedFile {
+    fd: OwnedFd,
+    identity: FileIdentity,
+}
+
+impl ResolvedFile {
+    /// Returns the device/inode/type identity captured after resolution.
+    #[must_use]
+    pub const fn identity(&self) -> FileIdentity {
+        self.identity
+    }
+
+    /// Consumes the descriptor and reads at most `maximum` bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `maximum` exceeds sixteen MiB, I/O fails, or the
+    /// file contains more than the admitted byte count.
+    pub fn read_bounded(self, maximum: usize) -> Result<Vec<u8>> {
+        if maximum > MAXIMUM_BOUNDED_READ_BYTES {
+            return Err(Error::invalid(
+                "bounded read",
+                "maximum exceeds sixteen MiB",
+            ));
+        }
+        let limit = maximum
+            .checked_add(1)
+            .ok_or_else(|| Error::invalid("bounded read", "maximum overflow"))?;
+        let mut bytes = Vec::with_capacity(limit);
+        std::fs::File::from(self.fd)
+            .take(
+                u64::try_from(limit).map_err(|_| {
+                    Error::invalid("bounded read", "maximum does not fit read limit")
+                })?,
+            )
+            .read_to_end(&mut bytes)
+            .map_err(|source| Error::Syscall {
+                operation: "read bounded regular file",
+                source,
+            })?;
+        if bytes.len() > maximum {
+            return Err(Error::invalid(
+                "bounded read",
+                "file exceeds admitted maximum",
+            ));
+        }
+        Ok(bytes)
+    }
 }
 
 impl ResolvedPath {
@@ -276,5 +367,27 @@ mod tests {
             BeneathRoot::from_owned(fd),
             Err(Error::WrongDescriptorType { .. })
         ));
+    }
+
+    #[test]
+    fn regular_file_reads_are_descriptor_pinned_and_bounded() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join("catalog"), b"abc").unwrap();
+        std::os::unix::fs::symlink("catalog", temp.path().join("link")).unwrap();
+        let root = root(temp.path());
+        assert_eq!(
+            root.open_regular(Path::new("catalog"))
+                .unwrap()
+                .read_bounded(3)
+                .unwrap(),
+            b"abc"
+        );
+        assert!(
+            root.open_regular(Path::new("catalog"))
+                .unwrap()
+                .read_bounded(2)
+                .is_err()
+        );
+        assert!(root.open_regular(Path::new("link")).is_err());
     }
 }
