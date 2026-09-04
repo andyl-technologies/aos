@@ -7,11 +7,13 @@
 //!
 //! - [`broker`] implements crash-safe request ordering and replay;
 //! - [`catalog`] resolves exact assignment-bound descriptor pins;
+//! - [`plan`] defines the sealed, fixed helper handoff;
 //! - [`state`] encodes the broker's bounded journal records;
 //! - [`worker`] defines the closed effect interface.
 
 pub mod broker;
 pub mod catalog;
+pub mod plan;
 mod state;
 pub mod worker;
 

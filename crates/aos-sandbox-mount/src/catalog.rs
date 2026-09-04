@@ -9,6 +9,7 @@
 use std::os::fd::OwnedFd;
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::Path;
+use std::path::PathBuf;
 
 use aos_sandbox_core::ObjectDescriptor;
 use aos_sandbox_linux::path::{BeneathRoot, FileIdentity, ResolveOptions, ResolvedPath};
@@ -36,6 +37,8 @@ pub struct ResolvedMountResources {
     pub target_root: ResolvedPath,
     /// Pinned broker-owned destination slot.
     pub target_slot: ResolvedPath,
+    /// Catalog-selected path to the slot beneath `target_root`.
+    pub target_relative_path: PathBuf,
 }
 
 /// Resolves one validated semantic request into exact pinned kernel objects.
@@ -73,6 +76,7 @@ struct MountCatalogEntry {
     user_namespace_path: String,
     target_root_path: String,
     target_slot_path: String,
+    target_relative_path: String,
     source_identity: FileIdentityWire,
     mount_namespace_identity: NamespaceIdentityWire,
     user_namespace_identity: NamespaceIdentityWire,
@@ -202,6 +206,7 @@ impl MountCatalog for FileMountCatalog {
             user_namespace,
             target_root,
             target_slot,
+            target_relative_path: PathBuf::from(&entry.target_relative_path),
         })
     }
 }
@@ -250,6 +255,7 @@ impl MountCatalogEntry {
             &self.user_namespace_path,
             &self.target_root_path,
             &self.target_slot_path,
+            &self.target_relative_path,
         ] {
             validate_relative(path)?;
         }
@@ -381,6 +387,7 @@ mod tests {
             user_namespace_path: "pins/userns".to_owned(),
             target_root_path: "pins/root".to_owned(),
             target_slot_path: "pins/slot".to_owned(),
+            target_relative_path: "run/aos/attachments/slot".to_owned(),
             source_identity: FileIdentityWire {
                 device: 1,
                 inode: 1,
