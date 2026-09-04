@@ -1,4 +1,4 @@
-##! tests/containers/phase0.nix — Executable RFC-0017 contract spikes.
+##! tests/containers/phase0.nix — Executable RFC-0018 contract spikes.
 ##!
 ##! Freezes the first layer byte vector, proves the production golden package
 ##! roots are independently available, and exercises the daemonless Nix-store

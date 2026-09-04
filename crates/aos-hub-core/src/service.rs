@@ -31,6 +31,7 @@
 mod container;
 mod container_admin;
 mod publication_manifest;
+mod release_publication;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
@@ -2583,6 +2584,8 @@ pub struct RpcService {
     pub identity_domain_verifier: Option<Arc<dyn crate::topology_probe::IdentityDomainVerifier>>,
     /// Runtime-owned active and retained route-reservation HMAC keys.
     pub route_reservation_keyring: Option<Arc<dyn RouteReservationKeyring>>,
+    /// Restricted deployment authority for release and channel evidence.
+    pub release_evidence: Option<Arc<dyn crate::release_evidence::ReleaseEvidenceAuthority>>,
     /// Serializes memory-bounded Git pack/index verification within the process or Worker isolate.
     pack_validation: Arc<futures_util::lock::Mutex<()>>,
 }
@@ -10056,6 +10059,7 @@ impl RpcService {
             domain_probe_terminator: None,
             identity_domain_verifier: None,
             route_reservation_keyring: None,
+            release_evidence: None,
             pack_validation: pack_validation_gate(),
         }
     }
@@ -10106,6 +10110,16 @@ impl RpcService {
         keyring: Arc<dyn RouteReservationKeyring>,
     ) -> Self {
         self.route_reservation_keyring = Some(keyring);
+        self
+    }
+
+    /// Attaches the deployment-owned release evidence authority.
+    #[must_use]
+    pub fn with_release_evidence(
+        mut self,
+        authority: Arc<dyn crate::release_evidence::ReleaseEvidenceAuthority>,
+    ) -> Self {
+        self.release_evidence = Some(authority);
         self
     }
 

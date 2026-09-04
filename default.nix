@@ -1116,6 +1116,15 @@
 in {
   inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem packagesWithExpose containerImages containerDefinitions;
 
+  # Pure, fail-closed release eligibility data. The release coordinator reads
+  # this value with strict JSON evaluation before resolving any derivation.
+  releasePackageInventory = pkgs.platformSupport.releaseInventory pkgs.allPackageNames;
+  releasePackageDerivations =
+    pkgs.platformSupport.releaseDerivations
+    hostPlatform.system
+    pkgs
+    pkgs.allPackageNames;
+
   # Auto-discovered golden image systems.
   # Each system has .config, .options, .build, and .checks.
   systems = discoverSystems;
@@ -1187,18 +1196,21 @@ in {
       package-platform-support = import ./tests/build/package-platform-support.nix {
         pkgs = buildPackages;
       };
+      external-image-assembly = import ./tests/build/external-image-assembly.nix {
+        inherit pkgs lib mkSystem;
+      };
       package-root-image = import ./lib/testing/package-root-image.nix {inherit pkgs lib;};
       systemd-verity = import ./lib/testing/systemd-verity.nix {inherit pkgs lib;};
       golden-image-budgets = lib.mapAttrs (_: system: system.checks.image-budget) discoverSystems;
     in {
-      inherit critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix gcc-config-shell hardening-probe kernel-config linux-cross-smoke package-platform-support package-root-image systemd-verity golden-image-budgets;
+      inherit critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe kernel-config linux-cross-smoke package-platform-support package-root-image systemd-verity golden-image-budgets;
       # Single target that pulls in the whole build-check group.
       all = pkgs.mkDerivation {
         pname = "aos-build-checks-all";
         version = "0";
         src = null;
         buildDeps =
-          [critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all gcc-config-shell kernel-config linux-cross-smoke package-platform-support package-root-image systemd-verity]
+          [critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell kernel-config linux-cross-smoke package-platform-support package-root-image systemd-verity]
           ++ builtins.attrValues hardening-probe
           ++ builtins.attrValues golden-image-budgets;
         phases = [

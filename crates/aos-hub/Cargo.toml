@@ -39,6 +39,8 @@ tower-http = { workspace = true, features = ["catch-panic", "limit"] }
 clap = { workspace = true }
 url = { workspace = true }
 reqwest = { workspace = true }
+rustls-pemfile = { workspace = true }
+tokio-rustls = { workspace = true }
 async-trait = { workspace = true }
 tempfile = { workspace = true }
 aos-core = { workspace = true }

@@ -25,10 +25,56 @@
   ...
 }: let
   cfg = config.aos.boot.secureBoot;
+  externalFinalization = cfg.externalFinalization.enable;
+  frozenArtifacts = config.aos.config.frozenArtifacts;
+  configArtifacts = config.aos.config.artifacts;
+  copyPublicFile = name: source: destination:
+    pkgs.mkDerivation {
+      pname = "aos-public-${name}";
+      version = "1";
+      src = null;
+      buildDeps = [pkgs.coreutils];
+      runtimeDeps = [];
+      propagatedDeps = [];
+      phases = [
+        {
+          name = "install";
+          script = ''
+            mkdir -p "$out"
+            cp ${source} "$out/${destination}"
+            chmod 0444 "$out/${destination}"
+          '';
+        }
+      ];
+      meta.description = "Public-only ${name} authority";
+    };
+  dbCertificateSource = copyPublicFile "secure-boot-certificate" cfg.dbCert "certificate.pem";
+  moduleCertificateSource = copyPublicFile "module-signing-certificate" cfg.lockdown.moduleSigningCert "certificate.pem";
+  enrollmentSource = pkgs.mkDerivation {
+    pname = "aos-public-firmware-enrollment";
+    version = "1";
+    src = null;
+    buildDeps = [pkgs.coreutils];
+    runtimeDeps = [];
+    propagatedDeps = [];
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out"
+          for file in db.auth KEK.auth PK.auth; do
+            cp ${cfg.enrollAuthDir}/"$file" "$out/$file"
+            chmod 0444 "$out/$file"
+          done
+        '';
+      }
+    ];
+    meta.description = "Public-only UEFI authenticated-variable enrollment set";
+  };
   enrollAuthDir =
-    if cfg.enrollAuthDir == null
+    if cfg._effectiveEnrollAuthDir == null
     then "/nonexistent/aos-secure-boot-auth"
-    else cfg.enrollAuthDir;
+    else cfg._effectiveEnrollAuthDir;
 
   # Lockdown deployment kernel (phase 2). The reproducible base kernel
   # deliberately omits lockdown + module signing (they require a
@@ -46,10 +92,23 @@
     CONFIG_SECURITY_LOCKDOWN_LSM_EARLY=y
     CONFIG_LOCK_DOWN_IN_EFI_SECURE_BOOT=y
     CONFIG_MODULE_SIG=y
-    CONFIG_MODULE_SIG_ALL=y
+    CONFIG_MODULE_SIG_ALL=${
+      if externalFinalization
+      then "n"
+      else "y"
+    }
     CONFIG_MODULE_SIG_FORCE=y
     CONFIG_MODULE_SIG_SHA256=y
-    CONFIG_MODULE_SIG_KEY="${toString cfg.lockdown.moduleSigningKey}"
+    ${
+      if externalFinalization
+      then ''
+        CONFIG_MODULE_SIG_KEY=""
+        CONFIG_SYSTEM_TRUSTED_KEYS="${toString cfg.lockdown._effectiveModuleSigningCert}"
+      ''
+      else ''
+        CONFIG_MODULE_SIG_KEY="${toString cfg.lockdown.moduleSigningKey}"
+      ''
+    }
     CONFIG_KEXEC_FILE=y
     CONFIG_KEXEC_SIG=y
     CONFIG_KEXEC_SIG_FORCE=y
@@ -95,6 +154,37 @@ in {
       '';
     };
 
+    externalFinalization = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Build an unsigned release assembly and require the release
+          coordinator to obtain all private-key operations from external
+          role-bound signers. No private signing key may enter the Nix store
+          when this mode is enabled.
+        '';
+      };
+
+      secureBootRole = lib.mkOption {
+        type = lib.types.nonEmptyStr;
+        default = "secure-boot-release";
+        description = "External signer role authorized for PE/COFF artifacts.";
+      };
+
+      moduleRole = lib.mkOption {
+        type = lib.types.nonEmptyStr;
+        default = "kernel-module-release";
+        description = "External signer role authorized for kernel modules.";
+      };
+
+      pcrRole = lib.mkOption {
+        type = lib.types.nonEmptyStr;
+        default = "pcr-policy-release";
+        description = "External signer role authorized for PCR policies.";
+      };
+    };
+
     dbKey = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
@@ -111,6 +201,14 @@ in {
       description = "Path to the db certificate (PEM); required with dbKey.";
     };
 
+    _effectiveDbCert = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      readOnly = true;
+      internal = true;
+      description = "Public-only Secure Boot certificate retained by the image.";
+    };
+
     enrollAuthDir = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
@@ -120,6 +218,14 @@ in {
         efivarfs. These are public material (no private keys); point a
         production deployment at a public-only directory.
       '';
+    };
+
+    _effectiveEnrollAuthDir = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      readOnly = true;
+      internal = true;
+      description = "Public-only firmware enrollment artifact retained by the image.";
     };
 
     lockdown = {
@@ -159,6 +265,24 @@ in {
           modules with this at build time.
         '';
       };
+
+      moduleSigningCert = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = ''
+          Public X.509 certificate embedded in an external-finalization
+          lockdown kernel. The release finalizer signs every shipped module
+          with the corresponding external role before image assembly.
+        '';
+      };
+
+      _effectiveModuleSigningCert = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        readOnly = true;
+        internal = true;
+        description = "Public-only module certificate retained by the image.";
+      };
     };
 
     measuredBoot = {
@@ -195,6 +319,14 @@ in {
           `.pcrpkey` section and used by `systemd-cryptenroll
           --tpm2-public-key` to seal `/var`. Required with pcrPrivateKey.
         '';
+      };
+
+      _effectivePcrPublicKey = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        readOnly = true;
+        internal = true;
+        description = "Public-only PCR policy key retained by the image.";
       };
 
       signedPcrs = lib.mkOption {
@@ -246,10 +378,55 @@ in {
     }
 
     (lib.mkIf cfg.enable {
+      aos.config._artifactSources = lib.mkIf externalFinalization {
+        secure-boot-db-public =
+          if frozenArtifacts ? "secure-boot-db-public"
+          then null
+          else dbCertificateSource;
+        secure-boot-enrollment-public =
+          if frozenArtifacts ? "secure-boot-enrollment-public"
+          then null
+          else enrollmentSource;
+        module-signing-certificate-public =
+          if frozenArtifacts ? "module-signing-certificate-public"
+          then null
+          else moduleCertificateSource;
+      };
+      aos.boot.secureBoot = {
+        _effectiveDbCert =
+          if externalFinalization
+          then "${configArtifacts.secure-boot-db-public}/certificate.pem"
+          else cfg.dbCert;
+        _effectiveEnrollAuthDir =
+          if externalFinalization
+          then "${configArtifacts.secure-boot-enrollment-public}"
+          else cfg.enrollAuthDir;
+        lockdown._effectiveModuleSigningCert =
+          if externalFinalization
+          then "${configArtifacts.module-signing-certificate-public}/certificate.pem"
+          else cfg.lockdown.moduleSigningCert;
+      };
       assertions = [
         {
-          assertion = cfg.dbKey != null && cfg.dbCert != null;
-          message = "aos.boot.secureBoot.enable requires dbKey and dbCert.";
+          assertion = cfg.dbCert != null;
+          message = "aos.boot.secureBoot.enable requires dbCert.";
+        }
+        {
+          assertion = externalFinalization || cfg.dbKey != null;
+          message = "local Secure Boot finalization requires dbKey.";
+        }
+        {
+          assertion = !externalFinalization || cfg.dbKey == null;
+          message = "external Secure Boot finalization forbids dbKey in the Nix evaluation.";
+        }
+        {
+          assertion =
+            !externalFinalization
+            || (cfg.lockdown.enable
+              && cfg.measuredBoot.enable
+              && config.aos.boot.recovery.enable
+              && config.aos.security.verity.enable);
+          message = "external image finalization requires lockdown, measured boot, recovery, and dm-verity.";
         }
         {
           assertion = cfg.enrollAuthDir != null;
@@ -263,7 +440,7 @@ in {
       # /etc. The initrd recovery-retention check references cfg.dbCert
       # directly, which retains that immutable store object in the initrd
       # closure without creating a toplevel/initrd dependency cycle.
-      environment.etc."aos/trust/secure-boot-db.crt".source = cfg.dbCert;
+      environment.etc."aos/trust/secure-boot-db.crt".source = cfg._effectiveDbCert;
 
       # First-boot recovery seeding authenticates the ESP copy before it
       # records any retention evidence. The initrd copies an explicit package
@@ -281,8 +458,16 @@ in {
           message = "aos.boot.secureBoot.lockdown requires aos.boot.secureBoot.enable.";
         }
         {
-          assertion = cfg.lockdown.moduleSigningKey != null;
-          message = "aos.boot.secureBoot.lockdown requires lockdown.moduleSigningKey.";
+          assertion = externalFinalization || cfg.lockdown.moduleSigningKey != null;
+          message = "local lockdown builds require lockdown.moduleSigningKey.";
+        }
+        {
+          assertion = !externalFinalization || cfg.lockdown.moduleSigningKey == null;
+          message = "external lockdown finalization forbids lockdown.moduleSigningKey.";
+        }
+        {
+          assertion = !externalFinalization || cfg.lockdown.moduleSigningCert != null;
+          message = "external lockdown finalization requires lockdown.moduleSigningCert.";
         }
       ];
 
@@ -322,17 +507,24 @@ in {
             ];
           };
 
+      aos.boot.secureBoot.measuredBoot._effectivePcrPublicKey = "${pcrKeyForInitrd}/pcr.pem";
+
       assertions = [
         {
           assertion = cfg.enable;
           message = "aos.boot.secureBoot.measuredBoot requires aos.boot.secureBoot.enable.";
         }
         {
-          assertion =
-            cfg.measuredBoot.pcrPrivateKey
-            != null
-            && cfg.measuredBoot.pcrPublicKey != null;
-          message = "aos.boot.secureBoot.measuredBoot requires pcrPrivateKey and pcrPublicKey.";
+          assertion = cfg.measuredBoot.pcrPublicKey != null;
+          message = "aos.boot.secureBoot.measuredBoot requires pcrPublicKey.";
+        }
+        {
+          assertion = externalFinalization || cfg.measuredBoot.pcrPrivateKey != null;
+          message = "local measured-boot finalization requires pcrPrivateKey.";
+        }
+        {
+          assertion = !externalFinalization || cfg.measuredBoot.pcrPrivateKey == null;
+          message = "external measured-boot finalization forbids pcrPrivateKey.";
         }
       ];
 

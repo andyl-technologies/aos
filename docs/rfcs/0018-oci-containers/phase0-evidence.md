@@ -1,4 +1,4 @@
-# RFC-0017 Phase-0 evidence
+# RFC-0018 Phase-0 evidence
 
 This record ties the checked Phase-0 claims to reproducible repository inputs.
 The executable evidence is `checks.container.phase0`, defined in

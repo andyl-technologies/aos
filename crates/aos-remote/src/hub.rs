@@ -624,6 +624,20 @@ enum HubTopologyMethod {
     CommitRegistryPublication,
     /// Selects explicit incomplete-publication retirement.
     AbortRegistryPublication,
+    /// Selects immutable release-bundle admission.
+    BeginReleasePublication,
+    /// Selects a deployment-signed staging commit.
+    CommitReleasePublication,
+    /// Selects signed staging qualification admission.
+    RecordReleaseQualification,
+    /// Selects exact production promotion.
+    PromoteReleasePublication,
+    /// Selects public production-receipt read-back.
+    GetReleaseReceipt,
+    /// Selects monotonic online timestamp publication.
+    PublishReleaseTimestamp,
+    /// Selects signed channel compare-and-swap.
+    AdvanceReleaseChannel,
     /// Selects the normalized `GitLog` Connect operation.
     GitLog,
     /// Selects the normalized `GitDiff` Connect operation.
@@ -1164,6 +1178,13 @@ impl HubTopologyMethod {
             GetRegistryPublication => "aos.hub.v1.PublishService/GetRegistryPublication",
             CommitRegistryPublication => "aos.hub.v1.PublishService/CommitRegistryPublication",
             AbortRegistryPublication => "aos.hub.v1.PublishService/AbortRegistryPublication",
+            BeginReleasePublication => "aos.hub.v1.PublishService/BeginReleasePublication",
+            CommitReleasePublication => "aos.hub.v1.PublishService/CommitReleasePublication",
+            RecordReleaseQualification => "aos.hub.v1.PublishService/RecordReleaseQualification",
+            PromoteReleasePublication => "aos.hub.v1.PublishService/PromoteReleasePublication",
+            GetReleaseReceipt => "aos.hub.v1.PublishService/GetReleaseReceipt",
+            PublishReleaseTimestamp => "aos.hub.v1.PublishService/PublishReleaseTimestamp",
+            AdvanceReleaseChannel => "aos.hub.v1.PublishService/AdvanceReleaseChannel",
             GitLog => "aos.hub.v1.GitService/GitLog",
             GitDiff => "aos.hub.v1.GitService/GitDiff",
             ListChangeRequests => "aos.hub.v1.GitService/ListChangeRequests",
@@ -1630,6 +1651,13 @@ pub mod hub_rpc {
         GetRegistryPublication: GetRegistryPublicationRequest => RegistryPublication;
         CommitRegistryPublication: CommitRegistryPublicationRequest => RegistryPublication;
         AbortRegistryPublication: AbortRegistryPublicationRequest => RegistryPublication;
+        BeginReleasePublication: BeginReleasePublicationRequest => ReleasePublicationState;
+        CommitReleasePublication: CommitReleasePublicationRequest => ReleaseReceipt;
+        RecordReleaseQualification: RecordReleaseQualificationRequest => ReleaseQualificationState;
+        PromoteReleasePublication: PromoteReleasePublicationRequest => ReleaseReceipt;
+        GetReleaseReceipt: GetReleaseReceiptRequest => ReleaseReceipt;
+        PublishReleaseTimestamp: PublishReleaseTimestampRequest => ReleaseTimestampState;
+        AdvanceReleaseChannel: AdvanceReleaseChannelRequest => ReleaseReceipt;
         GitLog: GitLogRequest => GitLogResponse;
         GitDiff: GitDiffRequest => GitDiffResponse;
         ListChangeRequests: ListChangeRequestsRequest => ListChangeRequestsResponse;

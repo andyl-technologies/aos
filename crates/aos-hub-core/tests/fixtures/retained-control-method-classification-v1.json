@@ -546,6 +546,76 @@
     "external_effects": true
   },
   {
+    "service": "PublishService",
+    "method": "BeginReleasePublication",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "data_plane_write"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "PublishService",
+    "method": "CommitReleasePublication",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "data_plane_write"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "PublishService",
+    "method": "RecordReleaseQualification",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "data_plane_write"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "PublishService",
+    "method": "PromoteReleasePublication",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "data_plane_write"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "PublishService",
+    "method": "GetReleaseReceipt",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": {
+      "class": "read"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "PublishService",
+    "method": "PublishReleaseTimestamp",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "data_plane_write"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "PublishService",
+    "method": "AdvanceReleaseChannel",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "data_plane_write"
+    },
+    "external_effects": false
+  },
+  {
     "service": "RegistryService",
     "method": "PlanCreateRegistry",
     "exposure": "public",

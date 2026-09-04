@@ -60,6 +60,7 @@ async fn seed_at(
     let state = Arc::new(AppState {
         db: Arc::clone(&db),
         external_url: external_url.into(),
+        deployment_id: None,
         ratelimit: auth.ratelimit.clone(),
         trusted_proxy: false,
         auth,
@@ -75,6 +76,7 @@ async fn seed_at(
         identity_domain_verifier: None,
         route_reservation_keyring: None,
         container_rollout: aos_hub_core::container_rollout::ContainerRollout::all_enabled(),
+        release_evidence: None,
     });
     (router(state).await, db, keys, secret, scope, owner_id)
 }

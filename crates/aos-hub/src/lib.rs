@@ -102,6 +102,7 @@ pub mod indexer;
 mod local_fs_delete;
 pub mod mirror;
 pub mod narlist;
+pub mod native_tls;
 pub mod probe;
 pub mod ratelimit;
 pub mod seed;

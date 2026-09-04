@@ -24,6 +24,7 @@ pub mod lint;
 pub mod metadata;
 pub mod prefetch;
 pub mod profile;
+pub mod release;
 pub mod repl;
 pub mod serve;
 pub mod show;

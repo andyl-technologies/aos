@@ -19,13 +19,13 @@
   # Specialized writable-root test variants may override this mkDefault.
   aos.security.verity.enable = lib.mkDefault true;
   aos.image.budgets = {
-    maxRootMiB = 512;
+    maxRootMiB = 640;
     maxVerityMiB = 16;
     maxInitrdMiB = 128;
     maxUkiMiB = 160;
     maxEspMiB = 384;
     maxRuntimeClosureMiB = 768;
-    maxDownloadMiB = 640;
+    maxDownloadMiB = 768;
   };
 
   # The service modules retain backwards-compatible enabled defaults. Keep

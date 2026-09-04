@@ -473,6 +473,20 @@ service PublishService {
       returns (RegistryPublication);
   rpc AbortRegistryPublication(AbortRegistryPublicationRequest)
       returns (RegistryPublication);
+  rpc BeginReleasePublication(BeginReleasePublicationRequest)
+      returns (ReleasePublicationState);
+  rpc CommitReleasePublication(CommitReleasePublicationRequest)
+      returns (ReleaseReceipt);
+  rpc RecordReleaseQualification(RecordReleaseQualificationRequest)
+      returns (ReleaseQualificationState);
+  rpc PromoteReleasePublication(PromoteReleasePublicationRequest)
+      returns (ReleaseReceipt);
+  rpc GetReleaseReceipt(GetReleaseReceiptRequest)
+      returns (ReleaseReceipt);
+  rpc PublishReleaseTimestamp(PublishReleaseTimestampRequest)
+      returns (ReleaseTimestampState);
+  rpc AdvanceReleaseChannel(AdvanceReleaseChannelRequest)
+      returns (ReleaseReceipt);
 }
 
 // Git read API for the UI and remote `apr` (RFC-0012 "API: aos.hub.v1"
@@ -2793,6 +2807,108 @@ message RegistryPublication {
   repeated RegistryPublicationPlacement placements = 11;
   int64 created_at = 12;
   int64 completed_at = 13;
+}
+
+// -- Release-scoped publication continuity -------------------------------
+
+message BeginReleasePublicationRequest {
+  string registry = 1;
+  string bundle_digest = 2;
+  string release_id = 3;
+  string manifest_digest = 4;
+  string registry_base_commit = 5;
+  string staging_deployment_id = 6;
+  string production_deployment_id = 7;
+  string backing_publication_id = 8;
+}
+
+message ReleasePublicationState {
+  string registry = 1;
+  string bundle_digest = 2;
+  string release_id = 3;
+  string manifest_digest = 4;
+}
+
+message CommitReleasePublicationRequest {
+  string registry = 1;
+  string bundle_digest = 2;
+  // staging | production
+  string environment = 3;
+  string publication_id = 4;
+  string expected_deployment_id = 5;
+  string staging_receipt_digest = 6;
+}
+
+// Canonical signed receipt envelope produced by the deployment authority.
+message ReleaseReceipt {
+  string receipt_digest = 1;
+  string signed_receipt_json = 2;
+}
+
+message RecordReleaseQualificationRequest {
+  string registry = 1;
+  string bundle_digest = 2;
+  string staging_receipt_digest = 3;
+  string qualification_digest = 4;
+  string signed_qualification_json = 5;
+  string qualification_receipt_json = 6;
+}
+
+message ReleaseQualificationState {
+  string bundle_digest = 1;
+  string staging_receipt_digest = 2;
+  string qualification_digest = 3;
+}
+
+message PromoteReleasePublicationRequest {
+  string registry = 1;
+  string bundle_digest = 2;
+  string publication_id = 3;
+  string expected_deployment_id = 4;
+  string staging_receipt_digest = 5;
+  string qualification_digest = 6;
+  // Exact staging envelope verified against the pinned staging deployment key.
+  string signed_staging_receipt_json = 7;
+  // Canonical qualification payload carried by signed_qualification_json.
+  string qualification_receipt_json = 8;
+  // Exact qualification envelope verified against a pinned authority key.
+  string signed_qualification_json = 9;
+}
+
+message GetReleaseReceiptRequest {
+  string bundle_digest = 1;
+  // Public callers may read only production receipts.
+  string environment = 2;
+}
+
+message PublishReleaseTimestampRequest {
+  string registry = 1;
+  string snapshot_digest = 2;
+  int64 snapshot_version = 3;
+  int64 timestamp_version = 4;
+  string timestamp_digest = 5;
+  string publication_id = 6;
+  // Mutable registry-relative path containing the exact timestamp bytes.
+  string timestamp_path = 7;
+  // Immutable registry-relative path containing the authorized snapshot.
+  string snapshot_path = 8;
+}
+
+message ReleaseTimestampState {
+  string snapshot_digest = 1;
+  int64 snapshot_version = 2;
+  int64 timestamp_version = 3;
+  string timestamp_digest = 4;
+}
+
+message AdvanceReleaseChannelRequest {
+  string registry = 1;
+  string channel = 2;
+  int64 prior_generation = 3;
+  int64 first_partition = 4;
+  int64 last_partition = 5;
+  string manifest_digest = 6;
+  string production_receipt_digest = 7;
 }
 
 // -- Webhooks (phase 4) ----------------------------------------------------

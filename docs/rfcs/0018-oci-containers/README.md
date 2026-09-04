@@ -1,4 +1,4 @@
-# RFC-0017: Scratch OCI containers from AOS package closures
+# RFC-0018: Scratch OCI containers from AOS package closures
 
 - **Status:** Proposed
 - **Date:** 2026-08-27

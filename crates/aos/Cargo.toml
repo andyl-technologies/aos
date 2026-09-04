@@ -20,6 +20,10 @@ path = "src/apm.rs"
 name = "aos-package-runtime"
 path = "src/package_runtime.rs"
 
+[[bin]]
+name = "aos-release-fleet-fixture"
+path = "tests/support/release_fleet_fixture.rs"
+
 [dependencies]
 rustix = { workspace = true }
 aos-core = { workspace = true }
@@ -29,9 +33,12 @@ aos-oci-types = { workspace = true }
 aos-server = { workspace = true }
 aos-cache = { workspace = true }
 aos-remote = { workspace = true }
+aos-proto-types = { workspace = true }
 aos-doc = { workspace = true }
 aos-doc-model = { workspace = true }
 aos-package = { workspace = true }
+aos-release = { workspace = true }
+aos-image-finalizer = { workspace = true }
 aos-profile = { workspace = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }
@@ -57,6 +64,7 @@ serde = { workspace = true }
 rand = { workspace = true }
 axum = { workspace = true }
 tokio-rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
 tokio-util = { workspace = true }
 hyper-util = { workspace = true }
 tower = { workspace = true }
