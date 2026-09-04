@@ -542,6 +542,43 @@ completes. The Git history remains authoritative for code details.
   because the phase-0 digests are publisher claims, supervisor pidfd namespace
   access is unproven under the hardened unit, and payload-root identity is not
   yet observed.
+- `aaeefc150` — foundation toward `SBX-BPROTO-04`, `SBX-CTRL-03`, and
+  `SBX-MOUNT-01`: portable mount canonicalization now lives at the shared
+  protocol boundary while preserving the existing commitment bytes. The mount
+  catalog remains a node-local resolution facade, so controller authority does
+  not acquire backend paths, descriptor identities, or other host facts.
+- `ca65218e4` — foundation toward `SBX-CTRL-03`: the controller journal now
+  publishes proposal, prepared authority, and current authority as one complete
+  cross-linked transaction. Recovery bounds and structurally revalidates the
+  audience set, manifest, lease, plan, and dispatch template, recomputes inner
+  and outer digests, and rejects rollback, equivocation, and partial state.
+  This is structural recovery only; each protected broker must still perform
+  cryptographic verification against its own trust anchors.
+- `8ced2381e` — foundation toward `SBX-P0-04` and `SBX-HOST-01`: launch
+  reconciliation now discovers exactly one direct nested PID 1 from the fixed
+  payload cgroup subtree, pins it with a pidfd, and checks bounded stable cgroup,
+  TGID, parent, namespace, liveness, and point-in-time root evidence against the
+  owned launch descriptors. Procfd aliases remain owned through initial
+  activation and proof, with automatic restart disabled and inactive units
+  collected. Apply remains unadvertised: deployed pidfd namespace access and
+  root continuity against a later root change are still explicit blockers.
+- `6f8835512` — foundation toward `SBX-STOR-01`: a bounded, exclusively locked
+  storage journal now durably records authenticated Prepared, Ambiguous, and
+  Committed phases for up to 1,024 operations. Recovery never returns runnable
+  mutation arguments, exact completed requests replay, rollback and catalog
+  forks fail closed, and observation assertions are bound to the exact request,
+  mutation, input catalog, and postcondition before commit. The assertion type
+  is not proof of ZFS inspection; the privileged observation/execution helper,
+  protected key lifecycle, and broker admission path remain open.
+- `ab36dc2b9` — foundation toward `SBX-BPROTO-04`, `SBX-CTRL-03`,
+  `SBX-STOR-01`, and `SBX-NET-01`: additive Storage and Network Apply and
+  Inventory method tags now have a closed protocol/method/role/carrier matrix.
+  Apply requires the signed authority carrier, Inventory rejects it, the two
+  local brokers accept no descriptor carriers, and cross-protocol or
+  non-controller replay fails closed. Protocol 1.1 enables signed effects while
+  1.0 remains inventory-only. A future remote transport must authenticate the
+  broker audience and define a separately versioned non-SCM_RIGHTS carrier
+  profile; local descriptor integers are never portable.
 
 The post-`727da7f3e` x86_64 `sandbox-filesystem-capability-proof` rerun built the
 complete hermetic Rust closure, AOS system, initrd, and VM disk and launched
