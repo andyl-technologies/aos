@@ -67,11 +67,46 @@ success. Existing working delivery remains selected until activation succeeds.
 
 - Initial source review completed at `37a423e9e`.
 - Implementation checkout: `dplecki/hub-settings-workflows`.
-- Console correctness/presentation, backend read models, and independent
-  validation are being developed in isolated checkouts.
+- Console correctness/presentation and backend read models were implemented
+  and independently reviewed in isolated checkouts.
+- Effective scope headers and instance, organization, registry, and cache
+  overviews separate current configuration from editing.
+- Delivery setup persists reviewed intent, child plans, verification
+  operations, replay keys, and prerequisite versions. Activation checks
+  current evidence and grants while switching all audiences atomically.
+- Delivery shows selected URLs and their endpoint/storage relationships.
+  Advanced editors remain available; their prerequisite reads are deferred
+  until opened and shared within the page.
+- Storage groups location creation and replica copying with guidance for
+  authority changes and drain/deletion. Cache integrations distinguish client
+  use, population, and retention.
+- Shared-resource selectors retain exact owner identities and current
+  grants. Route and scoped gateway inventories paginate in SQL before
+  expanding details. Worker workflow requests use stable execution affinity.
+- Changed drafts invalidate pending and in-flight reviews in delivery,
+  storage, organization profile, instance settings, and cache policy editors.
 
 ## Validation record
 
-Pending baseline and implementation checks. Runtime latency and authenticated
-browser behavior have not yet been measured; source-level findings are not
-production benchmarks.
+Checks use the AOS development toolchain. The console and Worker pass
+WebAssembly compilation. Focused native tests pass for delivery workflow
+replay and activation (10), scoped SQL route pagination (1), Worker request
+affinity (2), CLI argument boundaries (3), the complete retained-control API
+foundation (21), console contracts (27), native console HTTP integration
+(6), and shared-infrastructure HTTP authorization (1): 71 tests in total.
+
+Changed code passes formatting checks. A workspace-wide format check also
+reports existing differences in `crates/aos-hub-core/src/db/oci_gc/plan.rs` and
+`crates/aos/src/commands/build.rs`; those unrelated files were left unchanged.
+
+Runtime latency on a deployed Worker and authenticated browser rendering have
+not been measured. No browser automation harness is available in this
+workspace; HTTP console tests and WebAssembly compilation do not establish
+visual behavior. The read/query changes are structural improvements, not
+production latency benchmarks.
+
+The schema additions use the existing migration ledger and require no reset.
+The route-list continuation token is now a stable route-ID cursor; callers
+must start a fresh listing after the cutover. Provider accounts and CDN
+attachments remain external prerequisites, and no live deployment or database
+reset was performed.
