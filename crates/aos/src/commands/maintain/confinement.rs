@@ -305,10 +305,19 @@ fn probe_nix_sandbox() -> Result<()> {
     if !executable.starts_with("/nix/store") {
         bail!("the confinement backend requires an immutable AOS Nix client");
     }
-    let output = Command::new(executable)
-        .args(["config", "show", "sandbox"])
+    let mut command = Command::new(executable);
+    command
+        .args([
+            "--extra-experimental-features",
+            "nix-command",
+            "config",
+            "show",
+            "sandbox",
+        ])
         .env_clear()
         .env("HOME", "/var/empty")
+        .env("NIX_REMOTE", "daemon");
+    let output = command
         .output()
         .context("probing Nix build sandbox policy")?;
     if !output.status.success() || output.stdout != b"true\n" {

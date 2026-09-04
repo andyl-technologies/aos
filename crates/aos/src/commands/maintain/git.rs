@@ -116,16 +116,16 @@ pub(super) fn commit_candidate(
                 .ok_or_else(|| anyhow::anyhow!("campaign has no cohort identity"))?
         )
     };
-    let status = Command::new("git")
+    let output = Command::new("git")
         .arg("-C")
         .arg(root)
         .args(["-c", "core.hooksPath=/dev/null", "commit", "-m"])
         .arg(&message)
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
-        .status()
+        .output()
         .context("committing accepted candidate")?;
-    if !status.success() {
+    if !output.status.success() {
         restore_unstaged_candidate(root, &owners)?;
         bail!("Git could not commit the accepted candidate");
     }
