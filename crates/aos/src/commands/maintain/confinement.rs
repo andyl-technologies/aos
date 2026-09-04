@@ -26,6 +26,9 @@ pub(super) struct Backend {
     prlimit: PathBuf,
     landlock: PathBuf,
     landlock_abi: u32,
+    // RLIMIT_NPROC is host-UID-wide, so one detected baseline keeps every gate
+    // in a plan under the same evidence-bound ceiling.
+    uid_thread_baseline: u64,
 }
 
 #[derive(Serialize)]
@@ -112,6 +115,7 @@ impl Backend {
                 prlimit,
                 landlock,
                 landlock_abi: abi,
+                uid_thread_baseline: current_uid_thread_count()?,
             };
             backend.probe_namespaces()?;
             Ok(backend)
@@ -163,7 +167,8 @@ impl Backend {
         let policy_digest =
             Sha256Digest::of_canonical("aos.maintain.confinement-filesystem-policy/v1", &policy)?;
         let mut effective_limits = limits;
-        effective_limits.processes = current_uid_thread_count()?
+        effective_limits.processes = self
+            .uid_thread_baseline
             .checked_add(limits.processes)
             .ok_or_else(|| anyhow::anyhow!("process resource ceiling overflow"))?;
         let resource_limits_digest = Sha256Digest::of_canonical(
