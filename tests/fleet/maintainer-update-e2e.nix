@@ -145,6 +145,7 @@
     rootPaths = [
       fixtureRepository
       maintainerToolBundle
+      pkgs.bash.drvPath
       packageDerivationRecord
       sourceDerivationRecord
     ];
