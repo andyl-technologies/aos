@@ -84,6 +84,25 @@ pub const CONTAINER_DSSE_SIGNATURE_NAMESPACE: &str = "aos-container-signature-ds
 /// Schema identifier carried by [`ContainerEvidenceQualification`].
 pub const CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA: &str = "aos.container.evidence-qualification/v1";
 
+/// Returns whether a Nix definition attribute names the exact logical image.
+///
+/// Unified system evaluations use
+/// `systems.<variant>.build.containers.<image>`. The legacy
+/// `containerImages.<image>` alias remains accepted so already-signed sidecars
+/// can still be resumed and verified.
+#[must_use]
+pub fn definition_attribute_matches_image(attribute: &str, image: &str) -> bool {
+    if attribute == format!("containerImages.{image}") {
+        return true;
+    }
+
+    let suffix = format!(".build.containers.{image}");
+    attribute
+        .strip_prefix("systems.")
+        .and_then(|rest| rest.strip_suffix(&suffix))
+        .is_some_and(|variant| !variant.is_empty() && !variant.contains('.'))
+}
+
 /// One strict signed AOS container-release sidecar.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1842,6 +1861,30 @@ mod tests {
                 reason: "value must be below /nix/store".to_string(),
             })
         );
+    }
+
+    #[test]
+    fn definition_attribute_matching_is_closed_to_one_system_variant() {
+        assert!(definition_attribute_matches_image(
+            "containerImages.aos",
+            "aos"
+        ));
+        assert!(definition_attribute_matches_image(
+            "systems.server.build.containers.aos",
+            "aos"
+        ));
+        assert!(definition_attribute_matches_image(
+            "systems.aos-testing.build.containers.aos",
+            "aos"
+        ));
+        assert!(!definition_attribute_matches_image(
+            "systems.server.build.containers.other",
+            "aos"
+        ));
+        assert!(!definition_attribute_matches_image(
+            "systems.nested.server.build.containers.aos",
+            "aos"
+        ));
     }
 
     #[test]

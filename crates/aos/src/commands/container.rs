@@ -22,7 +22,7 @@ use aos_oci::{
 };
 use aos_oci_types::{
     ContainerRelease, ContainerSignatureInput, ManifestReference, RepositoryName, Sha256Digest,
-    to_canonical_json,
+    definition_attribute_matches_image, to_canonical_json,
 };
 use aos_remote::{HubClient, hub_rpc, hub_types};
 use serde_json::{Value, json};
@@ -622,7 +622,7 @@ async fn publish(input: PublishInput<'_>, printer: &Printer) -> Result<()> {
         release.identity.image
     );
     ensure!(
-        release.nix.definition.attribute == format!("containerImages.{name}"),
+        definition_attribute_matches_image(&release.nix.definition.attribute, name),
         "signed release Nix attribute '{}' does not match container definition '{name}'",
         release.nix.definition.attribute
     );
@@ -1931,6 +1931,30 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn publication_accepts_only_the_owning_system_container_attribute() {
+        assert!(definition_attribute_matches_image(
+            "containerImages.aos",
+            "aos"
+        ));
+        assert!(definition_attribute_matches_image(
+            "systems.server.build.containers.aos",
+            "aos"
+        ));
+        assert!(definition_attribute_matches_image(
+            "systems.aos-testing.build.containers.aos",
+            "aos"
+        ));
+        assert!(!definition_attribute_matches_image(
+            "systems.server.build.containers.other",
+            "aos"
+        ));
+        assert!(!definition_attribute_matches_image(
+            "systems.nested.server.build.containers.aos",
+            "aos"
+        ));
     }
 
     #[test]

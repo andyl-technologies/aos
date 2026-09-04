@@ -57,9 +57,11 @@ The current implementation provides these fail-closed operations:
 - `aos release verify` checks a closed release bundle and optional journal
   offline against explicitly supplied public keys.
 
-Production publication through this workflow remains forbidden until the
-remaining RFC-0017 launch gates and end-to-end operational exercises are
-complete.
+Supported publication to `andyl/main` remains forbidden until the remaining
+RFC-0017 launch gates and end-to-end operational exercises are complete. The
+experimental `andyl/testing` registry may be promoted to the production Hub
+only under [`registry-testing.md`](registry-testing.md); that does not satisfy
+or bypass any main-registry launch gate.
 
 The canonical release image profile enables external Secure Boot, distinct
 module and PCR-policy roles, lockdown, measured boot, encrypted state,
@@ -107,7 +109,8 @@ Create a reviewed JSON object with schema
 request supplies:
 
 - release id, calendar version, and release class;
-- the canonical `andyl/main` registry and its exact base commit and generation;
+- one registry authorized by [`registries.md`](registries.md), its exact base
+  commit and generation, and a release class/channel allowed by that registry;
 - protected source branch, unused immutable source tag, and SHA-256 digest of
   the public contributor-authorization summary;
 - explicit decisions for both Linux system-image targets;
@@ -247,16 +250,21 @@ command because their release matrix contains packages only.
 
 Prepare canonical `aos.registry-release-transaction/v1` JSON whose entries are
 strictly ordered by build artifact id and whose catalog, store-graph, and policy
-digests describe the complete intended result. The command independently
-checks every entry against `build-report.json`; a missing, extra, or changed
-package, version, target, or store path aborts before the output directory is
-installed.
+digests describe the complete intended result. The catalog surface includes
+`containers/`; when publishing OCI, calculate the expected digest with the
+exact externally finalized `containers/v1/index.json` sidecar installed. The
+command independently checks every package entry against `build-report.json`
+and binds the sidecar to its Nix signature input and planned system variant. A
+missing, extra, or changed package, version, target, store path, or sidecar
+aborts before the output directory is installed.
 
 ```sh
 aos release finalize-registry \
   --plan release-plan.json \
   --build-report release-build/evidence/build-report.json \
   --transaction registry-transaction.json \
+  --container-release final-container/container-release.json \
+  --container-signature-input final-container/signature-input.json \
   --source-registry /srv/aos-registry/authoring \
   --output /var/lib/aos-release/2026.9.0/registry \
   --result /var/lib/aos-release/2026.9.0/registry-result.json \
@@ -271,8 +279,17 @@ aos release finalize-registry \
   --git-offset-minutes 0
 ```
 
-The two public key files contain exact `andyl/main:Ed25519:<base64>` trust
-lines. Their key ids and provider revisions must be the single-key,
+Omit both container arguments for a release with no OCI artifact; finalization
+removes any prior release's fixed-path sidecar from the new signed tree.
+Supplying only one is invalid. The sidecar definition must be either the
+compatibility alias `containerImages.aos` with exactly one planned image
+variant, or the preferred
+`systems.<planned-variant>.build.containers.aos` identity.
+
+The two public key files contain exact
+`<local-alias>:Ed25519:<base64>` trust lines: `andyl` for `andyl/main`, or the
+epoch-matched `andyl-testing` alias for `andyl/testing`. Their key ids and
+provider revisions must be the single-key,
 threshold-one Provenance and Registry requirements frozen in the plan. The
 single-signature DSSE and Git formats cannot honestly represent a larger
 threshold, so the command rejects one rather than counting repeated signatures
@@ -511,8 +528,8 @@ compare-and-swap parent of its first release. Do not let the first release
 self-authorize that base. Obtain identical
 `aos.release.registry-bootstrap-intent/v1` envelopes signed by exactly the
 plan's `release-evidence` threshold. The intent binds the environment,
-deployment, `andyl/main`, planned base commit, plan digest, public authority,
-and approval time.
+deployment, the plan's exact registry identity, planned base commit, plan
+digest, public authority, and approval time.
 
 Install the reviewed base in staging first:
 
@@ -800,8 +817,9 @@ does not pretend that one x86 VM executes Darwin or Arm binaries.
 Do not bypass the isolated registry transaction, closed bundle finalizer,
 role-separated signing, exact-byte staging and promotion receipts, production
 read-back, or compare-and-swap channel updates with ad hoc publishes or manual
-object copies. Production remains fail-closed until immutable TUF authoring,
-qualification execution, and the remaining launch gates land.
+object copies. `andyl/main` remains fail-closed until its remaining launch gates
+and operational exercises are complete. A production-Hub testing publication
+remains explicitly experimental and cannot be promoted across registries.
 
 The normative design and rollout requirements are in
 [RFC-0017](../rfcs/0017-canonical-hub-publishing/README.md).

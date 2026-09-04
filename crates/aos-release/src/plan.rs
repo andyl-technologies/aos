@@ -9,6 +9,7 @@ use anyhow::{Context as _, Result, bail};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
+use crate::RELEASE_PLAN_V1;
 use crate::artifact::{require_identifier, require_store_path};
 use crate::digest::Sha256Digest;
 use crate::evidence::GateRequirement;
@@ -16,8 +17,8 @@ use crate::inventory::{DerivationInventoryV1, PackageInventoryV1, PackagePublica
 use crate::platform::{
     MatrixCell, Platform, require_complete_image_platforms, require_complete_package_platforms,
 };
+use crate::registry::registry_policy;
 use crate::signing::{SignerRequirement, SignerRole};
-use crate::{CANONICAL_REGISTRY, RELEASE_PLAN_V1};
 
 /// Exact schema for pre-evaluation planner inputs.
 pub const PLAN_REQUEST_V1: &str = "aos.release.plan-request/v1";
@@ -349,9 +350,7 @@ impl ReleasePlanV1 {
         if self.schema_version != RELEASE_PLAN_V1 {
             bail!("unsupported release plan schema: {}", self.schema_version);
         }
-        if self.registry != CANONICAL_REGISTRY {
-            bail!("canonical releases require registry {CANONICAL_REGISTRY}");
-        }
+        let registry_policy = registry_policy(&self.registry)?;
         require_identifier(&self.release_id, "release id")?;
         validate_version(&self.version, self.release_class)?;
         validate_sha256_git_oid(&self.registry_base_commit, "registry base commit")?;
@@ -479,6 +478,14 @@ impl ReleasePlanV1 {
                 _ => {}
             }
         }
+        registry_policy.require_release(
+            self.release_class,
+            &self
+                .intended_channels
+                .iter()
+                .map(|intent| intent.channel.clone())
+                .collect::<Vec<_>>(),
+        )?;
         require_identifier(&self.retention.policy_id, "retention policy id")?;
         if !self.retention.require_corresponding_source {
             bail!("canonical releases must retain corresponding source");

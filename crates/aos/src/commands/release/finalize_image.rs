@@ -12,7 +12,6 @@ use aos_image_finalizer::assembly::UnsignedImageAssemblyV1;
 use aos_image_finalizer::capture::capture_unsigned_assembly;
 use aos_image_finalizer::pipeline::finalize_image_set;
 use aos_image_finalizer::request::{ImageRequestAuthorizer, ImageSigningIntent};
-use aos_release::CANONICAL_REGISTRY;
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
 use aos_release::plan::ReleasePlanV1;
@@ -224,7 +223,7 @@ impl ImageRequestAuthorizer for PlanImageAuthorizer<'_> {
             schema_version: SIGNING_REQUEST_DOMAIN.to_owned(),
             request_id: format!("image-{}", &nonce[..24]),
             nonce,
-            registry: CANONICAL_REGISTRY.to_owned(),
+            registry: self.plan.registry.clone(),
             release_id: self.plan.release_id.clone(),
             plan_digest: self.plan_digest,
             manifest_digest: None,

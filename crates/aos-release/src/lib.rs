@@ -32,6 +32,7 @@ pub mod manifest;
 pub mod plan;
 pub mod platform;
 pub mod receipt;
+pub mod registry;
 pub mod sbom;
 pub mod signing;
 pub mod state;
@@ -39,9 +40,6 @@ pub mod tuf;
 pub mod verify;
 
 pub use digest::Sha256Digest;
-
-/// Registry identity governed by the canonical public release pipeline.
-pub const CANONICAL_REGISTRY: &str = "andyl/main";
 
 /// Schema identifier for the first frozen release-plan contract.
 pub const RELEASE_PLAN_V1: &str = "aos.release.plan/v1";
