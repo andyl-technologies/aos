@@ -119,6 +119,8 @@ enum ChannelCall {
     QmpHotForkMutexInventory,
     QmpHotForkTimerInventory,
     QmpHotForkMonitorInventory,
+    HostHotForkContinuationClone,
+    QmpHotFork,
     QmpTerminalLifecycle {
         action: ContentHash,
         evidence: ContentHash,
@@ -162,6 +164,7 @@ struct ScriptedHostIoRuntime {
     fault_results: VecDeque<DequeuedFaultResult>,
     staged_fault_events: Vec<DequeuedFaultEvent>,
     fingerprint_fault_events: VecDeque<DequeuedFaultEvent>,
+    fail_hot_fork_clone: bool,
 }
 
 #[derive(Clone)]
@@ -202,6 +205,7 @@ enum DescriptorScript {
     ForkRejected,
     ForkIndeterminate,
     ForkParentDispositionFailed,
+    HostIoCloneFailure,
 }
 
 #[derive(Clone, Copy)]
@@ -1011,6 +1015,7 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
         &mut self,
         request: crate::QmpHotForkRequest,
     ) -> Result<crate::QmpHotForkState, crate::QemuHotForkCommandError> {
+        self.log.lock().unwrap().push(ChannelCall::QmpHotFork);
         match self.hot_fork_script {
             HotForkScript::Forked => Ok(crate::QmpHotForkState::for_test(
                 request,
@@ -1147,6 +1152,27 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
 }
 
 impl QemuHostIoRuntime for ScriptedHostIoRuntime {
+    #[cfg(target_os = "linux")]
+    fn clone_hot_fork_host_io_continuation(
+        &mut self,
+        _execution_binding: ContentHash,
+        _shmem_fd: std::os::fd::BorrowedFd<'_>,
+        _wake_fd: std::os::fd::BorrowedFd<'_>,
+        _region_len: u64,
+    ) -> Result<Box<dyn QemuHostIoRuntime>, QemuAsyncDriverRuntimeError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(ChannelCall::HostHotForkContinuationClone);
+        if self.fail_hot_fork_clone {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "clone scripted hot-fork host continuation",
+                "injected unsupported live endpoint",
+            ));
+        }
+        Ok(Box::new(self.clone()))
+    }
+
     fn set_fault_event_staging_limit(
         &mut self,
         maximum_local_records: usize,
@@ -1732,10 +1758,18 @@ fn hot_fork_plugin_endpoints_bind_the_installed_private_ring_generation()
 
 #[cfg(target_os = "linux")]
 fn sealed_hot_fork_node(script: DescriptorScript) -> Result<QemuNode, Box<dyn Error>> {
+    sealed_hot_fork_node_with_log(script).map(|(node, _log)| node)
+}
+
+#[cfg(target_os = "linux")]
+fn sealed_hot_fork_node_with_log(
+    script: DescriptorScript,
+) -> Result<(QemuNode, SharedLog), Box<dyn Error>> {
     let (setup_identity, host_barrier, image) = held_hot_fork_ring_image()?;
     let barrier = crate::QmpHotForkPluginBarrierState::one_quiescent(15, host_barrier.ring_count());
+    let log = shared_log();
     let mut node = scripted_hot_fork_capture_node(
-        shared_log(),
+        Arc::clone(&log),
         setup_identity,
         setup_identity,
         host_barrier,
@@ -1750,7 +1784,7 @@ fn sealed_hot_fork_node(script: DescriptorScript) -> Result<QemuNode, Box<dyn Er
     node.stage_hot_fork_child_qmp()?;
     node.stage_hot_fork_plugin_endpoints()?;
     node.install_test_hot_fork_child_process_contract_stage(13, 1)?;
-    Ok(node)
+    Ok((node, log))
 }
 
 #[cfg(target_os = "linux")]
@@ -1785,6 +1819,30 @@ fn hot_fork_success_transfers_child_qmp_and_private_host_continuation() -> Resul
     assert_eq!(node.lifecycle_state(), QemuNodeLifecycleState::Running);
     assert!(node.take_hot_fork_child_qmp_host_endpoint().is_err());
     drop(launch);
+    node.shutdown_child()?;
+    Ok(())
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn hot_fork_rejects_host_io_clone_failure_before_qmp_or_process_retention()
+-> Result<(), Box<dyn Error>> {
+    let (mut node, log) = sealed_hot_fork_node_with_log(DescriptorScript::HostIoCloneFailure)?;
+    let mut process_owner = ScriptedHotForkChildOwner::default();
+
+    let error = node
+        .fork_hot_fork_template(exact_hot_fork_request(), &mut process_owner)
+        .expect_err("host-I/O cloning must fail before the fork command");
+
+    assert!(matches!(
+        error,
+        crate::QemuHotForkLaunchError::Rejected { .. }
+    ));
+    assert!(process_owner.retained.is_empty());
+    assert_eq!(node.lifecycle_state(), QemuNodeLifecycleState::Running);
+    let calls = recorded(&log);
+    assert!(calls.contains(&ChannelCall::HostHotForkContinuationClone));
+    assert!(!calls.contains(&ChannelCall::QmpHotFork));
     node.shutdown_child()?;
     Ok(())
 }
@@ -2368,7 +2426,8 @@ fn scripted_hot_fork_capture_node(
                 | DescriptorScript::InstallFailure
                 | DescriptorScript::CloseFailure
                 | DescriptorScript::EndpointInstallFailure
-                | DescriptorScript::EndpointDispositionMismatch => HotForkScript::Forked,
+                | DescriptorScript::EndpointDispositionMismatch
+                | DescriptorScript::HostIoCloneFailure => HotForkScript::Forked,
             },
         },
     );
@@ -2384,6 +2443,7 @@ fn scripted_hot_fork_capture_node(
             fault_results: VecDeque::new(),
             staged_fault_events: Vec::new(),
             fingerprint_fault_events: VecDeque::new(),
+            fail_hot_fork_clone: matches!(descriptor_script, DescriptorScript::HostIoCloneFailure),
         },
         2,
     ))
@@ -2512,6 +2572,7 @@ fn scripted_node_with_fault_events(
             fault_results: VecDeque::new(),
             staged_fault_events,
             fingerprint_fault_events: VecDeque::new(),
+            fail_hot_fork_clone: false,
         },
         2,
     ))
@@ -2611,6 +2672,7 @@ fn scripted_node_with_coverage(
             fingerprint_fault_events: (1..=options.fingerprint_fault_event_count)
                 .map(|sequence| fault_event_with_sequence(u64::from(sequence)))
                 .collect(),
+            fail_hot_fork_clone: false,
         },
         2,
     ))

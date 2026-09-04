@@ -214,6 +214,21 @@ impl QemuHotForkPluginEndpointPair {
         self.host_control.is_some() && self.host_wake.is_some()
     }
 
+    fn clone_host_wake(&self) -> Result<OwnedFd, QemuNodeChannelError> {
+        self.host_wake
+            .as_ref()
+            .ok_or_else(|| {
+                QemuNodeChannelError::new(
+                    "clone hot-fork plugin host wake",
+                    "branch-private plugin wake endpoint is unavailable",
+                )
+            })?
+            .try_clone()
+            .map_err(|source| {
+                QemuNodeChannelError::new("clone hot-fork plugin host wake", source.to_string())
+            })
+    }
+
     fn take_host_endpoint(
         &mut self,
     ) -> Result<QemuHotForkPluginHostEndpoint, QemuNodeChannelError> {
@@ -272,6 +287,16 @@ impl QemuHotForkPluginEndpointStage {
             Self::Installed(endpoints) => endpoints.take_host_endpoint(),
             Self::TransferUncertain(_) => Err(QemuNodeChannelError::new(
                 "take hot-fork plugin host endpoint",
+                "plugin endpoint transfer ownership is uncertain",
+            )),
+        }
+    }
+
+    pub(super) fn clone_host_wake(&self) -> Result<OwnedFd, QemuNodeChannelError> {
+        match self {
+            Self::Installed(endpoints) => endpoints.clone_host_wake(),
+            Self::TransferUncertain(_) => Err(QemuNodeChannelError::new(
+                "clone hot-fork plugin host wake",
                 "plugin endpoint transfer ownership is uncertain",
             )),
         }

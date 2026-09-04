@@ -90,7 +90,8 @@ pub use hot_fork_diagnostics::{
 #[cfg(target_os = "linux")]
 pub use hot_fork_operation::{
     QemuHotForkChildLaunch, QemuHotForkChildProcessBasis, QemuHotForkChildProcessOwner,
-    QemuHotForkCommandError, QemuHotForkLaunchError, QemuHotForkPluginHostContinuation,
+    QemuHotForkCommandError, QemuHotForkHostContinuation, QemuHotForkLaunchError,
+    QemuHotForkPluginHostContinuation,
 };
 #[cfg(target_os = "linux")]
 use hot_fork_plugin_endpoints::QemuHotForkPluginEndpointStage;

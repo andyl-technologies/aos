@@ -17,10 +17,9 @@ use std::os::unix::net::UnixStream;
 use crucible_campaign::{ExactCheckpointId, ObservationId};
 use crucible_qemu::{
     LinuxQemuHotForkChildProcessAuthority, QemuHotForkChildLaunch, QemuHotForkChildProcessBasis,
-    QemuHotForkChildProcessOwner, QemuHotForkChildQmpHandshakeError, QemuHotForkLaunchError,
-    QemuHotForkPluginHostContinuation, QemuNode, QemuNodeChannelError,
-    QemuQmpVmStateControlChannel, QemuVmRealizationError, QmpHotForkChildProcessPhase,
-    QmpHotForkChildProcessState,
+    QemuHotForkChildProcessOwner, QemuHotForkChildQmpHandshakeError, QemuHotForkHostContinuation,
+    QemuHotForkLaunchError, QemuNode, QemuNodeChannelError, QemuQmpVmStateControlChannel,
+    QemuVmRealizationError, QmpHotForkChildProcessPhase, QmpHotForkChildProcessState,
 };
 use thiserror::Error;
 
@@ -711,7 +710,7 @@ where
     basis: QemuHotForkChildProcessBasis,
     pending_child_qmp: Option<crucible_qemu::QemuHotForkChildQmpHostEndpoint>,
     child_qmp: Option<QemuQmpVmStateControlChannel<UnixStream>>,
-    host_continuation: Option<QemuHotForkPluginHostContinuation>,
+    host_continuation: Option<QemuHotForkHostContinuation>,
     source_release: LinuxSourceReleasePhase,
     diagnostics: Option<crucible_qemu::QemuHotForkChildDiagnosticCapture>,
 }
@@ -765,9 +764,9 @@ where
         self.child_qmp.as_mut()
     }
 
-    /// Returns mutable access to the exact branch-private plugin continuation.
+    /// Returns mutable access to the exact branch-private host continuation.
     #[must_use]
-    pub fn host_continuation_mut(&mut self) -> Option<&mut QemuHotForkPluginHostContinuation> {
+    pub fn host_continuation_mut(&mut self) -> Option<&mut QemuHotForkHostContinuation> {
         self.host_continuation.as_mut()
     }
 
@@ -786,18 +785,19 @@ where
         Some((child_qmp, &mut self.target))
     }
 
-    /// Returns every admitted child channel with the non-releasing boundary.
+    /// Returns every admitted child continuation with the non-releasing boundary.
     ///
-    /// The plugin continuation owns the branch-private control socket, wake
-    /// eventfd, mapped ring continuation, and retained ring descriptor. The
-    /// returned operational boundary can check cancellation and charge quanta,
-    /// but cannot finish or quarantine the complete target guard.
+    /// The host continuation owns the branch-private control socket, wake
+    /// eventfd, mapped ring continuation, retained ring descriptor, and cloned
+    /// host devices. The returned operational boundary can check cancellation
+    /// and charge quanta, but cannot finish or quarantine the complete target
+    /// guard.
     #[must_use]
     pub fn live_child_plugin_parts_mut(
         &mut self,
     ) -> Option<(
         &mut QemuQmpVmStateControlChannel<UnixStream>,
-        &mut QemuHotForkPluginHostContinuation,
+        &mut QemuHotForkHostContinuation,
         &mut dyn crate::QemuAttemptOperationalBoundary,
     )> {
         let child_qmp = self.child_qmp.as_mut()?;
@@ -1041,7 +1041,7 @@ where
         self.backend.as_mut()?.live_child_operational_parts_mut()
     }
 
-    /// Returns the admitted QMP and private plugin continuation with its boundary.
+    /// Returns the admitted QMP and private host continuation with its boundary.
     ///
     /// The triple is available only while the exact child is live. It exposes no
     /// release, cgroup, quota, or quarantine authority to modeled code.
@@ -1050,7 +1050,7 @@ where
         &mut self,
     ) -> Option<(
         &mut QemuQmpVmStateControlChannel<UnixStream>,
-        &mut QemuHotForkPluginHostContinuation,
+        &mut QemuHotForkHostContinuation,
         &mut dyn crate::QemuAttemptOperationalBoundary,
     )> {
         if self.phase != QemuHotForkReconciliationPhase::Live {

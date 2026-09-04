@@ -20,6 +20,12 @@
 //! awaits (handshake, QMP, process-exit) are not gated here: the node driver
 //! observes those directly on its control-socket, QMP, and child handles, so
 //! this runtime treats a non-advance await as an immediate host-liveness yield.
+//!
+//! At a retained-template hot fork, the runtime checkpoints its quiescent
+//! block, 9p, and deterministic accelerator state and reconstructs independent
+//! devices over the child's already-imaged private setup region. Source
+//! signal-coordinator capabilities are never shared across worlds; the child
+//! retains only the requirement for a fresh branch-local coordinator.
 
 use std::fs::File;
 use std::os::fd::BorrowedFd;
@@ -99,6 +105,8 @@ struct BlockIoServicing {
     servicer: QemuLiveBlockIoServicer,
     diagnostics: Arc<BlockIoDiagnostics>,
     coordinator: Option<Box<dyn QemuBlockFaultCoordinator>>,
+    /// Whether production servicing must wait for a fresh branch-local owner.
+    coordinator_required: bool,
 }
 
 /// The participant half of the runtime for one shared-memory 9p device.
@@ -106,6 +114,8 @@ struct NinepIoServicing {
     servicer: QemuLive9pIoServicer,
     diagnostics: Arc<NinepIoDiagnostics>,
     coordinator: Option<Box<dyn QemuNinepFaultCoordinator>>,
+    /// Whether production servicing must wait for a fresh branch-local owner.
+    coordinator_required: bool,
 }
 
 /// Owns exact signal evaluation around one live block servicing pass.
@@ -261,6 +271,7 @@ impl QemuLiveHostIoRuntime {
             servicer,
             diagnostics,
             coordinator: None,
+            coordinator_required: false,
         });
         Ok(self)
     }
@@ -280,6 +291,7 @@ impl QemuLiveHostIoRuntime {
             servicer,
             diagnostics,
             coordinator: None,
+            coordinator_required: false,
         });
         self
     }
@@ -579,6 +591,117 @@ impl QemuLiveHostIoRuntime {
 }
 
 impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
+    fn clone_hot_fork_host_io_continuation(
+        &mut self,
+        execution_binding: ContentHash,
+        shmem_fd: BorrowedFd<'_>,
+        wake_fd: BorrowedFd<'_>,
+        region_len: u64,
+    ) -> Result<Box<dyn QemuHostIoRuntime>, QemuAsyncDriverRuntimeError> {
+        if self.console.is_some() {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "clone hot-fork host-I/O continuation",
+                "console observation requires a fresh branch-private endpoint",
+            ));
+        }
+        if self.scheduler_input_publish_generation.is_some()
+            || self.device_wake_publish_generation.is_some()
+        {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "clone hot-fork host-I/O continuation",
+                "scheduler or device publication remains unsettled",
+            ));
+        }
+
+        let block = self
+            .block
+            .as_mut()
+            .map(|block| {
+                block
+                    .servicer
+                    .clone_hot_fork_continuation(shmem_fd, region_len, execution_binding)
+                    .map(|servicer| (servicer, block.coordinator_required))
+            })
+            .transpose()
+            .map_err(|source| {
+                QemuAsyncDriverRuntimeError::new(
+                    "clone hot-fork block continuation",
+                    source.to_string(),
+                )
+            })?;
+        let ninep = self
+            .ninep
+            .as_mut()
+            .map(|ninep| {
+                ninep
+                    .servicer
+                    .clone_hot_fork_continuation(shmem_fd, region_len, execution_binding)
+                    .map(|servicer| (servicer, ninep.coordinator_required))
+            })
+            .transpose()
+            .map_err(|source| {
+                QemuAsyncDriverRuntimeError::new(
+                    "clone hot-fork 9p continuation",
+                    source.to_string(),
+                )
+            })?;
+        let accelerator = self
+            .accelerator
+            .as_ref()
+            .map(|accelerator| accelerator.clone_hot_fork_continuation(shmem_fd, region_len))
+            .transpose()
+            .map_err(|source| {
+                QemuAsyncDriverRuntimeError::new(
+                    "clone hot-fork accelerator continuation",
+                    source.to_string(),
+                )
+            })?;
+
+        let mut continuation = Self::from_shmem_fd_with_poll_interval(
+            shmem_fd,
+            wake_fd,
+            region_len,
+            self.vm_slot,
+            self.poll_interval,
+        )
+        .map_err(|source| {
+            QemuAsyncDriverRuntimeError::new("clone hot-fork host-I/O runtime", source.to_string())
+        })?;
+        continuation.checkpoint_idle_coordinate = self.checkpoint_idle_coordinate;
+        continuation.staged_fault_events = self.staged_fault_events.clone();
+        continuation.fault_event_staging_limit = self.fault_event_staging_limit;
+        continuation.fault_event_canonical_current_offset =
+            self.fault_event_canonical_current_offset;
+        continuation.fault_event_configured_limit = self.fault_event_configured_limit;
+        if let Some((servicer, coordinator_required)) = block {
+            servicer
+                .shared_device()
+                .attach_notification_wake(Arc::clone(&continuation.wake))
+                .map_err(|source| {
+                    QemuAsyncDriverRuntimeError::new(
+                        "attach hot-fork block notification",
+                        source.to_string(),
+                    )
+                })?;
+            continuation.block = Some(BlockIoServicing {
+                servicer,
+                diagnostics: BlockIoDiagnostics::shared(),
+                coordinator: None,
+                coordinator_required,
+            });
+        }
+        if let Some((servicer, coordinator_required)) = ninep {
+            continuation.ninep = Some(NinepIoServicing {
+                servicer,
+                diagnostics: NinepIoDiagnostics::shared(),
+                coordinator: None,
+                coordinator_required,
+            });
+        }
+        continuation.accelerator = accelerator;
+        Ok(Box::new(continuation))
+    }
+
     fn set_fault_event_staging_limit(
         &mut self,
         maximum_local_records: usize,
@@ -1305,6 +1428,13 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
                 "live node has no shared-memory block servicer",
             )
         })?;
+        if block.coordinator.is_some() {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "install block fault coordinator",
+                "live block servicer already owns a signal coordinator",
+            ));
+        }
+        block.coordinator_required = true;
         block.coordinator = Some(coordinator);
         Ok(())
     }
@@ -1326,6 +1456,7 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
             ));
         }
         ninep.servicer.require_fault_directives();
+        ninep.coordinator_required = true;
         ninep.coordinator = Some(coordinator);
         Ok(())
     }
