@@ -639,6 +639,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-sandbox-host"
+version = "0.1.0"
+dependencies = [
+ "aos-proto",
+ "aos-sandbox-core",
+ "aos-sandbox-linux",
+ "aos-sandbox-protocol",
+ "aos-systemd",
+ "async-trait",
+ "buffa",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "aos-sandbox-linux"
 version = "0.1.0"
 dependencies = [

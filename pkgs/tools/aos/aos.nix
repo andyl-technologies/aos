@@ -127,6 +127,7 @@
     "aos-sandbox-protocol"
     "aos-sandbox"
     "aos-sandbox-linux"
+    "aos-sandbox-host"
     "aos-server"
     "aos-systemd"
   ];

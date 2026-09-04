@@ -293,6 +293,25 @@ impl SandboxUnitSpec {
         &self.name
     }
 
+    /// Returns the validated absolute executable path.
+    #[must_use]
+    pub fn executable(&self) -> &str {
+        &self.executable
+    }
+
+    /// Returns arguments excluding the executable `argv[0]` inserted by the
+    /// typed transport.
+    #[must_use]
+    pub fn arguments(&self) -> &[String] {
+        &self.arguments
+    }
+
+    /// Returns the validated pinned network-namespace path.
+    #[must_use]
+    pub fn network_namespace_path(&self) -> &str {
+        &self.network_namespace_path
+    }
+
     fn properties(&self) -> Result<Vec<TransientProperty>> {
         let mut argv = Vec::with_capacity(self.arguments.len() + 1);
         argv.push(self.executable.clone());

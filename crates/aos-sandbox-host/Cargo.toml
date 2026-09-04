@@ -1,0 +1,25 @@
+[package]
+name = "aos-sandbox-host"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+aos-proto = { path = "../aos-proto" }
+aos-sandbox-core = { path = "../aos-sandbox-core" }
+aos-sandbox-linux = { path = "../aos-sandbox-linux" }
+aos-sandbox-protocol = { path = "../aos-sandbox-protocol" }
+aos-systemd = { path = "../aos-systemd" }
+async-trait.workspace = true
+buffa = "0.3"
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+tokio.workspace = true
+
+[lints]
+workspace = true

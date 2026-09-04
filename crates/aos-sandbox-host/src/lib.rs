@@ -1,0 +1,45 @@
+//! Root-only fixed-function host broker for AOS sandbox runtimes.
+//!
+//! The broker accepts only semantically validated local runtime requests,
+//! durably fences assignment generations and request replays, resolves opaque
+//! workspace/network/attachment handles through a trusted node catalog, and
+//! invokes one short-lived typed systemd worker transaction. It never accepts
+//! a caller-selected path, command, unit name, D-Bus property, or signal.
+//!
+//! Modules divide the privilege boundary as follows:
+//!
+//! - [`plan`] resolves catalog handles and compiles the fixed nspawn launch;
+//! - [`state`] persists fences, pending effects, and replay receipts;
+//! - [`worker`] performs idempotent typed systemd and pidfd operations;
+//! - [`broker`] orders validation, durability, effects, and replies.
+
+pub mod broker;
+pub mod plan;
+pub mod state;
+pub mod worker;
+
+/// Errors returned by the fixed host broker.
+#[derive(Debug, thiserror::Error)]
+pub enum HostError {
+    /// Hostile or unauthorized local protocol input was rejected.
+    #[error("host protocol rejected request: {0}")]
+    Protocol(#[from] aos_sandbox_protocol::ProtocolValidationError),
+    /// The trusted catalog could not resolve an exact opaque handle tuple.
+    #[error("host catalog rejected launch: {0}")]
+    Catalog(String),
+    /// A resolved launch plan violates the fixed backend profile.
+    #[error("invalid resolved host launch plan: {0}")]
+    InvalidPlan(String),
+    /// Durable host fence or replay state is corrupt or unavailable.
+    #[error("host durable state failure: {0}")]
+    State(String),
+    /// A request is stale or contradicts durable host state.
+    #[error("host request fence conflict: {0}")]
+    Fence(&'static str),
+    /// The fixed systemd worker could not complete or verify an effect.
+    #[error("host worker failure: {0}")]
+    Worker(String),
+}
+
+/// Convenience result type for host broker operations.
+pub type Result<T> = std::result::Result<T, HostError>;

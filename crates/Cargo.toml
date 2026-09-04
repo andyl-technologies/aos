@@ -27,6 +27,7 @@ members = [
     "aos-sandbox-protocol",
     "aos-sandbox",
     "aos-sandbox-linux",
+    "aos-sandbox-host",
     "crucible-cas",
     "crucible-sim",
     "crucible-assert",
@@ -218,6 +219,7 @@ aos-sandbox-core = { path = "aos-sandbox-core" }
 aos-sandbox-protocol = { path = "aos-sandbox-protocol" }
 aos-sandbox = { path = "aos-sandbox" }
 aos-sandbox-linux = { path = "aos-sandbox-linux" }
+aos-sandbox-host = { path = "aos-sandbox-host" }
 
 [workspace.lints.clippy]
 all = "deny"
