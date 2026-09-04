@@ -9,8 +9,10 @@ These controls authenticate the publisher and exact content; they do not prove
 that a package is benign. Runtime confinement is a separate defense-in-depth
 control for services activated through a package's `expose` contract, and a
 package can declare permissions that weaken or remove that boundary. Review the
-confinement model in [Manage packages with APM](../aos/packages.md#understand-service-confinement)
-in addition to establishing registry trust.
+confinement model in [Understand the package sandbox](../aos/package-sandbox.md)
+in addition to establishing registry trust. Consumer-side registry selection
+and bootstrap are documented in [Configure package registries](../aos/registries.md);
+this guide owns the producer's key and incident procedures.
 
 ## Keep the keys straight
 

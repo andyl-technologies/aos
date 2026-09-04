@@ -457,7 +457,7 @@ narinfo References:    r4q1m2kp8v3x…-glibc-2.39  xr5is7by89v3q…-zlib-1.3.1
 
 ---
 
-## 8. Signing: one key, two signature forms
+## 8. Signing: a separate cache role
 
 The narinfo-signing logic is implemented by `NarInfoSigner` in
 `crates/aos-core/src/nar/cache.rs`. `fingerprint(store_path, nar_hash, nar_size,
@@ -465,24 +465,18 @@ refs)` produces the standard Nix narinfo fingerprint
 `1;{store_path};{nar_hash};{nar_size};{refs}`; `sign(fingerprint)` signs it with
 the Ed25519 secret and returns `name:base64sig`; and
 `render_static_narinfo` appends the `Sig:` line. The producer bakes the `Sig:`
-into each static narinfo at publish. The key model is the same single Ed25519
-keypair that signs the git tags (design brief §11):
+into each static narinfo at publish. Production deployments use a dedicated
+cache-signing Ed25519 keypair instead of the registry tag-signing key:
 
-- **One secret key** signs (a) git tag objects via an SSH-format signature and
-  (b) narinfos via the Nix fingerprint
-  `(StorePath, NarHash, NarSize, References)` — the latter **already
-  implemented** by `NarInfoSigner`. The *signed messages
-  differ*, so the *signatures differ*, but there is **one secret to manage**.
-- **Two published public-key encodings** from that one key:
-  - `aos-core:Ed25519:<base64>` — the apm form for `trusted-keys.d` anchoring and
-    the `keys.toml` roster (the `SigningConfig.public_key` format,
-    `crates/aos-package/src/types.rs:346`,
-    parsed as `<name>:Ed25519:<base64>` by `parse_signing_key` in `security.rs:575`;
-    the base64 payload is the SSH `ssh-ed25519` public-key blob used by git
-    `allowed_signers`).
-  - `<name>:<base64>` — the nix form for Nix `trusted-public-keys`.
-    Its base64 payload is the raw Ed25519 verifying key bytes. It is a different
-    wire encoding of the same public key, not the same literal base64 string.
+- The registry key signs git tag objects via an SSH-format signature and is trusted
+  through the AOS anchor and `keys.toml` roster.
+- The cache key signs the Nix fingerprint
+  `(StorePath, NarHash, NarSize, References)` and is distributed as
+  `<name>:<base64>` through the Nix `trusted-public-keys` configuration.
+
+Both paths use Ed25519, but they are different roles and different key material.
+This keeps a cache-publishing compromise from granting release authority and lets
+operators rotate cache trust without rotating the registry root.
 
 ### 8.1 Why a per-narinfo `Sig` exists at all
 
@@ -499,9 +493,7 @@ the NAR-cache layer itself is (§1).
 
 ```
 apm trust:   signed tag chain ──► TOML ──► NAR sha256   (transitive, no Sig needed)
-nix trust:   narinfo Sig (Ed25519) ──► NarHash          (per-path, satisfies require-sigs)
-                 ▲
-                 └── same key, different signed message
+nix trust:   cache-role narinfo Sig ──► NarHash         (per-path, satisfies require-sigs)
 ```
 
 See [signing-and-trust.md](signing-and-trust.md) for the full key model,
@@ -672,7 +664,7 @@ implemented producer that AOT-generates + uploads the static cache),
 consumer-side Nix substituter superset — **already narinfo-driven and done** in
 `download.rs`), and
 [workstream-04-signing-trust.md](../plans/registry/workstream-04-signing-trust.md)
-(the one-key signing model).
+(the role-separated signing model).
 
 ---
 
@@ -683,7 +675,7 @@ consumer-side Nix substituter superset — **already narinfo-driven and done** i
 - [repo-layout.md](repo-layout.md) — the committed git tree, including
   `registry.toml` `[[caches]]` (where the cache list lives) and `keys.toml`.
 - [http-layout.md](http-layout.md) — full HTTP/object layout and CDN TTLs.
-- [signing-and-trust.md](signing-and-trust.md) — the one-key model, name-binding,
+- [signing-and-trust.md](signing-and-trust.md) — role separation, name-binding,
   `tag → tag → commit`.
 - [current-state.md](current-state.md) — current git-native implementation
   status.

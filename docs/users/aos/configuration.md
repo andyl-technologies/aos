@@ -78,7 +78,8 @@ apm list --installed
 
 Machine-wide package sets can be reconciled from a reviewed desired-state
 file with `apm install --system --from`. See [Manage packages](packages.md) for
-registry trust, user and system scopes, upgrades, and rollback.
+user and system scopes, upgrades, and rollback, and [Configure package
+registries](registries.md) for origin and trust policy.
 
 ## Discover package configuration
 
