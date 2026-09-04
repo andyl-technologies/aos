@@ -219,6 +219,7 @@ in {
       maintainer.fail(f"test -e {SOURCE_DERIVATION}")
       maintainer.succeed(textwrap.dedent(f"""
           set -eu
+          export NIX_REMOTE=local
           mkdir -p /run/aos-host-store
           {MOUNT} -t 9p -o trans=virtio,version=9p2000.L,msize=1048576,ro \\
             aos-host-store /run/aos-host-store
@@ -318,6 +319,8 @@ in {
               export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
               export NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
               export NIX_CONFIG='experimental-features = nix-command'
+              export NIX_REMOTE=local
+              export PATH={TOOLS}/bin:$PATH
               {AOS} maintain --state-dir {STATE} --json {arguments}
           """)
           status, stdout, stderr = maintainer.execute(command, timeout=timeout)
