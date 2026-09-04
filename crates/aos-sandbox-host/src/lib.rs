@@ -10,12 +10,14 @@
 //!
 //! - [`plan`] resolves catalog handles and compiles the fixed nspawn launch;
 //! - [`state`] persists fences, pending effects, and replay receipts;
+//! - [`transport`] validates systemd-activated local packet sockets;
 //! - [`worker`] performs idempotent typed systemd and pidfd operations;
 //! - [`broker`] orders validation, durability, effects, and replies.
 
 pub mod broker;
 pub mod plan;
 pub mod state;
+pub mod transport;
 pub mod worker;
 
 /// Errors returned by the fixed host broker.
