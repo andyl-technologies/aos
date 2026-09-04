@@ -10,6 +10,7 @@ use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use thiserror::Error;
 
 use super::*;
+use crate::console_observation::QemuConsoleObservationSpool;
 
 /// Exact QMP command failure classification across the process-creation boundary.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -96,6 +97,7 @@ pub struct QemuHotForkHostContinuation {
     shmem_hot_path: Box<dyn QemuShmemHotPathChannel>,
     host_io_binding: crucible::model::ContentHash,
     host_io_runtime: Box<dyn QemuHostIoRuntime>,
+    console_spool: Option<QemuConsoleObservationSpool>,
 }
 
 impl std::fmt::Debug for QemuHotForkHostContinuation {
@@ -163,6 +165,44 @@ impl QemuHotForkHostContinuation {
     #[must_use]
     pub fn host_io_runtime_mut(&mut self) -> &mut dyn QemuHostIoRuntime {
         self.host_io_runtime.as_mut()
+    }
+
+    /// Returns whether the branch-private console spool remains transferable.
+    #[must_use]
+    pub const fn console_observation_available(&self) -> bool {
+        self.console_spool.is_some()
+    }
+
+    /// Attaches this continuation's boundary spool to its assembled child node.
+    ///
+    /// The host-I/O runtime retained by this continuation owns the matching
+    /// branch-private console reader. The child publishes those bytes only at
+    /// completed scheduler boundaries for `node`. The spool is linear: one
+    /// continuation can attach it to exactly one child node.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] if this continuation already transferred
+    /// its spool or the supplied child already owns a console observation.
+    pub fn attach_console_observation(
+        &mut self,
+        child: &mut QemuNode,
+        node: NodeId,
+    ) -> Result<(), QemuNodeChannelError> {
+        if child.console_observation.is_some() {
+            return Err(QemuNodeChannelError::new(
+                "attach hot-fork child console observation",
+                "child node already owns a console observation",
+            ));
+        }
+        let spool = self.console_spool.take().ok_or_else(|| {
+            QemuNodeChannelError::new(
+                "attach hot-fork child console observation",
+                "child console observation was already transferred",
+            )
+        })?;
+        child.console_observation = Some(QemuConsoleObservation { node, spool });
+        Ok(())
     }
 }
 
@@ -276,11 +316,12 @@ fn hot_fork_host_io_binding(
     ring: crucible_shmem::SetupRegionBackingIdentity,
 ) -> crucible::model::ContentHash {
     let material = format!(
-        "template={};private-ring={};diagnostic={};qmp={};monitor={};plugin-endpoint={};plugin-barrier={};rcu-barrier={};bh-timer-barrier={};block-barrier={};parent-process={};child-process={};child-contract={};ring-device={};ring-inode={};ring-length={}",
+        "template={};private-ring={};diagnostic={};qmp={};console={};monitor={};plugin-endpoint={};plugin-barrier={};rcu-barrier={};bh-timer-barrier={};block-barrier={};parent-process={};child-process={};child-contract={};ring-device={};ring-inode={};ring-length={}",
         request.template_generation(),
         request.private_ring_generation(),
         request.diagnostic_generation(),
         request.qmp_generation(),
+        request.console_generation(),
         request.monitor_generation(),
         request.plugin_endpoint_generation(),
         request.plugin_barrier_generation(),
@@ -295,7 +336,7 @@ fn hot_fork_host_io_binding(
         ring.length(),
     );
     crucible::model::ContentHash::from_canonical_material(
-        "crucible.qemu.hot-fork-host-io-continuation.v1",
+        "crucible.qemu.hot-fork-host-io-continuation.v2",
         &material,
     )
 }
@@ -386,6 +427,38 @@ impl QemuNode {
                 source: QemuNodeChannelError::new(
                     "fork retained hot-fork template",
                     "child QMP endpoint is not installed in a sealed resource plan",
+                ),
+            });
+        }
+        let console_stage = self.hot_fork_child_console_stage().ok_or_else(|| {
+            QemuHotForkLaunchError::Rejected {
+                source: QemuNodeChannelError::new(
+                    "fork retained hot-fork template",
+                    "source node retains no child console stage",
+                ),
+            }
+        })?;
+        if console_stage.state() != QemuHotForkChildConsoleStageState::Installed
+            || !console_stage.resource_plan_bound()
+            || console_stage.template_generation() != request.template_generation()
+            || console_stage.console_generation() != request.console_generation()
+        {
+            return Err(QemuHotForkLaunchError::Rejected {
+                source: QemuNodeChannelError::new(
+                    "fork retained hot-fork template",
+                    "child console endpoint does not match the sealed fork request",
+                ),
+            });
+        }
+        if !self
+            .hot_fork_child_console_stage
+            .as_ref()
+            .is_some_and(QemuHotForkChildConsoleStage::host_endpoint_available)
+        {
+            return Err(QemuHotForkLaunchError::Rejected {
+                source: QemuNodeChannelError::new(
+                    "fork retained hot-fork template",
+                    "branch-private child console endpoint was already transferred",
                 ),
             });
         }
@@ -480,6 +553,10 @@ impl QemuNode {
             .clone_hot_fork_host_continuation(mapping)
             .map_err(|source| QemuHotForkLaunchError::Rejected { source })?;
         let host_io_binding = hot_fork_host_io_binding(request, mapping.backing_identity());
+        let child_console = self
+            .clone_hot_fork_child_console_observation()
+            .map_err(|source| QemuHotForkLaunchError::Rejected { source })?;
+        let console_spool = child_console.spool();
         let host_io_runtime = self
             .host_io_runtime
             .clone_hot_fork_host_io_continuation(
@@ -487,6 +564,7 @@ impl QemuNode {
                 mapping.descriptor(),
                 host_wake.as_fd(),
                 mapping.backing_identity().length(),
+                Some(child_console),
             )
             .map_err(|source| QemuHotForkLaunchError::Rejected {
                 source: QemuNodeChannelError::new(
@@ -543,6 +621,14 @@ impl QemuNode {
                     source,
                 }
             })?;
+        self.consume_hot_fork_child_console_host_endpoint()
+            .map_err(|source| {
+                self.lifecycle_state = QemuNodeLifecycleState::Quarantined;
+                QemuHotForkLaunchError::EndpointTransfer {
+                    parent_state: Box::new(parent_state),
+                    source,
+                }
+            })?;
         let child_process_id = u32::try_from(parent_state.child_pid()).map_err(|_source| {
             self.lifecycle_state = QemuNodeLifecycleState::Quarantined;
             QemuHotForkLaunchError::ProcessRetention {
@@ -575,6 +661,7 @@ impl QemuNode {
             shmem_hot_path,
             host_io_binding,
             host_io_runtime,
+            console_spool: Some(console_spool),
         };
         Ok(QemuHotForkChildLaunch {
             parent_state,

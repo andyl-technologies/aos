@@ -597,11 +597,12 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         shmem_fd: BorrowedFd<'_>,
         wake_fd: BorrowedFd<'_>,
         region_len: u64,
+        console: Option<crate::QemuHotForkChildConsoleObservation>,
     ) -> Result<Box<dyn QemuHostIoRuntime>, QemuAsyncDriverRuntimeError> {
-        if self.console.is_some() {
+        if self.console.is_some() != console.is_some() {
             return Err(QemuAsyncDriverRuntimeError::new(
                 "clone hot-fork host-I/O continuation",
-                "console observation requires a fresh branch-private endpoint",
+                "source and child console observation capabilities differ",
             ));
         }
         if self.scheduler_input_publish_generation.is_some()
@@ -673,6 +674,7 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         continuation.fault_event_canonical_current_offset =
             self.fault_event_canonical_current_offset;
         continuation.fault_event_configured_limit = self.fault_event_configured_limit;
+        continuation.console = console.map(crate::QemuHotForkChildConsoleObservation::into_reader);
         if let Some((servicer, coordinator_required)) = block {
             servicer
                 .shared_device()
