@@ -4,15 +4,15 @@ use serde_json::Value;
 use thiserror::Error;
 
 use super::{
-    QmpHotForkChildProcessContractState, QmpHotForkChildQmpState, QmpHotForkTemplateOutcome,
-    QmpHotForkTemplateState,
+    QmpHotForkChildConsoleState, QmpHotForkChildProcessContractState, QmpHotForkChildQmpState,
+    QmpHotForkTemplateOutcome, QmpHotForkTemplateState,
 };
 use crate::qmp::{QmpCommandKind, QmpError};
 
 /// QMP command that forks one exact retained template.
 pub const QMP_HOT_FORK_COMMAND: &str = "crucible-hot-fork";
 /// Version of the exact retained-template fork result.
-pub const QMP_HOT_FORK_SCHEMA_VERSION: u32 = 1;
+pub const QMP_HOT_FORK_SCHEMA_VERSION: u32 = 2;
 
 /// Failure to derive a fork request from one exact prepared template basis.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
@@ -23,6 +23,9 @@ pub enum QmpHotForkRequestError {
     /// The private child-QMP report does not belong to the prepared template.
     #[error("hot-fork child QMP state does not match the prepared template")]
     ChildQmpBasisMismatch,
+    /// The private child-console report does not belong to the template.
+    #[error("hot-fork child console state does not match the prepared template")]
+    ChildConsoleBasisMismatch,
     /// The process contract is absent, consumed, or belongs to another template.
     #[error("hot-fork child process contract does not match the prepared template")]
     ChildProcessContractBasisMismatch,
@@ -35,6 +38,7 @@ pub struct QmpHotForkRequest {
     private_ring_generation: u64,
     diagnostic_generation: u64,
     qmp_generation: u64,
+    console_generation: u64,
     monitor_generation: u64,
     plugin_endpoint_generation: u64,
     plugin_barrier_generation: u64,
@@ -60,6 +64,7 @@ impl QmpHotForkRequest {
     pub fn from_prepared_template(
         template: &QmpHotForkTemplateState,
         child_qmp: &QmpHotForkChildQmpState,
+        child_console: &QmpHotForkChildConsoleState,
         child_process_contract: &QmpHotForkChildProcessContractState,
     ) -> Result<Self, QmpHotForkRequestError> {
         let stage = template.resource_stage();
@@ -88,6 +93,17 @@ impl QmpHotForkRequest {
         if !qmp_matches {
             return Err(QmpHotForkRequestError::ChildQmpBasisMismatch);
         }
+        let console_matches = child_console.staged()
+            && child_console.generation() == stage.console_generation()
+            && child_console.template_generation() == template.generation()
+            && child_console.resource_plan_bound()
+            && child_console.console_basis_bound()
+            && child_console.reinitializer_prepared()
+            && !child_console.reinitialized()
+            && !child_console.disposition_complete();
+        if !console_matches {
+            return Err(QmpHotForkRequestError::ChildConsoleBasisMismatch);
+        }
         let process_contract_matches = child_process_contract.staged()
             && !child_process_contract.consumed()
             && child_process_contract.generation() != 0
@@ -101,6 +117,7 @@ impl QmpHotForkRequest {
             private_ring_generation: stage.private_ring_generation(),
             diagnostic_generation: stage.diagnostic_generation(),
             qmp_generation: stage.qmp_generation(),
+            console_generation: stage.console_generation(),
             monitor_generation: child_qmp.monitor_generation(),
             plugin_endpoint_generation: stage.plugin_endpoint_generation(),
             plugin_barrier_generation: template.plugin_barrier().generation(),
@@ -121,6 +138,7 @@ impl QmpHotForkRequest {
         private_ring_generation: u64,
         diagnostic_generation: u64,
         qmp_generation: u64,
+        console_generation: u64,
         monitor_generation: u64,
         plugin_endpoint_generation: u64,
         plugin_barrier_generation: u64,
@@ -136,6 +154,7 @@ impl QmpHotForkRequest {
             private_ring_generation,
             diagnostic_generation,
             qmp_generation,
+            console_generation,
             monitor_generation,
             plugin_endpoint_generation,
             plugin_barrier_generation,
@@ -170,6 +189,12 @@ impl QmpHotForkRequest {
     #[must_use]
     pub const fn qmp_generation(self) -> u64 {
         self.qmp_generation
+    }
+
+    /// Returns the exact branch-private child-console generation.
+    #[must_use]
+    pub const fn console_generation(self) -> u64 {
+        self.console_generation
     }
 
     /// Returns the exact retained parent-monitor generation.
@@ -232,6 +257,7 @@ impl QmpHotForkRequest {
             "private-ring-generation": self.private_ring_generation,
             "diagnostic-generation": self.diagnostic_generation,
             "qmp-generation": self.qmp_generation,
+            "console-generation": self.console_generation,
             "monitor-generation": self.monitor_generation,
             "plugin-endpoint-generation": self.plugin_endpoint_generation,
             "plugin-barrier-generation": self.plugin_barrier_generation,
@@ -325,6 +351,7 @@ pub(crate) fn parse_hot_fork_state(
         "private-ring-generation",
         "diagnostic-generation",
         "qmp-generation",
+        "console-generation",
         "monitor-generation",
         "plugin-endpoint-generation",
         "plugin-barrier-generation",
@@ -363,6 +390,7 @@ pub(crate) fn parse_hot_fork_state(
         private_ring_generation: unsigned("private-ring-generation")?,
         diagnostic_generation: unsigned("diagnostic-generation")?,
         qmp_generation: unsigned("qmp-generation")?,
+        console_generation: unsigned("console-generation")?,
         monitor_generation: unsigned("monitor-generation")?,
         plugin_endpoint_generation: unsigned("plugin-endpoint-generation")?,
         plugin_barrier_generation: unsigned("plugin-barrier-generation")?,
@@ -401,13 +429,13 @@ mod tests {
     use super::*;
 
     fn request() -> QmpHotForkRequest {
-        QmpHotForkRequest::for_test(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)
+        QmpHotForkRequest::for_test(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14)
     }
 
     #[test]
     fn response_requires_exact_echo_and_outcome_status() {
         let response = json!({
-            "schema-version": 1,
+            "schema-version": 2,
             "outcome": "forked",
             "parent-status": 0,
             "child-pid": 321,
@@ -415,15 +443,16 @@ mod tests {
             "private-ring-generation": 2,
             "diagnostic-generation": 3,
             "qmp-generation": 4,
-            "monitor-generation": 5,
-            "plugin-endpoint-generation": 6,
-            "plugin-barrier-generation": 7,
-            "rcu-barrier-generation": 8,
-            "bh-timer-barrier-generation": 9,
-            "block-barrier-generation": 10,
-            "parent-process-generation": 11,
-            "child-process-generation": 12,
-            "child-process-contract-generation": 13,
+            "console-generation": 5,
+            "monitor-generation": 6,
+            "plugin-endpoint-generation": 7,
+            "plugin-barrier-generation": 8,
+            "rcu-barrier-generation": 9,
+            "bh-timer-barrier-generation": 10,
+            "block-barrier-generation": 11,
+            "parent-process-generation": 12,
+            "child-process-generation": 13,
+            "child-process-contract-generation": 14,
         });
         let Ok(state) = parse_hot_fork_state(&response, request()) else {
             panic!("exact hot-fork response should parse");

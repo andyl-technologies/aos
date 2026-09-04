@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "f9021132cd9dbc1c3993ee13eda7167467651b8fd97a314379c45fcc0141ef87";
+  patchBranchBundleSha256 = "2040cbe2980db258291192ba59153345e064d014627da651f9293fd039dee348";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "d112b2a75199d75a0dc992f9ae13c079d6518245";
+  patchBranchHeadCommit = "f34ad65aaa77873cbf998ff35d8064e328a8d67d";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1875,6 +1875,16 @@ let
       class = "F";
       enforces = "HFORK-3,HFORK-4,HFORK-11,HFORK-22";
       capability = "one generation-bound QMP transaction authenticates and retains a target cgroup-v2 directory, sticky nonblocking cancellation eventfd, and file-size ceiling; the main-loop coordinator creates the child with clone3(CLONE_INTO_CGROUP), and the child observes cancellation plus RLIMIT_FSIZE before runtime reconstruction, so no hot-fork instruction runs outside the target process contract; the Rust target owner then retains an exact pidfd and brackets bounded process-identity and cgroup-membership authentication with live-pidfd checks, while terminal source/target reconciliation, modeled guest admission, and the full production flight remain open";
+    }
+    {
+      file = "0195-crucible-replace-fork-child-console-endpoint.patch";
+      branchSubject = "crucible: replace fork child console endpoint";
+      branchCommit = "f34ad65aaa77873cbf998ff35d8064e328a8d67d";
+      branchTree = "d34061a824d25e959e76f6749716f4deb2aec288";
+      catalogName = "crucible-hot-fork-child-console";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-8,HFORK-11,HFORK-22";
+      capability = "one exact branch-private nonblocking Unix stream is generation-bound to the retained template and source console chardev; the complete child resource transaction closes the inherited console connection and listener, attaches only the replacement endpoint, releases input after reconstruction, and preserves the source console unchanged; Rust stages the exact generation, moves a one-shot reader and spool into the successful child continuation, and rejects cross-generation or reused endpoints, while modeled guest admission and the full production flight remain open";
     }
   ];
   catalogOnlyCapabilities = [

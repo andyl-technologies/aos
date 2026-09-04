@@ -15,7 +15,7 @@ use crate::qmp::{QmpCommandKind, QmpError};
 /// QMP command name used for QEMU's retained template-preparation coordinator.
 pub const QMP_HOT_FORK_TEMPLATE_COMMAND: &str = "crucible-hot-fork-template";
 /// Version of the QEMU-owned template-preparation transaction contract.
-pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 23;
+pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 24;
 
 const QMP_HOT_FORK_AIO_PROOF: u64 = 1_u64 << 3;
 const QMP_HOT_FORK_RCU_PROOF: u64 = 1_u64 << 4;
@@ -50,6 +50,9 @@ pub struct QmpHotForkTemplateResourceStageState {
     qmp_staged: bool,
     qmp_generation: u64,
     qmp_resource_plan_bound: bool,
+    console_staged: bool,
+    console_generation: u64,
+    console_resource_plan_bound: bool,
     plugin_endpoints_staged: bool,
     plugin_endpoint_generation: u64,
     plugin_private_ring_generation: u64,
@@ -119,6 +122,24 @@ impl QmpHotForkTemplateResourceStageState {
     #[must_use]
     pub const fn qmp_resource_plan_bound(self) -> bool {
         self.qmp_resource_plan_bound
+    }
+
+    /// Returns whether QEMU retains one branch-private child console stream.
+    #[must_use]
+    pub const fn console_staged(self) -> bool {
+        self.console_staged
+    }
+
+    /// Returns the current child-console mutation generation.
+    #[must_use]
+    pub const fn console_generation(self) -> u64 {
+        self.console_generation
+    }
+
+    /// Returns whether the child-console contribution is in the sealed plan.
+    #[must_use]
+    pub const fn console_resource_plan_bound(self) -> bool {
+        self.console_resource_plan_bound
     }
 
     /// Returns whether QEMU retains one branch-private plugin endpoint pair.
@@ -528,6 +549,9 @@ fn parse_hot_fork_template_resource_stage(
         "qmp-staged",
         "qmp-generation",
         "qmp-resource-plan-bound",
+        "console-staged",
+        "console-generation",
+        "console-resource-plan-bound",
         "plugin-endpoints-staged",
         "plugin-endpoint-generation",
         "plugin-private-ring-generation",
@@ -570,6 +594,9 @@ fn parse_hot_fork_template_resource_stage(
     let qmp_staged = bool_field("qmp-staged")?;
     let qmp_generation = u64_field("qmp-generation")?;
     let qmp_resource_plan_bound = bool_field("qmp-resource-plan-bound")?;
+    let console_staged = bool_field("console-staged")?;
+    let console_generation = u64_field("console-generation")?;
+    let console_resource_plan_bound = bool_field("console-resource-plan-bound")?;
     let plugin_endpoints_staged = bool_field("plugin-endpoints-staged")?;
     let plugin_endpoint_generation = u64_field("plugin-endpoint-generation")?;
     let plugin_private_ring_generation = u64_field("plugin-private-ring-generation")?;
@@ -595,6 +622,9 @@ fn parse_hot_fork_template_resource_stage(
         qmp_staged,
         qmp_generation,
         qmp_resource_plan_bound,
+        console_staged,
+        console_generation,
+        console_resource_plan_bound,
         plugin_endpoints_staged,
         plugin_endpoint_generation,
         plugin_private_ring_generation,
@@ -636,6 +666,7 @@ fn resource_stage_shape_valid(
     let resources_staged = state.private_ring_staged
         || state.diagnostics_staged
         || state.qmp_staged
+        || state.console_staged
         || state.plugin_endpoints_staged;
     let disposition_shape = if state.plugin_endpoints_staged && state.template_generation != 0 {
         state.plugin_barrier_generation != 0
@@ -668,6 +699,7 @@ fn resource_stage_shape_valid(
         && state.private_ring_staged
         && state.diagnostics_staged
         && state.qmp_staged
+        && state.console_staged
         && state.plugin_endpoints_staged
         && expected_disposition_bound
         && plugin_barrier.quiescent();
@@ -680,11 +712,12 @@ fn resource_stage_shape_valid(
         state.parent_process_generation == 0 && state.child_process_generation == 0
     };
 
-    schema_version == 12
+    schema_version == 13
         && readiness_proof_acknowledged == expected_readiness_proof
         && child_plan_shape
         && state.diagnostics_resource_plan_bound == state.plugin_child_plan_bound
         && state.qmp_resource_plan_bound == state.plugin_child_plan_bound
+        && state.console_resource_plan_bound == state.plugin_child_plan_bound
         && state.plugin_child_resource_plan_bound == state.plugin_child_plan_bound
         && disposition_shape
         && (!state.private_ring_staged || state.private_ring_generation != 0)
@@ -692,9 +725,12 @@ fn resource_stage_shape_valid(
         && (!state.diagnostics_staged || state.private_ring_staged)
         && (!state.qmp_staged || state.qmp_generation != 0)
         && (!state.qmp_staged || state.diagnostics_staged)
-        && (!state.plugin_endpoints_staged || state.qmp_staged)
+        && (!state.console_staged || state.console_generation != 0)
+        && (!state.console_staged || state.qmp_staged)
+        && (!state.plugin_endpoints_staged || state.console_staged)
         && (state.diagnostics_staged || !state.diagnostics_resource_plan_bound)
         && (state.qmp_staged || !state.qmp_resource_plan_bound)
+        && (state.console_staged || !state.console_resource_plan_bound)
         && (!state.plugin_endpoints_staged
             || (state.private_ring_staged
                 && state.plugin_endpoint_generation != 0
@@ -721,7 +757,7 @@ mod tests {
     fn resource_stage_requires_exact_template_and_private_ring_generations() {
         let plugin_barrier = QmpHotForkPluginBarrierState::one_quiescent(6, 9);
         let worker_mask = plugin_barrier.worker_mask();
-        let schema_version = 12;
+        let schema_version = 13;
         let bound = QmpHotForkTemplateResourceStageState {
             template_generation: 4,
             private_ring_staged: true,
@@ -732,6 +768,9 @@ mod tests {
             qmp_staged: true,
             qmp_generation: 14,
             qmp_resource_plan_bound: true,
+            console_staged: true,
+            console_generation: 15,
+            console_resource_plan_bound: true,
             plugin_endpoints_staged: true,
             plugin_endpoint_generation: 12,
             plugin_private_ring_generation: 11,
@@ -821,6 +860,7 @@ mod tests {
             plugin_child_plan_bound: false,
             diagnostics_resource_plan_bound: false,
             qmp_resource_plan_bound: false,
+            console_resource_plan_bound: false,
             plugin_child_resource_plan_bound: false,
             readiness_proof_acknowledged: false,
             ..bound

@@ -2949,18 +2949,25 @@ resets the proven-empty callback state, reopens admission, and starts one fresh
 callback worker before returning. Any pre-fork acquisition failure rolls the
 outer RCU barrier back.
 
-Template contract version 23 exposes the composed transaction through the
-public `crucible-hot-fork` QMP command. Its request binds the exact thirteen
-template, resource, process, runtime, descriptor, and monitor generations.
-QEMU revalidates that basis on the source main loop, forks once, preserves the
-parent template, and completes the supported descriptor, runtime, plugin, and
-private child-QMP dispositions in the immediate child. Its schema-version-1
+Template contract version 24, resource-stage version 13, and fork-result schema
+version 2 expose the composed transaction through the public
+`crucible-hot-fork` QMP command. Its request binds the exact fourteen template,
+resource, process, runtime, descriptor, monitor, and branch-private console
+generations. QEMU revalidates that basis on the source main loop, forks once,
+preserves the parent template, and completes the supported descriptor, runtime,
+plugin, private child-QMP, and child-console dispositions in the immediate
+child. Its schema-version-2
 parent response returns the positive child PID even when parent disposition
 fails. Child-QMP contract version 8 acknowledges readiness only after the
 resource plan, descriptor disposition, child runtime, plugin endpoints,
-greeting, and replacement input are complete. The response alone never admits
+greeting, and replacement input are complete. Child-console contract version 1
+retains an independently duplicated nonblocking Unix stream by standard-QMP
+descriptor name and Linux `SO_COOKIE`; it binds the exact source console,
+sealed child plan, and one-shot chardev reinitializer, and acknowledges its
+disposition only after replacement input is active. The response alone never admits
 the child: the executor MUST retain direct-child authority and authenticate the
-private child channel against the same generations before treating it as live.
+private child QMP and console channels against the same generations before
+treating it as live.
 An explicit pre-fork QMP rejection is safe to retry on the parent connection;
 any other transport or response failure is fork-indeterminate and poisons that
 connection. The daemon-side process guard, resource accounting,
@@ -2970,8 +2977,13 @@ observation integration remain mandatory before the executor may report
 
 The Rust node boundary enforces that rule with a linear launch token. A
 successful result contains the exact parent response, one nonduplicable
-child-process authority, and the single branch-private QMP endpoint; the node
-cannot return success with only a PID. Explicit pre-fork rejection retains the
+child-process authority, the single branch-private QMP endpoint, and the
+branch-private console continuation; the node cannot return success with only a
+PID. The source console reader is duplicated into retry-safe private host state
+before the QMP fork, but its original endpoint is consumed only after a known
+successful ownership transfer. The returned host continuation owns the child
+observation spool, and attaching it to the child node cannot expose source
+console bytes. Explicit pre-fork rejection retains the
 reusable source owner, while an indeterminate exchange, a failed parent
 disposition, endpoint transfer failure, or process-retention failure
 quarantines the source. The Linux host-resource facade now delegates child-
@@ -2980,8 +2992,8 @@ filesystem quota. The composed attempt guard carries that delegation together
 with sticky cancellation and quantum accounting; the process-only owner is not
 an accepted reconciliation target. The daemon
 reconciliation owner consumes the launch token without exposing a PID-only
-success state and retains the source, complete target guard, private QMP
-channel, exact attempt/execution basis, and semantic publication disposition
+success state and retains the source, complete target guard, private QMP and
+console channels, exact attempt/execution basis, and semantic publication disposition
 through ordered cleanup. It lends modeled execution only the child QMP channel
 and a non-releasing operational boundary, so modeled code cannot finish the
 guard early. The worker-pool post-execution contract now carries that exact

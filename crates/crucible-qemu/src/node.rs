@@ -52,6 +52,9 @@ mod error;
 mod exact_snapshot;
 mod fault_events;
 #[cfg(target_os = "linux")]
+#[path = "node/hot_fork_child_console.rs"]
+mod hot_fork_child_console;
+#[cfg(target_os = "linux")]
 #[path = "node/hot_fork_child_qmp.rs"]
 mod hot_fork_child_qmp;
 #[cfg(target_os = "linux")]
@@ -72,6 +75,13 @@ mod hot_fork_ring_image;
 #[cfg(target_os = "linux")]
 mod process_identity;
 pub use error::{QemuNodeChannelError, QemuNodeChannelPlane, QemuNodeError};
+#[cfg(target_os = "linux")]
+use hot_fork_child_console::QemuHotForkChildConsoleStage;
+#[cfg(target_os = "linux")]
+pub use hot_fork_child_console::{
+    QemuHotForkChildConsoleObservation, QemuHotForkChildConsoleStageError,
+    QemuHotForkChildConsoleStageProof, QemuHotForkChildConsoleStageState,
+};
 #[cfg(target_os = "linux")]
 use hot_fork_child_qmp::QemuHotForkChildQmpStage;
 #[cfg(target_os = "linux")]
@@ -1386,6 +1396,59 @@ pub trait QemuQmpMachineControlChannel: Send {
         ))
     }
 
+    /// Imports one branch-private child console stream into QEMU.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when this channel cannot transfer Unix
+    /// descriptors or QEMU cannot authenticate the exact console and template.
+    #[cfg(target_os = "linux")]
+    fn install_hot_fork_child_console(
+        &mut self,
+        _name: &crate::QmpDescriptorName,
+        _descriptor: BorrowedFd<'_>,
+        _socket_cookie: u64,
+        _template_generation: u64,
+    ) -> Result<crate::QmpHotForkChildConsoleState, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "install hot-fork child console",
+            "hot-fork child console transfer is not implemented by this QMP channel",
+        ))
+    }
+
+    /// Closes the exact child console retained by QEMU and monitor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when either ownership layer cannot be
+    /// released in exact order.
+    #[cfg(target_os = "linux")]
+    fn close_hot_fork_child_console(
+        &mut self,
+        _name: &crate::QmpDescriptorName,
+        _socket_cookie: u64,
+    ) -> Result<(), QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "close hot-fork child console",
+            "hot-fork child console close is not implemented by this QMP channel",
+        ))
+    }
+
+    /// Queries QEMU's exact retained child-console state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the query or strict response
+    /// validation fails.
+    fn query_hot_fork_child_console(
+        &mut self,
+    ) -> Result<crate::QmpHotForkChildConsoleState, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "query hot-fork child console",
+            "hot-fork child console query is not implemented by this QMP channel",
+        ))
+    }
+
     /// Queries QEMU's exact bounded allocated-bottom-half inventory.
     ///
     /// # Errors
@@ -1548,6 +1611,8 @@ pub struct QemuNode {
     hot_fork_child_diagnostic_stage: Option<QemuHotForkChildDiagnosticStage>,
     #[cfg(target_os = "linux")]
     hot_fork_child_qmp_stage: Option<QemuHotForkChildQmpStage>,
+    #[cfg(target_os = "linux")]
+    hot_fork_child_console_stage: Option<QemuHotForkChildConsoleStage>,
     #[cfg(target_os = "linux")]
     hot_fork_child_process_contract_stage: Option<QemuHotForkChildProcessContractStage>,
     #[cfg(target_os = "linux")]
@@ -1746,6 +1811,8 @@ impl QemuNode {
             hot_fork_child_diagnostic_stage: None,
             #[cfg(target_os = "linux")]
             hot_fork_child_qmp_stage: None,
+            #[cfg(target_os = "linux")]
+            hot_fork_child_console_stage: None,
             #[cfg(target_os = "linux")]
             hot_fork_child_process_contract_stage: None,
             #[cfg(target_os = "linux")]

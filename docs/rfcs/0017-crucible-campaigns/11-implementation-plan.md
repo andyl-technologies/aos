@@ -2321,19 +2321,25 @@ child-QMP transaction creates its monitor replacement. A raw-notifier main-loop
 bridge first owned the actual `fork(2)` call for an internal immutable callback
 operation.
 
-Template contract version 23 now exposes the complete supported-profile
-composition as the public `crucible-hot-fork` QMP operation. Its exact request
-binds thirteen template, resource, process, runtime, descriptor, and monitor
+Template contract version 24, resource-stage version 13, and fork-result schema
+version 2 now expose the complete supported-profile composition as the public
+`crucible-hot-fork` QMP operation. Its exact request binds fourteen template,
+resource, process, runtime, descriptor, monitor, and branch-private console
 generations. QEMU revalidates them on the source main loop, preserves the
 parent's retained template, closes the inherited parent QMP endpoint in the
 child, commits the descriptor disposition, reconstructs runtime/plugin/private
-QMP resources, and releases block and child-QMP input in ownership order. The
-schema-version-1 parent result preserves a positive child PID across a parent
-disposition error. Template schema 23 requires the seven parent-side proofs;
+QMP/console resources, and releases block, child-console, and child-QMP input in
+ownership order. The schema-version-2 parent result preserves a positive child
+PID across a parent
+disposition error. Template schema 24 requires the seven parent-side proofs;
 descriptor and child-reinitialization proofs remain child-only. Child-QMP
 schema 8 acknowledges readiness only after its exact plan, disposition,
-runtime, greeting, and input release complete. The Rust QMP client derives the
-thirteen-field request from those typed prepared states, validates every echoed
+runtime, greeting, and input release complete. Child-console schema 1 retains
+one exact nonblocking Unix stream by descriptor name and Linux `SO_COOKIE`,
+binds its one-shot chardev reinitializer into the sealed resource plan, and
+acknowledges readiness only after replacement input is active. The Rust QMP
+client derives the fourteen-field request from those typed prepared states,
+validates every echoed
 field and outcome, preserves the connection only for an explicit pre-fork
 command rejection, and poisons it after every fork-indeterminate failure.
 
@@ -2350,15 +2356,21 @@ and visibility state, and pending deterministic accelerator work over the
 child's private mapping before the QMP fork. A production block or 9p runtime
 that had a signal coordinator retains that requirement but not the source
 coordinator capability; the child fails closed until the atomic world owner
-installs its fresh branch-local coordinator. Console-bearing templates reject
-before the fork until a fresh console endpoint can be staged. Explicit
-rejection retains the reusable source; ambiguous
+installs its fresh branch-local coordinator. The node stages a fresh
+branch-private console socket before sealing, exact-binds its QEMU generation to
+the fork request, and clones its private reader plus observation spool before
+the fork. Successful ownership transfer consumes the original host endpoint;
+the returned host continuation alone can attach the child spool, so source
+console bytes cannot enter the child observation. Explicit rejection retains
+the reusable source; ambiguous
 exchange, failed parent disposition, endpoint loss, and process-retention
 failure quarantine it. Focused scripted regressions cover all six outcomes,
 including proof that a numeric child PID is not sufficient process authority.
 Mapped-channel coverage proves child mutation cannot change the retained source
 continuation; host-I/O coverage proves an exact checkpoint copy with a distinct
-mutable block owner and unchanged source checkpoint.
+mutable block owner and unchanged source checkpoint. Console coverage proves a
+foreign generation fails before fork and only bytes from the branch-private
+child endpoint enter the child spool.
 
 Patch 0194 now supplies the birth-time process contract. A generation-bound QMP
 operation authenticates and retains the target attempt's cgroup-v2 directory,
@@ -2387,8 +2399,8 @@ does not reuse that worker until cleanup completes. A runner error must finish
 or quarantine its incarnation before returning, so a retry cannot overlap it.
 The concrete hot-fork runner still must construct this owner, install fresh
 branch-local block/9p signal coordinators as part of the atomic world
-transaction, stage a private console and every remaining writable host-device
-continuation, run the modeled child, and produce the repository candidate.
+transaction, stage every remaining writable host-device continuation, run the
+modeled child, and produce the repository candidate.
 Patch 0193 supplies the parent-QEMU reap half: a fixed 4,096-record
 generation table, one bounded nonblocking `waitpid` attempt per query/release,
 retained exit-or-signal status, and explicit post-reap release. It deliberately
@@ -2416,7 +2428,7 @@ quarantine. Focused tests cover running-to-reaped ordering, publication gating,
 retry without guest rerun, foreign child status, unadmitted-result rejection,
 incomplete drop, the composed guard's unsplittable hot-fork ownership bound, and
 the fixed worker's exact-runtime-basis plus repeated-disposition callback. The
-remaining console and other writable host-device endpoints, atomic multi-node
+remaining writable host-device endpoints, atomic multi-node
 coordinator composition, concrete hot-fork runner, modeled QEMU driving,
 observation production, and a real fork flight remain open, so T-CAM-6.2 and
 T-CAM-6.3 stay unchecked.

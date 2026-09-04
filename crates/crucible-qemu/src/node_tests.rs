@@ -104,6 +104,15 @@ enum ChannelCall {
         name: String,
         socket_cookie: u64,
     },
+    QmpHotForkInstallChildConsole {
+        name: String,
+        socket_cookie: u64,
+        template_generation: u64,
+    },
+    QmpHotForkCloseChildConsole {
+        name: String,
+        socket_cookie: u64,
+    },
     QmpHotForkInstallPluginEndpoints {
         control_name: String,
         wake_name: String,
@@ -188,6 +197,7 @@ struct ScriptedQmpMachineControl {
     >,
     diagnostic_state: SharedRetainedStreamState,
     child_qmp_state: SharedRetainedStreamState,
+    child_console_state: SharedRetainedStreamState,
     fail_descriptor_install: bool,
     fail_descriptor_close: bool,
     fail_endpoint_install: bool,
@@ -793,6 +803,15 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
             ));
         };
         *bound = true;
+        let mut child_console = self.child_console_state.lock().unwrap();
+        let Some((_name, _socket_cookie, _template_generation, bound)) = child_console.as_mut()
+        else {
+            return Err(QemuNodeChannelError::new(
+                "install hot-fork plugin endpoints",
+                "scripted child console stage is absent",
+            ));
+        };
+        *bound = true;
         Ok(crate::QmpHotForkPluginEndpointState::one_template_staged(
             1,
             1,
@@ -831,6 +850,11 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
         }
         if let Some((_name, _socket_cookie, _template_generation, bound)) =
             self.child_qmp_state.lock().unwrap().as_mut()
+        {
+            *bound = false;
+        }
+        if let Some((_name, _socket_cookie, _template_generation, bound)) =
+            self.child_console_state.lock().unwrap().as_mut()
         {
             *bound = false;
         }
@@ -1011,6 +1035,89 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
         ))
     }
 
+    fn install_hot_fork_child_console(
+        &mut self,
+        name: &crate::QmpDescriptorName,
+        _descriptor: std::os::fd::BorrowedFd<'_>,
+        socket_cookie: u64,
+        template_generation: u64,
+    ) -> Result<crate::QmpHotForkChildConsoleState, QemuNodeChannelError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(ChannelCall::QmpHotForkInstallChildConsole {
+                name: name.as_str().to_owned(),
+                socket_cookie,
+                template_generation,
+            });
+        if self.fail_descriptor_install {
+            return Err(QemuNodeChannelError::new(
+                "install hot-fork child console",
+                "injected descriptor transfer failure",
+            ));
+        }
+        let state = crate::QmpHotForkChildConsoleState::one_template_staged(
+            1,
+            template_generation,
+            name.clone(),
+            socket_cookie,
+            34,
+            false,
+        );
+        *self.child_console_state.lock().unwrap() =
+            Some((name.clone(), socket_cookie, template_generation, false));
+        Ok(state)
+    }
+
+    fn close_hot_fork_child_console(
+        &mut self,
+        name: &crate::QmpDescriptorName,
+        socket_cookie: u64,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(ChannelCall::QmpHotForkCloseChildConsole {
+                name: name.as_str().to_owned(),
+                socket_cookie,
+            });
+        if self.fail_descriptor_close {
+            return Err(QemuNodeChannelError::new(
+                "close hot-fork child console",
+                "injected descriptor close failure",
+            ));
+        }
+        if self.child_qmp_state.lock().unwrap().is_none() {
+            return Err(QemuNodeChannelError::new(
+                "close hot-fork child console",
+                "scripted predecessor child QMP stage was already released",
+            ));
+        }
+        *self.child_console_state.lock().unwrap() = None;
+        Ok(())
+    }
+
+    fn query_hot_fork_child_console(
+        &mut self,
+    ) -> Result<crate::QmpHotForkChildConsoleState, QemuNodeChannelError> {
+        let state = self.child_console_state.lock().unwrap();
+        let (name, socket_cookie, template_generation, bound) =
+            state.as_ref().ok_or_else(|| {
+                QemuNodeChannelError::new(
+                    "query hot-fork child console",
+                    "scripted child console stage is absent",
+                )
+            })?;
+        Ok(crate::QmpHotForkChildConsoleState::one_template_staged(
+            1,
+            *template_generation,
+            name.clone(),
+            *socket_cookie,
+            34,
+            *bound,
+        ))
+    }
+
     fn hot_fork(
         &mut self,
         request: crate::QmpHotForkRequest,
@@ -1159,6 +1266,7 @@ impl QemuHostIoRuntime for ScriptedHostIoRuntime {
         _shmem_fd: std::os::fd::BorrowedFd<'_>,
         _wake_fd: std::os::fd::BorrowedFd<'_>,
         _region_len: u64,
+        _console: Option<crate::QemuHotForkChildConsoleObservation>,
     ) -> Result<Box<dyn QemuHostIoRuntime>, QemuAsyncDriverRuntimeError> {
         self.log
             .lock()
@@ -1648,6 +1756,13 @@ fn hot_fork_plugin_endpoints_bind_the_installed_private_ring_generation()
     assert_eq!(child_qmp.monitor_generation(), 7);
     assert!(!child_qmp.resource_plan_bound());
     assert!(node.take_hot_fork_child_qmp_host_endpoint().is_err());
+    let child_console = node.stage_hot_fork_child_console()?;
+    assert_eq!(
+        child_console.state(),
+        crate::QemuHotForkChildConsoleStageState::Installed
+    );
+    assert_eq!(child_console.console_generation(), 1);
+    assert!(!child_console.resource_plan_bound());
     let diagnostic_drain = node.drain_hot_fork_child_diagnostics()?;
     assert_eq!(diagnostic_drain.bytes_read(), 26);
     assert_eq!(diagnostic_drain.total_retained(), 26);
@@ -1678,6 +1793,13 @@ fn hot_fork_plugin_endpoints_bind_the_installed_private_ring_generation()
             .ok_or("child QMP stage disappeared after plugin seal")?
             .resource_plan_bound()
     );
+    assert!(
+        node.hot_fork_child_console_stage()
+            .ok_or("child console stage disappeared after plugin seal")?
+            .resource_plan_bound()
+    );
+    let child_console_observation = node.clone_hot_fork_child_console_observation()?;
+    drop(child_console_observation);
     let child_qmp_host = node.take_hot_fork_child_qmp_host_endpoint()?;
     assert_eq!(
         child_qmp_host.descriptor_name(),
@@ -1711,6 +1833,13 @@ fn hot_fork_plugin_endpoints_bind_the_installed_private_ring_generation()
             .ok_or("child QMP stage disappeared after plugin release")?
             .resource_plan_bound()
     );
+    assert!(
+        !node
+            .hot_fork_child_console_stage()
+            .ok_or("child console stage disappeared after plugin release")?
+            .resource_plan_bound()
+    );
+    node.release_hot_fork_child_console()?;
     node.release_hot_fork_child_qmp()?;
     let diagnostic_capture = node.release_hot_fork_child_diagnostics()?;
     assert_eq!(
@@ -1727,7 +1856,8 @@ fn hot_fork_plugin_endpoints_bind_the_installed_private_ring_generation()
     );
     assert_eq!(diagnostic_capture.bytes(), b"scripted child diagnostics");
     node.release_hot_fork_private_ring_mapping()?;
-    assert!(recorded(&log).iter().any(|call| {
+    let calls = recorded(&log);
+    assert!(calls.iter().any(|call| {
         matches!(
             call,
             ChannelCall::QmpHotForkInstallPluginEndpoints {
@@ -1740,7 +1870,7 @@ fn hot_fork_plugin_endpoints_bind_the_installed_private_ring_generation()
                 && *identity == proof.identity()
         )
     }));
-    assert!(recorded(&log).iter().any(|call| {
+    assert!(calls.iter().any(|call| {
         matches!(
             call,
             ChannelCall::QmpHotForkClosePluginEndpoints {
@@ -1752,6 +1882,15 @@ fn hot_fork_plugin_endpoints_bind_the_installed_private_ring_generation()
                 && *identity == proof.identity()
         )
     }));
+    let console_close = calls
+        .iter()
+        .position(|call| matches!(call, ChannelCall::QmpHotForkCloseChildConsole { .. }))
+        .ok_or("child console close was not recorded")?;
+    let qmp_close = calls
+        .iter()
+        .position(|call| matches!(call, ChannelCall::QmpHotForkCloseChildQmp { .. }))
+        .ok_or("child QMP close was not recorded")?;
+    assert!(console_close < qmp_close);
     node.shutdown_child()?;
     Ok(())
 }
@@ -1782,6 +1921,7 @@ fn sealed_hot_fork_node_with_log(
     node.stage_hot_fork_private_ring_mapping(private)?;
     node.stage_hot_fork_child_diagnostics()?;
     node.stage_hot_fork_child_qmp()?;
+    node.stage_hot_fork_child_console()?;
     node.stage_hot_fork_plugin_endpoints()?;
     node.install_test_hot_fork_child_process_contract_stage(13, 1)?;
     Ok((node, log))
@@ -1789,7 +1929,7 @@ fn sealed_hot_fork_node_with_log(
 
 #[cfg(target_os = "linux")]
 fn exact_hot_fork_request() -> crate::QmpHotForkRequest {
-    crate::QmpHotForkRequest::for_test(1, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)
+    crate::QmpHotForkRequest::for_test(1, 1, 3, 4, 1, 5, 6, 7, 8, 9, 10, 11, 12, 13)
 }
 
 #[test]
@@ -1818,7 +1958,16 @@ fn hot_fork_success_transfers_child_qmp_and_private_host_continuation() -> Resul
     assert_ne!(launch.host_continuation().ring_identity().inode(), 0);
     assert_eq!(node.lifecycle_state(), QemuNodeLifecycleState::Running);
     assert!(node.take_hot_fork_child_qmp_host_endpoint().is_err());
-    drop(launch);
+    let (_parent, _process, _child_qmp, mut continuation) = launch.into_parts();
+    assert!(continuation.console_observation_available());
+    continuation.attach_console_observation(&mut node, node_id("fork-child"))?;
+    assert!(!continuation.console_observation_available());
+    assert!(
+        continuation
+            .attach_console_observation(&mut node, node_id("second-child"))
+            .is_err()
+    );
+    drop(continuation);
     node.shutdown_child()?;
     Ok(())
 }
@@ -1854,11 +2003,23 @@ fn hot_fork_rejects_a_foreign_private_ring_before_consuming_host_continuation()
     let mut node = sealed_hot_fork_node(DescriptorScript::Success)?;
     let mut process_owner = ScriptedHotForkChildOwner::default();
     let foreign_ring =
-        crate::QmpHotForkRequest::for_test(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13);
+        crate::QmpHotForkRequest::for_test(1, 2, 3, 4, 1, 5, 6, 7, 8, 9, 10, 11, 12, 13);
 
     let error = node
         .fork_hot_fork_template(foreign_ring, &mut process_owner)
         .expect_err("a foreign private ring must fail before the fork command");
+    assert!(matches!(
+        error,
+        crate::QemuHotForkLaunchError::Rejected { .. }
+    ));
+    assert!(process_owner.retained.is_empty());
+    assert_eq!(node.lifecycle_state(), QemuNodeLifecycleState::Running);
+
+    let foreign_console =
+        crate::QmpHotForkRequest::for_test(1, 1, 3, 4, 2, 5, 6, 7, 8, 9, 10, 11, 12, 13);
+    let error = node
+        .fork_hot_fork_template(foreign_console, &mut process_owner)
+        .expect_err("a foreign child console must fail before the fork command");
     assert!(matches!(
         error,
         crate::QemuHotForkLaunchError::Rejected { .. }
@@ -2012,6 +2173,7 @@ fn hot_fork_plugin_endpoint_transfer_failure_retains_and_quarantines_owner()
     node.stage_hot_fork_private_ring_mapping(private)?;
     node.stage_hot_fork_child_diagnostics()?;
     node.stage_hot_fork_child_qmp()?;
+    node.stage_hot_fork_child_console()?;
 
     let error = node
         .stage_hot_fork_plugin_endpoints()
@@ -2052,6 +2214,7 @@ fn hot_fork_plugin_endpoint_worker_disposition_mismatch_quarantines_owner()
     node.stage_hot_fork_private_ring_mapping(private)?;
     node.stage_hot_fork_child_diagnostics()?;
     node.stage_hot_fork_child_qmp()?;
+    node.stage_hot_fork_child_console()?;
 
     let error = node
         .stage_hot_fork_plugin_endpoints()
@@ -2406,6 +2569,7 @@ fn scripted_hot_fork_capture_node(
             private_ring_state: Arc::new(Mutex::new(None)),
             diagnostic_state: Arc::new(Mutex::new(None)),
             child_qmp_state: Arc::new(Mutex::new(None)),
+            child_console_state: Arc::new(Mutex::new(None)),
             fail_descriptor_install: matches!(descriptor_script, DescriptorScript::InstallFailure),
             fail_descriptor_close: matches!(descriptor_script, DescriptorScript::CloseFailure),
             fail_endpoint_install: matches!(
@@ -2553,6 +2717,7 @@ fn scripted_node_with_fault_events(
             private_ring_state: Arc::new(Mutex::new(None)),
             diagnostic_state: Arc::new(Mutex::new(None)),
             child_qmp_state: Arc::new(Mutex::new(None)),
+            child_console_state: Arc::new(Mutex::new(None)),
             fail_descriptor_install: false,
             fail_descriptor_close: false,
             fail_endpoint_install: false,
@@ -2651,6 +2816,7 @@ fn scripted_node_with_coverage(
             private_ring_state: Arc::new(Mutex::new(None)),
             diagnostic_state: Arc::new(Mutex::new(None)),
             child_qmp_state: Arc::new(Mutex::new(None)),
+            child_console_state: Arc::new(Mutex::new(None)),
             fail_descriptor_install: false,
             fail_descriptor_close: false,
             fail_endpoint_install: false,
