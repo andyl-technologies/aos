@@ -635,6 +635,26 @@ completes. The Git history remains authoritative for code details.
   synchronization, so pathname substitution and repeated crash debris cannot
   silently weaken durable authority. Unsupported `openat2` enforcement is a
   typed hard failure; callers must not fall back to the ordinary journal API.
+- `e70140365` — foundation toward `SBX-STOR-01`: production storage state now
+  opens its journal exclusively through the root-anchored protected API. The
+  prior pathname metadata preflight and post-open chmod sequence are removed;
+  ordinary journal opening survives only in a test-only fixture, and protected
+  rejection has no fallback path.
+- `b9fae359c` — foundation toward `SBX-BPROTO-04`, `SBX-STOR-01`, and
+  `SBX-NET-01`: the shared broker authority now seals bounded
+  application-domain local records at exact namespace/key locations and checks
+  payload bounds before allocation. Fence and effect sealing also rejects a
+  durable location that disagrees with the record's intrinsic sandbox or
+  request identity, preventing trusted-code relocation from producing a valid
+  authenticated cross-link.
+- `ff3d3c4e7` — foundation toward durable ownership recovery in
+  `SBX-CTRL-03`: exact canonical historical lease and signature bytes can now
+  be authenticated against a pinned historical trust anchor and an
+  integrity-bound acceptance instant. The verifier reproduces the live
+  skew-safe wall-clock interval but deliberately carries no BOOTTIME or current
+  liveness; its distinct non-authorizing proof type cannot enter the live lease
+  pipeline. Chain ordering, unique-head recovery, and anchor-history selection
+  remain obligations of the protected durable authority backend.
 
 The post-`727da7f3e` x86_64 `sandbox-filesystem-capability-proof` rerun built the
 complete hermetic Rust closure, AOS system, initrd, and VM disk and launched
