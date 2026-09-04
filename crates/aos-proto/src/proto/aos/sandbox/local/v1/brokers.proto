@@ -32,6 +32,91 @@ message Feature {
   uint32 minor = 3;
 }
 
+// First packet sent by a client on a newly accepted broker connection.
+message BrokerClientHello {
+  uint32 protocol_major = 1;
+  uint32 protocol_minor = 2;
+  Audience audience = 3;
+  repeated Feature required_features = 4;
+  uint32 maximum_response_bytes = 5;
+  repeated BrokerMethod required_methods = 6;
+}
+
+// First and only handshake packet returned by a broker. A non-successful
+// negotiation carries error and the connection is closed without dispatch.
+message BrokerServerHello {
+  uint32 protocol_major = 1;
+  uint32 protocol_minor = 2;
+  repeated Feature features = 3;
+  uint32 maximum_request_bytes = 4;
+  uint32 maximum_response_bytes = 5;
+  BrokerError error = 6;
+  repeated BrokerMethod methods = 7;
+}
+
+// Closed node-local method registry. Method tags are compatibility semantics,
+// independent of protobuf body type names.
+enum BrokerMethod {
+  BROKER_METHOD_UNSPECIFIED = 0;
+  BROKER_METHOD_HOST_APPLY_RUNTIME = 1;
+  BROKER_METHOD_HOST_OBSERVE_RUNTIME = 2;
+  BROKER_METHOD_HOST_INVENTORY_RUNTIME = 3;
+  BROKER_METHOD_MOUNT_APPLY = 4;
+  BROKER_METHOD_MOUNT_INVENTORY = 5;
+}
+
+// Semantic roles for SCM_RIGHTS descriptors carried beside one packet.
+enum BrokerDescriptorRole {
+  BROKER_DESCRIPTOR_ROLE_UNSPECIFIED = 0;
+  BROKER_DESCRIPTOR_ROLE_PAYLOAD_MOUNT_NAMESPACE = 1;
+  BROKER_DESCRIPTOR_ROLE_TARGET_ROOT = 2;
+  BROKER_DESCRIPTOR_ROLE_MOUNT_SOURCE = 3;
+  BROKER_DESCRIPTOR_ROLE_DETACHED_MOUNT = 4;
+  BROKER_DESCRIPTOR_ROLE_RUNTIME_LEADER = 5;
+  BROKER_DESCRIPTOR_ROLE_PAYLOAD_USER_NAMESPACE = 6;
+  BROKER_DESCRIPTOR_ROLE_TARGET_SLOT = 7;
+}
+
+// Declares response-side ownership of a descriptor received with the request.
+enum BrokerDescriptorDisposition {
+  BROKER_DESCRIPTOR_DISPOSITION_UNSPECIFIED = 0;
+  BROKER_DESCRIPTOR_DISPOSITION_CONSUMED = 1;
+  BROKER_DESCRIPTOR_DISPOSITION_RETURNED = 2;
+  BROKER_DESCRIPTOR_DISPOSITION_CLOSED = 3;
+}
+
+// Entry n describes ancillary descriptor n; sparse indices are forbidden.
+// The envelope validates this structure. Each closed method separately fixes
+// which exact role sequence is legal for that operation.
+message BrokerDescriptorEntry {
+  uint32 index = 1;
+  BrokerDescriptorRole role = 2;
+}
+
+// Accounts for every request descriptor on every response path.
+message BrokerDescriptorDispositionEntry {
+  uint32 request_index = 1;
+  BrokerDescriptorRole role = 2;
+  BrokerDescriptorDisposition disposition = 3;
+}
+
+// One request packet after a successful two-packet hello exchange.
+message BrokerRequestEnvelope {
+  BrokerMethod method = 1;
+  bytes body = 2;
+  repeated BrokerDescriptorEntry descriptors = 3;
+}
+
+// One response packet. request_id repeats the validated body header ID.
+message BrokerResponseEnvelope {
+  bytes request_id = 1; // Exactly 16 bytes.
+  BrokerMethod method = 2;
+  bytes body = 3;
+  repeated BrokerDescriptorEntry descriptors = 4;
+  BrokerError error = 5;
+  repeated BrokerDescriptorDispositionEntry request_descriptor_dispositions = 6;
+}
+
 message BrokerError {
   BrokerErrorCode code = 1;
   string safe_message = 2;

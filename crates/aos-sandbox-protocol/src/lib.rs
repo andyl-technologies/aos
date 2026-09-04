@@ -8,10 +8,20 @@
 //! request.
 
 pub mod fencing;
+pub mod session;
+
+pub use session::{
+    MAXIMUM_HANDSHAKE_BYTES, MAXIMUM_PACKET_DESCRIPTORS, NegotiatedBrokerSession,
+    ValidatedBrokerError, ValidatedBrokerRequestEnvelope, ValidatedBrokerResponseEnvelope,
+    ValidatedDescriptorDisposition, ValidatedDescriptorEntry, decode_request_envelope,
+    decode_response_envelope, decode_server_hello, negotiate_client_hello,
+    validate_request_descriptor_roles,
+};
 
 use aos_proto::aos::sandbox::local::v1::{
     ApplyGuardianRequest, ApplyGuestExecutionRequest, ApplyMountRequest, ApplyNetworkRequest,
-    ApplyRuntimeRequest, ApplyStorageRequest, AssignmentFence, Audience, Descriptor, MountAction,
+    ApplyRuntimeRequest, ApplyStorageRequest, AssignmentFence, Audience, BrokerClientHello,
+    BrokerErrorCode, BrokerRequestEnvelope, BrokerResponseEnvelope, Descriptor, MountAction,
     RequestHeader, RuntimeAction, RuntimePlan,
 };
 use aos_sandbox_core::{
@@ -31,7 +41,6 @@ const OPAQUE_HANDLE_BYTES: usize = 32;
 const MAXIMUM_ATTACHMENTS: usize = 256;
 const MAXIMUM_RESOURCE_LIMITS: usize = 16;
 const MAXIMUM_REQUIRED_FEATURES: usize = 64;
-
 /// Carries credentials obtained from the accepted Unix socket.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PeerCredentials {
@@ -433,6 +442,21 @@ pub enum ProtocolValidationError {
     /// A descriptor is malformed or appears in the wrong semantic role.
     #[error("invalid local descriptor: {0}")]
     InvalidDescriptor(String),
+    /// The ancillary descriptor count or role table is not exact.
+    #[error("local ancillary descriptor table does not match the packet")]
+    DescriptorTableMismatch,
+    /// The closed method is not part of the negotiated broker domain.
+    #[error("local broker method is invalid for the negotiated protocol")]
+    MethodMismatch,
+    /// The peer requires a known feature this broker did not advertise.
+    #[error("required local broker feature is unavailable: {0}")]
+    RequiredFeatureUnavailable(String),
+    /// A syntactically valid server hello rejected negotiation.
+    #[error("local broker rejected negotiation with {0:?}")]
+    BrokerRejected(BrokerErrorCode),
+    /// A broker error violates its closed code, message, or feature contract.
+    #[error("local broker error is malformed")]
+    InvalidBrokerError,
 }
 
 /// Decodes and validates one host-broker runtime request from hostile bytes.
@@ -689,14 +713,7 @@ pub fn validate_request_header(
     if !header.__buffa_unknown_fields.is_empty() {
         return Err(ProtocolValidationError::UnknownFields);
     }
-    if peer.uid != policy.uid || policy.gid.is_some_and(|gid| peer.gid != gid) {
-        return Err(ProtocolValidationError::PeerCredentialMismatch);
-    }
-    if header.audience.as_known() != Some(policy.audience)
-        || policy.audience == Audience::AUDIENCE_UNSPECIFIED
-    {
-        return Err(ProtocolValidationError::AudienceMismatch);
-    }
+    validate_peer_audience(peer, policy, header.audience.as_known())?;
     negotiate_protocol(
         protocol,
         ProtocolVersion::new(
@@ -865,12 +882,35 @@ fn validate_attachment_handles(
     Ok(handles)
 }
 
+pub(crate) fn validate_peer_audience(
+    peer: PeerCredentials,
+    policy: PeerPolicy,
+    offered_audience: Option<Audience>,
+) -> Result<(), ProtocolValidationError> {
+    if peer.uid != policy.uid || policy.gid.is_some_and(|gid| peer.gid != gid) {
+        return Err(ProtocolValidationError::PeerCredentialMismatch);
+    }
+    if offered_audience != Some(policy.audience)
+        || policy.audience == Audience::AUDIENCE_UNSPECIFIED
+    {
+        return Err(ProtocolValidationError::AudienceMismatch);
+    }
+    Ok(())
+}
+
 fn validate_features(
     source: &[aos_proto::aos::sandbox::local::v1::Feature],
 ) -> Result<Vec<FeatureRef>, ProtocolValidationError> {
+    validate_feature_set(source, "launch_plan.required_features")
+}
+
+pub(crate) fn validate_feature_set(
+    source: &[aos_proto::aos::sandbox::local::v1::Feature],
+    field: &'static str,
+) -> Result<Vec<FeatureRef>, ProtocolValidationError> {
     if source.len() > MAXIMUM_REQUIRED_FEATURES {
         return Err(ProtocolValidationError::TooManyEntries {
-            field: "launch_plan.required_features",
+            field,
             maximum: MAXIMUM_REQUIRED_FEATURES,
         });
     }
@@ -882,9 +922,7 @@ fn validate_features(
         let feature = FeatureRef::new(feature.namespace.clone(), feature.major, feature.minor)
             .map_err(|error| ProtocolValidationError::InvalidDescriptor(error.to_string()))?;
         if features.last().is_some_and(|previous| previous >= &feature) {
-            return Err(ProtocolValidationError::InvalidField(
-                "launch_plan.required_features",
-            ));
+            return Err(ProtocolValidationError::InvalidField(field));
         }
         features.push(feature);
     }
@@ -911,7 +949,7 @@ fn validate_descriptor(
     Ok(descriptor)
 }
 
-fn exact_nonzero<const N: usize>(
+pub(crate) fn exact_nonzero<const N: usize>(
     bytes: &[u8],
     field: &'static str,
 ) -> Result<[u8; N], ProtocolValidationError> {
@@ -953,6 +991,9 @@ pub fn exercise_malformed_request_decoders(bytes: &[u8]) {
     let _ = ApplyGuardianRequest::decode_from_slice(bytes);
     let _ = aos_proto::aos::sandbox::local::v1::GuestHandshakeRequest::decode_from_slice(bytes);
     let _ = ApplyGuestExecutionRequest::decode_from_slice(bytes);
+    let _ = BrokerClientHello::decode_from_slice(bytes);
+    let _ = BrokerRequestEnvelope::decode_from_slice(bytes);
+    let _ = BrokerResponseEnvelope::decode_from_slice(bytes);
 }
 
 #[cfg(test)]
