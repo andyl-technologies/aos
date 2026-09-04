@@ -168,6 +168,12 @@ pub const CANONICAL_GATES: &[GateSpec] = &[
         status: GateStatus::Implemented,
     },
     GateSpec {
+        name: "gate:campaign-model",
+        phase: GatePhase::Phase1,
+        owner: "crucible-campaign",
+        status: GateStatus::Implemented,
+    },
+    GateSpec {
         name: "gate:replay-oracle",
         phase: GatePhase::Phase1,
         owner: "crucible",

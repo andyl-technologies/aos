@@ -56,6 +56,11 @@
     }
     {
       phase = "phase1";
+      attr = "campaignModel";
+      gate = "gate:campaign-model";
+    }
+    {
+      phase = "phase1";
       attr = "replayOracle";
       gate = "gate:replay-oracle";
     }
