@@ -188,8 +188,13 @@ searches once, then supports allocation-free O(1) seek by sibling ordinal;
 exact `nlink` is one parent-range search plus one checked direct access. This
 prevents `READDIR` pagination and repeated attributes from becoming whole-tree
 scans. Cookies and target-ABI `nlink` narrowing remain worker policy rather
-than portable index fields. Borrowed logical-size, symlink-target, content,
-xattr, and ACL record-body views remain required before worker composition.
+than portable index fields. Every accepted format now exposes allocation-free
+borrowed logical-size, symlink-target, whole/sparse content, extent, xattr,
+ACL, hard-link, and descriptor views. Each access reauthenticates its node
+handle against the format's exact root, lookup, or directory structure and
+returns values whose lifetime remains bound to the immutable validation proof.
+An isolated harness-free allocator instrument enforces the zero-allocation
+access contract.
 
 The read-only runtime seam borrows the exact validated immutable bytes and
 lazily decodes only the root or lookup candidates. It retains no heap object
