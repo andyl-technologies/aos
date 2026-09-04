@@ -753,6 +753,25 @@ completes. The Git history remains authoritative for code details.
   clock read. The slice passes 117 sandbox unit tests, one downstream API test,
   doctests, strict Clippy, warning-denied rustdoc, formatting, and independent
   adversarial review.
+- `09bac05fe` — foundation toward `SBX-BPROTO-04`, `SBX-CTRL-03`, and
+  `SBX-HOST-01`: Host protocol 1.2 adds a strictly read-only
+  `QueryRuntimeEffect` operation carrying the exact original 1.1-or-1.2 Apply
+  body and signed authorization quartet with zero descriptors. The broker
+  reauthenticates historical admission, durable fence, effect, derived runtime
+  handle, and byte-exact receipt, then reports `Absent`, `Pending`, or
+  `Complete` without admitting state, resolving a catalog, writing the journal,
+  or invoking a worker. A hostile response decoder enforces the closed status
+  and receipt shape. Host 1.2 negotiates a query-specific packet ceiling with
+  bounded wrapper headroom while retaining the full legacy 1.1 Apply ceiling;
+  only Query may use the additive band. Host StateWire V3 binds every current
+  fence to the exact latest admitting request ID, so deleting a later request
+  cannot be hidden by an older request with byte-identical assignment authority;
+  nonempty V1/V2 authority state requires explicit migration. Protocol 1.0/1.1
+  remain closed to Query, and Apply authorization semantics remain pinned to
+  1.1 independently of the 1.1/1.2 carrier. The slice passes 140 core, 59
+  protocol, and 65 host tests plus proto/doctests, strict Clippy,
+  warning-denied rustdoc, formatting, and two-round adversarial review. A
+  controller broker client and effect-template binding remain open.
 
 The post-`727da7f3e` x86_64 `sandbox-filesystem-capability-proof` rerun built the
 complete hermetic Rust closure, AOS system, initrd, and VM disk and launched
