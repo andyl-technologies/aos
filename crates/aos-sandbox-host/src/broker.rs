@@ -14,12 +14,14 @@ use aos_sandbox_protocol::{
     PeerCredentials, PeerPolicy, ValidatedAssignmentFence, ValidatedRuntimeRequest,
     decode_runtime_request,
 };
+use aos_systemd::SandboxUnitDiscoverySnapshot;
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
 use crate::authorization::HostAuthorityV1;
 use crate::authorization::semantics_v1::runtime_handle_v1;
 use crate::plan::{HostCatalog, NspawnConfig, ResolvedLaunchResources};
+use crate::recovery::{HostRuntimeRecoveryReport, reconcile};
 use crate::state::{Admission, HostState, HostStateStore, RuntimeEffectQuery};
 use crate::worker::{
     HostRuntimeIdentity, HostWorker, ObservedRuntimeState, PinnedLeader, WorkerObservation,
@@ -85,6 +87,26 @@ where
     #[must_use]
     pub const fn launch_available(&self) -> bool {
         self.nspawn.is_some()
+    }
+
+    /// Joins authenticated host authority with one bounded systemd snapshot.
+    ///
+    /// The returned report is observation only. A same-name unit is not
+    /// adopted, and this method neither calls the worker nor authorizes a
+    /// lifecycle effect. Any later mutation must reacquire fresh systemd and
+    /// kernel identity evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the public snapshot is structurally malformed,
+    /// internally inconsistent, or over its fixed bounds, or if authenticated
+    /// host state no longer has a complete current witness. This method cannot
+    /// establish snapshot provenance.
+    pub fn compare_runtime_discovery(
+        &self,
+        snapshot: SandboxUnitDiscoverySnapshot,
+    ) -> Result<HostRuntimeRecoveryReport> {
+        reconcile(self.state.runtime_recovery_inventory()?, snapshot)
     }
 
     /// Validates, fences, applies, and durably completes one runtime request.
@@ -724,51 +746,56 @@ mod tests {
             operation: WorkerOperation,
             before_effect: &mut (dyn FnMut() -> Result<()> + Send),
         ) -> Result<WorkerObservation> {
-            let WorkerOperation::Launch { spec, pins: _pins } = operation else {
-                panic!("test expected launch operation");
+            let state = match operation {
+                WorkerOperation::Launch { spec, pins: _pins } => {
+                    let descriptor_prefix =
+                        format!("/proc/{}/fd/", rustix::process::getpid().as_raw_nonzero());
+                    assert!(spec.executable().starts_with(&descriptor_prefix));
+                    let expected_machine = format!(
+                        "--machine=aos-{}",
+                        fence
+                            .incarnation_id()
+                            .iter()
+                            .map(|byte| format!("{byte:02x}"))
+                            .collect::<String>()
+                    );
+                    let expected_directory = format!("--directory={}", spec.root_directory());
+                    let expected_arguments = [
+                        "--boot",
+                        "--quiet",
+                        "--keep-unit",
+                        "--register=no",
+                        "--settings=no",
+                        expected_machine.as_str(),
+                        expected_directory.as_str(),
+                        "--private-users=65536:65536",
+                        "--private-users-ownership=map",
+                        "--notify-ready=yes",
+                        "--selinux-context=system_u:system_r:aos_sandbox_payload_t:s0",
+                        "--no-new-privileges=yes",
+                        "--drop-capability=CAP_AUDIT_CONTROL,CAP_AUDIT_READ,CAP_AUDIT_WRITE,CAP_BLOCK_SUSPEND,CAP_BPF,CAP_CHECKPOINT_RESTORE,CAP_DAC_READ_SEARCH,CAP_IPC_LOCK,CAP_IPC_OWNER,CAP_LEASE,CAP_LINUX_IMMUTABLE,CAP_MAC_ADMIN,CAP_MAC_OVERRIDE,CAP_MKNOD,CAP_NET_ADMIN,CAP_NET_BROADCAST,CAP_NET_RAW,CAP_PERFMON,CAP_SYSLOG,CAP_SYS_ADMIN,CAP_SYS_BOOT,CAP_SYS_CHROOT,CAP_SYS_MODULE,CAP_SYS_NICE,CAP_SYS_PACCT,CAP_SYS_PTRACE,CAP_SYS_RAWIO,CAP_SYS_RESOURCE,CAP_SYS_TIME,CAP_SYS_TTY_CONFIG,CAP_WAKE_ALARM",
+                        "--system-call-filter=~@mount @module @raw-io @reboot bpf perf_event_open ptrace setns unshare",
+                        "--aos-payload-seccomp-profile=aos-sandbox-payload-v1",
+                    ];
+                    assert_eq!(spec.arguments(), expected_arguments);
+                    assert!(spec.root_directory().starts_with(&descriptor_prefix));
+                    assert!(
+                        spec.network_namespace_path()
+                            .starts_with(&descriptor_prefix)
+                    );
+                    ObservedRuntimeState::Ready
+                }
+                WorkerOperation::Stop | WorkerOperation::Kill => ObservedRuntimeState::Exited,
+                WorkerOperation::Freeze => ObservedRuntimeState::Frozen,
+                WorkerOperation::Thaw => ObservedRuntimeState::Ready,
             };
-            let descriptor_prefix =
-                format!("/proc/{}/fd/", rustix::process::getpid().as_raw_nonzero());
-            assert!(spec.executable().starts_with(&descriptor_prefix));
-            let expected_machine = format!(
-                "--machine=aos-{}",
-                fence
-                    .incarnation_id()
-                    .iter()
-                    .map(|byte| format!("{byte:02x}"))
-                    .collect::<String>()
-            );
-            let expected_directory = format!("--directory={}", spec.root_directory());
-            let expected_arguments = [
-                "--boot",
-                "--quiet",
-                "--keep-unit",
-                "--register=no",
-                "--settings=no",
-                expected_machine.as_str(),
-                expected_directory.as_str(),
-                "--private-users=65536:65536",
-                "--private-users-ownership=map",
-                "--notify-ready=yes",
-                "--selinux-context=system_u:system_r:aos_sandbox_payload_t:s0",
-                "--no-new-privileges=yes",
-                "--drop-capability=CAP_AUDIT_CONTROL,CAP_AUDIT_READ,CAP_AUDIT_WRITE,CAP_BLOCK_SUSPEND,CAP_BPF,CAP_CHECKPOINT_RESTORE,CAP_DAC_READ_SEARCH,CAP_IPC_LOCK,CAP_IPC_OWNER,CAP_LEASE,CAP_LINUX_IMMUTABLE,CAP_MAC_ADMIN,CAP_MAC_OVERRIDE,CAP_MKNOD,CAP_NET_ADMIN,CAP_NET_BROADCAST,CAP_NET_RAW,CAP_PERFMON,CAP_SYSLOG,CAP_SYS_ADMIN,CAP_SYS_BOOT,CAP_SYS_CHROOT,CAP_SYS_MODULE,CAP_SYS_NICE,CAP_SYS_PACCT,CAP_SYS_PTRACE,CAP_SYS_RAWIO,CAP_SYS_RESOURCE,CAP_SYS_TIME,CAP_SYS_TTY_CONFIG,CAP_WAKE_ALARM",
-                "--system-call-filter=~@mount @module @raw-io @reboot bpf perf_event_open ptrace setns unshare",
-                "--aos-payload-seccomp-profile=aos-sandbox-payload-v1",
-            ];
-            assert_eq!(spec.arguments(), expected_arguments);
-            assert!(spec.root_directory().starts_with(&descriptor_prefix));
-            assert!(
-                spec.network_namespace_path()
-                    .starts_with(&descriptor_prefix)
-            );
             before_effect()?;
             self.calls.fetch_add(1, Ordering::SeqCst);
             if self.fail_next.swap(false, Ordering::SeqCst) {
                 return Err(HostError::Worker("injected crash boundary".to_owned()));
             }
             Ok(WorkerObservation {
-                state: ObservedRuntimeState::Ready,
+                state,
                 invocation_id: Some([9; 16]),
                 leader: None,
             })
@@ -1264,6 +1291,46 @@ mod tests {
         request.encode_to_vec()
     }
 
+    fn request_with_action(
+        request_id: u8,
+        generation: u64,
+        digest: u8,
+        action: RuntimeAction,
+    ) -> Vec<u8> {
+        let mut request =
+            ApplyRuntimeRequest::decode_from_slice(&request(request_id, generation, digest))
+                .unwrap();
+        request.action = action.into();
+        request.launch_plan = Default::default();
+        request.encode_to_vec()
+    }
+
+    fn discovered_runtime(incarnation: [u8; 16]) -> aos_systemd::DiscoveredSandboxUnit {
+        let unit = aos_systemd::SandboxUnitName::from_incarnation(incarnation);
+        aos_systemd::DiscoveredSandboxUnit {
+            unit: unit.clone(),
+            incarnation,
+            object_path: format!("/org/freedesktop/systemd1/unit/{}", incarnation[0]),
+            load_state: "loaded".to_owned(),
+            active_state: "inactive".to_owned(),
+            sub_state: "dead".to_owned(),
+            freezer_state: aos_systemd::FreezerState::Running,
+            cgroup: Some(unit.cgroup_path()),
+            supervisor_pid: None,
+            invocation_id: None,
+        }
+    }
+
+    fn discovery(
+        mut units: Vec<aos_systemd::DiscoveredSandboxUnit>,
+    ) -> SandboxUnitDiscoverySnapshot {
+        units.sort_by(|left, right| left.unit.cmp(&right.unit));
+        SandboxUnitDiscoverySnapshot {
+            units,
+            conflicts: Vec::new(),
+        }
+    }
+
     #[tokio::test]
     async fn completed_request_replays_without_a_second_effect() {
         let fixture = AuthorityFixture::new();
@@ -1346,6 +1413,20 @@ mod tests {
 
         apply(&mut broker, &fixture, &original).await.unwrap();
         apply(&mut broker, &fixture, &successor).await.unwrap();
+        let report = broker
+            .compare_runtime_discovery(discovery(vec![discovered_runtime([3; 16])]))
+            .unwrap();
+        assert!(report.current.is_empty());
+        assert_eq!(report.missing.len(), 1);
+        assert_eq!(
+            report.missing[0].expected.identity.incarnation_id(),
+            &[4; 16]
+        );
+        assert_eq!(report.historical_residuals.len(), 1);
+        assert_eq!(report.historical_residuals[0].incarnation, [3; 16]);
+        assert_eq!(report.historical_residuals[0].retained.len(), 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert!(broker.worker.observe_calls.lock().unwrap().is_empty());
         HostBroker::open(
             FixedCatalog,
             store,
@@ -1363,6 +1444,86 @@ mod tests {
             HostError::Fence("runtime incarnation is already retained by another sandbox")
         ));
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn stop_and_kill_observations_remain_known_without_worker_calls() {
+        for (action, expected_intent) in [
+            (
+                RuntimeAction::RUNTIME_ACTION_STOP,
+                crate::recovery::RetainedRuntimeIntent::Stop,
+            ),
+            (
+                RuntimeAction::RUNTIME_ACTION_KILL,
+                crate::recovery::RetainedRuntimeIntent::Kill,
+            ),
+        ] {
+            let fixture = AuthorityFixture::new();
+            let worker = FakeWorker::default();
+            let calls = worker.calls.clone();
+            let observations = worker.observe_calls.clone();
+            let mut broker = HostBroker::open(
+                FixedCatalog,
+                MemoryStore::default(),
+                worker,
+                Some(nspawn()),
+                fixture.authority(),
+            )
+            .unwrap();
+            apply(&mut broker, &fixture, &request(1, 1, 4))
+                .await
+                .unwrap();
+            apply(&mut broker, &fixture, &request_with_action(2, 2, 5, action))
+                .await
+                .unwrap();
+
+            let report = broker
+                .compare_runtime_discovery(discovery(vec![discovered_runtime([3; 16])]))
+                .unwrap();
+            assert_eq!(report.current.len(), 1);
+            assert_eq!(report.current[0].expected.intent, expected_intent);
+            assert_eq!(
+                report.current[0].expected.durability,
+                crate::recovery::RetainedEffectDurability::Complete
+            );
+            assert!(report.quarantine.is_empty());
+            assert!(report.historical_residuals.is_empty());
+            assert_eq!(calls.load(Ordering::SeqCst), 2);
+            assert!(observations.lock().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn pending_current_effect_is_reported_without_retrying_it() {
+        let fixture = AuthorityFixture::new();
+        let worker = FakeWorker::default();
+        worker.fail_next.store(true, Ordering::SeqCst);
+        let calls = worker.calls.clone();
+        let observations = worker.observe_calls.clone();
+        let mut broker = HostBroker::open(
+            FixedCatalog,
+            MemoryStore::default(),
+            worker,
+            Some(nspawn()),
+            fixture.authority(),
+        )
+        .unwrap();
+        assert!(
+            apply(&mut broker, &fixture, &request(1, 1, 4))
+                .await
+                .is_err()
+        );
+
+        let report = broker
+            .compare_runtime_discovery(discovery(Vec::new()))
+            .unwrap();
+        assert_eq!(report.missing.len(), 1);
+        assert_eq!(
+            report.missing[0].expected.durability,
+            crate::recovery::RetainedEffectDurability::Pending
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(observations.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

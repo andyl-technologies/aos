@@ -103,6 +103,34 @@ impl SandboxUnitName {
         }
     }
 
+    /// Parses one exact canonical nonzero sandbox service name.
+    ///
+    /// Uppercase hexadecimal, zero incarnations, extra suffixes, and non-ASCII
+    /// input are rejected. This parses syntax only; it does not prove systemd's
+    /// `Unit.Id` or `Followed` alias evidence. The returned incarnation is the
+    /// sole identity encoded by the name.
+    #[must_use]
+    pub fn from_service_name(value: &str) -> Option<(Self, [u8; 16])> {
+        let encoded = value.strip_prefix(UNIT_PREFIX)?.strip_suffix(UNIT_SUFFIX)?;
+        if encoded.len() != 32 {
+            return None;
+        }
+        let mut incarnation = [0; 16];
+        for (output, pair) in incarnation
+            .iter_mut()
+            .zip(encoded.as_bytes().chunks_exact(2))
+        {
+            *output = decode_hex(pair[0])?
+                .checked_mul(16)?
+                .checked_add(decode_hex(pair[1])?)?;
+        }
+        if incarnation == [0; 16] {
+            return None;
+        }
+        let name = Self::from_incarnation(incarnation);
+        (name.as_str() == value).then_some((name, incarnation))
+    }
+
     /// Returns the sandbox service unit name.
     #[must_use]
     pub fn as_str(&self) -> &str {
@@ -123,6 +151,14 @@ impl SandboxUnitName {
 
     fn expected_cgroup(&self) -> String {
         format!("/{SANDBOX_SLICE}/{}", self.service)
+    }
+}
+
+fn decode_hex(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        _ => None,
     }
 }
 
@@ -1034,6 +1070,25 @@ mod tests {
         assert_eq!(
             name.guardian(),
             "aos-lease-guard-abababababababababababababababab.service"
+        );
+        assert_eq!(
+            SandboxUnitName::from_service_name(name.as_str()),
+            Some((name, [0xab; 16]))
+        );
+        assert!(
+            SandboxUnitName::from_service_name(
+                "aos-sandbox-ABABABABABABABABABABABABABABABAB.service"
+            )
+            .is_none()
+        );
+        assert!(
+            SandboxUnitName::from_service_name(
+                "aos-sandbox-00000000000000000000000000000000.service"
+            )
+            .is_none()
+        );
+        assert!(
+            SandboxUnitName::from_service_name("aos-sandbox-éééééééééééééééé.service").is_none()
         );
     }
 

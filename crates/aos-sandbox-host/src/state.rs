@@ -25,6 +25,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use crate::authorization::HostAuthorityV1;
+use crate::recovery::{
+    RetainedEffectDurability, RetainedRuntimeEffect, RetainedRuntimeIntent,
+    RetainedRuntimeInventory,
+};
 use crate::worker::HostRuntimeIdentity;
 use crate::{HostError, Result};
 
@@ -397,6 +401,41 @@ impl HostState {
             .collect()
     }
 
+    pub(crate) fn runtime_recovery_inventory(&self) -> Result<RetainedRuntimeInventory> {
+        let mut current = Vec::new();
+        let mut historical = Vec::new();
+        current
+            .try_reserve_exact(self.fences.len())
+            .map_err(|_| HostError::State("cannot reserve current runtime inventory".to_owned()))?;
+        historical
+            .try_reserve_exact(self.requests.len())
+            .map_err(|_| HostError::State("cannot reserve runtime history".to_owned()))?;
+
+        for fence in self.fences.values() {
+            let request = self
+                .requests
+                .get(&fence.witness_request_id)
+                .ok_or_else(|| {
+                    HostError::State("current sandbox fence lost its witness request".to_owned())
+                })?;
+            current.push(retained_effect(request)?);
+        }
+        for request in self.requests.values() {
+            let current_fence = self.fences.get(&request.fence.sandbox_id).ok_or_else(|| {
+                HostError::State("historical request lost its current sandbox fence".to_owned())
+            })?;
+            if request.fence.incarnation_id != current_fence.incarnation_id {
+                historical.push(retained_effect(request)?);
+            }
+        }
+        current.sort_unstable_by_key(|effect| *effect.identity.incarnation_id());
+        historical.sort_unstable();
+        Ok(RetainedRuntimeInventory {
+            current,
+            historical,
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn corrupt_effect(&mut self, request_id: &[u8; 16]) {
         if let Some(byte) = self
@@ -615,6 +654,31 @@ fn action_verb(action: u8) -> Option<aos_sandbox_core::BrokerVerb> {
         5 => Some(aos_sandbox_core::BrokerVerb::HostKill),
         _ => None,
     }
+}
+
+fn retained_effect(request: &RequestRecord) -> Result<RetainedRuntimeEffect> {
+    let intent = match request.action {
+        1 => RetainedRuntimeIntent::Launch,
+        2 => RetainedRuntimeIntent::Stop,
+        3 => RetainedRuntimeIntent::Freeze,
+        4 => RetainedRuntimeIntent::Thaw,
+        5 => RetainedRuntimeIntent::Kill,
+        _ => {
+            return Err(HostError::State(
+                "retained runtime request has an unknown action".to_owned(),
+            ));
+        }
+    };
+    Ok(RetainedRuntimeEffect {
+        identity: request.fence.runtime_identity(),
+        request_id: request.request_id,
+        intent,
+        durability: if request.receipt.is_some() {
+            RetainedEffectDurability::Complete
+        } else {
+            RetainedEffectDurability::Pending
+        },
+    })
 }
 
 impl DurableFence {

@@ -446,31 +446,7 @@ fn charge_string(value: &str, aggregate: &mut usize) -> Result<()> {
 }
 
 fn parse_name(value: &str) -> Option<(SandboxUnitName, [u8; 16])> {
-    let encoded = value
-        .strip_prefix(super::UNIT_PREFIX)?
-        .strip_suffix(super::UNIT_SUFFIX)?;
-    if encoded.len() != 32 {
-        return None;
-    }
-    let mut incarnation = [0u8; 16];
-    for (index, pair) in encoded.as_bytes().chunks_exact(2).enumerate() {
-        incarnation[index] = decode_hex(pair[0])?
-            .checked_mul(16)?
-            .checked_add(decode_hex(pair[1])?)?;
-    }
-    if incarnation == [0; 16] {
-        return None;
-    }
-    let unit = SandboxUnitName::from_incarnation(incarnation);
-    (unit.as_str() == value).then_some((unit, incarnation))
-}
-
-fn decode_hex(value: u8) -> Option<u8> {
-    match value {
-        b'0'..=b'9' => Some(value - b'0'),
-        b'a'..=b'f' => Some(value - b'a' + 10),
-        _ => None,
-    }
+    SandboxUnitName::from_service_name(value)
 }
 
 #[cfg(test)]

@@ -349,10 +349,11 @@ async fn sandbox_discovery_returns_stable_complete_snapshot_and_quarantine_evide
 #[tokio::test]
 async fn sandbox_discovery_quarantines_prefix_lookalike() {
     let h = Harness::new().await;
-    h.set_discovery_units(vec![discovery_entry(
+    let entry = discovery_entry(
         "aos-sandbox-not-an-incarnation.service",
         "/org/freedesktop/systemd1/unit/lookalike",
-    )]);
+    );
+    h.set_discovery_units(vec![entry.clone()]);
     let outcome = with_timeout(h.client.discover_sandbox_units())
         .await
         .unwrap();
@@ -365,6 +366,18 @@ async fn sandbox_discovery_quarantines_prefix_lookalike() {
         snapshot.conflicts[0].object_path,
         "/org/freedesktop/systemd1/unit/lookalike"
     );
+
+    let mut with_job = entry;
+    with_job.job_id = 17;
+    with_job.job_type = "start".to_owned();
+    with_job.job_object_path = OwnedObjectPath::try_from("/job/17").unwrap();
+    h.set_discovery_units(vec![with_job]);
+    assert!(matches!(
+        with_timeout(h.client.discover_sandbox_units())
+            .await
+            .unwrap(),
+        SandboxDiscoveryOutcome::Indeterminate(_)
+    ));
 }
 
 #[tokio::test]

@@ -14,6 +14,7 @@
 //! - [`plan`] resolves catalog handles and compiles the fixed nspawn launch;
 //! - [`catalog`] resolves launch resources from one atomic root-owned snapshot;
 //! - [`peer`] pins the controller process to its exact service cgroup;
+//! - [`recovery`] joins authenticated runtime authority with bounded discovery;
 //! - [`service`] serves one bounded request per verified connection;
 //! - [`state`] persists fences, pending effects, and replay receipts;
 //! - [`transport`] validates systemd-activated local packet sockets;
@@ -27,6 +28,7 @@ pub mod catalog;
 mod observation;
 pub mod peer;
 pub mod plan;
+pub mod recovery;
 pub mod service;
 pub mod state;
 pub mod transport;
