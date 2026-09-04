@@ -38,6 +38,7 @@ members = [
     "aos-sandbox-protocol",
     "aos-sandbox",
     "aos-sandbox-linux",
+    "aos-sandbox-linux/tests/fixtures/verity-backing",
     "aos-sandbox-broker",
     "aos-sandbox-host",
     "aos-sandbox-mount",

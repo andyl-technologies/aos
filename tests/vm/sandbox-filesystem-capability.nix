@@ -1,5 +1,6 @@
 # Exact-kernel capability qualification, independent of full-system services.
 {
+  lib,
   testing,
   pkgs,
 }: let
@@ -7,10 +8,23 @@
     path = ../sandbox/filesystem-capability-probe.c;
     name = "aos-sandbox-filesystem-capability-probe.c";
   };
+  rustBackingProbe = pkgs.mkCargoPackage {
+    pname = "aos-sandbox-verity-backing-probe";
+    version = "0.0.0";
+    src = import ../../pkgs/tools/aos/_workspace-source.nix {inherit lib;};
+    cargoDeps = pkgs.aos.passthru.cargoDeps;
+    cargoRoot = "crates";
+    cargoFlags = "-p aos-sandbox-verity-backing-probe --bin aos-sandbox-verity-backing-probe";
+    # The executable needs the real ext4/fs-verity fixture below, not build-time
+    # mount privilege. It links only its Linux boundary and ordinary runtime.
+    doCheck = false;
+    buildDeps = [];
+    runtimeDeps = [];
+  };
 in
   testing.mkVMTest {
     name = "sandbox-filesystem-kernel-capabilities";
-    rootfsDeps = [probeSource pkgs.linux-headers pkgs.e2fsprogs pkgs.jq];
+    rootfsDeps = [probeSource rustBackingProbe pkgs.linux-headers pkgs.e2fsprogs pkgs.jq];
     memory = 256;
     testScript = ''
       test -c /dev/fuse
@@ -54,6 +68,28 @@ in
         }
       ' passthrough.json
       cat verity.json passthrough.json
+
+      # This measured expectation is supplied by the trusted test coordinator;
+      # it does not demonstrate a production publication-authorization catalog.
+      # Run last because the owned-descriptor lifetime check unlinks payload.
+      measurement=$(${pkgs.jq}/bin/jq -r .digest verity.json)
+      ${rustBackingProbe}/bin/aos-sandbox-verity-backing-probe \
+        /tmp/ext4 "$measurement" > backing.json
+      ${pkgs.jq}/bin/jq -e '
+        . == {
+          schema_version: "aos.sandbox.verity-backing-proof/v1",
+          read_verified: true,
+          identity_verified: true,
+          mapping_verified: true,
+          wrong_size_rejected: true,
+          over_limit_rejected: true,
+          wrong_digest_rejected: true,
+          unsealed_rejected: true,
+          symlink_rejected: true,
+          unlinked_pin_verified: true
+        }
+      ' backing.json
+      cat backing.json
       umount /tmp/ext4
       trap - EXIT
     '';
