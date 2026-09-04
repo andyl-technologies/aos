@@ -11,7 +11,8 @@ use leptos::task::spawn_local;
 use crate::components::{InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, watch_draft, PendingPlan};
 use crate::route::{
-    delivery_draft_prerequisites, delivery_workflow_action, DeliveryWorkflowAction,
+    delivery_draft_prerequisites, delivery_workflow_action, DeliverySetupAccess,
+    DeliveryWorkflowAction,
 };
 use crate::transport::ApiClient;
 
@@ -25,8 +26,10 @@ pub(super) fn DeliveryDestinationWorkflows(
     client: ApiClient,
     surface: aos_proto_types::SurfaceRef,
     choices: LocalResource<Result<Option<RouteCreateChoices>, String>>,
-    can_manage: bool,
+    choices_requested: RwSignal<bool>,
+    access: DeliverySetupAccess,
 ) -> impl IntoView {
+    let can_manage = client.allows("route.manage");
     let list_client = client.clone();
     let list_surface = surface.clone();
     let workflows = LocalResource::new(move || {
@@ -69,8 +72,8 @@ pub(super) fn DeliveryDestinationWorkflows(
                     })
                 }}
             </Suspense>
-            {can_manage.then(|| view! {
-                <details class="guided-workflow">
+            {access.can_start().then(|| view! {
+                <details class="guided-workflow" on:toggle=move |_| choices_requested.set(true)>
                     <summary>"Add delivery destination"</summary>
                     <Suspense fallback=move || view! { <p class="loading-row">"Loading available infrastructure…"</p> }>
                         {move || {
@@ -78,7 +81,7 @@ pub(super) fn DeliveryDestinationWorkflows(
                             let surface = surface.clone();
                             Suspend::new(async move {
                                 match choices.await.as_ref() {
-                                    Ok(Some(choices)) => view! { <DeliveryDestinationForm client=client surface=surface choices=choices.clone()/> }.into_any(),
+                                    Ok(Some(choices)) => view! { <DeliveryDestinationForm client=client surface=surface choices=choices.clone() access=access/> }.into_any(),
                                     Ok(None) => ().into_any(),
                                     Err(detail) => view! { <InlineError detail=detail.clone()/> }.into_any(),
                                 }
@@ -86,6 +89,9 @@ pub(super) fn DeliveryDestinationWorkflows(
                         }}
                     </Suspense>
                 </details>
+            })}
+            {(!access.can_start()).then(|| view! {
+                <p class="muted">"Creating a destination requires route and gateway management plus read access to its storage and endpoint. Creating a hostname also requires endpoint, domain, and network-policy access."</p>
             })}
         </section>
     }
@@ -96,12 +102,17 @@ fn DeliveryDestinationForm(
     client: ApiClient,
     surface: aos_proto_types::SurfaceRef,
     choices: RouteCreateChoices,
+    access: DeliverySetupAccess,
 ) -> impl IntoView {
-    let endpoint_mode = RwSignal::new(if choices.endpoints.is_empty() {
-        "new".to_string()
-    } else {
-        "existing".to_string()
-    });
+    let endpoint_mode = RwSignal::new(
+        if access.can_use_existing_endpoint && !choices.endpoints.is_empty() {
+            "existing".to_string()
+        } else if access.can_create_hostname_endpoint {
+            "new".to_string()
+        } else {
+            "domain".to_string()
+        },
+    );
     let endpoint_id = RwSignal::new(
         choices
             .endpoints
@@ -280,7 +291,7 @@ fn DeliveryDestinationForm(
             <p>"Choose the desired public result. Hub will retain the exact resources, grants, verification steps, and activation boundary underneath."</p>
             <form class="editor-form" on:submit=on_plan>
                 <label><span>"Storage placement"</span><select required prop:value=move || placement_name.get() on:change=move |event| placement_name.set(event_target_value(&event))>{placement_choices.iter().map(|placement| view! { <option value=placement.name.clone()>{format!("{} · {}", placement.name, placement.binding_name)}</option> }).collect_view()}</select><small>"The destination reads bytes from this existing placement."</small></label>
-                <label><span>"Endpoint"</span><select prop:value=move || endpoint_mode.get() on:change=move |event| endpoint_mode.set(event_target_value(&event))><option value="existing">"Use existing endpoint"</option><option value="new">"Configure new CDN hostname"</option>{(!domain_choices.is_empty()).then(|| view! { <option value="domain">"Use managed domain for new endpoint"</option> })}</select></label>
+                <label><span>"Endpoint"</span><select prop:value=move || endpoint_mode.get() on:change=move |event| endpoint_mode.set(event_target_value(&event))>{access.can_use_existing_endpoint.then(|| view! { <option value="existing">"Use existing endpoint"</option> })}{access.can_create_hostname_endpoint.then(|| view! { <option value="new">"Configure new CDN hostname"</option> })}{(access.can_create_managed_domain_endpoint && !domain_choices.is_empty()).then(|| view! { <option value="domain">"Use managed domain for new endpoint"</option> })}</select></label>
                 {move || if endpoint_mode.get() == "existing" {
                     let endpoint_choices = endpoint_choices.clone();
                     view! { <label><span>"Existing endpoint"</span><select required prop:value=move || endpoint_id.get() on:change=move |event| endpoint_id.set(event_target_value(&event))>{endpoint_choices.iter().map(|endpoint| view! { <option value=endpoint.stable_id.clone()>{endpoint_option_label(endpoint)}</option> }).collect_view()}</select>{endpoint_choices.is_empty().then(|| view! { <small>"No endpoint is available. Configure a new CDN hostname here instead."</small> })}</label> }.into_any()

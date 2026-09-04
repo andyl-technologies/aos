@@ -179,6 +179,44 @@ pub fn owner_controls_visible(
     permission_granted && owner_scope_key == consumer_scope_key
 }
 
+/// Permissions that determine which delivery-destination setup paths are usable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DeliverySetupAccess {
+    /// Whether an existing endpoint can be connected to the surface.
+    pub can_use_existing_endpoint: bool,
+    /// Whether a hostname, domain, and endpoint can be created inline.
+    pub can_create_hostname_endpoint: bool,
+    /// Whether a new endpoint can use an existing managed domain.
+    pub can_create_managed_domain_endpoint: bool,
+}
+
+impl DeliverySetupAccess {
+    /// Returns whether at least one guided delivery setup path is usable.
+    #[must_use]
+    pub fn can_start(self) -> bool {
+        self.can_use_existing_endpoint
+            || self.can_create_hostname_endpoint
+            || self.can_create_managed_domain_endpoint
+    }
+}
+
+/// Derives delivery setup access from the live route-scoped session permissions.
+#[must_use]
+pub fn delivery_setup_access(permissions: &[String]) -> DeliverySetupAccess {
+    let allows = |required: &str| permissions.iter().any(|value| value == required);
+    let common = allows("read")
+        && allows("binding.read")
+        && allows("route.manage")
+        && allows("gateway.manage");
+    let can_create_endpoint = common && allows("endpoint.manage") && allows("network_policy.read");
+
+    DeliverySetupAccess {
+        can_use_existing_endpoint: common && allows("endpoint.read"),
+        can_create_hostname_endpoint: can_create_endpoint && allows("domain.manage"),
+        can_create_managed_domain_endpoint: can_create_endpoint && allows("domain.read"),
+    }
+}
+
 /// One page in a scope's deterministic settings navigation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PageSpec {
@@ -1466,6 +1504,31 @@ mod tests {
             "scope:org:acme",
             false
         ));
+    }
+
+    #[test]
+    fn delivery_setup_requires_each_resource_permission() {
+        let existing = delivery_setup_access(&[
+            "read".to_string(),
+            "binding.read".to_string(),
+            "endpoint.read".to_string(),
+            "route.manage".to_string(),
+            "gateway.manage".to_string(),
+        ]);
+        assert!(existing.can_use_existing_endpoint);
+        assert!(!existing.can_create_hostname_endpoint);
+
+        let hostname = delivery_setup_access(&[
+            "read".to_string(),
+            "binding.read".to_string(),
+            "route.manage".to_string(),
+            "gateway.manage".to_string(),
+            "endpoint.manage".to_string(),
+            "network_policy.read".to_string(),
+            "domain.manage".to_string(),
+        ]);
+        assert!(hostname.can_create_hostname_endpoint);
+        assert!(!hostname.can_create_managed_domain_endpoint);
     }
 
     #[test]

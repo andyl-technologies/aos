@@ -10,7 +10,9 @@ use leptos::task::spawn_local;
 
 use crate::components::{HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{PendingPlan, idempotency_key, watch_draft};
-use crate::route::{ConsoleRoute, ConsoleScope, route_selection_for_audience};
+use crate::route::{
+    ConsoleRoute, ConsoleScope, delivery_setup_access, route_selection_for_audience,
+};
 use crate::transport::ApiClient;
 
 use super::access_policy::{
@@ -40,6 +42,8 @@ pub(super) fn RouteWorkflow(route: ConsoleRoute, client: ApiClient) -> impl Into
 #[component]
 fn Routes(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl IntoView {
     let can_manage = client.allows("route.manage");
+    let setup_access = delivery_setup_access(&client.session().route_permissions);
+    let choices_requested = RwSignal::new(false);
     let topology_client = client.clone();
     let topology_surface = surface.clone();
     let topology = LocalResource::new(move || {
@@ -60,10 +64,11 @@ fn Routes(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl IntoV
     let choices_surface = surface.clone();
     let choices_topology = topology;
     let choices = LocalResource::new(move || {
+        let requested = choices_requested.get();
         let client = choices_client.clone();
         let surface = choices_surface.clone();
         async move {
-            if !can_manage {
+            if !can_manage || !requested {
                 return Ok(None);
             }
             let topology = choices_topology
@@ -89,13 +94,13 @@ fn Routes(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl IntoV
                         match topology.await.as_ref() {
                             Ok(response) => view! {
                                 <DeliverySummary topology=response.clone()/>
-                                <DeliveryDestinationWorkflows client=client.clone() surface=surface.clone() choices=choices can_manage=can_manage/>
+                                <DeliveryDestinationWorkflows client=client.clone() surface=surface.clone() choices=choices choices_requested=choices_requested access=setup_access/>
                                 <section class="panel resource-panel">
                                     <div class="section-heading"><div><p class="section-kicker">"Simultaneous delivery paths"</p><div class="section-title"><h2>"Routes"</h2><HelpTooltip term="Routes" summary="Multiple Hub-proxied, redirected, CDN-fronted, and direct routes can serve the same logical surface concurrently."/></div></div></div>
                                     {if response.routes.is_empty() {
                                         view! { <p class="muted">"No routes for this surface."</p> }.into_any()
                                     } else {
-                                        view! { <div class="binding-list">{response.routes.iter().cloned().map(|route| view! { <RouteCard client=client.clone() surface=surface.clone() route=route choices=choices can_manage=can_manage/> }).collect_view()}</div> }.into_any()
+                                        view! { <div class="binding-list">{response.routes.iter().cloned().map(|route| view! { <RouteCard client=client.clone() surface=surface.clone() route=route choices=choices choices_requested=choices_requested can_manage=can_manage/> }).collect_view()}</div> }.into_any()
                                     }}
                                 </section>
                                 <RouteAdvertisements client=client surface=surface canonical=response.route_advertisements.clone() routes=response.routes.clone() can_manage=can_manage/>
@@ -105,7 +110,7 @@ fn Routes(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl IntoV
                     })
                 }}
             </Suspense>
-            {can_manage.then(|| view! { <RouteCreate client=client surface=surface choices=choices/> })}
+            {can_manage.then(|| view! { <RouteCreate client=client surface=surface choices=choices choices_requested=choices_requested/> })}
         </div>
     }
 }
@@ -340,9 +345,12 @@ fn RouteCreate(
     client: ApiClient,
     surface: aos_proto_types::SurfaceRef,
     choices: LocalResource<Result<Option<RouteCreateChoices>, String>>,
+    choices_requested: RwSignal<bool>,
 ) -> impl IntoView {
     view! {
-        <Suspense fallback=move || view! { <section class="panel editor-panel"><p class="loading-row">"Loading endpoints, placements, and gateways…"</p></section> }>
+        <details class="panel editor-panel" on:toggle=move |_| choices_requested.set(true)>
+        <summary>"Create a route manually"</summary>
+        <Suspense fallback=move || view! { <p class="loading-row">"Loading endpoints, placements, and gateways…"</p> }>
             {move || {
                 let client = client.clone();
                 let surface = surface.clone();
@@ -355,6 +363,7 @@ fn RouteCreate(
                 })
             }}
         </Suspense>
+        </details>
     }
 }
 
@@ -364,51 +373,82 @@ async fn load_route_create_choices(
     topology: aos_proto_types::GetSurfaceTopologyResponse,
 ) -> Result<RouteCreateChoices, String> {
     let (owner_scope_key, _) = surface_authorization_scope(client, surface).await?;
+    let can_read_endpoints = client.allows("endpoint.read");
+    let can_read_boundaries = client.allows("network_policy.read");
+    let can_read_domains = client.allows("domain.read");
+    let can_read_gateways = client.allows("gateway.read");
     let endpoint_scope = owner_scope_key.clone();
-    let endpoints = client.collect_pages::<_, aos_proto_types::ListEndpointsResponse, _, _, _>(
-        aos_proto_types::DELIVERY_SERVICE_LIST_ENDPOINTS_PATH,
-        move |page_token| aos_proto_types::ListTopologyResourcesRequest {
-            owner_scope_key: endpoint_scope.clone(),
-            page_size: 100,
-            page_token,
-            include_granted: true,
-        },
-        |response| (response.endpoints, response.next_page_token),
-    );
+    let endpoints = async {
+        if !can_read_endpoints {
+            return Ok(Vec::new());
+        }
+        client
+            .collect_pages::<_, aos_proto_types::ListEndpointsResponse, _, _, _>(
+                aos_proto_types::DELIVERY_SERVICE_LIST_ENDPOINTS_PATH,
+                move |page_token| aos_proto_types::ListTopologyResourcesRequest {
+                    owner_scope_key: endpoint_scope.clone(),
+                    page_size: 100,
+                    page_token,
+                    include_granted: true,
+                },
+                |response| (response.endpoints, response.next_page_token),
+            )
+            .await
+    };
     let boundary_scope = owner_scope_key.clone();
-    let boundaries = client
-        .collect_pages::<_, aos_proto_types::ListNetworkPoliciesResponse, _, _, _>(
-            aos_proto_types::NETWORK_POLICY_SERVICE_LIST_NETWORK_POLICIES_PATH,
-            move |page_token| aos_proto_types::ListTopologyResourcesRequest {
-                owner_scope_key: boundary_scope.clone(),
-                page_size: 100,
-                page_token,
-                include_granted: true,
-            },
-            |response| (response.network_policies, response.next_page_token),
-        );
+    let boundaries = async {
+        if !can_read_boundaries {
+            return Ok(Vec::new());
+        }
+        client
+            .collect_pages::<_, aos_proto_types::ListNetworkPoliciesResponse, _, _, _>(
+                aos_proto_types::NETWORK_POLICY_SERVICE_LIST_NETWORK_POLICIES_PATH,
+                move |page_token| aos_proto_types::ListTopologyResourcesRequest {
+                    owner_scope_key: boundary_scope.clone(),
+                    page_size: 100,
+                    page_token,
+                    include_granted: true,
+                },
+                |response| (response.network_policies, response.next_page_token),
+            )
+            .await
+    };
     let domain_scope = owner_scope_key.clone();
-    let domains = client.collect_pages::<_, aos_proto_types::ListDomainsResponse, _, _, _>(
-        aos_proto_types::DOMAIN_SERVICE_LIST_DOMAINS_PATH,
-        move |page_token| aos_proto_types::ListDomainsRequest {
-            owner_scope_key: domain_scope.clone(),
-            page_size: 100,
-            page_token,
-        },
-        |response| (response.domains, response.next_page_token),
-    );
+    let domains = async {
+        if !can_read_domains {
+            return Ok(Vec::new());
+        }
+        client
+            .collect_pages::<_, aos_proto_types::ListDomainsResponse, _, _, _>(
+                aos_proto_types::DOMAIN_SERVICE_LIST_DOMAINS_PATH,
+                move |page_token| aos_proto_types::ListDomainsRequest {
+                    owner_scope_key: domain_scope.clone(),
+                    page_size: 100,
+                    page_token,
+                },
+                |response| (response.domains, response.next_page_token),
+            )
+            .await
+    };
     let gateway_scope = owner_scope_key.clone();
-    let gateways = client.collect_pages::<_, aos_proto_types::ListGatewaysResponse, _, _, _>(
-        aos_proto_types::DELIVERY_SERVICE_LIST_GATEWAYS_PATH,
-        move |page_token| aos_proto_types::ListGatewaysRequest {
-            binding: None,
-            page_size: 100,
-            page_token,
-            owner_scope_key: gateway_scope.clone(),
-            include_granted: true,
-        },
-        |response| (response.gateways, response.next_page_token),
-    );
+    let gateways = async {
+        if !can_read_gateways {
+            return Ok(Vec::new());
+        }
+        client
+            .collect_pages::<_, aos_proto_types::ListGatewaysResponse, _, _, _>(
+                aos_proto_types::DELIVERY_SERVICE_LIST_GATEWAYS_PATH,
+                move |page_token| aos_proto_types::ListGatewaysRequest {
+                    binding: None,
+                    page_size: 100,
+                    page_token,
+                    owner_scope_key: gateway_scope.clone(),
+                    include_granted: true,
+                },
+                |response| (response.gateways, response.next_page_token),
+            )
+            .await
+    };
     let (endpoints, boundaries, domains, gateways) =
         futures::join!(endpoints, boundaries, domains, gateways);
     let endpoints = endpoints.map_err(|failure| failure.to_string())?;
@@ -549,6 +589,7 @@ fn RouteCard(
     surface: aos_proto_types::SurfaceRef,
     route: aos_proto_types::Route,
     choices: LocalResource<Result<Option<RouteCreateChoices>, String>>,
+    choices_requested: RwSignal<bool>,
     can_manage: bool,
 ) -> impl IntoView {
     let spec = route.spec.clone().unwrap_or_default();
@@ -569,7 +610,7 @@ fn RouteCard(
                 {(!observation.error.is_empty()).then(|| view! { <InlineError detail=observation.error/> })}
                 <RouteExplain client=client.clone() route=route.clone()/>
                 {can_manage.then(|| view! {
-                    <details class="advanced-controls">
+                    <details class="advanced-controls" on:toggle=move |_| choices_requested.set(true)>
                         <summary>"Advanced route controls"</summary>
                         <Suspense fallback=move || view! { <p class="loading-row">"Loading route controls…"</p> }>
                             {move || {

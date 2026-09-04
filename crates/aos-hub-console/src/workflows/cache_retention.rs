@@ -115,6 +115,7 @@ impl RetentionFields {
 /// Renders retention subscription inventory and the reviewed set editor.
 #[component]
 pub(super) fn CacheRetentionWorkflow(client: ApiClient, cache_id: String) -> impl IntoView {
+    let can_manage = client.allows("cache.retention.manage");
     let read_client = client.clone();
     let read_cache = cache_id.clone();
     let subscriptions = LocalResource::new(move || {
@@ -136,6 +137,8 @@ pub(super) fn CacheRetentionWorkflow(client: ApiClient, cache_id: String) -> imp
     });
     let view_client = client.clone();
     let view_cache = cache_id.clone();
+    let manage_client = client.clone();
+    let manage_cache = cache_id.clone();
 
     view! {
         <div class="workflow-stack">
@@ -166,6 +169,7 @@ pub(super) fn CacheRetentionWorkflow(client: ApiClient, cache_id: String) -> imp
                                             client=client.clone()
                                             cache_id=cache_id.clone()
                                             subscription=subscription
+                                            can_manage=can_manage
                                         />
                                     }).collect_view()}
                                 </div>
@@ -180,9 +184,11 @@ pub(super) fn CacheRetentionWorkflow(client: ApiClient, cache_id: String) -> imp
                     }}
                 </Suspense>
             </section>
-            <RetentionEditor client=client.clone() cache_id=cache_id.clone()/>
-            <RefreshAllRetention client=client.clone() cache_id=cache_id.clone()/>
-            <ManualRetentionRoots client=client.clone() cache_id=cache_id.clone()/>
+            {can_manage.then(|| view! {
+                <RetentionEditor client=manage_client.clone() cache_id=manage_cache.clone()/>
+                <RefreshAllRetention client=manage_client.clone() cache_id=manage_cache.clone()/>
+                <ManualRetentionRoots client=manage_client cache_id=manage_cache/>
+            })}
             <RetentionReasons client=client cache_id=cache_id/>
         </div>
     }
@@ -193,6 +199,7 @@ fn SubscriptionSummary(
     client: ApiClient,
     cache_id: String,
     subscription: aos_proto_types::RetentionSubscription,
+    can_manage: bool,
 ) -> impl IntoView {
     let edit_subscription = subscription.clone();
     let registry_id = subscription.registry_id.clone();
@@ -214,7 +221,7 @@ fn SubscriptionSummary(
                 <div><span>"Resource version"</span><code>{subscription.resource_version}</code></div>
                 <div><span>"Refresh operation"</span><code>{display_or(&subscription.current_refresh_id, "none")}</code></div>
             </div>
-            <div class="form-actions">
+            {can_manage.then(|| view! { <div class="form-actions">
                 <SubscriptionAction
                     client=client.clone()
                     cache_id=cache_id.clone()
@@ -237,7 +244,7 @@ fn SubscriptionSummary(
                     cache_id=cache_id.clone()
                     initial=edit_subscription
                 />
-            </details>
+            </details> })}
         </article>
     }
 }
