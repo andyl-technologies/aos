@@ -15,6 +15,7 @@
 
 #![cfg(target_os = "linux")]
 
+pub mod boot;
 pub mod inventory;
 pub mod mount;
 pub mod path;
