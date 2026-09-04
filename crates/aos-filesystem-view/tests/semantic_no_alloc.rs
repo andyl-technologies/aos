@@ -9,9 +9,9 @@ use std::io::Cursor;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use aos_filesystem_view::{
-    AclCapability, DirectoryHandleLimits, INDEX_MEDIA_TYPE, IdMapExtent, IdentityMap,
-    IndexContentView, IndexExpectation, IndexNodeBodyView, IndexStaging, InitRequest, InodeError,
-    InodeTable, InodeTableLimits, LookupReply, MetadataConnection, ObjectSource,
+    AclCapability, DirectoryHandleLimits, ForgetRequest, INDEX_MEDIA_TYPE, IdMapExtent,
+    IdentityMap, IndexContentView, IndexExpectation, IndexNodeBodyView, IndexStaging, InitRequest,
+    InodeError, InodeTable, InodeTableLimits, LookupReply, MetadataConnection, ObjectSource,
     PreparedPresentation, PresentationError, PresentationLimits, PresentationPlan, ROOT_NODE_ID,
     ReplyScratch, RequestBudget, TreeCompileLimits, TreeCompiler, Uninterrupted, WorkerError,
     WorkerLimits, validate_index,
@@ -380,7 +380,8 @@ fn main() {
                 .target(),
         );
         for entry in worker
-            .readdir(
+            .readdir_for_node(
+                ROOT_NODE_ID,
                 directory.handle.get(),
                 0,
                 worker_budget,
@@ -391,6 +392,12 @@ fn main() {
         {
             black_box(entry);
         }
+        black_box(worker.forget_one(
+            ForgetRequest::new(link_attributes.node_id, 1),
+            worker_budget,
+            &Uninterrupted,
+        )?);
+        worker.releasedir_for_node(ROOT_NODE_ID, directory.handle.get(), &Uninterrupted)?;
         Ok::<(), WorkerError>(())
     });
     worker_result.unwrap_or_else(|error| panic!("worker access failed: {error}"));

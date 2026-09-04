@@ -210,6 +210,138 @@ impl RequestControl for StopOnNth {
 }
 
 #[test]
+fn singleton_forget_and_directory_node_association_are_independent_of_batching() {
+    let fixture = fixture();
+    let index = fixture.validate();
+    let plan = plan();
+    let presentation =
+        PreparedPresentation::prepare(&index, &plan, 1, [91; 32], PresentationLimits::new(5, 0, 2))
+            .unwrap_or_else(|error| panic!("presentation failed: {error}"));
+    let mut worker = MetadataConnection::new(
+        &presentation,
+        [92; 32],
+        inode_limits(),
+        DirectoryHandleLimits::new(8, 16),
+        worker_limits(),
+    )
+    .unwrap_or_else(|error| panic!("worker failed: {error}"));
+    assert!(matches!(
+        worker.forget_one(
+            ForgetRequest::new(ROOT_NODE_ID, 1),
+            full_budget(),
+            &Uninterrupted
+        ),
+        Err(WorkerError::InvalidArgument)
+    ));
+    worker
+        .initialize(
+            InitRequest {
+                batch_forget: false,
+                directory_handles: true,
+                readdir_plus: false,
+            },
+            full_budget(),
+            &Uninterrupted,
+        )
+        .unwrap_or_else(|error| panic!("init failed: {error}"));
+    let LookupReply::Positive { attributes, .. } = worker
+        .lookup(ROOT_NODE_ID, b"dir", full_budget(), &Uninterrupted)
+        .unwrap_or_else(|error| panic!("lookup failed: {error}"))
+    else {
+        panic!("directory absent");
+    };
+    let node = attributes.node_id;
+    let mut pending = worker
+        .prepare_opendir(node, full_budget(), &Uninterrupted)
+        .unwrap_or_else(|error| panic!("prepare failed: {error}"));
+    let raw = pending.raw_handle();
+    assert!(
+        worker
+            .inode_table()
+            .resolve_active_directory_for_node(raw, node)
+            .is_err()
+    );
+    worker
+        .publish_opendir(&mut pending)
+        .unwrap_or_else(|error| panic!("publish failed: {error}"));
+    let mut scratch = ReplyScratch::new(worker_limits())
+        .unwrap_or_else(|error| panic!("scratch failed: {error}"));
+    for wrong_node in [0, ROOT_NODE_ID, u64::MAX] {
+        assert!(matches!(
+            worker.readdir_for_node(
+                wrong_node,
+                raw,
+                0,
+                full_budget(),
+                &mut scratch,
+                &Uninterrupted
+            ),
+            Err(WorkerError::Stale)
+        ));
+        assert_eq!(
+            worker.releasedir_for_node(wrong_node, raw, &Uninterrupted),
+            Err(WorkerError::Stale)
+        );
+    }
+    assert_eq!(worker.inode_table().live_directory_handles(), 1);
+    assert!(matches!(
+        worker.forget(
+            &mut [ForgetRequest::new(node, 1)],
+            full_budget(),
+            &Uninterrupted
+        ),
+        Err(WorkerError::OperationNotSupported)
+    ));
+    let references = worker.inode_table().total_lookup_references();
+    assert!(matches!(
+        worker.forget_one(
+            ForgetRequest::new(node, 1),
+            full_budget().with_forget_entries(0),
+            &Uninterrupted
+        ),
+        Err(WorkerError::ResourceExhausted)
+    ));
+    assert!(matches!(
+        worker.forget_one(
+            ForgetRequest::new(node, 1),
+            full_budget(),
+            &StopAt {
+                checkpoint: RequestCheckpoint::BeforeCommit,
+                state: RequestControlState::Cancelled
+            }
+        ),
+        Err(WorkerError::Interrupted)
+    ));
+    assert!(matches!(
+        worker.forget_one(ForgetRequest::new(node, 2), full_budget(), &Uninterrupted),
+        Err(WorkerError::InvalidArgument)
+    ));
+    assert_eq!(worker.inode_table().total_lookup_references(), references);
+    worker
+        .forget_one(ForgetRequest::new(node, 1), full_budget(), &Uninterrupted)
+        .unwrap_or_else(|error| panic!("singleton forget failed: {error}"));
+    // The open directory pin keeps the authenticated node association alive
+    // after its last lookup reference disappears.
+    assert!(
+        worker
+            .readdir_for_node(node, raw, 0, full_budget(), &mut scratch, &Uninterrupted)
+            .is_ok()
+    );
+    worker
+        .releasedir_for_node(node, raw, &Uninterrupted)
+        .unwrap_or_else(|error| panic!("release failed: {error}"));
+    assert_eq!(worker.inode_table().live_directory_handles(), 0);
+    assert_eq!(
+        worker.releasedir_for_node(node, raw, &Uninterrupted),
+        Err(WorkerError::Stale)
+    );
+    assert!(matches!(
+        worker.getattr(node, full_budget(), &Uninterrupted),
+        Err(WorkerError::Stale)
+    ));
+}
+
+#[test]
 fn init_lookup_getattr_readlink_and_rejections_are_bounded() {
     let fixture = fixture();
     let index = fixture.validate();

@@ -451,6 +451,32 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
         Ok(self.brand_directory(raw))
     }
 
+    /// Resolves an active directory handle bound to the supplied connection inode.
+    ///
+    /// Transports carrying both identities must validate their association before
+    /// reading directory contents or releasing the handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns pending, stale, wrong-kind, or integrity errors. A handle belonging
+    /// to another inode returns [`InodeError::StaleDirectoryHandle`].
+    pub fn resolve_active_directory_for_node(
+        &self,
+        raw: u64,
+        node_id: u64,
+    ) -> Result<DirectoryHandleId, InodeError> {
+        let handle = self.resolve_active_directory(raw)?;
+        let slot = find_directory(&self.directories, raw).ok_or(InodeError::InternalInvariant)?;
+        let DirectorySlot::Occupied { node_id: owner, .. } = self.directories[slot] else {
+            return Err(InodeError::InternalInvariant);
+        };
+        if owner != node_id {
+            return Err(InodeError::StaleDirectoryHandle);
+        }
+        self.authenticated_node_entry(owner)?;
+        Ok(handle)
+    }
+
     /// Returns an allocation-free stream beginning at a checked signed offset.
     ///
     /// # Errors

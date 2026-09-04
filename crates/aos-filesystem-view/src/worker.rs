@@ -490,6 +490,35 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
         if !self.ready()?.batch_forget {
             return Err(WorkerError::OperationNotSupported);
         }
+        self.forget_checked(requests, budget, control)
+    }
+
+    /// Releases lookup references from one ordinary FORGET request.
+    ///
+    /// Ordinary FORGET does not require batched dispatch negotiation. It still
+    /// requires INIT and an admitted connection and request entry budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns initialization, budget, cancellation, deadline, or inode-state
+    /// errors without releasing any references. A transport with no FORGET
+    /// error reply must terminate the connection on failure.
+    pub fn forget_one(
+        &mut self,
+        request: ForgetRequest,
+        budget: RequestBudget,
+        control: &impl RequestControl,
+    ) -> Result<ForgetSummary, WorkerError> {
+        self.ready_budget(budget)?;
+        self.forget_checked(&mut [request], budget, control)
+    }
+
+    fn forget_checked(
+        &mut self,
+        requests: &mut [ForgetRequest],
+        budget: RequestBudget,
+        control: &impl RequestControl,
+    ) -> Result<ForgetSummary, WorkerError> {
         if requests.len() > self.limits.maximum_forget_entries
             || requests.len() > budget.forget_entries
         {
@@ -750,6 +779,50 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
             continuation_cookie: continuation,
             eof,
         })
+    }
+
+    /// Produces a directory page after validating the request's inode and handle pair.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`Self::readdir`], or [`WorkerError::Stale`] when
+    /// the handle belongs to a different inode. No directory contents are read
+    /// before this association is checked.
+    pub fn readdir_for_node<'scratch>(
+        &self,
+        node_id: u64,
+        raw_handle: u64,
+        cookie: u64,
+        budget: RequestBudget,
+        scratch: &'scratch mut ReplyScratch,
+        control: &impl RequestControl,
+    ) -> Result<ReadDirPage<'scratch>, WorkerError> {
+        self.ready_budget(budget)?;
+        check(control, RequestCheckpoint::BeforeWork)?;
+        self.inodes
+            .resolve_active_directory_for_node(raw_handle, node_id)
+            .map_err(map_inode)?;
+        self.readdir(raw_handle, cookie, budget, scratch, control)
+    }
+
+    /// Releases an active directory handle after validating its request inode.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`Self::releasedir`], or [`WorkerError::Stale`]
+    /// when the handle belongs to a different inode. Errors preserve the handle.
+    pub fn releasedir_for_node(
+        &mut self,
+        node_id: u64,
+        raw_handle: u64,
+        control: &impl RequestControl,
+    ) -> Result<(), WorkerError> {
+        self.ready()?;
+        check(control, RequestCheckpoint::BeforeWork)?;
+        self.inodes
+            .resolve_active_directory_for_node(raw_handle, node_id)
+            .map_err(map_inode)?;
+        self.releasedir(raw_handle, control)
     }
 
     /// Releases one active raw directory handle.
