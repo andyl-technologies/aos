@@ -54,9 +54,11 @@ in
         script = ''
           # Meson needs to find its own Python modules (ninja invokes
           # python3 -m mesonbuild.mesonmain directly).
-          export PYTHONPATH="${meson}/lib/python3/site-packages''${PYTHONPATH:+:$PYTHONPATH}"
+          nativeMesonRoot=$(dirname "$(dirname "$(command -v meson)")")
+          export PYTHONPATH="$nativeMesonRoot/lib/python3/site-packages''${PYTHONPATH:+:$PYTHONPATH}"
 
           meson setup build \
+            $mesonFlags \
             --prefix=$out \
             --sysconfdir=$out/etc \
             --buildtype=release \

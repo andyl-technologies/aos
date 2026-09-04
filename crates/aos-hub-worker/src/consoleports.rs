@@ -1147,7 +1147,9 @@ impl WorkerHttpClient {
         if let Ok(Some(declared)) = response.headers().get("content-length") {
             if let Ok(len) = declared.parse::<usize>() {
                 if len > MAX_OIDC_BODY_BYTES {
-                    bail!("{what}: declared Content-Length {len} exceeds {MAX_OIDC_BODY_BYTES}-byte cap");
+                    bail!(
+                        "{what}: declared Content-Length {len} exceeds {MAX_OIDC_BODY_BYTES}-byte cap"
+                    );
                 }
             }
         }

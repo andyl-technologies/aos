@@ -61,6 +61,7 @@ async fn app_state(db: Arc<Database>) -> Arc<AppState> {
         domain_probe_terminator: None,
         identity_domain_verifier: None,
         route_reservation_keyring: None,
+        container_rollout: aos_hub_core::container_rollout::ContainerRollout::all_enabled(),
         release_evidence: None,
     })
 }
@@ -1192,6 +1193,7 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
                 serves_git: true,
                 serves_cache: false,
                 serves_web: false,
+                serves_oci: false,
                 enabled: false,
             },
             "http://192.0.2.44:8420/replica",

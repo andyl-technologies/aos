@@ -46,6 +46,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
 use crate::db::TokenAuth;
+use aos_oci_types::RepositoryName;
 
 /// HMAC-SHA256 keyed by the JWT signing secret.
 type HmacSha256 = Hmac<Sha256>;
@@ -57,12 +58,18 @@ const B64: base64::engine::general_purpose::GeneralPurpose =
 /// The fixed compact-JWS header for an HS256 token.
 const HEADER_JSON: &[u8] = br#"{"alg":"HS256","typ":"JWT"}"#;
 
+/// Domain-separated compact-JWS header for OCI repository tokens.
+const OCI_HEADER_JSON: &[u8] = br#"{"alg":"HS256","typ":"application/vnd.aos.oci-token+jwt"}"#;
+
 /// Authorization-model epoch embedded in every newly minted access token.
 ///
 /// Verification rejects any other value, including tokens minted before the
 /// stable-scope cutover. Increment this whenever claim interpretation or the
 /// authorization graph changes incompatibly.
 pub const AUTHORIZATION_CLAIMS_VERSION: &str = "stable-scope-1";
+
+/// Authorization-model epoch for repository-scoped Distribution tokens.
+pub const OCI_AUTHORIZATION_CLAIMS_VERSION: &str = "aos-oci-repository-grants-2";
 
 /// The HS256-signed claims carried by a hub access token.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,6 +89,49 @@ pub struct Claims {
     /// Issued-at timestamp (Unix seconds).
     pub iat: i64,
     /// Expiry timestamp (Unix seconds).
+    pub exp: i64,
+}
+
+/// One exact repository/action grant in an OCI Distribution token.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OciRepositoryGrant {
+    /// Exact repository local to the owning registry.
+    pub repository: RepositoryName,
+    /// Sorted, unique Distribution actions drawn from `pull` and `push`.
+    pub actions: Vec<String>,
+}
+
+/// Inputs bound into one repository-scoped OCI token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OciTokenGrant {
+    /// Stable principal or anonymous-session subject.
+    pub subject: String,
+    /// Exact canonical Distribution service authority.
+    pub authority: String,
+    /// Stable id of the owning AOS registry incarnation.
+    pub registry_stable_id: String,
+    /// Sorted, unique repository grants local to that registry.
+    pub grants: Vec<OciRepositoryGrant>,
+}
+
+/// Claims carried only by a repository-scoped OCI Distribution token.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OciClaims {
+    /// Token-contract epoch.
+    pub oci_version: String,
+    /// Stable authenticated principal.
+    pub sub: String,
+    /// Exact canonical Distribution service authority.
+    pub aud: String,
+    /// Stable owning-registry incarnation.
+    pub registry: String,
+    /// Sorted, unique repository/action grants local to the registry.
+    pub grants: Vec<OciRepositoryGrant>,
+    /// Issued-at timestamp in Unix seconds.
+    pub iat: i64,
+    /// Expiry timestamp in Unix seconds.
     pub exp: i64,
 }
 
@@ -167,35 +217,7 @@ impl JwtKeys {
     /// the token is expired, its authorization epoch is obsolete, or the
     /// claims cannot be deserialized.
     pub fn verify(&self, token: &str) -> Result<Claims> {
-        let mut parts = token.split('.');
-        let (Some(header_b64), Some(claims_b64), Some(sig_b64), None) =
-            (parts.next(), parts.next(), parts.next(), parts.next())
-        else {
-            bail!("invalid JWT: expected three dot-separated segments");
-        };
-        // The header is fixed for the tokens this hub mints; reject anything
-        // whose alg/typ we did not produce (an `alg:none` downgrade or an
-        // unexpected algorithm never reaches the signature check).
-        let header = B64
-            .decode(header_b64)
-            .context("invalid JWT header base64")?;
-        if header != HEADER_JSON {
-            bail!("invalid JWT: unexpected header (only HS256 is accepted)");
-        }
-        // Verify the signature over `header.claims` in constant time.
-        let signing_input = format!("{header_b64}.{claims_b64}");
-        let signature = B64
-            .decode(sig_b64)
-            .context("invalid JWT signature base64")?;
-        let mut mac = <HmacSha256 as Mac>::new_from_slice(&self.secret)
-            .unwrap_or_else(|_| unreachable!("HMAC-SHA256 accepts any key length"));
-        mac.update(signing_input.as_bytes());
-        mac.verify_slice(&signature)
-            .map_err(|_| anyhow::anyhow!("invalid JWT signature"))?;
-        // Signature verified: decode the claims and enforce expiry.
-        let claims_bytes = B64
-            .decode(claims_b64)
-            .context("invalid JWT claims base64")?;
+        let claims_bytes = self.verify_compact(token, HEADER_JSON)?;
         let claims: Claims = serde_json::from_slice(&claims_bytes).context("invalid JWT claims")?;
         if claims.authz_version != AUTHORIZATION_CLAIMS_VERSION {
             bail!("JWT was minted for an incompatible authorization model");
@@ -206,6 +228,194 @@ impl JwtKeys {
         }
         Ok(claims)
     }
+
+    /// Mints a short-lived token bound to one OCI service and repository.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed grant identity, unsupported actions,
+    /// invalid lifetime, clock failure, or claim serialization failure.
+    pub fn mint_oci(&self, grant: &OciTokenGrant, ttl_secs: i64) -> Result<String> {
+        validate_oci_grant(grant)?;
+        if !(1..=900).contains(&ttl_secs) {
+            bail!("OCI token lifetime must be between 1 and 900 seconds");
+        }
+        let now = unix_now()?;
+        let claims = OciClaims {
+            oci_version: OCI_AUTHORIZATION_CLAIMS_VERSION.to_string(),
+            sub: grant.subject.clone(),
+            aud: grant.authority.clone(),
+            registry: grant.registry_stable_id.clone(),
+            grants: grant.grants.clone(),
+            iat: now,
+            exp: now + ttl_secs,
+        };
+        self.mint_compact(OCI_HEADER_JSON, &claims, "OCI token claims")
+    }
+
+    /// Verifies an OCI token against the exact request authority and repository.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a malformed or expired token, the ordinary Hub JWT
+    /// header, an incompatible token epoch, or any authority, registry,
+    /// repository, or action mismatch.
+    pub fn verify_oci(
+        &self,
+        token: &str,
+        authority: &str,
+        registry_stable_id: &str,
+        repository: &RepositoryName,
+        required_action: &str,
+    ) -> Result<OciClaims> {
+        let claims = self.verify_oci_claims(token)?;
+        if claims.aud != authority
+            || claims.registry != registry_stable_id
+            || !claims.grants.iter().any(|grant| {
+                &grant.repository == repository
+                    && grant.actions.iter().any(|action| action == required_action)
+            })
+        {
+            bail!("OCI token is not authorized for this repository request");
+        }
+        Ok(claims)
+    }
+
+    /// Verifies the signature, token type, epoch, lifetime, and grant shape of
+    /// an OCI token without applying a request-specific authorization check.
+    ///
+    /// This split lets the Distribution handler distinguish an invalid
+    /// credential (`UNAUTHORIZED`) from a valid token presented for the wrong
+    /// authority, registry, repository, or action (`DENIED`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a malformed signature or claims body, an ordinary
+    /// Hub JWT, an incompatible epoch, an invalid lifetime, or a malformed
+    /// repository grant.
+    pub fn verify_oci_claims(&self, token: &str) -> Result<OciClaims> {
+        let claims_bytes = self.verify_compact(token, OCI_HEADER_JSON)?;
+        let claims: OciClaims =
+            serde_json::from_slice(&claims_bytes).context("invalid OCI token claims")?;
+        if claims.oci_version != OCI_AUTHORIZATION_CLAIMS_VERSION {
+            bail!("OCI token was minted for an incompatible authorization model");
+        }
+        let now = unix_now()?;
+        if claims.exp <= now || claims.iat > now || claims.exp - claims.iat > 900 {
+            bail!("OCI token lifetime is invalid or expired");
+        }
+        let grant = OciTokenGrant {
+            subject: claims.sub.clone(),
+            authority: claims.aud.clone(),
+            registry_stable_id: claims.registry.clone(),
+            grants: claims.grants.clone(),
+        };
+        validate_oci_grant(&grant)?;
+        Ok(claims)
+    }
+
+    fn mint_compact<T: Serialize>(
+        &self,
+        header: &[u8],
+        claims: &T,
+        context: &'static str,
+    ) -> Result<String> {
+        let claims_json =
+            serde_json::to_vec(claims).with_context(|| format!("serializing {context}"))?;
+        let signing_input = format!("{}.{}", B64.encode(header), B64.encode(claims_json));
+        let signature = self.sign(signing_input.as_bytes());
+        Ok(format!("{signing_input}.{}", B64.encode(signature)))
+    }
+
+    fn verify_compact(&self, token: &str, expected_header: &[u8]) -> Result<Vec<u8>> {
+        let mut parts = token.split('.');
+        let (Some(header_b64), Some(claims_b64), Some(sig_b64), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            bail!("invalid JWT: expected three dot-separated segments");
+        };
+        let header = B64
+            .decode(header_b64)
+            .context("invalid JWT header base64")?;
+        if header != expected_header {
+            bail!("invalid JWT: unexpected token type or algorithm");
+        }
+        let signing_input = format!("{header_b64}.{claims_b64}");
+        let signature = B64
+            .decode(sig_b64)
+            .context("invalid JWT signature base64")?;
+        let mut mac = <HmacSha256 as Mac>::new_from_slice(&self.secret)
+            .unwrap_or_else(|_| unreachable!("HMAC-SHA256 accepts any key length"));
+        mac.update(signing_input.as_bytes());
+        mac.verify_slice(&signature)
+            .map_err(|_| anyhow::anyhow!("invalid JWT signature"))?;
+        B64.decode(claims_b64).context("invalid JWT claims base64")
+    }
+}
+
+fn validate_oci_grant(grant: &OciTokenGrant) -> Result<()> {
+    for (value, field, maximum) in [
+        (grant.subject.as_str(), "OCI token subject", 128_usize),
+        (grant.authority.as_str(), "OCI token authority", 255_usize),
+        (
+            grant.registry_stable_id.as_str(),
+            "OCI token registry identity",
+            128_usize,
+        ),
+    ] {
+        if value.is_empty()
+            || value.len() > maximum
+            || !value.bytes().all(|byte| byte.is_ascii_graphic())
+        {
+            bail!("{field} is malformed");
+        }
+    }
+    if grant.authority != grant.authority.to_ascii_lowercase()
+        || grant
+            .authority
+            .bytes()
+            .any(|byte| matches!(byte, b'/' | b'@' | b'?' | b'#'))
+    {
+        bail!("OCI token authority is not canonical");
+    }
+    if grant.registry_stable_id.len() != "registry:".len() + 32
+        || !grant
+            .registry_stable_id
+            .strip_prefix("registry:")
+            .is_some_and(|opaque| {
+                opaque
+                    .bytes()
+                    .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+            })
+    {
+        bail!("OCI token registry identity is not canonical");
+    }
+    if grant.grants.is_empty() || grant.grants.len() > 8 {
+        bail!("OCI token must contain between one and eight repository grants");
+    }
+    let mut previous_repository = None;
+    for repository_grant in &grant.grants {
+        if previous_repository
+            .as_ref()
+            .is_some_and(|previous| previous >= &repository_grant.repository)
+        {
+            bail!("OCI token repository grants must be sorted and unique");
+        }
+        previous_repository = Some(repository_grant.repository.clone());
+        if repository_grant.actions.is_empty() || repository_grant.actions.len() > 2 {
+            bail!("OCI token repository actions are empty or excessive");
+        }
+        let mut previous_action: Option<&str> = None;
+        for action in &repository_grant.actions {
+            if !matches!(action.as_str(), "pull" | "push")
+                || previous_action.is_some_and(|previous| previous >= action.as_str())
+            {
+                bail!("OCI token repository actions must be sorted, unique pull/push actions");
+            }
+            previous_action = Some(action);
+        }
+    }
+    Ok(())
 }
 
 /// Returns the current Unix time in seconds (native `SystemTime`, or the
@@ -313,5 +523,132 @@ mod tests {
         assert!(keys.verify("not-a-jwt").is_err());
         assert!(keys.verify("only.two").is_err());
         assert!(keys.verify("a.b.c.d").is_err());
+    }
+
+    fn sample_oci_grant() -> OciTokenGrant {
+        OciTokenGrant {
+            subject: "token:tok-1".to_string(),
+            authority: "containers.example:8443".to_string(),
+            registry_stable_id: "registry:0123456789abcdef0123456789abcdef".to_string(),
+            grants: vec![OciRepositoryGrant {
+                repository: RepositoryName::parse("aos").unwrap(),
+                actions: vec!["pull".to_string()],
+            }],
+        }
+    }
+
+    #[test]
+    fn oci_tokens_are_exactly_repository_and_authority_bound() {
+        let keys = JwtKeys::from_secret(b"oci-token-test-secret");
+        let grant = sample_oci_grant();
+        let token = keys.mint_oci(&grant, 300).unwrap();
+        let repository = &grant.grants[0].repository;
+
+        let claims = keys
+            .verify_oci(
+                &token,
+                &grant.authority,
+                &grant.registry_stable_id,
+                repository,
+                "pull",
+            )
+            .unwrap();
+        assert_eq!(claims.grants, grant.grants);
+        assert!(keys
+            .verify_oci(
+                &token,
+                "other.example",
+                &grant.registry_stable_id,
+                repository,
+                "pull"
+            )
+            .is_err());
+        assert!(keys
+            .verify_oci(
+                &token,
+                &grant.authority,
+                &grant.registry_stable_id,
+                &RepositoryName::parse("other").unwrap(),
+                "pull"
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn ordinary_and_oci_tokens_are_domain_separated() {
+        let keys = JwtKeys::from_secret(b"domain-separation-test-secret");
+        let hub = keys.mint(&sample_auth(), 300).unwrap();
+        let grant = sample_oci_grant();
+        let oci = keys.mint_oci(&grant, 300).unwrap();
+        let repository = &grant.grants[0].repository;
+
+        assert!(keys.verify(&oci).is_err());
+        assert!(keys
+            .verify_oci(
+                &hub,
+                &grant.authority,
+                &grant.registry_stable_id,
+                repository,
+                "pull"
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn oci_grants_reject_noncanonical_shapes_and_lifetimes() {
+        let keys = JwtKeys::random();
+        let mut grant = sample_oci_grant();
+        grant.grants[0].actions.push("delete".to_string());
+        assert!(keys.mint_oci(&grant, 300).is_err());
+        grant.grants[0].actions = vec!["pull".to_string()];
+        assert!(keys.mint_oci(&grant, 901).is_err());
+        assert!(keys.mint_oci(&grant, 0).is_err());
+        grant.authority = "EXAMPLE.test".to_string();
+        assert!(keys.mint_oci(&grant, 300).is_err());
+        grant.authority = "example.test".to_string();
+        grant.registry_stable_id = "registry:ABCDEF0123456789ABCDEF0123456789".to_string();
+        assert!(keys.mint_oci(&grant, 300).is_err());
+    }
+
+    #[test]
+    fn oci_tokens_bind_sorted_multi_repository_mount_grants() {
+        let keys = JwtKeys::from_secret(b"oci-mount-token-test-secret");
+        let mut grant = sample_oci_grant();
+        grant.grants[0].actions.push("push".to_string());
+        grant.grants.push(OciRepositoryGrant {
+            repository: RepositoryName::parse("source").unwrap(),
+            actions: vec!["pull".to_string()],
+        });
+        let token = keys.mint_oci(&grant, 300).unwrap();
+        assert!(keys
+            .verify_oci(
+                &token,
+                &grant.authority,
+                &grant.registry_stable_id,
+                &grant.grants[0].repository,
+                "push"
+            )
+            .is_ok());
+        assert!(keys
+            .verify_oci(
+                &token,
+                &grant.authority,
+                &grant.registry_stable_id,
+                &grant.grants[1].repository,
+                "pull"
+            )
+            .is_ok());
+        assert!(keys
+            .verify_oci(
+                &token,
+                &grant.authority,
+                &grant.registry_stable_id,
+                &grant.grants[1].repository,
+                "push"
+            )
+            .is_err());
+
+        grant.grants.reverse();
+        assert!(keys.mint_oci(&grant, 300).is_err());
     }
 }

@@ -124,12 +124,34 @@ pub fn parse_armored(armored: &str) -> Result<SshSig> {
 /// invalid, the namespace is not `git`, the hash algorithm is unsupported,
 /// the cryptographic verification fails, or the signing key is untrusted.
 pub fn verify_armored(armored: &str, payload: &[u8], trusted_keys: &[String]) -> Result<String> {
+    verify_armored_namespace(armored, payload, trusted_keys, "git")
+}
+
+/// Verifies an armored SSHSIG in one exact namespace against trusted keys.
+///
+/// This is used for domain-separated payloads such as DSSE PAE bytes. Git
+/// callers should use [`verify_armored`], which fixes the namespace to `git`.
+///
+/// # Errors
+///
+/// Returns an error when the trusted set is empty, the signature is malformed,
+/// its namespace differs, cryptographic verification fails, or its embedded
+/// key is not trusted.
+pub fn verify_armored_namespace(
+    armored: &str,
+    payload: &[u8],
+    trusted_keys: &[String],
+    namespace: &str,
+) -> Result<String> {
     if trusted_keys.is_empty() {
         bail!("cannot verify signature: trusted key set is empty");
     }
     let sig = parse_armored(armored)?;
-    if sig.namespace != "git" {
-        bail!("unexpected SSHSIG namespace '{}'", sig.namespace);
+    if namespace.is_empty() || sig.namespace != namespace {
+        bail!(
+            "unexpected SSHSIG namespace '{}'; expected '{namespace}'",
+            sig.namespace
+        );
     }
 
     let hashed: Vec<u8> = match sig.hash_algorithm.as_str() {
@@ -140,7 +162,7 @@ pub fn verify_armored(armored: &str, payload: &[u8], trusted_keys: &[String]) ->
 
     let mut signed_data = Vec::with_capacity(hashed.len() + 64);
     signed_data.extend_from_slice(MAGIC);
-    write_string(&mut signed_data, "git".as_bytes());
+    write_string(&mut signed_data, namespace.as_bytes());
     write_string(&mut signed_data, b"");
     write_string(&mut signed_data, sig.hash_algorithm.as_bytes());
     write_string(&mut signed_data, &hashed);
@@ -165,12 +187,26 @@ pub fn verify_armored(armored: &str, payload: &[u8], trusted_keys: &[String]) ->
 /// client-side, per RFC-0004); this exists for fixture construction in
 /// tests and provider-custodied retained signing operations.
 pub fn sign_armored(payload: &[u8], signing_key: &ed25519_dalek::SigningKey) -> String {
+    sign_armored_namespace(payload, signing_key, "git")
+}
+
+/// Signs `payload` as armored SSHSIG in one exact namespace.
+///
+/// The Hub does not use this to sign production artifacts. It is exposed for
+/// provider-custodied signing implementations and deterministic fixtures that
+/// must match [`verify_armored_namespace`].
+#[must_use]
+pub fn sign_armored_namespace(
+    payload: &[u8],
+    signing_key: &ed25519_dalek::SigningKey,
+    namespace: &str,
+) -> String {
     use ed25519_dalek::Signer;
 
     let hashed = Sha512::digest(payload);
     let mut signed_data = Vec::with_capacity(96);
     signed_data.extend_from_slice(MAGIC);
-    write_string(&mut signed_data, b"git");
+    write_string(&mut signed_data, namespace.as_bytes());
     write_string(&mut signed_data, b"");
     write_string(&mut signed_data, b"sha512");
     write_string(&mut signed_data, &hashed);
@@ -185,7 +221,7 @@ pub fn sign_armored(payload: &[u8], signing_key: &ed25519_dalek::SigningKey) -> 
     blob.extend_from_slice(MAGIC);
     blob.extend_from_slice(&1u32.to_be_bytes());
     write_string(&mut blob, &key_blob);
-    write_string(&mut blob, b"git");
+    write_string(&mut blob, namespace.as_bytes());
     write_string(&mut blob, b"");
     write_string(&mut blob, b"sha512");
     write_string(&mut blob, &sig_blob);
@@ -325,6 +361,24 @@ mod tests {
         let matched =
             verify_armored(&armored, b"payload bytes", std::slice::from_ref(&trusted)).unwrap();
         assert_eq!(matched, trusted.rsplit(':').next().unwrap());
+    }
+
+    #[test]
+    fn namespaced_signatures_are_domain_separated() {
+        let key = test_key();
+        let trusted = trusted_key_line("test", &key.verifying_key());
+        let armored = sign_armored_namespace(b"PAE", &key, "aos-container-signature-dsse-v1");
+        assert_eq!(
+            verify_armored_namespace(
+                &armored,
+                b"PAE",
+                std::slice::from_ref(&trusted),
+                "aos-container-signature-dsse-v1",
+            )
+            .unwrap(),
+            trusted.rsplit(':').next().unwrap(),
+        );
+        assert!(verify_armored(&armored, b"PAE", &[trusted]).is_err());
     }
 
     #[test]

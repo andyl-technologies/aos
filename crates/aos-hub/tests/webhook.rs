@@ -186,6 +186,7 @@ async fn app_state(db: Arc<Database>) -> Arc<AppState> {
         domain_probe_terminator: None,
         identity_domain_verifier: None,
         route_reservation_keyring: None,
+        container_rollout: aos_hub_core::container_rollout::ContainerRollout::all_enabled(),
         release_evidence: None,
     })
 }
@@ -884,6 +885,23 @@ async fn metrics_renders_counters() {
     assert!(text.contains("aos_hub_cache_bytes_total 0"));
     assert!(text.contains("aos_hub_cache_gc_runs{status=\"ok\"} 0"));
     assert!(text.contains("aos_hub_cache_gc_freed_bytes 0"));
+    assert!(text.contains("aos_hub_oci_rollout_enabled{capability=\"pull\"} 1"));
+    assert!(text.contains("aos_hub_oci_gc_runs{state=\"planned\"} 0"));
+    assert!(text.contains("aos_hub_oci_gc_bytes{state=\"finalized\"} 0"));
+    assert!(text.contains("aos_hub_oci_gc_failed_actions 0"));
+    assert!(text.contains("aos_hub_oci_gc_stale_inventories 0"));
+    assert!(text.contains("aos_hub_oci_catalog_bytes{kind=\"logical\"} 0"));
+    assert!(text.contains("aos_hub_oci_catalog_bytes{kind=\"reused\"} 0"));
+    assert!(text.contains("aos_hub_oci_reuse_ratio 0.000000"));
+    assert!(text.contains("aos_hub_oci_provider_inventory_bytes 0"));
+    assert!(text.contains("aos_hub_oci_uploads{state=\"expired_nonterminal\"} 0"));
+    assert!(text.contains("aos_hub_oci_publications{state=\"stuck\"} 0"));
+    assert!(text.contains("aos_hub_oci_publication_ready_latency_seconds_count 0"));
+    assert!(text.contains("aos_hub_oci_placements{health=\"unhealthy\"} 0"));
+    assert!(text.contains("aos_hub_oci_inventory_age_seconds{stat=\"max\"} 0"));
+    assert!(text.contains("aos_hub_oci_inventory_events{kind=\"takeover\"} 0"));
+    assert!(text.contains("aos_hub_oci_gc_recoveries{kind=\"action_requeue\"} 0"));
+    assert!(text.contains("aos_hub_oci_digest_mismatches 0"));
     assert!(text.contains("aos_hub_build_info{version="));
 }
 

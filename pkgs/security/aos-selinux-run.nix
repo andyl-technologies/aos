@@ -20,6 +20,17 @@ mkDerivation {
     }
   ];
 
+  passthru.evidenceSources = [
+    (builtins.path {
+      path = ./aos-selinux-run.nix;
+      name = "aos-selinux-run.nix";
+    })
+    (builtins.path {
+      path = ./aos-selinux-run.c;
+      name = "aos-selinux-run.c";
+    })
+  ];
+
   meta = {
     description = "Enter a SELinux context before exec";
     license = "MIT";

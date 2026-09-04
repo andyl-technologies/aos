@@ -18,7 +18,8 @@ pub mod route;
 pub mod app;
 #[cfg(target_arch = "wasm32")]
 pub mod components;
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", test))]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 mod mutation;
 #[cfg(target_arch = "wasm32")]
 pub mod transport;

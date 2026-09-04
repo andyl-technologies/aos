@@ -207,6 +207,7 @@ pub async fn configure_hub_route(
                 serves_git,
                 serves_cache,
                 serves_web,
+                serves_oci: false,
                 enabled: true,
             },
             &canonical_url,

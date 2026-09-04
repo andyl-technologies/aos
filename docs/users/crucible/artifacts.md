@@ -159,4 +159,3 @@ mismatch. Automation should preserve those distinctions.
 See [Reproduction and branching](reproduction.md) for command workflows,
 [Recorded signals](recorded-signals.md) for import objects, and
 [Running Crucible](running.md#artifacts-and-store-layout) for global paths.
-

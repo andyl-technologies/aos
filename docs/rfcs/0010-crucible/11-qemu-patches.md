@@ -1633,7 +1633,7 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 ### crucible-hot-fork-readiness — report QEMU-owned quiescence proofs
 
 - **Patch:** `0114-crucible-hot-fork-readiness.patch`.
-- **Enforces:** RFC-0019 [HFORK-3], [HFORK-4].
+- **Enforces:** RFC-0020 [HFORK-3], [HFORK-4].
 - **Mechanism:** a fixed version-1 QMP query reports the complete nine-bit
   hot-fork proof contract and the exact subset QEMU can attest at the current
   boundary. Precise icount, single-threaded sim RR, and an authenticated exact
@@ -1658,7 +1658,7 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 ### crucible-hot-fork-thread-ownership — classify unresolved subsystem workers
 
 - **Patch:** `0115-crucible-hot-fork-thread-ownership.patch`.
-- **Enforces:** RFC-0019 [HFORK-3], [HFORK-4].
+- **Enforces:** RFC-0020 [HFORK-3], [HFORK-4].
 - **Mechanism:** the RCU callback worker and every QEMU `IOThread` assign their
   own version-2 thread-registry disposition at the start of their subsystem
   entry point. The values remain explicitly unresolved and contribute to the
@@ -1683,7 +1683,7 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 ### crucible-hot-fork-rcu-inventory — expose bounded observational RCU state
 
 - **Patch:** `0116-crucible-hot-fork-rcu-inventory.patch`.
-- **Enforces:** RFC-0019 [HFORK-3], [HFORK-4].
+- **Enforces:** RFC-0020 [HFORK-3], [HFORK-4].
 - **Mechanism:** a fixed version-1 QMP query snapshots at most 65,536 registered
   RCU readers under the registry lock, sorts their positive thread IDs, and
   reports instantaneous read-side activity, submitted-but-incomplete callback
@@ -1706,7 +1706,7 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 ### crucible-hot-fork-aio-inventory — expose bounded AioContext activity
 
 - **Patch:** `0117-crucible-hot-fork-aio-inventory.patch`.
-- **Enforces:** RFC-0019 [HFORK-3], [HFORK-4].
+- **Enforces:** RFC-0020 [HFORK-3], [HFORK-4].
 - **Mechanism:** every `AioContext` receives a positive process-local identity
   and enters a 65,536-entry lifecycle registry. A fixed version-1 QMP query
   reports exact home-thread assignment, active `aio_poll()` and GLib dispatch
@@ -1729,7 +1729,7 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 ### crucible-hot-fork-mutex-inventory — expose bounded QEMU lock ownership
 
 - **Patch:** `0118-crucible-hot-fork-mutex-inventory.patch`.
-- **Enforces:** RFC-0019 [HFORK-3], [HFORK-4].
+- **Enforces:** RFC-0020 [HFORK-3], [HFORK-4].
 - **Mechanism:** every live POSIX `QemuMutex` and `QemuRecMutex` receives a
   positive process-local identity and enters a 65,536-entry lifecycle registry.
   Lock, try-lock, recursive-lock, condition-wait, and unlock transitions retain
@@ -1755,7 +1755,7 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 ### crucible-hot-fork-timer-inventory — expose bounded live-timer state
 
 - **Patch:** `0119-crucible-hot-fork-timer-inventory.patch`.
-- **Enforces:** RFC-0019 [HFORK-3], [HFORK-4].
+- **Enforces:** RFC-0020 [HFORK-3], [HFORK-4].
 - **Mechanism:** every pending `QEMUTimer` and active timer callback receives a
   stable process-local timer and timer-list identity. A fixed version-1 QMP
   query returns at most 65,536 sorted unique records with exact clock, expiry,
@@ -1780,7 +1780,7 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 ### crucible-hot-fork-bottom-half-inventory — expose every allocated QEMUBH
 
 - **Patch:** `0120-crucible-hot-fork-bottom-half-inventory.patch`.
-- **Enforces:** RFC-0019 [HFORK-3], [HFORK-4].
+- **Enforces:** RFC-0020 [HFORK-3], [HFORK-4].
 - **Mechanism:** every allocated `QEMUBH` receives a stable process-local
   identity and a copied bounded diagnostic name. A fixed version-1 QMP query
   returns at most 65,536 sorted unique entries spanning inert, pending, active,
@@ -1808,7 +1808,7 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 ### crucible-hot-fork-aio-handler-inventory — expose every POSIX AIO handler
 
 - **Patch:** `0121-crucible-hot-fork-aio-handler-inventory.patch`.
-- **Enforces:** RFC-0019 [HFORK-3], [HFORK-4].
+- **Enforces:** RFC-0020 [HFORK-3], [HFORK-4].
 - **Mechanism:** every allocated POSIX `AioHandler` receives a stable positive
   process-local identity and enters a 65,536-entry lifecycle registry. A fixed
   version-1 QMP query returns sorted unique entries with the exact owning
@@ -1837,7 +1837,7 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 ### crucible-hot-fork-block-backend-inventory — expose every block backend
 
 - **Patch:** `0122-crucible-hot-fork-block-backend-inventory.patch`.
-- **Enforces:** RFC-0019 [HFORK-3], [HFORK-5].
+- **Enforces:** RFC-0020 [HFORK-3], [HFORK-5].
 - **Mechanism:** every allocated `BlockBackend`, including hidden backends,
   receives a stable positive process-local identity and enters a 65,536-entry
   lifecycle registry. A fixed version-1 QMP query returns sorted unique entries
@@ -1864,7 +1864,7 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 ### crucible-hot-fork-plugin-resource-inventory — bind plugin resources to QEMU state
 
 - **Patch:** `0123-crucible-hot-fork-plugin-resource-inventory.patch`.
-- **Enforces:** RFC-0019 [HFORK-3], [HFORK-4], [HFORK-5].
+- **Enforces:** RFC-0020 [HFORK-3], [HFORK-4], [HFORK-5].
 - **Mechanism:** the Crucible plugin seals one fixed version-1 scalar manifest
   only after setup, wake-descriptor registration, and all required callback
   registrations succeed. The manifest binds the exact plugin and process
@@ -1894,7 +1894,7 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 ### crucible-hot-fork-plugin-callback-barrier — retain callback quiescence
 
 - **Patch:** `0124-crucible-hot-fork-plugin-callback-barrier.patch`.
-- **Enforces:** RFC-0019 [HFORK-3], [HFORK-4].
+- **Enforces:** RFC-0020 [HFORK-3], [HFORK-4].
 - **Mechanism:** after every covered Rust callback shares one admission counter,
   the plugin registers a process-lifetime barrier operation with QEMU. A fixed
   version-1 OOB QMP command holds, queries, or releases the reversible barrier.
@@ -1921,7 +1921,7 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 ### crucible-hot-fork-template-coordinator — own retained preparation
 
 - **Patch:** `0125-crucible-hot-fork-template-coordinator.patch`.
-- **Enforces:** RFC-0019 [HFORK-3], [HFORK-4], [HFORK-5].
+- **Enforces:** RFC-0020 [HFORK-3], [HFORK-4], [HFORK-5].
 - **Mechanism:** a serialized version-4 OOB QMP coordinator owns one retained
   template-preparation generation. `prepare` begins only at the authenticated
   exact paused/device-flush boundary, acquires the plugin callback, RCU, and
@@ -1952,7 +1952,7 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 ### crucible-hot-fork-rcu-barrier — retain RCU quiescence
 
 - **Patch:** `0126-crucible-hot-fork-rcu-barrier.patch`.
-- **Enforces:** RFC-0019 [HFORK-3], [HFORK-4], [HFORK-5].
+- **Enforces:** RFC-0020 [HFORK-3], [HFORK-4], [HFORK-5].
 - **Mechanism:** a process-lifetime reversible RCU barrier gates every new
   outer read-side entry and callback submission before it can
   become visible to the RCU subsystem. `hold` publishes a sticky gate and
@@ -1983,7 +1983,7 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 ### crucible-hot-fork-bh-timer-barrier — park bottom halves and timers
 
 - **Patch:** `0127-crucible-hot-fork-bh-timer-barrier.patch`.
-- **Enforces:** RFC-0019 [HFORK-3], [HFORK-4], [HFORK-5].
+- **Enforces:** RFC-0020 [HFORK-3], [HFORK-4], [HFORK-5].
 - **Mechanism:** a process-lifetime reversible barrier uses race-closed
   two-phase admission for bottom-half and timer creation, mutation, and
   callback dispatch. `hold` parks later producers and nonblocking event-loop
@@ -2010,7 +2010,7 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 ### crucible-hot-fork-aio-barrier — close asynchronous admission
 
 - **Patch:** `0128-crucible-hot-fork-aio-barrier.patch`.
-- **Enforces:** RFC-0019 [HFORK-3], [HFORK-4], [HFORK-5].
+- **Enforces:** RFC-0020 [HFORK-3], [HFORK-4], [HFORK-5].
 - **Mechanism:** the process-lifetime source barrier additionally gates
   AioContext polling and GLib dispatch, AioHandler lifecycle and callback
   entry, and coroutine scheduling through the same race-closed admission
@@ -2038,7 +2038,7 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 ### crucible-hot-fork-block-drain-barrier — retain native block quiescence
 
 - **Patch:** `0129-crucible-hot-fork-block-drain-barrier.patch`.
-- **Enforces:** RFC-0019 [HFORK-3], [HFORK-4], [HFORK-5].
+- **Enforces:** RFC-0020 [HFORK-3], [HFORK-4], [HFORK-5].
 - **Mechanism:** a process-lifetime version-1 main-loop QMP operation holds,
   queries, or releases QEMU's native all-block drain section. Hold is accepted
   only at the exact paused/device-flush boundary, rejects replay-events and a
@@ -2068,7 +2068,7 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 ### crucible-hot-fork-block-template-coordinator — order retained block quiescence
 
 - **Patch:** `0130-crucible-hot-fork-block-template-coordinator.patch`.
-- **Enforces:** RFC-0019 [HFORK-3], [HFORK-4], [HFORK-5].
+- **Enforces:** RFC-0020 [HFORK-3], [HFORK-4], [HFORK-5].
 - **Mechanism:** the version-5 OOB template coordinator schedules native
   all-block drain acquisition and release on the main AioContext. It retains the
   block drain before admitting RCU, asynchronous-source, and plugin holds;
@@ -2094,7 +2094,7 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 ### crucible-hot-fork-block-graph-barrier — retain graph-writer exclusion
 
 - **Patch:** `0131-crucible-hot-fork-block-graph-barrier.patch`.
-- **Enforces:** RFC-0019 [HFORK-3], [HFORK-4], [HFORK-5].
+- **Enforces:** RFC-0020 [HFORK-3], [HFORK-4], [HFORK-5].
 - **Mechanism:** the version-2 block barrier closes block-graph writer
   admission on the main AioContext before it enters QEMU's native all-block
   drain. It rejects an already-active writer, captures the exact completed
@@ -2124,7 +2124,7 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 ### crucible-hot-fork-block-snapshot-roots — bind immutable writable roots
 
 - **Patch:** `0132-crucible-bind-hot-fork-block-snapshot-roots.patch`.
-- **Enforces:** RFC-0019 [HFORK-3], [HFORK-4], [HFORK-5].
+- **Enforces:** RFC-0020 [HFORK-3], [HFORK-4], [HFORK-5].
 - **Mechanism:** while the version-3 native block drain and graph-writer
   barriers are retained and quiescent, the version-7 template coordinator
   binds every writable rooted backend to an exact guest-allocation-empty active

@@ -1,4 +1,4 @@
-//! The transport-free registry-hub service layer (RFC-0004 Phase 5).
+//! The transport-free registry-hub service layer.
 //!
 //! [`RpcService`] holds the `aos.hub.v1` method bodies once, decoupled
 //! from any HTTP framework or wire protocol. Both deployment targets call it:
@@ -28,6 +28,8 @@
 //!   -> 404 { "code": "not_found", "message": "registry not found" }
 //! ```
 
+mod container;
+mod container_admin;
 mod publication_manifest;
 mod release_publication;
 
@@ -1485,7 +1487,7 @@ fn parse_byte_range(header: Option<&str>) -> Option<(u64, u64)> {
 }
 
 /// Wraps one placement body with an exact signed byte-count contract.
-fn exact_image_body(body: axum::body::Body, remaining: u64) -> axum::body::Body {
+pub(crate) fn exact_image_body(body: axum::body::Body, remaining: u64) -> axum::body::Body {
     use futures_util::StreamExt as _;
 
     axum::body::Body::from_stream(futures_util::stream::unfold(
@@ -2502,6 +2504,15 @@ pub struct RpcService {
     pub jwt_keys: JwtKeys,
     /// Externally reachable base URL, used to build the canonical upload URL.
     pub external_url: String,
+    /// Public base URL exposing the instance-default storage binding directly.
+    ///
+    /// When configured, public registries on a reconciled complete placement
+    /// inherit a canonical Git URL from this origin unless an explicit Git
+    /// route advertisement exists. This is the common object-store CDN path;
+    /// explicit topology remains authoritative for custom deployments.
+    pub default_public_delivery_url: Option<String>,
+    /// Independent, fail-closed OCI capability rollout policy.
+    pub container_rollout: crate::container_rollout::ContainerRollout,
     /// The abuse-bound rate limiter (the [`RateLimiter`] port), metering
     /// `CreateOrg` per principal.
     pub ratelimit: Arc<dyn RateLimiter>,
@@ -8508,6 +8519,7 @@ impl RpcService {
                 serves_git: capabilities.serves_git,
                 serves_cache: capabilities.serves_cache,
                 serves_web: capabilities.serves_web,
+                serves_oci: capabilities.serves_oci,
                 enabled: spec.enabled,
             },
             canonical_url,
@@ -8594,6 +8606,7 @@ impl RpcService {
                     serves_git: snapshot.spec.serves_git,
                     serves_cache: snapshot.spec.serves_cache,
                     serves_web: snapshot.spec.serves_web,
+                    serves_oci: snapshot.spec.serves_oci,
                 }),
                 enabled: snapshot.spec.enabled,
             }),
@@ -9426,9 +9439,10 @@ impl RpcService {
             "git" => snapshot.spec.serves_git,
             "nix_cache" => snapshot.spec.serves_cache,
             "web" => snapshot.spec.serves_web,
+            "oci" => snapshot.spec.serves_oci,
             _ => {
                 return Err(RpcError::invalid(
-                    "accessClass must be git, nix_cache, or web",
+                    "accessClass must be git, nix_cache, web, or oci",
                 ));
             }
         };
@@ -10030,6 +10044,8 @@ impl RpcService {
             db,
             jwt_keys,
             external_url,
+            default_public_delivery_url: None,
+            container_rollout: crate::container_rollout::ContainerRollout::default(),
             ratelimit,
             surface,
             surface_write,
@@ -10048,6 +10064,25 @@ impl RpcService {
         }
     }
 
+    /// Attaches the public origin for the instance-default storage binding.
+    ///
+    /// Explicit canonical route advertisements always take precedence over
+    /// this derived delivery policy.
+    #[must_use]
+    pub fn with_default_public_delivery_url(mut self, url: String) -> Self {
+        self.default_public_delivery_url = Some(url);
+        self
+    }
+
+    /// Attaches the independently configured OCI capability rollout policy.
+    #[must_use]
+    pub fn with_container_rollout(
+        mut self,
+        rollout: crate::container_rollout::ContainerRollout,
+    ) -> Self {
+        self.container_rollout = rollout;
+        self
+    }
     /// Attaches the runtime DNS verifier for organization-domain challenges.
     #[must_use]
     pub fn with_identity_domain_verifier(
@@ -10516,6 +10551,67 @@ impl RpcService {
         let claims = self.require_claims(auth)?;
         let scope = self.registry_scope(registry).await?;
         self.require_permission(&claims, Permission::Read, &scope)
+            .await
+    }
+
+    /// Requires an authenticated Hub principal with current registry read access.
+    ///
+    /// Unlike [`Self::require_read`], this gate does not make public registries
+    /// anonymous. Delivery routes with an explicit `hub_auth` posture use it
+    /// before minting a repository-scoped protocol token.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found for an inactive owner, authentication or permission
+    /// errors for an invalid caller, and internal errors for database failures.
+    pub(crate) async fn require_authenticated_registry_read(
+        &self,
+        auth: Option<&str>,
+        registry: &RegistryRecord,
+    ) -> Result<(), RpcError> {
+        if let Some(org_id) = registry.org_id {
+            if !self
+                .db
+                .org_is_active(org_id)
+                .await
+                .map_err(RpcError::internal)?
+            {
+                return Err(RpcError::not_found("registry"));
+            }
+        }
+        let claims = self.require_claims(auth)?;
+        let scope = self.registry_scope(registry).await?;
+        self.require_permission(&claims, Permission::Read, &scope)
+            .await
+    }
+
+    /// Requires an authenticated Hub principal with current registry publish access.
+    ///
+    /// Distribution push-token exchange uses this gate before minting a
+    /// protocol token. Registry visibility never makes writes anonymous.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found for an inactive owner, authentication or permission
+    /// errors for an invalid caller, and internal errors for database failures.
+    pub(crate) async fn require_authenticated_registry_publish(
+        &self,
+        auth: Option<&str>,
+        registry: &RegistryRecord,
+    ) -> Result<(), RpcError> {
+        if let Some(org_id) = registry.org_id {
+            if !self
+                .db
+                .org_is_active(org_id)
+                .await
+                .map_err(RpcError::internal)?
+            {
+                return Err(RpcError::not_found("registry"));
+            }
+        }
+        let claims = self.require_claims(auth)?;
+        let scope = self.registry_scope(registry).await?;
+        self.require_permission(&claims, Permission::Publish, &scope)
             .await
     }
 
@@ -14615,7 +14711,7 @@ impl RpcService {
     }
 
     /// Resolves the single fully reconciled placement that may receive writes.
-    async fn effective_surface_writer(
+    pub(crate) async fn effective_surface_writer(
         &self,
         surface: SurfaceTarget,
     ) -> Result<crate::db::SurfacePlacementRecord, RpcError> {
@@ -15476,9 +15572,10 @@ impl RpcService {
                 "git" => snapshot.spec.serves_git,
                 "nix_cache" => snapshot.spec.serves_cache,
                 "web" => snapshot.spec.serves_web,
+                "oci" => snapshot.spec.serves_oci,
                 _ => {
                     return Err(RpcError::invalid(
-                        "accessClass must be git, nix_cache, or web",
+                        "accessClass must be git, nix_cache, web, or oci",
                     ));
                 }
             };
@@ -36447,6 +36544,14 @@ mod cache_upload_tests {
             Ok(Box::new(InjectedWriter { behavior }))
         }
 
+        async fn placement_writer_at_revision(
+            &self,
+            placement: &crate::db::SurfacePlacementRecord,
+            _revision: &crate::db::BindingWriteRevisionRecord,
+        ) -> Result<Box<dyn SurfaceWrite>> {
+            self.placement_writer(placement).await
+        }
+
         async fn placement_deleter(
             &self,
             _placement: &crate::db::SurfacePlacementRecord,
@@ -36605,6 +36710,7 @@ mod cache_upload_tests {
                 behaviors: Mutex::new(sealer_behaviors.into()),
             })),
         )
+        .with_container_rollout(crate::container_rollout::ContainerRollout::all_enabled())
         .with_identity_domain_verifier(Arc::new(PublishedIdentityDomain));
         (service, db, lease, format!("Bearer {token}"))
     }

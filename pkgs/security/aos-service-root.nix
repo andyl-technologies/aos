@@ -29,6 +29,17 @@ mkDerivation {
     }
   ];
 
+  passthru.evidenceSources = [
+    (builtins.path {
+      path = ./aos-service-root.nix;
+      name = "aos-service-root.nix";
+    })
+    (builtins.path {
+      path = ./aos-service-root.c;
+      name = "aos-service-root.c";
+    })
+  ];
+
   checks = {
     testing,
     self,

@@ -18,7 +18,8 @@
 //! Binding maps each [`Value`] onto the engine's parameter encoding:
 //!
 //! ```text
-//! Value::Null      -> a typed NULL (bound as Option::<i64>::None, etc.)
+//! Value::Null      -> a database NULL (PostgreSQL uses the unknown OID so the
+//!                     statement context selects the concrete target type)
 //! Value::Int(i64)  -> INTEGER / BIGINT
 //! Value::Real(f64) -> REAL / DOUBLE
 //! Value::Text(s)   -> TEXT / VARCHAR
@@ -224,6 +225,25 @@ impl super::Backend for SqlxBackend {
         }
     }
 
+    async fn migration_batch(
+        &self,
+        expected_current: i64,
+        target: i64,
+        stmts: &[Statement],
+    ) -> Result<()> {
+        match self {
+            Self::Sqlite(pool) => {
+                sqlite::migration_batch(pool, expected_current, target, stmts).await
+            }
+            #[cfg(feature = "postgres")]
+            Self::Postgres(pool) => {
+                postgres::migration_batch(pool, expected_current, target, stmts).await
+            }
+            #[cfg(feature = "mysql")]
+            Self::Mysql(pool) => mysql::batch(pool, stmts).await,
+        }
+    }
+
     async fn checked_batch(&self, stmts: &[CheckedStatement]) -> Result<()> {
         match self {
             Self::Sqlite(pool) => sqlite::checked_batch(pool, stmts).await,
@@ -337,6 +357,47 @@ mod sqlite {
         Ok(())
     }
 
+    pub(super) async fn migration_batch(
+        pool: &SqlitePool,
+        expected_current: i64,
+        target: i64,
+        stmts: &[Statement],
+    ) -> Result<()> {
+        let mut tx = pool.begin().await.context("beginning sqlite migration")?;
+        sqlx::query("UPDATE schema_version SET version = version")
+            .execute(&mut *tx)
+            .await
+            .context("locking sqlite schema version")?;
+        let versions = sqlx::query_scalar::<_, i64>("SELECT version FROM schema_version")
+            .fetch_all(&mut *tx)
+            .await
+            .context("reading locked sqlite schema version")?;
+        if versions.len() == 1 && versions[0] == target {
+            tx.commit()
+                .await
+                .context("committing sqlite migration lock")?;
+            return Ok(());
+        }
+        let observed = match versions.as_slice() {
+            [] => 0,
+            [version] => *version,
+            _ => anyhow::bail!("sqlite schema version marker is not a singleton"),
+        };
+        anyhow::ensure!(
+            observed == expected_current,
+            "sqlite schema version changed while migration was waiting"
+        );
+        for stmt in stmts {
+            let (sql, params) = prepare(Dialect::Sqlite, &stmt.sql, &stmt.params)?;
+            bind(sqlx::query(&sql), &params)
+                .execute(&mut *tx)
+                .await
+                .with_context(|| format!("executing {sql}"))?;
+        }
+        tx.commit().await.context("committing sqlite migration")?;
+        Ok(())
+    }
+
     /// Runs a checked sqlite transaction, rolling back on a row-count mismatch.
     pub(super) async fn checked_batch(pool: &SqlitePool, stmts: &[CheckedStatement]) -> Result<()> {
         let mut tx = pool.begin().await.context("beginning sqlite transaction")?;
@@ -370,13 +431,99 @@ mod postgres {
     //! Translation rewrites `?N` to `$N` and the DDL types to their postgres
     //! spellings; `execute_insert` appends `RETURNING id` and reads column 0.
 
-    use anyhow::{Context, Result};
-    use sqlx::{Column, PgPool, Postgres, Row as _, TypeInfo, ValueRef};
+    use anyhow::{bail, Context, Result};
+    use sqlx::{PgPool, Postgres, Row as _, TypeInfo, ValueRef};
 
     use super::super::super::dialect::Dialect;
     use super::super::super::value::{Row, Value};
     use super::super::{prepare, with_returning_id, CheckedStatement, Statement};
     use super::SqlxBackend;
+
+    /// PostgreSQL null whose type is inferred from the statement context.
+    ///
+    /// Binding `Option::<i64>::None` advertises INT8 even though a hub
+    /// [`Value::Null`] may target text, bytea, or another nullable column. OID
+    /// 705 is PostgreSQL's unknown pseudo-type; the server resolves it from the
+    /// target column or comparison before executing the prepared statement.
+    struct UntypedNull;
+
+    impl sqlx::Type<Postgres> for UntypedNull {
+        fn type_info() -> sqlx::postgres::PgTypeInfo {
+            sqlx::postgres::PgTypeInfo::with_oid(sqlx::postgres::types::Oid(705))
+        }
+    }
+
+    impl sqlx::Encode<'_, Postgres> for UntypedNull {
+        fn encode_by_ref(
+            &self,
+            _buf: &mut sqlx::postgres::PgArgumentBuffer,
+        ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
+            Ok(sqlx::encode::IsNull::Yes)
+        }
+    }
+
+    /// Decodes PostgreSQL's base-10000 binary NUMERIC form when it is an i64.
+    fn decode_numeric_i64(bytes: &[u8]) -> Result<i64> {
+        fn word(bytes: &[u8], cursor: &mut usize) -> Result<i16> {
+            let end = cursor
+                .checked_add(2)
+                .context("PostgreSQL NUMERIC cursor overflow")?;
+            let pair = bytes
+                .get(*cursor..end)
+                .context("truncated PostgreSQL NUMERIC value")?;
+            *cursor = end;
+            Ok(i16::from_be_bytes([pair[0], pair[1]]))
+        }
+
+        let mut cursor = 0;
+        let digit_count = word(bytes, &mut cursor)?;
+        let weight = word(bytes, &mut cursor)?;
+        let sign = word(bytes, &mut cursor)? as u16;
+        let scale = word(bytes, &mut cursor)?;
+        if digit_count < 0 || scale != 0 {
+            bail!("PostgreSQL NUMERIC is not an integral value");
+        }
+
+        let mut digits = Vec::with_capacity(usize::try_from(digit_count)?);
+        for _ in 0..digit_count {
+            let digit = word(bytes, &mut cursor)?;
+            if !(0..10_000).contains(&digit) {
+                bail!("PostgreSQL NUMERIC contains an invalid base-10000 digit");
+            }
+            digits.push(i128::from(digit));
+        }
+        if cursor != bytes.len() {
+            bail!("PostgreSQL NUMERIC contains trailing bytes");
+        }
+
+        let mut magnitude = 0_i128;
+        if weight >= 0 {
+            for exponent in (0..=weight).rev() {
+                let index = usize::try_from(weight - exponent)?;
+                let digit = digits.get(index).copied().unwrap_or(0);
+                magnitude = magnitude
+                    .checked_mul(10_000)
+                    .and_then(|value| value.checked_add(digit))
+                    .context("PostgreSQL NUMERIC exceeds the supported integer range")?;
+            }
+            let integer_digits = usize::try_from(weight)? + 1;
+            if digits
+                .get(integer_digits..)
+                .is_some_and(|tail| tail.iter().any(|digit| *digit != 0))
+            {
+                bail!("PostgreSQL NUMERIC contains a fractional component");
+            }
+        } else if digits.iter().any(|digit| *digit != 0) {
+            bail!("PostgreSQL NUMERIC contains a fractional component");
+        }
+
+        let signed = match sign {
+            0x0000 => magnitude,
+            0x4000 => -magnitude,
+            _ => bail!("PostgreSQL NUMERIC has an unsupported sign"),
+        };
+        i64::try_from(signed).context("PostgreSQL NUMERIC exceeds i64")
+    }
 
     /// Binds `params` onto a postgres query.
     fn bind<'q>(
@@ -385,7 +532,7 @@ mod postgres {
     ) -> sqlx::query::Query<'q, Postgres, sqlx::postgres::PgArguments> {
         for value in params {
             query = match value {
-                Value::Null => query.bind(Option::<i64>::None),
+                Value::Null => query.bind(UntypedNull),
                 Value::Int(n) => query.bind(*n),
                 Value::Real(f) => query.bind(*f),
                 Value::Text(s) => query.bind(s.as_str()),
@@ -405,10 +552,30 @@ mod postgres {
                 continue;
             }
             let value = match raw.type_info().name() {
-                "INT2" | "INT4" | "INT8" => Value::Int(row.try_get::<i64, _>(i)?),
+                "INT2" => Value::Int(i64::from(row.try_get::<i16, _>(i)?)),
+                "INT4" => Value::Int(i64::from(row.try_get::<i32, _>(i)?)),
+                "INT8" => Value::Int(row.try_get::<i64, _>(i)?),
                 "BOOL" => Value::Int(i64::from(row.try_get::<bool, _>(i)?)),
-                "FLOAT4" | "FLOAT8" => Value::Real(row.try_get::<f64, _>(i)?),
+                "FLOAT4" => Value::Real(f64::from(row.try_get::<f32, _>(i)?)),
+                "FLOAT8" => Value::Real(row.try_get::<f64, _>(i)?),
                 "BYTEA" => Value::Bytes(row.try_get::<Vec<u8>, _>(i)?),
+                "NUMERIC" => {
+                    let value = match raw.format() {
+                        sqlx::postgres::PgValueFormat::Text => raw
+                            .as_str()
+                            .map_err(|error| {
+                                anyhow::anyhow!("reading PostgreSQL NUMERIC: {error}")
+                            })?
+                            .parse::<i64>()?,
+                        sqlx::postgres::PgValueFormat::Binary => {
+                            let bytes = raw.as_bytes().map_err(|error| {
+                                anyhow::anyhow!("reading PostgreSQL NUMERIC bytes: {error}")
+                            })?;
+                            decode_numeric_i64(bytes)?
+                        }
+                    };
+                    Value::Int(value)
+                }
                 // TEXT, VARCHAR, and anything else the schema produces is text.
                 _ => Value::Text(row.try_get::<String, _>(i)?),
             };
@@ -472,6 +639,44 @@ mod postgres {
         Ok(())
     }
 
+    pub(super) async fn migration_batch(
+        pool: &PgPool,
+        expected_current: i64,
+        target: i64,
+        stmts: &[Statement],
+    ) -> Result<()> {
+        let mut tx = pool.begin().await.context("beginning postgres migration")?;
+        let versions =
+            sqlx::query_scalar::<_, i64>("SELECT version FROM schema_version FOR UPDATE")
+                .fetch_all(&mut *tx)
+                .await
+                .context("locking postgres schema version")?;
+        if versions.len() == 1 && versions[0] == target {
+            tx.commit()
+                .await
+                .context("committing postgres migration lock")?;
+            return Ok(());
+        }
+        let observed = match versions.as_slice() {
+            [] => 0,
+            [version] => *version,
+            _ => anyhow::bail!("postgres schema version marker is not a singleton"),
+        };
+        anyhow::ensure!(
+            observed == expected_current,
+            "postgres schema version changed while migration was waiting"
+        );
+        for stmt in stmts {
+            let (sql, params) = prepare(Dialect::Postgres, &stmt.sql, &stmt.params)?;
+            bind(sqlx::query(&sql), &params)
+                .execute(&mut *tx)
+                .await
+                .with_context(|| format!("executing {sql}"))?;
+        }
+        tx.commit().await.context("committing postgres migration")?;
+        Ok(())
+    }
+
     /// Runs a checked postgres transaction, rolling back on a row-count mismatch.
     pub(super) async fn checked_batch(pool: &PgPool, stmts: &[CheckedStatement]) -> Result<()> {
         let mut tx = pool
@@ -507,6 +712,28 @@ mod postgres {
     fn _uses_column(row: &sqlx::postgres::PgRow) -> usize {
         row.columns().len()
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::decode_numeric_i64;
+
+        #[test]
+        fn decodes_integral_postgres_numeric_binary_values() {
+            // 12,345 = 1 * 10,000 + 2,345.
+            let positive = [0, 2, 0, 1, 0, 0, 0, 0, 0, 1, 9, 41];
+            assert_eq!(decode_numeric_i64(&positive).unwrap(), 12_345);
+
+            let negative = [0, 1, 0, 0, 0x40, 0, 0, 0, 0, 7];
+            assert_eq!(decode_numeric_i64(&negative).unwrap(), -7);
+        }
+
+        #[test]
+        fn rejects_fractional_or_malformed_postgres_numeric_values() {
+            let fractional = [0, 1, 0xff, 0xff, 0, 0, 0, 1, 0, 1];
+            assert!(decode_numeric_i64(&fractional).is_err());
+            assert!(decode_numeric_i64(&[0, 1]).is_err());
+        }
+    }
 }
 
 #[cfg(feature = "mysql")]
@@ -523,6 +750,18 @@ mod mysql {
     use super::super::super::dialect::Dialect;
     use super::super::super::value::{Row, Value};
     use super::super::{prepare, CheckedStatement, Statement};
+
+    /// Parses an aggregate DECIMAL that is contractually an integer.
+    ///
+    /// MySQL promotes `SUM(BIGINT)` to DECIMAL even when every input and the
+    /// destination hub value are integral. Parsing the protocol text directly
+    /// preserves the full range and rejects fractional or overflowing values
+    /// instead of routing through `f64`.
+    fn decode_decimal_i64(value: &str) -> Result<i64> {
+        value
+            .parse::<i64>()
+            .with_context(|| format!("MySQL DECIMAL is not an i64: {value:?}"))
+    }
 
     /// Binds `params` onto a mysql query.
     fn bind<'q>(
@@ -552,11 +791,26 @@ mod mysql {
             }
             // mysql column type names are upper-case keywords; the hub schema
             // maps onto integer, floating-point, blob, and text classes.
-            let value = match raw.type_info().name() {
+            let type_info = raw.type_info();
+            let type_name = type_info.name();
+            let value = match type_name {
                 "TINYINT" | "SMALLINT" | "MEDIUMINT" | "INT" | "BIGINT" | "BOOLEAN" => {
                     Value::Int(row.try_get::<i64, _>(i)?)
                 }
+                "TINYINT UNSIGNED" | "SMALLINT UNSIGNED" | "MEDIUMINT UNSIGNED"
+                | "INT UNSIGNED" | "BIGINT UNSIGNED" => Value::Int(
+                    i64::try_from(row.try_get::<u64, _>(i)?)
+                        .with_context(|| format!("MySQL {type_name} exceeds i64"))?,
+                ),
                 "FLOAT" | "DOUBLE" => Value::Real(row.try_get::<f64, _>(i)?),
+                "DECIMAL" => {
+                    // sqlx deliberately requires its optional BigDecimal type
+                    // for checked DECIMAL decoding. The wire representation is
+                    // text, so bypass only the type compatibility check and
+                    // immediately apply the hub's stricter integral contract.
+                    let decimal = row.try_get_unchecked::<String, _>(i)?;
+                    Value::Int(decode_decimal_i64(&decimal)?)
+                }
                 "BLOB" | "TINYBLOB" | "MEDIUMBLOB" | "LONGBLOB" | "VARBINARY" | "BINARY" => {
                     Value::Bytes(row.try_get::<Vec<u8>, _>(i)?)
                 }
@@ -645,5 +899,27 @@ mod mysql {
     #[allow(dead_code)]
     fn _uses_column(row: &sqlx::mysql::MySqlRow) -> usize {
         row.columns().len()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::decode_decimal_i64;
+
+        #[test]
+        fn decodes_integral_mysql_decimal_values() {
+            assert_eq!(decode_decimal_i64("0").unwrap(), 0);
+            assert_eq!(decode_decimal_i64("9223372036854775807").unwrap(), i64::MAX);
+            assert_eq!(
+                decode_decimal_i64("-9223372036854775808").unwrap(),
+                i64::MIN
+            );
+        }
+
+        #[test]
+        fn rejects_fractional_or_overflowing_mysql_decimal_values() {
+            assert!(decode_decimal_i64("1.0").is_err());
+            assert!(decode_decimal_i64("9223372036854775808").is_err());
+            assert!(decode_decimal_i64("not-a-number").is_err());
+        }
     }
 }

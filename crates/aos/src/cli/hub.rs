@@ -15,8 +15,9 @@ use clap::{Args, Subcommand};
 use std::path::PathBuf;
 
 use super::{
-    HubAccessTokenCmd, HubIdentityProviderCmd, HubInstanceSettingsSectionCmd, HubInvitationCmd,
-    HubOrgMemberCmd, HubOrganizationDomainCmd, HubServiceAccountCmd, HubSigningKeyCmd,
+    HubAccessTokenCmd, HubContainerCmd, HubIdentityProviderCmd, HubInstanceSettingsSectionCmd,
+    HubInvitationCmd, HubOrgMemberCmd, HubOrganizationDomainCmd, HubServiceAccountCmd,
+    HubSigningKeyCmd,
 };
 
 #[derive(Args, Debug, Clone)]
@@ -1636,7 +1637,7 @@ pub struct HubRouteSpecArgs {
     #[arg(long)]
     pub gateway: Option<String>,
     /// Replace the complete route capability set
-    #[arg(long = "serves", value_parser = ["git", "cache", "web"])]
+    #[arg(long = "serves", value_parser = ["git", "cache", "web", "oci"])]
     pub serves: Vec<String>,
     #[command(flatten)]
     pub policy: HubAccessPolicyArgs,
@@ -2826,6 +2827,11 @@ pub enum HubRegistryCmd {
         #[command(subcommand)]
         command: HubConfigCmd,
     },
+    /// Inspect and administer OCI container repositories
+    Container {
+        #[command(subcommand)]
+        command: HubContainerCmd,
+    },
 }
 
 #[derive(Subcommand)]
@@ -3362,6 +3368,39 @@ mod tests {
                 }
             }
         ));
+    }
+
+    #[test]
+    fn route_accepts_oci_capability() {
+        let cli = parse_cli([
+            "aos",
+            "hub",
+            "route",
+            "add",
+            "--hub",
+            "https://aos.example",
+            "registry:andyl/main",
+            "--endpoint",
+            "registry.example@3",
+            "--mode",
+            "hub-proxy",
+            "--placement",
+            "primary",
+            "--serves",
+            "oci",
+            "--plan",
+        ])
+        .unwrap();
+        let Commands::Hub {
+            command:
+                HubCmd::Route {
+                    command: HubRouteCmd::Add { spec, .. },
+                },
+        } = cli.command
+        else {
+            panic!("expected route add command");
+        };
+        assert_eq!(spec.serves, vec!["oci"]);
     }
 
     #[test]

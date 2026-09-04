@@ -1507,7 +1507,7 @@ becomes a new `Decided` entry referencing the one it supersedes).
   ring, and duplicate novelty acceptance only after reset; the realization
   factory commits the host reset only after native-pause confirmation.
 - **Affects:** [SHM-30], [SHM-39], [SHM-40], [SHM-40A], campaign T-CAM-4.9;
-  files 13, 31, and RFC-0019 files 04a and 11.
+  files 13, 31, and RFC-0020 files 04a and 11.
 - **Date:** 2026-08-30.
 
 ---

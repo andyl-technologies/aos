@@ -1,6 +1,6 @@
 # 00 — Scope, vocabulary, and determinism boundary
 
-This file establishes the concepts used throughout RFC-0019 and separates the
+This file establishes the concepts used throughout RFC-0020 and separates the
 three kinds of state that are otherwise easy to conflate: modeled execution,
 campaign knowledge, and operational placement.
 
@@ -145,7 +145,7 @@ specified future coordinator without introducing cluster behavior here.
 
 ## 00.7 Four distinct uses of branching
 
-RFC-0019 uses separate terms for operations that share a tree-shaped visual but
+RFC-0020 uses separate terms for operations that share a tree-shaped visual but
 have different identities and effects:
 
 | Operation | Meaning |

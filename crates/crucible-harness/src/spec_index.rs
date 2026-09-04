@@ -88,7 +88,7 @@ pub const CRATE_SPEC_INDEX: &[CrateSpecIndexEntry] = &[
         package: "crucible-guest",
         root: "src/lib.rs",
         spec_files: &["16"],
-        supplemental_spec: Some("RFC-0019 file 02"),
+        supplemental_spec: Some("RFC-0020 file 02"),
         section_6_row: true,
     },
     CrateSpecIndexEntry {
@@ -102,21 +102,21 @@ pub const CRATE_SPEC_INDEX: &[CrateSpecIndexEntry] = &[
         package: "crucible-campaign",
         root: "src/lib.rs",
         spec_files: &[],
-        supplemental_spec: Some("RFC-0019 files 01, 02, 04a, 06, 09"),
+        supplemental_spec: Some("RFC-0020 files 01, 02, 04a, 06, 09"),
         section_6_row: false,
     },
     CrateSpecIndexEntry {
         package: "crucible-linux-resource",
         root: "src/lib.rs",
         spec_files: &[],
-        supplemental_spec: Some("RFC-0019 files 04a, 06"),
+        supplemental_spec: Some("RFC-0020 files 04a, 06"),
         section_6_row: false,
     },
     CrateSpecIndexEntry {
         package: "crucible-s3-store",
         root: "src/lib.rs",
         spec_files: &[],
-        supplemental_spec: Some("RFC-0019 file 06"),
+        supplemental_spec: Some("RFC-0020 file 06"),
         section_6_row: false,
     },
     CrateSpecIndexEntry {
@@ -137,7 +137,7 @@ pub const CRATE_SPEC_INDEX: &[CrateSpecIndexEntry] = &[
         package: "crucible-daemon",
         root: "src/lib.rs",
         spec_files: &["20", "21"],
-        supplemental_spec: Some("RFC-0019 file 04a"),
+        supplemental_spec: Some("RFC-0020 file 04a"),
         section_6_row: true,
     },
     CrateSpecIndexEntry {

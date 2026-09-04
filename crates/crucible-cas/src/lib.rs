@@ -33,7 +33,7 @@
 //! [`CampaignFreshLineageRoots`], [`CampaignManifest`],
 //! [`CampaignProvenance`], [`CampaignContinuitySeedDecision`], and the
 //! invalidation types [`DependencySnapshot`], [`InvalidationQuery`], and
-//! [`InvalidationDecision`]. [`content_store`] owns RFC-0019's streaming,
+//! [`InvalidationDecision`]. [`content_store`] owns RFC-0020's streaming,
 //! domain-separated immutable-blob and mutable-ref contracts plus its closed
 //! composition-graph validator. [`content_envelope`] owns the generic canonical
 //! child-bearing object format used by storage, transfer, and closure walkers

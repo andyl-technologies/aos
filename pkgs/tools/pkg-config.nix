@@ -7,6 +7,31 @@
 }: let
   version = "0.29.2";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  crossConfigureCache =
+    if stdenv.isCross
+    then ''
+      # Bundled GLib discovers stack direction by executing a target binary.
+      # Every AOS target supported by this package uses a downward-growing
+      # stack, so provide the result explicitly during cross compilation.
+      export ac_cv_c_stack_direction=-1
+      export glib_cv_stack_grows=no
+
+      # These bundled GLib probes also execute target programs. Both glibc and
+      # Darwin provide overlap-safe bcopy and the POSIX passwd/group APIs.
+      export glib_cv_working_bcopy=yes
+      export ac_cv_func_posix_getpwuid_r=yes
+      export ac_cv_func_nonposix_getpwuid_r=no
+      export ac_cv_func_posix_getgrgid_r=yes
+      export ac_cv_func_nonposix_getgrgid_r=no
+
+      # ELF C symbols have no leading underscore; Mach-O symbols do.
+      export glib_cv_uscore=${
+        if stdenv.hostPlatform.isDarwin
+        then "yes"
+        else "no"
+      }
+    ''
+    else "";
 in
   mkDerivation {
     pname = "pkg-config";
@@ -36,6 +61,8 @@ in
         script =
           if isDarwinCross
           then ''
+            ${crossConfigureCache}
+
             # Bundled GLib 2.38 detects Carbon by preprocessing its umbrella
             # header. The AOS compiler SDK deliberately exposes the surviving
             # header-only compatibility surface, but no linkable Carbon
@@ -52,17 +79,6 @@ in
 
             # Bundled GLib discovers this by executing a target binary.
             # Both supported Darwin architectures use downward-growing stacks.
-            export ac_cv_c_stack_direction=-1
-            export glib_cv_stack_grows=no
-            # Mach-O C symbols have a leading underscore. Darwin's bcopy is
-            # overlap-safe, and its reentrant passwd/group interfaces use the
-            # POSIX signatures; bundled GLib otherwise executes each probe.
-            export glib_cv_uscore=yes
-            export glib_cv_working_bcopy=yes
-            export ac_cv_func_posix_getpwuid_r=yes
-            export ac_cv_func_nonposix_getpwuid_r=no
-            export ac_cv_func_posix_getgrgid_r=yes
-            export ac_cv_func_nonposix_getgrgid_r=no
             # pkg-config 0.29 embeds GLib 2.38, whose atomic pointer macros
             # intentionally pass integer-sized masks through GCC builtins.
             # Modern Clang diagnoses that historical extension as an error.
@@ -75,6 +91,8 @@ in
               --disable-host-tool
           ''
           else ''
+            ${crossConfigureCache}
+
             ./configure \
               $configureFlags \
               --prefix=$out \

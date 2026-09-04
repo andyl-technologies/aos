@@ -115,6 +115,25 @@ enum Command {
         /// Scoped Cloudflare API token used by authenticated CDN route probes.
         #[arg(long, env = "HUB_CLOUDFLARE_API_TOKEN")]
         cloudflare_api_token: Option<String>,
+        /// Enable OCI Distribution discovery and repository pulls.
+        #[arg(long, env = "HUB_OCI_PULL_ENABLED", default_value_t = false)]
+        oci_pull_enabled: bool,
+        /// Enable OCI Distribution discovery and repository pushes.
+        #[arg(long, env = "HUB_OCI_PUSH_ENABLED", default_value_t = false)]
+        oci_push_enabled: bool,
+        /// Enable verified AOS container publication transactions.
+        #[arg(
+            long,
+            env = "HUB_OCI_VERIFIED_PUBLICATION_ENABLED",
+            default_value_t = false
+        )]
+        oci_verified_publication_enabled: bool,
+        /// Enable reviewed container repository, tag, and retention mutations.
+        #[arg(long, env = "HUB_OCI_ADMINISTRATION_ENABLED", default_value_t = false)]
+        oci_administration_enabled: bool,
+        /// Enable reviewed OCI garbage collection.
+        #[arg(long, env = "HUB_OCI_GC_ENABLED", default_value_t = false)]
+        oci_gc_enabled: bool,
         /// File containing the scoped Cloudflare API token.
         #[arg(
             long,
@@ -281,6 +300,25 @@ struct WorkerArgs {
     /// Immutable source/build identity exposed for deployment verification.
     #[arg(long, env = "HUB_DEPLOYMENT_ID")]
     deployment_id: Option<String>,
+    /// Enable OCI Distribution discovery and repository pulls.
+    #[arg(long, env = "HUB_OCI_PULL_ENABLED", default_value_t = false)]
+    oci_pull_enabled: bool,
+    /// Enable OCI Distribution discovery and repository pushes.
+    #[arg(long, env = "HUB_OCI_PUSH_ENABLED", default_value_t = false)]
+    oci_push_enabled: bool,
+    /// Enable verified AOS container publication transactions.
+    #[arg(
+        long,
+        env = "HUB_OCI_VERIFIED_PUBLICATION_ENABLED",
+        default_value_t = false
+    )]
+    oci_verified_publication_enabled: bool,
+    /// Enable reviewed container repository, tag, and retention mutations.
+    #[arg(long, env = "HUB_OCI_ADMINISTRATION_ENABLED", default_value_t = false)]
+    oci_administration_enabled: bool,
+    /// Enable reviewed OCI garbage collection.
+    #[arg(long, env = "HUB_OCI_GC_ENABLED", default_value_t = false)]
+    oci_gc_enabled: bool,
     /// Stable name of the colocated SQLite Durable Object instance.
     ///
     /// Changing this selects a fresh database and is intended for explicit
@@ -445,6 +483,11 @@ async fn main() -> Result<()> {
             route_reservation_keys_file,
             secret_version_manifest_file,
             cloudflare_api_token,
+            oci_pull_enabled,
+            oci_push_enabled,
+            oci_verified_publication_enabled,
+            oci_administration_enabled,
+            oci_gc_enabled,
             cloudflare_api_token_file,
         } => {
             let root = resolve_root(cli.root, dev)?;
@@ -544,6 +587,13 @@ async fn main() -> Result<()> {
                 }
             }
             let mut app_state = AppState::new(db, external_url).await;
+            app_state.container_rollout = aos_hub_core::container_rollout::ContainerRollout {
+                pull: oci_pull_enabled,
+                push: oci_push_enabled,
+                verified_publication: oci_verified_publication_enabled,
+                administration: oci_administration_enabled,
+                garbage_collection: oci_gc_enabled,
+            };
             app_state.deployment_id = deployment_id.clone();
             match (
                 deployment_id,
@@ -857,21 +907,56 @@ async fn main() -> Result<()> {
                 }
             });
             let inventory_db = Arc::clone(&app_state.db);
-            let inventory_surfaces = aos_hub::coreports::HubSurfaceProvider::new(
+            let inventory_surfaces = Arc::new(
+                aos_hub::coreports::HubSurfaceProvider::new(
+                    Arc::clone(&inventory_db),
+                    app_state.http.clone(),
+                    app_state.image_snapshots.clone(),
+                )
+                .with_credentials(Arc::clone(&app_state.secret_versions)),
+            );
+            let inventory_writers = Arc::new(
+                aos_hub::coreports::HubSurfaceWriteProvider::new(
+                    Arc::clone(&inventory_db),
+                    app_state.http.clone(),
+                )
+                .with_credentials(Arc::clone(&app_state.secret_versions)),
+            );
+            let conditional_delete_probes =
+                aos_hub_core::conditional_delete_probe::ConditionalDeleteProbeController::new(
+                    Arc::clone(&inventory_db),
+                    Arc::clone(&inventory_surfaces)
+                        as Arc<dyn aos_hub_core::fetch::SurfaceProvider>,
+                    Arc::clone(&inventory_writers)
+                        as Arc<dyn aos_hub_core::surface_write::SurfaceWriteProvider>,
+                );
+            let oci_provider_inventory =
+                aos_hub_core::oci_inventory_controller::OciProviderInventoryController::new(
+                    Arc::clone(&inventory_db),
+                    Arc::clone(&inventory_surfaces)
+                        as Arc<dyn aos_hub_core::fetch::SurfaceProvider>,
+                );
+            let oci_gc_controller = aos_hub_core::oci_gc_controller::OciGcDeletionController::new(
                 Arc::clone(&inventory_db),
-                app_state.http.clone(),
-                app_state.image_snapshots.clone(),
-            )
-            .with_credentials(Arc::clone(&app_state.secret_versions));
-            let inventory_writers = aos_hub::coreports::HubSurfaceWriteProvider::new(
-                Arc::clone(&inventory_db),
-                app_state.http.clone(),
-            )
-            .with_credentials(Arc::clone(&app_state.secret_versions));
+                Arc::clone(&inventory_surfaces) as Arc<dyn aos_hub_core::fetch::SurfaceProvider>,
+                Arc::clone(&inventory_writers)
+                    as Arc<dyn aos_hub_core::surface_write::SurfaceWriteProvider>,
+            );
             tokio::spawn(async move {
                 let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+                let mut oci_inventory_continuation: Option<String> = None;
                 loop {
                     tick.tick().await;
+                    if let Err(error) = aos_hub_core::oci::recover_expired_oci_work(
+                        &inventory_db,
+                        inventory_writers.as_ref(),
+                        now_secs(),
+                        100,
+                    )
+                    .await
+                    {
+                        tracing::warn!(error = %format!("{error:#}"), "expired OCI work recovery failed");
+                    }
                     if let Err(error) = aos_hub_core::cache_scan::reap_due_cache_tombstones(
                         &inventory_db,
                         now_secs(),
@@ -882,14 +967,43 @@ async fn main() -> Result<()> {
                     }
                     if let Err(error) = aos_hub_core::cache_scan::recover_expired_cache_writes(
                         &inventory_db,
-                        &inventory_surfaces,
-                        &inventory_writers,
+                        inventory_surfaces.as_ref(),
+                        inventory_writers.as_ref(),
                         now_secs(),
                         aos_hub_core::cache_scan::MAX_CLEANUP_ITEMS_PER_PASS,
                     )
                     .await
                     {
                         tracing::warn!(error = %format!("{error:#}"), "expired cache write recovery failed");
+                    }
+                    if oci_gc_enabled {
+                        let inventory_now = now_secs();
+                        match oci_provider_inventory
+                            .run_due_bounded(
+                                "native-oci-inventory",
+                                &format!("native-inventory-{}", inventory_now / 60),
+                                inventory_now,
+                                100,
+                                oci_inventory_continuation.as_deref(),
+                                aos_hub_core::oci_inventory_controller::NATIVE_OCI_INVENTORY_DISPATCH_BUDGET,
+                            )
+                            .await
+                        {
+                            Ok(stats) => oci_inventory_continuation = stats.continuation,
+                            Err(error) => {
+                                tracing::warn!(error = %format!("{error:#}"), "OCI provider inventory pass failed");
+                            }
+                        }
+                        if let Err(error) = oci_gc_controller
+                            .run_due("native-oci-gc", now_secs(), 100)
+                            .await
+                        {
+                            tracing::warn!(error = %format!("{error:#}"), "OCI GC deletion controller pass failed");
+                        }
+                        if let Err(error) = conditional_delete_probes.run_due(now_secs(), 10).await
+                        {
+                            tracing::warn!(error = %format!("{error:#}"), "conditional-delete capability probe failed");
+                        }
                     }
                     let caches = match inventory_db.list_binary_caches().await {
                         Ok(caches) => caches,
@@ -904,7 +1018,7 @@ async fn main() -> Result<()> {
                     {
                         if let Err(error) = aos_hub_core::cache_scan::rescan_cache(
                             &inventory_db,
-                            &inventory_surfaces,
+                            inventory_surfaces.as_ref(),
                             &cache,
                         )
                         .await
@@ -1284,6 +1398,13 @@ async fn provision_worker(
     cfg.observability = !args.no_observability;
     cfg.head_sampling_rate = args.head_sampling_rate;
     cfg.logpush = args.logpush;
+    cfg.container_rollout = aos_hub_core::container_rollout::ContainerRollout {
+        pull: args.oci_pull_enabled,
+        push: args.oci_push_enabled,
+        verified_publication: args.oci_verified_publication_enabled,
+        administration: args.oci_administration_enabled,
+        garbage_collection: args.oci_gc_enabled,
+    };
     // Email Service binding: emitted only when a verified sender is supplied.
     cfg.email_from = args.email_from.clone();
     Ok(cfg)
