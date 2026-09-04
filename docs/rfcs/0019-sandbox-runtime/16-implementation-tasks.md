@@ -493,3 +493,37 @@ completes. The Git history remains authoritative for code details.
   unadvertised because current path-valued systemd/nspawn transport does not
   yet consume those pins and no protected boot-local readiness attestation is
   available.
+- `fbf7b6b53` — foundation toward `SBX-STOR-01`: storage request authority now
+  binds opaque handles to exact catalogued dataset and snapshot GUIDs, policy
+  domains, holds, child and ancestor quota policy, and complete typed
+  postconditions. The resulting ZFS transaction program is deliberately not
+  runnable: a future helper must hold the protected catalog lock continuously
+  across GUID/name/hold preconditions, mutation, observation, and durable
+  catalog update before any effect can be enabled.
+- `14cbe6fe3` — foundation toward `SBX-CTRL-03`: a bounded canonical assignment
+  manifest now owns the complete controller-known identity, ancestry, node,
+  generation, immutable input, feature, policy, and reservation preimage and
+  derives its assignment digest internally. Fixed schema collection ceilings
+  apply before allocation, node-local names have no carrier, lease renewal is
+  outside the digest, and the existing free-digest placement path has an
+  explicit migration through the canonical manifest.
+- `dad861f3f` — foundation toward `SBX-HOST-01`: systemd launch compilation now
+  carries owned descriptor tokens for the pinned nspawn executable, workspace,
+  and network namespace instead of reopenable catalog paths. Initial and replay
+  observations require the same executable, network, leader, and liveness
+  proof; every ambiguous or failed proof unconditionally attempts kill and stop
+  containment while retaining the pins. Production Apply remains unadvertised
+  pending protected boot-local readiness and payload-root evidence.
+- `ccf1f0891` — foundation toward `SBX-BPROTO-04`, `SBX-CTRL-03`, and
+  `SBX-STOR-01`: the portable storage semantic compiler now lives at the shared
+  protocol boundary and accepts only bounded wire input, opaque catalog
+  commitment, and portable handles. Storage adds node-local resolved-object and
+  policy equivalence without leaking backend names, GUIDs, keys, or paths into
+  portable authority; the existing canonical commitment remains byte-exact.
+- `8dde225a9` — foundation toward `SBX-CTRL-03` and `SBX-MULTI-01`: ownership
+  acquisition and renewal now cross an explicit linearizable-authority boundary
+  with a fixed canonical claim, request idempotency, expected-absence acquire,
+  and exact generation/digest compare-and-swap renewal. Generation, validity,
+  skew, and nonce remain issuer facts; returned bytes become usable only after
+  canonical signature, trust, context, liveness, duration, and advancement
+  verification. A production durable authority backend remains open.
