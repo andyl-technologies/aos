@@ -2463,10 +2463,15 @@ quarantine. Focused tests cover running-to-reaped ordering, publication gating,
 retry without guest rerun, foreign child status, unadmitted-result rejection,
 incomplete drop, the composed guard's unsplittable hot-fork ownership bound, and
 the fixed worker's exact-runtime-basis plus repeated-disposition callback. The
-remaining writable host-device endpoints, atomic multi-node
-coordinator composition, concrete hot-fork runner, modeled QEMU driving,
-observation production, and a real fork flight remain open, so T-CAM-6.2 and
-T-CAM-6.3 stay unchecked.
+new world-assembly owner withholds all admitted node children until the exact
+running-node set matches one captured continuation by installed node, source process,
+configuration, event prefix, child-channel admission, scheduler-node
+installation, and an unforgeable process-local assembly incarnation. Partial
+assembly drop quarantines every admitted child. Shared
+aggregate target ownership, authoritative lifecycle construction, the remaining
+writable host-device endpoints, modeled QEMU driving, observation production,
+and a real fork flight remain open, so T-CAM-6.2, T-CAM-6.3, and T-CAM-7.4 stay
+unchecked.
 The daemon now also has the linear hot-fork execution-runner boundary above
 that owner. It rejects exact-resume substitution and foreign execution
 incarnations, admits the private child before a two-phase modeled drive/seal,

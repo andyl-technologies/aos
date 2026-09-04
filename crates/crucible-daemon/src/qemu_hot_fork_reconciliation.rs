@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crucible::{EventLog, NodeId};
+use crucible::{ContentHash, EventLog, EventLogOffset, NodeId};
 use crucible_campaign::{ExactCheckpointId, ObservationId};
 use crucible_qemu::{
     LinuxQemuHotForkChildProcessAuthority, QemuAsyncDriverPolicy, QemuChildWait, QemuCrashDetector,
@@ -29,16 +29,67 @@ use crucible_qemu::{
     QemuHotForkChildProcessBasis, QemuHotForkChildProcessOwner, QemuHotForkChildQmpHandshakeError,
     QemuHotForkHostContinuation, QemuHotForkLaunchError, QemuHotForkSchedulerNodeContinuation,
     QemuHotForkTemplateIdentity, QemuNode, QemuNodeChannelError, QemuNodeExternalProcessControl,
-    QemuPreparedHotForkTemplate, QemuReap, QemuShutdownPolicy, QemuShutdownRung,
-    QemuShutdownTargetError, QemuVmRealizationError, QmpHotForkChildProcessPhase,
+    QemuPreparedHotForkTemplate, QemuProcessIdentity, QemuReap, QemuShutdownPolicy,
+    QemuShutdownRung, QemuShutdownTargetError, QemuVmRealizationError, QmpHotForkChildProcessPhase,
     QmpHotForkChildProcessState,
 };
 use thiserror::Error;
 
 use crate::CrucibleAttemptExecution;
+use crate::qemu_hot_fork_world::QemuHotForkWorldAssemblyToken;
 
 /// Exact supervisor reservation owning one hot-fork realization.
 pub type QemuHotForkAttemptBasis = crate::AttemptExecutionRuntimeBasis;
+
+/// Authenticated installed-node and source-template basis retained by one child.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QemuHotForkWorldChildSourceBasis {
+    node: NodeId,
+    configuration: ContentHash,
+    event_log_offset: EventLogOffset,
+    process: QemuProcessIdentity,
+}
+
+impl QemuHotForkWorldChildSourceBasis {
+    #[cfg(test)]
+    pub(crate) const fn for_test(
+        node: NodeId,
+        configuration: ContentHash,
+        event_log_offset: EventLogOffset,
+        process: QemuProcessIdentity,
+    ) -> Self {
+        Self {
+            node,
+            configuration,
+            event_log_offset,
+            process,
+        }
+    }
+
+    /// Returns the exact scheduler-node coordinate installed for this child.
+    #[must_use]
+    pub const fn node(&self) -> &NodeId {
+        &self.node
+    }
+
+    /// Returns the exact modeled configuration of the source template.
+    #[must_use]
+    pub const fn configuration(&self) -> ContentHash {
+        self.configuration
+    }
+
+    /// Returns the unified event-log offset cloned into the child branch.
+    #[must_use]
+    pub const fn event_log_offset(&self) -> EventLogOffset {
+        self.event_log_offset
+    }
+
+    /// Returns the exact source-QEMU process incarnation.
+    #[must_use]
+    pub const fn process(&self) -> &QemuProcessIdentity {
+        &self.process
+    }
+}
 
 /// Parent-observed lifecycle of one exact hot-fork child.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -945,12 +996,14 @@ where
     process_owner: Arc<LinuxQemuHotForkProcessOwner>,
     template_identity: QemuHotForkTemplateIdentity,
     input: CrucibleAttemptExecution,
+    world_assembly: Option<QemuHotForkWorldAssemblyToken>,
     child_event_log: EventLog,
     target: G,
     basis: QemuHotForkChildProcessBasis,
     pending_child_qmp: Option<crucible_qemu::QemuHotForkChildQmpHostEndpoint>,
     scheduler_node: Option<QemuHotForkSchedulerNodeContinuation>,
     installed_node: Option<QemuNode>,
+    installed_node_id: Option<NodeId>,
     diagnostics_consumer: QemuHotForkChildDiagnosticConsumer,
     host_continuation: Option<QemuHotForkHostContinuation>,
     source_release: LinuxSourceReleasePhase,
@@ -1044,9 +1097,11 @@ where
         formatter
             .debug_struct("LinuxQemuHotForkReconciliationBackend")
             .field("basis", &self.basis)
+            .field("world_assembly", &self.world_assembly.is_some())
             .field("pending_child_qmp", &self.pending_child_qmp.is_some())
             .field("scheduler_node_admitted", &self.scheduler_node.is_some())
             .field("scheduler_node_installed", &self.installed_node.is_some())
+            .field("installed_node_id", &self.installed_node_id)
             .field("diagnostics_consumer", &self.diagnostics_consumer)
             .field("host_continuation", &self.host_continuation.is_some())
             .field("source_release", &self.source_release)
@@ -1064,6 +1119,7 @@ where
         source: QemuNode,
         template_identity: QemuHotForkTemplateIdentity,
         input: CrucibleAttemptExecution,
+        world_assembly: Option<QemuHotForkWorldAssemblyToken>,
         target: G,
         launch: QemuHotForkChildLaunch<LinuxQemuHotForkChildProcessAuthority>,
     ) -> Self {
@@ -1080,12 +1136,14 @@ where
             process_owner,
             template_identity,
             input,
+            world_assembly,
             child_event_log,
             target,
             basis,
             pending_child_qmp: Some(child_qmp),
             scheduler_node: None,
             installed_node: None,
+            installed_node_id: None,
             diagnostics_consumer,
             host_continuation: Some(host_continuation),
             source_release: LinuxSourceReleasePhase::CloseChildChannel,
@@ -1131,6 +1189,25 @@ where
         LinuxQemuHotForkNodeProcessControl::new(Arc::clone(&self.process_owner))
     }
 
+    fn world_child_source_basis(
+        &self,
+    ) -> Result<QemuHotForkWorldChildSourceBasis, LinuxQemuHotForkReconciliationError> {
+        let process = self.with_source_mut(|source| {
+            source.process_identity().map_err(|error| {
+                QemuNodeChannelError::new("authenticate hot-fork source process", error.to_string())
+            })
+        })?;
+        Ok(QemuHotForkWorldChildSourceBasis {
+            node: self
+                .installed_node_id
+                .clone()
+                .ok_or(LinuxQemuHotForkReconciliationError::BasisMismatch)?,
+            configuration: self.template_identity.configuration(),
+            event_log_offset: self.template_identity.event_log().offset(),
+            process,
+        })
+    }
+
     /// Installs the admitted branch-private continuation as one scheduler node.
     ///
     /// This operation consumes no source-parent, pidfd, or target-resource
@@ -1157,14 +1234,15 @@ where
             .take()
             .ok_or(LinuxQemuHotForkReconciliationError::BasisMismatch)?;
         match continuation.into_qemu_node(
-            node,
+            node.clone(),
             self.node_process_control(),
             shutdown_policy,
             async_policy,
             crash_detector,
         ) {
-            Ok(node) => {
-                self.installed_node = Some(node);
+            Ok(installed_node) => {
+                self.installed_node = Some(installed_node);
+                self.installed_node_id = Some(node);
                 Ok(())
             }
             Err(error) => {
@@ -1264,6 +1342,7 @@ where
                     self.pending_child_qmp = None;
                     self.scheduler_node = None;
                     self.installed_node = None;
+                    self.installed_node_id = None;
                     self.host_continuation = None;
                     self.source_release = LinuxSourceReleasePhase::PluginEndpoints;
                 }
@@ -1438,7 +1517,39 @@ where
         attempt: QemuHotForkAttemptBasis,
         input: &CrucibleAttemptExecution,
         template: QemuPreparedHotForkTemplate<QemuNode>,
+        target: G,
+    ) -> Result<Self, LinuxQemuHotForkAttemptLaunchError<G>> {
+        Self::launch_inner(attempt, input, template, target, None)
+    }
+
+    /// Forks one retained source for an exact atomic world assembly.
+    ///
+    /// The process-local assembly token is retained inside the resulting
+    /// reconciliation owner. Atomic world admission later requires pointer-
+    /// identical token provenance in addition to the authenticated source
+    /// process, configuration, and event-log prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LinuxQemuHotForkAttemptLaunchError`] with the source and target
+    /// authorities when QEMU rejects the request or launch ownership cannot be
+    /// established exactly.
+    pub fn launch_for_world(
+        attempt: QemuHotForkAttemptBasis,
+        input: &CrucibleAttemptExecution,
+        template: QemuPreparedHotForkTemplate<QemuNode>,
+        target: G,
+        world_assembly: QemuHotForkWorldAssemblyToken,
+    ) -> Result<Self, LinuxQemuHotForkAttemptLaunchError<G>> {
+        Self::launch_inner(attempt, input, template, target, Some(world_assembly))
+    }
+
+    fn launch_inner(
+        attempt: QemuHotForkAttemptBasis,
+        input: &CrucibleAttemptExecution,
+        template: QemuPreparedHotForkTemplate<QemuNode>,
         mut target: G,
+        world_assembly: Option<QemuHotForkWorldAssemblyToken>,
     ) -> Result<Self, LinuxQemuHotForkAttemptLaunchError<G>> {
         let (mut source_node, template_identity) = template.into_parts();
         match source_node.fork_prepared_hot_fork_template_into(&mut target, |target| {
@@ -1455,6 +1566,7 @@ where
                     source_node,
                     template_identity,
                     input.clone(),
+                    world_assembly,
                     target,
                     launch,
                 ),
@@ -1521,6 +1633,56 @@ where
             return None;
         }
         self.backend.as_mut()?.installed_scheduler_node_mut()
+    }
+
+    /// Returns the authenticated source basis for atomic world admission.
+    ///
+    /// The basis is available only while the exact child remains live and its
+    /// process-neutral scheduler node has been installed. This prevents a
+    /// world transaction from admitting a raw fork result whose private host
+    /// continuation has not completed child-channel authentication.
+    ///
+    /// # Errors
+    ///
+    /// Returns a phase or backend error when the child is not ready for world
+    /// admission or the retained source process can no longer be authenticated.
+    pub fn world_child_source_basis(
+        &self,
+    ) -> Result<
+        QemuHotForkWorldChildSourceBasis,
+        Box<QemuHotForkAttemptReconciliationError<LinuxQemuHotForkReconciliationError>>,
+    > {
+        self.require_phase(
+            "authenticate hot-fork child for world admission",
+            QemuHotForkReconciliationPhase::Live,
+        )
+        .map_err(Box::new)?;
+        let backend = self.backend_ref().map_err(Box::new)?;
+        if backend.installed_node.is_none() {
+            return Err(Box::new(
+                QemuHotForkAttemptReconciliationError::InvalidPhase {
+                    operation: "authenticate installed hot-fork scheduler node",
+                    phase: self.phase,
+                },
+            ));
+        }
+        backend.world_child_source_basis().map_err(|source| {
+            Box::new(QemuHotForkAttemptReconciliationError::Backend {
+                operation: "authenticate hot-fork source basis",
+                source,
+            })
+        })
+    }
+
+    /// Returns the exact atomic world assembly for which this child launched.
+    ///
+    /// Legacy single-node launches return `None` and therefore cannot be
+    /// admitted into an atomic multi-node world.
+    #[must_use]
+    pub fn world_assembly_token(&self) -> Option<&QemuHotForkWorldAssemblyToken> {
+        self.backend
+            .as_ref()
+            .and_then(|backend| backend.world_assembly.as_ref())
     }
 }
 
