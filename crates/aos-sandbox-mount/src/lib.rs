@@ -12,7 +12,7 @@
 //! - [`helper`] executes one namespace-local syscall plan and exits;
 //! - [`transport`] and [`peer`] authenticate bounded local requests;
 //! - [`service`] owns the synchronous broker loop.
-//! - [`state`] encodes the broker's bounded journal records;
+//! - `state` encodes the broker's bounded journal records;
 //! - [`worker`] defines the closed effect interface.
 
 pub mod authorization;

@@ -5,11 +5,16 @@
 //! dataset names, GUIDs, encryption keys, or other node-local expressions.
 
 pub mod host;
+pub mod mount;
 pub mod storage;
 
 pub use host::{
     CanonicalHostSemanticsV1, HostSemanticError, canonical_host_semantics_v1, runtime_handle_v1,
     runtime_resource_handle,
+};
+pub use mount::{
+    CanonicalMountSemanticsV1, MountCatalogBindingV1, MountSemanticError,
+    canonical_mount_semantics_v1,
 };
 
 pub use storage::{
