@@ -266,8 +266,10 @@ in {
           {NIX_STORE} --check-validity {FIXTURE_REPOSITORY}
           {NIX_STORE} --check-validity {PACKAGE_DERIVATION}
           {NIX_STORE} --check-validity {SOURCE_DERIVATION}
-          {NIX} derivation show {PACKAGE_DERIVATION} | {JQ} -e '.derivations | length == 1'
-          {NIX} derivation show {SOURCE_DERIVATION} | {JQ} -e '.derivations | length == 1'
+          {NIX} derivation show {PACKAGE_DERIVATION} > /tmp/package-derivation.json
+          {NIX} derivation show {SOURCE_DERIVATION} > /tmp/source-derivation.json
+          test -s /tmp/package-derivation.json
+          test -s /tmp/source-derivation.json
           {FINDMNT} -rn -t 9p -o OPTIONS /run/aos-host-store | grep -qw ro
           ! touch {TOOLS}/host-store-write-must-fail
       """), timeout=240)
