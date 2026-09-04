@@ -964,6 +964,23 @@ completes. The Git history remains authoritative for code details.
   independent adversarial inventory comparison. Explicit imports and a leaf
   wire layer remain desirable cleanup; the current production modules are each
   below the repository's 1,000-line design signal.
+- `5b0479e51` — further qualifies the package-only `SBX-P0-11` and
+  `SBX-FS-03` foundation. Independently compiled reports now require libfuse
+  3.18.2's private protocol header and the AOS Linux 6.18.33 UAPI to agree on
+  ABI 7.45, input/output and INIT layouts, passthrough flags, backing ioctls,
+  and the signed backing identifier. A helper-free socketpair gate uses public
+  custom I/O and the public owning session loop to inject an exact extended
+  INIT request, verify the exact 80-byte response and passthrough stack-depth
+  negotiation, cover rejected handoff paths, bound blocking waits, and prove
+  accepted-descriptor closure plus one destroy callback. The final fixed-up
+  package tree is compared as a NUL-delimited exact manifest, including
+  symlink targets and target-platform metadata, with independent traversal
+  failures and special files rejected. All seven package, ABI, protocol,
+  SONAME, symbol, link, closure, and manifest gates pass under the hermetic AOS
+  package set, followed by independent adversarial review. This does not test
+  a real `/dev/fuse`, count internal `close(2)` calls, issue backing ioctls, or
+  prove kernel passthrough I/O; those broker and VM gates remain open, so
+  `SBX-P0-11` and `SBX-FS-03` remain unchecked.
 
 The post-`727da7f3e` x86_64 `sandbox-filesystem-capability-proof` rerun built the
 complete hermetic Rust closure, AOS system, initrd, and VM disk and launched
