@@ -791,6 +791,24 @@ completes. The Git history remains authoritative for code details.
   two-round independent adversarial review. mmap lookup, lazy inode
   instantiation, cache management, FUSE request handling, sealed publication,
   and mount realization remain open, so both task boxes remain unchecked.
+- `530462b7b` — prerequisite toward `SBX-BPROTO-04` and `SBX-HOST-01`: the
+  Linux boundary now owns a nonblocking, close-on-exec connected Unix
+  `SOCK_SEQPACKET` transport with exact `MSG_PEEK | MSG_TRUNC` admission before
+  allocation and exact consuming receive. A fixed ancillary buffer accepts
+  exactly one kernel-authorized credentials/pidfd subject pair and rejects,
+  closes, and revokes the connection for rights, unknown, duplicate, malformed,
+  truncated, or length-drifting control data. Socket adoption rejects listeners
+  and unconnected endpoints, then separately pins the connection establisher
+  through correlated `SO_PEERCRED` and Linux 6.18 `SO_PEERPIDFD`. The public
+  types explicitly distinguish connection-establisher identity from a
+  delegable endpoint's later executor and from a per-record subject whose
+  credentials a capable process may nominate; none is mislabeled execution
+  provenance. Unsafe C UAPI handling remains confined to the private UAPI
+  module with descriptor ownership established before fallible validation. The
+  slice passes 35 live-kernel unit tests, strict all-target Clippy,
+  warning-denied rustdoc, formatting, and two-round independent adversarial
+  review. Carrier framing, transcript authentication, systemd unit binding,
+  service deployment, and the controller client remain open.
 
 The post-`727da7f3e` x86_64 `sandbox-filesystem-capability-proof` rerun built the
 complete hermetic Rust closure, AOS system, initrd, and VM disk and launched
