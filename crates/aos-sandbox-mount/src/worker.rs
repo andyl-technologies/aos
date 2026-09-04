@@ -46,7 +46,7 @@ pub trait MountWorker {
 pub(crate) fn expected_handles(
     action: MountAction,
     request_digest: [u8; 32],
-    supplied_detached: Option<[u8; 32]>,
+    _supplied_detached: Option<[u8; 32]>,
 ) -> EffectHandles {
     match action {
         MountAction::MOUNT_ACTION_CREATE_DETACHED => EffectHandles {
@@ -54,14 +54,12 @@ pub(crate) fn expected_handles(
             installed: None,
         },
         MountAction::MOUNT_ACTION_INSTALL | MountAction::MOUNT_ACTION_REPLACE => EffectHandles {
-            detached: supplied_detached,
+            detached: None,
             installed: Some(derive_handle(b"installed", request_digest)),
         },
-        MountAction::MOUNT_ACTION_DETACH | MountAction::MOUNT_ACTION_RELEASE => EffectHandles {
-            detached: supplied_detached,
-            installed: None,
-        },
-        MountAction::MOUNT_ACTION_UNSPECIFIED => EffectHandles {
+        MountAction::MOUNT_ACTION_DETACH
+        | MountAction::MOUNT_ACTION_RELEASE
+        | MountAction::MOUNT_ACTION_UNSPECIFIED => EffectHandles {
             detached: None,
             installed: None,
         },

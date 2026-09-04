@@ -6,10 +6,12 @@
 //! privileged namespace helper to remain a separate executable and process.
 //!
 //! - [`broker`] implements crash-safe request ordering and replay;
+//! - [`catalog`] resolves exact assignment-bound descriptor pins;
 //! - [`state`] encodes the broker's bounded journal records;
 //! - [`worker`] defines the closed effect interface.
 
 pub mod broker;
+pub mod catalog;
 mod state;
 pub mod worker;
 
