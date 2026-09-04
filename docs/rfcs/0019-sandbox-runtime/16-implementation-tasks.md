@@ -687,6 +687,19 @@ completes. The Git history remains authoritative for code details.
   response and completes without a second issuance. Automatic recovery still
   never contacts the issuer. The crate passes 72 unit tests and the same strict
   Clippy, rustdoc, formatting, and diff gates.
+- `50a48d3a1` — foundation toward `SBX-BPROTO-04`, `SBX-CTRL-03`, and
+  `SBX-MULTI-01`: a separately versioned, transport-neutral ownership protocol
+  now negotiates an exact authority epoch, closed methods, hard bounds, and
+  fresh client/server nonce transcript. Begin, explicit completion/resume, and
+  query preserve one immutable request binding; the signed transaction receipt
+  binds that claim and exact lease so four-artifact replay cannot substitute a
+  lease, signature, receipt, or authority epoch. Hostile carrier decoders have
+  an explicit validation boundary, recovered and caller-clock-checked artifacts
+  remain non-authorizing, and the durable authority plus controller publication
+  use distinct V2 formats that reject legacy V1 state with `MigrationRequired`.
+  The normative fixed-binary profile and executable golden vectors agree. The
+  focused suites pass 230 unit tests plus doctests, strict all-target Clippy,
+  warning-denied rustdoc, formatting, and adversarial review.
 
 The post-`727da7f3e` x86_64 `sandbox-filesystem-capability-proof` rerun built the
 complete hermetic Rust closure, AOS system, initrd, and VM disk and launched
