@@ -223,6 +223,19 @@ pub fn delivery_setup_access(permissions: &[String]) -> DeliverySetupAccess {
     }
 }
 
+/// Joins a gateway URL prefix and binding-relative placement prefix for display.
+#[must_use]
+pub fn delivery_public_path(client_base_path: &str, placement_prefix: &str) -> String {
+    let base = client_base_path.trim_end_matches('/');
+    let placement = placement_prefix.trim_matches('/');
+    match (base.is_empty(), placement.is_empty()) {
+        (true, true) => "/".to_string(),
+        (true, false) => format!("/{placement}"),
+        (false, true) => base.to_string(),
+        (false, false) => format!("{base}/{placement}"),
+    }
+}
+
 /// One page in a scope's deterministic settings navigation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PageSpec {
@@ -1537,6 +1550,12 @@ mod tests {
         ]);
         assert!(hostname.can_create_hostname_endpoint);
         assert!(!hostname.can_create_managed_domain_endpoint);
+    }
+
+    #[test]
+    fn delivery_path_appends_the_placement_prefix() {
+        assert_eq!(delivery_public_path("/cdn", "org/cache"), "/cdn/org/cache");
+        assert_eq!(delivery_public_path("/", "org/cache"), "/org/cache");
     }
 
     #[test]
