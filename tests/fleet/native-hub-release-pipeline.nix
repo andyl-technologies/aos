@@ -98,7 +98,6 @@
           '';
           systemd.services.release-fleet-tls = {
             description = "Test-only TLS edge for the native Hub release fleet";
-            wantedBy = ["multi-user.target"];
             after = ["aos-hub.service"];
             serviceConfig = {
               Type = "simple";
@@ -266,9 +265,7 @@ in {
       def initialize_hub(machine, url, suffix):
           machine.succeed(textwrap.dedent(f"""
               systemctl is-active --quiet aos-hub.service
-              systemctl is-active --quiet release-fleet-tls.service
-              {CURL} -fsS {url}/healthz
-              test "$({CURL} -fsS {url}/.well-known/aos-deployment)" = fleet-{suffix}-v1
+              {CURL} -fsS http://127.0.0.1:8420/healthz
               systemctl stop aos-hub.service
               printf '%s\\n' 'fleet-root-password' | \\
                 ${pkgs.systemd}/bin/systemd-run --pipe --wait --collect \\
@@ -277,9 +274,13 @@ in {
                     --root-email fleet-root@example.test --root-password-stdin
               install -d -o aos-hub -g aos-hub -m 0750 /var/lib/aos-hub/storage/andyl
               systemctl start aos-hub.service
-              systemctl restart release-fleet-tls.service
+              systemctl start release-fleet-tls.service
+              systemctl is-active --quiet release-fleet-tls.service
           """), timeout=180)
           machine.wait_until_succeeds(f"{CURL} -fsS {url}/healthz", timeout=120)
+          machine.succeed(
+              f'test "$({CURL} -fsS {url}/.well-known/aos-deployment)" = fleet-{suffix}-v1'
+          )
           return machine.succeed(textwrap.dedent(f"""
               set -eu
               headers=/tmp/hub-login.headers
