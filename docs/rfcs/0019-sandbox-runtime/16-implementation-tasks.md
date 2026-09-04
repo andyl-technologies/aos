@@ -618,6 +618,23 @@ completes. The Git history remains authoritative for code details.
   and injects only fresh local deadline attenuation through the reconciler's
   sole journal owner. The resulting packet is explicitly non-authorizing until
   a protected broker verifies it and resolves its descriptor catalog.
+- `eb6a61600` — foundation toward `SBX-STOR-01`: the crate-private storage
+  helper now proves the exact durable request, mutation, catalog bytes, and
+  derived postcondition before any privileged observation, repeats that proof
+  immediately before the durable Ambiguous transition, holds the transaction
+  lock across observation and the single injected execution, and commits only
+  after complete child-and-ancestor re-observation. Ambiguous recovery remains
+  observation-only, and no production ZFS adapter or Apply advertisement exists.
+- `99236454d` — foundation toward `SBX-CORE-03`, `SBX-CTRL-03`, and the
+  privileged brokers: the journal now has a fail-closed production opener for
+  root-owned state. It anchors absolute traversal at `/`, validates every
+  component through retained no-follow directory descriptors, rejects writable
+  ancestors, and requires exact 0700 directory plus 0600 single-link journal
+  and lock files. Protected compaction uses one bounded, exclusively created
+  per-journal temporary slot with fd-relative cleanup, rename, and directory
+  synchronization, so pathname substitution and repeated crash debris cannot
+  silently weaken durable authority. Unsupported `openat2` enforcement is a
+  typed hard failure; callers must not fall back to the ordinary journal API.
 
 The post-`727da7f3e` x86_64 `sandbox-filesystem-capability-proof` rerun built the
 complete hermetic Rust closure, AOS system, initrd, and VM disk and launched
