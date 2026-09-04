@@ -9320,7 +9320,7 @@ async fn upload_publication_object_class(
     printer: &Printer,
     label: &str,
 ) -> Result<()> {
-    const CONCURRENT_UPLOADS: usize = 32;
+    const CONCURRENT_IMMUTABLE_UPLOADS: usize = 32;
     const SNAPSHOT_PERMIT_BYTES: u64 = 1024 * 1024;
     // Cloudflare Durable Objects have a 128 MiB isolate limit. A request body
     // exists in both the Worker stream and the verified Rust buffer while R2
@@ -9352,6 +9352,17 @@ async fn upload_publication_object_class(
     let progress = printer.transfer(label, total_bytes);
     let transfer_manager =
         std::sync::Arc::new(TransferManager::new(TransferManagerConfig::default()));
+    // Mutable pointers share one publication lease and advance placement
+    // watermarks. Serialize them so independent HTTP requests cannot race the
+    // durable pointer-phase transition; immutable content remains parallel.
+    let request_concurrency = if objects
+        .iter()
+        .any(|object| object.kind == "mutable_pointer")
+    {
+        1
+    } else {
+        CONCURRENT_IMMUTABLE_UPLOADS
+    };
 
     let result = stream::iter(objects.iter().copied().map(|object| {
         let declared = inputs.iter().find(|declared| declared.path == object.path);
@@ -9416,7 +9427,7 @@ async fn upload_publication_object_class(
             .await
         }
     }))
-    .buffer_unordered(CONCURRENT_UPLOADS)
+    .buffer_unordered(request_concurrency)
     .try_collect::<Vec<()>>()
     .await;
     progress.finish();
