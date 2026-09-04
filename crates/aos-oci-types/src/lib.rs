@@ -65,4 +65,5 @@ pub use release::{
     ContainerEvidenceUnknownPath, ContainerNixProvenance, ContainerOciRelease, ContainerRelease,
     ContainerReleaseEvidence, ContainerReleaseIdentity, ContainerSignatureInput,
     ContainerSignatureInputEvidence, NixDefinitionIdentity, NixOutputIdentity,
+    definition_attribute_matches_image,
 };

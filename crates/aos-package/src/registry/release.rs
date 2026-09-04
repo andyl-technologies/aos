@@ -12,6 +12,7 @@ use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
+use aos_oci_types::CONTAINER_RELEASE_SIDECAR_PATH;
 use async_trait::async_trait;
 use git2::{Repository, StatusOptions};
 use serde::{Deserialize, Serialize};
@@ -142,7 +143,7 @@ fn validate_publication(publication: &RegistryPackagePublication, package: &str)
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RegistrySurfaceDigests {
-    /// Digest of package, documentation, provenance, and transparency data.
+    /// Digest of package, container, documentation, provenance, and transparency data.
     pub catalog: String,
     /// Digest of the complete registry store graph.
     pub store_graph: String,
@@ -351,6 +352,28 @@ impl RegistryReleaseTransaction {
         output: &Path,
         author: &mut dyn RegistryEntryAuthor,
     ) -> Result<PreparedRegistryRelease> {
+        self.prepare_with_container_release(source_registry, output, author, None)
+            .await
+    }
+
+    /// Prepares the transaction and commits an exact container sidecar surface.
+    ///
+    /// This is the canonical container-aware form of [`Self::prepare`]. The
+    /// sidecar bytes have already been validated against their external
+    /// signature input by the caller and are included in the transaction's
+    /// expected catalog digest before the isolated tree becomes visible.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors from [`Self::prepare`], or an error when the
+    /// container surface cannot be installed as a regular file.
+    pub async fn prepare_with_container_release(
+        &self,
+        source_registry: &Path,
+        output: &Path,
+        author: &mut dyn RegistryEntryAuthor,
+        container_release: Option<&[u8]>,
+    ) -> Result<PreparedRegistryRelease> {
         self.validate()?;
         if output.exists() {
             bail!(
@@ -391,6 +414,10 @@ impl RegistryReleaseTransaction {
             require_head(&isolated, &self.base_commit)
                 .context("entry author moved the isolated registry ref")?;
         }
+
+        set_container_release(&isolated, container_release)?;
+        require_head(&isolated, &self.base_commit)
+            .context("container sidecar selection moved the isolated registry ref")?;
 
         validate_materialized_entries(&isolated, &self.entries)?;
         StoreMap::load(&isolated).context("validating prepared registry store graph")?;
@@ -855,7 +882,13 @@ fn registry_surface_digests(directory: &Path) -> Result<RegistrySurfaceDigests> 
         catalog: digest_roots(
             directory,
             "catalog",
-            &["packages", "docs", "provenance", "transparency"],
+            &[
+                "packages",
+                "docs",
+                "provenance",
+                "transparency",
+                "containers",
+            ],
         )?,
         store_graph: digest_roots(directory, "store-graph", &["store"])?,
         policy: digest_roots(
@@ -864,6 +897,75 @@ fn registry_surface_digests(directory: &Path) -> Result<RegistrySurfaceDigests> 
             &["registry.toml", "keys.toml", "sb-certs.toml", "tuf"],
         )?,
     })
+}
+
+fn set_container_release(directory: &Path, bytes: Option<&[u8]>) -> Result<()> {
+    let path = directory.join(CONTAINER_RELEASE_SIDECAR_PATH);
+    let Some(parent) = container_release_parent(directory, bytes.is_some())? else {
+        return Ok(());
+    };
+    if bytes.is_none() {
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_file() => {
+                fs::remove_file(&path).with_context(|| {
+                    format!("removing stale container sidecar {}", path.display())
+                })?;
+                File::open(parent)?.sync_all()?;
+            }
+            Ok(_) => bail!(
+                "container sidecar destination is not a regular file: {}",
+                path.display()
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        }
+        return Ok(());
+    }
+    let bytes = bytes.context("container sidecar bytes disappeared")?;
+    if let Ok(metadata) = fs::symlink_metadata(&path) {
+        if !metadata.file_type().is_file() {
+            bail!(
+                "container sidecar destination is not a regular file: {}",
+                path.display()
+            );
+        }
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("opening container sidecar {}", path.display()))?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
+fn container_release_parent(directory: &Path, create: bool) -> Result<Option<PathBuf>> {
+    let mut current = directory.to_path_buf();
+    for component in ["containers", "v1"] {
+        let parent = current.clone();
+        current.push(component);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => bail!(
+                "container sidecar parent is not a directory: {}",
+                current.display()
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && !create => {
+                return Ok(None);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                fs::create_dir(&current).with_context(|| {
+                    format!("creating container sidecar parent {}", current.display())
+                })?;
+                File::open(&parent)?.sync_all()?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(Some(current))
 }
 
 fn digest_roots(directory: &Path, surface: &str, roots: &[&str]) -> Result<String> {
@@ -1199,6 +1301,75 @@ mod tests {
         require_worktree_changes(&report.directory)?;
         validate_materialized_entries(&report.directory, &transaction.entries)?;
         require_clean(&Repository::open(&source)?)?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn container_sidecar_is_bound_into_the_reviewed_catalog_surface() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let source = temporary.path().join("source");
+        fs::create_dir(&source)?;
+        let base = initialize_registry(&source)?;
+        let mut transaction = transaction(base);
+        let sidecar = br#"{"schemaVersion":1}"#;
+
+        let expected_clone = temporary.path().join("expected");
+        Repository::clone(
+            source.to_str().context("test path encoding")?,
+            &expected_clone,
+        )?;
+        let mut expected_author = WritesPackageEntry;
+        for entry in &transaction.entries {
+            expected_author.author_entry(&expected_clone, entry).await?;
+        }
+        let without_sidecar = registry_surface_digests(&expected_clone)?.catalog;
+        set_container_release(&expected_clone, Some(sidecar))?;
+        transaction.expected = registry_surface_digests(&expected_clone)?;
+        assert_ne!(transaction.expected.catalog, without_sidecar);
+        fs::remove_dir_all(&expected_clone)?;
+
+        let output = temporary.path().join("prepared");
+        transaction
+            .prepare_with_container_release(
+                &source,
+                &output,
+                &mut WritesPackageEntry,
+                Some(sidecar),
+            )
+            .await?;
+
+        assert_eq!(
+            fs::read(output.join(CONTAINER_RELEASE_SIDECAR_PATH))?,
+            sidecar
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn release_without_container_removes_the_fixed_prior_sidecar() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let path = temporary.path().join(CONTAINER_RELEASE_SIDECAR_PATH);
+        fs::create_dir_all(path.parent().context("sidecar parent")?)?;
+        fs::write(&path, b"prior release")?;
+
+        set_container_release(temporary.path(), None)?;
+
+        assert!(!path.exists());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn release_without_container_refuses_a_symlinked_parent() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let outside = tempfile::tempdir()?;
+        let outside_sidecar = outside.path().join("v1/index.json");
+        fs::create_dir_all(outside_sidecar.parent().context("outside parent")?)?;
+        fs::write(&outside_sidecar, b"outside release")?;
+        std::os::unix::fs::symlink(outside.path(), temporary.path().join("containers"))?;
+
+        assert!(set_container_release(temporary.path(), None).is_err());
+        assert_eq!(fs::read(outside_sidecar)?, b"outside release");
         Ok(())
     }
 

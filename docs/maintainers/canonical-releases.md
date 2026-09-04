@@ -247,16 +247,21 @@ command because their release matrix contains packages only.
 
 Prepare canonical `aos.registry-release-transaction/v1` JSON whose entries are
 strictly ordered by build artifact id and whose catalog, store-graph, and policy
-digests describe the complete intended result. The command independently
-checks every entry against `build-report.json`; a missing, extra, or changed
-package, version, target, or store path aborts before the output directory is
-installed.
+digests describe the complete intended result. The catalog surface includes
+`containers/`; when publishing OCI, calculate the expected digest with the
+exact externally finalized `containers/v1/index.json` sidecar installed. The
+command independently checks every package entry against `build-report.json`
+and binds the sidecar to its Nix signature input and planned system variant. A
+missing, extra, or changed package, version, target, store path, or sidecar
+aborts before the output directory is installed.
 
 ```sh
 aos release finalize-registry \
   --plan release-plan.json \
   --build-report release-build/evidence/build-report.json \
   --transaction registry-transaction.json \
+  --container-release final-container/container-release.json \
+  --container-signature-input final-container/signature-input.json \
   --source-registry /srv/aos-registry/authoring \
   --output /var/lib/aos-release/2026.9.0/registry \
   --result /var/lib/aos-release/2026.9.0/registry-result.json \
@@ -270,6 +275,13 @@ aos release finalize-registry \
   --git-unix-seconds 1788436800 \
   --git-offset-minutes 0
 ```
+
+Omit both container arguments for a release with no OCI artifact; finalization
+removes any prior release's fixed-path sidecar from the new signed tree.
+Supplying only one is invalid. The sidecar definition must be either the
+compatibility alias `containerImages.aos` with exactly one planned image
+variant, or the preferred
+`systems.<planned-variant>.build.containers.aos` identity.
 
 The two public key files contain exact
 `<local-alias>:Ed25519:<base64>` trust lines: `andyl` for `andyl/main`, or the

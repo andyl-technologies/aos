@@ -377,6 +377,14 @@ pub struct ReleaseFinalizeRegistryArgs {
     #[arg(long)]
     pub transaction: PathBuf,
 
+    /// Externally signed canonical container-release sidecar to commit
+    #[arg(long, requires = "container_signature_input")]
+    pub container_release: Option<PathBuf>,
+
+    /// Nix-produced signature input paired with --container-release
+    #[arg(long, requires = "container_release")]
+    pub container_signature_input: Option<PathBuf>,
+
     /// Clean authoring registry at the exact planned base commit
     #[arg(long)]
     pub source_registry: PathBuf,
@@ -997,42 +1005,57 @@ mod tests {
 
     #[test]
     fn registry_finalization_requires_both_public_role_keys() {
-        assert!(
-            Cli::try_parse_from([
-                "aos",
-                "release",
-                "finalize-registry",
-                "--plan",
-                "release-plan.json",
-                "--build-report",
-                "build-report.json",
-                "--transaction",
-                "registry-transaction.json",
-                "--source-registry",
-                "registry",
-                "--output",
-                "isolated-registry",
-                "--result",
-                "registry-result.json",
-                "--signer-executable",
-                "/opt/aos/signer",
-                "--provenance-key",
-                "provenance=provenance.pub",
-                "--registry-key",
-                "registry=registry.pub",
-                "--provenance-verification-identity",
-                "provider-provenance",
-                "--registry-verification-identity",
-                "provider-registry",
-                "--git-name",
-                "AOS Release",
-                "--git-email",
-                "release@example.invalid",
-                "--git-unix-seconds",
-                "1",
+        let base = [
+            "aos",
+            "release",
+            "finalize-registry",
+            "--plan",
+            "release-plan.json",
+            "--build-report",
+            "build-report.json",
+            "--transaction",
+            "registry-transaction.json",
+            "--source-registry",
+            "registry",
+            "--output",
+            "isolated-registry",
+            "--result",
+            "registry-result.json",
+            "--signer-executable",
+            "/opt/aos/signer",
+            "--provenance-key",
+            "provenance=provenance.pub",
+            "--registry-key",
+            "registry=registry.pub",
+            "--provenance-verification-identity",
+            "provider-provenance",
+            "--registry-verification-identity",
+            "provider-registry",
+            "--git-name",
+            "AOS Release",
+            "--git-email",
+            "release@example.invalid",
+            "--git-unix-seconds",
+            "1",
+        ];
+        assert!(Cli::try_parse_from(base).is_ok());
+
+        let with_container = base
+            .into_iter()
+            .chain([
+                "--container-release",
+                "container-release.json",
+                "--container-signature-input",
+                "signature-input.json",
             ])
-            .is_ok()
-        );
+            .collect::<Vec<_>>();
+        assert!(Cli::try_parse_from(with_container).is_ok());
+
+        let unpaired = base
+            .into_iter()
+            .chain(["--container-release", "container-release.json"])
+            .collect::<Vec<_>>();
+        assert!(Cli::try_parse_from(unpaired).is_err());
     }
 
     #[test]
