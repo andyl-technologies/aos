@@ -31,6 +31,8 @@
 mod container;
 mod container_admin;
 mod delivery_workflow;
+#[cfg(test)]
+mod delivery_workflow_tests;
 mod publication_manifest;
 mod release_publication;
 
@@ -36669,6 +36671,11 @@ mod cache_upload_tests {
         write_behaviors: Vec<WriteBehavior>,
     ) -> (RpcService, Arc<Database>, Arc<InMemoryLease>, String) {
         injected_service_with_sealer(fetch_behaviors, write_behaviors, vec![]).await
+    }
+
+    pub(super) async fn delivery_test_service() -> (RpcService, Arc<Database>) {
+        let (service, database, _, _) = injected_service(vec![], vec![]).await;
+        (service, database)
     }
 
     async fn injected_service_with_sealer(
