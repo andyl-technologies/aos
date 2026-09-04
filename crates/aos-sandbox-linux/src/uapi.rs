@@ -57,6 +57,19 @@ struct RawVerityDigest {
     digest: [u8; 64],
 }
 
+#[repr(C)]
+struct RawVerityEnableArg {
+    version: u32,
+    hash_algorithm: u32,
+    block_size: u32,
+    salt_size: u32,
+    salt_ptr: u64,
+    signature_size: u32,
+    reserved1: u32,
+    signature_ptr: u64,
+    reserved2: [u64; 11],
+}
+
 pub(crate) const OPEN_TREE_CLONE: u32 = 1;
 pub(crate) const OPEN_TREE_CLOEXEC: u32 = libc::O_CLOEXEC as u32;
 pub(crate) const AT_EMPTY_PATH: u32 = 0x1000;
@@ -97,6 +110,8 @@ const NSFS_MAGIC: libc::c_long = 0x6e73_6673;
 const NS_GET_NSTYPE: libc::c_ulong = 0xb703;
 // Linux 6.18 `FS_IOC_MEASURE_VERITY`: _IOWR('f', 134, struct fsverity_digest).
 const FS_IOC_MEASURE_VERITY: libc::c_ulong = 0xc004_6686;
+// Linux 6.18 `FS_IOC_ENABLE_VERITY`: _IOW('f', 133, struct fsverity_enable_arg).
+const FS_IOC_ENABLE_VERITY: libc::c_ulong = 0x4080_6685;
 const PIDFD_GET_MNT_NAMESPACE: libc::c_ulong = 0xff03;
 const PIDFD_GET_NET_NAMESPACE: libc::c_ulong = 0xff04;
 const PIDFD_GET_PID_NAMESPACE: libc::c_ulong = 0xff05;
@@ -422,6 +437,55 @@ pub(crate) fn measure_verity(fd: BorrowedFd<'_>) -> Result<VerityMeasurement> {
         length,
         digest: measurement.digest,
     })
+}
+
+pub(crate) fn enable_verity_sha256_4096(fd: BorrowedFd<'_>) -> Result<()> {
+    let argument = RawVerityEnableArg {
+        version: 1,
+        hash_algorithm: 1,
+        block_size: 4096,
+        salt_size: 0,
+        salt_ptr: 0,
+        signature_size: 0,
+        reserved1: 0,
+        signature_ptr: 0,
+        reserved2: [0; 11],
+    };
+    // SAFETY: the fixed-layout argument remains borrowed for the complete
+    // ioctl. All optional pointer/length pairs and reserved fields are zero.
+    let result = unsafe {
+        libc::ioctl(
+            fd.as_raw_fd(),
+            FS_IOC_ENABLE_VERITY,
+            std::ptr::addr_of!(argument),
+        )
+    };
+    if result < 0 {
+        return Err(Error::syscall("ioctl(FS_IOC_ENABLE_VERITY)"));
+    }
+    if result != 0 {
+        return Err(Error::MalformedKernelResponse {
+            object: "fs-verity enable",
+            message: "ioctl returned a positive success value".to_string(),
+        });
+    }
+    Ok(())
+}
+
+pub(crate) fn fsync(fd: BorrowedFd<'_>) -> Result<()> {
+    // SAFETY: `fsync` only observes and synchronizes the borrowed file
+    // description for the duration of the call.
+    let result = unsafe { libc::fsync(fd.as_raw_fd()) };
+    if result < 0 {
+        Err(Error::syscall("fsync"))
+    } else {
+        Ok(())
+    }
+}
+
+pub(crate) fn effective_uid() -> u32 {
+    // SAFETY: `geteuid` has no pointer arguments or process-state mutation.
+    unsafe { libc::geteuid() }
 }
 
 pub(crate) fn map_readonly_shared(fd: BorrowedFd<'_>, length: usize) -> Result<*mut libc::c_void> {
@@ -1200,7 +1264,9 @@ mod tests {
         assert_eq!(size_of::<StatMountBuffer>(), 512 + STAT_STRING_BYTES);
         assert_eq!(std::mem::offset_of!(RawVerityDigest, digest), 4);
         assert_eq!(size_of::<RawVerityDigest>(), 68);
+        assert_eq!(size_of::<RawVerityEnableArg>(), 128);
         assert_eq!(FS_IOC_MEASURE_VERITY, 0xc004_6686);
+        assert_eq!(FS_IOC_ENABLE_VERITY, 0x4080_6685);
     }
 
     #[test]

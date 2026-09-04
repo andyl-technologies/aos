@@ -19,8 +19,14 @@
 //! accepting its reported digest. This boundary assumes a trusted kernel.
 
 mod backing;
+mod publication;
 
 pub use backing::{BackingFileIdentity, FsVerityBacking};
+pub use publication::{
+    FsVerityPublicationRoot, InvalidPublicationName, MaterializationCallbacks,
+    MaterializationError, MaterializationFailure, PublicationName, PublicationRootError,
+    RetainedPrivateArtifact, RetainedPrivatePhase, SealedPrivateFile,
+};
 
 use std::marker::PhantomData;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
