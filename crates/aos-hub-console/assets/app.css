@@ -21,6 +21,32 @@
   font-weight: 400;
 }
 
+.scope-header {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 1rem;
+  margin: 0 0 1.4rem;
+  padding: 0 0 0.8rem;
+  border-bottom: 3px solid var(--rule-strong);
+}
+
+.scope-header h1,
+.scope-header p {
+  margin: 0;
+}
+
+.scope-identity {
+  display: flex;
+  gap: 0.45rem;
+  color: var(--dim);
+  font-size: 0.85rem;
+}
+
+.scope-identity strong {
+  color: var(--ink);
+}
+
 .workflow-stack,
 .binding-list,
 .subworkflow-stack {
@@ -235,6 +261,48 @@
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
   gap: 1rem;
+}
+
+.topology-path {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.7rem;
+  margin: 0 0 1rem;
+  padding: 0.8rem;
+  border: 1px solid var(--rule);
+}
+
+.topology-path span {
+  display: grid;
+  min-width: 0;
+  gap: 0.2rem;
+}
+
+.topology-path small {
+  color: var(--dim);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.topology-path code {
+  overflow-wrap: anywhere;
+}
+
+.topology-path b {
+  color: var(--dim);
+}
+
+.advanced-controls {
+  margin-top: 1rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--rule);
+}
+
+.advanced-controls > summary {
+  font-weight: 700;
+  cursor: pointer;
 }
 
 .review-columns > div,

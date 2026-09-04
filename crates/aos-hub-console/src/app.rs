@@ -171,7 +171,7 @@ fn ManagementShell(
                     </Transition>
                 </details>
                 <main id="main-content" class="settings-body">
-                    <h1>{page_label}</h1>
+                    <ScopeHeader route=route.clone()/>
                     <ContextRail route=context_route.clone()/>
                     <Transition fallback=move || view! { <p class="loading-row" aria-busy="true">"Loading management data…"</p> }>
                         {move || { let route = workflow_route.clone(); Suspend::new(async move { match session.await.as_ref() { Ok(client) if client.allows(route.page.navigation_permission()) => view! { <ResourceWorkflow route=route client=client.clone()/> }.into_any(), Ok(_) => view! { <PermissionDenied route=route/> }.into_any(), Err(error) => view! { <FailureShell route=route detail=error.to_string()/> }.into_any() } }) }}
@@ -194,19 +194,33 @@ fn ManagementShell(
 }
 
 #[component]
+fn ScopeHeader(route: ConsoleRoute) -> impl IntoView {
+    let kind = scope_kind(&route.scope);
+    let identity = scope_identity(&route.scope);
+    let overview = route.base_path.clone();
+
+    view! {
+        <header class="scope-header">
+            <div>
+                <p class="section-kicker">{format!("{kind} settings")}</p>
+                <h1>{route.page.label}</h1>
+                <p class="scope-identity"><span>"Scope"</span><strong>{identity}</strong></p>
+            </div>
+            {(route.page.key != "overview").then(|| view! { <a href=overview>"View scope overview"</a> })}
+        </header>
+    }
+}
+
+#[component]
 fn ContextRail(route: ConsoleRoute) -> impl IntoView {
     let visible = matches!(route.page.group, "Infrastructure" | "Topology")
         || matches!(route.page.key, "integrations" | "retention" | "gc");
     visible.then(|| {
-        let (owns, uses, used_by) = topology_context(&route);
+        let edges = related_settings(&route);
         view! {
             <details class="topology-context">
-                <summary>"Topology context"</summary>
-                <div class="topology-context-grid">
-                    <ContextEdges label="Owns" edges=owns/>
-                    <ContextEdges label="Uses" edges=uses/>
-                    <ContextEdges label="Used by" edges=used_by/>
-                </div>
+                <summary>"Related settings"</summary>
+                <ContextEdges label="Configuration areas" edges=edges/>
             </details>
         }
     })
@@ -228,52 +242,33 @@ fn ContextEdges(label: &'static str, edges: Vec<(&'static str, String)>) -> impl
     }
 }
 
-fn topology_context(
-    route: &ConsoleRoute,
-) -> (
-    Vec<(&'static str, String)>,
-    Vec<(&'static str, String)>,
-    Vec<(&'static str, String)>,
-) {
+fn related_settings(route: &ConsoleRoute) -> Vec<(&'static str, String)> {
     let sibling = |suffix: &str| format!("{}/{suffix}", route.base_path);
     match &route.scope {
-        ConsoleScope::Registry { .. } => (
-            vec![
-                ("Placements", sibling("placements")),
-                ("Routes", sibling("delivery")),
-            ],
-            vec![("Binary caches", sibling("caches"))],
-            Vec::new(),
-        ),
-        ConsoleScope::Cache { .. } => (
-            vec![
-                ("Placements", sibling("placements")),
-                ("Routes", sibling("delivery")),
-            ],
-            Vec::new(),
-            vec![("Registry integrations", sibling("integrations"))],
-        ),
-        ConsoleScope::Organization { .. } => (
-            vec![
-                ("Bindings", sibling("bindings")),
-                ("Endpoints", sibling("endpoints")),
-            ],
-            Vec::new(),
-            vec![
-                ("Registries", sibling("registries")),
-                ("Binary caches", sibling("caches")),
-            ],
-        ),
-        ConsoleScope::Instance => (
-            vec![
-                ("Bindings", sibling("bindings")),
-                ("Endpoints", sibling("endpoints")),
-            ],
-            Vec::new(),
-            vec![("Organizations", "/-/orgs".to_string())],
-        ),
-        ConsoleScope::Caches => (Vec::new(), Vec::new(), Vec::new()),
-        ConsoleScope::Organizations => (Vec::new(), Vec::new(), Vec::new()),
+        ConsoleScope::Registry { .. } => vec![
+            ("Placements", sibling("placements")),
+            ("Delivery", sibling("delivery")),
+            ("Binary caches", sibling("caches")),
+        ],
+        ConsoleScope::Cache { .. } => vec![
+            ("Placements", sibling("placements")),
+            ("Delivery", sibling("delivery")),
+            ("Registry integrations", sibling("integrations")),
+        ],
+        ConsoleScope::Organization { .. } => vec![
+            ("Bindings", sibling("bindings")),
+            ("Endpoints", sibling("endpoints")),
+            ("Gateways", sibling("gateways")),
+            ("Registries", sibling("registries")),
+            ("Binary caches", sibling("caches")),
+        ],
+        ConsoleScope::Instance => vec![
+            ("Bindings", sibling("bindings")),
+            ("Endpoints", sibling("endpoints")),
+            ("Gateways", sibling("gateways")),
+            ("Organizations", "/-/orgs".to_string()),
+        ],
+        ConsoleScope::Caches | ConsoleScope::Organizations => Vec::new(),
     }
 }
 
@@ -421,6 +416,28 @@ fn scope_title(scope: &ConsoleScope) -> String {
     }
 }
 
+fn scope_kind(scope: &ConsoleScope) -> &'static str {
+    match scope {
+        ConsoleScope::Instance => "Instance",
+        ConsoleScope::Caches => "Cache inventory",
+        ConsoleScope::Organizations => "Organization inventory",
+        ConsoleScope::Organization { .. } => "Organization",
+        ConsoleScope::Registry { .. } => "Registry",
+        ConsoleScope::Cache { .. } => "Binary cache",
+    }
+}
+
+fn scope_identity(scope: &ConsoleScope) -> String {
+    match scope {
+        ConsoleScope::Instance => "AOS Hub deployment".to_string(),
+        ConsoleScope::Caches => "All visible caches".to_string(),
+        ConsoleScope::Organizations => "All visible organizations".to_string(),
+        ConsoleScope::Organization { slug }
+        | ConsoleScope::Registry { path: slug }
+        | ConsoleScope::Cache { path: slug } => slug.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -449,18 +466,25 @@ mod tests {
     }
 
     #[test]
-    fn topology_context_uses_relationship_labels_and_canonical_links() {
+    fn related_settings_use_canonical_links_without_claiming_resource_relationships() {
         let registry = ConsoleRoute::resolve("/acme/main/-/settings/placements")
             .expect("registry topology route");
-        let (owns, uses, used_by) = topology_context(&registry);
-        assert_eq!(owns[0].1, "/acme/main/-/settings/placements");
-        assert_eq!(uses[0].1, "/acme/main/-/settings/caches");
-        assert!(used_by.is_empty());
+        let registry_links = related_settings(&registry);
+        assert_eq!(registry_links[0].1, "/acme/main/-/settings/placements");
+        assert_eq!(registry_links[2].1, "/acme/main/-/settings/caches");
 
         let cache = ConsoleRoute::resolve("/-/org/acme/caches/build/delivery")
             .expect("cache topology route");
-        let (_, _, used_by) = topology_context(&cache);
-        assert_eq!(used_by[0].1, "/-/org/acme/caches/build/integrations");
+        let cache_links = related_settings(&cache);
+        assert_eq!(cache_links[2].1, "/-/org/acme/caches/build/integrations");
+    }
+
+    #[test]
+    fn scope_header_names_resource_kind_and_exact_identity() {
+        let route = ConsoleRoute::resolve("/acme/main/-/settings/delivery")
+            .expect("registry delivery route");
+        assert_eq!(scope_kind(&route.scope), "Registry");
+        assert_eq!(scope_identity(&route.scope), "acme/main");
     }
 
     #[test]
