@@ -40,6 +40,7 @@ where
     retention: R,
     records: BTreeMap<HotCheckpointFallbackSlot, HotCheckpointFallbackRecord>,
     active: BTreeMap<QemuHotForkTemplatePoolSlot, HotCheckpointFallbackSlot>,
+    unresolved: BTreeMap<HotCheckpointFallbackSlot, QemuHotForkTemplatePoolSlot>,
 }
 
 impl<F, Q, D, R> DurableManagedQemuHotForkTemplatePool<F, Q, D, R>
@@ -73,6 +74,7 @@ where
             retention,
             records,
             active: BTreeMap::new(),
+            unresolved: BTreeMap::new(),
         })
     }
 
@@ -112,13 +114,30 @@ where
         self.active.get(&source).copied()
     }
 
+    /// Returns the internally retained source protected by one fallback slot.
+    ///
+    /// An unresolved source exists only after the managed inventory rejected
+    /// an installed candidate and defensive pool rollback also failed. It is
+    /// neither an admitted live source nor an independently releasable cold
+    /// fallback.
+    #[must_use]
+    pub fn unresolved_source_slot(
+        &self,
+        slot: HotCheckpointFallbackSlot,
+    ) -> Option<QemuHotForkTemplatePoolSlot> {
+        self.unresolved.get(&slot).copied()
+    }
+
     /// Iterates every durable cold fallback in exact catalog order.
     pub fn cold_fallbacks(
         &self,
     ) -> impl Iterator<Item = (HotCheckpointFallbackSlot, HotCheckpointFallbackRecord)> + '_ {
         self.records
             .iter()
-            .filter(|(slot, _record)| !self.active.values().any(|active| active == *slot))
+            .filter(|(slot, _record)| {
+                !self.active.values().any(|active| active == *slot)
+                    && !self.unresolved.contains_key(*slot)
+            })
             .map(|(&slot, &record)| (slot, record))
     }
 
@@ -188,9 +207,13 @@ where
                 Ok(commit)
             }
             Err(failure) => {
+                let internally_retained_slot = failure.internally_retained_slot();
                 let (candidate, stranded, source) = failure.into_parts();
                 self.reconcile_active_sources();
                 if candidate.is_none() {
+                    if let Some(source_slot) = internally_retained_slot {
+                        self.unresolved.insert(catalog_slot, source_slot);
+                    }
                     return Err(DurableManagedHotCheckpointAdmissionFailure::new(
                         None,
                         stranded,
@@ -293,6 +316,9 @@ where
     ) -> Result<HotCheckpointFallbackRecord, DurableManagedHotCheckpointReleaseError> {
         if self.active.values().any(|active| *active == slot) {
             return Err(DurableManagedHotCheckpointReleaseError::Active);
+        }
+        if self.unresolved.contains_key(&slot) {
+            return Err(DurableManagedHotCheckpointReleaseError::Unresolved);
         }
         let record = self
             .records
@@ -597,6 +623,9 @@ pub enum DurableManagedHotCheckpointReleaseError {
     /// The catalog record still protects a live source.
     #[error("cannot release the fallback of a live hot-checkpoint source")]
     Active,
+    /// The record protects a candidate retained after failed pool rollback.
+    #[error("cannot release the fallback of an unresolved installed hot-checkpoint source")]
+    Unresolved,
     /// The requested durable catalog slot is absent.
     #[error("hot-checkpoint fallback catalog slot is absent")]
     Missing,
