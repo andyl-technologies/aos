@@ -1950,6 +1950,15 @@ exclusive, persistent generation over its combined operational root inventory.
 The fixed hot-checkpoint fallback catalog supplies an independently fenced,
 restart-authenticated operational root inventory; its exact contents are bound
 by the root manifest rather than a new field in the v1 plan header.
+The single-host durable managed-pool owner creates a catalog record before a
+source enters the hot tier, retains the record when that source becomes a cold
+exact/thin fallback, and removes it only through an explicit conditional
+release after proving no live source uses the slot. Restart inventory restores
+all records as cold roots rather than guessing live process state. Admission
+cleanup failure returns the exact still-rooted slot, so neither a candidate
+factory nor its GC protection becomes anonymous. Catalog inventory and release
+share the same read/write lifecycle fence, preventing GC plan/apply from racing
+these transitions.
 Directory, compressed-directory, encrypted-directory,
 compressed-encrypted-directory, and packed generations survive restart; memory
 generations are process-local and monotonic for their

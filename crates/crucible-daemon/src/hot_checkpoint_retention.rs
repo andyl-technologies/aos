@@ -133,6 +133,25 @@ impl HotCheckpointFallbackRetentionSummary {
 
 /// Stable inventory guard for destructive-GC coordination.
 pub trait HotCheckpointFallbackRetentionFence {
+    /// Streams every durable fallback record in exact slot order.
+    ///
+    /// Visited records are tentative until terminal success. This inventory is
+    /// the restart authority used by the managed hot/cold owner; callers must
+    /// not infer absence until the returned summary authenticates the complete
+    /// bounded catalog.
+    ///
+    /// # Errors
+    ///
+    /// Returns a catalog error when a record cannot be authenticated or the
+    /// visitor rejects an entry.
+    fn visit_fallbacks(
+        &mut self,
+        visitor: &mut dyn FnMut(
+            HotCheckpointFallbackSlot,
+            HotCheckpointFallbackRecord,
+        ) -> Result<(), HotCheckpointFallbackRetentionError>,
+    ) -> Result<HotCheckpointFallbackRetentionSummary, HotCheckpointFallbackRetentionError>;
+
     /// Streams every durable fallback root exactly once.
     ///
     /// Visited roots are tentative until terminal success.
@@ -144,7 +163,9 @@ pub trait HotCheckpointFallbackRetentionFence {
     fn visit_roots(
         &mut self,
         visitor: &mut dyn FnMut(ContentId) -> Result<(), HotCheckpointFallbackRetentionError>,
-    ) -> Result<HotCheckpointFallbackRetentionSummary, HotCheckpointFallbackRetentionError>;
+    ) -> Result<HotCheckpointFallbackRetentionSummary, HotCheckpointFallbackRetentionError> {
+        self.visit_fallbacks(&mut |_slot, record| visitor(record.root()))
+    }
 }
 
 /// Separate maintenance capability for hot-checkpoint fallback roots.
@@ -265,9 +286,12 @@ struct MemoryHotCheckpointFallbackRetentionFence<'a> {
 }
 
 impl HotCheckpointFallbackRetentionFence for MemoryHotCheckpointFallbackRetentionFence<'_> {
-    fn visit_roots(
+    fn visit_fallbacks(
         &mut self,
-        visitor: &mut dyn FnMut(ContentId) -> Result<(), HotCheckpointFallbackRetentionError>,
+        visitor: &mut dyn FnMut(
+            HotCheckpointFallbackSlot,
+            HotCheckpointFallbackRecord,
+        ) -> Result<(), HotCheckpointFallbackRetentionError>,
     ) -> Result<HotCheckpointFallbackRetentionSummary, HotCheckpointFallbackRetentionError> {
         visit_records(&self.records, visitor)
     }
@@ -445,9 +469,12 @@ struct DirectoryHotCheckpointFallbackRetentionFence<'a> {
 }
 
 impl HotCheckpointFallbackRetentionFence for DirectoryHotCheckpointFallbackRetentionFence<'_> {
-    fn visit_roots(
+    fn visit_fallbacks(
         &mut self,
-        visitor: &mut dyn FnMut(ContentId) -> Result<(), HotCheckpointFallbackRetentionError>,
+        visitor: &mut dyn FnMut(
+            HotCheckpointFallbackSlot,
+            HotCheckpointFallbackRecord,
+        ) -> Result<(), HotCheckpointFallbackRetentionError>,
     ) -> Result<HotCheckpointFallbackRetentionSummary, HotCheckpointFallbackRetentionError> {
         visit_records(&self.records, visitor)
     }
@@ -492,11 +519,14 @@ pub enum HotCheckpointFallbackRetentionError {
 
 fn visit_records(
     records: &BTreeMap<HotCheckpointFallbackSlot, HotCheckpointFallbackRecord>,
-    visitor: &mut dyn FnMut(ContentId) -> Result<(), HotCheckpointFallbackRetentionError>,
+    visitor: &mut dyn FnMut(
+        HotCheckpointFallbackSlot,
+        HotCheckpointFallbackRecord,
+    ) -> Result<(), HotCheckpointFallbackRetentionError>,
 ) -> Result<HotCheckpointFallbackRetentionSummary, HotCheckpointFallbackRetentionError> {
     let mut material = Vec::with_capacity(records.len().saturating_mul(128));
     for (&slot, &record) in records {
-        visitor(record.root())?;
+        visitor(slot, record)?;
         material.extend_from_slice(&slot.0.to_be_bytes());
         material.extend_from_slice(
             &CampaignHash::derive(RECORD_CHECKSUM_DOMAIN, &encode_record(slot, record)).as_bytes(),
