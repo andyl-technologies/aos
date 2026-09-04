@@ -127,7 +127,7 @@
   };
 
   hostFixture = import ../fixtures/maintainer-update-repo/default.nix {
-    bash = pkgs.bash;
+    bash = builtins.unsafeDiscardStringContext "${pkgs.bash}";
   };
   mountedPackageDerivation = builtins.storePath (builtins.unsafeDiscardStringContext hostFixture.pkgs.maintain-fixture.drvPath);
   mountedSourceDerivation =
@@ -145,7 +145,6 @@
     rootPaths = [
       fixtureRepository
       maintainerToolBundle
-      pkgs.bash.drvPath
       packageDerivationRecord
       sourceDerivationRecord
     ];
