@@ -27,7 +27,7 @@ use aos_maintain::presentation::{
     EffectClass, GateLogView, MaintainCommandResult, NextAction, PrimaryValue, PullRequestDraft,
     escape_terminal,
 };
-use aos_maintain::workflow::{ProgressEvent, TaskStatus};
+use aos_maintain::workflow::{DiscoveryDecision, ProgressEvent, TaskStatus};
 use aos_maintain::{MAINTENANCE_CLI_V1, MAINTENANCE_PROGRESS_EVENT_V1};
 use serde::Serialize;
 
@@ -1386,6 +1386,7 @@ fn diff_command(
     } else {
         (current, "worktree")
     };
+    let patch_digest = aos_contract::Sha256Digest::separated("aos.package-update-patch/v1", &bytes);
     let patch = String::from_utf8(bytes).context("candidate patch is not UTF-8")?;
     let plan = store
         .read_plan(run.plan_id.as_str())?
@@ -1394,7 +1395,10 @@ fn diff_command(
         "diff",
         CommandDisposition::Success,
         CommandData {
-            values: BTreeMap::from([("patchSource".to_string(), source.to_string())]),
+            values: BTreeMap::from([
+                ("patchDigest".to_string(), patch_digest.to_string()),
+                ("patchSource".to_string(), source.to_string()),
+            ]),
             plan: Some(plan),
             run: Some(run),
             patch: (!command.semantic).then_some(patch),
@@ -1578,32 +1582,46 @@ fn cached_completion(
                 }
             }
         }
-        if let Some(report) = report {
-            snapshot.units.retain(|unit| {
-                let family_matches = report.family.as_ref().is_none_or(|family| {
-                    inventory.inventory.units.iter().any(|candidate| {
-                        candidate.unit_id.as_str() == unit.unit_id
-                            && candidate.family.as_str() == family
-                    })
-                });
-                let state_matches = if report.outdated {
-                    unit.decision == DiscoveryDecision::UpdateAvailable
-                } else if report.unknown {
-                    unit.decision == DiscoveryDecision::Unknown
-                } else {
-                    true
-                };
-                family_matches && state_matches
-            });
-            let retained = snapshot
+        snapshot.units.retain(|unit| {
+            let declared = inventory
+                .inventory
                 .units
                 .iter()
-                .map(|unit| format!("{}/", unit.unit_id))
-                .collect::<Vec<_>>();
-            snapshot
-                .observations
-                .retain(|key, _| retained.iter().any(|prefix| key.starts_with(prefix)));
-        }
+                .find(|candidate| candidate.unit_id.as_str() == unit.unit_id);
+            let family_matches = report
+                .and_then(|selection| selection.family.as_ref())
+                .is_none_or(|family| {
+                    declared.is_some_and(|candidate| candidate.family.as_str() == family)
+                });
+            let required = declared.is_some_and(|candidate| {
+                matches!(
+                    candidate.classification,
+                    Classification::Automatic | Classification::Assisted
+                )
+            });
+            let state_matches = match report {
+                Some(selection) if selection.outdated => {
+                    unit.decision == DiscoveryDecision::UpdateAvailable
+                }
+                Some(selection) if selection.unknown => unit.decision == DiscoveryDecision::Unknown,
+                Some(_) => true,
+                None => {
+                    matches!(
+                        unit.decision,
+                        DiscoveryDecision::UpdateAvailable | DiscoveryDecision::Quarantined
+                    ) || (required && unit.decision == DiscoveryDecision::Unknown)
+                }
+            };
+            family_matches && state_matches
+        });
+        let retained = snapshot
+            .units
+            .iter()
+            .map(|unit| format!("{}/", unit.unit_id))
+            .collect::<Vec<_>>();
+        snapshot
+            .observations
+            .retain(|key, _| retained.iter().any(|prefix| key.starts_with(prefix)));
     }
 
     let mut values = BTreeMap::new();
@@ -1625,6 +1643,24 @@ fn cached_completion(
             .map_or(0, |snapshot| snapshot.units.len())
             .to_string(),
     );
+    if let Some(snapshot) = &discovery {
+        for (name, decision) in [
+            ("current", DiscoveryDecision::Current),
+            ("updateAvailable", DiscoveryDecision::UpdateAvailable),
+            ("unknown", DiscoveryDecision::Unknown),
+            ("quarantined", DiscoveryDecision::Quarantined),
+        ] {
+            values.insert(
+                name.to_string(),
+                snapshot
+                    .units
+                    .iter()
+                    .filter(|unit| unit.decision == decision)
+                    .count()
+                    .to_string(),
+            );
+        }
+    }
     let mut diagnostics = Vec::new();
     let mut actions = Vec::new();
     if discovery.is_none() {
@@ -1685,9 +1721,31 @@ fn scan_completion(
             *count += 1;
         }
     }
-    let disposition = if counts["quarantined"] > 0 {
+    let required = outcome
+        .snapshot
+        .units
+        .iter()
+        .filter(|unit| {
+            envelope.inventory.units.iter().any(|candidate| {
+                candidate.unit_id.as_str() == unit.unit_id
+                    && matches!(
+                        candidate.classification,
+                        Classification::Automatic | Classification::Assisted
+                    )
+            })
+        })
+        .fold((0_u64, 0_u64), |(unknown, quarantined), unit| {
+            match unit.decision {
+                DiscoveryDecision::Unknown => (unknown + 1, quarantined),
+                DiscoveryDecision::Quarantined => (unknown, quarantined + 1),
+                DiscoveryDecision::Current | DiscoveryDecision::UpdateAvailable => {
+                    (unknown, quarantined)
+                }
+            }
+        });
+    let disposition = if required.1 > 0 {
         CommandDisposition::Quarantined
-    } else if counts["unknown"] > 0 {
+    } else if required.0 > 0 {
         CommandDisposition::UpstreamUnknown
     } else if counts["updateAvailable"] == 0 {
         CommandDisposition::NoChange
@@ -1697,15 +1755,19 @@ fn scan_completion(
     let values = counts
         .into_iter()
         .map(|(key, value)| (key, value.to_string()))
-        .chain([(
-            "repositoryState".to_string(),
-            if envelope.content.permits_write_plan() {
-                "clean"
-            } else {
-                "dirty"
-            }
-            .to_string(),
-        )])
+        .chain([
+            ("requiredUnknown".to_string(), required.0.to_string()),
+            ("requiredQuarantined".to_string(), required.1.to_string()),
+            (
+                "repositoryState".to_string(),
+                if envelope.content.permits_write_plan() {
+                    "clean"
+                } else {
+                    "dirty"
+                }
+                .to_string(),
+            ),
+        ])
         .collect();
     let diagnostics = outcome
         .warnings
@@ -1914,7 +1976,7 @@ fn plan_command(
             DiscoveryDecision::UpdateAvailable => {}
         }
     }
-    let plan = match aos_maintain::plan::create_campaign_plan(
+    let mut plan = match aos_maintain::plan::create_campaign_plan(
         &envelope,
         &snapshot,
         cohort.as_ref(),
@@ -1937,23 +1999,20 @@ fn plan_command(
             );
         }
     };
-    let digest = store.write_plan(&plan)?;
-    snapshot.units.retain(|unit| {
-        unit_ids
-            .iter()
-            .any(|selected| selected.as_str() == unit.unit_id)
-    });
-    snapshot.observations.retain(|key, _| {
-        unit_ids
-            .iter()
-            .any(|selected| key.starts_with(&format!("{selected}/")))
-    });
+    let digest = if let Some(existing) = store.read_plan(plan.plan_id.as_str())? {
+        plan.created_at_unix = existing.created_at_unix;
+        if plan != existing {
+            anyhow::bail!("existing immutable plan disagrees with its deterministic identity");
+        }
+        aos_contract::Sha256Digest::of_canonical(aos_maintain::PACKAGE_UPDATE_PLAN_V1, &existing)?
+    } else {
+        store.write_plan(&plan)?
+    };
     completion(
         "plan",
         CommandDisposition::Success,
         CommandData {
             values: BTreeMap::from([("repositoryState".to_string(), "clean".to_string())]),
-            discovery: Some(snapshot),
             plan: Some(plan.clone()),
             ..CommandData::default()
         },
@@ -2354,6 +2413,10 @@ fn run_view_completion(
                 .filter(|result| result.outcome == aos_maintain::workflow::GateOutcome::Success)
                 .count()
                 .to_string(),
+        );
+        values.insert(
+            "patchDigest".to_string(),
+            gates.candidate_digest.to_string(),
         );
     }
     let evidence = store.read_evidence(run.run_id.as_str())?;
@@ -2890,7 +2953,47 @@ fn render_human(result: &MaintainCommandResult, screen_reader: bool, printer: &P
     if let Some(snapshot) = &result.data.discovery {
         printer.plain("");
         printer.header("Discovery");
-        for unit in &snapshot.units {
+        if let (Some(updates), Some(unknown), Some(quarantined)) = (
+            result.data.values.get("updateAvailable"),
+            result.data.values.get("unknown"),
+            result.data.values.get("quarantined"),
+        ) {
+            printer.kv(
+                "Summary",
+                &format!("{updates} available, {unknown} unknown, {quarantined} quarantined"),
+            );
+        }
+        if let (Some(unknown), Some(quarantined)) = (
+            result.data.values.get("requiredUnknown"),
+            result.data.values.get("requiredQuarantined"),
+        ) {
+            printer.kv(
+                "Required",
+                &format!("{unknown} unknown, {quarantined} quarantined"),
+            );
+        }
+        let visible = snapshot.units.iter().filter(|unit| {
+            if result.command != "scan" {
+                return true;
+            }
+            if matches!(
+                unit.decision,
+                DiscoveryDecision::UpdateAvailable | DiscoveryDecision::Quarantined
+            ) {
+                return true;
+            }
+            unit.decision == DiscoveryDecision::Unknown
+                && result.data.inventory.as_ref().is_some_and(|inventory| {
+                    inventory.inventory.units.iter().any(|candidate| {
+                        candidate.unit_id.as_str() == unit.unit_id
+                            && matches!(
+                                candidate.classification,
+                                Classification::Automatic | Classification::Assisted
+                            )
+                    })
+                })
+        });
+        for unit in visible {
             let candidate = unit
                 .components
                 .iter()
@@ -2952,6 +3055,55 @@ fn render_human(result: &MaintainCommandResult, screen_reader: bool, printer: &P
         printer.kv("State", run_state_name(run.state));
         printer.kv("Branch", &escape_terminal(&run.branch, 256));
         printer.kv("Worktree", &escape_terminal(&run.worktree, 4096));
+        if let Some(digest) = result.data.values.get("patchDigest") {
+            printer.kv("Patch", digest);
+        }
+    }
+
+    if result.command == "diff"
+        && let Some(plan) = &result.data.plan
+    {
+        printer.plain("");
+        printer.header("Semantic changes");
+        for unit in &plan.units {
+            printer.plain(&format!(
+                "{}  {} -> {}",
+                escape_terminal(unit.unit_id.as_str(), 256),
+                escape_terminal(&unit.current_package_version, 256),
+                escape_terminal(&unit.target_package_version, 256),
+            ));
+            for (component, target) in &unit.component_targets {
+                printer.plain(&format!(
+                    "  component {}  target {}",
+                    escape_terminal(component.as_str(), 256),
+                    escape_terminal(&target.upstream_id, 512),
+                ));
+            }
+            for mutation in &unit.semantic_mutations {
+                printer.plain(&format!(
+                    "  {}:{}  {} -> {}",
+                    escape_terminal(&mutation.owner, 4096),
+                    escape_terminal(&mutation.field_path.join("."), 4096),
+                    escape_terminal(&mutation.expected, 4096),
+                    escape_terminal(&mutation.replacement, 4096),
+                ));
+            }
+            for source in &unit.sources {
+                printer.plain(&format!(
+                    "  source {}/{}  resolve {}",
+                    escape_terminal(source.component.as_str(), 256),
+                    escape_terminal(source.slot.as_str(), 256),
+                    escape_terminal(&source.upstream_id, 512),
+                ));
+            }
+            for artifact in &unit.artifacts {
+                printer.plain(&format!(
+                    "  artifact {}  regenerate with {}",
+                    escape_terminal(artifact.slot.as_str(), 256),
+                    artifact_materializer_name(&artifact.materializer),
+                ));
+            }
+        }
     }
 
     if !result.data.gate_results.is_empty() {
@@ -3272,6 +3424,20 @@ fn risk_name(risk: aos_maintain::inventory::RiskLevel) -> &'static str {
         RiskLevel::Normal => "normal",
         RiskLevel::High => "high",
         RiskLevel::Critical => "critical",
+    }
+}
+
+fn artifact_materializer_name(
+    materializer: &aos_maintain::inventory::ArtifactMaterializer,
+) -> &'static str {
+    use aos_maintain::inventory::ArtifactMaterializer;
+
+    match materializer {
+        ArtifactMaterializer::CargoDeps { .. } => "cargo-deps",
+        ArtifactMaterializer::CargoVendor { .. } => "cargo-vendor",
+        ArtifactMaterializer::GoModules { .. } => "go-modules",
+        ArtifactMaterializer::NpmDeps { .. } => "npm-deps",
+        ArtifactMaterializer::BazelDeps { .. } => "bazel-deps",
     }
 }
 
