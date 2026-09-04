@@ -1805,6 +1805,11 @@ fn v2_point_lookup_is_byte_exact_lazy_and_allocation_free() {
     assert_eq!(file.record_id(), 1);
     assert_eq!(file.kind(), IndexNodeKind::File);
     assert_eq!(file.name(), b"z");
+    let file_from_bytes = validated
+        .lookup_child_bytes(&root_view, b"z")
+        .unwrap_or_else(|error| panic!("byte lookup failed: {error}"))
+        .unwrap_or_else(|| panic!("byte lookup file missing"));
+    assert_eq!(file_from_bytes, file);
     assert_eq!((file.uid(), file.gid()), (7, 8));
     assert_eq!(
         file.hardlink_group()
@@ -1832,6 +1837,21 @@ fn v2_point_lookup_is_byte_exact_lazy_and_allocation_free() {
             .unwrap_or_else(|error| panic!("lookup failed: {error}"))
             .is_none()
     );
+
+    let oversized = [b'a'; 256];
+    for invalid in [
+        &b""[..],
+        &b"."[..],
+        &b".."[..],
+        &b"a/b"[..],
+        &b"a\0b"[..],
+        &oversized,
+    ] {
+        assert!(matches!(
+            validated.lookup_child_bytes(&root_view, invalid),
+            Err(IndexError::InvalidPathName(_))
+        ));
+    }
 }
 
 #[test]

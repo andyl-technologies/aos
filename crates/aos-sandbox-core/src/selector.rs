@@ -492,14 +492,13 @@ pub struct InvalidFeatureNamespace;
 pub struct PathName(Vec<u8>);
 
 impl PathName {
-    /// Validates one byte-exact path component.
+    /// Validates a borrowed byte-exact path component without allocating.
     ///
     /// # Errors
     ///
     /// Returns [`InvalidPathName`] if the name is empty, exceeds 255 bytes,
     /// contains NUL or `/`, or equals `.` or `..`.
-    pub fn new(bytes: impl Into<Vec<u8>>) -> Result<Self, InvalidPathName> {
-        let bytes = bytes.into();
+    pub fn validate(bytes: &[u8]) -> Result<(), InvalidPathName> {
         if bytes.is_empty()
             || bytes.len() > 255
             || bytes.contains(&0)
@@ -509,8 +508,20 @@ impl PathName {
         {
             Err(InvalidPathName)
         } else {
-            Ok(Self(bytes))
+            Ok(())
         }
+    }
+
+    /// Validates one byte-exact path component.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidPathName`] if the name is empty, exceeds 255 bytes,
+    /// contains NUL or `/`, or equals `.` or `..`.
+    pub fn new(bytes: impl Into<Vec<u8>>) -> Result<Self, InvalidPathName> {
+        let bytes = bytes.into();
+        Self::validate(&bytes)?;
+        Ok(Self(bytes))
     }
 
     /// Returns the uninterpreted filesystem name bytes.
@@ -863,9 +874,24 @@ mod tests {
 
     #[test]
     fn invalid_path_names_are_rejected() {
-        for invalid in [&b""[..], &b"."[..], &b".."[..], &b"a/b"[..], &b"a\0b"[..]] {
+        let oversized = [b'a'; 256];
+        for invalid in [
+            &b""[..],
+            &b"."[..],
+            &b".."[..],
+            &b"a/b"[..],
+            &b"a\0b"[..],
+            &oversized,
+        ] {
+            assert!(PathName::validate(invalid).is_err());
             assert!(PathName::new(invalid).is_err());
         }
+
+        let maximum = [0xff; 255];
+        assert!(PathName::validate(&maximum).is_ok());
+        let borrowed = maximum.as_slice();
+        assert_eq!(borrowed.as_ptr(), maximum.as_ptr());
+        assert_eq!(PathName::new(maximum).map(|name| name.0.len()), Ok(255));
     }
 
     #[test]

@@ -70,8 +70,8 @@ pub use resources::{
     ResourceCeilings, ResourceDimension, ResourceLimit, ResourceVector,
 };
 pub use selector::{
-    FeatureRef, MediaType, ObjectDescriptor, ObjectDigest, Operation, OperationSet, PathName,
-    RelativePath, ResourceKind, Selector,
+    FeatureRef, InvalidPathName, MediaType, ObjectDescriptor, ObjectDigest, Operation,
+    OperationSet, PathName, RelativePath, ResourceKind, Selector,
 };
 pub use version::{
     AssignmentEpoch, DesiredGeneration, NamespaceGeneration, ObservationSequence, Revision,

@@ -24,6 +24,9 @@ pub struct IndexCrosslinks {
 /// Reports structural-index staging or validation failure.
 #[derive(Debug, thiserror::Error)]
 pub enum IndexError {
+    /// A byte-slice lookup name is outside the portable component profile.
+    #[error("invalid structural-index lookup name: {0}")]
+    InvalidPathName(#[from] InvalidPathName),
     /// Staging I/O failed.
     #[error("structural-index I/O failed: {0}")]
     Io(#[source] std::io::Error),

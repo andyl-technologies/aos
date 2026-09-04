@@ -252,6 +252,12 @@ fn main() {
         .unwrap_or_else(|| panic!("link missing"));
 
     let (result, allocations) = measure_allocations(|| {
+        PathName::validate(black_box(b"file"))?;
+        let file_from_bytes = index
+            .lookup_child_bytes(&root, black_box(b"file"))?
+            .ok_or(aos_filesystem_view::IndexError::InvalidRecord)?;
+        black_box(file_from_bytes);
+
         let root_semantics = index.record_semantics(&root)?;
         let IndexNodeBodyView::Directory { descriptor } = root_semantics.body() else {
             return Err(aos_filesystem_view::IndexError::InvalidRecord);

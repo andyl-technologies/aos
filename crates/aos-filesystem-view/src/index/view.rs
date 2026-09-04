@@ -107,7 +107,7 @@ impl<'bytes> ValidatedIndex<'bytes> {
     }
 
     /// Re-resolves a private node handle through the authenticated format index.
-    pub(super) fn authenticate_node(
+    pub(crate) fn authenticate_node(
         &self,
         node: &IndexNodeView<'_>,
     ) -> Result<IndexNodeView<'bytes>, IndexError> {
@@ -228,15 +228,34 @@ impl<'bytes> ValidatedIndex<'bytes> {
         parent: &IndexNodeView<'_>,
         name: &PathName,
     ) -> Result<Option<IndexNodeView<'index>>, IndexError> {
-        self.retained_lookup_child(parent, name)
+        self.lookup_child_bytes(parent, name.as_bytes())
     }
 
-    /// Looks up a child whose byte lifetime is retained by an internal owner.
-    pub(crate) fn retained_lookup_child(
+    /// Finds one byte-exact child after allocation-free component validation.
+    ///
+    /// This worker-facing form accepts bytes directly from a bounded protocol
+    /// request. It applies the same collision-safe lookup as
+    /// [`Self::lookup_child`] without constructing an owned [`PathName`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IndexError::InvalidPathName`] for a non-portable component.
+    /// Other errors are the same as [`Self::lookup_child`].
+    pub fn lookup_child_bytes<'index>(
+        &'index self,
+        parent: &IndexNodeView<'_>,
+        name: &[u8],
+    ) -> Result<Option<IndexNodeView<'index>>, IndexError> {
+        self.retained_lookup_child_bytes(parent, name)
+    }
+
+    /// Looks up a byte-slice child whose index lifetime is retained internally.
+    pub(crate) fn retained_lookup_child_bytes(
         &self,
         parent: &IndexNodeView<'_>,
-        name: &PathName,
+        name: &[u8],
     ) -> Result<Option<IndexNodeView<'bytes>>, IndexError> {
+        PathName::validate(name)?;
         let (header_bytes, records_bytes, lookup_slots) = match self.layout {
             IndexLayout::SequentialV1 => return Err(IndexError::PointLookupUnavailable),
             IndexLayout::PointLookupV2 {
@@ -253,7 +272,7 @@ impl<'bytes> ValidatedIndex<'bytes> {
             return Err(IndexError::ForeignNode);
         }
 
-        let target_hash = lookup_hash(parent.id, name.as_bytes());
+        let target_hash = lookup_hash(parent.id, name);
         let table_offset = (header_bytes as u64)
             .checked_add(records_bytes)
             .ok_or(IndexError::InvalidRecord)?;
@@ -277,7 +296,7 @@ impl<'bytes> ValidatedIndex<'bytes> {
                 usize::try_from(slot.record_offset).map_err(|_| IndexError::InvalidRecord)?;
             let candidate =
                 decode_record_view(self.bytes, offset, slot.record_id, self.descriptor.digest())?;
-            if candidate.parent == parent.id && candidate.name == name.as_bytes() {
+            if candidate.parent == parent.id && candidate.name == name {
                 return Ok(Some(candidate));
             }
             left += 1;

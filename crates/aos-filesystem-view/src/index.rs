@@ -44,8 +44,8 @@ use aos_sandbox_core::model::{
     Acl, AclEntry, ContentLayout, Extent, FilesystemMetadata, SparseContent, Xattr,
 };
 use aos_sandbox_core::{
-    DescriptorRole, MediaType, ObjectDescriptor, ObjectDigest, PathName, RelativePath,
-    descriptor_for_bytes, hardlink_group_digest, validate_descriptor_role,
+    DescriptorRole, InvalidPathName, MediaType, ObjectDescriptor, ObjectDigest, PathName,
+    RelativePath, descriptor_for_bytes, hardlink_group_digest, validate_descriptor_role,
 };
 use sha2::{Digest, Sha256};
 

@@ -24,7 +24,7 @@ pub use index::{
 };
 pub use inode::{
     ForgetRequest, ForgetSummary, InodeAttributes, InodeError, InodeLookup, InodeTable,
-    InodeTableLimits, OpenHandleId, OpenReservation, ROOT_NODE_ID,
+    InodeTableLimits, LiveInode, OpenHandleId, OpenReservation, ROOT_NODE_ID,
 };
 pub use limits::TreeCompileLimits;
 pub use presentation::{

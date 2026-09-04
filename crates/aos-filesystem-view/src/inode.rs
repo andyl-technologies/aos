@@ -1,4 +1,4 @@
-//! Connection-scoped lazy inode identity over an immutable V2 index.
+//! Connection-scoped lazy inode identity over an immutable V2 or V3 index.
 //!
 //! The table assigns monotonically increasing, never-reused node IDs as a
 //! connection observes records. Two fixed-slot open-addressed tables map node
@@ -22,7 +22,9 @@ use std::mem::size_of;
 use aos_sandbox_core::{ObjectDigest, PathName};
 use sha2::{Digest, Sha256};
 
-use crate::{IndexError, IndexNodeKind, IndexNodeView, ValidatedIndex};
+use crate::{
+    DirectoryRange, IndexError, IndexNodeKind, IndexNodeSemantics, IndexNodeView, ValidatedIndex,
+};
 
 const INITIAL_CAPACITY: usize = 2;
 const SEMANTIC_HASH_DOMAIN: &[u8] = b"aos.filesystem-view.inode-semantic.v1\0";
@@ -109,6 +111,20 @@ pub struct OpenReservation {
     consumed: bool,
 }
 
+impl OpenReservation {
+    /// Returns the raw protocol handle reserved for a prospective open reply.
+    ///
+    /// This untrusted integer is identity to be resolved by the originating
+    /// table, not standalone authority. Reading it makes no state transition.
+    /// While the reservation is unconsumed, resolution reports a pending open;
+    /// after successful [`InodeTable::activate_open`] the same integer resolves
+    /// to the active handle, and after [`InodeTable::abort_open`] it is stale.
+    #[must_use]
+    pub const fn raw_protocol_handle(&self) -> u64 {
+        self.raw_handle_id
+    }
+}
+
 /// Portable attributes returned by lookup and getattr.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct InodeAttributes {
@@ -128,6 +144,99 @@ pub struct InodeAttributes {
     pub mtime_seconds: i64,
     /// Normalized modification-time nanoseconds.
     pub mtime_nanos: u32,
+}
+
+/// Borrows one authenticated live inode while preventing table mutation.
+///
+/// Construction reauthenticates the retained record against the exact index.
+/// The wrapper borrows its table, so lookup-reference eviction and open-table
+/// mutation cannot occur while its record or semantic views are in use.
+///
+/// ```compile_fail
+/// use aos_filesystem_view::{ForgetRequest, InodeError, InodeTable};
+///
+/// fn cannot_evict_while_borrowed(
+///     table: &mut InodeTable<'_, '_>,
+///     node_id: u64,
+/// ) -> Result<(), InodeError> {
+///     let live = table.live_inode(node_id)?;
+///     table.forget(&mut [ForgetRequest::new(node_id, 1)])?;
+///     let _ = live.attributes();
+///     Ok(())
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use aos_filesystem_view::{IndexNodeView, InodeError, InodeTable};
+///
+/// fn record_cannot_escape(
+///     table: &InodeTable<'_, '_>,
+/// ) -> Result<&'static IndexNodeView<'static>, InodeError> {
+///     let live = table.live_inode(1)?;
+///     Ok(live.record())
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use aos_filesystem_view::{IndexNodeSemantics, InodeError, InodeTable};
+///
+/// fn semantics_cannot_escape(
+///     table: &InodeTable<'_, '_>,
+/// ) -> Result<IndexNodeSemantics<'static>, InodeError> {
+///     let live = table.live_inode(1)?;
+///     live.semantics()
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use aos_filesystem_view::{DirectoryRange, InodeError, InodeTable};
+///
+/// fn directory_range_cannot_escape(
+///     table: &InodeTable<'_, '_>,
+/// ) -> Result<DirectoryRange<'static>, InodeError> {
+///     let live = table.live_inode(1)?;
+///     live.directory_range()
+/// }
+/// ```
+pub struct LiveInode<'table, 'index, 'bytes> {
+    table: &'table InodeTable<'index, 'bytes>,
+    record: IndexNodeView<'bytes>,
+    attributes: InodeAttributes,
+}
+
+impl LiveInode<'_, '_, '_> {
+    /// Returns the connection-scoped attributes captured under this borrow.
+    #[must_use]
+    pub const fn attributes(&self) -> InodeAttributes {
+        self.attributes
+    }
+
+    /// Borrows the reauthenticated structural-index record.
+    #[must_use]
+    pub const fn record(&self) -> &IndexNodeView<'_> {
+        &self.record
+    }
+
+    /// Borrows authenticated variable metadata and node semantics.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InodeError::Index`] if the retained record no longer resolves
+    /// exactly within the validated index, which safe callers cannot cause.
+    pub fn semantics(&self) -> Result<IndexNodeSemantics<'_>, InodeError> {
+        Ok(self.table.index.record_semantics(&self.record)?)
+    }
+
+    /// Borrows the canonical child range of a directory inode.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InodeError::Index`] if directory iteration is unavailable,
+    /// the record is not an authenticated directory, or an index invariant
+    /// fails closed.
+    pub fn directory_range(&self) -> Result<DirectoryRange<'_>, InodeError> {
+        Ok(self.table.index.directory_range(&self.record)?)
+    }
 }
 
 /// Result of one byte-exact child lookup.
@@ -439,14 +548,12 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
     ///
     /// # Errors
     ///
-    /// Returns [`InodeError`] when the node is stale, a handle/count/heap
-    /// ceiling is exceeded, or fixed-slot allocation fails. Failure leaves all
-    /// table state unchanged.
+    /// Returns [`InodeError`] when the node is stale or fails exact identity
+    /// authentication, a handle/count/heap ceiling is exceeded, or fixed-slot
+    /// allocation fails. Failure leaves all table state unchanged.
     pub fn reserve_open(&mut self, node_id: u64) -> Result<OpenReservation, InodeError> {
+        let mut node = self.authenticated_node_entry(node_id)?;
         let node_slot = find_node(&self.nodes, node_id).ok_or(InodeError::StaleNode)?;
-        let NodeSlot::Occupied(mut node) = self.nodes[node_slot] else {
-            return Err(InodeError::InternalInvariant);
-        };
         if node.record.kind() != IndexNodeKind::File {
             return Err(InodeError::OpenTargetNotFile);
         }
@@ -583,7 +690,9 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
     /// Returns [`InodeError::OpenStillPending`] for a reserved open and
     /// [`InodeError::StaleOpenHandle`] for an unknown or released handle.
     /// A handle branded by another connection returns
-    /// [`InodeError::ForeignOpenHandle`].
+    /// [`InodeError::ForeignOpenHandle`]. Record identity or reverse-map
+    /// corruption returns [`InodeError::Index`] or
+    /// [`InodeError::InternalInvariant`].
     pub fn active_open(&self, handle_id: OpenHandleId) -> Result<InodeAttributes, InodeError> {
         let raw_handle_id = self.validate_handle_brand(handle_id)?;
         let slot = find_open(&self.opens, raw_handle_id).ok_or(InodeError::StaleOpenHandle)?;
@@ -593,9 +702,7 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
         if state == OpenState::Pending {
             return Err(InodeError::OpenStillPending);
         }
-        self.node_entry(node_id)
-            .map(attributes)
-            .ok_or(InodeError::InternalInvariant)
+        self.authenticated_node_entry(node_id).map(attributes)
     }
 
     /// Releases one active open exactly once and drops its inode pin.
@@ -659,26 +766,31 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
     /// inconsistency, identifier exhaustion, a configured admission ceiling,
     /// or allocation refusal. Failure leaves semantic inode state unchanged.
     pub fn lookup(&mut self, parent: u64, name: &PathName) -> Result<InodeLookup, InodeError> {
-        let parent_entry = self.node_entry(parent).ok_or(InodeError::StaleNode)?;
+        self.lookup_bytes(parent, name.as_bytes())
+    }
+
+    /// Looks up a byte-slice child without allocating an owned path component.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InodeError`] under the same conditions as [`Self::lookup`],
+    /// including [`IndexError::InvalidPathName`] for malformed component bytes.
+    pub fn lookup_bytes(&mut self, parent: u64, name: &[u8]) -> Result<InodeLookup, InodeError> {
+        let parent_entry = self.authenticated_node_entry(parent)?;
         if parent_entry.record.kind() != IndexNodeKind::Directory {
             return Err(InodeError::ParentNotDirectory);
         }
         let Some(record) = self
             .index
-            .retained_lookup_child(&parent_entry.record, name)?
+            .retained_lookup_child_bytes(&parent_entry.record, name)?
         else {
             return Ok(InodeLookup::Negative);
         };
         let semantic = semantic_key(&record)?;
         let hash = semantic_hash(&self.connection_key, semantic);
         if let Some(node_id) = find_semantic(&self.semantics, &hash, semantic) {
+            let mut entry = self.authenticated_node_entry(node_id)?;
             let slot = find_node(&self.nodes, node_id).ok_or(InodeError::InternalInvariant)?;
-            let NodeSlot::Occupied(mut entry) = self.nodes[slot] else {
-                return Err(InodeError::InternalInvariant);
-            };
-            if entry.semantic != semantic {
-                return Err(InodeError::InternalInvariant);
-            }
             let next = entry
                 .lookup_references
                 .checked_add(1)
@@ -704,11 +816,27 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
     /// # Errors
     ///
     /// Returns [`InodeError::StaleNode`] if the node was never assigned or was
-    /// evicted after its last lookup reference was forgotten.
+    /// evicted after its last lookup reference was forgotten. Record identity
+    /// or reverse-map corruption returns [`InodeError::Index`] or
+    /// [`InodeError::InternalInvariant`].
     pub fn getattr(&self, node_id: u64) -> Result<InodeAttributes, InodeError> {
-        self.node_entry(node_id)
-            .map(attributes)
-            .ok_or(InodeError::StaleNode)
+        self.authenticated_node_entry(node_id).map(attributes)
+    }
+
+    /// Borrows one reauthenticated live inode and prevents table mutation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InodeError::StaleNode`] if the ID is unknown or evicted,
+    /// [`InodeError::Index`] if its retained record is foreign or stale, or
+    /// [`InodeError::InternalInvariant`] if its slot identity is inconsistent.
+    pub fn live_inode(&self, node_id: u64) -> Result<LiveInode<'_, 'index, 'bytes>, InodeError> {
+        let entry = self.authenticated_node_entry(node_id)?;
+        Ok(LiveInode {
+            table: self,
+            record: entry.record,
+            attributes: attributes(entry),
+        })
     }
 
     /// Applies a bounded batch of lookup-reference releases atomically.
@@ -1157,6 +1285,24 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
             NodeSlot::Empty | NodeSlot::Tombstone => None,
         })
     }
+
+    /// Reauthenticates every identity edge for a connection-scoped node.
+    fn authenticated_node_entry(&self, node_id: u64) -> Result<NodeEntry<'bytes>, InodeError> {
+        let entry = self.node_entry(node_id).ok_or(InodeError::StaleNode)?;
+        if entry.node_id != node_id {
+            return Err(InodeError::InternalInvariant);
+        }
+        let record = self.index.authenticate_node(&entry.record)?;
+        let semantic = semantic_key(&record)?;
+        if semantic != entry.semantic {
+            return Err(InodeError::InternalInvariant);
+        }
+        let hash = semantic_hash(&self.connection_key, semantic);
+        if find_semantic(&self.semantics, &hash, semantic) != Some(node_id) {
+            return Err(InodeError::InternalInvariant);
+        }
+        Ok(NodeEntry { record, ..entry })
+    }
 }
 
 fn semantic_key(record: &IndexNodeView<'_>) -> Result<SemanticKey, IndexError> {
@@ -1486,12 +1632,18 @@ mod tests {
         bytes: Vec<u8>,
         tree: ObjectDescriptor,
         root: ObjectDescriptor,
+        v3: bool,
     }
 
     impl Fixture {
         fn validate(&self) -> ValidatedIndex<'_> {
-            let media = MediaType::new(INDEX_MEDIA_TYPE_V2)
-                .unwrap_or_else(|error| panic!("media failed: {error}"));
+            let media_type = if self.v3 {
+                crate::INDEX_MEDIA_TYPE_V3
+            } else {
+                INDEX_MEDIA_TYPE_V2
+            };
+            let media =
+                MediaType::new(media_type).unwrap_or_else(|error| panic!("media failed: {error}"));
             let descriptor = descriptor_for_bytes(media, &self.bytes);
             validate_index(
                 &self.bytes,
@@ -1510,9 +1662,22 @@ mod tests {
     }
 
     fn fixture() -> Fixture {
+        fixture_with_format([3; 32], false)
+    }
+
+    fn fixture_v3() -> Fixture {
+        fixture_with_format([3; 32], true)
+    }
+
+    fn fixture_with_content_digest(content_digest: [u8; 32]) -> Fixture {
+        fixture_with_format(content_digest, false)
+    }
+
+    fn fixture_with_format(content_digest: [u8; 32], v3: bool) -> Fixture {
         let tree = descriptor("application/vnd.aos.sandbox.tree.v1+cbor", [1; 32]);
         let root = descriptor("application/vnd.aos.sandbox.directory.v1+cbor", [2; 32]);
-        let content_descriptor = descriptor("application/vnd.aos.sandbox.content.v1", [3; 32]);
+        let content_descriptor =
+            descriptor("application/vnd.aos.sandbox.content.v1", content_digest);
         let content = ContentLayout::whole(content_descriptor);
         let directory_metadata = FilesystemMetadata::new(0o755, 10, 20, 30, 40, Vec::new(), None)
             .unwrap_or_else(|error| panic!("metadata failed: {error}"));
@@ -1531,9 +1696,12 @@ mod tests {
         let hardlink = hardlink_group_digest(&paths, &file_metadata, &content)
             .unwrap_or_else(|error| panic!("hardlink failed: {error}"));
         let staging = IndexStaging::new(IoCursor::new(Vec::new()), 16 * 1024, 4096);
-        let mut builder =
+        let mut builder = if v3 {
+            StructuralIndexBuilder::new_v3(staging, [7; 32], tree.clone(), root.clone(), 0)
+        } else {
             StructuralIndexBuilder::new(staging, [7; 32], tree.clone(), root.clone(), 0)
-                .unwrap_or_else(|error| panic!("builder failed: {error}"));
+        }
+        .unwrap_or_else(|error| panic!("builder failed: {error}"));
         builder
             .push(&IndexRecord {
                 parent: u64::MAX,
@@ -1585,6 +1753,16 @@ mod tests {
                 },
             })
             .unwrap_or_else(|error| panic!("file push failed: {error}"));
+        builder
+            .push(&IndexRecord {
+                parent: 0,
+                depth: 1,
+                sibling_ordinal: 4,
+                name: b"e",
+                metadata: &directory_metadata,
+                node: IndexNode::Directory { descriptor: &root },
+            })
+            .unwrap_or_else(|error| panic!("directory push failed: {error}"));
         let (writer, _) = builder
             .finish()
             .unwrap_or_else(|error| panic!("finish failed: {error}"))
@@ -1593,6 +1771,7 @@ mod tests {
             bytes: writer.into_inner(),
             tree,
             root,
+            v3,
         }
     }
 
@@ -1650,6 +1829,401 @@ mod tests {
             InodeLookup::Negative
         );
         assert_eq!(table.live_nodes(), 2);
+    }
+
+    #[test]
+    fn byte_lookup_validates_without_owned_names_or_partial_mutation() {
+        let fixture = fixture();
+        let index = fixture.validate();
+        let mut table = InodeTable::new(&index, [31; 32], generous_limits())
+            .unwrap_or_else(|error| panic!("table failed: {error}"));
+
+        let found = table
+            .lookup_bytes(ROOT_NODE_ID, b"c")
+            .unwrap_or_else(|error| panic!("byte lookup failed: {error}"));
+        assert!(matches!(found, InodeLookup::Positive { .. }));
+        let nodes = table.live_nodes();
+        let references = table.total_lookup_references();
+        let oversized = [b'a'; 256];
+        for invalid in [
+            &b""[..],
+            &b"."[..],
+            &b".."[..],
+            &b"a/b"[..],
+            &b"a\0b"[..],
+            &oversized,
+        ] {
+            assert!(matches!(
+                table.lookup_bytes(ROOT_NODE_ID, invalid),
+                Err(InodeError::Index(IndexError::InvalidPathName(_)))
+            ));
+            assert_eq!(table.live_nodes(), nodes);
+            assert_eq!(table.total_lookup_references(), references);
+        }
+    }
+
+    #[test]
+    fn live_inode_reauthenticates_and_bounds_all_borrowed_views() {
+        let fixture = fixture();
+        let index = fixture.validate();
+        let mut table = InodeTable::new(&index, [32; 32], generous_limits())
+            .unwrap_or_else(|error| panic!("table failed: {error}"));
+        let (file, _) = positive_parts(
+            table
+                .lookup_bytes(ROOT_NODE_ID, b"c")
+                .unwrap_or_else(|error| panic!("lookup failed: {error}")),
+        );
+
+        {
+            let live = table
+                .live_inode(file.node_id)
+                .unwrap_or_else(|error| panic!("live inode failed: {error}"));
+            assert_eq!(live.attributes(), file);
+            assert_eq!(live.record().record_id(), file.record_id);
+            assert_eq!(
+                live.semantics()
+                    .unwrap_or_else(|error| panic!("semantics failed: {error}"))
+                    .logical_size(),
+                Some(0)
+            );
+        }
+
+        table
+            .forget(&mut [ForgetRequest::new(file.node_id, 1)])
+            .unwrap_or_else(|error| panic!("forget failed: {error}"));
+        assert!(matches!(
+            table.live_inode(file.node_id),
+            Err(InodeError::StaleNode)
+        ));
+
+        let root = table
+            .live_inode(ROOT_NODE_ID)
+            .unwrap_or_else(|error| panic!("root live inode failed: {error}"));
+        assert!(matches!(
+            root.directory_range(),
+            Err(InodeError::Index(IndexError::DirectoryIterationUnavailable))
+        ));
+    }
+
+    #[test]
+    fn live_inode_exposes_a_canonical_v3_directory_range() {
+        let fixture = fixture_v3();
+        let index = fixture.validate();
+        let table = InodeTable::new(&index, [40; 32], generous_limits())
+            .unwrap_or_else(|error| panic!("table failed: {error}"));
+        let root = table
+            .live_inode(ROOT_NODE_ID)
+            .unwrap_or_else(|error| panic!("root live inode failed: {error}"));
+        let range = root
+            .directory_range()
+            .unwrap_or_else(|error| panic!("directory range failed: {error}"));
+        assert_eq!(range.len(), 5);
+        let names = range
+            .iter()
+            .map(|entry| {
+                entry
+                    .unwrap_or_else(|error| panic!("directory entry failed: {error}"))
+                    .node()
+                    .name()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec![
+                b"a".as_slice(),
+                b"b".as_slice(),
+                b"c".as_slice(),
+                b"d".as_slice(),
+                b"e".as_slice(),
+            ]
+        );
+    }
+
+    #[test]
+    fn live_inode_rejects_a_foreign_retained_record() {
+        let first_fixture = fixture();
+        let second_fixture = fixture_with_content_digest([33; 32]);
+        let first_index = first_fixture.validate();
+        let second_index = second_fixture.validate();
+        let foreign_root = second_index
+            .root()
+            .unwrap_or_else(|error| panic!("foreign root failed: {error}"));
+        let mut table = InodeTable::new(&first_index, [34; 32], generous_limits())
+            .unwrap_or_else(|error| panic!("table failed: {error}"));
+        let slot = find_node(&table.nodes, ROOT_NODE_ID)
+            .unwrap_or_else(|| panic!("root node slot missing"));
+        let NodeSlot::Occupied(mut entry) = table.nodes[slot] else {
+            panic!("root node entry missing");
+        };
+        entry.record = foreign_root;
+        table.nodes[slot] = NodeSlot::Occupied(entry);
+
+        assert!(matches!(
+            table.live_inode(ROOT_NODE_ID),
+            Err(InodeError::Index(IndexError::ForeignNode))
+        ));
+    }
+
+    #[test]
+    fn live_inode_rejects_same_artifact_identity_and_reverse_map_corruption() {
+        let fixture = fixture();
+        let index = fixture.validate();
+        let mut table = InodeTable::new(&index, [35; 32], generous_limits())
+            .unwrap_or_else(|error| panic!("table failed: {error}"));
+        let (first, _) = positive_parts(
+            table
+                .lookup_bytes(ROOT_NODE_ID, b"c")
+                .unwrap_or_else(|error| panic!("first lookup failed: {error}")),
+        );
+        let (second, _) = positive_parts(
+            table
+                .lookup_bytes(ROOT_NODE_ID, b"d")
+                .unwrap_or_else(|error| panic!("second lookup failed: {error}")),
+        );
+        let first_slot = find_node(&table.nodes, first.node_id)
+            .unwrap_or_else(|| panic!("first node slot missing"));
+        let second_entry = table
+            .node_entry(second.node_id)
+            .unwrap_or_else(|| panic!("second node missing"));
+        let NodeSlot::Occupied(original) = table.nodes[first_slot] else {
+            panic!("first node missing");
+        };
+        let live_nodes = table.live_nodes();
+        let references = table.total_lookup_references();
+
+        table.nodes[first_slot] = NodeSlot::Occupied(NodeEntry {
+            record: second_entry.record,
+            ..original
+        });
+        assert!(matches!(
+            table.live_inode(first.node_id),
+            Err(InodeError::InternalInvariant)
+        ));
+        assert_eq!(table.live_nodes(), live_nodes);
+        assert_eq!(table.total_lookup_references(), references);
+
+        table.nodes[first_slot] = NodeSlot::Occupied(NodeEntry {
+            semantic: second_entry.semantic,
+            ..original
+        });
+        assert!(matches!(
+            table.live_inode(first.node_id),
+            Err(InodeError::InternalInvariant)
+        ));
+        assert_eq!(table.live_nodes(), live_nodes);
+        assert_eq!(table.total_lookup_references(), references);
+
+        table.nodes[first_slot] = NodeSlot::Occupied(original);
+        let hash = semantic_hash(&table.connection_key, original.semantic);
+        let semantic_slot = find_semantic_slot(&table.semantics, &hash, original.semantic)
+            .unwrap_or_else(|| panic!("first semantic slot missing"));
+        table.semantics[semantic_slot] = SemanticSlot::Tombstone;
+        assert!(matches!(
+            table.live_inode(first.node_id),
+            Err(InodeError::InternalInvariant)
+        ));
+        assert_eq!(table.live_nodes(), live_nodes);
+        assert_eq!(table.total_lookup_references(), references);
+    }
+
+    #[test]
+    fn lookup_rejects_same_artifact_directory_swap_before_admission() {
+        let fixture = fixture();
+        let index = fixture.validate();
+        let mut table = InodeTable::new(&index, [36; 32], generous_limits())
+            .unwrap_or_else(|error| panic!("table failed: {error}"));
+        let (directory, _) = positive_parts(
+            table
+                .lookup_bytes(ROOT_NODE_ID, b"e")
+                .unwrap_or_else(|error| panic!("directory lookup failed: {error}")),
+        );
+        assert_eq!(directory.kind, IndexNodeKind::Directory);
+        let directory_entry = table
+            .node_entry(directory.node_id)
+            .unwrap_or_else(|| panic!("directory entry missing"));
+        let root_slot = find_node(&table.nodes, ROOT_NODE_ID)
+            .unwrap_or_else(|| panic!("root node slot missing"));
+        let NodeSlot::Occupied(root_entry) = table.nodes[root_slot] else {
+            panic!("root node entry missing");
+        };
+        table.nodes[root_slot] = NodeSlot::Occupied(NodeEntry {
+            record: directory_entry.record,
+            ..root_entry
+        });
+        let live_nodes = table.live_nodes();
+        let references = table.total_lookup_references();
+        let next_node_id = table.next_node_id;
+
+        assert!(matches!(
+            table.lookup_bytes(ROOT_NODE_ID, b"c"),
+            Err(InodeError::InternalInvariant)
+        ));
+        assert_eq!(table.live_nodes(), live_nodes);
+        assert_eq!(table.total_lookup_references(), references);
+        assert_eq!(table.next_node_id, next_node_id);
+    }
+
+    #[test]
+    fn lookup_reuse_reauthenticates_the_existing_inode_before_increment() {
+        let fixture = fixture();
+        let index = fixture.validate();
+        let mut table = InodeTable::new(&index, [37; 32], generous_limits())
+            .unwrap_or_else(|error| panic!("table failed: {error}"));
+        let (first, _) = positive_parts(
+            table
+                .lookup_bytes(ROOT_NODE_ID, b"c")
+                .unwrap_or_else(|error| panic!("first lookup failed: {error}")),
+        );
+        let (second, _) = positive_parts(
+            table
+                .lookup_bytes(ROOT_NODE_ID, b"d")
+                .unwrap_or_else(|error| panic!("second lookup failed: {error}")),
+        );
+        let first_slot = find_node(&table.nodes, first.node_id)
+            .unwrap_or_else(|| panic!("first node slot missing"));
+        let second_entry = table
+            .node_entry(second.node_id)
+            .unwrap_or_else(|| panic!("second node missing"));
+        let NodeSlot::Occupied(first_entry) = table.nodes[first_slot] else {
+            panic!("first node missing");
+        };
+        table.nodes[first_slot] = NodeSlot::Occupied(NodeEntry {
+            record: second_entry.record,
+            ..first_entry
+        });
+        let entry_references = first_entry.lookup_references;
+        let total_references = table.total_lookup_references();
+        let live_nodes = table.live_nodes();
+        let next_node_id = table.next_node_id;
+
+        assert!(matches!(
+            table.lookup_bytes(ROOT_NODE_ID, b"c"),
+            Err(InodeError::InternalInvariant)
+        ));
+        assert_eq!(
+            table
+                .node_entry(first.node_id)
+                .map(|entry| entry.lookup_references),
+            Some(entry_references)
+        );
+        assert_eq!(table.total_lookup_references(), total_references);
+        assert_eq!(table.live_nodes(), live_nodes);
+        assert_eq!(table.next_node_id, next_node_id);
+    }
+
+    #[test]
+    fn public_inode_reads_and_open_authorization_reject_record_substitution() {
+        let fixture = fixture();
+        let index = fixture.validate();
+        let mut table = InodeTable::new(&index, [38; 32], generous_limits())
+            .unwrap_or_else(|error| panic!("table failed: {error}"));
+        let (first, _) = positive_parts(
+            table
+                .lookup_bytes(ROOT_NODE_ID, b"c")
+                .unwrap_or_else(|error| panic!("first lookup failed: {error}")),
+        );
+        let (second, _) = positive_parts(
+            table
+                .lookup_bytes(ROOT_NODE_ID, b"d")
+                .unwrap_or_else(|error| panic!("second lookup failed: {error}")),
+        );
+        let first_slot = find_node(&table.nodes, first.node_id)
+            .unwrap_or_else(|| panic!("first node slot missing"));
+        let NodeSlot::Occupied(first_entry) = table.nodes[first_slot] else {
+            panic!("first node missing");
+        };
+        let second_record = table
+            .node_entry(second.node_id)
+            .unwrap_or_else(|| panic!("second node missing"))
+            .record;
+        table.nodes[first_slot] = NodeSlot::Occupied(NodeEntry {
+            record: second_record,
+            ..first_entry
+        });
+        let heap_bytes = table.heap_bytes();
+        let live_nodes = table.live_nodes();
+        let references = table.total_lookup_references();
+        let live_opens = table.live_open_handles();
+        let pending_opens = table.pending_open_handles();
+        let next_node_id = table.next_node_id;
+        let next_open_handle_id = table.next_open_handle_id;
+
+        assert!(matches!(
+            table.getattr(first.node_id),
+            Err(InodeError::InternalInvariant)
+        ));
+        assert!(matches!(
+            table.reserve_open(first.node_id),
+            Err(InodeError::InternalInvariant)
+        ));
+        assert_eq!(table.heap_bytes(), heap_bytes);
+        assert_eq!(table.live_nodes(), live_nodes);
+        assert_eq!(table.total_lookup_references(), references);
+        assert_eq!(table.live_open_handles(), live_opens);
+        assert_eq!(table.pending_open_handles(), pending_opens);
+        assert_eq!(table.next_node_id, next_node_id);
+        assert_eq!(table.next_open_handle_id, next_open_handle_id);
+        assert_eq!(
+            table.node_entry(first.node_id).map(|entry| entry.open_pins),
+            Some(first_entry.open_pins)
+        );
+
+        let mut active_table = InodeTable::new(&index, [39; 32], generous_limits())
+            .unwrap_or_else(|error| panic!("active table failed: {error}"));
+        let (active_file, _) = positive_parts(
+            active_table
+                .lookup_bytes(ROOT_NODE_ID, b"c")
+                .unwrap_or_else(|error| panic!("active-file lookup failed: {error}")),
+        );
+        let (replacement, _) = positive_parts(
+            active_table
+                .lookup_bytes(ROOT_NODE_ID, b"d")
+                .unwrap_or_else(|error| panic!("replacement lookup failed: {error}")),
+        );
+        let mut reservation = active_table
+            .reserve_open(active_file.node_id)
+            .unwrap_or_else(|error| panic!("reservation failed: {error}"));
+        let handle = active_table
+            .activate_open(&mut reservation)
+            .unwrap_or_else(|error| panic!("activation failed: {error}"));
+        let active_slot = find_node(&active_table.nodes, active_file.node_id)
+            .unwrap_or_else(|| panic!("active node slot missing"));
+        let NodeSlot::Occupied(active_entry) = active_table.nodes[active_slot] else {
+            panic!("active node missing");
+        };
+        let replacement_record = active_table
+            .node_entry(replacement.node_id)
+            .unwrap_or_else(|| panic!("replacement node missing"))
+            .record;
+        active_table.nodes[active_slot] = NodeSlot::Occupied(NodeEntry {
+            record: replacement_record,
+            ..active_entry
+        });
+        let active_heap = active_table.heap_bytes();
+        let active_nodes = active_table.live_nodes();
+        let active_references = active_table.total_lookup_references();
+        let active_opens = active_table.live_open_handles();
+        let active_pending = active_table.pending_open_handles();
+        let active_next_node = active_table.next_node_id;
+        let active_next_open = active_table.next_open_handle_id;
+
+        assert!(matches!(
+            active_table.active_open(handle),
+            Err(InodeError::InternalInvariant)
+        ));
+        assert_eq!(active_table.heap_bytes(), active_heap);
+        assert_eq!(active_table.live_nodes(), active_nodes);
+        assert_eq!(active_table.total_lookup_references(), active_references);
+        assert_eq!(active_table.live_open_handles(), active_opens);
+        assert_eq!(active_table.pending_open_handles(), active_pending);
+        assert_eq!(active_table.next_node_id, active_next_node);
+        assert_eq!(active_table.next_open_handle_id, active_next_open);
+        assert_eq!(
+            active_table
+                .node_entry(active_file.node_id)
+                .map(|entry| entry.open_pins),
+            Some(active_entry.open_pins)
+        );
     }
 
     #[test]
@@ -1973,7 +2547,8 @@ mod tests {
         let mut reservation = table
             .reserve_open(file.node_id)
             .unwrap_or_else(|error| panic!("reserve failed: {error}"));
-        let raw_handle = reservation.raw_handle_id;
+        let raw_handle = reservation.raw_protocol_handle();
+        assert_eq!(reservation.raw_protocol_handle(), raw_handle);
         assert_eq!(table.live_open_handles(), 1);
         assert_eq!(table.pending_open_handles(), 1);
         assert!(matches!(
@@ -1991,6 +2566,7 @@ mod tests {
             .activate_open(&mut reservation)
             .unwrap_or_else(|error| panic!("activate failed: {error}"));
         assert_eq!(active.get(), raw_handle);
+        assert_eq!(reservation.raw_protocol_handle(), raw_handle);
         let resolved = table
             .resolve_active_handle(raw_handle)
             .unwrap_or_else(|error| panic!("resolve failed: {error}"));
@@ -2039,12 +2615,22 @@ mod tests {
         let mut reservation = table
             .reserve_open(file.node_id)
             .unwrap_or_else(|error| panic!("reserve failed: {error}"));
+        let raw_handle = reservation.raw_protocol_handle();
+        assert!(matches!(
+            table.resolve_active_handle(raw_handle),
+            Err(InodeError::OpenStillPending)
+        ));
         table
             .forget(&mut [ForgetRequest::new(file.node_id, 1)])
             .unwrap_or_else(|error| panic!("forget failed: {error}"));
         table
             .abort_open(&mut reservation)
             .unwrap_or_else(|error| panic!("abort failed: {error}"));
+        assert_eq!(reservation.raw_protocol_handle(), raw_handle);
+        assert!(matches!(
+            table.resolve_active_handle(raw_handle),
+            Err(InodeError::StaleOpenHandle)
+        ));
         assert!(matches!(
             table.abort_open(&mut reservation),
             Err(InodeError::InvalidOpenReservation)
@@ -2426,7 +3012,10 @@ mod tests {
         assert_eq!(table.live, live_before);
         assert_eq!(table.live_opens, live_opens_before);
         assert_eq!(table.open_tombstones, open_tombstones_before);
-        assert!(table.active_open(handle).is_ok());
+        assert!(matches!(
+            table.active_open(handle),
+            Err(InodeError::InternalInvariant)
+        ));
         assert_eq!(
             table
                 .node_entry(file.node_id)
