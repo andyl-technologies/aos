@@ -175,6 +175,7 @@ in {
       AOS = "NO_PROXY='*' no_proxy='*' SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt ${pkgs.aos}/bin/aos"
       APR = "${pkgs.aos.apr}/bin/apr"
       CURL = "${pkgs.curl}/bin/curl --noproxy '*' --cacert /etc/ssl/certs/ca-certificates.crt"
+      GIT = "${pkgs.git}/bin/git"
       JQ = "${pkgs.jq}/bin/jq"
       NIX_STORE = "${pkgs.nix}/bin/nix-store"
       MOUNT = "${pkgs.util-linux}/bin/mount"
@@ -401,7 +402,7 @@ in {
             {NIX_STORE} --dump "$path" > "/var/tmp/nars/$(basename "$path").nar"
           done
       """), timeout=600)
-      base_commit = publisher.succeed("awk 'NR == 1 {print $1}' /var/tmp/base-surface/info/refs").strip()
+      base_commit = publisher.succeed(f"{GIT} --git-dir=/var/tmp/base-surface rev-parse HEAD").strip()
       assert len(base_commit) == 64, base_commit
 
       for url, token in ((STAGING, staging_token), (PRODUCTION, production_token)):
