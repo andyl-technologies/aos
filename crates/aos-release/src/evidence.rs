@@ -411,7 +411,7 @@ mod tests {
             release_id: "release-2026.9.0".to_owned(),
             version: "2026.9.0".to_owned(),
             release_class: ReleaseClass::Stable,
-            registry: crate::CANONICAL_REGISTRY.to_owned(),
+            registry: crate::registry::MAIN_REGISTRY.to_owned(),
             registry_base_commit: "0123456789012345678901234567890123456789".to_owned(),
             registry_base_generation: 1,
             source: SourceIdentity {
@@ -597,7 +597,7 @@ mod tests {
     fn executor_request_closes_public_objects_and_subjects() {
         let request = QualificationExecutorRequestV1 {
             schema_version: QUALIFICATION_EXECUTOR_REQUEST_V1.to_owned(),
-            registry: crate::CANONICAL_REGISTRY.to_owned(),
+            registry: crate::registry::MAIN_REGISTRY.to_owned(),
             release_id: "release-2026.9.0".to_owned(),
             staging_receipt_digest: digest("staging"),
             manifest_digest: digest("manifest"),

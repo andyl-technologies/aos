@@ -78,6 +78,9 @@ semver = { workspace = true }
 # This dependency only links into the wasm32 target; on native it resolves but
 # its glue is never referenced (the worker modules are cfg-gated out).
 worker = { version = "0.8", features = ["queue"] }
+# Direct access to the exact DurableObjectStorage JS handle is needed only for
+# PITR methods that workers-rs 0.8 has not wrapped yet.
+worker-sys = "0.8"
 
 # The worker fold (RFC-0004 Phase 5 step 4e): the Worker serves the *same*
 # shared Connect-JSON axum router as the native hub (aos_hub_core::connect),
