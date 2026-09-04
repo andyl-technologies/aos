@@ -12,7 +12,7 @@ use crate::envelope::InventoryEnvelopeV1;
 use crate::identity::RunId;
 use crate::plan::PackageUpdatePlanV1;
 use crate::remote::{PullRequestObservationV1, PullRequestPublicationV1};
-use crate::run::{PackageUpdateEvidenceV1, PackageUpdateRunV1, RepairAttemptV1};
+use crate::run::{GateResultsV1, PackageUpdateEvidenceV1, PackageUpdateRunV1, RepairAttemptV1};
 use crate::workflow::{DiscoveryDecision, GateOutcome, RunState, TaskStatus};
 
 /// Classifies the outcome of the requested command independently of run state.
@@ -198,6 +198,12 @@ pub struct CommandData {
     /// Bounded textual patch returned by explicit diff inspection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub patch: Option<String>,
+    /// Retained quick and final gate executions selected for inspection.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gate_results: Vec<GateResultsV1>,
+    /// One explicitly selected retained gate log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_log: Option<GateLogView>,
     /// Closed trusted task supplied to a local repair adapter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_task: Option<AgentTaskV1>,
@@ -219,6 +225,22 @@ pub struct CommandData {
     /// Latest exact-head read-only pull-request observation, when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_observation: Option<PullRequestObservationV1>,
+}
+
+/// Carries one bounded retained gate log and its local evidence identity.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct GateLogView {
+    /// Gate phase containing the selected execution.
+    pub phase: String,
+    /// Stable planned gate identity.
+    pub gate_id: String,
+    /// Protected local evidence path, when explicitly requested.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// Bounded retained output, when explicitly requested.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contents: Option<String>,
 }
 
 /// Carries exact reviewed pull-request text and branch identities offline.
@@ -290,6 +312,16 @@ impl MaintainCommandResult {
         }
         if self.data.values.len() > 128
             || self.data.runs.len() > 1024
+            || self.data.gate_results.len() > 2
+            || self.data.gate_log.as_ref().is_some_and(|log| {
+                log.phase.len() > 16
+                    || log.gate_id.len() > 256
+                    || log.path.as_ref().is_some_and(|path| path.len() > 8192)
+                    || log
+                        .contents
+                        .as_ref()
+                        .is_some_and(|contents| contents.len() > 8 * 1024 * 1024)
+            })
             || self
                 .data
                 .patch
@@ -309,6 +341,16 @@ impl MaintainCommandResult {
         }
         for action in &self.next_actions {
             action.validate()?;
+        }
+        for gates in &self.data.gate_results {
+            gates.validate()?;
+        }
+        if let Some(log) = &self.data.gate_log
+            && (!matches!(log.phase.as_str(), "quick" | "final")
+                || log.gate_id.is_empty()
+                || log.path.is_some() == log.contents.is_some())
+        {
+            bail!("maintenance gate-log view is invalid");
         }
         if let Some(task) = &self.data.agent_task {
             task.validate()?;

@@ -81,18 +81,7 @@ pub(super) fn evaluate(nix: &NixRunner, target: Option<&str>) -> Result<Inventor
             .map(str::to_string)
             .ok_or_else(|| anyhow::anyhow!("builtins.currentSystem did not evaluate to text"))?,
     };
-    let controller = ControllerIdentity {
-        version: env!("CARGO_PKG_VERSION").to_string(),
-        executable_digest: executable_digest()?,
-        policy_digest: Sha256Digest::separated(
-            "aos.maintain.controller-policy/v1",
-            format!(
-                "{}:{}",
-                env!("CARGO_PKG_VERSION"),
-                aos_maintain::MAINTENANCE_INVENTORY_V1
-            ),
-        ),
-    };
+    let controller = controller_identity()?;
     let envelope = InventoryEnvelopeV1 {
         schema: MAINTENANCE_INVENTORY_ENVELOPE_V1.to_string(),
         canonical_remote: remote,
@@ -109,6 +98,26 @@ pub(super) fn evaluate(nix: &NixRunner, target: Option<&str>) -> Result<Inventor
     };
     envelope.validate()?;
     Ok(envelope)
+}
+
+/// Resolves the exact executable and policy identity of this controller.
+///
+/// # Errors
+///
+/// Returns an error when the running executable cannot be read or hashed.
+pub(super) fn controller_identity() -> Result<ControllerIdentity> {
+    Ok(ControllerIdentity {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        executable_digest: executable_digest()?,
+        policy_digest: Sha256Digest::separated(
+            "aos.maintain.controller-policy/v1",
+            format!(
+                "{}:{}",
+                env!("CARGO_PKG_VERSION"),
+                aos_maintain::MAINTENANCE_INVENTORY_V1
+            ),
+        ),
+    })
 }
 
 /// Audits every schedulable member's direct fixed-output derivation inputs.

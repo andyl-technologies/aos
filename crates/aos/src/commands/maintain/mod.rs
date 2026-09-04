@@ -24,7 +24,7 @@ use aos_maintain::identity::OperationId;
 use aos_maintain::inventory::Classification;
 use aos_maintain::presentation::{
     CommandCompletion, CommandData, CommandDisposition, Diagnostic, DiagnosticSeverity,
-    EffectClass, MaintainCommandResult, NextAction, PrimaryValue, PullRequestDraft,
+    EffectClass, GateLogView, MaintainCommandResult, NextAction, PrimaryValue, PullRequestDraft,
     escape_terminal,
 };
 use aos_maintain::workflow::{ProgressEvent, TaskStatus};
@@ -232,6 +232,10 @@ fn accept_command(
 ) -> Result<CommandCompletion> {
     let (store, _) = current_store(args)?;
     let mut run = resolve_run(&store, &command.run)?;
+    let plan = store
+        .read_plan(run.plan_id.as_str())?
+        .ok_or_else(|| anyhow::anyhow!("run plan is unavailable"))?;
+    require_frozen_controller(&plan)?;
     if command.adopt_worktree {
         return adopt_worktree(args, &store, run, command.confirm.as_deref());
     }
@@ -313,6 +317,7 @@ fn adopt_worktree(
     let plan = store
         .read_plan(run.plan_id.as_str())?
         .ok_or_else(|| anyhow::anyhow!("run plan is unavailable"))?;
+    require_frozen_controller(&plan)?;
     let (patch, changed_paths) =
         materialize::adopt_candidate(std::path::Path::new(&run.worktree), &plan, 0, false)?;
     let retained = store
@@ -454,6 +459,7 @@ fn commit_command(
     let plan = store
         .read_plan(run.plan_id.as_str())?
         .ok_or_else(|| anyhow::anyhow!("run plan is unavailable"))?;
+    require_frozen_controller(&plan)?;
     match git::commit_candidate(&store, &plan, &mut run) {
         Ok(commit) => {
             let mut completion = run_view_completion("commit", &store, run, None)?;
@@ -486,6 +492,7 @@ fn test_command(
     let plan = store
         .read_plan(run.plan_id.as_str())?
         .ok_or_else(|| anyhow::anyhow!("run plan is unavailable"))?;
+    require_frozen_controller(&plan)?;
     let final_phase = if command.quick {
         false
     } else {
@@ -530,6 +537,7 @@ async fn repair_command(
     let plan = store
         .read_plan(run.plan_id.as_str())?
         .ok_or_else(|| anyhow::anyhow!("run plan is unavailable"))?;
+    require_frozen_controller(&plan)?;
 
     if let Some(confirmation) = command.confirm.as_deref() {
         let Some(proposal) = repair::pending(&store, &run)? else {
@@ -710,6 +718,7 @@ fn evidence_command(
     let plan = store
         .read_plan(run.plan_id.as_str())?
         .ok_or_else(|| anyhow::anyhow!("run plan is unavailable"))?;
+    require_frozen_controller(&plan)?;
     let (evidence, digest) = match evidence::generate(&store, &plan, &mut run) {
         Ok(result) => result,
         Err(error) => {
@@ -844,6 +853,10 @@ async fn publish_pr_command(
 ) -> Result<CommandCompletion> {
     let (store, coordinates) = current_store(args)?;
     let mut run = resolve_run(&store, &command.run)?;
+    let plan = store
+        .read_plan(run.plan_id.as_str())?
+        .ok_or_else(|| anyhow::anyhow!("run plan is unavailable"))?;
+    require_frozen_controller(&plan)?;
     if !matches!(
         run.state,
         aos_maintain::workflow::RunState::ReadyForPr
@@ -989,6 +1002,10 @@ async fn observe_pr_command(
 ) -> Result<CommandCompletion> {
     let (store, _) = current_store(args)?;
     let mut run = resolve_run(&store, &command.run)?;
+    let plan = store
+        .read_plan(run.plan_id.as_str())?
+        .ok_or_else(|| anyhow::anyhow!("run plan is unavailable"))?;
+    require_frozen_controller(&plan)?;
     if !matches!(
         run.state,
         aos_maintain::workflow::RunState::AwaitingRemoteAuthorization
@@ -1065,6 +1082,10 @@ fn handoff_command(
 ) -> Result<CommandCompletion> {
     let (store, _) = current_store(args)?;
     let mut run = resolve_run(&store, &command.run)?;
+    let plan = store
+        .read_plan(run.plan_id.as_str())?
+        .ok_or_else(|| anyhow::anyhow!("run plan is unavailable"))?;
+    require_frozen_controller(&plan)?;
     if run.state == aos_maintain::workflow::RunState::ReleaseHandoff {
         return run_view_completion("handoff", &store, run, None);
     }
@@ -1248,7 +1269,69 @@ fn inspect_command(
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("inspect requires a run or plan"))?;
     let run = resolve_run(&store, query)?;
-    run_view_completion("inspect", &store, run, None)
+    let mut gate_results = Vec::new();
+    for phase in ["quick", "final"] {
+        if let Some(results) = store.read_gate_results(run.run_id.as_str(), phase)? {
+            gate_results.push(results);
+        }
+    }
+    let selected_log = command.log.as_ref().or(command.log_file.as_ref());
+    let gate_log = if let Some(gate_id) = selected_log {
+        let phase = gate_results
+            .iter()
+            .rev()
+            .find(|results| {
+                results
+                    .results
+                    .iter()
+                    .any(|result| result.gate_id == *gate_id)
+            })
+            .map(|results| results.phase.as_str())
+            .ok_or_else(|| anyhow::anyhow!("selected gate has no retained execution"))?;
+        if command.log_file.is_some() {
+            store.read_gate_log(run.run_id.as_str(), phase, gate_id)?;
+            let path = store.gate_log_path(run.run_id.as_str(), phase, gate_id)?;
+            Some(GateLogView {
+                phase: phase.to_string(),
+                gate_id: gate_id.clone(),
+                path: Some(
+                    path.to_str()
+                        .ok_or_else(|| anyhow::anyhow!("retained gate-log path is not UTF-8"))?
+                        .to_string(),
+                ),
+                contents: None,
+            })
+        } else {
+            let bytes = store.read_gate_log(run.run_id.as_str(), phase, gate_id)?;
+            Some(GateLogView {
+                phase: phase.to_string(),
+                gate_id: gate_id.clone(),
+                path: None,
+                contents: Some(String::from_utf8_lossy(&bytes).into_owned()),
+            })
+        }
+    } else {
+        None
+    };
+    if command.failure {
+        gate_results.retain(|results| {
+            results
+                .results
+                .iter()
+                .any(|result| result.outcome != aos_maintain::workflow::GateOutcome::Success)
+        });
+    }
+    let mut completion = run_view_completion("inspect", &store, run, None)?;
+    completion.result.data.gate_results = gate_results;
+    completion.result.data.gate_log = gate_log;
+    if command.failure {
+        completion
+            .result
+            .data
+            .values
+            .insert("inspectionFocus".to_string(), "failure".to_string());
+    }
+    CommandCompletion::new(completion.result)
 }
 
 fn diff_command(
@@ -1815,6 +1898,11 @@ fn plan_command(
         }
     };
     let digest = store.write_plan(&plan)?;
+    snapshot.units.retain(|unit| {
+        unit_ids
+            .iter()
+            .any(|selected| selected.as_str() == unit.unit_id)
+    });
     completion(
         "plan",
         CommandDisposition::Success,
@@ -1936,7 +2024,10 @@ async fn run_command(
     };
     let envelope_digest =
         Sha256Digest::of_canonical(aos_maintain::MAINTENANCE_INVENTORY_ENVELOPE_V1, &envelope)?;
-    if envelope_digest != plan.inventory_envelope_digest || envelope.controller != plan.controller {
+    if envelope_digest != plan.inventory_envelope_digest
+        || envelope.controller != plan.controller
+        || inventory::controller_identity()? != plan.controller
+    {
         return completion(
             "run",
             CommandDisposition::Stale,
@@ -2092,6 +2183,7 @@ fn stopped_run_completion(
     code: &str,
     summary: &str,
 ) -> Result<CommandCompletion> {
+    let inspect_failure = code == "maintain.quick-gate-failed";
     CommandCompletion::new(MaintainCommandResult {
         schema_version: MAINTENANCE_CLI_V1.to_string(),
         command: command.to_string(),
@@ -2114,14 +2206,34 @@ fn stopped_run_completion(
         }],
         diagnostics: vec![diagnostic(code, DiagnosticSeverity::Error, summary)],
         next_actions: vec![NextAction {
-            label: "Inspect the stopped run".to_string(),
-            argv: vec![
-                "aos".to_string(),
-                "maintain".to_string(),
-                "status".to_string(),
-                run.run_id.to_string(),
-            ],
-            reason: "durable state identifies the last verified boundary".to_string(),
+            label: if inspect_failure {
+                "Inspect failed gates"
+            } else {
+                "Inspect the stopped run"
+            }
+            .to_string(),
+            argv: if inspect_failure {
+                vec![
+                    "aos".to_string(),
+                    "maintain".to_string(),
+                    "inspect".to_string(),
+                    run.run_id.to_string(),
+                    "--failure".to_string(),
+                ]
+            } else {
+                vec![
+                    "aos".to_string(),
+                    "maintain".to_string(),
+                    "status".to_string(),
+                    run.run_id.to_string(),
+                ]
+            },
+            reason: if inspect_failure {
+                "retained results identify each failed gate and its bounded log"
+            } else {
+                "durable state identifies the last verified boundary"
+            }
+            .to_string(),
             prerequisites: Vec::new(),
             effect_class: EffectClass::ReadOnly,
             bound_context: Some(run.plan_digest.to_string()),
@@ -2136,6 +2248,15 @@ fn current_store(
     let coordinates = inventory::repository_coordinates(&directory)?;
     let store = state::StateStore::open(args.state_dir.as_deref(), &coordinates)?;
     Ok((store, coordinates))
+}
+
+fn require_frozen_controller(plan: &aos_maintain::plan::PackageUpdatePlanV1) -> Result<()> {
+    if inventory::controller_identity()? != plan.controller {
+        anyhow::bail!(
+            "the running AOS executable does not match the immutable plan's frozen controller"
+        );
+    }
+    Ok(())
 }
 
 fn resolve_run(
@@ -2781,6 +2902,49 @@ fn render_human(result: &MaintainCommandResult, screen_reader: bool, printer: &P
         printer.kv("Worktree", &escape_terminal(&run.worktree, 4096));
     }
 
+    if !result.data.gate_results.is_empty() {
+        printer.plain("");
+        printer.header("Gates");
+        for gates in &result.data.gate_results {
+            let passed = gates
+                .results
+                .iter()
+                .filter(|gate| gate.outcome == aos_maintain::workflow::GateOutcome::Success)
+                .count();
+            printer.plain(&format!(
+                "{}  {passed}/{} passed",
+                gates.phase,
+                gates.results.len()
+            ));
+            for gate in gates
+                .results
+                .iter()
+                .filter(|gate| gate.outcome != aos_maintain::workflow::GateOutcome::Success)
+            {
+                printer.plain(&format!(
+                    "  {}  outcome={}  exit={}",
+                    escape_terminal(&gate.gate_id, 256),
+                    gate_outcome_name(gate.outcome),
+                    gate.exit_code
+                        .map_or_else(|| "signal".to_string(), |code| code.to_string())
+                ));
+            }
+        }
+    }
+
+    if let Some(log) = &result.data.gate_log {
+        printer.plain("");
+        printer.header("Gate log");
+        printer.kv("Gate", &escape_terminal(&log.gate_id, 256));
+        printer.kv("Phase", &log.phase);
+        if let Some(path) = &log.path {
+            printer.plain(&escape_terminal(path, 8192));
+        }
+        if let Some(contents) = &log.contents {
+            printer.plain(&escape_multiline(contents, 8 * 1024 * 1024));
+        }
+    }
+
     if !result.data.runs.is_empty() {
         printer.plain("");
         printer.header("Runs");
@@ -3026,6 +3190,15 @@ fn discovery_name(decision: aos_maintain::workflow::DiscoveryDecision) -> &'stat
         DiscoveryDecision::UpdateAvailable => "update-available",
         DiscoveryDecision::Unknown => "unknown",
         DiscoveryDecision::Quarantined => "quarantined",
+    }
+}
+
+fn gate_outcome_name(outcome: aos_maintain::workflow::GateOutcome) -> &'static str {
+    match outcome {
+        aos_maintain::workflow::GateOutcome::Success => "success",
+        aos_maintain::workflow::GateOutcome::Failure => "failure",
+        aos_maintain::workflow::GateOutcome::ActionRequired => "action-required",
+        aos_maintain::workflow::GateOutcome::Cancelled => "cancelled",
     }
 }
 
