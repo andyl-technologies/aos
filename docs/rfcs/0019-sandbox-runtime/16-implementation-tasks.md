@@ -892,6 +892,27 @@ completes. The Git history remains authoritative for code details.
   warning-denied rustdoc, formatting, and independent adversarial review. Open
   handles, kernel FUSE framing/conformance, mapped-byte reservations, and
   worker lifecycle remain open, so `SBX-FS-02` remains unchecked.
+- `75dba477c` — further foundation toward `SBX-FS-02` and `SBX-FS-04`:
+  the connection-scoped inode table now reserves bounded file-open identities
+  before external backing work, transitions them explicitly from pending to
+  active, and pins zero-lookup-reference nodes until abort or final release.
+  Typed handles carry a redacted unique-connection brand while fixed slots and
+  the future FUSE wire retain only monotonic, never-reused raw integers; raw
+  values become typed only after lookup in the authoritative connection table.
+  Foreign branded handles, forged or replayed reservations, pending-as-active,
+  stale, and double-release transitions fail closed. A third fixed-slot map has
+  an independent live-handle ceiling and participates in retained plus
+  replacement heap admission. Allocation, growth, compaction, abort, release,
+  and final inode reap preflight every fallible counter and reverse-map check
+  before mutation. Dropping a pending token deliberately leaves a bounded pin
+  until connection teardown. Sustained churn, exact tombstone reuse, foreign
+  handle collisions, allocation and replacement peaks, and injected pin,
+  pending-counter, and reverse-map corruption are covered by 52 unit tests.
+  The slice also passes one compile-fail doctest, strict crate-local all-target
+  Clippy, warning-denied rustdoc, formatting, and independent adversarial
+  review. Directory handles, semantic content access, kernel FUSE framing,
+  broker-owned backing registration, and worker lifecycle remain open, so
+  `SBX-FS-02` and `SBX-FS-04` remain unchecked.
 
 The post-`727da7f3e` x86_64 `sandbox-filesystem-capability-proof` rerun built the
 complete hermetic Rust closure, AOS system, initrd, and VM disk and launched
