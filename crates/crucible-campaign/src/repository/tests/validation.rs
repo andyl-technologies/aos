@@ -1601,6 +1601,47 @@ fn head_rejects_genesis_without_canonical_configuration_membership() {
 }
 
 #[test]
+fn genesis_payload_and_exact_checkpoint_closure_versions_are_independent() {
+    let (repository, original, policy) = fixture();
+    let genesis = repository
+        .publish_configuration_artifact(
+            original.scenario(),
+            original.scenario_content(),
+            original.genesis(),
+            2,
+            b"configuration payload version two".to_vec(),
+        )
+        .expect("version-two genesis payload");
+    let lineage = CampaignLineage::new(
+        original.scenario(),
+        original.scenario_content(),
+        original.genesis(),
+        genesis,
+        original.crucible_version(),
+        original.qemu_build(),
+        original.protocol_versions().clone(),
+        original.scenario_schema(),
+        4,
+    )
+    .expect("version-four exact closure lineage");
+
+    let created = repository
+        .create("independent-versions", &lineage, &policy, &BTreeMap::new())
+        .expect("configuration payload is not an exact checkpoint closure");
+    let reopened = repository
+        .head("independent-versions")
+        .expect("revalidate head");
+    assert_eq!(created, reopened);
+    let content = repository.put_lineage(&lineage).expect("store lineage");
+    assert_eq!(
+        repository
+            .read_lineage(content)
+            .expect("revalidate lineage"),
+        lineage
+    );
+}
+
+#[test]
 fn imported_lineages_revalidate_scenario_and_configuration_bindings() {
     let (repository, lineage, _) = fixture();
     let other_scenario = ScenarioDefId::from_hash(CampaignHash::derive("test", b"other"));
