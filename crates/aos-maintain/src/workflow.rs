@@ -91,6 +91,7 @@ impl RunState {
                 | (ReadyForPr, PrPublished)
                 | (PrPublished, AwaitingRemoteAuthorization)
                 | (AwaitingRemoteAuthorization, MergeEligibleObserved)
+                | (AwaitingRemoteAuthorization, MergedObserved)
                 | (MergeEligibleObserved, MergedObserved)
                 | (MergedObserved, ReleaseHandoff)
         );

@@ -236,6 +236,7 @@ fn accept_command(
         .read_plan(run.plan_id.as_str())?
         .ok_or_else(|| anyhow::anyhow!("run plan is unavailable"))?;
     require_frozen_controller(&plan)?;
+    let _operation_lease = store.acquire_operation_lease(plan.plan_id.as_str())?;
     if command.adopt_worktree {
         return adopt_worktree(args, &store, run, command.confirm.as_deref());
     }
@@ -460,6 +461,7 @@ fn commit_command(
         .read_plan(run.plan_id.as_str())?
         .ok_or_else(|| anyhow::anyhow!("run plan is unavailable"))?;
     require_frozen_controller(&plan)?;
+    let _operation_lease = store.acquire_operation_lease(plan.plan_id.as_str())?;
     match git::commit_candidate(&store, &plan, &mut run) {
         Ok(commit) => {
             let mut completion = run_view_completion("commit", &store, run, None)?;
@@ -494,6 +496,7 @@ fn test_command(
         .read_plan(run.plan_id.as_str())?
         .ok_or_else(|| anyhow::anyhow!("run plan is unavailable"))?;
     require_frozen_controller(&plan)?;
+    let _operation_lease = store.acquire_operation_lease(plan.plan_id.as_str())?;
     let final_phase = if command.quick {
         false
     } else {
@@ -540,6 +543,7 @@ async fn repair_command(
         .read_plan(run.plan_id.as_str())?
         .ok_or_else(|| anyhow::anyhow!("run plan is unavailable"))?;
     require_frozen_controller(&plan)?;
+    let _operation_lease = store.acquire_operation_lease(plan.plan_id.as_str())?;
 
     if let Some(confirmation) = command.confirm.as_deref() {
         let Some(proposal) = repair::pending(&store, &run)? else {
@@ -721,6 +725,7 @@ fn evidence_command(
         .read_plan(run.plan_id.as_str())?
         .ok_or_else(|| anyhow::anyhow!("run plan is unavailable"))?;
     require_frozen_controller(&plan)?;
+    let _operation_lease = store.acquire_operation_lease(plan.plan_id.as_str())?;
     let (evidence, digest) = match evidence::generate(&store, &plan, &mut run) {
         Ok(result) => result,
         Err(error) => {
@@ -859,6 +864,7 @@ async fn publish_pr_command(
         .read_plan(run.plan_id.as_str())?
         .ok_or_else(|| anyhow::anyhow!("run plan is unavailable"))?;
     require_frozen_controller(&plan)?;
+    let _operation_lease = store.acquire_operation_lease(plan.plan_id.as_str())?;
     if !matches!(
         run.state,
         aos_maintain::workflow::RunState::ReadyForPr
@@ -1008,6 +1014,7 @@ async fn observe_pr_command(
         .read_plan(run.plan_id.as_str())?
         .ok_or_else(|| anyhow::anyhow!("run plan is unavailable"))?;
     require_frozen_controller(&plan)?;
+    let _operation_lease = store.acquire_operation_lease(plan.plan_id.as_str())?;
     if !matches!(
         run.state,
         aos_maintain::workflow::RunState::AwaitingRemoteAuthorization
@@ -1047,6 +1054,15 @@ async fn observe_pr_command(
     };
     store.write_remote_observation(&observation)?;
     if run.state == aos_maintain::workflow::RunState::AwaitingRemoteAuthorization
+        && observation.is_qualified_merge()
+    {
+        store.transition(
+            &mut run,
+            aos_maintain::workflow::RunState::MergedObserved,
+            aos_maintain::workflow::ActorClass::RemoteObservation,
+            state::now_unix()?,
+        )?;
+    } else if run.state == aos_maintain::workflow::RunState::AwaitingRemoteAuthorization
         && observation.is_merge_eligible()
     {
         store.transition(
@@ -1064,7 +1080,7 @@ async fn observe_pr_command(
             state::now_unix()?,
         )?;
     }
-    let disposition = if observation.is_merge_eligible() || observation.merged {
+    let disposition = if observation.is_merge_eligible() || observation.is_qualified_merge() {
         None
     } else {
         Some((
@@ -1088,6 +1104,7 @@ fn handoff_command(
         .read_plan(run.plan_id.as_str())?
         .ok_or_else(|| anyhow::anyhow!("run plan is unavailable"))?;
     require_frozen_controller(&plan)?;
+    let _operation_lease = store.acquire_operation_lease(plan.plan_id.as_str())?;
     if run.state == aos_maintain::workflow::RunState::ReleaseHandoff {
         return run_view_completion("handoff", &store, run, None);
     }
@@ -1387,6 +1404,7 @@ fn abandon_command(
 ) -> Result<CommandCompletion> {
     let (store, _) = current_store(args)?;
     let mut run = resolve_run(&store, &command.run)?;
+    let _operation_lease = store.acquire_operation_lease(run.plan_id.as_str())?;
     if !run.state.is_terminal() {
         store.transition(
             &mut run,
@@ -1404,6 +1422,7 @@ fn clean_command(
 ) -> Result<CommandCompletion> {
     let (store, coordinates) = current_store(args)?;
     let mut run = resolve_run(&store, &command.run)?;
+    let _operation_lease = store.acquire_operation_lease(run.plan_id.as_str())?;
     if run.worktree_cleaned {
         return run_view_completion("clean", &store, run, None);
     }
@@ -2002,6 +2021,7 @@ async fn run_command(
         };
         plan
     };
+    let _operation_lease = store.acquire_operation_lease(plan.plan_id.as_str())?;
 
     let now = state::now_unix()?;
     let plan_has_run = store

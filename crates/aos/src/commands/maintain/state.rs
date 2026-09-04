@@ -34,6 +34,14 @@ pub(super) struct StateStore {
     repository: PathBuf,
 }
 
+/// Holds an exclusive lease for one immutable maintenance plan.
+///
+/// The file descriptor intentionally has no public operations: retaining this
+/// value is the lease, and dropping it releases the kernel lock.
+pub(super) struct OperationLease {
+    _file: File,
+}
+
 impl StateStore {
     /// Opens the repository namespace and creates protected directories.
     pub(super) fn open(
@@ -808,6 +816,30 @@ impl StateStore {
         operation()
     }
 
+    /// Serializes a complete state-changing operation for one immutable plan.
+    ///
+    /// This lock is deliberately separate from the short repository lock used
+    /// by journal appends. A command may retain this lease across long-running
+    /// gates or network requests while still taking the repository lock for an
+    /// atomic state transition.
+    pub(super) fn acquire_operation_lease(&self, plan_id: &str) -> Result<OperationLease> {
+        validate_state_name(plan_id, "plan")?;
+        let directory = self.repository.join("operation-locks");
+        secure_directory(&directory)?;
+        let path = directory.join(format!("{plan_id}.lock"));
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(path)
+            .context("opening maintenance operation lease")?;
+        rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive)
+            .context("locking maintenance plan operation")?;
+        Ok(OperationLease { _file: file })
+    }
+
     /// Records an immutable provider identity's earliest observed time.
     pub(super) fn record_first_observed(&self, identity: &str, observed_at: u64) -> Result<u64> {
         if identity.is_empty()
@@ -1258,6 +1290,32 @@ mod tests {
                 .record_source_identity("unit\0main\0source\0v1", "sha256-second")
                 .is_err()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn operation_lease_excludes_the_same_plan_only() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let repository = temporary.path().join("repository");
+        secure_directory(&repository)?;
+        let store = StateStore {
+            root: temporary.path().to_path_buf(),
+            repository,
+        };
+
+        let lease = store.acquire_operation_lease("plan-one")?;
+        let same = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(store.repository.join("operation-locks/plan-one.lock"))?;
+        assert!(
+            rustix::fs::flock(&same, rustix::fs::FlockOperation::NonBlockingLockExclusive).is_err()
+        );
+        let other = store.acquire_operation_lease("plan-two")?;
+
+        drop(other);
+        drop(lease);
+        rustix::fs::flock(&same, rustix::fs::FlockOperation::NonBlockingLockExclusive)?;
         Ok(())
     }
 
