@@ -143,7 +143,8 @@ static int core_readdir(void *opaque, uint64_t node, uint64_t handle,
                         uint64_t *names_length) {
   struct fake_core *core = opaque;
   core->readdir++;
-  if (node != 1 || handle != 77 || cookie != 0 || maximum_output < 64 ||
+  (void)maximum_output;
+  if (node != 1 || handle != 77 || cookie != 0 ||
       entry_capacity < 3 || names_capacity < 10)
     return EINVAL;
   memcpy(names, ".\0..\0child", 10);
@@ -353,7 +354,7 @@ static pid_t start_child(int sockets[2], int cancellation[2],
     } else {
       valid = result == ECANCELED && descriptor_borrowed && cancellation_borrowed &&
               core.lookup == 2 && core.forget == 1 && core.getattr == 1 &&
-              core.readlink == 1 && core.opendir == 1 && core.readdir == 2 &&
+              core.readlink == 1 && core.opendir == 1 && core.readdir == 4 &&
               core.releasedir == 1 && core.committed == 1 &&
               core.aborted == 0 && core.duplicate_refused == 1 &&
               core.destroy == 1;
@@ -627,6 +628,15 @@ int main(void) {
   }
   if (position != length)
     fail("READDIR alignment or tail was invalid");
+
+  struct fuse_read_in tiny_read = {.fh = 77, .offset = 0, .size = 1};
+  send_request(sockets[0], FUSE_READDIR, unique, 1, &tiny_read,
+               sizeof(tiny_read), NULL, 0);
+  expect_error(sockets[0], unique++, EINVAL);
+  tiny_read.size = 0;
+  send_request(sockets[0], FUSE_READDIR, unique, 1, &tiny_read,
+               sizeof(tiny_read), NULL, 0);
+  expect_error(sockets[0], unique++, EINVAL);
 
   struct fuse_read_in small_read = {.fh = 77, .offset = 0, .size = 64};
   send_request(sockets[0], FUSE_READDIR, unique, 1, &small_read,

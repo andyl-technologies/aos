@@ -525,6 +525,13 @@ static void readdir(fuse_req_t request, fuse_ino_t node, size_t size,
       }
     }
   }
+  /* An empty successful reply means EOF to the kernel. A nonempty core page
+   * that cannot fit even its first record must remain retryable, not truncate
+   * the directory silently. Validate the entire page before this decision. */
+  if (entry_count != 0 && used == 0) {
+    reply_error(request, EINVAL);
+    return;
+  }
   (void)checked_reply(
       transport, fuse_reply_buf(request, transport->directory_output, used));
 }
