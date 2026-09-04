@@ -15,6 +15,7 @@ pub mod crypto;
 pub mod format;
 pub mod identity;
 pub mod model;
+pub mod ownership_lease;
 pub mod registry;
 pub mod resources;
 pub mod selector;
@@ -39,6 +40,15 @@ pub use identity::{
     GrantId, IncarnationId, IssuerId, LeaseId, NetworkEndpointId, NodeId, OperationId, PrincipalId,
     ProjectId, ResourceId, RestoreScopeId, RevocationScopeId, SandboxId, SecretId, ServiceId,
     SnapshotId, TrustScopeId, ViewId,
+};
+pub use ownership_lease::{
+    BrokerAdmissionIntersection, CLOCK_PAIR_TOLERANCE_NANOSECONDS, InvalidOwnershipLease,
+    LEASE_SAFETY_MARGIN_SECONDS, LeaseAssignment, LeaseFenceOutcome, LocalLeaseRecord,
+    LocalLeaseRecordCodecError, OwnershipLease, OwnershipLeaseExpectation,
+    OwnershipLeaseTrustAnchor, OwnershipLeaseVerificationError, PendingLocalLeaseRecord,
+    RawClockProvenance, RawPairedClockSample, VerifiedOwnershipLease, decode_local_lease_record,
+    encode_local_lease_record, intersect_broker_admission, prepare_local_lease_record,
+    verify_ownership_lease,
 };
 pub use registry::{
     DescriptorRole, PortableMediaType, ProtocolId, ProtocolVersion, RegistryError,

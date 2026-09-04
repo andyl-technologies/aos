@@ -174,16 +174,18 @@ const fn purpose_code(purpose: SignaturePurpose) -> u64 {
         SignaturePurpose::Snapshot => 2,
         SignaturePurpose::Distribution => 3,
         SignaturePurpose::BrokerAuthorization => 4,
+        SignaturePurpose::OwnershipLease => 5,
     }
 }
 
 fn decode_purpose(decoder: &mut Decoder<'_>) -> Result<SignaturePurpose, CanonicalCborError> {
-    match decoder.closed("signature purpose", 4)? {
+    match decoder.closed("signature purpose", 5)? {
         0 => Ok(SignaturePurpose::Policy),
         1 => Ok(SignaturePurpose::Tree),
         2 => Ok(SignaturePurpose::Snapshot),
         3 => Ok(SignaturePurpose::Distribution),
         4 => Ok(SignaturePurpose::BrokerAuthorization),
+        5 => Ok(SignaturePurpose::OwnershipLease),
         value => Err(CanonicalCborError::UnknownRegistryValue {
             registry: "signature purpose",
             value,

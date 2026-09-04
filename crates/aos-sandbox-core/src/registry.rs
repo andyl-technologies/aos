@@ -89,6 +89,8 @@ pub enum PortableMediaType {
     Signature,
     /// One controller-signed audience-specific local broker plan.
     BrokerAuthorizationPlan,
+    /// One ownership-authority-signed node lease.
+    OwnershipLease,
 }
 
 impl PortableMediaType {
@@ -111,6 +113,7 @@ impl PortableMediaType {
             Self::BrokerAuthorizationPlan => {
                 "application/vnd.aos.sandbox.broker-authorization-plan.v1+cbor"
             }
+            Self::OwnershipLease => "application/vnd.aos.sandbox.ownership-lease.v1+cbor",
         }
     }
 
@@ -131,7 +134,7 @@ impl PortableMediaType {
     }
 }
 
-const ALL_MEDIA_TYPES: [PortableMediaType; 13] = [
+const ALL_MEDIA_TYPES: [PortableMediaType; 14] = [
     PortableMediaType::Content,
     PortableMediaType::Directory,
     PortableMediaType::Tree,
@@ -145,6 +148,7 @@ const ALL_MEDIA_TYPES: [PortableMediaType; 13] = [
     PortableMediaType::TrustPolicy,
     PortableMediaType::Signature,
     PortableMediaType::BrokerAuthorizationPlan,
+    PortableMediaType::OwnershipLease,
 ];
 
 /// Identifies the semantic field in which a descriptor appears.
@@ -312,6 +316,7 @@ pub fn validate_signature_subject(
         SignaturePurpose::BrokerAuthorization => {
             matches!(kind, PortableMediaType::BrokerAuthorizationPlan)
         }
+        SignaturePurpose::OwnershipLease => matches!(kind, PortableMediaType::OwnershipLease),
     };
     if allowed {
         Ok(kind)
@@ -477,6 +482,20 @@ mod tests {
             validate_signature_subject(
                 SignaturePurpose::Policy,
                 &descriptor(PortableMediaType::Snapshot)
+            ),
+            Err(RegistryError::SignatureSubjectMismatch { .. })
+        ));
+        assert_eq!(
+            validate_signature_subject(
+                SignaturePurpose::OwnershipLease,
+                &descriptor(PortableMediaType::OwnershipLease)
+            ),
+            Ok(PortableMediaType::OwnershipLease)
+        );
+        assert!(matches!(
+            validate_signature_subject(
+                SignaturePurpose::OwnershipLease,
+                &descriptor(PortableMediaType::BrokerAuthorizationPlan)
             ),
             Err(RegistryError::SignatureSubjectMismatch { .. })
         ));

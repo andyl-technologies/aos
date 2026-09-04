@@ -272,7 +272,7 @@ key-reference = [
 trust-policy-v1 = [
   version: 1,
   trust-scope: id,
-  purpose: 0..4,
+  purpose: 0..5,
   allowed-keys: [* key-reference],
   required-features: [* feature],
 ]
@@ -283,7 +283,7 @@ signature-statement-v1 = [
   trust-scope: id,
   signer: key-reference,
   algorithm: 1, ; Ed25519
-  purpose: 0..4,
+  purpose: 0..5,
   issued-seconds: i64,
   expires-seconds: i64 / null,
   verification-policy: descriptor,
@@ -329,4 +329,16 @@ broker-authorization-plan-v1 = [
   issued-seconds: i64,
   expires-seconds: i64,
   required-features: [*64 feature],
+]
+
+; application/vnd.aos.sandbox.ownership-lease.v1+cbor
+ownership-lease-v1 = [
+  version: 1,
+  assignment: [sandbox: id, incarnation: id, epoch: u64, assignment-digest: digest],
+  node: id,
+  lease-generation: 1..18446744073709551615,
+  authority-issued-seconds: i64,
+  authority-expires-seconds: i64,
+  maximum-clock-skew-seconds: u64,
+  renewal-nonce: id,
 ]

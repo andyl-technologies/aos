@@ -8,6 +8,7 @@
 
 mod broker_authorization;
 mod cbor;
+mod ownership_lease;
 mod policy;
 mod snapshot;
 mod spec;
@@ -23,6 +24,7 @@ pub use broker_authorization::{
     decode_broker_authorization_plan, encode_broker_authorization_plan,
 };
 pub use cbor::{CanonicalCborError, DecodeLimits, validate_canonical_cbor};
+pub use ownership_lease::{decode_ownership_lease, encode_ownership_lease};
 pub use policy::{decode_optimization, decode_policy, encode_optimization, encode_policy};
 pub use snapshot::{decode_snapshot, encode_snapshot};
 pub use spec::{decode_sandbox_spec, encode_sandbox_spec};

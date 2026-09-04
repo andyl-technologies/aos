@@ -4,9 +4,10 @@
 //! node and every mutable shared endpoint perform before admitting effects.
 //! [`EndpointSet`] applies ownership changes transactionally so a destination
 //! cannot become active after updating only a subset of its shared endpoints.
-//! Authority signatures are deliberately outside this module: callers may
-//! construct an [`OwnershipLease`] only for a lease whose signature and key
-//! purpose have already been verified.
+//! This entire module is a protocol simulation, not a production authority
+//! boundary. Its constructors accept modeled facts and perform no cryptography;
+//! production brokers use `aos-sandbox-core` verified leases and durable local
+//! records instead.
 
 use aos_sandbox_core::{
     AssignmentEpoch, DesiredGeneration, IncarnationId, NodeId, ObjectDigest, SandboxId,
@@ -98,7 +99,10 @@ impl AssignmentClaim {
     }
 }
 
-/// Carries an ownership-authority lease after signature verification.
+/// Carries a simulated ownership lease with caller-asserted verification facts.
+///
+/// This value is test/model input only and must never be treated as proof that
+/// a signature or durable broker fence was verified.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OwnershipLease {
     assignment: AssignmentClaim,
@@ -111,7 +115,7 @@ pub struct OwnershipLease {
 }
 
 impl OwnershipLease {
-    /// Constructs a signature-verified ownership lease.
+    /// Constructs a simulated lease from caller-asserted verified fields.
     ///
     /// The assignment digest excludes lease timing and generation, while the
     /// lease digest commits to the exact signed lease bytes.
@@ -205,7 +209,9 @@ impl OwnershipLease {
     }
 }
 
-/// Proves that a prior owner was stopped independently of lease timeout.
+/// Models caller-asserted evidence that a prior owner was stopped.
+///
+/// This simulation value is not a production stop-proof verifier.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StopProof {
     prior_assignment: AssignmentClaim,
@@ -213,7 +219,7 @@ pub struct StopProof {
 }
 
 impl StopProof {
-    /// Constructs proof bound to the exact prior assignment and lease.
+    /// Constructs simulated evidence bound to a prior assignment and lease.
     #[must_use]
     pub const fn new(prior_assignment: AssignmentClaim, prior_lease_digest: ObjectDigest) -> Self {
         Self {

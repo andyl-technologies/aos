@@ -3,10 +3,10 @@
 ## Scope
 
 Portable policy, filesystem tree, delta, view, environment, sandbox spec,
-snapshot, trust-policy, broker-plan, and signature objects use one exact encoding profile so
-independent implementations compute identical identities. This profile is
-separate from protobuf RPC messages and from the replaceable node-local mmap
-index.
+snapshot, trust-policy, broker-plan, ownership-lease, and signature objects use
+one exact encoding profile so independent implementations compute identical
+identities. This profile is separate from protobuf RPC messages and from the
+replaceable node-local mmap index.
 
 The authoritative [portable v1 CDDL](portable-v1.cddl), the rules below, and the
 golden vectors in this document form one normative contract. Phase 1 copies
@@ -67,6 +67,7 @@ application/vnd.aos.sandbox.snapshot.v1+cbor
 application/vnd.aos.sandbox.trust-policy.v1+cbor
 application/vnd.aos.sandbox.signature.v1+cbor
 application/vnd.aos.sandbox.broker-authorization-plan.v1+cbor
+application/vnd.aos.sandbox.ownership-lease.v1+cbor
 ```
 
 Object size, media type, and digest are verified before semantic use. The
@@ -144,8 +145,8 @@ external dependency kind 0..4: immutable-view, package-closure, secret,
   service-endpoint, network-endpoint
 consistency 0..2: crash-consistent, application-quiesced, backend-exact
 quiesce evidence kind 0..2: none, guest-acknowledged, backend-acknowledged
-signature purpose 0..4: policy, tree, snapshot, distribution,
-  broker-authorization
+signature purpose 0..5: policy, tree, snapshot, distribution,
+  broker-authorization, ownership-lease
 key usage 0..5: policy, tree, snapshot, distribution, broker-authorization,
   ownership-lease
 broker audience/protocol 0..1: host, mount
@@ -186,6 +187,7 @@ matching digest bytes with the wrong media type is invalid:
 | content retention | raw content or a closed portable object reachable from the snapshot |
 | signature verification policy | trust-policy |
 | broker authorization signature subject | broker-authorization-plan |
+| ownership lease signature subject | ownership-lease |
 | policy explanation source | a descriptor also present in policy input commitments |
 
 `profile-selector.body` and the feature-owned roles above are legal only when
@@ -464,7 +466,8 @@ and carry the corresponding typed usage. Purpose-to-subject rules are closed:
 policy signs policy; tree signs tree, directory, delta, view, or environment;
 snapshot signs snapshot or spec; distribution signs raw content or any
 portable CBOR object while adding no authority; broker-authorization signs
-only an audience-specific broker plan. A mismatched purpose, usage,
+only an audience-specific broker plan; ownership-lease signs only an
+authority-wall-clock ownership lease. A mismatched purpose, usage,
 fingerprint, generation, subject media type, or trust scope fails.
 
 Authorization is not inferred from a valid signature alone. The verifier
@@ -494,6 +497,20 @@ The canonical broker-plan golden fixture used by the core conformance test is:
 ```text
 8e01010101008550010101010101010101010101010101015002020202020202020202020202020202030458200505050505050505050505050505050505050505050505050505050505050505500a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a84696f776e657273686970015820090909090909090909090909090909090909090909090909090909090909090905818508810058200b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b191000005820070707070707070707070707070707070707070707070707070707070707070750080808080808080808080808080808080a1481837825616f732e73616e64626f782e656e666f7263656d656e742e62726f6b65722d6c65646765720100
 ```
+
+The canonical ownership-lease fixture uses sandbox bytes `01`, incarnation
+bytes `02`, epoch 3, assignment digest bytes `05`, node bytes `06`, lease
+generation 7, authority interval `[100, 200)`, maximum skew 10 seconds, and
+renewal nonce bytes `09`. Its exact CBOR hex is:
+
+```text
+880184500101010101010101010101010101010150020202020202020202020202020202020358200505050505050505050505050505050505050505050505050505050505050505500606060606060606060606060606060607186418c80a5009090909090909090909090909090909
+```
+
+Negative ownership-lease vectors append a trailing CBOR item, replace the
+registered subject media type, use a zero generation or nonce, invert either
+authority bound, or present an equal generation with a different digest or
+nonce. Readers and lease fences reject each form rather than normalize it.
 
 ## Distribution envelope
 

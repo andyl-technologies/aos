@@ -301,6 +301,18 @@ different bytes, older leases, expired authority, and every request not exactly
 authorized by both plan and lease. A lease renewal may advance the lease
 generation for an unchanged plan; it cannot change verbs, handles, or bounds.
 
+The node-local lease record uses the fixed-width 234-byte `AOSLLR` version 1
+codec. In network byte order it carries magic and version, sandbox and
+incarnation IDs, assignment epoch and digest, node ID, lease generation and
+digest, renewal nonce, authority expiry, raw clock-source provenance, host boot
+ID, the derived `CLOCK_BOOTTIME` fail-stop deadline, and a domain-separated
+SHA-256 corruption digest. Wrong length, magic, version, trailing bytes,
+sentinel authority fields, or digest mismatch fail closed. The digest is not a
+MAC: this is a non-authorizing local recovery format, and an adversarial-storage
+threat model requires the broker journal to authenticate it with a node-local
+key. It is not a portable media type or evidence that the containing journal
+transaction reached stable storage.
+
 At expiry a broker denies new effects. The stale plan permits only local
 containment that cannot harm a later owner: network default-drop, cgroup
 freeze/kill, namespace-local detach after stop, and removal of proven

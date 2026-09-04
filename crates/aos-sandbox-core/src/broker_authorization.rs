@@ -778,6 +778,11 @@ pub struct MatchedBrokerRequest<'a> {
 }
 
 impl MatchedBrokerRequest<'_> {
+    /// Returns the authentic plan borrowed by this request proof.
+    #[must_use]
+    pub(crate) const fn verified_plan(&self) -> &VerifiedBrokerPlan {
+        self.verified_plan
+    }
     /// Returns the authentic plan digest to persist with later fence admission.
     #[must_use]
     pub const fn plan_digest(&self) -> ObjectDigest {
@@ -834,6 +839,26 @@ impl VerifiedBrokerPlan {
             verified_plan: self,
             grant,
         })
+    }
+}
+
+#[cfg(test)]
+impl VerifiedBrokerPlan {
+    pub(crate) fn from_test_plan(plan: BrokerAuthorizationPlan) -> Self {
+        let bytes = crate::format::encode_broker_authorization_plan(&plan);
+        let descriptor = crate::format::descriptor_for_bytes(
+            crate::MediaType::new(
+                crate::PortableMediaType::BrokerAuthorizationPlan
+                    .as_str()
+                    .to_owned(),
+            )
+            .unwrap_or_else(|error| panic!("test media type failed: {error}")),
+            &bytes,
+        );
+        Self {
+            plan,
+            plan_digest: descriptor.digest(),
+        }
     }
 }
 

@@ -91,6 +91,8 @@ pub enum KeyUsage {
 pub enum SignaturePurpose {
     /// Authorizes one audience-specific local broker plan.
     BrokerAuthorization,
+    /// Authorizes one short-lived node ownership lease.
+    OwnershipLease,
     /// Authorizes a resolved policy object.
     Policy,
     /// Authenticates tree/view/environment provenance.
@@ -105,6 +107,7 @@ impl SignaturePurpose {
     const fn required_usage(self) -> KeyUsage {
         match self {
             Self::BrokerAuthorization => KeyUsage::BrokerAuthorization,
+            Self::OwnershipLease => KeyUsage::OwnershipLease,
             Self::Policy => KeyUsage::Policy,
             Self::Tree => KeyUsage::Tree,
             Self::Snapshot => KeyUsage::Snapshot,
