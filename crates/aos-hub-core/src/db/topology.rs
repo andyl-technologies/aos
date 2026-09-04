@@ -4732,10 +4732,10 @@ impl Database {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
-    async fn route_fixture() -> (Database, i64, RouteSpec, String, [u8; 32]) {
+    pub(crate) async fn route_fixture() -> (Database, i64, RouteSpec, String, [u8; 32]) {
         let db = Database::open_in_memory().await.unwrap();
         let org_id = db.create_org("route-probes", "Route probes").await.unwrap();
         let org = db.org_by_slug("route-probes").await.unwrap().unwrap();

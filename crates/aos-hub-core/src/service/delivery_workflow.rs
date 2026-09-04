@@ -4,6 +4,12 @@
 //! its effects, so retries reuse the same authorization and idempotency fence.
 //! Preparation creates unadvertised resources; activation reviews and switches
 //! all requested audiences atomically against current verification evidence.
+//!
+//! Persisted intent uses an explicit schema version:
+//!
+//! ```json
+//! {"version":1,"workflow_id":"...","intent":{},"prerequisites":[]}
+//! ```
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -27,6 +33,7 @@ const STEPS: &[(&str, &str)] = &[
 
 #[derive(Clone, Serialize, Deserialize)]
 struct IntentSeal {
+    version: u32,
     workflow_id: String,
     intent: pb::DeliveryDestinationIntent,
     actor_kind: String,
@@ -38,6 +45,17 @@ struct IntentSeal {
     binding_resource_version: i64,
     origin_prefix: String,
     canonical_url: String,
+    prerequisites: Vec<PrerequisiteSeal>,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct PrerequisiteSeal {
+    kind: String,
+    stable_id: String,
+    resource_version: i64,
+    revision: i64,
+    content_digest: String,
+    lifecycle_state: String,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -69,8 +87,15 @@ fn encode<T: Serialize>(value: &T) -> Result<String, RpcError> {
 }
 
 fn decode(record: &DeliveryWorkflowRecord) -> Result<(IntentSeal, Progress), RpcError> {
+    let intent: IntentSeal =
+        serde_json::from_str(&record.intent_json).map_err(RpcError::internal)?;
+    if intent.version != 1 {
+        return Err(RpcError::FailedPrecondition(
+            "unsupported delivery workflow intent version".into(),
+        ));
+    }
     Ok((
-        serde_json::from_str(&record.intent_json).map_err(RpcError::internal)?,
+        intent,
         serde_json::from_str(&record.progress_json).map_err(RpcError::internal)?,
     ))
 }
@@ -270,7 +295,9 @@ impl RpcService {
                 ))
             }
         };
+        let prerequisites = self.delivery_prerequisites(&intent).await?;
         let seal = IntentSeal {
+            version: 1,
             workflow_id: uuid::Uuid::new_v4().to_string(),
             intent,
             actor_kind: claims.owner_kind.clone(),
@@ -282,6 +309,7 @@ impl RpcService {
             binding_resource_version: binding.resource_version,
             origin_prefix: format!("/{}", placement.prefix.trim_matches('/')),
             canonical_url,
+            prerequisites,
         };
         self.create_control_plan(&claims, CREATE_KIND, &scope, &seal, &req.idempotency_key,
             vec![format!("prepare CDN delivery at {}", seal.canonical_url),
@@ -304,6 +332,106 @@ impl RpcService {
             return Err(RpcError::FailedPrecondition(
                 format!("an active grant for {resource:?} to consumer scope '{scope}' is required; ask the resource owner to grant access"),
             ));
+        }
+        Ok(())
+    }
+
+    async fn delivery_prerequisites(
+        &self,
+        intent: &pb::DeliveryDestinationIntent,
+    ) -> Result<Vec<PrerequisiteSeal>, RpcError> {
+        let mut result = Vec::new();
+        let mut policies = BTreeSet::new();
+        match intent.endpoint.as_ref() {
+            Some(pb::delivery_destination_intent::Endpoint::NewEndpoint(input)) => {
+                let revision = input
+                    .revision
+                    .as_ref()
+                    .ok_or_else(|| RpcError::invalid("endpoint revision is required"))?;
+                policies.insert((input.network_policy_id.clone(), revision.boundary_revision));
+                if let Some(pb::delivery_endpoint_input::HostnameSource::DomainId(id)) =
+                    &input.hostname_source
+                {
+                    let domain = self
+                        .db
+                        .delivery_domain(id)
+                        .await
+                        .map_err(RpcError::internal)?
+                        .ok_or_else(|| RpcError::not_found("domain prerequisite"))?;
+                    result.push(PrerequisiteSeal {
+                        kind: "domain".into(),
+                        stable_id: id.clone(),
+                        resource_version: domain.resource_version,
+                        revision: 0,
+                        content_digest: domain.hostname,
+                        lifecycle_state: String::new(),
+                    });
+                }
+            }
+            Some(pb::delivery_destination_intent::Endpoint::ExistingEndpoint(reference)) => {
+                let endpoint = self
+                    .db
+                    .endpoint(&reference.endpoint_id)
+                    .await
+                    .map_err(RpcError::internal)?
+                    .ok_or_else(|| RpcError::not_found("endpoint prerequisite"))?;
+                let revision = self
+                    .db
+                    .endpoint_revision(&reference.endpoint_id, reference.generation)
+                    .await
+                    .map_err(RpcError::internal)?
+                    .ok_or_else(|| RpcError::not_found("endpoint generation prerequisite"))?;
+                policies.insert((endpoint.network_policy_id, revision.spec.boundary_revision));
+            }
+            None => return Err(RpcError::invalid("endpoint prerequisite is required")),
+        }
+        if let Some(pb::delivery_access_policy::Policy::PrivateNetwork(policy)) = intent
+            .access_policy
+            .as_ref()
+            .and_then(|policy| policy.policy.as_ref())
+        {
+            self.require_workflow_grant(
+                GrantResource::NetworkPolicy {
+                    id: &policy.boundary_id,
+                },
+                &intent.owner_scope_key,
+            )
+            .await?;
+            policies.insert((policy.boundary_id.clone(), policy.boundary_revision));
+        }
+        for (id, revision) in policies {
+            let policy = self
+                .db
+                .network_policy(&id)
+                .await
+                .map_err(RpcError::internal)?
+                .ok_or_else(|| RpcError::not_found("network policy prerequisite"))?;
+            let generation = self
+                .db
+                .network_policy_revision(&id, revision)
+                .await
+                .map_err(RpcError::internal)?
+                .ok_or_else(|| RpcError::not_found("network policy revision prerequisite"))?;
+            if generation.lifecycle_state != "active" {
+                return Err(RpcError::FailedPrecondition(format!(
+                    "network policy '{id}' revision {revision} must be active"
+                )));
+            }
+            result.push(PrerequisiteSeal {
+                kind: "network_policy".into(),
+                stable_id: id,
+                resource_version: policy.resource_version,
+                revision,
+                content_digest: generation.content_digest,
+                lifecycle_state: generation.lifecycle_state,
+            });
+        }
+        Ok(result)
+    }
+
+    async fn check_delivery_prerequisites(&self, seal: &IntentSeal) -> Result<(), RpcError> {
+        if self.delivery_prerequisites(&seal.intent).await? != seal.prerequisites {
+            return Err(RpcError::FailedPrecondition("domain or network policy prerequisites changed after review; create a new destination plan".into()));
         }
         Ok(())
     }
@@ -552,6 +680,11 @@ impl RpcService {
     ) -> Result<pb::DeliveryWorkflowResponse, RpcError> {
         let (seal, mut progress) = decode(&record)?;
         if progress.active {
+            return self.delivery_workflow_response(record).await;
+        }
+        if let Err(error) = self.check_delivery_prerequisites(&seal).await {
+            progress.error = error.to_string();
+            self.save_delivery_progress(&mut record, &progress).await?;
             return self.delivery_workflow_response(record).await;
         }
         // Recheck authority on every resumed operation; the reviewed intent does
@@ -1121,6 +1254,7 @@ impl RpcService {
             ));
         }
         let (intent, progress) = decode(&record)?;
+        self.check_delivery_prerequisites(&intent).await?;
         if progress.active || !progress.completed.contains("route") || !progress.error.is_empty() {
             return Err(RpcError::FailedPrecondition(
                 "destination preparation must complete before activation".into(),
@@ -1215,8 +1349,9 @@ impl RpcService {
         let record = self
             .authorized_delivery_workflow(auth, &seal.workflow_id, true)
             .await?;
-        let (_, mut progress) = decode(&record)?;
+        let (intent, mut progress) = decode(&record)?;
         if progress.activation_plan_id.as_deref() != Some(req.plan_id.as_str()) {
+            self.check_delivery_prerequisites(&intent).await?;
             if progress.active || record.resource_version != seal.resource_version {
                 return Err(RpcError::FailedPrecondition(
                     "workflow changed since activation review".into(),

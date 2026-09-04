@@ -11,6 +11,10 @@ use crate::backend::{Row, Statement};
 
 use super::{unix_now, Database, DeliveryIdentityPage, SurfaceTarget};
 
+#[cfg(test)]
+#[path = "delivery_workflow_tests.rs"]
+mod tests;
+
 const COLUMNS: &str = "workflow_id, owner_scope_key, registry_id, cache_id,
     intent_json, progress_json, resource_version, created_at, updated_at";
 
