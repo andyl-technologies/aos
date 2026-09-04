@@ -29,6 +29,15 @@ const FORMAT_VERSION: u16 = 1;
 /// Opaque, stable identity of one broker-owned mount resource.
 pub(crate) type MountHandleV1 = [u8; 32];
 
+/// Returns the sole descriptor-store key permitted for a mount handle.
+///
+/// [`crate::keeper::KernelMountName`] encodes these exact bytes in its
+/// versioned activation name. Keeping the persisted key identical to the
+/// handle prevents a recovered row from redirecting custody to another name.
+pub(crate) const fn canonical_fd_store_key(handle: MountHandleV1) -> [u8; 32] {
+    handle
+}
+
 type DestinationSlotKeyV1 = ([u8; 16], [u8; 16], [u8; 16]);
 
 /// Bounds recovery and every newly encoded resource.
@@ -330,14 +339,22 @@ struct StoredMountResourceV1 {
 #[derive(Debug)]
 pub(crate) struct MountResourceTableV1 {
     limits: MountResourceLimitsV1,
+    current_kernel_boot_id: [u8; 16],
     resources: BTreeMap<MountHandleV1, MountResourceV1>,
     materialized_bytes: usize,
 }
 
 impl MountResourceTableV1 {
     /// Reconstructs the bounded resource table from committed journal records.
-    pub(crate) fn recover(journal: &Journal, limits: MountResourceLimitsV1) -> Result<Self> {
+    pub(crate) fn recover(
+        journal: &Journal,
+        limits: MountResourceLimitsV1,
+        current_kernel_boot_id: [u8; 16],
+    ) -> Result<Self> {
         validate_limits(limits)?;
+        if current_kernel_boot_id == [0; 16] {
+            return Err(state_error("current kernel boot identity is a sentinel"));
+        }
         let mut resources = BTreeMap::new();
         let mut materialized_bytes = 0usize;
         for (key, value) in journal.records(RecordNamespace::Operation) {
@@ -362,6 +379,7 @@ impl MountResourceTableV1 {
         }
         let table = Self {
             limits,
+            current_kernel_boot_id,
             resources,
             materialized_bytes,
         };
@@ -443,6 +461,7 @@ impl MountResourceTableV1 {
         );
         if !declared
             || !linked
+            || successor.kernel_boot_id != predecessor.kernel_boot_id
             || successor.recipe.attachment_id != predecessor.recipe.attachment_id
             || successor.recipe.destination_slot_id != predecessor.recipe.destination_slot_id
             || !successor.binding.strictly_advances(&predecessor.binding)
@@ -572,6 +591,7 @@ impl MountResourceTableV1 {
         let materialized_bytes = encoded_total(&candidate, self.limits)?;
         let next = Self {
             limits: self.limits,
+            current_kernel_boot_id: self.current_kernel_boot_id,
             resources: candidate,
             materialized_bytes,
         };
@@ -599,6 +619,7 @@ impl MountResourceTableV1 {
         encoded_total(&candidate, self.limits)?;
         Self {
             limits: self.limits,
+            current_kernel_boot_id: self.current_kernel_boot_id,
             resources: candidate,
             materialized_bytes: 0,
         }
@@ -626,6 +647,20 @@ impl MountResourceTableV1 {
                 "live mount resources exceed the descriptor-store capacity",
             ));
         }
+        let mut active_stale_slot_boots = BTreeSet::new();
+        for resource in self.resources.values().filter(|resource| {
+            resource.kernel_boot_id != self.current_kernel_boot_id
+                && is_slot_claim(&resource.state)
+                && !matches!(resource.state, MountResourceStateV1::Faulted { .. })
+        }) {
+            active_stale_slot_boots.insert((
+                resource.kernel_boot_id,
+                resource.binding.sandbox_id,
+                resource.binding.incarnation_id,
+                resource.recipe.destination_slot_id,
+            ));
+        }
+
         let mut slots: BTreeMap<DestinationSlotKeyV1, Vec<&MountResourceV1>> = BTreeMap::new();
         for resource in self.resources.values() {
             resource.validate(self.limits)?;
@@ -653,7 +688,16 @@ impl MountResourceTableV1 {
                     resource.handle,
                 )?;
             }
-            if is_slot_claim(&resource.state) {
+            let stale_slot_boot = (
+                resource.kernel_boot_id,
+                resource.binding.sandbox_id,
+                resource.binding.incarnation_id,
+                resource.recipe.destination_slot_id,
+            );
+            if is_slot_claim(&resource.state)
+                && (resource.kernel_boot_id == self.current_kernel_boot_id
+                    || active_stale_slot_boots.contains(&stale_slot_boot))
+            {
                 slots
                     .entry((
                         resource.binding.sandbox_id,
@@ -664,6 +708,7 @@ impl MountResourceTableV1 {
                     .push(resource);
             }
         }
+        validate_replacement_edges(&self.resources)?;
         for claimants in slots.values() {
             validate_slot_claimants(claimants)?;
         }
@@ -688,9 +733,9 @@ impl MountResourceV1 {
         {
             return Err(state_error("mount resource contains a sentinel identity"));
         }
-        if self.fd_store_key == [0; 32] {
+        if self.fd_store_key != canonical_fd_store_key(self.handle) {
             return Err(state_error(
-                "mount resource has a sentinel descriptor-store key",
+                "mount resource descriptor-store key is not canonical for its handle",
             ));
         }
         self.recipe.policy.validate()?;
@@ -1110,8 +1155,34 @@ fn declares_replacement(successor: &MountResourceV1, predecessor: &MountResource
             && draining_successor(&predecessor.state) == Some(successor.handle));
     forward
         && phases_match
+        && successor.kernel_boot_id == predecessor.kernel_boot_id
         && successor.recipe.attachment_id == predecessor.recipe.attachment_id
+        && successor.recipe.destination_slot_id == predecessor.recipe.destination_slot_id
         && successor.binding.strictly_advances(&predecessor.binding)
+}
+
+fn validate_replacement_edges(resources: &BTreeMap<MountHandleV1, MountResourceV1>) -> Result<()> {
+    for resource in resources.values() {
+        if let Some(predecessor_handle) =
+            publication(&resource.state).and_then(|value| value.replaces)
+        {
+            let predecessor = resources
+                .get(&predecessor_handle)
+                .ok_or_else(|| state_error("replacement predecessor is missing"))?;
+            if !declares_replacement(resource, predecessor) {
+                return Err(state_error("replacement forward edge is inconsistent"));
+            }
+        }
+        if let Some(successor_handle) = draining_successor(&resource.state) {
+            let successor = resources
+                .get(&successor_handle)
+                .ok_or_else(|| state_error("replacement successor is missing"))?;
+            if !declares_replacement(successor, resource) {
+                return Err(state_error("replacement back edge is inconsistent"));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn has_replacement_edge(state: &MountResourceStateV1) -> bool {
@@ -1431,6 +1502,7 @@ mod tests {
     fn table() -> MountResourceTableV1 {
         MountResourceTableV1 {
             limits: MountResourceLimitsV1::default(),
+            current_kernel_boot_id: [10; 16],
             resources: BTreeMap::new(),
             materialized_bytes: 0,
         }
@@ -1538,6 +1610,51 @@ mod tests {
             root: b"/source".to_vec(),
             mount_point: b"/target".to_vec(),
             identity_map_digest: [28; 32],
+        }
+    }
+
+    fn stale_faulted_replacement_pair() -> (MountResourceV1, MountResourceV1) {
+        let mut predecessor = resource(70, 4, None);
+        predecessor.kernel_boot_id = [9; 16];
+        predecessor.revision = 5;
+        predecessor.state = MountResourceStateV1::Faulted {
+            from: MountFaultPhaseV1::Draining,
+            creation: None,
+            publication: None,
+            detachment: None,
+            release: None,
+            replaced_by: Some([71; 32]),
+            detached: Some(detached(70, 170)),
+            installed: Some(installed(170)),
+            failure_digest: [72; 32],
+        };
+
+        let mut successor = resource(71, 5, None);
+        successor.kernel_boot_id = [9; 16];
+        successor.revision = 5;
+        successor.state = MountResourceStateV1::Faulted {
+            from: MountFaultPhaseV1::Installed,
+            creation: None,
+            publication: Some(publication(Some([70; 32]))),
+            detachment: None,
+            release: None,
+            replaced_by: None,
+            detached: Some(detached(71, 171)),
+            installed: Some(installed(171)),
+            failure_digest: [73; 32],
+        };
+        (predecessor, successor)
+    }
+
+    fn table_with(resources: impl IntoIterator<Item = MountResourceV1>) -> MountResourceTableV1 {
+        MountResourceTableV1 {
+            limits: MountResourceLimitsV1::default(),
+            current_kernel_boot_id: [10; 16],
+            resources: resources
+                .into_iter()
+                .map(|resource| (resource.handle, resource))
+                .collect(),
+            materialized_bytes: 0,
         }
     }
 
@@ -1719,6 +1836,175 @@ mod tests {
             publication: publication(None),
         };
         assert!(table.plan_transition(2, &second).is_err());
+    }
+
+    #[test]
+    fn stale_boot_faulted_install_does_not_wedge_current_slot_publication() {
+        let mut table = table();
+        table.current_kernel_boot_id = [11; 16];
+
+        let mut stale = resource(60, 4, None);
+        allocate(&mut table, &stale);
+        stale.revision = 2;
+        stale.state = MountResourceStateV1::Prepared {
+            detached: detached(60, 160),
+            creation: creation(),
+        };
+        transition(&mut table, 1, &stale);
+        stale.revision = 3;
+        stale.state = MountResourceStateV1::Publishing {
+            detached: detached(60, 160),
+            publication: publication(None),
+        };
+        transition(&mut table, 2, &stale);
+        stale.revision = 4;
+        stale.state = MountResourceStateV1::Installed {
+            detached: detached(60, 160),
+            installed: installed(160),
+            publication: publication(None),
+        };
+        transition(&mut table, 3, &stale);
+
+        stale.revision = 5;
+        stale.state = MountResourceStateV1::Faulted {
+            from: MountFaultPhaseV1::Installed,
+            creation: None,
+            publication: Some(publication(None)),
+            detachment: None,
+            release: None,
+            replaced_by: None,
+            detached: Some(detached(60, 160)),
+            installed: Some(installed(160)),
+            failure_digest: [61; 32],
+        };
+        transition(&mut table, 4, &stale);
+
+        let mut current = resource(62, 5, None);
+        current.kernel_boot_id = [11; 16];
+        allocate(&mut table, &current);
+        current.revision = 2;
+        current.state = MountResourceStateV1::Prepared {
+            detached: detached(62, 162),
+            creation: creation(),
+        };
+        transition(&mut table, 1, &current);
+        current.revision = 3;
+        current.state = MountResourceStateV1::Publishing {
+            detached: detached(62, 162),
+            publication: publication(None),
+        };
+        transition(&mut table, 2, &current);
+    }
+
+    #[test]
+    fn cross_boot_replacement_pair_is_rejected() {
+        let mut predecessor = resource(63, 4, None);
+        predecessor.revision = 4;
+        predecessor.state = MountResourceStateV1::Installed {
+            detached: detached(63, 163),
+            installed: installed(163),
+            publication: publication(None),
+        };
+
+        let mut successor = resource(64, 5, None);
+        successor.kernel_boot_id = [11; 16];
+        successor.revision = 3;
+        successor.state = MountResourceStateV1::Publishing {
+            detached: detached(64, 164),
+            publication: publication(Some(predecessor.handle)),
+        };
+
+        let resources = BTreeMap::from([
+            (predecessor.handle, predecessor),
+            (successor.handle, successor),
+        ]);
+        let malformed = MountResourceTableV1 {
+            limits: MountResourceLimitsV1::default(),
+            current_kernel_boot_id: [11; 16],
+            resources,
+            materialized_bytes: 0,
+        };
+        assert!(malformed.validate_table().is_err());
+    }
+
+    #[test]
+    fn stale_nonterminal_install_cannot_hide_a_current_install() {
+        let mut stale = resource(65, 4, None);
+        stale.revision = 4;
+        stale.state = MountResourceStateV1::Installed {
+            detached: detached(65, 165),
+            installed: installed(165),
+            publication: publication(None),
+        };
+
+        let mut current = resource(66, 5, None);
+        current.kernel_boot_id = [11; 16];
+        current.revision = 4;
+        current.state = MountResourceStateV1::Installed {
+            detached: detached(66, 166),
+            installed: installed(166),
+            publication: publication(None),
+        };
+
+        let resources = BTreeMap::from([(stale.handle, stale), (current.handle, current)]);
+        let malformed = MountResourceTableV1 {
+            limits: MountResourceLimitsV1::default(),
+            current_kernel_boot_id: [11; 16],
+            resources,
+            materialized_bytes: 0,
+        };
+        assert!(malformed.validate_table().is_err());
+    }
+
+    #[test]
+    fn valid_stale_faulted_replacement_history_remains_reciprocal() {
+        let (predecessor, successor) = stale_faulted_replacement_pair();
+        table_with([predecessor, successor])
+            .validate_table()
+            .unwrap();
+    }
+
+    #[test]
+    fn stale_faulted_replacement_history_rejects_dangling_edges() {
+        let (predecessor, successor) = stale_faulted_replacement_pair();
+        assert!(table_with([successor]).validate_table().is_err());
+        assert!(table_with([predecessor]).validate_table().is_err());
+    }
+
+    #[test]
+    fn stale_faulted_replacement_history_rejects_cross_boot_edges() {
+        let (predecessor, mut successor) = stale_faulted_replacement_pair();
+        successor.kernel_boot_id = [8; 16];
+        assert!(
+            table_with([predecessor, successor])
+                .validate_table()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn stale_faulted_replacement_cannot_link_to_unrelated_current_resource() {
+        let (predecessor, mut successor) = stale_faulted_replacement_pair();
+        let mut current = resource(74, 6, None);
+        current.revision = 4;
+        current.state = MountResourceStateV1::Installed {
+            detached: detached(74, 174),
+            installed: installed(174),
+            publication: publication(None),
+        };
+        let MountResourceStateV1::Faulted { publication, .. } = &mut successor.state else {
+            panic!("successor fixture must be faulted");
+        };
+        publication
+            .as_mut()
+            .unwrap_or_else(|| panic!("successor publication must exist"))
+            .replaces = Some(current.handle);
+
+        assert!(
+            table_with([predecessor, successor, current])
+                .validate_table()
+                .is_err()
+        );
     }
 
     #[test]
@@ -1934,11 +2220,20 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_store_key_and_materialized_bounds_fail_closed() {
-        let mut table = table();
+    fn descriptor_store_key_must_be_derived_from_handle() {
+        let table = table();
+        let mut redirected_key = resource(50, 4, None);
+        redirected_key.fd_store_key = [51; 32];
+        assert!(table.plan_allocate(&redirected_key).is_err());
+
         let mut sentinel_key = resource(50, 4, None);
         sentinel_key.fd_store_key = [0; 32];
         assert!(table.plan_allocate(&sentinel_key).is_err());
+    }
+
+    #[test]
+    fn descriptor_store_and_materialized_bounds_fail_closed() {
+        let mut table = table();
 
         let first = resource(50, 4, None);
         allocate(&mut table, &first);

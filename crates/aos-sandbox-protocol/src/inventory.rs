@@ -465,6 +465,13 @@ pub fn decode_mount_inventory_response(
     let mut mount_id_owners = BTreeMap::new();
     for record in &response.mounts {
         let record = validate_record(record)?;
+        if claims_current_kernel_state(record.lifecycle)
+            && record.resource_kernel_boot_id != kernel_boot_id
+        {
+            return Err(ProtocolValidationError::InvalidField(
+                "inventory current kernel boot",
+            ));
+        }
         if mounts
             .last()
             .is_some_and(|previous: &ValidatedMountInventoryRecord| {
@@ -501,7 +508,7 @@ pub fn decode_mount_inventory_response(
         mounts.push(record);
     }
     validate_replacement_correlations(&mounts)?;
-    validate_slot_ownership(&mounts)?;
+    validate_slot_ownership(&mounts, kernel_boot_id)?;
 
     Ok(ValidatedMountInventory {
         kernel_boot_id,
@@ -513,9 +520,13 @@ pub fn decode_mount_inventory_response(
 
 fn validate_slot_ownership(
     mounts: &[ValidatedMountInventoryRecord],
+    kernel_boot_id: [u8; 16],
 ) -> Result<(), ProtocolValidationError> {
     let mut slots = BTreeMap::new();
-    for resource in mounts.iter().filter(|value| claims_slot(value)) {
+    for resource in mounts
+        .iter()
+        .filter(|value| claims_slot(value, kernel_boot_id))
+    {
         let key = (
             *resource.binding.fence.sandbox_id(),
             *resource.binding.fence.incarnation_id(),
@@ -537,7 +548,25 @@ fn validate_slot_ownership(
     Ok(())
 }
 
-fn claims_slot(resource: &ValidatedMountInventoryRecord) -> bool {
+fn claims_current_kernel_state(lifecycle: MountLifecycle) -> bool {
+    matches!(
+        lifecycle,
+        MountLifecycle::MOUNT_LIFECYCLE_ALLOCATED
+            | MountLifecycle::MOUNT_LIFECYCLE_PREPARED
+            | MountLifecycle::MOUNT_LIFECYCLE_PUBLISHING
+            | MountLifecycle::MOUNT_LIFECYCLE_INSTALLED
+            | MountLifecycle::MOUNT_LIFECYCLE_DETACHING
+            | MountLifecycle::MOUNT_LIFECYCLE_DRAINING
+            | MountLifecycle::MOUNT_LIFECYCLE_RELEASING
+    )
+}
+
+fn claims_slot(resource: &ValidatedMountInventoryRecord, kernel_boot_id: [u8; 16]) -> bool {
+    if resource.resource_kernel_boot_id != kernel_boot_id {
+        // Faulted rows from an earlier boot retain historical observations but
+        // no longer claim topology in the broker's current mount namespace.
+        return false;
+    }
     matches!(
         resource.lifecycle,
         MountLifecycle::MOUNT_LIFECYCLE_PUBLISHING
@@ -569,6 +598,7 @@ fn declares_replacement(
         .publication
         .and_then(|value| value.replaces_mount_handle)
         == Some(predecessor.mount_handle)
+        && successor.resource_kernel_boot_id == predecessor.resource_kernel_boot_id
         && same_slot(successor, predecessor)
         && binding_strictly_advances(&successor.binding, &predecessor.binding)
         && ((is_phase(successor, MountLifecycle::MOUNT_LIFECYCLE_PUBLISHING)
@@ -618,11 +648,7 @@ fn validate_replacement_correlations(
             .and_then(|value| value.replaces_mount_handle)
         {
             let replaced = find_mount(mounts, replaced_handle)?;
-            if !same_slot(resource, replaced)
-                || !binding_strictly_advances(&resource.binding, &replaced.binding)
-                || !(is_phase(replaced, MountLifecycle::MOUNT_LIFECYCLE_INSTALLED)
-                    || is_phase(replaced, MountLifecycle::MOUNT_LIFECYCLE_DRAINING))
-            {
+            if !declares_replacement(resource, replaced) {
                 return Err(ProtocolValidationError::InvalidField(
                     "inventory replacement correlation",
                 ));
@@ -630,14 +656,7 @@ fn validate_replacement_correlations(
         }
         if let Some(successor_handle) = resource.replaced_by_mount_handle {
             let successor = find_mount(mounts, successor_handle)?;
-            if !same_slot(resource, successor)
-                || !binding_strictly_advances(&successor.binding, &resource.binding)
-                || !is_phase(successor, MountLifecycle::MOUNT_LIFECYCLE_INSTALLED)
-                || successor
-                    .publication
-                    .and_then(|value| value.replaces_mount_handle)
-                    != Some(resource.mount_handle)
-            {
+            if !declares_replacement(successor, resource) {
                 return Err(ProtocolValidationError::InvalidField(
                     "inventory replacement correlation",
                 ));
@@ -1159,7 +1178,7 @@ mod tests {
 
     fn response(records: Vec<MountInventoryRecord>) -> InventoryMountResourcesResponse {
         InventoryMountResourcesResponse {
-            kernel_boot_id: vec![15; 16],
+            kernel_boot_id: vec![16; 16],
             journal_sequence: 14,
             mounts: records,
             broker_instance_id: vec![17; 16],
@@ -1200,7 +1219,7 @@ mod tests {
         let encoded = response(vec![installed_record(1, 101)]).encode_to_vec();
         let inventory = decode_mount_inventory_response(&encoded, MINIMUM_RESPONSE_BYTES)
             .unwrap_or_else(|error| panic!("valid inventory failed: {error}"));
-        assert_eq!(inventory.kernel_boot_id(), &[15; 16]);
+        assert_eq!(inventory.kernel_boot_id(), &[16; 16]);
         assert_eq!(inventory.broker_instance_id(), &[17; 16]);
         assert_eq!(inventory.journal_sequence(), 14);
         let record = &inventory.mounts()[0];
@@ -1217,6 +1236,93 @@ mod tests {
                 .map(ValidatedMountKernelObservation::unique_mount_id),
             Some(101)
         );
+    }
+
+    #[test]
+    fn live_kernel_lifecycles_must_belong_to_the_inventory_boot() {
+        let operation = || {
+            Some(MountOperationCorrelation {
+                operation_id: vec![18; 16],
+                request_digest: vec![19; 32],
+                ..Default::default()
+            })
+            .into()
+        };
+
+        let mut allocated = installed_record(1, 100);
+        allocated.lifecycle = MountLifecycle::MOUNT_LIFECYCLE_ALLOCATED.into();
+        allocated.detached_unique_mount_id = None;
+        allocated.installed_observation = None.into();
+        allocated.publication = None.into();
+        allocated.creation = operation();
+
+        let mut prepared = installed_record(1, 101);
+        prepared.lifecycle = MountLifecycle::MOUNT_LIFECYCLE_PREPARED.into();
+        prepared.installed_observation = None.into();
+        prepared.publication = None.into();
+        prepared.creation = operation();
+
+        let mut publishing = installed_record(1, 101);
+        publishing.lifecycle = MountLifecycle::MOUNT_LIFECYCLE_PUBLISHING.into();
+        publishing.installed_observation = None.into();
+
+        let installed = installed_record(1, 101);
+
+        let mut detaching = installed_record(1, 101);
+        detaching.lifecycle = MountLifecycle::MOUNT_LIFECYCLE_DETACHING.into();
+        detaching.publication = None.into();
+        detaching.detachment = operation();
+
+        let mut draining = installed_record(1, 101);
+        draining.lifecycle = MountLifecycle::MOUNT_LIFECYCLE_DRAINING.into();
+        draining.publication = None.into();
+        draining.replaced_by_mount_handle = vec![2; 32];
+
+        let mut releasing = installed_record(1, 101);
+        releasing.lifecycle = MountLifecycle::MOUNT_LIFECYCLE_RELEASING.into();
+        releasing.installed_observation = None.into();
+        releasing.publication = None.into();
+        releasing.release = operation();
+
+        for mut record in [
+            allocated, prepared, publishing, installed, detaching, draining, releasing,
+        ] {
+            record.resource_kernel_boot_id = vec![15; 16];
+            let encoded = response(vec![record]).encode_to_vec();
+            assert_eq!(
+                decode_mount_inventory_response(&encoded, MINIMUM_RESPONSE_BYTES),
+                Err(ProtocolValidationError::InvalidField(
+                    "inventory current kernel boot"
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn historical_terminal_rows_may_precede_the_inventory_boot() {
+        let mut released = installed_record(2, 101);
+        released.lifecycle = MountLifecycle::MOUNT_LIFECYCLE_RELEASED.into();
+        released.resource_kernel_boot_id = vec![15; 16];
+        released.installed_observation = None.into();
+        released.publication = None.into();
+
+        let mut faulted = installed_record(3, 102);
+        faulted.lifecycle = MountLifecycle::MOUNT_LIFECYCLE_FAULTED.into();
+        faulted.resource_kernel_boot_id = vec![15; 16];
+        faulted.fault = Some(MountFaultCorrelation {
+            from: MountFaultPhase::MOUNT_FAULT_PHASE_INSTALLED.into(),
+            failure_digest: vec![20; 32],
+            ..Default::default()
+        })
+        .into();
+
+        // Numerical IDs are scoped by boot. Historical terminal rows do not
+        // claim the current slot or alias its current kernel object.
+        let current = installed_record(4, 101);
+        let encoded = response(vec![released, faulted, current]).encode_to_vec();
+        let inventory = decode_mount_inventory_response(&encoded, MINIMUM_RESPONSE_BYTES)
+            .unwrap_or_else(|error| panic!("historical inventory failed: {error}"));
+        assert_eq!(inventory.mounts().len(), 3);
     }
 
     #[test]
@@ -1284,6 +1390,176 @@ mod tests {
         let encoded = response(vec![predecessor, successor]).encode_to_vec();
         let inventory = decode_mount_inventory_response(&encoded, MINIMUM_RESPONSE_BYTES)
             .unwrap_or_else(|error| panic!("faulted reciprocal pair failed: {error}"));
+        assert_eq!(inventory.mounts().len(), 2);
+    }
+
+    #[test]
+    fn reciprocal_replacement_rows_must_share_one_kernel_boot() {
+        let mut predecessor = installed_record(1, 101);
+        predecessor.lifecycle = MountLifecycle::MOUNT_LIFECYCLE_FAULTED.into();
+        predecessor.resource_kernel_boot_id = vec![15; 16];
+        predecessor.publication = None.into();
+        predecessor.replaced_by_mount_handle = vec![2; 32];
+        predecessor.fault = Some(MountFaultCorrelation {
+            from: MountFaultPhase::MOUNT_FAULT_PHASE_DRAINING.into(),
+            failure_digest: vec![20; 32],
+            ..Default::default()
+        })
+        .into();
+
+        let mut successor = installed_record(2, 102);
+        let successor_fence = successor
+            .binding
+            .get_or_insert_default()
+            .fence
+            .get_or_insert_default();
+        successor_fence.desired_generation = 5;
+        successor_fence.assignment_digest = vec![21; 32];
+        successor
+            .publication
+            .get_or_insert_default()
+            .replaces_mount_handle = vec![1; 32];
+        successor.lifecycle = MountLifecycle::MOUNT_LIFECYCLE_FAULTED.into();
+        successor.fault = Some(MountFaultCorrelation {
+            from: MountFaultPhase::MOUNT_FAULT_PHASE_INSTALLED.into(),
+            failure_digest: vec![22; 32],
+            ..Default::default()
+        })
+        .into();
+
+        let encoded = response(vec![predecessor, successor]).encode_to_vec();
+        assert_eq!(
+            decode_mount_inventory_response(&encoded, MINIMUM_RESPONSE_BYTES),
+            Err(ProtocolValidationError::InvalidField(
+                "inventory replacement correlation"
+            ))
+        );
+    }
+
+    #[test]
+    fn historical_installed_forward_edge_requires_draining_reciprocity() {
+        let mut predecessor = installed_record(1, 101);
+        predecessor.resource_kernel_boot_id = vec![15; 16];
+        predecessor.lifecycle = MountLifecycle::MOUNT_LIFECYCLE_FAULTED.into();
+        predecessor.fault = Some(MountFaultCorrelation {
+            from: MountFaultPhase::MOUNT_FAULT_PHASE_INSTALLED.into(),
+            failure_digest: vec![20; 32],
+            ..Default::default()
+        })
+        .into();
+
+        let mut successor = installed_record(2, 102);
+        successor.resource_kernel_boot_id = vec![15; 16];
+        let successor_fence = successor
+            .binding
+            .get_or_insert_default()
+            .fence
+            .get_or_insert_default();
+        successor_fence.desired_generation = 5;
+        successor_fence.assignment_digest = vec![21; 32];
+        successor
+            .publication
+            .get_or_insert_default()
+            .replaces_mount_handle = vec![1; 32];
+        successor.lifecycle = MountLifecycle::MOUNT_LIFECYCLE_FAULTED.into();
+        successor.fault = Some(MountFaultCorrelation {
+            from: MountFaultPhase::MOUNT_FAULT_PHASE_INSTALLED.into(),
+            failure_digest: vec![22; 32],
+            ..Default::default()
+        })
+        .into();
+
+        let encoded = response(vec![predecessor, successor]).encode_to_vec();
+        assert_eq!(
+            decode_mount_inventory_response(&encoded, MINIMUM_RESPONSE_BYTES),
+            Err(ProtocolValidationError::InvalidField(
+                "inventory replacement correlation"
+            ))
+        );
+    }
+
+    #[test]
+    fn historical_publishing_cannot_replace_a_draining_row() {
+        let mut predecessor = installed_record(1, 101);
+        predecessor.resource_kernel_boot_id = vec![15; 16];
+        predecessor.lifecycle = MountLifecycle::MOUNT_LIFECYCLE_FAULTED.into();
+        predecessor.publication = None.into();
+        predecessor.replaced_by_mount_handle = vec![2; 32];
+        predecessor.fault = Some(MountFaultCorrelation {
+            from: MountFaultPhase::MOUNT_FAULT_PHASE_DRAINING.into(),
+            failure_digest: vec![20; 32],
+            ..Default::default()
+        })
+        .into();
+
+        let mut successor = installed_record(2, 102);
+        successor.resource_kernel_boot_id = vec![15; 16];
+        let successor_fence = successor
+            .binding
+            .get_or_insert_default()
+            .fence
+            .get_or_insert_default();
+        successor_fence.desired_generation = 5;
+        successor_fence.assignment_digest = vec![21; 32];
+        successor
+            .publication
+            .get_or_insert_default()
+            .replaces_mount_handle = vec![1; 32];
+        successor.lifecycle = MountLifecycle::MOUNT_LIFECYCLE_FAULTED.into();
+        successor.installed_observation = None.into();
+        successor.fault = Some(MountFaultCorrelation {
+            from: MountFaultPhase::MOUNT_FAULT_PHASE_PUBLISHING.into(),
+            failure_digest: vec![22; 32],
+            ..Default::default()
+        })
+        .into();
+
+        let encoded = response(vec![predecessor, successor]).encode_to_vec();
+        assert_eq!(
+            decode_mount_inventory_response(&encoded, MINIMUM_RESPONSE_BYTES),
+            Err(ProtocolValidationError::InvalidField(
+                "inventory replacement correlation"
+            ))
+        );
+    }
+
+    #[test]
+    fn historical_publishing_to_installed_one_way_edge_is_valid() {
+        let mut predecessor = installed_record(1, 101);
+        predecessor.resource_kernel_boot_id = vec![15; 16];
+        predecessor.lifecycle = MountLifecycle::MOUNT_LIFECYCLE_FAULTED.into();
+        predecessor.fault = Some(MountFaultCorrelation {
+            from: MountFaultPhase::MOUNT_FAULT_PHASE_INSTALLED.into(),
+            failure_digest: vec![20; 32],
+            ..Default::default()
+        })
+        .into();
+
+        let mut successor = installed_record(2, 102);
+        successor.resource_kernel_boot_id = vec![15; 16];
+        let successor_fence = successor
+            .binding
+            .get_or_insert_default()
+            .fence
+            .get_or_insert_default();
+        successor_fence.desired_generation = 5;
+        successor_fence.assignment_digest = vec![21; 32];
+        successor
+            .publication
+            .get_or_insert_default()
+            .replaces_mount_handle = vec![1; 32];
+        successor.lifecycle = MountLifecycle::MOUNT_LIFECYCLE_FAULTED.into();
+        successor.installed_observation = None.into();
+        successor.fault = Some(MountFaultCorrelation {
+            from: MountFaultPhase::MOUNT_FAULT_PHASE_PUBLISHING.into(),
+            failure_digest: vec![22; 32],
+            ..Default::default()
+        })
+        .into();
+
+        let encoded = response(vec![predecessor, successor]).encode_to_vec();
+        let inventory = decode_mount_inventory_response(&encoded, MINIMUM_RESPONSE_BYTES)
+            .unwrap_or_else(|error| panic!("valid historical publication failed: {error}"));
         assert_eq!(inventory.mounts().len(), 2);
     }
 

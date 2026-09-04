@@ -27,6 +27,7 @@ use crate::state::mount_resource_v1::{
     MountHandleV1, MountPolicyV1, MountRecipeV1, MountResourceLimitsV1, MountResourceStateV1,
     MountResourceTableV1, MountResourceV1, NativeMutationV1, ObjectDescriptorV1,
     OperationCorrelationV1, OwnedMountAttributeV1, PublicationCorrelationV1,
+    canonical_fd_store_key,
 };
 use crate::state::{EffectStatus, decode_effect, encode_effect, encode_fence, validate_fence};
 use crate::worker::{
@@ -56,8 +57,11 @@ impl<W: MountWorker> MountBroker<W> {
             .map_err(|error| MountError::State(error.to_string()))?
             .into_bytes();
         let broker_instance_id = broker_instance_id()?;
-        let mut resources =
-            MountResourceTableV1::recover(&journal, MountResourceLimitsV1::default())?;
+        let mut resources = MountResourceTableV1::recover(
+            &journal,
+            MountResourceLimitsV1::default(),
+            kernel_boot_id,
+        )?;
         fault_stale_boot_resources(&mut journal, &mut resources, kernel_boot_id)?;
         fault_unverifiable_allocated_custody(
             &mut journal,
@@ -581,7 +585,7 @@ fn allocated_resource(
     let handle = derive_handle(b"detached", request_digest);
     Ok(MountResourceV1 {
         handle,
-        fd_store_key: handle,
+        fd_store_key: canonical_fd_store_key(handle),
         kernel_boot_id,
         revision: 1,
         binding: binding(request),
