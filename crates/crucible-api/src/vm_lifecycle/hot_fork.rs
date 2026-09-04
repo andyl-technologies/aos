@@ -259,13 +259,7 @@ impl ProductionVmHotForkWorldContinuation {
         self,
         node_generations: BTreeMap<NodeId, u64>,
         run_state_root: impl Into<PathBuf>,
-    ) -> (
-        ProductionVmLifecycleConfig,
-        ProductionVmExactCheckpointSet,
-        BTreeMap<NodeId, ContentHash>,
-        BTreeMap<NodeId, storage_faults::ProductionBlockBinding>,
-        BTreeMap<NodeId, storage_faults::ProductionNinepBinding>,
-    ) {
+    ) -> ProductionVmHotForkRestoreParts {
         let config = self.config.with_run_state_root(run_state_root);
         let checkpoint = ProductionVmExactCheckpointSet {
             identity: self.configuration.id(),
@@ -286,13 +280,13 @@ impl ProductionVmHotForkWorldContinuation {
             node_generations,
             node_service_states: self.node_service_states,
         };
-        (
+        ProductionVmHotForkRestoreParts {
             config,
             checkpoint,
-            self.immutable_root_images,
-            self.block_bindings,
-            self.ninep_bindings,
-        )
+            immutable_root_images: self.immutable_root_images,
+            block_bindings: self.block_bindings,
+            ninep_bindings: self.ninep_bindings,
+        }
     }
 }
 
