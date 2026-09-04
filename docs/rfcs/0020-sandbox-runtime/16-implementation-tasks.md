@@ -1178,6 +1178,27 @@ completes. The Git history remains authoritative for code details.
   file data, and worker process integration remain open. No task is checked
   from the library alone.
 
+- `c4e801616` — qualifies the public Rust owned-backing and mapping admission
+  APIs on exact AOS Linux 6.18.33 x86_64. The narrow unpublished fixture verifies
+  bytes, EOF, identity, mapping compatibility, and retained-pin reads after
+  unlink, and rejects wrong measurements/sizes, exceeded ceilings, symlinks,
+  and unsealed same-content files. The existing fs-verity/passthrough proof
+  continues to pass. Independent review, scoped build/lint/format checks, and
+  installed linkage checks pass; runtime dependencies are only AOS libc and
+  its loader. Result:
+  `pgpcl9lp5mkb9z3xgxn7jzdb0c0hn5iz-aos-vm-test-sandbox-filesystem-kernel-capabilities-0`.
+  This does not prove publisher authority, aarch64 behavior, or the adversarial
+  emulated-verity FUSE runtime case.
+- `dece711df` — opens protected journals for a configured dedicated service
+  UID without exposing the ancestry-skipping test helper. Rooted no-symlink
+  traversal admits root ancestors followed by a one-way transition to the exact
+  service owner; writable ancestors and ownership reentry fail closed. The
+  final directory remains exact-owner 0700 and all retained-directory journal,
+  lock, and replacement checks remain exact-owner 0600. UID zero preserves the
+  root-only boundary. All 132 sandbox unit tests (including 24 journal tests),
+  strict scoped Clippy, warning-denied rustdoc, and independent review pass.
+  Real service-UID VM qualification remains open; no credential change,
+  authenticated ownership assertion, or rollback protection is implied.
 - `81247127a` — adds owned, read-only fs-verity backing admission without
   mapping the full file. Exact-size ceilings precede opening; filesystem type,
   measurement, size, and identity are checked on the same pinned descriptor.
@@ -1305,5 +1326,8 @@ completed the hermetic AOS package build/check and reached full-system guest
 readiness. Credential recovery succeeds in both initrd and the booted system.
 The test body passed fs-verity and failed passthrough because its captured probe
 predates `44e0abf1d`'s receive-buffer repair. That failure cancelled the sibling
-metadata fleet gate after readiness; it is being rerun independently. This
-resolves the observed boot blocker, not the complete filesystem fleet gate.
+metadata fleet gate after readiness. Its independent rerun now passes:
+`gpxfkbl9xdb3bfjjzlg2i46iyfcrrf0r-aos-fleet-test-sandbox-fuse-transport-proof-0`.
+The installed C transport therefore has both headless and full-system x86_64
+metadata runtime evidence. This resolves the observed boot blocker, not the
+complete filesystem capability fleet gate or dual-architecture qualification.
