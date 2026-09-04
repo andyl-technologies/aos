@@ -56,6 +56,11 @@ according to its disposable-data policy.
 - [`registry-main.md`](registry-main.md) is the fail-closed production runbook.
 - [`canonical-releases.md`](canonical-releases.md) documents every `aos release`
   phase and the signed evidence it produces.
+- [`trust-model.md`](trust-model.md) defines the authority chain, image-baked
+  anchors, signed registry metadata, and runtime trust boundary that these
+  procedures preserve.
+- [`package-security.md`](package-security.md) defines the package review and
+  confinement gates that precede publication.
 - [`aos-hub-deployment.md`](aos-hub-deployment.md) deploys one validated Worker
   build to staging and production.
 - [`aos-hub-backup-recovery.md`](aos-hub-backup-recovery.md) defines the Hub
