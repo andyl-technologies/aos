@@ -710,8 +710,10 @@ fn is_fixture_github_tags_request(request: &[u8]) -> bool {
     let Some(line) = request.split(|byte| *byte == b'\n').next() else {
         return false;
     };
-    request_host(request) == Some("api.github.com")
-        && line.starts_with(b"GET /repos/andyl-technologies/maintain-fixture/tags?")
+    matches!(
+        request_host(request),
+        Some("api.github.com" | "aos.andyl.org")
+    ) && line.starts_with(b"GET /repos/andyl-technologies/maintain-fixture/tags?")
         && line.ends_with(b" HTTP/1.1\r")
 }
 
@@ -802,7 +804,7 @@ mod tests {
         assert!(!is_fixture_github_tags_request(
             b"GET /repos/other/project/tags?page=1 HTTP/1.1\r\nHost: api.github.com\r\n\r\n"
         ));
-        assert!(!is_fixture_github_tags_request(
+        assert!(is_fixture_github_tags_request(
             b"GET /repos/andyl-technologies/maintain-fixture/tags?page=1 HTTP/1.1\r\nHost: aos.andyl.org\r\n\r\n"
         ));
     }

@@ -12,9 +12,9 @@
 }: let
   fixture = import ./_native-hub-production.nix {inherit lib mkSystem pkgs;};
   releaseTool = pkgs.aos.testSupport;
-  # The self-signed certificate is a public test trust anchor. Its matching
-  # key is the repository's pre-existing release-fleet fixture key.
-  caCertificate = builtins.readFile ../fixtures/maintainer-fleet-server.crt;
+  # The certificate chain and private key are public test fixtures and carry
+  # no production authority.
+  caCertificate = builtins.readFile ../fixtures/release-fleet-ca.crt;
   styleHash = builtins.convertHash {
     hash = builtins.hashFile "sha256" ../../crates/aos-hub-core/src/web/static_assets/style.css;
     hashAlgo = "sha256";
@@ -26,7 +26,7 @@
       inherit name text;
       destination = "/value";
     };
-  serverCertificate = credentialFile "maintainer-fleet-server-certificate" (builtins.readFile ../fixtures/maintainer-fleet-server-leaf.crt);
+  serverCertificate = credentialFile "maintainer-fleet-server-certificate" (builtins.readFile ../fixtures/release-fleet-server.crt);
   serverPrivateKey = credentialFile "maintainer-fleet-server-private-key" (builtins.readFile ../fixtures/release-fleet-server.key);
 
   hubSystem = fixture.hubSystem.extendModules {
@@ -326,6 +326,7 @@ in {
               export NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
               export NIX_CONFIG='experimental-features = nix-command'
               export NIX_REMOTE=local
+              export GITHUB_API_URL=https://aos.andyl.org
               export PATH={TOOLS}/bin:$PATH
               {AOS} maintain --state-dir {STATE} --json {arguments}
           """)
