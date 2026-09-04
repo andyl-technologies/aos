@@ -377,7 +377,7 @@ impl StorageTransactionStore {
     }
 
     #[cfg(test)]
-    fn begin(
+    pub(crate) fn begin(
         &mut self,
         operation_id: [u8; 16],
         request_digest: ObjectDigest,
@@ -553,6 +553,39 @@ impl StorageTransactionStore {
         }
         record.phase = DurableStoragePhase::Ambiguous;
         self.publish(record)
+    }
+
+    pub(crate) fn mark_mutation_ambiguous_exact(
+        &mut self,
+        operation_id: [u8; 16],
+        request_digest: ObjectDigest,
+        mutation_digest: ObjectDigest,
+        catalog: &ResolvedCatalogCommitmentV1,
+    ) -> Result<(), StorageStateError> {
+        self.validate_mutation_exact(operation_id, request_digest, mutation_digest, catalog)?;
+        self.mark_mutation_ambiguous(operation_id, mutation_digest)
+    }
+
+    pub(crate) fn validate_mutation_exact(
+        &self,
+        operation_id: [u8; 16],
+        request_digest: ObjectDigest,
+        mutation_digest: ObjectDigest,
+        catalog: &ResolvedCatalogCommitmentV1,
+    ) -> Result<(), StorageStateError> {
+        // This read-only guard runs before a privileged observer is allowed to
+        // derive names from the supplied catalog. The state transition repeats
+        // the same comparison immediately before publishing Ambiguous so a
+        // future store implementation cannot accidentally widen the TOCTOU gap.
+        let record = self.exact_current(operation_id, mutation_digest)?;
+        if record.request_digest != request_digest
+            || record.catalog != catalog.binding()
+            || record.catalog_bytes != catalog.canonical_bytes()
+            || record.postcondition_digest != postcondition_digest(catalog.canonical_bytes())
+        {
+            return Err(StorageStateError::AuthorityLinkMismatch);
+        }
+        Ok(())
     }
 
     /// Publishes a committed result after observation verifies the postcondition.

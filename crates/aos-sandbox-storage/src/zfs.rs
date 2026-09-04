@@ -50,6 +50,8 @@ impl ZfsHelperContract {
     pub fn new(executable: PathBuf) -> Result<Self, ZfsTransactionError> {
         let length = executable.as_os_str().as_encoded_bytes().len();
         let valid = executable.is_absolute()
+            && executable.starts_with("/nix/store")
+            && executable.components().count() >= 5
             && (1..=MAXIMUM_EXECUTABLE_BYTES).contains(&length)
             && executable
                 .components()
@@ -230,6 +232,10 @@ impl ZfsTransaction {
     #[must_use]
     pub const fn ancestor_transaction(&self) -> Option<&AncestorPolicyTransaction> {
         self.ancestor.as_ref()
+    }
+
+    pub(crate) fn mutation_arguments(&self) -> &[OsString] {
+        &self.mutation_arguments
     }
 }
 

@@ -20,6 +20,11 @@
 pub mod authorization;
 pub mod broker;
 pub mod catalog;
+#[allow(
+    dead_code,
+    reason = "sealed helper boundary is not wired until Apply readiness exists"
+)]
+mod helper;
 pub mod request;
 pub mod state;
 pub mod zfs;
