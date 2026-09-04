@@ -1178,6 +1178,16 @@ completes. The Git history remains authoritative for code details.
   file data, and worker process integration remain open. No task is checked
   from the library alone.
 
+- `e92a74fe6` — real-kernel qualification toward `SBX-FS-03`: a fixed metadata
+  fixture links the installed C transport and mounts `/dev/fuse` in a private
+  mount namespace. The headless Firecracker gate passes on AOS Linux 6.18.33
+  x86_64, proving metadata/directory/symlink operations, kernel-reported mount
+  flags, cross-UID DAC with dropped credentials, read-only enforcement, idle
+  survival, cancellation, borrowed descriptor retention, exactly-once destroy,
+  disconnected-mount behavior, and normal unmount. The same C probe has a
+  full-system fleet test, whose runtime result remains pending. This is neither
+  real-kernel Rust-worker evidence nor aarch64 qualification. The passed result
+  is `cjzf7m6x3gnfqrzq01lw9ggfan286im3-aos-vm-test-aos-fuse-transport-kernel-metadata-0`.
 - `b619f4e29` — connects the metadata worker to the installed transport through
   a Linux-only Rust adapter toward `SBX-FS-03`. Its safe runner consumes the
   connection and borrows scratch, presentation/index storage, and descriptors
