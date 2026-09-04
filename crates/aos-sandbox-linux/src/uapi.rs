@@ -10,6 +10,32 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 
 use crate::{Error, Result};
 
+// Linux 6.18 `include/linux/socket.h`. glibc versions older than 2.39 do not
+// publish these constants even when the running kernel implements the ABI.
+pub(crate) const SO_PASSPIDFD: libc::c_int = 76;
+pub(crate) const SCM_PIDFD: libc::c_int = 0x04;
+pub(crate) const SO_PEERPIDFD: libc::c_int = 77;
+
+const SEQPACKET_CONTROL_BYTES: usize = 512;
+
+/// One control message returned by the kernel with all descriptor ownership
+/// transferred out of the raw message buffer.
+#[derive(Debug)]
+pub(crate) enum RawAncillary {
+    Credentials(libc::ucred),
+    PidFd(OwnedFd),
+    Rights(Vec<OwnedFd>),
+    Unknown { level: i32, kind: i32 },
+    Malformed(Vec<OwnedFd>),
+}
+
+#[derive(Debug)]
+pub(crate) struct RawSeqpacketMessage {
+    pub(crate) bytes: usize,
+    pub(crate) flags: i32,
+    pub(crate) ancillary: Vec<RawAncillary>,
+}
+
 pub(crate) const RESOLVE_NO_XDEV: u64 = 0x01;
 pub(crate) const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
 pub(crate) const RESOLVE_NO_SYMLINKS: u64 = 0x04;
@@ -537,6 +563,477 @@ pub(crate) fn listmount(request: &MountIdRequest, output: &mut [u64], flags: u32
     })
 }
 
+pub(crate) fn prepare_seqpacket(fd: BorrowedFd<'_>) -> Result<()> {
+    let socket_type = socket_integer_option(fd, libc::SO_TYPE, "getsockopt(SO_TYPE)")?;
+    if socket_type != libc::SOCK_SEQPACKET {
+        return Err(Error::WrongDescriptorType {
+            expected: "Unix SOCK_SEQPACKET socket",
+        });
+    }
+    let domain = socket_integer_option(fd, libc::SO_DOMAIN, "getsockopt(SO_DOMAIN)")?;
+    if domain != libc::AF_UNIX {
+        return Err(Error::WrongDescriptorType {
+            expected: "Unix SOCK_SEQPACKET socket",
+        });
+    }
+    let accepts_connections =
+        socket_integer_option(fd, libc::SO_ACCEPTCONN, "getsockopt(SO_ACCEPTCONN)")?;
+    if accepts_connections != 0 {
+        return Err(Error::WrongDescriptorType {
+            expected: "connected Unix SOCK_SEQPACKET socket, not a listener",
+        });
+    }
+    require_connected_unix_peer(fd)?;
+
+    ensure_cloexec(fd)?;
+    // SAFETY: F_GETFL observes the borrowed descriptor and takes no pointer.
+    let current = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
+    if current < 0 {
+        return Err(Error::syscall("fcntl(F_GETFL)"));
+    }
+    // SAFETY: F_SETFL consumes the scalar flags while the descriptor is live.
+    let result = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, current | libc::O_NONBLOCK) };
+    unit_result(result.into(), "fcntl(F_SETFL, O_NONBLOCK)")
+}
+
+fn require_connected_unix_peer(fd: BorrowedFd<'_>) -> Result<()> {
+    // All-zero is valid for sockaddr_storage and lets the kernel fill the
+    // peer address without relying on a pathname representation.
+    // SAFETY: sockaddr_storage is a plain C output structure.
+    let mut address: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+    let mut length = size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+    // SAFETY: the address and length are writable and live for the call. A
+    // successful getpeername positively establishes connected socket state.
+    let result = unsafe {
+        libc::getpeername(
+            fd.as_raw_fd(),
+            std::ptr::addr_of_mut!(address).cast(),
+            std::ptr::addr_of_mut!(length),
+        )
+    };
+    unit_result(result.into(), "getpeername(SOCK_SEQPACKET)")?;
+    if usize::try_from(length).unwrap_or(0) < size_of::<libc::sa_family_t>()
+        || i32::from(address.ss_family) != libc::AF_UNIX
+    {
+        return Err(Error::MalformedKernelResponse {
+            object: "SOCK_SEQPACKET peer address",
+            message: "getpeername returned a missing or non-Unix peer".to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn socket_integer_option(fd: BorrowedFd<'_>, option: i32, operation: &'static str) -> Result<i32> {
+    let mut value = 0_i32;
+    let mut length = size_of::<i32>() as libc::socklen_t;
+    // SAFETY: the output integer and its length are writable and live for the
+    // call, and the descriptor borrow spans the call.
+    let result = unsafe {
+        libc::getsockopt(
+            fd.as_raw_fd(),
+            libc::SOL_SOCKET,
+            option,
+            std::ptr::addr_of_mut!(value).cast(),
+            std::ptr::addr_of_mut!(length),
+        )
+    };
+    unit_result(result.into(), operation)?;
+    if length as usize != size_of::<i32>() {
+        return Err(Error::MalformedKernelResponse {
+            object: "socket option",
+            message: format!("{operation} returned an unexpected length"),
+        });
+    }
+    Ok(value)
+}
+
+pub(crate) fn enable_seqpacket_identity(fd: BorrowedFd<'_>) -> Result<()> {
+    set_socket_bool(fd, libc::SO_PASSCRED, "setsockopt(SO_PASSCRED)")?;
+    set_socket_bool(fd, SO_PASSPIDFD, "setsockopt(SO_PASSPIDFD)")
+}
+
+pub(crate) fn peer_credentials(fd: BorrowedFd<'_>) -> Result<libc::ucred> {
+    // All-zero is valid for this integer-only output structure.
+    // SAFETY: `ucred` contains only integer scalars.
+    let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut length = size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: the output structure and length remain writable and live for
+    // the call, and the connected socket descriptor is borrowed.
+    let result = unsafe {
+        libc::getsockopt(
+            fd.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            std::ptr::addr_of_mut!(credentials).cast(),
+            std::ptr::addr_of_mut!(length),
+        )
+    };
+    unit_result(result.into(), "getsockopt(SO_PEERCRED)")?;
+    if length as usize != size_of::<libc::ucred>() {
+        return Err(Error::MalformedKernelResponse {
+            object: "SO_PEERCRED",
+            message: "kernel returned an unexpected credential length".to_string(),
+        });
+    }
+    Ok(credentials)
+}
+
+pub(crate) fn peer_pidfd(fd: BorrowedFd<'_>) -> Result<OwnedFd> {
+    let mut peer_fd = -1_i32;
+    let mut length = size_of::<RawFd>() as libc::socklen_t;
+    // SAFETY: the output integer and length remain writable and live for the
+    // call. On success Linux installs a new pidfd in `peer_fd`.
+    let result = unsafe {
+        libc::getsockopt(
+            fd.as_raw_fd(),
+            libc::SOL_SOCKET,
+            SO_PEERPIDFD,
+            std::ptr::addr_of_mut!(peer_fd).cast(),
+            std::ptr::addr_of_mut!(length),
+        )
+    };
+    unit_result(result.into(), "getsockopt(SO_PEERPIDFD)")?;
+    if peer_fd < 0 {
+        return Err(Error::MalformedKernelResponse {
+            object: "SO_PEERPIDFD",
+            message: "kernel returned a negative descriptor".to_string(),
+        });
+    }
+    // Adopt before validating the returned length so every successful kernel
+    // installation is owned and closed on all later error paths.
+    // SAFETY: SO_PEERPIDFD returned a fresh descriptor in this process, and
+    // ownership has not been transferred elsewhere.
+    let peer_fd = unsafe { OwnedFd::from_raw_fd(peer_fd) };
+    ensure_cloexec(peer_fd.as_fd())?;
+    if length as usize != size_of::<RawFd>() {
+        return Err(Error::MalformedKernelResponse {
+            object: "SO_PEERPIDFD",
+            message: "kernel returned an unexpected descriptor length".to_string(),
+        });
+    }
+    Ok(peer_fd)
+}
+
+fn set_socket_bool(fd: BorrowedFd<'_>, option: i32, operation: &'static str) -> Result<()> {
+    let enabled = 1_i32;
+    // SAFETY: the scalar option value remains live and correctly sized for
+    // the complete call; the socket descriptor is borrowed.
+    let result = unsafe {
+        libc::setsockopt(
+            fd.as_raw_fd(),
+            libc::SOL_SOCKET,
+            option,
+            std::ptr::addr_of!(enabled).cast(),
+            size_of::<i32>() as libc::socklen_t,
+        )
+    };
+    unit_result(result.into(), operation)
+}
+
+pub(crate) fn send_seqpacket(fd: BorrowedFd<'_>, payload: &[u8]) -> Result<usize> {
+    // SAFETY: the byte slice remains readable and the descriptor remains
+    // borrowed for the complete nonblocking send.
+    let result = unsafe {
+        libc::send(
+            fd.as_raw_fd(),
+            payload.as_ptr().cast(),
+            payload.len(),
+            libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL,
+        )
+    };
+    if result < 0 {
+        return Err(Error::syscall("send(SOCK_SEQPACKET)"));
+    }
+    usize::try_from(result).map_err(|_| Error::MalformedKernelResponse {
+        object: "SOCK_SEQPACKET send",
+        message: "kernel returned a negative or oversized byte count".to_string(),
+    })
+}
+
+pub(crate) fn recv_seqpacket(
+    fd: BorrowedFd<'_>,
+    payload: &mut [u8],
+    flags: i32,
+) -> Result<RawSeqpacketMessage> {
+    let mut byte = 0_u8;
+    let (payload_pointer, payload_length) = if payload.is_empty() {
+        (std::ptr::addr_of_mut!(byte).cast(), 0)
+    } else {
+        (payload.as_mut_ptr().cast(), payload.len())
+    };
+    let mut vector = libc::iovec {
+        iov_base: payload_pointer,
+        iov_len: payload_length,
+    };
+    let mut control = [0_usize; SEQPACKET_CONTROL_BYTES / size_of::<usize>()];
+    // The all-zero bit pattern is the required initial state for `msghdr`.
+    // SAFETY: `msghdr` contains only pointers and integer fields for which
+    // null/zero is valid.
+    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+    message.msg_iov = std::ptr::addr_of_mut!(vector);
+    message.msg_iovlen = 1;
+    message.msg_control = control.as_mut_ptr().cast();
+    message.msg_controllen = SEQPACKET_CONTROL_BYTES;
+
+    // SAFETY: every pointer in `message` targets live writable storage for
+    // the call. The kernel initializes returned payload/control lengths and
+    // flags. MSG_CMSG_CLOEXEC closes the exec race before fd adoption.
+    let result = unsafe {
+        libc::recvmsg(
+            fd.as_raw_fd(),
+            std::ptr::addr_of_mut!(message),
+            flags | libc::MSG_DONTWAIT | libc::MSG_CMSG_CLOEXEC,
+        )
+    };
+    if result < 0 {
+        return Err(Error::syscall("recvmsg(SOCK_SEQPACKET)"));
+    }
+    let bytes = usize::try_from(result).map_err(|_| Error::MalformedKernelResponse {
+        object: "SOCK_SEQPACKET receive",
+        message: "kernel returned a negative or oversized byte count".to_string(),
+    })?;
+    let ancillary = decode_control(&control, message.msg_controllen)?;
+    Ok(RawSeqpacketMessage {
+        bytes,
+        flags: message.msg_flags,
+        ancillary,
+    })
+}
+
+fn decode_control(control: &[usize], used: usize) -> Result<Vec<RawAncillary>> {
+    if used > std::mem::size_of_val(control) {
+        return Err(Error::MalformedKernelResponse {
+            object: "SOCK_SEQPACKET ancillary data",
+            message: "kernel returned an oversized control length".to_string(),
+        });
+    }
+    let bytes = control.as_ptr().cast::<u8>();
+    let header_size = size_of::<libc::cmsghdr>();
+    let data_offset = cmsg_align(header_size);
+    let mut offset = 0;
+    let mut output = Vec::new();
+    while offset + header_size <= used {
+        // SAFETY: bounds above cover a complete header. `read_unaligned`
+        // avoids assuming stronger alignment for subsequent headers.
+        let header = unsafe { std::ptr::read_unaligned(bytes.add(offset).cast::<libc::cmsghdr>()) };
+        let length = header.cmsg_len;
+        if length < data_offset || length > used - offset {
+            return Err(Error::MalformedKernelResponse {
+                object: "SOCK_SEQPACKET ancillary data",
+                message: "invalid cmsghdr length".to_string(),
+            });
+        }
+        let payload_length = length - data_offset;
+        // SAFETY: the checked cmsg length covers the payload range.
+        let payload =
+            unsafe { std::slice::from_raw_parts(bytes.add(offset + data_offset), payload_length) };
+        output.push(decode_cmsg(header.cmsg_level, header.cmsg_type, payload));
+        offset = offset.saturating_add(cmsg_align(length));
+    }
+    Ok(output)
+}
+
+fn decode_cmsg(level: i32, kind: i32, payload: &[u8]) -> RawAncillary {
+    if level != libc::SOL_SOCKET {
+        return RawAncillary::Unknown { level, kind };
+    }
+    if kind == libc::SCM_CREDENTIALS && payload.len() == size_of::<libc::ucred>() {
+        // SAFETY: the exact length was checked and unaligned reads are valid.
+        return RawAncillary::Credentials(unsafe {
+            std::ptr::read_unaligned(payload.as_ptr().cast::<libc::ucred>())
+        });
+    }
+    if kind == libc::SCM_RIGHTS || kind == SCM_PIDFD {
+        let descriptors = adopt_descriptors(payload);
+        if kind == SCM_PIDFD && payload.len() == size_of::<RawFd>() && descriptors.len() == 1 {
+            let mut descriptors = descriptors;
+            return match descriptors.pop() {
+                Some(fd) => RawAncillary::PidFd(fd),
+                None => RawAncillary::Malformed(descriptors),
+            };
+        }
+        return if kind == libc::SCM_RIGHTS && payload.len().is_multiple_of(size_of::<RawFd>()) {
+            RawAncillary::Rights(descriptors)
+        } else {
+            RawAncillary::Malformed(descriptors)
+        };
+    }
+    RawAncillary::Unknown { level, kind }
+}
+
+fn adopt_descriptors(payload: &[u8]) -> Vec<OwnedFd> {
+    payload
+        .chunks_exact(size_of::<RawFd>())
+        .filter_map(|bytes| {
+            // SAFETY: a complete native fd integer is present. recvmsg
+            // installed each non-negative descriptor into this process and
+            // ownership has not otherwise been transferred.
+            let raw = unsafe { std::ptr::read_unaligned(bytes.as_ptr().cast::<RawFd>()) };
+            (raw >= 0).then(|| unsafe { OwnedFd::from_raw_fd(raw) })
+        })
+        .collect()
+}
+
+const fn cmsg_align(length: usize) -> usize {
+    let alignment = size_of::<usize>();
+    (length + alignment - 1) & !(alignment - 1)
+}
+
+#[cfg(test)]
+pub(crate) fn seqpacket_pair() -> Result<(OwnedFd, OwnedFd)> {
+    let mut descriptors = [-1; 2];
+    // SAFETY: the output array contains space for exactly two descriptors;
+    // success transfers both newly-created descriptors to this process.
+    let result = unsafe {
+        libc::socketpair(
+            libc::AF_UNIX,
+            libc::SOCK_SEQPACKET | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
+            0,
+            descriptors.as_mut_ptr(),
+        )
+    };
+    unit_result(result.into(), "socketpair(SOCK_SEQPACKET)")?;
+    // SAFETY: socketpair returned two distinct fresh descriptors.
+    Ok(unsafe {
+        (
+            OwnedFd::from_raw_fd(descriptors[0]),
+            OwnedFd::from_raw_fd(descriptors[1]),
+        )
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn unconnected_seqpacket() -> Result<OwnedFd> {
+    // SAFETY: socket returns one fresh descriptor on success.
+    let result = unsafe {
+        libc::socket(
+            libc::AF_UNIX,
+            libc::SOCK_SEQPACKET | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
+            0,
+        )
+    };
+    fd_result(result.into(), "socket(SOCK_SEQPACKET)")
+}
+
+#[cfg(test)]
+pub(crate) fn seqpacket_listener() -> Result<OwnedFd> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_NAME: AtomicU64 = AtomicU64::new(0);
+
+    let socket = unconnected_seqpacket()?;
+    // All-zero makes sun_path[0] the abstract-namespace marker.
+    // SAFETY: sockaddr_un is a plain C structure accepting all-zero bytes.
+    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    let name = format!(
+        "aos-seqpacket-{}-{}",
+        std::process::id(),
+        NEXT_NAME.fetch_add(1, Ordering::Relaxed)
+    );
+    if name.len() + 1 > address.sun_path.len() {
+        return Err(Error::invalid(
+            "abstract socket name",
+            "test name is too long",
+        ));
+    }
+    for (destination, source) in address.sun_path[1..].iter_mut().zip(name.bytes()) {
+        *destination = source as libc::c_char;
+    }
+    let length = std::mem::offset_of!(libc::sockaddr_un, sun_path) + 1 + name.len();
+    // SAFETY: the address length covers the family, abstract marker, and
+    // initialized name bytes; the socket remains borrowed for the call.
+    let result = unsafe {
+        libc::bind(
+            socket.as_raw_fd(),
+            std::ptr::addr_of!(address).cast(),
+            length as libc::socklen_t,
+        )
+    };
+    unit_result(result.into(), "bind(abstract SOCK_SEQPACKET)")?;
+    // SAFETY: listen consumes only a descriptor and scalar backlog.
+    let result = unsafe { libc::listen(socket.as_raw_fd(), 1) };
+    unit_result(result.into(), "listen(SOCK_SEQPACKET)")?;
+    Ok(socket)
+}
+
+#[cfg(test)]
+pub(crate) fn send_seqpacket_rights(
+    socket: BorrowedFd<'_>,
+    payload: &[u8],
+    descriptors: &[BorrowedFd<'_>],
+) -> Result<()> {
+    let raw: Vec<RawFd> = descriptors.iter().map(AsRawFd::as_raw_fd).collect();
+    let data_bytes = std::mem::size_of_val(raw.as_slice());
+    let control_bytes = cmsg_align(size_of::<libc::cmsghdr>()) + cmsg_align(data_bytes);
+    let mut control = vec![0_usize; control_bytes.div_ceil(size_of::<usize>())];
+    let mut vector = libc::iovec {
+        iov_base: payload.as_ptr().cast_mut().cast(),
+        iov_len: payload.len(),
+    };
+    // SAFETY: all-zero initializes optional msghdr pointers and lengths.
+    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+    message.msg_iov = std::ptr::addr_of_mut!(vector);
+    message.msg_iovlen = 1;
+    message.msg_control = control.as_mut_ptr().cast();
+    message.msg_controllen = control_bytes;
+    // SAFETY: the aligned control allocation covers the header and payload;
+    // both remain live for sendmsg and contain borrowed descriptor integers.
+    unsafe {
+        let header = message.msg_control.cast::<libc::cmsghdr>();
+        (*header).cmsg_level = libc::SOL_SOCKET;
+        (*header).cmsg_type = libc::SCM_RIGHTS;
+        (*header).cmsg_len = cmsg_align(size_of::<libc::cmsghdr>()) + data_bytes;
+        std::ptr::copy_nonoverlapping(
+            raw.as_ptr().cast::<u8>(),
+            message
+                .msg_control
+                .cast::<u8>()
+                .add(cmsg_align(size_of::<libc::cmsghdr>())),
+            data_bytes,
+        );
+    }
+    // SAFETY: the fully initialized message borrows all referenced storage for
+    // the duration of this nonblocking call.
+    let result = unsafe {
+        libc::sendmsg(
+            socket.as_raw_fd(),
+            std::ptr::addr_of!(message),
+            libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL,
+        )
+    };
+    if result < 0 {
+        Err(Error::syscall("sendmsg(SCM_RIGHTS)"))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn is_cloexec(fd: BorrowedFd<'_>) -> Result<bool> {
+    // SAFETY: F_GETFD only observes a descriptor borrowed for the call.
+    let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFD) };
+    if flags < 0 {
+        Err(Error::syscall("fcntl(F_GETFD)"))
+    } else {
+        Ok(flags & libc::FD_CLOEXEC != 0)
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn raw_fd_is_open(fd: RawFd) -> bool {
+    // SAFETY: F_GETFD only observes the integer descriptor table entry.
+    let result = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    result >= 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EBADF)
+}
+
+#[cfg(test)]
+pub(crate) fn duplicate_at_least(fd: BorrowedFd<'_>, minimum: RawFd) -> Result<OwnedFd> {
+    // SAFETY: F_DUPFD_CLOEXEC borrows the source and returns a fresh owned fd.
+    let result = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_DUPFD_CLOEXEC, minimum) };
+    fd_result(result.into(), "fcntl(F_DUPFD_CLOEXEC)")
+}
+
 fn fd_result(result: libc::c_long, operation: &'static str) -> Result<OwnedFd> {
     if result < 0 {
         return Err(Error::syscall(operation));
@@ -579,5 +1076,12 @@ mod tests {
         assert_eq!(SYS_STATMOUNT, 457);
         assert_eq!(SYS_LISTMOUNT, 458);
         assert_eq!(SYS_OPEN_TREE_ATTR, 467);
+    }
+
+    #[test]
+    fn vendored_socket_options_match_linux_6_18() {
+        assert_eq!(SO_PASSPIDFD, 76);
+        assert_eq!(SO_PEERPIDFD, 77);
+        assert_eq!(SCM_PIDFD, 0x04);
     }
 }

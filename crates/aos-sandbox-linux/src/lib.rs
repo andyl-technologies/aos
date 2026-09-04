@@ -3,7 +3,7 @@
 //! The crate wraps pidfds, namespace descriptors, race-resistant `openat2`
 //! resolution, the descriptor-based mount API, and mount-topology queries.
 //! All kernel resources are represented by owned descriptor types. Raw syscall
-//! invocation and vendored Linux 6.18 UAPI live only in the private [`uapi`]
+//! invocation and vendored Linux 6.18 UAPI live only in the private `uapi`
 //! module; safe callers cannot manufacture a typed descriptor from an integer.
 //!
 //! The modules divide responsibility as follows:
@@ -11,7 +11,8 @@
 //! - [`pidfd`] pins a process and obtains typed namespace descriptors;
 //! - [`path`] resolves descendants beneath a pre-opened directory;
 //! - [`mount`] constructs, attributes, idmaps, and attaches detached mounts;
-//! - [`inventory`] lists mounts and reads stable mount metadata.
+//! - [`inventory`] lists mounts and reads stable mount metadata;
+//! - [`seqpacket`] exchanges bounded records with kernel-pinned peer identity.
 
 #![cfg(target_os = "linux")]
 
@@ -20,6 +21,7 @@ pub mod inventory;
 pub mod mount;
 pub mod path;
 pub mod pidfd;
+pub mod seqpacket;
 mod uapi;
 
 /// Errors returned by the Linux sandbox descriptor boundary.
