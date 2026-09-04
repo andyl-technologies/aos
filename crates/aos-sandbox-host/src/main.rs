@@ -10,6 +10,7 @@ use std::os::fd::OwnedFd;
 use std::process::ExitCode;
 
 use aos_sandbox_host::activation::take_systemd_listener;
+use aos_sandbox_host::authorization::HostAuthorityV1;
 use aos_sandbox_host::broker::HostBroker;
 use aos_sandbox_host::catalog::FileHostCatalog;
 use aos_sandbox_host::peer::ControllerPeerVerifier;
@@ -46,13 +47,18 @@ fn run() -> Result<()> {
     let listener = take_systemd_listener()?;
     let catalog = FileHostCatalog::open_root_owned(CATALOG_ROOT)?;
     let state = FileHostStateStore::open(STATE_ROOT)?;
+    let credential_directory = env::var_os("CREDENTIALS_DIRECTORY").ok_or_else(|| {
+        HostError::State("systemd authority credential directory is absent".to_owned())
+    })?;
+    let authority = HostAuthorityV1::from_protected_directory(credential_directory)
+        .map_err(|error| HostError::State(error.to_string()))?;
     let worker = SystemdOneShotWorker::new(open_cgroup_root()?);
     let verifier = ControllerPeerVerifier::new(open_cgroup_root()?);
     // Launch remains unavailable until the phase-0 evidence publisher can
     // construct an opaque BackendReadiness token bound to the configured
     // executable. The argv value above is intentionally discarded rather than
     // being treated as evidence that an arbitrary path is safe to launch.
-    let broker = HostBroker::open(catalog, state, worker, None)?;
+    let broker = HostBroker::open(catalog, state, worker, None, authority)?;
     let mut service = HostService::new(broker, verifier, controller_identity);
 
     let runtime = tokio::runtime::Builder::new_current_thread()

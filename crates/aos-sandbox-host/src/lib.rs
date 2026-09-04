@@ -9,6 +9,8 @@
 //! Modules divide the privilege boundary as follows:
 //!
 //! - [`activation`] adopts the sole systemd-owned broker socket;
+//! - [`authorization`] exposes the shared CTRL-03/host semantic compiler and
+//!   owns host-audience admission;
 //! - [`plan`] resolves catalog handles and compiles the fixed nspawn launch;
 //! - [`catalog`] resolves launch resources from one atomic root-owned snapshot;
 //! - [`peer`] pins the controller process to its exact service cgroup;
@@ -19,6 +21,7 @@
 //! - [`broker`] orders validation, durability, effects, and replies.
 
 pub mod activation;
+pub mod authorization;
 pub mod broker;
 pub mod catalog;
 pub mod peer;
@@ -27,6 +30,8 @@ pub mod service;
 pub mod state;
 pub mod transport;
 pub mod worker;
+
+pub(crate) const KERNEL_CLOCK_PROVENANCE: [u8; 16] = *b"aos-kernel-clock";
 
 /// Errors returned by the fixed host broker.
 #[derive(Debug, thiserror::Error)]
@@ -46,6 +51,9 @@ pub enum HostError {
     /// A request is stale or contradicts durable host state.
     #[error("host request fence conflict: {0}")]
     Fence(&'static str),
+    /// Signed plan, ownership lease, or authenticated local authority failed.
+    #[error("host authority rejected request: {0}")]
+    Authority(#[from] aos_sandbox_broker::BrokerAdmissionError),
     /// The fixed systemd worker could not complete or verify an effect.
     #[error("host worker failure: {0}")]
     Worker(String),

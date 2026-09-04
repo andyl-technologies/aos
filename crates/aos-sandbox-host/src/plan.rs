@@ -180,8 +180,28 @@ impl NspawnConfig {
         fence: &ValidatedAssignmentFence,
         plan: &ValidatedRuntimePlan,
     ) -> Result<SandboxUnitSpec> {
-        validate_backend_features(plan)?;
         let resolved = catalog.resolve(fence, plan)?;
+        self.compile_resolved(fence, plan, resolved)
+    }
+
+    /// Compiles a launch from the exact resources admitted by the caller.
+    ///
+    /// Keeping resolution outside this method lets the broker resolve the
+    /// controller-authorized opaque handles exactly once for local compilation.
+    /// Kernel identities remain node-local checks and never enter the portable
+    /// signed request semantics.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unsupported features, invalid required resources,
+    /// unsafe resolved paths, or a contradictory identity allocation.
+    pub(crate) fn compile_resolved(
+        &self,
+        fence: &ValidatedAssignmentFence,
+        plan: &ValidatedRuntimePlan,
+        resolved: ResolvedLaunchResources,
+    ) -> Result<SandboxUnitSpec> {
+        validate_backend_features(plan)?;
         let workspace = resolved.workspace;
         let network = resolved.network;
         validate_resolved_identity(&resolved.identity, plan)?;

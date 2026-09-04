@@ -89,6 +89,9 @@ pub struct WorkerObservation {
 #[async_trait]
 pub trait HostWorker {
     /// Applies or reconciles one operation, then returns verified observation.
+    /// Implementations must invoke `before_effect` after asynchronous
+    /// preparation and immediately before each mutating backend call. An
+    /// idempotent no-op reconciliation does not consume effect authority.
     ///
     /// # Errors
     ///
@@ -98,6 +101,7 @@ pub trait HostWorker {
         &self,
         fence: &ValidatedAssignmentFence,
         operation: WorkerOperation,
+        before_effect: &mut (dyn FnMut() -> Result<()> + Send),
     ) -> Result<WorkerObservation>;
 
     /// Observes one incarnation without mutating it.
@@ -226,6 +230,7 @@ impl HostWorker for SystemdOneShotWorker {
         &self,
         fence: &ValidatedAssignmentFence,
         operation: WorkerOperation,
+        before_effect: &mut (dyn FnMut() -> Result<()> + Send),
     ) -> Result<WorkerObservation> {
         let client = SystemdClient::connect()
             .await
@@ -237,6 +242,7 @@ impl HostWorker for SystemdOneShotWorker {
                 return Ok(current);
             }
             WorkerOperation::Launch(spec) => {
+                before_effect()?;
                 ensure_done(
                     &client
                         .start_sandbox_unit(&spec)
@@ -250,6 +256,7 @@ impl HostWorker for SystemdOneShotWorker {
                 return Ok(current);
             }
             WorkerOperation::Stop => {
+                before_effect()?;
                 ensure_done(
                     &client
                         .stop_sandbox_unit(&name)
@@ -260,21 +267,30 @@ impl HostWorker for SystemdOneShotWorker {
             WorkerOperation::Freeze if current.state == ObservedRuntimeState::Frozen => {
                 return Ok(current);
             }
-            WorkerOperation::Freeze => client
-                .freeze_sandbox_unit(&name)
-                .await
-                .map_err(|error| worker_error(&error))?,
+            WorkerOperation::Freeze => {
+                before_effect()?;
+                client
+                    .freeze_sandbox_unit(&name)
+                    .await
+                    .map_err(|error| worker_error(&error))?;
+            }
             WorkerOperation::Thaw if current.state == ObservedRuntimeState::Ready => {
                 return Ok(current);
             }
-            WorkerOperation::Thaw => client
-                .thaw_sandbox_unit(&name)
-                .await
-                .map_err(|error| worker_error(&error))?,
-            WorkerOperation::Kill => client
-                .kill_sandbox_unit(&name)
-                .await
-                .map_err(|error| worker_error(&error))?,
+            WorkerOperation::Thaw => {
+                before_effect()?;
+                client
+                    .thaw_sandbox_unit(&name)
+                    .await
+                    .map_err(|error| worker_error(&error))?;
+            }
+            WorkerOperation::Kill => {
+                before_effect()?;
+                client
+                    .kill_sandbox_unit(&name)
+                    .await
+                    .map_err(|error| worker_error(&error))?;
+            }
         }
         self.observe_with_client(&client, fence).await
     }

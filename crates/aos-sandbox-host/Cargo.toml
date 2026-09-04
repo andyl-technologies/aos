@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 aos-proto = { path = "../aos-proto" }
+aos-sandbox-broker.workspace = true
 aos-sandbox-core = { path = "../aos-sandbox-core" }
 aos-sandbox-linux = { path = "../aos-sandbox-linux" }
 aos-sandbox-protocol = { path = "../aos-sandbox-protocol" }
@@ -24,6 +25,7 @@ rustix = { workspace = true, features = ["fs", "net", "process", "time"] }
 tokio.workspace = true
 
 [dev-dependencies]
+ed25519-dalek.workspace = true
 tempfile = "3"
 
 [lints]

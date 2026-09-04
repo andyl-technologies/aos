@@ -260,6 +260,26 @@ impl BrokerAuthority {
         .map_err(|_| BrokerAdmissionError::FenceRejected)
     }
 
+    /// Authenticates and opens one exact assignment-fence record location.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BrokerAdmissionError::FenceRejected`] for malformed,
+    /// unauthenticated, or relocated state.
+    pub fn open_fence(
+        &self,
+        sandbox_id: &[u8; 16],
+        bytes: &[u8],
+    ) -> Result<BrokerAuthorizationFenceV1, BrokerAdmissionError> {
+        open_authorization_fence(
+            &self.journal_mac_key,
+            RecordNamespace::DesiredState,
+            sandbox_id,
+            bytes,
+        )
+        .map_err(|_| BrokerAdmissionError::FenceRejected)
+    }
+
     /// Reads a fresh clock and validates it immediately before an effect.
     ///
     /// # Errors

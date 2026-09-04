@@ -6,7 +6,9 @@
 //! durable runtime observation or one path-free error.
 
 use aos_proto::aos::sandbox::local::v1::{Audience, BrokerErrorCode, BrokerMethod};
-use aos_sandbox_core::ProtocolId;
+use aos_sandbox_core::{FeatureRef, ProtocolId, RawClockProvenance, RawPairedClockSample};
+use aos_sandbox_linux::boot::KernelBootId;
+use aos_sandbox_protocol::session::SIGNED_PLAN_LEASE_FEATURE_NAMESPACE;
 use aos_sandbox_protocol::{
     MAXIMUM_HANDSHAKE_BYTES, MAXIMUM_REQUEST_BYTES, PeerPolicy, ProtocolValidationError,
     decode_runtime_request, encode_error_response_envelope, encode_success_response_envelope,
@@ -15,6 +17,7 @@ use aos_sandbox_protocol::{
 use buffa::Message as _;
 use rustix::time::{ClockId, clock_gettime};
 
+use crate::KERNEL_CLOCK_PROVENANCE;
 use crate::broker::HostBroker;
 use crate::peer::ControllerPeerVerifier;
 use crate::plan::HostCatalog;
@@ -99,12 +102,13 @@ where
             ));
         }
         let advertised_methods = advertised_methods(self.broker.launch_available());
+        let advertised_features = [signed_plan_lease_feature()?];
         let session = match negotiate_client_hello(
             &hello.bytes,
             peer.credentials(),
             self.peer_policy,
             ProtocolId::HostBroker,
-            &[],
+            &advertised_features,
             &advertised_methods,
         ) {
             Ok(session) => session,
@@ -128,10 +132,15 @@ where
         if validate_request_descriptor_roles(&request, &[]).is_err() {
             return Ok(ConnectionOutcome::RequestRejected);
         }
+        let Some(artifacts) = request.authorization() else {
+            return Ok(ConnectionOutcome::RequestRejected);
+        };
 
-        let now = boottime_nanoseconds()?;
+        // The broker applies the live deadline to new and pending effects. This
+        // first pass binds the session header and permits an exact authenticated
+        // Complete receipt to remain recoverable after its effect deadline.
         let Ok(validated) =
-            decode_runtime_request(request.body(), peer.credentials(), self.peer_policy, now)
+            decode_runtime_request(request.body(), peer.credentials(), self.peer_policy, 0)
         else {
             return Ok(ConnectionOutcome::RequestRejected);
         };
@@ -143,7 +152,14 @@ where
 
         match self
             .broker
-            .apply_runtime(request.body(), peer.credentials(), self.peer_policy, now)
+            .apply_runtime(
+                request.body(),
+                artifacts,
+                session.version(),
+                peer.credentials(),
+                self.peer_policy,
+                trusted_paired_clock_sample,
+            )
             .await
         {
             Ok(body) => {
@@ -178,22 +194,44 @@ where
 }
 
 fn advertised_methods(launch_available: bool) -> Vec<BrokerMethod> {
+    // Observation and inventory have protocol tags but no host dispatcher yet.
+    // Do not advertise them until their non-authorizing implementations exist.
     launch_available
         .then_some(BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME)
         .into_iter()
         .collect()
 }
 
-fn boottime_nanoseconds() -> Result<u64> {
-    let time = clock_gettime(ClockId::Boottime);
-    let seconds = u64::try_from(time.tv_sec)
+fn signed_plan_lease_feature() -> Result<FeatureRef> {
+    FeatureRef::new(SIGNED_PLAN_LEASE_FEATURE_NAMESPACE, 1, 0)
+        .map_err(|error| HostError::State(error.to_string()))
+}
+
+fn trusted_paired_clock_sample() -> Result<RawPairedClockSample> {
+    let wall = clock_gettime(ClockId::Realtime);
+    let boottime = clock_gettime(ClockId::Boottime);
+    let seconds = u64::try_from(boottime.tv_sec)
         .map_err(|_| HostError::State("CLOCK_BOOTTIME returned negative seconds".to_owned()))?;
-    let nanoseconds = u64::try_from(time.tv_nsec)
+    let nanoseconds = u64::try_from(boottime.tv_nsec)
         .map_err(|_| HostError::State("CLOCK_BOOTTIME returned negative nanoseconds".to_owned()))?;
     seconds
         .checked_mul(1_000_000_000)
         .and_then(|value| value.checked_add(nanoseconds))
         .ok_or_else(|| HostError::State("CLOCK_BOOTTIME overflowed u64 nanoseconds".to_owned()))
+        .and_then(|boottime_nanoseconds| {
+            let provenance = RawClockProvenance::new_untrusted(KERNEL_CLOCK_PROVENANCE)
+                .map_err(|error| HostError::State(error.to_string()))?;
+            let boot_id = KernelBootId::current()
+                .map_err(|error| HostError::State(error.to_string()))?
+                .into_bytes();
+            RawPairedClockSample::new_untrusted(
+                provenance,
+                boot_id,
+                wall.tv_sec,
+                boottime_nanoseconds,
+            )
+            .map_err(|error| HostError::State(error.to_string()))
+        })
 }
 
 fn encode_method_error(
@@ -247,7 +285,7 @@ fn classify_error(error: &HostError) -> (BrokerErrorCode, &'static str, bool) {
             "request deadline expired",
             true,
         ),
-        HostError::Protocol(_) | HostError::InvalidPlan(_) => (
+        HostError::Protocol(_) | HostError::InvalidPlan(_) | HostError::Authority(_) => (
             BrokerErrorCode::BROKER_ERROR_CODE_INVALID_REQUEST,
             "request is invalid",
             false,
@@ -328,7 +366,12 @@ mod tests {
 
     #[test]
     fn boottime_is_positive_and_normalized() {
-        assert!(boottime_nanoseconds().unwrap() > 0);
+        assert!(
+            trusted_paired_clock_sample()
+                .unwrap()
+                .boottime_nanoseconds()
+                > 0
+        );
     }
 
     #[test]
