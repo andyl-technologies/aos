@@ -7,6 +7,10 @@ generation, or mutable application state under `/var`.
 Keep console access, the deployed image digest, the accepted `host.nix`,
 registry trust anchors, and application backups outside the host.
 
+The normal and recovery boot paths share the trust relationships documented in
+[Use Secure Boot and verify package trust](secure-boot.md), but recovery UKIs
+deliberately do not unlock ordinary mutable state.
+
 ## Understand the initrd access boundary
 
 Normal AOS initrds have a locked root account and do not run the upstream

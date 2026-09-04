@@ -23,6 +23,12 @@
 > [`TODO.md`](./TODO.md). External infra, fleet, and target-host validation is
 > tracked for the follow-up PR in
 > [`validation-runbook.md`](./validation-runbook.md).
+>
+> **Superseding security policy:** references in this archival plan to reusing
+> one Ed25519 key for registry tags and narinfo predate RFC-0017. Production
+> publication uses separate registry and cache signing roles; current policy is
+> documented in
+> [`../../maintainers/trust-model.md`](../../maintainers/trust-model.md).
 
 ---
 

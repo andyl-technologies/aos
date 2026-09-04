@@ -34,14 +34,14 @@ Check the [support-status matrix](docs/users/aos/support-status.md) before plann
 
 - [AOS user documentation](docs/users/aos/) covers installation,
   configuration, packages, security, upgrades, operations, and recovery.
-- [AOS Hub documentation](docs/users/aos-hub/) covers its web, API, CLI,
-  native, and Cloudflare deployments.
+- [AOS Hub documentation](docs/users/aos-hub/) covers its trust model, web,
+  API, CLI, native, and Cloudflare deployments.
 - [Registry operator documentation](docs/users/registry/) covers hosting,
   signing, publishing, staged rollouts, and incident response.
 - [Crucible documentation](docs/users/crucible/) covers deterministic
   exploration, reproduction, debugging, and CI.
-- [Maintainer documentation](docs/maintainers/) covers source builds, image
-  production, repository development, and tests.
+- [Maintainer documentation](docs/maintainers/) covers source builds, trust and
+  package security, image production, repository development, and tests.
 
 ## Contributing
 
