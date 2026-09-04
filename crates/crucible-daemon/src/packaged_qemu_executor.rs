@@ -413,6 +413,12 @@ pub(crate) fn prepare_packaged_qemu_executor(
     config: PackagedQemuExecutorConfig,
 ) -> Result<PackagedQemuExecutor, PackagedQemuExecutorError> {
     let basis = authenticate_packaged_campaigns(&repository, &config.campaigns)?;
+    if basis.profile.exact_closure_schema() != crate::EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION {
+        return Err(PackagedQemuExecutorError::UnsupportedExactClosureSchema {
+            actual: basis.profile.exact_closure_schema(),
+            supported: crate::EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION,
+        });
+    }
     let scenarios = preflight_packaged_scenario_catalog(&repository, &basis.scenarios)?;
     let host = SharedQemuAttemptHostResourceFactory::new(
         LinuxQemuAttemptHostResourceFactory::open(config.host.clone())?,
@@ -969,6 +975,14 @@ pub enum PackagedQemuExecutorError {
     /// The internal deployment contract named no campaign.
     #[error("packaged QEMU executor has no campaign")]
     NoCampaigns,
+    /// The lineage requests a closure format this concrete executor cannot emit.
+    #[error("packaged QEMU executor supports exact closure schema {supported}, not {actual}")]
+    UnsupportedExactClosureSchema {
+        /// Requested lineage compatibility version.
+        actual: u32,
+        /// Concrete checkpoint writer's version.
+        supported: u32,
+    },
     /// A configured campaign does not share the pool's exact compatibility basis.
     #[error(
         "campaign `{}` is incompatible with the packaged QEMU executor pool",

@@ -2785,6 +2785,9 @@ fn validate_creation_artifact_basis(
     scenario: &ScenarioArtifact,
     genesis: &ConfigurationArtifact,
 ) -> Result<(), CampaignRepositoryError> {
+    // The genesis ID authenticates its complete configuration payload,
+    // including that payload's version. `exact_closure_schema` instead names
+    // executor checkpoint closures; the two formats evolve independently.
     if scenario.id()? != lineage.scenario_content()
         || scenario.scenario() != lineage.scenario()
         || scenario.payload_schema() != lineage.scenario_schema()
@@ -2792,7 +2795,6 @@ fn validate_creation_artifact_basis(
         || genesis.scenario() != lineage.scenario()
         || genesis.scenario_artifact() != lineage.scenario_content()
         || genesis.configuration() != lineage.genesis()
-        || genesis.payload_schema() != lineage.exact_closure_schema()
     {
         return Err(integrity("lineage-execution-model-artifact-mismatch"));
     }
