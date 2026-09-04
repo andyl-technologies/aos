@@ -529,6 +529,32 @@ fn candidate_key_mismatch_is_write_free_and_returns_the_factory() {
 }
 
 #[test]
+fn failed_installed_rollback_reports_the_exact_retained_coordinate() {
+    let key = key(1);
+    let slot = QemuHotForkTemplatePoolSlot::new(key, 3);
+    let failure =
+        ManagedHotCheckpointAdmissionFailure::<ScriptedFactory, ScriptedError>::without_candidate(
+            slot,
+            ManagedHotCheckpointAdmissionError::InstalledRollback {
+                source: HotCheckpointAdmissionCommitError::StalePlan {
+                    planned: 1,
+                    current: 2,
+                },
+                retirement: QemuHotForkTemplatePoolRetirementError::Busy { key, slot: 3 },
+            },
+        );
+
+    assert_eq!(failure.internally_retained_slot(), Some(slot));
+    let (candidate, stranded, error) = failure.into_parts();
+    assert!(candidate.is_none());
+    assert!(stranded.is_none());
+    assert!(matches!(
+        error,
+        ManagedHotCheckpointAdmissionError::InstalledRollback { .. }
+    ));
+}
+
+#[test]
 fn every_start_attempt_consumes_the_managed_fork_rate_before_pool_work() {
     let input = execution_input();
     let basis = execution_basis(&input);

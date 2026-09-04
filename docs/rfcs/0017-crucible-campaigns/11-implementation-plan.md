@@ -2546,9 +2546,12 @@ records conservatively as cold after restart. Focused regressions cover
 root-before-install ordering, pressure demotion, explicit cold release,
 rejected-admission cleanup, retained cleanup failure, active-release rejection,
 catalog-exhaustion rejection before live ownership, and memory/directory
-restart. The final concrete process owner remains open, so this is not yet the
-production launch boundary and T-CAM-7.5 remains unchecked. Atomic multi-node
-host-continuation installation,
+restart. A defensive manager-commit rollback failure now also reports its exact
+internally retained pool coordinate; the durable owner keeps that record in a
+distinct unresolved state which remains a GC root but cannot be enumerated or
+released as cold. The final concrete process owner remains open, so this is
+not yet the production launch boundary and T-CAM-7.5 remains unchecked. Atomic
+multi-node host-continuation installation,
 the concrete modeled driver, and a real QEMU flight also remain open; this
 checkpoint therefore does not mark T-CAM-6.2 or T-CAM-6.3 complete.
 The internal registry now has safe RCU and internal-monitor dispositions, while

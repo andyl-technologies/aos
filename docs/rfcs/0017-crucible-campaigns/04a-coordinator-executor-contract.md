@@ -2389,6 +2389,13 @@ explicit demotion remove only the live source and preserve that record as a
 cold fallback; only an explicit release of a non-hot catalog slot may remove
 the GC root. A failed live admission removes its provisional record, while a
 failed removal returns the exact still-rooted cleanup slot with the candidate.
+If the managed inventory rejects an already-installed candidate and defensive
+pool rollback also fails, the failure names the exact internally retained pool
+coordinate. The durable owner classifies its catalog record as `unresolved`,
+not `cold`: GC continues to visit it, cold-root enumeration omits it, and an
+independent release is rejected until the complete process owner is recovered
+or quarantined. An internal rollback failure therefore cannot turn a still-live
+source's only durable fallback into operator-releasable state.
 After restart, the owner authenticates the complete bounded catalog and treats
 every record as cold; it never infers that a QEMU source survived from an
 operational record. A crash between record creation and live installation may

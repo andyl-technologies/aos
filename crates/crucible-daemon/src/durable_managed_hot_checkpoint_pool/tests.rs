@@ -380,6 +380,32 @@ fn active_fallback_cannot_be_released() {
 }
 
 #[test]
+fn unresolved_installed_source_keeps_its_fallback_nonreleasable() {
+    let retention = crate::MemoryHotCheckpointFallbackRetentionStore::new();
+    let mut owner = owner(1, unit_resources(), retention);
+    let commit = owner
+        .admit_template(factory(7), candidate(7, 7, unit_resources()))
+        .expect("durable admission");
+    let source_slot = commit.retained().slot();
+    let catalog_slot = owner
+        .active
+        .remove(&source_slot)
+        .expect("active catalog binding");
+    owner.unresolved.insert(catalog_slot, source_slot);
+
+    assert_eq!(
+        owner.unresolved_source_slot(catalog_slot),
+        Some(source_slot)
+    );
+    assert_eq!(owner.cold_fallbacks().count(), 0);
+    assert!(matches!(
+        owner.release_cold_fallback(catalog_slot),
+        Err(DurableManagedHotCheckpointReleaseError::Unresolved)
+    ));
+    assert!(owner.fallback_record(catalog_slot).is_some());
+}
+
+#[test]
 fn full_catalog_rejects_before_live_source_ownership_changes() {
     let retention = crate::MemoryHotCheckpointFallbackRetentionStore::new();
     let occupied = HotCheckpointFallbackRecord::new(key(8), exact_fallback(8));

@@ -20,6 +20,7 @@ use crate::{
     QemuHotForkLifecycleQuarantine, QemuHotForkTemplateKey, QemuHotForkTemplatePool,
     QemuHotForkTemplatePoolCapacityError, QemuHotForkTemplatePoolError,
     QemuHotForkTemplatePoolLifecycle, QemuHotForkTemplatePoolRetirementError,
+    QemuHotForkTemplatePoolSlot,
 };
 
 /// Sink that completes an orderly hot-to-exact/thin source transition.
@@ -381,6 +382,7 @@ where
                     ))
                 }
                 Err(retirement) => Err(ManagedHotCheckpointAdmissionFailure::without_candidate(
+                    installed_slot,
                     ManagedHotCheckpointAdmissionError::InstalledRollback { source, retirement },
                 )),
             },
@@ -553,6 +555,7 @@ pub enum ManagedHotCheckpointDemotionError<E> {
 pub struct ManagedHotCheckpointAdmissionFailure<F, E> {
     candidate: Option<Box<F>>,
     stranded_factory: Option<Box<F>>,
+    internally_retained_slot: Option<QemuHotForkTemplatePoolSlot>,
     error: Box<ManagedHotCheckpointAdmissionError<E>>,
 }
 
@@ -561,6 +564,7 @@ impl<F, E> ManagedHotCheckpointAdmissionFailure<F, E> {
         Self {
             candidate: Some(Box::new(factory)),
             stranded_factory: None,
+            internally_retained_slot: None,
             error: Box::new(error),
         }
     }
@@ -573,16 +577,32 @@ impl<F, E> ManagedHotCheckpointAdmissionFailure<F, E> {
         Self {
             candidate: Some(Box::new(candidate)),
             stranded_factory: Some(Box::new(stranded_factory)),
+            internally_retained_slot: None,
             error: Box::new(error),
         }
     }
 
-    fn without_candidate(error: ManagedHotCheckpointAdmissionError<E>) -> Self {
+    fn without_candidate(
+        internally_retained_slot: QemuHotForkTemplatePoolSlot,
+        error: ManagedHotCheckpointAdmissionError<E>,
+    ) -> Self {
         Self {
             candidate: None,
             stranded_factory: None,
+            internally_retained_slot: Some(internally_retained_slot),
             error: Box::new(error),
         }
+    }
+
+    /// Returns the exact pool coordinate retaining the candidate internally.
+    ///
+    /// This is present only when manager commit failed and the defensive
+    /// rollback could not retire the newly installed source. Callers must keep
+    /// its durable fallback rooted until the complete owner is quarantined or
+    /// the source is recovered from this coordinate.
+    #[must_use]
+    pub const fn internally_retained_slot(&self) -> Option<QemuHotForkTemplatePoolSlot> {
+        self.internally_retained_slot
     }
 
     /// Consumes the failure into retained factories and its diagnostic.
@@ -617,6 +637,7 @@ where
             .debug_struct("ManagedHotCheckpointAdmissionFailure")
             .field("has_candidate", &self.candidate.is_some())
             .field("has_stranded_factory", &self.stranded_factory.is_some())
+            .field("internally_retained_slot", &self.internally_retained_slot)
             .field("error", &self.error)
             .finish()
     }
