@@ -913,6 +913,23 @@ completes. The Git history remains authoritative for code details.
   review. Directory handles, semantic content access, kernel FUSE framing,
   broker-owned backing registration, and worker lifecycle remain open, so
   `SBX-FS-02` and `SBX-FS-04` remain unchecked.
+- `b326cce76` — package-only foundation toward `SBX-P0-11` and `SBX-FS-03`:
+  libfuse 3.18.2 is now built hermetically from its pinned release source as a
+  Linux-only AOS package. The output contains the shared library, complete
+  public headers, and package metadata, but no mount helper, setuid program,
+  utility, init script, udev rule, policy file, or static archive. Its exact
+  file and symlink manifest, `libfuse3.so.4` SONAME, `FUSE_3.17` custom-I/O and
+  passthrough symbol versions, compatible low-level declarations, and exact
+  self-plus-glibc runtime closure are checked. The final closure is 14,974,648
+  bytes and all five focused package/VM gates pass. The package is
+  LGPL-2.1-only; GPL-only utility sources are neither built nor installed.
+  This deliberately does not select libfuse as the production authority
+  boundary: broker-supplied custom-FD INIT/teardown ownership, exact AOS Linux
+  6.18.33 UAPI parity, cancellation behavior, and comparative resource and
+  latency measurements remain required. A full repository eval was stopped
+  after expanding into hundreds of unrelated rebuilds, and the existing
+  package-platform-support check remains blocked by unrelated excluded-resource
+  inventory failures. `SBX-P0-11` and `SBX-FS-03` remain unchecked.
 
 The post-`727da7f3e` x86_64 `sandbox-filesystem-capability-proof` rerun built the
 complete hermetic Rust closure, AOS system, initrd, and VM disk and launched
