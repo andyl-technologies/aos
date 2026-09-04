@@ -320,6 +320,19 @@ The 2026-09-04 flight passed with evidence in
 This isolates storage enforcement; complete packaged-QEMU resource/recovery
 and operator flights remain separate requirements.
 
+`checks.crucible.phase4.qemuHostOwnerVm` additionally exercises the combined
+production cgroup/project-quota owner with real QEMU and its guarded image
+helper. The 2026-09-04 flight passed twice through a single project-ID slot,
+checking exclusive namespace acquisition, unprivileged child credentials,
+installed CPU/memory/task limits, sticky cancellation, direct-child reap, and
+removal of both the attempt cgroup and storage tree. Evidence is retained in
+`/nix/store/dg92fhl7lgnm3lp3g0yydbgsc9491y2g-aos-vm-test-crucible-qemu-host-owner-0/serial.log`.
+The first flight exposed missing `CONFIG_CFS_BANDWIDTH` in the AOS kernel;
+the standard kernel now enables CPU bandwidth and built-in project-quota
+support. The check uses that standard kernel without a test-only override.
+It verifies limit installation, not CPU-pressure or OOM stress, and does not
+close the campaign-level execution, recovery, or independent operator gates.
+
 Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
 `crucible-daemon`.
 
