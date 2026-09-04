@@ -11,7 +11,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use crate::components::{InlineError, ReviewedPlanCard, StatusBadge};
-use crate::mutation::{idempotency_key, PendingPlan};
+use crate::mutation::{idempotency_key, watch_draft, PendingPlan};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
 
@@ -116,9 +116,22 @@ fn IdentitySettings(
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
+    let draft_epoch = watch_draft(
+        move || {
+            let _ = (
+                signup_policy.get(),
+                signup_domains.get(),
+                password_login.get(),
+                session_lifetime.get(),
+            );
+        },
+        pending,
+        error,
+    );
     let plan_client = client.clone();
     let on_plan = move |event: SubmitEvent| {
         event.prevent_default();
+        pending.set(None);
         let domains = normalized_lines(&signup_domains.get_untracked()).join(",");
         let lifetime = match non_negative(&session_lifetime.get_untracked(), "Session lifetime") {
             Ok(value) => value,
@@ -144,6 +157,7 @@ fn IdentitySettings(
             pending,
             error,
             busy,
+            draft_epoch,
         );
     };
     let on_apply = apply_settings(client, pending, error, busy);
@@ -175,9 +189,17 @@ fn ResourceDefaults(
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
+    let draft_epoch = watch_draft(
+        move || {
+            let _ = (crawl_policy.get(), max_upload.get(), caches_public.get());
+        },
+        pending,
+        error,
+    );
     let plan_client = client.clone();
     let on_plan = move |event: SubmitEvent| {
         event.prevent_default();
+        pending.set(None);
         let max_upload = match non_negative(&max_upload.get_untracked(), "Maximum upload size") {
             Ok(value) => value,
             Err(detail) => {
@@ -204,6 +226,7 @@ fn ResourceDefaults(
             pending,
             error,
             busy,
+            draft_epoch,
         );
     };
     let on_apply = apply_settings(client, pending, error, busy);
@@ -237,9 +260,24 @@ fn BrandingSettings(
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
+    let draft_epoch = watch_draft(
+        move || {
+            let _ = (
+                site_title.get(),
+                tagline.get(),
+                announcement.get(),
+                tos_url.get(),
+                privacy_url.get(),
+                support_url.get(),
+            );
+        },
+        pending,
+        error,
+    );
     let plan_client = client.clone();
     let on_plan = move |event: SubmitEvent| {
         event.prevent_default();
+        pending.set(None);
         let values = HashMap::from([
             ("site_title".to_string(), site_title.get_untracked()),
             ("tagline".to_string(), tagline.get_untracked()),
@@ -256,6 +294,7 @@ fn BrandingSettings(
             pending,
             error,
             busy,
+            draft_epoch,
         );
     };
     let on_apply = apply_settings(client, pending, error, busy);
@@ -298,7 +337,10 @@ fn plan_settings(
     pending: RwSignal<Option<PendingPlan>>,
     error: RwSignal<Option<String>>,
     busy: RwSignal<bool>,
+    draft_epoch: RwSignal<u64>,
 ) {
+    let planned_epoch = draft_epoch.get_untracked();
+    pending.set(None);
     let idempotency_key = idempotency_key(action);
     let request = aos_proto_types::PlanSetInstanceSettingsRequest {
         values,
@@ -318,7 +360,10 @@ fn plan_settings(
             .map_err(|failure| failure.to_string())
             .and_then(|response| PendingPlan::from_response(response, idempotency_key));
         match result {
-            Ok(reviewed) => pending.set(Some(reviewed)),
+            Ok(reviewed) if draft_epoch.get_untracked() == planned_epoch => {
+                pending.set(Some(reviewed));
+            }
+            Ok(_) => {}
             Err(detail) => error.set(Some(detail)),
         }
         busy.set(false);
