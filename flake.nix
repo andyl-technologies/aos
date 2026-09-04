@@ -51,7 +51,9 @@
         (import ./. {
           system = coordinatorSystem;
           crossSystem = "aarch64-linux";
-        }).systems.${variant}.build.defaultContainer
+        }).systems.${
+          variant
+        }.build.defaultContainer
       ];
       oci = import ./lib/build/oci {
         inherit (coordinator) lib;

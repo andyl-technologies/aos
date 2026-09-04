@@ -10,13 +10,24 @@
   oci,
   container,
   systemIdentity,
+  definitionAttribute,
 }: let
-  releaseIdentity = systemIdentity.release or {
-    enabled = false;
-    tier = "production";
-    registry = "andyl/main";
-    channel = "stable";
-  };
+  releaseIdentity =
+    systemIdentity.release or {
+      enabled = false;
+      tier = "production";
+      registry = "andyl/main";
+      channel = "stable";
+    };
+  releaseOsMetadata = lib.optionalString releaseIdentity.enabled (
+    lib.concatStringsSep "\n" [
+      "AOS_RELEASE_TIER=${releaseIdentity.tier}"
+      "AOS_REGISTRY=${releaseIdentity.registry}"
+      "AOS_CHANNEL=${releaseIdentity.channel}"
+      "AOS_REGISTRY_ROOT_EPOCH=${toString releaseIdentity.rootEpoch}"
+    ]
+    + "\n"
+  );
   uniqueByPath = values: let
     step = state: value: let
       path = builtins.unsafeDiscardStringContext (builtins.toString value);
@@ -195,10 +206,7 @@
     AOS_SYSTEM=${container.platform.aosSystem}
     AOS_STATE_VERSION=${systemIdentity.stateVersion}
     AOS_MODULE_ABI=${toString systemIdentity.moduleAbi}
-    ${lib.optionalString releaseIdentity.enabled ''AOS_RELEASE_TIER=${releaseIdentity.tier}
-    AOS_REGISTRY=${releaseIdentity.registry}
-    AOS_CHANNEL=${releaseIdentity.channel}
-    AOS_REGISTRY_ROOT_EPOCH=${toString releaseIdentity.rootEpoch}''}
+    ${releaseOsMetadata}
   '';
   releaseAnnotations =
     container.annotations
@@ -364,7 +372,7 @@
       image = primary.ociIndex;
       inherit (platformBuild) referenceGraph sourceGraph closureLayers;
       packageCatalog = packageEvidence.catalog;
-      definitionAttribute = "containerImages.${container.name}";
+      inherit definitionAttribute;
       releaseIdentity = container.publication.releaseIdentity;
       packageName = pkgs.aos.pname;
       packageVersion = pkgs.aos.version;
@@ -535,7 +543,7 @@ in {
     inherit (container.platform) aosSystem os architecture;
     packageName = pkgs.aos.pname;
     packageVersion = pkgs.aos.version;
-    definitionAttribute = "containerImages.${container.name}";
+    inherit definitionAttribute;
     indexAnnotations = builtins.removeAttrs releaseAnnotations ["dev.andyl.aos.system"];
   };
   checks = {

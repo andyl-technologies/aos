@@ -126,6 +126,7 @@
       if builtins.isAttrs args && args ? systemName
       then args.systemName
       else "system";
+    moduleSpecialArgs = specialArgs // {inherit systemName;};
     # The on-host resolver supplies the verified `host.nix`
     # store path here as an operator-provenance module, so its bare defs are
     # lifted to the reserved priority-75 band (see `lib/modules.nix`
@@ -163,7 +164,8 @@
               };
             }
           ];
-        inherit pkgs lib specialArgs operatorModules runtimeModules packageModules;
+        inherit pkgs lib operatorModules runtimeModules packageModules;
+        specialArgs = moduleSpecialArgs;
       })
       .config
       .aos
@@ -186,7 +188,8 @@
             };
           }
         ];
-      inherit pkgs lib specialArgs operatorModules runtimeModules packageModules;
+      inherit pkgs lib operatorModules runtimeModules packageModules;
+      specialArgs = moduleSpecialArgs;
     };
 
   # Auto-discover system definitions from ./systems/*.nix
@@ -238,7 +241,10 @@
   # ---------------------------------------------------------------------------
 
   # The default system used for eval/build checks and package integration tests.
-  serverSystem = mkSystem ./systems/server.nix;
+  serverSystem = mkSystem {
+    modules = [./systems/server.nix];
+    systemName = "server";
+  };
   containerImages = discoverSystems.server.build.containers;
   containerDefinitions = lib.mapAttrs (_: image: image.definition) containerImages;
 

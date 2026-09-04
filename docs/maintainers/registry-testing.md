@@ -57,7 +57,8 @@ Verify the restored private key with the AOS-built OpenSSH tool before loading
 it into APR:
 
 ```sh
-derived_public="$(ssh-keygen -y -f "$ANDYL_TESTING_REGISTRY_KEY")"
+openssh="$(nix build .#pkg-openssh --no-link --print-out-paths)"
+derived_public="$("$openssh/bin/ssh-keygen" -y -f "$ANDYL_TESTING_REGISTRY_KEY")"
 test "andyl-testing:Ed25519:${derived_public#ssh-ed25519 }" = \
   "$ANDYL_TESTING_TRUST_KEY"
 ```
@@ -124,8 +125,13 @@ inspect the row first, then install the independently approved empty base.
 
 ## Publish the first or a later edge release
 
-Use a calendar SemVer prerelease such as
-`2026.9.0-dev.20260904.1`. The plan request must contain:
+The prepared first-release profile uses
+`2026.9.0-dev.20260904.1`. For every later edge release, update
+`aos.system.version` in the testing profile to the next calendar SemVer
+`YYYY.M.P-dev.YYYYMMDD.N` through the reviewed source-update workflow before
+building. That value is the disk version and the OCI signed release identity;
+the `aos` package version remains separate provenance. The plan request must
+use that exact version and contain:
 
 - `registry: "andyl/testing"` (or the active epoch identity);
 - `release_class: "edge"`;
@@ -154,6 +160,48 @@ aos release promote
 aos release channel advance
 aos release channel complete
 ```
+
+For the testing OCI artifact, externally finalize the exact Nix publication
+inputs before `finalize-registry`. The signing key must be the active testing
+registry key, never a main-registry key:
+
+```sh
+nix build .#container-aos-testing-publication-inputs
+openssh="$(nix build .#pkg-openssh --no-link --print-out-paths)"
+aos container prepare-signature ./result \
+  --output container-signature.pae
+"$openssh/bin/ssh-keygen" -Y sign \
+  -f "$ANDYL_TESTING_REGISTRY_KEY" \
+  -n aos-container-signature-dsse-v1 \
+  container-signature.pae
+aos container finalize-signature ./result \
+  --signer "$ANDYL_TESTING_TRUST_KEY" \
+  --signature container-signature.pae.sig \
+  --output final-testing-container
+```
+
+Upload the immutable OCI graph without a tag or Hub mutation before registry
+finalization:
+
+```sh
+aos container publish aos "$TESTING_OCI_REFERENCE" \
+  --release final-testing-container/container-release.json \
+  --release-layout final-testing-container/layout \
+  --signature-input final-testing-container/signature-input.json \
+  --registry andyl/testing \
+  --idempotency-key "testing-${AOS_RELEASE_VERSION}-oci-stage" \
+  --registry-origin "$TESTING_OCI_ORIGIN" \
+  --registry-token "$TESTING_OCI_TOKEN" \
+  --stage-only
+```
+
+Include those exact `container-release.json` and `signature-input.json` paths in
+`aos release finalize-registry`; its reviewed catalog digest includes the
+sidecar. After the signed registry release is promoted and the Hub has indexed
+it, rerun the same `aos container publish` command without `--stage-only`, add
+the production Hub credentials, and use a new stable idempotency key. Record
+the returned verified root and tag resource version. Do not use a generic OCI
+push for the release tag.
 
 Do not omit staging qualification even though testing data is disposable. Each
 command consumes the prior phase's exact evidence, refuses replacement outputs,

@@ -2,7 +2,6 @@
 {
   imports = [./server.nix];
 
-  aos.system.name = "AOS Testing";
   aos.profiles.testingRelease.enable = true;
 
   # Public half of the dedicated experimental registry root. The private half
