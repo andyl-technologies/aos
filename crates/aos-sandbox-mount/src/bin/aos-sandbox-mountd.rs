@@ -1,4 +1,7 @@
 //! Runs the root-only, systemd-activated sandbox mount broker.
+//!
+//! PID 1 supplies the broker's authority objects through a private systemd
+//! credential directory. Durable state never doubles as a trust-anchor source.
 
 use std::collections::BTreeSet;
 use std::env;
@@ -57,7 +60,10 @@ fn run() -> Result<()> {
     let catalog = FileMountCatalog::open_root_owned(CATALOG_ROOT)?;
     let helper = PosixSpawnNamespaceHelper::new(helper_executable)?;
     let worker = DescriptorMountWorker::new(catalog, helper, keeper, activation.mounts)?;
-    let authority = MountAuthorityV1::from_protected_directory(STATE_ROOT)
+    let credential_directory = env::var_os("CREDENTIALS_DIRECTORY").ok_or_else(|| {
+        MountError::State("systemd authority credential directory is absent".to_owned())
+    })?;
+    let authority = MountAuthorityV1::from_protected_directory(credential_directory)
         .map_err(|error| MountError::State(error.to_string()))?;
     let broker = MountBroker::new(journal, worker, authority)?;
     let verifier = ControllerPeerVerifier::new(open_cgroup_root()?);
