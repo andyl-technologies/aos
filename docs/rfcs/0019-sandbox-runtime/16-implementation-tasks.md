@@ -1104,6 +1104,24 @@ completes. The Git history remains authoritative for code details.
   pass. This core neither parses FUSE wire records nor owns a kernel connection,
   cancellation carrier, backing descriptor, or external resource, so
   `SBX-FS-03` remains unchecked.
+- `e02d1f2e9` — further foundation toward `SBX-HOST-01`, `SBX-RT-06`, and
+  `SBX-LIFE-06`: the typed systemd client now discovers the complete canonical
+  sandbox-unit namespace in two independently collected, uncached passes.
+  Exact lowercase nonzero incarnation names, listing filters, aliases, object
+  paths, `Unit.Id`, invocation IDs, cgroups, supervisor PIDs, freezer and unit
+  states, duplicates, jobs, strings, properties, units, and aggregate decoded
+  bytes are bounded and cross-checked. Prefix lookalikes retain their complete
+  bounded raw listing row as explicit conflict evidence, while canonical units
+  unknown to the caller's stable expected identity set become quarantine
+  evidence; missing and matched results are deterministic. Reload, transport,
+  disappearance, substitution, or any two-pass mismatch returns a typed
+  indeterminate outcome requiring rescan. The API documents that zbus performs
+  typed allocation after its outer message ceiling and that equal passes cannot
+  exclude ABA; snapshots remain observation only and cannot authorize adoption,
+  kill, or another lifecycle effect. Ten unit and 25 hostile D-Bus integration
+  tests, strict Clippy, warning-denied rustdoc, formatting, and independent
+  adversarial repair pass. Host-state reconciliation and production lifecycle
+  action remain open, so all three tasks stay unchecked.
 
 The post-`727da7f3e` x86_64 `sandbox-filesystem-capability-proof` rerun built the
 complete hermetic Rust closure, AOS system, initrd, and VM disk and launched
