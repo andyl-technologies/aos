@@ -388,6 +388,8 @@ pub struct ConfinementEvidence {
     pub worker_tree_reaped: bool,
     /// Whether process, file, descriptor, address-space, and CPU ceilings apply.
     pub resource_limited: bool,
+    /// Whether the configured Nix daemon reports mandatory build sandboxing.
+    pub nix_sandbox_verified: bool,
 }
 
 impl ConfinementEvidence {
@@ -398,13 +400,14 @@ impl ConfinementEvidence {
     /// Returns an error when the backend identity, ABI, or mandatory isolation
     /// properties do not satisfy the version-one contract.
     pub fn validate(&self) -> Result<()> {
-        if self.backend != "aos.linux-userns-landlock/v1"
+        if self.backend != "aos.linux-userns-landlock/v2"
             || self.landlock_abi < 4
             || !self.private_user_namespace
             || !self.private_process_namespaces
             || !self.network_isolated
             || !self.worker_tree_reaped
             || !self.resource_limited
+            || !self.nix_sandbox_verified
         {
             bail!("gate evidence does not satisfy the required confinement contract");
         }
@@ -529,6 +532,9 @@ pub struct PackageUpdateEvidenceV1 {
     pub patch_digest: Sha256Digest,
     /// Complete deterministic source materialization evidence.
     pub materialization: MaterializationRecordV1,
+    /// Ordered accepted repair lineage after deterministic attempt zero.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repair_attempts: Vec<RepairAttemptV1>,
     /// Successful quick gate execution.
     pub quick_gates: GateResultsV1,
     /// Successful exact-commit final gate execution.
@@ -553,8 +559,34 @@ impl PackageUpdateEvidenceV1 {
         self.base_commit.validate()?;
         self.candidate_commit.validate()?;
         self.materialization.validate()?;
+        for repair in &self.repair_attempts {
+            repair.validate()?;
+        }
         self.quick_gates.validate()?;
         self.final_gates.validate()?;
+        let repair_lineage_valid = if self.attempt == 0 {
+            self.repair_attempts.is_empty()
+                && self.materialization.patch_digest == self.patch_digest
+        } else {
+            self.repair_attempts.len() == self.attempt as usize
+                && self
+                    .repair_attempts
+                    .iter()
+                    .enumerate()
+                    .all(|(index, repair)| {
+                        let attempt = u32::try_from(index)
+                            .ok()
+                            .and_then(|value| value.checked_add(1));
+                        repair.run_id == self.run_id
+                            && repair.plan_id == self.plan_id
+                            && Some(repair.attempt) == attempt
+                            && repair.parent_attempt.checked_add(1) == Some(repair.attempt)
+                    })
+                && self
+                    .repair_attempts
+                    .last()
+                    .is_some_and(|repair| repair.candidate_digest == self.patch_digest)
+        };
         if self.materialization.run_id != self.run_id
             || self.quick_gates.run_id != self.run_id
             || self.final_gates.run_id != self.run_id
@@ -563,7 +595,7 @@ impl PackageUpdateEvidenceV1 {
             || self.final_gates.plan_id != self.plan_id
             || self.quick_gates.attempt != self.attempt
             || self.final_gates.attempt != self.attempt
-            || (self.attempt == 0 && self.materialization.patch_digest != self.patch_digest)
+            || !repair_lineage_valid
             || self.quick_gates.candidate_digest != self.patch_digest
             || self.final_gates.candidate_digest
                 != Sha256Digest::separated(

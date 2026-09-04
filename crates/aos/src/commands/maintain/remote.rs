@@ -65,12 +65,8 @@ pub(super) fn publication_request_digest(
 }
 
 pub(super) fn default_branch(coordinates: &RepositoryCoordinates) -> Result<String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(&coordinates.root)
+    let output = sanitized_git(&coordinates.root)?
         .args(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .context("resolving origin's default branch")?;
     if !output.status.success() {
@@ -98,7 +94,7 @@ pub(super) async fn publish(
     let token = secret_from_environment(token_environment)?;
     verify_candidate(run, draft, token_environment)?;
 
-    let actual_remote_head = remote_head(&coordinates.root, &run.branch, token_environment)?;
+    let actual_remote_head = remote_head(coordinates, &run.branch, &token)?;
     let already_published = actual_remote_head.as_deref() == Some(draft.head.as_str());
     if !already_published && actual_remote_head.as_deref() != expected_remote_head {
         bail!(
@@ -106,13 +102,8 @@ pub(super) async fn publish(
         );
     }
     if !already_published && let Some(previous) = &actual_remote_head {
-        let status = Command::new("git")
-            .arg("-C")
-            .arg(&run.worktree)
+        let status = sanitized_git(Path::new(&run.worktree))?
             .args(["merge-base", "--is-ancestor", previous, &draft.head])
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env_remove(token_environment)
             .status()
             .context("verifying publication is fast-forward")?;
         if !status.success() {
@@ -126,29 +117,26 @@ pub(super) async fn publish(
             None => format!("--force-with-lease=refs/heads/{}:", run.branch),
         };
         let refspec = format!("{}:refs/heads/{}", draft.head, run.branch);
-        let status = Command::new("git")
-            .arg("-C")
-            .arg(&run.worktree)
-            .args([
-                "-c",
-                "core.hooksPath=/dev/null",
-                "push",
-                &lease,
-                "origin",
-                &refspec,
-            ])
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env_remove(token_environment)
-            .status()
-            .context("publishing exact candidate branch")?;
+        let status = authenticated_git(
+            Path::new(&run.worktree),
+            &coordinates.canonical_remote,
+            &token,
+        )?
+        .args([
+            "-c",
+            "core.hooksPath=/dev/null",
+            "push",
+            &lease,
+            &coordinates.canonical_remote,
+            &refspec,
+        ])
+        .status()
+        .context("publishing exact candidate branch")?;
         if !status.success() {
             bail!("Git could not atomically publish the exact candidate branch");
         }
     }
-    if remote_head(&coordinates.root, &run.branch, token_environment)?.as_deref()
-        != Some(draft.head.as_str())
-    {
+    if remote_head(coordinates, &run.branch, &token)?.as_deref() != Some(draft.head.as_str()) {
         bail!("remote branch does not contain the exact candidate after push");
     }
 
@@ -308,43 +296,38 @@ fn latest_review_counts(reviews: Vec<ReviewResponse>) -> Result<(u32, u32)> {
 fn verify_candidate(
     run: &PackageUpdateRunV1,
     draft: &PullRequestDraft,
-    token_environment: &str,
+    _token_environment: &str,
 ) -> Result<()> {
     let root = Path::new(&run.worktree);
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(root)
+    let output = sanitized_git(root)?
         .args(["status", "--porcelain=v2", "-z"])
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env_remove(token_environment)
         .output()
         .context("checking candidate worktree cleanliness")?;
     if !output.status.success() || !output.stdout.is_empty() {
         bail!("candidate worktree is not clean");
     }
-    let head = git_text_without(
-        root,
-        &["rev-parse", "--verify", "HEAD^{commit}"],
-        token_environment,
-    )?;
-    let branch = git_text_without(root, &["branch", "--show-current"], token_environment)?;
+    let head = git_text_without(root, &["rev-parse", "--verify", "HEAD^{commit}"])?;
+    let branch = git_text_without(root, &["branch", "--show-current"])?;
     if head != draft.head || branch != run.branch || draft.branch != run.branch {
         bail!("publication draft no longer matches the exact candidate branch");
     }
     Ok(())
 }
 
-fn remote_head(repository: &Path, branch: &str, token_environment: &str) -> Result<Option<String>> {
+fn remote_head(
+    coordinates: &RepositoryCoordinates,
+    branch: &str,
+    token: &str,
+) -> Result<Option<String>> {
     validate_ref_component(branch, "source branch")?;
     let reference = format!("refs/heads/{branch}");
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repository)
-        .args(["ls-remote", "--heads", "origin", &reference])
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env_remove(token_environment)
+    let output = authenticated_git(&coordinates.root, &coordinates.canonical_remote, token)?
+        .args([
+            "ls-remote",
+            "--heads",
+            &coordinates.canonical_remote,
+            &reference,
+        ])
         .output()
         .context("querying exact remote branch")?;
     if !output.status.success() {
@@ -367,14 +350,9 @@ fn remote_head(repository: &Path, branch: &str, token_environment: &str) -> Resu
     Ok(Some(head.to_string()))
 }
 
-fn git_text_without(root: &Path, arguments: &[&str], environment: &str) -> Result<String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(root)
+fn git_text_without(root: &Path, arguments: &[&str]) -> Result<String> {
+    let output = sanitized_git(root)?
         .args(arguments)
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env_remove(environment)
         .output()
         .with_context(|| format!("running git {}", arguments.join(" ")))?;
     if !output.status.success() {
@@ -384,6 +362,41 @@ fn git_text_without(root: &Path, arguments: &[&str], environment: &str) -> Resul
         .context("Git output is not UTF-8")?
         .trim_end()
         .to_string())
+}
+
+fn sanitized_git(root: &Path) -> Result<Command> {
+    let path =
+        std::env::var_os("PATH").ok_or_else(|| anyhow::anyhow!("PATH is unavailable for Git"))?;
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(root)
+        .env_clear()
+        .env("PATH", path)
+        .env("HOME", "/var/empty")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_SSH_COMMAND", "false");
+    Ok(command)
+}
+
+fn authenticated_git(root: &Path, remote: &str, token: &str) -> Result<Command> {
+    let _ = github_repository(remote)?;
+    let authorization =
+        base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{token}"));
+    let mut command = sanitized_git(root)?;
+    command
+        .env("GIT_CONFIG_COUNT", "2")
+        .env("GIT_CONFIG_KEY_0", "credential.helper")
+        .env("GIT_CONFIG_VALUE_0", "")
+        .env("GIT_CONFIG_KEY_1", "http.https://github.com/.extraheader")
+        .env(
+            "GIT_CONFIG_VALUE_1",
+            format!("AUTHORIZATION: basic {authorization}"),
+        );
+    Ok(command)
 }
 
 fn git_object(run: &PackageUpdateRunV1, value: String) -> Result<GitObjectId> {

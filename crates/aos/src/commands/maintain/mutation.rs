@@ -9,6 +9,8 @@ use rnix::types::{
     Apply, AttrSet, EntryHolder as _, Ident, KeyValue, Str, TokenWrapper as _, TypedNode as _,
 };
 
+const REPAIR_SCOPE_SENTINEL: &str = "__AOS_REPAIR_SCOPE_VALUE__";
+
 #[derive(Clone, Copy)]
 enum ContractKind {
     Full,
@@ -105,6 +107,85 @@ pub(super) fn apply(source: &str, unit_id: &str, mutations: &[SemanticMutation])
         bail!("semantic mutation produced invalid Nix syntax");
     }
     Ok(output)
+}
+
+/// Verifies that a repair changes only explicitly authorized builder values.
+///
+/// # Errors
+///
+/// Returns an error when either document is invalid, the package builder or
+/// scoped fields are ambiguous, or any byte outside a scoped value changes.
+pub(super) fn validate_repair_scope(
+    before: &str,
+    after: &str,
+    allowed_fields: &[String],
+) -> Result<()> {
+    if allowed_fields.is_empty() {
+        bail!("the immutable update plan grants no semantic repair scope");
+    }
+    let before_masked = mask_repair_scope(before, allowed_fields)?;
+    let after_masked = mask_repair_scope(after, allowed_fields)?;
+    if before_masked != after_masked {
+        bail!("repair changes bytes outside the plan's explicit semantic scope");
+    }
+    Ok(())
+}
+
+fn mask_repair_scope(source: &str, allowed_fields: &[String]) -> Result<String> {
+    let parsed = rnix::parse(source);
+    if !parsed.errors().is_empty() {
+        bail!("repair owner is not valid Nix syntax");
+    }
+    let candidates = parsed
+        .node()
+        .descendants()
+        .filter_map(Apply::cast)
+        .filter(|apply| {
+            !matches!(
+                apply.lambda().as_ref().map(ToString::to_string).as_deref(),
+                Some("mkUpstream" | "mkGithubUpstream" | "mkManualUpstream")
+            )
+        })
+        .filter_map(|apply| apply.value().and_then(AttrSet::cast))
+        .filter_map(|set| {
+            let entries = set
+                .entries()
+                .filter_map(|entry| {
+                    let path = key_path(&entry).ok()?;
+                    let [field] = path.as_slice() else {
+                        return None;
+                    };
+                    Some((field.clone(), entry.value()?))
+                })
+                .collect::<BTreeMap<_, _>>();
+            allowed_fields
+                .iter()
+                .all(|field| entries.contains_key(field))
+                .then_some(entries)
+        })
+        .collect::<Vec<_>>();
+    let [entries] = candidates.as_slice() else {
+        bail!("repair scope does not identify exactly one package builder");
+    };
+    let mut ranges = allowed_fields
+        .iter()
+        .map(|field| {
+            let value = entries
+                .get(field)
+                .ok_or_else(|| anyhow::anyhow!("repair-scope field disappeared"))?;
+            let range = value.text_range();
+            Ok((usize::from(range.start()), usize::from(range.end())))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    ranges.sort_unstable();
+    if ranges.windows(2).any(|pair| pair[0].1 > pair[1].0) {
+        bail!("repair-scope fields overlap");
+    }
+    let mut masked = source.to_string();
+    for (start, end) in ranges.into_iter().rev() {
+        masked.replace_range(start..end, REPAIR_SCOPE_SENTINEL);
+    }
+    Ok(masked)
 }
 
 fn editable_path(kind: ContractKind, normalized: &[String]) -> Result<Vec<String>> {
@@ -295,6 +376,23 @@ in upstream
         assert!(updated.contains("upstreamId = \"v1.1.0\";"));
         assert!(updated.contains("source.hash = \"sha256-new\";"));
         assert!(updated.contains("artifacts.cargoDeps.hash = \"sha256-new-deps\";"));
+        Ok(())
+    }
+
+    #[test]
+    fn repair_scope_masks_only_one_explicit_builder_value() -> Result<()> {
+        let before = r#"mkCargoPackage {
+  pname = "demo";
+  postPatch = "old";
+  doCheck = true;
+}"#;
+        let allowed = vec!["postPatch".to_string()];
+        let scoped = before.replace("postPatch = \"old\"", "postPatch = \"new\"");
+        validate_repair_scope(before, &scoped, &allowed)?;
+
+        let weakened = scoped.replace("doCheck = true", "doCheck = false");
+        assert!(validate_repair_scope(before, &weakened, &allowed).is_err());
+        assert!(validate_repair_scope(before, &scoped, &[]).is_err());
         Ok(())
     }
 }

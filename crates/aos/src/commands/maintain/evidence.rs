@@ -44,6 +44,7 @@ pub(super) fn generate(
     let materialization = store
         .read_materialization(run.run_id.as_str())?
         .ok_or_else(|| anyhow::anyhow!("materialization evidence is missing"))?;
+    let repair_attempts = store.read_repair_attempts(run)?;
     let quick_gates = store
         .read_gate_results(run.run_id.as_str(), "quick")?
         .ok_or_else(|| anyhow::anyhow!("quick gate evidence is missing"))?;
@@ -67,6 +68,7 @@ pub(super) fn generate(
         candidate_commit,
         patch_digest,
         materialization,
+        repair_attempts,
         quick_gates,
         final_gates,
         journal_tip,

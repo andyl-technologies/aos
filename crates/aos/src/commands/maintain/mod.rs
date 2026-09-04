@@ -18,6 +18,7 @@ use std::collections::BTreeMap;
 use std::io::Write as _;
 
 use anyhow::{Context as _, Result};
+use aos_contract::Sha256Digest;
 use aos_core::nix::NixRunner;
 use aos_core::output::Printer;
 use aos_maintain::identity::OperationId;
@@ -27,7 +28,7 @@ use aos_maintain::presentation::{
     EffectClass, GateLogView, MaintainCommandResult, NextAction, PrimaryValue, PullRequestDraft,
     escape_terminal,
 };
-use aos_maintain::workflow::{DiscoveryDecision, ProgressEvent, TaskStatus};
+use aos_maintain::workflow::{ActorClass, DiscoveryDecision, ProgressEvent, TaskStatus};
 use aos_maintain::{MAINTENANCE_CLI_V1, MAINTENANCE_PROGRESS_EVENT_V1};
 use serde::Serialize;
 
@@ -224,6 +225,38 @@ pub async fn run(cli: &Cli, args: &MaintainArgs, printer: &Printer) -> Result<Co
         Some(MaintainCommand::ObservePr(command)) => observe_pr_command(args, command).await,
         Some(MaintainCommand::Handoff(command)) => handoff_command(args, command),
     }
+}
+
+/// Constructs the typed completion emitted after an interactive interruption.
+///
+/// # Errors
+///
+/// Returns an error only if the stable interruption result violates the CLI
+/// presentation contract.
+pub fn interrupted(command: &str) -> Result<CommandCompletion> {
+    completion(
+        command,
+        CommandDisposition::Interrupted,
+        CommandData::default(),
+        vec![diagnostic(
+            "maintain.interrupted",
+            DiagnosticSeverity::Warning,
+            "Interrupted at a durable boundary; inspect status and resume the retained run",
+        )],
+        Vec::new(),
+        vec![NextAction {
+            label: "Inspect resumable maintenance state".to_string(),
+            argv: vec![
+                "aos".to_string(),
+                "maintain".to_string(),
+                "status".to_string(),
+            ],
+            reason: "completed effects and open intents remain in the durable journal".to_string(),
+            prerequisites: Vec::new(),
+            effect_class: EffectClass::ReadOnly,
+            bound_context: None,
+        }],
+    )
 }
 
 fn accept_command(
@@ -462,7 +495,30 @@ fn commit_command(
         .ok_or_else(|| anyhow::anyhow!("run plan is unavailable"))?;
     require_frozen_controller(&plan)?;
     let _operation_lease = store.acquire_operation_lease(plan.plan_id.as_str())?;
-    match git::commit_candidate(&store, &plan, &mut run) {
+    let request = run
+        .accepted_candidate
+        .ok_or_else(|| anyhow::anyhow!("accepted candidate digest is unavailable"))?;
+    let intent = store.effect_intent(&run, "commit-candidate", ActorClass::Maintainer, request)?;
+    let committed = git::commit_candidate(&store, &plan, &mut run);
+    let (outcome, output) = match &committed {
+        Ok(commit) => (
+            aos_maintain::workflow::GateOutcome::Success,
+            Some(Sha256Digest::separated(
+                "aos.package-update-commit/v1",
+                commit.value.as_bytes(),
+            )),
+        ),
+        Err(_) => (aos_maintain::workflow::GateOutcome::Failure, None),
+    };
+    store.effect_result(
+        &run,
+        "commit-candidate",
+        ActorClass::Maintainer,
+        intent,
+        outcome,
+        output,
+    )?;
+    match committed {
         Ok(commit) => {
             let mut completion = run_view_completion("commit", &store, run, None)?;
             completion.result.primary_values.push(PrimaryValue {
@@ -485,6 +541,50 @@ fn commit_command(
     }
 }
 
+fn execute_gates_with_journal(
+    store: &state::StateStore,
+    plan: &aos_maintain::plan::PackageUpdatePlanV1,
+    run: &mut aos_maintain::run::PackageUpdateRunV1,
+    printer: &Printer,
+    final_phase: bool,
+) -> Result<aos_maintain::run::GateResultsV1> {
+    let operation = if final_phase {
+        "execute-final-gates"
+    } else {
+        "execute-quick-gates"
+    };
+    let request = Sha256Digest::of_canonical(aos_maintain::PACKAGE_UPDATE_PLAN_V1, plan)?;
+    let intent = store.effect_intent(run, operation, ActorClass::Controller, request)?;
+    let result = if final_phase {
+        validation::final_gates(store, plan, run, printer)
+    } else {
+        validation::quick(store, plan, run, printer)
+    };
+    let (outcome, output) = match &result {
+        Ok(record) => (
+            if record.all_succeeded() {
+                aos_maintain::workflow::GateOutcome::Success
+            } else {
+                aos_maintain::workflow::GateOutcome::Failure
+            },
+            Some(Sha256Digest::of_canonical(
+                aos_maintain::PACKAGE_UPDATE_GATE_RESULTS_V1,
+                record,
+            )?),
+        ),
+        Err(_) => (aos_maintain::workflow::GateOutcome::Failure, None),
+    };
+    store.effect_result(
+        run,
+        operation,
+        ActorClass::Controller,
+        intent,
+        outcome,
+        output,
+    )?;
+    result
+}
+
 fn test_command(
     args: &MaintainArgs,
     command: &crate::cli::MaintainTestArgs,
@@ -502,11 +602,7 @@ fn test_command(
     } else {
         command.final_gate
     };
-    let results = if final_phase {
-        validation::final_gates(&store, &plan, &mut run, printer)
-    } else {
-        validation::quick(&store, &plan, &mut run, printer)
-    };
+    let results = execute_gates_with_journal(&store, &plan, &mut run, printer, final_phase);
     match results {
         Ok(results) if results.all_succeeded() => run_view_completion("test", &store, run, None),
         Ok(_) => run_view_completion(
@@ -557,7 +653,11 @@ async fn repair_command(
                 )),
             );
         };
-        let attempt = match repair::accept(
+        let request = proposal
+            .proposal_digest
+            .ok_or_else(|| anyhow::anyhow!("repair proposal digest is unavailable"))?;
+        let intent = store.effect_intent(&run, "accept-repair", ActorClass::Maintainer, request)?;
+        let accepted = repair::accept(
             &store,
             &plan,
             &mut run,
@@ -565,7 +665,26 @@ async fn repair_command(
             confirmation,
             cli.verbose,
             cli.quiet,
-        ) {
+        );
+        let (outcome, output) = match &accepted {
+            Ok(attempt) => (
+                aos_maintain::workflow::GateOutcome::Success,
+                Some(Sha256Digest::of_canonical(
+                    aos_maintain::PACKAGE_UPDATE_REPAIR_ATTEMPT_V1,
+                    attempt,
+                )?),
+            ),
+            Err(_) => (aos_maintain::workflow::GateOutcome::Failure, None),
+        };
+        store.effect_result(
+            &run,
+            "accept-repair",
+            ActorClass::Maintainer,
+            intent,
+            outcome,
+            output,
+        )?;
+        let attempt = match accepted {
             Ok(attempt) => attempt,
             Err(error) => {
                 return run_view_completion(
@@ -576,7 +695,7 @@ async fn repair_command(
                 );
             }
         };
-        let gates = validation::quick(&store, &plan, &mut run, printer);
+        let gates = execute_gates_with_journal(&store, &plan, &mut run, printer, false);
         let failure = match gates {
             Ok(results) if results.all_succeeded() => None,
             Ok(_) => Some((
@@ -641,7 +760,33 @@ async fn repair_command(
             .adapter
             .as_deref()
             .ok_or_else(|| anyhow::anyhow!("--agent local requires --adapter PATH"))?;
-        match repair::propose(&store, &plan, &run, adapter).await {
+        let request = Sha256Digest::of_canonical(aos_maintain::PACKAGE_UPDATE_PLAN_V1, &plan)?;
+        let intent = store.effect_intent(
+            &run,
+            "invoke-repair-adapter",
+            ActorClass::Controller,
+            request,
+        )?;
+        let proposed = repair::propose(&store, &plan, &run, adapter).await;
+        let (outcome, output) = match &proposed {
+            Ok(proposal) => (
+                aos_maintain::workflow::GateOutcome::Success,
+                Some(Sha256Digest::of_canonical(
+                    aos_maintain::PACKAGE_UPDATE_AGENT_RESULT_V1,
+                    &proposal.result,
+                )?),
+            ),
+            Err(_) => (aos_maintain::workflow::GateOutcome::Failure, None),
+        };
+        store.effect_result(
+            &run,
+            "invoke-repair-adapter",
+            ActorClass::Controller,
+            intent,
+            outcome,
+            output,
+        )?;
+        match proposed {
             Ok(proposal) => proposal,
             Err(error) => {
                 return run_view_completion(
@@ -939,8 +1084,10 @@ async fn publish_pr_command(
             ],
             reason: "the confirmation binds the remote, ref, expected prior head, candidate, evidence, and PR text".to_string(),
             prerequisites: vec![
-                format!("load the GitHub API credential into {}", command.token_env),
-                "ensure configured Git push authentication is available".to_string(),
+                format!(
+                    "load a GitHub token with branch-write and pull-request access into {}",
+                    command.token_env
+                ),
             ],
             effect_class: EffectClass::RemoteMutation,
             bound_context: Some(request_digest.to_string()),
@@ -948,15 +1095,39 @@ async fn publish_pr_command(
         return CommandCompletion::new(completion.result);
     }
 
-    let publication = match remote::publish(
+    let intent = store.effect_intent(
+        &run,
+        "publish-pull-request",
+        ActorClass::Maintainer,
+        request_digest,
+    )?;
+    let published = remote::publish(
         &coordinates,
         &run,
         &draft,
         expected.as_deref(),
         &command.token_env,
     )
-    .await
-    {
+    .await;
+    let (outcome, output) = match &published {
+        Ok(publication) => (
+            aos_maintain::workflow::GateOutcome::Success,
+            Some(Sha256Digest::of_canonical(
+                aos_maintain::PACKAGE_UPDATE_PR_PUBLICATION_V1,
+                publication,
+            )?),
+        ),
+        Err(_) => (aos_maintain::workflow::GateOutcome::Failure, None),
+    };
+    store.effect_result(
+        &run,
+        "publish-pull-request",
+        ActorClass::Maintainer,
+        intent,
+        outcome,
+        output,
+    )?;
+    let publication = match published {
         Ok(publication) => publication,
         Err(error) => {
             return run_view_completion(
@@ -1247,6 +1418,8 @@ async fn resume_command(
             )),
         );
     }
+    let resumed_state = run_state_name(run.state).to_string();
+    let resumed_run = run.run_id.clone();
     let mut completion = run_command(
         cli,
         args,
@@ -1254,6 +1427,7 @@ async fn resume_command(
             unit: None,
             campaign: None,
             plan: Some(run.plan_id.to_string()),
+            confirm_plan: None,
             until: command.until,
             worktree: Some(std::path::PathBuf::from(run.worktree)),
         },
@@ -1261,6 +1435,15 @@ async fn resume_command(
     )
     .await?;
     completion.result.command = "resume".to_string();
+    completion
+        .result
+        .data
+        .values
+        .insert("resumedFrom".to_string(), resumed_state);
+    completion.result.primary_values.push(PrimaryValue {
+        name: "resumedRunId".to_string(),
+        value: resumed_run.to_string(),
+    });
     CommandCompletion::new(completion.result)
 }
 
@@ -1844,7 +2027,7 @@ fn plan_command(
     let cohort = match command
         .campaign
         .as_ref()
-        .map(|value| aos_maintain::identity::CohortId::parse(value))
+        .map(aos_maintain::identity::CohortId::parse)
         .transpose()
     {
         Ok(cohort) => cohort,
@@ -1877,8 +2060,8 @@ fn plan_command(
         ]
     };
     let now = state::now_unix()?;
-    if let Some(target) = &command.target {
-        if let Err(error) = select_explicit_target(
+    if let Some(target) = &command.target
+        && let Err(error) = select_explicit_target(
             &envelope,
             &mut snapshot,
             unit_id
@@ -1886,20 +2069,20 @@ fn plan_command(
                 .ok_or_else(|| anyhow::anyhow!("target requires a unit"))?,
             target,
             now,
-        ) {
-            return completion(
-                "plan",
-                CommandDisposition::InvalidInvocation,
-                CommandData::default(),
-                vec![diagnostic(
-                    "maintain.invalid-target",
-                    DiagnosticSeverity::Error,
-                    &error.to_string(),
-                )],
-                Vec::new(),
-                Vec::new(),
-            );
-        }
+        )
+    {
+        return completion(
+            "plan",
+            CommandDisposition::InvalidInvocation,
+            CommandData::default(),
+            vec![diagnostic(
+                "maintain.invalid-target",
+                DiagnosticSeverity::Error,
+                &error.to_string(),
+            )],
+            Vec::new(),
+            Vec::new(),
+        );
     }
     if !command.component.is_empty() {
         let selections = match parse_component_selections(&command.component) {
@@ -2029,6 +2212,8 @@ fn plan_command(
                 "run".to_string(),
                 "--plan".to_string(),
                 plan.plan_id.to_string(),
+                "--confirm-plan".to_string(),
+                digest.to_string(),
                 "--until".to_string(),
                 "worktree-ready".to_string(),
             ],
@@ -2094,6 +2279,43 @@ async fn run_command(
         .list_runs()?
         .iter()
         .any(|run| run.plan_id == plan.plan_id);
+    let plan_digest = Sha256Digest::of_canonical(aos_maintain::PACKAGE_UPDATE_PLAN_V1, &plan)?;
+    let plan_digest_text = plan_digest.to_string();
+    if !plan_has_run && command.confirm_plan.as_deref() != Some(plan_digest_text.as_str()) {
+        return completion(
+            "run",
+            CommandDisposition::ActionRequired,
+            CommandData {
+                plan: Some(plan.clone()),
+                ..CommandData::default()
+            },
+            vec![diagnostic(
+                "maintain.plan-confirmation-required",
+                DiagnosticSeverity::Warning,
+                "Review the immutable plan and confirm its exact digest before creating a worktree",
+            )],
+            Vec::new(),
+            vec![NextAction {
+                label: "Confirm and execute this immutable plan".to_string(),
+                argv: vec![
+                    "aos".to_string(),
+                    "maintain".to_string(),
+                    "run".to_string(),
+                    "--plan".to_string(),
+                    plan.plan_id.to_string(),
+                    "--confirm-plan".to_string(),
+                    plan_digest.to_string(),
+                    "--until".to_string(),
+                    run_until_name(command.until).to_string(),
+                ],
+                reason: "the confirmation binds the complete candidate, mutation, and gate plan"
+                    .to_string(),
+                prerequisites: vec!["inspect the semantic plan and gate matrix".to_string()],
+                effect_class: EffectClass::HumanDecision,
+                bound_context: Some(plan_digest.to_string()),
+            }],
+        );
+    }
     if now >= plan.expires_at_unix && !plan_has_run {
         let mut argv = vec![
             "aos".to_string(),
@@ -2176,23 +2398,47 @@ async fn run_command(
         ("repositoryState".to_string(), "clean".to_string()),
     ]);
     if command.until != crate::cli::MaintainRunUntil::WorktreeReady {
-        let materialization =
-            match materialize::execute(&store, &plan, &mut run, cli.verbose, cli.quiet, printer)
-                .await
-            {
-                Ok(record) => record,
-                Err(error) => {
-                    return stopped_run_completion(
-                        "run",
-                        CommandDisposition::ActionRequired,
-                        envelope,
-                        plan,
-                        run,
-                        "maintain.materialization-blocked",
-                        &format!("{error:#}"),
-                    );
-                }
-            };
+        let request = Sha256Digest::of_canonical(aos_maintain::PACKAGE_UPDATE_PLAN_V1, &plan)?;
+        let intent = store.effect_intent(
+            &run,
+            "materialize-candidate",
+            ActorClass::Controller,
+            request,
+        )?;
+        let materialized =
+            materialize::execute(&store, &plan, &mut run, cli.verbose, cli.quiet, printer).await;
+        let (outcome, output) = match &materialized {
+            Ok(record) => (
+                aos_maintain::workflow::GateOutcome::Success,
+                Some(Sha256Digest::of_canonical(
+                    aos_maintain::PACKAGE_UPDATE_MATERIALIZATION_V1,
+                    record,
+                )?),
+            ),
+            Err(_) => (aos_maintain::workflow::GateOutcome::Failure, None),
+        };
+        store.effect_result(
+            &run,
+            "materialize-candidate",
+            ActorClass::Controller,
+            intent,
+            outcome,
+            output,
+        )?;
+        let materialization = match materialized {
+            Ok(record) => record,
+            Err(error) => {
+                return stopped_run_completion(
+                    "run",
+                    CommandDisposition::ActionRequired,
+                    envelope,
+                    plan,
+                    run,
+                    "maintain.materialization-blocked",
+                    &format!("{error:#}"),
+                );
+            }
+        };
         values.insert(
             "patchDigest".to_string(),
             materialization.patch_digest.to_string(),
@@ -2208,7 +2454,7 @@ async fn run_command(
         );
     }
     if command.until == crate::cli::MaintainRunUntil::QuickGated {
-        let gates = match validation::quick(&store, &plan, &mut run, printer) {
+        let gates = match execute_gates_with_journal(&store, &plan, &mut run, printer, false) {
             Ok(gates) => gates,
             Err(error) => {
                 return stopped_run_completion(
@@ -3381,6 +3627,15 @@ fn run_state_name(state: aos_maintain::workflow::RunState) -> &'static str {
         RunState::Rejected => "rejected",
         RunState::Abandoned => "abandoned",
         RunState::Failed => "failed",
+    }
+}
+
+const fn run_until_name(until: crate::cli::MaintainRunUntil) -> &'static str {
+    match until {
+        crate::cli::MaintainRunUntil::WorktreeReady => "worktree-ready",
+        crate::cli::MaintainRunUntil::Materialized => "materialized",
+        crate::cli::MaintainRunUntil::PolicyValid => "policy-valid",
+        crate::cli::MaintainRunUntil::QuickGated => "quick-gated",
     }
 }
 

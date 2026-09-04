@@ -9,6 +9,7 @@
   upstreamId ? version,
   reason,
   riskFloor ? "high",
+  repairScope ? [],
   lifecycle ? "supported",
   successorUnit ? null,
   reviewAfter ? null,
@@ -61,7 +62,7 @@
       platforms = [platform];
       policy =
         {
-          inherit lifecycle riskFloor;
+          inherit lifecycle riskFloor repairScope;
         }
         // (
           if successorUnit == null

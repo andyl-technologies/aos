@@ -2,7 +2,6 @@
 
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::Instant;
 
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt as _;
@@ -13,8 +12,9 @@ use aos_maintain::PACKAGE_UPDATE_GATE_RESULTS_V1;
 use aos_maintain::plan::{GateSpec, PackageUpdatePlanV1};
 use aos_maintain::run::{GateResult, GateResultsV1, PackageUpdateRunV1};
 use aos_maintain::workflow::{ActorClass, GateOutcome, RunState};
+use tokio::time::Instant;
 
-use super::confinement::{Backend, ResourceLimits};
+use super::confinement::{Backend, ResourceLimits, wait_with_timeout};
 use super::state::{self, StateStore};
 
 const MAX_GATE_LOG_BYTES: usize = 8 * 1024 * 1024;
@@ -242,13 +242,14 @@ fn execute_gate(
 ) -> Result<(GateResult, Vec<u8>, aos_maintain::run::ConfinementEvidence)> {
     let executable = std::env::current_exe().context("resolving frozen controller executable")?;
     let started = Instant::now();
+    let limits = ResourceLimits::gates();
     let (mut command, confinement) = backend.command(
         &executable,
         &gate.argv[1..],
         &[root.to_path_buf()],
         &[scratch.to_path_buf()],
         true,
-        ResourceLimits::gates(),
+        limits,
     )?;
     let home = scratch.join("home");
     let temporary = scratch.join("tmp");
@@ -259,6 +260,7 @@ fn execute_gate(
         .env("HOME", &home)
         .env("TMPDIR", &temporary)
         .env("XDG_CACHE_HOME", &cache)
+        .env("NIX_REMOTE", "daemon")
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdout(Stdio::piped())
@@ -269,8 +271,6 @@ fn execute_gate(
         "LOGNAME",
         "LANG",
         "LC_ALL",
-        "NIX_REMOTE",
-        "NIX_CONFIG",
         "NIX_SSL_CERT_FILE",
         "SSL_CERT_FILE",
     ] {
@@ -291,7 +291,7 @@ fn execute_gate(
         .ok_or_else(|| anyhow::anyhow!("planned gate stderr was not captured"))?;
     let stdout_reader = std::thread::spawn(move || bounded_read(stdout));
     let stderr_reader = std::thread::spawn(move || bounded_read(stderr));
-    let status = child.wait().context("waiting for planned gate")?;
+    let (status, timed_out) = wait_with_timeout(&mut child, limits.wall_seconds)?;
     let (stdout, stdout_truncated) = stdout_reader
         .join()
         .map_err(|_| anyhow::anyhow!("planned gate stdout reader panicked"))??;
@@ -314,6 +314,13 @@ fn execute_gate(
             &mut log,
             b"\ntermination:\n",
             termination_description(&status).as_bytes(),
+        );
+    }
+    if timed_out {
+        append_log(
+            &mut log,
+            b"\ntermination:\n",
+            b"wall-time limit exceeded; namespace supervisor killed\n",
         );
     }
     let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);

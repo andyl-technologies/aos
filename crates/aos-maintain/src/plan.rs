@@ -127,6 +127,9 @@ pub struct PackageUpdateUnitPlan {
     /// Planned generated fixed-output artifacts in dependency order.
     #[serde(default)]
     pub artifacts: Vec<ArtifactIntent>,
+    /// Explicit package-builder attribute values eligible for repair proposals.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repair_scope: Vec<String>,
 }
 
 /// Freezes a one- or multi-unit campaign before any worktree mutation.
@@ -241,6 +244,21 @@ fn validate_unit_plan(
     unit: &PackageUpdateUnitPlan,
     fields: &mut BTreeSet<(UnitId, String, Vec<String>)>,
 ) -> Result<()> {
+    if unit.repair_scope.len() > 64
+        || unit.repair_scope.windows(2).any(|pair| pair[0] >= pair[1])
+        || unit.repair_scope.iter().any(|field| {
+            field.is_empty()
+                || field.len() > 128
+                || !field.bytes().enumerate().all(|(index, byte)| {
+                    byte == b'_'
+                        || byte == b'-'
+                        || byte.is_ascii_alphabetic()
+                        || (index > 0 && byte.is_ascii_digit())
+                })
+        })
+    {
+        bail!("plan contains an invalid repair scope");
+    }
     for mutation in &unit.semantic_mutations {
         validate_owner(&mutation.owner)?;
         if mutation.field_path.is_empty()
@@ -518,6 +536,7 @@ fn create_unit_plan(
         semantic_mutations,
         sources,
         artifacts,
+        repair_scope: unit.policy.repair_scope.clone(),
     })
 }
 
@@ -607,6 +626,45 @@ fn gate_plans(unit: &crate::inventory::UpdateUnit) -> (Vec<GateSpec>, Vec<GateSp
     }
     quick.sort_by(|left, right| left.id.cmp(&right.id));
     let mut final_gates = quick.clone();
+    if matches!(
+        unit.policy.risk_floor,
+        RiskLevel::High | RiskLevel::Critical
+    ) {
+        for member in &unit.members {
+            for target in &unit.platforms {
+                final_gates.push(GateSpec {
+                    id: format!("repeat-build-{member}-{target}"),
+                    kind: GateKind::PackageBuild,
+                    argv: vec![
+                        "aos".to_string(),
+                        "build".to_string(),
+                        member.to_string(),
+                        "--target".to_string(),
+                        target.clone(),
+                    ],
+                    target: Some(target.clone()),
+                });
+            }
+        }
+    }
+    // AOS intentionally chooses the conservative closed policy while package
+    // coverage is young: every package root is built on each eligible target.
+    // This is a deterministic superset of any affected reverse-dependency
+    // closure and prevents an incomplete graph from weakening final evidence.
+    for target in &unit.platforms {
+        final_gates.push(GateSpec {
+            id: format!("repository-build-all-{target}"),
+            kind: GateKind::RepositoryTest,
+            argv: vec![
+                "aos".to_string(),
+                "build".to_string(),
+                "--all".to_string(),
+                "--target".to_string(),
+                target.clone(),
+            ],
+            target: Some(target.clone()),
+        });
+    }
     for layer in ["rust", "build", "vm", "fleet"] {
         final_gates.push(GateSpec {
             id: format!("repository-{layer}"),

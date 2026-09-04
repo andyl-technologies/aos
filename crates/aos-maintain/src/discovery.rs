@@ -553,6 +553,7 @@ mod tests {
                 lifecycle: Lifecycle::Supported,
                 risk_floor: RiskLevel::Normal,
                 successor_unit: None,
+                repair_scope: Vec::new(),
             },
             reason: None,
             owner_unit: None,

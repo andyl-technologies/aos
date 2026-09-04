@@ -226,10 +226,9 @@ async fn github_tags(
             if raw_id.len() > 512 {
                 bail!("GitHub tag identity is oversized");
             }
-            let raw_version = raw_id
-                .strip_prefix(tag_prefix)
-                .unwrap_or(&raw_id)
-                .to_string();
+            let Some(raw_version) = normalized_github_tag(&raw_id, tag_prefix) else {
+                continue;
+            };
             let first_key = format!(
                 "github-tags:{}:{repository}:{}:{raw_id}",
                 repository.len(),
@@ -238,7 +237,7 @@ async fn github_tags(
             let first_observed = store.record_first_observed(&first_key, retrieved_at)?;
             candidates.push(ObservationCandidate {
                 raw_id: raw_id.clone(),
-                raw_version,
+                raw_version: raw_version.to_string(),
                 published_at_unix: None,
                 first_observed_at_unix: first_observed,
                 prerelease: false,
@@ -280,6 +279,15 @@ async fn github_tags(
     };
     observation.validate()?;
     Ok(observation)
+}
+
+fn normalized_github_tag<'a>(tag: &'a str, prefix: &str) -> Option<&'a str> {
+    if prefix.is_empty() {
+        Some(tag)
+    } else {
+        tag.strip_prefix(prefix)
+            .filter(|version| !version.is_empty())
+    }
 }
 
 fn read_optional_token(variable: &str) -> Result<Option<String>> {
@@ -476,5 +484,13 @@ mod tests {
     fn response_accumulation_is_bounded() {
         let mut output = vec![0_u8; MAX_RESPONSE_BYTES];
         assert!(append_response(&mut output, &[1]).is_err());
+    }
+
+    #[test]
+    fn github_tag_prefix_is_an_exact_candidate_boundary() {
+        assert_eq!(normalized_github_tag("v2.3.4", "v"), Some("2.3.4"));
+        assert_eq!(normalized_github_tag("release-2.3.4", "v"), None);
+        assert_eq!(normalized_github_tag("v", "v"), None);
+        assert_eq!(normalized_github_tag("2.3.4", ""), Some("2.3.4"));
     }
 }

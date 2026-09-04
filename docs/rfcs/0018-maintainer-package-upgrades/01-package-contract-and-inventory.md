@@ -103,6 +103,7 @@ An automatic conventional source has this shape:
     policy = {
       lifecycle = "supported";
       riskFloor = "normal";
+      repairScope = [];
     };
   };
 in
@@ -132,6 +133,8 @@ these semantics are normative:
 - the helper returns real AOS `fetchurl`/source derivations;
 - the derivation receives normal `version`, `src`, and artifact values;
 - update-only metadata is visible to evaluation but not to the package builder;
+- agent repairs may change only package-builder attribute values named by the
+  plan-frozen `policy.repairScope`; an empty list disables patch proposals;
 - functions, derivations, paths, secrets, or arbitrary executable update hooks
   are not serializable maintenance metadata.
 
