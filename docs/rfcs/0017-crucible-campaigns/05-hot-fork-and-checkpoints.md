@@ -1449,9 +1449,16 @@ before its predecessor child-QMP endpoint. A successful child disposition
 installs the replacement stream before console input becomes active.
 
 The Rust host boundary now makes that ordering linear. The node operation
-accepts an explicit child-process owner and returns a launch token only after
-that owner authenticates and retains the exact source PID, child PID, and
-fourteen-generation request basis. The token jointly owns the process
+accepts an explicit child-process owner but no caller-supplied generation
+tuple. It queries the prepared template, private ring, diagnostics, child QMP,
+child console, and child-process contract, then queries the template again.
+The two template reports MUST be identical, every intervening report MUST
+match both the template resource stage and the node's corresponding linear
+host authority, and only that checked basis may construct the fourteen-field
+fork request. QEMU revalidates the same basis in the immediately following
+fork command. The node returns a launch token only after the child-process
+owner authenticates and retains the exact source PID, child PID, and request
+basis. The token jointly owns the process
 authority, the single branch-private QMP endpoint, and one host continuation.
 That continuation retains the exact private-ring descriptor, branch-private
 console observation spool, the

@@ -2984,8 +2984,13 @@ direct-child/quarantine lifecycle, private-channel promotion, and campaign
 observation integration remain mandatory before the executor may report
 `hot-fork`.
 
-The Rust node boundary enforces that rule with a linear launch token. A
-successful result contains the exact parent response, one nonduplicable
+The Rust node boundary enforces that rule with a linear launch token. A caller
+cannot provide a raw generation tuple to the daemon launch boundary. The node
+brackets exact QMP queries for every retained child contribution with an
+unchanged prepared-template report, matches them to its linear host-side ring,
+endpoint, diagnostic, console, and process-contract authorities, and constructs
+the request only from that authenticated basis. A successful result contains
+the exact parent response, one nonduplicable
 child-process authority, the single branch-private QMP endpoint, the sole
 bounded diagnostic reader, and the branch-private console continuation; the
 node cannot return success with only a PID. The source console reader is
@@ -3000,9 +3005,9 @@ quarantines the source. The Linux host-resource facade now delegates child-
 process retention only while it still owns both the live cgroup and aggregate
 filesystem quota. The composed attempt guard carries that delegation together
 with sticky cancellation and quantum accounting; the process-only owner is not
-an accepted reconciliation target. The daemon
-reconciliation owner consumes the launch token without exposing a PID-only
-success state and retains the source, complete target guard, private QMP and
+an accepted reconciliation target. The daemon reconciliation launch derives
+that request internally and consumes the launch token without exposing a
+PID-only success state and retains the source, complete target guard, private QMP and
 console channels, exact attempt/execution basis, and semantic publication disposition
 through ordered cleanup. It lends modeled execution only the child QMP channel
 and a non-releasing operational boundary, so modeled code cannot finish the

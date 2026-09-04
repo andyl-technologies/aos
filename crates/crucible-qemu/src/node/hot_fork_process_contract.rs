@@ -54,6 +54,17 @@ impl QemuHotForkChildProcessContractStage {
     pub(super) fn mark_consumed(&mut self) {
         self.proof.consumed = true;
     }
+
+    pub(super) fn matches_state(&self, state: &crate::QmpHotForkChildProcessContractState) -> bool {
+        state.staged()
+            && !state.consumed()
+            && state.generation() == self.proof.generation
+            && state.template_generation() == self.proof.template_generation
+            && state.cgroup_name() == Some(&self.cgroup_name)
+            && state.cancellation_name() == Some(&self.cancellation_name)
+            && state.identity() == Some(self.proof.identity)
+            && !self.proof.consumed
+    }
 }
 
 impl QemuNode {
