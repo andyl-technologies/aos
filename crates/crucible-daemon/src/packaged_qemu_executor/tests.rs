@@ -313,6 +313,13 @@ fn scenario_artifact() -> ScenarioArtifactId {
 }
 
 fn repository_with_campaigns(campaigns: &[(&str, &[u8], &str)]) -> Arc<CampaignRepository> {
+    repository_with_closure_schema(campaigns, crate::EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION)
+}
+
+fn repository_with_closure_schema(
+    campaigns: &[(&str, &[u8], &str)],
+    closure_schema: u32,
+) -> Arc<CampaignRepository> {
     let repository = Arc::new(CampaignRepository::new(
         Arc::new(MemoryBlobBackend::new(
             "packaged-campaign-basis",
@@ -350,7 +357,7 @@ fn repository_with_campaigns(campaigns: &[(&str, &[u8], &str)]) -> Arc<CampaignR
             *qemu_build,
             std::collections::BTreeMap::from([(String::from("control"), 1)]),
             1,
-            1,
+            closure_schema,
         )
         .expect("campaign lineage");
         let policy = packaged_policy(scenario);
@@ -638,6 +645,32 @@ fn invalid_campaign_fails_before_operational_owner_mutation() {
         Err(error) => error,
     };
     assert!(matches!(error, PackagedQemuExecutorError::Repository(_)));
+    assert!(!ledger.exists());
+    assert!(!socket.exists());
+}
+
+#[test]
+fn unsupported_closure_version_fails_before_catalog_or_host_acquisition() {
+    let directory = tempfile::tempdir().expect("packaged executor directory");
+    let mut config = config(&directory, 1);
+    config.campaigns = BTreeSet::from([CampaignName::new("legacy").expect("campaign name")]);
+    let ledger = config.ledger_root().to_owned();
+    let socket = config.endpoint().path().to_owned();
+    // Deliberately not a decodable Crucible scenario: compatibility rejection
+    // must precede even catalog decoding, let alone privileged host mutation.
+    let repository = repository_with_closure_schema(&[("legacy", b"scenario", "qemu-test")], 2);
+    let backend = Arc::new(MemoryBlobBackend::new("legacy-checkpoints", 1024 * 1024));
+    let error = match prepare_packaged_qemu_executor(repository, backend, config) {
+        Ok(_) => panic!("legacy closure version must not be advertised by a version-four writer"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        PackagedQemuExecutorError::UnsupportedExactClosureSchema {
+            actual: 2,
+            supported: 4
+        }
+    ));
     assert!(!ledger.exists());
     assert!(!socket.exists());
 }

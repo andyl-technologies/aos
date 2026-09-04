@@ -213,6 +213,13 @@ control = 2
 shared-memory = 5
 ```
 
+`exact_closure_schema` names the executor's exact-checkpoint format, not the
+genesis configuration payload format. The current packaged executor requires
+closure version 4; imported Crucible configuration payloads use version 2 and
+are independently authenticated by `genesis_content`. A different requested
+closure version is rejected before the packaged executor acquires host
+resources. Existing immutable lineage records are not rewritten at startup.
+
 The lineage and policy compilers reject unknown fields, noncanonical
 identities, and invalid typed values before creating output. They write new
 owner-only files durably and never replace existing paths. Each report contains

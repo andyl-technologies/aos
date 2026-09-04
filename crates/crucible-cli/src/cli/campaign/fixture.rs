@@ -232,7 +232,7 @@ fn worked_network_fixture() -> Result<WorkedNetworkFixture, CliError> {
             (String::from("shared-memory"), 1),
         ]),
         scenario_artifact.payload_schema(),
-        configuration_artifact.payload_schema(),
+        crucible_daemon::EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION,
     )
     .map_err(|error| fixture_error(format!("build campaign lineage: {error}")))?;
     Ok(WorkedNetworkFixture {
@@ -711,6 +711,10 @@ mod tests {
             &fs::read(&report.lineage).expect("lineage bytes"),
         )
         .expect("canonical lineage");
+        assert_eq!(
+            lineage.exact_closure_schema(),
+            crucible_daemon::EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION
+        );
         let policy =
             CampaignPolicy::from_canonical_bytes(&fs::read(&report.policy).expect("policy bytes"))
                 .expect("canonical policy");
