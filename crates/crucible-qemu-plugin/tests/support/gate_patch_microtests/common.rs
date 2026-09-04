@@ -205,6 +205,10 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0189-crucible-retain-async-fork-barrier-through-child-release.patch",
     "0190-crucible-release-child-async-barrier-before-qmp-start.patch",
     "0191-crucible-coordinate-fork-on-main-loop.patch",
+    "0192-crucible-fork-retained-templates-through-private-qmp.patch",
+    "0193-crucible-retain-hot-fork-child-status.patch",
+    "0194-crucible-contain-hot-fork-children-from-birth.patch",
+    "0195-crucible-replace-fork-child-console-endpoint.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each
