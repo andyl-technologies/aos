@@ -394,3 +394,10 @@ completes. The Git history remains authoritative for code details.
   stale terminal history cannot claim current slots or hide dangling,
   cross-boot, or nonreciprocal edges, and descriptor-store keys are canonical
   to mount handles. Bounded tombstone retirement remains open.
+- `0f7688335` — foundation toward `SBX-BPROTO-04`, `SBX-HOST-01`, and
+  `SBX-MOUNT-01`: host and mount protocol 1.1 carries an exact bounded signed
+  plan/lease quartet as explicitly untrusted input; effect methods fail closed
+  without the negotiated feature while legacy 1.0 remains
+  observation/inventory-only. Broker signature verification, semantic matching,
+  durable intersection admission, and immediate pre-effect expiry checks remain
+  open.
