@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 use std::error::Error;
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::os::fd::{AsFd, FromRawFd, OwnedFd};
 use std::process::Command;
@@ -219,6 +219,7 @@ struct ScriptedQmpMachineControl {
     fail_endpoint_install: bool,
     mismatch_endpoint_disposition: bool,
     mismatch_request_basis: bool,
+    serve_child_qmp: bool,
     template_query_count: Arc<Mutex<u64>>,
     hot_fork_script: HotForkScript,
 }
@@ -226,6 +227,7 @@ struct ScriptedQmpMachineControl {
 #[derive(Clone, Copy)]
 enum DescriptorScript {
     Success,
+    SchedulerContinuation,
     InstallFailure,
     CloseFailure,
     EndpointInstallFailure,
@@ -289,6 +291,68 @@ impl crate::QemuHotForkChildProcessOwner for ScriptedHotForkTargetOwner {
         self.retained.push(basis);
         Ok(ScriptedHotForkChildAuthority { basis })
     }
+}
+
+#[cfg(target_os = "linux")]
+fn serve_scripted_hot_fork_child_qmp(
+    descriptor: std::os::fd::BorrowedFd<'_>,
+    name: &crate::QmpDescriptorName,
+    socket_cookie: u64,
+    template_generation: u64,
+) -> Result<(), QemuNodeChannelError> {
+    let descriptor = descriptor.try_clone_to_owned().map_err(|source| {
+        QemuNodeChannelError::new("clone scripted child QMP endpoint", source.to_string())
+    })?;
+    let mut stream = std::os::unix::net::UnixStream::from(descriptor);
+    let response = format!(
+        r#"{{"return":{{"schema-version":8,"generation":1,"template-generation":{template_generation},"monitor-generation":7,"staged":true,"fdname":"{}","socket-cookie":{socket_cookie},"retained-fd":33,"resource-plan-bound":true,"nonblocking-unix-stream":true,"monitor-basis-bound":true,"monitor-disposition-bound":true,"monitor-socket-resources-bound":true,"reinitializer-prepared":true,"reinitialized":true,"disposition-complete":true,"readiness-proof-acknowledged":true}}}}"#,
+        name.as_str(),
+    );
+    std::thread::Builder::new()
+        .name(String::from("scripted-hot-fork-child-qmp"))
+        .spawn(move || {
+            if stream.set_nonblocking(false).is_err() {
+                return;
+            }
+            if stream
+                .write_all(b"{\"QMP\":{\"version\":{},\"capabilities\":[]}}\r\n")
+                .is_err()
+            {
+                return;
+            }
+            let reader_stream = match stream.try_clone() {
+                Ok(stream) => stream,
+                Err(_) => return,
+            };
+            let mut reader = BufReader::new(reader_stream);
+            let mut request = String::new();
+            if reader
+                .read_line(&mut request)
+                .ok()
+                .filter(|read| *read > 0)
+                .is_none()
+            {
+                return;
+            }
+            if stream.write_all(b"{\"return\":{}}\r\n").is_err() {
+                return;
+            }
+            request.clear();
+            if reader
+                .read_line(&mut request)
+                .ok()
+                .filter(|read| *read > 0)
+                .is_none()
+            {
+                return;
+            }
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.write_all(b"\r\n");
+        })
+        .map(|_handle| ())
+        .map_err(|source| {
+            QemuNodeChannelError::new("spawn scripted child QMP endpoint", source.to_string())
+        })
 }
 
 impl QemuPluginIpcControlChannel for ScriptedPluginControl {
@@ -993,7 +1057,7 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
     fn install_hot_fork_child_qmp(
         &mut self,
         name: &crate::QmpDescriptorName,
-        _descriptor: std::os::fd::BorrowedFd<'_>,
+        descriptor: std::os::fd::BorrowedFd<'_>,
         socket_cookie: u64,
         template_generation: u64,
     ) -> Result<crate::QmpHotForkChildQmpState, QemuNodeChannelError> {
@@ -1023,6 +1087,14 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
         );
         *self.child_qmp_state.lock().unwrap() =
             Some((name.clone(), socket_cookie, template_generation, false));
+        if self.serve_child_qmp {
+            serve_scripted_hot_fork_child_qmp(
+                descriptor,
+                name,
+                socket_cookie,
+                template_generation,
+            )?;
+        }
         Ok(state)
     }
 
@@ -2128,6 +2200,10 @@ fn unvalidated_hot_fork_process_contract() -> Result<crate::QemuChildProcessCont
 fn hot_fork_success_transfers_child_qmp_and_private_host_continuation() -> Result<(), Box<dyn Error>>
 {
     let (mut node, log) = sealed_hot_fork_node_with_log(DescriptorScript::Success)?;
+    node.last_observed_time = crucible::VirtualTime { ticks: 41 };
+    node.next_network_output_sequence = 17;
+    node.next_fault_command_sequence = 23;
+    node.next_fault_event_sequence = 29;
     let source_process_id = node.process_id();
     let mut process_owner = ScriptedHotForkChildOwner::default();
 
@@ -2147,6 +2223,31 @@ fn hot_fork_success_transfers_child_qmp_and_private_host_continuation() -> Resul
     assert_eq!(launch.host_continuation().template_generation(), 1);
     assert_eq!(launch.host_continuation().private_ring_generation(), 1);
     assert_ne!(launch.host_continuation().ring_identity().inode(), 0);
+    assert_eq!(
+        launch.host_continuation().node_state().last_observed_time(),
+        crucible::VirtualTime { ticks: 41 }
+    );
+    assert_eq!(
+        launch
+            .host_continuation()
+            .node_state()
+            .next_network_output_sequence(),
+        17
+    );
+    assert_eq!(
+        launch
+            .host_continuation()
+            .node_state()
+            .next_fault_command_sequence(),
+        23
+    );
+    assert_eq!(
+        launch
+            .host_continuation()
+            .node_state()
+            .next_fault_event_sequence(),
+        29
+    );
     assert_eq!(node.lifecycle_state(), QemuNodeLifecycleState::Running);
     let calls = recorded(&log);
     assert_eq!(
@@ -2180,6 +2281,63 @@ fn hot_fork_success_transfers_child_qmp_and_private_host_continuation() -> Resul
     node.release_hot_fork_child_qmp()?;
     let capture = node.release_hot_fork_child_diagnostics_with_consumer(&mut diagnostics)?;
     assert_eq!(capture.bytes(), b"scripted child diagnostics");
+    drop(node.release_hot_fork_private_ring_mapping()?);
+    node.shutdown_child()?;
+    Ok(())
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn hot_fork_rejects_uncommitted_node_state_before_process_creation() -> Result<(), Box<dyn Error>> {
+    let (mut node, log) = sealed_hot_fork_node_with_log(DescriptorScript::Success)?;
+    node.pending_network_outputs.push(QemuNodeEmittedFrame {
+        source: node_id("source"),
+        destination: node_id("destination"),
+        emit_icount: crucible::Icount { retired: 1 },
+        sequence: 0,
+        payload: vec![1],
+    });
+    let mut process_owner = ScriptedHotForkChildOwner::default();
+
+    let error = node
+        .fork_prepared_hot_fork_template(&mut process_owner)
+        .expect_err("uncommitted node state must reject before process creation");
+
+    assert!(matches!(error, QemuHotForkLaunchError::Rejected { .. }));
+    assert!(process_owner.retained.is_empty());
+    assert!(!recorded(&log).contains(&ChannelCall::QmpHotFork));
+    node.pending_network_outputs.clear();
+    node.shutdown_child()?;
+    Ok(())
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn hot_fork_scheduler_continuation_owns_exact_private_planes() -> Result<(), Box<dyn Error>> {
+    let (mut node, _log) = sealed_hot_fork_node_with_log(DescriptorScript::SchedulerContinuation)?;
+    node.last_observed_time = crucible::VirtualTime { ticks: 73 };
+    node.next_network_output_sequence = 31;
+    let mut process_owner = ScriptedHotForkChildOwner::default();
+
+    let launch = node.fork_prepared_hot_fork_template(&mut process_owner)?;
+    let (_parent, _process, child_qmp, mut diagnostics, continuation) = launch.into_parts();
+    let scheduler = continuation.into_scheduler_node_continuation(child_qmp)?;
+
+    assert_eq!(scheduler.request(), exact_hot_fork_request());
+    assert_eq!(scheduler.template_generation(), 1);
+    assert_eq!(scheduler.private_ring_generation(), 1);
+    assert_ne!(scheduler.host_io_binding(), ContentHash { bytes: [0; 32] });
+    assert_eq!(
+        scheduler.node_state().last_observed_time(),
+        crucible::VirtualTime { ticks: 73 }
+    );
+    assert_eq!(scheduler.node_state().next_network_output_sequence(), 31);
+
+    drop(scheduler);
+    node.release_hot_fork_plugin_endpoints()?;
+    node.release_hot_fork_child_console()?;
+    node.release_hot_fork_child_qmp()?;
+    let _capture = node.release_hot_fork_child_diagnostics_with_consumer(&mut diagnostics)?;
     drop(node.release_hot_fork_private_ring_mapping()?);
     node.shutdown_child()?;
     Ok(())
@@ -2982,6 +3140,7 @@ fn scripted_hot_fork_capture_node(
                 descriptor_script,
                 DescriptorScript::RequestBasisMismatch
             ),
+            serve_child_qmp: matches!(descriptor_script, DescriptorScript::SchedulerContinuation),
             template_query_count: Arc::new(Mutex::new(0)),
             hot_fork_script: match descriptor_script {
                 DescriptorScript::ForkRejected => HotForkScript::Rejected,
@@ -2990,6 +3149,7 @@ fn scripted_hot_fork_capture_node(
                     HotForkScript::ParentDispositionFailed
                 }
                 DescriptorScript::Success
+                | DescriptorScript::SchedulerContinuation
                 | DescriptorScript::InstallFailure
                 | DescriptorScript::CloseFailure
                 | DescriptorScript::EndpointInstallFailure
@@ -3128,6 +3288,7 @@ fn scripted_node_with_fault_events(
             fail_endpoint_install: false,
             mismatch_endpoint_disposition: false,
             mismatch_request_basis: false,
+            serve_child_qmp: false,
             template_query_count: Arc::new(Mutex::new(0)),
             hot_fork_script: HotForkScript::Rejected,
         },
@@ -3230,6 +3391,7 @@ fn scripted_node_with_coverage(
             fail_endpoint_install: false,
             mismatch_endpoint_disposition: false,
             mismatch_request_basis: false,
+            serve_child_qmp: false,
             template_query_count: Arc::new(Mutex::new(0)),
             hot_fork_script: HotForkScript::Rejected,
         },
