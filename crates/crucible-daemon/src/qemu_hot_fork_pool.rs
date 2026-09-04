@@ -133,7 +133,10 @@ where
     ///
     /// Returns [`QemuHotForkTemplatePoolInsertionError`] with the unchanged
     /// worker when the configured pool capacity is already full.
-    pub fn insert(&mut self, factory: F) -> Result<(), QemuHotForkTemplatePoolInsertionError<F>> {
+    pub fn insert(
+        &mut self,
+        factory: F,
+    ) -> Result<QemuHotForkTemplatePoolSlot, QemuHotForkTemplatePoolInsertionError<F>> {
         if self.slot_count >= self.maximum_slots {
             return Err(QemuHotForkTemplatePoolInsertionError {
                 factory: Box::new(factory),
@@ -141,13 +144,30 @@ where
         }
         let key = factory.template_key();
         let slots = self.slots.entry(key).or_default();
-        if let Some(slot) = slots.iter_mut().find(|slot| slot.is_none()) {
-            *slot = Some(factory);
+        let slot = if let Some((slot, entry)) = slots
+            .iter_mut()
+            .enumerate()
+            .find(|(_slot, entry)| entry.is_none())
+        {
+            *entry = Some(factory);
+            slot
         } else {
             slots.push(Some(factory));
-        }
+            slots.len() - 1
+        };
         self.slot_count += 1;
-        Ok(())
+        Ok(QemuHotForkTemplatePoolSlot { key, slot })
+    }
+
+    /// Returns the first stable retained-worker coordinate, when nonempty.
+    #[must_use]
+    pub fn first_slot(&self) -> Option<QemuHotForkTemplatePoolSlot> {
+        self.slots.iter().find_map(|(&key, slots)| {
+            slots
+                .iter()
+                .position(Option::is_some)
+                .map(|slot| QemuHotForkTemplatePoolSlot { key, slot })
+        })
     }
 
     /// Removes one idle source worker for orderly demotion or shutdown.
@@ -166,9 +186,10 @@ where
     /// child lifecycle. No pool state changes on error.
     pub fn retire_idle(
         &mut self,
-        key: QemuHotForkTemplateKey,
-        slot: usize,
+        coordinate: QemuHotForkTemplatePoolSlot,
     ) -> Result<F, QemuHotForkTemplatePoolRetirementError> {
+        let key = coordinate.key;
+        let slot = coordinate.slot;
         let slots = self
             .slots
             .get_mut(&key)
@@ -224,6 +245,35 @@ where
     #[must_use]
     pub const fn quarantine_sink(&self) -> &Q {
         &self.quarantine
+    }
+}
+
+/// Stable coordinate of one retained source worker within a template pool.
+///
+/// Removing another worker never changes this coordinate. A retired coordinate
+/// may be reused only for a later source with the same exact template key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct QemuHotForkTemplatePoolSlot {
+    key: QemuHotForkTemplateKey,
+    slot: usize,
+}
+
+impl QemuHotForkTemplatePoolSlot {
+    /// Returns the exact lineage/configuration key of the source worker.
+    #[must_use]
+    pub const fn template_key(self) -> QemuHotForkTemplateKey {
+        self.key
+    }
+
+    /// Returns the stable per-key slot index.
+    #[must_use]
+    pub const fn slot_index(self) -> usize {
+        self.slot
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn new(key: QemuHotForkTemplateKey, slot: usize) -> Self {
+        Self { key, slot }
     }
 }
 

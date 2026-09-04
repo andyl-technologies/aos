@@ -2503,9 +2503,23 @@ fixed factory/source authority without dropping it, leaves a tombstone rather
 than shifting a busy sibling's recovery coordinate, and reuses that slot only
 after the prior source is proven idle and transferred. Busy and missing
 retirement are read-only failures, with sibling-retirement/reuse regressions.
-Hotness scoring and eviction choice, atomic multi-node host-continuation
-installation, the concrete modeled driver, and a real QEMU flight remain open;
-this checkpoint therefore does not mark T-CAM-6.2 or T-CAM-6.3 complete.
+The daemon now also has the bounded operational `HotCheckpointManager`. It
+accounts all six retained-resource dimensions from HFORK-24, separately limits
+actual fork starts in monotonic host-time windows, computes the signed LAZY-15
+score from bounded explainable inputs, protects explicit pins, and selects
+pressure victims deterministically with existing sources winning score ties.
+Its read-only admission plans bind the exact stable pool coordinates, fallback
+tier, candidate basis, and inventory generation; commits fail closed after any
+intervening signal, pin, or inventory change. Focused regressions cover every
+resource dimension, multi-source pressure, pins, deterministic ties, signal
+updates, foreign/stale/wrong-key plans, orderly accounting release, and fork-
+rate rollover. Pool insertion now returns the stable coordinate consumed by
+that boundary. The owner that executes a plan and atomically composes idle
+source retirement with exact/thin fallback has not yet been wired, so resource
+accounting is not yet the production launch boundary and T-CAM-7.5 remains
+unchecked. Atomic multi-node host-continuation installation, the concrete
+modeled driver, and a real QEMU flight also remain open; this checkpoint
+therefore does not mark T-CAM-6.2 or T-CAM-6.3 complete.
 The internal registry now has safe RCU and internal-monitor dispositions, while
 other AIO owners and every generic or external thread remain unresolved. The
 retained AIO/BH/timer and RCU

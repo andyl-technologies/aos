@@ -2326,4 +2326,7 @@ realizations intact.
 - **[HFORK-24]** The daemon MUST enforce configurable limits for total hot
   template bytes, expected private dirty bytes, process count, vCPU count,
   descriptors, overlays, and fork rate. Pressure changes placement or
-  realization tier, never semantic proposal priority in strict mode.
+  realization tier, never semantic proposal priority in strict mode. Fork rate
+  is measured over one configured fixed-duration monotonic host-time window;
+  every admitted process-fork attempt is charged even when later preparation
+  fails.
