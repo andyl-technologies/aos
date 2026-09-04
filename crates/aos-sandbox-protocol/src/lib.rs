@@ -247,8 +247,15 @@ impl ValidatedRuntimeRequest {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ValidatedMountRequest {
     header: ValidatedHeader,
-    request: ApplyMountRequest,
+    fence: ValidatedAssignmentFence,
+    action: MountAction,
+    attachment_id: [u8; 16],
+    destination_slot_id: [u8; 16],
     view_revision: Option<ObjectDescriptor>,
+    detached_mount_handle: Option<[u8; 32]>,
+    replacement_mount_handle: Option<[u8; 32]>,
+    attributes: Option<ValidatedMountAttributes>,
+    source_generation: u64,
 }
 
 impl ValidatedMountRequest {
@@ -258,16 +265,109 @@ impl ValidatedMountRequest {
         &self.header
     }
 
-    /// Returns the original request after hostile-input validation.
+    /// Returns the exact assignment fence.
     #[must_use]
-    pub const fn request(&self) -> &ApplyMountRequest {
-        &self.request
+    pub const fn fence(&self) -> &ValidatedAssignmentFence {
+        &self.fence
+    }
+
+    /// Returns the closed mount action.
+    #[must_use]
+    pub const fn action(&self) -> MountAction {
+        self.action
+    }
+
+    /// Returns the attachment resource identifier.
+    #[must_use]
+    pub const fn attachment_id(&self) -> &[u8; 16] {
+        &self.attachment_id
+    }
+
+    /// Returns the broker-owned destination-slot identifier.
+    #[must_use]
+    pub const fn destination_slot_id(&self) -> &[u8; 16] {
+        &self.destination_slot_id
     }
 
     /// Returns the validated view descriptor when the action supplies one.
     #[must_use]
     pub const fn view_revision(&self) -> Option<&ObjectDescriptor> {
         self.view_revision.as_ref()
+    }
+
+    /// Returns the action-dependent detached or installed mount handle.
+    #[must_use]
+    pub const fn detached_mount_handle(&self) -> Option<&[u8; 32]> {
+        self.detached_mount_handle.as_ref()
+    }
+
+    /// Returns the installed handle being replaced, only for replace.
+    #[must_use]
+    pub const fn replacement_mount_handle(&self) -> Option<&[u8; 32]> {
+        self.replacement_mount_handle.as_ref()
+    }
+
+    /// Returns closed mount attributes for prepare/install operations.
+    #[must_use]
+    pub const fn attributes(&self) -> Option<ValidatedMountAttributes> {
+        self.attributes
+    }
+
+    /// Returns the nonzero immutable source generation.
+    #[must_use]
+    pub const fn source_generation(&self) -> u64 {
+        self.source_generation
+    }
+}
+
+/// Carries a closed mount-attribute request after enum validation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ValidatedMountAttributes {
+    bits: u8,
+    mutation_mode: u32,
+}
+
+impl ValidatedMountAttributes {
+    const READ_ONLY: u8 = 1 << 0;
+    const NO_EXEC: u8 = 1 << 1;
+    const NO_SUID: u8 = 1 << 2;
+    const NO_DEVICE: u8 = 1 << 3;
+    const NO_ATIME: u8 = 1 << 4;
+
+    /// Reports whether the mount is VFS read-only.
+    #[must_use]
+    pub const fn read_only(self) -> bool {
+        self.bits & Self::READ_ONLY != 0
+    }
+
+    /// Reports whether execution through the mount is denied.
+    #[must_use]
+    pub const fn no_exec(self) -> bool {
+        self.bits & Self::NO_EXEC != 0
+    }
+
+    /// Reports whether set-ID mode bits are ineffective.
+    #[must_use]
+    pub const fn no_suid(self) -> bool {
+        self.bits & Self::NO_SUID != 0
+    }
+
+    /// Reports whether device nodes are ineffective.
+    #[must_use]
+    pub const fn no_device(self) -> bool {
+        self.bits & Self::NO_DEVICE != 0
+    }
+
+    /// Reports whether access-time updates are disabled.
+    #[must_use]
+    pub const fn no_atime(self) -> bool {
+        self.bits & Self::NO_ATIME != 0
+    }
+
+    /// Returns the closed view mutation mode `0..=4`.
+    #[must_use]
+    pub const fn mutation_mode(self) -> u32 {
+        self.mutation_mode
     }
 }
 
@@ -424,7 +524,7 @@ pub fn decode_mount_request(
         ProtocolId::MountBroker,
         now_boottime_nanoseconds,
     )?;
-    validate_fence(
+    let fence = validate_fence(
         request
             .fence
             .as_option()
@@ -452,11 +552,110 @@ pub fn decode_mount_request(
         None => None,
     };
 
+    let attachment_id = exact_nonzero::<16>(&request.attachment_id, "attachment_id")?;
+    let destination_slot_id =
+        exact_nonzero::<16>(&request.destination_slot_id, "destination_slot_id")?;
+    if request.source_generation == 0 {
+        return Err(ProtocolValidationError::InvalidField("source_generation"));
+    }
+    let detached_mount_handle =
+        optional_exact_nonzero::<32>(&request.detached_mount_handle, "detached_mount_handle")?;
+    let replacement_mount_handle = optional_exact_nonzero::<32>(
+        &request.replacement_mount_handle,
+        "replacement_mount_handle",
+    )?;
+    let attributes = request
+        .attributes
+        .as_option()
+        .map(validate_mount_attributes)
+        .transpose()?;
+    validate_mount_shape(
+        action,
+        view_revision.is_some(),
+        detached_mount_handle,
+        replacement_mount_handle,
+        attributes,
+    )?;
+
     Ok(ValidatedMountRequest {
         header,
-        request,
+        fence,
+        action,
+        attachment_id,
+        destination_slot_id,
         view_revision,
+        detached_mount_handle,
+        replacement_mount_handle,
+        attributes,
+        source_generation: request.source_generation,
     })
+}
+
+fn validate_mount_attributes(
+    attributes: &aos_proto::aos::sandbox::local::v1::MountAttributes,
+) -> Result<ValidatedMountAttributes, ProtocolValidationError> {
+    if !attributes.__buffa_unknown_fields.is_empty()
+        || attributes.mutation_mode > 4
+        || !attributes.no_suid
+        || !attributes.no_device
+        || attributes.read_only != (attributes.mutation_mode == 0)
+    {
+        return Err(ProtocolValidationError::InvalidField("attributes"));
+    }
+    let mut bits = 0;
+    for (enabled, bit) in [
+        (attributes.read_only, ValidatedMountAttributes::READ_ONLY),
+        (attributes.no_exec, ValidatedMountAttributes::NO_EXEC),
+        (attributes.no_suid, ValidatedMountAttributes::NO_SUID),
+        (attributes.no_device, ValidatedMountAttributes::NO_DEVICE),
+        (attributes.no_atime, ValidatedMountAttributes::NO_ATIME),
+    ] {
+        if enabled {
+            bits |= bit;
+        }
+    }
+
+    Ok(ValidatedMountAttributes {
+        bits,
+        mutation_mode: attributes.mutation_mode,
+    })
+}
+
+fn validate_mount_shape(
+    action: MountAction,
+    has_view_revision: bool,
+    detached: Option<[u8; 32]>,
+    replacement: Option<[u8; 32]>,
+    attributes: Option<ValidatedMountAttributes>,
+) -> Result<(), ProtocolValidationError> {
+    let valid = match action {
+        MountAction::MOUNT_ACTION_CREATE_DETACHED => {
+            has_view_revision && detached.is_none() && replacement.is_none() && attributes.is_some()
+        }
+        MountAction::MOUNT_ACTION_INSTALL => {
+            has_view_revision && detached.is_some() && replacement.is_none() && attributes.is_some()
+        }
+        MountAction::MOUNT_ACTION_REPLACE => {
+            has_view_revision
+                && detached.is_some()
+                && replacement.is_some()
+                && detached != replacement
+                && attributes.is_some()
+        }
+        MountAction::MOUNT_ACTION_DETACH | MountAction::MOUNT_ACTION_RELEASE => {
+            !has_view_revision
+                && detached.is_some()
+                && replacement.is_none()
+                && attributes.is_none()
+        }
+        MountAction::MOUNT_ACTION_UNSPECIFIED => false,
+    };
+    if !valid {
+        return Err(ProtocolValidationError::InvalidField(
+            "mount action field shape",
+        ));
+    }
+    Ok(())
 }
 
 /// Validates one broker header against kernel-supplied peer credentials.
@@ -716,6 +915,17 @@ fn exact_nonzero<const N: usize>(
     }
 }
 
+fn optional_exact_nonzero<const N: usize>(
+    bytes: &[u8],
+    field: &'static str,
+) -> Result<Option<[u8; N]>, ProtocolValidationError> {
+    if bytes.is_empty() {
+        Ok(None)
+    } else {
+        exact_nonzero(bytes, field).map(Some)
+    }
+}
+
 /// Exercises every privileged request decoder with arbitrary input bytes.
 ///
 /// This entry point performs no effects and is intended for deterministic test
@@ -801,6 +1011,12 @@ mod tests {
         request.action = MountAction::MOUNT_ACTION_CREATE_DETACHED.into();
         request.attachment_id = vec![5; 16];
         request.destination_slot_id = vec![6; 16];
+        request.source_generation = 1;
+        let attributes = request.attributes.get_or_insert_default();
+        attributes.read_only = true;
+        attributes.no_suid = true;
+        attributes.no_device = true;
+        attributes.mutation_mode = 0;
         let descriptor = request.view_revision.get_or_insert_default();
         descriptor.media_type = "application/vnd.aos.sandbox.view.v1+cbor".to_owned();
         descriptor.sha256 = vec![7; 32];
@@ -830,12 +1046,44 @@ mod tests {
         let validated = decode_mount_request(&encoded, peer(), policy(), 100)
             .unwrap_or_else(|error| panic!("valid request failed: {error}"));
         assert_eq!(validated.header().request_id(), &[1; 16]);
+        assert_eq!(validated.fence().incarnation_id(), &[3; 16]);
+        assert_eq!(validated.attachment_id(), &[5; 16]);
+        assert_eq!(validated.source_generation(), 1);
 
         let mut wrong_peer = peer();
         wrong_peer.uid = 0;
         assert_eq!(
             decode_mount_request(&encoded, wrong_peer, policy(), 100),
             Err(ProtocolValidationError::PeerCredentialMismatch)
+        );
+    }
+
+    #[test]
+    fn mount_action_shapes_and_security_attributes_fail_closed() {
+        let mut request = ApplyMountRequest::decode_from_slice(&valid_mount_request())
+            .unwrap_or_else(|error| panic!("fixture decode failed: {error}"));
+        request.action = MountAction::MOUNT_ACTION_INSTALL.into();
+        assert_eq!(
+            decode_mount_request(&request.encode_to_vec(), peer(), policy(), 100),
+            Err(ProtocolValidationError::InvalidField(
+                "mount action field shape"
+            ))
+        );
+
+        let mut request = ApplyMountRequest::decode_from_slice(&valid_mount_request())
+            .unwrap_or_else(|error| panic!("fixture decode failed: {error}"));
+        request.attributes.get_or_insert_default().no_device = false;
+        assert_eq!(
+            decode_mount_request(&request.encode_to_vec(), peer(), policy(), 100),
+            Err(ProtocolValidationError::InvalidField("attributes"))
+        );
+
+        let mut request = ApplyMountRequest::decode_from_slice(&valid_mount_request())
+            .unwrap_or_else(|error| panic!("fixture decode failed: {error}"));
+        request.source_generation = 0;
+        assert_eq!(
+            decode_mount_request(&request.encode_to_vec(), peer(), policy(), 100),
+            Err(ProtocolValidationError::InvalidField("source_generation"))
         );
     }
 
