@@ -199,6 +199,8 @@ message ApplyMountRequest {
   bytes replacement_mount_handle = 8; // Exactly 32 bytes only for replace.
   MountAttributes attributes = 9;
   uint64 source_generation = 10; // Nonzero for every action.
+  // Exact payload mount-namespace generation; changes across internal reboot.
+  uint64 namespace_generation = 11; // Nonzero for every action.
 }
 
 message MountResult {

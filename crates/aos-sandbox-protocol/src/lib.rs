@@ -256,6 +256,7 @@ pub struct ValidatedMountRequest {
     replacement_mount_handle: Option<[u8; 32]>,
     attributes: Option<ValidatedMountAttributes>,
     source_generation: u64,
+    namespace_generation: u64,
 }
 
 impl ValidatedMountRequest {
@@ -317,6 +318,12 @@ impl ValidatedMountRequest {
     #[must_use]
     pub const fn source_generation(&self) -> u64 {
         self.source_generation
+    }
+
+    /// Returns the nonzero payload mount-namespace generation.
+    #[must_use]
+    pub const fn namespace_generation(&self) -> u64 {
+        self.namespace_generation
     }
 }
 
@@ -555,8 +562,10 @@ pub fn decode_mount_request(
     let attachment_id = exact_nonzero::<16>(&request.attachment_id, "attachment_id")?;
     let destination_slot_id =
         exact_nonzero::<16>(&request.destination_slot_id, "destination_slot_id")?;
-    if request.source_generation == 0 {
-        return Err(ProtocolValidationError::InvalidField("source_generation"));
+    if request.source_generation == 0 || request.namespace_generation == 0 {
+        return Err(ProtocolValidationError::InvalidField(
+            "source or namespace generation",
+        ));
     }
     let detached_mount_handle =
         optional_exact_nonzero::<32>(&request.detached_mount_handle, "detached_mount_handle")?;
@@ -588,6 +597,7 @@ pub fn decode_mount_request(
         replacement_mount_handle,
         attributes,
         source_generation: request.source_generation,
+        namespace_generation: request.namespace_generation,
     })
 }
 
@@ -1012,6 +1022,7 @@ mod tests {
         request.attachment_id = vec![5; 16];
         request.destination_slot_id = vec![6; 16];
         request.source_generation = 1;
+        request.namespace_generation = 1;
         let attributes = request.attributes.get_or_insert_default();
         attributes.read_only = true;
         attributes.no_suid = true;
@@ -1049,6 +1060,7 @@ mod tests {
         assert_eq!(validated.fence().incarnation_id(), &[3; 16]);
         assert_eq!(validated.attachment_id(), &[5; 16]);
         assert_eq!(validated.source_generation(), 1);
+        assert_eq!(validated.namespace_generation(), 1);
 
         let mut wrong_peer = peer();
         wrong_peer.uid = 0;
@@ -1083,7 +1095,19 @@ mod tests {
         request.source_generation = 0;
         assert_eq!(
             decode_mount_request(&request.encode_to_vec(), peer(), policy(), 100),
-            Err(ProtocolValidationError::InvalidField("source_generation"))
+            Err(ProtocolValidationError::InvalidField(
+                "source or namespace generation"
+            ))
+        );
+
+        let mut request = ApplyMountRequest::decode_from_slice(&valid_mount_request())
+            .unwrap_or_else(|error| panic!("fixture decode failed: {error}"));
+        request.namespace_generation = 0;
+        assert_eq!(
+            decode_mount_request(&request.encode_to_vec(), peer(), policy(), 100),
+            Err(ProtocolValidationError::InvalidField(
+                "source or namespace generation"
+            ))
         );
     }
 
