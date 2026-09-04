@@ -623,13 +623,13 @@ fn deduplicate_gates(gates: &mut Vec<GateSpec>) -> Result<()> {
     gates.sort_by(|left, right| left.id.cmp(&right.id));
     let mut unique: Vec<GateSpec> = Vec::with_capacity(gates.len());
     for gate in gates.drain(..) {
-        if let Some(previous) = unique.last() {
-            if previous.id == gate.id {
-                if previous != &gate {
-                    bail!("campaign assigns one gate identity to different commands");
-                }
-                continue;
+        if let Some(previous) = unique.last()
+            && previous.id == gate.id
+        {
+            if previous != &gate {
+                bail!("campaign assigns one gate identity to different commands");
             }
+            continue;
         }
         unique.push(gate);
     }
