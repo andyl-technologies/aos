@@ -1,7 +1,7 @@
 //! Exact-byte publication to the canonical isolated staging Hub.
 
 use std::collections::BTreeMap;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write as _;
 use std::path::Path;
 
@@ -11,6 +11,7 @@ use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
 use aos_release::receipt::{PublicationReceiptV1, verify_signed_receipt};
 use aos_release::state::{JournalEntryV1, ReleaseState, parse_journal};
+use aos_release::tuf::TufRole;
 use aos_remote::hub::HubClient;
 use aos_remote::hub::hub_rpc;
 
@@ -44,7 +45,17 @@ pub(super) async fn run(args: &ReleaseStageArgs, printer: &Printer) -> Result<()
         hub: Some(STAGING_HUB.to_owned()),
         token: args.token.clone(),
     };
-    let publication_surface = publication_surface(&args.bundle, &captured.files)?;
+    let manifest_public_path = format!(
+        "releases/{}/{}/release-manifest.json",
+        TufRole::for_release(plan.release_class).as_str(),
+        plan.version
+    );
+    let publication_surface = publication_surface(
+        &args.bundle,
+        &captured.files,
+        &manifest_public_path,
+        &captured.manifest_bytes,
+    )?;
     let publication = crate::commands::hub::upload_registry_publication(
         &access,
         &plan.registry,
@@ -152,9 +163,11 @@ pub(super) async fn run(args: &ReleaseStageArgs, printer: &Printer) -> Result<()
 /// than registry-surface paths. The second capture is compared with the first
 /// before those reserved files are removed, preventing source mutation between
 /// verification and publication from changing the uploaded bytes.
-fn publication_surface(
+pub(super) fn publication_surface(
     bundle: &Path,
     verified_files: &[aos_release::verify::CapturedFile],
+    manifest_public_path: &str,
+    manifest_bytes: &[u8],
 ) -> Result<tempfile::TempDir> {
     let temporary = tempfile::Builder::new()
         .prefix("aos-release-stage-surface-")
@@ -168,6 +181,20 @@ fn publication_surface(
 
     fs::remove_file(surface.join("release-plan.json"))?;
     fs::remove_file(surface.join("release-manifest.json"))?;
+    let manifest = surface.join(manifest_public_path);
+    if manifest.exists() {
+        bail!("release bundle collides with its canonical public manifest path");
+    }
+    fs::create_dir_all(
+        manifest
+            .parent()
+            .context("canonical public manifest path has no parent")?,
+    )?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(manifest)?;
+    file.write_all(manifest_bytes)?;
     Ok(temporary)
 }
 
@@ -300,10 +327,19 @@ mod tests {
         fs::write(bundle.path().join("objects/payload"), b"payload")?;
         let captured = capture::bundle(bundle.path())?;
 
-        let publication = publication_surface(bundle.path(), &captured.files)?;
+        let publication = publication_surface(
+            bundle.path(),
+            &captured.files,
+            "releases/edge/1.0.0/release-manifest.json",
+            &captured.manifest_bytes,
+        )?;
         let surface = publication.path().join("surface");
         assert!(!surface.join("release-plan.json").exists());
         assert!(!surface.join("release-manifest.json").exists());
+        assert_eq!(
+            fs::read(surface.join("releases/edge/1.0.0/release-manifest.json"))?,
+            b"manifest"
+        );
         assert_eq!(fs::read(surface.join("objects/payload"))?, b"payload");
         Ok(())
     }
