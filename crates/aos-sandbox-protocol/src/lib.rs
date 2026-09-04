@@ -20,10 +20,11 @@ pub use inventory::{
 };
 
 pub use session::{
-    MAXIMUM_HANDSHAKE_BYTES, MAXIMUM_PACKET_DESCRIPTORS, NegotiatedBrokerSession,
-    ValidatedBrokerError, ValidatedBrokerRequestEnvelope, ValidatedBrokerResponseEnvelope,
-    ValidatedDescriptorDisposition, ValidatedDescriptorEntry, decode_request_envelope,
-    decode_response_envelope, decode_server_hello, encode_error_response_envelope,
+    AuthorizationArtifactBytes, MAXIMUM_HANDSHAKE_BYTES, MAXIMUM_PACKET_DESCRIPTORS,
+    NegotiatedBrokerSession, ValidatedBrokerError, ValidatedBrokerRequestEnvelope,
+    ValidatedBrokerResponseEnvelope, ValidatedDescriptorDisposition, ValidatedDescriptorEntry,
+    decode_request_envelope, decode_response_envelope, decode_server_hello,
+    encode_authorized_request_envelope, encode_error_response_envelope,
     encode_success_response_envelope, failed_server_hello, negotiate_client_hello,
     validate_request_descriptor_roles,
 };

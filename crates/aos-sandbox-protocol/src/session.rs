@@ -242,6 +242,23 @@ pub struct ValidatedUntrustedAuthorizationArtifacts {
     ownership_lease_signature: Vec<u8>,
 }
 
+/// Borrows the exact signed artifact bytes for one outbound effect request.
+///
+/// Construction performs no trust decision. [`encode_authorized_request_envelope`]
+/// validates each canonical object and all transport bounds before copying the
+/// bytes into the protobuf packet.
+#[derive(Clone, Copy, Debug)]
+pub struct AuthorizationArtifactBytes<'a> {
+    /// Canonical `BrokerAuthorizationPlan` CBOR bytes.
+    pub broker_plan: &'a [u8],
+    /// Canonical detached broker-plan `Signature` CBOR bytes.
+    pub broker_plan_signature: &'a [u8],
+    /// Canonical `OwnershipLease` CBOR bytes.
+    pub ownership_lease: &'a [u8],
+    /// Canonical detached ownership-lease `Signature` CBOR bytes.
+    pub ownership_lease_signature: &'a [u8],
+}
+
 impl ValidatedUntrustedAuthorizationArtifacts {
     /// Returns the exact received canonical broker-plan bytes.
     #[must_use]
@@ -525,11 +542,89 @@ pub fn decode_request_envelope(
     })
 }
 
+/// Encodes one authority-bearing effect request under the fixed packet bounds.
+///
+/// The descriptor roles become the canonical contiguous descriptor table in
+/// ancillary-descriptor order. Artifact bytes are structurally validated but
+/// remain untrusted; the receiving broker must still verify signatures, trust,
+/// clocks, request semantics, and durable fences.
+///
+/// # Errors
+///
+/// Returns [`ProtocolValidationError`] for an empty or oversized body, an
+/// invalid method/protocol pairing, a non-effect method, an invalid descriptor
+/// table, malformed or oversized authorization artifacts, or an encoded packet
+/// exceeding [`crate::MAXIMUM_REQUEST_BYTES`].
+pub fn encode_authorized_request_envelope(
+    protocol: ProtocolId,
+    method: BrokerMethod,
+    body: &[u8],
+    descriptor_roles: &[BrokerDescriptorRole],
+    authorization: AuthorizationArtifactBytes<'_>,
+) -> Result<Vec<u8>, ProtocolValidationError> {
+    let method = validate_method(Some(method), protocol)?;
+    if !method_requires_authorization(method) {
+        return Err(ProtocolValidationError::InvalidField(
+            "envelope.authorization profile",
+        ));
+    }
+    if body.is_empty() {
+        return Err(ProtocolValidationError::InvalidField("envelope.body"));
+    }
+    if body.len() > MAXIMUM_REQUEST_BYTES {
+        return Err(ProtocolValidationError::RequestTooLarge);
+    }
+
+    validate_authorization_artifact_bytes(authorization)?;
+    let descriptors = outbound_descriptor_table(descriptor_roles)?;
+    let envelope = BrokerRequestEnvelope {
+        method: method.into(),
+        body: body.to_vec(),
+        descriptors,
+        authorization: Some(BrokerAuthorizationArtifactsV1 {
+            broker_plan: authorization.broker_plan.to_vec(),
+            broker_plan_signature: authorization.broker_plan_signature.to_vec(),
+            ownership_lease: authorization.ownership_lease.to_vec(),
+            ownership_lease_signature: authorization.ownership_lease_signature.to_vec(),
+            ..Default::default()
+        })
+        .into(),
+        ..Default::default()
+    };
+    let encoded = envelope.encode_to_vec();
+    if encoded.len() > MAXIMUM_REQUEST_BYTES {
+        return Err(ProtocolValidationError::RequestTooLarge);
+    }
+    Ok(encoded)
+}
+
 fn validate_authorization_artifacts(
     artifacts: &BrokerAuthorizationArtifactsV1,
 ) -> Result<ValidatedUntrustedAuthorizationArtifacts, ProtocolValidationError> {
-    if !artifacts.__buffa_unknown_fields.is_empty()
-        || artifacts.broker_plan.is_empty()
+    if !artifacts.__buffa_unknown_fields.is_empty() {
+        return Err(ProtocolValidationError::InvalidField(
+            "envelope.authorization",
+        ));
+    }
+    validate_authorization_artifact_bytes(AuthorizationArtifactBytes {
+        broker_plan: &artifacts.broker_plan,
+        broker_plan_signature: &artifacts.broker_plan_signature,
+        ownership_lease: &artifacts.ownership_lease,
+        ownership_lease_signature: &artifacts.ownership_lease_signature,
+    })?;
+
+    Ok(ValidatedUntrustedAuthorizationArtifacts {
+        broker_plan: artifacts.broker_plan.clone(),
+        broker_plan_signature: artifacts.broker_plan_signature.clone(),
+        ownership_lease: artifacts.ownership_lease.clone(),
+        ownership_lease_signature: artifacts.ownership_lease_signature.clone(),
+    })
+}
+
+fn validate_authorization_artifact_bytes(
+    artifacts: AuthorizationArtifactBytes<'_>,
+) -> Result<(), ProtocolValidationError> {
+    if artifacts.broker_plan.is_empty()
         || artifacts.broker_plan.len() > MAXIMUM_BROKER_PLAN_BYTES
         || artifacts.broker_plan_signature.is_empty()
         || artifacts.broker_plan_signature.len() > MAXIMUM_AUTHORIZATION_SIGNATURE_BYTES
@@ -553,31 +648,53 @@ fn validate_authorization_artifacts(
         return Err(ProtocolValidationError::RequestTooLarge);
     }
 
-    let limits = authorization_decode_limits(MAXIMUM_BROKER_PLAN_BYTES);
-    decode_broker_authorization_plan(&artifacts.broker_plan, limits)
-        .map_err(|_| ProtocolValidationError::InvalidField("envelope.authorization.plan"))?;
+    decode_broker_authorization_plan(
+        artifacts.broker_plan,
+        authorization_decode_limits(MAXIMUM_BROKER_PLAN_BYTES),
+    )
+    .map_err(|_| ProtocolValidationError::InvalidField("envelope.authorization.plan"))?;
     decode_signature(
-        &artifacts.broker_plan_signature,
+        artifacts.broker_plan_signature,
         authorization_decode_limits(MAXIMUM_AUTHORIZATION_SIGNATURE_BYTES),
     )
     .map_err(|_| ProtocolValidationError::InvalidField("envelope.authorization.plan_signature"))?;
     decode_ownership_lease(
-        &artifacts.ownership_lease,
+        artifacts.ownership_lease,
         authorization_decode_limits(MAXIMUM_OWNERSHIP_LEASE_BYTES),
     )
     .map_err(|_| ProtocolValidationError::InvalidField("envelope.authorization.lease"))?;
     decode_signature(
-        &artifacts.ownership_lease_signature,
+        artifacts.ownership_lease_signature,
         authorization_decode_limits(MAXIMUM_AUTHORIZATION_SIGNATURE_BYTES),
     )
     .map_err(|_| ProtocolValidationError::InvalidField("envelope.authorization.lease_signature"))?;
+    Ok(())
+}
 
-    Ok(ValidatedUntrustedAuthorizationArtifacts {
-        broker_plan: artifacts.broker_plan.clone(),
-        broker_plan_signature: artifacts.broker_plan_signature.clone(),
-        ownership_lease: artifacts.ownership_lease.clone(),
-        ownership_lease_signature: artifacts.ownership_lease_signature.clone(),
-    })
+fn outbound_descriptor_table(
+    roles: &[BrokerDescriptorRole],
+) -> Result<Vec<BrokerDescriptorEntry>, ProtocolValidationError> {
+    if roles.len() > MAXIMUM_PACKET_DESCRIPTORS {
+        return Err(ProtocolValidationError::TooManyEntries {
+            field: "envelope.descriptors",
+            maximum: MAXIMUM_PACKET_DESCRIPTORS,
+        });
+    }
+    let mut descriptors = Vec::with_capacity(roles.len());
+    for (index, role) in roles.iter().copied().enumerate() {
+        if role == BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_UNSPECIFIED
+            || roles[..index].contains(&role)
+        {
+            return Err(ProtocolValidationError::DescriptorTableMismatch);
+        }
+        descriptors.push(BrokerDescriptorEntry {
+            index: u32::try_from(index)
+                .map_err(|_| ProtocolValidationError::DescriptorTableMismatch)?,
+            role: role.into(),
+            ..Default::default()
+        });
+    }
+    Ok(descriptors)
 }
 
 const fn authorization_decode_limits(maximum_bytes: usize) -> DecodeLimits {
@@ -1352,6 +1469,312 @@ mod tests {
             ownership_lease_signature,
             ..Default::default()
         }
+    }
+
+    fn borrowed_artifacts(
+        artifacts: &BrokerAuthorizationArtifactsV1,
+    ) -> AuthorizationArtifactBytes<'_> {
+        AuthorizationArtifactBytes {
+            broker_plan: &artifacts.broker_plan,
+            broker_plan_signature: &artifacts.broker_plan_signature,
+            ownership_lease: &artifacts.ownership_lease,
+            ownership_lease_signature: &artifacts.ownership_lease_signature,
+        }
+    }
+
+    #[test]
+    fn outbound_authorized_envelope_round_trips_exact_artifact_bytes() {
+        let artifacts = authorization_artifacts();
+        let roles = [
+            BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_PAYLOAD_USER_NAMESPACE,
+            BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_TARGET_SLOT,
+        ];
+        let encoded = encode_authorized_request_envelope(
+            ProtocolId::MountBroker,
+            BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
+            b"exact method body",
+            &roles,
+            borrowed_artifacts(&artifacts),
+        )
+        .unwrap_or_else(|error| panic!("outbound envelope failed: {error}"));
+        let decoded = decode_request_envelope(&encoded, ProtocolId::MountBroker, roles.len())
+            .unwrap_or_else(|error| panic!("outbound envelope did not round trip: {error}"));
+        assert_eq!(decoded.method(), BrokerMethod::BROKER_METHOD_MOUNT_APPLY);
+        assert_eq!(decoded.body(), b"exact method body");
+        assert_eq!(
+            decoded
+                .descriptors()
+                .iter()
+                .map(|entry| entry.role())
+                .collect::<Vec<_>>(),
+            roles
+        );
+        let decoded_artifacts = decoded
+            .authorization()
+            .unwrap_or_else(|| panic!("round trip lost authorization artifacts"));
+        assert_eq!(decoded_artifacts.broker_plan(), artifacts.broker_plan);
+        assert_eq!(
+            decoded_artifacts.broker_plan_signature(),
+            artifacts.broker_plan_signature
+        );
+        assert_eq!(
+            decoded_artifacts.ownership_lease(),
+            artifacts.ownership_lease
+        );
+        assert_eq!(
+            decoded_artifacts.ownership_lease_signature(),
+            artifacts.ownership_lease_signature
+        );
+    }
+
+    #[test]
+    fn outbound_authorized_envelope_rejects_body_method_and_descriptor_boundaries() {
+        let artifacts = authorization_artifacts();
+        let encode = |protocol, method, body: &[u8], roles: &[BrokerDescriptorRole]| {
+            encode_authorized_request_envelope(
+                protocol,
+                method,
+                body,
+                roles,
+                borrowed_artifacts(&artifacts),
+            )
+        };
+
+        assert_eq!(
+            encode(
+                ProtocolId::MountBroker,
+                BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
+                &[],
+                &[],
+            ),
+            Err(ProtocolValidationError::InvalidField("envelope.body"))
+        );
+        assert_eq!(
+            encode(
+                ProtocolId::MountBroker,
+                BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
+                &vec![0; MAXIMUM_REQUEST_BYTES + 1],
+                &[],
+            ),
+            Err(ProtocolValidationError::RequestTooLarge)
+        );
+        assert_eq!(
+            encode(
+                ProtocolId::HostBroker,
+                BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
+                b"body",
+                &[],
+            ),
+            Err(ProtocolValidationError::MethodMismatch)
+        );
+        assert_eq!(
+            encode(
+                ProtocolId::MountBroker,
+                BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY,
+                b"body",
+                &[],
+            ),
+            Err(ProtocolValidationError::InvalidField(
+                "envelope.authorization profile"
+            ))
+        );
+        assert_eq!(
+            encode(
+                ProtocolId::MountBroker,
+                BrokerMethod::BROKER_METHOD_UNSPECIFIED,
+                b"body",
+                &[],
+            ),
+            Err(ProtocolValidationError::UnknownAction)
+        );
+
+        let too_many = vec![
+            BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_TARGET_SLOT;
+            MAXIMUM_PACKET_DESCRIPTORS + 1
+        ];
+        assert_eq!(
+            encode(
+                ProtocolId::MountBroker,
+                BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
+                b"body",
+                &too_many,
+            ),
+            Err(ProtocolValidationError::TooManyEntries {
+                field: "envelope.descriptors",
+                maximum: MAXIMUM_PACKET_DESCRIPTORS,
+            })
+        );
+        assert_eq!(
+            encode(
+                ProtocolId::MountBroker,
+                BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
+                b"body",
+                &[
+                    BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_TARGET_SLOT,
+                    BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_TARGET_SLOT,
+                ],
+            ),
+            Err(ProtocolValidationError::DescriptorTableMismatch)
+        );
+        assert_eq!(
+            encode(
+                ProtocolId::MountBroker,
+                BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
+                b"body",
+                &[BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_UNSPECIFIED],
+            ),
+            Err(ProtocolValidationError::DescriptorTableMismatch)
+        );
+    }
+
+    #[test]
+    fn outbound_authorized_envelope_rejects_every_artifact_boundary() {
+        let artifacts = authorization_artifacts();
+        let valid = borrowed_artifacts(&artifacts);
+        let encode = |authorization| {
+            encode_authorized_request_envelope(
+                ProtocolId::MountBroker,
+                BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
+                b"body",
+                &[],
+                authorization,
+            )
+        };
+
+        for empty in [
+            AuthorizationArtifactBytes {
+                broker_plan: &[],
+                ..valid
+            },
+            AuthorizationArtifactBytes {
+                broker_plan_signature: &[],
+                ..valid
+            },
+            AuthorizationArtifactBytes {
+                ownership_lease: &[],
+                ..valid
+            },
+            AuthorizationArtifactBytes {
+                ownership_lease_signature: &[],
+                ..valid
+            },
+        ] {
+            assert_eq!(
+                encode(empty),
+                Err(ProtocolValidationError::InvalidField(
+                    "envelope.authorization"
+                ))
+            );
+        }
+
+        let oversized_plan = vec![0; MAXIMUM_BROKER_PLAN_BYTES + 1];
+        let oversized_signature = vec![0; MAXIMUM_AUTHORIZATION_SIGNATURE_BYTES + 1];
+        let oversized_lease = vec![0; MAXIMUM_OWNERSHIP_LEASE_BYTES + 1];
+        for oversized in [
+            AuthorizationArtifactBytes {
+                broker_plan: &oversized_plan,
+                ..valid
+            },
+            AuthorizationArtifactBytes {
+                broker_plan_signature: &oversized_signature,
+                ..valid
+            },
+            AuthorizationArtifactBytes {
+                ownership_lease: &oversized_lease,
+                ..valid
+            },
+            AuthorizationArtifactBytes {
+                ownership_lease_signature: &oversized_signature,
+                ..valid
+            },
+        ] {
+            assert_eq!(
+                encode(oversized),
+                Err(ProtocolValidationError::InvalidField(
+                    "envelope.authorization"
+                ))
+            );
+        }
+
+        // The aggregate ceiling is exactly the sum of the four individual
+        // ceilings. Therefore its first impossible byte is necessarily also an
+        // individual-bound violation, covered above.
+        assert_eq!(
+            MAXIMUM_AUTHORIZATION_ARTIFACT_BYTES,
+            MAXIMUM_BROKER_PLAN_BYTES
+                + MAXIMUM_OWNERSHIP_LEASE_BYTES
+                + 2 * MAXIMUM_AUTHORIZATION_SIGNATURE_BYTES
+        );
+
+        for (malformed, expected) in [
+            (
+                AuthorizationArtifactBytes {
+                    broker_plan: &[0xff],
+                    ..valid
+                },
+                "envelope.authorization.plan",
+            ),
+            (
+                AuthorizationArtifactBytes {
+                    broker_plan_signature: &[0xff],
+                    ..valid
+                },
+                "envelope.authorization.plan_signature",
+            ),
+            (
+                AuthorizationArtifactBytes {
+                    ownership_lease: &[0xff],
+                    ..valid
+                },
+                "envelope.authorization.lease",
+            ),
+            (
+                AuthorizationArtifactBytes {
+                    ownership_lease_signature: &[0xff],
+                    ..valid
+                },
+                "envelope.authorization.lease_signature",
+            ),
+        ] {
+            assert_eq!(
+                encode(malformed),
+                Err(ProtocolValidationError::InvalidField(expected))
+            );
+        }
+    }
+
+    #[test]
+    fn outbound_authorized_envelope_enforces_the_encoded_packet_boundary() {
+        let artifacts = authorization_artifacts();
+        let encode_body = |size| {
+            let body = vec![0; size];
+            encode_authorized_request_envelope(
+                ProtocolId::MountBroker,
+                BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
+                &body,
+                &[],
+                borrowed_artifacts(&artifacts),
+            )
+        };
+        let mut low = 1;
+        let mut high = MAXIMUM_REQUEST_BYTES;
+        while low < high {
+            let middle = low + (high - low).div_ceil(2);
+            if encode_body(middle).is_ok() {
+                low = middle;
+            } else {
+                high = middle - 1;
+            }
+        }
+        let largest_body = low;
+        let packet = encode_body(largest_body)
+            .unwrap_or_else(|error| panic!("largest bounded packet failed: {error}"));
+        assert!(packet.len() <= MAXIMUM_REQUEST_BYTES);
+        assert!(largest_body < MAXIMUM_REQUEST_BYTES);
+        assert_eq!(
+            encode_body(largest_body + 1),
+            Err(ProtocolValidationError::RequestTooLarge)
+        );
     }
 
     #[test]
