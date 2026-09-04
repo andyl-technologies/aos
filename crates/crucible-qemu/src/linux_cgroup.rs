@@ -1392,8 +1392,10 @@ impl LinuxQemuCgroup {
     /// Extracts and authenticates the direct child from a failed live node.
     ///
     /// Consuming the node drops its modeled channels and backend capabilities;
-    /// only the nonduplicable direct-child wait handle crosses into the cgroup
-    /// reap authority.
+    /// a direct-child wait handle crosses into the cgroup reap authority. An
+    /// externally parented hot-fork node returns `Ok(None)` because its outer
+    /// lifecycle, rather than this cgroup helper, retains source-status and
+    /// process cleanup authority.
     ///
     /// # Errors
     ///
@@ -1403,8 +1405,10 @@ impl LinuxQemuCgroup {
     pub fn retain_failed_node(
         &mut self,
         node: QemuNode,
-    ) -> Result<LinuxQemuDirectChild, LinuxQemuDirectChildAuthenticationError> {
-        self.retain_child(node.into_direct_child_for_quarantine())
+    ) -> Result<Option<LinuxQemuDirectChild>, LinuxQemuDirectChildAuthenticationError> {
+        node.into_direct_child_for_quarantine()
+            .map(|child| self.retain_child(child).map(Some))
+            .unwrap_or(Ok(None))
     }
 
     /// Transfers this group, its watcher, and one retained child to quarantine.

@@ -2499,10 +2499,15 @@ planes, cloned host-I/O runtime, private ring and console ownership, and exact
 scheduler/fault/network sequence state. Node forking rejects uncommitted
 observations, any operator debug endpoint, and terminal fault transport state before
 process creation. The continuation cannot be assembled from raw public parts
-and deliberately carries no fabricated direct-child wait handle. Pairing it
-with source-parent status and target pidfd/cgroup authority,
-then installing every child atomically into the complete world continuation,
-remains open. Realization now also
+and deliberately carries no fabricated direct-child wait handle. The daemon
+now pairs one such node continuation with exact source-parent child status plus
+the target pidfd/cgroup authority through a non-owning process-control loan,
+then consumes both into a real `QemuNode`. The installed node owns the
+child-private modeled planes without fabricating `std::process::Child` or
+gaining authority to release the outer attempt guard; source reuse is rejected
+while any such loan remains. Installing the complete ordered node set together
+with the process-neutral world continuation as one failure-atomic lifecycle
+transaction remains open. Realization now also
 converts an exact active node into a non-forgeable prepared-template capability only after QEMU has
 completed the retained-template and branch-resource transaction. The capability
 keeps the realized configuration and unified event-log prefix paired with the

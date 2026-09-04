@@ -3,7 +3,7 @@
 use super::*;
 
 pub(super) struct QemuNodeAsyncStepTarget<'a> {
-    pub(super) child: &'a mut QemuNodeChild,
+    pub(super) child: &'a mut QemuNodeProcessControl,
     pub(super) channels: &'a mut QemuNodeChannels,
     pub(super) lifecycle_state: &'a mut QemuNodeLifecycleState,
     pub(super) shutdown_policy: QemuShutdownPolicy,
@@ -47,7 +47,7 @@ impl QemuAsyncNodeStepTarget for QemuNodeAsyncStepTarget<'_> {
 }
 
 pub(super) fn shutdown_node_child(
-    child: &mut QemuNodeChild,
+    child: &mut QemuNodeProcessControl,
     channels: &mut QemuNodeChannels,
     lifecycle_state: &mut QemuNodeLifecycleState,
     shutdown_policy: QemuShutdownPolicy,

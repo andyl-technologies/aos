@@ -252,6 +252,54 @@ struct ScriptedHotForkChildAuthority {
     basis: crate::QemuHotForkChildProcessBasis,
 }
 
+#[derive(Debug)]
+struct ScriptedExternalProcessControl {
+    basis: crate::QemuHotForkChildProcessBasis,
+}
+
+impl crate::QemuNodeExternalProcessControl for ScriptedExternalProcessControl {
+    fn hot_fork_process_basis(&self) -> crate::QemuHotForkChildProcessBasis {
+        self.basis
+    }
+
+    fn process_id(&self) -> u32 {
+        self.basis.child_process_id()
+    }
+
+    fn reaped(&self) -> bool {
+        false
+    }
+
+    fn try_wait_natural_exit(
+        &mut self,
+    ) -> Result<Option<std::process::ExitStatus>, crate::QemuShutdownTargetError> {
+        Ok(None)
+    }
+
+    fn send_sigterm(&mut self) -> Result<(), crate::QemuShutdownTargetError> {
+        Ok(())
+    }
+
+    fn send_sigkill(&mut self) -> Result<(), crate::QemuShutdownTargetError> {
+        Ok(())
+    }
+
+    fn wait_for_exit(
+        &mut self,
+        _rung: crate::QemuShutdownRung,
+        _timeout: Duration,
+    ) -> Result<crate::QemuChildWait, crate::QemuShutdownTargetError> {
+        Ok(crate::QemuChildWait::StillRunning)
+    }
+
+    fn reap(
+        &mut self,
+        _timeout: Duration,
+    ) -> Result<crate::QemuReap, crate::QemuShutdownTargetError> {
+        Ok(crate::QemuReap::StillAlive)
+    }
+}
+
 #[derive(Default)]
 struct ScriptedHotForkChildOwner {
     fail: bool,
@@ -2320,7 +2368,7 @@ fn hot_fork_scheduler_continuation_owns_exact_private_planes() -> Result<(), Box
     let mut process_owner = ScriptedHotForkChildOwner::default();
 
     let launch = node.fork_prepared_hot_fork_template(&mut process_owner)?;
-    let (_parent, _process, child_qmp, mut diagnostics, continuation) = launch.into_parts();
+    let (_parent, process, child_qmp, mut diagnostics, continuation) = launch.into_parts();
     let scheduler = continuation.into_scheduler_node_continuation(child_qmp)?;
 
     assert_eq!(scheduler.request(), exact_hot_fork_request());
@@ -2333,7 +2381,21 @@ fn hot_fork_scheduler_continuation_owns_exact_private_planes() -> Result<(), Box
     );
     assert_eq!(scheduler.node_state().next_network_output_sequence(), 31);
 
-    drop(scheduler);
+    let installed = scheduler.into_qemu_node(
+        node_id("child"),
+        ScriptedExternalProcessControl {
+            basis: process.basis,
+        },
+        QemuShutdownPolicy::fast_test(),
+        QemuAsyncDriverPolicy::fast_test(),
+        QemuCrashDetector::new("child"),
+    )?;
+    assert_eq!(installed.process_id(), 321);
+    assert!(!installed.child_reaped());
+    assert_eq!(installed.last_observed_time, VirtualTime { ticks: 73 });
+    assert_eq!(installed.next_network_output_sequence, 31);
+    assert!(installed._hot_fork_scheduler_authority.is_some());
+    drop(installed);
     node.release_hot_fork_plugin_endpoints()?;
     node.release_hot_fork_child_console()?;
     node.release_hot_fork_child_qmp()?;
@@ -2890,7 +2952,9 @@ fn failed_node_surrenders_its_direct_child_wait_authority() -> Result<(), Box<dy
     let node = scripted_node(shared_log(), false, false, false)?;
     let process_id = node.child.process_id();
 
-    let mut child = node.into_direct_child_for_quarantine();
+    let mut child = node
+        .into_direct_child_for_quarantine()
+        .expect("fixture node owns a direct child");
 
     assert_eq!(child.process_id(), process_id);
     assert!(!child.reaped());

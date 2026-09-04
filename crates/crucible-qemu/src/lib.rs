@@ -250,13 +250,14 @@ pub use node::{
     QemuHotForkPreparedChildResources, QemuHotForkPrivateRingMapping,
     QemuHotForkPrivateRingStageError, QemuHotForkPrivateRingStageProof,
     QemuHotForkPrivateRingStageState, QemuHotForkSchedulerNodeAssemblyError,
-    QemuHotForkSchedulerNodeContinuation,
+    QemuHotForkSchedulerNodeContinuation, QemuHotForkSchedulerNodeInstallError,
 };
 pub use node::{
     QemuLogicalTimeCalibration, QemuNode, QemuNodeChannelError, QemuNodeChannelPlane,
-    QemuNodeChannels, QemuNodeChild, QemuNodeEmittedFrame, QemuNodeError, QemuNodeIdleState,
-    QemuNodeLifecycleState, QemuNodePendingQuantum, QemuPluginIpcControlChannel,
-    QemuQmpMachineControlChannel, QemuShmemHotPathChannel,
+    QemuNodeChannels, QemuNodeChild, QemuNodeEmittedFrame, QemuNodeError,
+    QemuNodeExternalProcessControl, QemuNodeIdleState, QemuNodeLifecycleState,
+    QemuNodePendingQuantum, QemuPluginIpcControlChannel, QemuQmpMachineControlChannel,
+    QemuShmemHotPathChannel,
 };
 #[cfg(target_os = "linux")]
 pub use node::{QemuProcessIdentity, linux_process_identity, quarantine_orphaned_qemu_process};
