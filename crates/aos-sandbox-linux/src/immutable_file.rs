@@ -1,4 +1,4 @@
-//! Scoped, read-only mappings of seal-proven immutable files.
+//! Owned descriptors and scoped mappings of seal-proven immutable files.
 //!
 //! This generic Linux boundary distinguishes transient fully sealed memfds
 //! from durable fs-verity files. It owns no filesystem-view semantics and does
@@ -10,6 +10,17 @@
 //! Read-only mode bits, a read-only descriptor, a pathname, or a content hash
 //! alone is not an immutability proof. Filesystem-snapshot proofs require a
 //! separate backend type and are not implemented here.
+//!
+//! Fs-verity admission requires a same-descriptor filesystem-type check against
+//! the supported kernel implementations (ext4, Btrfs and F2FS). Other filesystems,
+//! including FUSE and overlay, fail closed: a forwarded or emulated ioctl is not
+//! proof of kernel-enforced immutability. Adding an implementation requires
+//! auditing its ioctl routing and content-verification semantics, not merely
+//! accepting its reported digest. This boundary assumes a trusted kernel.
+
+mod backing;
+
+pub use backing::{BackingFileIdentity, FsVerityBacking};
 
 use std::marker::PhantomData;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
@@ -82,6 +93,15 @@ pub enum ImmutableFileError {
     /// The descriptor cannot be read through this file description.
     #[error("immutable-file descriptor is write-only")]
     WriteOnlyDescriptor,
+    /// The backing file description is not opened for read-only access.
+    #[error("immutable backing descriptor is not read-only")]
+    DescriptorNotReadOnly,
+    /// The expected backing size exceeds the explicit admission ceiling.
+    #[error("immutable backing exceeds its configured byte ceiling")]
+    BackingLimitExceeded,
+    /// The filesystem is not an admitted kernel fs-verity implementation.
+    #[error("filesystem is not an admitted kernel fs-verity implementation")]
+    UnsupportedVerityFilesystem,
     /// The memfd lacks one or more seals required to prove stable bytes.
     #[error("memfd lacks required write/grow/shrink/seal protection")]
     MissingSeals,
@@ -162,7 +182,8 @@ impl SealedMemfdMapping {
 ///
 /// The verity measurement is independent authenticated publication data. A
 /// content descriptor or digest from the mapped candidate cannot substitute
-/// for it.
+/// for it. Only the kernel filesystem implementations documented by this module
+/// are admitted; proxy filesystems are rejected before measuring.
 pub struct FsVerityMapping;
 
 impl FsVerityMapping {
@@ -198,11 +219,7 @@ impl FsVerityMapping {
         if before.file_type != libc::S_IFREG {
             return Err(ImmutableFileError::NotRegular);
         }
-        let measurement = uapi::measure_verity(file.as_fd())?;
-        if !expected_verity.matches(
-            measurement.algorithm,
-            &measurement.digest[..measurement.length],
-        ) {
+        if !measurement_matches(file.as_fd(), expected_verity)? {
             return Err(ImmutableFileError::VerityMeasurementMismatch);
         }
 
@@ -213,11 +230,7 @@ impl FsVerityMapping {
             maximum_mapped_bytes,
             use_bytes,
             |fd| {
-                let measurement = uapi::measure_verity(fd)?;
-                if expected_verity.matches(
-                    measurement.algorithm,
-                    &measurement.digest[..measurement.length],
-                ) {
+                if measurement_matches(fd, expected_verity)? {
                     Ok(())
                 } else {
                     Err(ImmutableFileError::AdmissionRace)
@@ -225,6 +238,27 @@ impl FsVerityMapping {
             },
         )
     }
+}
+
+fn measurement_matches(
+    fd: BorrowedFd<'_>,
+    expected: FsVerityDigest,
+) -> Result<bool, ImmutableFileError> {
+    if !is_kernel_verity_filesystem(uapi::filesystem_type(fd)?) {
+        return Err(ImmutableFileError::UnsupportedVerityFilesystem);
+    }
+    let measurement = uapi::measure_verity(fd)?;
+    Ok(expected.matches(
+        measurement.algorithm,
+        &measurement.digest[..measurement.length],
+    ))
+}
+
+fn is_kernel_verity_filesystem(filesystem_type: libc::c_long) -> bool {
+    matches!(
+        filesystem_type,
+        libc::EXT4_SUPER_MAGIC | libc::BTRFS_SUPER_MAGIC | libc::F2FS_SUPER_MAGIC
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -504,7 +538,27 @@ mod tests {
                 4096,
                 |_, _| (),
             ),
-            Err(ImmutableFileError::Linux(_))
+            Err(ImmutableFileError::Linux(_) | ImmutableFileError::UnsupportedVerityFilesystem)
         ));
+    }
+
+    #[test]
+    fn verity_proof_sources_require_audited_kernel_filesystems() {
+        for kind in [
+            libc::EXT4_SUPER_MAGIC,
+            libc::BTRFS_SUPER_MAGIC,
+            libc::F2FS_SUPER_MAGIC,
+        ] {
+            assert!(is_kernel_verity_filesystem(kind));
+        }
+        for kind in [
+            libc::FUSE_SUPER_MAGIC,
+            libc::OVERLAYFS_SUPER_MAGIC,
+            libc::TMPFS_MAGIC,
+            libc::NFS_SUPER_MAGIC,
+            0,
+        ] {
+            assert!(!is_kernel_verity_filesystem(kind));
+        }
     }
 }

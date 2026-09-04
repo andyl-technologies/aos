@@ -292,15 +292,19 @@ pub(crate) fn pidfd_namespace(pidfd: BorrowedFd<'_>, namespace: NamespaceIoctl) 
 }
 
 pub(crate) fn is_namespace(fd: BorrowedFd<'_>) -> Result<bool> {
+    Ok(filesystem_type(fd)? == NSFS_MAGIC)
+}
+
+pub(crate) fn filesystem_type(fd: BorrowedFd<'_>) -> Result<libc::c_long> {
     // SAFETY: `statfs` is fully initialized by `fstatfs`; the fd borrow spans
     // the call and the pointer is writable and correctly aligned.
     let mut statfs: libc::statfs = unsafe { std::mem::zeroed() };
     // SAFETY: described above.
     let result = unsafe { libc::fstatfs(fd.as_raw_fd(), std::ptr::addr_of_mut!(statfs)) };
     if result < 0 {
-        return Err(Error::syscall("fstatfs(namespace)"));
+        return Err(Error::syscall("fstatfs"));
     }
-    Ok(statfs.f_type == NSFS_MAGIC)
+    Ok(statfs.f_type)
 }
 
 pub(crate) fn namespace_type(fd: BorrowedFd<'_>) -> Result<i32> {

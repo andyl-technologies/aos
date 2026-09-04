@@ -12,7 +12,7 @@
 //! - [`path`] resolves descendants beneath a pre-opened directory;
 //! - [`mount`] constructs, attributes, idmaps, and attaches detached mounts;
 //! - [`inventory`] lists mounts and reads stable mount metadata;
-//! - [`immutable_file`] maps seal-proven immutable files; and
+//! - [`immutable_file`] pins descriptors and maps seal-proven immutable files; and
 //! - [`seqpacket`] exchanges bounded records with kernel-pinned peer identity.
 
 #![cfg(target_os = "linux")]

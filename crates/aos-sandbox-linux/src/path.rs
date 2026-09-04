@@ -143,7 +143,9 @@ impl BeneathRoot {
     ///
     /// Resolution rejects symlinks, magic links, traversal, and mount
     /// crossings exactly like [`BeneathRoot::resolve`], but returns a readable
-    /// descriptor rather than `O_PATH`.
+    /// descriptor rather than `O_PATH`. Nonblocking and no-controlling-terminal
+    /// flags prevent FIFO/terminal side effects before the regular-file check;
+    /// they do not impose an I/O deadline on an underlying filesystem.
     ///
     /// # Errors
     ///
@@ -153,8 +155,12 @@ impl BeneathRoot {
         let bytes = validate_relative_path(relative)?;
         let path =
             CString::new(bytes).map_err(|_| Error::invalid("relative path", "contains NUL"))?;
-        let flags = u64::try_from(libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW)
-            .map_err(|_| Error::invalid("open flags", "platform flag conversion failed"))?;
+        // The type is checked after open: reject FIFO candidates without waiting
+        // for a writer and never acquire a terminal while inspecting a candidate.
+        let flags = u64::try_from(
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY,
+        )
+        .map_err(|_| Error::invalid("open flags", "platform flag conversion failed"))?;
         let fd = uapi::openat2(
             self.fd.as_fd(),
             &path,
@@ -408,6 +414,29 @@ mod tests {
     fn root(path: &Path) -> BeneathRoot {
         let fd: OwnedFd = File::open(path).unwrap().into();
         BeneathRoot::from_owned(fd).unwrap()
+    }
+
+    #[test]
+    fn regular_open_rejects_fifo_without_waiting_for_a_writer() {
+        let temp = tempfile::tempdir().unwrap();
+        let fifo = CString::new(temp.path().join("fifo").as_os_str().as_bytes()).unwrap();
+        // SAFETY: the private temporary pathname is a live NUL-terminated string;
+        // mkfifo consumes no pointers beyond this call and initializes no output.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        let root = root(temp.path());
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let result = root.open_regular(Path::new("fifo"));
+            sender.send(result).unwrap();
+            drop(temp);
+        });
+
+        // A regression to blocking open must fail the test, not hang the suite.
+        let result = receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        assert!(matches!(result, Err(Error::WrongDescriptorType { .. })));
+        reader.join().unwrap();
     }
 
     #[test]
