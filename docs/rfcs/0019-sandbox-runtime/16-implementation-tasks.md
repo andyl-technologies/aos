@@ -677,6 +677,14 @@ completes. The Git history remains authoritative for code details.
   integration, key-generation migration, release, transfer, and epoch rollover
   remain open. The crate passes 71 unit tests, strict all-target Clippy, and
   rustdoc with warnings denied.
+- `6b6db8035` — correction toward `SBX-CTRL-03` and `SBX-MULTI-01`: ownership
+  completion now treats protected paired-clock sampling as a fallible boundary
+  after the issuer round trip and before any completed entry or current pointer
+  is published. If sampling fails after issuer success, only the durable intent
+  remains; reopen plus explicit resume requires the issuer's exact idempotent
+  response and completes without a second issuance. Automatic recovery still
+  never contacts the issuer. The crate passes 72 unit tests and the same strict
+  Clippy, rustdoc, formatting, and diff gates.
 
 The post-`727da7f3e` x86_64 `sandbox-filesystem-capability-proof` rerun built the
 complete hermetic Rust closure, AOS system, initrd, and VM disk and launched
