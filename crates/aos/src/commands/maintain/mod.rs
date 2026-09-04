@@ -1345,6 +1345,14 @@ fn inspect_command(
     let mut completion = run_view_completion("inspect", &store, run, None)?;
     completion.result.data.gate_results = gate_results;
     completion.result.data.gate_log = gate_log;
+    if let Some(log) = &completion.result.data.gate_log
+        && let Some(path) = &log.path
+    {
+        completion.result.primary_values = vec![PrimaryValue {
+            name: "gateLogPath".to_string(),
+            value: path.clone(),
+        }];
+    }
     if command.failure {
         completion
             .result
