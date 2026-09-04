@@ -364,3 +364,16 @@ completes. The Git history remains authoritative for code details.
   with complete bounded lifecycle evidence, boot and journal ordering,
   canonical identities, and reciprocal replacement validation. Broker
   dispatch and durable state projection remain open.
+- `2cec65370` — foundation toward `SBX-MOUNT-01` and `SBX-LIFE-06`: restart
+  reconciliation now compares retained descriptor custody against exact mount
+  identity before allowing durable resources to remain usable.
+- `9d67adcc3` — foundation toward `SBX-BPROTO-04`: canonical signed broker
+  plans bind one node, assignment, audience, protocol, exact semantic verbs,
+  opaque targets, request commitments, ceilings, trust generation, and
+  revocation scope. Ownership-lease intersection, request admission, and
+  broker dispatch enforcement remain open.
+- `9a2d91b94` — foundation toward `SBX-HOST-01`, `SBX-RT-02`, and `SBX-RT-04`:
+  the host broker compiles only a fixed nspawn command, exact transient-unit
+  profile, catalogued nonoverlapping identity allocation, and bounded resource
+  policy. Production launch remains unavailable until executable, MAC,
+  namespace, immutable-pin, and post-launch identity probes mint readiness.
