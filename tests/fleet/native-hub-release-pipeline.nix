@@ -93,8 +93,6 @@
                 signingSeed = "nWGxne_9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A";
               }
             ])}/value
-            C /run/credentials/@system/release-fleet-tls-certificate 0600 root root - ${serverCertificate}/value
-            C /run/credentials/@system/release-fleet-tls-private-key 0600 root root - ${serverPrivateKey}/value
           '';
           systemd.services.release-fleet-tls = {
             description = "Test-only TLS edge for the native Hub release fleet";
@@ -103,8 +101,8 @@
               Type = "simple";
               ExecStart = "${releaseTool}/bin/aos-release-fleet-fixture tls-proxy 0.0.0.0:443 127.0.0.1:8420 /run/credentials/release-fleet-tls.service/certificate /run/credentials/release-fleet-tls.service/private-key";
               LoadCredential = [
-                "certificate:/run/credentials/@system/release-fleet-tls-certificate"
-                "private-key:/run/credentials/@system/release-fleet-tls-private-key"
+                "certificate:${serverCertificate}/value"
+                "private-key:${serverPrivateKey}/value"
               ];
               DynamicUser = true;
               Restart = "on-failure";
@@ -275,6 +273,7 @@ in {
               install -d -o aos-hub -g aos-hub -m 0750 /var/lib/aos-hub/storage/andyl
               systemctl start aos-hub.service
               systemctl start release-fleet-tls.service
+              sleep 1
               systemctl is-active --quiet release-fleet-tls.service
           """), timeout=180)
           machine.wait_until_succeeds(f"{CURL} -fsS {url}/healthz", timeout=120)
