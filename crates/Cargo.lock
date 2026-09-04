@@ -198,6 +198,7 @@ dependencies = [
  "rnix",
  "rustix 1.1.4",
  "rustls-pemfile",
+ "semver",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -475,6 +476,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "worker",
+ "worker-sys",
 ]
 
 [[package]]

@@ -12,10 +12,10 @@ use anyhow::{Context as _, Result, bail};
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
-use crate::CANONICAL_REGISTRY;
 use crate::canonical;
 use crate::digest::Sha256Digest;
 use crate::plan::ReleaseClass;
+use crate::registry::registry_policy;
 use crate::signing::{
     SignatureResponseV1, SignerRole, SigningContext, SigningOperation, SigningRequestV1,
     TrustedEd25519Key, verify_ed25519_response,
@@ -99,11 +99,15 @@ impl TufRole {
 /// # Errors
 ///
 /// Returns an error for a zero version or malformed/non-UTC expiry.
-pub fn canonical_targets_metadata(version: u64, expires: String) -> Result<TargetsMetadataV1> {
+pub fn canonical_targets_metadata(
+    registry: &str,
+    version: u64,
+    expires: String,
+) -> Result<TargetsMetadataV1> {
     let metadata = TargetsMetadataV1 {
         schema_version: TUF_TARGETS_V1.to_owned(),
         spec_version: TUF_SPEC_VERSION.to_owned(),
-        registry: CANONICAL_REGISTRY.to_owned(),
+        registry: registry.to_owned(),
         version,
         expires,
         delegations: [
@@ -131,6 +135,7 @@ pub fn canonical_targets_metadata(version: u64, expires: String) -> Result<Targe
 /// Returns an error for malformed identity, class/path mismatch, a zero
 /// version or length, or malformed/non-UTC expiry.
 pub fn delegated_release_metadata(
+    registry: &str,
     version: u64,
     expires: String,
     target: TufReleaseTargetV1,
@@ -139,7 +144,7 @@ pub fn delegated_release_metadata(
     let metadata = DelegatedTargetsMetadataV1 {
         schema_version: TUF_DELEGATED_TARGETS_V1.to_owned(),
         spec_version: TUF_SPEC_VERSION.to_owned(),
-        registry: CANONICAL_REGISTRY.to_owned(),
+        registry: registry.to_owned(),
         role,
         version,
         expires,
@@ -163,6 +168,7 @@ pub fn delegated_release_metadata(
 /// Returns an error for a zero version, malformed/non-UTC expiry, or an
 /// envelope that cannot be canonically encoded.
 pub fn immutable_snapshot_metadata(
+    registry: &str,
     version: u64,
     expires: String,
     root: &TufEnvelopeV1<RootMetadataV1>,
@@ -172,7 +178,7 @@ pub fn immutable_snapshot_metadata(
     let metadata = SnapshotMetadataV1 {
         schema_version: TUF_SNAPSHOT_V1.to_owned(),
         spec_version: TUF_SPEC_VERSION.to_owned(),
-        registry: CANONICAL_REGISTRY.to_owned(),
+        registry: registry.to_owned(),
         version,
         expires,
         metadata: vec![
@@ -210,6 +216,7 @@ pub fn immutable_snapshot_metadata(
 /// not after issuance, its validity exceeds 48 hours, or canonical encoding
 /// of the snapshot fails.
 pub fn timestamp_metadata(
+    registry: &str,
     version: u64,
     issued_at: String,
     expires: String,
@@ -218,7 +225,7 @@ pub fn timestamp_metadata(
     let metadata = TimestampMetadataV1 {
         schema_version: TUF_TIMESTAMP_V1.to_owned(),
         spec_version: TUF_SPEC_VERSION.to_owned(),
-        registry: CANONICAL_REGISTRY.to_owned(),
+        registry: registry.to_owned(),
         version,
         issued_at,
         expires,
@@ -481,6 +488,8 @@ pub struct TufRootTrust<'a> {
 
 /// Exact release identity that delegated targets must authorize.
 pub struct TufReleaseExpectation<'a> {
+    /// Registry trust domain authenticated by the release plan.
+    pub registry: &'a str,
     /// Immutable release id.
     pub release_id: &'a str,
     /// Release class selecting the delegated role.
@@ -521,6 +530,9 @@ pub fn verify_snapshot_envelope(
     now: std::time::SystemTime,
 ) -> Result<()> {
     validate_root(root)?;
+    if snapshot.signed.registry != root.registry {
+        bail!("TUF snapshot registry differs from its trusted root");
+    }
     let keys = root_keys(root)?;
     let policies = root_policies(root)?;
     verify_envelope(snapshot, policy(&policies, TufRole::Snapshot)?, &keys, now)?;
@@ -608,6 +620,15 @@ pub fn verify_immutable_set(
     expected: &TufReleaseExpectation<'_>,
 ) -> Result<()> {
     validate_root(&set.root.signed)?;
+    if set.root.signed.registry != expected.registry {
+        bail!("immutable TUF registry does not match the release plan");
+    }
+    if set.targets.signed.registry != set.root.signed.registry
+        || set.delegated.signed.registry != set.root.signed.registry
+        || set.snapshot.signed.registry != set.root.signed.registry
+    {
+        bail!("immutable TUF metadata crosses registry trust domains");
+    }
     verify_root(&set.root, trust, previous_root, now)?;
     let keys = root_keys(&set.root.signed)?;
     let policies = root_policies(&set.root.signed)?;
@@ -658,6 +679,9 @@ pub fn verify_timestamp(
     now: std::time::SystemTime,
 ) -> Result<()> {
     validate_root(root)?;
+    if timestamp.signed.registry != root.registry || snapshot.signed.registry != root.registry {
+        bail!("TUF timestamp chain crosses registry trust domains");
+    }
     validate_timestamp_freshness(&timestamp.signed, now)?;
     let keys = root_keys(root)?;
     let policies = root_policies(root)?;
@@ -700,6 +724,9 @@ pub fn verify_prior_timestamp_for_refresh(
 ) -> Result<()> {
     let issued = parse_utc(&timestamp.signed.issued_at, "TUF timestamp issuance")?;
     validate_root(root)?;
+    if timestamp.signed.registry != root.registry || snapshot.signed.registry != root.registry {
+        bail!("prior TUF timestamp chain crosses registry trust domains");
+    }
     validate_timestamp_freshness(&timestamp.signed, issued)?;
     let keys = root_keys(root)?;
     let policies = root_policies(root)?;
@@ -891,6 +918,9 @@ fn verify_root(
     verify_with_keys(root, trust.keys, trust.threshold, now)?;
     if let Some(previous) = previous {
         validate_root(&previous.signed)?;
+        if root.signed.registry != previous.signed.registry {
+            bail!("TUF root rotation cannot change registry identity");
+        }
         if root.signed.version != previous.signed.version.saturating_add(1) {
             bail!("TUF root rotation must increase the version by exactly one");
         }
@@ -993,11 +1023,11 @@ fn verify_declared_identities<T>(envelope: &TufEnvelopeV1<T>, root: &RootMetadat
 fn validate_common(metadata: &impl SignedMetadata, schema: &str) -> Result<()> {
     if metadata.schema() != schema
         || metadata.spec_version() != TUF_SPEC_VERSION
-        || metadata.registry() != CANONICAL_REGISTRY
         || metadata.version() == 0
     {
         bail!("invalid TUF metadata identity");
     }
+    registry_policy(metadata.registry())?;
     Ok(())
 }
 
@@ -1068,6 +1098,7 @@ fn require_not_expired(value: &str, now: std::time::SystemTime) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::registry::MAIN_REGISTRY;
 
     fn key(id: &str, byte: u8) -> TufKeyV1 {
         TufKeyV1 {
@@ -1090,7 +1121,7 @@ mod tests {
         RootMetadataV1 {
             schema_version: TUF_ROOT_V1.to_owned(),
             spec_version: TUF_SPEC_VERSION.to_owned(),
-            registry: CANONICAL_REGISTRY.to_owned(),
+            registry: MAIN_REGISTRY.to_owned(),
             version: 1,
             expires: "2030-01-01T00:00:00Z".to_owned(),
             consistent_snapshot: true,
@@ -1127,7 +1158,7 @@ mod tests {
         let mut targets = TargetsMetadataV1 {
             schema_version: TUF_TARGETS_V1.to_owned(),
             spec_version: TUF_SPEC_VERSION.to_owned(),
-            registry: CANONICAL_REGISTRY.to_owned(),
+            registry: MAIN_REGISTRY.to_owned(),
             version: 1,
             expires: "2030-01-01T00:00:00Z".to_owned(),
             delegations: [
@@ -1151,7 +1182,11 @@ mod tests {
     #[test]
     fn authoring_constructors_bind_exact_predecessor_envelopes() -> Result<()> {
         let targets = TufEnvelopeV1 {
-            signed: canonical_targets_metadata(4, "2030-01-01T00:00:00Z".to_owned())?,
+            signed: canonical_targets_metadata(
+                MAIN_REGISTRY,
+                4,
+                "2030-01-01T00:00:00Z".to_owned(),
+            )?,
             signatures: vec![],
         };
         let root = TufEnvelopeV1 {
@@ -1160,6 +1195,7 @@ mod tests {
         };
         let delegated = TufEnvelopeV1 {
             signed: delegated_release_metadata(
+                MAIN_REGISTRY,
                 8,
                 "2030-01-01T00:00:00Z".to_owned(),
                 TufReleaseTargetV1 {
@@ -1174,6 +1210,7 @@ mod tests {
         };
         let snapshot = TufEnvelopeV1 {
             signed: immutable_snapshot_metadata(
+                MAIN_REGISTRY,
                 9,
                 "2030-01-01T00:00:00Z".to_owned(),
                 &root,
@@ -1187,12 +1224,42 @@ mod tests {
         assert_eq!(snapshot.signed.metadata[2].path, "8.stable.json");
 
         let timestamp = timestamp_metadata(
+            MAIN_REGISTRY,
             10,
             "2029-12-30T00:00:00Z".to_owned(),
             "2030-01-01T00:00:00Z".to_owned(),
             &snapshot,
         )?;
         assert_eq!(timestamp.snapshot.path, "9.snapshot.json");
+        let set = ImmutableTufSetV1 {
+            root,
+            targets,
+            delegated,
+            snapshot,
+        };
+        for registry in ["andyl/testing", "andyl/testing-v2"] {
+            let error = verify_immutable_set(
+                &set,
+                &TufRootTrust {
+                    keys: &[],
+                    threshold: 1,
+                },
+                None,
+                humantime::parse_rfc3339("2029-12-30T00:00:00Z")?,
+                &TufReleaseExpectation {
+                    registry,
+                    release_id: "release-2030.1.0",
+                    release_class: ReleaseClass::Stable,
+                    manifest_digest: Sha256Digest::of_bytes("manifest"),
+                },
+            )
+            .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("registry does not match the release plan")
+            );
+        }
         Ok(())
     }
 
@@ -1202,7 +1269,7 @@ mod tests {
         let mut timestamp = TimestampMetadataV1 {
             schema_version: TUF_TIMESTAMP_V1.to_owned(),
             spec_version: TUF_SPEC_VERSION.to_owned(),
-            registry: CANONICAL_REGISTRY.to_owned(),
+            registry: MAIN_REGISTRY.to_owned(),
             version: 1,
             issued_at: "2026-09-03T00:00:00Z".to_owned(),
             expires: "2026-09-05T00:00:00Z".to_owned(),

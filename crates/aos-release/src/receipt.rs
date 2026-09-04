@@ -8,10 +8,10 @@ use ed25519_dalek::{Signature, Verifier as _, VerifyingKey};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::CANONICAL_REGISTRY;
 use crate::artifact::require_identifier;
 use crate::digest::Sha256Digest;
 use crate::evidence::GateResult;
+use crate::registry::registry_policy;
 
 /// Schema for an exact Hub publication receipt.
 pub const PUBLICATION_RECEIPT_V1: &str = "aos.release.publication-receipt/v1";
@@ -152,9 +152,7 @@ impl PublicationReceiptV1 {
         require_identifier(&self.deployment_id, "Hub deployment id")?;
         require_identifier(&self.release_id, "release id")?;
         require_identifier(&self.operation_id, "Hub operation id")?;
-        if self.registry != CANONICAL_REGISTRY {
-            bail!("publication receipt names a noncanonical registry");
-        }
+        registry_policy(&self.registry)?;
         if !self.committed_at.ends_with('Z')
             || humantime::parse_rfc3339(&self.committed_at).is_err()
         {
@@ -207,9 +205,7 @@ impl RegistryBootstrapIntentV1 {
         }
         require_identifier(&self.deployment_id, "bootstrap deployment id")?;
         require_identifier(&self.authority_id, "bootstrap authority id")?;
-        if self.registry != CANONICAL_REGISTRY {
-            bail!("registry bootstrap intent names a noncanonical registry");
-        }
+        registry_policy(&self.registry)?;
         if !matches!(self.base_commit.len(), 40 | 64)
             || !self
                 .base_commit
@@ -477,7 +473,7 @@ mod tests {
             schema_version: REGISTRY_BOOTSTRAP_INTENT_V1.into(),
             environment: HubEnvironment::Staging,
             deployment_id: "staging-2026-09".into(),
-            registry: CANONICAL_REGISTRY.into(),
+            registry: crate::registry::MAIN_REGISTRY.into(),
             base_commit: "a".repeat(40),
             plan_digest: Sha256Digest::of_bytes("plan"),
             authority_id: "release-evidence".into(),
