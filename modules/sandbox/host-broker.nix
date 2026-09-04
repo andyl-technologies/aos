@@ -108,9 +108,10 @@ in {
         RuntimeDirectoryMode = "0710";
         UMask = "0077";
 
-        # Do not grant CAP_SYS_PTRACE merely to make pidfd namespace ioctls
-        # succeed. Launch stays gated until the worker proves the exact narrow
-        # access needed for its pinned nspawn supervisor under this empty set.
+        # hostd probes the pidfs namespace ioctls against itself under this
+        # exact service sandbox. Do not grant CAP_SYS_PTRACE merely to cross
+        # the distinct ptrace check for a user-namespace-shifted payload;
+        # launch remains gated until that narrow access is proven separately.
         CapabilityBoundingSet = "";
         DevicePolicy = "closed";
         LockPersonality = true;

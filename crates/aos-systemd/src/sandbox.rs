@@ -286,6 +286,24 @@ pub enum SandboxDevice {
     Fuse,
 }
 
+/// Witnesses the closed payload policy which prevents later root replacement.
+///
+/// The witness is constructible only from [`SandboxUnitSpec`]. That type emits
+/// an immutable nspawn profile which removes `CAP_SYS_ADMIN` and
+/// `CAP_SYS_CHROOT`, enables no-new-privileges, denies the mount, namespace,
+/// `chroot`, and `pivot_root` syscall families, and selects the compiled AOS
+/// seccomp profile installed immediately before payload execution. Because
+/// seccomp filters and no-new-privileges are inherited across fork and exec,
+/// the policy covers PID 1 and its descendants.
+///
+/// This is a policy-compilation witness, not binary attestation. Its consumer
+/// must separately pin the reviewed AOS systemd-nspawn executable and verify
+/// that the launched supervisor used that exact binary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PayloadRootContinuityPolicyV1 {
+    _sealed: (),
+}
+
 /// Carries the two host paths resolved atomically for one launch assignment.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SandboxResolvedPaths {
@@ -548,6 +566,12 @@ impl SandboxUnitSpec {
     #[must_use]
     pub fn root_directory(&self) -> &str {
         self.paths.root_directory()
+    }
+
+    /// Returns the root-continuity policy compiled into this closed launch.
+    #[must_use]
+    pub const fn payload_root_continuity_policy(&self) -> PayloadRootContinuityPolicyV1 {
+        PayloadRootContinuityPolicyV1 { _sealed: () }
     }
 
     fn properties(&self) -> Result<Vec<TransientProperty>> {
@@ -1037,6 +1061,29 @@ mod tests {
                 Duration::from_secs(1),
             )
             .is_err()
+        );
+
+        let spec = fixture();
+        let _policy = spec.payload_root_continuity_policy();
+        assert!(
+            spec.arguments()
+                .iter()
+                .any(|value| value == "--no-new-privileges=yes")
+        );
+        assert!(spec.arguments().iter().any(|value| {
+            value.starts_with("--drop-capability=")
+                && value.contains("CAP_SYS_ADMIN")
+                && value.contains("CAP_SYS_CHROOT")
+        }));
+        assert!(spec.arguments().iter().any(|value| {
+            value.starts_with("--system-call-filter=~@mount")
+                && value.contains(" setns")
+                && value.contains(" unshare")
+        }));
+        assert!(
+            spec.arguments()
+                .iter()
+                .any(|value| { value == "--aos-payload-seccomp-profile=aos-sandbox-payload-v1" })
         );
     }
 

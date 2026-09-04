@@ -11,8 +11,8 @@ use aos_sandbox_linux::path::{BeneathRoot, ResolveOptions};
 use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceKind, PidFd};
 use aos_sandbox_protocol::ValidatedAssignmentFence;
 use aos_systemd::{
-    FreezerState, JobResult, SandboxCgroupPath, SandboxUnitName, SandboxUnitObservation,
-    SandboxUnitSpec, SystemdClient,
+    FreezerState, JobResult, PayloadRootContinuityPolicyV1, SandboxCgroupPath, SandboxUnitName,
+    SandboxUnitObservation, SandboxUnitSpec, SystemdClient,
 };
 use async_trait::async_trait;
 use sha2::{Digest as _, Sha256};
@@ -163,16 +163,132 @@ impl PinnedLeader {
 /// Retains the exact payload PID 1 and point-in-time root/namespace evidence.
 ///
 /// This observation defeats numeric PID reuse and proves that the inspected
-/// root descriptor named the pinned workspace when acquired. It is not launch
-/// authority: the current backend cannot yet prove root continuity against a
-/// concurrent payload root change, and pidfd namespace access must work under
-/// the deployed service sandbox.
+/// root descriptor named the pinned workspace when acquired. It becomes a
+/// root-continuity proof only when launch verification also consumes the
+/// closed [`PayloadRootContinuityPolicyV1`] witness and pins the reviewed
+/// nspawn binary. Pidfd namespace access to a shifted payload remains a
+/// separately probed deployment condition.
 #[derive(Debug)]
 pub struct PinnedPayloadLeader {
     pidfd: PidFd,
     root: OwnedFd,
     network: NamespaceFd,
     mount: NamespaceFd,
+}
+
+/// Retains proof that pidfd namespace inspection works in the current service.
+///
+/// This boot-local probe exercises the same Linux pidfs ioctls used by launch
+/// verification while running under hostd's deployed systemd sandbox. It
+/// deliberately targets the service process itself, so it proves kernel,
+/// seccomp, and service-policy availability but not the separate ptrace access
+/// check for a user-namespace-shifted payload.
+#[derive(Debug)]
+pub struct PidfdNamespaceAccessProbe {
+    process: PidFd,
+    mount: NamespaceFd,
+    network: NamespaceFd,
+    pid: NamespaceFd,
+    user: NamespaceFd,
+}
+
+impl PidfdNamespaceAccessProbe {
+    /// Probes all namespace ioctls required by the hardened host service.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the kernel lacks required pidfs operations, the
+    /// service sandbox blocks one, an ioctl returns a substituted process or
+    /// namespace type, or the pinned process is not live after inspection.
+    pub fn current_service() -> Result<Self> {
+        let raw_pid = u32::try_from(rustix::process::getpid().as_raw_nonzero().get())
+            .map_err(|_| HostError::Worker("host pid does not fit in u32".to_owned()))?;
+        let pid = NonZeroU32::new(raw_pid)
+            .ok_or_else(|| HostError::Worker("host pid is zero".to_owned()))?;
+        let process = PidFd::open(pid).map_err(|error| HostError::Worker(error.to_string()))?;
+        let before = process
+            .info()
+            .map_err(|error| HostError::Worker(error.to_string()))?;
+        validate_service_probe_identity(raw_pid, before.pid(), before.thread_group_id())?;
+
+        let mount = process
+            .namespace(NamespaceKind::Mount)
+            .map_err(|error| HostError::Worker(error.to_string()))?;
+        let network = process
+            .namespace(NamespaceKind::Network)
+            .map_err(|error| HostError::Worker(error.to_string()))?;
+        let pid_namespace = process
+            .namespace(NamespaceKind::Pid)
+            .map_err(|error| HostError::Worker(error.to_string()))?;
+        let user = process
+            .namespace(NamespaceKind::User)
+            .map_err(|error| HostError::Worker(error.to_string()))?;
+
+        let after = process
+            .info()
+            .map_err(|error| HostError::Worker(error.to_string()))?;
+        validate_service_probe_identity(raw_pid, after.pid(), after.thread_group_id())?;
+        if before != after {
+            return Err(HostError::Worker(
+                "host pidfd identity changed during namespace probe".to_owned(),
+            ));
+        }
+        if !process
+            .is_alive()
+            .map_err(|error| HostError::Worker(error.to_string()))?
+        {
+            return Err(HostError::Worker(
+                "host process exited during namespace probe".to_owned(),
+            ));
+        }
+
+        Ok(Self {
+            process,
+            mount,
+            network,
+            pid: pid_namespace,
+            user,
+        })
+    }
+
+    /// Borrows the probed service-process pidfd.
+    #[must_use]
+    pub const fn process(&self) -> &PidFd {
+        &self.process
+    }
+
+    /// Borrows the verified mount namespace descriptor.
+    #[must_use]
+    pub const fn mount(&self) -> &NamespaceFd {
+        &self.mount
+    }
+
+    /// Borrows the verified network namespace descriptor.
+    #[must_use]
+    pub const fn network(&self) -> &NamespaceFd {
+        &self.network
+    }
+
+    /// Borrows the verified PID namespace descriptor.
+    #[must_use]
+    pub const fn pid(&self) -> &NamespaceFd {
+        &self.pid
+    }
+
+    /// Borrows the verified user namespace descriptor.
+    #[must_use]
+    pub const fn user(&self) -> &NamespaceFd {
+        &self.user
+    }
+}
+
+fn validate_service_probe_identity(expected: u32, pid: u32, thread_group: u32) -> Result<()> {
+    if pid != expected || thread_group != expected {
+        return Err(HostError::Worker(
+            "host pidfd namespace probe returned a substituted process".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 impl PinnedPayloadLeader {
@@ -829,6 +945,7 @@ impl HostWorker for SystemdOneShotWorker {
         let name = SandboxUnitName::from_incarnation(*identity.incarnation_id());
         match operation {
             WorkerOperation::Launch { spec, pins } => {
+                let root_policy = spec.payload_root_continuity_policy();
                 let backend = SystemdLaunchBackend {
                     worker: self,
                     client: &client,
@@ -841,7 +958,7 @@ impl HostWorker for SystemdOneShotWorker {
                             "started nspawn supervisor has no pinned leader".to_owned(),
                         )
                     })?;
-                    verify_supervisor_pins(&self.cgroup_root, pins, leader)
+                    verify_supervisor_pins(&self.cgroup_root, pins, leader, root_policy)
                 };
                 return reconcile_launch(&backend, &spec, &pins, before_effect, &mut verify).await;
             }
@@ -912,7 +1029,12 @@ fn verify_supervisor_pins(
     cgroup_root: &BeneathRoot,
     pins: &LaunchPins,
     leader: &PinnedLeader,
+    _root_policy: PayloadRootContinuityPolicyV1,
 ) -> Result<()> {
+    // The unforgeable policy witness couples this point-in-time root check to
+    // the immutable command which prevents PID 1 and descendants from later
+    // replacing their root. Binary identity is checked below before the
+    // payload observation is accepted.
     let pidfd = &leader.pidfd;
     let info = pidfd
         .info()
@@ -1231,7 +1353,15 @@ mod tests {
         .unwrap();
         let cgroup_root = BeneathRoot::from_owned(cgroup_root).unwrap();
 
-        assert!(verify_supervisor_pins(&cgroup_root, &pins, &leader).is_err());
+        assert!(
+            verify_supervisor_pins(
+                &cgroup_root,
+                &pins,
+                &leader,
+                spec().payload_root_continuity_policy(),
+            )
+            .is_err()
+        );
         assert!(leader.pidfd.is_alive().unwrap());
     }
 
@@ -1329,6 +1459,13 @@ mod tests {
         assert!(parse_nested_pid(b"NSpid:\t42\t1\n", pid).is_err());
         assert!(parse_nested_pid(b"NSpid:\t41\t1\nNSpid:\t41\t1\n", pid).is_err());
         assert!(parse_nested_pid(b"Name:\tinit\n", pid).is_err());
+    }
+
+    #[test]
+    fn namespace_self_probe_rejects_pid_or_thread_group_substitution() {
+        assert!(validate_service_probe_identity(41, 41, 41).is_ok());
+        assert!(validate_service_probe_identity(41, 42, 41).is_err());
+        assert!(validate_service_probe_identity(41, 41, 42).is_err());
     }
 
     #[tokio::test]

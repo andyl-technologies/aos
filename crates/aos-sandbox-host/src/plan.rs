@@ -252,10 +252,13 @@ pub trait HostCatalog {
 /// Proves that the exact node-local nspawn backend passed all executable gates.
 ///
 /// The type intentionally has no production constructor yet. Protected phase-0
-/// evidence is represented by [`ProtectedBackendReadinessEvidence`], but that
-/// artifact cannot prove live supervisor pidfd access or payload-root identity.
-/// Until those checks can be combined mechanically, hostd cannot construct
-/// this token and does not advertise runtime launch.
+/// evidence is represented by [`ProtectedBackendReadinessEvidence`]. The
+/// closed unit compiler now supplies a root-continuity policy witness, and the
+/// worker verifies point-in-time payload-root identity, but the artifact still
+/// does not independently bind the deployed profile or prove pidfd namespace
+/// access to a user-namespace-shifted payload. Until those checks can be
+/// combined mechanically, hostd cannot construct this token and does not
+/// advertise runtime launch.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BackendReadiness {
     executable: String,
@@ -272,10 +275,10 @@ pub struct BackendReadiness {
 pub enum BackendReadinessBlocker {
     /// No trusted implementation has verified the declared probe and profile digests.
     Phase0ClaimVerification,
-    /// The deployed service has not proven supervisor and payload pidfd namespace inspection.
-    PidfdNamespaceInspection,
-    /// Point-in-time root identity is not yet paired with proven root-change prevention.
-    PayloadRootContinuity,
+    /// Self-inspection does not prove ptrace access to a user-namespace-shifted payload.
+    ShiftedPayloadPidfdNamespaceInspection,
+    /// The compiled root policy is not yet bound to independently verified deployment evidence.
+    PayloadRootPolicyDeploymentVerification,
 }
 
 /// Holds protected, boot-bound phase-0 publisher claims without authorizing launch.
@@ -373,8 +376,8 @@ impl ProtectedBackendReadinessEvidence {
     pub const fn runtime_blockers(&self) -> [BackendReadinessBlocker; 3] {
         [
             BackendReadinessBlocker::Phase0ClaimVerification,
-            BackendReadinessBlocker::PidfdNamespaceInspection,
-            BackendReadinessBlocker::PayloadRootContinuity,
+            BackendReadinessBlocker::ShiftedPayloadPidfdNamespaceInspection,
+            BackendReadinessBlocker::PayloadRootPolicyDeploymentVerification,
         ]
     }
 }
@@ -1101,8 +1104,8 @@ mod tests {
             evidence.runtime_blockers(),
             [
                 BackendReadinessBlocker::Phase0ClaimVerification,
-                BackendReadinessBlocker::PidfdNamespaceInspection,
-                BackendReadinessBlocker::PayloadRootContinuity,
+                BackendReadinessBlocker::ShiftedPayloadPidfdNamespaceInspection,
+                BackendReadinessBlocker::PayloadRootPolicyDeploymentVerification,
             ]
         );
 

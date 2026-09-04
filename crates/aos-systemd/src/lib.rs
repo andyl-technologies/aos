@@ -20,9 +20,9 @@ pub use client::{
 pub use error::{Error, Result};
 pub use manager_proxy::ListUnitsEntry;
 pub use sandbox::{
-    CpuWeight, FreezerState, SandboxCgroupPath, SandboxDescriptorPath, SandboxDevice,
-    SandboxNspawnCommand, SandboxResolvedPaths, SandboxResources, SandboxUnitName,
-    SandboxUnitObservation, SandboxUnitSpec,
+    CpuWeight, FreezerState, PayloadRootContinuityPolicyV1, SandboxCgroupPath,
+    SandboxDescriptorPath, SandboxDevice, SandboxNspawnCommand, SandboxResolvedPaths,
+    SandboxResources, SandboxUnitName, SandboxUnitObservation, SandboxUnitSpec,
 };
 
 // `unit_property` returns a `zbus::zvariant::OwnedValue` in its public

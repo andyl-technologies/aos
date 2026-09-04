@@ -17,7 +17,7 @@ use aos_sandbox_host::peer::ControllerPeerVerifier;
 use aos_sandbox_host::plan::{BackendReadinessBlocker, ProtectedBackendReadinessEvidence};
 use aos_sandbox_host::service::HostService;
 use aos_sandbox_host::state::FileHostStateStore;
-use aos_sandbox_host::worker::SystemdOneShotWorker;
+use aos_sandbox_host::worker::{PidfdNamespaceAccessProbe, SystemdOneShotWorker};
 use aos_sandbox_host::{HostError, Result};
 use aos_sandbox_linux::path::BeneathRoot;
 
@@ -43,8 +43,20 @@ fn run() -> Result<()> {
     }
     let (controller_identity, nspawn_executable) = arguments()?;
 
-    // Adopt FD 3 before Tokio or another dependency can create a thread.
+    // Adopt FD 3 before another dependency can allocate descriptors or create
+    // a thread.
     let listener = take_systemd_listener()?;
+    // This is intentionally non-authorizing. It exercises pidfs from inside
+    // the deployed service sandbox, while shifted-payload ptrace access remains
+    // an explicit readiness blocker. Observation stays available on failure.
+    let _pidfd_namespace_probe = match PidfdNamespaceAccessProbe::current_service() {
+        Ok(probe) => Some(probe),
+        Err(error) => {
+            eprintln!("aos-sandbox-hostd: pidfd namespace self-probe unavailable: {error}");
+            None
+        }
+    };
+
     let catalog = FileHostCatalog::open_root_owned(CATALOG_ROOT)?;
     let state = FileHostStateStore::open(STATE_ROOT)?;
     let credential_directory = env::var_os("CREDENTIALS_DIRECTORY").ok_or_else(|| {
@@ -62,8 +74,8 @@ fn run() -> Result<()> {
         if blockers
             != [
                 BackendReadinessBlocker::Phase0ClaimVerification,
-                BackendReadinessBlocker::PidfdNamespaceInspection,
-                BackendReadinessBlocker::PayloadRootContinuity,
+                BackendReadinessBlocker::ShiftedPayloadPidfdNamespaceInspection,
+                BackendReadinessBlocker::PayloadRootPolicyDeploymentVerification,
             ]
         {
             return Err(HostError::State(
@@ -76,8 +88,9 @@ fn run() -> Result<()> {
     let verifier = ControllerPeerVerifier::new(open_cgroup_root()?);
     // Any present phase-0 artifact is protected, boot-bound, and
     // rollback-protected above. Its declared digests are not yet independently
-    // verified, and live supervisor/payload proofs are also absent, so it
-    // cannot be promoted into BackendReadiness and Apply remains unadvertised.
+    // verified, and the self-probe above does not prove ptrace access to a
+    // shifted payload, so it cannot be promoted into BackendReadiness and
+    // Apply remains unadvertised.
     let broker = HostBroker::open(catalog, state, worker, None, authority)?;
     let mut service = HostService::new(broker, verifier, controller_identity);
 

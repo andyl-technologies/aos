@@ -27,7 +27,7 @@ index 3788de0..b819a8f 100644
  
  #include "log.h"
  #include "nspawn-seccomp.h"
-@@ -11,6 +13,140 @@
+@@ -11,6 +13,141 @@
  
  #if HAVE_SECCOMP
  
@@ -55,6 +55,7 @@ index 3788de0..b819a8f 100644
 +int setup_aos_payload_seccomp(void) {
 +        static const char *const denied_syscalls[] = {
 +                "bpf",
++                "chroot",
 +                "delete_module",
 +                "finit_module",
 +                "fsconfig",
@@ -269,7 +270,7 @@ new file mode 100644
 index 0000000..a0c27a1
 --- /dev/null
 +++ b/src/nspawn/test-nspawn-seccomp.c
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,45 @@
 +/* SPDX-License-Identifier: LGPL-2.1-or-later */
 +
 +#include <linux/sched.h>
@@ -290,6 +291,7 @@ index 0000000..a0c27a1
 +        ASSERT_OK(prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0));
 +        ASSERT_OK(setup_aos_payload_seccomp());
 +
++        ASSERT_ERROR_ERRNO(chroot("/"), EPERM);
 +        ASSERT_ERROR_ERRNO(mount(NULL, NULL, NULL, 0, NULL), EPERM);
 +        ASSERT_ERROR_ERRNO(syscall(__NR_unshare, 0), EPERM);
 +        ASSERT_ERROR_ERRNO(syscall(__NR_clone3, NULL, 0), ENOSYS);
