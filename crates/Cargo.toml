@@ -30,6 +30,7 @@ members = [
     "aos-sandbox-broker",
     "aos-sandbox-host",
     "aos-sandbox-mount",
+    "aos-sandbox-network",
     "aos-sandbox-storage",
     "crucible-cas",
     "crucible-sim",
@@ -223,6 +224,7 @@ aos-sandbox-protocol = { path = "aos-sandbox-protocol" }
 aos-sandbox = { path = "aos-sandbox" }
 aos-sandbox-broker = { path = "aos-sandbox-broker" }
 aos-sandbox-mount = { path = "aos-sandbox-mount" }
+aos-sandbox-network = { path = "aos-sandbox-network" }
 aos-sandbox-storage = { path = "aos-sandbox-storage" }
 aos-sandbox-linux = { path = "aos-sandbox-linux" }
 aos-sandbox-host = { path = "aos-sandbox-host" }

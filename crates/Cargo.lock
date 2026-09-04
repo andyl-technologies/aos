@@ -712,6 +712,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-sandbox-network"
+version = "0.1.0"
+dependencies = [
+ "aos-proto",
+ "aos-sandbox",
+ "aos-sandbox-broker",
+ "aos-sandbox-core",
+ "aos-sandbox-protocol",
+ "buffa",
+ "ed25519-dalek",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "aos-sandbox-protocol"
 version = "0.1.0"
 dependencies = [
