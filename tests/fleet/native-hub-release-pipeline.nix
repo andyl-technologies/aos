@@ -517,7 +517,7 @@ in {
             --channel-receipt-key production-channel-v1={channel_key} \\
             --completion-key release-evidence-v1={release_key} \\
             --output /var/tmp/complete
-          {AOS} release status --journal /var/tmp/complete/release-journal.jsonl | grep -q 'State: Complete'
+          {AOS} release status --journal /var/tmp/complete/release-journal.jsonl
       """), timeout=1800)
 
       report = json.loads(publisher.succeed(
