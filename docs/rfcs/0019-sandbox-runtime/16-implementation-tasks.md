@@ -527,3 +527,24 @@ completes. The Git history remains authoritative for code details.
   skew, and nonce remain issuer facts; returned bytes become usable only after
   canonical signature, trust, context, liveness, duration, and advancement
   verification. A production durable authority backend remains open.
+- `673df1774` — foundation toward `SBX-BPROTO-04` and `SBX-CTRL-03`: portable
+  host canonicalization now lives at the shared protocol boundary with its
+  existing commitment preserved, and controller dispatch separates immutable
+  signed-plan templates from lease- and local-deadline-bound attempts. The
+  controller artifacts are explicitly non-authorizing: privileged brokers must
+  still decode hostile bodies, resolve catalogs, recompute semantics, verify
+  protected clocks, and durably admit the complete authority intersection.
+- `70c466d49` — foundation toward `SBX-P0-04` and `SBX-HOST-01`: hostd can
+  optionally ingest a bounded root-owned systemd credential bound to the
+  current boot and exact nspawn store object, with a durable global publisher
+  generation/digest watermark. Missing evidence preserves Observe/Inventory;
+  present invalid or stale evidence fails closed. Apply remains unadvertised
+  because the phase-0 digests are publisher claims, supervisor pidfd namespace
+  access is unproven under the hardened unit, and payload-root identity is not
+  yet observed.
+
+The post-`727da7f3e` x86_64 `sandbox-filesystem-capability-proof` rerun built the
+complete hermetic Rust closure, AOS system, initrd, and VM disk and launched
+QEMU with KVM. The guest agent timed out before readiness with a blank serial
+log, so the fs-verity/FUSE runtime body never executed and `SBX-P0-02` remains
+open. This is recorded as a VM boot-boundary failure, not capability evidence.
