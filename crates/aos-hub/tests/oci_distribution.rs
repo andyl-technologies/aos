@@ -744,6 +744,7 @@ async fn spawn_registry_with_rollout(
     let state = Arc::new(AppState {
         db: Arc::clone(&db),
         external_url: origin.trim_end_matches('/').to_string(),
+        deployment_id: None,
         auth,
         leases: Arc::new(aos_hub_core::lease::InMemoryLease::new()),
         mailer: Arc::new(aos_hub::auth::magic::LogMailer),
@@ -759,6 +760,7 @@ async fn spawn_registry_with_rollout(
         identity_domain_verifier: None,
         route_reservation_keyring: None,
         container_rollout,
+        release_evidence: None,
     });
     let app = router(state).await;
     let server = tokio::spawn(async move {

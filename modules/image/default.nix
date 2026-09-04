@@ -16,6 +16,7 @@
   ...
 }: let
   cfg = config.aos.image;
+  externalFinalization = config.aos.boot.secureBoot.externalFinalization.enable;
   positiveMiB = default: description:
     lib.mkOption {
       type = lib.types.addCheck lib.types.int (value: value > 0);
@@ -338,6 +339,17 @@ in {
     };
   };
 
+  options.system.build.unsignedImageAssembly = lib.mkOption {
+    type = lib.types.nullOr lib.types.package;
+    default = null;
+    readOnly = true;
+    description = ''
+      Deterministic public-only inputs for external production image
+      finalization. Final image outputs remain absent until the coordinator
+      has completed and independently verified every signing operation.
+    '';
+  };
+
   options.system.build.imageArtifacts = lib.mkOption {
     type = lib.types.attrsOf (lib.types.attrsOf lib.types.package);
     description = ''
@@ -375,46 +387,54 @@ in {
     description = "Authenticated fixed-layout payload for removable recovery media.";
   };
 
-  config = lib.mkIf cfg.enable {
-    assertions = [
-      {
-        assertion = cfg.allowTestArtifacts || cfg.testArtifactRoots == [];
-        message = "aos.image.testArtifactRoots requires aos.image.allowTestArtifacts = true";
-      }
-      {
-        assertion = cfg.budgets.maxEspMiB >= 2 * cfg.budgets.maxUkiMiB + 32;
-        message = "aos.image.budgets.maxEspMiB must hold two maximum-sized UKIs plus 32 MiB of bootloader and FAT headroom";
-      }
-      {
-        assertion = logicalDiskContractMiB <= maxLogicalDiskMiB;
-        message = "aos.image storage budgets produce a logical disk larger than the 8192 MiB publication safety limit";
-      }
-      {
-        assertion = cfg.rootPartitionMiB >= cfg.budgets.maxRootMiB;
-        message = "aos.image.rootPartitionMiB must be at least aos.image.budgets.maxRootMiB";
-      }
-      {
-        assertion = cfg.espExtraFreeMiB >= 0;
-        message = "aos.image.espExtraFreeMiB must not be negative";
-      }
-    ];
-    system.build.image = {
-      raw = rawImage;
-      inherit (convertedImages) qcow2 vmdk vhd;
-    };
-    system.build.imageArtifacts = {
-      raw = artifactFor "raw" rawImage "aos-${config.aos.system.name}.img.zst";
-      qcow2 = artifactFor "qcow2" convertedImages.qcow2 "aos-${config.aos.system.name}.qcow2";
-      vmdk = artifactFor "vmdk" convertedImages.vmdk "aos-${config.aos.system.name}.vmdk";
-      vhd = artifactFor "vhd" convertedImages.vhd "aos-${config.aos.system.name}.vhd";
-    };
-    system.build.checks.image-budget = imageBudgetCheck;
-    system.build.checks.runtime-closure = runtimeClosureAudit;
-    system.build.uki = rawImage.uki;
-    system.build.recoveryInitrd = lib.mkIf config.aos.boot.recovery.enable rawImage.recoveryInitrdA;
-    system.build.recoverySlotManifest = lib.mkIf config.aos.boot.recovery.enable rawImage.recoverySlotManifest;
-    system.build.recoveryUkiA = lib.mkIf config.aos.boot.recovery.enable rawImage.recoveryUkiA;
-    system.build.recoveryUkiB = lib.mkIf config.aos.boot.recovery.enable rawImage.recoveryUkiB;
-    system.build.recoveryBundle = lib.mkIf config.aos.boot.recovery.enable rawImage.recoveryBundle;
-  };
+  config = lib.mkIf cfg.enable (lib.mkMerge [
+    {
+      assertions = [
+        {
+          assertion = cfg.allowTestArtifacts || cfg.testArtifactRoots == [];
+          message = "aos.image.testArtifactRoots requires aos.image.allowTestArtifacts = true";
+        }
+        {
+          assertion = cfg.budgets.maxEspMiB >= 2 * cfg.budgets.maxUkiMiB + 32;
+          message = "aos.image.budgets.maxEspMiB must hold two maximum-sized UKIs plus 32 MiB of bootloader and FAT headroom";
+        }
+        {
+          assertion = logicalDiskContractMiB <= maxLogicalDiskMiB;
+          message = "aos.image storage budgets produce a logical disk larger than the 8192 MiB publication safety limit";
+        }
+        {
+          assertion = cfg.rootPartitionMiB >= cfg.budgets.maxRootMiB;
+          message = "aos.image.rootPartitionMiB must be at least aos.image.budgets.maxRootMiB";
+        }
+        {
+          assertion = cfg.espExtraFreeMiB >= 0;
+          message = "aos.image.espExtraFreeMiB must not be negative";
+        }
+      ];
+      system.build.unsignedImageAssembly =
+        if externalFinalization
+        then rawImage
+        else null;
+      system.build.checks.runtime-closure = runtimeClosureAudit;
+    }
+    (lib.mkIf (!externalFinalization) {
+      system.build.image = {
+        raw = rawImage;
+        inherit (convertedImages) qcow2 vmdk vhd;
+      };
+      system.build.imageArtifacts = {
+        raw = artifactFor "raw" rawImage "aos-${config.aos.system.name}.img.zst";
+        qcow2 = artifactFor "qcow2" convertedImages.qcow2 "aos-${config.aos.system.name}.qcow2";
+        vmdk = artifactFor "vmdk" convertedImages.vmdk "aos-${config.aos.system.name}.vmdk";
+        vhd = artifactFor "vhd" convertedImages.vhd "aos-${config.aos.system.name}.vhd";
+      };
+      system.build.checks.image-budget = imageBudgetCheck;
+      system.build.uki = rawImage.uki;
+      system.build.recoveryInitrd = lib.mkIf config.aos.boot.recovery.enable rawImage.recoveryInitrdA;
+      system.build.recoverySlotManifest = lib.mkIf config.aos.boot.recovery.enable rawImage.recoverySlotManifest;
+      system.build.recoveryUkiA = lib.mkIf config.aos.boot.recovery.enable rawImage.recoveryUkiA;
+      system.build.recoveryUkiB = lib.mkIf config.aos.boot.recovery.enable rawImage.recoveryUkiB;
+      system.build.recoveryBundle = lib.mkIf config.aos.boot.recovery.enable rawImage.recoveryBundle;
+    })
+  ]);
 }

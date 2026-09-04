@@ -1,7 +1,7 @@
 //! Frozen first-release OCI, Docker schema 2, and AOS media-type allowlist.
 //!
 //! Media types are matched exactly, without parameters or case folding. Adding
-//! a variant is an RFC-0017 compatibility change that requires parser, runtime,
+//! a variant is an RFC-0018 compatibility change that requires parser, runtime,
 //! storage, and garbage-collection coverage.
 
 use std::fmt;
@@ -11,7 +11,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::error::{Error, Result};
 
-/// An exact media type admitted by RFC-0017.
+/// An exact media type admitted by RFC-0018.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum MediaType {
     /// Generic bytes accepted by the Distribution blob-upload transport.

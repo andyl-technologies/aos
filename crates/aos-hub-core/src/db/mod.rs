@@ -555,12 +555,14 @@ mod placement_policy;
 mod publication_admission;
 mod registry_delete;
 mod registry_index_build;
+mod release_publication;
 mod signing_keys;
 mod topology;
 mod worker_jobs;
 pub use placement_policy::*;
 pub use publication_admission::*;
 pub use registry_index_build::*;
+pub use release_publication::*;
 pub use signing_keys::*;
 pub use topology::*;
 pub use worker_jobs::*;
@@ -624,6 +626,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("package_documentation_system_module.sql"),
     include_str!("release_package_documentation.sql"),
     include_str!("release_documentation_projection_generation.sql"),
+    include_str!("release_publication.sql"),
     include_str!("oci_catalog.sql"),
     include_str!("oci_upload_publication.sql"),
     include_str!("oci_admin.sql"),
@@ -27818,9 +27821,9 @@ source_nar_hash = ""
 
     #[test]
     fn oci_phase5_v23_migration_upgrades_v22_and_backfills_contextual_media() {
-        const OCI_UPLOAD_PUBLICATION_INDEX: usize = 25;
+        const OCI_UPLOAD_PUBLICATION_INDEX: usize = 26;
 
-        assert_eq!(MIGRATIONS.len(), 29, "reviewed schema version changed");
+        assert_eq!(MIGRATIONS.len(), 30, "reviewed schema version changed");
         let connection = Connection::open_in_memory().unwrap();
         for migration in &MIGRATIONS[..OCI_UPLOAD_PUBLICATION_INDEX] {
             connection.execute_batch(migration).unwrap();
@@ -27905,7 +27908,7 @@ source_nar_hash = ""
 
     #[test]
     fn oci_phase5_v23_migration_refuses_unknown_placeholder_state() {
-        const OCI_UPLOAD_PUBLICATION_INDEX: usize = 25;
+        const OCI_UPLOAD_PUBLICATION_INDEX: usize = 26;
 
         let connection = Connection::open_in_memory().unwrap();
         for migration in &MIGRATIONS[..OCI_UPLOAD_PUBLICATION_INDEX] {
@@ -28050,7 +28053,7 @@ source_nar_hash = ""
 
     #[test]
     fn oci_admin_v24_upgrade_backfills_policy_and_queues_exact_byte_reconciliation() {
-        const OCI_ADMIN_INDEX: usize = 26;
+        const OCI_ADMIN_INDEX: usize = 27;
 
         let connection = Connection::open_in_memory().unwrap();
         for migration in &MIGRATIONS[..OCI_ADMIN_INDEX] {
@@ -28091,7 +28094,7 @@ source_nar_hash = ""
 
     #[test]
     fn oci_admin_v24_upgrade_fails_closed_and_rolls_back_out_of_range_history() {
-        const OCI_ADMIN_INDEX: usize = 26;
+        const OCI_ADMIN_INDEX: usize = 27;
 
         let connection = Connection::open_in_memory().unwrap();
         for migration in &MIGRATIONS[..OCI_ADMIN_INDEX] {
@@ -28120,7 +28123,7 @@ source_nar_hash = ""
 
     #[tokio::test]
     async fn oci_admin_v24_concurrent_start_and_reopen_apply_once() {
-        const OCI_ADMIN_INDEX: usize = 26;
+        const OCI_ADMIN_INDEX: usize = 27;
 
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("v21-concurrent.db");
@@ -28132,7 +28135,7 @@ source_nar_hash = ""
         connection
             .execute_batch(
                 "CREATE TABLE schema_version(version INTEGER NOT NULL);
-                 INSERT INTO schema_version(version) VALUES(26);",
+                 INSERT INTO schema_version(version) VALUES(27);",
             )
             .unwrap();
         drop(connection);
@@ -28149,7 +28152,7 @@ source_nar_hash = ""
             .unwrap()
             .get(0)
             .unwrap();
-        assert_eq!(version, 29);
+        assert_eq!(version, 30);
     }
 
     #[test]

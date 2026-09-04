@@ -1,4 +1,4 @@
-# RFC-0017 testing strategy
+# RFC-0018 testing strategy
 
 The container feature crosses deterministic build output, runtime filesystem
 semantics, package management, HTTP distribution, tenancy, storage placement,

@@ -1,6 +1,6 @@
 //! Ordered and bounded OCI annotation maps.
 //!
-//! Unknown keys are intentionally preserved. RFC-0017 bounds UTF-8 bytes rather
+//! Unknown keys are intentionally preserved. RFC-0018 bounds UTF-8 bytes rather
 //! than character counts: one key may occupy 1 KiB, one value 4 KiB, and the sum
 //! of all key and value bytes on an object may occupy 64 KiB.
 //!

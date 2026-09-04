@@ -895,6 +895,8 @@ pub struct Secrets {
     pub domain_probe_signer_manifest: Option<String>,
     /// `HUB_ROUTE_RESERVATION_KEYRING` — active and retained route HMAC keys.
     pub route_reservation_keyring: Option<String>,
+    /// `HUB_RELEASE_EVIDENCE_CONFIG` — atomic role-separated release keys.
+    pub release_evidence_config: Option<String>,
 }
 
 impl Secrets {
@@ -938,6 +940,13 @@ impl Secrets {
         if let Some(keyring) = &self.route_reservation_keyring {
             aos_hub_core::service::ConfiguredRouteReservationKeyring::from_json(keyring)
                 .context("invalid Worker route reservation keyring")?;
+        }
+        if let Some(config) = &self.release_evidence_config {
+            aos_hub_core::release_evidence::Ed25519ReleaseEvidenceAuthority::from_json(
+                "deployment-validation",
+                config,
+            )
+            .context("invalid Worker release evidence configuration")?;
         }
         Ok(())
     }
@@ -1225,6 +1234,14 @@ pub async fn deploy(
 
     let listed = run_wrangler(assets, &secret_list_args(&secret_config), None, None).await?;
     let existing = parse_secret_names(&listed)?;
+    let release_evidence_present = secrets.release_evidence_config.is_some()
+        || existing
+            .iter()
+            .any(|name| name == "HUB_RELEASE_EVIDENCE_CONFIG");
+    anyhow::ensure!(
+        !release_evidence_present || cfg.deployment_id.is_some(),
+        "--deployment-id is required when release evidence signing is configured"
+    );
 
     // Secrets survive `wrangler deploy` when omitted from configuration. The
     // pre-cutover name is never consumed by either transport.
@@ -1328,6 +1345,21 @@ pub async fn deploy(
         None => bail!(
             "HUB_ROUTE_RESERVATION_KEYRING is required on first deploy; pass --route-reservation-keys-file"
         ),
+    }
+    match &secrets.release_evidence_config {
+        Some(config) => {
+            put_secret(
+                assets,
+                "HUB_RELEASE_EVIDENCE_CONFIG",
+                config,
+                &secret_config,
+            )
+            .await?;
+        }
+        None if existing
+            .iter()
+            .any(|name| name == "HUB_RELEASE_EVIDENCE_CONFIG") => {}
+        None => {}
     }
 
     if mode == DeployMode::Update || cfg.egress_gateway_url.is_some() {
@@ -1940,6 +1972,7 @@ mod tests {
             disable_delivery_attestation: false,
             domain_probe_signer_manifest: None,
             route_reservation_keyring: None,
+            release_evidence_config: None,
         };
         assert!(valid().validate().is_ok());
 
@@ -1965,6 +1998,10 @@ mod tests {
 
         let mut secrets = valid();
         secrets.route_reservation_keyring = Some("not-json".into());
+        assert!(secrets.validate().is_err());
+
+        let mut secrets = valid();
+        secrets.release_evidence_config = Some("not-json".into());
         assert!(secrets.validate().is_err());
     }
 

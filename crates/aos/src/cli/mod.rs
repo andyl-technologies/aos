@@ -24,6 +24,7 @@ mod hub_container;
 mod hub_retained_control;
 mod image;
 mod prefetch;
+mod release;
 mod server;
 mod test;
 mod vm;
@@ -34,6 +35,7 @@ pub use hub::*;
 pub use hub_container::*;
 pub use hub_retained_control::*;
 pub use image::*;
+pub use release::*;
 pub use server::*;
 pub use test::*;
 pub use vm::*;
@@ -340,6 +342,11 @@ pub enum Commands {
     Container {
         #[command(subcommand)]
         command: ContainerCommand,
+    },
+    /// Plan, build, verify, and publish canonical AOS releases
+    Release {
+        #[command(subcommand)]
+        command: ReleaseCommand,
     },
     /// Run downloaded AOS images locally with QEMU
     Vm {

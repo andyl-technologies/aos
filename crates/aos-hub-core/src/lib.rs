@@ -107,6 +107,7 @@ pub mod placement_read;
 pub mod placement_scan;
 pub mod ratelimit;
 pub mod reindex;
+pub mod release_evidence;
 pub mod retention;
 pub mod robots;
 pub mod s3surface;

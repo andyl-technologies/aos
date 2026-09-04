@@ -386,7 +386,8 @@
         passthru = (args.passthru or {}) // exposeAttrs // configModuleAttrs;
       }
       // lib.optionalAttrs (
-        args ? phases
+        args
+        ? phases
         && stdenv.buildPlatform.system != stdenv.hostPlatform.system
         && stdenv.hostPlatform.objectFormat == "macho"
       ) {
@@ -1252,59 +1253,82 @@
 
       # --- stdenv packages (linked, not rebuilt) ---
       gcc =
-        withDistributionMeta {
-          description = "GNU Compiler Collection with AOS target and runtime defaults";
-          license = "GPL-3.0-or-later WITH GCC-exception-3.1";
-        }
-        (
-          if stdenv.hostPlatform.isDarwin
-          then darwinGcc
-          else stdenv.gcc
-        );
-      glibc = withDefaultMaintainers (
-        stdenv.glibc
-        // lib.optionalAttrs stdenv.hostPlatform.isDarwin {
-          dev = stdenv.glibc;
-          static = stdenv.glibc;
-        }
-      );
-      binutils = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin
-        then darwinBinutils
-        else stdenv.binutils
-      );
+        (withDistributionMeta {
+            description = "GNU Compiler Collection with AOS target and runtime defaults";
+            license = "GPL-3.0-or-later WITH GCC-exception-3.1";
+          }
+          (
+            if stdenv.hostPlatform.isDarwin
+            then darwinGcc
+            else stdenv.gcc
+          ))
+        // {version = "14.3.0";};
+      glibc =
+        (withDistributionMeta {
+            description = "GNU C Library for the AOS target runtime";
+            license = "LGPL-2.1-or-later";
+          }
+          (
+            stdenv.glibc
+            // lib.optionalAttrs stdenv.hostPlatform.isDarwin {
+              dev = stdenv.glibc;
+              static = stdenv.glibc;
+            }
+          ))
+        // {version = "2.39.0";};
+      binutils =
+        (withDistributionMeta {
+            description = "GNU binary utilities for the AOS target toolchain";
+            license = "GPL-3.0-or-later";
+          }
+          (
+            if stdenv.hostPlatform.isDarwin
+            then darwinBinutils
+            else stdenv.binutils
+          ))
+        // {version = "2.41.0";};
       inherit darwinDtraceCompiler;
       inherit appleLibTapi;
       inherit darwinCctoolsLinker;
       cc =
-        withDistributionMeta {
-          description = "AOS C and C++ compiler wrapper toolchain";
-          license = "GPL-3.0-or-later WITH GCC-exception-3.1";
-        }
-        (
-          if stdenv.hostPlatform.isDarwin
-          then darwinCc
-          else stdenv.cc
-        );
+        (withDistributionMeta {
+            description = "AOS C and C++ compiler wrapper toolchain";
+            license = "GPL-3.0-or-later WITH GCC-exception-3.1";
+          }
+          (
+            if stdenv.hostPlatform.isDarwin
+            then darwinCc
+            else stdenv.cc
+          ))
+        // {version = "0.1.0";};
       # The unwrapped gcc-14.3.0-stage2. `pkgs.gcc` is the wrapped
       # gcc-14.3.0-wrapped; the perl Config scrub needs to substitute
       # and block the unwrapped one, since that's what Configure
       # records via specs/PATH.
-      gccUnwrapped = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin
-        then darwinGcc
-        else if stdenv ? gccStage2
-        then stdenv.gccStage2
-        else stdenv.gcc
-      );
+      gccUnwrapped =
+        (withDistributionMeta {
+            description = "Unwrapped GNU Compiler Collection for the AOS target toolchain";
+            license = "GPL-3.0-or-later WITH GCC-exception-3.1";
+          }
+          (
+            if stdenv.hostPlatform.isDarwin
+            then darwinGcc
+            else if stdenv ? gccStage2
+            then stdenv.gccStage2
+            else stdenv.gcc
+          ))
+        // {version = "14.3.0";};
       gcc-libs =
         if stdenv.hostPlatform.isDarwin
         then withDefaultMaintainers darwinGcc
         else discoveredPackages.gcc-libs;
-      getent = withDistributionMeta {
-        description = "Name service database lookup utility from GNU C Library";
-        license = "LGPL-2.1-or-later";
-      } (lib.getOutput "getent" stdenv.glibc);
+      getent =
+        (withDistributionMeta {
+            description = "Name service database lookup utility from GNU C Library";
+            license = "LGPL-2.1-or-later";
+          }
+          (lib.getOutput "getent" stdenv.glibc))
+        // {version = "2.39.0";};
       # Native package sets retain the final stdenv tools. Darwin package roots
       # must be actual target builds; Linux build tools remain available only
       # through buildPackages and build-dependency splicing.
