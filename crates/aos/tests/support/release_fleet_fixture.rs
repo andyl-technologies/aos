@@ -240,7 +240,7 @@ fn release_plan(
         SignerRole::Qualification,
         SignerRole::TufRoot,
         SignerRole::TufTargets,
-        SignerRole::TufEdge,
+        SignerRole::TufCandidate,
         SignerRole::TufSnapshot,
         SignerRole::TufTimestamp,
         SignerRole::Channel,
