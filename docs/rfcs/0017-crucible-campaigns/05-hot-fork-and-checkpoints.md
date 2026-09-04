@@ -815,9 +815,13 @@ node running. This ordering prevents either a lost memfd owner or a caller from
 treating an unacknowledged transfer as a definite rejection.
 
 Once that private-ring stage is installed, the node may create one fresh
-branch-private control/wake pair without exposing either host continuation. The
-control endpoint is a connected empty AF_UNIX stream; the wake endpoint is an
-empty nonblocking eventfd. Their standard-QMP names are distinct and bounded:
+branch-private control/wake pair. The pair remains sealed in the source node and
+cannot be borrowed or duplicated before the fork outcome is authenticated. A
+successful fork consumes its host half into the linear branch-private plugin
+continuation described below; rejection leaves the complete pair reusable, and
+an indeterminate outcome quarantines the source. The control endpoint is a
+connected empty AF_UNIX stream; the wake endpoint is an empty nonblocking
+eventfd. Their standard-QMP names are distinct and bounded:
 
 ```text
 crucible-hfork-control-v1-<SO_COOKIE:16-lower-hex>
@@ -1399,12 +1403,19 @@ process authority.
 The Rust host boundary now makes that ordering linear. The node operation
 accepts an explicit child-process owner and returns a launch token only after
 that owner authenticates and retains the exact source PID, child PID, and
-twelve-generation request basis. The token jointly owns the process authority
-and the single branch-private QMP endpoint. Explicit command rejection leaves
-the source node and endpoint reusable; every indeterminate exchange,
-parent-disposition failure, missing endpoint, or process-retention failure
-quarantines the complete source node. A positive PID is never treated as a
-direct-child wait handle.
+thirteen-generation request basis. The token jointly owns the process
+authority, the single branch-private QMP endpoint, and one plugin host
+continuation. That continuation retains the exact private-ring descriptor, the
+host control/wake endpoints, and an independent clone of every scheduler-owned
+shared-memory cursor, pending event, coverage state, selectable continuation,
+and the same scheduler-owned topology send-authorizer capability. The source retains
+its own unchanged template state.
+Explicit command rejection leaves the source node and endpoint reusable; every
+indeterminate exchange, parent-disposition failure, missing endpoint, or
+process-retention failure quarantines the complete source node. A positive PID
+is never treated as a direct-child wait handle. Block, 9p, accelerator, console,
+and other writable host-device continuations remain separate branch-local
+cloning work; the plugin continuation does not claim to clone those owners.
 
 This is an interface checkpoint, not the concrete daemon process owner. The
 forked process is a direct child of the template QEMU rather than of the daemon.

@@ -243,6 +243,7 @@ pub use node::{
     QemuHotForkChildQmpStageError, QemuHotForkChildQmpStageProof, QemuHotForkChildQmpStageState,
     QemuHotForkCommandError, QemuHotForkLaunchError, QemuHotForkPluginEndpointStageError,
     QemuHotForkPluginEndpointStageProof, QemuHotForkPluginEndpointStageState,
+    QemuHotForkPluginHostContinuation, QemuHotForkPluginHostEndpoint,
     QemuHotForkPrivateRingMapping, QemuHotForkPrivateRingStageError,
     QemuHotForkPrivateRingStageProof, QemuHotForkPrivateRingStageState,
 };
