@@ -437,7 +437,7 @@ async fn load_organization_snapshot(
         }
         client
             .collect_pages::<_, aos_proto_types::ListBindingsResponse, _, _, _>(
-                aos_proto_types::STORAGE_SERVICE_LIST_BINDINGS_PATH,
+                aos_proto_types::BINDING_SERVICE_LIST_BINDINGS_PATH,
                 move |page_token| aos_proto_types::ListBindingsRequest {
                     owner_scope_key: binding_scope.clone(),
                     page_size: 100,
