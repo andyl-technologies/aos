@@ -32,6 +32,7 @@ pub use journal::{
     JournalRecord, JournalTransaction, RecordNamespace, RecoveryReport,
 };
 pub use ownership_authority::{
+    DurableOwnershipAuthority, DurableOwnershipAuthorityError, DurableOwnershipBeginOutcome,
     ExpectedOwnershipLease, OwnershipAuthority, OwnershipAuthorityError,
     OwnershipAuthorityVerifier, OwnershipClaimAction, OwnershipClaimError, OwnershipClaimV1,
     OwnershipLeaseAcquisitionError, SignedOwnershipLease, UnverifiedOwnershipLeaseResponse,
