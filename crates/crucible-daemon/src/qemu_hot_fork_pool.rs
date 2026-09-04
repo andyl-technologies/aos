@@ -78,7 +78,7 @@ where
     identity: Arc<()>,
     maximum_slots: usize,
     slot_count: usize,
-    slots: BTreeMap<QemuHotForkTemplateKey, Vec<F>>,
+    slots: BTreeMap<QemuHotForkTemplateKey, Vec<Option<F>>>,
     quarantine: Q,
 }
 
@@ -119,7 +119,7 @@ where
             identity: Arc::new(()),
             maximum_slots,
             slot_count: 1,
-            slots: BTreeMap::from([(key, vec![first])]),
+            slots: BTreeMap::from([(key, vec![Some(first)])]),
             quarantine,
         })
     }
@@ -139,12 +139,57 @@ where
                 factory: Box::new(factory),
             });
         }
-        self.slots
-            .entry(factory.template_key())
-            .or_default()
-            .push(factory);
+        let key = factory.template_key();
+        let slots = self.slots.entry(key).or_default();
+        if let Some(slot) = slots.iter_mut().find(|slot| slot.is_none()) {
+            *slot = Some(factory);
+        } else {
+            slots.push(Some(factory));
+        }
         self.slot_count += 1;
         Ok(())
+    }
+
+    /// Removes one idle source worker for orderly demotion or shutdown.
+    ///
+    /// The returned factory retains its exact prepared source and quarantine
+    /// owner. Removing a slot leaves a tombstone, so every outstanding sibling
+    /// lifecycle keeps the same recovery coordinate. A later insertion for the
+    /// same key may reuse that tombstone only after this method proved the old
+    /// source idle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuHotForkTemplatePoolRetirementError::MissingSlot`] when the
+    /// key or stable slot is absent, or
+    /// [`QemuHotForkTemplatePoolRetirementError::Busy`] while that source owns a
+    /// child lifecycle. No pool state changes on error.
+    pub fn retire_idle(
+        &mut self,
+        key: QemuHotForkTemplateKey,
+        slot: usize,
+    ) -> Result<F, QemuHotForkTemplatePoolRetirementError> {
+        let slots = self
+            .slots
+            .get_mut(&key)
+            .ok_or(QemuHotForkTemplatePoolRetirementError::MissingSlot { key, slot })?;
+        let factory = slots
+            .get_mut(slot)
+            .and_then(Option::as_mut)
+            .ok_or(QemuHotForkTemplatePoolRetirementError::MissingSlot { key, slot })?;
+        if !factory.template_available() {
+            return Err(QemuHotForkTemplatePoolRetirementError::Busy { key, slot });
+        }
+        let factory = slots
+            .get_mut(slot)
+            .and_then(Option::take)
+            .ok_or(QemuHotForkTemplatePoolRetirementError::MissingSlot { key, slot })?;
+        self.slot_count -= 1;
+        let remove_key = slots.iter().all(Option::is_none);
+        if remove_key {
+            self.slots.remove(&key);
+        }
+        Ok(factory)
     }
 
     /// Returns the configured hard slot ceiling.
@@ -170,7 +215,7 @@ where
     pub fn available_slot_count(&self) -> usize {
         self.slots
             .values()
-            .flatten()
+            .flat_map(|slots| slots.iter().flatten())
             .filter(|factory| factory.template_available())
             .count()
     }
@@ -267,6 +312,7 @@ where
         let (slot, factory) = factories
             .iter_mut()
             .enumerate()
+            .filter_map(|(slot, factory)| factory.as_mut().map(|factory| (slot, factory)))
             .find(|(_slot, factory)| factory.template_available())
             .ok_or_else(|| {
                 AttemptWorkerFailure::Retryable(QemuHotForkTemplatePoolError::AllTemplatesBusy {
@@ -298,6 +344,7 @@ where
             .slots
             .get_mut(&lifecycle.key)
             .and_then(|factories| factories.get_mut(lifecycle.slot))
+            .and_then(Option::as_mut)
         else {
             return Err(QemuHotForkAttemptLifecycleRecoveryError::new(
                 lifecycle,
@@ -396,6 +443,27 @@ impl<F> std::fmt::Debug for QemuHotForkTemplatePoolConstructionError<F> {
 #[must_use = "recover or quarantine the uninstalled retained source worker"]
 pub struct QemuHotForkTemplatePoolInsertionError<F> {
     factory: Box<F>,
+}
+
+/// Failure to transfer an exact source worker out of a template pool.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum QemuHotForkTemplatePoolRetirementError {
+    /// The key or stable per-key slot is not installed.
+    #[error("hot-fork template retirement names a missing source slot")]
+    MissingSlot {
+        /// Exact requested lineage/configuration key.
+        key: QemuHotForkTemplateKey,
+        /// Stable per-key slot index.
+        slot: usize,
+    },
+    /// The exact slot still owns an outstanding child lifecycle.
+    #[error("hot-fork template retirement requires an idle source slot")]
+    Busy {
+        /// Exact requested lineage/configuration key.
+        key: QemuHotForkTemplateKey,
+        /// Stable per-key slot index.
+        slot: usize,
+    },
 }
 
 impl<F> QemuHotForkTemplatePoolInsertionError<F> {
