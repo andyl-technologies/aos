@@ -8,7 +8,8 @@
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Child, Command, ExitStatus, Output};
+use std::time::Duration;
 
 #[cfg(target_os = "linux")]
 use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
@@ -17,6 +18,7 @@ use anyhow::{Context as _, Result, bail};
 use aos_contract::Sha256Digest;
 use aos_maintain::run::ConfinementEvidence;
 use serde::Serialize;
+use tokio::time::Instant;
 
 const MINIMUM_LANDLOCK_ABI: u32 = 4;
 
@@ -52,6 +54,8 @@ pub(super) struct ResourceLimits {
     pub(super) address_bytes: u64,
     /// Maximum CPU seconds per worker process.
     pub(super) cpu_seconds: u64,
+    /// Maximum controller wall seconds before killing the namespace supervisor.
+    pub(super) wall_seconds: u64,
 }
 
 impl ResourceLimits {
@@ -63,6 +67,7 @@ impl ResourceLimits {
             file_bytes: 32 * 1024 * 1024 * 1024,
             address_bytes: 256 * 1024 * 1024 * 1024,
             cpu_seconds: 6 * 60 * 60,
+            wall_seconds: 8 * 60 * 60,
         }
     }
 
@@ -74,7 +79,37 @@ impl ResourceLimits {
             file_bytes: 16 * 1024 * 1024,
             address_bytes: 128 * 1024 * 1024 * 1024,
             cpu_seconds: 45 * 60,
+            wall_seconds: 60 * 60,
         }
+    }
+}
+
+/// Waits for a confined namespace supervisor with a hard wall-time ceiling.
+///
+/// # Errors
+///
+/// Returns an error when process observation or termination fails.
+pub(super) fn wait_with_timeout(
+    child: &mut Child,
+    wall_seconds: u64,
+) -> Result<(ExitStatus, bool)> {
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(wall_seconds))
+        .ok_or_else(|| anyhow::anyhow!("confinement wall-time deadline overflow"))?;
+    loop {
+        if let Some(status) = child.try_wait().context("observing confined worker")? {
+            return Ok((status, false));
+        }
+        if Instant::now() >= deadline {
+            child
+                .kill()
+                .context("terminating timed-out confined worker")?;
+            return child
+                .wait()
+                .context("reaping timed-out confined worker")
+                .map(|status| (status, true));
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
 }
 
@@ -118,6 +153,7 @@ impl Backend {
                 uid_thread_baseline: current_uid_thread_count()?,
             };
             backend.probe_namespaces()?;
+            probe_nix_sandbox()?;
             Ok(backend)
         }
     }
@@ -220,7 +256,7 @@ impl Backend {
         Ok((
             command,
             ConfinementEvidence {
-                backend: "aos.linux-userns-landlock/v1".to_string(),
+                backend: "aos.linux-userns-landlock/v2".to_string(),
                 landlock_abi: self.landlock_abi,
                 filesystem_policy_digest: policy_digest,
                 resource_limits_digest,
@@ -229,6 +265,7 @@ impl Backend {
                 network_isolated: true,
                 worker_tree_reaped: true,
                 resource_limited: true,
+                nix_sandbox_verified: true,
             },
         ))
     }
@@ -254,6 +291,30 @@ impl Backend {
         }
         Ok(())
     }
+}
+
+fn probe_nix_sandbox() -> Result<()> {
+    let search = std::env::var_os("PATH")
+        .ok_or_else(|| anyhow::anyhow!("PATH is unavailable for the Nix sandbox probe"))?;
+    let executable = std::env::split_paths(&search)
+        .map(|directory| directory.join("nix"))
+        .find(|candidate| candidate.is_file())
+        .ok_or_else(|| anyhow::anyhow!("the AOS Nix client is unavailable"))?
+        .canonicalize()
+        .context("resolving the AOS Nix client")?;
+    if !executable.starts_with("/nix/store") {
+        bail!("the confinement backend requires an immutable AOS Nix client");
+    }
+    let output = Command::new(executable)
+        .args(["config", "show", "sandbox"])
+        .env_clear()
+        .env("HOME", "/var/empty")
+        .output()
+        .context("probing Nix build sandbox policy")?;
+    if !output.status.success() || output.stdout != b"true\n" {
+        bail!("the configured Nix daemon does not require build sandboxing");
+    }
+    Ok(())
 }
 
 fn configured_executable(variable: &str) -> Result<PathBuf> {

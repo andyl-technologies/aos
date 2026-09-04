@@ -28,7 +28,7 @@ pub(super) fn candidate_digest(
     let retained_digest = Sha256Digest::separated("aos.package-update-patch/v1", &retained);
     let diff = git(
         Path::new(&run.worktree),
-        &["diff", "--no-ext-diff", "--full-index", "--"],
+        &["diff", "--no-ext-diff", "--full-index", "HEAD", "--"],
     )?;
     if !diff.status.success()
         || Sha256Digest::separated("aos.package-update-patch/v1", &diff.stdout) != retained_digest
@@ -85,6 +85,10 @@ pub(super) fn commit_candidate(
         .flat_map(|unit| unit.semantic_mutations.iter())
         .map(|mutation| mutation.owner.as_str())
         .collect::<std::collections::BTreeSet<_>>();
+    let index = git(root, &["diff", "--cached", "--quiet", "--exit-code", "--"])?;
+    if !index.status.success() {
+        bail!("candidate index is not clean before the commit effect");
+    }
     let mut add = Command::new("git");
     add.arg("-C")
         .arg(root)
@@ -122,11 +126,34 @@ pub(super) fn commit_candidate(
         .status()
         .context("committing accepted candidate")?;
     if !status.success() {
+        restore_unstaged_candidate(root, &owners)?;
         bail!("Git could not commit the accepted candidate");
     }
     let commit = reconcile_created_commit(plan, run, accepted)?;
     finish_commit(store, run, commit.clone())?;
     Ok(commit)
+}
+
+fn restore_unstaged_candidate(
+    root: &Path,
+    owners: &std::collections::BTreeSet<&str>,
+) -> Result<()> {
+    let mut reset = Command::new("git");
+    reset
+        .arg("-C")
+        .arg(root)
+        .args(["reset", "--quiet", "HEAD", "--"])
+        .args(owners)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_TERMINAL_PROMPT", "0");
+    if !reset
+        .status()
+        .context("restoring the candidate index after a failed commit")?
+        .success()
+    {
+        bail!("Git commit failed and the candidate index could not be restored");
+    }
+    Ok(())
 }
 
 fn reconcile_created_commit(

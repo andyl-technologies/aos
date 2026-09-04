@@ -63,23 +63,30 @@ not stop a same-UID process from opening the maintainer's files, `/proc`, user
 sockets, or sibling processes. A conforming backend therefore enforces an OS
 boundary and owns/reaps the complete worker process tree.
 
-The initial Linux backend must provide:
+The initial Linux backend provides:
 
-- a separate subordinate UID plus private user, mount, PID, IPC, UTS, and
-  network namespaces;
-- a minimal read-only input view and writable scratch/output mounts with no
-  maintainer home, Git common directory, state directory, agent/signing sockets,
-  or unrelated paths;
-- a private `/proc`, no host device access except an explicitly planned KVM
-  capability, no privilege escalation, and a bounded syscall/device policy;
-- cgroup resource limits and pidfd/cgroup-based termination/reaping before any
-  privileged local phase;
-- default-deny network; networked materializers receive only a constrained
-  egress proxy/namespace whose destination and redirect policy is enforced
-  outside the worker;
-- a private Nix evaluation/build context and store/daemon boundary, optionally
-  reading a verified cache, rather than arbitrary access to the maintainer's
-  host Nix daemon socket.
+- private user, mount, PID, IPC, UTS, and network namespaces, with namespace
+  root mapped only to the invoking unprivileged host UID;
+- Landlock ABI 4 enforcement over a minimal read-only input view and writable
+  scratch paths, with no maintainer home, Git common directory, state directory,
+  agent/signing sockets, or unrelated paths;
+- a private `/proc` and no host device access beyond explicitly granted
+  character devices;
+- process, descriptor, file-size, address-space, CPU, output, and controller
+  wall-time limits, with the namespace supervisor configured to kill its child
+  tree when it exits;
+- default-deny worker networking; the trusted controller performs declared
+  HTTPS source retrieval and enforces the planned host and redirect allowlist;
+- read-only access to immutable `/nix/store` inputs and narrowly scoped access
+  to the Nix daemon socket only for Nix operations. The controller verifies
+  mandatory Nix build sandboxing, supplies a synthetic home, clears client
+  configuration, and forces the daemon transport before executing a candidate.
+
+The evidence distinguishes the namespace worker from daemon-side builds. It
+does not claim that a mapped namespace UID is a subordinate host UID, that
+per-process rlimits are cgroups, or that killing a Nix client directly reaps a
+daemon process. A future backend may add subordinate IDs, cgroup v2 ownership,
+or a private store without changing the higher-level capability contract.
 
 On Darwin, where an equivalent combination cannot be enforced for arbitrary
 upstream code, the required backend is a disposable local VM with the same
@@ -182,8 +189,8 @@ The agent's file tools operate on a bounded disposable view, not the real Git
 worktree or repository control directory. The mutation gateway applies its
 patch after validation.
 
-Nix builds use the confined private Nix context plus AOS's existing package
-sandbox and declared dependencies. No package build reads host tools, host
+Nix clients use the confined namespace and delegate builds to AOS's verified
+sandboxed Nix daemon with declared dependencies. No package build reads host tools, host
 `/bin`/`/usr/bin`, nixpkgs, the maintainer home, or network. Tests needing KVM
 receive only the documented device capability and test inputs, not arbitrary
 host mounts or credentials.

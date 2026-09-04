@@ -375,6 +375,7 @@ pub fn verify_journal(events: &[JournalEvent]) -> Result<RunState> {
     let run_id = &first.run_id;
     let mut previous = None;
     let mut state = None;
+    let mut completed_intents = std::collections::BTreeSet::new();
 
     for (index, event) in events.iter().enumerate() {
         event.verify()?;
@@ -389,6 +390,25 @@ pub fn verify_journal(events: &[JournalEvent]) -> Result<RunState> {
         }
         if event.previous_record_digest != previous {
             bail!("maintenance journal digest chain is broken at {expected_sequence}");
+        }
+        if let JournalPayload::EffectResult {
+            intent_sequence, ..
+        } = event.payload
+        {
+            let intent_index = intent_sequence
+                .checked_sub(1)
+                .and_then(|value| usize::try_from(value).ok())
+                .ok_or_else(|| anyhow::anyhow!("effect result has an invalid intent sequence"))?;
+            let intent = events
+                .get(intent_index)
+                .ok_or_else(|| anyhow::anyhow!("effect result references an absent intent"))?;
+            if intent.journal_sequence >= event.journal_sequence
+                || intent.operation != event.operation
+                || !matches!(intent.payload, JournalPayload::EffectIntent { .. })
+                || !completed_intents.insert(intent_sequence)
+            {
+                bail!("effect result does not close one prior matching intent");
+            }
         }
         if let JournalPayload::Transition { from, to } = event.payload {
             if state.is_none() && from != RunState::Observed {

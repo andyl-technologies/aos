@@ -1304,6 +1304,7 @@
           if local
           then "low"
           else "high";
+        repairScope = [];
       };
     }
     // lib.optionalAttrs (!local) {
@@ -1319,12 +1320,19 @@
     builtins.map (
       name: let
         package = self.${name};
+        declared =
+          if
+            builtins.isAttrs package
+            && package ? passthru.aos.maintenance
+          then builtins.removeAttrs package.passthru.aos.maintenance ["schema"]
+          else fallbackMaintenanceUnit name package;
+        eligiblePlatforms = builtins.sort builtins.lessThan (builtins.filter (
+            system:
+              builtins.all (member: platformSupport.supportsTarget system member) declared.members
+          )
+          platformSupport.canonicalSystems);
       in
-        if
-          builtins.isAttrs package
-          && package ? passthru.aos.maintenance
-        then builtins.removeAttrs package.passthru.aos.maintenance ["schema"]
-        else fallbackMaintenanceUnit name package
+        declared // {platforms = eligiblePlatforms;}
     )
     packageNames;
   maintenanceUnitIndex =

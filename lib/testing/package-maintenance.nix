@@ -142,7 +142,7 @@ in
   )
   pkgs.packageNames;
   assert zlibUnit.members == ["zlib"];
-  assert zlibUnit.platforms == [pkgs.stdenv.hostPlatform.system];
+  assert zlibUnit.platforms == builtins.sort builtins.lessThan pkgs.platformSupport.canonicalSystems;
     lib.throwIfNot
     (builtins.head pkgs.zlib.src.urls == "https://zlib.net/zlib-${zlibUnit.package.currentVersion}.tar.xz")
     "zlib derivation source diverged from its maintenance metadata"

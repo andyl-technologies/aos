@@ -42,6 +42,15 @@ pub(super) struct OperationLease {
     _file: File,
 }
 
+/// Durable owner preimage written before deterministic materialization edits.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub(super) struct MaterializationPreimage {
+    pub(super) path: String,
+    pub(super) mode: u32,
+    pub(super) contents: String,
+}
+
 impl StateStore {
     /// Opens the repository namespace and creates protected directories.
     pub(super) fn open(
@@ -359,6 +368,80 @@ impl StateStore {
         atomic_write(&attempt, "materialization.json", record)
     }
 
+    /// Stores immutable owner preimages before the first materialization edit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the set is empty, oversized, unsafe, or conflicts
+    /// with a previously written intent.
+    pub(super) fn write_materialization_intent(
+        &self,
+        run: &PackageUpdateRunV1,
+        preimages: &[MaterializationPreimage],
+    ) -> Result<()> {
+        if preimages.is_empty() || preimages.len() > 64 {
+            bail!("materialization preimage set is empty or oversized");
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for preimage in preimages {
+            if !preimage.path.starts_with("pkgs/")
+                || !seen.insert(preimage.path.as_str())
+                || preimage.contents.len() as u64 > MAX_STATE_DOCUMENT_BYTES
+            {
+                bail!("materialization preimage is unsafe or duplicated");
+            }
+        }
+        let directory = self.run_directory(run.run_id.as_str())?.join("attempts/0");
+        secure_directory(&directory)?;
+        write_immutable(
+            &directory,
+            "materialization-intent.json",
+            &preimages.to_vec(),
+        )
+    }
+
+    /// Reads owner preimages retained for interrupted materialization recovery.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when retained intent state is malformed.
+    pub(super) fn read_materialization_intent(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<Vec<MaterializationPreimage>>> {
+        let path = self
+            .run_directory(run_id)?
+            .join("attempts/0/materialization-intent.json");
+        let Some(preimages): Option<Vec<MaterializationPreimage>> =
+            read_optional(&path, "materialization intent")?
+        else {
+            return Ok(None);
+        };
+        if preimages.is_empty() || preimages.len() > 64 {
+            bail!("materialization intent is empty or oversized");
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for preimage in &preimages {
+            let path = Path::new(&preimage.path);
+            if !preimage.path.starts_with("pkgs/")
+                || path.is_absolute()
+                || path.components().any(|component| {
+                    matches!(
+                        component,
+                        std::path::Component::ParentDir
+                            | std::path::Component::CurDir
+                            | std::path::Component::RootDir
+                    )
+                })
+                || !seen.insert(preimage.path.as_str())
+                || preimage.contents.len() as u64 > MAX_STATE_DOCUMENT_BYTES
+            {
+                bail!("materialization intent contains an unsafe preimage");
+            }
+        }
+        Ok(Some(preimages))
+    }
+
     /// Reads deterministic materialization evidence for a run, when present.
     pub(super) fn read_materialization(
         &self,
@@ -652,6 +735,38 @@ impl StateStore {
         write_immutable(&directory, "repair.json", record)
     }
 
+    /// Reads the complete ordered accepted repair lineage for one run.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an expected attempt is absent, malformed, or
+    /// does not form the run's exact monotonic lineage.
+    pub(super) fn read_repair_attempts(
+        &self,
+        run: &PackageUpdateRunV1,
+    ) -> Result<Vec<RepairAttemptV1>> {
+        let mut records = Vec::with_capacity(run.attempt as usize);
+        for attempt in 1..=run.attempt {
+            let path = self
+                .run_directory(run.run_id.as_str())?
+                .join("attempts")
+                .join(attempt.to_string())
+                .join("repair.json");
+            let record: RepairAttemptV1 = read_optional(&path, "repair attempt")?
+                .ok_or_else(|| anyhow::anyhow!("repair attempt {attempt} is missing"))?;
+            record.validate()?;
+            if record.run_id != run.run_id
+                || record.plan_id != run.plan_id
+                || record.attempt != attempt
+                || record.parent_attempt.checked_add(1) != Some(attempt)
+            {
+                bail!("repair attempt lineage disagrees with its run");
+            }
+            records.push(record);
+        }
+        Ok(records)
+    }
+
     /// Stores the immutable final local evidence dossier.
     pub(super) fn write_evidence(
         &self,
@@ -794,6 +909,105 @@ impl StateStore {
             run.state = next;
             run.updated_at_unix = now_unix;
             self.write_run(run)
+        })
+    }
+
+    /// Appends a durable request before an external effect begins.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the journal disagrees with the run or the event
+    /// cannot be appended atomically.
+    pub(super) fn effect_intent(
+        &self,
+        run: &PackageUpdateRunV1,
+        operation: &str,
+        actor: ActorClass,
+        request: Sha256Digest,
+    ) -> Result<u64> {
+        self.append_effect_event(
+            run,
+            operation,
+            actor,
+            JournalPayload::EffectIntent { request },
+        )
+    }
+
+    /// Appends the observed result of one durable external-effect request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the intent is absent or mismatched, the journal
+    /// disagrees with the run, or the event cannot be appended atomically.
+    pub(super) fn effect_result(
+        &self,
+        run: &PackageUpdateRunV1,
+        operation: &str,
+        actor: ActorClass,
+        intent_sequence: u64,
+        outcome: aos_maintain::workflow::GateOutcome,
+        output: Option<Sha256Digest>,
+    ) -> Result<u64> {
+        let events = self.read_journal(run.run_id.as_str())?;
+        let intent = events
+            .iter()
+            .find(|event| event.journal_sequence == intent_sequence)
+            .ok_or_else(|| anyhow::anyhow!("effect intent is absent from the journal"))?;
+        if intent.operation.as_str() != operation
+            || !matches!(intent.payload, JournalPayload::EffectIntent { .. })
+        {
+            bail!("effect result does not match its journaled intent");
+        }
+        self.append_effect_event(
+            run,
+            operation,
+            actor,
+            JournalPayload::EffectResult {
+                intent_sequence,
+                outcome,
+                output,
+            },
+        )
+    }
+
+    fn append_effect_event(
+        &self,
+        run: &PackageUpdateRunV1,
+        operation: &str,
+        actor: ActorClass,
+        payload: JournalPayload,
+    ) -> Result<u64> {
+        self.with_repository_lock(|| {
+            let events = self.read_journal(run.run_id.as_str())?;
+            if verify_journal(&events)? != run.state {
+                bail!("run projection disagrees with its journal");
+            }
+            let sequence = u64::try_from(events.len())
+                .context("journal length overflow")?
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("journal sequence overflow"))?;
+            let event = JournalEvent::new(
+                sequence,
+                events.last().map(|event| event.record_digest),
+                run.run_id.clone(),
+                Some(run.attempt),
+                aos_maintain::identity::OperationId::parse(operation)?,
+                actor,
+                EventBindings {
+                    plan: Some(run.plan_digest),
+                    tree: run.accepted_candidate,
+                    head: run.candidate_commit.as_ref().map(|commit| {
+                        Sha256Digest::separated(
+                            "aos.package-update-commit/v1",
+                            commit.value.as_bytes(),
+                        )
+                    }),
+                },
+                payload,
+                format!("unix:{}", now_unix()?),
+            )?;
+            self.append_journal_event(run.run_id.as_str(), &event)?;
+            Ok(sequence)
         })
     }
 
@@ -1366,7 +1580,7 @@ mod tests {
             phase: "quick".to_string(),
             candidate_digest: Sha256Digest::of_bytes(b"candidate"),
             confinement: ConfinementEvidence {
-                backend: "aos.linux-userns-landlock/v1".to_string(),
+                backend: "aos.linux-userns-landlock/v2".to_string(),
                 landlock_abi: 4,
                 filesystem_policy_digest: Sha256Digest::of_bytes(b"fs"),
                 resource_limits_digest: Sha256Digest::of_bytes(b"limits"),
@@ -1375,6 +1589,7 @@ mod tests {
                 network_isolated: true,
                 worker_tree_reaped: true,
                 resource_limited: true,
+                nix_sandbox_verified: true,
             },
             results: vec![GateResult {
                 gate_id: "fmt".to_string(),

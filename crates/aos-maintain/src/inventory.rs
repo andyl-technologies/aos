@@ -195,6 +195,18 @@ impl UpdateUnit {
         }
         require_strict_order(&self.members, "member", &self.unit_id)?;
         require_strict_strings(&self.platforms, "platform", &self.unit_id)?;
+        require_strict_strings(&self.policy.repair_scope, "repair scope", &self.unit_id)?;
+        if self.policy.repair_scope.iter().any(|field| {
+            field.len() > 128
+                || !field.bytes().enumerate().all(|(index, byte)| {
+                    byte == b'_'
+                        || byte == b'-'
+                        || byte.is_ascii_alphabetic()
+                        || (index > 0 && byte.is_ascii_digit())
+                })
+        }) {
+            bail!("unit {} has an invalid repair-scope field", self.unit_id);
+        }
 
         let upstream = matches!(
             self.classification,
@@ -763,6 +775,9 @@ pub struct UnitPolicy {
     /// Optional succeeding unit for concurrent-stream reporting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub successor_unit: Option<UnitId>,
+    /// Package-builder attribute values an accepted repair may change.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repair_scope: Vec<String>,
 }
 
 /// Describes the supported lifetime of an update stream.

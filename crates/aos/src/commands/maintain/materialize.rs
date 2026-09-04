@@ -27,8 +27,8 @@ use futures_util::StreamExt as _;
 use sha2::{Digest as _, Sha256};
 use url::Url;
 
-use super::confinement::{Backend, ResourceLimits};
-use super::state::{self, StateStore};
+use super::confinement::{Backend, ResourceLimits, wait_with_timeout};
+use super::state::{self, MaterializationPreimage, StateStore};
 use super::{inventory, mutation};
 
 const MAX_SOURCE_BYTES: u64 = 16 * 1024 * 1024 * 1024;
@@ -102,6 +102,9 @@ pub(super) async fn execute(
         }
         return Ok(record);
     }
+    if run.state == RunState::Materializing {
+        reconcile_interrupted_materialization(store, run, plan)?;
+    }
     ensure_clean_base(&root, plan, &run.branch)?;
     let backend = Backend::detect().context("verifying local materialization confinement")?;
     let scratch = store.scratch_directory(run.run_id.as_str(), "materialize")?;
@@ -109,7 +112,7 @@ pub(super) async fn execute(
         &root,
         &scratch,
         &backend,
-        &[
+        [
             "--eval",
             "--strict",
             "--json",
@@ -160,6 +163,23 @@ pub(super) async fn execute(
         .flat_map(|(_, mutations)| mutations.iter().cloned())
         .collect::<Vec<_>>();
     let originals = capture_owner_files(&root, &mutations)?;
+    let preimages = originals
+        .iter()
+        .map(|(path, mode, contents)| {
+            Ok(MaterializationPreimage {
+                path: path
+                    .strip_prefix(&root)
+                    .context("materialization owner escaped its worktree")?
+                    .to_str()
+                    .ok_or_else(|| anyhow::anyhow!("materialization owner is not UTF-8"))?
+                    .to_string(),
+                mode: *mode,
+                contents: String::from_utf8(contents.clone())
+                    .context("materialization owner is not UTF-8")?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    store.write_materialization_intent(run, &preimages)?;
     let materialized = (|| {
         let mutation_activity = printer.activity("Apply exact package metadata updates");
         for (unit, mutations) in &unit_mutations {
@@ -207,6 +227,48 @@ pub(super) async fn execute(
         state::now_unix()?,
     )?;
     Ok(record)
+}
+
+fn reconcile_interrupted_materialization(
+    store: &StateStore,
+    run: &PackageUpdateRunV1,
+    plan: &PackageUpdatePlanV1,
+) -> Result<()> {
+    let root = Path::new(&run.worktree);
+    let Some(preimages) = store.read_materialization_intent(run.run_id.as_str())? else {
+        return ensure_clean_base(root, plan, &run.branch);
+    };
+    let head = git_text(root, &["rev-parse", "--verify", "HEAD^{commit}"])?;
+    let branch = git_text(root, &["branch", "--show-current"])?;
+    if head != plan.base_commit.value || branch != run.branch {
+        bail!("interrupted materialization no longer has its planned base and branch");
+    }
+    let changed = git(root, &["diff", "--name-only", "-z", "HEAD", "--"])?;
+    let untracked = git(root, &["ls-files", "--others", "--exclude-standard", "-z"])?;
+    if !changed.status.success() || !untracked.status.success() || !untracked.stdout.is_empty() {
+        bail!("interrupted materialization contains state requiring human reconciliation");
+    }
+    let changed = changed
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|value| !value.is_empty())
+        .map(|value| String::from_utf8(value.to_vec()).context("changed path is not UTF-8"))
+        .collect::<Result<BTreeSet<_>>>()?;
+    let owned = preimages
+        .iter()
+        .map(|preimage| preimage.path.clone())
+        .collect::<BTreeSet<_>>();
+    if !changed.is_subset(&owned) {
+        bail!("interrupted materialization changed a path outside its durable intent");
+    }
+    for preimage in preimages {
+        replace_file(
+            &root.join(&preimage.path),
+            preimage.mode,
+            preimage.contents.as_bytes(),
+        )?;
+    }
+    ensure_clean_base(root, plan, &run.branch)
 }
 
 fn resolve_artifacts(
@@ -466,6 +528,7 @@ fn configure_nix_command(command: &mut Command, root: &Path, scratch: &Path) -> 
         .env("HOME", home)
         .env("TMPDIR", temporary)
         .env("XDG_CACHE_HOME", cache)
+        .env("NIX_REMOTE", "daemon")
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdout(Stdio::piped())
@@ -476,8 +539,6 @@ fn configure_nix_command(command: &mut Command, root: &Path, scratch: &Path) -> 
         "LOGNAME",
         "LANG",
         "LC_ALL",
-        "NIX_REMOTE",
-        "NIX_CONFIG",
         "NIX_SSL_CERT_FILE",
         "SSL_CERT_FILE",
     ] {
@@ -547,13 +608,16 @@ fn bounded_output(
         .ok_or_else(|| anyhow::anyhow!("artifact stderr was not captured"))?;
     let stdout_reader = std::thread::spawn(move || bounded_read(stdout));
     let stderr_reader = std::thread::spawn(move || bounded_read(stderr));
-    let status = child.wait().context("waiting for artifact materializer")?;
+    let (status, timed_out) = wait_with_timeout(&mut child, ResourceLimits::gates().wall_seconds)?;
     let (stdout, stdout_truncated) = stdout_reader
         .join()
         .map_err(|_| anyhow::anyhow!("artifact stdout reader panicked"))??;
     let (stderr, stderr_truncated) = stderr_reader
         .join()
         .map_err(|_| anyhow::anyhow!("artifact stderr reader panicked"))??;
+    if timed_out {
+        bail!("artifact materializer exceeded its wall-time budget");
+    }
     Ok((status, stdout, stderr, stdout_truncated || stderr_truncated))
 }
 
@@ -751,8 +815,7 @@ fn apply_mutations(root: &Path, unit_id: &str, mutations: &[SemanticMutation]) -
         staged.push((path, metadata.permissions().mode(), original, formatted));
     }
 
-    let mut replaced = 0_usize;
-    for (path, mode, _, formatted) in &staged {
+    for (replaced, (path, mode, _, formatted)) in staged.iter().enumerate() {
         if let Err(error) = replace_file(path, *mode, formatted.as_bytes()) {
             for (rollback_path, rollback_mode, original, _) in staged[..replaced].iter().rev() {
                 replace_file(rollback_path, *rollback_mode, original.as_bytes()).with_context(
@@ -762,7 +825,6 @@ fn apply_mutations(root: &Path, unit_id: &str, mutations: &[SemanticMutation]) -
             return Err(error)
                 .with_context(|| format!("replacing package owner {}", path.display()));
         }
-        replaced += 1;
     }
     Ok(())
 }

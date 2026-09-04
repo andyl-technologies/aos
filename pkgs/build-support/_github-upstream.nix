@@ -17,6 +17,7 @@
   source,
   artifacts ? {},
   riskFloor ? "normal",
+  repairScope ? [],
   lifecycle ? "supported",
   successorUnit ? null,
   cohort ? null,
@@ -27,7 +28,7 @@
     else {repology.project = repology;};
   policy =
     {
-      inherit lifecycle riskFloor;
+      inherit lifecycle riskFloor repairScope;
     }
     // (
       if successorUnit == null

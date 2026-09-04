@@ -139,6 +139,12 @@ pub(super) fn accept(
         .ok_or_else(|| anyhow::anyhow!("repair proposal has no writable owner"))?;
     let candidate_path = scratch.join("apply-view").join(owner);
     let candidate = fs::read(&candidate_path).context("reading gateway candidate output")?;
+    let unit_plan = plan.single_unit()?;
+    super::mutation::validate_repair_scope(
+        std::str::from_utf8(&original).context("repair owner preimage is not UTF-8")?,
+        std::str::from_utf8(&candidate).context("repair owner candidate is not UTF-8")?,
+        &unit_plan.repair_scope,
+    )?;
     let real_path = root.join(owner);
     if let Err(error) = atomic_replace(&real_path, &candidate)
         .and_then(|()| {
@@ -209,6 +215,12 @@ fn build_task(
     view: &Path,
 ) -> Result<AgentTaskV1> {
     let unit_plan = plan.single_unit()?;
+    if unit_plan.repair_scope.is_empty() {
+        bail!(
+            "unit {} declares no semantic repair scope; update its mkUpstream policy and create a new plan",
+            unit_plan.unit_id
+        );
+    }
     let inventory = store
         .read_inventory()?
         .ok_or_else(|| anyhow::anyhow!("repair inventory is unavailable"))?;

@@ -317,7 +317,7 @@ in
     classification = requireEnum "classification" ["automatic" "assisted"] checked.classification;
     package = assertFields "package" ["currentVersion" "versionProjection"] [] checked.package;
     projection = assertFields "package.versionProjection" ["kind" "component" "field"] [] package.versionProjection;
-    policy = assertFields "policy" ["lifecycle" "riskFloor"] ["successorUnit"] checked.policy;
+    policy = assertFields "policy" ["lifecycle" "riskFloor"] ["repairScope" "successorUnit"] checked.policy;
     normalizedComponents = builtins.mapAttrs (normalizeComponent checked.components) checked.components;
     componentMetadata = builtins.mapAttrs (_: value: value.metadata) normalizedComponents;
     normalizedArtifacts = builtins.mapAttrs (normalizeArtifact componentMetadata (checked.artifacts or {})) (checked.artifacts or {});
@@ -354,6 +354,7 @@ in
         {
           lifecycle = requireEnum "policy.lifecycle" ["supported" "security-only" "frozen" "retiring"] policy.lifecycle;
           riskFloor = requireEnum "policy.riskFloor" ["low" "normal" "high" "critical"] policy.riskFloor;
+          repairScope = requireSortedStrings "policy.repairScope" (policy.repairScope or []);
         }
         // lib.optionalAttrs (policy ? successorUnit) {
           successorUnit = requireString "policy.successorUnit" policy.successorUnit;

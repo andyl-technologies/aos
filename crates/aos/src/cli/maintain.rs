@@ -168,6 +168,10 @@ pub struct MaintainRunArgs {
     #[arg(long, value_name = "PLAN", required_unless_present_any = ["unit", "campaign"])]
     pub plan: Option<String>,
 
+    /// Confirm the exact immutable plan digest before creating a worktree
+    #[arg(long, value_name = "DIGEST")]
+    pub confirm_plan: Option<String>,
+
     /// Stop after reaching this durable boundary
     #[arg(long, value_enum, default_value_t = MaintainRunUntil::QuickGated)]
     pub until: MaintainRunUntil,
@@ -414,6 +418,23 @@ mod tests {
         assert!(
             Cli::try_parse_from(["aos", "maintain", "run", "--campaign", "llvm-suite"]).is_ok()
         );
+        let confirmed = Cli::try_parse_from([
+            "aos",
+            "maintain",
+            "run",
+            "--plan",
+            "plan-fixture",
+            "--confirm-plan",
+            "sha256:fixture",
+        ])
+        .expect("plan confirmation should parse");
+        let Commands::Maintain(args) = confirmed.command else {
+            panic!("expected maintain command");
+        };
+        let Some(MaintainCommand::Run(run)) = args.command else {
+            panic!("expected run command");
+        };
+        assert_eq!(run.confirm_plan.as_deref(), Some("sha256:fixture"));
         assert!(
             Cli::try_parse_from([
                 "aos",
