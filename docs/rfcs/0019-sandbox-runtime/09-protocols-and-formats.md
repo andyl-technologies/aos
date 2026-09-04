@@ -322,6 +322,25 @@ require an exact query before retry; resource exhaustion awaits an explicit
 state transition; integrity failure quarantines; and correctable request or
 identity failures do not become automatic retries.
 
+The first service adapter is transport-neutral. It dispatches an already
+negotiated and validated envelope onto the protected durable authority. Query
+only observes the exact request-ID/claim-digest binding; Begin only commits an
+unsigned intent; and CompleteOrResume queries that binding under the same
+exclusive authority borrow before contacting the issuer. An absent completion
+returns NotFound, a completed transaction replays its exact four artifacts, and
+only a still-pending transaction may reach the issuer and protected authority
+clock. Journal recovery, Query, and completed replay never contact the issuer;
+explicit completion of a recovered pending intent may do so idempotently.
+
+An in-process adapter composes controller and service only when they share one
+trusted computing base; it is not a security boundary and conveys no synthetic
+peer-authentication token. A Unix carrier must authenticate and authorize peer
+credentials and service identity, enforce the negotiated frame ceiling before
+allocation, and validate hostile request parts before dispatch. A future
+authenticated remote carrier supplies its own principal and channel security
+to the same semantic handler. Socket paths, credentials, framing, and remote
+identity therefore remain outside the portable ownership protocol.
+
 ## Node-local broker protocols
 
 Privileged brokers listen only on protected Unix `SOCK_SEQPACKET` sockets. The

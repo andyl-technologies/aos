@@ -11,6 +11,7 @@ pub mod dispatch;
 pub mod journal;
 pub mod ownership_authority;
 pub mod ownership_resume;
+pub mod ownership_service;
 pub mod publication;
 pub mod reconciler;
 
@@ -34,14 +35,18 @@ pub use journal::{
 };
 pub use ownership_authority::{
     DurableOwnershipAuthority, DurableOwnershipAuthorityError, DurableOwnershipBeginOutcome,
-    ExpectedOwnershipLease, OwnershipAuthority, OwnershipAuthorityError,
-    OwnershipAuthorityVerifier, OwnershipClaimAction, OwnershipClaimError, OwnershipClaimV1,
-    OwnershipLeaseAcquisitionError, OwnershipTransactionReceiptV1, ProtectedOwnershipClockError,
-    RecoveredOwnershipLease, SignedOwnershipLease, UnverifiedOwnershipLeaseResponse,
+    DurableOwnershipQueryOutcome, ExpectedOwnershipLease, OwnershipAuthority,
+    OwnershipAuthorityError, OwnershipAuthorityVerifier, OwnershipClaimAction, OwnershipClaimError,
+    OwnershipClaimV1, OwnershipLeaseAcquisitionError, OwnershipTransactionReceiptV1,
+    ProtectedOwnershipClockError, RecoveredOwnershipLease, SignedOwnershipLease,
+    UnverifiedOwnershipLeaseResponse,
 };
 pub use ownership_resume::{
     OwnershipAuthoritySessionClient, OwnershipClockObservationError, OwnershipResumeError,
     OwnershipResumeOutcomeV1, OwnershipSessionTransportError, UntrustedOwnershipResponsePartsV1,
+};
+pub use ownership_service::{
+    DurableOwnershipProtocolService, InProcessOwnershipSessionClient, OwnershipProtocolServiceError,
 };
 pub use publication::{
     AuthorityPublicationDraftV1, AuthorityPublicationError, AuthorityPublicationOutcome,

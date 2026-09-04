@@ -20,6 +20,7 @@ use std::path::Path;
 
 use aos_sandbox_core::model::KeyReference;
 use aos_sandbox_core::{ObjectDigest, RawPairedClockSample, SandboxId};
+use aos_sandbox_ownership_protocol::protocol::OwnershipTransactionReferenceV1;
 pub use aos_sandbox_ownership_protocol::{
     CLAIM_BYTES, ExpectedOwnershipLease, OwnershipAuthority, OwnershipAuthorityError,
     OwnershipAuthorityVerifier, OwnershipClaimAction, OwnershipClaimError, OwnershipClaimV1,
@@ -123,6 +124,20 @@ pub enum DurableOwnershipBeginOutcome {
     Replay(Box<UnverifiedOwnershipLeaseResponse>),
 }
 
+/// Describes one exact durable ownership transaction observation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DurableOwnershipQueryOutcome {
+    /// No request with this identity exists in the protected authority state.
+    Absent,
+    /// The exact claim is durable but has no committed completion.
+    Pending {
+        /// The immutable action needed to classify a later CAS conflict.
+        action: OwnershipClaimAction,
+    },
+    /// The exact completed four-artifact response is durable.
+    Completed(Box<UnverifiedOwnershipLeaseResponse>),
+}
+
 #[derive(Clone, Debug)]
 enum DurableEntryState {
     Intent,
@@ -199,6 +214,42 @@ impl DurableOwnershipAuthority {
             verifier,
             entries,
             current,
+        })
+    }
+
+    /// Returns the exact protected ownership-authority key generation.
+    #[must_use]
+    pub const fn authority(&self) -> &KeyReference {
+        self.verifier.authority()
+    }
+
+    /// Observes one exact durable request and claim binding.
+    ///
+    /// This method performs no issuer call, clock read, journal write, or live
+    /// authority check. A completed response is historical replay material and
+    /// remains non-authorizing until independently verified at its use site.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurableOwnershipAuthorityError::IdempotencyConflict`] when
+    /// the request identity exists but is bound to another claim digest.
+    pub fn query(
+        &self,
+        reference: OwnershipTransactionReferenceV1,
+    ) -> Result<DurableOwnershipQueryOutcome, DurableOwnershipAuthorityError> {
+        let Some(entry) = self.entries.get(reference.request_id()) else {
+            return Ok(DurableOwnershipQueryOutcome::Absent);
+        };
+        if entry.claim.digest() != reference.claim_digest() {
+            return Err(DurableOwnershipAuthorityError::IdempotencyConflict);
+        }
+        Ok(match &entry.state {
+            DurableEntryState::Intent => DurableOwnershipQueryOutcome::Pending {
+                action: entry.claim.action(),
+            },
+            DurableEntryState::Completed { lease, .. } => {
+                DurableOwnershipQueryOutcome::Completed(Box::new(lease.exact_response()))
+            }
         })
     }
 
@@ -892,12 +943,23 @@ mod tests {
     use aos_sandbox_core::{
         AssignmentEpoch, DecodeLimits, DesiredGeneration, IncarnationId, LeaseAssignment,
         MediaType, NodeId, OwnershipLease, OwnershipLeaseTrustAnchor, PortableMediaType,
-        RawClockProvenance, TrustScopeId, descriptor_for_bytes, sign_statement,
+        ProtocolVersion, RawClockProvenance, TrustScopeId, descriptor_for_bytes, sign_statement,
+    };
+    use aos_sandbox_ownership_protocol::protocol::{
+        MAXIMUM_OWNERSHIP_RESPONSE_BYTES, NegotiatedOwnershipSessionV1, OwnershipClientHelloV1,
+        OwnershipMethodV1, OwnershipProtocolValidationError, OwnershipRequestBodyV1,
+        OwnershipResponseOutcomeV1, OwnershipTransactionReferenceV1, OwnershipTransactionStatusV1,
     };
     use ed25519_dalek::SigningKey;
 
     use super::*;
     use crate::journal::IdempotencyKey;
+    use crate::publication::tests::{activation_claim, activation_fixture};
+    use crate::{
+        ActivatedOperationCompiler, EffectDomain, EffectFailure, EffectObservation, EffectPlan,
+        EffectReceipt, NodeController, NodeControllerLimits, OperationCompilationError,
+        OperationPlan, OwnershipResumeOutcomeV1, Reconciler, SingleNodeEffectExecutor,
+    };
 
     struct TestDirectory(PathBuf);
 
@@ -914,6 +976,10 @@ mod tests {
 
         fn journal(&self) -> PathBuf {
             self.0.join("authority.journal")
+        }
+
+        fn controller_journal(&self) -> PathBuf {
+            self.0.join("controller.journal")
         }
     }
 
@@ -935,6 +1001,7 @@ mod tests {
         generation_increment: u64,
         override_assignment: Option<LeaseAssignment>,
         override_node: Option<NodeId>,
+        calls: Rc<Cell<usize>>,
     }
 
     impl TestAuthority {
@@ -1024,6 +1091,7 @@ mod tests {
             &mut self,
             claim: &OwnershipClaimV1,
         ) -> Result<UnverifiedOwnershipLeaseResponse, OwnershipAuthorityError> {
+            self.calls.set(self.calls.get() + 1);
             if claim.action() != OwnershipClaimAction::Acquire {
                 return Err(OwnershipAuthorityError::Internal);
             }
@@ -1044,6 +1112,7 @@ mod tests {
             &mut self,
             claim: &OwnershipClaimV1,
         ) -> Result<UnverifiedOwnershipLeaseResponse, OwnershipAuthorityError> {
+            self.calls.set(self.calls.get() + 1);
             if claim.action() != OwnershipClaimAction::Renew {
                 return Err(OwnershipAuthorityError::Internal);
             }
@@ -1127,6 +1196,7 @@ mod tests {
                 generation_increment: 2,
                 override_assignment: None,
                 override_node: None,
+                calls: Rc::new(Cell::new(0)),
             },
             verifier: OwnershipAuthorityVerifier::new(anchor, authority),
             clock,
@@ -2336,5 +2406,435 @@ mod tests {
             ),
             Err(OwnershipLeaseAcquisitionError::InvalidIssuerResponse)
         );
+    }
+
+    #[test]
+    fn exact_query_and_protocol_service_never_issue_outside_pending_completion() {
+        let directory = TestDirectory::new("protocol-service");
+        let path = directory.journal();
+        let Fixture {
+            mut authority,
+            verifier,
+            clock,
+        } = fixture(61);
+        let authority_calls = authority.calls.clone();
+        let authority_reference = verifier.authority().clone();
+        let (journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
+        let mut store = DurableOwnershipAuthority::from_journal(journal, verifier).unwrap();
+        let claim = acquire_claim(5);
+        let reference = OwnershipTransactionReferenceV1::from_claim(&claim);
+        let absent =
+            OwnershipTransactionReferenceV1::new([99; 16], ObjectDigest::from_bytes([98; 32]))
+                .unwrap();
+        assert_eq!(
+            store.query(absent).unwrap(),
+            DurableOwnershipQueryOutcome::Absent
+        );
+
+        let methods = vec![
+            OwnershipMethodV1::Begin,
+            OwnershipMethodV1::CompleteOrResume,
+            OwnershipMethodV1::Query,
+        ];
+        let hello = OwnershipClientHelloV1::new(
+            [71; 32],
+            ProtocolVersion::new(1, 0),
+            authority_reference.clone(),
+            methods.clone(),
+            MAXIMUM_OWNERSHIP_RESPONSE_BYTES,
+        )
+        .unwrap();
+        let session =
+            NegotiatedOwnershipSessionV1::negotiate(&hello, [72; 32], authority_reference, methods)
+                .unwrap();
+        let clock_calls = Rc::new(Cell::new(0));
+        let counted_clock_calls = clock_calls.clone();
+        let mut protected_clock = move || {
+            counted_clock_calls.set(counted_clock_calls.get() + 1);
+            Ok(clock)
+        };
+        let bounded_hello = OwnershipClientHelloV1::new(
+            [73; 32],
+            ProtocolVersion::new(1, 0),
+            session.authority().clone(),
+            session.methods().to_vec(),
+            aos_sandbox_ownership_protocol::protocol::MINIMUM_OWNERSHIP_RESPONSE_BYTES,
+        )
+        .unwrap();
+        let bounded_session = NegotiatedOwnershipSessionV1::negotiate(
+            &bounded_hello,
+            [74; 32],
+            session.authority().clone(),
+            session.methods().to_vec(),
+        )
+        .unwrap();
+        assert!(
+            crate::DurableOwnershipProtocolService::new(
+                bounded_session,
+                &mut store,
+                &mut authority,
+                &mut protected_clock,
+            )
+            .is_ok()
+        );
+        assert_eq!(authority_calls.get(), 0);
+        assert_eq!(clock_calls.get(), 0);
+        let wrong_authority = KeyReference::new(
+            StableKeyId::new("wrong-service-authority".to_owned()).unwrap(),
+            1,
+            ObjectDigest::from_bytes([75; 32]),
+            KeyUsage::OwnershipLease,
+        );
+        let wrong_hello = OwnershipClientHelloV1::new(
+            [76; 32],
+            ProtocolVersion::new(1, 0),
+            wrong_authority.clone(),
+            session.methods().to_vec(),
+            MAXIMUM_OWNERSHIP_RESPONSE_BYTES,
+        )
+        .unwrap();
+        let wrong_session = NegotiatedOwnershipSessionV1::negotiate(
+            &wrong_hello,
+            [77; 32],
+            wrong_authority,
+            session.methods().to_vec(),
+        )
+        .unwrap();
+        assert!(matches!(
+            crate::DurableOwnershipProtocolService::new(
+                wrong_session,
+                &mut store,
+                &mut authority,
+                &mut protected_clock,
+            ),
+            Err(crate::OwnershipProtocolServiceError::InvalidSession)
+        ));
+        assert_eq!(authority_calls.get(), 0);
+        assert_eq!(clock_calls.get(), 0);
+        let foreign_hello = OwnershipClientHelloV1::new(
+            [78; 32],
+            ProtocolVersion::new(1, 0),
+            session.authority().clone(),
+            session.methods().to_vec(),
+            MAXIMUM_OWNERSHIP_RESPONSE_BYTES,
+        )
+        .unwrap();
+        let foreign_session = NegotiatedOwnershipSessionV1::negotiate(
+            &foreign_hello,
+            [79; 32],
+            session.authority().clone(),
+            session.methods().to_vec(),
+        )
+        .unwrap();
+        {
+            let mut service = crate::DurableOwnershipProtocolService::new(
+                session.clone(),
+                &mut store,
+                &mut authority,
+                &mut protected_clock,
+            )
+            .unwrap();
+            let query = session
+                .request(OwnershipRequestBodyV1::Query(reference))
+                .unwrap();
+            let foreign_query = foreign_session
+                .request(OwnershipRequestBodyV1::Query(reference))
+                .unwrap();
+            assert!(matches!(
+                service.handle(&foreign_query),
+                Err(crate::OwnershipProtocolServiceError::Protocol(
+                    OwnershipProtocolValidationError::SessionBindingMismatch
+                ))
+            ));
+            assert_eq!(authority_calls.get(), 0);
+            assert_eq!(clock_calls.get(), 0);
+            assert!(matches!(
+                service.handle(&query).unwrap().outcome(),
+                OwnershipResponseOutcomeV1::Status(OwnershipTransactionStatusV1::Absent)
+            ));
+            assert_eq!(authority_calls.get(), 0);
+            assert_eq!(clock_calls.get(), 0);
+
+            let begin = session
+                .request(OwnershipRequestBodyV1::Begin(Box::new(claim.clone())))
+                .unwrap();
+            assert!(matches!(
+                service.handle(&begin).unwrap().outcome(),
+                OwnershipResponseOutcomeV1::Status(OwnershipTransactionStatusV1::Pending)
+            ));
+            assert_eq!(authority_calls.get(), 0);
+            assert_eq!(clock_calls.get(), 0);
+
+            assert!(matches!(
+                service.handle(&query).unwrap().outcome(),
+                OwnershipResponseOutcomeV1::Status(OwnershipTransactionStatusV1::Pending)
+            ));
+            assert_eq!(authority_calls.get(), 0);
+            assert_eq!(clock_calls.get(), 0);
+
+            let complete = session
+                .request(OwnershipRequestBodyV1::CompleteOrResume(reference))
+                .unwrap();
+            assert!(matches!(
+                service.handle(&complete).unwrap().outcome(),
+                OwnershipResponseOutcomeV1::Status(OwnershipTransactionStatusV1::Completed(_))
+            ));
+            assert_eq!(authority_calls.get(), 1);
+            assert_eq!(clock_calls.get(), 1);
+
+            assert!(matches!(
+                service.handle(&query).unwrap().outcome(),
+                OwnershipResponseOutcomeV1::Status(OwnershipTransactionStatusV1::Completed(_))
+            ));
+            assert_eq!(authority_calls.get(), 1);
+            assert_eq!(clock_calls.get(), 1);
+
+            assert!(matches!(
+                service.handle(&begin).unwrap().outcome(),
+                OwnershipResponseOutcomeV1::Status(OwnershipTransactionStatusV1::Completed(_))
+            ));
+            assert_eq!(authority_calls.get(), 1);
+            assert_eq!(clock_calls.get(), 1);
+        }
+
+        let rebound = OwnershipTransactionReferenceV1::new(
+            *claim.request_id(),
+            ObjectDigest::from_bytes([97; 32]),
+        )
+        .unwrap();
+        assert!(matches!(
+            store.query(rebound),
+            Err(DurableOwnershipAuthorityError::IdempotencyConflict)
+        ));
+        drop(store);
+
+        let mut reopened = open_test_store(&path, 61).unwrap();
+        assert!(matches!(
+            reopened.query(reference).unwrap(),
+            DurableOwnershipQueryOutcome::Completed(_)
+        ));
+        let mut client = crate::InProcessOwnershipSessionClient::new(
+            session.clone(),
+            &mut reopened,
+            &mut authority,
+            &mut protected_clock,
+        )
+        .unwrap();
+        let query = session
+            .request(OwnershipRequestBodyV1::Query(reference))
+            .unwrap();
+        crate::OwnershipAuthoritySessionClient::exchange(&mut client, &query).unwrap();
+        assert_eq!(authority_calls.get(), 1);
+        assert_eq!(clock_calls.get(), 1);
+    }
+
+    #[test]
+    fn node_controller_composes_with_in_process_service_across_both_journals() {
+        #[derive(Default)]
+        struct CompositionExecutor;
+
+        impl SingleNodeEffectExecutor for CompositionExecutor {
+            fn observe(
+                &mut self,
+                _operation_id: aos_sandbox_core::OperationId,
+                _step: u32,
+                _plan: &EffectPlan,
+            ) -> Result<EffectObservation, EffectFailure> {
+                Ok(EffectObservation::Absent)
+            }
+
+            fn apply(
+                &mut self,
+                _operation_id: aos_sandbox_core::OperationId,
+                _step: u32,
+                _plan: &EffectPlan,
+            ) -> Result<EffectReceipt, EffectFailure> {
+                Ok(EffectReceipt::new(vec![1]).unwrap())
+            }
+        }
+
+        struct CompositionCompiler;
+
+        impl ActivatedOperationCompiler for CompositionCompiler {
+            fn compile(
+                &mut self,
+                _canonical_request: &[u8],
+                _request_digest: [u8; 32],
+            ) -> Result<OperationPlan, OperationCompilationError> {
+                Err(OperationCompilationError::Rejected)
+            }
+        }
+
+        let directory = TestDirectory::new("controller-service-composition");
+        let (draft, _) = activation_fixture(1);
+        let claim = activation_claim(&draft, 1);
+        let transaction = OwnershipTransactionReferenceV1::from_claim(&claim);
+        let signing_key = SigningKey::from_bytes(&[41; 32]);
+        let authority_reference = draft.ownership_authority().clone();
+        assert_eq!(
+            authority_reference.public_key_sha256(),
+            ObjectDigest::from_bytes(Sha256::digest(signing_key.verifying_key().as_bytes()).into())
+        );
+        let make_verifier = || {
+            let scope = TrustScopeId::from_bytes([61; 16]);
+            let policy = TrustPolicy::new(
+                scope,
+                SignaturePurpose::OwnershipLease,
+                vec![authority_reference.clone()],
+                Vec::new(),
+            )
+            .unwrap();
+            let policy_bytes = encode_trust_policy(&policy);
+            let policy_descriptor = descriptor_for_bytes(
+                MediaType::new(PortableMediaType::TrustPolicy.as_str().to_owned()).unwrap(),
+                &policy_bytes,
+            );
+            let anchor = OwnershipLeaseTrustAnchor::from_trusted_configuration(
+                policy_bytes,
+                policy_descriptor.clone(),
+                scope,
+                authority_reference.clone(),
+                signing_key.verifying_key().to_bytes(),
+                DecodeLimits::default(),
+            )
+            .unwrap();
+            (
+                OwnershipAuthorityVerifier::new(anchor, authority_reference.clone()),
+                scope,
+                policy_descriptor,
+            )
+        };
+        let (authority_verifier, authority_scope, authority_policy) = make_verifier();
+        let (controller_verifier, _, _) = make_verifier();
+        let (reopen_verifier, _, _) = make_verifier();
+        let issuer_calls = Rc::new(Cell::new(0));
+        let mut issuer = TestAuthority {
+            signing_key,
+            authority: authority_reference.clone(),
+            scope: authority_scope,
+            policy_descriptor: authority_policy,
+            requests: BTreeMap::new(),
+            current: None,
+            now_seconds: 150,
+            duration_seconds: 40,
+            generation_increment: 1,
+            override_assignment: None,
+            override_node: None,
+            calls: issuer_calls.clone(),
+        };
+
+        let operation_id = aos_sandbox_core::OperationId::from_bytes([0x81; 16]);
+        let plan = OperationPlan::ownership_gated(
+            operation_id,
+            IdempotencyKey::new(b"controller-service-composition".to_vec()).unwrap(),
+            [0x82; 32],
+            b"sandbox".to_vec(),
+            b"ownership-pending".to_vec(),
+            vec![EffectPlan::new(EffectDomain::Guardian, b"arm".to_vec()).unwrap()],
+            claim,
+            draft,
+        )
+        .unwrap();
+        let (controller_journal, _) =
+            Journal::open(directory.controller_journal(), JournalLimits::default()).unwrap();
+        let mut reconciler = Reconciler::new(controller_journal, CompositionExecutor);
+        reconciler.accept(&plan).unwrap();
+        let mut controller = NodeController::new(
+            crate::ControllerRequestScopeV1::new(ObjectDigest::from_bytes([0x83; 32])).unwrap(),
+            NodeControllerLimits::default(),
+            CompositionCompiler,
+            reconciler,
+        );
+        let (authority_journal, _) =
+            Journal::open(directory.journal(), ownership_journal_limits()).unwrap();
+        let mut authority_store =
+            DurableOwnershipAuthority::from_journal(authority_journal, authority_verifier).unwrap();
+        let hello = OwnershipClientHelloV1::new(
+            [0x84; 32],
+            ProtocolVersion::new(1, 0),
+            authority_reference.clone(),
+            vec![
+                OwnershipMethodV1::Begin,
+                OwnershipMethodV1::CompleteOrResume,
+                OwnershipMethodV1::Query,
+            ],
+            aos_sandbox_ownership_protocol::protocol::MINIMUM_OWNERSHIP_RESPONSE_BYTES,
+        )
+        .unwrap();
+        let session = NegotiatedOwnershipSessionV1::negotiate(
+            &hello,
+            [0x85; 32],
+            authority_reference,
+            vec![
+                OwnershipMethodV1::Begin,
+                OwnershipMethodV1::CompleteOrResume,
+                OwnershipMethodV1::Query,
+            ],
+        )
+        .unwrap();
+        let protected_clock_calls = Rc::new(Cell::new(0));
+        let counted_clock_calls = protected_clock_calls.clone();
+        let mut protected_clock = move || {
+            counted_clock_calls.set(counted_clock_calls.get() + 1);
+            Ok(test_clock(150))
+        };
+        {
+            let mut client = crate::InProcessOwnershipSessionClient::new(
+                session.clone(),
+                &mut authority_store,
+                &mut issuer,
+                &mut protected_clock,
+            )
+            .unwrap();
+            assert_eq!(
+                controller
+                    .resume_ownership(operation_id, &mut client, &controller_verifier, &mut || Ok(
+                        test_clock(150)
+                    ),)
+                    .unwrap(),
+                OwnershipResumeOutcomeV1::Activated
+            );
+        }
+        assert_eq!(issuer_calls.get(), 1);
+        assert_eq!(protected_clock_calls.get(), 1);
+
+        drop(authority_store);
+        drop(controller);
+        let (authority_journal, _) =
+            Journal::open(directory.journal(), ownership_journal_limits()).unwrap();
+        let mut authority_store =
+            DurableOwnershipAuthority::from_journal(authority_journal, reopen_verifier).unwrap();
+        assert!(matches!(
+            authority_store.query(transaction).unwrap(),
+            DurableOwnershipQueryOutcome::Completed(_)
+        ));
+        let (controller_journal, _) =
+            Journal::open(directory.controller_journal(), JournalLimits::default()).unwrap();
+        let mut controller = NodeController::new(
+            crate::ControllerRequestScopeV1::new(ObjectDigest::from_bytes([0x83; 32])).unwrap(),
+            NodeControllerLimits::default(),
+            CompositionCompiler,
+            Reconciler::new(controller_journal, CompositionExecutor),
+        );
+        let mut replay_client = crate::InProcessOwnershipSessionClient::new(
+            session,
+            &mut authority_store,
+            &mut issuer,
+            &mut protected_clock,
+        )
+        .unwrap();
+        assert_eq!(
+            controller
+                .resume_ownership(
+                    operation_id,
+                    &mut replay_client,
+                    &controller_verifier,
+                    &mut || panic!("activated replay sampled the controller clock"),
+                )
+                .unwrap(),
+            OwnershipResumeOutcomeV1::Replay
+        );
+        assert_eq!(issuer_calls.get(), 1);
+        assert_eq!(protected_clock_calls.get(), 1);
     }
 }

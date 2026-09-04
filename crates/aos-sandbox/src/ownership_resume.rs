@@ -9,10 +9,10 @@
 use aos_sandbox_core::{OperationId, ProtocolVersion, RawPairedClockSample};
 use aos_sandbox_ownership_protocol::protocol::{
     MAXIMUM_OWNERSHIP_REQUEST_BYTES, MAXIMUM_OWNERSHIP_RESPONSE_BYTES,
-    NegotiatedOwnershipSessionV1, OwnershipErrorRecoveryV1, OwnershipMethodV1,
-    OwnershipProtocolErrorCodeV1, OwnershipProtocolValidationError, OwnershipRequestBodyV1,
-    OwnershipRequestEnvelopeV1, OwnershipResponseOutcomeV1, OwnershipTransactionReferenceV1,
-    OwnershipTransactionStatusV1,
+    MINIMUM_OWNERSHIP_RESPONSE_BYTES, NegotiatedOwnershipSessionV1, OwnershipErrorRecoveryV1,
+    OwnershipMethodV1, OwnershipProtocolErrorCodeV1, OwnershipProtocolValidationError,
+    OwnershipRequestBodyV1, OwnershipRequestEnvelopeV1, OwnershipResponseOutcomeV1,
+    OwnershipTransactionReferenceV1, OwnershipTransactionStatusV1,
 };
 
 use crate::{
@@ -289,7 +289,8 @@ fn validate_session_contract(
         || session.authority() != expected_authority
         || session.methods() != REQUIRED_METHODS
         || session.maximum_request_bytes() != MAXIMUM_OWNERSHIP_REQUEST_BYTES
-        || session.maximum_response_bytes() != MAXIMUM_OWNERSHIP_RESPONSE_BYTES
+        || !(MINIMUM_OWNERSHIP_RESPONSE_BYTES..=MAXIMUM_OWNERSHIP_RESPONSE_BYTES)
+            .contains(&session.maximum_response_bytes())
         || session.maximum_requested_lease_seconds()
             != aos_sandbox_ownership_protocol::MAXIMUM_REQUESTED_DURATION_SECONDS
         || claim.canonical_bytes().len() > request_bound
@@ -986,7 +987,7 @@ mod tests {
     }
 
     #[test]
-    fn wrong_negotiated_bound_fails_before_transport() {
+    fn minimum_negotiated_response_bound_is_accepted() {
         let (_directory, mut controller, plan, draft) = gated_controller();
         let (verifier, _) = completed_response(&draft);
         let authority = draft.ownership_authority().clone();
@@ -998,7 +999,13 @@ mod tests {
             aos_sandbox_ownership_protocol::protocol::MINIMUM_OWNERSHIP_RESPONSE_BYTES,
         )
         .unwrap();
-        let mut client = ScriptedClient::new(authority.clone(), []);
+        let mut client = ScriptedClient::new(
+            authority.clone(),
+            [
+                status(OwnershipTransactionStatusV1::Pending),
+                status(OwnershipTransactionStatusV1::Pending),
+            ],
+        );
         client.session = NegotiatedOwnershipSessionV1::negotiate(
             &hello,
             [0x62; 32],
@@ -1006,16 +1013,21 @@ mod tests {
             REQUIRED_METHODS.to_vec(),
         )
         .unwrap();
-        assert!(matches!(
-            controller.resume_ownership(
-                plan.operation_id(),
-                &mut client,
-                &verifier,
-                &mut || panic!("bad session sampled the clock"),
-            ),
-            Err(OwnershipResumeError::SessionContract)
-        ));
-        assert_eq!(client.methods.len(), 0);
+        assert_eq!(
+            controller
+                .resume_ownership(plan.operation_id(), &mut client, &verifier, &mut || panic!(
+                    "pending response sampled the clock"
+                ),)
+                .unwrap(),
+            OwnershipResumeOutcomeV1::Pending
+        );
+        assert_eq!(
+            client.methods,
+            vec![
+                OwnershipMethodV1::Query,
+                OwnershipMethodV1::CompleteOrResume,
+            ]
+        );
     }
 
     #[test]
