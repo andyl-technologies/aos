@@ -37,6 +37,7 @@ use aos_release::signing::{
 use aos_release::state::{JournalEntryV1, ReleaseState, parse_journal};
 use base64::Engine as _;
 use ed25519_dalek::{Signer as _, SigningKey};
+use futures_util::{StreamExt as _, TryStreamExt as _, stream};
 use serde_json::json;
 
 const RELEASE_SEED: [u8; 32] = [7; 32];
@@ -492,23 +493,31 @@ async fn qualification_executor() -> Result<()> {
         builder = builder.add_root_certificate(reqwest::Certificate::from_der(&certificate?)?);
     }
     let client = builder.build()?;
-    for object in &request.objects {
-        let bytes = client
-            .get(&object.url)
-            .send()
-            .await?
-            .error_for_status()?
-            .bytes()
-            .await?;
-        if u64::try_from(bytes.len())? != object.size_bytes
-            || Sha256Digest::of_bytes(&bytes) != object.sha256
-        {
-            bail!(
-                "public qualification object changed: {}",
-                object.artifact_id
-            );
-        }
-    }
+    stream::iter(&request.objects)
+        .map(|object| {
+            let client = &client;
+            async move {
+                let bytes = client
+                    .get(&object.url)
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .bytes()
+                    .await?;
+                if u64::try_from(bytes.len())? != object.size_bytes
+                    || Sha256Digest::of_bytes(&bytes) != object.sha256
+                {
+                    bail!(
+                        "public qualification object changed: {}",
+                        object.artifact_id
+                    );
+                }
+                Result::<()>::Ok(())
+            }
+        })
+        .buffer_unordered(32)
+        .try_collect::<Vec<_>>()
+        .await?;
     let report = json!({
         "schema_version": "aos.release.fleet-executor-report/v1",
         "platform": request.platform,
