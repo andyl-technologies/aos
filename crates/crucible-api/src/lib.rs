@@ -124,8 +124,7 @@ pub use vm_lifecycle::{
 };
 #[cfg(target_os = "linux")]
 pub use vm_lifecycle::{
-    ProductionVmHotForkNodeAdoption,
-    build_production_vm_lifecycle_loop_from_hot_fork_with_launcher,
+    ProductionVmHotForkNodeAdoption, build_production_vm_lifecycle_loop_from_hot_fork_with_launcher,
 };
 // Re-exported so control-plane clients (e.g. the CLI) record the *shared*
 // guest-host protocol version in a reproduction artifact's provenance triple
