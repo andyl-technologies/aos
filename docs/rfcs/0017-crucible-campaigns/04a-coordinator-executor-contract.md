@@ -2362,9 +2362,14 @@ binds the pool incarnation, exact key, and stable per-key slot; only that pool
 can route successful recovery back to the source. Missing keys fail without
 touching a worker, all matching busy slots report retryable backpressure, and
 foreign or terminal lifecycles move to the pool's nondroppable quarantine.
-Hotness scoring and eviction/admission policy, the atomic world-continuation
-installer, modeled private-child driver, and real QEMU campaign flight remain
-required before hot fork is advertised.
+Demotion can remove only a source whose fixed factory proves idle and returns
+the complete factory/source authority to the caller for orderly reap or durable
+fallback. Removal leaves a stable tombstone while sibling children exist, so
+their recovery coordinates cannot shift; a later same-key insertion may reuse
+that slot only after the old idle authority has been transferred. Hotness
+scoring and the policy that chooses such demotions, the atomic world-
+continuation installer, modeled private-child driver, and real QEMU campaign
+flight remain required before hot fork is advertised.
 
 Exactly one attempt-owned watcher blocks on the same sticky eventfd, and child
 contracts cannot be minted before that watcher is live. Terminal cancellation
