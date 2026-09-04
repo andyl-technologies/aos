@@ -179,6 +179,15 @@ pub fn owner_controls_visible(
     permission_granted && owner_scope_key == consumer_scope_key
 }
 
+/// Returns whether settings navigation starts expanded at a viewport width.
+///
+/// An unavailable width preserves the desktop behavior. Narrow clients start
+/// with the scope and workflow visible and can expand navigation on demand.
+#[must_use]
+pub fn settings_navigation_starts_open(viewport_width: Option<f64>) -> bool {
+    viewport_width.is_none_or(|width| width > 768.0)
+}
+
 /// Permissions that determine which delivery-destination setup paths are usable.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DeliverySetupAccess {
@@ -1525,6 +1534,13 @@ mod tests {
             "scope:org:acme",
             false
         ));
+    }
+
+    #[test]
+    fn narrow_settings_navigation_starts_collapsed() {
+        assert!(!settings_navigation_starts_open(Some(390.0)));
+        assert!(settings_navigation_starts_open(Some(1440.0)));
+        assert!(settings_navigation_starts_open(None));
     }
 
     #[test]
