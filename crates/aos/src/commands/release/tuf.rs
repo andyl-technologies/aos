@@ -71,6 +71,9 @@ pub(super) async fn run(args: &ReleaseTufArgs, printer: &aos_core::output::Print
         threshold: args.trusted_root_threshold,
     };
     verify_root_envelope(&root, &root_trust, previous_root.as_ref(), now)?;
+    if root.signed.registry != plan.registry {
+        bail!("TUF root registry differs from the release plan");
+    }
     require_policy_match(&root.signed, &plan, TufRole::Root)?;
     require_policy_match(&root.signed, &plan, TufRole::Timestamp)?;
 
@@ -85,7 +88,11 @@ pub(super) async fn run(args: &ReleaseTufArgs, printer: &aos_core::output::Print
     let mut nonces = BTreeSet::new();
 
     let targets = sign_metadata(
-        canonical_targets_metadata(args.targets_version, args.targets_expires.clone())?,
+        canonical_targets_metadata(
+            &plan.registry,
+            args.targets_version,
+            args.targets_expires.clone(),
+        )?,
         TufRole::Targets,
         &targets_keys,
         &plan,
@@ -98,6 +105,7 @@ pub(super) async fn run(args: &ReleaseTufArgs, printer: &aos_core::output::Print
     let manifest_envelope_digest = Sha256Digest::of_bytes(&captured_bundle.manifest_bytes);
     let delegated = sign_metadata(
         delegated_release_metadata(
+            &plan.registry,
             args.delegated_version,
             args.delegated_expires.clone(),
             TufReleaseTargetV1 {
@@ -122,6 +130,7 @@ pub(super) async fn run(args: &ReleaseTufArgs, printer: &aos_core::output::Print
     )
     .await?;
     let snapshot_unsigned = immutable_snapshot_metadata(
+        &plan.registry,
         args.snapshot_version,
         args.snapshot_expires.clone(),
         &root,

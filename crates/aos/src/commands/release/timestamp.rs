@@ -62,6 +62,9 @@ async fn publish(args: &ReleaseTimestampPublishArgs, printer: &Printer) -> Resul
         None,
         now,
     )?;
+    if root.signed.registry != plan.registry {
+        bail!("TUF root registry differs from the release plan");
+    }
     verify_snapshot_envelope(&snapshot, &root.signed, now)?;
     verify_timestamp(
         &timestamp,
@@ -292,6 +295,9 @@ async fn refresh(args: &ReleaseTimestampRefreshArgs, printer: &Printer) -> Resul
         None,
         now,
     )?;
+    if root.signed.registry != plan.registry {
+        bail!("TUF root registry differs from the release plan");
+    }
     verify_snapshot_envelope(&snapshot, &root.signed, now)?;
 
     let previous = args
@@ -313,6 +319,7 @@ async fn refresh(args: &ReleaseTimestampRefreshArgs, printer: &Printer) -> Resul
     };
 
     let signed = timestamp_metadata(
+        &plan.registry,
         args.version,
         args.issued_at.clone(),
         args.expires.clone(),

@@ -104,7 +104,8 @@ Create a reviewed JSON object with schema
 request supplies:
 
 - release id, calendar version, and release class;
-- the canonical `andyl/main` registry and its exact base commit and generation;
+- one registry authorized by [`registries.md`](registries.md), its exact base
+  commit and generation, and a release class/channel allowed by that registry;
 - protected source branch, unused immutable source tag, and SHA-256 digest of
   the public contributor-authorization summary;
 - explicit decisions for both Linux system-image targets;
@@ -268,8 +269,10 @@ aos release finalize-registry \
   --git-offset-minutes 0
 ```
 
-The two public key files contain exact `andyl/main:Ed25519:<base64>` trust
-lines. Their key ids and provider revisions must be the single-key,
+The two public key files contain exact
+`<local-alias>:Ed25519:<base64>` trust lines: `andyl` for `andyl/main`, or the
+epoch-matched `andyl-testing` alias for `andyl/testing`. Their key ids and
+provider revisions must be the single-key,
 threshold-one Provenance and Registry requirements frozen in the plan. The
 single-signature DSSE and Git formats cannot honestly represent a larger
 threshold, so the command rejects one rather than counting repeated signatures
@@ -508,8 +511,8 @@ compare-and-swap parent of its first release. Do not let the first release
 self-authorize that base. Obtain identical
 `aos.release.registry-bootstrap-intent/v1` envelopes signed by exactly the
 plan's `release-evidence` threshold. The intent binds the environment,
-deployment, `andyl/main`, planned base commit, plan digest, public authority,
-and approval time.
+deployment, the plan's exact registry identity, planned base commit, plan
+digest, public authority, and approval time.
 
 Install the reviewed base in staging first:
 
