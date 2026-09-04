@@ -15,15 +15,17 @@ impl CampaignLocalService {
     /// Serves authenticated campaign requests until sticky shutdown.
     ///
     /// Any attached runtime or packaged-executor termination stops the shared
-    /// listener. Listener shutdown then cancels and joins every runtime and the
-    /// executor before repository ownership is released.
+    /// listener. Listener shutdown then cancels and joins runtimes and waits
+    /// for executor cleanup. If semantic workers remain after its bounded wait,
+    /// they retain the repository and executor endpoint and return a pending
+    /// cleanup error instead of claiming a completed shutdown.
     ///
     /// # Errors
     ///
     /// Returns [`CampaignLocalServiceError::Listener`] when listener acceptance
     /// or a worker invariant fails, or the corresponding runtime, executor, or
-    /// monitor error when a coupled owner fails. Repository and endpoint
-    /// ownership remain held until all workers have stopped.
+    /// monitor error when a coupled owner fails. Unfinished executor workers
+    /// retain repository and executor endpoint ownership.
     pub fn serve(self) -> Result<CampaignLoopbackServerReport, CampaignLocalServiceError> {
         let Self {
             server,

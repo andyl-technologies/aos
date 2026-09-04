@@ -2,12 +2,15 @@
 //!
 //! The executor listener and semantic worker pool have different concurrency
 //! domains but one daemon lifecycle. This module binds those owners so listener
-//! termination cancels and joins every modeled worker, while terminal worker
-//! completion closes the listener. The concrete execution-model and QEMU
+//! termination cancels modeled work and waits for bounded cleanup, while
+//! terminal pool state closes the listener. Unfinished workers retain endpoint
+//! ownership along with their exact resources. The execution-model and QEMU
 //! factory remain constructor inputs owned by [`LocalExecutorWorkerPool`].
 
 use std::io;
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use crate::campaign_endpoint::LocalEndpointGuard;
 use crate::{
@@ -20,9 +23,9 @@ use crate::{
 
 /// Exclusive owner of one listener and its exact semantic worker pool.
 ///
-/// Dropping an unserved owner is a synchronous fail-closed backstop: it closes
-/// the listener, cancels and joins semantic workers, then releases the endpoint
-/// namespace. Normal daemon control should call [`Self::serve`] and use
+/// Dropping an unserved owner closes the listener and requests worker cleanup.
+/// Cleanup waits at most thirty seconds; unfinished workers retain the endpoint
+/// namespace and their exact resources. Normal daemon control calls [`Self::serve`] and uses
 /// [`Self::shutdown_handle`] for explicit termination.
 #[must_use = "the local executor service must be served or explicitly dropped"]
 pub struct ExecutorLocalService<L, V>
@@ -37,7 +40,7 @@ where
 struct ExecutorLocalServiceInner<L, V> {
     server: ExecutorLoopbackServer<LocalExecutorPoolService<L, V>>,
     pool: LocalExecutorWorkerPool<L, V>,
-    endpoint_guard: LocalEndpointGuard,
+    endpoint_guard: Arc<LocalEndpointGuard>,
 }
 
 impl<L, V> ExecutorLocalService<L, V>
@@ -63,6 +66,9 @@ where
         config: ExecutorLoopbackServerConfig,
     ) -> Result<Self, ExecutorLoopbackListenerError> {
         let (listener, endpoint_guard) = listener.into_parts();
+        let endpoint_guard = Arc::new(endpoint_guard);
+        pool.completion_handle()
+            .retain_endpoint(Arc::clone(&endpoint_guard));
         let server = ExecutorLoopbackServer::new(listener, pool.service(), peer, config)?;
         let shutdown = ExecutorLocalServiceShutdown {
             listener: server.shutdown_handle(),
@@ -84,18 +90,26 @@ where
         self.shutdown.clone()
     }
 
-    /// Serves authenticated requests and joins every owned worker on exit.
+    /// Serves authenticated requests and waits for owned worker cleanup on exit.
     ///
-    /// A fixed monitor closes the listener when the semantic pool terminates.
-    /// Listener termination first requests pool cancellation and then joins all
-    /// semantic workers. Pool failure takes precedence in the returned error so
+    /// A fixed monitor closes the listener when the semantic pool stops admission.
+    /// Listener termination requests pool cancellation and waits up to thirty
+    /// seconds for cleanup. Unfinished workers retain endpoint ownership and
+    /// all unreconciled resources. Pool failure takes precedence so
     /// a poisoned executor is never reported as an ordinary listener stop.
     ///
     /// # Errors
     ///
     /// Returns [`ExecutorLocalServiceError`] for listener failure, semantic
     /// worker failure, or failure of the single lifecycle-monitor thread.
-    pub fn serve(mut self) -> Result<ExecutorLocalServiceReport, ExecutorLocalServiceError> {
+    pub fn serve(self) -> Result<ExecutorLocalServiceReport, ExecutorLocalServiceError> {
+        self.serve_with_shutdown_timeout(crate::executor_pool::WORKER_SHUTDOWN_WAIT)
+    }
+
+    pub(crate) fn serve_with_shutdown_timeout(
+        mut self,
+        timeout: Duration,
+    ) -> Result<ExecutorLocalServiceReport, ExecutorLocalServiceError> {
         let Some(ExecutorLocalServiceInner {
             server,
             pool,
@@ -108,7 +122,7 @@ where
         let monitor = match monitor {
             Ok(monitor) => monitor,
             Err(source) => {
-                let pool_result = pool.shutdown_and_join();
+                let pool_result = pool.shutdown_and_join_with_timeout(timeout);
                 drop(server);
                 drop(endpoint_guard);
                 pool_result.map_err(ExecutorLocalServiceError::Pool)?;
@@ -118,7 +132,7 @@ where
 
         let listener_result = server.serve().map_err(ExecutorLocalServiceError::Listener);
         let pool_result = pool
-            .shutdown_and_join()
+            .shutdown_and_join_with_timeout(timeout)
             .map_err(ExecutorLocalServiceError::Pool);
         let monitor_result = monitor
             .join()
@@ -163,7 +177,7 @@ fn spawn_pool_monitor(
     thread::Builder::new()
         .name(String::from("crucible-executor-pool-monitor"))
         .spawn(move || {
-            completion.wait();
+            completion.wait_until_stopping();
             listener.shutdown();
         })
 }

@@ -8,7 +8,7 @@
 
 use std::io;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -44,6 +44,10 @@ use crate::{
     stage_prepared_checkpoint_result,
 };
 
+mod completion;
+pub use completion::LocalExecutorPoolCompletion;
+use completion::{PoolCompletionState, WorkerCompletion};
+
 mod promotion;
 pub use promotion::{
     LocalCheckpointPromotionWorker, MAX_LOCAL_CHECKPOINT_PROMOTION_QUEUE,
@@ -70,6 +74,7 @@ impl LocalCheckpointPromotionWorker for DisabledCheckpointPromotionWorker {
 pub const MAX_LOCAL_EXECUTOR_WORKERS: usize = 256;
 
 const WORKER_RETRY_INTERVAL: Duration = Duration::from_millis(10);
+pub(crate) const WORKER_SHUTDOWN_WAIT: Duration = Duration::from_secs(30);
 const POOL_RUNNING: u8 = 0;
 const POOL_SHUTTING_DOWN: u8 = 1;
 const POOL_POISONED: u8 = 2;
@@ -490,14 +495,16 @@ where
             let worker_store = store.clone();
             let join = match thread::Builder::new()
                 .name(format!("crucible-executor-{slot}"))
-                .spawn(move || worker_loop(worker_shared, worker_store, worker))
-            {
+                .spawn(move || {
+                    let _completion = WorkerCompletion::new(&worker_shared.completion);
+                    worker_loop(worker_shared, worker_store, worker);
+                }) {
                 Ok(join) => join,
                 Err(source) => {
                     shared.request_shutdown();
-                    for join in joins {
-                        let _ = join.join();
-                    }
+                    // Already-started workers own their exact state. A spawn
+                    // failure must not wait forever on their reconciliation.
+                    drop(joins);
                     return Err(LocalExecutorPoolConfigError::Spawn { source });
                 }
             };
@@ -507,14 +514,14 @@ where
             let worker_shared = Arc::clone(&shared);
             let join = match thread::Builder::new()
                 .name(format!("crucible-checkpoint-promotion-{slot}"))
-                .spawn(move || promotion_worker_loop(worker_shared, worker))
-            {
+                .spawn(move || {
+                    let _completion = WorkerCompletion::new(&worker_shared.completion);
+                    promotion_worker_loop(worker_shared, worker);
+                }) {
                 Ok(join) => join,
                 Err(source) => {
                     shared.request_shutdown();
-                    for join in joins {
-                        let _ = join.join();
-                    }
+                    drop(joins);
                     return Err(LocalExecutorPoolConfigError::Spawn { source });
                 }
             };
@@ -554,20 +561,33 @@ where
         self.service.shared.request_shutdown();
     }
 
-    /// Requests shutdown, joins every worker, and returns final counters.
+    /// Requests shutdown and waits up to thirty seconds for worker cleanup.
     ///
     /// A conforming execution model observes cancellation during every bounded
-    /// operational quantum. This method waits until those workers return and
-    /// their exact supervisor tokens are reconciled.
+    /// operational quantum. Unfinished workers retain their supervisor, store,
+    /// and exact reconciliation tokens after the wait expires. No reservation
+    /// is released merely because the caller stopped waiting.
     ///
     /// # Errors
     ///
     /// Returns an error when a worker thread escaped the pool's panic boundary
-    /// or a caught worker panic poisoned this executor incarnation.
+    /// or a caught worker panic poisoned this executor incarnation. Returns
+    /// [`LocalExecutorPoolShutdownError::CleanupPending`] when cleanup remains
+    /// in flight or a worker has entered fail-closed quarantine.
     pub fn shutdown_and_join(
+        self,
+    ) -> Result<LocalExecutorPoolReport, LocalExecutorPoolShutdownError> {
+        self.shutdown_and_join_with_timeout(WORKER_SHUTDOWN_WAIT)
+    }
+
+    pub(crate) fn shutdown_and_join_with_timeout(
         mut self,
+        timeout: Duration,
     ) -> Result<LocalExecutorPoolReport, LocalExecutorPoolShutdownError> {
         self.request_shutdown();
+        if !self.service.shared.completion.wait_for_cleanup(timeout) {
+            return Err(LocalExecutorPoolShutdownError::CleanupPending);
+        }
         let mut outer_panic = false;
         for worker in self.workers.drain(..) {
             if worker.join().is_err() {
@@ -614,35 +634,6 @@ impl<L, V> LocalExecutorPoolShutdown<L, V> {
     #[must_use]
     pub fn is_shutdown(&self) -> bool {
         self.shared.state.load(Ordering::Acquire) != POOL_RUNNING
-    }
-}
-
-/// Cloneable completion signal for one local executor worker-pool incarnation.
-#[derive(Clone)]
-pub struct LocalExecutorPoolCompletion {
-    state: Arc<PoolCompletionState>,
-}
-
-impl LocalExecutorPoolCompletion {
-    /// Returns whether every fixed worker thread has exited.
-    #[must_use]
-    pub fn is_finished(&self) -> bool {
-        self.state.is_finished()
-    }
-
-    /// Blocks until every fixed worker exits or synchronization is poisoned.
-    ///
-    /// Poison is treated as terminal completion so a containing service fails
-    /// closed instead of retaining a listener for a broken executor owner.
-    pub fn wait(&self) {
-        let Ok(wait) = self.state.wait.lock() else {
-            return;
-        };
-        drop(
-            self.state
-                .changed
-                .wait_while(wait, |_| !self.state.is_finished()),
-        );
     }
 }
 
@@ -711,6 +702,11 @@ pub enum LocalExecutorPoolServiceError<E> {
 /// Terminal failure while joining a fixed worker pool.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum LocalExecutorPoolShutdownError {
+    /// Workers retain unresolved resources after the bounded cleanup wait.
+    #[error(
+        "local executor cleanup is pending; worker resources and endpoint ownership remain retained"
+    )]
+    CleanupPending,
     /// A worker panicked outside the pool's guarded model call.
     #[error("local executor worker thread panicked")]
     ThreadPanicked,
@@ -938,6 +934,7 @@ impl<L, V> SharedExecutor<L, V> {
             Ordering::AcqRel,
             Ordering::Acquire,
         );
+        self.completion.signal_stopping();
         match self.executor.lock() {
             Ok(executor) => executor.supervisor().signal_all_active_cancellation(),
             Err(poisoned) => poisoned
@@ -956,6 +953,7 @@ impl<L, V> SharedExecutor<L, V> {
 
     fn fail_closed(&self) {
         self.state.store(POOL_POISONED, Ordering::Release);
+        self.completion.signal_stopping();
         match self.executor.lock() {
             Ok(executor) => executor.supervisor().signal_all_active_cancellation(),
             Err(poisoned) => poisoned
@@ -1080,59 +1078,6 @@ where
     }
 }
 
-struct PoolCompletionState {
-    finished_workers: AtomicUsize,
-    worker_count: usize,
-    wait: Mutex<()>,
-    changed: Condvar,
-}
-
-impl PoolCompletionState {
-    fn new(worker_count: usize) -> Self {
-        Self {
-            finished_workers: AtomicUsize::new(0),
-            worker_count,
-            wait: Mutex::new(()),
-            changed: Condvar::new(),
-        }
-    }
-
-    fn is_finished(&self) -> bool {
-        self.finished_workers.load(Ordering::Acquire) >= self.worker_count
-    }
-
-    fn worker_finished(&self) {
-        let _wait = match self.wait.lock() {
-            Ok(wait) => wait,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        let _ =
-            self.finished_workers
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |finished| {
-                    Some(finished.saturating_add(1).min(self.worker_count))
-                });
-        self.changed.notify_all();
-    }
-}
-
-struct WorkerCompletion {
-    state: Arc<PoolCompletionState>,
-}
-
-impl WorkerCompletion {
-    fn new(state: &Arc<PoolCompletionState>) -> Self {
-        Self {
-            state: Arc::clone(state),
-        }
-    }
-}
-
-impl Drop for WorkerCompletion {
-    fn drop(&mut self) {
-        self.state.worker_finished();
-    }
-}
-
 #[derive(Default)]
 struct PoolCounters {
     executions: AtomicU64,
@@ -1159,7 +1104,6 @@ fn worker_loop<L, V, W>(
     V: AttemptAdmissionValidator + Send + Sync + 'static,
     W: LocalAttemptWorker,
 {
-    let _completion = WorkerCompletion::new(&shared.completion);
     loop {
         let Some(queued) = take_next_queued(&shared) else {
             return;
@@ -1919,6 +1863,7 @@ fn lock_or_retain<'a, L, V, T>(
 
 fn retain_forever<L, V, T>(shared: &SharedExecutor<L, V>, token: T) -> ! {
     shared.fail_closed();
+    shared.completion.signal_retained();
     let _retained = token;
     loop {
         thread::park();
