@@ -1029,6 +1029,24 @@ completes. The Git history remains authoritative for code details.
   warning-denied rustdoc, scoped formatting, and independent inventory review.
   Explicit imports in the open module remain cleanup debt; directory-handle
   implementation and worker composition remain open.
+- `d8568ef71` — further foundation toward `SBX-FS-02` and `SBX-FS-03`: the
+  connection inode table now provides opt-in, separately bounded directory
+  handles whose raw identities share the file-handle monotonic namespace.
+  Non-copyable authenticated reservations pin their inode before external
+  work, then activate or abort explicitly; branded active handles reject
+  foreign, pending, stale, and wrong-kind use. Each handle caches a
+  reauthenticated V3 ordinal range and exposes allocation-free, stateless
+  `READDIR` iteration with exact dot, dot-dot, child, and EOF cookies, including
+  signed-offset and target-`usize` bounds. Directory, aggregate-handle, and
+  retained-plus-replacement heap ceilings fail before mutation; release
+  preflights range identity, reverse maps, pins, counters, and reap state.
+  High-fanout and byte-name pagination, rewind, V2 rollback, ID sharing,
+  allocation refusal, churn, tombstones, `FORGET`, corruption, and connection
+  teardown semantics pass 80 filesystem tests, the harness-free allocator
+  binary, seven compile-fail doctests, strict Clippy, warning-denied rustdoc,
+  scoped formatting, and independent adversarial review. Attribute
+  presentation, protocol dispatch, and a real kernel FUSE connection remain
+  open, so neither task is checked.
 
 The post-`727da7f3e` x86_64 `sandbox-filesystem-capability-proof` rerun built the
 complete hermetic Rust closure, AOS system, initrd, and VM disk and launched
