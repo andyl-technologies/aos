@@ -250,6 +250,10 @@ impl RpcService {
             Some(pb::delivery_destination_intent::Endpoint::NewEndpoint(input)) => {
                 self.require_delivery_scope(auth, &scope, Permission::EndpointManage)
                     .await?;
+                // Verification records domain observations as well as the new
+                // endpoint's listener and TLS evidence, including reused domains.
+                self.require_delivery_scope(auth, &scope, Permission::DomainManage)
+                    .await?;
                 let revision = Self::endpoint_revision_spec(input.revision.clone())?;
                 crate::db::validate_endpoint_revision_spec(&revision).map_err(|error| {
                     RpcError::invalid(format!("invalid endpoint revision: {error:#}"))
@@ -273,8 +277,6 @@ impl RpcService {
                 .await?;
                 let hostname = match input.hostname_source.as_mut() {
                     Some(pb::delivery_endpoint_input::HostnameSource::Hostname(hostname)) => {
-                        self.require_delivery_scope(auth, &scope, Permission::DomainManage)
-                            .await?;
                         *hostname = crate::db::canonical_delivery_hostname(hostname)
                             .map_err(|error| RpcError::invalid(error.to_string()))?;
                         if self
@@ -780,7 +782,7 @@ impl RpcService {
         if !ready && !progress.active {
             blockers.push("The CDN attachment, gateway, current storage publication, and delivery route must pass verification.".into());
         }
-        let next_actions = if drift.is_some() {
+        let mut next_actions = if drift.is_some() {
             vec!["Inspect the changed resources and create a new destination plan.".into()]
         } else {
             match state {
@@ -792,6 +794,32 @@ impl RpcService {
                 ],
             }
         };
+        if !ready && !progress.active {
+            if let Some(pb::delivery_destination_intent::Endpoint::ExistingEndpoint(reference)) =
+                &seal.intent.endpoint
+            {
+                let observed = self
+                    .db
+                    .endpoint_observation(&reference.endpoint_id)
+                    .await
+                    .map_err(RpcError::internal)?;
+                if !observed.is_some_and(|observed| {
+                    observed.observed_generation == Some(reference.generation)
+                        && observed.state == "healthy"
+                        && observed.listener_observed
+                        && observed.tls_observed
+                }) {
+                    blockers.push(format!(
+                        "Endpoint '{}' generation {} requires owner verification.",
+                        reference.endpoint_id, reference.generation,
+                    ));
+                    next_actions.push(
+                        "Ask the endpoint owner to verify its HTTPS domain, or have its ingress controller report the exact endpoint generation when domain verification is unavailable."
+                            .into(),
+                    );
+                }
+            }
+        }
         let mut operations = BTreeMap::new();
         for (step, operation_id) in &progress.operations {
             if let Some(operation) = self

@@ -117,6 +117,153 @@ fn apply_request(plan: pb::TopologyPlan, key: &str) -> pb::ApplyDeliveryDestinat
     }
 }
 
+/// Rejects measurements so the real controller must fail closed after claiming work.
+struct UnreachableDeliveryHttp(std::sync::atomic::AtomicUsize);
+
+#[async_trait::async_trait]
+impl crate::web::console::ports::HttpClient for UnreachableDeliveryHttp {
+    async fn post_form(&self, _: &str, _: &[(&str, &str)]) -> anyhow::Result<Vec<u8>> {
+        anyhow::bail!("unexpected delivery form request")
+    }
+
+    async fn get(&self, _: &str) -> anyhow::Result<Vec<u8>> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        anyhow::bail!("delivery fixture has no reachable DNS or TLS terminator")
+    }
+}
+
+#[tokio::test]
+async fn workflow_domain_probe_is_consumed_and_failed_measurement_can_resume() {
+    let (service, auth, intent, _) = fixture().await;
+    let plan = service
+        .plan_delivery_destination(
+            Some(&auth),
+            pb::PlanDeliveryDestinationRequest {
+                intent: Some(intent),
+                idempotency_key: "plan-consumed-probe".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .plan
+        .unwrap();
+    let first = service
+        .apply_delivery_destination(Some(&auth), apply_request(plan, "apply-consumed-probe"))
+        .await
+        .unwrap()
+        .workflow
+        .unwrap();
+    let endpoint_operation = |workflow: &pb::DeliveryWorkflow| {
+        workflow
+            .steps
+            .iter()
+            .find(|step| step.key == "endpoint")
+            .unwrap()
+            .operation
+            .clone()
+            .unwrap()
+    };
+    let operation = endpoint_operation(&first);
+    assert_eq!(operation.kind, "domain_probe");
+    let target = service
+        .db
+        .topology_operation_targets(&operation.operation_id)
+        .await
+        .unwrap()
+        .remove(0);
+    let domain = service
+        .db
+        .delivery_domain(&first.domain_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(target.target_kind, "domain");
+    assert_eq!(target.stable_id, first.domain_id);
+    assert_eq!(target.generation_key, domain.resource_version);
+
+    let pending = service
+        .resume_delivery_destination(
+            Some(&auth),
+            pb::ResumeDeliveryDestinationRequest {
+                workflow_id: first.workflow_id.clone(),
+                expected_resource_version: first.resource_version,
+                idempotency_key: "resume-pending-probe".into(),
+            },
+        )
+        .await
+        .unwrap()
+        .workflow
+        .unwrap();
+    assert_eq!(
+        endpoint_operation(&pending).operation_id,
+        operation.operation_id
+    );
+
+    let http = Arc::new(UnreachableDeliveryHttp(
+        std::sync::atomic::AtomicUsize::new(0),
+    ));
+    let controller = crate::topology_probe::DomainProbeController::new(
+        Arc::clone(&service.db),
+        http.clone(),
+        crate::topology_probe::DomainTlsProbeVerifier::new(),
+        "https://dns.example.test/query",
+        "delivery-workflow-test",
+    )
+    .unwrap();
+    assert_eq!(controller.run_due(25).await.unwrap(), 1);
+    assert!(http.0.load(std::sync::atomic::Ordering::Relaxed) > 0);
+    let failed = service
+        .db
+        .topology_operation(&operation.operation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(failed.state, "failed");
+    assert_ne!(
+        service
+            .db
+            .endpoint_observation(&pending.endpoint_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        "healthy"
+    );
+    assert!(service.db.route(&pending.route_id).await.unwrap().is_none());
+
+    let request = pb::ResumeDeliveryDestinationRequest {
+        workflow_id: pending.workflow_id,
+        expected_resource_version: pending.resource_version,
+        idempotency_key: "retry-failed-domain-measurement".into(),
+    };
+    let resumed = service
+        .resume_delivery_destination(Some(&auth), request.clone())
+        .await
+        .unwrap()
+        .workflow
+        .unwrap();
+    assert_eq!(resumed.domain_id, first.domain_id);
+    assert_eq!(resumed.endpoint_id, first.endpoint_id);
+    assert_eq!(resumed.gateway_id, first.gateway_id);
+    assert_ne!(
+        endpoint_operation(&resumed).operation_id,
+        operation.operation_id
+    );
+    assert_eq!(endpoint_operation(&resumed).state, "pending");
+    let replay = service
+        .resume_delivery_destination(Some(&auth), request)
+        .await
+        .unwrap()
+        .workflow
+        .unwrap();
+    assert_eq!(
+        endpoint_operation(&replay).operation_id,
+        endpoint_operation(&resumed).operation_id
+    );
+    assert_eq!(replay.resource_version, resumed.resource_version);
+}
+
 #[tokio::test]
 async fn shared_storage_workflow_resumes_child_plans_without_owner_authority() {
     let (service, auth, intent, _) = fixture().await;
