@@ -7,7 +7,8 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::backend::{Row, Statement};
+use crate::backend::Statement;
+use crate::value::Row;
 
 use super::{unix_now, Database, DeliveryIdentityPage, SurfaceTarget};
 
