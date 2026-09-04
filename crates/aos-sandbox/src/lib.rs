@@ -7,6 +7,7 @@
 
 pub mod authority;
 pub mod journal;
+pub mod ownership_authority;
 pub mod reconciler;
 
 pub use authority::{
@@ -16,6 +17,11 @@ pub use authority::{
 pub use journal::{
     CommitResult, IdempotencyKey, IdempotencyOutcome, Journal, JournalError, JournalLimits,
     JournalRecord, JournalTransaction, RecordNamespace, RecoveryReport,
+};
+pub use ownership_authority::{
+    ExpectedOwnershipLease, OwnershipAuthority, OwnershipAuthorityError,
+    OwnershipAuthorityVerifier, OwnershipClaimAction, OwnershipClaimError, OwnershipClaimV1,
+    OwnershipLeaseAcquisitionError, SignedOwnershipLease, UnverifiedOwnershipLeaseResponse,
 };
 pub use reconciler::{
     AcceptOutcome, EffectDomain, EffectFailure, EffectObservation, EffectPlan, EffectReceipt,
