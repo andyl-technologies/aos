@@ -312,7 +312,7 @@ in {
           endpoint_id = f"fleet-{suffix}-endpoint"
           reviewed(
               url, f"{suffix}-endpoint",
-              f"endpoint add {url} --stable-id {endpoint_id} --org andyl --network-policy instance:public@1 --ingress hub --listener-provider hub-native --listener-resource-id aos-hub.service --tls-provider hub-managed --probe-provider native-file --probe-signer-secret-ref fleet-probe-v1 --probe-public-key {PROBE_KEY}",
+              f"endpoint add {url} --stable-id {endpoint_id} --org andyl --network-policy instance:public@1 --ingress hub --listener-provider hub-native --listener-resource-id aos-hub.service --tls-provider hub-managed --certificate-ref credential:release-fleet-tls-certificate --probe-provider native-file --probe-signer-secret-ref fleet-probe-v1 --probe-public-key {PROBE_KEY}",
               token,
           )
           endpoint = json.loads(publisher.succeed(hub_command(url, f"endpoint show {endpoint_id}", token)))["data"]["endpoint"]
