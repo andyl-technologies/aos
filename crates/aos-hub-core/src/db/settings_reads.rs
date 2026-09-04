@@ -3,7 +3,7 @@
 //! These queries preserve resource ownership while exposing explicitly granted
 //! resources to their consumer scope. Pagination precedes resource expansion.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 use super::{Database, DeliveryIdentityPage, GatewayRecord, RouteRecord, SurfaceTarget};
 
@@ -22,6 +22,10 @@ impl Database {
         after_id: &str,
     ) -> Result<DeliveryIdentityPage<RouteRecord>> {
         let (registry, cache) = surface.ids();
+        let scope_predicate = match surface {
+            SurfaceTarget::Registry(_) => "r.registry_id = ?1",
+            SurfaceTarget::BinaryCache(_) => "r.cache_id = ?2",
+        };
         let limit = i64::from(if page_size == 0 {
             50
         } else {
@@ -30,12 +34,14 @@ impl Database {
         let rows = self
             .backend
             .query(
-                "SELECT r.id, h.configuration_generation, h.configuration_digest,
+                &format!(
+                    "SELECT r.id, h.configuration_generation, h.configuration_digest,
             r.endpoint_id, r.endpoint_generation, r.base_path, r.registry_id, r.cache_id,
             r.mode, r.enabled, r.resource_version, r.created_at, r.updated_at
             FROM routes r JOIN route_heads h ON h.route_id = r.id
-            WHERE (r.registry_id = ?1 OR r.cache_id = ?2) AND r.id > ?3
-            ORDER BY r.id LIMIT ?4",
+            WHERE {scope_predicate} AND r.id > ?3
+            ORDER BY r.id LIMIT ?4"
+                ),
                 &vals![registry, cache, after_id, limit + 1],
             )
             .await?;
@@ -180,18 +186,20 @@ mod tests {
             ["route:z"]
         );
         assert!(second.next_cursor.is_none());
-        assert!(db
-            .list_routes_page(surface, 2, "route:z")
-            .await
-            .unwrap()
-            .records
-            .is_empty());
-        assert!(db
-            .list_routes_page(SurfaceTarget::Registry(registry_id + 1000), 2, "")
-            .await
-            .unwrap()
-            .records
-            .is_empty());
+        assert!(
+            db.list_routes_page(surface, 2, "route:z")
+                .await
+                .unwrap()
+                .records
+                .is_empty()
+        );
+        assert!(
+            db.list_routes_page(SurfaceTarget::Registry(registry_id + 1000), 2, "")
+                .await
+                .unwrap()
+                .records
+                .is_empty()
+        );
         assert_eq!(db.list_routes(surface).await.unwrap().len(), 3);
     }
 }
