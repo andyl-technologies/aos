@@ -10,6 +10,9 @@ operated egress service. The schema migrates on first use.
 Use the packaged installer. It contains the `aos-hub` deployment command,
 Worker artifact, and AOS-built provider tooling.
 
+Read [Trust an internal AOS Hub deployment](trust.md) before provisioning
+hosted signing keys, administrative identities, or client trust anchors.
+
 ## Install the Worker
 
 Build the installer:

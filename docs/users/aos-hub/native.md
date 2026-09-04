@@ -4,6 +4,9 @@ The native server keeps its system of record in SQLite and serves registry and
 cache bytes from local or S3-compatible storage. Put it behind a TLS reverse
 proxy for internet-facing use.
 
+Before choosing where keys and credentials live, read [Trust an internal AOS
+Hub deployment](trust.md).
+
 ## Initialize the instance
 
 Build the package:
@@ -130,9 +133,11 @@ bindings live elsewhere, include those paths as well. Include the reverse-proxy
 and service configuration in the same backup plan. Use SQLite's online-backup
 mechanism instead if the service cannot be stopped.
 
-Access JWT signing keys are currently regenerated when the native process
-starts. Existing one-hour API access tokens therefore stop working after a
-restart; exchange the durable provisioning token again.
+Without a configured JWT credential, access-token signing keys are regenerated
+when the native process starts. Existing one-hour API access tokens then stop
+working after a restart; exchange the durable provisioning token again. When
+the AOS service supplies `credentials.jwtSecret`, preserve that runtime
+credential with the deployment's secret state.
 
 ## Add registry storage
 

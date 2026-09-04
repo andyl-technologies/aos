@@ -1,8 +1,9 @@
 # Signing & Trust
 
 > **Status:** Reference. Grounded in
-> [`../plans/registry/design-brief.md`](../plans/registry/design-brief.md) §11 and §5
-> and the **Registry PKI v1** work (multi-maintainer signing keys, the baked image
+> [`../plans/registry/design-brief.md`](../plans/registry/design-brief.md) §11 and §5,
+> as superseded by RFC-0017's production role separation, and the **Registry PKI
+> v1** work (multi-maintainer signing keys, the baked image
 > trust anchor, and in-band roster distribution), which is now **implemented** — see
 > §2.5–§2.7 and the §9 status table. Where this doc cites current code, the code wins
 > for *current state*; the brief wins for *target intent*.
@@ -20,8 +21,8 @@ Related siblings:
 [`versioning-and-channels.md`](versioning-and-channels.md) (the 256-partition rollout
 and bucket selection), [`publishing.md`](publishing.md) (how the producer signs and
 advances partitions), and
-[`nix-cache-compatibility.md`](nix-cache-compatibility.md) (the NAR cache that reuses
-the same key).
+[`nix-cache-compatibility.md`](nix-cache-compatibility.md) (the NAR cache and its
+separate cache-signing role).
 
 ---
 
@@ -546,33 +547,31 @@ partition-advancement model and [`publishing.md`](publishing.md) for the pipelin
 
 ---
 
-## 6. One key, two surfaces — git signing + Nix narinfo
+## 6. Separate registry and Nix-cache signing roles
 
-A single Ed25519 key per registry covers **both** trust surfaces:
+An origin that serves both registry metadata and a Nix binary cache has two trust
+surfaces:
 
-1. **Git tag signatures** — the `tag → tag → commit` chain above (the primary use).
-2. **Nix narinfo `Sig:`** — if the origin *also* serves a NAR binary cache, the
-   `<storehash>.narinfo` `Sig:` field can reuse the **same** Ed25519 key. The cache
-   location is **not** carried in any signed tag (tags are pure pointers): it lives in
-   the committed `registry.toml` `[[caches]]` (authenticated via the tag —
-   [`repo-layout.md`](repo-layout.md) §2), with the consumer's client-side
-   `registries.d/<name>.toml` as an optional override/supplement (higher priority
-   wins). The origin MAY serve the stock-nix superset (`nix-cache-info`,
-   `<storehash>.narinfo`, `nar/…`) — see
-   [`nix-cache-compatibility.md`](nix-cache-compatibility.md).
+1. **Registry tag signatures** authenticate the `tag → tag → commit` chain.
+2. **Nix-cache signatures** authenticate each narinfo fingerprint for stock Nix.
 
-These are **separate signature objects** (a git SSH-format tag signature vs. a Nix
-narinfo `Sig:` line) produced by the **same** key material. A consumer that already
-trusts `<registry>.pub` for git tag verification can verify NAR substitution from the
-same origin without provisioning a second key. The key-management surface
-(`trusted-keys.d` anchoring/pinning, the `keys.toml` roster, fingerprinting) is
-shared; only the verification *call site* differs (git tag vs. narinfo).
+Production deployments use a different Ed25519 keypair for each role. The wire
+formats are cryptographically compatible, but that does not make the authorities
+interchangeable. Separation limits the consequences of a cache-publisher compromise
+and permits cache rotation without changing registry release authority. A signer or
+verifier must reject a key presented for the wrong role.
 
-The public-key encodings are format-specific projections of that same key: git
-verification stores an SSH `ssh-ed25519` public-key blob in the
-`registry:Ed25519:<base64>` AOS trust form, while stock Nix
-`trusted-public-keys` uses `<name>:<base64>` with the raw Ed25519 verifying key
-bytes.
+The cache location is **not** carried in any signed tag (tags are pure pointers): it
+lives in the committed `registry.toml` `[[caches]]` (authenticated via the tag —
+[`repo-layout.md`](repo-layout.md) §2), with the consumer's client-side
+`registries.d/<name>.toml` as an optional override/supplement (higher priority wins).
+The origin MAY serve the stock-Nix superset (`nix-cache-info`,
+`<storehash>.narinfo`, `nar/…`) — see
+[`nix-cache-compatibility.md`](nix-cache-compatibility.md).
+
+Registry verification uses the `registry:Ed25519:<base64>` AOS trust form and the
+`keys.toml` roster. Stock Nix cache verification uses `<name>:<base64>` in
+`trusted-public-keys`. Operators provision and rotate those anchors independently.
 
 ---
 
@@ -590,7 +589,7 @@ bytes.
 | Is this pointer fresh? | AOS-TUF `timestamp.json` for release metadata; low CDN TTL on `/channels` + consumer max-staleness policy + monotonic floor for rollout pointers | freshness, not forgery |
 | Could I be downgraded? | consumer **monotonic floor** (semver); abort = **fix-forward** | yes |
 | Are these NAR bytes the published bytes? | `store/` realisation graph in the signed tree: decompressed SHA-256 + size must match a blessed NAR; unmapped path = hard failure when the graph is published (RFC-0005) | yes - roots content at the tag signature |
-| NAR substitution from same origin? | `store/` realisation graph (above); narinfo `Sig:` reusing the **one** Ed25519 key remains for stock-Nix consumers | yes |
+| NAR substitution from same origin? | `store/` realisation graph (above); a separate cache-role key signs narinfo for stock-Nix consumers | yes |
 
 ---
 
@@ -630,7 +629,7 @@ ways:
 | Name-binding | embedded tag-name == expected path name (channel / semver) |
 | Anti-rollback | semver monotonic floor + fix-forward |
 | Dev config root | `APM_SYSTEM_CONFIG_DIR` redirects `/etc/apm` for both scopes (`types.rs:31`,`:52`) |
-| Nix narinfo `Sig:` | `NarInfoSigner` signs static narinfos during cache generation; the same Ed25519 key projects from git SSH tag signing to Nix narinfo signing |
+| Nix narinfo `Sig:` | `NarInfoSigner` signs static narinfos during cache generation. The implementation accepts Ed25519 key material; production supplies a separate cache-role key rather than the registry tag key |
 
 The full implementation plan for this surface is
 [`../plans/registry/workstream-04-signing-trust.md`](../plans/registry/workstream-04-signing-trust.md).
@@ -647,6 +646,6 @@ Historical removed concepts are listed in design-brief §15.
 - [`versioning-and-channels.md`](versioning-and-channels.md) — semver, channels-as-branches, 256-partition rollout, bucket selection, anti-rollback.
 - [`packs-and-deltas.md`](packs-and-deltas.md) — what the verified commit's object store contains.
 - [`publishing.md`](publishing.md) — producer pipeline: commit → sign → pack → advance partitions.
-- [`nix-cache-compatibility.md`](nix-cache-compatibility.md) — NAR cache reusing the one Ed25519 key.
+- [`nix-cache-compatibility.md`](nix-cache-compatibility.md) — NAR cache protocol and its separate production cache-signing role.
 - [`current-state.md`](current-state.md) — current git-native implementation status.
 - Plan: [`../plans/registry/workstream-04-signing-trust.md`](../plans/registry/workstream-04-signing-trust.md), [`../plans/registry/design-brief.md`](../plans/registry/design-brief.md), [`../plans/registry/open-questions.md`](../plans/registry/open-questions.md).

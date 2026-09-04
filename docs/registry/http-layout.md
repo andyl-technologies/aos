@@ -136,7 +136,7 @@ Three properties hold by construction:
    full packs. See §7.
 2. **It is a superset of the Nix binary cache.** The origin MAY additionally serve a
    `nix-cache-info` / `*.narinfo` / `nar/` surface (the superset for stock nix);
-   narinfo signing reuses the one Ed25519 key. The substituter location lives in the
+   a separate cache-role Ed25519 key signs narinfo. The substituter location lives in the
    committed repo-root `registry.toml` `[[caches]]` (a tree file authenticated
    transitively by the signed tag), with the consumer's client-side `registries.d`
    as an optional override — it is **not** advertised in the signed tag itself. That surface is documented in
