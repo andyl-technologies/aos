@@ -118,6 +118,16 @@ Primary crates: `crucible`, `crucible-protocol`, `crucible-shmem`,
 
 **Manual gate:** accepted §14 Phase 2 real-guest choice flight.
 
+The 2026-09-04 rerun of
+`nix-build -A checks.crucible.phase2.qemuLiveSelectableProduct --no-out-link`
+passed after synchronizing the plugin's patch-coverage roster with carried
+patches 0192-0195. The retained evidence is
+`/nix/store/f900aqralyj2vbn1fxk6rzryr1n9qvl8-crucible-phase2-qemu-live-selectable-product-0/result`:
+it captures a pending choice at icount 3,306,251,991, force-crashes the source,
+restores the exact request in a fresh QEMU, and observes the selected network
+payload after both discrete and integer replies. This automated prerequisite
+does not close the independent §14 operator gate.
+
 The version-1 selectable ABI is now a pure, architecture-independent codec in
 `crucible-protocol` with closed register/request/reply kinds, a 4,608-byte
 aggregate bound, checked dense byte ranges, exact request/reply sequence
@@ -299,6 +309,16 @@ extensions under `gate:abi-conformance`.
 **Manual gate:** accepted §14 Phase 3 measurement/finding flight.
 
 ## 11.6 Phase 4 — Lazy local campaign supervisor
+
+`checks.crucible.phase4.projectQuotaVm` now exercises the production
+`crucible-linux-resource` API against real ext4 inside a disposable Firecracker
+guest. Unprivileged writers encounter both hard-byte and hard-inode quota
+limits; a nonempty release retains its exact authority, and emptied/released
+projects can be reused. The host needs KVM, not an ext4 mount or quota changes.
+The 2026-09-04 flight passed with evidence in
+`/nix/store/6dxixiq283f6m65ndn5564n0j72wyfla-aos-vm-test-crucible-project-quota-0/serial.log`.
+This isolates storage enforcement; complete packaged-QEMU resource/recovery
+and operator flights remain separate requirements.
 
 Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
 `crucible-daemon`.
