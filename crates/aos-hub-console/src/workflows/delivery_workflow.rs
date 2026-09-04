@@ -282,8 +282,10 @@ fn DeliveryDestinationForm(
                 <label><span>"Storage placement"</span><select required prop:value=move || placement_name.get() on:change=move |event| placement_name.set(event_target_value(&event))>{placement_choices.iter().map(|placement| view! { <option value=placement.name.clone()>{format!("{} · {}", placement.name, placement.binding_name)}</option> }).collect_view()}</select><small>"The destination reads bytes from this existing placement."</small></label>
                 <label><span>"Endpoint"</span><select prop:value=move || endpoint_mode.get() on:change=move |event| endpoint_mode.set(event_target_value(&event))><option value="existing">"Use existing endpoint"</option><option value="new">"Configure new CDN hostname"</option>{(!domain_choices.is_empty()).then(|| view! { <option value="domain">"Use managed domain for new endpoint"</option> })}</select></label>
                 {move || if endpoint_mode.get() == "existing" {
+                    let endpoint_choices = endpoint_choices.clone();
                     view! { <label><span>"Existing endpoint"</span><select required prop:value=move || endpoint_id.get() on:change=move |event| endpoint_id.set(event_target_value(&event))>{endpoint_choices.iter().map(|endpoint| view! { <option value=endpoint.stable_id.clone()>{endpoint_option_label(endpoint)}</option> }).collect_view()}</select>{endpoint_choices.is_empty().then(|| view! { <small>"No endpoint is available. Configure a new CDN hostname here instead."</small> })}</label> }.into_any()
                 } else {
+                    let domain_choices = domain_choices.clone();
                     view! {
                         <fieldset class="choice-field">
                             <legend>"New CDN endpoint"</legend>
@@ -304,7 +306,7 @@ fn DeliveryDestinationForm(
                 <AccessPolicyFields signals=access allow_hub_auth=false boundaries=boundaries_for_access/>
                 <fieldset class="choice-field"><legend>"Capabilities"</legend><label class="choice-row"><input type="checkbox" prop:checked=move || serves_git.get() on:change=move |event| serves_git.set(event_target_checked(&event))/><span>"Git"</span></label><label class="choice-row"><input type="checkbox" prop:checked=move || serves_cache.get() on:change=move |event| serves_cache.set(event_target_checked(&event))/><span>"Nix cache"</span></label><label class="choice-row"><input type="checkbox" prop:checked=move || serves_web.get() on:change=move |event| serves_web.set(event_target_checked(&event))/><span>"Web"</span></label><label class="choice-row"><input type="checkbox" prop:checked=move || serves_oci.get() on:change=move |event| serves_oci.set(event_target_checked(&event))/><span>"OCI"</span></label></fieldset>
                 <fieldset class="choice-field"><legend>"Make canonical for"</legend><label class="choice-row"><input type="checkbox" prop:checked=move || advertise_git.get() on:change=move |event| advertise_git.set(event_target_checked(&event))/><span>"Git clients"</span></label><label class="choice-row"><input type="checkbox" prop:checked=move || advertise_cache.get() on:change=move |event| advertise_cache.set(event_target_checked(&event))/><span>"Nix clients"</span></label><label class="choice-row"><input type="checkbox" prop:checked=move || advertise_web.get() on:change=move |event| advertise_web.set(event_target_checked(&event))/><span>"Web clients"</span></label></fieldset>
-                <DeliveryPrerequisites endpoint_mode=endpoint_mode endpoint_id=endpoint_id hostname=hostname domain_id=domain_id network_policy_id=network_policy_id listener_ref=listener_ref tls_provider=tls_provider certificate_ref=certificate_ref placement_name=placement_name/>
+                <DeliveryPrerequisites endpoint_mode=endpoint_mode endpoint_id=endpoint_id hostname=hostname domain_id=domain_id network_policy_id=network_policy_id listener_ref=listener_ref tls_provider=tls_provider certificate_ref=certificate_ref probe_ref=probe_ref placement_name=placement_name/>
                 <div class="form-actions"><button class="button" type="submit" disabled=move || { let mode = endpoint_mode.get(); busy.get() || !delivery_draft_prerequisites( !placement_name.get().is_empty(), !endpoint_id.get().is_empty(), mode != "existing", if mode == "domain" { !domain_id.get().is_empty() } else { !hostname.get().is_empty() }, !network_policy_id.get().is_empty(), !listener_ref.get().is_empty() && !tls_provider.get().is_empty() && !certificate_ref.get().is_empty() && !probe_ref.get().is_empty()).is_empty() }>"Review destination"</button></div>
             </form>
             {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
@@ -323,6 +325,7 @@ fn DeliveryPrerequisites(
     listener_ref: RwSignal<String>,
     tls_provider: RwSignal<String>,
     certificate_ref: RwSignal<String>,
+    probe_ref: RwSignal<String>,
     placement_name: RwSignal<String>,
 ) -> impl IntoView {
     move || {
