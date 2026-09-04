@@ -722,8 +722,24 @@ where
         Self::Template,
         QemuHotForkTemplateSourceRecoveryFailure<Self::Lifecycle, Self::Error>,
     > {
+        let attempt = lifecycle.attempt();
+        let terminal = lifecycle.terminal_observation();
+        let publication = lifecycle.publication();
         match lifecycle.into_reconciled_backend() {
-            Ok(backend) => Ok(backend.into_source()),
+            Ok(backend) => match backend.into_source() {
+                Ok(source) => Ok(source),
+                Err(backend) => Err(QemuHotForkTemplateSourceRecoveryFailure::new(
+                    QemuHotForkAttemptReconciliation::from_reconciled_backend(
+                        attempt,
+                        *backend,
+                        terminal,
+                        publication,
+                    ),
+                    AttemptWorkerFailure::Terminal(
+                        LinuxQemuHotForkTemplateLauncherError::IncompleteRecovery,
+                    ),
+                )),
+            },
             Err(lifecycle) => Err(QemuHotForkTemplateSourceRecoveryFailure::new(
                 *lifecycle,
                 AttemptWorkerFailure::Terminal(

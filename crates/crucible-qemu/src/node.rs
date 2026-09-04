@@ -78,6 +78,8 @@ mod hot_fork_ring_image;
 #[cfg(target_os = "linux")]
 #[path = "node/hot_fork_scheduler_continuation.rs"]
 mod hot_fork_scheduler_continuation;
+#[path = "node/process_control.rs"]
+mod process_control;
 #[cfg(target_os = "linux")]
 mod process_identity;
 pub use error::{QemuNodeChannelError, QemuNodeChannelPlane, QemuNodeError};
@@ -135,10 +137,14 @@ pub use hot_fork_ring_image::{
     QemuHotForkPrivateRingStageProof, QemuHotForkPrivateRingStageState,
 };
 #[cfg(target_os = "linux")]
+use hot_fork_scheduler_continuation::QemuHotForkInstalledNodeAuthority;
+#[cfg(target_os = "linux")]
 pub use hot_fork_scheduler_continuation::{
     QemuHotForkNodeStateContinuation, QemuHotForkSchedulerNodeAssemblyError,
-    QemuHotForkSchedulerNodeContinuation,
+    QemuHotForkSchedulerNodeContinuation, QemuHotForkSchedulerNodeInstallError,
 };
+pub use process_control::QemuNodeExternalProcessControl;
+use process_control::QemuNodeProcessControl;
 #[cfg(target_os = "linux")]
 use process_identity::linux_process_identity_components;
 #[cfg(target_os = "linux")]
@@ -1619,7 +1625,7 @@ struct QemuConsoleObservation {
 
 /// Host-side wrapper exposing one QEMU child as a synchronous scheduler node.
 pub struct QemuNode {
-    child: QemuNodeChild,
+    child: QemuNodeProcessControl,
     channels: QemuNodeChannels,
     #[cfg(target_os = "linux")]
     hot_fork_private_ring_stage: Option<QemuHotForkPrivateRingStage>,
@@ -1633,6 +1639,8 @@ pub struct QemuNode {
     hot_fork_child_process_contract_stage: Option<QemuHotForkChildProcessContractStage>,
     #[cfg(target_os = "linux")]
     hot_fork_plugin_endpoint_stage: Option<QemuHotForkPluginEndpointStage>,
+    #[cfg(target_os = "linux")]
+    _hot_fork_scheduler_authority: Option<QemuHotForkInstalledNodeAuthority>,
     lifecycle_state: QemuNodeLifecycleState,
     shutdown_policy: QemuShutdownPolicy,
     async_policy: QemuAsyncDriverPolicy,
@@ -1819,7 +1827,7 @@ impl QemuNode {
         initial_fault_command_sequence: u64,
     ) -> Self {
         Self {
-            child,
+            child: QemuNodeProcessControl::Direct(child),
             channels,
             #[cfg(target_os = "linux")]
             hot_fork_private_ring_stage: None,
@@ -1833,6 +1841,8 @@ impl QemuNode {
             hot_fork_child_process_contract_stage: None,
             #[cfg(target_os = "linux")]
             hot_fork_plugin_endpoint_stage: None,
+            #[cfg(target_os = "linux")]
+            _hot_fork_scheduler_authority: None,
             lifecycle_state: QemuNodeLifecycleState::Running,
             shutdown_policy,
             async_policy,
@@ -2319,7 +2329,7 @@ impl QemuNode {
 
     /// Returns whether the owned child has been reaped by this wrapper.
     #[must_use]
-    pub const fn child_reaped(&self) -> bool {
+    pub fn child_reaped(&self) -> bool {
         self.child.reaped()
     }
 
@@ -2329,8 +2339,8 @@ impl QemuNode {
     /// live-backend capability. The returned child must be authenticated and
     /// transferred to the attempt's cgroup reaper before any resource guard is
     /// released.
-    pub(crate) fn into_direct_child_for_quarantine(self) -> QemuNodeChild {
-        self.child
+    pub(crate) fn into_direct_child_for_quarantine(self) -> Option<QemuNodeChild> {
+        self.child.into_direct_child()
     }
 
     /// Returns the operating-system process identifier of this QEMU generation.
@@ -3795,7 +3805,7 @@ const fn virtual_time_from_advance_outcome(
 }
 
 struct QemuNodeShutdownTarget<'a> {
-    child: &'a mut QemuNodeChild,
+    child: &'a mut QemuNodeProcessControl,
     plugin_control: &'a mut dyn QemuPluginIpcControlChannel,
     qmp_machine_control: &'a mut dyn QemuQmpMachineControlChannel,
 }

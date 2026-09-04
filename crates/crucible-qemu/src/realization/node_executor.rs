@@ -1272,7 +1272,7 @@ where
         L: QemuNodeLauncher<Node = QemuNode>,
     {
         self.take_active_node_for_quarantine()
-            .map(QemuNode::into_direct_child_for_quarantine)
+            .and_then(QemuNode::into_direct_child_for_quarantine)
     }
 
     /// Takes a direct child retained after a post-spawn launch reap failure.

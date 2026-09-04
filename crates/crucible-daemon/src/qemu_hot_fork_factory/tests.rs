@@ -10,9 +10,7 @@ use crucible_campaign::{
     ConfigurationArtifact, ConfigurationId, ExecutionId, ExecutionRetentionIntent,
     ScenarioArtifact, ScenarioDefId, StopCondition,
 };
-use crucible_qemu::{
-    QemuHotForkChildDiagnosticDrain, QemuHotForkHostContinuation, QemuQmpVmStateControlChannel,
-};
+use crucible_qemu::QemuHotForkChildDiagnosticDrain;
 
 use super::*;
 use crate::{
@@ -160,16 +158,6 @@ impl QemuAttemptOperationalBoundary for ScriptedLive<'_> {
 }
 
 impl QemuHotForkLiveExecution for ScriptedLive<'_> {
-    fn child_qmp_mut(
-        &mut self,
-    ) -> &mut QemuQmpVmStateControlChannel<std::os::unix::net::UnixStream> {
-        panic!("scripted template lifecycle has no QMP channel")
-    }
-
-    fn host_continuation_mut(&mut self) -> &mut QemuHotForkHostContinuation {
-        panic!("scripted template lifecycle has no host continuation")
-    }
-
     fn event_log_mut(&mut self) -> &mut EventLog {
         self.event_log
     }

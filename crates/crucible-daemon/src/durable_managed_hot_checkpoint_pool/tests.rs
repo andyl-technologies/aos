@@ -1,10 +1,6 @@
 // crucible-lint: allow panic-shortcut -- fixtures use panic shortcuts for precise failures.
 #![allow(clippy::expect_used)]
 
-use crucible_campaign::ExactCheckpointId;
-use crucible_cas::content_store::{ContentId, ObjectKind};
-use crucible_qemu::QemuQmpVmStateControlChannel;
-
 use super::*;
 use crate::{
     AttemptExecutionDisposition, AttemptExecutionReconciliationStep, HotCheckpointFallback,
@@ -12,6 +8,8 @@ use crate::{
     QemuAttemptOperationalBoundary, QemuHotForkAttemptLifecycle, QemuHotForkChildExitPolicy,
     QemuHotForkLiveExecution, QemuHotForkTemplateKey,
 };
+use crucible_campaign::ExactCheckpointId;
+use crucible_cas::content_store::{ContentId, ObjectKind};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
 #[error("scripted durable managed-pool failure")]
@@ -38,16 +36,6 @@ impl QemuAttemptOperationalBoundary for NeverLive {
 }
 
 impl QemuHotForkLiveExecution for NeverLive {
-    fn child_qmp_mut(
-        &mut self,
-    ) -> &mut QemuQmpVmStateControlChannel<std::os::unix::net::UnixStream> {
-        panic!("scripted lifecycle never becomes live")
-    }
-
-    fn host_continuation_mut(&mut self) -> &mut crucible_qemu::QemuHotForkHostContinuation {
-        panic!("scripted lifecycle never becomes live")
-    }
-
     fn event_log_mut(&mut self) -> &mut crucible::EventLog {
         panic!("scripted lifecycle never becomes live")
     }

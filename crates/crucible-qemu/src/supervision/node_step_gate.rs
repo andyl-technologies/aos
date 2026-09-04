@@ -2472,7 +2472,7 @@ fn reap_failed_live_node(
         Err(cleanup) => QemuLiveNodeStepGateError::FailedCleanup {
             primary: Box::new(primary),
             cleanup,
-            unreaped_child: Some(Box::new(node.into_direct_child_for_quarantine())),
+            unreaped_child: node.into_direct_child_for_quarantine().map(Box::new),
         },
     }
 }
