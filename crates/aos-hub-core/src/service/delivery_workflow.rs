@@ -238,6 +238,14 @@ impl RpcService {
                 self.require_delivery_scope(auth, &scope, Permission::EndpointManage)
                     .await?;
                 let revision = Self::endpoint_revision_spec(input.revision.clone())?;
+                crate::db::validate_endpoint_revision_spec(&revision).map_err(|error| {
+                    RpcError::invalid(format!("invalid endpoint revision: {error:#}"))
+                })?;
+                if revision.tls_configuration == "{}" {
+                    return Err(RpcError::invalid(
+                        "HTTPS CDN endpoints require TLS configuration",
+                    ));
+                }
                 if !matches!(revision.ingress_kind.as_str(), "external" | "layer7") {
                     return Err(RpcError::invalid(
                         "CDN endpoint must use external or layer7 ingress",
