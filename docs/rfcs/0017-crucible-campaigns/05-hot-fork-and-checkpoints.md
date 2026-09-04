@@ -1769,6 +1769,20 @@ one selection proposal before it can run.
 - **[HFORK-12]** Host continuation clone and QEMU fork are one world transaction;
   partial publication is forbidden.
 
+The current single-node transaction prepares both halves before asking QEMU to
+fork. It copies the scheduler-owned shared-memory continuation onto the exact
+private ring and reconstructs independent host block, 9p, and deterministic
+accelerator devices from a checkpoint bound to the fork request and private
+ring identity. Immutable block bases and 9p trees may be shared; writable
+overlays, device queues, visibility state, directives, pending completions, and
+transport cursors may not. A source signal coordinator is world authority, not
+per-node cloneable state: the child remembers that coordinated servicing is
+mandatory and rejects device work until the branch's atomic world transaction
+installs a fresh coordinator. A live console still requires a fresh staged
+endpoint and therefore rejects the fork before process creation in this
+checkpoint. Multi-node pairing and publication remain governed by §05.8 and
+are not implied by the single-node launch token.
+
 ## 05.8 Atomic multi-node world fork
 
 A scenario branch often contains several QEMU nodes. Forking it is an atomic
