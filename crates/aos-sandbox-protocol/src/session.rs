@@ -5,6 +5,12 @@
 //! protobuf body, and an exact table describing ancillary descriptors. Packet
 //! parsing validates table structure; each method dispatcher separately checks
 //! its exact role sequence before using any descriptor.
+//!
+//! The local socket's [`ProtocolId`] is the protected broker audience: method
+//! tags cannot cross Host, Mount, Storage, or Network domains. A future remote
+//! wrapper must carry that audience in its authenticated transcript and replace
+//! SCM_RIGHTS roles with a separately versioned remote object-carrier profile;
+//! descriptor integers and local carrier assumptions are never portable.
 
 use aos_proto::aos::sandbox::local::v1::{
     Audience, BrokerAuthorizationArtifactsV1, BrokerClientHello, BrokerDescriptorDisposition,
@@ -16,15 +22,15 @@ use aos_sandbox_core::format::{
     decode_broker_authorization_plan, decode_ownership_lease, decode_signature,
 };
 use aos_sandbox_core::{
-    DecodeLimits, FeatureRef, ProtocolId, ProtocolVersion, RegistryError, negotiate_protocol,
-    validate_required_features,
+    negotiate_protocol, validate_required_features, DecodeLimits, FeatureRef, ProtocolId,
+    ProtocolVersion, RegistryError,
 };
 use buffa::Message as _;
 
 use crate::{
-    MAXIMUM_REQUEST_BYTES, MAXIMUM_RESPONSE_BYTES, MINIMUM_RESPONSE_BYTES, PeerCredentials,
-    PeerPolicy, ProtocolValidationError, ValidatedHeader, exact_nonzero, validate_feature_set,
-    validate_peer_audience,
+    exact_nonzero, validate_feature_set, validate_peer_audience, PeerCredentials, PeerPolicy,
+    ProtocolValidationError, ValidatedHeader, MAXIMUM_REQUEST_BYTES, MAXIMUM_RESPONSE_BYTES,
+    MINIMUM_RESPONSE_BYTES,
 };
 
 /// Maximum encoded handshake packet accepted before protobuf decoding.
@@ -138,6 +144,7 @@ impl NegotiatedBrokerSession {
         ancillary_descriptor_count: usize,
     ) -> Result<ValidatedBrokerRequestEnvelope, ProtocolValidationError> {
         let request = decode_request_envelope(bytes, self.protocol, ancillary_descriptor_count)?;
+        validate_session_role_and_carriers(self.audience, &request)?;
         if !self.advertised_methods.contains(&request.method) {
             return Err(ProtocolValidationError::MethodMismatch);
         }
@@ -413,6 +420,7 @@ pub fn negotiate_client_hello(
     ensure_feature_subset(&required_features, advertised_features)?;
     let required_methods =
         validate_proto_methods(&hello.required_methods, protocol, "hello.required_methods")?;
+    validate_role_methods(policy.audience, &required_methods)?;
     ensure_method_subset(&required_methods, advertised_methods)?;
     validate_negotiated_authorization_profile(version, &required_features, &required_methods)?;
 
@@ -480,6 +488,7 @@ pub fn decode_server_hello(
     let advertised_features = validate_feature_set(&hello.features, "server_hello.features")?;
     ensure_feature_subset(required_features, &advertised_features)?;
     validate_canonical_methods(required_methods, protocol, "required_methods")?;
+    validate_role_methods(audience, required_methods)?;
     let advertised_methods =
         validate_proto_methods(&hello.methods, protocol, "server_hello.methods")?;
     ensure_method_subset(required_methods, &advertised_methods)?;
@@ -563,6 +572,7 @@ pub fn encode_authorized_request_envelope(
     authorization: AuthorizationArtifactBytes<'_>,
 ) -> Result<Vec<u8>, ProtocolValidationError> {
     let method = validate_method(Some(method), protocol)?;
+    validate_outbound_carriers(method, descriptor_roles)?;
     if !method_requires_authorization(method) {
         return Err(ProtocolValidationError::InvalidField(
             "envelope.authorization profile",
@@ -761,8 +771,71 @@ fn validate_authorization_profile(
 const fn method_requires_authorization(method: BrokerMethod) -> bool {
     matches!(
         method,
-        BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME | BrokerMethod::BROKER_METHOD_MOUNT_APPLY
+        BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
+            | BrokerMethod::BROKER_METHOD_MOUNT_APPLY
+            | BrokerMethod::BROKER_METHOD_STORAGE_APPLY
+            | BrokerMethod::BROKER_METHOD_NETWORK_APPLY
     )
+}
+
+fn validate_session_role_and_carriers(
+    audience: Audience,
+    request: &ValidatedBrokerRequestEnvelope,
+) -> Result<(), ProtocolValidationError> {
+    if audience != Audience::AUDIENCE_NODE_CONTROLLER {
+        return Err(ProtocolValidationError::MethodMismatch);
+    }
+    let roles = request
+        .descriptors
+        .iter()
+        .map(|descriptor| descriptor.role)
+        .collect::<Vec<_>>();
+    validate_outbound_carriers(request.method, &roles)
+}
+
+fn validate_role_methods(
+    audience: Audience,
+    methods: &[BrokerMethod],
+) -> Result<(), ProtocolValidationError> {
+    if audience == Audience::AUDIENCE_NODE_CONTROLLER && !methods.is_empty() {
+        Ok(())
+    } else {
+        Err(ProtocolValidationError::MethodMismatch)
+    }
+}
+
+fn validate_outbound_carriers(
+    method: BrokerMethod,
+    roles: &[BrokerDescriptorRole],
+) -> Result<(), ProtocolValidationError> {
+    let valid = match method {
+        BrokerMethod::BROKER_METHOD_MOUNT_APPLY => roles.iter().all(|role| {
+            matches!(
+                role,
+                BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_PAYLOAD_MOUNT_NAMESPACE
+                    | BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_TARGET_ROOT
+                    | BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_MOUNT_SOURCE
+                    | BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_DETACHED_MOUNT
+                    | BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_PAYLOAD_USER_NAMESPACE
+                    | BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_TARGET_SLOT
+            )
+        }),
+        BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
+        | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME
+        | BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME
+        | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY
+        | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES
+        | BrokerMethod::BROKER_METHOD_STORAGE_APPLY
+        | BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY
+        | BrokerMethod::BROKER_METHOD_NETWORK_APPLY
+        | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY => roles.is_empty(),
+        BrokerMethod::BROKER_METHOD_UNSPECIFIED => false,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(ProtocolValidationError::DescriptorTableMismatch)
+    }
 }
 
 fn is_signed_plan_lease_feature(feature: &FeatureRef) -> bool {
@@ -1032,7 +1105,12 @@ fn valid_response_body_shape(
 ) -> bool {
     if error_is_present {
         body_is_empty
-    } else if method == BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME {
+    } else if matches!(
+        method,
+        BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME
+            | BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY
+            | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY
+    ) {
         true
     } else {
         !body_is_empty
@@ -1099,6 +1177,14 @@ fn validate_method(
             BrokerMethod::BROKER_METHOD_MOUNT_APPLY
                 | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY
                 | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES
+        ) | (
+            ProtocolId::StorageBroker,
+            BrokerMethod::BROKER_METHOD_STORAGE_APPLY
+                | BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY
+        ) | (
+            ProtocolId::NetworkBroker,
+            BrokerMethod::BROKER_METHOD_NETWORK_APPLY
+                | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY
         )
     );
     if !valid {
@@ -1431,16 +1517,14 @@ mod tests {
             assignment,
             NodeId::from_bytes([7; 16]),
             authority.clone(),
-            vec![
-                BrokerGrant::new(
-                    BrokerVerb::MountCreate,
-                    BrokerGrantTarget::Assignment,
-                    BrokerArgumentCommitment::for_canonical_bytes(b"mount create"),
-                    4096,
-                    0,
-                )
-                .unwrap_or_else(|error| panic!("test grant failed: {error}")),
-            ],
+            vec![BrokerGrant::new(
+                BrokerVerb::MountCreate,
+                BrokerGrantTarget::Assignment,
+                BrokerArgumentCommitment::for_canonical_bytes(b"mount create"),
+                4096,
+                0,
+            )
+            .unwrap_or_else(|error| panic!("test grant failed: {error}"))],
             ObjectDigest::from_bytes([8; 32]),
             RevocationScopeId::from_bytes([9; 16]),
             100,
@@ -2216,7 +2300,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_success_body_is_canonical_only_for_host_inventory() {
+    fn empty_success_body_is_canonical_only_for_explicit_empty_inventories() {
         let request_id = [9; 16];
         let inventory = decode_request_envelope(
             &BrokerRequestEnvelope {
@@ -2243,6 +2327,31 @@ mod tests {
         )
         .unwrap_or_else(|error| panic!("empty inventory response did not decode: {error}"));
         assert!(decoded.body().is_empty());
+
+        for (protocol, method) in [
+            (
+                ProtocolId::StorageBroker,
+                BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY,
+            ),
+            (
+                ProtocolId::NetworkBroker,
+                BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY,
+            ),
+        ] {
+            let inventory = decode_request_envelope(
+                &BrokerRequestEnvelope {
+                    method: method.into(),
+                    body: vec![1],
+                    ..Default::default()
+                }
+                .encode_to_vec(),
+                protocol,
+                0,
+            )
+            .unwrap_or_else(|error| panic!("valid inventory envelope failed: {error}"));
+            encode_success_response_envelope(&request_id, &inventory, Vec::new(), &[], &[], 4_096)
+                .unwrap_or_else(|error| panic!("empty inventory response failed: {error}"));
+        }
 
         let observe = decode_request_envelope(
             &BrokerRequestEnvelope {
@@ -2362,5 +2471,110 @@ mod tests {
             ),
             Err(ProtocolValidationError::InvalidBrokerError)
         );
+    }
+
+    #[test]
+    fn storage_and_network_methods_are_domain_separated_and_authority_bearing() {
+        let artifacts = authorization_artifacts();
+        for (protocol, apply, inventory) in [
+            (
+                ProtocolId::StorageBroker,
+                BrokerMethod::BROKER_METHOD_STORAGE_APPLY,
+                BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY,
+            ),
+            (
+                ProtocolId::NetworkBroker,
+                BrokerMethod::BROKER_METHOD_NETWORK_APPLY,
+                BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY,
+            ),
+        ] {
+            let packet = encode_authorized_request_envelope(
+                protocol,
+                apply,
+                b"typed body",
+                &[],
+                borrowed_artifacts(&artifacts),
+            )
+            .unwrap_or_else(|error| panic!("effect encode failed: {error}"));
+            assert_eq!(
+                decode_request_envelope(&packet, protocol, 0)
+                    .unwrap_or_else(|error| panic!("effect decode failed: {error}"))
+                    .method(),
+                apply
+            );
+            let wrong_protocol = if protocol == ProtocolId::StorageBroker {
+                ProtocolId::NetworkBroker
+            } else {
+                ProtocolId::StorageBroker
+            };
+            assert_eq!(
+                decode_request_envelope(&packet, wrong_protocol, 0),
+                Err(ProtocolValidationError::MethodMismatch)
+            );
+            assert_eq!(
+                encode_authorized_request_envelope(
+                    protocol,
+                    inventory,
+                    b"inventory",
+                    &[],
+                    borrowed_artifacts(&artifacts),
+                ),
+                Err(ProtocolValidationError::InvalidField(
+                    "envelope.authorization profile"
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn storage_and_network_reject_descriptor_carriers_and_cross_role_sessions() {
+        let artifacts = authorization_artifacts();
+        for (protocol, method) in [
+            (
+                ProtocolId::StorageBroker,
+                BrokerMethod::BROKER_METHOD_STORAGE_APPLY,
+            ),
+            (
+                ProtocolId::NetworkBroker,
+                BrokerMethod::BROKER_METHOD_NETWORK_APPLY,
+            ),
+        ] {
+            assert_eq!(
+                encode_authorized_request_envelope(
+                    protocol,
+                    method,
+                    b"typed body",
+                    &[BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_TARGET_ROOT],
+                    borrowed_artifacts(&artifacts),
+                ),
+                Err(ProtocolValidationError::DescriptorTableMismatch)
+            );
+
+            let features = client_features();
+            let hello = BrokerClientHello {
+                protocol_major: 1,
+                protocol_minor: 1,
+                audience: Audience::AUDIENCE_MOUNT_WORKER.into(),
+                required_features: features.iter().map(proto_feature).collect(),
+                maximum_response_bytes: 8192,
+                required_methods: vec![method.into()],
+                ..Default::default()
+            };
+            let wrong_role_policy = PeerPolicy {
+                audience: Audience::AUDIENCE_MOUNT_WORKER,
+                ..policy()
+            };
+            assert_eq!(
+                negotiate_client_hello(
+                    &hello.encode_to_vec(),
+                    peer(),
+                    wrong_role_policy,
+                    protocol,
+                    &features,
+                    &[method],
+                ),
+                Err(ProtocolValidationError::MethodMismatch)
+            );
+        }
     }
 }

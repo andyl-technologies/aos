@@ -439,11 +439,12 @@ pub fn negotiate_protocol(
 
 const fn protocol_version(protocol: ProtocolId) -> ProtocolVersion {
     match protocol {
-        ProtocolId::HostBroker | ProtocolId::MountBroker => ProtocolVersion::new(1, 1),
+        ProtocolId::HostBroker
+        | ProtocolId::MountBroker
+        | ProtocolId::StorageBroker
+        | ProtocolId::NetworkBroker => ProtocolVersion::new(1, 1),
         ProtocolId::PublicApi
         | ProtocolId::CoordinatorNode
-        | ProtocolId::StorageBroker
-        | ProtocolId::NetworkBroker
         | ProtocolId::Guardian
         | ProtocolId::GuestAgent => ProtocolVersion::new(1, 0),
     }

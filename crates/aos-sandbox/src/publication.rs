@@ -622,7 +622,7 @@ fn validate_encoded_publication(
             _ => {}
         }
         let method = i32::from_be_bytes(take_array(bytes, &mut cursor)?);
-        if !matches!((audience, method), (1, 1) | (2, 4)) {
+        if !matches!((audience, method), (1, 1) | (2, 4) | (3, 7) | (4, 9)) {
             return Err(AuthorityPublicationError::CorruptCurrent);
         }
         let body = take_bytes(bytes, &mut cursor)?;

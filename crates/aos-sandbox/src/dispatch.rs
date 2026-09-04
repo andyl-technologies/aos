@@ -359,6 +359,8 @@ fn validate_method(
     let expected = match signed_plan.plan().protocol() {
         ProtocolId::HostBroker => BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
         ProtocolId::MountBroker => BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
+        ProtocolId::StorageBroker => BrokerMethod::BROKER_METHOD_STORAGE_APPLY,
+        ProtocolId::NetworkBroker => BrokerMethod::BROKER_METHOD_NETWORK_APPLY,
         _ => return Err(BrokerDispatchTemplateError::MethodMismatch),
     };
     if method != expected
