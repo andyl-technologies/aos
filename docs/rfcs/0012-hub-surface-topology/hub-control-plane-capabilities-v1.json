@@ -127,7 +127,8 @@
       "cli_families": ["route"],
       "web_workflows": ["routes"],
       "web_method_exceptions": [
-        {"method": "GetRoute", "reason": "ListRoutes returns the complete route generation and status model rendered by the editor."}
+        {"method": "ListRoutes", "reason": "The Delivery page shares GetSurfaceTopology across its effective summary, route inventory, and audience editor to avoid duplicate topology expansion."},
+        {"method": "GetRoute", "reason": "GetSurfaceTopology returns the complete route generation and status model rendered by the editor."}
       ],
       "methods": ["ListRoutes", "GetRoute", "PlanCreateRoute", "CreateRoute", "PlanUpdateRoute", "UpdateRoute", "PlanReplaceRoute", "ReplaceRoute", "PlanEnableRoute", "EnableRoute", "PlanDisableRoute", "DisableRoute", "PlanDeleteRoute", "DeleteRoute", "PlanSetRouteAdvertisement", "SetRouteAdvertisement", "ExplainRoute"]
     },

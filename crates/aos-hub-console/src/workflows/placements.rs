@@ -9,7 +9,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use crate::components::{HashValue, HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
-use crate::mutation::{idempotency_key, PendingPlan};
+use crate::mutation::{PendingPlan, idempotency_key, watch_draft};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
 
@@ -61,28 +61,21 @@ fn Placements(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl I
     let view_client = client.clone();
     let view_surface = surface.clone();
     let authority_surface = surface.clone();
-    let replication_surface = surface.clone();
-    let diagnostics_surface = surface.clone();
-    let binding_client = client.clone();
-    let binding_surface = surface.clone();
-    let bindings = LocalResource::new(move || {
-        let client = binding_client.clone();
-        let surface = binding_surface.clone();
-        async move { load_surface_bindings(&client, &surface).await }
-    });
-    let create_surface = surface;
+    let action = RwSignal::new("overview".to_string());
+    let action_client = client.clone();
+    let action_surface = surface.clone();
 
     view! {
         <div class="workflow-stack">
             <section class="panel resource-panel">
-                <div class="section-heading"><div><p class="section-kicker">"Physical topology"</p><div class="section-title"><h2>"Storage & replicas"</h2><HelpTooltip term="Placements" summary="Placements connect this logical surface to bindings; desired state and controller evidence are shown separately."/></div></div></div>
-                <Suspense fallback=move || view! { <p class="loading-row">"Loading placements…"</p> }>
+                <div class="section-heading"><div><p class="section-kicker">"Effective storage"</p><div class="section-title"><h2>"Storage & replicas"</h2><HelpTooltip term="Placements" summary="Each placement connects this surface to a storage binding. Effective reads and writes depend on current controller evidence."/></div><p>"See where clients read and writes land. Expand a location to inspect its configuration, move write authority, or review retirement."</p></div></div>
+                <Suspense fallback=move || view! { <p class="loading-row">"Loading storage locations…"</p> }>
                     {move || {
                         let client = view_client.clone();
                         let surface = view_surface.clone();
                         Suspend::new(async move {
                             match placements.await.as_ref() {
-                                Ok(placements) if placements.is_empty() => view! { <p class="muted">"No placements for this surface."</p> }.into_any(),
+                                Ok(placements) if placements.is_empty() => view! { <p class="muted">"No storage is connected. Add a storage location to begin setup."</p> }.into_any(),
                                 Ok(placements) => view! { <div class="binding-list">{placements.iter().cloned().map(|placement| view! { <PlacementCard client=client.clone() surface=surface.clone() placement=placement can_manage=can_manage can_evict=can_evict/> }).collect_view()}</div> }.into_any(),
                                 Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any(),
                             }
@@ -90,16 +83,57 @@ fn Placements(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl I
                     }}
                 </Suspense>
             </section>
-            <SurfaceDiagnostics client=client.clone() surface=diagnostics_surface can_explain=can_explain/>
-            <WriteAuthorityPanel client=client.clone() surface=authority_surface/>
-            <PlacementPolicyPanel client=client.clone() surface=create_surface.clone()/>
-            <PlacementEquivalencePanel client=client.clone() surface=create_surface.clone()/>
-            <PlacementReplication client=client.clone() surface=replication_surface/>
-            {can_manage.then(|| view! {
+            <WriteAuthorityPanel client=client surface=authority_surface/>
+            <section class="panel resource-panel">
+                <h2>"Storage actions"</h2>
+                <label><span>"Choose a task"</span><select prop:value=move || action.get() on:change=move |event| action.set(event_target_value(&event))>
+                    <option value="overview">"Choose a task…"</option>
+                    {can_manage.then(|| view! { <option value="add">"Add a storage location"</option><option value="replicate">"Copy data to a replica"</option> })}
+                    <option value="advanced">"Advanced policies and diagnostics"</option>
+                </select></label>
+                <p class="muted">"To add a replica, first connect its storage location, then copy data from a healthy source. Copying data does not change write authority."</p>
+            </section>
+            {move || {
+                let client = action_client.clone();
+                let surface = action_surface.clone();
+                match action.get().as_str() {
+                    "add" if can_manage => view! { <PlacementSetup client=client surface=surface/> }.into_any(),
+                    "replicate" if can_manage => view! {
+                        <Suspense fallback=move || view! { <p class="loading-row">"Loading replica choices…"</p> }>
+                            {move || { let client = client.clone(); let surface = surface.clone(); Suspend::new(async move {
+                                match placements.await.as_ref() {
+                                    Ok(items) => view! { <PlacementReplication client=client surface=surface placements=items.clone()/> }.into_any(),
+                                    Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any(),
+                                }
+                            }) }}
+                        </Suspense>
+                    }.into_any(),
+                    "advanced" => view! {
+                        <PlacementPolicyPanel client=client.clone() surface=surface.clone()/>
+                        <PlacementEquivalencePanel client=client.clone() surface=surface.clone()/>
+                        <SurfaceDiagnostics client=client surface=surface can_explain=can_explain/>
+                    }.into_any(),
+                    _ => ().into_any(),
+                }
+            }}
+        </div>
+    }
+}
+
+#[component]
+fn PlacementSetup(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl IntoView {
+    let binding_client = client.clone();
+    let binding_surface = surface.clone();
+    let bindings = LocalResource::new(move || {
+        let client = binding_client.clone();
+        let surface = binding_surface.clone();
+        async move { load_surface_bindings(&client, &surface).await }
+    });
+    view! {
                 <Suspense fallback=move || view! { <section class="panel editor-panel"><p class="loading-row">"Loading bindings…"</p></section> }>
                     {move || {
                         let client = client.clone();
-                        let surface = create_surface.clone();
+                        let surface = surface.clone();
                         Suspend::new(async move {
                             match bindings.await.as_ref() {
                                 Ok(bindings) => view! { <PlacementCreate client=client surface=surface bindings=bindings.clone()/> }.into_any(),
@@ -108,8 +142,6 @@ fn Placements(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl I
                         })
                     }}
                 </Suspense>
-            })}
-        </div>
     }
 }
 
@@ -165,9 +197,28 @@ fn PlacementCreate(
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
+    let draft_epoch = watch_draft(
+        move || {
+            let _ = (
+                name.get(),
+                binding.get(),
+                prefix.get(),
+                kind.get(),
+                state.get(),
+                read_enabled.get(),
+                read_order.get(),
+                range_start.get(),
+                range_end.get(),
+                conditional_writes.get(),
+            );
+        },
+        pending,
+        error,
+    );
     let plan_client = client.clone();
     let on_plan = move |event: SubmitEvent| {
         event.prevent_default();
+        pending.set(None);
         let order = match read_order.get_untracked().parse::<i64>() {
             Ok(value) => value,
             Err(_) => {
@@ -214,6 +265,7 @@ fn PlacementCreate(
             pending,
             error,
             busy,
+            Some(draft_epoch),
         );
     };
     let on_apply = apply::<aos_proto_types::PlacementResponse>(
@@ -225,7 +277,7 @@ fn PlacementCreate(
     );
 
     view! {
-        <section class="panel editor-panel"><h2>"Create placement"</h2><form class="editor-form" on:submit=on_plan><label><span>"Name"</span><input required prop:value=move || name.get() on:input=move |event| name.set(event_target_value(&event))/></label><label><span>"Binding"</span><select required prop:value=move || binding.get() on:change=move |event| binding.set(event_target_value(&event))>{bindings.iter().map(|choice| view! { <option value=choice.stable_id.clone()>{binding_option_label(choice)}</option> }).collect_view()}</select>{bindings.is_empty().then(|| view! { <small>"No compatible bindings are owned by or explicitly granted to this surface's owner scope."</small> })}</label><label><span>"Object prefix"</span><input required prop:value=move || prefix.get() on:input=move |event| prefix.set(event_target_value(&event))/><small>"Routes map this binding-relative prefix to an explicitly configured delivery URL."</small></label><label><span>"Kind"</span><select prop:value=move || kind.get() on:change=move |event| kind.set(event_target_value(&event))><option value="complete">"Complete"</option><option value="shard">"Shard"</option><option value="archive">"Archive"</option></select></label><label><span>"Desired state"</span><select prop:value=move || state.get() on:change=move |event| state.set(event_target_value(&event))><option value="active">"Active"</option><option value="draining">"Draining"</option><option value="offline">"Offline"</option></select></label><label><span>"Read order"</span><input required type="number" prop:value=move || read_order.get() on:input=move |event| read_order.set(event_target_value(&event))/></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || read_enabled.get() on:change=move |event| read_enabled.set(event_target_checked(&event))/><span>"Enable reads"</span></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || conditional_writes.get() on:change=move |event| conditional_writes.set(event_target_checked(&event))/><span>"Require conditional writes"</span></label>{move || (kind.get() == "shard").then(|| view! { <label><span>"Hash range start"</span><input required type="number" min="0" max="65535" prop:value=move || range_start.get() on:input=move |event| range_start.set(event_target_value(&event))/></label><label><span>"Hash range end"</span><input required type="number" min="1" max="65536" prop:value=move || range_end.get() on:input=move |event| range_end.set(event_target_value(&event))/></label> })}<div class="form-actions"><button class="button" type="submit" disabled=move || busy.get() || binding.get().is_empty()>"Review placement"</button></div></form><PlanReview pending=pending error=error busy=busy on_apply=on_apply/></section>
+        <section class="panel editor-panel"><h2>"Add a storage location"</h2><p>"Connect existing storage to this surface. New locations become usable only when their controller evidence is ready."</p><form class="editor-form" on:submit=on_plan><label><span>"Name"</span><input required prop:value=move || name.get() on:input=move |event| name.set(event_target_value(&event))/></label><label><span>"Binding"</span><select required prop:value=move || binding.get() on:change=move |event| binding.set(event_target_value(&event))>{bindings.iter().map(|choice| view! { <option value=choice.stable_id.clone()>{binding_option_label(choice)}</option> }).collect_view()}</select>{bindings.is_empty().then(|| view! { <small>"No compatible bindings are owned by or explicitly granted to this surface's owner scope."</small> })}</label><label><span>"Object prefix"</span><input required prop:value=move || prefix.get() on:input=move |event| prefix.set(event_target_value(&event))/><small>"Routes map this binding-relative prefix to an explicitly configured delivery URL."</small></label><label><span>"Kind"</span><select prop:value=move || kind.get() on:change=move |event| kind.set(event_target_value(&event))><option value="complete">"Complete"</option><option value="shard">"Shard"</option><option value="archive">"Archive"</option></select></label><label><span>"Desired state"</span><select prop:value=move || state.get() on:change=move |event| state.set(event_target_value(&event))><option value="active">"Active"</option><option value="draining">"Draining"</option><option value="offline">"Offline"</option></select></label><label><span>"Read order"</span><input required type="number" prop:value=move || read_order.get() on:input=move |event| read_order.set(event_target_value(&event))/></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || read_enabled.get() on:change=move |event| read_enabled.set(event_target_checked(&event))/><span>"Enable reads"</span></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || conditional_writes.get() on:change=move |event| conditional_writes.set(event_target_checked(&event))/><span>"Require conditional writes"</span></label>{move || (kind.get() == "shard").then(|| view! { <label><span>"Hash range start"</span><input required type="number" min="0" max="65535" prop:value=move || range_start.get() on:input=move |event| range_start.set(event_target_value(&event))/></label><label><span>"Hash range end"</span><input required type="number" min="1" max="65536" prop:value=move || range_end.get() on:input=move |event| range_end.set(event_target_value(&event))/></label> })}<div class="form-actions"><button class="button" type="submit" disabled=move || busy.get() || binding.get().is_empty()>"Review placement"</button></div></form><PlanReview pending=pending error=error busy=busy on_apply=on_apply/></section>
     }
 }
 
@@ -246,11 +298,19 @@ fn PlacementCard(
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
+    let draft_epoch = watch_draft(
+        move || {
+            let _ = (state.get(), read_enabled.get(), read_order.get());
+        },
+        pending,
+        error,
+    );
     let plan_client = client.clone();
     let update_surface = surface.clone();
     let update_placement = placement.clone();
     let on_update = move |event: SubmitEvent| {
         event.prevent_default();
+        pending.set(None);
         let order = match read_order.get_untracked().parse::<i64>() {
             Ok(value) => value,
             Err(_) => {
@@ -281,6 +341,7 @@ fn PlacementCard(
             pending,
             error,
             busy,
+            Some(draft_epoch),
         );
     };
     let on_apply = apply::<aos_proto_types::PlacementResponse>(
@@ -292,7 +353,7 @@ fn PlacementCard(
     );
 
     view! {
-        <details class="binding-card"><summary><div><span class="resource-kind">{status.derived_role.clone()}</span><h3>{placement.name.clone()}</h3><code>{format!("{}:{}", placement.binding_name, placement.prefix)}</code></div><StatusBadge state=observation.state.clone() positive=observation.state == "ready"/></summary><div class="binding-details"><div class="resource-identity"><div><span>"Kind"</span><strong>{spec.kind}</strong></div><div><span>"Desired state"</span><strong>{spec.desired_state}</strong></div><div><span>"Observed completeness"</span><strong>{observation.completeness}</strong></div><div><span>"Effective read"</span><strong>{yes_no(status.effective_read_enabled)}</strong></div><div><span>"Effective write"</span><strong>{yes_no(status.effective_write_enabled)}</strong></div><div><span>"Version"</span><code>{placement.resource_version.clone()}</code></div></div><div class="subworkflow-grid">{can_manage.then(|| view! { <section class="subworkflow"><h4>"Desired placement state"</h4><form class="stacked-form" on:submit=on_update><label><span>"State"</span><select prop:value=move || state.get() on:change=move |event| state.set(event_target_value(&event))><option value="active">"Active"</option><option value="draining">"Draining"</option><option value="offline">"Offline"</option></select></label><label><span>"Read order"</span><input type="number" prop:value=move || read_order.get() on:input=move |event| read_order.set(event_target_value(&event))/></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || read_enabled.get() on:change=move |event| read_enabled.set(event_target_checked(&event))/><span>"Enable reads"</span></label><button class="secondary-button" type="submit" disabled=move || busy.get()>"Review update"</button></form><PlanReview pending=pending error=error busy=busy on_apply=on_apply/></section> })}{(can_manage || can_evict).then(|| view! { <PlacementActions client=client.clone() surface=surface.clone() placement=placement.clone() can_manage=can_manage can_evict=can_evict/> })}</div>{can_manage.then(|| view! { <PlacementOperations client=client surface=surface placement=placement/> })}</div></details>
+        <details class="binding-card"><summary><div><span class="resource-kind">{status.derived_role.clone()}</span><h3>{placement.name.clone()}</h3><code>{format!("{}:{}", placement.binding_name, placement.prefix)}</code><p>{format!("Reads: {} · Writes: {}", yes_no(status.effective_read_enabled), yes_no(status.effective_write_enabled))}</p></div><StatusBadge state=observation.state.clone() positive=observation.state == "ready"/></summary><div class="binding-details"><div class="resource-identity"><div><span>"Kind"</span><strong>{spec.kind}</strong></div><div><span>"Desired state"</span><strong>{spec.desired_state}</strong></div><div><span>"Observed completeness"</span><strong>{observation.completeness}</strong></div><div><span>"Effective read"</span><strong>{yes_no(status.effective_read_enabled)}</strong></div><div><span>"Effective write"</span><strong>{yes_no(status.effective_write_enabled)}</strong></div><div><span>"Version"</span><code>{placement.resource_version.clone()}</code></div></div><div class="subworkflow-grid">{can_manage.then(|| view! { <section class="subworkflow"><h4>"Desired placement state"</h4><form class="stacked-form" on:submit=on_update><label><span>"State"</span><select prop:value=move || state.get() on:change=move |event| state.set(event_target_value(&event))><option value="active">"Active"</option><option value="draining">"Draining"</option><option value="offline">"Offline"</option></select></label><label><span>"Read order"</span><input type="number" prop:value=move || read_order.get() on:input=move |event| read_order.set(event_target_value(&event))/></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || read_enabled.get() on:change=move |event| read_enabled.set(event_target_checked(&event))/><span>"Enable reads"</span></label><button class="secondary-button" type="submit" disabled=move || busy.get()>"Review update"</button></form><PlanReview pending=pending error=error busy=busy on_apply=on_apply/></section> })}{(can_manage || can_evict).then(|| view! { <PlacementActions client=client.clone() surface=surface.clone() placement=placement.clone() can_manage=can_manage can_evict=can_evict/> })}</div>{can_manage.then(|| view! { <PlacementOperations client=client surface=surface placement=placement/> })}</div></details>
     }
 }
 
@@ -343,6 +404,7 @@ fn PlacementActions(
             pending,
             error,
             busy,
+            None,
         );
     });
     let eviction_pending = RwSignal::new(None::<PendingPlan>);
@@ -364,6 +426,7 @@ fn PlacementActions(
             eviction_pending,
             eviction_error,
             eviction_busy,
+            None,
         );
     };
     let on_apply_eviction = apply::<aos_proto_types::OperationResponse>(
@@ -410,7 +473,7 @@ fn PlacementActions(
         .as_ref()
         .is_some_and(|spec| spec.desired_state == "draining");
     view! {
-        <section class="subworkflow"><h4>"Lifecycle"</h4><p>"Promotion changes single-writer authority; draining and deletion remain blocked until safety predicates pass."</p><div class="form-actions">{can_manage.then(|| view! { <button class="secondary-button" type="button" disabled=move || busy.get() on:click=promote>"Review promotion"</button>{if draining { view! { <button class="secondary-button" type="button" disabled=move || busy.get() on:click=cancel_drain>"Review cancel drain"</button> }.into_any() } else { view! { <button class="secondary-button" type="button" disabled=move || busy.get() on:click=drain>"Review drain"</button> }.into_any() }}<button class="danger-button" type="button" disabled=move || busy.get() on:click=delete>"Review deletion"</button> })}{cache_surface.then(|| view! { <button class="danger-button" type="button" disabled=move || eviction_busy.get() on:click=on_eviction>"Review physical eviction"</button> })}</div>{can_manage.then(|| view! { <PlanReview pending=pending error=error busy=busy on_apply=on_apply/> })}<PlanReview pending=eviction_pending error=eviction_error busy=eviction_busy on_apply=on_apply_eviction/></section>
+        <section class="subworkflow"><h4>"Move writes or retire this location"</h4><p>"To retire storage, review a drain, wait for its blockers to clear, then review deletion. Promotion moves write authority to this location after verification."</p><div class="form-actions">{can_manage.then(|| view! { <button class="secondary-button" type="button" disabled=move || busy.get() on:click=promote>"Review promotion"</button>{if draining { view! { <button class="secondary-button" type="button" disabled=move || busy.get() on:click=cancel_drain>"Review cancel drain"</button> }.into_any() } else { view! { <button class="secondary-button" type="button" disabled=move || busy.get() on:click=drain>"Review drain"</button> }.into_any() }}<button class="danger-button" type="button" disabled=move || busy.get() on:click=delete>"Review deletion"</button> })}{cache_surface.then(|| view! { <button class="danger-button" type="button" disabled=move || eviction_busy.get() on:click=on_eviction>"Review physical eviction"</button> })}</div>{can_manage.then(|| view! { <PlanReview pending=pending error=error busy=busy on_apply=on_apply/> })}<PlanReview pending=eviction_pending error=eviction_error busy=eviction_busy on_apply=on_apply_eviction/></section>
     }
 }
 
@@ -550,6 +613,7 @@ fn WriteAuthorityState(
     surface: aos_proto_types::SurfaceRef,
     authority: Option<aos_proto_types::SurfaceWriteAuthority>,
 ) -> impl IntoView {
+    let can_manage = client.allows("placement.manage");
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
@@ -581,6 +645,7 @@ fn WriteAuthorityState(
             pending,
             error,
             busy,
+            None,
         );
     });
     let on_apply = Callback::new(move |()| {
@@ -613,7 +678,7 @@ fn WriteAuthorityState(
         exists && current.desired_placement_name != current.observed_placement_name;
 
     view! {
-        {if exists { view! { <div class="resource-identity"><div><span>"Mode"</span><strong>{current.mode}</strong></div><div><span>"Desired writer"</span><code>{current.desired_placement_name}</code></div><div><span>"Observed writer"</span><code>{current.observed_placement_name}</code></div><div><span>"Desired generation"</span><strong>{current.desired_generation}</strong></div><div><span>"Observed generation"</span><strong>{current.observed_generation}</strong></div><div><span>"Reconciliation"</span><StatusBadge state=current.reconciliation_state.clone() positive=current.reconciliation_state == "ready"/></div><div><span>"Incarnation"</span><code>{current.incarnation_id}</code></div></div><div class="form-actions">{promotion_pending.then(|| view! { <button class="secondary-button" type="button" disabled=move || busy.get() on:click=cancel>"Review promotion cancellation"</button> })}<button class="danger-button" type="button" disabled=move || busy.get() on:click=remove>"Review read-only transition"</button></div> }.into_any() } else { view! { <p class="muted">"This surface is explicitly read-only and has no write-authority incarnation."</p> }.into_any() }}<PlanReview pending=pending error=error busy=busy on_apply=on_apply/>
+        {if exists { view! { <div class="resource-identity"><div><span>"Mode"</span><strong>{current.mode}</strong></div><div><span>"Desired writer"</span><code>{current.desired_placement_name}</code></div><div><span>"Observed writer"</span><code>{current.observed_placement_name}</code></div><div><span>"Desired generation"</span><strong>{current.desired_generation}</strong></div><div><span>"Observed generation"</span><strong>{current.observed_generation}</strong></div><div><span>"Reconciliation"</span><StatusBadge state=current.reconciliation_state.clone() positive=current.reconciliation_state == "ready"/></div><div><span>"Incarnation"</span><code>{current.incarnation_id}</code></div></div>{can_manage.then(|| view! { <div class="form-actions">{promotion_pending.then(|| view! { <button class="secondary-button" type="button" disabled=move || busy.get() on:click=cancel>"Review promotion cancellation"</button> })}<button class="danger-button" type="button" disabled=move || busy.get() on:click=remove>"Review read-only transition"</button></div> })} }.into_any() } else { view! { <p class="muted">"This surface is explicitly read-only and has no write-authority incarnation."</p> }.into_any() }}<PlanReview pending=pending error=error busy=busy on_apply=on_apply/>
     }
 }
 
@@ -628,6 +693,13 @@ fn PlacementOperations(
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
+    let draft_epoch = watch_draft(
+        move || {
+            let _ = source.get();
+        },
+        pending,
+        error,
+    );
     let scan_client = client.clone();
     let scan_surface = surface.clone();
     let scan_placement = placement.clone();
@@ -648,6 +720,7 @@ fn PlacementOperations(
             pending,
             error,
             busy,
+            Some(draft_epoch),
         );
     };
     let repair_client = client.clone();
@@ -655,6 +728,7 @@ fn PlacementOperations(
     let repair_placement = placement;
     let on_repair = move |event: SubmitEvent| {
         event.prevent_default();
+        pending.set(None);
         action.set("repair".to_string());
         let idempotency_key = idempotency_key("placement-repair");
         let request = aos_proto_types::PlanRepairPlacementRequest {
@@ -672,6 +746,7 @@ fn PlacementOperations(
             pending,
             error,
             busy,
+            Some(draft_epoch),
         );
     };
     let on_apply = Callback::new(move |()| {
@@ -703,29 +778,13 @@ fn PlacementOperations(
 }
 
 #[component]
-fn PlacementReplication(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl IntoView {
-    let read_client = client.clone();
-    let read_surface = surface.clone();
-    let inventory = LocalResource::new(move || {
-        let client = read_client.clone();
-        let surface = read_surface.clone();
-        async move {
-            client
-                .collect_pages::<_, aos_proto_types::ListPlacementsResponse, _, _, _>(
-                    aos_proto_types::TOPOLOGY_SERVICE_LIST_PLACEMENTS_PATH,
-                    move |page_token| aos_proto_types::ListPlacementsRequest {
-                        surface: Some(surface.clone()),
-                        page_size: 100,
-                        page_token,
-                    },
-                    |response| (response.placements, response.next_page_token),
-                )
-                .await
-        }
-    });
-
+fn PlacementReplication(
+    client: ApiClient,
+    surface: aos_proto_types::SurfaceRef,
+    placements: Vec<aos_proto_types::Placement>,
+) -> impl IntoView {
     view! {
-        <section class="panel editor-panel"><p class="section-kicker">"Data movement"</p><h2>"Replicate placement"</h2><Suspense fallback=move || view! { <p class="loading-row">"Loading replication targets…"</p> }>{move || { let client = client.clone(); let surface = surface.clone(); Suspend::new(async move { match inventory.await.as_ref() { Ok(placements) => view! { <ReplicationForm client=client surface=surface placements=placements.clone()/> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section>
+        <section class="panel editor-panel"><p class="section-kicker">"Replica setup"</p><h2>"Copy data to a replica"</h2><p>"Choose an existing source and destination. Review the copy, then inspect its operation and destination evidence before promoting it to writer."</p><ReplicationForm client=client surface=surface placements=placements/></section>
     }
 }
 
@@ -744,10 +803,18 @@ fn ReplicationForm(
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
+    let draft_epoch = watch_draft(
+        move || {
+            let _ = (source.get(), destination.get());
+        },
+        pending,
+        error,
+    );
     let request_placements = placements.clone();
     let plan_client = client.clone();
     let on_plan = move |event: SubmitEvent| {
         event.prevent_default();
+        pending.set(None);
         let source_name = source.get_untracked();
         let destination_name = destination.get_untracked();
         if source_name == destination_name {
@@ -780,6 +847,7 @@ fn ReplicationForm(
             pending,
             error,
             busy,
+            Some(draft_epoch),
         );
     };
     let on_apply = apply::<aos_proto_types::OperationResponse>(
@@ -813,7 +881,10 @@ fn plan<Req: serde::Serialize + 'static>(
     pending: RwSignal<Option<PendingPlan>>,
     error: RwSignal<Option<String>>,
     busy: RwSignal<bool>,
+    draft_epoch: Option<RwSignal<u64>>,
 ) {
+    let planned_epoch = draft_epoch.map(|epoch| (epoch, epoch.get_untracked()));
+    pending.set(None);
     busy.set(true);
     error.set(None);
     spawn_local(async move {
@@ -823,7 +894,14 @@ fn plan<Req: serde::Serialize + 'static>(
             .map_err(|failure| failure.to_string())
             .and_then(|response| PendingPlan::from_response(response, idempotency_key));
         match result {
-            Ok(reviewed) => pending.set(Some(reviewed)),
+            Ok(reviewed)
+                if planned_epoch
+                    .as_ref()
+                    .is_none_or(|(epoch, planned)| epoch.get_untracked() == *planned) =>
+            {
+                pending.set(Some(reviewed))
+            }
+            Ok(_) => {}
             Err(detail) => error.set(Some(detail)),
         }
         busy.set(false);
@@ -891,11 +969,7 @@ fn cache_surface(path: &str) -> aos_proto_types::SurfaceRef {
     }
 }
 fn yes_no(value: bool) -> &'static str {
-    if value {
-        "yes"
-    } else {
-        "no"
-    }
+    if value { "yes" } else { "no" }
 }
 fn display_or(value: &str, fallback: &str) -> String {
     if value.is_empty() {
