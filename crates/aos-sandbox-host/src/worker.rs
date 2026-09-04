@@ -4,7 +4,7 @@ use std::num::NonZeroU32;
 use std::path::Path;
 
 use aos_sandbox_linux::path::{BeneathRoot, ResolveOptions};
-use aos_sandbox_linux::pidfd::PidFd;
+use aos_sandbox_linux::pidfd::{NamespaceKind, PidFd};
 use aos_sandbox_protocol::ValidatedAssignmentFence;
 use aos_systemd::{
     FreezerState, JobResult, SandboxUnitName, SandboxUnitObservation, SandboxUnitSpec,
@@ -167,7 +167,10 @@ pub trait HostWorker {
     /// Applies or reconciles one operation, then returns verified observation.
     /// Implementations must invoke `before_effect` after asynchronous
     /// preparation and immediately before each mutating backend call. An
-    /// idempotent no-op reconciliation does not consume effect authority.
+    /// idempotent no-op reconciliation does not consume effect authority. The
+    /// sole exception is mandatory kill/stop compensation after an attempted
+    /// launch fails identity proof: that rollback completes the already-admitted
+    /// effect and cannot be disabled by expiry of its ordinary forward guard.
     ///
     /// # Errors
     ///
@@ -301,6 +304,124 @@ impl SystemdOneShotWorker {
 }
 
 #[async_trait]
+trait LaunchBackend {
+    async fn observe(&self) -> Result<WorkerObservation>;
+    async fn start(&self, spec: &SandboxUnitSpec) -> Result<()>;
+    async fn kill(&self) -> Result<()>;
+    async fn stop(&self) -> Result<()>;
+}
+
+struct SystemdLaunchBackend<'a> {
+    worker: &'a SystemdOneShotWorker,
+    client: &'a SystemdClient,
+    identity: &'a HostRuntimeIdentity,
+    name: &'a SandboxUnitName,
+}
+
+#[async_trait]
+impl LaunchBackend for SystemdLaunchBackend<'_> {
+    async fn observe(&self) -> Result<WorkerObservation> {
+        self.worker
+            .observe_with_client(self.client, self.identity)
+            .await
+    }
+
+    async fn start(&self, spec: &SandboxUnitSpec) -> Result<()> {
+        ensure_done(
+            &self
+                .client
+                .start_sandbox_unit(spec)
+                .await
+                .map_err(|error| worker_error(&error))?,
+        )
+    }
+
+    async fn kill(&self) -> Result<()> {
+        self.client
+            .kill_sandbox_unit(self.name)
+            .await
+            .map_err(|error| worker_error(&error))
+    }
+
+    async fn stop(&self) -> Result<()> {
+        ensure_done(
+            &self
+                .client
+                .stop_sandbox_unit(self.name)
+                .await
+                .map_err(|error| worker_error(&error))?,
+        )
+    }
+}
+
+async fn reconcile_launch<B: LaunchBackend + Sync>(
+    backend: &B,
+    spec: &SandboxUnitSpec,
+    pins: &LaunchPins,
+    before_effect: &mut (dyn FnMut() -> Result<()> + Send),
+    verify_pins: &mut (dyn FnMut(&WorkerObservation, &LaunchPins) -> Result<()> + Send),
+) -> Result<WorkerObservation> {
+    let initial = match backend.observe().await {
+        Ok(observation) => observation,
+        Err(error) => return rollback_launch(backend, error).await,
+    };
+    let observation = if initial.state == ObservedRuntimeState::Absent {
+        before_effect()?;
+        if let Err(error) = backend.start(spec).await {
+            return rollback_launch(backend, error).await;
+        }
+        match backend.observe().await {
+            Ok(observation) => observation,
+            Err(error) => return rollback_launch(backend, error).await,
+        }
+    } else {
+        initial
+    };
+
+    let proof = validate_launch_observation(&observation, pins, verify_pins);
+    match proof {
+        Ok(()) => Ok(observation),
+        Err(error) => rollback_launch(backend, error).await,
+    }
+}
+
+fn validate_launch_observation(
+    observation: &WorkerObservation,
+    pins: &LaunchPins,
+    verify_pins: &mut (dyn FnMut(&WorkerObservation, &LaunchPins) -> Result<()> + Send),
+) -> Result<()> {
+    if !matches!(
+        observation.state,
+        ObservedRuntimeState::Ready | ObservedRuntimeState::Frozen
+    ) {
+        return Err(HostError::Worker(
+            "nspawn launch reconciled to a non-running state".to_owned(),
+        ));
+    }
+    observation.leader.as_ref().ok_or_else(|| {
+        HostError::Worker("started nspawn supervisor has no pinned leader".to_owned())
+    })?;
+    verify_pins(observation, pins)
+}
+
+async fn rollback_launch<B: LaunchBackend + Sync>(
+    backend: &B,
+    original: HostError,
+) -> Result<WorkerObservation> {
+    // This is mandatory containment for an effect already attempted under a
+    // valid launch grant, not a caller-directed inverse operation. Lease expiry
+    // cannot turn failed identity proof into permission to keep running.
+    let kill_failed = backend.kill().await.is_err();
+    let stop_failed = backend.stop().await.is_err();
+    if kill_failed || stop_failed {
+        return Err(HostError::Worker(format!(
+            "{original}; fail-stop cleanup incomplete (kill_failed={kill_failed}, stop_failed={stop_failed})"
+        )));
+    }
+    Err(original)
+}
+
+#[async_trait]
 impl HostWorker for SystemdOneShotWorker {
     async fn execute(
         &self,
@@ -313,65 +434,74 @@ impl HostWorker for SystemdOneShotWorker {
             .map_err(|error| worker_error(&error))?;
         let identity = HostRuntimeIdentity::from(fence);
         let name = SandboxUnitName::from_incarnation(*identity.incarnation_id());
-        let current = self.observe_with_client(&client, &identity).await?;
         match operation {
-            WorkerOperation::Launch { .. } if current.state != ObservedRuntimeState::Absent => {
-                return Ok(current);
-            }
             WorkerOperation::Launch { spec, pins } => {
-                // Retain both pins across the D-Bus await. Production launch
-                // remains disabled until the systemd property transport
-                // consumes these descriptors rather than reopening paths.
-                let _pins = pins;
-                before_effect()?;
-                ensure_done(
-                    &client
-                        .start_sandbox_unit(&spec)
-                        .await
-                        .map_err(|error| worker_error(&error))?,
-                )?;
-                return self.observe_with_client(&client, &identity).await;
+                let backend = SystemdLaunchBackend {
+                    worker: self,
+                    client: &client,
+                    identity: &identity,
+                    name: &name,
+                };
+                let mut verify = |observation: &WorkerObservation, pins: &LaunchPins| {
+                    let leader = observation.leader.as_ref().ok_or_else(|| {
+                        HostError::Worker(
+                            "started nspawn supervisor has no pinned leader".to_owned(),
+                        )
+                    })?;
+                    verify_supervisor_pins(pins, &leader.pidfd)
+                };
+                return reconcile_launch(&backend, &spec, &pins, before_effect, &mut verify).await;
             }
-            WorkerOperation::Stop | WorkerOperation::Kill
-                if current.state == ObservedRuntimeState::Absent =>
-            {
-                return Ok(current);
-            }
-            WorkerOperation::Stop => {
-                before_effect()?;
-                ensure_done(
-                    &client
-                        .stop_sandbox_unit(&name)
-                        .await
-                        .map_err(|error| worker_error(&error))?,
-                )?;
-            }
-            WorkerOperation::Freeze if current.state == ObservedRuntimeState::Frozen => {
-                return Ok(current);
-            }
-            WorkerOperation::Freeze => {
-                before_effect()?;
-                client
-                    .freeze_sandbox_unit(&name)
-                    .await
-                    .map_err(|error| worker_error(&error))?;
-            }
-            WorkerOperation::Thaw if current.state == ObservedRuntimeState::Ready => {
-                return Ok(current);
-            }
-            WorkerOperation::Thaw => {
-                before_effect()?;
-                client
-                    .thaw_sandbox_unit(&name)
-                    .await
-                    .map_err(|error| worker_error(&error))?;
-            }
-            WorkerOperation::Kill => {
-                before_effect()?;
-                client
-                    .kill_sandbox_unit(&name)
-                    .await
-                    .map_err(|error| worker_error(&error))?;
+            operation => {
+                let current = self.observe_with_client(&client, &identity).await?;
+                match operation {
+                    WorkerOperation::Stop | WorkerOperation::Kill
+                        if current.state == ObservedRuntimeState::Absent =>
+                    {
+                        return Ok(current);
+                    }
+                    WorkerOperation::Stop => {
+                        before_effect()?;
+                        ensure_done(
+                            &client
+                                .stop_sandbox_unit(&name)
+                                .await
+                                .map_err(|error| worker_error(&error))?,
+                        )?;
+                    }
+                    WorkerOperation::Freeze if current.state == ObservedRuntimeState::Frozen => {
+                        return Ok(current);
+                    }
+                    WorkerOperation::Freeze => {
+                        before_effect()?;
+                        client
+                            .freeze_sandbox_unit(&name)
+                            .await
+                            .map_err(|error| worker_error(&error))?;
+                    }
+                    WorkerOperation::Thaw if current.state == ObservedRuntimeState::Ready => {
+                        return Ok(current);
+                    }
+                    WorkerOperation::Thaw => {
+                        before_effect()?;
+                        client
+                            .thaw_sandbox_unit(&name)
+                            .await
+                            .map_err(|error| worker_error(&error))?;
+                    }
+                    WorkerOperation::Kill => {
+                        before_effect()?;
+                        client
+                            .kill_sandbox_unit(&name)
+                            .await
+                            .map_err(|error| worker_error(&error))?;
+                    }
+                    WorkerOperation::Launch { .. } => {
+                        return Err(HostError::Worker(
+                            "launch operation escaped its reconciliation path".to_owned(),
+                        ));
+                    }
+                }
             }
         }
         self.observe_with_client(&client, &identity).await
@@ -383,6 +513,53 @@ impl HostWorker for SystemdOneShotWorker {
             .map_err(|error| worker_error(&error))?;
         self.observe_with_client(&client, identity).await
     }
+}
+
+fn verify_supervisor_pins(pins: &LaunchPins, pidfd: &PidFd) -> Result<()> {
+    let info = pidfd
+        .info()
+        .map_err(|error| HostError::Worker(error.to_string()))?;
+    let executable_path = format!("/proc/{}/exe", info.pid());
+    let executable = rustix::fs::open(
+        executable_path,
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(|error| HostError::Worker(error.to_string()))?;
+    let expected = rustix::fs::fstat(pins.executable())
+        .map_err(|error| HostError::Worker(error.to_string()))?;
+    let observed =
+        rustix::fs::fstat(&executable).map_err(|error| HostError::Worker(error.to_string()))?;
+    if (expected.st_dev, expected.st_ino) != (observed.st_dev, observed.st_ino) {
+        return Err(HostError::Worker(
+            "nspawn supervisor executable differs from its pin".to_owned(),
+        ));
+    }
+
+    let network = pidfd
+        .namespace(NamespaceKind::Network)
+        .map_err(|error| HostError::Worker(error.to_string()))?;
+    if network.identity() != pins.network().identity() {
+        return Err(HostError::Worker(
+            "nspawn supervisor network namespace differs from its pin".to_owned(),
+        ));
+    }
+    // The nspawn supervisor deliberately remains outside the guest root, so
+    // `/proc/<supervisor>/root` is not evidence for the container root. The
+    // root guarantee here is instead the owned descriptor embedded in the
+    // fixed `--directory=/proc/<hostd>/fd/N` argument and retained until this
+    // post-start check. Guest-root comparison must wait for payload PID 1
+    // discovery and pinning; treating the supervisor root as equivalent would
+    // be a false proof.
+    if !pidfd
+        .is_alive()
+        .map_err(|error| HostError::Worker(error.to_string()))?
+    {
+        return Err(HostError::Worker(
+            "nspawn supervisor exited during launch identity validation".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn classify_state(observation: &SandboxUnitObservation) -> ObservedRuntimeState {
@@ -411,4 +588,250 @@ fn ensure_done(outcome: &aos_systemd::JobOutcome) -> Result<()> {
 
 fn worker_error(error: &aos_systemd::Error) -> HostError {
     HostError::Worker(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use std::collections::VecDeque;
+    use std::num::NonZeroU32;
+    use std::os::fd::AsFd as _;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceKind};
+    use aos_systemd::{
+        SandboxDescriptorPath, SandboxNspawnCommand, SandboxResolvedPaths, SandboxResources,
+    };
+
+    use super::*;
+
+    struct FakeLaunchBackend {
+        observations: Mutex<VecDeque<Result<WorkerObservation>>>,
+        starts: AtomicUsize,
+        kills: AtomicUsize,
+        stops: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl LaunchBackend for FakeLaunchBackend {
+        async fn observe(&self) -> Result<WorkerObservation> {
+            self.observations
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| Err(HostError::Worker("missing fake observation".to_owned())))
+        }
+
+        async fn start(&self, _spec: &SandboxUnitSpec) -> Result<()> {
+            self.starts.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn kill(&self) -> Result<()> {
+            self.kills.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn stop(&self) -> Result<()> {
+            self.stops.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    fn backend(observations: Vec<Result<WorkerObservation>>) -> FakeLaunchBackend {
+        FakeLaunchBackend {
+            observations: Mutex::new(observations.into()),
+            starts: AtomicUsize::new(0),
+            kills: AtomicUsize::new(0),
+            stops: AtomicUsize::new(0),
+        }
+    }
+
+    fn current_pins(executable_path: &str) -> LaunchPins {
+        let executable = rustix::fs::open(
+            executable_path,
+            rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .unwrap();
+        let workspace = rustix::fs::open(
+            "/",
+            rustix::fs::OFlags::PATH | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .unwrap();
+        let network = rustix::fs::open(
+            "/proc/self/ns/net",
+            rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .unwrap();
+        let network = NamespaceFd::from_owned(network, NamespaceKind::Network).unwrap();
+        LaunchPins::for_tests(executable, workspace, network)
+    }
+
+    fn observation(state: ObservedRuntimeState, leader: bool) -> WorkerObservation {
+        let leader = leader.then(|| PinnedLeader {
+            handle: [1; 32],
+            pidfd: PidFd::open(NonZeroU32::new(std::process::id()).unwrap()).unwrap(),
+        });
+        WorkerObservation {
+            state,
+            invocation_id: Some([2; 16]),
+            leader,
+        }
+    }
+
+    fn spec() -> SandboxUnitSpec {
+        let executable = std::fs::File::open("/proc/self/exe").unwrap();
+        let root = std::fs::File::open("/").unwrap();
+        let network = std::fs::File::open("/proc/self/ns/net").unwrap();
+        SandboxUnitSpec::new_nspawn(
+            SandboxUnitName::from_incarnation([1; 16]),
+            SandboxNspawnCommand::private_user_descriptor_v1(
+                SandboxDescriptorPath::for_current_process(executable.as_fd()).unwrap(),
+                [1; 16],
+                65_536,
+                65_536,
+            )
+            .unwrap(),
+            SandboxResolvedPaths::from_descriptors(
+                SandboxDescriptorPath::for_current_process(root.as_fd()).unwrap(),
+                SandboxDescriptorPath::for_current_process(network.as_fd()).unwrap(),
+            ),
+            SandboxResources::new(1, 1, 1, 1).unwrap(),
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(1),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn post_launch_rejects_executable_pin_substitution() {
+        let executable = rustix::fs::open(
+            "/",
+            rustix::fs::OFlags::PATH | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .unwrap();
+        let workspace = rustix::fs::open(
+            "/",
+            rustix::fs::OFlags::PATH | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .unwrap();
+        let network = rustix::fs::open(
+            "/proc/self/ns/net",
+            rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .unwrap();
+        let network = NamespaceFd::from_owned(network, NamespaceKind::Network).unwrap();
+        let pins = LaunchPins::for_tests(executable, workspace, network);
+        let pid = NonZeroU32::new(std::process::id()).unwrap();
+        let pidfd = PidFd::open(pid).unwrap();
+
+        assert!(verify_supervisor_pins(&pins, &pidfd).is_err());
+        assert!(pidfd.is_alive().unwrap());
+    }
+
+    #[tokio::test]
+    async fn proof_failure_rolls_back_even_if_effect_guard_would_expire() {
+        let backend = backend(vec![
+            Ok(observation(ObservedRuntimeState::Absent, false)),
+            Err(HostError::Worker(
+                "post-start observation failed".to_owned(),
+            )),
+        ]);
+        let mut guard_calls = 0;
+        let mut guard = || {
+            guard_calls += 1;
+            if guard_calls == 1 {
+                Ok(())
+            } else {
+                Err(HostError::Worker("expired effect guard".to_owned()))
+            }
+        };
+        let mut verify = |_: &WorkerObservation, _: &LaunchPins| Ok(());
+
+        assert!(
+            reconcile_launch(
+                &backend,
+                &spec(),
+                &current_pins("/proc/self/exe"),
+                &mut guard,
+                &mut verify,
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(guard_calls, 1);
+        assert_eq!(backend.starts.load(Ordering::SeqCst), 1);
+        assert_eq!(backend.kills.load(Ordering::SeqCst), 1);
+        assert_eq!(backend.stops.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn missing_leader_and_preexisting_mismatch_are_fail_stopped() {
+        let missing = backend(vec![
+            Ok(observation(ObservedRuntimeState::Absent, false)),
+            Ok(observation(ObservedRuntimeState::Ready, false)),
+        ]);
+        let mut guard = || Ok(());
+        let mut verify = |_: &WorkerObservation, _: &LaunchPins| Ok(());
+        assert!(
+            reconcile_launch(
+                &missing,
+                &spec(),
+                &current_pins("/proc/self/exe"),
+                &mut guard,
+                &mut verify,
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(missing.starts.load(Ordering::SeqCst), 1);
+        assert_eq!(missing.kills.load(Ordering::SeqCst), 1);
+        assert_eq!(missing.stops.load(Ordering::SeqCst), 1);
+
+        let mismatch = backend(vec![Ok(observation(ObservedRuntimeState::Ready, true))]);
+        let mut mismatch_proof = |_: &WorkerObservation, _: &LaunchPins| {
+            Err(HostError::Worker("injected pin mismatch".to_owned()))
+        };
+        assert!(
+            reconcile_launch(
+                &mismatch,
+                &spec(),
+                &current_pins("/proc/self/exe"),
+                &mut guard,
+                &mut mismatch_proof,
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(mismatch.starts.load(Ordering::SeqCst), 0);
+        assert_eq!(mismatch.kills.load(Ordering::SeqCst), 1);
+        assert_eq!(mismatch.stops.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn preexisting_running_unit_requires_and_passes_exact_pin_proof() {
+        let backend = backend(vec![Ok(observation(ObservedRuntimeState::Ready, true))]);
+        let mut guard = || Err(HostError::Worker("must not start".to_owned()));
+        let mut verify = |_: &WorkerObservation, _: &LaunchPins| Ok(());
+        let result = reconcile_launch(
+            &backend,
+            &spec(),
+            &current_pins("/proc/self/exe"),
+            &mut guard,
+            &mut verify,
+        )
+        .await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(backend.starts.load(Ordering::SeqCst), 0);
+        assert_eq!(backend.kills.load(Ordering::SeqCst), 0);
+        assert_eq!(backend.stops.load(Ordering::SeqCst), 0);
+    }
 }

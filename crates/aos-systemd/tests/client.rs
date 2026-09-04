@@ -3,11 +3,12 @@
 
 mod common;
 
+use std::os::fd::AsFd as _;
 use std::time::Duration;
 
 use aos_systemd::{
-    Error, JobResult, SandboxNspawnCommand, SandboxResolvedPaths, SandboxResources,
-    SandboxUnitName, SandboxUnitSpec,
+    Error, JobResult, SandboxDescriptorPath, SandboxNspawnCommand, SandboxResolvedPaths,
+    SandboxResources, SandboxUnitName, SandboxUnitSpec,
 };
 use common::Harness;
 
@@ -220,16 +221,22 @@ async fn transient_sandbox_uses_typed_exact_transport() {
     let h = Harness::new().await;
     let name = SandboxUnitName::from_incarnation([0x42; 16]);
     let resources = SandboxResources::new(512, 1024, 64, 100).unwrap();
+    let executable = std::fs::File::open("/proc/self/exe").unwrap();
+    let root = std::fs::File::open("/").unwrap();
+    let network = std::fs::File::open("/proc/self/ns/net").unwrap();
     let spec = SandboxUnitSpec::new_nspawn(
         name.clone(),
-        SandboxNspawnCommand::private_user_v1(
-            "/nix/store/test-systemd/bin/systemd-nspawn",
+        SandboxNspawnCommand::private_user_descriptor_v1(
+            SandboxDescriptorPath::for_current_process(executable.as_fd()).unwrap(),
             [0x42; 16],
             65_536,
             65_536,
         )
         .unwrap(),
-        SandboxResolvedPaths::new("/var/lib/aos/sandboxes/root", "/proc/123/fd/7").unwrap(),
+        SandboxResolvedPaths::from_descriptors(
+            SandboxDescriptorPath::for_current_process(root.as_fd()).unwrap(),
+            SandboxDescriptorPath::for_current_process(network.as_fd()).unwrap(),
+        ),
         resources,
         Duration::from_secs(30),
         Duration::from_secs(10),

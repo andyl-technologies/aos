@@ -1,11 +1,14 @@
 //! Trusted catalog resolution and fixed nspawn launch compilation.
 
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::sync::Arc;
 use std::time::Duration;
 
 use aos_sandbox_linux::pidfd::NamespaceFd;
 use aos_sandbox_protocol::{ValidatedAssignmentFence, ValidatedRuntimePlan};
-use aos_systemd::{SandboxResolvedPaths, SandboxResources, SandboxUnitName, SandboxUnitSpec};
+use aos_systemd::{
+    SandboxDescriptorPath, SandboxResolvedPaths, SandboxResources, SandboxUnitName, SandboxUnitSpec,
+};
 
 use crate::{HostError, Result};
 
@@ -139,11 +142,18 @@ pub struct ResolvedLaunchResources {
 /// handoff to systemd and post-launch identity verification.
 #[derive(Debug)]
 pub struct LaunchPins {
+    executable: Arc<OwnedFd>,
     workspace: OwnedFd,
     network: NamespaceFd,
 }
 
 impl LaunchPins {
+    /// Returns the pinned nspawn executable descriptor.
+    #[must_use]
+    pub fn executable(&self) -> BorrowedFd<'_> {
+        self.executable.as_fd()
+    }
+
     /// Returns the pinned workspace directory descriptor.
     #[must_use]
     pub fn workspace(&self) -> BorrowedFd<'_> {
@@ -154,6 +164,15 @@ impl LaunchPins {
     #[must_use]
     pub fn network(&self) -> &NamespaceFd {
         &self.network
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_tests(executable: OwnedFd, workspace: OwnedFd, network: NamespaceFd) -> Self {
+        Self {
+            executable: Arc::new(executable),
+            workspace,
+            network,
+        }
     }
 }
 
@@ -211,9 +230,9 @@ pub struct BackendReadiness {
 }
 
 /// Stores node-owned constants used to compile a launch request.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub struct NspawnConfig {
-    executable: String,
+    executable_pin: Arc<OwnedFd>,
     timeout_start: Duration,
     timeout_stop: Duration,
 }
@@ -225,14 +244,18 @@ impl NspawnConfig {
     ///
     /// Returns [`HostError::InvalidPlan`] for nonabsolute/unnormalized paths,
     /// an invalid `SELinux` context token, or zero timeouts.
-    #[cfg(test)]
-    fn new(
+    pub fn from_readiness(
         readiness: BackendReadiness,
         timeout_start: Duration,
         timeout_stop: Duration,
     ) -> Result<Self> {
         let executable = readiness.executable;
         validate_absolute(&executable, "nspawn executable")?;
+        if !executable.starts_with("/nix/store/") || !executable.ends_with("/bin/systemd-nspawn") {
+            return Err(HostError::InvalidPlan(
+                "nspawn executable is not the fixed AOS store binary".to_owned(),
+            ));
+        }
         if readiness.executable_device == 0
             || readiness.executable_inode == 0
             || readiness.probe_generation == 0
@@ -249,8 +272,18 @@ impl NspawnConfig {
                 "systemd operation timeouts must be nonzero".to_owned(),
             ));
         }
+        let executable_pin = open_executable_pin(&executable)?;
+        let executable_identity = rustix::fs::fstat(&executable_pin)
+            .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
+        if executable_identity.st_dev != readiness.executable_device
+            || executable_identity.st_ino != readiness.executable_inode
+        {
+            return Err(HostError::InvalidPlan(
+                "nspawn executable identity changed".to_owned(),
+            ));
+        }
         Ok(Self {
-            executable,
+            executable_pin: Arc::new(executable_pin),
             timeout_start,
             timeout_stop,
         })
@@ -258,20 +291,20 @@ impl NspawnConfig {
 
     #[cfg(test)]
     pub(crate) fn for_tests(executable: impl Into<String>) -> Result<Self> {
-        let executable = executable.into();
-        Self::new(
-            BackendReadiness {
-                executable: executable.clone(),
-                executable_device: 1,
-                executable_inode: 2,
-                probe_generation: 1,
-                mac_policy_digest: [3; 32],
-                supervisor_profile_digest: [4; 32],
-                payload_filter_digest: [5; 32],
-            },
-            Duration::from_secs(30),
-            Duration::from_secs(10),
+        let _configured_executable = executable.into();
+        let executable =
+            std::env::current_exe().map_err(|error| HostError::InvalidPlan(error.to_string()))?;
+        let executable_pin = rustix::fs::open(
+            &executable,
+            rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
         )
+        .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
+        Ok(Self {
+            executable_pin: Arc::new(executable_pin),
+            timeout_start: Duration::from_secs(30),
+            timeout_stop: Duration::from_secs(10),
+        })
     }
 
     /// Resolves opaque resources and compiles the sole accepted nspawn argv.
@@ -347,15 +380,21 @@ impl NspawnConfig {
                 .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
         }
 
-        let command = aos_systemd::SandboxNspawnCommand::private_user_v1(
-            self.executable.clone(),
+        let executable_path =
+            SandboxDescriptorPath::for_current_process(self.executable_pin.as_fd())
+                .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
+        let root_path = SandboxDescriptorPath::for_current_process(workspace.pin.as_fd())
+            .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
+        let network_path = SandboxDescriptorPath::for_current_process(network.pin.as_fd())
+            .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
+        let command = aos_systemd::SandboxNspawnCommand::private_user_descriptor_v1(
+            executable_path,
             *fence.incarnation_id(),
             resolved.identity.range_start,
             resolved.identity.range_size,
         )
         .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
-        let paths = SandboxResolvedPaths::new(workspace.root_directory, network.namespace_path)
-            .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
+        let paths = SandboxResolvedPaths::from_descriptors(root_path, network_path);
         let spec = SandboxUnitSpec::new_nspawn(
             SandboxUnitName::from_incarnation(*fence.incarnation_id()),
             command,
@@ -368,11 +407,33 @@ impl NspawnConfig {
         Ok(PreparedLaunch {
             spec,
             pins: LaunchPins {
+                executable: Arc::clone(&self.executable_pin),
                 workspace: workspace.pin,
                 network: network.pin,
             },
         })
     }
+}
+
+fn open_executable_pin(path: &str) -> Result<OwnedFd> {
+    let pin = rustix::fs::open(
+        path,
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
+    let identity =
+        rustix::fs::fstat(&pin).map_err(|error| HostError::InvalidPlan(error.to_string()))?;
+    if rustix::fs::FileType::from_raw_mode(identity.st_mode) != rustix::fs::FileType::RegularFile
+        || identity.st_uid != 0
+        || identity.st_mode & 0o111 == 0
+        || identity.st_mode & 0o022 != 0
+    {
+        return Err(HostError::InvalidPlan(
+            "nspawn executable pin is not a protected executable".to_owned(),
+        ));
+    }
+    Ok(pin)
 }
 
 fn validate_resolved_identity(

@@ -9,6 +9,8 @@
 
 use std::fmt;
 use std::num::NonZeroU32;
+use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
+use std::sync::Arc;
 use std::time::Duration;
 
 use zbus::proxy::CacheProperties;
@@ -24,7 +26,6 @@ const GUARD_PREFIX: &str = "aos-lease-guard-";
 const SANDBOX_SLICE: &str = "aos-sandboxes.slice";
 const MAX_ARGUMENTS: usize = 256;
 const MAX_ARGUMENT_BYTES: usize = 128 * 1024;
-const MAX_PATH_BYTES: usize = 4 * 1024;
 const MAX_DEVICES: usize = 64;
 const MIN_CPU_WEIGHT: u64 = 1;
 const MAX_CPU_WEIGHT: u64 = 10_000;
@@ -268,36 +269,72 @@ pub enum SandboxDevice {
 pub struct SandboxResolvedPaths {
     root_directory: String,
     network_namespace_path: String,
+    _root_pin: SandboxDescriptorPath,
+    _network_pin: SandboxDescriptorPath,
 }
 
 /// Carries the sole nspawn command profile accepted by the typed transport.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SandboxNspawnCommand {
     executable: String,
+    _executable_pin: SandboxDescriptorPath,
     incarnation: [u8; 16],
     uid_range_start: u32,
     uid_range_size: u32,
 }
 
-impl SandboxNspawnCommand {
-    /// Constructs the fixed private-user nspawn command profile.
+/// Names an owned descriptor through the broker's current procfs fd table.
+///
+/// Values cannot be parsed from strings. The constructor accepts a live
+/// borrowed descriptor and derives both the process and descriptor numbers.
+#[derive(Clone, Debug)]
+pub struct SandboxDescriptorPath {
+    path: String,
+    _pin: Arc<OwnedFd>,
+}
+
+impl PartialEq for SandboxDescriptorPath {
+    fn eq(&self, other: &Self) -> bool {
+        self.path == other.path
+    }
+}
+
+impl Eq for SandboxDescriptorPath {}
+
+impl SandboxDescriptorPath {
+    /// Derives a descriptor path for the current broker process.
     ///
     /// # Errors
     ///
-    /// Returns an error unless the executable is an absolute store path ending
-    /// in `/bin/systemd-nspawn`, the incarnation is nonzero, and the identity
-    /// allocation excludes host identity zero and contains at least 65,536 IDs.
-    pub fn private_user_v1(
-        executable: impl Into<String>,
+    /// Returns an error when the descriptor cannot be duplicated into owned,
+    /// close-on-exec storage.
+    pub fn for_current_process(fd: BorrowedFd<'_>) -> std::io::Result<Self> {
+        let pin = Arc::new(fd.try_clone_to_owned()?);
+        Ok(Self {
+            path: format!("/proc/{}/fd/{}", std::process::id(), pin.as_raw_fd()),
+            _pin: pin,
+        })
+    }
+
+    /// Returns the internally derived absolute procfs path.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.path
+    }
+}
+
+impl SandboxNspawnCommand {
+    /// Constructs the fixed profile with an executable addressed by an owned descriptor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a sentinel incarnation or invalid private identity range.
+    pub fn private_user_descriptor_v1(
+        executable: SandboxDescriptorPath,
         incarnation: [u8; 16],
         uid_range_start: u32,
         uid_range_size: u32,
     ) -> Result<Self> {
-        let executable = executable.into();
-        validate_absolute_path(&executable, "nspawn executable")?;
-        if !executable.starts_with("/nix/store/") || !executable.ends_with("/bin/systemd-nspawn") {
-            return Err(invalid("nspawn executable is not an AOS store binary"));
-        }
         if incarnation == [0; 16]
             || uid_range_start == 0
             || uid_range_size < 65_536
@@ -306,7 +343,8 @@ impl SandboxNspawnCommand {
             return Err(invalid("nspawn identity or private user range is invalid"));
         }
         Ok(Self {
-            executable,
+            executable: executable.path.clone(),
+            _executable_pin: executable,
             incarnation,
             uid_range_start,
             uid_range_size,
@@ -339,24 +377,18 @@ impl SandboxNspawnCommand {
 }
 
 impl SandboxResolvedPaths {
-    /// Validates the private root and pinned network namespace paths.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::InvalidSandboxUnit`] when either path is empty,
-    /// nonabsolute, unnormalized, contains NUL, or exceeds the transport bound.
-    pub fn new(
-        root_directory: impl Into<String>,
-        network_namespace_path: impl Into<String>,
-    ) -> Result<Self> {
-        let root_directory = root_directory.into();
-        let network_namespace_path = network_namespace_path.into();
-        validate_absolute_path(&root_directory, "sandbox root")?;
-        validate_absolute_path(&network_namespace_path, "network namespace")?;
-        Ok(Self {
-            root_directory,
-            network_namespace_path,
-        })
+    /// Constructs launch paths solely from live broker-owned descriptors.
+    #[must_use]
+    pub fn from_descriptors(
+        root_directory: SandboxDescriptorPath,
+        network_namespace: SandboxDescriptorPath,
+    ) -> Self {
+        Self {
+            root_directory: root_directory.path.clone(),
+            network_namespace_path: network_namespace.path.clone(),
+            _root_pin: root_directory,
+            _network_pin: network_namespace,
+        }
     }
 
     /// Returns the resolved private sandbox root.
@@ -782,25 +814,6 @@ fn invalid(message: impl Into<String>) -> Error {
     Error::InvalidSandboxUnit(message.into())
 }
 
-fn validate_absolute_path(path: &str, label: &str) -> Result<()> {
-    if path.is_empty() || !path.starts_with('/') || path.len() > MAX_PATH_BYTES {
-        return Err(invalid(format!(
-            "{label} path must be absolute, non-empty, and at most {MAX_PATH_BYTES} bytes"
-        )));
-    }
-    if path.as_bytes().contains(&0)
-        || path.strip_prefix('/').is_none_or(|tail| {
-            tail.is_empty()
-                || tail
-                    .split('/')
-                    .any(|part| part.is_empty() || part == "." || part == "..")
-        })
-    {
-        return Err(invalid(format!("{label} path is not normalized")));
-    }
-    Ok(())
-}
-
 fn validate_arguments(arguments: &[String]) -> Result<()> {
     if arguments.len() > MAX_ARGUMENTS {
         return Err(invalid(format!(
@@ -896,7 +909,31 @@ fn parse_cgroup(name: &SandboxUnitName, path: String) -> Result<Option<SandboxCg
 
 #[cfg(test)]
 mod tests {
+    use std::os::fd::AsFd as _;
+
     use super::*;
+
+    fn descriptor_path(path: &str) -> SandboxDescriptorPath {
+        let file = std::fs::File::open(path).unwrap();
+        SandboxDescriptorPath::for_current_process(file.as_fd()).unwrap()
+    }
+
+    fn command(incarnation: [u8; 16]) -> SandboxNspawnCommand {
+        SandboxNspawnCommand::private_user_descriptor_v1(
+            descriptor_path("/proc/self/exe"),
+            incarnation,
+            65_536,
+            65_536,
+        )
+        .unwrap()
+    }
+
+    fn paths() -> SandboxResolvedPaths {
+        SandboxResolvedPaths::from_descriptors(
+            descriptor_path("/"),
+            descriptor_path("/proc/self/ns/net"),
+        )
+    }
 
     fn fixture() -> SandboxUnitSpec {
         let resources = SandboxResources::new(512, 1024, 128, 100)
@@ -906,14 +943,8 @@ mod tests {
             .unwrap();
         SandboxUnitSpec::new_nspawn(
             SandboxUnitName::from_incarnation([0xab; 16]),
-            SandboxNspawnCommand::private_user_v1(
-                "/nix/store/nspawn/bin/systemd-nspawn",
-                [0xab; 16],
-                65_536,
-                65_536,
-            )
-            .unwrap(),
-            SandboxResolvedPaths::new("/var/lib/aos/sandboxes/root", "/proc/123/fd/9").unwrap(),
+            command([0xab; 16]),
+            paths(),
             resources,
             Duration::from_secs(30),
             Duration::from_secs(10),
@@ -946,39 +977,68 @@ mod tests {
     #[test]
     fn command_and_namespace_paths_are_bounded_and_normalized() {
         assert!(
-            SandboxNspawnCommand::private_user_v1("/bin/systemd-nspawn", [1; 16], 65_536, 65_536)
-                .is_err()
-        );
-        assert!(
-            SandboxNspawnCommand::private_user_v1(
-                "/nix/store/a/bin/systemd-nspawn",
+            SandboxNspawnCommand::private_user_descriptor_v1(
+                descriptor_path("/proc/self/exe"),
                 [1; 16],
                 0,
                 65_536
             )
             .is_err()
         );
-        assert!(SandboxResolvedPaths::new("relative-root", "/proc/1/fd/2").is_err());
-        assert!(SandboxResolvedPaths::new("/var/lib/aos/sandboxes/root", "/proc/1/../2").is_err());
 
         let resources = SandboxResources::new(1, 1, 1, 1).unwrap();
         assert!(
             SandboxUnitSpec::new_nspawn(
                 SandboxUnitName::from_incarnation([1; 16]),
-                SandboxNspawnCommand::private_user_v1(
-                    "/nix/store/nspawn/bin/systemd-nspawn",
-                    [2; 16],
-                    65_536,
-                    65_536,
-                )
-                .unwrap(),
-                SandboxResolvedPaths::new("/var/lib/aos/sandboxes/root", "/proc/1/fd/2").unwrap(),
+                command([2; 16]),
+                paths(),
                 resources,
                 Duration::from_secs(1),
                 Duration::from_secs(1),
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn descriptor_launch_paths_are_derived_and_expire_with_ownership() {
+        let executable = std::fs::File::open("/proc/self/exe").unwrap();
+        let root = std::fs::File::open("/").unwrap();
+        let network = std::fs::File::open("/proc/self/ns/net").unwrap();
+        let executable_path =
+            SandboxDescriptorPath::for_current_process(executable.as_fd()).unwrap();
+        let root_path = SandboxDescriptorPath::for_current_process(root.as_fd()).unwrap();
+        let network_path = SandboxDescriptorPath::for_current_process(network.as_fd()).unwrap();
+        let expired = root_path.as_str().to_owned();
+        let spec = SandboxUnitSpec::new_nspawn(
+            SandboxUnitName::from_incarnation([1; 16]),
+            SandboxNspawnCommand::private_user_descriptor_v1(
+                executable_path,
+                [1; 16],
+                65_536,
+                65_536,
+            )
+            .unwrap(),
+            SandboxResolvedPaths::from_descriptors(root_path, network_path),
+            SandboxResources::new(1, 1, 1, 1).unwrap(),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        let prefix = format!("/proc/{}/fd/", std::process::id());
+        assert!(spec.executable().starts_with(&prefix));
+        assert!(spec.root_directory().starts_with(&prefix));
+        assert!(spec.network_namespace_path().starts_with(&prefix));
+        assert!(
+            spec.arguments()
+                .iter()
+                .any(|argument| argument == &format!("--directory={}", spec.root_directory()))
+        );
+
+        drop(root);
+        assert!(std::fs::metadata(&expired).is_ok());
+        drop(spec);
+        assert!(std::fs::metadata(expired).is_err());
     }
 
     #[test]

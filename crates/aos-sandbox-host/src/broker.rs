@@ -587,10 +587,9 @@ mod tests {
             let WorkerOperation::Launch { spec, pins: _pins } = operation else {
                 panic!("test expected launch operation");
             };
-            assert_eq!(
-                spec.executable(),
-                "/nix/store/aos-systemd/bin/systemd-nspawn"
-            );
+            let descriptor_prefix =
+                format!("/proc/{}/fd/", rustix::process::getpid().as_raw_nonzero());
+            assert!(spec.executable().starts_with(&descriptor_prefix));
             let expected_machine = format!(
                 "--machine=aos-{}",
                 fence
@@ -599,6 +598,7 @@ mod tests {
                     .map(|byte| format!("{byte:02x}"))
                     .collect::<String>()
             );
+            let expected_directory = format!("--directory={}", spec.root_directory());
             let expected_arguments = [
                 "--boot",
                 "--quiet",
@@ -606,7 +606,7 @@ mod tests {
                 "--register=no",
                 "--settings=no",
                 expected_machine.as_str(),
-                "--directory=/run/aos/sandbox-pins/workspaces/test-root",
+                expected_directory.as_str(),
                 "--private-users=65536:65536",
                 "--private-users-ownership=map",
                 "--notify-ready=yes",
@@ -617,13 +617,10 @@ mod tests {
                 "--aos-payload-seccomp-profile=aos-sandbox-payload-v1",
             ];
             assert_eq!(spec.arguments(), expected_arguments);
-            assert_eq!(
-                spec.root_directory(),
-                "/run/aos/sandbox-pins/workspaces/test-root"
-            );
-            assert_eq!(
-                spec.network_namespace_path(),
-                "/run/aos/sandbox-pins/netns/test-net"
+            assert!(spec.root_directory().starts_with(&descriptor_prefix));
+            assert!(
+                spec.network_namespace_path()
+                    .starts_with(&descriptor_prefix)
             );
             before_effect()?;
             self.calls.fetch_add(1, Ordering::SeqCst);
