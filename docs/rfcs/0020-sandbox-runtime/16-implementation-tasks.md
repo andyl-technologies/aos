@@ -1178,6 +1178,19 @@ completes. The Git history remains authoritative for code details.
   file data, and worker process integration remain open. No task is checked
   from the library alone.
 
+- `cf3138c2b` and `1b4978377` — move metadata ABI representability failure
+  before FUSE initialization. Backend-neutral prepared-presentation admission
+  bounds the record scan before traversal and checks translated scalar IDs,
+  link counts, sizes, rounded allocation units, timestamps, names, symlink
+  targets, and directory cookies, including synthetic `.` and `..` names.
+  The connection delegate checks cancellation/deadline before work, on each
+  record, and at completion. The Linux adapter supplies exact C scalar ranges
+  and an independent startup-record ceiling before INIT or C entry; dynamic
+  inode IDs require a full-width `ino_t` independently of the immutable scan.
+  All 95 core unit tests, the zero-allocation harness, ten core doctests, ten
+  adapter fixtures and its ownership doctest, strict scoped Clippy, rustdoc,
+  formatting, and independent adapter review pass. No publication-proof cache
+  or detached authorization token is introduced.
 - `e92a74fe6` — real-kernel qualification toward `SBX-FS-03`: a fixed metadata
   fixture links the installed C transport and mounts `/dev/fuse` in a private
   mount namespace. The headless Firecracker gate passes on AOS Linux 6.18.33
