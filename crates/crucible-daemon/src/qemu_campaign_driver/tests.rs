@@ -3,10 +3,6 @@
 // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts.
 #![allow(clippy::expect_used)]
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
-#[cfg(target_os = "linux")]
-use std::os::unix::net::UnixStream;
-
 use crucible::model::{
     Aggregation, BoundarySelector, CohortPolicy, MeasurementDefinition, MeasurementDefinitions,
     MeasurementId, MetricDefinition, MetricId, MetricSource, MetricValueType, UnitId,
@@ -27,10 +23,8 @@ use crucible_campaign::{
 use crucible_protocol::SelectionRequest;
 use crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest;
 #[cfg(target_os = "linux")]
-use crucible_qemu::{
-    QemuHotForkChildDiagnosticDrain, QemuHotForkHostContinuation, QemuQmpVmStateControlChannel,
-    QemuVmRealizationError,
-};
+use crucible_qemu::{QemuHotForkChildDiagnosticDrain, QemuVmRealizationError};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use super::*;
 use crate::{ExecutionCancellation, ExecutionCheckpointRequest, QemuFreshAttemptLifecycleOwner};
@@ -76,14 +70,6 @@ impl crate::QemuHotForkLiveExecution for HotModeledLive<'_> {
         Ok(self.modeled)
     }
 
-    fn child_qmp_mut(&mut self) -> &mut QemuQmpVmStateControlChannel<UnixStream> {
-        panic!("modeled-driver test does not use raw child QMP")
-    }
-
-    fn host_continuation_mut(&mut self) -> &mut QemuHotForkHostContinuation {
-        panic!("modeled-driver test does not use raw host continuation")
-    }
-
     fn event_log_mut(&mut self) -> &mut EventLog {
         &mut self.event_log
     }
@@ -123,14 +109,6 @@ impl crate::QemuAttemptOperationalBoundary for RawHotLive {
 
 #[cfg(target_os = "linux")]
 impl crate::QemuHotForkLiveExecution for RawHotLive {
-    fn child_qmp_mut(&mut self) -> &mut QemuQmpVmStateControlChannel<UnixStream> {
-        panic!("raw-live test does not use child QMP")
-    }
-
-    fn host_continuation_mut(&mut self) -> &mut QemuHotForkHostContinuation {
-        panic!("raw-live test does not use host continuation")
-    }
-
     fn event_log_mut(&mut self) -> &mut EventLog {
         &mut self.event_log
     }

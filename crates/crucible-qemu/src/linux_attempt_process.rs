@@ -381,6 +381,22 @@ impl LinuxQemuHotForkChildProcessAuthority {
         &self.identity
     }
 
+    /// Sends `SIGTERM` through the exact retained pidfd.
+    ///
+    /// # Errors
+    ///
+    /// Returns an executor-availability error when the kernel rejects the
+    /// pidfd signal operation. The source-parent status and attempt cgroup must
+    /// remain retained regardless of this result.
+    pub fn terminate(&self) -> Result<(), QemuVmRealizationError> {
+        pidfd_send_signal(&self.pidfd, Signal::TERM).map_err(|source| {
+            QemuVmRealizationError::ExecutorUnavailable {
+                operation: "terminate retained hot-fork child",
+                message: source.to_string(),
+            }
+        })
+    }
+
     /// Sends `SIGKILL` through the exact retained pidfd.
     ///
     /// # Errors

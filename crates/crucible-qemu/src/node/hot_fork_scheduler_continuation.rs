@@ -121,11 +121,11 @@ impl QemuHotForkNodeStateContinuation {
 #[must_use = "retain the scheduler-node continuation through child reconciliation"]
 pub struct QemuHotForkSchedulerNodeContinuation {
     request: crate::QmpHotForkRequest,
-    _channels: QemuNodeChannels,
-    _host_io_runtime: Box<dyn QemuHostIoRuntime>,
-    _console_spool: Option<QemuConsoleObservationSpool>,
+    channels: QemuNodeChannels,
+    host_io_runtime: Box<dyn QemuHostIoRuntime>,
+    console_spool: Option<QemuConsoleObservationSpool>,
     state: QemuHotForkNodeStateContinuation,
-    _ring_descriptor: OwnedFd,
+    ring_descriptor: OwnedFd,
     ring: QemuHotForkPrivateRingStageProof,
     endpoint_stage: QemuHotForkPluginEndpointStageProof,
     host_io_binding: crucible::model::ContentHash,
@@ -169,11 +169,11 @@ impl QemuHotForkSchedulerNodeContinuation {
         };
         Self {
             request,
-            _channels: channels,
-            _host_io_runtime: host_io_runtime,
-            _console_spool: console_spool,
+            channels,
+            host_io_runtime,
+            console_spool,
             state: node_state,
-            _ring_descriptor: ring_descriptor,
+            ring_descriptor,
             ring,
             endpoint_stage,
             host_io_binding,
@@ -208,6 +208,115 @@ impl QemuHotForkSchedulerNodeContinuation {
     #[must_use]
     pub const fn node_state(&self) -> &QemuHotForkNodeStateContinuation {
         &self.state
+    }
+
+    /// Installs this continuation as one externally parented scheduler node.
+    ///
+    /// The process-control loan must name the exact fork request and child PID
+    /// authenticated during source-template reconciliation. The returned node
+    /// owns every modeled child channel and continuation, while source-parent
+    /// status release and target-resource cleanup remain with the outer
+    /// lifecycle that issued `process`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuHotForkSchedulerNodeInstallError`] with both linear inputs
+    /// when the process-control basis differs from this continuation.
+    pub fn into_qemu_node(
+        self,
+        node: crucible::NodeId,
+        process: impl QemuNodeExternalProcessControl + 'static,
+        shutdown_policy: QemuShutdownPolicy,
+        async_policy: QemuAsyncDriverPolicy,
+        crash_detector: QemuCrashDetector,
+    ) -> Result<QemuNode, QemuHotForkSchedulerNodeInstallError> {
+        let process = Box::new(process);
+        let basis = process.hot_fork_process_basis();
+        if basis.request() != self.request || basis.child_process_id() != process.process_id() {
+            return Err(QemuHotForkSchedulerNodeInstallError::new(
+                self,
+                process,
+                QemuNodeChannelError::new(
+                    "install hot-fork scheduler node",
+                    "external process control does not match the retained fork basis",
+                ),
+            ));
+        }
+
+        let Self {
+            request,
+            channels,
+            host_io_runtime,
+            console_spool,
+            state,
+            ring_descriptor,
+            ring,
+            endpoint_stage,
+            host_io_binding,
+        } = self;
+        let console_observation = console_spool.map(|spool| QemuConsoleObservation { node, spool });
+        let authority = QemuHotForkInstalledNodeAuthority {
+            request,
+            _ring_descriptor: ring_descriptor,
+            ring,
+            endpoint_stage,
+            host_io_binding,
+        };
+        Ok(QemuNode {
+            child: QemuNodeProcessControl::External(process),
+            channels,
+            hot_fork_private_ring_stage: None,
+            hot_fork_child_diagnostic_stage: None,
+            hot_fork_child_qmp_stage: None,
+            hot_fork_child_console_stage: None,
+            hot_fork_child_process_contract_stage: None,
+            hot_fork_plugin_endpoint_stage: None,
+            _hot_fork_scheduler_authority: Some(authority),
+            lifecycle_state: QemuNodeLifecycleState::Running,
+            shutdown_policy,
+            async_policy,
+            crash_detector,
+            host_io_runtime,
+            last_observed_time: state.last_observed_time,
+            last_step_ceiling: state.last_step_ceiling,
+            last_step_final_state: state.last_step_final_state,
+            last_step_inbound_frames_consumed: state.last_step_inbound_frames_consumed,
+            console_observation_boundary: state.console_observation_boundary,
+            gdbstub: None,
+            active_gdbstub: None,
+            pending_preemption: state.pending_preemption,
+            pending_network_outputs: Vec::new(),
+            pending_priming_observations: Vec::new(),
+            next_network_output_sequence: state.next_network_output_sequence,
+            console_observation,
+            fault_capabilities: state.fault_capabilities,
+            ready_markers: state.ready_markers,
+            exact_fault_manifests: state.exact_fault_manifests,
+            next_fault_command_sequence: state.next_fault_command_sequence,
+            setup_fault_command_sequence_floor: state.setup_fault_command_sequence_floor,
+            next_fault_event_sequence: state.next_fault_event_sequence,
+            fault_event_terminal_failure: None,
+        })
+    }
+}
+
+pub(super) struct QemuHotForkInstalledNodeAuthority {
+    request: crate::QmpHotForkRequest,
+    _ring_descriptor: OwnedFd,
+    ring: QemuHotForkPrivateRingStageProof,
+    endpoint_stage: QemuHotForkPluginEndpointStageProof,
+    host_io_binding: crucible::model::ContentHash,
+}
+
+impl std::fmt::Debug for QemuHotForkInstalledNodeAuthority {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("QemuHotForkInstalledNodeAuthority")
+            .field("request", &self.request)
+            .field("ring", &self.ring)
+            .field("endpoint_stage", &self.endpoint_stage)
+            .field("host_io_binding", &self.host_io_binding)
+            .finish_non_exhaustive()
     }
 }
 
@@ -303,6 +412,42 @@ impl QemuHotForkSchedulerNodeAssemblyError {
             self.child_qmp.map(|child_qmp| *child_qmp),
             self.source,
         )
+    }
+}
+
+/// Failed exact pairing of an assembled node and external process control.
+#[derive(Debug, Error)]
+#[error("install hot-fork scheduler node failed: {source}")]
+#[must_use = "recover the scheduler continuation and external process-control loan"]
+pub struct QemuHotForkSchedulerNodeInstallError {
+    continuation: Box<QemuHotForkSchedulerNodeContinuation>,
+    process: Box<dyn QemuNodeExternalProcessControl>,
+    #[source]
+    source: QemuNodeChannelError,
+}
+
+impl QemuHotForkSchedulerNodeInstallError {
+    fn new(
+        continuation: QemuHotForkSchedulerNodeContinuation,
+        process: Box<dyn QemuNodeExternalProcessControl>,
+        source: QemuNodeChannelError,
+    ) -> Self {
+        Self {
+            continuation: Box::new(continuation),
+            process,
+            source,
+        }
+    }
+
+    /// Recovers both linear inputs and the exact typed failure.
+    pub fn into_parts(
+        self,
+    ) -> (
+        QemuHotForkSchedulerNodeContinuation,
+        Box<dyn QemuNodeExternalProcessControl>,
+        QemuNodeChannelError,
+    ) {
+        (*self.continuation, self.process, self.source)
     }
 }
 

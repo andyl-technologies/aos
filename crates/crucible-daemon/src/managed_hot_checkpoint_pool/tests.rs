@@ -10,10 +10,7 @@ use crucible_campaign::{
     ConfigurationArtifact, ConfigurationId, ExecutionId, ExecutionRetentionIntent,
     ScenarioArtifact, ScenarioDefId, StopCondition,
 };
-use crucible_qemu::{
-    QemuHotForkChildDiagnosticDrain, QemuHotForkHostContinuation, QemuQmpVmStateControlChannel,
-    QemuVmRealizationError,
-};
+use crucible_qemu::{QemuHotForkChildDiagnosticDrain, QemuVmRealizationError};
 
 use super::*;
 use crate::{
@@ -50,16 +47,6 @@ impl QemuAttemptOperationalBoundary for NeverLive {
 }
 
 impl QemuHotForkLiveExecution for NeverLive {
-    fn child_qmp_mut(
-        &mut self,
-    ) -> &mut QemuQmpVmStateControlChannel<std::os::unix::net::UnixStream> {
-        panic!("scripted lifecycle never becomes live")
-    }
-
-    fn host_continuation_mut(&mut self) -> &mut QemuHotForkHostContinuation {
-        panic!("scripted lifecycle never becomes live")
-    }
-
     fn event_log_mut(&mut self) -> &mut EventLog {
         panic!("scripted lifecycle never becomes live")
     }

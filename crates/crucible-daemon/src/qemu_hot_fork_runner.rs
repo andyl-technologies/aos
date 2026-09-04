@@ -7,14 +7,12 @@
 //! successful result therefore cannot release the source template early, and
 //! a failed execution cannot overlap a retry with an unreconciled child.
 
-use std::os::unix::net::UnixStream;
 use std::thread;
 use std::time::Duration;
 
 use crucible::EventLog;
 use crucible_qemu::{
-    QemuHotForkChildDiagnosticDrain, QemuHotForkChildProcessOwner, QemuHotForkHostContinuation,
-    QemuQmpVmStateControlChannel, QemuVmRealizationError,
+    QemuHotForkChildDiagnosticDrain, QemuHotForkChildProcessOwner, QemuVmRealizationError,
 };
 
 use crate::{
@@ -105,8 +103,9 @@ pub enum QemuHotForkChildExitPolicyError {
 ///
 /// This value cannot terminate the child, release the target guard, recover
 /// the source template, or acknowledge semantic publication. Guest progress
-/// must pass through [`QemuAttemptOperationalBoundary`], while bounded control
-/// and host-I/O operations use the exact private child channels.
+/// must pass through [`QemuAttemptOperationalBoundary`]. Raw QMP and host-I/O
+/// capabilities stay inside the reconciliation owner and reach modeled code
+/// only after they have been assembled into the process-neutral lifecycle.
 pub trait QemuHotForkLiveExecution: QemuAttemptOperationalBoundary {
     /// Borrows the assembled process-owner-neutral scheduler lifecycle.
     ///
@@ -130,13 +129,6 @@ pub trait QemuHotForkLiveExecution: QemuAttemptOperationalBoundary {
         })
     }
 
-    /// Borrows the authenticated branch-private child QMP channel.
-    #[must_use]
-    fn child_qmp_mut(&mut self) -> &mut QemuQmpVmStateControlChannel<UnixStream>;
-
-    /// Borrows the branch-private plugin and host-I/O continuation.
-    fn host_continuation_mut(&mut self) -> &mut QemuHotForkHostContinuation;
-
     /// Borrows the branch-private clone of the source unified event prefix.
     ///
     /// The modeled driver must append every child observation to this one log;
@@ -156,14 +148,6 @@ pub trait QemuHotForkLiveExecution: QemuAttemptOperationalBoundary {
 }
 
 impl QemuHotForkLiveExecution for LinuxQemuHotForkLiveChild<'_> {
-    fn child_qmp_mut(&mut self) -> &mut QemuQmpVmStateControlChannel<UnixStream> {
-        LinuxQemuHotForkLiveChild::child_qmp_mut(self)
-    }
-
-    fn host_continuation_mut(&mut self) -> &mut QemuHotForkHostContinuation {
-        LinuxQemuHotForkLiveChild::host_continuation_mut(self)
-    }
-
     fn event_log_mut(&mut self) -> &mut EventLog {
         LinuxQemuHotForkLiveChild::event_log_mut(self)
     }

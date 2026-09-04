@@ -15,17 +15,23 @@
 
 use std::error::Error;
 use std::fmt;
-use std::os::unix::net::UnixStream;
+use std::os::unix::process::ExitStatusExt;
+use std::process::ExitStatus;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-use crucible::EventLog;
+use crucible::{EventLog, NodeId};
 use crucible_campaign::{ExactCheckpointId, ObservationId};
 use crucible_qemu::{
-    LinuxQemuHotForkChildProcessAuthority, QemuHotForkChildDiagnosticConsumer,
-    QemuHotForkChildDiagnosticDrain, QemuHotForkChildLaunch, QemuHotForkChildProcessBasis,
-    QemuHotForkChildProcessOwner, QemuHotForkChildQmpHandshakeError, QemuHotForkHostContinuation,
-    QemuHotForkLaunchError, QemuHotForkTemplateIdentity, QemuNode, QemuNodeChannelError,
-    QemuPreparedHotForkTemplate, QemuQmpVmStateControlChannel, QemuVmRealizationError,
-    QmpHotForkChildProcessPhase, QmpHotForkChildProcessState,
+    LinuxQemuHotForkChildProcessAuthority, QemuAsyncDriverPolicy, QemuChildWait, QemuCrashDetector,
+    QemuHotForkChildDiagnosticConsumer, QemuHotForkChildDiagnosticDrain, QemuHotForkChildLaunch,
+    QemuHotForkChildProcessBasis, QemuHotForkChildProcessOwner, QemuHotForkChildQmpHandshakeError,
+    QemuHotForkHostContinuation, QemuHotForkLaunchError, QemuHotForkSchedulerNodeContinuation,
+    QemuHotForkTemplateIdentity, QemuNode, QemuNodeChannelError, QemuNodeExternalProcessControl,
+    QemuPreparedHotForkTemplate, QemuReap, QemuShutdownPolicy, QemuShutdownRung,
+    QemuShutdownTargetError, QemuVmRealizationError, QmpHotForkChildProcessPhase,
+    QmpHotForkChildProcessState,
 };
 use thiserror::Error;
 
@@ -351,6 +357,23 @@ where
             terminal: None,
             publication: None,
             diagnostics_drained: false,
+        }
+    }
+
+    pub(crate) fn from_reconciled_backend(
+        attempt: QemuHotForkAttemptBasis,
+        backend: B,
+        terminal: Option<QemuHotForkChildObservation>,
+        publication: Option<QemuHotForkPublicationDisposition>,
+    ) -> Self {
+        Self {
+            attempt,
+            backend: Some(backend),
+            phase: QemuHotForkReconciliationPhase::Reconciled,
+            child_admitted: true,
+            terminal,
+            publication,
+            diagnostics_drained: true,
         }
     }
 
@@ -740,6 +763,9 @@ pub enum LinuxQemuHotForkReconciliationError {
     /// An acknowledged source response contradicted the retained exact basis.
     #[error("source QEMU contradicted the retained hot-fork lifecycle basis")]
     BasisMismatch,
+    /// The in-process source-template owner was poisoned by an unwind.
+    #[error("source QEMU ownership lock is poisoned")]
+    SourceOwnerPoisoned,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -752,21 +778,179 @@ enum LinuxSourceReleasePhase {
     Complete,
 }
 
+struct LinuxQemuHotForkProcessOwner {
+    source: Mutex<Option<QemuNode>>,
+    process: LinuxQemuHotForkChildProcessAuthority,
+    reaped: AtomicBool,
+}
+
+impl LinuxQemuHotForkProcessOwner {
+    fn observe_child(
+        &self,
+    ) -> Result<QmpHotForkChildProcessState, LinuxQemuHotForkReconciliationError> {
+        let mut source = self
+            .source
+            .lock()
+            .map_err(|_source| LinuxQemuHotForkReconciliationError::SourceOwnerPoisoned)?;
+        let source = source
+            .as_mut()
+            .ok_or(LinuxQemuHotForkReconciliationError::BasisMismatch)?;
+        let state = source.query_hot_fork_child_process(
+            self.process.basis().request().child_process_generation(),
+        )?;
+        if state.generation() != self.process.basis().request().child_process_generation()
+            || state.child_process_id() != self.process.basis().child_process_id()
+        {
+            return Err(LinuxQemuHotForkReconciliationError::BasisMismatch);
+        }
+        if state.phase() != QmpHotForkChildProcessPhase::Running {
+            self.reaped.store(true, Ordering::Release);
+        }
+        Ok(state)
+    }
+}
+
+/// Process-control loan joining a hot-fork pidfd to source-parent status.
+///
+/// Cloning this value duplicates no pidfd, cgroup, or wait authority. Every
+/// clone points at the same outer lifecycle owner, which remains responsible
+/// for releasing the source status record and target resources after modeled
+/// execution has stopped.
+#[derive(Clone)]
+pub struct LinuxQemuHotForkNodeProcessControl {
+    owner: Arc<LinuxQemuHotForkProcessOwner>,
+}
+
+impl fmt::Debug for LinuxQemuHotForkNodeProcessControl {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LinuxQemuHotForkNodeProcessControl")
+            .field("basis", &self.owner.process.basis())
+            .field("reaped", &self.owner.reaped.load(Ordering::Acquire))
+            .finish_non_exhaustive()
+    }
+}
+
+impl LinuxQemuHotForkNodeProcessControl {
+    fn new(owner: Arc<LinuxQemuHotForkProcessOwner>) -> Self {
+        Self { owner }
+    }
+
+    fn observe_exit(&self) -> Result<Option<ExitStatus>, QemuShutdownTargetError> {
+        let state = self.owner.observe_child().map_err(|source| {
+            QemuShutdownTargetError::new(
+                "query source-owned hot-fork child status",
+                source.to_string(),
+            )
+        })?;
+        match state.phase() {
+            QmpHotForkChildProcessPhase::Running => Ok(None),
+            QmpHotForkChildProcessPhase::Exited => {
+                Ok(Some(ExitStatus::from_raw(i32::from(state.status()) << 8)))
+            }
+            QmpHotForkChildProcessPhase::Signaled if state.status() != 0 => {
+                Ok(Some(ExitStatus::from_raw(i32::from(state.status()))))
+            }
+            QmpHotForkChildProcessPhase::Signaled => Err(QemuShutdownTargetError::new(
+                "query source-owned hot-fork child status",
+                "source parent reported a zero terminating signal",
+            )),
+        }
+    }
+
+    fn wait_until(&self, timeout: Duration) -> Result<bool, QemuShutdownTargetError> {
+        let deadline = hot_fork_process_wait_now()
+            .checked_add(timeout)
+            .ok_or_else(|| {
+                QemuShutdownTargetError::new(
+                    "wait for source-owned hot-fork child",
+                    "child wait deadline overflowed",
+                )
+            })?;
+        loop {
+            if self.observe_exit()?.is_some() {
+                return Ok(true);
+            }
+            let now = hot_fork_process_wait_now();
+            if now >= deadline {
+                return Ok(false);
+            }
+            std::thread::sleep(
+                Duration::from_millis(1).min(deadline.saturating_duration_since(now)),
+            );
+        }
+    }
+}
+
+impl QemuNodeExternalProcessControl for LinuxQemuHotForkNodeProcessControl {
+    fn hot_fork_process_basis(&self) -> QemuHotForkChildProcessBasis {
+        self.owner.process.basis()
+    }
+
+    fn process_id(&self) -> u32 {
+        self.owner.process.basis().child_process_id()
+    }
+
+    fn reaped(&self) -> bool {
+        self.owner.reaped.load(Ordering::Acquire)
+    }
+
+    fn try_wait_natural_exit(&mut self) -> Result<Option<ExitStatus>, QemuShutdownTargetError> {
+        self.observe_exit()
+    }
+
+    fn send_sigterm(&mut self) -> Result<(), QemuShutdownTargetError> {
+        self.owner.process.terminate().map_err(|source| {
+            QemuShutdownTargetError::new("terminate retained hot-fork child", source.to_string())
+        })
+    }
+
+    fn send_sigkill(&mut self) -> Result<(), QemuShutdownTargetError> {
+        self.owner.process.kill().map_err(|source| {
+            QemuShutdownTargetError::new("kill retained hot-fork child", source.to_string())
+        })
+    }
+
+    fn wait_for_exit(
+        &mut self,
+        _rung: QemuShutdownRung,
+        timeout: Duration,
+    ) -> Result<QemuChildWait, QemuShutdownTargetError> {
+        self.wait_until(timeout).map(|exited| {
+            if exited {
+                QemuChildWait::Exited
+            } else {
+                QemuChildWait::StillRunning
+            }
+        })
+    }
+
+    fn reap(&mut self, timeout: Duration) -> Result<QemuReap, QemuShutdownTargetError> {
+        self.wait_until(timeout).map(|reaped| {
+            if reaped {
+                QemuReap::Reaped
+            } else {
+                QemuReap::StillAlive
+            }
+        })
+    }
+}
+
 /// Concrete source-QEMU, pidfd, cgroup, and private-channel owner.
 pub struct LinuxQemuHotForkReconciliationBackend<G>
 where
     G: crate::QemuAttemptResourceGuard
         + QemuHotForkChildProcessOwner<Authority = LinuxQemuHotForkChildProcessAuthority>,
 {
-    source: QemuNode,
+    process_owner: Arc<LinuxQemuHotForkProcessOwner>,
     template_identity: QemuHotForkTemplateIdentity,
     input: CrucibleAttemptExecution,
     child_event_log: EventLog,
     target: G,
-    process: LinuxQemuHotForkChildProcessAuthority,
     basis: QemuHotForkChildProcessBasis,
     pending_child_qmp: Option<crucible_qemu::QemuHotForkChildQmpHostEndpoint>,
-    child_qmp: Option<QemuQmpVmStateControlChannel<UnixStream>>,
+    scheduler_node: Option<QemuHotForkSchedulerNodeContinuation>,
+    installed_node: Option<QemuNode>,
     diagnostics_consumer: QemuHotForkChildDiagnosticConsumer,
     host_continuation: Option<QemuHotForkHostContinuation>,
     source_release: LinuxSourceReleasePhase,
@@ -782,9 +966,7 @@ where
 /// guest progress must remain behind the operational methods.
 pub struct LinuxQemuHotForkLiveChild<'a> {
     input: &'a CrucibleAttemptExecution,
-    child_qmp: &'a mut QemuQmpVmStateControlChannel<UnixStream>,
     diagnostics: &'a mut QemuHotForkChildDiagnosticConsumer,
-    host_continuation: &'a mut QemuHotForkHostContinuation,
     event_log: &'a mut EventLog,
     operational: &'a mut dyn crate::QemuAttemptOperationalBoundary,
 }
@@ -794,10 +976,6 @@ impl fmt::Debug for LinuxQemuHotForkLiveChild<'_> {
         formatter
             .debug_struct("LinuxQemuHotForkLiveChild")
             .field("diagnostics", &self.diagnostics)
-            .field(
-                "host_continuation_generation",
-                &self.host_continuation.template_generation(),
-            )
             .finish_non_exhaustive()
     }
 }
@@ -807,17 +985,6 @@ impl LinuxQemuHotForkLiveChild<'_> {
     #[must_use]
     pub const fn execution_input(&self) -> &CrucibleAttemptExecution {
         self.input
-    }
-
-    /// Borrows the authenticated private child QMP channel for bounded control.
-    #[must_use]
-    pub fn child_qmp_mut(&mut self) -> &mut QemuQmpVmStateControlChannel<UnixStream> {
-        self.child_qmp
-    }
-
-    /// Borrows the exact branch-private host continuation.
-    pub fn host_continuation_mut(&mut self) -> &mut QemuHotForkHostContinuation {
-        self.host_continuation
     }
 
     /// Borrows the branch-private clone of the source event-log prefix.
@@ -878,7 +1045,8 @@ where
             .debug_struct("LinuxQemuHotForkReconciliationBackend")
             .field("basis", &self.basis)
             .field("pending_child_qmp", &self.pending_child_qmp.is_some())
-            .field("child_qmp_admitted", &self.child_qmp.is_some())
+            .field("scheduler_node_admitted", &self.scheduler_node.is_some())
+            .field("scheduler_node_installed", &self.installed_node.is_some())
             .field("diagnostics_consumer", &self.diagnostics_consumer)
             .field("host_continuation", &self.host_continuation.is_some())
             .field("source_release", &self.source_release)
@@ -902,17 +1070,22 @@ where
         let (_parent, process, child_qmp, diagnostics_consumer, host_continuation) =
             launch.into_parts();
         let basis = process.basis();
+        let process_owner = Arc::new(LinuxQemuHotForkProcessOwner {
+            source: Mutex::new(Some(source)),
+            process,
+            reaped: AtomicBool::new(false),
+        });
         let child_event_log = template_identity.fork_event_log();
         Self {
-            source,
+            process_owner,
             template_identity,
             input,
             child_event_log,
             target,
-            process,
             basis,
             pending_child_qmp: Some(child_qmp),
-            child_qmp: None,
+            scheduler_node: None,
+            installed_node: None,
             diagnostics_consumer,
             host_continuation: Some(host_continuation),
             source_release: LinuxSourceReleasePhase::CloseChildChannel,
@@ -923,12 +1096,27 @@ where
     fn live_child_mut(&mut self) -> Option<LinuxQemuHotForkLiveChild<'_>> {
         Some(LinuxQemuHotForkLiveChild {
             input: &self.input,
-            child_qmp: self.child_qmp.as_mut()?,
             diagnostics: &mut self.diagnostics_consumer,
-            host_continuation: self.host_continuation.as_mut()?,
             event_log: &mut self.child_event_log,
             operational: &mut self.target,
         })
+    }
+
+    fn with_source_mut<T>(
+        &self,
+        operation: impl FnOnce(&mut QemuNode) -> Result<T, QemuNodeChannelError>,
+    ) -> Result<T, LinuxQemuHotForkReconciliationError> {
+        let mut source = self
+            .process_owner
+            .source
+            .lock()
+            .map_err(|_source| LinuxQemuHotForkReconciliationError::SourceOwnerPoisoned)?;
+        operation(
+            source
+                .as_mut()
+                .ok_or(LinuxQemuHotForkReconciliationError::BasisMismatch)?,
+        )
+        .map_err(Into::into)
     }
 
     /// Returns the bounded final child diagnostic capture after source release.
@@ -937,9 +1125,82 @@ where
         self.diagnostics.as_ref()
     }
 
+    /// Creates a non-owning modeled-node process-control loan.
+    #[must_use]
+    pub fn node_process_control(&self) -> LinuxQemuHotForkNodeProcessControl {
+        LinuxQemuHotForkNodeProcessControl::new(Arc::clone(&self.process_owner))
+    }
+
+    /// Installs the admitted branch-private continuation as one scheduler node.
+    ///
+    /// This operation consumes no source-parent, pidfd, or target-resource
+    /// ownership. The installed node receives only a shared non-owning process
+    /// control loan; terminal release remains ordered by this backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns a fail-closed basis error when admission has not produced one
+    /// exact continuation or a node is already installed. A process-basis
+    /// mismatch restores the unchanged continuation for quarantine or retry.
+    pub fn install_scheduler_node(
+        &mut self,
+        node: NodeId,
+        shutdown_policy: QemuShutdownPolicy,
+        async_policy: QemuAsyncDriverPolicy,
+        crash_detector: QemuCrashDetector,
+    ) -> Result<(), LinuxQemuHotForkReconciliationError> {
+        if self.installed_node.is_some() {
+            return Err(LinuxQemuHotForkReconciliationError::BasisMismatch);
+        }
+        let continuation = self
+            .scheduler_node
+            .take()
+            .ok_or(LinuxQemuHotForkReconciliationError::BasisMismatch)?;
+        match continuation.into_qemu_node(
+            node,
+            self.node_process_control(),
+            shutdown_policy,
+            async_policy,
+            crash_detector,
+        ) {
+            Ok(node) => {
+                self.installed_node = Some(node);
+                Ok(())
+            }
+            Err(error) => {
+                let (continuation, _process, source) = error.into_parts();
+                self.scheduler_node = Some(continuation);
+                Err(LinuxQemuHotForkReconciliationError::Source(source))
+            }
+        }
+    }
+
+    /// Borrows the exact installed process-neutral scheduler node.
+    #[must_use]
+    pub fn installed_scheduler_node_mut(&mut self) -> Option<&mut QemuNode> {
+        self.installed_node.as_mut()
+    }
+
     /// Consumes a reconciled backend into its reusable exact source template.
-    pub fn into_source(self) -> QemuPreparedHotForkTemplate<QemuNode> {
-        QemuPreparedHotForkTemplate::from_reconciled_parts(self.source, self.template_identity)
+    ///
+    /// # Errors
+    ///
+    /// Returns the unchanged backend when a modeled-node process-control loan
+    /// still exists or the source ownership lock cannot be recovered exactly.
+    pub fn into_source(mut self) -> Result<QemuPreparedHotForkTemplate<QemuNode>, Box<Self>> {
+        if Arc::strong_count(&self.process_owner) != 1 {
+            return Err(Box::new(self));
+        }
+        let source = Arc::get_mut(&mut self.process_owner)
+            .and_then(|owner| owner.source.get_mut().ok())
+            .and_then(Option::take);
+        let Some(source) = source else {
+            return Err(Box::new(self));
+        };
+        Ok(QemuPreparedHotForkTemplate::from_reconciled_parts(
+            source,
+            self.template_identity,
+        ))
     }
 }
 
@@ -962,12 +1223,26 @@ where
             .pending_child_qmp
             .take()
             .ok_or(LinuxQemuHotForkReconciliationError::BasisMismatch)?;
-        self.child_qmp = Some(endpoint.connect()?);
-        Ok(())
+        let continuation = self
+            .host_continuation
+            .take()
+            .ok_or(LinuxQemuHotForkReconciliationError::BasisMismatch)?;
+        match continuation.into_scheduler_node_continuation(endpoint) {
+            Ok(scheduler_node) => {
+                self.scheduler_node = Some(scheduler_node);
+                Ok(())
+            }
+            Err(error) => {
+                let (continuation, endpoint, source) = error.into_parts();
+                self.host_continuation = Some(continuation);
+                self.pending_child_qmp = endpoint;
+                Err(LinuxQemuHotForkReconciliationError::Source(source))
+            }
+        }
     }
 
     fn terminate_child(&mut self) -> Result<(), Self::Error> {
-        self.process.kill().map_err(Into::into)
+        self.process_owner.process.kill().map_err(Into::into)
     }
 
     fn drain_child_diagnostics(&mut self) -> Result<(), Self::Error> {
@@ -978,9 +1253,7 @@ where
     }
 
     fn observe_child(&mut self) -> Result<QemuHotForkChildObservation, Self::Error> {
-        let state = self
-            .source
-            .query_hot_fork_child_process(self.basis.request().child_process_generation())?;
+        let state = self.process_owner.observe_child()?;
         qmp_child_observation(state)
     }
 
@@ -989,32 +1262,40 @@ where
             match self.source_release {
                 LinuxSourceReleasePhase::CloseChildChannel => {
                     self.pending_child_qmp = None;
-                    self.child_qmp = None;
+                    self.scheduler_node = None;
+                    self.installed_node = None;
                     self.host_continuation = None;
                     self.source_release = LinuxSourceReleasePhase::PluginEndpoints;
                 }
                 LinuxSourceReleasePhase::PluginEndpoints => {
-                    self.source.release_hot_fork_plugin_endpoints()?;
+                    self.with_source_mut(|source| source.release_hot_fork_plugin_endpoints())?;
                     self.source_release = LinuxSourceReleasePhase::ChildQmp;
                     return Ok(false);
                 }
                 LinuxSourceReleasePhase::ChildQmp => {
-                    self.source.release_hot_fork_child_qmp()?;
+                    self.with_source_mut(|source| source.release_hot_fork_child_qmp())?;
                     self.source_release = LinuxSourceReleasePhase::Diagnostics;
                     return Ok(false);
                 }
                 LinuxSourceReleasePhase::Diagnostics => {
-                    self.diagnostics = Some(
-                        self.source
-                            .release_hot_fork_child_diagnostics_with_consumer(
-                                &mut self.diagnostics_consumer,
-                            )?,
-                    );
+                    let process_owner = Arc::clone(&self.process_owner);
+                    let mut source = process_owner.source.lock().map_err(|_source| {
+                        LinuxQemuHotForkReconciliationError::SourceOwnerPoisoned
+                    })?;
+                    let source = source
+                        .as_mut()
+                        .ok_or(LinuxQemuHotForkReconciliationError::BasisMismatch)?;
+                    self.diagnostics =
+                        Some(source.release_hot_fork_child_diagnostics_with_consumer(
+                            &mut self.diagnostics_consumer,
+                        )?);
                     self.source_release = LinuxSourceReleasePhase::PrivateRing;
                     return Ok(false);
                 }
                 LinuxSourceReleasePhase::PrivateRing => {
-                    drop(self.source.release_hot_fork_private_ring_mapping()?);
+                    self.with_source_mut(|source| {
+                        source.release_hot_fork_private_ring_mapping().map(drop)
+                    })?;
                     self.source_release = LinuxSourceReleasePhase::Complete;
                     return Ok(true);
                 }
@@ -1031,9 +1312,9 @@ where
         &mut self,
         terminal: QemuHotForkChildObservation,
     ) -> Result<(), Self::Error> {
-        let released = self
-            .source
-            .release_hot_fork_child_process(terminal.generation())?;
+        let released = self.with_source_mut(|source| {
+            source.release_hot_fork_child_process(terminal.generation())
+        })?;
         let observed = qmp_child_observation(released)?;
         if observed != terminal || released.retained() {
             return Err(LinuxQemuHotForkReconciliationError::BasisMismatch);
@@ -1042,7 +1323,7 @@ where
     }
 
     fn release_process_contract(&mut self) -> Result<(), Self::Error> {
-        let state = self.source.release_hot_fork_child_process_contract()?;
+        let state = self.with_source_mut(QemuNode::release_hot_fork_child_process_contract)?;
         if state.staged()
             || state.consumed()
             || state.generation() != self.basis.request().child_process_contract_generation()
@@ -1053,9 +1334,17 @@ where
     }
 
     fn quarantine(&mut self) {
-        let _ = self.process.kill();
+        let _ = self.process_owner.process.kill();
         self.target.quarantine();
     }
+}
+
+// Monotonic host time bounds only operational child-status waiting and never
+// enters campaign content, modeled execution, or deterministic scheduling.
+// crucible-lint: allow clippy-disallowed-method -- the bounded host operation is operational only and cannot enter modeled state.
+#[allow(clippy::disallowed_methods)]
+fn hot_fork_process_wait_now() -> Instant {
+    Instant::now()
 }
 
 fn qmp_child_observation(
@@ -1193,6 +1482,45 @@ where
             return None;
         }
         self.backend.as_mut()?.live_child_mut()
+    }
+
+    /// Installs the admitted continuation as an externally parented QEMU node.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid-phase error before child admission or a backend
+    /// error while retaining every source, target, and continuation authority.
+    pub fn install_scheduler_node(
+        &mut self,
+        node: NodeId,
+        shutdown_policy: QemuShutdownPolicy,
+        async_policy: QemuAsyncDriverPolicy,
+        crash_detector: QemuCrashDetector,
+    ) -> Result<(), Box<QemuHotForkAttemptReconciliationError<LinuxQemuHotForkReconciliationError>>>
+    {
+        self.require_phase(
+            "install hot-fork scheduler node",
+            QemuHotForkReconciliationPhase::Live,
+        )
+        .map_err(Box::new)?;
+        self.backend_mut()
+            .map_err(Box::new)?
+            .install_scheduler_node(node, shutdown_policy, async_policy, crash_detector)
+            .map_err(|source| {
+                Box::new(QemuHotForkAttemptReconciliationError::Backend {
+                    operation: "install hot-fork scheduler node",
+                    source,
+                })
+            })
+    }
+
+    /// Borrows the installed process-neutral QEMU node while the child is live.
+    #[must_use]
+    pub fn installed_scheduler_node_mut(&mut self) -> Option<&mut QemuNode> {
+        if self.phase != QemuHotForkReconciliationPhase::Live {
+            return None;
+        }
+        self.backend.as_mut()?.installed_scheduler_node_mut()
     }
 }
 

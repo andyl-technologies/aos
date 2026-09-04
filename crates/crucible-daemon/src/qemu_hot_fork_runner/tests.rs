@@ -12,9 +12,8 @@ use crucible_campaign::{
 };
 use crucible_cas::content_store::{BlobHandle, ContentId, ObjectKind};
 use crucible_qemu::{
-    QemuHotForkChildDiagnosticDrain, QemuHotForkHostContinuation, QemuNodeChannelError,
-    QemuQmpVmStateControlChannel, QemuReplayOracleValidation, QemuVmRealizationError,
-    QemuVmSnapshot,
+    QemuHotForkChildDiagnosticDrain, QemuNodeChannelError, QemuReplayOracleValidation,
+    QemuVmRealizationError, QemuVmSnapshot,
 };
 
 use super::*;
@@ -60,16 +59,6 @@ impl QemuAttemptOperationalBoundary for ScriptedLive<'_> {
 }
 
 impl QemuHotForkLiveExecution for ScriptedLive<'_> {
-    fn child_qmp_mut(
-        &mut self,
-    ) -> &mut QemuQmpVmStateControlChannel<std::os::unix::net::UnixStream> {
-        panic!("scripted driver does not use raw child QMP")
-    }
-
-    fn host_continuation_mut(&mut self) -> &mut QemuHotForkHostContinuation {
-        panic!("scripted driver does not use a host continuation")
-    }
-
     fn event_log_mut(&mut self) -> &mut EventLog {
         self.event_log
     }
