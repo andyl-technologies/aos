@@ -728,9 +728,11 @@ version = "0.1.0"
 dependencies = [
  "aos-proto",
  "aos-sandbox",
+ "aos-sandbox-broker",
  "aos-sandbox-core",
  "aos-sandbox-protocol",
  "buffa",
+ "ed25519-dalek",
  "hmac 0.12.1",
  "sha2 0.10.9",
  "tempfile",

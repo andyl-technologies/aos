@@ -17,11 +17,18 @@
 //! intentionally separate layers. This crate does not spawn processes or
 //! claim that a mutation reached the catalog's expected state.
 
+pub mod authorization;
+pub mod broker;
 pub mod catalog;
 pub mod request;
 pub mod state;
 pub mod zfs;
 
+pub use authorization::{StorageAdmissionError, StorageAuthorityConfigError, StorageAuthorityV1};
+pub use broker::{
+    StorageAdmissionCoordinator, StorageAdmissionOutcome, StorageBrokerError,
+    advertised_storage_methods,
+};
 pub use catalog::{
     ActiveHoldEvidence, CatalogObjectKind, CatalogPlanV1, HoldId, ManagedDatasetRoot,
     PlannedDataset, PlannedSnapshot, PostconditionPolicyV1, ProjectAncestorPolicyV1,
@@ -33,8 +40,8 @@ pub use request::{
     StorageSemanticsError, decode_resolved,
 };
 pub use state::{
-    BeginStorageTransaction, CommittedStorageResultV1, DurableStoragePhase, StorageStateError,
-    StorageStateKey, StorageTransactionStore, VerifiedStorageResultV1,
+    BeginStorageTransaction, CommittedStorageResultV1, DurableStoragePhase, StorageRecoveryEntry,
+    StorageStateError, StorageStateKey, StorageTransactionStore, VerifiedStorageResultV1,
 };
 pub use zfs::{
     AncestorPolicyTransaction, ZfsHelperContract, ZfsPrecondition, ZfsTransaction,
