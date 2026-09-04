@@ -116,13 +116,16 @@
 in
   assert aos.name == "aos";
   assert builtins.attrNames registered == ["aos"];
-  assert aos.packageRoots == goldenRoots;
+  assert aos.packageRoots == lib.unique (goldenRoots ++ [pkgs.aos pkgs.aos.apm pkgs.aos.apr]);
   assert aos.packageManagement
   == {
     enable = true;
     bakedGcRoots = true;
   };
   assert aos.filesystem.allowedFacadeCollisions == ["kill"];
+  assert map (entry: entry.name) aos.filesystem.facade == ["aos" "apm" "apr"];
+  assert map (entry: entry.target) aos.filesystem.facade
+  == ["${pkgs.aos}/bin/aos" "${pkgs.aos.apm}/bin/apm" "${pkgs.aos.apr}/bin/apr"];
   assert aos.runtime.environment.PATH == "/var/lib/profiles/per-user/root/current/bin:/var/lib/profiles/per-user/root/current/sbin:/usr/bin:/usr/sbin:/bin";
   assert aos.runtime.environment.NIX_REMOTE == "local";
   assert aos.runtime.environment.XDG_DATA_HOME == "/root/.local/share";

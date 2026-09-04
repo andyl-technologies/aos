@@ -11,30 +11,6 @@
   containerPublicationInputs,
 }: let
   fixture = import ./_native-hub-production.nix {inherit lib mkSystem pkgs;};
-  aosSystem = pkgs.stdenv.hostPlatform.system;
-  goldenRoots = systems.server.config.environment.systemPackages;
-  oci = import ../../lib/build/oci {
-    inherit lib;
-    inherit (pkgs) mkDerivation coreutils findutils gzip jq tar;
-  };
-  container =
-    (import ../../containers {
-      inherit lib pkgs goldenRoots aosSystem;
-    })
-    .aos;
-  containerImage = import ../../lib/containers/build.nix {
-    inherit lib pkgs oci container;
-    systemIdentity = {
-      inherit
-        (systems.server.config.aos.system)
-        name
-        version
-        stateVersion
-        moduleAbi
-        ;
-    };
-  };
-  productionLayout = containerImage.platforms.${aosSystem}.ociLayout;
   fixtures = import ../vm/apm/fixtures.nix {
     inherit pkgs;
     aosPkg = pkgs.aos;
@@ -397,7 +373,8 @@
 
   address = "/run/aos-containerd/containerd.sock";
   nerdctl =
-    "${pkgs.nerdctl}/bin/nerdctl"
+    "DOCKER_CONFIG=/var/lib/aos-containerd/nerdctl-config"
+    + " ${pkgs.nerdctl}/bin/nerdctl"
     + " --address ${address}"
     + " --namespace aos-hub-oci"
     + " --snapshotter native";
@@ -415,6 +392,7 @@ in {
     publisher = {
       system = fixture.publisherSystem;
       extraModules = [publisherPkiModule];
+      extraClosures = [pkgs.aos.apr pkgs.gawk];
       hostStoreMount = true;
       memoryMiB = 3072;
       varSizeMiB = 8192;
@@ -425,6 +403,7 @@ in {
         (lib.remove pkgs.coreutils fixtures.commonDeps)
         ++ [
           fixtureTool
+          pkgs.aos.apr
           pkgs.python3
         ];
       memoryMiB = 4096;
@@ -438,7 +417,7 @@ in {
     import textwrap
 
     AOS = "${pkgs.aos}/bin/aos"
-    APR = "${pkgs.aos}/bin/apr"
+    APR = "${pkgs.aos.apr}/bin/apr"
     CURL = (
         "${pkgs.curl}/bin/curl"
         " --cacert /etc/ssl/certs/ca-certificates.crt"
@@ -448,8 +427,9 @@ in {
     HUB = "http://hub:8420"
     OCI = "https://hub:8443"
     PRIVATE_OCI = "https://192.168.50.11:8443"
-    LAYOUT = "/run/aos-host-store/${baseNameOf productionLayout}/layout"
     PUBLICATION_INPUTS = "/run/aos-host-store/${baseNameOf containerPublicationInputs}"
+    LAYOUT = f"{PUBLICATION_INPUTS}/oci-layout"
+    DELIVERY_LAYOUT = "/var/tmp/container-delivery-layout"
 
     def hub_command(subcommand, token, mutation=""):
         suffix = f" {mutation}" if mutation else ""
@@ -594,7 +574,7 @@ in {
         test -f {PUBLICATION_INPUTS}/publication-roots.json
         test -f {PUBLICATION_INPUTS}/EXTERNAL-SIGNING-REQUIRED
     """), timeout=120)
-    consumer.fail(f"test -e /nix/store/${baseNameOf productionLayout}")
+    consumer.fail(f"test -e /nix/store/${baseNameOf containerPublicationInputs}")
 
     # Generate real APR signing identities before the registries establish
     # their trust roots. These test keys also drive the external container
@@ -605,14 +585,14 @@ in {
         mkdir -p "$HOME"
         output=$({APR} keys generate initial --registry containers 2>&1)
         printf '%s\n' "$output" >&2
-        printf '%s\n' "$output" | awk '/Public key:/ {{print $NF; exit}}'
+        printf '%s\n' "$output" | ${pkgs.gawk}/bin/awk '/Public key:/ {{print $NF; exit}}'
     """), timeout=120).strip()
     private_trust = publisher.succeed(textwrap.dedent(f"""
         set -eu
         export HOME=/var/lib/aos-oci-publisher USER=publisher
         output=$({APR} keys generate initial --registry containers-private 2>&1)
         printf '%s\n' "$output" >&2
-        printf '%s\n' "$output" | awk '/Public key:/ {{print $NF; exit}}'
+        printf '%s\n' "$output" | ${pkgs.gawk}/bin/awk '/Public key:/ {{print $NF; exit}}'
     """), timeout=120).strip()
     assert public_trust.startswith("containers:Ed25519:"), public_trust
     assert private_trust.startswith("containers-private:Ed25519:"), private_trust
@@ -644,6 +624,16 @@ in {
     signed_release = finalized["release_identity"]
     signed_root = finalized["index_digest"]
     assert signed_root.startswith("sha256:"), finalized
+    signed_root_hex = signed_root.removeprefix("sha256:")
+    publisher.succeed(textwrap.dedent(f"""
+        set -eu
+        ${pkgs.coreutils}/bin/rm -rf {DELIVERY_LAYOUT}
+        ${pkgs.coreutils}/bin/cp -a {LAYOUT} {DELIVERY_LAYOUT}
+        test -f {DELIVERY_LAYOUT}/blobs/sha256/{signed_root_hex}
+        ${pkgs.coreutils}/bin/cp \
+          {DELIVERY_LAYOUT}/blobs/sha256/{signed_root_hex} \
+          {DELIVERY_LAYOUT}/index.json
+    """), timeout=120)
     publisher.fail(
         f"{AOS} --json --progress off --color never container finalize-signature "
         f"{PUBLICATION_INPUTS} --signer {shlex.quote(public_trust)} "
@@ -683,8 +673,8 @@ in {
           --store-path ${pkgs.aos} --name aos --version "$package_version" \
           --description 'AOS production command-line tools' \
           --license Apache-2.0 --maintainer 'Andyl, Inc.' \
-          --channel stable --init-channel --key-id initial
-        {APR} origin upload --registry containers \
+          --channel stable --init-channel --key-id initial \
+          --cache-url http://hub:8420/acme/containers/ \
           --upload-url file:///var/tmp/container-publication-surface
         {APR} verify --registry containers
     """), timeout=900)
@@ -890,7 +880,7 @@ in {
 
     push = json.loads(publisher.succeed(
         f"HOME=/var/lib/aos-oci-publisher {AOS} "
-        f"--json --progress off --color never container push {LAYOUT} "
+        f"--json --progress off --color never container push {DELIVERY_LAYOUT} "
         "hub:8443/aos:latest --hub https://hub:8443 "
         f"--token {shlex.quote(token)}",
         timeout=900,
@@ -901,7 +891,7 @@ in {
     assert manifest_digest.startswith("sha256:"), push
     shared_push = json.loads(publisher.succeed(
         f"HOME=/var/lib/aos-oci-publisher {AOS} "
-        f"--json --progress off --color never container push {LAYOUT} "
+        f"--json --progress off --color never container push {DELIVERY_LAYOUT} "
         "hub:8443/shared:latest --mount-from aos --hub https://hub:8443 "
         f"--token {shlex.quote(token)}",
         timeout=900,
@@ -910,7 +900,7 @@ in {
 
     private_push = json.loads(publisher.succeed(
         f"HOME=/var/lib/aos-oci-publisher {AOS} "
-        f"--json --progress off --color never container push {LAYOUT} "
+        f"--json --progress off --color never container push {DELIVERY_LAYOUT} "
         "192.168.50.11:8443/aos:private --hub https://192.168.50.11:8443 "
         f"--token {shlex.quote(token)}",
         timeout=900,
@@ -945,14 +935,21 @@ in {
         timeout=900,
     ))["data"]
     assert indexed["state"] == "ready", indexed
-    publisher.wait_until_succeeds(
-        hub_command(
-            f"registry container provenance show acme/containers aos {signed_root} "
-            f"--release {shlex.quote(signed_release)}",
-            token,
-        ),
-        timeout=180,
-    )
+    try:
+        publisher.wait_until_succeeds(
+            hub_command(
+                f"registry container provenance show acme/containers aos {signed_root} "
+                f"--release {shlex.quote(signed_release)}",
+                token,
+            ),
+            timeout=180,
+        )
+    except Exception as error:
+        diagnostics = hub.succeed(textwrap.dedent("""
+            systemctl --no-pager --full status aos-hub.service || true
+            journalctl --no-pager -u aos-hub.service -n 200 || true
+        """))
+        raise AssertionError((error, diagnostics)) from error
     verified_publish = json.loads(publisher.succeed(
         signed_publish
         + f"--hub {HUB} --token {shlex.quote(token)} "
@@ -968,12 +965,27 @@ in {
     # Its config declares arm64 and its layers are the exact production AOS
     # layers; the qualification pulls but never executes this synthetic graph.
     # The independently flake-qualified cross output owns runnable arm64 bytes.
+    multi_push_token = json.loads(publisher.succeed(
+        f"{CURL} -fsS -H "
+        + shlex.quote(f"Authorization: Bearer {token}")
+        + " "
+        + shlex.quote(
+            f"{OCI}/v2/token?service=hub:8443&scope=repository:aos:pull,push"
+        )
+    ))["token"]
     multi_root = publisher.succeed(textwrap.dedent(f"""
         set -euo pipefail
         work=/var/tmp/aos-multi-platform
         rm -rf "$work"
         mkdir -p "$work"
-        cp {LAYOUT}/index.json "$work/production-index.json"
+        cp {LAYOUT}/index.json "$work/layout-index.json"
+        production_index_digest=$(jq -er \
+          '.manifests | select(length == 1) | .[0].digest' \
+          "$work/layout-index.json")
+        production_index_blob={LAYOUT}/blobs/sha256/$(printf '%s' \
+          "$production_index_digest" | cut -d: -f2)
+        test -f "$production_index_blob"
+        cp "$production_index_blob" "$work/production-index.json"
         amd64_manifest=$(jq -er \
           '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest' \
           "$work/production-index.json")
@@ -1004,31 +1016,31 @@ in {
           headers="$work/upload.headers"
           {CURL} -fsS -D "$headers" -o /dev/null -X POST \
             -H 'Content-Length: 0' \
-            -H 'Authorization: Bearer {token}' \
+            -H 'Authorization: Bearer {multi_push_token}' \
             {OCI}/v2/aos/blobs/uploads/
           location=$(sed -n 's/^location: *//ip' "$headers" | tr -d '\r' | tail -n1)
           test -n "$location"
           case "$location" in http*) ;; *) location={OCI}$location ;; esac
           {CURL} -fsS -o /dev/null -X PATCH \
             -H 'Content-Type: application/octet-stream' \
-            -H 'Authorization: Bearer {token}' \
+            -H 'Authorization: Bearer {multi_push_token}' \
             --data-binary @"$file" "$location"
           case "$location" in *\\?*) separator='&' ;; *) separator='?' ;; esac
           {CURL} -fsS -o /dev/null -X PUT \
             -H 'Content-Length: 0' \
-            -H 'Authorization: Bearer {token}' \
+            -H 'Authorization: Bearer {multi_push_token}' \
             "$location$separator"digest="$digest"
         }}
 
         upload_blob "$work/arm64-config.json" "$arm64_config_digest"
         {CURL} -fsS -o /dev/null -X PUT \
           -H 'Content-Type: application/vnd.oci.image.manifest.v1+json' \
-          -H 'Authorization: Bearer {token}' \
+          -H 'Authorization: Bearer {multi_push_token}' \
           --data-binary @"$work/arm64-manifest.json" \
           {OCI}/v2/aos/manifests/$arm64_manifest_digest
         {CURL} -fsS -o /dev/null -X PUT \
           -H 'Content-Type: application/vnd.oci.image.index.v1+json' \
-          -H 'Authorization: Bearer {token}' \
+          -H 'Authorization: Bearer {multi_push_token}' \
           --data-binary @"$work/multi-index.json" \
           {OCI}/v2/aos/manifests/multi
         printf '%s\n' "$multi_digest"
@@ -1050,6 +1062,33 @@ in {
     public_pull_token = repository_token(
         consumer, OCI, "hub:8443", "aos", "pull"
     )
+    # Anonymous human discovery and anonymous machine delivery must describe
+    # and consume the same exact public OCI graph. These requests carry no Hub
+    # session cookie, bearer, or registry credential.
+    public_containers = consumer.succeed(
+        f"{CURL} -fsS {HUB}/acme/containers/-/containers"
+    )
+    assert 'aria-current="page">Containers' in public_containers, public_containers
+    assert 'repository=aos' in public_containers, public_containers
+    assert 'hub:8443/aos' in public_containers, public_containers
+    public_repository = consumer.succeed(
+        f"{CURL} -fsS '{HUB}/acme/containers/-/containers/repository?repository=aos'"
+    )
+    assert 'Container repository aos' in public_repository, public_repository
+    assert 'tag=latest' in public_repository, public_repository
+    assert 'docker pull hub:8443/aos' in public_repository, public_repository
+    public_tag = consumer.succeed(
+        f"{CURL} -fsS '{HUB}/acme/containers/-/containers/tag?repository=aos&tag=latest'"
+    )
+    assert 'aos:latest' in public_tag, public_tag
+    assert root_digest in public_tag, public_tag
+    assert 'linux/amd64' in public_tag, public_tag
+    public_manifest = consumer.succeed(
+        f"{CURL} -fsS '{HUB}/acme/containers/-/containers/manifest?repository=aos&digest={root_digest}'"
+    )
+    assert root_digest in public_manifest, public_manifest
+    assert 'Runnable platforms' in public_manifest, public_manifest
+    assert 'linux/amd64' in public_manifest, public_manifest
     multi_index = json.loads(consumer.succeed(
         f"{CURL} -fsS "
         "-H 'Accept: application/vnd.oci.image.index.v1+json' "
@@ -1069,7 +1108,7 @@ in {
     )
     assert "200" in manifest_headers.splitlines()[0], manifest_headers
     fetched_index_sha256 = consumer.succeed(
-        f"{pkgs.coreutils}/bin/sha256sum /var/tmp/aos-index.json"
+        "${pkgs.coreutils}/bin/sha256sum /var/tmp/aos-index.json"
     ).split()[0]
     assert root_digest == f"sha256:{fetched_index_sha256}", root_digest
 
@@ -1215,7 +1254,7 @@ in {
     repositories = json.loads(publisher.succeed(
         hub_command("registry container repository list acme/containers", token)
     ))["data"]["repositories"]
-    assert any(item["name"] == "aos" for item in repositories), repositories
+    assert any(item["repository"] == "aos" for item in repositories), repositories
     repository = json.loads(publisher.succeed(
         hub_command("registry container repository show acme/containers aos", token)
     ))["data"]["repository"]
@@ -1224,7 +1263,8 @@ in {
         publisher,
         "aos-repository-description",
         "registry container repository update acme/containers aos "
-        "--description 'Production AOS base image'",
+        "--description 'Production AOS base image' "
+        f"--if-version {shlex.quote(repository['resource_version'])}",
         token,
     )
     reviewed(
@@ -1234,27 +1274,32 @@ in {
         "--description 'Delete lifecycle fixture'",
         token,
     )
-    publisher.succeed(hub_command(
+    empty_repository = json.loads(publisher.succeed(hub_command(
         "registry container repository show acme/containers empty", token
-    ))
+    )))["data"]["repository"]
     reviewed(
         publisher,
         "empty-repository-update",
         "registry container repository update acme/containers empty "
-        "--clear-description",
+        "--clear-description "
+        f"--if-version {shlex.quote(empty_repository['resource_version'])}",
         token,
     )
+    empty_repository = json.loads(publisher.succeed(hub_command(
+        "registry container repository show acme/containers empty", token
+    )))["data"]["repository"]
     reviewed(
         publisher,
         "empty-repository-delete",
-        "registry container repository delete acme/containers empty",
+        "registry container repository delete acme/containers empty "
+        f"--if-version {shlex.quote(empty_repository['resource_version'])}",
         token,
     )
 
     tags = json.loads(publisher.succeed(hub_command(
         "registry container tag list acme/containers aos", token
     )))["data"]["tags"]
-    latest = next(item for item in tags if item["name"] == "latest")
+    latest = next(item for item in tags if item["tag"] == "latest")
     assert latest["digest"] == root_digest, latest
     publisher.succeed(hub_command(
         "registry container tag show acme/containers aos latest", token
@@ -1271,12 +1316,14 @@ in {
     assert stable["digest"] == signed_root, stable
     publisher.fail(hub_command(
         "registry container tag set acme/containers aos stable "
-        f"--digest {signed_root} --plan --idempotency-key signed-tag-set-denied",
+        f"--digest {signed_root} --if-version {stable['resource_version']} "
+        "--plan --idempotency-key signed-tag-set-denied",
         token,
     ))
     publisher.fail(hub_command(
         "registry container tag unset acme/containers aos stable "
-        f"--if-digest {signed_root} --plan --idempotency-key signed-tag-unset-denied",
+        f"--if-digest {signed_root} --if-version {stable['resource_version']} "
+        "--plan --idempotency-key signed-tag-unset-denied",
         token,
     ))
     reviewed(
@@ -1286,11 +1333,15 @@ in {
         f"--digest {root_digest}",
         token,
     )
+    candidate = json.loads(publisher.succeed(hub_command(
+        "registry container tag show acme/containers aos candidate", token
+    )))["data"]["tag"]
     reviewed(
         publisher,
         "candidate-tag-unset",
         "registry container tag unset acme/containers aos candidate "
-        f"--if-digest {root_digest}",
+        f"--if-digest {root_digest} "
+        f"--if-version {shlex.quote(candidate['resource_version'])}",
         token,
     )
 
@@ -1321,7 +1372,7 @@ in {
         token,
     )))["data"]["layers"]
     assert layers, layers
-    assert any(item["shared_repository_count"] >= 2 for item in layers), layers
+    assert any(int(item["shared_repository_count"]) >= 2 for item in layers), layers
     layer = layers[0]
     publisher.succeed(hub_command(
         f"registry container layer show acme/containers aos {root_digest} "
@@ -1356,6 +1407,9 @@ in {
     consumer.wait_for_unit("aos-container-runtime-test.service", timeout=120)
     consumer.succeed("${pkgs.containerd}/bin/containerd --version")
     consumer.succeed("${pkgs.runc}/sbin/runc --version")
+    consumer.succeed(
+        "${pkgs.coreutils}/bin/mkdir -p /var/lib/aos-containerd/nerdctl-config"
+    )
     consumer.succeed("${pkgs.nerdctl}/bin/nerdctl --version")
     consumer.succeed(
         f"printf '%s\\n' {shlex.quote(client_secret)} | "
@@ -1398,11 +1452,23 @@ in {
     consumer.succeed(textwrap.dedent(r"""
         set -eu
         ${fixtures.setupPreamble}
+        APR="${pkgs.aos.apr}/bin/apr"
         export XDG_CACHE_HOME="$HOME/.cache"
         export XDG_CONFIG_HOME="$HOME/.config"
         export XDG_DATA_HOME="$HOME/.local/share"
         export XDG_STATE_HOME="$HOME/.local/state"
-        "$APR" create hub-oci-runtime
+        key="$HOME/.config/apm/keys/hub-oci-runtime-initial.key"
+        output=$("$APR" keys generate initial --registry hub-oci-runtime 2>&1)
+        printf '%s\n' "$output"
+        trust=$(printf '%s\n' "$output" \
+          | ${pkgs.grep}/bin/grep -o 'hub-oci-runtime:Ed25519:[A-Za-z0-9+/=]*' \
+          | ${pkgs.coreutils}/bin/head -n1)
+        test -n "$trust"
+        "$APR" add "file://$REG_STORAGE/hub-oci-runtime" \
+          --name hub-oci-runtime --no-clone --trust-key "$trust"
+        "$APR" keys register initial --registry hub-oci-runtime --key "$key"
+        "$APR" create hub-oci-runtime --trust-key "$trust" \
+          --trust-key-id initial --key-id initial
         REG_DIR="$REG_STORAGE/hub-oci-runtime"
         "$APR" publish ${fixtureTool} \
           --name hub-oci-container-tool \
@@ -1411,6 +1477,7 @@ in {
           --license MIT \
           --maintainer hub-oci@example.invalid \
           --registry hub-oci-runtime \
+          --key-id initial \
           --no-commit
         mkdir -p /var/lib/hub-oci-container-fixtures
         NIX_CONFIG='experimental-features = nix-command' \
@@ -1440,8 +1507,8 @@ in {
     # succeed from inside the scratch image.
     consumer.fail(
         "${nerdctl} run --rm --net host --add-host hub:192.168.50.11 "
-        "hub:8443/aos:latest /usr/bin/aos --json container inspect "
-        "hub:8443/aos:latest --hub https://hub:8443"
+        "hub:8443/aos:stable /usr/bin/aos --json container inspect "
+        "hub:8443/aos:stable --hub https://hub:8443"
     )
     mounts = (
         " --volume /var/lib/hub-oci-container-fixtures/registry:/fixtures/registry:ro"
@@ -1452,7 +1519,7 @@ in {
         "${nerdctl} run --detach --name aos-hub-runtime --hostname aos-qualified "
         "--net host --add-host hub:192.168.50.11"
         + mounts
-        + " hub:8443/aos:latest ${pkgs.coreutils}/bin/sleep infinity",
+        + " hub:8443/aos:stable ${pkgs.coreutils}/bin/sleep infinity",
         timeout=180,
     )
     consumer.wait_until_succeeds(
@@ -1460,21 +1527,29 @@ in {
         "| grep -Fx running",
         timeout=120,
     )
-    consumer.succeed(
+    # Containerd reports the task as running while the image entrypoint is
+    # still importing its daemonless Nix registration. Wait for the init-owned
+    # marker before asserting the initialized runtime contract.
+    consumer.wait_until_succeeds(
         "${nerdctl} exec aos-hub-runtime ${pkgs.bash}/bin/bash -c "
-        + shlex.quote(
-            "set -eu; "
-            "test \"$(cat /etc/hostname)\" = aos-qualified; "
-            "grep -F aos-qualified /etc/hosts; "
-            "test -s /etc/resolv.conf; "
-            "grep -q MIIDHzCCAgeg /etc/ssl/certs/ca-certificates.crt; "
-            "grep -q MIIDHzCCAgeg /etc/ssl/certs/ca-bundle.crt; "
-            "grep -q MIIDHzCCAgeg /etc/pki/tls/certs/ca-bundle.crt; "
-            "test \"$NIX_REMOTE\" = local; "
-            "test ! -S /nix/var/nix/daemon-socket/socket; "
-            "test -s /nix/var/nix/.aos-container-ready"
-        )
+        + shlex.quote("test -s /nix/var/nix/.aos-container-ready"),
+        timeout=180,
     )
+    runtime_checks = (
+        'test "$(cat /etc/hostname)" = aos-qualified',
+        "grep -Eq '(^|[[:space:]])hub([[:space:]]|$)' /etc/hosts",
+        "test -s /etc/resolv.conf",
+        "grep -q MIIDHzCCAgeg /etc/ssl/certs/ca-certificates.crt",
+        "grep -q MIIDHzCCAgeg /etc/ssl/certs/ca-bundle.crt",
+        "grep -q MIIDHzCCAgeg /etc/pki/tls/certs/ca-bundle.crt",
+        'test "$NIX_REMOTE" = local',
+        "test ! -S /nix/var/nix/daemon-socket/socket",
+    )
+    for check in runtime_checks:
+        consumer.succeed(
+            "${nerdctl} exec aos-hub-runtime ${pkgs.bash}/bin/bash -c "
+            + shlex.quote(check)
+        )
     consumer.succeed(
         "${nerdctl} exec aos-hub-runtime /usr/bin/aos --version"
     )
@@ -1486,7 +1561,7 @@ in {
     )
     consumer.succeed(
         "${nerdctl} exec aos-hub-runtime /usr/bin/aos --json container inspect "
-        "hub:8443/aos:latest --hub https://hub:8443",
+        "hub:8443/aos:stable --hub https://hub:8443",
         timeout=900,
     )
     consumer.succeed(
@@ -1555,9 +1630,15 @@ in {
         f"--run-id {gc_run_id}",
         token,
     ))
-    # A retained live tag makes this a non-destructive plan. A mismatched
-    # confirmation is rejected before any applying state or provider effect.
-    assert gc_run["candidate_object_count"] == 0, gc_run
+    # The catalog roots are traversed successfully across public, shared, and
+    # private repositories. The deliberately absent provider inventory keeps
+    # the plan failed closed before any candidate or provider effect.
+    assert gc_run["state"] == "failed", gc_run
+    assert int(gc_run["reachable_object_count"]) > 0, gc_run
+    assert any(
+        blocker["kind"] == "stale_provider_inventory"
+        for blocker in gc_plan["blockers"]
+    ), gc_plan
     publisher.fail(hub_command(
         "registry container gc apply "
         f"--plan-id {gc_review['plan_id']} "

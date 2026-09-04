@@ -46,13 +46,24 @@
     then common.fail "annotations exceeds the 64 KiB aggregate limit"
     else checked;
   checkedAnnotations = validateAnnotations annotations;
-  descriptorAnnotations =
+  referenceAnnotations =
     if referenceName == null
     then {}
     else {
       "org.opencontainers.image.ref.name" =
         common.validateTaggedReference "referenceName" referenceName;
     };
+  coordinatedAnnotations =
+    if
+      referenceName
+      != null
+      && checkedAnnotations ? "org.opencontainers.image.ref.name"
+      && checkedAnnotations."org.opencontainers.image.ref.name"
+      != referenceAnnotations."org.opencontainers.image.ref.name"
+    then
+      common.fail
+      "annotations org.opencontainers.image.ref.name conflicts with referenceName"
+    else checkedAnnotations // referenceAnnotations;
   validated =
     if !builtins.isList images
     then common.fail "images must be a list"
@@ -64,10 +75,10 @@
     then common.fail "images contains the same derivation more than once"
     else if !lib.all (image: builtins.isAttrs image && (image.passthru.ociImage or false)) images
     then common.fail "every input must be produced by mkImageLayout"
-    else builtins.deepSeq [checkedAnnotations descriptorAnnotations] true;
+    else builtins.deepSeq coordinatedAnnotations true;
   indexSpec = {
-    annotations = checkedAnnotations;
-    inherit descriptorAnnotations;
+    annotations = coordinatedAnnotations;
+    descriptorAnnotations = coordinatedAnnotations;
   };
   addImageScripts =
     lib.concatMapStringsSep "\n" (image: ''

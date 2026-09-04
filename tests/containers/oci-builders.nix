@@ -441,6 +441,15 @@ in
             and .manifests[0].mediaType == "application/vnd.oci.image.index.v1+json"
           ' ${multiPlatform}/layout/index.json >/dev/null \
             || fail "layout root does not point at the multi-platform index"
+          jq -e \
+            --slurpfile descriptor ${multiPlatform}/index-descriptor.json \
+            --slurpfile index ${multiPlatform}/image-index.json '
+              .manifests == [$descriptor[0]]
+              and $descriptor[0].annotations == $index[0].annotations
+              and $descriptor[0].annotations."org.opencontainers.image.ref.name"
+                == "aos-fixture:latest"
+            ' ${multiPlatform}/layout/index.json >/dev/null \
+            || fail "layout root descriptor annotations diverge from the image index"
           index_digest=$(jq -r .digest ${multiPlatform}/index-descriptor.json)
           index_hex=''${index_digest#sha256:}
           verify_descriptor_blob \

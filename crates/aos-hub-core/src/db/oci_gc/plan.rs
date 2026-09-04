@@ -2,28 +2,35 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use aos_oci_types::Sha256Digest;
 use uuid::Uuid;
 
-use super::plan_model::{
-    canonical_digest, digest_json, oci_gc_snapshot_guard_statement, policy_guard_statement,
-    validate_apply_input, validate_plan_input, EffectivePolicy, FrozenAction, FrozenCandidate,
-    FrozenPlacement, FrozenRoot, PlanBlocker,
-};
 pub use super::plan_model::{ApplyOciGc, PlanOciGc};
+use super::plan_model::{
+    EffectivePolicy, FrozenAction, FrozenCandidate, FrozenPlacement, FrozenRoot, PlanBlocker,
+    canonical_digest, digest_json, oci_gc_snapshot_guard_statement, policy_guard_statement,
+    validate_apply_input, validate_plan_input,
+};
 use super::{
-    OciGcGenerationRecord, OCI_GC_MAX_ACTIONS, OCI_GC_MAX_DEPTH, OCI_GC_MAX_EDGES,
-    OCI_GC_MAX_INVENTORY_AGE_SECONDS, OCI_GC_MAX_OBJECTS, OCI_GC_MAX_PLACEMENTS,
-    OCI_GC_PLAN_TTL_SECONDS,
+    OCI_GC_MAX_ACTIONS, OCI_GC_MAX_DEPTH, OCI_GC_MAX_EDGES, OCI_GC_MAX_INVENTORY_AGE_SECONDS,
+    OCI_GC_MAX_OBJECTS, OCI_GC_MAX_PLACEMENTS, OCI_GC_PLAN_TTL_SECONDS, OciGcGenerationRecord,
 };
 use crate::backend::Statement;
 use crate::db::{
-    sanitize_log_text, Database, OciRetentionPolicyRecord,
-    OCI_RETENTION_DEFAULT_DELETED_TAG_HISTORY_SECONDS,
+    Database, OCI_RETENTION_DEFAULT_DELETED_TAG_HISTORY_SECONDS,
     OCI_RETENTION_DEFAULT_RECENT_MANUAL_TAG_REVISIONS, OCI_RETENTION_DEFAULT_RETAIN_REFERRERS,
-    OCI_RETENTION_DEFAULT_UNTAGGED_GRACE_SECONDS,
+    OCI_RETENTION_DEFAULT_UNTAGGED_GRACE_SECONDS, OciRetentionPolicyRecord, sanitize_log_text,
 };
+
+/// Qualifies a catalog-owned root source within its repository.
+///
+/// The durable root key intentionally excludes the nullable repository column,
+/// so names such as `latest` must not collide when repositories retain the
+/// same digest under the same tag or release name.
+fn repository_root_source_id(repository_id: i64, source_id: &str) -> String {
+    format!("{repository_id}:{source_id}")
+}
 
 impl Database {
     /// Produces one durable, actor-bound OCI GC plan.
@@ -997,11 +1004,12 @@ impl Database {
             )
             .await?
         {
+            let repository_id = row.get(1)?;
             roots.insert(FrozenRoot {
                 kind: "tag".into(),
                 digest: canonical_digest(row.get(0)?)?,
-                source_id: row.get(2)?,
-                repository_id: Some(row.get(1)?),
+                source_id: repository_root_source_id(repository_id, &row.get::<String>(2)?),
+                repository_id: Some(repository_id),
             });
         }
         for row in self
@@ -1022,11 +1030,15 @@ impl Database {
             )
             .await?
         {
+            let repository_id = row.get(1)?;
             roots.insert(FrozenRoot {
                 kind: "signed_release".into(),
                 digest: canonical_digest(row.get(0)?)?,
-                source_id: format!("{}:{}", row.get::<String>(2)?, row.get::<String>(3)?),
-                repository_id: Some(row.get(1)?),
+                source_id: repository_root_source_id(
+                    repository_id,
+                    &format!("{}:{}", row.get::<String>(2)?, row.get::<String>(3)?),
+                ),
+                repository_id: Some(repository_id),
             });
         }
         for row in self
@@ -1039,11 +1051,12 @@ impl Database {
             )
             .await?
         {
+            let repository_id = row.get(1)?;
             roots.insert(FrozenRoot {
                 kind: "signed_release".into(),
                 digest: canonical_digest(row.get(0)?)?,
-                source_id: row.get(2)?,
-                repository_id: Some(row.get(1)?),
+                source_id: repository_root_source_id(repository_id, &row.get::<String>(2)?),
+                repository_id: Some(repository_id),
             });
         }
         for row in self
@@ -1446,5 +1459,19 @@ impl Database {
             }
         }
         Ok(actions)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::repository_root_source_id;
+
+    #[test]
+    fn repository_root_sources_do_not_collide_across_repositories() {
+        assert_ne!(
+            repository_root_source_id(7, "latest"),
+            repository_root_source_id(11, "latest")
+        );
+        assert_eq!(repository_root_source_id(7, "latest"), "7:latest");
     }
 }

@@ -312,7 +312,7 @@ in
           cmp production-metadata/usr/lib/aos-container/store-paths \
             ${productionReferenceGraph}/store-paths \
             || fail "embedded production store inventory differs from the authoritative graph"
-          printf '%s\n' ${lib.concatMapStringsSep " " lib.escapeShellArg (map builtins.toString goldenRoots)} \
+          printf '%s\n' ${lib.concatMapStringsSep " " lib.escapeShellArg (map builtins.toString (lib.unique (goldenRoots ++ [pkgs.aos pkgs.aos.apm pkgs.aos.apr])))} \
             > expected-production-baked-roots
           cmp expected-production-baked-roots \
             production-metadata/usr/lib/aos-container/baked-roots \

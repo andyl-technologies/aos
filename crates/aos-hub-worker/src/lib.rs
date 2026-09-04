@@ -563,6 +563,9 @@ mod entry {
             format!("/{slug}/"),
             format!("/{slug}/-/packages"),
             format!("/{slug}/-/images"),
+            format!("/{slug}/-/containers"),
+            // Query-bearing container detail pages are deliberately not
+            // cached; purging the canonical index prevents stale discovery.
             format!("/{slug}/-/channels"),
             format!("/{slug}/-/releases"),
             format!("/{slug}/-/health"),

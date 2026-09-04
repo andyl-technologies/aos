@@ -418,6 +418,12 @@ async fn browse_dispatch(
             "packages" => browse::packages(&svc, &headers, &slug, &q).await,
             "docs" => browse::documentation_search(&svc, &headers, &slug, &q).await,
             "images" => browse::images(&svc, &headers, &slug, &q).await,
+            "containers" => browse::containers(&svc, &headers, &slug, &q).await,
+            "containers/repository" => {
+                browse::container_repository(&svc, &headers, &slug, &q).await
+            }
+            "containers/tag" => browse::container_tag(&svc, &headers, &slug, &q).await,
+            "containers/manifest" => browse::container_manifest(&svc, &headers, &slug, &q).await,
             "channels" => browse::channels(&svc, &headers, &slug, &q).await,
             "releases" => browse::releases(&svc, &headers, &slug, &q).await,
             "health" => browse::health(&svc, &headers, &slug).await,

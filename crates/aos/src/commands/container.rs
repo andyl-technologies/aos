@@ -366,16 +366,14 @@ async fn inspect(
 
     if let Ok(reference) = RegistryReference::parse(target) {
         let temporary = tempfile::tempdir().context("creating registry inspection directory")?;
-        let verified = pull_layout(
-            &reference,
-            temporary.path().to_path_buf(),
-            selector,
-            hub,
-            token,
-            printer,
-        )
-        .await?;
-        return render_inspection(temporary.path(), target, &verified, raw, printer);
+        // PullDestination claims a previously absent directory by writing its
+        // identity marker.  Keep the TempDir as the private parent and let the
+        // pull create a child, rather than presenting TempDir's existing root
+        // as unowned resumable state.
+        let layout = temporary.path().join("layout");
+        let verified =
+            pull_layout(&reference, layout.clone(), selector, hub, token, printer).await?;
+        return render_inspection(&layout, target, &verified, raw, printer);
     }
 
     validate_definition_name(target).with_context(|| {

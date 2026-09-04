@@ -34,7 +34,10 @@ const UPLOAD_STATE_SCHEMA: &str = "aos.oci.upload-state/v1";
 // A cancelled upload PATCH can remain in the registry's transaction queue
 // while a saturated server drains unrelated work. Keep the cleanup bounded,
 // but allow enough time for that transaction to release its upload lease.
-const UPLOAD_CANCELLATION_RETRY_WINDOW: Duration = Duration::from_secs(16);
+// A cancelled upload can leave the Hub-side write transaction draining while
+// the registry is serving other concurrent requests. Keep cleanup bounded,
+// but allow enough time for that transaction to release its repository lock.
+const UPLOAD_CANCELLATION_RETRY_WINDOW: Duration = Duration::from_secs(32);
 const UPLOAD_CANCELLATION_INITIAL_RETRY_DELAY: Duration = Duration::from_millis(20);
 const UPLOAD_CANCELLATION_MAX_RETRY_DELAY: Duration = Duration::from_secs(1);
 static CHECKPOINT_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);

@@ -25,7 +25,7 @@ use aos_hub::domain::{Permission, Principal, Scope};
 use aos_hub::server::{router, AppState};
 use aos_hub_core::db::{
     oci_blob_object_key, ClaimOciUpload, IndexOciRepositoryCatalog, OciBlobClaimOutcome,
-    OciCatalogObject, OciCatalogProjection,
+    OciCatalogObject, OciCatalogProjection, OciImageConfigProjection, OciLayerProjection,
 };
 use aos_oci::{
     PlatformSelector, PullOptions, PushOptions, RegistryClient, RegistryReference, TransferEvent,
@@ -196,8 +196,8 @@ fn image_graph_for(
         }],
     };
     config.validate().unwrap();
-    let config = to_canonical_json(&config).unwrap();
-    let config_descriptor = descriptor(MediaType::OciImageConfig, &config, None);
+    let config = String::from_utf8(to_canonical_json(&config).unwrap()).unwrap();
+    let config_descriptor = descriptor(MediaType::OciImageConfig, config.as_bytes(), None);
 
     let manifest = ImageManifest {
         schema_version: 2,
@@ -247,13 +247,25 @@ fn image_graph_for(
                 bytes: manifest_bytes,
                 projection: Some(OciCatalogProjection::Manifest {
                     document: manifest,
-                    platform: Some(platform),
-                    image_config: None,
+                    platform: Some(platform.clone()),
+                    image_config: Some(OciImageConfigProjection {
+                        config_json: config.clone(),
+                        aos_system: match platform.architecture.as_str() {
+                            "amd64" => "x86_64-linux".to_string(),
+                            "arm64" => "aarch64-linux".to_string(),
+                            architecture => format!("{architecture}-linux"),
+                        },
+                        layers: vec![OciLayerProjection {
+                            unpacked_byte_size: u64::try_from(layer.len()).unwrap(),
+                            diff_id,
+                            closure_group: String::new(),
+                        }],
+                    }),
                 }),
             },
             GraphObject {
                 descriptor: config_descriptor,
-                bytes: config,
+                bytes: config.into_bytes(),
                 projection: None,
             },
             GraphObject {
@@ -780,6 +792,98 @@ async fn spawn_registry_with_rollout(
 async fn error_code(response: reqwest::Response) -> String {
     let envelope: serde_json::Value = response.json().await.unwrap();
     envelope["errors"][0]["code"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn anonymous_container_browse_discovers_public_tags_and_manifests_only() {
+    let public = spawn_registry("public", true, "public").await;
+    let slug = "oci-native/containers";
+    let browse_root = format!("{}{slug}/-/containers", public.origin);
+
+    let response = public.http.get(&browse_root).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let index = response.text().await.unwrap();
+    assert!(
+        index.contains("aria-current=\"page\">Containers"),
+        "{index}"
+    );
+    assert!(index.contains("OCI repositories available"), "{index}");
+    assert!(index.contains("repository=aos"), "{index}");
+    assert!(
+        index.contains(&format!("{}/aos", public.authority)),
+        "{index}"
+    );
+    assert!(index.contains("repository=other"), "{index}");
+
+    let response = public
+        .http
+        .get(&browse_root)
+        .query(&[("cursor", "not-a-valid-cursor")])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    let response = public
+        .http
+        .get(format!("{browse_root}/repository"))
+        .query(&[("repository", "aos")])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let repository = response.text().await.unwrap();
+    assert!(
+        repository.contains("Container repository aos"),
+        "{repository}"
+    );
+    assert!(repository.contains("tag=latest"), "{repository}");
+    assert!(repository.contains("tag=sbom"), "{repository}");
+    assert!(repository.contains("docker pull"), "{repository}");
+    assert!(repository.contains("data-copy-value"), "{repository}");
+
+    let response = public
+        .http
+        .get(format!("{browse_root}/tag"))
+        .query(&[("repository", "aos"), ("tag", "latest")])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let tag = response.text().await.unwrap();
+    assert!(tag.contains("aos:latest"), "{tag}");
+    assert!(tag.contains(&public.image.root.digest.to_string()), "{tag}");
+    assert!(tag.contains("linux/amd64"), "{tag}");
+    assert!(tag.contains("Pull immutably"), "{tag}");
+
+    let response = public
+        .http
+        .get(format!("{browse_root}/manifest"))
+        .query(&[
+            ("repository", "aos"),
+            ("digest", &public.image.root.digest.to_string()),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let manifest = response.text().await.unwrap();
+    assert!(manifest.contains("Child manifests"), "{manifest}");
+    assert!(manifest.contains("linux/amd64"), "{manifest}");
+    assert!(!manifest.contains("Publication history"), "{manifest}");
+    assert!(!manifest.contains("Garbage collection"), "{manifest}");
+
+    let private = spawn_registry("private", false, "hub_auth").await;
+    let response = private
+        .http
+        .get(format!(
+            "{}oci-native/containers/-/containers",
+            private.origin
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

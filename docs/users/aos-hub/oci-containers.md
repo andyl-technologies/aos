@@ -39,6 +39,26 @@ push preflights. `GET`, tag listing, and referrer discovery remain unavailable.
 This permits Docker-family push clients without granting repository readers a
 pull path.
 
+## Public Web browsing
+
+When pull is enabled, a public registry exposes its container catalog on the
+same anonymous, no-JavaScript browse surface as packages and system images:
+
+```text
+/<organization>/<registry>/-/containers
+```
+
+The Containers navigation item lists active repositories and their exact OCI
+Distribution references. Repository pages list current tags; tag and manifest
+pages expose immutable digests, media types, sizes, and runnable platforms.
+Each repository and tag view includes copyable Docker, nerdctl, and AOS pull
+commands derived from the server-selected delivery authority.
+
+Private and internal registries retain the normal browse visibility rules and
+are never made public by these routes. Publication sessions, retention policy,
+garbage collection, and mutation controls remain in the authenticated registry
+settings console at `/<organization>/<registry>/-/settings/containers`.
+
 ## Docker
 
 ```sh
