@@ -6,6 +6,7 @@
 
 pub mod host;
 pub mod mount;
+pub mod network;
 pub mod storage;
 
 pub use host::{
@@ -15,6 +16,9 @@ pub use host::{
 pub use mount::{
     CanonicalMountSemanticsV1, MountCatalogBindingV1, MountSemanticError,
     canonical_mount_semantics_v1,
+};
+pub use network::{
+    CanonicalNetworkSemanticsV1, MAXIMUM_NETWORK_ENDPOINTS, NetworkOperation, NetworkSemanticsError,
 };
 
 pub use storage::{
