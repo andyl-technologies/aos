@@ -51,6 +51,11 @@ release policy, output formats, and image validation.
 the packaged Wrangler and Cloudflare OAuth, isolated staging and production
 configuration, validation, promotion, and rollback.
 
+[Plan and verify canonical releases](canonical-releases.md) documents the
+fail-closed four-platform release plan, source and authorization preconditions,
+and offline bundle verification. It also identifies which RFC-0017 publication
+phases are not yet authorized for production use.
+
 ## Use the repository CLI
 
 Run the packaged repository command through the flake:

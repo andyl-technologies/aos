@@ -71,9 +71,12 @@ use aos_core::output::{OutputMode, Printer};
 
 use crate::config::ApmConfig;
 use crate::platform::native_platform;
+#[cfg(test)]
+use crate::provenance::sign_statement_dsse_jsonl;
 use crate::provenance::{
-    TrustedProvenanceKey, builder_id as provenance_builder_id, digest_map as provenance_digest_map,
-    sha256_hex_payload, sign_statement_dsse_jsonl,
+    ProvenanceSignature, ProvenanceSigner, TrustedProvenanceKey,
+    builder_id as provenance_builder_id, digest_map as provenance_digest_map, sha256_hex_payload,
+    sign_statement_dsse_jsonl_external,
 };
 use crate::registry::channel::{self, PartitionMap};
 use crate::registry::keys::{self, KeysToml, RevokedKey, RosterKey};
@@ -1353,6 +1356,16 @@ fn commit_staged_registry(dir: &Path, message: &str, signing_key: Option<&str>) 
     Ok(())
 }
 
+/// Applies the deep staged-index checks shared by legacy APR commits and the
+/// canonical isolated release transaction.
+pub(crate) fn validate_canonical_release_registry_index(dir: &Path) -> Result<()> {
+    validate_staged_package_toml_provenance_requirements(dir)?;
+    if staged_package_provenance_transparency_validation_needed(dir)? {
+        validate_staged_package_provenance_transparency_log(dir)?;
+    }
+    Ok(())
+}
+
 /// Create an SSH-signed commit of the current index, attaching the armored
 /// signature in the `gpgsig-sha256` header git uses for SHA-256 repositories.
 ///
@@ -1470,7 +1483,7 @@ fn commit_registry(dir: &Path, message: &str, signing_key: Option<&str>) -> Resu
 }
 
 /// Refresh the static dumb-HTTP object indexes after refs or commits change.
-fn refresh_registry_object_store(dir: &Path) -> Result<()> {
+pub(crate) fn refresh_registry_object_store(dir: &Path) -> Result<()> {
     let _publish_lock = RegistryPublishLock::acquire_or_join_current_process(dir)?;
     objectstore::assert_sha256(dir)?;
     let releases = semver_tag_versions(dir)?;
@@ -1803,21 +1816,101 @@ pub async fn publish(
     registry: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
+    let registry_name = resolve_registry_name(config, registry)?;
+    let registry_dir = config.scope.registries_path().join(&registry_name);
+
+    publish_to_registry_directory(
+        config,
+        &registry_dir,
+        &registry_name,
+        store_path,
+        name_override,
+        version_override,
+        platform_override,
+        description,
+        homepage,
+        license,
+        maintainer,
+        sysroot,
+        previous,
+        source_drv,
+        image_payload_paths,
+        image_disk_paths,
+        image_info_paths,
+        image_formats,
+        image_uki_paths,
+        expose_manifest_path,
+        config_module_path,
+        config_base_lib_path,
+        documentation_base_lib_path,
+        config_dependencies,
+        bless,
+        no_ca,
+        no_commit,
+        message,
+        key,
+        key_id,
+        None,
+        printer,
+    )
+    .await
+}
+
+/// Publishes one store output into an explicitly selected registry directory.
+///
+/// This is the package-materialization primitive used by an isolated release
+/// transaction. The ordinary CLI resolves its configured authoring clone
+/// before entering this function; release orchestration instead supplies its
+/// private clone. Callers must hold the appropriate outer transaction lock.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn publish_to_registry_directory(
+    config: &ApmConfig,
+    dir: &Path,
+    name: &str,
+    store_path: &str,
+    name_override: Option<&str>,
+    version_override: Option<&str>,
+    platform_override: Option<&str>,
+    description: Option<&str>,
+    homepage: Option<&str>,
+    license: Option<&str>,
+    maintainer: Option<&str>,
+    sysroot: bool,
+    previous: Option<&str>,
+    source_drv: Option<&str>,
+    image_payload_paths: &[String],
+    image_disk_paths: &[String],
+    image_info_paths: &[String],
+    image_formats: &[String],
+    image_uki_paths: &[String],
+    expose_manifest_path: Option<&str>,
+    config_module_path: Option<&str>,
+    config_base_lib_path: Option<&str>,
+    documentation_base_lib_path: Option<&str>,
+    config_dependencies: &[String],
+    bless: bool,
+    no_ca: bool,
+    no_commit: bool,
+    message: Option<&str>,
+    key: Option<&str>,
+    key_id: Option<&str>,
+    external_provenance_signer: Option<&mut dyn ProvenanceSigner>,
+    printer: &Printer,
+) -> Result<()> {
     let description = required_publish_metadata(description, "--description", "No description")?;
     let license = required_publish_metadata(license, "--license", "unknown")?;
     let maintainer = required_publish_metadata(maintainer, "--maintainer", "unknown")?;
 
-    let name = resolve_registry_name(config, registry)?;
-    let dir = config.scope.registries_path().join(&name);
-    ensure_writable_registry_clone(&name, &dir)?;
+    validate_registry_name(name)?;
+    ensure_writable_registry_clone(name, dir)?;
     let require_signed_ukis =
-        read_registry_toml(&dir)?.is_some_and(|root| root.registry.require_signed_ukis);
+        read_registry_toml(dir)?.is_some_and(|root| root.registry.require_signed_ukis);
     if let Some(name) = name_override {
         validate_package_name(name)?;
     }
     let signing_key = if key.is_some() || key_id.is_some() {
         Some(resolve_producer_signing_key(
-            config, &dir, &name, key, key_id,
+            config, dir, name, key, key_id,
         )?)
     } else {
         None
@@ -1897,7 +1990,7 @@ pub async fn publish(
     // Bind the exact disk, canonical per-format metadata, and paired UKI
     // before catalog construction. Committed Secure Boot policy is enforced
     // below.
-    let sb_db_cert = sb_db_cert_path(config, &name);
+    let sb_db_cert = sb_db_cert_path(config, name);
     let mut image_infos: Vec<PublishedImage> = Vec::new();
     for ((((payload_path, disk_path), info_path), img_fmt), uki_path) in image_payload_paths
         .iter()
@@ -1921,7 +2014,7 @@ pub async fn publish(
             sb_db_cert.as_deref(),
         )?);
     }
-    let sb_catalog = sb_certs::load_sb_certs_toml(&dir)?;
+    let sb_catalog = sb_certs::load_sb_certs_toml(dir)?;
     apply_publish_sb_policy(
         &mut image_infos,
         sb_catalog.as_ref(),
@@ -1964,12 +2057,16 @@ pub async fn publish(
         expose_artifact_info.as_ref(),
         &documentation_declarations,
     )?;
-    let provenance_signer = Some(resolve_package_provenance_signer(
-        &dir,
-        &name,
-        signing_key.as_ref(),
-        key_id,
-    )?);
+    let mut local_provenance_signer;
+    let provenance_signer: &mut dyn ProvenanceSigner =
+        if let Some(signer) = external_provenance_signer {
+            validate_external_provenance_signer(dir, signer)?;
+            signer
+        } else {
+            local_provenance_signer =
+                resolve_package_provenance_signer(dir, name, signing_key.as_ref(), key_id)?;
+            &mut local_provenance_signer
+        };
 
     let _publish_lock = RegistryPublishLock::acquire(&dir)?;
 
@@ -2037,21 +2134,22 @@ pub async fn publish(
     )?;
     let provenance_artifact =
         if let (Some(module), Some(attestation)) = (config_module, config_attestation.as_ref()) {
-            Some(publish_config_provenance_artifact_with_documentation(
-                &name,
-                pkg_name,
-                pkg_version,
-                &platform,
-                &info,
-                source_info.as_ref(),
-                module,
-                expose_manifest_digest.as_deref(),
-                attestation,
-                &documentation.metadata,
-                provenance_signer
-                    .as_ref()
-                    .context("provenance signer missing for config-module package")?,
-            )?)
+            Some(
+                publish_config_provenance_artifact_with_documentation(
+                    &name,
+                    pkg_name,
+                    pkg_version,
+                    &platform,
+                    &info,
+                    source_info.as_ref(),
+                    module,
+                    expose_manifest_digest.as_deref(),
+                    attestation,
+                    &documentation.metadata,
+                    provenance_signer,
+                )
+                .await?,
+            )
         } else {
             match (expose_manifest.as_ref(), expose_manifest_digest.as_deref()) {
                 (Some(manifest), Some(manifest_digest)) => {
@@ -2065,26 +2163,26 @@ pub async fn publish(
                         manifest,
                         manifest_digest,
                         &documentation.metadata,
-                        provenance_signer
-                            .as_ref()
-                            .context("provenance signer missing for exposed package")?,
-                    )?
+                        provenance_signer,
+                    )
+                    .await?
                 }
-                _ => Some(publish_documentation_provenance_artifact(
-                    &name,
-                    pkg_name,
-                    pkg_version,
-                    &platform,
-                    &info,
-                    source_info.as_ref(),
-                    &documentation.metadata,
-                    documentation_attestation
-                        .as_ref()
-                        .context("documentation-only package is missing attestation metadata")?,
-                    provenance_signer
-                        .as_ref()
-                        .context("provenance signer missing for documented package")?,
-                )?),
+                _ => Some(
+                    publish_documentation_provenance_artifact(
+                        &name,
+                        pkg_name,
+                        pkg_version,
+                        &platform,
+                        &info,
+                        source_info.as_ref(),
+                        &documentation.metadata,
+                        documentation_attestation.as_ref().context(
+                            "documentation-only package is missing attestation metadata",
+                        )?,
+                        provenance_signer,
+                    )
+                    .await?,
+                ),
             }
         };
 
@@ -2345,6 +2443,70 @@ pub async fn publish(
     }
 
     Ok(())
+}
+
+/// Materializes one canonical package-platform entry without committing it.
+///
+/// This is the narrow bridge used by an isolated registry release transaction.
+/// It deliberately exposes neither producer key paths nor ordinary authoring
+/// clone discovery; provenance is supplied by the caller's external adapter.
+///
+/// # Errors
+///
+/// Returns an error when package introspection, metadata validation,
+/// provenance signing, documentation generation, or store-graph authoring
+/// fails.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn publish_canonical_release_entry(
+    config: &ApmConfig,
+    dir: &Path,
+    registry: &str,
+    store_path: &str,
+    package: &str,
+    version: &str,
+    platform: &str,
+    description: &str,
+    homepage: Option<&str>,
+    license: &str,
+    maintainer: &str,
+    provenance_signer: &mut dyn ProvenanceSigner,
+    printer: &Printer,
+) -> Result<()> {
+    publish_to_registry_directory(
+        config,
+        dir,
+        registry,
+        store_path,
+        Some(package),
+        Some(version),
+        Some(platform),
+        Some(description),
+        homepage,
+        Some(license),
+        Some(maintainer),
+        false,
+        None,
+        None,
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        None,
+        None,
+        None,
+        None,
+        &[],
+        false,
+        false,
+        true,
+        None,
+        None,
+        None,
+        Some(provenance_signer),
+        printer,
+    )
+    .await
 }
 
 /// Returns required package distribution metadata after rejecting historical
@@ -7122,9 +7284,29 @@ struct PublishProvenanceArtifact {
     attestation: AttestationMeta,
 }
 
-struct PackageProvenanceSigner {
+struct LocalPackageProvenanceSigner {
     key_id: String,
     key_path: PathBuf,
+}
+
+#[async_trait::async_trait]
+impl ProvenanceSigner for LocalPackageProvenanceSigner {
+    fn key_id(&self) -> &str {
+        &self.key_id
+    }
+
+    async fn sign_provenance(&mut self, payload: &[u8]) -> Result<ProvenanceSignature> {
+        let armored_signature = crate::security::sign_payload_signature(
+            &self.key_path,
+            crate::provenance::DSSE_SIGNATURE_NAMESPACE,
+            payload,
+        )?;
+        Ok(ProvenanceSignature {
+            key_id: self.key_id.clone(),
+            provider_operation_id: "local-file-key".to_string(),
+            armored_signature,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -7209,7 +7391,7 @@ struct StagedPackageRfc0001Meta {
     bpf_lsm: Option<BpfLsmPolicyMeta>,
 }
 
-fn publish_provenance_artifact_inner(
+fn unsigned_publish_provenance_artifact(
     registry_name: &str,
     name: &str,
     version: &str,
@@ -7219,8 +7401,8 @@ fn publish_provenance_artifact_inner(
     manifest: &PublishExposeManifest,
     manifest_digest: &str,
     documentation: Option<&DocumentationArtifactMeta>,
-    signer: &PackageProvenanceSigner,
-) -> Result<Option<PublishProvenanceArtifact>> {
+    key_id: &str,
+) -> Result<Option<(String, Value, AttestationMeta)>> {
     let Some(attestation) = publish_attestation_meta(
         name,
         version,
@@ -7251,7 +7433,7 @@ fn publish_provenance_artifact_inner(
         source_info,
         manifest_digest,
         &attestation,
-        &signer.key_id,
+        key_id,
     )?;
     if let Some(documentation) = documentation {
         append_documentation_provenance_subject(
@@ -7262,9 +7444,40 @@ fn publish_provenance_artifact_inner(
             documentation,
         )?;
     }
-    let jsonl = sign_statement_dsse_jsonl(&statement, &signer.key_id, &signer.key_path)?;
+    Ok(Some((provenance, statement, attestation)))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn publish_provenance_artifact_inner(
+    registry_name: &str,
+    name: &str,
+    version: &str,
+    platform: &str,
+    info: &StorePathInfo,
+    source_info: Option<&StorePathInfo>,
+    manifest: &PublishExposeManifest,
+    manifest_digest: &str,
+    documentation: Option<&DocumentationArtifactMeta>,
+    signer: &mut dyn ProvenanceSigner,
+) -> Result<Option<PublishProvenanceArtifact>> {
+    let Some((path, statement, attestation)) = unsigned_publish_provenance_artifact(
+        registry_name,
+        name,
+        version,
+        platform,
+        info,
+        source_info,
+        manifest,
+        manifest_digest,
+        documentation,
+        signer.key_id(),
+    )?
+    else {
+        return Ok(None);
+    };
+    let jsonl = sign_statement_dsse_jsonl_external(&statement, signer).await?;
     Ok(Some(PublishProvenanceArtifact {
-        path: provenance,
+        path,
         jsonl,
         attestation,
     }))
@@ -7281,9 +7494,9 @@ fn publish_provenance_artifact(
     source_info: Option<&StorePathInfo>,
     manifest: &PublishExposeManifest,
     manifest_digest: &str,
-    signer: &PackageProvenanceSigner,
+    signer: &LocalPackageProvenanceSigner,
 ) -> Result<Option<PublishProvenanceArtifact>> {
-    publish_provenance_artifact_inner(
+    let Some((path, statement, attestation)) = unsigned_publish_provenance_artifact(
         registry_name,
         name,
         version,
@@ -7293,12 +7506,21 @@ fn publish_provenance_artifact(
         manifest,
         manifest_digest,
         None,
-        signer,
-    )
+        &signer.key_id,
+    )?
+    else {
+        return Ok(None);
+    };
+    let jsonl = sign_statement_dsse_jsonl(&statement, &signer.key_id, &signer.key_path)?;
+    Ok(Some(PublishProvenanceArtifact {
+        path,
+        jsonl,
+        attestation,
+    }))
 }
 
 #[allow(clippy::too_many_arguments)]
-fn publish_provenance_artifact_with_documentation(
+async fn publish_provenance_artifact_with_documentation(
     registry_name: &str,
     name: &str,
     version: &str,
@@ -7308,7 +7530,7 @@ fn publish_provenance_artifact_with_documentation(
     manifest: &PublishExposeManifest,
     manifest_digest: &str,
     documentation: &DocumentationArtifactMeta,
-    signer: &PackageProvenanceSigner,
+    signer: &mut dyn ProvenanceSigner,
 ) -> Result<Option<PublishProvenanceArtifact>> {
     publish_provenance_artifact_inner(
         registry_name,
@@ -7322,10 +7544,11 @@ fn publish_provenance_artifact_with_documentation(
         Some(documentation),
         signer,
     )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
-fn publish_config_provenance_artifact_inner(
+fn unsigned_config_provenance_artifact(
     registry_name: &str,
     name: &str,
     version: &str,
@@ -7336,8 +7559,8 @@ fn publish_config_provenance_artifact_inner(
     expose_manifest_digest: Option<&str>,
     attestation: &AttestationMeta,
     documentation: Option<&DocumentationArtifactMeta>,
-    signer: &PackageProvenanceSigner,
-) -> Result<PublishProvenanceArtifact> {
+    key_id: &str,
+) -> Result<(String, Value, AttestationMeta)> {
     let provenance = attestation
         .provenance
         .clone()
@@ -7355,7 +7578,7 @@ fn publish_config_provenance_artifact_inner(
         source_info,
         &config_publish_binding_digest(module, expose_manifest_digest)?,
         attestation,
-        &signer.key_id,
+        key_id,
     )?;
     let subjects = statement
         .get_mut("subject")
@@ -7396,11 +7619,41 @@ fn publish_config_provenance_artifact_inner(
             documentation,
         )?;
     }
-    let jsonl = sign_statement_dsse_jsonl(&statement, &signer.key_id, &signer.key_path)?;
+    Ok((provenance, statement, attestation.clone()))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn publish_config_provenance_artifact_inner(
+    registry_name: &str,
+    name: &str,
+    version: &str,
+    platform: &str,
+    info: &StorePathInfo,
+    source_info: Option<&StorePathInfo>,
+    module: &ConfigModuleMeta,
+    expose_manifest_digest: Option<&str>,
+    attestation: &AttestationMeta,
+    documentation: Option<&DocumentationArtifactMeta>,
+    signer: &mut dyn ProvenanceSigner,
+) -> Result<PublishProvenanceArtifact> {
+    let (path, statement, attestation) = unsigned_config_provenance_artifact(
+        registry_name,
+        name,
+        version,
+        platform,
+        info,
+        source_info,
+        module,
+        expose_manifest_digest,
+        attestation,
+        documentation,
+        signer.key_id(),
+    )?;
+    let jsonl = sign_statement_dsse_jsonl_external(&statement, signer).await?;
     Ok(PublishProvenanceArtifact {
-        path: provenance,
+        path,
         jsonl,
-        attestation: attestation.clone(),
+        attestation,
     })
 }
 
@@ -7416,9 +7669,9 @@ fn publish_config_provenance_artifact(
     module: &ConfigModuleMeta,
     expose_manifest_digest: Option<&str>,
     attestation: &AttestationMeta,
-    signer: &PackageProvenanceSigner,
+    signer: &LocalPackageProvenanceSigner,
 ) -> Result<PublishProvenanceArtifact> {
-    publish_config_provenance_artifact_inner(
+    let (path, statement, attestation) = unsigned_config_provenance_artifact(
         registry_name,
         name,
         version,
@@ -7429,12 +7682,18 @@ fn publish_config_provenance_artifact(
         expose_manifest_digest,
         attestation,
         None,
-        signer,
-    )
+        &signer.key_id,
+    )?;
+    let jsonl = sign_statement_dsse_jsonl(&statement, &signer.key_id, &signer.key_path)?;
+    Ok(PublishProvenanceArtifact {
+        path,
+        jsonl,
+        attestation,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
-fn publish_config_provenance_artifact_with_documentation(
+async fn publish_config_provenance_artifact_with_documentation(
     registry_name: &str,
     name: &str,
     version: &str,
@@ -7445,7 +7704,7 @@ fn publish_config_provenance_artifact_with_documentation(
     expose_manifest_digest: Option<&str>,
     attestation: &AttestationMeta,
     documentation: &DocumentationArtifactMeta,
-    signer: &PackageProvenanceSigner,
+    signer: &mut dyn ProvenanceSigner,
 ) -> Result<PublishProvenanceArtifact> {
     publish_config_provenance_artifact_inner(
         registry_name,
@@ -7460,10 +7719,11 @@ fn publish_config_provenance_artifact_with_documentation(
         Some(documentation),
         signer,
     )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
-fn publish_documentation_provenance_artifact(
+async fn publish_documentation_provenance_artifact(
     registry_name: &str,
     name: &str,
     version: &str,
@@ -7472,7 +7732,7 @@ fn publish_documentation_provenance_artifact(
     source_info: Option<&StorePathInfo>,
     documentation: &DocumentationArtifactMeta,
     attestation: &AttestationMeta,
-    signer: &PackageProvenanceSigner,
+    signer: &mut dyn ProvenanceSigner,
 ) -> Result<PublishProvenanceArtifact> {
     let provenance = attestation
         .provenance
@@ -7488,7 +7748,7 @@ fn publish_documentation_provenance_artifact(
         source_info,
         &binding_digest,
         attestation,
-        &signer.key_id,
+        signer.key_id(),
     )?;
     append_documentation_provenance_subject(
         &mut statement,
@@ -7497,7 +7757,7 @@ fn publish_documentation_provenance_artifact(
         platform,
         documentation,
     )?;
-    let jsonl = sign_statement_dsse_jsonl(&statement, &signer.key_id, &signer.key_path)?;
+    let jsonl = sign_statement_dsse_jsonl_external(&statement, signer).await?;
     Ok(PublishProvenanceArtifact {
         path: provenance,
         jsonl,
@@ -7544,7 +7804,7 @@ fn resolve_package_provenance_signer(
     registry_name: &str,
     signing_key: Option<&ResolvedSigningKey>,
     key_id: Option<&str>,
-) -> Result<PackageProvenanceSigner> {
+) -> Result<LocalPackageProvenanceSigner> {
     let key_id = key_id.context(
         "publishing privileged package provenance requires --key-id so the DSSE builder \
          identity is tied to keys.toml",
@@ -7566,10 +7826,38 @@ fn resolve_package_provenance_signer(
             active.key
         );
     }
-    Ok(PackageProvenanceSigner {
+    Ok(LocalPackageProvenanceSigner {
         key_id: key_id.to_string(),
         key_path: PathBuf::from(signing_key.path()),
     })
+}
+
+fn validate_external_provenance_signer(dir: &Path, signer: &dyn ProvenanceSigner) -> Result<()> {
+    let trusted_key = signer
+        .trusted_key_line()
+        .context("external provenance signer must expose its pinned roster trust line")?;
+    require_active_registry_key(dir, signer.key_id(), trusted_key)
+}
+
+pub(crate) fn require_active_registry_key(
+    dir: &Path,
+    key_id: &str,
+    trusted_key: &str,
+) -> Result<()> {
+    validate_roster_key_id(key_id)?;
+    let roster = load_committed_roster(dir)?;
+    if keys::is_revoked(&roster, key_id) {
+        bail!("signing key id '{}' is revoked in keys.toml", key_id);
+    }
+    let active = keys::active_key_by_id(&roster, key_id)
+        .ok_or_else(|| anyhow::anyhow!("signing key id '{}' is not active in keys.toml", key_id))?;
+    if trusted_key != active.key {
+        bail!(
+            "external signing key for '{}' differs from keys.toml",
+            key_id
+        );
+    }
+    Ok(())
 }
 
 fn package_provenance_trusted_keys(dir: &Path) -> Result<(String, Vec<TrustedProvenanceKey>)> {
@@ -19270,7 +19558,7 @@ mod tests {
 
     struct TestProvenanceSigner {
         _tmp: TempDir,
-        signer: PackageProvenanceSigner,
+        signer: LocalPackageProvenanceSigner,
         trusted_key: String,
     }
 
@@ -19286,7 +19574,7 @@ mod tests {
             TEST_PROVENANCE_KEY_ID,
         );
         TestProvenanceSigner {
-            signer: PackageProvenanceSigner {
+            signer: LocalPackageProvenanceSigner {
                 key_id: TEST_PROVENANCE_KEY_ID.to_string(),
                 key_path: key.private_key.clone(),
             },

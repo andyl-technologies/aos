@@ -291,6 +291,8 @@ mod entry {
     const HUB_EXTERNAL_URL: &str = "HUB_EXTERNAL_URL";
     /// Immutable source/build identity used to attest the active deployment.
     const HUB_DEPLOYMENT_ID: &str = "HUB_DEPLOYMENT_ID";
+    /// Atomic JSON secret containing role-separated release evidence keys.
+    const HUB_RELEASE_EVIDENCE_CONFIG: &str = "HUB_RELEASE_EVIDENCE_CONFIG";
     /// Staged request-execution cutover: `off`, `read`, or `on`.
     const HUB_REQUEST_SHARDING: &str = "HUB_REQUEST_SHARDING";
     /// Non-cacheable endpoint exposing [`HUB_DEPLOYMENT_ID`].
@@ -648,6 +650,30 @@ mod entry {
         }
         let sealer = sealer_from_secret(&seal_secret)
             .map_err(|err| worker::Error::RustError(format!("seal key: {err:#}")))?;
+        let release_evidence = match env.secret(HUB_RELEASE_EVIDENCE_CONFIG).ok() {
+            Some(config) => {
+                let deployment_id = env.var(HUB_DEPLOYMENT_ID).map_err(|_| {
+                    worker::Error::RustError(format!(
+                        "{HUB_DEPLOYMENT_ID} is required with release receipt signing"
+                    ))
+                })?;
+                Some(Arc::new(
+                    aos_hub_core::release_evidence::Ed25519ReleaseEvidenceAuthority::from_json(
+                        deployment_id.to_string(),
+                        &config.to_string(),
+                    )
+                    .map_err(|error| {
+                        worker::Error::RustError(format!(
+                            "release evidence authority is invalid: {error:#}"
+                        ))
+                    })?,
+                )
+                    as Arc<
+                        dyn aos_hub_core::release_evidence::ReleaseEvidenceAuthority,
+                    >)
+            }
+            None => None,
+        };
         let secret_versions = crate::secretversions::from_env(env)?;
         let route_reservation_secret = env
             .secret(HUB_ROUTE_RESERVATION_KEYRING)
@@ -874,6 +900,9 @@ mod entry {
         .with_kv(Arc::new(crate::workerkv::WorkerKv::new(
             env.kv(crate::handlers::bindings::KV_SESSIONS)?,
         )));
+        if let Some(authority) = release_evidence {
+            service = service.with_release_evidence(authority);
+        }
         let service = Arc::new(service);
 
         // Seed the editable site chrome (title/banner/footer) from HubDb once per
