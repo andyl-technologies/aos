@@ -3,7 +3,7 @@
 //! These queries preserve resource ownership while exposing explicitly granted
 //! resources to their consumer scope. Pagination precedes resource expansion.
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 
 use super::{Database, DeliveryIdentityPage, GatewayRecord, RouteRecord, SurfaceTarget};
 
@@ -186,20 +186,18 @@ mod tests {
             ["route:z"]
         );
         assert!(second.next_cursor.is_none());
-        assert!(
-            db.list_routes_page(surface, 2, "route:z")
-                .await
-                .unwrap()
-                .records
-                .is_empty()
-        );
-        assert!(
-            db.list_routes_page(SurfaceTarget::Registry(registry_id + 1000), 2, "")
-                .await
-                .unwrap()
-                .records
-                .is_empty()
-        );
+        assert!(db
+            .list_routes_page(surface, 2, "route:z")
+            .await
+            .unwrap()
+            .records
+            .is_empty());
+        assert!(db
+            .list_routes_page(SurfaceTarget::Registry(registry_id + 1000), 2, "")
+            .await
+            .unwrap()
+            .records
+            .is_empty());
         assert_eq!(db.list_routes(surface).await.unwrap().len(), 3);
     }
 }

@@ -2188,13 +2188,41 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         delete_network_policy
     );
     // DeliveryService — endpoint identity and controller-observation reads.
-    r = rpc_route!(r, "/aos.hub.v1.DeliveryService/PlanDeliveryDestination", plan_delivery_destination);
-    r = rpc_route!(r, "/aos.hub.v1.DeliveryService/ApplyDeliveryDestination", apply_delivery_destination);
-    r = rpc_route!(r, "/aos.hub.v1.DeliveryService/GetDeliveryWorkflow", get_delivery_workflow);
-    r = rpc_route!(r, "/aos.hub.v1.DeliveryService/ListDeliveryWorkflows", list_delivery_workflows);
-    r = rpc_route!(r, "/aos.hub.v1.DeliveryService/ResumeDeliveryDestination", resume_delivery_destination);
-    r = rpc_route!(r, "/aos.hub.v1.DeliveryService/PlanActivateDeliveryDestination", plan_activate_delivery_destination);
-    r = rpc_route!(r, "/aos.hub.v1.DeliveryService/ActivateDeliveryDestination", activate_delivery_destination);
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/PlanDeliveryDestination",
+        plan_delivery_destination
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/ApplyDeliveryDestination",
+        apply_delivery_destination
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/GetDeliveryWorkflow",
+        get_delivery_workflow
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/ListDeliveryWorkflows",
+        list_delivery_workflows
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/ResumeDeliveryDestination",
+        resume_delivery_destination
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/PlanActivateDeliveryDestination",
+        plan_activate_delivery_destination
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/ActivateDeliveryDestination",
+        activate_delivery_destination
+    );
     r = rpc_route!(
         r,
         "/aos.hub.v1.DeliveryService/ListEndpoints",
