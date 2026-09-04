@@ -157,6 +157,32 @@ in
         ];
       };
 
+      kernel-metadata = let
+        probeSource = builtins.path {
+          path = ../../tests/sandbox/fuse-transport-probe.c;
+          name = "aos-fuse-transport-probe.c";
+        };
+      in
+        testing.mkVMTest {
+          name = "aos-fuse-transport-kernel-metadata";
+          rootfsDeps = [self probeSource];
+          memory = 256;
+          testScript = ''
+            test -c /dev/fuse
+            cd /tmp
+            gcc -std=c17 -Wall -Wextra -Werror -Wconversion -Wsign-conversion \
+              -I${self}/include ${probeSource} \
+              -L${self}/lib -Wl,-rpath,${self}/lib -laos-fuse-transport \
+              -o aos-fuse-transport-probe
+
+            # The guest compiler uses the harness bootstrap environment. The
+            # installed bridge must resolve its own runtime closure during the
+            # proof, without LD_LIBRARY_PATH overriding those dependencies.
+            unset LD_LIBRARY_PATH
+            ./aos-fuse-transport-probe
+          '';
+        };
+
       closure = pkgs.mkDerivation {
         pname = "aos-fuse-transport-runtime-closure-check";
         version = "0";
