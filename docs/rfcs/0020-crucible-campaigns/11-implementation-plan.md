@@ -1080,8 +1080,13 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   version 1 remains replay-compatible. Both run behind a versioned one-request
   process protocol:
   a parent-owned supervisor measures deterministic page fuel, enforces a
-  finite wall deadline and sticky cancellation, drains bounded pipes, and
-  kills and reaps the authority-free worker before returning. The generic
+  finite exchange deadline and sticky cancellation, and multiplexes bounded
+  nonblocking pipes through EOF. Cleanup signals the dedicated process group
+  before reaping the authority-free direct child. A separate one-second cleanup
+  wait returns an explicit pending failure while one retained reaper retries;
+  another evaluation cannot overlap that unfinished child. Pipe inheritance,
+  blocked input, cancellation, unwind, and cleanup-retention regressions cover
+  the failure boundaries. The generic
   daemon-owned long-lived coordinator runtime is implemented. Process startup
   can now attach a bounded fixed set of up to 256 such runtimes to unique
   explicitly named existing campaigns, each with the packaged planner and a

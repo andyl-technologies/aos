@@ -2,8 +2,10 @@
 //!
 //! The authority-bearing daemon never executes the pure planner on its own
 //! thread. It starts the packaged `crucible` executable in a hidden worker
-//! mode, sends one bounded canonical [`PlannerRequest`], drains all three pipes
-//! concurrently, and kills and reaps the child on cancellation or deadline.
+//! mode and exchanges one bounded canonical [`PlannerRequest`] over nonblocking
+//! pipes under one cancellation/deadline boundary. Cleanup signals the worker's
+//! process group and reaps its direct child; a failed finite cleanup wait leaves
+//! ownership with the supervisor's reaper and prevents overlapping evaluation.
 //! The child returns only an unauthenticated [`PlannerStepProposal`]; measured
 //! fuel and planner authority remain parent-owned.
 //!
@@ -34,6 +36,9 @@ use crucible_campaign::{
     MAX_PLANNER_COMPONENT_MESSAGE_BYTES, PlannerEngineOutput, PlannerExecutionSupervisor,
     PlannerRequest, PlannerStepProposal, PurePlannerEngine, SupervisedPlannerExecution,
 };
+
+mod owner;
+mod pipes;
 
 const FRAME_MAGIC: &[u8; 8] = b"CRUCPP01";
 const FRAME_HEADER_BYTES: usize = 16;
@@ -139,6 +144,7 @@ impl CanonicalPlannerProcessCancellation {
 pub struct CanonicalPlannerProcessSupervisor {
     config: CanonicalPlannerProcessConfig,
     canceled: Arc<AtomicBool>,
+    process_owner: Option<owner::ProcessOwner>,
 }
 
 impl CanonicalPlannerProcessSupervisor {
@@ -152,6 +158,7 @@ impl CanonicalPlannerProcessSupervisor {
             Self {
                 config,
                 canceled: Arc::clone(&canceled),
+                process_owner: None,
             },
             CanonicalPlannerProcessCancellation { canceled },
         )
@@ -177,97 +184,25 @@ impl CanonicalPlannerProcessSupervisor {
                 "canonical planner deadline overflow",
             ))?;
 
-        let mut child = Command::new(&self.config.executable)
+        if self.process_owner.is_none() {
+            self.process_owner = Some(owner::ProcessOwner::new()?);
+        }
+        let process_owner = self.process_owner.as_ref().ok_or(
+            CanonicalPlannerProcessError::InvalidConfiguration(
+                "canonical planner owner is unavailable",
+            ),
+        )?;
+        let mut command = Command::new(&self.config.executable);
+        command
             .arg(CANONICAL_PLANNER_WORKER_ARGUMENT)
             .env_clear()
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|source| process_io("spawn-canonical-planner", source))?;
-        if let Err(error) = revalidate_executable(&self.config.executable, &executable_before) {
-            terminate_and_reap(&mut child);
-            return Err(error);
-        }
-
-        let (Some(stdin), Some(stdout), Some(stderr)) =
-            (child.stdin.take(), child.stdout.take(), child.stderr.take())
-        else {
-            terminate_and_reap(&mut child);
-            return Err(CanonicalPlannerProcessError::InvalidConfiguration(
-                "canonical planner child pipe is unavailable",
-            ));
-        };
-
-        let writer = match thread::Builder::new()
-            .name(String::from("crucible-planner-request"))
-            .spawn(move || write_frame(stdin, REQUEST_KIND, &request_bytes))
-        {
-            Ok(writer) => writer,
-            Err(source) => {
-                terminate_and_reap(&mut child);
-                return Err(process_io("spawn-planner-request-writer", source));
-            }
-        };
-        let stdout_reader = match thread::Builder::new()
-            .name(String::from("crucible-planner-response"))
-            .spawn(move || {
-                capture_bounded(
-                    stdout,
-                    FRAME_HEADER_BYTES.saturating_add(MAX_PLANNER_COMPONENT_MESSAGE_BYTES),
-                )
-            }) {
-            Ok(reader) => reader,
-            Err(source) => {
-                terminate_and_reap(&mut child);
-                let _ = writer.join();
-                return Err(process_io("spawn-planner-response-reader", source));
-            }
-        };
-        let stderr_reader = match thread::Builder::new()
-            .name(String::from("crucible-planner-stderr"))
-            .spawn(move || capture_bounded(stderr, MAX_STDERR_BYTES))
-        {
-            Ok(reader) => reader,
-            Err(source) => {
-                terminate_and_reap(&mut child);
-                let _ = writer.join();
-                let _ = stdout_reader.join();
-                return Err(process_io("spawn-planner-stderr-reader", source));
-            }
-        };
-
-        let terminal = loop {
-            if self.canceled.load(Ordering::Acquire) {
-                terminate_and_reap(&mut child);
-                break Err(CanonicalPlannerProcessError::Canceled);
-            }
-            if process_now() >= deadline {
-                terminate_and_reap(&mut child);
-                break Err(CanonicalPlannerProcessError::TimedOut);
-            }
-            match child.try_wait() {
-                Ok(Some(status)) => break Ok(status),
-                Ok(None) => thread::sleep(
-                    CHILD_POLL_INTERVAL.min(deadline.saturating_duration_since(process_now())),
-                ),
-                Err(source) => {
-                    terminate_and_reap(&mut child);
-                    break Err(process_io("poll-canonical-planner", source));
-                }
-            }
-        };
-
-        let write_result = join_worker(writer, "canonical planner request writer")?;
-        let stdout = join_worker(stdout_reader, "canonical planner response reader")?
-            .map_err(|source| process_io("read-canonical-planner-response", source))?;
-        let stderr = join_worker(stderr_reader, "canonical planner stderr reader")?
-            .map_err(|source| process_io("read-canonical-planner-stderr", source))?;
-        let status = terminal?;
-        write_result.map_err(|source| process_io("write-canonical-planner-request", source))?;
-        if stdout.overflow {
-            return Err(CanonicalPlannerProcessError::OutputLimitExceeded);
-        }
+            .stderr(Stdio::piped());
+        let (status, stdout, stderr) = process_owner.run(&mut command, |child| {
+            revalidate_executable(&self.config.executable, &executable_before)?;
+            pipes::exchange(child, &request_bytes, deadline, &self.canceled)
+        })?;
         if !status.success() {
             return Err(worker_failed(status, stderr));
         }
@@ -342,9 +277,13 @@ pub enum CanonicalPlannerProcessError {
     /// Sticky cancellation stopped or rejected the evaluation.
     #[error("canonical planner evaluation was canceled")]
     Canceled,
-    /// The finite wall-clock limit expired and the worker was killed and reaped.
+    /// The exchange deadline expired and direct-child cleanup completed.
     #[error("canonical planner evaluation timed out")]
     TimedOut,
+    /// Cleanup did not finish within one second; the owner retains the child
+    /// and retries without permitting an overlapping evaluation.
+    #[error("canonical planner process cleanup is still pending")]
+    CleanupPending,
     /// The worker emitted more than the fixed response limit.
     #[error("canonical planner response exceeds 64 MiB")]
     OutputLimitExceeded,
@@ -365,7 +304,7 @@ pub enum CanonicalPlannerProcessError {
     /// A canonical request or proposal body was invalid.
     #[error(transparent)]
     Codec(#[from] CampaignCodecError),
-    /// One process, pipe, or thread operation failed.
+    /// One process, pipe, or cleanup-worker operation failed.
     #[error("canonical planner process {operation} failed: {source}")]
     Io {
         /// Stable operation category.
@@ -374,9 +313,6 @@ pub enum CanonicalPlannerProcessError {
         #[source]
         source: io::Error,
     },
-    /// One bounded pipe worker panicked.
-    #[error("{0} panicked")]
-    ThreadPanicked(&'static str),
 }
 
 /// Serves one canonical planner process request over arbitrary byte streams.
@@ -551,37 +487,12 @@ fn parse_frame(bytes: &[u8]) -> Result<(u8, &[u8]), CanonicalPlannerProcessError
     Ok((bytes[8], &bytes[FRAME_HEADER_BYTES..]))
 }
 
-fn capture_bounded(mut reader: impl Read, maximum_bytes: usize) -> io::Result<CapturedOutput> {
-    let mut bytes = Vec::with_capacity(maximum_bytes.min(64 * 1024));
-    let mut overflow = false;
-    let mut buffer = [0_u8; 16 * 1024];
-    loop {
-        let read = reader.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        let remaining = maximum_bytes.saturating_sub(bytes.len());
-        let retained = remaining.min(read);
-        bytes.extend_from_slice(&buffer[..retained]);
-        overflow |= retained != read;
-    }
-    Ok(CapturedOutput { bytes, overflow })
-}
-
 fn bounded_rejection(error: &str) -> String {
     let mut end = error.len().min(MAX_REJECTION_BYTES);
     while !error.is_char_boundary(end) {
         end = end.saturating_sub(1);
     }
     error[..end].to_owned()
-}
-
-fn terminate_and_reap(child: &mut Child) {
-    let already_exited = child.try_wait().ok().flatten().is_some();
-    if !already_exited {
-        let _ = child.kill();
-    }
-    let _ = child.wait();
 }
 
 fn worker_failed(status: ExitStatus, stderr: CapturedOutput) -> CanonicalPlannerProcessError {
@@ -593,15 +504,6 @@ fn worker_failed(status: ExitStatus, stderr: CapturedOutput) -> CanonicalPlanner
         status: status.code(),
         diagnostic,
     }
-}
-
-fn join_worker<T>(
-    worker: thread::JoinHandle<T>,
-    name: &'static str,
-) -> Result<T, CanonicalPlannerProcessError> {
-    worker
-        .join()
-        .map_err(|_| CanonicalPlannerProcessError::ThreadPanicked(name))
 }
 
 fn process_io(operation: &'static str, source: io::Error) -> CanonicalPlannerProcessError {

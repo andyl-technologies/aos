@@ -1358,16 +1358,29 @@ proposal bodies use the existing canonical component schemas and are at most
 device and inode are checked before and after spawn under the local
 operator-owned executable namespace contract.
 
-The parent owns a finite 1-ms-to-60-s wall deadline, sticky cancellation,
-bounded concurrent pipe drains, deterministic input-page fuel measurement,
-proposal validation, and the planner authority key. Deadline or cancellation
-kills and reaps the child before the call returns. The child owns no repository
-or planner authority and can return only an unauthenticated proposal. This
+The parent owns a finite 1-ms-to-60-s exchange deadline, sticky cancellation,
+nonblocking bounded pipe I/O, deterministic input-page fuel measurement,
+proposal validation, and the planner authority key. The exchange deadline
+continues through pipe EOF even after the direct child exits; no reader thread
+can keep the caller waiting on an inherited descriptor. Cleanup signals the
+worker's dedicated process group before reaping the direct child. Exit status
+is observed without reaping until that signal, preventing process-group ID
+reuse during cleanup. The trusted built-in worker profile is not a sandbox for
+an arbitrary executable deliberately escaping its process group.
+
+The caller waits at most one additional second for cleanup. If cleanup remains
+pending, that failure takes precedence over the proposal or execution error,
+and one supervisor-owned reaper retains the direct child and retries at a
+10-ms cadence. The supervisor cannot launch another evaluation while that
+child remains owned. Unwinding and supervisor drop request the same cleanup;
+neither detaches a blocking pipe reader nor discards the child wait authority.
+The child owns no repository or planner authority and can return only an
+unauthenticated proposal. This
 private process protocol is distinct from the planner loopback component
 adapter: loopback proves direct/RPC message equivalence, while the process
 supervisor supplies killability and parent-owned metering for this built-in
-engine. Attaching that supervisor to the long-lived campaign coordinator loop
-remains an implementation-plan gate.
+engine. The packaged runtime attaches this supervisor to its long-lived
+campaign coordinator; complete operator and recovery flights remain required.
 
 Direct and Unix-loopback paths use the same checked client. The loopback transport uses nonzero absolute
 read/write deadlines capped at one hour, checks the body bound before
