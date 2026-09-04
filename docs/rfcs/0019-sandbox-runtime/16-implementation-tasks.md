@@ -930,6 +930,29 @@ completes. The Git history remains authoritative for code details.
   after expanding into hundreds of unrelated rebuilds, and the existing
   package-platform-support check remains blocked by unrelated excluded-resource
   inventory failures. `SBX-P0-11` and `SBX-FS-03` remain unchecked.
+- `17162fea3` — further foundation toward `SBX-FS-02`: structural-index V3
+  preserves the locked V1/V2 record and lookup bytes under a distinct media
+  type, then adds a canonical fixed-width directory table with authenticated
+  root and per-occurrence link counts. Validation reconstructs exact parent,
+  sibling order, record start, record ID, and `nlink` bytes after hard-link
+  semantics pass. Borrowed directory ranges perform two binary searches and
+  support allocation-free O(1) ordinal seek; exact link count is one range
+  search plus a verified direct slot. Graph compilation now emits V3 while
+  legacy builders remain test-only for golden compatibility. Builder-local and
+  graph-aggregate ceilings cross one API: requested storage is admitted before
+  allocation, actual entry, record-scratch, lookup, directory, and hard-link
+  capacities are checked before the next allocation or write, and the actual
+  finish peak returns to the compiler summary. A checked 248-byte stack encoder
+  writes the header last. Forced-capacity and refusal tests prove both local and
+  aggregate boundaries, alongside empty, foreign, high-fanout, reversed walk,
+  cross-parent hard-link, output-limit, version/media, reserved-field, ordering,
+  offset, ID, and link-count cases. The final direct workspace-toolchain run
+  passes 62 unit tests, one compile-fail doctest, strict Clippy, warning-denied
+  rustdoc, and formatting; the final project-shell rerun was interrupted after
+  its shared Nix eval cache remained busy without reaching Cargo. Borrowed
+  semantic body views, FUSE cookies/`READDIRPLUS`, target-ABI link-count
+  translation, directory handles, and worker lifecycle remain open, so
+  `SBX-FS-02` remains unchecked.
 
 The post-`727da7f3e` x86_64 `sandbox-filesystem-capability-proof` rerun built the
 complete hermetic Rust closure, AOS system, initrd, and VM disk and launched
