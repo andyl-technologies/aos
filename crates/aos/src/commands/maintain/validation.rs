@@ -57,8 +57,8 @@ pub(super) fn quick(
                 ActorClass::Controller,
                 state::now_unix()?,
             )?;
+            return Ok(record);
         }
-        return Ok(record);
     }
 
     let backend = Backend::detect().context("verifying local gate confinement")?;
@@ -150,8 +150,8 @@ pub(super) fn final_gates(
                 ActorClass::Controller,
                 state::now_unix()?,
             )?;
+            return Ok(record);
         }
-        return Ok(record);
     }
 
     let backend = Backend::detect().context("verifying local gate confinement")?;

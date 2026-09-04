@@ -407,26 +407,47 @@ impl StateStore {
             .join("attempts")
             .join(record.attempt.to_string());
         secure_directory(&attempt)?;
-        let log_directory = attempt.join("logs");
+        let digest =
+            Sha256Digest::of_canonical(aos_maintain::PACKAGE_UPDATE_GATE_RESULTS_V1, record)?;
+        let phase_directory = attempt.join("gates").join(&record.phase);
+        secure_directory(&phase_directory)?;
+        let execution = phase_directory.join(digest.hex());
+        secure_directory(&execution)?;
+        let log_directory = execution.join("logs");
         secure_directory(&log_directory)?;
         if logs.len() != record.results.len() {
             bail!("gate log set does not match result set");
         }
+        let mut retained = std::collections::BTreeSet::new();
         for (name, bytes) in logs {
             validate_state_name(name, "gate")?;
             if bytes.len() > 8 * 1024 * 1024 {
                 bail!("gate log exceeds size limit");
             }
-            write_immutable_bytes(
-                &log_directory,
-                &format!("{}-{name}.log", record.phase),
-                bytes,
-            )?;
+            let result = record
+                .results
+                .iter()
+                .find(|result| result.gate_id == *name)
+                .ok_or_else(|| anyhow::anyhow!("gate log identity is absent from result set"))?;
+            let bytes_len = u64::try_from(bytes.len()).context("gate log length overflow")?;
+            let digest = Sha256Digest::separated("aos.package-update-gate-log/v1", bytes);
+            if !retained.insert(name)
+                || result.log_bytes != bytes_len
+                || result.log_digest != digest
+            {
+                bail!("gate log bytes disagree with retained result evidence");
+            }
+            write_immutable_bytes(&log_directory, &format!("{name}.log"), bytes)?;
         }
-        write_immutable(&attempt, &format!("gates-{}.json", record.phase), record)
+        write_immutable(&execution, "results.json", record)?;
+        atomic_write(
+            &phase_directory,
+            "latest.json",
+            &GateExecutionHead { digest },
+        )
     }
 
-    /// Reads and validates an immutable gate set for attempt zero.
+    /// Reads and validates the atomically selected gate set for the current attempt.
     pub(super) fn read_gate_results(
         &self,
         run_id: &str,
@@ -438,21 +459,37 @@ impl StateStore {
         let run = self
             .read_run(run_id)?
             .ok_or_else(|| anyhow::anyhow!("gate run is unavailable"))?;
-        let path = self
+        let directory = self
             .run_directory(run_id)?
             .join("attempts")
             .join(run.attempt.to_string())
-            .join(format!("gates-{phase}.json"));
-        let Some(record) = read_optional(&path, "gate results")? else {
+            .join("gates")
+            .join(phase);
+        let Some(head): Option<GateExecutionHead> =
+            read_optional(&directory.join("latest.json"), "gate execution head")?
+        else {
             return Ok(None);
         };
-        let record: GateResultsV1 = record;
+        let digest = head.digest.hex();
+        let execution = directory.join(&digest);
+        let metadata = execution
+            .symlink_metadata()
+            .context("inspecting retained gate execution")?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            bail!("retained gate execution path is unsafe");
+        }
+        let record: GateResultsV1 = read_required(&execution.join("results.json"), "gate results")?;
         record.validate()?;
         if record.run_id.as_str() != run_id
             || record.phase != phase
             || record.attempt != run.attempt
         {
             bail!("gate results do not match their state path");
+        }
+        let actual =
+            Sha256Digest::of_canonical(aos_maintain::PACKAGE_UPDATE_GATE_RESULTS_V1, &record)?;
+        if actual != head.digest {
+            bail!("gate result content digest disagrees with its state path");
         }
         Ok(Some(record))
     }
@@ -464,6 +501,35 @@ impl StateStore {
         phase: &str,
         gate_id: &str,
     ) -> Result<Vec<u8>> {
+        let path = self.gate_log_path(run_id, phase, gate_id)?;
+        let bytes = read_bounded_regular_file(&path, 8 * 1024 * 1024, "gate log")?;
+        let results = self
+            .read_gate_results(run_id, phase)?
+            .ok_or_else(|| anyhow::anyhow!("gate execution is unavailable"))?;
+        let result = results
+            .results
+            .iter()
+            .find(|result| result.gate_id == gate_id)
+            .ok_or_else(|| anyhow::anyhow!("gate is absent from the retained execution"))?;
+        let length = u64::try_from(bytes.len()).context("gate log length overflow")?;
+        let digest = Sha256Digest::separated("aos.package-update-gate-log/v1", &bytes);
+        if result.log_bytes != length || result.log_digest != digest {
+            bail!("retained gate log disagrees with result evidence");
+        }
+        Ok(bytes)
+    }
+
+    /// Resolves one validated retained gate-log path without reading it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid identity, missing run, or unsafe log.
+    pub(super) fn gate_log_path(
+        &self,
+        run_id: &str,
+        phase: &str,
+        gate_id: &str,
+    ) -> Result<PathBuf> {
         if !matches!(phase, "quick" | "final") {
             bail!("gate phase is invalid");
         }
@@ -471,13 +537,37 @@ impl StateStore {
         let run = self
             .read_run(run_id)?
             .ok_or_else(|| anyhow::anyhow!("gate run is unavailable"))?;
+        let results = self
+            .read_gate_results(run_id, phase)?
+            .ok_or_else(|| anyhow::anyhow!("gate execution is unavailable"))?;
+        if !results
+            .results
+            .iter()
+            .any(|result| result.gate_id == gate_id)
+        {
+            bail!("gate is absent from the retained execution");
+        }
+        let digest =
+            Sha256Digest::of_canonical(aos_maintain::PACKAGE_UPDATE_GATE_RESULTS_V1, &results)?;
         let path = self
             .run_directory(run_id)?
             .join("attempts")
             .join(run.attempt.to_string())
+            .join("gates")
+            .join(phase)
+            .join(digest.hex())
             .join("logs")
-            .join(format!("{phase}-{gate_id}.log"));
-        read_bounded_regular_file(&path, 8 * 1024 * 1024, "gate log")
+            .join(format!("{gate_id}.log"));
+        let metadata = path
+            .symlink_metadata()
+            .context("inspecting retained gate log")?;
+        if !metadata.is_file()
+            || metadata.file_type().is_symlink()
+            || metadata.len() > 8 * 1024 * 1024
+        {
+            bail!("retained gate log is unsafe or oversized");
+        }
+        Ok(path)
     }
 
     /// Stores one immutable untrusted adapter proposal before human acceptance.
@@ -920,6 +1010,12 @@ struct SourceIdentityRecord {
     hash: String,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct GateExecutionHead {
+    digest: Sha256Digest,
+}
+
 /// Returns wall-clock Unix seconds for observational metadata only.
 pub(super) fn now_unix() -> Result<u64> {
     std::time::UNIX_EPOCH
@@ -1096,6 +1192,11 @@ where
 mod tests {
     use std::os::unix::fs::symlink;
 
+    use aos_maintain::envelope::{GitObjectFormat, GitObjectId};
+    use aos_maintain::identity::{PlanId, RunId};
+    use aos_maintain::run::{ConfinementEvidence, GateResult};
+    use aos_maintain::workflow::GateOutcome;
+
     use super::*;
 
     #[test]
@@ -1155,6 +1256,101 @@ mod tests {
         assert!(
             store
                 .record_source_identity("unit\0main\0source\0v1", "sha256-second")
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn gate_retries_select_exact_latest_execution_and_verify_logs() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let repository = temporary.path().join("repository");
+        secure_directory(&repository)?;
+        let store = StateStore {
+            root: temporary.path().to_path_buf(),
+            repository,
+        };
+        let run_id = RunId::parse("run-fixture")?;
+        let plan_id = PlanId::parse("plan-fixture")?;
+        let run = PackageUpdateRunV1 {
+            schema: aos_maintain::PACKAGE_UPDATE_RUN_V1.to_string(),
+            run_id: run_id.clone(),
+            plan_id: plan_id.clone(),
+            plan_digest: Sha256Digest::of_bytes(b"plan"),
+            state: RunState::PolicyValid,
+            branch: "dplecki/upgrade-fixture".to_string(),
+            worktree: "/tmp/aos-maintain-state-fixture".to_string(),
+            worktree_cleaned: false,
+            accepted_candidate: None,
+            candidate_commit: None,
+            evidence_digest: None,
+            base_commit: GitObjectId {
+                algorithm: GitObjectFormat::Sha1,
+                value: "0".repeat(40),
+            },
+            attempt: 0,
+            created_at_unix: 1,
+            updated_at_unix: 1,
+        };
+        let runs = store.repository.join("runs");
+        secure_directory(&runs)?;
+        let run_directory = runs.join(run_id.as_str());
+        secure_directory(&run_directory)?;
+        store.write_run(&run)?;
+
+        let first_log = b"first".to_vec();
+        let second_log = b"second".to_vec();
+        let record = |log: &[u8], outcome| GateResultsV1 {
+            schema: aos_maintain::PACKAGE_UPDATE_GATE_RESULTS_V1.to_string(),
+            run_id: run_id.clone(),
+            plan_id: plan_id.clone(),
+            attempt: 0,
+            phase: "quick".to_string(),
+            candidate_digest: Sha256Digest::of_bytes(b"candidate"),
+            confinement: ConfinementEvidence {
+                backend: "aos.linux-userns-landlock/v1".to_string(),
+                landlock_abi: 4,
+                filesystem_policy_digest: Sha256Digest::of_bytes(b"fs"),
+                resource_limits_digest: Sha256Digest::of_bytes(b"limits"),
+                private_user_namespace: true,
+                private_process_namespaces: true,
+                network_isolated: true,
+                worker_tree_reaped: true,
+                resource_limited: true,
+            },
+            results: vec![GateResult {
+                gate_id: "fmt".to_string(),
+                argv: vec!["aos".to_string(), "fmt".to_string()],
+                outcome,
+                exit_code: Some(if outcome == GateOutcome::Success {
+                    0
+                } else {
+                    1
+                }),
+                log_digest: Sha256Digest::separated("aos.package-update-gate-log/v1", log),
+                log_bytes: log.len() as u64,
+                elapsed_ms: 1,
+            }],
+            completed_at_unix: 10,
+        };
+        let first = record(&first_log, GateOutcome::Failure);
+        store.write_gate_results(&first, &[("fmt".to_string(), first_log)])?;
+        let second = record(&second_log, GateOutcome::Success);
+        store.write_gate_results(&second, &[("fmt".to_string(), second_log.clone())])?;
+
+        assert_eq!(
+            store.read_gate_results(run_id.as_str(), "quick")?,
+            Some(second)
+        );
+        assert_eq!(
+            store.read_gate_log(run_id.as_str(), "quick", "fmt")?,
+            second_log
+        );
+        let path = store.gate_log_path(run_id.as_str(), "quick", "fmt")?;
+        fs::write(path, b"tampered")?;
+        assert!(
+            store
+                .read_gate_log(run_id.as_str(), "quick", "fmt")
                 .is_err()
         );
         Ok(())

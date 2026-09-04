@@ -183,6 +183,8 @@ pub enum MaintainRunUntil {
     WorktreeReady,
     /// Stop after deterministic source and metadata materialization
     Materialized,
+    /// Stop after deterministic materialization and policy validation
+    PolicyValid,
     /// Stop after the quick gate plan completes
     QuickGated,
 }
@@ -206,6 +208,18 @@ pub struct MaintainInspectArgs {
     /// Inspect one exact immutable plan without executing it
     #[arg(long, value_name = "PLAN", required_unless_present = "run")]
     pub plan: Option<String>,
+
+    /// Focus the latest retained failed gate set
+    #[arg(long, conflicts_with_all = ["plan", "log", "log_file"])]
+    pub failure: bool,
+
+    /// Print the bounded retained output for one gate
+    #[arg(long, value_name = "GATE", conflicts_with_all = ["plan", "failure", "log_file"])]
+    pub log: Option<String>,
+
+    /// Print only the retained local path for one gate log
+    #[arg(long, value_name = "GATE", conflicts_with_all = ["plan", "failure", "log"])]
+    pub log_file: Option<String>,
 }
 
 #[derive(Args)]
