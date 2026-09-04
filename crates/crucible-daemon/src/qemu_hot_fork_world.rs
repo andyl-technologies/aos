@@ -19,12 +19,10 @@ use crucible::{ContentHash, EventLogOffset, NodeId};
 use crucible_api::vm_lifecycle::{
     ProductionVmHotForkNodeServiceState, ProductionVmHotForkWorldContinuation,
 };
-use crucible_qemu::{
-    LinuxQemuHotForkChildProcessAuthority, QemuHotForkChildProcessOwner, QemuProcessIdentity,
-};
+use crucible_qemu::QemuProcessIdentity;
 
 use crate::{
-    LinuxQemuHotForkReconciliationBackend, QemuAttemptProcessResourceGuard,
+    LinuxQemuHotForkReconciliationBackend, QemuAttemptResourceGuard,
     QemuHotForkAttemptReconciliation, QemuHotForkWorldChildSourceBasis,
 };
 
@@ -91,16 +89,14 @@ pub trait QemuHotForkWorldChild: sealed::QemuHotForkWorldChild {
 impl<G> sealed::QemuHotForkWorldChild
     for QemuHotForkAttemptReconciliation<LinuxQemuHotForkReconciliationBackend<G>>
 where
-    G: QemuAttemptProcessResourceGuard
-        + QemuHotForkChildProcessOwner<Authority = LinuxQemuHotForkChildProcessAuthority>,
+    G: QemuAttemptResourceGuard,
 {
 }
 
 impl<G> QemuHotForkWorldChild
     for QemuHotForkAttemptReconciliation<LinuxQemuHotForkReconciliationBackend<G>>
 where
-    G: QemuAttemptProcessResourceGuard
-        + QemuHotForkChildProcessOwner<Authority = LinuxQemuHotForkChildProcessAuthority>,
+    G: QemuAttemptResourceGuard,
 {
     type Error = Box<
         crate::QemuHotForkAttemptReconciliationError<crate::LinuxQemuHotForkReconciliationError>,

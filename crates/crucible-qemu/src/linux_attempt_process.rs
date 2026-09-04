@@ -264,8 +264,9 @@ impl LinuxQemuAttemptProcessFactory {
             maximum_vcpus,
             maximum_resident_bytes,
             maximum_writable_bytes,
+            maximum_tasks: self.config.maximum_tasks,
             finish_timeout: self.config.finish_timeout,
-            hot_fork_child_retained: false,
+            hot_fork_children_retained: 0,
         })
     }
 }
@@ -278,8 +279,9 @@ pub struct LinuxQemuAttemptProcessOwner {
     maximum_vcpus: u32,
     maximum_resident_bytes: u64,
     maximum_writable_bytes: u64,
+    maximum_tasks: u32,
     finish_timeout: Duration,
-    hot_fork_child_retained: bool,
+    hot_fork_children_retained: u32,
 }
 
 impl LinuxQemuAttemptProcessOwner {
@@ -421,10 +423,10 @@ impl QemuHotForkChildProcessOwner for LinuxQemuAttemptProcessOwner {
         &mut self,
         basis: QemuHotForkChildProcessBasis,
     ) -> Result<Self::Authority, QemuNodeChannelError> {
-        if self.hot_fork_child_retained {
+        if self.hot_fork_children_retained >= self.maximum_tasks {
             return Err(QemuNodeChannelError::new(
                 "retain forked child process",
-                "attempt process owner already retained one hot-fork child",
+                "attempt process owner exhausted its bounded hot-fork child slots",
             ));
         }
         let raw_process_id = i32::try_from(basis.child_process_id())
@@ -454,7 +456,15 @@ impl QemuHotForkChildProcessOwner for LinuxQemuAttemptProcessOwner {
             })?;
         verify_pidfd_process_id(&pidfd, basis.child_process_id())?;
 
-        self.hot_fork_child_retained = true;
+        self.hot_fork_children_retained = self
+            .hot_fork_children_retained
+            .checked_add(1)
+            .ok_or_else(|| {
+                QemuNodeChannelError::new(
+                    "retain forked child process",
+                    "attempt hot-fork child accounting overflowed",
+                )
+            })?;
         Ok(LinuxQemuHotForkChildProcessAuthority {
             basis,
             identity,

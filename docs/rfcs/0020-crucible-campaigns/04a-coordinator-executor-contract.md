@@ -3118,10 +3118,16 @@ assembly incarnation against that continuation. An unexpected, duplicate, or
 mismatched child is returned unchanged, while
 dropping an incomplete assembly quarantines every child already admitted. The
 transaction publishes only an opaque complete-world capability; it never lends
-one node during assembly. Installing that capability as the authoritative
-`ProductionVmLifecycleLoop`, sharing one aggregate target guard and unified
-event log across all node children, complete private-channel driving,
-hot-child checkpoint capture, and a real modeled QEMU flight remain open.
+one node during assembly. The launch path now places every child reservation
+behind one bounded aggregate target owner. Each reconciliation receives only a
+non-releasing node share; explicit no-child rejection reopens that exact slot,
+while an ambiguous/post-fork failure or abandoned share quarantines the whole
+attempt guard. Final guard release is permitted only after every issued node
+has recorded exact cleanup. Installing the complete-world capability as the
+authoritative `ProductionVmLifecycleLoop`, transferring those shares without
+splitting aggregate ownership, using one unified event log across all node
+children, complete private-channel driving, hot-child checkpoint capture, and
+a real modeled QEMU flight remain open.
 
 The successful node transaction now retains the exact state needed for one
 linear process-neutral scheduler-node sealing transition. That transition
