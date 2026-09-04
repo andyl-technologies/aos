@@ -206,6 +206,7 @@
           aos.pkgs.bootstrapTools
           aos.pkgs.perl
           aos.pkgs.pkg-config
+          aos.pkgs.aos-fuse-transport
           aos.pkgs.openssl
           aos.pkgs.protobuf
           # Runtime tools the aos/apm/apr binaries shell out to by bare name
@@ -252,6 +253,7 @@
               export RUST_SRC_PATH="${aos.pkgs.rust.dev}/lib/rustlib/src/rust/library"
               export OPENSSL_DIR="${aos.pkgs.openssl}"
               export OPENSSL_NO_VENDOR=1
+              export PKG_CONFIG_PATH="${aos.pkgs.aos-fuse-transport}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
               # OPENSSL_DIR above only lets `openssl-sys` *link* against the AOS
               # OpenSSL; the resulting binary still records only the SONAME, so
               # an impure `cargo build` produces a binary that cannot find
@@ -260,7 +262,7 @@
               # no patchelf, and no LD_LIBRARY_PATH that would poison the `nix`
               # subprocess they shell out to (which needs its own, newer
               # OpenSSL). rpath is per-binary, so each keeps its own OpenSSL.
-              export ${cargoHostRustflagsVar}="-C link-arg=-Wl,-rpath,${aos.pkgs.openssl}/lib"
+              export ${cargoHostRustflagsVar}="-C link-arg=-Wl,-rpath,${aos.pkgs.openssl}/lib -C link-arg=-Wl,-rpath,${aos.pkgs.aos-fuse-transport}/lib"
             '';
         };
       }

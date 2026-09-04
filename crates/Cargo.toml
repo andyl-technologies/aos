@@ -30,6 +30,8 @@ members = [
     "aos-profile",
     "aos-systemd",
     "aos-filesystem-view",
+    "aos-filesystem-fuse",
+    "aos-filesystem-fuse/tests/fixtures/link-consumer",
     "aos-sandbox-core",
     "aos-sandbox-ownership-protocol",
     "aos-sandbox-protocol",
@@ -235,6 +237,7 @@ aos-image-finalizer = { path = "aos-image-finalizer" }
 aos-profile = { path = "aos-profile" }
 aos-systemd = { path = "aos-systemd" }
 aos-filesystem-view = { path = "aos-filesystem-view" }
+aos-filesystem-fuse = { path = "aos-filesystem-fuse" }
 aos-sandbox-core = { path = "aos-sandbox-core" }
 aos-sandbox-ownership-protocol = { path = "aos-sandbox-ownership-protocol" }
 aos-sandbox-protocol = { path = "aos-sandbox-protocol" }

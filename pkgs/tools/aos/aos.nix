@@ -12,6 +12,7 @@
   perl,
   openssl,
   aos-landlock,
+  aos-fuse-transport,
   aos-service-root,
   aos-selinux-run,
   aos-verity-root-guard,
@@ -118,6 +119,7 @@
     "aos-doc"
     "aos-doc-model"
     "aos-filesystem-view"
+    "aos-filesystem-fuse"
     "aos-hub"
     "aos-hub-core"
     "aos-hub-worker"
@@ -179,7 +181,9 @@
       "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${applicationTestFlags}"
     ];
     inherit cargoEnv;
-    buildDeps = [buildPerl buildPkgConfig openssl buildProtobuf buildCmake libssh2];
+    buildDeps =
+      [buildPerl buildPkgConfig openssl buildProtobuf buildCmake libssh2]
+      ++ lib.optionals (!isDarwinCross) [aos-fuse-transport];
     runtimeDeps = [openssl zlib];
   };
 in
@@ -211,6 +215,7 @@ in
     # inspect, commit, and publish isolated Git worktrees without host tools.
     buildDeps =
       [buildPerl buildPkgConfig openssl buildProtobuf buildCmake libssh2 buildGitMinimal buildOpenSsh]
+      ++ lib.optionals (!isDarwinCross) [aos-fuse-transport]
       ++ lib.optionals isDarwinCross [buildPackages.aos];
     runtimeDeps =
       [openssl zlib]

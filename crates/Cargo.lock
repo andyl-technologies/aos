@@ -305,6 +305,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-filesystem-fuse"
+version = "0.1.0"
+dependencies = [
+ "aos-filesystem-view",
+ "aos-sandbox-core",
+ "libc",
+ "pkg-config",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "aos-filesystem-fuse-link-consumer"
+version = "0.0.0"
+dependencies = [
+ "aos-filesystem-fuse",
+]
+
+[[package]]
 name = "aos-filesystem-view"
 version = "0.1.0"
 dependencies = [
