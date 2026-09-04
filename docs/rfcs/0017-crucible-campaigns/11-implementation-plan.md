@@ -2467,6 +2467,21 @@ remaining writable host-device endpoints, atomic multi-node
 coordinator composition, concrete hot-fork runner, modeled QEMU driving,
 observation production, and a real fork flight remain open, so T-CAM-6.2 and
 T-CAM-6.3 stay unchecked.
+The daemon now also has the linear hot-fork execution-runner boundary above
+that owner. It rejects exact-resume substitution and foreign execution
+incarnations, admits the private child before a two-phase modeled drive/seal,
+stops and reaps the child under a finite polling policy before returning a
+result, retains successful source authority across immutable publication, and
+recovers it only after the worker supplies the exact durable disposition.
+Retryable recovery retains the same lifecycle token, an incomplete runner drop
+transfers that token to factory quarantine, and a driver failure quarantines
+the source lifecycle rather than inventing a semantic failure acknowledgement.
+Scripted regressions cover success ordering, all driver failure classes,
+foreign runtime identity, bounded exit policy, recovery retry, second-launch
+exclusion, and pending-owner drop. A production template-pool factory,
+nondroppable daemon quarantine sink, atomic multi-node host-continuation
+installation, concrete modeled driver, and real QEMU flight remain open; this
+checkpoint therefore does not mark T-CAM-6.2 or T-CAM-6.3 complete.
 The internal registry now has safe RCU and internal-monitor dispositions, while
 other AIO owners and every generic or external thread remain unresolved. The
 retained AIO/BH/timer and RCU

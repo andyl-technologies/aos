@@ -2326,8 +2326,24 @@ post-execution callback and does not dispatch another assignment on that
 worker until the retained owner reports complete. A runner that returns an
 execution error MUST instead finish or quarantine its operational incarnation
 before returning, so supervisor requeue cannot overlap the failed QEMU owner.
-The concrete hot-fork runner that creates this owner and drives the modeled
-private child remains required before hot fork is advertised.
+
+The hot-fork runner boundary is linear. It rejects exact-resume work and any
+child whose lineage-qualified attempt/execution incarnation differs from the
+worker reservation. A factory transfers exactly one source-template and target
+guard lifecycle into the runner; a modeled driver receives only the admitted
+private child, non-releasing operational boundary, and branch-local host
+continuation. Driving and result sealing are separate phases at one exact
+paused boundary. The runner then terminates the child, polls the source-owned
+status under a finite configured cadence, proves target-resource release, and
+retains the source lifecycle until the worker supplies its durable semantic
+disposition. Retryable source-template recovery returns the unchanged lifecycle
+token. Dropping a pending runner transfers that token to the factory's
+nondroppable quarantine owner. An execution error has no durable semantic
+disposition; after target cleanup the runner MUST quarantine the remaining
+source lifecycle rather than fabricating `Failed` and releasing the source
+status. The production template-pool factory, nondroppable daemon quarantine
+sink, atomic world-continuation installer, and modeled private-child driver
+remain required before hot fork is advertised.
 
 Exactly one attempt-owned watcher blocks on the same sticky eventfd, and child
 contracts cannot be minted before that watcher is live. Terminal cancellation
