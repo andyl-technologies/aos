@@ -64,7 +64,7 @@ pub use semantic::{
 pub use validate::{IndexCrosslinks, IndexError, IndexExpectation, validate_index};
 pub use view::{
     DirectoryEntries, DirectoryEntryView, DirectoryRange, IndexNodeKind, IndexNodeView,
-    IndexSummary, ValidatedIndex,
+    IndexRecords, IndexSummary, ValidatedIndex,
 };
 pub use wire::{INDEX_MEDIA_TYPE, INDEX_MEDIA_TYPE_V1, INDEX_MEDIA_TYPE_V2, INDEX_MEDIA_TYPE_V3};
 

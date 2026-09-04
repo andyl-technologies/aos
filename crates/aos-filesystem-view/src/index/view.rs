@@ -59,6 +59,33 @@ pub(super) enum IndexLayout {
 }
 
 impl<'bytes> ValidatedIndex<'bytes> {
+    /// Iterates every authenticated record in canonical record-ID order.
+    ///
+    /// The iterator borrows the exact bytes retained by this validation
+    /// authority, performs no allocation, and is available for every index
+    /// version. Each yielded locator remains subject to reauthentication by
+    /// APIs that use it for authorization.
+    #[must_use]
+    pub fn records(&self) -> IndexRecords<'_> {
+        let (start, records_bytes) = match self.layout {
+            IndexLayout::SequentialV1 => (HEADER_BYTES_V1, self.bytes.len() - HEADER_BYTES_V1),
+            IndexLayout::PointLookupV2 { records_bytes, .. } => {
+                (HEADER_BYTES_V2, records_bytes as usize)
+            }
+            IndexLayout::IterableV3 { records_bytes, .. } => {
+                (HEADER_BYTES_V3, records_bytes as usize)
+            }
+        };
+        IndexRecords {
+            bytes: self.bytes,
+            artifact: self.descriptor.digest(),
+            offset: start,
+            end: start.saturating_add(records_bytes),
+            next_id: 0,
+            remaining: self.summary.records,
+        }
+    }
+
     /// Returns the exact immutable bytes covered by validation.
     #[must_use]
     pub const fn bytes(&self) -> &[u8] {
@@ -423,6 +450,58 @@ impl<'bytes> ValidatedIndex<'bytes> {
         Ok(slot.nlink)
     }
 }
+
+/// Iterates exact authenticated index records without allocating.
+pub struct IndexRecords<'a> {
+    bytes: &'a [u8],
+    artifact: ObjectDigest,
+    offset: usize,
+    end: usize,
+    next_id: u64,
+    remaining: u64,
+}
+
+impl<'a> Iterator for IndexRecords<'a> {
+    type Item = Result<IndexNodeView<'a>, IndexError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        if self.offset >= self.end || self.end > self.bytes.len() {
+            self.remaining = 0;
+            return Some(Err(IndexError::InvalidRecord));
+        }
+
+        let record = decode_record_view(self.bytes, self.offset, self.next_id, self.artifact);
+        match record {
+            Ok(record) if self.offset.saturating_add(record.encoded_record.len()) <= self.end => {
+                self.offset += record.encoded_record.len();
+                self.next_id += 1;
+                self.remaining -= 1;
+                Some(Ok(record))
+            }
+            Ok(_) => {
+                self.remaining = 0;
+                Some(Err(IndexError::InvalidRecord))
+            }
+            Err(error) => {
+                self.remaining = 0;
+                Some(Err(error))
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        // Every nonempty record occupies bytes in the retained slice, so a
+        // successfully validated record count necessarily fits `usize`.
+        let remaining = self.remaining as usize;
+        (remaining, Some(remaining))
+    }
+}
+
+impl ExactSizeIterator for IndexRecords<'_> {}
+impl std::iter::FusedIterator for IndexRecords<'_> {}
 
 fn same_node_identity(left: &IndexNodeView<'_>, right: &IndexNodeView<'_>) -> bool {
     left.artifact == right.artifact

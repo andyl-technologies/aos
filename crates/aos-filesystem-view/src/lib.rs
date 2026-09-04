@@ -19,8 +19,8 @@ pub use index::{
     INDEX_MEDIA_TYPE_V2, INDEX_MEDIA_TYPE_V3, IndexAclEntries, IndexAclRange, IndexContentView,
     IndexCrosslinks, IndexError, IndexExpectation, IndexExtentRange, IndexExtentView, IndexExtents,
     IndexFileView, IndexNodeBodyView, IndexNodeKind, IndexNodeSemantics, IndexNodeView,
-    IndexObjectDescriptorView, IndexSparseContentView, IndexStaging, IndexSummary, IndexXattrRange,
-    IndexXattrView, IndexXattrs, StagedIndex, ValidatedIndex, validate_index,
+    IndexObjectDescriptorView, IndexRecords, IndexSparseContentView, IndexStaging, IndexSummary,
+    IndexXattrRange, IndexXattrView, IndexXattrs, StagedIndex, ValidatedIndex, validate_index,
 };
 pub use inode::{
     DirectoryCookie, DirectoryHandleId, DirectoryHandleLimits, DirectoryReadEntries,
@@ -30,6 +30,8 @@ pub use inode::{
 };
 pub use limits::TreeCompileLimits;
 pub use presentation::{
-    AclCapability, IdMapExtent, IdentityMap, IdentityMapError, PresentationPlan, PresentedMetadata,
+    AclCapability, IdMapExtent, IdentityMap, IdentityMapError, PreparedPresentation,
+    PresentationError, PresentationLimits, PresentationPlan, PresentedAclEntries,
+    PresentedAclRange, PresentedInodeAttributes, PresentedMetadata,
 };
 pub use source::{ExactObject, ObjectSource, SourceError, load_exact};

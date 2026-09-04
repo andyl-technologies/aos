@@ -9,9 +9,10 @@ use std::io::Cursor;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use aos_filesystem_view::{
-    DirectoryHandleLimits, INDEX_MEDIA_TYPE, IndexContentView, IndexExpectation, IndexNodeBodyView,
-    IndexStaging, InodeError, InodeTable, InodeTableLimits, ObjectSource, ROOT_NODE_ID,
-    TreeCompileLimits, TreeCompiler, validate_index,
+    AclCapability, DirectoryHandleLimits, INDEX_MEDIA_TYPE, IdMapExtent, IdentityMap,
+    IndexContentView, IndexExpectation, IndexNodeBodyView, IndexStaging, InodeError, InodeTable,
+    InodeTableLimits, ObjectSource, PreparedPresentation, PresentationError, PresentationLimits,
+    PresentationPlan, ROOT_NODE_ID, TreeCompileLimits, TreeCompiler, validate_index,
 };
 use aos_sandbox_core::format::{encode_directory, encode_tree};
 use aos_sandbox_core::model::{
@@ -251,6 +252,74 @@ fn main() {
         .lookup_child(&root, &link_name)
         .unwrap_or_else(|error| panic!("lookup failed: {error}"))
         .unwrap_or_else(|| panic!("link missing"));
+    let uid = (0_u32..64)
+        .map(|portable_start| IdMapExtent {
+            portable_start,
+            presented_start: (63 - portable_start) * 2,
+            length: 1,
+        })
+        .collect();
+    let gid = (0_u32..64)
+        .map(|portable_start| IdMapExtent {
+            portable_start,
+            presented_start: 1_000 + (63 - portable_start) * 2,
+            length: 1,
+        })
+        .collect();
+    let (validated_map, map_validation_allocations) =
+        measure_allocations(|| IdentityMap::new(uid, gid));
+    validated_map.unwrap_or_else(|error| panic!("large identity map failed: {error}"));
+    assert_eq!(map_validation_allocations, 0);
+
+    let identity = IdentityMap::new(
+        vec![IdMapExtent {
+            portable_start: 0,
+            presented_start: 1_000,
+            length: 100,
+        }],
+        vec![IdMapExtent {
+            portable_start: 0,
+            presented_start: 2_000,
+            length: 100,
+        }],
+    )
+    .unwrap_or_else(|error| panic!("identity map failed: {error}"));
+    let plan = PresentationPlan::new(identity, AclCapability::Posix);
+    let (prepared, preparation_allocations) = measure_allocations(|| {
+        PreparedPresentation::prepare(&index, &plan, 1, [7; 32], PresentationLimits::new(3, 5, 2))
+    });
+    let prepared = prepared.unwrap_or_else(|error| panic!("preparation failed: {error}"));
+    assert_eq!(preparation_allocations, 0);
+
+    let (hot_result, hot_allocations) = measure_allocations(|| {
+        for record in index.records() {
+            black_box(record?);
+        }
+        let attributes = prepared.present(&file)?;
+        black_box((
+            attributes.record_id(),
+            attributes.kind(),
+            attributes.mode(),
+            attributes.uid(),
+            attributes.gid(),
+            attributes.nlink(),
+            attributes.size(),
+            attributes.mtime_seconds(),
+            attributes.mtime_nanos(),
+        ));
+        for xattr in attributes.xattrs() {
+            black_box(xattr?);
+        }
+        if let Some(acl) = attributes.acl() {
+            for entry in acl.iter() {
+                black_box(entry?);
+            }
+        }
+        Ok::<(), PresentationError>(())
+    });
+    hot_result.unwrap_or_else(|error| panic!("hot presentation failed: {error}"));
+    assert_eq!(hot_allocations, 0);
+
     let mut inode_table = InodeTable::new_with_directory_limits(
         &index,
         [61; 32],

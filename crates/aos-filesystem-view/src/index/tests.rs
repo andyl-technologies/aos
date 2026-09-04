@@ -452,6 +452,10 @@ fn semantic_index() -> (Vec<u8>, ObjectDescriptor, ObjectDescriptor) {
     let acl = Acl::new(vec![
         AclEntry::UserObject(7),
         AclEntry::NamedUser {
+            uid: 41,
+            permissions: 4,
+        },
+        AclEntry::NamedUser {
             uid: 42,
             permissions: 6,
         },
@@ -610,9 +614,9 @@ fn authenticated_semantic_views_borrow_every_record_body_without_allocation() {
     assert!(xattrs.next().is_none());
 
     let acl = semantics.acl().unwrap_or_else(|| panic!("ACL missing"));
-    assert_eq!(acl.len(), 6);
+    assert_eq!(acl.len(), 7);
     let mut acl_entries = acl.iter();
-    assert_eq!(acl_entries.size_hint(), (6, Some(6)));
+    assert_eq!(acl_entries.size_hint(), (7, Some(7)));
     let entries = acl_entries
         .by_ref()
         .collect::<Result<Vec<_>, _>>()
@@ -621,6 +625,10 @@ fn authenticated_semantic_views_borrow_every_record_body_without_allocation() {
         entries,
         vec![
             AclEntry::UserObject(7),
+            AclEntry::NamedUser {
+                uid: 41,
+                permissions: 4,
+            },
             AclEntry::NamedUser {
                 uid: 42,
                 permissions: 6,
@@ -2352,4 +2360,351 @@ fn valid_hardlink_path_reconstruction_requires_admission() {
             Some(group)
         );
     }
+}
+
+fn presentation_map() -> crate::IdentityMap {
+    crate::IdentityMap::new(
+        vec![crate::IdMapExtent {
+            portable_start: 0,
+            presented_start: 1_000,
+            length: 100,
+        }],
+        vec![crate::IdMapExtent {
+            portable_start: 0,
+            presented_start: 2_000,
+            length: 100,
+        }],
+    )
+    .unwrap_or_else(|error| panic!("identity map failed: {error}"))
+}
+
+#[test]
+fn sequential_records_cover_every_validated_format() {
+    let (v1, v1_tree, v1_root) = root_index_v1();
+    let v1 = validate_fresh(&v1, &v1_tree, &v1_root)
+        .unwrap_or_else(|error| panic!("V1 validation failed: {error}"));
+    assert_eq!(
+        v1.records()
+            .map(|record| record.map(|record| record.record_id()))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap_or_else(|error| panic!("V1 iteration failed: {error}")),
+        vec![0]
+    );
+
+    let (v2, _, _, v2_tree, v2_root) = root_index();
+    let v2 = validate_fresh(&v2, &v2_tree, &v2_root)
+        .unwrap_or_else(|error| panic!("V2 validation failed: {error}"));
+    assert_eq!(v2.records().len(), 1);
+
+    let (v3, v3_tree, v3_root) = iterable_index();
+    let v3 = validate_fresh(&v3, &v3_tree, &v3_root)
+        .unwrap_or_else(|error| panic!("V3 validation failed: {error}"));
+    assert_eq!(
+        v3.records()
+            .map(|record| record.map(|record| record.record_id()))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap_or_else(|error| panic!("V3 iteration failed: {error}")),
+        vec![0, 1, 2, 3, 4, 5]
+    );
+}
+
+#[test]
+fn prepared_presentation_requires_v3_and_explicit_limits() {
+    let plan = crate::PresentationPlan::new(presentation_map(), crate::AclCapability::Posix);
+    let permissive = crate::PresentationLimits::new(16, 16, 2);
+    for (bytes, tree, root) in {
+        let (v1, v1_tree, v1_root) = root_index_v1();
+        let (v2, _, _, v2_tree, v2_root) = root_index();
+        [(v1, v1_tree, v1_root), (v2, v2_tree, v2_root)]
+    } {
+        let index = validate_fresh(&bytes, &tree, &root)
+            .unwrap_or_else(|error| panic!("old index validation failed: {error}"));
+        assert!(matches!(
+            crate::PreparedPresentation::prepare(&index, &plan, 1, [2; 32], permissive),
+            Err(crate::PresentationError::VersionUnsupported)
+        ));
+    }
+
+    let (bytes, tree, root) = semantic_index();
+    let index = validate_fresh_with_features(&bytes, &tree, &root, FEATURE_ACL)
+        .unwrap_or_else(|error| panic!("V3 validation failed: {error}"));
+    for (limits, dimension) in [
+        (crate::PresentationLimits::new(3, 7, 2), "record"),
+        (crate::PresentationLimits::new(4, 6, 2), "ACL entry"),
+        (
+            crate::PresentationLimits::new(4, 7, 1),
+            "identity-map extent",
+        ),
+    ] {
+        assert!(matches!(
+            crate::PreparedPresentation::prepare(&index, &plan, 1, [2; 32], limits),
+            Err(crate::PresentationError::LimitExceeded(actual)) if actual == dimension
+        ));
+    }
+
+    let mut overallocated_uid = Vec::with_capacity(32);
+    overallocated_uid.push(crate::IdMapExtent {
+        portable_start: 0,
+        presented_start: 1_000,
+        length: 100,
+    });
+    let overallocated = crate::IdentityMap::new(
+        overallocated_uid,
+        vec![crate::IdMapExtent {
+            portable_start: 0,
+            presented_start: 2_000,
+            length: 100,
+        }],
+    )
+    .unwrap_or_else(|error| panic!("overallocated map failed: {error}"));
+    let overallocated = crate::PresentationPlan::new(overallocated, crate::AclCapability::Posix);
+    assert!(matches!(
+        crate::PreparedPresentation::prepare(
+            &index,
+            &overallocated,
+            1,
+            [2; 32],
+            crate::PresentationLimits::new(4, 7, 2),
+        ),
+        Err(crate::PresentationError::LimitExceeded(
+            "identity-map extent"
+        ))
+    ));
+}
+
+#[test]
+fn prepared_presentation_translates_and_reauthenticates_hot_attributes() {
+    let (bytes, tree, root_descriptor) = semantic_index();
+    let index = validate_fresh_with_features(&bytes, &tree, &root_descriptor, FEATURE_ACL)
+        .unwrap_or_else(|error| panic!("validation failed: {error}"));
+    let plan = crate::PresentationPlan::new(presentation_map(), crate::AclCapability::Posix);
+    let prepared = crate::PreparedPresentation::prepare(
+        &index,
+        &plan,
+        7,
+        [8; 32],
+        crate::PresentationLimits::new(4, 7, 2),
+    )
+    .unwrap_or_else(|error| panic!("preparation failed: {error}"));
+    let root = index
+        .root()
+        .unwrap_or_else(|error| panic!("root failed: {error}"));
+    let file = index
+        .lookup_child_bytes(&root, b"file")
+        .unwrap_or_else(|error| panic!("lookup failed: {error}"))
+        .unwrap_or_else(|| panic!("file missing"));
+    let attributes = prepared
+        .present(&file)
+        .unwrap_or_else(|error| panic!("presentation failed: {error}"));
+    assert_eq!(attributes.record_id(), 1);
+    assert_eq!(attributes.kind(), IndexNodeKind::File);
+    assert_eq!(attributes.mode(), 0o754);
+    assert_eq!((attributes.uid(), attributes.gid()), (1_007, 2_008));
+    assert_eq!((attributes.nlink(), attributes.size()), (1, 20));
+    assert_eq!(
+        (attributes.mtime_seconds(), attributes.mtime_nanos()),
+        (9, 10)
+    );
+    assert_eq!(attributes.xattrs().len(), 2);
+    let acl = attributes.acl().unwrap_or_else(|| panic!("ACL missing"));
+    assert_eq!(acl.len(), 7);
+    assert!(
+        acl.iter()
+            .any(|entry| matches!(entry, Ok(AclEntry::NamedUser { uid: 1_042, .. })))
+    );
+    let mut translated = acl.iter();
+    fn assert_fused<T: std::iter::FusedIterator>(_: &T) {}
+    assert_fused(&translated);
+    assert_eq!(translated.len(), 7);
+    let translated_entries = translated
+        .by_ref()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap_or_else(|error| panic!("translated ACL failed: {error}"));
+    assert_eq!(translated_entries.len(), 7);
+    assert_eq!(translated.len(), 0);
+    assert!(translated.next().is_none());
+    assert!(translated.next().is_none());
+
+    let same = crate::PreparedPresentation::prepare(
+        &index,
+        &plan,
+        7,
+        [8; 32],
+        crate::PresentationLimits::new(4, 7, 2),
+    )
+    .unwrap_or_else(|error| panic!("repeat preparation failed: {error}"));
+    let different_generation = crate::PreparedPresentation::prepare(
+        &index,
+        &plan,
+        8,
+        [8; 32],
+        crate::PresentationLimits::new(4, 7, 2),
+    )
+    .unwrap_or_else(|error| panic!("generation preparation failed: {error}"));
+    let different_policy = crate::PreparedPresentation::prepare(
+        &index,
+        &plan,
+        7,
+        [9; 32],
+        crate::PresentationLimits::new(4, 7, 2),
+    )
+    .unwrap_or_else(|error| panic!("policy preparation failed: {error}"));
+    let remapped = crate::PresentationPlan::new(
+        crate::IdentityMap::new(
+            vec![crate::IdMapExtent {
+                portable_start: 0,
+                presented_start: 3_000,
+                length: 100,
+            }],
+            vec![crate::IdMapExtent {
+                portable_start: 0,
+                presented_start: 4_000,
+                length: 100,
+            }],
+        )
+        .unwrap_or_else(|error| panic!("remapped identity failed: {error}")),
+        crate::AclCapability::Posix,
+    );
+    let different_map = crate::PreparedPresentation::prepare(
+        &index,
+        &remapped,
+        7,
+        [8; 32],
+        crate::PresentationLimits::new(4, 7, 2),
+    )
+    .unwrap_or_else(|error| panic!("remapped preparation failed: {error}"));
+    assert_eq!(prepared.cache_identity(), same.cache_identity());
+    assert_ne!(
+        prepared.cache_identity(),
+        different_generation.cache_identity()
+    );
+    assert_ne!(prepared.cache_identity(), different_policy.cache_identity());
+    assert_ne!(prepared.cache_identity(), different_map.cache_identity());
+
+    let mut substituted = file;
+    substituted.uid = 42;
+    assert!(matches!(
+        prepared.present(&substituted),
+        Err(crate::PresentationError::Index(IndexError::InvalidRecord))
+    ));
+    let mut relocated = file;
+    relocated.record_offset += 1;
+    assert!(matches!(
+        prepared.present(&relocated),
+        Err(crate::PresentationError::Index(IndexError::InvalidRecord))
+    ));
+
+    let (foreign_bytes, foreign_tree, foreign_root) = iterable_index();
+    let foreign = validate_fresh(&foreign_bytes, &foreign_tree, &foreign_root)
+        .unwrap_or_else(|error| panic!("foreign validation failed: {error}"));
+    let foreign_root = foreign
+        .root()
+        .unwrap_or_else(|error| panic!("foreign root failed: {error}"));
+    assert!(matches!(
+        prepared.present(&foreign_root),
+        Err(crate::PresentationError::Index(IndexError::ForeignNode))
+    ));
+}
+
+#[test]
+fn prepared_presentation_rejects_identity_acl_and_nlink_failures() {
+    let (bytes, tree, root) = semantic_index();
+    let mut index = validate_fresh_with_features(&bytes, &tree, &root, FEATURE_ACL)
+        .unwrap_or_else(|error| panic!("validation failed: {error}"));
+    let limits = crate::PresentationLimits::new(4, 7, 2);
+
+    let owner_unmapped = crate::IdentityMap::new(
+        vec![crate::IdMapExtent {
+            portable_start: 0,
+            presented_start: 1_000,
+            length: 7,
+        }],
+        vec![crate::IdMapExtent {
+            portable_start: 0,
+            presented_start: 2_000,
+            length: 100,
+        }],
+    )
+    .unwrap_or_else(|error| panic!("owner-unmapped map failed: {error}"));
+    let owner_unmapped = crate::PresentationPlan::new(owner_unmapped, crate::AclCapability::Posix);
+    assert!(matches!(
+        crate::PreparedPresentation::prepare(&index, &owner_unmapped, 1, [0; 32], limits),
+        Err(crate::PresentationError::Identity(
+            crate::IdentityMapError::UnmappedIdentity
+        ))
+    ));
+
+    let owners_only = crate::IdentityMap::new(
+        vec![crate::IdMapExtent {
+            portable_start: 0,
+            presented_start: 1_000,
+            length: 8,
+        }],
+        vec![crate::IdMapExtent {
+            portable_start: 0,
+            presented_start: 2_000,
+            length: 9,
+        }],
+    )
+    .unwrap_or_else(|error| panic!("owner map failed: {error}"));
+    let plan = crate::PresentationPlan::new(owners_only, crate::AclCapability::Posix);
+    assert!(matches!(
+        crate::PreparedPresentation::prepare(&index, &plan, 1, [0; 32], limits),
+        Err(crate::PresentationError::Identity(
+            crate::IdentityMapError::UnmappedIdentity
+        ))
+    ));
+
+    let unsupported =
+        crate::PresentationPlan::new(presentation_map(), crate::AclCapability::Unsupported);
+    assert!(matches!(
+        crate::PreparedPresentation::prepare(&index, &unsupported, 1, [0; 32], limits),
+        Err(crate::PresentationError::Identity(
+            crate::IdentityMapError::AclUnsupported
+        ))
+    ));
+
+    let reordered = crate::IdentityMap::new(
+        vec![
+            crate::IdMapExtent {
+                portable_start: 0,
+                presented_start: 1_000,
+                length: 42,
+            },
+            crate::IdMapExtent {
+                portable_start: 42,
+                presented_start: 500,
+                length: 58,
+            },
+        ],
+        vec![crate::IdMapExtent {
+            portable_start: 0,
+            presented_start: 2_000,
+            length: 100,
+        }],
+    )
+    .unwrap_or_else(|error| panic!("reordering map failed: {error}"));
+    let reordered = crate::PresentationPlan::new(reordered, crate::AclCapability::Posix);
+    assert!(matches!(
+        crate::PreparedPresentation::prepare(
+            &index,
+            &reordered,
+            1,
+            [0; 32],
+            crate::PresentationLimits::new(4, 7, 3),
+        ),
+        Err(crate::PresentationError::Identity(
+            crate::IdentityMapError::InvalidAcl
+        ))
+    ));
+
+    let IndexLayout::IterableV3 { root_nlink, .. } = &mut index.layout else {
+        panic!("fixture was not V3");
+    };
+    *root_nlink = u64::from(u32::MAX) + 1;
+    let plan = crate::PresentationPlan::new(presentation_map(), crate::AclCapability::Posix);
+    assert!(matches!(
+        crate::PreparedPresentation::prepare(&index, &plan, 1, [0; 32], limits),
+        Err(crate::PresentationError::LinkCountOverflow)
+    ));
 }
