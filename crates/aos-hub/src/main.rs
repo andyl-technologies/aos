@@ -59,6 +59,12 @@ enum Command {
         /// Externally reachable base URL for setup snippets.
         #[arg(long)]
         external_url: Option<String>,
+        /// PEM certificate chain for native TLS termination.
+        #[arg(long, env = "HUB_TLS_CERTIFICATE_FILE")]
+        tls_certificate_file: Option<PathBuf>,
+        /// PEM private key matching the native TLS certificate.
+        #[arg(long, env = "HUB_TLS_PRIVATE_KEY_FILE")]
+        tls_private_key_file: Option<PathBuf>,
         /// Immutable deployment identity used by canonical release plans.
         #[arg(long, env = "HUB_DEPLOYMENT_ID")]
         deployment_id: Option<String>,
@@ -421,6 +427,8 @@ async fn main() -> Result<()> {
             dev,
             seed,
             external_url,
+            tls_certificate_file,
+            tls_private_key_file,
             deployment_id,
             release_receipt_key_id,
             release_receipt_key_file,
@@ -447,6 +455,28 @@ async fn main() -> Result<()> {
                 .local_addr()
                 .context("reading bound listen address")?;
             let external_url = external_url.unwrap_or_else(|| format!("http://{listen_addr}"));
+            let tls = match (tls_certificate_file, tls_private_key_file) {
+                (Some(certificate), Some(private_key)) => {
+                    let public_url = url::Url::parse(&external_url)
+                        .context("parsing the native TLS external URL")?;
+                    anyhow::ensure!(
+                        public_url.scheme() == "https",
+                        "native TLS requires an https external URL"
+                    );
+                    let server_name = public_url
+                        .host_str()
+                        .context("native TLS external URL has no hostname")?;
+                    anyhow::ensure!(
+                        server_name.parse::<std::net::IpAddr>().is_err(),
+                        "native TLS external URL must use a DNS hostname for SNI"
+                    );
+                    Some((certificate, private_key, server_name.to_owned()))
+                }
+                (None, None) => None,
+                _ => anyhow::bail!(
+                    "HUB_TLS_CERTIFICATE_FILE and HUB_TLS_PRIVATE_KEY_FILE must be configured together"
+                ),
+            };
             let db = Arc::new(Database::open(&root.join("hub.db")).await?);
             let storage_root = root.join("storage");
             std::fs::create_dir_all(&storage_root).with_context(|| {
@@ -899,13 +929,35 @@ async fn main() -> Result<()> {
             // `into_make_service_with_connect_info` injects the TCP peer
             // address as `ConnectInfo<SocketAddr>` so the rate limiter keys on
             // the real client when no trusted proxy fronts the hub.
-            axum::serve(
-                listener,
-                router(state)
-                    .await
-                    .into_make_service_with_connect_info::<std::net::SocketAddr>(),
-            )
-            .await?;
+            if let Some((certificate, private_key, server_name)) = tls {
+                let tls_listener = aos_hub::native_tls::NativeTlsListener::new(
+                    listener,
+                    &certificate,
+                    &private_key,
+                    server_name.clone(),
+                )?;
+                let transport = aos_hub_core::connect::DeliveryTransportEvidence {
+                    scheme: "https".to_owned(),
+                    ingress_kind: "hub".to_owned(),
+                    tls_identity: Some(aos_hub_core::db::InboundEndpointHost::Domain(server_name)),
+                };
+                axum::serve(
+                    tls_listener,
+                    aos_hub::server::router_with_transport(state, Some(transport))
+                        .await
+                        .into_make_service_with_connect_info::<aos_hub::native_tls::NativeTlsPeer>(
+                        ),
+                )
+                .await?;
+            } else {
+                axum::serve(
+                    listener,
+                    router(state)
+                        .await
+                        .into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                )
+                .await?;
+            }
         }
         Command::Validate { command } => {
             let db = open_db(&cli.root, &cli.target).await?;

@@ -4,17 +4,17 @@
 ##! deploy the multi-tenant registry management WebUI *with* AOS, per RFC-0004's
 ##! operations section. The hub is local-first and self-contained: a single
 ##! binary plus a sqlite database under `--root`, listening on `--listen`. It
-##! shells out to nothing, so — unlike the registry *server* role — it needs no
-##! PATH wiring.
+##! can terminate TLS in-process so authenticated listener evidence reaches the
+##! typed route dispatcher without trusting forwarding headers.
 ##!
 ##! This contributes:
 ##!   * aos.users.users.aos-hub + group (a dedicated service account)
 ##!   * systemd.services.aos-hub running `aos-hub serve`
 ##!     under StateDirectory=aos-hub, with strict sandboxing
 ##!
-##! Enable with `aos.registry-hub.enable = true`. The defaults bind localhost
-##! (front a real instance behind a TLS-terminating reverse proxy and set
-##! `externalUrl` to the public origin so setup snippets render correctly).
+##! Enable with `aos.registry-hub.enable = true`. The defaults bind localhost;
+##! production deployments provide the native TLS credentials, bind their
+##! public listener, and set `externalUrl` to the matching HTTPS origin.
 {
   config,
   lib,
@@ -71,6 +71,14 @@
       handle = "qualification-keys";
       environment = "HUB_QUALIFICATION_KEYS_FILE";
     };
+    tlsCertificate = {
+      handle = "tls-certificate";
+      environment = "HUB_TLS_CERTIFICATE_FILE";
+    };
+    tlsPrivateKey = {
+      handle = "tls-private-key";
+      environment = "HUB_TLS_PRIVATE_KEY_FILE";
+    };
   };
   configuredCredentials = lib.filterAttrs (name: _: cfg.credentials.${name} != null) credentialFields;
   loadCredentials =
@@ -110,9 +118,8 @@ in {
       default = "127.0.0.1:8420";
       example = "0.0.0.0:8420";
       description = ''
-        Address the hub's HTTP server binds. Defaults to localhost; expose it
-        through a TLS-terminating reverse proxy rather than binding a public
-        interface directly.
+        Address the Hub listener binds. Defaults to localhost. Production
+        deployments enable native TLS before binding a public interface.
       '';
     };
 
@@ -211,6 +218,19 @@ in {
       }
       {
         assertion =
+          (cfg.credentials.tlsCertificate == null)
+          == (cfg.credentials.tlsPrivateKey == null);
+        message = "native Hub TLS certificate and private-key credentials must be configured together";
+      }
+      {
+        assertion =
+          cfg.credentials.tlsCertificate
+          == null
+          || (cfg.externalUrl != null && lib.hasPrefix "https://" cfg.externalUrl);
+        message = "native Hub TLS requires an HTTPS externalUrl";
+      }
+      {
+        assertion =
           cfg.releaseReceiptKeyId
           == null
           || cfg.channelReceiptKeyId == null
@@ -291,6 +311,8 @@ in {
         ProtectKernelTunables = true;
         ProtectControlGroups = true;
         RestrictAddressFamilies = ["AF_INET" "AF_INET6" "AF_UNIX"];
+        AmbientCapabilities = lib.optional (cfg.credentials.tlsCertificate != null) "CAP_NET_BIND_SERVICE";
+        CapabilityBoundingSet = lib.optional (cfg.credentials.tlsCertificate != null) "CAP_NET_BIND_SERVICE";
       };
     };
   };
