@@ -134,14 +134,12 @@
     builtins.storePath
     (builtins.unsafeDiscardStringContext
       (builtins.elemAt hostFixture.maintenanceInventory.units 0).components.main.sources.source.derivation);
-  packageDerivationRecord = builtins.path {
-    path = mountedPackageDerivation;
-    name = "maintain-fixture-package-derivation-record";
-  };
-  sourceDerivationRecord = builtins.path {
-    path = mountedSourceDerivation;
-    name = "maintain-fixture-source-derivation-record";
-  };
+  packageDerivationRecord =
+    builtins.toFile "maintain-fixture-package-derivation-record"
+    (builtins.unsafeDiscardStringContext (builtins.readFile mountedPackageDerivation));
+  sourceDerivationRecord =
+    builtins.toFile "maintain-fixture-source-derivation-record"
+    (builtins.unsafeDiscardStringContext (builtins.readFile mountedSourceDerivation));
 
   mountedClosure = import ../../lib/build/closure-info.nix {inherit lib pkgs;} {
     rootPaths = [
