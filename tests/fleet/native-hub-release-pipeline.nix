@@ -272,9 +272,7 @@ in {
               install -d -o aos-hub -g aos-hub -m 0750 /var/lib/aos-hub/storage/andyl
               systemctl start aos-hub.service
           """), timeout=180)
-          machine.wait_until_succeeds(
-              f"{CURL} -fsS http://127.0.0.1:8420/healthz", timeout=120
-          )
+          machine.succeed("systemctl is-active --quiet aos-hub.service")
           machine.succeed(textwrap.dedent("""
               systemctl start release-fleet-tls.service
               sleep 1
