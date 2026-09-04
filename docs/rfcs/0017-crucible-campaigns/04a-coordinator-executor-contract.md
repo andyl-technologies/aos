@@ -3102,7 +3102,15 @@ lifecycle above, treats the hot start as the beginning of the attempt-local
 scheduler segment, and rejects checkpoint handoff until the lifecycle supplies
 an exact hot-child capture operation. The worker-pool post-execution contract
 now carries the exact basis and durable disposition through bounded cleanup
-before worker reuse. Linux branch-private node/world assembly, complete
+before worker reuse. The production lifecycle can now capture the complete
+process-neutral half of an atomic world fork at an exact global boundary. The
+opaque continuation carries the same scheduler, event-log closure,
+fault/network, trigger, assertion, selectable, terminal, and node-generation
+state used by durable checkpoint restore. Capture rejects unsettled network
+output, mutable debug/checkpoint work, unresolved lifecycle ownership, and a
+source process/time inventory that changes across the capture. It performs no
+fork and exposes no partial child world. Linux branch-private node assembly,
+atomic installation of all child nodes into that continuation, complete
 private-channel driving, hot-child checkpoint capture, and a real modeled QEMU
 flight remain open.
 
