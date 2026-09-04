@@ -8,9 +8,6 @@
 //! this module contains no API that returns or reissues mutation argv.
 
 use std::collections::BTreeMap;
-use std::fs;
-use std::os::unix::fs::MetadataExt as _;
-use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 
 use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
@@ -36,9 +33,6 @@ const MAXIMUM_OPERATIONS: usize = 256;
 /// Reports durable storage state validation or transition failure.
 #[derive(Debug, thiserror::Error)]
 pub enum StorageStateError {
-    /// The state directory is not a root-owned, non-group/other-writable directory.
-    #[error("storage state directory is not protected")]
-    UnprotectedDirectory,
     /// The journal failed validation, locking, or durable publication.
     #[error("storage journal failure: {0}")]
     Journal(#[from] aos_sandbox::JournalError),
@@ -280,33 +274,29 @@ pub struct StorageTransactionStore {
 impl StorageTransactionStore {
     /// Opens a root-owned protected directory and exclusively locks its journal.
     ///
+    /// `directory` must be an absolute path whose complete ancestry satisfies
+    /// [`Journal::open_protected_at`]. The final directory must be exactly mode
+    /// 0700; the journal and independent lock must be root-owned, single-link
+    /// regular files exactly mode 0600. Protected-open rejection never falls
+    /// back to the ordinary pathname opener.
+    ///
     /// `minimum_generation` is an external monotonic rollback anchor. Opening a
     /// valid older record below it fails closed.
     ///
     /// # Errors
     ///
-    /// Returns [`StorageStateError`] for directory ownership/mode failure,
-    /// lock contention, journal corruption, record authentication failure, or
-    /// rollback below `minimum_generation`.
+    /// Returns [`StorageStateError::Journal`] for protected-path rejection,
+    /// unsupported protected resolution, lock contention, or journal failure;
+    /// returns another [`StorageStateError`] for record authentication failure
+    /// or rollback below `minimum_generation`.
     pub fn open_root_owned(
         directory: &Path,
         key: StorageStateKey,
         minimum_generation: u64,
     ) -> Result<Self, StorageStateError> {
-        let metadata = fs::symlink_metadata(directory).map_err(aos_sandbox::JournalError::Io)?;
-        if metadata.file_type().is_symlink()
-            || !metadata.is_dir()
-            || metadata.uid() != 0
-            || metadata.mode() & 0o022 != 0
-        {
-            return Err(StorageStateError::UnprotectedDirectory);
-        }
-        validate_existing_state_file(&directory.join("storage-state.journal"))?;
-        validate_existing_state_file(&directory.join("storage-state.journal.lock"))?;
-        let store = Self::open_checked(directory, key, minimum_generation)?;
-        protect_state_file(&directory.join("storage-state.journal"))?;
-        protect_state_file(&directory.join("storage-state.journal.lock"))?;
-        Ok(store)
+        let (journal, _) =
+            Journal::open_protected_at(directory, "storage-state.journal", journal_limits())?;
+        Self::from_journal(journal, key, minimum_generation)
     }
 
     #[cfg(test)]
@@ -315,25 +305,16 @@ impl StorageTransactionStore {
         key: StorageStateKey,
         minimum_generation: u64,
     ) -> Result<Self, StorageStateError> {
-        Self::open_checked(directory, key, minimum_generation)
+        let (journal, _) =
+            Journal::open(directory.join("storage-state.journal"), journal_limits())?;
+        Self::from_journal(journal, key, minimum_generation)
     }
 
-    fn open_checked(
-        directory: &Path,
+    fn from_journal(
+        journal: Journal,
         key: StorageStateKey,
         minimum_generation: u64,
     ) -> Result<Self, StorageStateError> {
-        let limits = JournalLimits {
-            maximum_journal_bytes: 64 * 1024 * 1024,
-            maximum_record_bytes: MAXIMUM_RECORD_BYTES,
-            maximum_key_bytes: 128,
-            maximum_records_per_transaction: 4,
-            maximum_transaction_bytes: MAXIMUM_RECORD_BYTES * 4,
-            maximum_transactions: 65_536,
-            maximum_materialized_bytes: MAXIMUM_RECORD_BYTES * MAXIMUM_OPERATIONS * 3,
-            maximum_materialized_records: MAXIMUM_OPERATIONS * 3,
-        };
-        let (journal, _) = Journal::open(directory.join("storage-state.journal"), limits)?;
         let mut records = BTreeMap::new();
         for (record_key, bytes) in journal.records(RecordNamespace::Operation) {
             let record = decode_record(bytes, &key)?;
@@ -463,22 +444,6 @@ impl StorageTransactionStore {
         let transaction = JournalTransaction::new(
             [241; 16],
             vec![JournalRecord::delete(namespace, key.to_vec())],
-        )
-        .unwrap();
-        self.journal.commit(&transaction).unwrap();
-    }
-
-    #[cfg(test)]
-    #[allow(clippy::unwrap_used)]
-    pub(crate) fn replace_authority_record_for_test(
-        &mut self,
-        namespace: RecordNamespace,
-        key: &[u8],
-        value: Vec<u8>,
-    ) {
-        let transaction = JournalTransaction::new(
-            [242; 16],
-            vec![JournalRecord::put(namespace, key.to_vec(), value)],
         )
         .unwrap();
         self.journal.commit(&transaction).unwrap();
@@ -661,31 +626,16 @@ impl StorageTransactionStore {
     }
 }
 
-fn protect_state_file(path: &Path) -> Result<(), StorageStateError> {
-    let metadata = fs::symlink_metadata(path).map_err(aos_sandbox::JournalError::Io)?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.uid() != 0 {
-        return Err(StorageStateError::UnprotectedDirectory);
-    }
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-        .map_err(aos_sandbox::JournalError::Io)?;
-    Ok(())
-}
-
-fn validate_existing_state_file(path: &Path) -> Result<(), StorageStateError> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata)
-            if !metadata.file_type().is_symlink()
-                && metadata.is_file()
-                && metadata.uid() == 0
-                && metadata.mode() & 0o022 == 0 =>
-        {
-            Ok(())
-        }
-        Ok(_) => Err(StorageStateError::UnprotectedDirectory),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(StorageStateError::Journal(aos_sandbox::JournalError::Io(
-            error,
-        ))),
+const fn journal_limits() -> JournalLimits {
+    JournalLimits {
+        maximum_journal_bytes: 64 * 1024 * 1024,
+        maximum_record_bytes: MAXIMUM_RECORD_BYTES,
+        maximum_key_bytes: 128,
+        maximum_records_per_transaction: 4,
+        maximum_transaction_bytes: MAXIMUM_RECORD_BYTES * 4,
+        maximum_transactions: 65_536,
+        maximum_materialized_bytes: MAXIMUM_RECORD_BYTES * MAXIMUM_OPERATIONS * 3,
+        maximum_materialized_records: MAXIMUM_OPERATIONS * 3,
     }
 }
 
@@ -915,7 +865,7 @@ impl<'a> Cursor<'a> {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use std::fs::OpenOptions;
+    use std::fs::{self, OpenOptions};
     use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 
     use aos_sandbox::JournalError;
@@ -1268,14 +1218,19 @@ mod tests {
     }
 
     #[test]
-    fn protected_open_rejects_writable_directory() {
+    fn protected_open_rejects_relative_and_unsafe_ancestry() {
         use std::os::unix::fs::PermissionsExt as _;
 
+        assert!(matches!(
+            StorageTransactionStore::open_root_owned(Path::new("relative/state"), key(1), 0),
+            Err(StorageStateError::Journal(JournalError::ProtectedBoundary))
+        ));
+
         let directory = TempDir::new().unwrap();
-        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o777)).unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
         assert!(matches!(
             StorageTransactionStore::open_root_owned(directory.path(), key(1), 0),
-            Err(StorageStateError::UnprotectedDirectory)
+            Err(StorageStateError::Journal(JournalError::ProtectedBoundary))
         ));
     }
 }
