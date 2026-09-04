@@ -380,12 +380,28 @@ pub fn validate_method_manifest(methods: &[MethodDescriptor]) -> Vec<ManifestVio
         }
         let canonical_names =
             plans[0].method.strip_prefix("Plan") == Some(applies[0].method.as_str());
-        let registry_purge_fence_names = plans[0].service == "ContainerService"
-            && plans[0].method == "PlanContainerRegistryPurgeFence"
-            && applies[0].method == "ApplyContainerRegistryPurgeFence";
+        // These names deliberately retain `Apply` to distinguish durable
+        // workflow initiation from the activation operation. Keep the
+        // exception exact so new reviewed mutations still use paired names.
+        let explicitly_paired_names = matches!(
+            (
+                plans[0].service.as_str(),
+                plans[0].method.as_str(),
+                applies[0].method.as_str(),
+            ),
+            (
+                "ContainerService",
+                "PlanContainerRegistryPurgeFence",
+                "ApplyContainerRegistryPurgeFence"
+            ) | (
+                "DeliveryService",
+                "PlanDeliveryDestination",
+                "ApplyDeliveryDestination"
+            )
+        );
         if plans[0].service != applies[0].service
             || plans[0].exposure != applies[0].exposure
-            || (!canonical_names && !registry_purge_fence_names)
+            || (!canonical_names && !explicitly_paired_names)
         {
             violations.push(ManifestViolation {
                 subject: pair.into(),
@@ -1492,6 +1508,27 @@ mod tests {
                 external_effects: true,
             },
             MethodDescriptor {
+                service: "DeliveryService".into(),
+                method: "PlanDeliveryDestination".into(),
+                exposure: MethodExposure::Public,
+                durability: MethodDurability::Durable,
+                class: MethodClass::Plan {
+                    pair: "delivery_destination".into(),
+                },
+                external_effects: false,
+            },
+            MethodDescriptor {
+                service: "DeliveryService".into(),
+                method: "ApplyDeliveryDestination".into(),
+                exposure: MethodExposure::Public,
+                durability: MethodDurability::Durable,
+                class: MethodClass::Apply {
+                    pair: "delivery_destination".into(),
+                    outcome: ApplyOutcome::Workflow,
+                },
+                external_effects: true,
+            },
+            MethodDescriptor {
                 service: "ChangeRequestService".into(),
                 method: "AddComment".into(),
                 exposure: MethodExposure::Public,
@@ -1540,13 +1577,11 @@ mod tests {
             class: MethodClass::DataPlaneWrite,
             external_effects: false,
         };
-        assert!(
-            validate_method_manifest(&[
-                write("BinaryCacheService", "CreateCacheObjectUploads"),
-                write("BinaryCacheService", "RegisterCacheNarinfos"),
-            ])
-            .is_empty()
-        );
+        assert!(validate_method_manifest(&[
+            write("BinaryCacheService", "CreateCacheObjectUploads"),
+            write("BinaryCacheService", "RegisterCacheNarinfos"),
+        ])
+        .is_empty());
         assert_eq!(
             validate_method_manifest(&[write("IdentityService", &["Mint", "Token"].concat(),)])
                 .len(),
@@ -1585,27 +1620,25 @@ mod tests {
 
         let duplicate = vec![descriptor[0].clone(), descriptor[0].clone()];
         assert!(!validate_descriptor_coverage(&methods, &duplicate).is_empty());
-        assert!(
-            api_methods_from_generated_descriptors(&[
-                aos_proto_types::ConnectMethodDescriptor {
-                    path: "/aos.hub.v1.InstanceService/GetBranding",
-                    service: "InstanceService",
-                    method: "GetBranding",
-                    input_type: ".aos.hub.v1.GetBrandingRequest",
-                    output_type: ".aos.hub.v1.BrandingResponse",
-                    input_fields: &["instance_id"],
-                },
-                aos_proto_types::ConnectMethodDescriptor {
-                    path: "/aos.hub.v1.InstanceService/GetBranding",
-                    service: "InstanceService",
-                    method: "GetBranding",
-                    input_type: ".aos.hub.v1.GetBrandingRequest",
-                    output_type: ".aos.hub.v1.BrandingResponse",
-                    input_fields: &["instance_id"],
-                },
-            ])
-            .is_err()
-        );
+        assert!(api_methods_from_generated_descriptors(&[
+            aos_proto_types::ConnectMethodDescriptor {
+                path: "/aos.hub.v1.InstanceService/GetBranding",
+                service: "InstanceService",
+                method: "GetBranding",
+                input_type: ".aos.hub.v1.GetBrandingRequest",
+                output_type: ".aos.hub.v1.BrandingResponse",
+                input_fields: &["instance_id"],
+            },
+            aos_proto_types::ConnectMethodDescriptor {
+                path: "/aos.hub.v1.InstanceService/GetBranding",
+                service: "InstanceService",
+                method: "GetBranding",
+                input_type: ".aos.hub.v1.GetBrandingRequest",
+                output_type: ".aos.hub.v1.BrandingResponse",
+                input_fields: &["instance_id"],
+            },
+        ])
+        .is_err());
     }
 
     #[test]
@@ -1658,11 +1691,9 @@ mod tests {
                 ],
             },
         ];
-        assert!(
-            validate_complete_method_manifest(&methods, &descriptors)
-                .iter()
-                .any(|violation| violation.reason.contains("apply requests may contain only"))
-        );
+        assert!(validate_complete_method_manifest(&methods, &descriptors)
+            .iter()
+            .any(|violation| violation.reason.contains("apply requests may contain only")));
     }
 
     #[test]
@@ -1811,11 +1842,9 @@ mod tests {
 
         let mut unrelated = method;
         unrelated.method = "ResumeUnreviewedDestination".into();
-        assert!(
-            validate_method_manifest(&[unrelated])
-                .iter()
-                .any(|violation| violation.reason.contains("operation-lifecycle exception"))
-        );
+        assert!(validate_method_manifest(&[unrelated])
+            .iter()
+            .any(|violation| violation.reason.contains("operation-lifecycle exception")));
     }
 
     #[test]
