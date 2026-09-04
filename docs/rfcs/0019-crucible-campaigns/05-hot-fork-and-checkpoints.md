@@ -1877,6 +1877,15 @@ If any node fails, every child created by the transaction is terminated, new
 overlays/rings are discarded, and the parent template remains valid if its
 state was not changed.
 
+The current daemon implements the all-or-nothing admission half of this
+transaction. It keeps each installed node child private until all running
+nodes exact-match the captured installed-node, source-process, configuration,
+event-prefix, private-channel, scheduler-node, and process-local assembly-incarnation basis;
+partial assembly drop quarantines all children already admitted. Construction
+of the authoritative scheduler
+lifecycle and one shared aggregate target-resource owner remain mandatory
+before this path is enabled or T-CAM-7.4 is marked complete.
+
 - **[HFORK-13]** A campaign branch is a world, not a bag of independently
   visible node forks. No consumer may observe a partially forked world.
 - **[HFORK-14]** Permanently failed modeled nodes and non-VM I/O nodes must have

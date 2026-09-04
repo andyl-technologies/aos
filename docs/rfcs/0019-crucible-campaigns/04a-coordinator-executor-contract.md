@@ -3109,10 +3109,19 @@ fault/network, trigger, assertion, selectable, terminal, and node-generation
 state used by durable checkpoint restore. Capture rejects unsettled network
 output, mutable debug/checkpoint work, unresolved lifecycle ownership, and a
 source process/time inventory that changes across the capture. It performs no
-fork and exposes no partial child world. Linux branch-private node assembly,
-atomic installation of all child nodes into that continuation, complete
-private-channel driving, hot-child checkpoint capture, and a real modeled QEMU
-flight remain open.
+fork and exposes no partial child world. The daemon now also owns an
+all-or-nothing child-world assembly transaction. It withholds every admitted
+child until the complete running-node set is present and exact-checks each
+child's installed node coordinate, source process incarnation, configuration,
+event prefix, private channel admission, scheduler-node installation, and unforgeable process-local
+assembly incarnation against that continuation. An unexpected, duplicate, or
+mismatched child is returned unchanged, while
+dropping an incomplete assembly quarantines every child already admitted. The
+transaction publishes only an opaque complete-world capability; it never lends
+one node during assembly. Installing that capability as the authoritative
+`ProductionVmLifecycleLoop`, sharing one aggregate target guard and unified
+event log across all node children, complete private-channel driving,
+hot-child checkpoint capture, and a real modeled QEMU flight remain open.
 
 The successful node transaction now retains the exact state needed for one
 linear process-neutral scheduler-node sealing transition. That transition
