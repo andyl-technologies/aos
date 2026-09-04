@@ -218,7 +218,7 @@ pub(crate) fn confinement_regression_failures() -> Result<Vec<String>, Box<dyn E
         boundary_manifest_findings("crucible-daemon", &daemon_manifest, &toml::map::Map::new());
     if finding_contains(&daemon_findings, "may not route host nondeterminism") {
         failures.push(
-            "harness-lint confinement regression rejected the RFC-0017 daemon engine driver"
+            "harness-lint confinement regression rejected the RFC-0019 daemon engine driver"
                 .to_string(),
         );
     }

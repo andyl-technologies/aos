@@ -9,6 +9,16 @@
   targetPackages ? null,
 }: let
   fetchurl = lib.fetchurl;
+  mkUpstream = import ./build-support/_upstream.nix {
+    inherit lib fetchurl;
+    platform = stdenv.hostPlatform.system;
+  };
+  mkGithubUpstream = import ./build-support/_github-upstream.nix {
+    inherit mkUpstream;
+  };
+  mkManualUpstream = import ./build-support/_manual-upstream.nix {
+    platform = stdenv.hostPlatform.system;
+  };
   platformSupport = import ./_platform-support.nix;
 
   # Cross package-set roles. `self` is the host package set: its outputs run
@@ -386,7 +396,8 @@
         passthru = (args.passthru or {}) // exposeAttrs // configModuleAttrs;
       }
       // lib.optionalAttrs (
-        args ? phases
+        args
+        ? phases
         && stdenv.buildPlatform.system != stdenv.hostPlatform.system
         && stdenv.hostPlatform.objectFormat == "macho"
       ) {
@@ -997,14 +1008,14 @@
     auto = builtins.intersectAttrs (builtins.functionArgs fn) (
       packageArgumentScope
       // {
-        inherit mkDerivation fetchurl callPackage;
+        inherit mkDerivation fetchurl mkUpstream mkGithubUpstream mkManualUpstream callPackage;
       }
     );
   in
     fn (auto // overrides);
 
   # Shared Linux kernel source (single tarball for linux and linux-headers)
-  linuxSource = import ./kernel/_source.nix {inherit fetchurl;};
+  linuxSource = import ./kernel/_source.nix {inherit fetchurl mkManualUpstream;};
 
   # Shared Kubernetes source (single tarball for kubelet, kubectl)
   kubeSource = import ./kubernetes/_source.nix {inherit fetchurl;};
@@ -1054,7 +1065,46 @@
   in
     filePackages // subdirPackages;
 
+  # Preserve an explicit source-owner association for every auto-discovered
+  # package root. This is structural discovery of AOS source, not an upstream
+  # name or URL heuristic. Reviewed mkUpstream metadata supersedes this
+  # fail-closed manual census entry.
+  discoverPackageOwners = dir: let
+    entries = builtins.readDir dir;
+    names = builtins.attrNames entries;
+    nixFiles =
+      builtins.filter (
+        name:
+          entries.${name}
+          == "regular"
+          && lib.hasSuffix ".nix" name
+          && name != "default.nix"
+          && builtins.substring 0 1 name != "_"
+      )
+      names;
+    subdirs =
+      builtins.filter (
+        name: entries.${name} == "directory" && builtins.substring 0 1 name != "_"
+      )
+      names;
+    root = (builtins.toString ./.) + "/";
+    fileOwners = builtins.listToAttrs (
+      builtins.map (name: {
+        name = lib.removeSuffix ".nix" name;
+        value = "pkgs/${lib.removePrefix root (builtins.toString (dir + "/${name}"))}";
+      })
+      nixFiles
+    );
+    subdirOwners =
+      builtins.foldl' (
+        acc: subdir: acc // discoverPackageOwners (dir + "/${subdir}")
+      ) {}
+      subdirs;
+  in
+    fileOwners // subdirOwners;
+
   discoveredPackages = discoverPackages ./.;
+  discoveredPackageOwners = discoverPackageOwners ./.;
   darwinGcc = import ./darwin/_darwin-gcc.nix {
     inherit lib mkDerivation fetchurl stdenv buildPackages;
     bash = self.bash;
@@ -1139,11 +1189,183 @@
     builtins.mapAttrs platformSupport.annotate (
       platformSupport.selectTargetPackages targetSystem self allPackageNames
     );
+  localMaintenanceRoots = [
+    "aos"
+    "aos-agent-rpc"
+    "aos-boot-identity"
+    "aos-ebpf-lsm-policy"
+    "aos-ebpf-net-policy"
+    "aos-hub"
+    "aos-hub-cloudflare"
+    "aos-hub-console-dist"
+    "aos-hub-dialect-tests"
+    "aos-hub-e2e"
+    "aos-hub-worker-dist"
+    "aos-hub-worker-do-e2e"
+    "aos-landlock"
+    "aos-recovery"
+    "aos-registry-server"
+    "aos-secret-reference-test"
+    "aos-selinux-run"
+    "aos-service-root"
+    "aos-system-image-e2e-fixture"
+    "aos-test-agent"
+    "aos-test-driver"
+    "aos-var-policy-migrate"
+    "aos-verity-root-guard"
+    "aos-vm"
+    "apm-systemd-client-test"
+    "config-module-smoke"
+    "crucible"
+    "crucible-controller"
+    "crucible-fixtures"
+    "crucible-fleet-store"
+    "crucible-guest"
+    "crucible-qemu-plugin"
+    "crucible-qemu-trace-plugin"
+    "desired-config-test"
+    "desired-prune-test"
+    "expose-smoke"
+    "test-http-server"
+    "test-static-cache-server"
+  ];
+  frozenMaintenanceRoots = [
+    "ant-bootstrap"
+    "bazel-bootstrap"
+    "classpath-0_93"
+    "classpath-0_99"
+    "ecj-bootstrap"
+    "fastjar"
+    "gcc-bootstrap"
+    "openjdk-bootstrap"
+    "rust-1_74"
+  ];
+  fallbackMaintenanceUnit = name: package: let
+    rawVersion = package.version or package.name or "unknown";
+    version =
+      if builtins.isString rawVersion && rawVersion != ""
+      then rawVersion
+      else "unknown";
+    local = builtins.elem name localMaintenanceRoots;
+    frozen = builtins.elem name frozenMaintenanceRoots;
+  in
+    {
+      unitId = name;
+      family = name;
+      stream = "manual";
+      classification =
+        if local
+        then "local"
+        else if frozen
+        then "frozen"
+        else "manual";
+      package =
+        if local
+        then null
+        else {
+          currentVersion = version;
+          versionProjection = {
+            kind = "component-field";
+            component = "main";
+            field = "comparisonVersion";
+          };
+        };
+      components =
+        if local
+        then {}
+        else {
+          main = {
+            current = {
+              upstreamId = version;
+              comparisonVersion = version;
+            };
+            primary = null;
+            advisors = [];
+            releasePolicy = {
+              strategy = "channel";
+              versionScheme = "provider";
+              seriesMajor = null;
+              allowPrerelease = false;
+              minimumAgeDays = 0;
+            };
+            sources = {};
+          };
+        };
+      artifacts = {};
+      owner = discoveredPackageOwners.${name} or "pkgs/default.nix";
+      members = [name];
+      platforms = [stdenv.hostPlatform.system];
+      policy = {
+        lifecycle =
+          if frozen
+          then "frozen"
+          else "supported";
+        riskFloor =
+          if local
+          then "low"
+          else "high";
+        repairScope = [];
+      };
+    }
+    // lib.optionalAttrs (!local) {
+      reason =
+        if frozen
+        then "Historical bootstrap input is intentionally pinned pending explicit bootstrap-chain review."
+        else "No reviewed typed upstream contract is declared; updates require a maintainer-authored plan.";
+    }
+    // lib.optionalAttrs frozen {
+      reviewAfter = "2027-01-01";
+    };
+  unmergedMaintenanceUnits =
+    builtins.map (
+      name: let
+        package = self.${name};
+        declared =
+          if
+            builtins.isAttrs package
+            && package ? passthru.aos.maintenance
+          then builtins.removeAttrs package.passthru.aos.maintenance ["schema"]
+          else fallbackMaintenanceUnit name package;
+        eligiblePlatforms = builtins.sort builtins.lessThan (builtins.filter (
+            system:
+              builtins.all (member: platformSupport.supportsTarget system member) declared.members
+          )
+          platformSupport.canonicalSystems);
+      in
+        declared // {platforms = eligiblePlatforms;}
+    )
+    packageNames;
+  maintenanceUnitIndex =
+    builtins.foldl' (
+      units: unit: let
+        existing = units.${unit.unitId} or null;
+        comparable = value: builtins.removeAttrs value ["members" "platforms"];
+        merged =
+          if existing == null
+          then unit
+          else if comparable existing != comparable unit
+          then throw "maintenance unit '${unit.unitId}' has conflicting member metadata"
+          else
+            existing
+            // {
+              members = builtins.sort builtins.lessThan (lib.unique (existing.members ++ unit.members));
+              platforms = builtins.sort builtins.lessThan (lib.unique (existing.platforms ++ unit.platforms));
+            };
+      in
+        units // {${unit.unitId} = merged;}
+    ) {}
+    unmergedMaintenanceUnits;
+  maintenanceUnits = builtins.attrValues maintenanceUnitIndex;
+  maintenanceInventory = {
+    schema = "aos.maintenance-inventory/v1";
+    units = builtins.sort (left: right: left.unitId < right.unitId) maintenanceUnits;
+  };
 
   self =
     {
       # --- Plumbing ---
-      inherit mkDerivation fetchurl lib packageNames allPackageNames;
+      inherit mkDerivation fetchurl mkUpstream mkGithubUpstream mkManualUpstream lib packageNames allPackageNames;
+      inherit maintenanceInventory;
       inherit platformSupport targetPackageNamesFor targetPackagesFor;
       inherit mkCargoPackage mkCargoArtifacts mkCargoNextestCheck mkGoPackage mkBazelPackage;
       inherit (cargoArtifactsSupport) mkCargoDummySource;
@@ -1244,59 +1466,82 @@
 
       # --- stdenv packages (linked, not rebuilt) ---
       gcc =
-        withDistributionMeta {
-          description = "GNU Compiler Collection with AOS target and runtime defaults";
-          license = "GPL-3.0-or-later WITH GCC-exception-3.1";
-        }
-        (
-          if stdenv.hostPlatform.isDarwin
-          then darwinGcc
-          else stdenv.gcc
-        );
-      glibc = withDefaultMaintainers (
-        stdenv.glibc
-        // lib.optionalAttrs stdenv.hostPlatform.isDarwin {
-          dev = stdenv.glibc;
-          static = stdenv.glibc;
-        }
-      );
-      binutils = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin
-        then darwinBinutils
-        else stdenv.binutils
-      );
+        (withDistributionMeta {
+            description = "GNU Compiler Collection with AOS target and runtime defaults";
+            license = "GPL-3.0-or-later WITH GCC-exception-3.1";
+          }
+          (
+            if stdenv.hostPlatform.isDarwin
+            then darwinGcc
+            else stdenv.gcc
+          ))
+        // {version = "14.3.0";};
+      glibc =
+        (withDistributionMeta {
+            description = "GNU C Library for the AOS target runtime";
+            license = "LGPL-2.1-or-later";
+          }
+          (
+            stdenv.glibc
+            // lib.optionalAttrs stdenv.hostPlatform.isDarwin {
+              dev = stdenv.glibc;
+              static = stdenv.glibc;
+            }
+          ))
+        // {version = "2.39.0";};
+      binutils =
+        (withDistributionMeta {
+            description = "GNU binary utilities for the AOS target toolchain";
+            license = "GPL-3.0-or-later";
+          }
+          (
+            if stdenv.hostPlatform.isDarwin
+            then darwinBinutils
+            else stdenv.binutils
+          ))
+        // {version = "2.41.0";};
       inherit darwinDtraceCompiler;
       inherit appleLibTapi;
       inherit darwinCctoolsLinker;
       cc =
-        withDistributionMeta {
-          description = "AOS C and C++ compiler wrapper toolchain";
-          license = "GPL-3.0-or-later WITH GCC-exception-3.1";
-        }
-        (
-          if stdenv.hostPlatform.isDarwin
-          then darwinCc
-          else stdenv.cc
-        );
+        (withDistributionMeta {
+            description = "AOS C and C++ compiler wrapper toolchain";
+            license = "GPL-3.0-or-later WITH GCC-exception-3.1";
+          }
+          (
+            if stdenv.hostPlatform.isDarwin
+            then darwinCc
+            else stdenv.cc
+          ))
+        // {version = "0.1.0";};
       # The unwrapped gcc-14.3.0-stage2. `pkgs.gcc` is the wrapped
       # gcc-14.3.0-wrapped; the perl Config scrub needs to substitute
       # and block the unwrapped one, since that's what Configure
       # records via specs/PATH.
-      gccUnwrapped = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin
-        then darwinGcc
-        else if stdenv ? gccStage2
-        then stdenv.gccStage2
-        else stdenv.gcc
-      );
+      gccUnwrapped =
+        (withDistributionMeta {
+            description = "Unwrapped GNU Compiler Collection for the AOS target toolchain";
+            license = "GPL-3.0-or-later WITH GCC-exception-3.1";
+          }
+          (
+            if stdenv.hostPlatform.isDarwin
+            then darwinGcc
+            else if stdenv ? gccStage2
+            then stdenv.gccStage2
+            else stdenv.gcc
+          ))
+        // {version = "14.3.0";};
       gcc-libs =
         if stdenv.hostPlatform.isDarwin
         then withDefaultMaintainers darwinGcc
         else discoveredPackages.gcc-libs;
-      getent = withDistributionMeta {
-        description = "Name service database lookup utility from GNU C Library";
-        license = "LGPL-2.1-or-later";
-      } (lib.getOutput "getent" stdenv.glibc);
+      getent =
+        (withDistributionMeta {
+            description = "Name service database lookup utility from GNU C Library";
+            license = "LGPL-2.1-or-later";
+          }
+          (lib.getOutput "getent" stdenv.glibc))
+        // {version = "2.39.0";};
       # Native package sets retain the final stdenv tools. Darwin package roots
       # must be actual target builds; Linux build tools remain available only
       # through buildPackages and build-dependency splicing.

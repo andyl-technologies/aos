@@ -1,7 +1,7 @@
 ##! jq — Lightweight command-line JSON processor
 {
   mkDerivation,
-  fetchurl,
+  mkGithubUpstream,
   gnumake,
   patch,
   patchelf,
@@ -9,18 +9,58 @@
   oniguruma,
   buildPackages,
 }: let
-  version = "1.8.1";
+  upstream = mkGithubUpstream {
+    unitId = "jq-1";
+    family = "jq";
+    stream = "1";
+    owner = "pkgs/tools/jq.nix";
+    version = "1.8.1";
+    upstreamId = "jq-1.8.1";
+    repository = "jqlang/jq";
+    tagPrefix = "jq-";
+    major = 1;
+    source = {
+      authority = "github.com";
+      path = [
+        "jqlang"
+        "jq"
+        "releases"
+        "download"
+        {
+          parts = [
+            {literal = "jq-";}
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+          ];
+        }
+        {
+          parts = [
+            {literal = "jq-";}
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+            {literal = ".tar.gz";}
+          ];
+        }
+      ];
+      hash = "sha256-K+ZOcSnOyxHVkGKQ66EK9pT7nj5/n8IIoxHcM8qDfrA=";
+    };
+  };
+  inherit (upstream) version;
 in
   mkDerivation {
     pname = "jq";
     inherit version;
 
-    src = fetchurl {
-      urls = [
-        "https://github.com/jqlang/jq/releases/download/jq-${version}/jq-${version}.tar.gz"
-      ];
-      hash = "sha256-K+ZOcSnOyxHVkGKQ66EK9pT7nj5/n8IIoxHcM8qDfrA=";
-    };
+    src = upstream.components.main.sources.source;
+    update = upstream.update;
 
     buildDeps = [gnumake];
     runtimeDeps = [oniguruma];

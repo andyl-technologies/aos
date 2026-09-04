@@ -385,14 +385,14 @@ Above the per-arch doorbell sits one architecture-independent binary protocol.
 This is the only format the host marker decoder understands, and it is the format
 the guest emitter (§16.6) produces. It is deliberately small and rigid.
 
-RFC-0017 §02.7 additionally assigns the same synchronous trap transport a
+RFC-0019 §02.7 additionally assigns the same synchronous trap transport a
 separate, independently versioned selectable register/request/reply message
 family. Those messages do not extend or reinterpret the closed marker-kind
 table below: dispatch first distinguishes the registered selectable version and
 kind prefix from this `CRBL` marker frame, then invokes exactly one codec. The
 selectable family owns its own golden vectors, byte ceiling, and version bump
 rule in `crucible-protocol::selectable`; wiring that dispatcher and catalog
-authority is RFC-0017 T-CAM-2.5. A retained runtime request crosses the existing
+authority is RFC-0019 T-CAM-2.5. A retained runtime request crosses the existing
 plugin-to-host marker ring under the internal kind `0xff06` and the independent
 `CRUCSPQ1` codec owned by `crucible-protocol::selectable_transport`; it is not a
 guest-originated marker kind and cannot enter the observational marker decoder.
@@ -479,12 +479,12 @@ evaluation.
     kind whose servicing produces a `Decision` (in-band, part of `reduce`) and
     elicits a host→guest reply; all other kinds are purely observational (§16.5.3).
   - **Measurement messages**, the `measurement_begin`, `metric_sample`, and
-    `measurement_end` messages of RFC-0017 §08.4. Each carries a canonical
+    `measurement_end` messages of RFC-0019 §08.4. Each carries a canonical
     measurement ID and instance key; a sample additionally carries a metric ID
     and one bounded typed value.
   - **Semantic markers**, carrying a canonical marker ID, exact instance key,
     and up to 64 strictly key-ordered typed details. They provide the
-    instance-bearing boundary events required by RFC-0017 §08.3-08.4 without
+    instance-bearing boundary events required by RFC-0019 §08.3-08.4 without
     conflating application facts with host-derived model facts.
   *Gate:* `gate:abi-conformance`. *Spec:* §16.5.1, forward-ref
   [`18-assertions-properties.md`](18-assertions-properties.md),
@@ -552,7 +552,7 @@ Doorbell protocol version 3 kind table (closed, versioned set):
   every complete marker body is at most 4,608 bytes, matching the dedicated
   shared-memory marker entry; count bounds do not waive this aggregate limit
 
-  Adding the RFC-0017 measurement vocabulary (kinds 6-9) bumps the doorbell
+  Adding the RFC-0019 measurement vocabulary (kinds 6-9) bumps the doorbell
   protocol version from 2 to 3 ([GHC-21]); all nine bodies are golden-vectored.
   Unlike every observational kind, kind 5 is guest->host only,
   produces a Decision::AppRandom (05), and elicits a host->guest reply (§16.5.3).

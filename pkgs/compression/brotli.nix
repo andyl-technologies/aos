@@ -1,24 +1,54 @@
 ##! Brotli — Generic-purpose lossless compression algorithm
 {
   mkDerivation,
-  fetchurl,
+  mkGithubUpstream,
   gnumake,
   cmake,
   ninja,
   stdenv,
 }: let
-  version = "1.2.0";
+  upstream = mkGithubUpstream {
+    unitId = "brotli-1";
+    family = "brotli";
+    stream = "1";
+    owner = "pkgs/compression/brotli.nix";
+    version = "1.2.0";
+    upstreamId = "v1.2.0";
+    repository = "google/brotli";
+    tagPrefix = "v";
+    major = 1;
+    source = {
+      authority = "github.com";
+      path = [
+        "google"
+        "brotli"
+        "archive"
+        "refs"
+        "tags"
+        {
+          parts = [
+            {literal = "v";}
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+            {literal = ".tar.gz";}
+          ];
+        }
+      ];
+      hash = "sha256-gWyW6Ojxk7QBUdrX6P83sSIdAZ28ucNc0/rb/mR33+w=";
+    };
+  };
+  inherit (upstream) version;
 in
   mkDerivation {
     pname = "brotli";
     inherit version;
 
-    src = fetchurl {
-      urls = [
-        "https://github.com/google/brotli/archive/refs/tags/v${version}.tar.gz"
-      ];
-      hash = "sha256-gWyW6Ojxk7QBUdrX6P83sSIdAZ28ucNc0/rb/mR33+w=";
-    };
+    src = upstream.components.main.sources.source;
+    update = upstream.update;
 
     buildDeps = [
       gnumake

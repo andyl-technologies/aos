@@ -9141,74 +9141,10 @@ async fn publish(printer: &Printer, command: &HubPublishCmd) -> Result<()> {
             manifest,
             root,
         } => {
-            let mut pinned = match manifest {
-                Some(manifest) => {
-                    let request = publication_manifest_request(manifest, registry)?;
-                    pinned_publication_from_root(root, request)?
-                }
-                None => publication_from_root(root, registry)?,
-            };
-            let client = publication_client(access).await?;
-            bind_publication_parent(&client, &mut pinned.request).await?;
-            let publication = begin_registry_publication_chunked(&client, &pinned.request).await?;
-            let publication_id = publication.publication_id.clone();
-            let result: Result<hub_types::RegistryPublication> = async {
-                anyhow::ensure!(
-                    publication.objects.len() == pinned.request.objects.len(),
-                    "Hub publication response changed the declared object count"
-                );
-                let objects = publication_objects_in_upload_order(&publication);
-                let pointer_start =
-                    objects.partition_point(|object| object.kind != "mutable_pointer");
-                let (immutable_objects, pointer_objects) = objects.split_at(pointer_start);
-
-                // The response is an inventory, not an execution order. The
-                // Hub independently verifies each immutable object and opens
-                // the pointer gate only after the entire class is complete.
-                upload_publication_object_class(
-                    &client,
-                    access,
-                    &publication_id,
-                    &pinned.root,
-                    &pinned.request.objects,
-                    immutable_objects,
-                    printer,
-                    "Uploading immutable publication objects",
-                )
-                .await?;
-
-                // Mutable pointers are independent paths, and the Hub has
-                // already closed their write gate over the complete immutable
-                // set, so the same bounded uploader can publish this class.
-                upload_publication_object_class(
-                    &client,
-                    access,
-                    &publication_id,
-                    &pinned.root,
-                    &pinned.request.objects,
-                    pointer_objects,
-                    printer,
-                    "Uploading publication pointers",
-                )
-                .await?;
-                publication_client(access)
-                    .await?
-                    .call_topology(
-                        HubTopologyMethod::CommitRegistryPublication,
-                        &hub_types::CommitRegistryPublicationRequest {
-                            publication_id: publication_id.to_string(),
-                        },
-                    )
-                    .await
-            }
-            .await;
-            result
-                .with_context(|| {
-                    format!(
-                        "publication {publication_id} remains resumable; rerun this exact upload or abort it explicitly"
-                    )
-                })
-                .and_then(|committed| print_topology_message(printer, &committed))
+            let committed =
+                upload_registry_publication(access, registry, manifest.as_deref(), root, printer)
+                    .await?;
+            print_topology_message(printer, &committed)
         }
         HubPublishCmd::Begin {
             access,
@@ -9268,6 +9204,111 @@ async fn publish(printer: &Printer, command: &HubPublishCmd) -> Result<()> {
     }
 }
 
+/// Uploads and commits one exact registry surface without advancing a channel.
+///
+/// Release orchestration reuses this bounded publication primitive after it
+/// has independently verified the destination deployment and closed bundle.
+pub(crate) async fn upload_registry_publication(
+    access: &HubAccessArgs,
+    registry: &str,
+    manifest: Option<&std::path::Path>,
+    root: &std::path::Path,
+    printer: &Printer,
+) -> Result<hub_types::RegistryPublication> {
+    upload_registry_publication_with_commit(access, registry, manifest, root, printer, true).await
+}
+
+/// Uploads one exact registry surface while leaving its mutable commit to a
+/// release-scoped compare-and-swap RPC.
+pub(crate) async fn prepare_registry_publication(
+    access: &HubAccessArgs,
+    registry: &str,
+    manifest: Option<&std::path::Path>,
+    root: &std::path::Path,
+    printer: &Printer,
+) -> Result<hub_types::RegistryPublication> {
+    upload_registry_publication_with_commit(access, registry, manifest, root, printer, false).await
+}
+
+async fn upload_registry_publication_with_commit(
+    access: &HubAccessArgs,
+    registry: &str,
+    manifest: Option<&std::path::Path>,
+    root: &std::path::Path,
+    printer: &Printer,
+    commit: bool,
+) -> Result<hub_types::RegistryPublication> {
+    let mut pinned = match manifest {
+        Some(manifest) => {
+            let request = publication_manifest_request(manifest, registry)?;
+            pinned_publication_from_root(root, request)?
+        }
+        None => publication_from_root(root, registry)?,
+    };
+    let client = publication_client(access).await?;
+    bind_publication_parent(&client, &mut pinned.request).await?;
+    let publication = begin_registry_publication_chunked(&client, &pinned.request).await?;
+    let publication_id = publication.publication_id.clone();
+    let result: Result<hub_types::RegistryPublication> = async {
+        anyhow::ensure!(
+            publication.objects.len() == pinned.request.objects.len(),
+            "Hub publication response changed the declared object count"
+        );
+        let objects = publication_objects_in_upload_order(&publication);
+        let pointer_start = objects.partition_point(|object| object.kind != "mutable_pointer");
+        let (immutable_objects, pointer_objects) = objects.split_at(pointer_start);
+
+        upload_publication_object_class(
+            &client,
+            access,
+            &publication_id,
+            &pinned.root,
+            &pinned.request.objects,
+            immutable_objects,
+            printer,
+            "Uploading immutable publication objects",
+        )
+        .await?;
+        upload_publication_object_class(
+            &client,
+            access,
+            &publication_id,
+            &pinned.root,
+            &pinned.request.objects,
+            pointer_objects,
+            printer,
+            "Uploading publication pointers",
+        )
+        .await?;
+        let client = publication_client(access).await?;
+        if commit {
+            client
+                .call_topology(
+                    HubTopologyMethod::CommitRegistryPublication,
+                    &hub_types::CommitRegistryPublicationRequest {
+                        publication_id: publication_id.to_string(),
+                    },
+                )
+                .await
+        } else {
+            client
+                .call_topology(
+                    HubTopologyMethod::GetRegistryPublication,
+                    &hub_types::GetRegistryPublicationRequest {
+                        publication_id: publication_id.to_string(),
+                    },
+                )
+                .await
+        }
+    }
+    .await;
+    result.with_context(|| {
+        format!(
+            "publication {publication_id} remains resumable; rerun this exact upload or abort it explicitly"
+        )
+    })
+}
+
 /// Uploads one publication class with bounded request concurrency.
 async fn upload_publication_object_class(
     client: &HubClient,
@@ -9279,7 +9320,7 @@ async fn upload_publication_object_class(
     printer: &Printer,
     label: &str,
 ) -> Result<()> {
-    const CONCURRENT_UPLOADS: usize = 32;
+    const CONCURRENT_IMMUTABLE_UPLOADS: usize = 32;
     const SNAPSHOT_PERMIT_BYTES: u64 = 1024 * 1024;
     // Cloudflare Durable Objects have a 128 MiB isolate limit. A request body
     // exists in both the Worker stream and the verified Rust buffer while R2
@@ -9311,6 +9352,17 @@ async fn upload_publication_object_class(
     let progress = printer.transfer(label, total_bytes);
     let transfer_manager =
         std::sync::Arc::new(TransferManager::new(TransferManagerConfig::default()));
+    // Mutable pointers share one publication lease and advance placement
+    // watermarks. Serialize them so independent HTTP requests cannot race the
+    // durable pointer-phase transition; immutable content remains parallel.
+    let request_concurrency = if objects
+        .iter()
+        .any(|object| object.kind == "mutable_pointer")
+    {
+        1
+    } else {
+        CONCURRENT_IMMUTABLE_UPLOADS
+    };
 
     let result = stream::iter(objects.iter().copied().map(|object| {
         let declared = inputs.iter().find(|declared| declared.path == object.path);
@@ -9375,7 +9427,7 @@ async fn upload_publication_object_class(
             .await
         }
     }))
-    .buffer_unordered(CONCURRENT_UPLOADS)
+    .buffer_unordered(request_concurrency)
     .try_collect::<Vec<()>>()
     .await;
     progress.finish();

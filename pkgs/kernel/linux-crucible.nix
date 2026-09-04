@@ -64,8 +64,7 @@
     "ro"
     "net.ifnames=0"
   ];
-in
-  (linuxWith extraConfig).overrideAttrs (prev: {
+  kernel = (linuxWith extraConfig).overrideAttrs (prev: {
     pname = "linux-crucible";
     passthru =
       (prev.passthru or {})
@@ -82,4 +81,17 @@ in
       // {
         description = "Linux kernel fixture for Crucible determinism gates";
       };
-  })
+  });
+in
+  kernel
+  // {
+    passthru =
+      (kernel.passthru or {})
+      // {
+        aos =
+          (kernel.passthru.aos or {})
+          // {
+            maintenance = kernel.passthru.aos.maintenance // {members = ["linux-crucible"];};
+          };
+      };
+  }

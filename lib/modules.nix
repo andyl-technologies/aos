@@ -1759,7 +1759,8 @@
           pathStr = key;
           typeSig = option.type.description;
           type =
-            option.type._aosDocType or {
+            option.type._aosDocType
+            or {
               kind = "opaque";
               signature = option.type.description;
             };

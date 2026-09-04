@@ -1,22 +1,62 @@
 ##! LZ4 — Extremely fast compression algorithm
 {
   mkDerivation,
-  fetchurl,
+  mkGithubUpstream,
   gnumake,
   stdenv,
 }: let
-  version = "1.10.0";
+  upstream = mkGithubUpstream {
+    unitId = "lz4-1";
+    family = "lz4";
+    stream = "1";
+    owner = "pkgs/compression/lz4.nix";
+    version = "1.10.0";
+    upstreamId = "v1.10.0";
+    repository = "lz4/lz4";
+    tagPrefix = "v";
+    major = 1;
+    source = {
+      authority = "github.com";
+      path = [
+        "lz4"
+        "lz4"
+        "releases"
+        "download"
+        {
+          parts = [
+            {literal = "v";}
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+          ];
+        }
+        {
+          parts = [
+            {literal = "lz4-";}
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+            {literal = ".tar.gz";}
+          ];
+        }
+      ];
+      hash = "sha256-U3USkEdEs14jKRIFXM+Oxm12hjn/Or5XiNkNeS7F9Is=";
+    };
+  };
+  inherit (upstream) version;
 in
   mkDerivation {
     pname = "lz4";
     inherit version;
 
-    src = fetchurl {
-      urls = [
-        "https://github.com/lz4/lz4/releases/download/v${version}/lz4-${version}.tar.gz"
-      ];
-      hash = "sha256-U3USkEdEs14jKRIFXM+Oxm12hjn/Or5XiNkNeS7F9Is=";
-    };
+    src = upstream.components.main.sources.source;
+    update = upstream.update;
 
     buildDeps = [gnumake];
     runtimeDeps = [];

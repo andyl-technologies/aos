@@ -171,8 +171,10 @@ in
           MODULES
           cp ${dbCert} root/etc/aos/trust/db.crt
           cp ${authorizedDbCerts} root/etc/aos/trust/authorized-db-certs.pem
-          cp ${slotManifest}/slot-manifest.json root/lib/aos/recovery/slot-manifest.json
-          cp ${slotManifest}/slot-manifest.json.sig root/lib/aos/recovery/slot-manifest.json.sig
+          ${lib.optionalString (slotManifest != null) ''
+            cp ${slotManifest}/slot-manifest.json root/lib/aos/recovery/slot-manifest.json
+            cp ${slotManifest}/slot-manifest.json.sig root/lib/aos/recovery/slot-manifest.json.sig
+          ''}
           cat > root/etc/os-release <<'OS_RELEASE'
           NAME="AOS"
           ID=aos
