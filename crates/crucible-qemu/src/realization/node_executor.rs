@@ -404,6 +404,60 @@ impl<N> QemuPreparedHotForkTemplate<N> {
     }
 }
 
+impl<N> QemuPreparedHotForkTemplate<N>
+where
+    N: QemuRealizedNodeBackend,
+{
+    /// Drains final observations and reaps this retired source template.
+    ///
+    /// Successful return attests that the backend no longer owns a live child.
+    /// A failure retains the exact, potentially partially shut down source so
+    /// its unique process authority can move into quarantine instead of being
+    /// mistaken for a reusable template.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuPreparedHotForkTemplateShutdownFailure`] when final event
+    /// draining or the backend shutdown/reap ladder fails.
+    pub fn shutdown_for_demotion(
+        mut self,
+    ) -> Result<(), QemuPreparedHotForkTemplateShutdownFailure<N>> {
+        match self
+            .node
+            .shutdown_live_with_event_log(&mut self.identity.event_log)
+        {
+            Ok(()) => Ok(()),
+            Err(source) => Err(QemuPreparedHotForkTemplateShutdownFailure {
+                template: Box::new(self),
+                source,
+            }),
+        }
+    }
+}
+
+/// Failed retained-source shutdown preserving its unique process authority.
+#[must_use = "retry shutdown or transfer the retained source into quarantine"]
+pub struct QemuPreparedHotForkTemplateShutdownFailure<N> {
+    template: Box<QemuPreparedHotForkTemplate<N>>,
+    source: BackendError,
+}
+
+impl<N> QemuPreparedHotForkTemplateShutdownFailure<N> {
+    /// Separates the retained source from its shutdown diagnostic.
+    pub fn into_parts(self) -> (QemuPreparedHotForkTemplate<N>, BackendError) {
+        (*self.template, self.source)
+    }
+}
+
+impl<N> std::fmt::Debug for QemuPreparedHotForkTemplateShutdownFailure<N> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("QemuPreparedHotForkTemplateShutdownFailure")
+            .field("source", &self.source)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<N> std::fmt::Debug for QemuPreparedHotForkTemplate<N> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter

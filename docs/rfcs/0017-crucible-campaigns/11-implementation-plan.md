@@ -2524,10 +2524,19 @@ charges a process-local monotonic-nanosecond fork-rate window before every pool
 start attempt. Focused regressions cover exact manager/pool coordinates,
 pressure replacement, busy-victim read-only rejection, partial-demotion
 reconciliation, sink-failure restoration, explicit orderly demotion, candidate
-key mismatch, and rate rejection before a second pool start. The production
-fallback router and demotion sink have not yet been composed with the concrete
-daemon/QEMU owner, so this is not yet the production launch boundary and
-T-CAM-7.5 remains unchecked. Atomic multi-node host-continuation installation,
+key mismatch, and rate rejection before a second pool start. The daemon now
+also composes a narrow repository/checkpoint authenticator with the exact
+baked-genesis catalog: exact fallbacks require matching configuration,
+lineage/scenario, and scheduler continuation; thin fallbacks require exact
+lineage artifacts, resolved selections, configuration identity, and native
+World/scenario basis. The concrete fixed-source demoter consumes the prepared
+QEMU template, drains final events, requires backend reap, and transfers a
+failed partial shutdown into terminal factory quarantine. Focused regressions
+cover exact/thin mismatches, missing native bases, missing continuations,
+release-boundary reauthentication, and consuming source shutdown. Durable
+fallback-root retention across GC/restart and the final production owner remain
+open, so this is not yet the production launch boundary and T-CAM-7.5 remains
+unchecked. Atomic multi-node host-continuation installation,
 the concrete modeled driver, and a real QEMU flight also remain open; this
 checkpoint therefore does not mark T-CAM-6.2 or T-CAM-6.3 complete.
 The internal registry now has safe RCU and internal-monitor dispositions, while
@@ -2562,8 +2571,11 @@ capability ships.
   `ExactCheckpointId` or thin `ConfigurationArtifactId`, performs read-only
   fallback and victim preflight before transfer, rechecks fallback validity at
   the demotion boundary, and releases accounting only after the sink attests
-  source reap. The concrete fallback-retention router and QEMU demotion sink
-  remain required before this item is complete.
+  source reap. The concrete sink authenticates exact checkpoints or resolved
+  thin replay bases and consumes a fixed prepared-QEMU source into attested
+  reap or terminal quarantine. Durable GC/restart retention of each fallback
+  root and the final production owner remain required before this item is
+  complete.
 - [ ] **T-CAM-7.6** Add the complete equivalence, isolation, negative,
   resource-leak, and scaling matrix from §10.
 - [ ] **T-CAM-7.7** Complete the §14 Phase 7 atomic multi-machine,

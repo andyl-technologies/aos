@@ -314,6 +314,11 @@ impl QemuRealizedNodeBackend for ScriptedNode {
                     message: source.to_string(),
                 })?;
         }
+        if self.runtime_id == ContentHash::from_bytes(b"hot-fork-shutdown-failure") {
+            return Err(BackendError::Rejected {
+                message: String::from("injected retained-template shutdown failure"),
+            });
+        }
         Backend::shutdown(self)?;
         Ok(())
     }
@@ -1056,6 +1061,58 @@ fn retained_hot_fork_template_moves_exact_configuration_and_event_prefix() {
     let recovered = QemuPreparedHotForkTemplate::from_reconciled_parts(node, identity);
     assert_eq!(recovered.configuration(), configuration);
     assert_eq!(recovered.event_log().offset(), offset);
+}
+
+#[test]
+fn retained_hot_fork_demotion_reaps_or_returns_the_exact_source() {
+    let log = shared_log();
+    let configuration = hash("configuration", "retained-template-demotion");
+    let offset = EventLogOffset::new(hash("event-prefix", "retained-template-demotion"), 11, 2);
+    let mut executor = QemuNodeRealizationExecutor {
+        node: node_id(),
+        launcher: scripted_launcher(Rc::clone(&log), configuration, 0),
+        active_node: Some(ScriptedNode {
+            log: Rc::clone(&log),
+            runtime_id: configuration,
+            current_icount: Icount { retired: 0 },
+            shutdown_event: None,
+        }),
+        active_configuration: Some(configuration),
+        event_log: EventLog::from_offset(offset),
+        observation_sealed: false,
+    };
+
+    executor
+        .prepare_active_hot_fork_template(&[], 4096)
+        .expect("prepare retained template")
+        .shutdown_for_demotion()
+        .expect("demote retained template");
+    assert_eq!(logged(&log).last(), Some(&NodeExecutorCall::Shutdown));
+
+    let failure = ContentHash::from_bytes(b"hot-fork-shutdown-failure");
+    let mut executor = QemuNodeRealizationExecutor {
+        node: node_id(),
+        launcher: scripted_launcher(Rc::clone(&log), failure, 0),
+        active_node: Some(ScriptedNode {
+            log,
+            runtime_id: failure,
+            current_icount: Icount { retired: 0 },
+            shutdown_event: None,
+        }),
+        active_configuration: Some(failure),
+        event_log: EventLog::from_offset(offset),
+        observation_sealed: false,
+    };
+    let failed = executor
+        .prepare_active_hot_fork_template(&[], 4096)
+        .expect("prepare failing retained template")
+        .shutdown_for_demotion()
+        .expect_err("shutdown must fail");
+    let (retained, source) = failed.into_parts();
+
+    assert_eq!(retained.configuration(), failure);
+    assert_eq!(retained.event_log().offset(), offset);
+    assert!(matches!(source, BackendError::Rejected { .. }));
 }
 
 #[test]
