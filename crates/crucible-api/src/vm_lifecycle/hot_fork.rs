@@ -88,6 +88,7 @@ impl ProductionVmHotForkNodeBoundary {
 /// node children have been authenticated atomically.
 #[must_use = "install the continuation into an atomic child world or discard it before forking"]
 pub struct ProductionVmHotForkWorldContinuation {
+    config: ProductionVmLifecycleConfig,
     configuration: Configuration,
     scheduler: SingleSchedulerCheckpoint,
     event_log_objects: BTreeMap<ContentHash, Vec<u8>>,
@@ -104,6 +105,9 @@ pub struct ProductionVmHotForkWorldContinuation {
     fault_checkpoint: ProductionFaultRuntimeCheckpoint,
     node_generations: BTreeMap<NodeId, u64>,
     node_service_states: BTreeMap<NodeId, ProductionNodeServiceState>,
+    immutable_root_images: BTreeMap<NodeId, ContentHash>,
+    block_bindings: BTreeMap<NodeId, storage_faults::ProductionBlockBinding>,
+    ninep_bindings: BTreeMap<NodeId, storage_faults::ProductionNinepBinding>,
     nodes: Vec<ProductionVmHotForkNodeBoundary>,
 }
 
@@ -191,6 +195,15 @@ impl ProductionVmHotForkWorldContinuation {
         if node_ids.len() != self.nodes.len()
             || self.node_generations.keys().ne(node_ids.iter())
             || self.node_service_states.keys().ne(node_ids.iter())
+            || self.immutable_root_images.keys().ne(node_ids.iter())
+            || self
+                .block_bindings
+                .keys()
+                .any(|node| !node_ids.contains(node))
+            || self
+                .ninep_bindings
+                .keys()
+                .any(|node| !node_ids.contains(node))
         {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from("hot-fork node continuation is incomplete"),
@@ -240,6 +253,46 @@ impl ProductionVmHotForkWorldContinuation {
             &self.recorded_controls,
         );
         Ok(())
+    }
+
+    pub(super) fn into_restore_parts(
+        self,
+        node_generations: BTreeMap<NodeId, u64>,
+        run_state_root: impl Into<PathBuf>,
+    ) -> (
+        ProductionVmLifecycleConfig,
+        ProductionVmExactCheckpointSet,
+        BTreeMap<NodeId, ContentHash>,
+        BTreeMap<NodeId, storage_faults::ProductionBlockBinding>,
+        BTreeMap<NodeId, storage_faults::ProductionNinepBinding>,
+    ) {
+        let config = self.config.with_run_state_root(run_state_root);
+        let checkpoint = ProductionVmExactCheckpointSet {
+            identity: self.configuration.id(),
+            configuration: self.configuration,
+            scheduler: self.scheduler,
+            event_log_objects: self.event_log_objects,
+            signal_artifact_objects: self.signal_artifact_objects,
+            trigger_state: self.trigger_state,
+            assertion_state: self.assertion_state,
+            terminal_verdict: self.terminal_verdict,
+            terminal_cause: self.terminal_cause,
+            initial_lifecycle_observations_pending: self.initial_lifecycle_observations_pending,
+            branch: self.branch,
+            recorded_controls: self.recorded_controls,
+            selectable_catalog_plans: self.selectable_catalog_plans,
+            fault_checkpoint: Some(self.fault_checkpoint),
+            targets: BTreeMap::new(),
+            node_generations,
+            node_service_states: self.node_service_states,
+        };
+        (
+            config,
+            checkpoint,
+            self.immutable_root_images,
+            self.block_bindings,
+            self.ninep_bindings,
+        )
     }
 }
 
@@ -329,6 +382,7 @@ impl ProductionVmLifecycleLoop {
         }
 
         let continuation = ProductionVmHotForkWorldContinuation {
+            config: self.config.clone(),
             configuration,
             scheduler,
             event_log_objects,
@@ -344,6 +398,25 @@ impl ProductionVmLifecycleLoop {
             fault_checkpoint,
             node_generations: self.node_generations.clone(),
             node_service_states: self.node_service_states.clone(),
+            immutable_root_images: self.immutable_root_images.clone(),
+            block_bindings: self
+                .block_bindings
+                .iter()
+                .filter(|(node, _binding)| {
+                    self.node_service_states.get(*node)
+                        != Some(&ProductionNodeServiceState::PermanentlyFailed)
+                })
+                .map(|(node, binding)| (node.clone(), binding.clone()))
+                .collect(),
+            ninep_bindings: self
+                .ninep_bindings
+                .iter()
+                .filter(|(node, _binding)| {
+                    self.node_service_states.get(*node)
+                        != Some(&ProductionNodeServiceState::PermanentlyFailed)
+                })
+                .map(|(node, binding)| (node.clone(), binding.clone()))
+                .collect(),
             nodes: before,
         };
         continuation.validate_complete_internal_state()?;

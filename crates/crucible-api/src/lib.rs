@@ -122,6 +122,11 @@ pub use vm_lifecycle::{
     install_exact_checkpoint_closure_with_boundary_and_admission, open_exact_checkpoint_closure,
     production_vm_search_frontier, retire_production_exact_checkpoint_catalog,
 };
+#[cfg(target_os = "linux")]
+pub use vm_lifecycle::{
+    ProductionVmHotForkNodeAdoption,
+    build_production_vm_lifecycle_loop_from_hot_fork_with_launcher,
+};
 // Re-exported so control-plane clients (e.g. the CLI) record the *shared*
 // guest-host protocol version in a reproduction artifact's provenance triple
 // without reaching past the control plane into `crucible-protocol` directly
