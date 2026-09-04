@@ -47,13 +47,14 @@ pub use identity::{
     SnapshotId, TrustScopeId, ViewId,
 };
 pub use ownership_lease::{
-    BrokerAdmissionIntersection, CLOCK_PAIR_TOLERANCE_NANOSECONDS, InvalidOwnershipLease,
+    BrokerAdmissionIntersection, CLOCK_PAIR_TOLERANCE_NANOSECONDS,
+    DurableHistoricalWallClockInstant, HistoricalOwnershipLeaseExpectation, InvalidOwnershipLease,
     LEASE_SAFETY_MARGIN_SECONDS, LeaseAssignment, LeaseFenceOutcome, LocalLeaseRecord,
-    LocalLeaseRecordCodecError, OwnershipLease, OwnershipLeaseExpectation,
-    OwnershipLeaseTrustAnchor, OwnershipLeaseVerificationError, PendingLocalLeaseRecord,
-    RawClockProvenance, RawPairedClockSample, VerifiedOwnershipLease, decode_local_lease_record,
-    encode_local_lease_record, intersect_broker_admission, prepare_local_lease_record,
-    verify_ownership_lease,
+    LocalLeaseRecordCodecError, NonAuthorizingHistoricalOwnershipLease, OwnershipLease,
+    OwnershipLeaseExpectation, OwnershipLeaseTrustAnchor, OwnershipLeaseVerificationError,
+    PendingLocalLeaseRecord, RawClockProvenance, RawPairedClockSample, VerifiedOwnershipLease,
+    authenticate_historical_ownership_lease, decode_local_lease_record, encode_local_lease_record,
+    intersect_broker_admission, prepare_local_lease_record, verify_ownership_lease,
 };
 pub use registry::{
     DescriptorRole, PortableMediaType, ProtocolId, ProtocolVersion, RegistryError,

@@ -352,6 +352,52 @@ pub struct OwnershipLeaseExpectation<'a> {
     pub clock: &'a RawPairedClockSample,
 }
 
+/// Identifies a wall-clock instant recovered from authenticated durable state.
+///
+/// Construction does not authenticate the instant. The caller must only use a
+/// value that was committed with, and integrity-bound to, the historical
+/// authority record being recovered. This type deliberately carries no
+/// BOOTTIME or current-liveness claim.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DurableHistoricalWallClockInstant {
+    wall_seconds: i64,
+}
+
+impl DurableHistoricalWallClockInstant {
+    /// Marks a wall-clock second obtained from an authenticated durable record.
+    ///
+    /// The caller is responsible for establishing the record's authenticity
+    /// before construction. This function performs no clock or provenance
+    /// validation and its result grants no live authority.
+    #[must_use]
+    pub const fn from_authenticated_record(wall_seconds: i64) -> Self {
+        Self { wall_seconds }
+    }
+
+    /// Returns the historical Unix second.
+    #[must_use]
+    pub const fn wall_seconds(self) -> i64 {
+        self.wall_seconds
+    }
+}
+
+/// Supplies exact durable context for historical lease authentication.
+#[derive(Clone, Copy, Debug)]
+pub struct HistoricalOwnershipLeaseExpectation<'a> {
+    /// Assignment recorded by the durable authority state machine.
+    pub assignment: BrokerAssignment,
+    /// Node recorded by the durable authority state machine.
+    pub node: NodeId,
+    /// Exact authority key generation recorded for the lease.
+    pub ownership_authority: &'a KeyReference,
+    /// Exact monotonic lease generation recorded for this chain entry.
+    pub lease_generation: u64,
+    /// Exact canonical lease digest recorded for this chain entry.
+    pub lease_digest: ObjectDigest,
+    /// Authenticated historical instant at which the lease was accepted.
+    pub accepted_at: DurableHistoricalWallClockInstant,
+}
+
 /// Reports lease verification, local fencing, or intersection failure.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum OwnershipLeaseVerificationError {
@@ -415,6 +461,12 @@ pub enum OwnershipLeaseVerificationError {
     /// Paired elapsed wall time and BOOTTIME diverged beyond the v1 tolerance.
     #[error("paired wall and BOOTTIME clocks diverged")]
     ClockDivergence,
+    /// Durable historical context does not match the canonical lease record.
+    #[error("historical ownership lease does not match its durable record")]
+    HistoricalRecordMismatch,
+    /// The historical instant's full skew envelope is outside signed validity.
+    #[error("historical ownership lease was not skew-safely valid at its acceptance instant")]
+    HistoricalInstantOutsideSafeValidity,
 }
 
 /// Proves a lease signature and liveness relative to a supplied raw clock.
@@ -427,6 +479,76 @@ pub struct VerifiedOwnershipLease {
     authority: KeyReference,
     lease_digest: ObjectDigest,
     verification_clock: RawPairedClockSample,
+}
+
+/// Proves only that a lease was authentic at one durable historical instant.
+///
+/// This proof can rebuild an authority state-machine history after restart. It
+/// is intentionally a different type from [`VerifiedOwnershipLease`], carries
+/// no BOOTTIME deadline, and must never authorize current broker admission or
+/// effects. The trust theorem assumes [`DurableHistoricalWallClockInstant`]
+/// came from a previously authenticated durable record bound to these exact
+/// lease and signature bytes.
+///
+/// ```compile_fail
+/// use aos_sandbox_core::{
+///     NonAuthorizingHistoricalOwnershipLease, RawPairedClockSample,
+///     prepare_local_lease_record,
+/// };
+///
+/// fn recover_only(
+///     proof: &NonAuthorizingHistoricalOwnershipLease,
+///     clock: &RawPairedClockSample,
+/// ) {
+///     let _ = prepare_local_lease_record(None, proof, clock);
+/// }
+/// ```
+#[derive(Debug)]
+pub struct NonAuthorizingHistoricalOwnershipLease {
+    lease: OwnershipLease,
+    authority: KeyReference,
+    lease_digest: ObjectDigest,
+    accepted_at: DurableHistoricalWallClockInstant,
+    canonical_lease: Vec<u8>,
+    canonical_signature: Vec<u8>,
+}
+
+impl NonAuthorizingHistoricalOwnershipLease {
+    /// Returns the historically authenticated lease semantics.
+    #[must_use]
+    pub const fn lease(&self) -> &OwnershipLease {
+        &self.lease
+    }
+
+    /// Returns the exact historical authority key generation.
+    #[must_use]
+    pub const fn authority(&self) -> &KeyReference {
+        &self.authority
+    }
+
+    /// Returns the descriptor digest of the exact canonical lease bytes.
+    #[must_use]
+    pub const fn lease_digest(&self) -> ObjectDigest {
+        self.lease_digest
+    }
+
+    /// Returns the authenticated historical acceptance instant.
+    #[must_use]
+    pub const fn accepted_at(&self) -> DurableHistoricalWallClockInstant {
+        self.accepted_at
+    }
+
+    /// Returns the exact canonical ownership-lease bytes.
+    #[must_use]
+    pub fn canonical_lease(&self) -> &[u8] {
+        &self.canonical_lease
+    }
+
+    /// Returns the exact canonical detached-signature bytes.
+    #[must_use]
+    pub fn canonical_signature(&self) -> &[u8] {
+        &self.canonical_signature
+    }
 }
 
 impl VerifiedOwnershipLease {
@@ -515,6 +637,99 @@ pub fn verify_ownership_lease(
         authority: anchor.authority.clone(),
         lease_digest: descriptor.digest(),
         verification_clock: *expectation.clock,
+    })
+}
+
+/// Authenticates a persisted lease at its durable historical acceptance time.
+///
+/// Both inputs must be the exact canonical bytes stored by the authority state
+/// machine. Successful authentication proves that the configured historical
+/// trust generation signed those lease bytes and that the supplied durable
+/// acceptance instant's full clock-skew envelope fell inside the signed
+/// interval. It does not prove that the lease is live now and cannot be used
+/// by APIs requiring [`VerifiedOwnershipLease`].
+///
+/// The caller must establish that `expectation.accepted_at` came from a
+/// previously authenticated durable record integrity-bound to this chain
+/// entry. Supplying the current wall clock or an unauthenticated persisted
+/// timestamp violates this function's recovery theorem.
+///
+/// This function authenticates one record only. A durable authority backend
+/// must separately prove that it selected the trust anchor active for this
+/// historical entry and enforce acquire/renew chain order, exact predecessor
+/// fences, and a unique current head during recovery.
+///
+/// # Errors
+///
+/// Rejects non-canonical lease or signature bytes, descriptor or signature
+/// substitution, trust scope/purpose/key-generation mismatch, invalid Ed25519
+/// signatures, assignment/node/generation/digest mismatch, or a historical
+/// acceptance instant whose conservative skew envelope is outside the signed
+/// validity interval.
+pub fn authenticate_historical_ownership_lease(
+    canonical_lease: &[u8],
+    canonical_signature: &[u8],
+    anchor: &OwnershipLeaseTrustAnchor,
+    expectation: HistoricalOwnershipLeaseExpectation<'_>,
+    limits: DecodeLimits,
+) -> Result<NonAuthorizingHistoricalOwnershipLease, OwnershipLeaseVerificationError> {
+    let lease = decode_ownership_lease(canonical_lease, limits)?;
+    let signature = crate::format::decode_signature(canonical_signature, limits)?;
+    let descriptor = descriptor_for_bytes(
+        crate::MediaType::new(crate::PortableMediaType::OwnershipLease.as_str().to_owned())
+            .map_err(|error| CanonicalCborError::InvalidSemantics {
+                object: "ownership lease media type",
+                message: error.to_string(),
+            })?,
+        canonical_lease,
+    );
+    let statement = signature.statement();
+    if statement.subject() != &descriptor
+        || statement.purpose() != SignaturePurpose::OwnershipLease
+        || statement.signer() != &anchor.authority
+        || statement.verification_policy() != &anchor.policy_descriptor
+        || statement.trust_scope() != anchor.trust_scope
+        || statement.issued_seconds() != lease.authority_issued_seconds()
+        || statement.expires_seconds() != Some(lease.authority_expires_seconds())
+    {
+        return Err(OwnershipLeaseVerificationError::SignatureStatementMismatch);
+    }
+    if !lease
+        .assignment()
+        .matches_broker_assignment(expectation.assignment)
+        || lease.node() != expectation.node
+        || statement.signer() != expectation.ownership_authority
+        || lease.lease_generation() != expectation.lease_generation
+        || descriptor.digest() != expectation.lease_digest
+    {
+        return Err(OwnershipLeaseVerificationError::HistoricalRecordMismatch);
+    }
+    let accepted_at = expectation.accepted_at.wall_seconds();
+    let skew = i64::try_from(lease.maximum_clock_skew_seconds())
+        .map_err(|_| OwnershipLeaseVerificationError::HistoricalInstantOutsideSafeValidity)?;
+    let earliest = accepted_at
+        .checked_sub(skew)
+        .ok_or(OwnershipLeaseVerificationError::HistoricalInstantOutsideSafeValidity)?;
+    let latest = accepted_at
+        .checked_add(skew)
+        .ok_or(OwnershipLeaseVerificationError::HistoricalInstantOutsideSafeValidity)?;
+    if earliest < lease.authority_issued_seconds() || latest >= lease.authority_expires_seconds() {
+        return Err(OwnershipLeaseVerificationError::HistoricalInstantOutsideSafeValidity);
+    }
+    verify_signature(
+        &signature,
+        &anchor.canonical_policy,
+        &anchor.public_key,
+        accepted_at,
+        limits,
+    )?;
+    Ok(NonAuthorizingHistoricalOwnershipLease {
+        lease,
+        authority: anchor.authority.clone(),
+        lease_digest: descriptor.digest(),
+        accepted_at: expectation.accepted_at,
+        canonical_lease: canonical_lease.to_vec(),
+        canonical_signature: canonical_signature.to_vec(),
     })
 }
 
@@ -1027,8 +1242,8 @@ mod tests {
         BrokerArgumentCommitment, BrokerAudience, BrokerAuthorizationPlan, BrokerGrant,
         BrokerPlanRequest, VerifiedBrokerPlan,
     };
-    use crate::format::{encode_ownership_lease, encode_trust_policy};
-    use crate::model::{SignatureStatement, StableKeyId, TrustPolicy};
+    use crate::format::{encode_ownership_lease, encode_signature, encode_trust_policy};
+    use crate::model::{SignatureBytes, SignatureStatement, StableKeyId, TrustPolicy};
     use crate::{
         DesiredGeneration, MediaType, PortableMediaType, ProtocolId, ProtocolVersion,
         RevocationScopeId, sign_statement,
@@ -1045,6 +1260,17 @@ mod tests {
     }
 
     fn fixture(generation: u64, assignment_byte: u8, nonce_byte: u8) -> Fixture {
+        fixture_with_interval(generation, assignment_byte, nonce_byte, 100, 200, 10)
+    }
+
+    fn fixture_with_interval(
+        generation: u64,
+        assignment_byte: u8,
+        nonce_byte: u8,
+        issued_seconds: i64,
+        expires_seconds: i64,
+        maximum_clock_skew_seconds: u64,
+    ) -> Fixture {
         let signing_key = SigningKey::from_bytes(&[31; 32]);
         let authority = KeyReference::new(
             StableKeyId::new("ownership-authority".to_owned())
@@ -1073,9 +1299,9 @@ mod tests {
             lease_assignment,
             node,
             generation,
-            100,
-            200,
-            10,
+            issued_seconds,
+            expires_seconds,
+            maximum_clock_skew_seconds,
             [nonce_byte; 16],
         )
         .unwrap_or_else(|error| panic!("test lease failed: {error}"));
@@ -1104,8 +1330,8 @@ mod tests {
             scope,
             authority.clone(),
             SignaturePurpose::OwnershipLease,
-            100,
-            Some(200),
+            issued_seconds,
+            Some(expires_seconds),
             policy_descriptor.clone(),
         )
         .unwrap_or_else(|error| panic!("test statement failed: {error}"));
@@ -1161,6 +1387,312 @@ mod tests {
             boottime,
         )
         .unwrap_or_else(|error| panic!("test clock failed: {error}"))
+    }
+
+    fn historical_expectation(
+        fixture: &Fixture,
+        accepted_at: i64,
+    ) -> HistoricalOwnershipLeaseExpectation<'_> {
+        HistoricalOwnershipLeaseExpectation {
+            assignment: fixture.assignment,
+            node: fixture.node,
+            ownership_authority: &fixture.authority,
+            lease_generation: fixture.lease.lease_generation(),
+            lease_digest: descriptor_for_bytes(
+                MediaType::new(PortableMediaType::OwnershipLease.as_str().to_owned())
+                    .unwrap_or_else(|error| panic!("test media type failed: {error}")),
+                &fixture.bytes,
+            )
+            .digest(),
+            accepted_at: DurableHistoricalWallClockInstant::from_authenticated_record(accepted_at),
+        }
+    }
+
+    #[test]
+    fn historical_authentication_accepts_valid_now_expired_record() {
+        let fixture = fixture(7, 5, 9);
+        let simulated_current_wall = 10_000;
+        assert!(simulated_current_wall >= fixture.lease.authority_expires_seconds());
+        let signature_bytes = encode_signature(&fixture.signature);
+        let proof = authenticate_historical_ownership_lease(
+            &fixture.bytes,
+            &signature_bytes,
+            &fixture.anchor,
+            historical_expectation(&fixture, 150),
+            DecodeLimits::default(),
+        )
+        .unwrap_or_else(|error| panic!("historical authentication failed: {error}"));
+        assert_eq!(proof.lease(), &fixture.lease);
+        assert_eq!(proof.canonical_lease(), fixture.bytes);
+        assert_eq!(proof.canonical_signature(), signature_bytes);
+        assert_eq!(proof.accepted_at().wall_seconds(), 150);
+    }
+
+    #[test]
+    fn historical_authentication_rejects_forged_rebound_and_noncanonical_bytes() {
+        let original = fixture(7, 5, 9);
+        let mut forged_signature = encode_signature(&original.signature);
+        let last = forged_signature
+            .last_mut()
+            .unwrap_or_else(|| panic!("canonical signature unexpectedly empty"));
+        *last ^= 1;
+        assert!(
+            authenticate_historical_ownership_lease(
+                &original.bytes,
+                &forged_signature,
+                &original.anchor,
+                historical_expectation(&original, 150),
+                DecodeLimits::default(),
+            )
+            .is_err()
+        );
+
+        let rebound = fixture(7, 8, 9);
+        assert!(matches!(
+            authenticate_historical_ownership_lease(
+                &rebound.bytes,
+                &encode_signature(&original.signature),
+                &original.anchor,
+                historical_expectation(&rebound, 150),
+                DecodeLimits::default(),
+            ),
+            Err(OwnershipLeaseVerificationError::SignatureStatementMismatch)
+        ));
+
+        let mut noncanonical = encode_signature(&original.signature);
+        noncanonical.push(0);
+        assert!(matches!(
+            authenticate_historical_ownership_lease(
+                &original.bytes,
+                &noncanonical,
+                &original.anchor,
+                historical_expectation(&original, 150),
+                DecodeLimits::default(),
+            ),
+            Err(OwnershipLeaseVerificationError::Canonical(_))
+        ));
+
+        let mut noncanonical_lease = original.bytes.clone();
+        noncanonical_lease.push(0);
+        assert!(matches!(
+            authenticate_historical_ownership_lease(
+                &noncanonical_lease,
+                &encode_signature(&original.signature),
+                &original.anchor,
+                historical_expectation(&original, 150),
+                DecodeLimits::default(),
+            ),
+            Err(OwnershipLeaseVerificationError::Canonical(_))
+        ));
+        let restrictive_limits = DecodeLimits {
+            maximum_bytes: 1,
+            ..DecodeLimits::default()
+        };
+        assert!(matches!(
+            authenticate_historical_ownership_lease(
+                &original.bytes,
+                &encode_signature(&original.signature),
+                &original.anchor,
+                historical_expectation(&original, 150),
+                restrictive_limits,
+            ),
+            Err(OwnershipLeaseVerificationError::Canonical(_))
+        ));
+
+        let mut wrong_assignment = historical_expectation(&original, 150);
+        wrong_assignment.assignment = rebound.assignment;
+        assert!(matches!(
+            authenticate_historical_ownership_lease(
+                &original.bytes,
+                &encode_signature(&original.signature),
+                &original.anchor,
+                wrong_assignment,
+                DecodeLimits::default(),
+            ),
+            Err(OwnershipLeaseVerificationError::HistoricalRecordMismatch)
+        ));
+        let mut wrong_node = historical_expectation(&original, 150);
+        wrong_node.node = NodeId::from_bytes([0x66; 16]);
+        assert!(matches!(
+            authenticate_historical_ownership_lease(
+                &original.bytes,
+                &encode_signature(&original.signature),
+                &original.anchor,
+                wrong_node,
+                DecodeLimits::default(),
+            ),
+            Err(OwnershipLeaseVerificationError::HistoricalRecordMismatch)
+        ));
+    }
+
+    #[test]
+    fn historical_authentication_rejects_wrong_instant_anchor_generation_and_purpose() {
+        let fixture = fixture_with_interval(7, 5, 9, 100, 200, 5);
+        let signature_bytes = encode_signature(&fixture.signature);
+        for outside in [104, 195] {
+            assert!(matches!(
+                authenticate_historical_ownership_lease(
+                    &fixture.bytes,
+                    &signature_bytes,
+                    &fixture.anchor,
+                    historical_expectation(&fixture, outside),
+                    DecodeLimits::default(),
+                ),
+                Err(OwnershipLeaseVerificationError::HistoricalInstantOutsideSafeValidity)
+            ));
+        }
+        for safe_boundary in [105, 194] {
+            authenticate_historical_ownership_lease(
+                &fixture.bytes,
+                &signature_bytes,
+                &fixture.anchor,
+                historical_expectation(&fixture, safe_boundary),
+                DecodeLimits::default(),
+            )
+            .unwrap_or_else(|error| panic!("safe historical boundary rejected: {error}"));
+        }
+
+        let mut wrong_generation = historical_expectation(&fixture, 150);
+        wrong_generation.lease_generation += 1;
+        assert!(matches!(
+            authenticate_historical_ownership_lease(
+                &fixture.bytes,
+                &signature_bytes,
+                &fixture.anchor,
+                wrong_generation,
+                DecodeLimits::default(),
+            ),
+            Err(OwnershipLeaseVerificationError::HistoricalRecordMismatch)
+        ));
+        let mut wrong_digest = historical_expectation(&fixture, 150);
+        wrong_digest.lease_digest = ObjectDigest::from_bytes([0x55; 32]);
+        assert!(matches!(
+            authenticate_historical_ownership_lease(
+                &fixture.bytes,
+                &signature_bytes,
+                &fixture.anchor,
+                wrong_digest,
+                DecodeLimits::default(),
+            ),
+            Err(OwnershipLeaseVerificationError::HistoricalRecordMismatch)
+        ));
+        let wrong_authority = KeyReference::new(
+            fixture.authority.stable_key_id().clone(),
+            fixture.authority.generation() + 1,
+            fixture.authority.public_key_sha256(),
+            KeyUsage::OwnershipLease,
+        );
+        let mut wrong_authority_expectation = historical_expectation(&fixture, 150);
+        wrong_authority_expectation.ownership_authority = &wrong_authority;
+        assert!(matches!(
+            authenticate_historical_ownership_lease(
+                &fixture.bytes,
+                &signature_bytes,
+                &fixture.anchor,
+                wrong_authority_expectation,
+                DecodeLimits::default(),
+            ),
+            Err(OwnershipLeaseVerificationError::HistoricalRecordMismatch)
+        ));
+
+        let other_key = SigningKey::from_bytes(&[47; 32]);
+        let other_authority = KeyReference::new(
+            StableKeyId::new("other-ownership-authority".to_owned())
+                .unwrap_or_else(|error| panic!("test key ID failed: {error}")),
+            1,
+            ObjectDigest::from_bytes(Sha256::digest(other_key.verifying_key().as_bytes()).into()),
+            KeyUsage::OwnershipLease,
+        );
+        let scope = fixture.signature.statement().trust_scope();
+        let other_scope = TrustScopeId::from_bytes([0x77; 16]);
+        let other_policy = TrustPolicy::new(
+            other_scope,
+            SignaturePurpose::OwnershipLease,
+            vec![other_authority.clone()],
+            Vec::new(),
+        )
+        .unwrap_or_else(|error| panic!("test policy failed: {error}"));
+        let other_policy_bytes = encode_trust_policy(&other_policy);
+        let other_policy_descriptor = descriptor_for_bytes(
+            MediaType::new(PortableMediaType::TrustPolicy.as_str().to_owned())
+                .unwrap_or_else(|error| panic!("test media type failed: {error}")),
+            &other_policy_bytes,
+        );
+        let other_anchor = OwnershipLeaseTrustAnchor::from_trusted_configuration(
+            other_policy_bytes,
+            other_policy_descriptor,
+            other_scope,
+            other_authority,
+            other_key.verifying_key().to_bytes(),
+            DecodeLimits::default(),
+        )
+        .unwrap_or_else(|error| panic!("test anchor failed: {error}"));
+        assert!(
+            authenticate_historical_ownership_lease(
+                &fixture.bytes,
+                &signature_bytes,
+                &other_anchor,
+                historical_expectation(&fixture, 150),
+                DecodeLimits::default(),
+            )
+            .is_err()
+        );
+
+        let wrong_purpose_key = KeyReference::new(
+            fixture.authority.stable_key_id().clone(),
+            fixture.authority.generation(),
+            fixture.authority.public_key_sha256(),
+            KeyUsage::BrokerAuthorization,
+        );
+        let wrong_purpose_statement = SignatureStatement::new(
+            fixture.signature.statement().subject().clone(),
+            scope,
+            wrong_purpose_key,
+            SignaturePurpose::BrokerAuthorization,
+            100,
+            Some(200),
+            fixture.signature.statement().verification_policy().clone(),
+        )
+        .unwrap_or_else(|error| panic!("wrong-purpose statement failed: {error}"));
+        let wrong_purpose_signature =
+            Signature::new(wrong_purpose_statement, SignatureBytes::new([1; 64]));
+        assert!(
+            authenticate_historical_ownership_lease(
+                &fixture.bytes,
+                &encode_signature(&wrong_purpose_signature),
+                &fixture.anchor,
+                historical_expectation(&fixture, 150),
+                DecodeLimits::default(),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn historical_safe_interval_rejects_checked_arithmetic_edges() {
+        let underflow = fixture_with_interval(7, 5, 9, i64::MIN, i64::MIN + 100, 5);
+        assert!(matches!(
+            authenticate_historical_ownership_lease(
+                &underflow.bytes,
+                &encode_signature(&underflow.signature),
+                &underflow.anchor,
+                historical_expectation(&underflow, i64::MIN + 4),
+                DecodeLimits::default(),
+            ),
+            Err(OwnershipLeaseVerificationError::HistoricalInstantOutsideSafeValidity)
+        ));
+
+        let overflow = fixture_with_interval(7, 5, 9, i64::MAX - 100, i64::MAX, 5);
+        assert!(matches!(
+            authenticate_historical_ownership_lease(
+                &overflow.bytes,
+                &encode_signature(&overflow.signature),
+                &overflow.anchor,
+                historical_expectation(&overflow, i64::MAX - 4),
+                DecodeLimits::default(),
+            ),
+            Err(OwnershipLeaseVerificationError::HistoricalInstantOutsideSafeValidity)
+        ));
     }
 
     fn plan(fixture: &Fixture, expires_seconds: i64) -> VerifiedBrokerPlan {
