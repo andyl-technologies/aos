@@ -261,9 +261,11 @@ in {
 
 
       def initialize_hub(machine, url, suffix):
+          machine.succeed("systemctl is-active --quiet aos-hub.service")
+          machine.wait_until_succeeds(
+              f"{CURL} -fsS http://127.0.0.1:8420/healthz", timeout=120
+          )
           machine.succeed(textwrap.dedent(f"""
-              systemctl is-active --quiet aos-hub.service
-              {CURL} -fsS http://127.0.0.1:8420/healthz
               systemctl stop aos-hub.service
               printf '%s\\n' 'fleet-root-password' | \\
                 ${pkgs.systemd}/bin/systemd-run --pipe --wait --collect \\
