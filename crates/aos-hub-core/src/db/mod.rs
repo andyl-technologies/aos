@@ -549,12 +549,14 @@ mod placement_policy;
 mod publication_admission;
 mod registry_delete;
 mod registry_index_build;
+mod release_publication;
 mod signing_keys;
 mod topology;
 mod worker_jobs;
 pub use placement_policy::*;
 pub use publication_admission::*;
 pub use registry_index_build::*;
+pub use release_publication::*;
 pub use signing_keys::*;
 pub use topology::*;
 pub use worker_jobs::*;
@@ -618,6 +620,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("package_documentation_system_module.sql"),
     include_str!("release_package_documentation.sql"),
     include_str!("release_documentation_projection_generation.sql"),
+    include_str!("release_publication.sql"),
 ];
 
 /// Identity stamped into databases created by the topology hard-cutover
@@ -4623,7 +4626,9 @@ impl Database {
             });
             canonical_documentation.dedup();
             if canonical_documentation != release_snapshot.documentation {
-                bail!("release documentation projection must be canonically sorted and deduplicated");
+                bail!(
+                    "release documentation projection must be canonically sorted and deduplicated"
+                );
             }
             if canonical_documentation.windows(2).any(|pair| {
                 pair[0].package_name == pair[1].package_name
@@ -4774,11 +4779,7 @@ impl Database {
                     metadata_digest,
                 ]);
             }
-            extend_release_documentation_inserts(
-                &mut stmts,
-                &snapshot_id,
-                &documentation_rows,
-            )?;
+            extend_release_documentation_inserts(&mut stmts, &snapshot_id, &documentation_rows)?;
             stmts.push(Statement::new(
                 "UPDATE release_artifact_snapshots
                  SET actual_artifact_count = (SELECT COUNT(*)
@@ -15482,8 +15483,7 @@ impl Database {
         // The anti-join above proves every signed documentation artifact has
         // a locator with the same immutable path identity. Reading the full
         // projection additionally verifies every locator metadata digest.
-        self.list_release_package_documentation(registry_id)
-            .await?;
+        self.list_release_package_documentation(registry_id).await?;
         Ok(true)
     }
 
@@ -15561,9 +15561,8 @@ impl Database {
                     references: Vec::new(),
                 },
             };
-            let expected_digest = hex::encode(sha2::Sha256::digest(serde_json::to_vec(
-                &documentation,
-            )?));
+            let expected_digest =
+                hex::encode(sha2::Sha256::digest(serde_json::to_vec(&documentation)?));
             let stored_digest: String = row.get(12)?;
             if stored_digest != expected_digest {
                 bail!("release documentation metadata digest does not match its locator");
@@ -27007,9 +27006,7 @@ source_nar_hash = ""
             .unwrap();
         let release_documentation_index = MIGRATIONS
             .iter()
-            .position(|migration| {
-                migration.contains("CREATE TABLE release_package_documentation(")
-            })
+            .position(|migration| migration.contains("CREATE TABLE release_package_documentation("))
             .unwrap();
         let projection_generation_index = MIGRATIONS
             .iter()
@@ -27937,11 +27934,10 @@ source_nar_hash = ""
             )
             .await
             .unwrap();
-        assert!(
-            db.release_documentation_projection_complete(id)
-                .await
-                .is_err()
-        );
+        assert!(db
+            .release_documentation_projection_complete(id)
+            .await
+            .is_err());
         db.backend
             .execute(
                 "UPDATE release_package_documentation

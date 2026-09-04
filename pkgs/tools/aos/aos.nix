@@ -122,6 +122,7 @@
     "aos-proto-types"
     "aos-registry-spa"
     "aos-registry-surface"
+    "aos-release"
     "aos-remote"
     "aos-server"
     "aos-systemd"
@@ -171,7 +172,7 @@ in
     pname = "aos";
     inherit version src;
 
-    outputs = ["out" "apm" "apr" "packageRuntime"];
+    outputs = ["out" "apm" "apr" "packageRuntime" "testSupport"];
 
     cargoFlags = "-p aos";
 
@@ -332,6 +333,12 @@ in
           install_cli apm "$apm" ${lib.escapeShellArg (runtimeBinPath apmRuntimeTools)} 1
           install_cli apr "$apr" ${lib.escapeShellArg (runtimeBinPath aprRuntimeTools)} 0
           install_cli aos-package-runtime "$packageRuntime" ${lib.escapeShellArg (runtimeBinPath apmRuntimeTools)} 1
+
+          # This deterministic signer/fixture process exists only for the
+          # isolated fleet release exercise. Keep it out of every shipped CLI
+          # output and expose it solely through the explicit testSupport output.
+          mkdir -p "$testSupport/bin"
+          mv "$out/bin/aos-release-fleet-fixture" "$testSupport/bin/"
 
           # Cargo links the binaries before they are distributed among the
           # named outputs, so its default install-prefix RPATH names $out/lib.

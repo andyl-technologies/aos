@@ -18,6 +18,8 @@ members = [
     "aos-hub-core",
     "aos-hub",
     "aos-registry-surface",
+    "aos-release",
+    "aos-image-finalizer",
     "aos-registry-spa",
     "aos-hub-worker",
     "aos-hub-console",
@@ -80,7 +82,7 @@ alejandra = "3.1.0"
 bytes = "1"
 http-body-util = "0.1"
 http = "1"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json", "stream"] }
 url = "2"
 unicode-normalization = "0.1"
 async-trait = "0.1"
@@ -208,6 +210,8 @@ aos-hub-console-contract = { path = "aos-hub-console-contract" }
 aos-hub-core = { path = "aos-hub-core" }
 aos-hub = { path = "aos-hub" }
 aos-registry-surface = { path = "aos-registry-surface" }
+aos-release = { path = "aos-release" }
+aos-image-finalizer = { path = "aos-image-finalizer" }
 aos-profile = { path = "aos-profile" }
 aos-systemd = { path = "aos-systemd" }
 

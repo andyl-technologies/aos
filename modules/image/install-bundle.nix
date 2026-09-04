@@ -28,7 +28,7 @@
     };
   };
   efiName = efiNames.${lib.platform.constraints.cpu} or (throw "no installer EFI names for ${lib.system}");
-  pcrPublicKey = config.aos.boot.secureBoot.measuredBoot.pcrPublicKey;
+  pcrPublicKey = config.aos.boot.secureBoot.measuredBoot._effectivePcrPublicKey;
 in {
   options.system.build.installBundle = lib.mkOption {
     type = lib.types.nullOr lib.types.package;
@@ -82,7 +82,7 @@ in {
             ''}
             ${lib.optionalString config.aos.boot.secureBoot.enable ''
               sbsign --key ${config.aos.boot.secureBoot.dbKey} \
-                --cert ${config.aos.boot.secureBoot.dbCert} \
+                --cert ${config.aos.boot.secureBoot._effectiveDbCert} \
                 --output "$out/payload/esp/EFI/BOOT/${efiName.fallback}" \
                 ${pkgs.systemd}/lib/systemd/boot/efi/${efiName.systemd}
             ''}
