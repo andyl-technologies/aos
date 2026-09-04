@@ -35,6 +35,8 @@ pub enum ApplyOutcome {
     Immediate,
     /// Apply commits desired state and schedules a durable operation.
     Operation,
+    /// Apply persists reviewed workflow progress with linked durable operations.
+    Workflow,
 }
 
 /// The only durable mutations exempt from reviewed plan/apply as append-only collaboration.
@@ -210,10 +212,12 @@ pub fn validate_method_manifest(methods: &[MethodDescriptor]) -> Vec<ManifestVio
                         "apply method has an invalid pair identity",
                     ));
                 }
-                if method.external_effects && *outcome != ApplyOutcome::Operation {
+                if method.external_effects
+                    && !matches!(outcome, ApplyOutcome::Operation | ApplyOutcome::Workflow)
+                {
                     violations.push(violation(
                         method,
-                        "external reviewed effects must return an operation",
+                        "external reviewed effects must return an operation or reviewed workflow",
                     ));
                 }
                 pairs.entry(pair.as_str()).or_default().1.push(method);
@@ -317,9 +321,12 @@ pub fn validate_method_manifest(methods: &[MethodDescriptor]) -> Vec<ManifestVio
                     "operation lifecycle methods mutate operation state",
                     &mut violations,
                 );
-                if !matches!(path.as_str(),
-                    "OperationService/CancelOperation" | "OperationService/RetryOperation"
-                        | "DeliveryService/ResumeDeliveryDestination") {
+                if !matches!(
+                    path.as_str(),
+                    "OperationService/CancelOperation"
+                        | "OperationService/RetryOperation"
+                        | "DeliveryService/ResumeDeliveryDestination"
+                ) {
                     violations.push(violation(
                         method,
                         "operation-lifecycle exception is limited to cancel, retry, and reviewed delivery resume",
@@ -495,10 +502,14 @@ pub fn validate_complete_method_manifest(
             let mut fields = descriptor.request_fields.clone();
             fields.sort();
             if !fields.iter().map(String::as_str).eq([
-                "expected_resource_version", "idempotency_key", "workflow_id",
+                "expected_resource_version",
+                "idempotency_key",
+                "workflow_id",
             ]) {
-                violations.push(violation(method,
-                    "delivery resume must bind a reviewed workflow, CAS, and idempotency key"));
+                violations.push(violation(
+                    method,
+                    "delivery resume must bind a reviewed workflow, CAS, and idempotency key",
+                ));
             }
         }
         if matches!(method.class, MethodClass::Plan { .. })
@@ -573,6 +584,18 @@ pub fn validate_complete_method_manifest(
                 method,
                 "operation applies must independently return OperationResponse",
             ));
+        }
+        if matches!(
+            method.class,
+            MethodClass::Apply {
+                outcome: ApplyOutcome::Workflow,
+                ..
+            }
+        ) && (method.path() != "DeliveryService/ApplyDeliveryDestination"
+            || descriptor.response != "DeliveryWorkflowResponse")
+        {
+            violations.push(violation(method,
+                "workflow applies must return the declared delivery workflow with durable operation references"));
         }
     }
     violations
@@ -1517,11 +1540,13 @@ mod tests {
             class: MethodClass::DataPlaneWrite,
             external_effects: false,
         };
-        assert!(validate_method_manifest(&[
-            write("BinaryCacheService", "CreateCacheObjectUploads"),
-            write("BinaryCacheService", "RegisterCacheNarinfos"),
-        ])
-        .is_empty());
+        assert!(
+            validate_method_manifest(&[
+                write("BinaryCacheService", "CreateCacheObjectUploads"),
+                write("BinaryCacheService", "RegisterCacheNarinfos"),
+            ])
+            .is_empty()
+        );
         assert_eq!(
             validate_method_manifest(&[write("IdentityService", &["Mint", "Token"].concat(),)])
                 .len(),
@@ -1560,25 +1585,27 @@ mod tests {
 
         let duplicate = vec![descriptor[0].clone(), descriptor[0].clone()];
         assert!(!validate_descriptor_coverage(&methods, &duplicate).is_empty());
-        assert!(api_methods_from_generated_descriptors(&[
-            aos_proto_types::ConnectMethodDescriptor {
-                path: "/aos.hub.v1.InstanceService/GetBranding",
-                service: "InstanceService",
-                method: "GetBranding",
-                input_type: ".aos.hub.v1.GetBrandingRequest",
-                output_type: ".aos.hub.v1.BrandingResponse",
-                input_fields: &["instance_id"],
-            },
-            aos_proto_types::ConnectMethodDescriptor {
-                path: "/aos.hub.v1.InstanceService/GetBranding",
-                service: "InstanceService",
-                method: "GetBranding",
-                input_type: ".aos.hub.v1.GetBrandingRequest",
-                output_type: ".aos.hub.v1.BrandingResponse",
-                input_fields: &["instance_id"],
-            },
-        ])
-        .is_err());
+        assert!(
+            api_methods_from_generated_descriptors(&[
+                aos_proto_types::ConnectMethodDescriptor {
+                    path: "/aos.hub.v1.InstanceService/GetBranding",
+                    service: "InstanceService",
+                    method: "GetBranding",
+                    input_type: ".aos.hub.v1.GetBrandingRequest",
+                    output_type: ".aos.hub.v1.BrandingResponse",
+                    input_fields: &["instance_id"],
+                },
+                aos_proto_types::ConnectMethodDescriptor {
+                    path: "/aos.hub.v1.InstanceService/GetBranding",
+                    service: "InstanceService",
+                    method: "GetBranding",
+                    input_type: ".aos.hub.v1.GetBrandingRequest",
+                    output_type: ".aos.hub.v1.BrandingResponse",
+                    input_fields: &["instance_id"],
+                },
+            ])
+            .is_err()
+        );
     }
 
     #[test]
@@ -1631,9 +1658,11 @@ mod tests {
                 ],
             },
         ];
-        assert!(validate_complete_method_manifest(&methods, &descriptors)
-            .iter()
-            .any(|violation| violation.reason.contains("apply requests may contain only")));
+        assert!(
+            validate_complete_method_manifest(&methods, &descriptors)
+                .iter()
+                .any(|violation| violation.reason.contains("apply requests may contain only"))
+        );
     }
 
     #[test]
@@ -1741,6 +1770,51 @@ mod tests {
             validate_complete_method_manifest(&adjacent_methods, &adjacent_descriptors)
                 .iter()
                 .any(|violation| violation.reason.contains("apply requests may contain only"))
+        );
+    }
+
+    #[test]
+    fn delivery_resume_cannot_accept_new_intent_or_widen_the_lifecycle_exception() {
+        let method = MethodDescriptor {
+            service: "DeliveryService".into(),
+            method: "ResumeDeliveryDestination".into(),
+            exposure: MethodExposure::Public,
+            durability: MethodDurability::Durable,
+            class: MethodClass::OperationLifecycle,
+            external_effects: true,
+        };
+        let descriptor = ApiMethodDescriptor {
+            service: method.service.clone(),
+            method: method.method.clone(),
+            request: "ResumeDeliveryDestinationRequest".into(),
+            response: "DeliveryWorkflowResponse".into(),
+            request_fields: [
+                "workflow_id",
+                "expected_resource_version",
+                "idempotency_key",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        };
+        assert!(
+            validate_complete_method_manifest(&[method.clone()], &[descriptor.clone()]).is_empty()
+        );
+
+        let mut mutable = descriptor;
+        mutable.request_fields.push("intent".into());
+        assert!(
+            validate_complete_method_manifest(&[method.clone()], &[mutable])
+                .iter()
+                .any(|violation| violation.reason.contains("delivery resume must bind"))
+        );
+
+        let mut unrelated = method;
+        unrelated.method = "ResumeUnreviewedDestination".into();
+        assert!(
+            validate_method_manifest(&[unrelated])
+                .iter()
+                .any(|violation| violation.reason.contains("operation-lifecycle exception"))
         );
     }
 

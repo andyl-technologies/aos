@@ -18,7 +18,7 @@
     "class": {
       "class": "apply",
       "pair": "delivery_destination",
-      "outcome": "operation"
+      "outcome": "workflow"
     },
     "external_effects": true
   },
