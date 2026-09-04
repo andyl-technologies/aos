@@ -542,6 +542,8 @@ mod cache_write_admission;
 pub use cache_write_admission::*;
 mod delivery_identity;
 pub use delivery_identity::*;
+mod delivery_workflow;
+pub use delivery_workflow::*;
 mod egress_nonce;
 mod gc_topology;
 pub use gc_topology::*;
@@ -633,6 +635,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("oci_admin.sql"),
     include_str!("oci_gc.sql"),
     include_str!("oci_gc_remediation.sql"),
+    include_str!("delivery_workflow.sql"),
 ];
 
 /// Identity stamped into databases created by the topology hard-cutover
