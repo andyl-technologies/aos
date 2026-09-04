@@ -157,6 +157,57 @@ fn fixture_with_format(content_digest: [u8; 32], v3: bool) -> Fixture {
     }
 }
 
+fn fixture_v3_names(names: &[Vec<u8>]) -> Fixture {
+    let tree = descriptor("application/vnd.aos.sandbox.tree.v1+cbor", [51; 32]);
+    let root = descriptor("application/vnd.aos.sandbox.directory.v1+cbor", [52; 32]);
+    let content_descriptor = descriptor("application/vnd.aos.sandbox.content.v1", [53; 32]);
+    let content = ContentLayout::whole(content_descriptor);
+    let directory_metadata = FilesystemMetadata::new(0o755, 1, 2, 3, 4, Vec::new(), None)
+        .unwrap_or_else(|error| panic!("metadata failed: {error}"));
+    let file_metadata = FilesystemMetadata::new(0o644, 5, 6, 7, 8, Vec::new(), None)
+        .unwrap_or_else(|error| panic!("metadata failed: {error}"));
+    let staging = IndexStaging::new(IoCursor::new(Vec::new()), 1_048_576, 4096);
+    let mut builder =
+        StructuralIndexBuilder::new_v3(staging, [7; 32], tree.clone(), root.clone(), 0)
+            .unwrap_or_else(|error| panic!("builder failed: {error}"));
+    builder
+        .push(&IndexRecord {
+            parent: u64::MAX,
+            depth: 0,
+            sibling_ordinal: 0,
+            name: &[],
+            metadata: &directory_metadata,
+            node: IndexNode::Directory { descriptor: &root },
+        })
+        .unwrap_or_else(|error| panic!("root push failed: {error}"));
+    for (ordinal, name) in names.iter().enumerate() {
+        builder
+            .push(&IndexRecord {
+                parent: 0,
+                depth: 1,
+                sibling_ordinal: u32::try_from(ordinal)
+                    .unwrap_or_else(|_| panic!("ordinal overflow")),
+                name,
+                metadata: &file_metadata,
+                node: IndexNode::File {
+                    content: &content,
+                    hardlink_group: None,
+                },
+            })
+            .unwrap_or_else(|error| panic!("file push failed: {error}"));
+    }
+    let (writer, _) = builder
+        .finish()
+        .unwrap_or_else(|error| panic!("finish failed: {error}"))
+        .into_parts();
+    Fixture {
+        bytes: writer.into_inner(),
+        tree,
+        root,
+        v3: true,
+    }
+}
+
 fn descriptor(media: &str, digest: [u8; 32]) -> ObjectDescriptor {
     ObjectDescriptor::new(
         MediaType::new(media).unwrap_or_else(|error| panic!("media failed: {error}")),
@@ -528,7 +579,7 @@ fn public_inode_reads_and_open_authorization_reject_record_substitution() {
     let live_opens = table.live_open_handles();
     let pending_opens = table.pending_open_handles();
     let next_node_id = table.next_node_id;
-    let next_open_handle_id = table.next_open_handle_id;
+    let next_handle_id = table.next_handle_id;
 
     assert!(matches!(
         table.getattr(first.node_id),
@@ -544,10 +595,12 @@ fn public_inode_reads_and_open_authorization_reject_record_substitution() {
     assert_eq!(table.live_open_handles(), live_opens);
     assert_eq!(table.pending_open_handles(), pending_opens);
     assert_eq!(table.next_node_id, next_node_id);
-    assert_eq!(table.next_open_handle_id, next_open_handle_id);
+    assert_eq!(table.next_handle_id, next_handle_id);
     assert_eq!(
-        table.node_entry(first.node_id).map(|entry| entry.open_pins),
-        Some(first_entry.open_pins)
+        table
+            .node_entry(first.node_id)
+            .map(|entry| entry.handle_pins),
+        Some(first_entry.handle_pins)
     );
 
     let mut active_table = InodeTable::new(&index, [39; 32], generous_limits())
@@ -587,7 +640,7 @@ fn public_inode_reads_and_open_authorization_reject_record_substitution() {
     let active_opens = active_table.live_open_handles();
     let active_pending = active_table.pending_open_handles();
     let active_next_node = active_table.next_node_id;
-    let active_next_open = active_table.next_open_handle_id;
+    let active_next_open = active_table.next_handle_id;
 
     assert!(matches!(
         active_table.active_open(handle),
@@ -599,12 +652,12 @@ fn public_inode_reads_and_open_authorization_reject_record_substitution() {
     assert_eq!(active_table.live_open_handles(), active_opens);
     assert_eq!(active_table.pending_open_handles(), active_pending);
     assert_eq!(active_table.next_node_id, active_next_node);
-    assert_eq!(active_table.next_open_handle_id, active_next_open);
+    assert_eq!(active_table.next_handle_id, active_next_open);
     assert_eq!(
         active_table
             .node_entry(active_file.node_id)
-            .map(|entry| entry.open_pins),
-        Some(active_entry.open_pins)
+            .map(|entry| entry.handle_pins),
+        Some(active_entry.handle_pins)
     );
 }
 
@@ -1162,7 +1215,7 @@ fn open_admission_failures_leave_inode_and_handle_state_unchanged() {
     assert_eq!(allocation_refused.live_open_handles(), 0);
     assert!(allocation_refused.getattr(file.node_id).is_ok());
 
-    allocation_refused.next_open_handle_id = u64::MAX;
+    allocation_refused.next_handle_id = u64::MAX;
     assert!(matches!(
         allocation_refused.reserve_open(file.node_id),
         Err(InodeError::LimitExceeded("open handle IDs"))
@@ -1305,7 +1358,7 @@ fn open_growth_and_compaction_charge_retained_plus_replacement() {
     compaction.opens =
         allocate_open_slots(4).unwrap_or_else(|error| panic!("fixture allocation failed: {error}"));
     compaction.opens.fill(OpenSlot::Tombstone);
-    let empty = open_bucket(compaction.next_open_handle_id, compaction.opens.len());
+    let empty = open_bucket(compaction.next_handle_id, compaction.opens.len());
     compaction.opens[empty] = OpenSlot::Empty;
     compaction.open_tombstones = 3;
     let replacement = modeled_bytes::<OpenSlot>(compaction.opens.len())
@@ -1340,7 +1393,7 @@ fn open_tombstone_reuse_needs_no_replacement_admission() {
         .abort_open(&mut first)
         .unwrap_or_else(|error| panic!("abort failed: {error}"));
     table.opens.fill(OpenSlot::Empty);
-    let tombstone = open_bucket(table.next_open_handle_id, table.opens.len());
+    let tombstone = open_bucket(table.next_handle_id, table.opens.len());
     table.opens[tombstone] = OpenSlot::Tombstone;
     table.open_tombstones = 1;
     table.limits.maximum_heap_bytes = table.heap_bytes();
@@ -1401,7 +1454,7 @@ fn release_cross_map_corruption_fails_before_any_removal() {
     assert_eq!(
         table
             .node_entry(file.node_id)
-            .map(|entry| (entry.lookup_references, entry.open_pins)),
+            .map(|entry| (entry.lookup_references, entry.handle_pins)),
         Some((0, 1))
     );
 }
@@ -1428,7 +1481,7 @@ fn release_zero_pin_corruption_leaves_slots_and_counters_unchanged() {
     let NodeSlot::Occupied(mut node) = table.nodes[node_slot] else {
         panic!("node slot not occupied");
     };
-    node.open_pins = 0;
+    node.handle_pins = 0;
     table.nodes[node_slot] = NodeSlot::Occupied(node);
     let open_slot =
         find_open(&table.opens, handle.get()).unwrap_or_else(|| panic!("open slot missing"));
@@ -1451,7 +1504,7 @@ fn release_zero_pin_corruption_leaves_slots_and_counters_unchanged() {
     let ids_before = [
         table.total_lookup_references,
         table.next_node_id,
-        table.next_open_handle_id,
+        table.next_handle_id,
     ];
 
     assert!(matches!(
@@ -1473,7 +1526,7 @@ fn release_zero_pin_corruption_leaves_slots_and_counters_unchanged() {
         [
             table.total_lookup_references,
             table.next_node_id,
-            table.next_open_handle_id,
+            table.next_handle_id,
         ],
         ids_before
     );
@@ -1489,7 +1542,7 @@ fn release_zero_pin_corruption_leaves_slots_and_counters_unchanged() {
     assert_eq!(
         table
             .node_entry(file.node_id)
-            .map(|entry| (entry.lookup_references, entry.open_pins)),
+            .map(|entry| (entry.lookup_references, entry.handle_pins)),
         Some((node.lookup_references, 0))
     );
 }
@@ -1520,7 +1573,7 @@ fn abort_zero_pending_counter_leaves_slots_and_counters_unchanged() {
     };
     let node_before = table
         .node_entry(file.node_id)
-        .map(|entry| (entry.lookup_references, entry.open_pins));
+        .map(|entry| (entry.lookup_references, entry.handle_pins));
     table.pending_opens = 0;
     let counters_before = [
         table.live,
@@ -1533,7 +1586,7 @@ fn abort_zero_pending_counter_leaves_slots_and_counters_unchanged() {
     let ids_before = [
         table.total_lookup_references,
         table.next_node_id,
-        table.next_open_handle_id,
+        table.next_handle_id,
     ];
 
     assert!(matches!(
@@ -1555,7 +1608,7 @@ fn abort_zero_pending_counter_leaves_slots_and_counters_unchanged() {
         [
             table.total_lookup_references,
             table.next_node_id,
-            table.next_open_handle_id,
+            table.next_handle_id,
         ],
         ids_before
     );
@@ -1571,8 +1624,549 @@ fn abort_zero_pending_counter_leaves_slots_and_counters_unchanged() {
     assert_eq!(
         table
             .node_entry(file.node_id)
-            .map(|entry| (entry.lookup_references, entry.open_pins)),
+            .map(|entry| (entry.lookup_references, entry.handle_pins)),
         node_before
     );
     assert!(!reservation.consumed);
+}
+
+#[test]
+fn directory_handle_cookies_are_stable_stateless_and_do_not_intern_children() {
+    let fixture = fixture_v3();
+    let index = fixture.validate();
+    let directory_limits = DirectoryHandleLimits::new(8, 16);
+    let mut table = InodeTable::new_with_directory_limits(
+        &index,
+        [40; 32],
+        generous_limits(),
+        directory_limits,
+    )
+    .unwrap_or_else(|error| panic!("table failed: {error}"));
+    let mut reservation = table
+        .reserve_directory(ROOT_NODE_ID)
+        .unwrap_or_else(|error| panic!("reserve failed: {error}"));
+    let raw = reservation.raw_protocol_handle();
+    let authenticator = reservation.authenticator;
+    reservation.authenticator[0] ^= 1;
+    assert!(matches!(
+        table.activate_directory(&mut reservation),
+        Err(InodeError::InvalidDirectoryReservation)
+    ));
+    assert!(!reservation.consumed);
+    reservation.authenticator = authenticator;
+    assert!(matches!(
+        table.resolve_active_directory(raw),
+        Err(InodeError::DirectoryHandleStillPending)
+    ));
+    let handle = table
+        .activate_directory(&mut reservation)
+        .unwrap_or_else(|error| panic!("activate failed: {error}"));
+    assert_eq!(handle.get(), raw);
+    assert_eq!(reservation.raw_protocol_handle(), raw);
+
+    let nodes = table.live_nodes();
+    let references = table.total_lookup_references();
+    let entries = table
+        .directory_entries(handle, 0)
+        .unwrap_or_else(|error| panic!("entries failed: {error}"))
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap_or_else(|error| panic!("iteration failed: {error}"));
+    assert_eq!(
+        entries
+            .iter()
+            .map(DirectoryReadEntry::name)
+            .collect::<Vec<_>>(),
+        [b".".as_slice(), b"..", b"a", b"b", b"c", b"d", b"e"]
+    );
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| entry.next_cookie().get())
+            .collect::<Vec<_>>(),
+        [1, 2, 3, 4, 5, 6, 7]
+    );
+    assert_eq!(entries[0].kind(), DirectoryReadKind::Dot);
+    assert_eq!(
+        entries[0].inode().map(|value| value.node_id),
+        Some(ROOT_NODE_ID)
+    );
+    assert!(entries[1].inode().is_none());
+    assert!(entries[2..].iter().all(|entry| entry.child().is_some()));
+    assert_eq!(table.live_nodes(), nodes);
+    assert_eq!(table.total_lookup_references(), references);
+
+    for cookie in 0..=7_i64 {
+        let suffix = table
+            .directory_entries(handle, cookie)
+            .unwrap_or_else(|error| panic!("seek {cookie} failed: {error}"))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap_or_else(|error| panic!("seek iteration failed: {error}"));
+        assert_eq!(suffix.len(), 7 - cookie as usize);
+        if let Some(first) = suffix.first() {
+            assert_eq!(first.next_cookie().get(), cookie as u64 + 1);
+        }
+    }
+    assert!(matches!(
+        table.directory_entries(handle, -1),
+        Err(InodeError::InvalidDirectoryCookie)
+    ));
+    assert!(matches!(
+        table.directory_entries_raw(handle, i64::MAX as u64 + 1),
+        Err(InodeError::InvalidDirectoryCookie)
+    ));
+    assert!(matches!(
+        table.directory_entries(handle, 8),
+        Err(InodeError::InvalidDirectoryCookie)
+    ));
+    table
+        .release_directory(handle)
+        .unwrap_or_else(|error| panic!("release failed: {error}"));
+    assert!(matches!(
+        table.release_directory(handle),
+        Err(InodeError::StaleDirectoryHandle)
+    ));
+}
+
+#[test]
+fn directory_handles_are_opt_in_v3_only_and_share_raw_identity_with_files() {
+    let v3_fixture = fixture_v3();
+    let v3_index = v3_fixture.validate();
+    let mut disabled = InodeTable::new(&v3_index, [41; 32], generous_limits())
+        .unwrap_or_else(|error| panic!("disabled table failed: {error}"));
+    assert!(matches!(
+        disabled.reserve_directory(ROOT_NODE_ID),
+        Err(InodeError::DirectoryHandlesDisabled)
+    ));
+    assert_eq!(disabled.next_handle_id, 1);
+
+    let v2_fixture = fixture();
+    let v2_index = v2_fixture.validate();
+    let mut v2 = InodeTable::new_with_directory_limits(
+        &v2_index,
+        [42; 32],
+        generous_limits(),
+        DirectoryHandleLimits::new(2, 4),
+    )
+    .unwrap_or_else(|error| panic!("v2 table failed: {error}"));
+    assert!(matches!(
+        v2.reserve_directory(ROOT_NODE_ID),
+        Err(InodeError::Index(IndexError::DirectoryIterationUnavailable))
+    ));
+    assert_eq!((v2.live_directory_handles(), v2.next_handle_id), (0, 1));
+
+    let mut table = InodeTable::new_with_directory_limits(
+        &v3_index,
+        [43; 32],
+        generous_limits(),
+        DirectoryHandleLimits::new(2, 4),
+    )
+    .unwrap_or_else(|error| panic!("table failed: {error}"));
+    let (file, _) = positive_parts(
+        table
+            .lookup_bytes(ROOT_NODE_ID, b"c")
+            .unwrap_or_else(|error| panic!("lookup failed: {error}")),
+    );
+    let mut file_reservation = table
+        .reserve_open(file.node_id)
+        .unwrap_or_else(|error| panic!("file reserve failed: {error}"));
+    let file_raw = file_reservation.raw_protocol_handle();
+    let file_handle = table
+        .activate_open(&mut file_reservation)
+        .unwrap_or_else(|error| panic!("file activate failed: {error}"));
+    let mut directory_reservation = table
+        .reserve_directory(ROOT_NODE_ID)
+        .unwrap_or_else(|error| panic!("directory reserve failed: {error}"));
+    let directory_raw = directory_reservation.raw_protocol_handle();
+    assert!(directory_raw > file_raw);
+    let mut foreign_table = InodeTable::new_with_directory_limits(
+        &v3_index,
+        [54; 32],
+        generous_limits(),
+        DirectoryHandleLimits::new(2, 4),
+    )
+    .unwrap_or_else(|error| panic!("foreign table failed: {error}"));
+    assert!(matches!(
+        foreign_table.activate_directory(&mut directory_reservation),
+        Err(InodeError::InvalidDirectoryReservation)
+    ));
+    assert!(!directory_reservation.consumed);
+    assert!(matches!(
+        table.resolve_active_directory(file_raw),
+        Err(InodeError::WrongHandleKind)
+    ));
+    assert!(matches!(
+        table.resolve_active_handle(directory_raw),
+        Err(InodeError::WrongHandleKind)
+    ));
+    let directory_handle = table
+        .activate_directory(&mut directory_reservation)
+        .unwrap_or_else(|error| panic!("directory activate failed: {error}"));
+    table
+        .release_directory(directory_handle)
+        .unwrap_or_else(|error| panic!("directory release failed: {error}"));
+    table
+        .release_open(file_handle)
+        .unwrap_or_else(|error| panic!("file release failed: {error}"));
+}
+
+#[test]
+fn directory_pin_survives_forget_and_abort_or_release_reaps() {
+    let fixture = fixture_v3();
+    let index = fixture.validate();
+    let mut table = InodeTable::new_with_directory_limits(
+        &index,
+        [44; 32],
+        generous_limits(),
+        DirectoryHandleLimits::new(4, 4),
+    )
+    .unwrap_or_else(|error| panic!("table failed: {error}"));
+    let (directory, _) = positive_parts(
+        table
+            .lookup_bytes(ROOT_NODE_ID, b"e")
+            .unwrap_or_else(|error| panic!("lookup failed: {error}")),
+    );
+    let mut reservation = table
+        .reserve_directory(directory.node_id)
+        .unwrap_or_else(|error| panic!("reserve failed: {error}"));
+    table
+        .forget(&mut [ForgetRequest::new(directory.node_id, 1)])
+        .unwrap_or_else(|error| panic!("forget failed: {error}"));
+    assert!(table.getattr(directory.node_id).is_ok());
+    let handle = table
+        .activate_directory(&mut reservation)
+        .unwrap_or_else(|error| panic!("activate failed: {error}"));
+    assert_eq!(
+        table
+            .directory_entries(handle, 0)
+            .unwrap_or_else(|error| panic!("entries failed: {error}"))
+            .len(),
+        2
+    );
+    table
+        .release_directory(handle)
+        .unwrap_or_else(|error| panic!("release failed: {error}"));
+    assert!(matches!(
+        table.getattr(directory.node_id),
+        Err(InodeError::StaleNode)
+    ));
+
+    let (directory, _) = positive_parts(
+        table
+            .lookup_bytes(ROOT_NODE_ID, b"e")
+            .unwrap_or_else(|error| panic!("second lookup failed: {error}")),
+    );
+    let mut reservation = table
+        .reserve_directory(directory.node_id)
+        .unwrap_or_else(|error| panic!("second reserve failed: {error}"));
+    table
+        .forget(&mut [ForgetRequest::new(directory.node_id, 1)])
+        .unwrap_or_else(|error| panic!("second forget failed: {error}"));
+    table
+        .abort_directory(&mut reservation)
+        .unwrap_or_else(|error| panic!("abort failed: {error}"));
+    assert!(matches!(
+        table.abort_directory(&mut reservation),
+        Err(InodeError::InvalidDirectoryReservation)
+    ));
+    assert!(matches!(
+        table.getattr(directory.node_id),
+        Err(InodeError::StaleNode)
+    ));
+}
+
+#[test]
+fn directory_seek_is_page_local_for_high_fanout_and_preserves_byte_names() {
+    let mut names = (0_u32..32)
+        .map(|value| format!("n{value:04}").into_bytes())
+        .collect::<Vec<_>>();
+    names.push(vec![b'x'; 255]);
+    names.push(vec![0x80]);
+    let fixture = fixture_v3_names(&names);
+    let index = fixture.validate();
+    let mut table = InodeTable::new_with_directory_limits(
+        &index,
+        [45; 32],
+        InodeTableLimits::new(256, 4 * 1_048_576, 256, 16, 8),
+        DirectoryHandleLimits::new(2, 8),
+    )
+    .unwrap_or_else(|error| panic!("table failed: {error}"));
+    let mut reservation = table
+        .reserve_directory(ROOT_NODE_ID)
+        .unwrap_or_else(|error| panic!("reserve failed: {error}"));
+    let handle = table
+        .activate_directory(&mut reservation)
+        .unwrap_or_else(|error| panic!("activate failed: {error}"));
+    let offset = 2 + 20;
+    let mut page = table
+        .directory_entries(handle, offset)
+        .unwrap_or_else(|error| panic!("seek failed: {error}"));
+    assert_eq!(page.len(), names.len() - 20);
+    assert_eq!(
+        page.next()
+            .transpose()
+            .unwrap_or_else(|error| panic!("entry failed: {error}"))
+            .map(|entry| entry.name().to_vec()),
+        Some(names[20].clone())
+    );
+    let tail = table
+        .directory_entries(handle, 2 + 32)
+        .unwrap_or_else(|error| panic!("tail failed: {error}"))
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap_or_else(|error| panic!("tail iteration failed: {error}"));
+    assert_eq!(tail[0].name(), vec![b'x'; 255]);
+    assert_eq!(tail[1].name(), &[0x80]);
+
+    let empty_fixture = fixture_v3_names(&[]);
+    let empty_index = empty_fixture.validate();
+    let mut empty_table = InodeTable::new_with_directory_limits(
+        &empty_index,
+        [46; 32],
+        generous_limits(),
+        DirectoryHandleLimits::new(1, 1),
+    )
+    .unwrap_or_else(|error| panic!("empty table failed: {error}"));
+    let mut empty_reservation = empty_table
+        .reserve_directory(ROOT_NODE_ID)
+        .unwrap_or_else(|error| panic!("empty reserve failed: {error}"));
+    let empty_handle = empty_table
+        .activate_directory(&mut empty_reservation)
+        .unwrap_or_else(|error| panic!("empty activate failed: {error}"));
+    assert_eq!(
+        empty_table
+            .directory_entries(empty_handle, 0)
+            .unwrap_or_else(|error| panic!("empty entries failed: {error}"))
+            .len(),
+        2
+    );
+    assert_eq!(
+        empty_table
+            .directory_entries(empty_handle, 2)
+            .unwrap_or_else(|error| panic!("empty EOF failed: {error}"))
+            .len(),
+        0
+    );
+}
+
+#[test]
+fn directory_limits_foreign_handles_and_cached_substitution_fail_closed() {
+    let fixture = fixture_v3();
+    let index = fixture.validate();
+    let directory_limits = DirectoryHandleLimits::new(1, 2);
+    let mut first = InodeTable::new_with_directory_limits(
+        &index,
+        [47; 32],
+        generous_limits(),
+        directory_limits,
+    )
+    .unwrap_or_else(|error| panic!("first table failed: {error}"));
+    let second = InodeTable::new_with_directory_limits(
+        &index,
+        [48; 32],
+        generous_limits(),
+        directory_limits,
+    )
+    .unwrap_or_else(|error| panic!("second table failed: {error}"));
+    let mut reservation = first
+        .reserve_directory(ROOT_NODE_ID)
+        .unwrap_or_else(|error| panic!("reserve failed: {error}"));
+    assert!(matches!(
+        first.reserve_directory(ROOT_NODE_ID),
+        Err(InodeError::LimitExceeded("directory handles"))
+    ));
+    let handle = first
+        .activate_directory(&mut reservation)
+        .unwrap_or_else(|error| panic!("activate failed: {error}"));
+    assert!(matches!(
+        second.directory_entries(handle, 0),
+        Err(InodeError::ForeignDirectoryHandle)
+    ));
+
+    let (nested, _) = positive_parts(
+        first
+            .lookup_bytes(ROOT_NODE_ID, b"e")
+            .unwrap_or_else(|error| panic!("nested lookup failed: {error}")),
+    );
+    first
+        .release_directory(handle)
+        .unwrap_or_else(|error| panic!("root release failed: {error}"));
+    let mut root_reservation = first
+        .reserve_directory(ROOT_NODE_ID)
+        .unwrap_or_else(|error| panic!("root reserve failed: {error}"));
+    let root_handle = first
+        .activate_directory(&mut root_reservation)
+        .unwrap_or_else(|error| panic!("root activate failed: {error}"));
+    first
+        .release_directory(root_handle)
+        .unwrap_or_else(|error| panic!("second root release failed: {error}"));
+    let mut nested_reservation = first
+        .reserve_directory(nested.node_id)
+        .unwrap_or_else(|error| panic!("nested reserve failed: {error}"));
+    let nested_handle = first
+        .activate_directory(&mut nested_reservation)
+        .unwrap_or_else(|error| panic!("nested activate failed: {error}"));
+    let nested_slot = find_directory(&first.directories, nested_handle.get())
+        .unwrap_or_else(|| panic!("nested slot missing"));
+    let DirectorySlot::Occupied {
+        raw_handle_id,
+        node_id,
+        record_id,
+        range,
+        state,
+    } = first.directories[nested_slot]
+    else {
+        panic!("nested slot not occupied");
+    };
+    first.directories[nested_slot] = DirectorySlot::Occupied {
+        raw_handle_id,
+        node_id,
+        record_id: record_id + 1,
+        range,
+        state,
+    };
+    assert!(matches!(
+        first.directory_entries(nested_handle, 0),
+        Err(InodeError::InternalInvariant)
+    ));
+    assert!(matches!(
+        first.release_directory(nested_handle),
+        Err(InodeError::InternalInvariant)
+    ));
+
+    let root_range = index
+        .retained_directory_range(
+            &index
+                .root()
+                .unwrap_or_else(|error| panic!("root failed: {error}")),
+        )
+        .unwrap_or_else(|error| panic!("root range failed: {error}"));
+    first.directories[nested_slot] = DirectorySlot::Occupied {
+        raw_handle_id,
+        node_id,
+        record_id,
+        range: root_range,
+        state,
+    };
+    let before_release = (
+        first.live_directory_handles(),
+        first.pending_directory_handles(),
+        first.live_nodes(),
+        first.directory_tombstones,
+    );
+    assert!(matches!(
+        first.directory_entries(nested_handle, 0),
+        Err(InodeError::InternalInvariant)
+    ));
+    assert!(matches!(
+        first.release_directory(nested_handle),
+        Err(InodeError::InternalInvariant)
+    ));
+    assert_eq!(
+        (
+            first.live_directory_handles(),
+            first.pending_directory_handles(),
+            first.live_nodes(),
+            first.directory_tombstones,
+        ),
+        before_release
+    );
+
+    let mut refused = InodeTable::new_with_directory_limits(
+        &index,
+        [49; 32],
+        generous_limits(),
+        DirectoryHandleLimits::new(1, 1),
+    )
+    .unwrap_or_else(|error| panic!("refused table failed: {error}"));
+    refused.refuse_next_directory_allocation = true;
+    let next_id = refused.next_handle_id;
+    assert!(matches!(
+        refused.reserve_directory(ROOT_NODE_ID),
+        Err(InodeError::AllocationRefused)
+    ));
+    assert_eq!(refused.next_handle_id, next_id);
+    assert_eq!(refused.live_directory_handles(), 0);
+
+    let retained_heap = refused.heap_bytes();
+    let heap_limited = InodeTableLimits::new(32, retained_heap, 16, 16, 16);
+    let mut exact_heap = InodeTable::new_with_directory_limits(
+        &index,
+        [55; 32],
+        heap_limited,
+        DirectoryHandleLimits::new(1, 1),
+    )
+    .unwrap_or_else(|error| panic!("exact-heap table failed: {error}"));
+    assert!(matches!(
+        exact_heap.reserve_directory(ROOT_NODE_ID),
+        Err(InodeError::LimitExceeded("heap bytes"))
+    ));
+    assert_eq!(exact_heap.heap_bytes(), retained_heap);
+    assert_eq!(exact_heap.live_directory_handles(), 0);
+
+    let mut aggregate = InodeTable::new_with_directory_limits(
+        &index,
+        [50; 32],
+        generous_limits(),
+        DirectoryHandleLimits::new(2, 1),
+    )
+    .unwrap_or_else(|error| panic!("aggregate table failed: {error}"));
+    let (file, _) = positive_parts(
+        aggregate
+            .lookup_bytes(ROOT_NODE_ID, b"c")
+            .unwrap_or_else(|error| panic!("file lookup failed: {error}")),
+    );
+    let _file_reservation = aggregate
+        .reserve_open(file.node_id)
+        .unwrap_or_else(|error| panic!("file reserve failed: {error}"));
+    assert!(matches!(
+        aggregate.reserve_directory(ROOT_NODE_ID),
+        Err(InodeError::LimitExceeded("total handles"))
+    ));
+}
+
+#[test]
+fn directory_churn_rebuilds_and_exact_tombstone_reuse_needs_no_heap_growth() {
+    let fixture = fixture_v3();
+    let index = fixture.validate();
+    let mut table = InodeTable::new_with_directory_limits(
+        &index,
+        [62; 32],
+        generous_limits(),
+        DirectoryHandleLimits::new(4, 4),
+    )
+    .unwrap_or_else(|error| panic!("table failed: {error}"));
+    let mut previous = 0;
+    for _ in 0..64 {
+        let mut reservation = table
+            .reserve_directory(ROOT_NODE_ID)
+            .unwrap_or_else(|error| panic!("reserve failed: {error}"));
+        assert!(reservation.raw_protocol_handle() > previous);
+        previous = reservation.raw_protocol_handle();
+        table
+            .abort_directory(&mut reservation)
+            .unwrap_or_else(|error| panic!("abort failed: {error}"));
+        assert_eq!(table.live_directory_handles(), 0);
+        assert!(table.heap_bytes() <= table.limits.maximum_heap_bytes);
+    }
+    assert!(table.directory_rebuilds > 0);
+
+    let tombstone = table
+        .directories
+        .iter()
+        .position(|slot| matches!(slot, DirectorySlot::Tombstone))
+        .unwrap_or_else(|| panic!("directory tombstone missing"));
+    while node_bucket(table.next_handle_id, table.directories.len()) != tombstone {
+        table.next_handle_id = table
+            .next_handle_id
+            .checked_add(1)
+            .unwrap_or_else(|| panic!("handle ID overflow"));
+    }
+    table.limits.maximum_heap_bytes = table.heap_bytes();
+    let rebuilds = table.directory_rebuilds;
+    let mut reservation = table
+        .reserve_directory(ROOT_NODE_ID)
+        .unwrap_or_else(|error| panic!("tombstone reserve failed: {error}"));
+    assert_eq!(table.directory_rebuilds, rebuilds);
+    table
+        .abort_directory(&mut reservation)
+        .unwrap_or_else(|error| panic!("tombstone abort failed: {error}"));
 }

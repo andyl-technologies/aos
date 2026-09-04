@@ -25,18 +25,24 @@ use crate::{
     DirectoryRange, IndexError, IndexNodeKind, IndexNodeSemantics, IndexNodeView, ValidatedIndex,
 };
 
+mod directory;
 mod identity;
 mod open;
 
+pub use directory::{
+    DirectoryCookie, DirectoryHandleId, DirectoryHandleLimits, DirectoryReadEntries,
+    DirectoryReadEntry, DirectoryReadKind, DirectoryReservation,
+};
+use directory::{DirectorySlot, find_directory};
 use identity::{
     NodeEntry, NodeSlot, SemanticKey, SemanticSlot, allocate_node_slots, allocate_semantic_slots,
     find_node, find_node_insert, find_semantic, find_semantic_insert, find_semantic_slot,
     node_bucket, rehash_nodes, rehash_semantics, semantic_hash,
 };
-use open::OpenSlot;
 pub use open::{OpenHandleId, OpenReservation};
+use open::{OpenSlot, find_open};
 #[cfg(test)]
-use open::{allocate_open_slots, find_open, open_bucket};
+use open::{allocate_open_slots, open_bucket};
 
 const INITIAL_CAPACITY: usize = 2;
 
@@ -282,6 +288,30 @@ pub enum InodeError {
     /// The typed open handle belongs to another connection.
     #[error("inode open handle belongs to another connection")]
     ForeignOpenHandle,
+    /// Directory handles were not explicitly enabled for this table.
+    #[error("inode directory handles are disabled")]
+    DirectoryHandlesDisabled,
+    /// A directory reservation targeted a non-directory inode.
+    #[error("inode directory handle target is not a directory")]
+    DirectoryTargetNotDirectory,
+    /// A directory reservation is foreign, stale, or already consumed.
+    #[error("inode directory reservation is invalid or already consumed")]
+    InvalidDirectoryReservation,
+    /// The directory handle remains pending.
+    #[error("inode directory handle is still pending")]
+    DirectoryHandleStillPending,
+    /// The directory handle is unknown or was released.
+    #[error("inode directory handle is stale")]
+    StaleDirectoryHandle,
+    /// The typed directory handle belongs to another connection.
+    #[error("inode directory handle belongs to another connection")]
+    ForeignDirectoryHandle,
+    /// A raw handle names the other handle kind.
+    #[error("inode handle has the wrong kind")]
+    WrongHandleKind,
+    /// A READDIR cookie is negative, unrepresentable, or outside the stream.
+    #[error("inode directory cookie is invalid")]
+    InvalidDirectoryCookie,
     /// An internal fixed-table invariant was violated.
     #[error("inode table invariant violated")]
     InternalInvariant,
@@ -295,6 +325,7 @@ pub enum InodeError {
 /// bucket bits; exact semantic-key comparison independently preserves
 /// correctness if full SHA-256 digests collide. The key must not be reused as
 /// a public identifier. The table performs no randomness or persistence.
+/// Dropping it tears down every pending and active handle without callbacks.
 pub struct InodeTable<'index, 'bytes> {
     index: &'index ValidatedIndex<'bytes>,
     connection_key: [u8; 32],
@@ -302,17 +333,26 @@ pub struct InodeTable<'index, 'bytes> {
     nodes: Vec<NodeSlot<'bytes>>,
     semantics: Vec<SemanticSlot>,
     opens: Vec<OpenSlot>,
+    directories: Vec<DirectorySlot<'bytes>>,
+    directory_limits: Option<DirectoryHandleLimits>,
     live: usize,
     node_tombstones: usize,
     semantic_tombstones: usize,
     live_opens: usize,
     pending_opens: usize,
     open_tombstones: usize,
+    live_directories: usize,
+    pending_directories: usize,
+    directory_tombstones: usize,
     total_lookup_references: u64,
     next_node_id: u64,
-    next_open_handle_id: u64,
+    next_handle_id: u64,
     #[cfg(test)]
     refuse_next_open_allocation: bool,
+    #[cfg(test)]
+    refuse_next_directory_allocation: bool,
+    #[cfg(test)]
+    directory_rebuilds: u64,
     #[cfg(test)]
     open_rebuilds: u64,
     #[cfg(test)]
@@ -332,6 +372,30 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
         index: &'index ValidatedIndex<'bytes>,
         connection_key: [u8; 32],
         limits: InodeTableLimits,
+    ) -> Result<Self, InodeError> {
+        Self::new_inner(index, connection_key, limits, None)
+    }
+
+    /// Creates a table with explicitly bounded directory-handle support.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::new`]. Directory storage is charged
+    /// only when the first directory handle is reserved.
+    pub fn new_with_directory_limits(
+        index: &'index ValidatedIndex<'bytes>,
+        connection_key: [u8; 32],
+        limits: InodeTableLimits,
+        directory_limits: DirectoryHandleLimits,
+    ) -> Result<Self, InodeError> {
+        Self::new_inner(index, connection_key, limits, Some(directory_limits))
+    }
+
+    fn new_inner(
+        index: &'index ValidatedIndex<'bytes>,
+        connection_key: [u8; 32],
+        limits: InodeTableLimits,
+        directory_limits: Option<DirectoryHandleLimits>,
     ) -> Result<Self, InodeError> {
         if !index.supports_point_lookup() {
             return Err(InodeError::Index(IndexError::PointLookupUnavailable));
@@ -372,7 +436,7 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
             semantic,
             record: root,
             lookup_references: 1,
-            open_pins: 0,
+            handle_pins: 0,
         });
         semantics[semantic_slot] = SemanticSlot::Occupied {
             hash,
@@ -387,17 +451,26 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
             nodes,
             semantics,
             opens: Vec::new(),
+            directories: Vec::new(),
+            directory_limits,
             live: 1,
             node_tombstones: 0,
             semantic_tombstones: 0,
             live_opens: 0,
             pending_opens: 0,
             open_tombstones: 0,
+            live_directories: 0,
+            pending_directories: 0,
+            directory_tombstones: 0,
             total_lookup_references: 1,
             next_node_id: ROOT_NODE_ID + 1,
-            next_open_handle_id: 1,
+            next_handle_id: 1,
             #[cfg(test)]
             refuse_next_open_allocation: false,
+            #[cfg(test)]
+            refuse_next_directory_allocation: false,
+            #[cfg(test)]
+            directory_rebuilds: 0,
             #[cfg(test)]
             open_rebuilds: 0,
             #[cfg(test)]
@@ -413,6 +486,7 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
                 nodes
                     .checked_add(slot_vector_bytes(&self.semantics)?)
                     .and_then(|value| value.checked_add(slot_vector_bytes(&self.opens).ok()?))
+                    .and_then(|value| value.checked_add(slot_vector_bytes(&self.directories).ok()?))
                     .ok_or(InodeError::LimitExceeded("heap bytes"))
             })
             .unwrap_or(u64::MAX)
@@ -583,7 +657,7 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
                 .checked_add(item.lookup_references)
                 .ok_or(InodeError::ForgetUnderflow)?;
             if retained == item.lookup_references
-                && entry.open_pins == 0
+                && entry.handle_pins == 0
                 && item.node_id != ROOT_NODE_ID
             {
                 let hash = semantic_hash(&self.connection_key, entry.semantic);
@@ -654,7 +728,7 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
             semantic,
             record,
             lookup_references: 1,
-            open_pins: 0,
+            handle_pins: 0,
         };
         let next_live = self
             .live

@@ -327,6 +327,14 @@ impl<'bytes> ValidatedIndex<'bytes> {
         &'index self,
         directory: &IndexNodeView<'_>,
     ) -> Result<DirectoryRange<'index>, IndexError> {
+        self.retained_directory_range(directory)
+    }
+
+    /// Returns a child range whose bytes are retained by an internal owner.
+    pub(crate) fn retained_directory_range(
+        &self,
+        directory: &IndexNodeView<'_>,
+    ) -> Result<DirectoryRange<'bytes>, IndexError> {
         let IndexLayout::IterableV3 {
             records_bytes,
             lookup_slots,
@@ -478,6 +486,16 @@ pub struct DirectoryRange<'a> {
 }
 
 impl<'a> DirectoryRange<'a> {
+    /// Reports whether two ranges carry the same authenticated identity.
+    pub(crate) fn same_identity(&self, other: &Self) -> bool {
+        std::ptr::eq(self.bytes, other.bytes)
+            && self.artifact == other.artifact
+            && self.table_offset == other.table_offset
+            && self.start == other.start
+            && self.length == other.length
+            && self.parent == other.parent
+    }
+
     /// Returns the exact child count.
     #[must_use]
     pub const fn len(&self) -> u64 {

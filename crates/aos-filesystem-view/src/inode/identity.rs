@@ -22,7 +22,7 @@ pub(super) struct NodeEntry<'bytes> {
     pub(super) semantic: SemanticKey,
     pub(super) record: IndexNodeView<'bytes>,
     pub(super) lookup_references: u64,
-    pub(super) open_pins: u64,
+    pub(super) handle_pins: u64,
 }
 
 #[derive(Clone, Copy)]

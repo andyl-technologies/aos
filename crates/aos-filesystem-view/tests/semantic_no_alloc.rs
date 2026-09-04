@@ -9,8 +9,9 @@ use std::io::Cursor;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use aos_filesystem_view::{
-    INDEX_MEDIA_TYPE, IndexContentView, IndexExpectation, IndexNodeBodyView, IndexStaging,
-    ObjectSource, TreeCompileLimits, TreeCompiler, validate_index,
+    DirectoryHandleLimits, INDEX_MEDIA_TYPE, IndexContentView, IndexExpectation, IndexNodeBodyView,
+    IndexStaging, InodeError, InodeTable, InodeTableLimits, ObjectSource, ROOT_NODE_ID,
+    TreeCompileLimits, TreeCompiler, validate_index,
 };
 use aos_sandbox_core::format::{encode_directory, encode_tree};
 use aos_sandbox_core::model::{
@@ -250,9 +251,24 @@ fn main() {
         .lookup_child(&root, &link_name)
         .unwrap_or_else(|error| panic!("lookup failed: {error}"))
         .unwrap_or_else(|| panic!("link missing"));
+    let mut inode_table = InodeTable::new_with_directory_limits(
+        &index,
+        [61; 32],
+        InodeTableLimits::new(16, 1_048_576, 16, 16, 8),
+        DirectoryHandleLimits::new(2, 8),
+    )
+    .unwrap_or_else(|error| panic!("inode table failed: {error}"));
+    let mut directory_reservation = inode_table
+        .reserve_directory(ROOT_NODE_ID)
+        .unwrap_or_else(|error| panic!("directory reserve failed: {error}"));
+    let directory_raw = directory_reservation.raw_protocol_handle();
+    let directory_handle = inode_table
+        .activate_directory(&mut directory_reservation)
+        .unwrap_or_else(|error| panic!("directory activation failed: {error}"));
 
     let (result, allocations) = measure_allocations(|| {
-        PathName::validate(black_box(b"file"))?;
+        PathName::validate(black_box(b"file"))
+            .map_err(|_| aos_filesystem_view::IndexError::InvalidRecord)?;
         let file_from_bytes = index
             .lookup_child_bytes(&root, black_box(b"file"))?
             .ok_or(aos_filesystem_view::IndexError::InvalidRecord)?;
@@ -260,7 +276,7 @@ fn main() {
 
         let root_semantics = index.record_semantics(&root)?;
         let IndexNodeBodyView::Directory { descriptor } = root_semantics.body() else {
-            return Err(aos_filesystem_view::IndexError::InvalidRecord);
+            return Err(aos_filesystem_view::IndexError::InvalidRecord.into());
         };
         black_box(descriptor.media_type());
 
@@ -275,10 +291,10 @@ fn main() {
             }
         }
         let IndexNodeBodyView::File(file) = semantics.body() else {
-            return Err(aos_filesystem_view::IndexError::InvalidRecord);
+            return Err(aos_filesystem_view::IndexError::InvalidRecord.into());
         };
         let IndexContentView::Sparse(sparse) = file.content() else {
-            return Err(aos_filesystem_view::IndexError::InvalidRecord);
+            return Err(aos_filesystem_view::IndexError::InvalidRecord.into());
         };
         black_box(sparse.logical_size());
         for extent in sparse.extents() {
@@ -288,10 +304,16 @@ fn main() {
 
         let link = index.record_semantics(&link)?;
         let IndexNodeBodyView::Symlink { target } = link.body() else {
-            return Err(aos_filesystem_view::IndexError::InvalidRecord);
+            return Err(aos_filesystem_view::IndexError::InvalidRecord.into());
         };
         black_box(target);
-        Ok::<(), aos_filesystem_view::IndexError>(())
+        let resolved = inode_table.resolve_active_directory(black_box(directory_raw))?;
+        for entry in inode_table.directory_entries(resolved, black_box(0))? {
+            let entry = entry?;
+            black_box((entry.name(), entry.next_cookie()));
+        }
+        black_box(directory_handle);
+        Ok::<(), InodeError>(())
     });
 
     result.unwrap_or_else(|error| panic!("semantic access failed: {error}"));

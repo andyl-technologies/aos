@@ -114,16 +114,21 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
             return Err(InodeError::OpenTargetNotFile);
         }
         let next_pin_count = node
-            .open_pins
+            .handle_pins
             .checked_add(1)
             .ok_or(InodeError::LimitExceeded("open pins"))?;
         if self.live_opens as u64 >= self.limits.maximum_open_handles {
             return Err(InodeError::LimitExceeded("open handles"));
         }
+        if let Some(limits) = self.directory_limits
+            && self.total_handles()? >= limits.maximum_total_handles
+        {
+            return Err(InodeError::LimitExceeded("total handles"));
+        }
 
-        let raw_handle_id = self.next_open_handle_id;
+        let raw_handle_id = self.next_handle_id;
         let next_handle_id = self
-            .next_open_handle_id
+            .next_handle_id
             .checked_add(1)
             .ok_or(InodeError::LimitExceeded("open handle IDs"))?;
         let next_live = self
@@ -175,11 +180,11 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
             self.open_tombstones = next_tombstones;
         }
 
-        node.open_pins = next_pin_count;
+        node.handle_pins = next_pin_count;
         self.nodes[node_slot] = NodeSlot::Occupied(node);
         self.live_opens = next_live;
         self.pending_opens = next_pending;
-        self.next_open_handle_id = next_handle_id;
+        self.next_handle_id = next_handle_id;
         Ok(OpenReservation {
             raw_handle_id,
             node_id,
@@ -299,7 +304,12 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
         if raw == 0 {
             return Err(InodeError::StaleOpenHandle);
         }
-        let slot = find_open(&self.opens, raw).ok_or(InodeError::StaleOpenHandle)?;
+        let Some(slot) = find_open(&self.opens, raw) else {
+            if find_directory(&self.directories, raw).is_some() {
+                return Err(InodeError::WrongHandleKind);
+            }
+            return Err(InodeError::StaleOpenHandle);
+        };
         let OpenSlot::Occupied { state, .. } = self.opens[slot] else {
             return Err(InodeError::InternalInvariant);
         };
@@ -420,7 +430,7 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
             return Err(InodeError::InternalInvariant);
         };
         let next_pins = node
-            .open_pins
+            .handle_pins
             .checked_sub(1)
             .ok_or(InodeError::InternalInvariant)?;
         let reap = node_id != ROOT_NODE_ID && node.lookup_references == 0 && next_pins == 0;
@@ -474,7 +484,7 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
             self.nodes[node_slot] = NodeSlot::Tombstone;
             self.semantics[semantic_slot] = SemanticSlot::Tombstone;
         } else {
-            node.open_pins = next_pins;
+            node.handle_pins = next_pins;
             self.nodes[node_slot] = NodeSlot::Occupied(node);
         }
         self.live = next_live;
