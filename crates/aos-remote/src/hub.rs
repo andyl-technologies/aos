@@ -896,7 +896,9 @@ impl HubTopologyMethod {
             GetDeliveryWorkflow => "aos.hub.v1.DeliveryService/GetDeliveryWorkflow",
             ListDeliveryWorkflows => "aos.hub.v1.DeliveryService/ListDeliveryWorkflows",
             ResumeDeliveryDestination => "aos.hub.v1.DeliveryService/ResumeDeliveryDestination",
-            PlanActivateDeliveryDestination => "aos.hub.v1.DeliveryService/PlanActivateDeliveryDestination",
+            PlanActivateDeliveryDestination => {
+                "aos.hub.v1.DeliveryService/PlanActivateDeliveryDestination"
+            }
             ActivateDeliveryDestination => "aos.hub.v1.DeliveryService/ActivateDeliveryDestination",
             PlanCreateGateway => "aos.hub.v1.DeliveryService/PlanCreateGateway",
             CreateGateway => "aos.hub.v1.DeliveryService/CreateGateway",

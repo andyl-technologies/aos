@@ -639,10 +639,10 @@ fn verify_checked_capability_manifest(generated: &[ConnectMethod]) -> BuildResul
         for method_name in &service_methods {
             if let Some(default_apply_name) = method_name.strip_prefix("Plan") {
                 let apply_name = match (service_name, *method_name) {
-                    ("ContainerService", "PlanContainerRegistryPurgeFence") =>
-                        "ApplyContainerRegistryPurgeFence",
-                    ("DeliveryService", "PlanDeliveryDestination") =>
-                        "ApplyDeliveryDestination",
+                    ("ContainerService", "PlanContainerRegistryPurgeFence") => {
+                        "ApplyContainerRegistryPurgeFence"
+                    }
+                    ("DeliveryService", "PlanDeliveryDestination") => "ApplyDeliveryDestination",
                     _ => default_apply_name,
                 };
                 if !service_methods.contains(apply_name) {

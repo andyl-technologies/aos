@@ -9,7 +9,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use crate::components::{HashValue, HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
-use crate::mutation::{PendingPlan, idempotency_key, watch_draft};
+use crate::mutation::{idempotency_key, watch_draft, PendingPlan};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
 
@@ -969,7 +969,11 @@ fn cache_surface(path: &str) -> aos_proto_types::SurfaceRef {
     }
 }
 fn yes_no(value: bool) -> &'static str {
-    if value { "yes" } else { "no" }
+    if value {
+        "yes"
+    } else {
+        "no"
+    }
 }
 fn display_or(value: &str, fallback: &str) -> String {
     if value.is_empty() {
