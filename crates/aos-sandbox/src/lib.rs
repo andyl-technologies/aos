@@ -9,6 +9,7 @@ pub mod authority;
 pub mod dispatch;
 pub mod journal;
 pub mod ownership_authority;
+pub mod publication;
 pub mod reconciler;
 
 pub use authority::{
@@ -28,6 +29,10 @@ pub use ownership_authority::{
     ExpectedOwnershipLease, OwnershipAuthority, OwnershipAuthorityError,
     OwnershipAuthorityVerifier, OwnershipClaimAction, OwnershipClaimError, OwnershipClaimV1,
     OwnershipLeaseAcquisitionError, SignedOwnershipLease, UnverifiedOwnershipLeaseResponse,
+};
+pub use publication::{
+    AuthorityPublicationError, AuthorityPublicationOutcome, AuthorityPublicationProposalV1,
+    AuthorityPublicationStore, CurrentAuthorityPublicationV1, PreparedAuthorityPublicationV1,
 };
 pub use reconciler::{
     AcceptOutcome, EffectDomain, EffectFailure, EffectObservation, EffectPlan, EffectReceipt,

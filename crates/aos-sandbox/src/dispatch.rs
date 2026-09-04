@@ -520,6 +520,13 @@ fn locate_deadline_free_header(body: &[u8]) -> Result<(usize, usize), BrokerDisp
     Ok((start, end))
 }
 
+pub(crate) fn validate_durable_deadline_free_body(body: &[u8]) -> bool {
+    body.len()
+        .checked_add(MAXIMUM_DEADLINE_FIELD_BYTES)
+        .is_some_and(|size| size <= MAXIMUM_REQUEST_BYTES)
+        && locate_deadline_free_header(body).is_ok()
+}
+
 fn validate_remaining_body_fields(bytes: &[u8]) -> Result<(), BrokerDispatchTemplateError> {
     let mut cursor = 0;
     while cursor < bytes.len() {
