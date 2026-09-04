@@ -7,7 +7,7 @@
 //! memfd missing a required seal.
 //!
 //! ```text
-//! header | identities | target-relative-path | sha256
+//! header | identities | effect-deadline | target-relative-path | sha256
 //! ```
 
 use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
@@ -23,8 +23,8 @@ use sha2::{Digest as _, Sha256};
 use crate::{MountError, Result};
 
 const MAGIC: &[u8; 8] = b"AOSMNT01";
-const VERSION: u16 = 2;
-const FIXED_PREFIX_BYTES: usize = 8 + 2 + 1 + 1 + 8 + 8 + 16 + 16 + 32 + (11 * 8) + 2;
+const VERSION: u16 = 3;
+const FIXED_PREFIX_BYTES: usize = 8 + 2 + 1 + 1 + 8 + 8 + 16 + 16 + 32 + (11 * 8) + 16 + 16 + 8 + 2;
 const CHECKSUM_BYTES: usize = 32;
 const MAXIMUM_TARGET_PATH_BYTES: usize = 4096;
 const MAXIMUM_PLAN_BYTES: usize = FIXED_PREFIX_BYTES + MAXIMUM_TARGET_PATH_BYTES + CHECKSUM_BYTES;
@@ -145,6 +145,12 @@ pub struct HelperPlan {
     pub expected_predecessor_mount_id: u64,
     /// Exact mount identity beneath an absent destination slot.
     pub target_slot_mount_id: u64,
+    /// Protected paired-clock reader identity, or zero for observation.
+    pub clock_provenance: [u8; 16],
+    /// Host boot identity under which a mutation deadline is valid.
+    pub host_boot_id: [u8; 16],
+    /// Exclusive mutation deadline on `CLOCK_BOOTTIME`, or zero for observation.
+    pub effect_deadline_boottime_nanoseconds: u64,
     /// Source-root identity expected after attachment.
     pub source: ExpectedFileIdentity,
     /// Payload mount-namespace identity.
@@ -194,6 +200,9 @@ impl HelperPlan {
         ] {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
+        bytes.extend_from_slice(&self.clock_provenance);
+        bytes.extend_from_slice(&self.host_boot_id);
+        bytes.extend_from_slice(&self.effect_deadline_boottime_nanoseconds.to_le_bytes());
         bytes.extend_from_slice(&path_length.to_le_bytes());
         bytes.extend_from_slice(path);
         let checksum = Sha256::digest(&bytes);
@@ -241,6 +250,9 @@ impl HelperPlan {
             expected_mount_id: 0,
             expected_predecessor_mount_id: 0,
             target_slot_mount_id: 0,
+            clock_provenance: [0; 16],
+            host_boot_id: [0; 16],
+            effect_deadline_boottime_nanoseconds: 0,
             source: ExpectedFileIdentity {
                 device: decoder.u64()?,
                 inode: decoder.u64()?,
@@ -262,6 +274,9 @@ impl HelperPlan {
         plan.expected_mount_id = decoder.u64()?;
         plan.expected_predecessor_mount_id = decoder.u64()?;
         plan.target_slot_mount_id = decoder.u64()?;
+        plan.clock_provenance = decoder.array()?;
+        plan.host_boot_id = decoder.array()?;
+        plan.effect_deadline_boottime_nanoseconds = decoder.u64()?;
         let path_length = usize::from(decoder.u16()?);
         let path = decoder.take(path_length)?;
         if !decoder.remaining().is_empty() {
@@ -303,6 +318,23 @@ impl HelperPlan {
         if !predecessor_valid {
             return Err(invalid_plan(
                 "helper predecessor identity does not match action",
+            ));
+        }
+        let deadline_valid = match self.action {
+            HelperAction::Observe => {
+                self.clock_provenance == [0; 16]
+                    && self.host_boot_id == [0; 16]
+                    && self.effect_deadline_boottime_nanoseconds == 0
+            }
+            HelperAction::Install | HelperAction::Replace | HelperAction::Detach => {
+                self.clock_provenance != [0; 16]
+                    && self.host_boot_id != [0; 16]
+                    && self.effect_deadline_boottime_nanoseconds != 0
+            }
+        };
+        if !deadline_valid {
+            return Err(invalid_plan(
+                "helper effect deadline does not match the action",
             ));
         }
         let path = &self.target_relative_path;
@@ -452,6 +484,9 @@ mod tests {
             expected_mount_id: 12,
             expected_predecessor_mount_id: 13,
             target_slot_mount_id: 14,
+            clock_provenance: [15; 16],
+            host_boot_id: [16; 16],
+            effect_deadline_boottime_nanoseconds: 17,
             source: ExpectedFileIdentity {
                 device: 4,
                 inode: 5,

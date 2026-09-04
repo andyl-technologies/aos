@@ -1,7 +1,9 @@
 //! Negotiated one-request mount-broker service orchestration.
 
 use aos_proto::aos::sandbox::local::v1::{Audience, BrokerErrorCode, BrokerMethod};
-use aos_sandbox_core::ProtocolId;
+use aos_sandbox_core::{FeatureRef, ProtocolId, RawClockProvenance, RawPairedClockSample};
+use aos_sandbox_linux::boot::KernelBootId;
+use aos_sandbox_protocol::session::SIGNED_PLAN_LEASE_FEATURE_NAMESPACE;
 use aos_sandbox_protocol::{
     MAXIMUM_HANDSHAKE_BYTES, MAXIMUM_REQUEST_BYTES, PeerPolicy, ProtocolValidationError,
     ValidatedBrokerRequestEnvelope, decode_mount_inventory_request, decode_mount_request,
@@ -15,7 +17,7 @@ use crate::broker::MountBroker;
 use crate::peer::ControllerPeerVerifier;
 use crate::transport::ActivatedSeqpacketListener;
 use crate::worker::MountWorker;
-use crate::{MountError, Result};
+use crate::{KERNEL_CLOCK_PROVENANCE, MountError, Result};
 
 /// Classifies handling of one accepted connection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -60,8 +62,9 @@ impl<W: MountWorker> MountService<W> {
     ///
     /// # Errors
     ///
-    /// Returns an error only when accepting the next connection or reading
-    /// `CLOCK_BOOTTIME` fails. Per-request failures become bounded responses.
+    /// Returns an error only when accepting the next connection or reading the
+    /// protected paired clock fails. Per-request failures become bounded
+    /// responses.
     #[allow(clippy::too_many_lines)]
     pub fn serve_once(
         &mut self,
@@ -75,12 +78,13 @@ impl<W: MountWorker> MountService<W> {
             Ok(packet) if packet.descriptors.is_empty() => packet.bytes,
             Ok(_) | Err(_) => return Ok(ConnectionOutcome::TransportRejected),
         };
+        let advertised_features = [signed_plan_lease_feature()?];
         let session = match negotiate_client_hello(
             &hello,
             peer.credentials(),
             self.peer_policy,
             ProtocolId::MountBroker,
-            &[],
+            &advertised_features,
             &[
                 BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
                 BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES,
@@ -106,9 +110,12 @@ impl<W: MountWorker> MountService<W> {
         if validate_request_descriptor_roles(&envelope, &[]).is_err() {
             return Ok(ConnectionOutcome::RequestRejected);
         }
-        let now = boottime_nanoseconds()?;
+        let now = trusted_paired_clock_sample()?.boottime_nanoseconds();
         let dispatch = match envelope.method() {
             BrokerMethod::BROKER_METHOD_MOUNT_APPLY => {
+                let Some(artifacts) = envelope.authorization() else {
+                    return Ok(ConnectionOutcome::RequestRejected);
+                };
                 let Ok(validated) = decode_mount_request(
                     envelope.body(),
                     peer.credentials(),
@@ -126,9 +133,11 @@ impl<W: MountWorker> MountService<W> {
                     ceiling,
                     self.broker.apply_mount(
                         envelope.body(),
+                        artifacts,
+                        session.version(),
                         peer.credentials(),
                         self.peer_policy,
-                        now,
+                        trusted_paired_clock_sample,
                     ),
                 )
             }
@@ -215,17 +224,37 @@ fn encode_dispatch_response(
     }
 }
 
-fn boottime_nanoseconds() -> Result<u64> {
-    let time = clock_gettime(ClockId::Boottime);
-    let seconds = u64::try_from(time.tv_sec)
+fn signed_plan_lease_feature() -> Result<FeatureRef> {
+    FeatureRef::new(SIGNED_PLAN_LEASE_FEATURE_NAMESPACE, 1, 0)
+        .map_err(|error| MountError::State(error.to_string()))
+}
+
+/// Reads wall time and BOOTTIME from the kernel in one protected adapter call.
+///
+/// The provenance identity is a local source label, not a trust credential.
+/// Callers invoke this function again after durable admission and immediately
+/// before an effect, preventing an earlier transport timestamp from becoming
+/// executable authority.
+fn trusted_paired_clock_sample() -> Result<RawPairedClockSample> {
+    let wall = clock_gettime(ClockId::Realtime);
+    let boottime = clock_gettime(ClockId::Boottime);
+    let wall_seconds = wall.tv_sec;
+    let seconds = u64::try_from(boottime.tv_sec)
         .map_err(|_| MountError::State("CLOCK_BOOTTIME returned negative seconds".to_owned()))?;
-    let nanoseconds = u64::try_from(time.tv_nsec).map_err(|_| {
+    let nanoseconds = u64::try_from(boottime.tv_nsec).map_err(|_| {
         MountError::State("CLOCK_BOOTTIME returned negative nanoseconds".to_owned())
     })?;
-    seconds
+    let boottime_nanoseconds = seconds
         .checked_mul(1_000_000_000)
         .and_then(|value| value.checked_add(nanoseconds))
-        .ok_or_else(|| MountError::State("CLOCK_BOOTTIME overflowed u64".to_owned()))
+        .ok_or_else(|| MountError::State("CLOCK_BOOTTIME overflowed u64".to_owned()))?;
+    let provenance = RawClockProvenance::new_untrusted(KERNEL_CLOCK_PROVENANCE)
+        .map_err(|error| MountError::State(error.to_string()))?;
+    let boot_id = KernelBootId::current()
+        .map_err(|error| MountError::State(error.to_string()))?
+        .into_bytes();
+    RawPairedClockSample::new_untrusted(provenance, boot_id, wall_seconds, boottime_nanoseconds)
+        .map_err(|error| MountError::State(error.to_string()))
 }
 
 fn classify_error(error: &MountError) -> (BrokerErrorCode, &'static str, bool) {

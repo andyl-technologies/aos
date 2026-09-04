@@ -6,6 +6,7 @@ use std::os::fd::{AsFd as _, FromRawFd as _, OwnedFd};
 use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
 use std::path::{Path, PathBuf};
 
+use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::inventory::{MountId, MountNamespace, MountObservation};
 use aos_sandbox_linux::mount::{DetachedMount, detach_relative};
 use aos_sandbox_linux::path::{BeneathRoot, FileIdentity, ResolveOptions, ResolvedPath};
@@ -21,8 +22,10 @@ use crate::spawn::{
     DETACHED_MOUNT_FD, DescriptorMapping, MOUNT_NAMESPACE_FD, OBSERVATION_FD, PLAN_FD,
     TARGET_ROOT_FD, TARGET_SLOT_FD, run_helper,
 };
-use crate::worker::{InstalledMountObservation, MountTargetObservation, NamespaceHelper};
-use crate::{MountError, Result};
+use crate::worker::{
+    EffectDeadlineV1, InstalledMountObservation, MountTargetObservation, NamespaceHelper,
+};
+use crate::{KERNEL_CLOCK_PROVENANCE, MountError, Result};
 
 const REPORT_MAGIC: &[u8; 8] = b"AOSMOBS1";
 const MAXIMUM_REPORT_BYTES: usize = 131_072;
@@ -68,6 +71,7 @@ impl PosixSpawnNamespaceHelper {
         Ok(Self { executable })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn invoke(
         &self,
         request: &ValidatedMountRequest,
@@ -76,6 +80,7 @@ impl PosixSpawnNamespaceHelper {
         action: HelperAction,
         detached: Option<&DetachedMount>,
         expected: ExpectedMounts,
+        deadline: Option<EffectDeadlineV1>,
     ) -> Result<MountTargetObservation> {
         let plan = compile_plan(
             request,
@@ -84,6 +89,7 @@ impl PosixSpawnNamespaceHelper {
             action,
             expected.successor,
             expected.predecessor,
+            deadline,
         )?;
         let sealed = SealedHelperPlan::create(&plan)?;
         let report = rustix::fs::memfd_create(
@@ -143,6 +149,7 @@ impl NamespaceHelper for PosixSpawnNamespaceHelper {
                 successor: expected_mount_id,
                 predecessor: expected_predecessor_mount_id,
             },
+            None,
         )
     }
 
@@ -154,6 +161,7 @@ impl NamespaceHelper for PosixSpawnNamespaceHelper {
         mount: &DetachedMount,
         beneath: bool,
         expected_predecessor_mount_id: Option<MountId>,
+        deadline: EffectDeadlineV1,
     ) -> Result<InstalledMountObservation> {
         let action = if beneath {
             HelperAction::Replace
@@ -170,6 +178,7 @@ impl NamespaceHelper for PosixSpawnNamespaceHelper {
                 successor: mount.mount_id(),
                 predecessor: expected_predecessor_mount_id,
             },
+            Some(deadline),
         )? {
             MountTargetObservation::Installed(observation) => Ok(*observation),
             _ => Err(MountError::Worker(
@@ -184,6 +193,7 @@ impl NamespaceHelper for PosixSpawnNamespaceHelper {
         request_digest: [u8; 32],
         resources: &ResolvedMountResources,
         expected_mount_id: MountId,
+        deadline: EffectDeadlineV1,
     ) -> Result<()> {
         self.invoke(
             request,
@@ -195,6 +205,7 @@ impl NamespaceHelper for PosixSpawnNamespaceHelper {
                 successor: expected_mount_id,
                 predecessor: None,
             },
+            Some(deadline),
         )?;
         Ok(())
     }
@@ -222,6 +233,7 @@ pub fn run_inherited() -> Result<u8> {
     // transfers unique child-side ownership to this helper.
     let plan_fd = unsafe { OwnedFd::from_raw_fd(PLAN_FD) };
     let plan = SealedHelperPlan::read_inherited(plan_fd)?;
+    validate_effect_clock_identity(&plan)?;
     let needs_detached = plan.roles.contains(DescriptorRoles::DETACHED_MOUNT);
     ensure_descriptor(DETACHED_MOUNT_FD, needs_detached)?;
     for fd in [
@@ -270,6 +282,7 @@ pub fn run_inherited() -> Result<u8> {
             }
             let mount = DetachedMount::from_inherited(adopt(DETACHED_MOUNT_FD)?)
                 .map_err(helper_linux_error)?;
+            validate_effect_deadline(&plan)?;
             mount.attach(&current).map_err(helper_linux_error)?;
             observe_published(&target_root, &plan)?
         }
@@ -306,12 +319,14 @@ pub fn run_inherited() -> Result<u8> {
                 ReplacementStackState::NeedsAttach => {
                     let mount = DetachedMount::from_inherited(adopt(DETACHED_MOUNT_FD)?)
                         .map_err(helper_linux_error)?;
+                    validate_effect_deadline(&plan)?;
                     mount.attach_beneath(&current).map_err(helper_linux_error)?;
                 }
                 ReplacementStackState::AlreadyAttached => {
                     ensure_descriptor(DETACHED_MOUNT_FD, true)?;
                 }
             }
+            validate_effect_deadline(&plan)?;
             detach_relative(&plan.target_relative_path, &single).map_err(helper_linux_error)?;
             observe_published(&target_root, &plan)?
         }
@@ -323,6 +338,7 @@ pub fn run_inherited() -> Result<u8> {
                     "refusing to detach a different exact mount generation".to_owned(),
                 ));
             }
+            validate_effect_deadline(&plan)?;
             detach_relative(&plan.target_relative_path, &single).map_err(helper_linux_error)?;
             let revealed = resolve_target(&target_root, &plan.target_relative_path)?;
             if revealed.identity() == current.identity() {
@@ -384,7 +400,17 @@ fn compile_plan(
     action: HelperAction,
     expected_mount_id: MountId,
     expected_predecessor_mount_id: Option<MountId>,
+    deadline: Option<EffectDeadlineV1>,
 ) -> Result<HelperPlan> {
+    let (clock_provenance, host_boot_id, effect_deadline_boottime_nanoseconds) = deadline
+        .map(|value| {
+            (
+                value.clock_provenance,
+                value.host_boot_id,
+                value.boottime_nanoseconds,
+            )
+        })
+        .unwrap_or(([0; 16], [0; 16], 0));
     Ok(HelperPlan {
         action,
         roles: DescriptorRoles::for_action(action),
@@ -398,12 +424,51 @@ fn compile_plan(
         target_slot_mount_id: MountId::from_fd(resources.target_slot.as_fd())
             .map_err(helper_linux_error)?
             .get(),
+        clock_provenance,
+        host_boot_id,
+        effect_deadline_boottime_nanoseconds,
         source: resources.source.identity().into(),
         mount_namespace: resources.mount_namespace.identity().into(),
         target_root: resources.target_root.identity().into(),
         target_slot: resources.target_slot.identity().into(),
         target_relative_path: resources.target_relative_path.clone(),
     })
+}
+
+fn validate_effect_clock_identity(plan: &HelperPlan) -> Result<()> {
+    if plan.action == HelperAction::Observe {
+        return Ok(());
+    }
+    let boot_id = KernelBootId::current()
+        .map_err(|error| MountError::Worker(error.to_string()))?
+        .into_bytes();
+    if plan.clock_provenance != KERNEL_CLOCK_PROVENANCE || plan.host_boot_id != boot_id {
+        return Err(MountError::Fence(
+            "mount helper effect clock identity changed",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_effect_deadline(plan: &HelperPlan) -> Result<()> {
+    let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
+    let seconds = u64::try_from(now.tv_sec)
+        .map_err(|_| MountError::State("CLOCK_BOOTTIME returned negative seconds".to_owned()))?;
+    let nanoseconds = u64::try_from(now.tv_nsec).map_err(|_| {
+        MountError::State("CLOCK_BOOTTIME returned negative nanoseconds".to_owned())
+    })?;
+    let now = seconds
+        .checked_mul(1_000_000_000)
+        .and_then(|value| value.checked_add(nanoseconds))
+        .ok_or_else(|| MountError::State("CLOCK_BOOTTIME overflowed u64".to_owned()))?;
+    validate_effect_deadline_at(plan.effect_deadline_boottime_nanoseconds, now)
+}
+
+fn validate_effect_deadline_at(deadline: u64, now: u64) -> Result<()> {
+    if now >= deadline {
+        return Err(MountError::Fence("mount helper effect authority expired"));
+    }
+    Ok(())
 }
 
 fn resolve_target(root: &BeneathRoot, relative: &Path) -> Result<ResolvedPath> {
@@ -718,6 +783,13 @@ mod tests {
 
     use super::*;
     use aos_sandbox_linux::pidfd::NamespaceIdentity;
+
+    #[test]
+    fn helper_effect_deadline_is_exclusive() {
+        assert!(validate_effect_deadline_at(101, 100).is_ok());
+        assert!(validate_effect_deadline_at(100, 100).is_err());
+        assert!(validate_effect_deadline_at(100, 101).is_err());
+    }
 
     fn mount_at(mount_id: u64, parent_mount_id: u64, mount_point: &[u8]) -> MountObservation {
         MountObservation {

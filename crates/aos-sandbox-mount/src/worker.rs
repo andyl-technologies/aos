@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 
 use aos_proto::aos::sandbox::local::v1::{MountAction, MountState};
+use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_linux::inventory::{MountId, MountNamespace, MountObservation};
 use aos_sandbox_linux::mount::{DetachedMount, MountAttributes};
 use aos_sandbox_linux::pidfd::NamespaceIdentity;
@@ -90,8 +91,43 @@ enum PublicationEffect {
     ReplacePredecessor,
 }
 
+/// Carries the sealed fail-stop clock facts delegated to a namespace helper.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EffectDeadlineV1 {
+    /// Protected paired-clock reader identity used by the broker.
+    pub clock_provenance: [u8; 16],
+    /// Host boot identity under which the deadline is valid.
+    pub host_boot_id: [u8; 16],
+    /// Exclusive absolute `CLOCK_BOOTTIME` deadline.
+    pub boottime_nanoseconds: u64,
+}
+
+fn validate_catalog_commitment(
+    resources: &ResolvedMountResources,
+    expected: ObjectDigest,
+) -> Result<()> {
+    if resources.authorization_commitment.digest() != expected {
+        return Err(MountError::Fence(
+            "mount catalog changed after authorization admission",
+        ));
+    }
+    Ok(())
+}
+
 /// Applies one idempotent, descriptor-only mount transaction.
 pub trait MountWorker {
+    /// Resolves the exact catalog behavior commitment used for authorization.
+    ///
+    /// Release is the sole action that returns no catalog commitment. Every
+    /// other action must recheck this digest when resolving resources for an
+    /// effect, closing catalog replacement between admission and execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the trusted catalog cannot resolve and verify the
+    /// exact request generation.
+    fn catalog_commitment(&self, request: &ValidatedMountRequest) -> Result<Option<ObjectDigest>>;
+
     /// Returns the complete bounded set of restart-retained mount descriptors.
     ///
     /// # Errors
@@ -119,6 +155,7 @@ pub trait MountWorker {
         handle: [u8; 32],
         expected_mount_id: MountId,
         predecessor: Option<([u8; 32], MountId)>,
+        expected_catalog_commitment: ObjectDigest,
     ) -> Result<PublicationPreflight>;
 
     /// Reconciles an uncertain detach from durable identity alone.
@@ -133,6 +170,8 @@ pub trait MountWorker {
         request_digest: [u8; 32],
         handle: [u8; 32],
         expected_mount_id: MountId,
+        expected_catalog_commitment: ObjectDigest,
+        before_effect: &mut dyn FnMut() -> Result<EffectDeadlineV1>,
     ) -> Result<ReleasedMountObservation>;
 
     /// Applies or reconciles the validated action and verifies its result.
@@ -151,6 +190,8 @@ pub trait MountWorker {
         request: &ValidatedMountRequest,
         request_digest: [u8; 32],
         handles: EffectHandles,
+        expected_catalog_commitment: Option<ObjectDigest>,
+        before_effect: &mut dyn FnMut() -> Result<EffectDeadlineV1>,
     ) -> Result<WorkerObservation>;
 }
 
@@ -176,6 +217,7 @@ pub trait NamespaceHelper {
     ///
     /// Returns an error when helper launch, descriptor validation, namespace
     /// entry, publication, or post-publication verification fails.
+    #[allow(clippy::too_many_arguments)]
     fn install(
         &self,
         request: &ValidatedMountRequest,
@@ -184,6 +226,7 @@ pub trait NamespaceHelper {
         mount: &DetachedMount,
         beneath: bool,
         expected_predecessor_mount_id: Option<MountId>,
+        deadline: EffectDeadlineV1,
     ) -> Result<InstalledMountObservation>;
 
     /// Detaches the exact catalogued installed generation if present.
@@ -198,6 +241,7 @@ pub trait NamespaceHelper {
         request_digest: [u8; 32],
         resources: &ResolvedMountResources,
         expected_mount_id: MountId,
+        deadline: EffectDeadlineV1,
     ) -> Result<()>;
 }
 
@@ -259,15 +303,24 @@ impl<C: MountCatalog, H: NamespaceHelper, K: KernelMountStore> DescriptorMountWo
         request_digest: [u8; 32],
         handle: [u8; 32],
         expected_mount_id: MountId,
+        expected_catalog_commitment: ObjectDigest,
+        before_effect: &mut dyn FnMut() -> Result<EffectDeadlineV1>,
     ) -> Result<ReleasedMountObservation> {
         let resources = self.catalog.resolve(request)?;
+        validate_catalog_commitment(&resources, expected_catalog_commitment)?;
         match self
             .helper
             .observe(request, request_digest, &resources, expected_mount_id, None)?
         {
             MountTargetObservation::Installed(_) => {
-                self.helper
-                    .detach(request, request_digest, &resources, expected_mount_id)?;
+                let deadline = before_effect()?;
+                self.helper.detach(
+                    request,
+                    request_digest,
+                    &resources,
+                    expected_mount_id,
+                    deadline,
+                )?;
             }
             MountTargetObservation::Absent => {}
             MountTargetObservation::PredecessorInstalled => {
@@ -281,6 +334,7 @@ impl<C: MountCatalog, H: NamespaceHelper, K: KernelMountStore> DescriptorMountWo
                 ));
             }
         }
+        let _deadline = before_effect()?;
         self.keeper.remove(&KernelMountName::from_digest(handle))?;
         self.detached.remove(&handle);
         Ok(ReleasedMountObservation {
@@ -292,6 +346,15 @@ impl<C: MountCatalog, H: NamespaceHelper, K: KernelMountStore> DescriptorMountWo
 impl<C: MountCatalog, H: NamespaceHelper, K: KernelMountStore> MountWorker
     for DescriptorMountWorker<C, H, K>
 {
+    fn catalog_commitment(&self, request: &ValidatedMountRequest) -> Result<Option<ObjectDigest>> {
+        if request.action() == MountAction::MOUNT_ACTION_RELEASE {
+            return Ok(None);
+        }
+        self.catalog
+            .resolve(request)
+            .map(|resources| Some(resources.authorization_commitment.digest()))
+    }
+
     fn custody_inventory(&self) -> Result<Vec<RetainedMountObservation>> {
         Ok(self
             .detached
@@ -316,6 +379,7 @@ impl<C: MountCatalog, H: NamespaceHelper, K: KernelMountStore> MountWorker
         handle: [u8; 32],
         expected_mount_id: MountId,
         predecessor: Option<([u8; 32], MountId)>,
+        expected_catalog_commitment: ObjectDigest,
     ) -> Result<PublicationPreflight> {
         let mount = self.detached.get(&handle).ok_or_else(|| {
             MountError::Worker("publication mount is not retained by this broker".to_owned())
@@ -337,6 +401,7 @@ impl<C: MountCatalog, H: NamespaceHelper, K: KernelMountStore> MountWorker
         }
 
         let resources = self.catalog.resolve(request)?;
+        validate_catalog_commitment(&resources, expected_catalog_commitment)?;
         let namespace = MountNamespace::pinned(&resources.mount_namespace)
             .map_err(|error| MountError::Worker(error.to_string()))?;
         let root = namespace
@@ -373,6 +438,8 @@ impl<C: MountCatalog, H: NamespaceHelper, K: KernelMountStore> MountWorker
         request_digest: [u8; 32],
         handle: [u8; 32],
         expected_mount_id: MountId,
+        expected_catalog_commitment: ObjectDigest,
+        before_effect: &mut dyn FnMut() -> Result<EffectDeadlineV1>,
     ) -> Result<ReleasedMountObservation> {
         DescriptorMountWorker::reconcile_detach(
             self,
@@ -380,6 +447,8 @@ impl<C: MountCatalog, H: NamespaceHelper, K: KernelMountStore> MountWorker
             request_digest,
             handle,
             expected_mount_id,
+            expected_catalog_commitment,
+            before_effect,
         )
     }
 
@@ -389,11 +458,14 @@ impl<C: MountCatalog, H: NamespaceHelper, K: KernelMountStore> MountWorker
         request: &ValidatedMountRequest,
         request_digest: [u8; 32],
         handles: EffectHandles,
+        expected_catalog_commitment: Option<ObjectDigest>,
+        before_effect: &mut dyn FnMut() -> Result<EffectDeadlineV1>,
     ) -> Result<WorkerObservation> {
         if request.action() == MountAction::MOUNT_ACTION_RELEASE {
             let handle = request.detached_mount_handle().copied().ok_or_else(|| {
                 MountError::Worker("release operation lost its staged handle".to_owned())
             })?;
+            let _deadline = before_effect()?;
             self.keeper.remove(&KernelMountName::from_digest(handle))?;
             self.detached.remove(&handle);
             return Ok(WorkerObservation {
@@ -405,6 +477,10 @@ impl<C: MountCatalog, H: NamespaceHelper, K: KernelMountStore> MountWorker
         }
 
         let resources = self.catalog.resolve(request)?;
+        let expected_catalog_commitment = expected_catalog_commitment.ok_or_else(|| {
+            MountError::Worker("catalogued effect lost its authorization commitment".to_owned())
+        })?;
+        validate_catalog_commitment(&resources, expected_catalog_commitment)?;
         match request.action() {
             MountAction::MOUNT_ACTION_CREATE_DETACHED => {
                 let handle = handles.detached.ok_or_else(|| {
@@ -419,8 +495,10 @@ impl<C: MountCatalog, H: NamespaceHelper, K: KernelMountStore> MountWorker
                             "descriptor store contains an unadopted mount name".to_owned(),
                         ));
                     }
+                    let _deadline = before_effect()?;
                     let mount = prepare_mount(request, &resources)?;
                     let mount_id = mount.mount_id();
+                    let _deadline = before_effect()?;
                     self.keeper.store(&name, mount.as_fd())?;
                     entry.insert(mount);
                     return Ok(WorkerObservation {
@@ -483,22 +561,30 @@ impl<C: MountCatalog, H: NamespaceHelper, K: KernelMountStore> MountWorker
                         };
                         *observation
                     }
-                    PublicationEffect::AttachToEmptySlot => self.helper.install(
-                        request,
-                        request_digest,
-                        &resources,
-                        mount,
-                        false,
-                        None,
-                    )?,
-                    PublicationEffect::ReplacePredecessor => self.helper.install(
-                        request,
-                        request_digest,
-                        &resources,
-                        mount,
-                        true,
-                        predecessor,
-                    )?,
+                    PublicationEffect::AttachToEmptySlot => {
+                        let deadline = before_effect()?;
+                        self.helper.install(
+                            request,
+                            request_digest,
+                            &resources,
+                            mount,
+                            false,
+                            None,
+                            deadline,
+                        )?
+                    }
+                    PublicationEffect::ReplacePredecessor => {
+                        let deadline = before_effect()?;
+                        self.helper.install(
+                            request,
+                            request_digest,
+                            &resources,
+                            mount,
+                            true,
+                            predecessor,
+                            deadline,
+                        )?
+                    }
                 };
                 if installed.mount.mount_id != mount.mount_id() {
                     return Err(MountError::Worker(
@@ -523,8 +609,14 @@ impl<C: MountCatalog, H: NamespaceHelper, K: KernelMountStore> MountWorker
                 })?;
                 let expected_mount_id = mount.mount_id();
                 let _ = resources;
-                let _released =
-                    self.reconcile_detach(request, request_digest, handle, expected_mount_id)?;
+                let _released = self.reconcile_detach(
+                    request,
+                    request_digest,
+                    handle,
+                    expected_mount_id,
+                    expected_catalog_commitment,
+                    before_effect,
+                )?;
                 Ok(WorkerObservation {
                     state: MountState::MOUNT_STATE_REVOKED,
                     handles,

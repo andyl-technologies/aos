@@ -17,6 +17,7 @@ use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceIdentity, NamespaceKind};
 use aos_sandbox_protocol::{ValidatedAssignmentFence, ValidatedMountRequest};
 use serde::{Deserialize, Serialize};
 
+use crate::authorization::semantics_v1::MountCatalogCommitmentV1;
 use crate::{MountError, Result};
 
 const CATALOG_FILE: &str = "catalog.json";
@@ -39,6 +40,8 @@ pub struct ResolvedMountResources {
     pub target_slot: ResolvedPath,
     /// Catalog-selected path to the slot beneath `target_root`.
     pub target_relative_path: PathBuf,
+    /// Non-circular commitment to the exact verified catalog behavior facts.
+    pub(crate) authorization_commitment: MountCatalogCommitmentV1,
 }
 
 /// Resolves one validated semantic request into exact pinned kernel objects.
@@ -199,6 +202,15 @@ impl MountCatalog for FileMountCatalog {
             entry.target_slot_identity,
             "target slot",
         )?;
+        let authorization_commitment = catalog_authorization_commitment(
+            snapshot.generation,
+            entry,
+            source.identity(),
+            mount_namespace.identity(),
+            user_namespace.identity(),
+            target_root.identity(),
+            target_slot.identity(),
+        )?;
 
         Ok(ResolvedMountResources {
             source,
@@ -207,8 +219,58 @@ impl MountCatalog for FileMountCatalog {
             target_root,
             target_slot,
             target_relative_path: PathBuf::from(&entry.target_relative_path),
+            authorization_commitment,
         })
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn catalog_authorization_commitment(
+    generation: u64,
+    entry: &MountCatalogEntry,
+    source: FileIdentity,
+    mount_namespace: NamespaceIdentity,
+    user_namespace: NamespaceIdentity,
+    target_root: FileIdentity,
+    target_slot: FileIdentity,
+) -> Result<MountCatalogCommitmentV1> {
+    let media_type = entry.view_revision.media_type().as_str().as_bytes();
+    let relative_path = entry.target_relative_path.as_bytes();
+    let media_length = u16::try_from(media_type.len())
+        .map_err(|_| MountError::State("catalog media type exceeds u16".to_owned()))?;
+    let path_length = u32::try_from(relative_path.len())
+        .map_err(|_| MountError::State("catalog relative path exceeds u32".to_owned()))?;
+    let mut bytes = Vec::with_capacity(320 + media_type.len() + relative_path.len());
+    bytes.extend_from_slice(b"AOSMCAT1");
+    bytes.extend_from_slice(&1_u16.to_be_bytes());
+    bytes.extend_from_slice(&generation.to_be_bytes());
+    bytes.extend_from_slice(&entry.assignment.sandbox_id);
+    bytes.extend_from_slice(&entry.assignment.incarnation_id);
+    bytes.extend_from_slice(&entry.assignment.assignment_epoch.to_be_bytes());
+    bytes.extend_from_slice(&entry.assignment.desired_generation.to_be_bytes());
+    bytes.extend_from_slice(&entry.assignment.assignment_digest);
+    bytes.extend_from_slice(&entry.attachment_id);
+    bytes.extend_from_slice(&entry.destination_slot_id);
+    bytes.extend_from_slice(&entry.source_generation.to_be_bytes());
+    bytes.extend_from_slice(&entry.namespace_generation.to_be_bytes());
+    bytes.extend_from_slice(&media_length.to_be_bytes());
+    bytes.extend_from_slice(media_type);
+    bytes.extend_from_slice(entry.view_revision.digest().as_bytes());
+    bytes.extend_from_slice(&entry.view_revision.encoded_size().to_be_bytes());
+    bytes.extend_from_slice(&path_length.to_be_bytes());
+    bytes.extend_from_slice(relative_path);
+    for (device, inode) in [
+        (source.device, source.inode),
+        (mount_namespace.device, mount_namespace.inode),
+        (user_namespace.device, user_namespace.inode),
+        (target_root.device, target_root.inode),
+        (target_slot.device, target_slot.inode),
+    ] {
+        bytes.extend_from_slice(&device.to_be_bytes());
+        bytes.extend_from_slice(&inode.to_be_bytes());
+    }
+    MountCatalogCommitmentV1::for_verified_canonical_bytes(&bytes)
+        .map_err(|error| MountError::State(error.to_string()))
 }
 
 impl MountCatalogSnapshot {
@@ -353,6 +415,8 @@ fn validate_relative(path: &str) -> Result<()> {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    use aos_sandbox_linux::path::FileType;
+
     use super::*;
 
     #[test]
@@ -364,7 +428,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_rejects_duplicate_semantic_keys_before_opening_resources() {
+    fn snapshot_and_authorization_commitments_bind_all_behavior_facts() {
         let descriptor = ObjectDescriptor::new(
             aos_sandbox_core::MediaType::new("application/vnd.aos.sandbox.view.v1+cbor".to_owned())
                 .unwrap(),
@@ -411,6 +475,63 @@ mod tests {
                 inode: 5,
             },
         };
+        let directory = |device, inode| FileIdentity {
+            device,
+            inode,
+            file_type: FileType::Directory,
+        };
+        let namespace = |device, inode| NamespaceIdentity { device, inode };
+        let commitment = catalog_authorization_commitment(
+            1,
+            &entry,
+            directory(1, 1),
+            namespace(1, 2),
+            namespace(1, 3),
+            directory(1, 4),
+            directory(1, 5),
+        )
+        .unwrap();
+        assert_ne!(
+            catalog_authorization_commitment(
+                2,
+                &entry,
+                directory(1, 1),
+                namespace(1, 2),
+                namespace(1, 3),
+                directory(1, 4),
+                directory(1, 5),
+            )
+            .unwrap(),
+            commitment
+        );
+        let mut changed_path = entry.clone();
+        changed_path.target_relative_path = "run/aos/attachments/other".to_owned();
+        assert_ne!(
+            catalog_authorization_commitment(
+                1,
+                &changed_path,
+                directory(1, 1),
+                namespace(1, 2),
+                namespace(1, 3),
+                directory(1, 4),
+                directory(1, 5),
+            )
+            .unwrap(),
+            commitment
+        );
+        assert_ne!(
+            catalog_authorization_commitment(
+                1,
+                &entry,
+                directory(9, 9),
+                namespace(1, 2),
+                namespace(1, 3),
+                directory(1, 4),
+                directory(1, 5),
+            )
+            .unwrap(),
+            commitment
+        );
         let snapshot = MountCatalogSnapshot {
             generation: 1,
             entries: vec![entry.clone(), entry],

@@ -12,9 +12,10 @@ use aos_proto::aos::sandbox::local::v1::{
 use aos_sandbox::journal::{
     IdempotencyKey, IdempotencyOutcome, Journal, JournalRecord, JournalTransaction, RecordNamespace,
 };
-use aos_sandbox_core::OperationId;
+use aos_sandbox_core::{ObjectDigest, OperationId, ProtocolVersion, RawPairedClockSample};
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::inventory::MountId;
+use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use aos_sandbox_protocol::{
     PeerCredentials, PeerPolicy, ValidatedMountAttributes, ValidatedMountRequest,
     decode_mount_request,
@@ -22,6 +23,9 @@ use aos_sandbox_protocol::{
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
+use crate::authorization::semantics_v1::MountCatalogCommitmentV1;
+use crate::authorization::{MountAuthorityV1, VerifiedMountAdmissionV1};
+use crate::state::authorization_v1::{MountEffectIntentV2, MountEffectStatusV2};
 use crate::state::mount_resource_v1::{
     AssignmentBindingV1, DetachedMountIdentityV1, InstalledMountObservationV1, MountFaultPhaseV1,
     MountHandleV1, MountPolicyV1, MountRecipeV1, MountResourceLimitsV1, MountResourceStateV1,
@@ -29,9 +33,8 @@ use crate::state::mount_resource_v1::{
     OperationCorrelationV1, OwnedMountAttributeV1, PublicationCorrelationV1,
     canonical_fd_store_key,
 };
-use crate::state::{EffectStatus, decode_effect, encode_effect, encode_fence, validate_fence};
 use crate::worker::{
-    EffectHandles, MountTargetObservation, MountWorker, RetainedMountObservation,
+    EffectDeadlineV1, EffectHandles, MountTargetObservation, MountWorker, RetainedMountObservation,
     WorkerObservation, expected_handles,
 };
 use crate::{MountError, Result};
@@ -43,6 +46,7 @@ pub struct MountBroker<W> {
     resources: MountResourceTableV1,
     kernel_boot_id: [u8; 16],
     broker_instance_id: [u8; 16],
+    authority: MountAuthorityV1,
 }
 
 impl<W: MountWorker> MountBroker<W> {
@@ -52,7 +56,7 @@ impl<W: MountWorker> MountBroker<W> {
     ///
     /// Returns an error for malformed state, unavailable boot identity,
     /// stale-boot fault persistence failure, or contradictory retained FDs.
-    pub fn new(mut journal: Journal, mut worker: W) -> Result<Self> {
+    pub fn new(mut journal: Journal, mut worker: W, authority: MountAuthorityV1) -> Result<Self> {
         let kernel_boot_id = KernelBootId::current()
             .map_err(|error| MountError::State(error.to_string()))?
             .into_bytes();
@@ -76,6 +80,7 @@ impl<W: MountWorker> MountBroker<W> {
             resources,
             kernel_boot_id,
             broker_instance_id,
+            authority,
         })
     }
 
@@ -100,20 +105,49 @@ impl<W: MountWorker> MountBroker<W> {
     /// Returns an error before effects for hostile input, stale/equivocating
     /// assignment state, request-ID reuse, contradictory resource state, or
     /// malformed replay state. Effects remain represented by durable intent.
-    pub fn apply_mount(
+    pub fn apply_mount<F>(
         &mut self,
         request_bytes: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
         peer: PeerCredentials,
         policy: PeerPolicy,
-        now_boottime_nanoseconds: u64,
-    ) -> Result<Vec<u8>> {
-        let request = decode_mount_request(request_bytes, peer, policy, now_boottime_nanoseconds)?;
+        mut trusted_clock: F,
+    ) -> Result<Vec<u8>>
+    where
+        F: FnMut() -> Result<RawPairedClockSample>,
+    {
+        let verification_clock = trusted_clock()?;
+        let request = decode_mount_request(
+            request_bytes,
+            peer,
+            policy,
+            verification_clock.boottime_nanoseconds(),
+        )?;
+        let catalog_commitment = self.worker.catalog_commitment(&request)?;
+        let catalog_semantics = catalog_commitment
+            .map(MountCatalogCommitmentV1::from_verified_digest)
+            .transpose()
+            .map_err(|error| MountError::State(error.to_string()))?;
         let request_digest: [u8; 32] = Sha256::digest(request_bytes).into();
+        let prior_fence = self
+            .journal
+            .get(RecordNamespace::DesiredState, request.fence().sandbox_id());
+        let admission = self
+            .authority
+            .admit(
+                artifacts,
+                &request,
+                request_bytes,
+                catalog_semantics,
+                &[],
+                protocol_version,
+                &verification_clock,
+                prior_fence,
+            )
+            .map_err(|_| MountError::Fence("signed mount authority was rejected"))?;
         let idempotency = IdempotencyKey::new(request.header().request_id().to_vec())?;
         let operation_id = OperationId::from_bytes(*request.header().request_id());
-        let action = action_code(request.action());
-
-        validate_fence(&self.journal, request.fence())?;
         match self.journal.check_idempotency(&idempotency, request_digest) {
             IdempotencyOutcome::Conflict => {
                 return Err(MountError::Fence(
@@ -125,21 +159,38 @@ impl<W: MountWorker> MountBroker<W> {
                     "mount idempotency operation identity changed".to_owned(),
                 ));
             }
-            IdempotencyOutcome::Replay(_) => {}
+            IdempotencyOutcome::Replay(_) => {
+                let effect = self.effect(request.header().request_id())?;
+                validate_effect_matches(&effect, &admission, request_digest)?;
+                if effect.status() == MountEffectStatusV2::Complete {
+                    return Ok(effect.receipt().to_vec());
+                }
+                if effect.plan_digest() != admission.effect.plan_digest()
+                    || effect.lease_digest() != admission.effect.lease_digest()
+                {
+                    self.persist_authority_refresh(&request, &admission)?;
+                }
+            }
             IdempotencyOutcome::Vacant => {
-                self.persist_intent(&request, &idempotency, operation_id, request_digest, action)?;
+                self.persist_intent(
+                    &request,
+                    &idempotency,
+                    operation_id,
+                    request_digest,
+                    catalog_commitment,
+                    &admission,
+                )?;
             }
         }
 
         let effect = self.effect(request.header().request_id())?;
-        if effect.request_digest != request_digest || effect.action != action {
-            return Err(MountError::Fence(
-                "durable effect contradicts exact request",
-            ));
+        validate_effect_matches(&effect, &admission, request_digest)?;
+        if effect.status() == MountEffectStatusV2::Complete {
+            return Ok(effect.receipt().to_vec());
         }
-        if effect.status == EffectStatus::Complete {
-            return Ok(effect.receipt);
-        }
+        self.authority
+            .validate_effect_clock(&effect, &trusted_clock()?)
+            .map_err(|_| MountError::Fence("mount authority expired before the effect"))?;
 
         let handle = operation_handle(&request, request_digest)?;
         let current = self
@@ -154,6 +205,18 @@ impl<W: MountWorker> MountBroker<W> {
             request_digest,
             request.detached_mount_handle().copied(),
         )?;
+        let authority = &self.authority;
+        let mut before_effect = || {
+            let clock = trusted_clock()?;
+            authority
+                .validate_effect_clock(&effect, &clock)
+                .map_err(|_| MountError::Fence("mount authority expired before the effect"))?;
+            Ok(EffectDeadlineV1 {
+                clock_provenance: *effect.clock_provenance(),
+                host_boot_id: *effect.host_boot_id(),
+                boottime_nanoseconds: effect.effect_deadline_boottime_nanoseconds(),
+            })
+        };
         let observation = if request.action() == MountAction::MOUNT_ACTION_DETACH {
             execute_durable_detach(
                 &mut self.worker,
@@ -161,9 +224,19 @@ impl<W: MountWorker> MountBroker<W> {
                 request_digest,
                 &current,
                 handles,
+                catalog_commitment.ok_or(MountError::Fence(
+                    "detach lost its admitted catalog commitment",
+                ))?,
+                &mut before_effect,
             )?
         } else {
-            self.worker.execute(&request, request_digest, handles)?
+            self.worker.execute(
+                &request,
+                request_digest,
+                handles,
+                catalog_commitment,
+                &mut before_effect,
+            )?
         };
         validate_observation(request.action(), handles, &observation)?;
         let response = encode_result(&request, &observation)?;
@@ -174,15 +247,40 @@ impl<W: MountWorker> MountBroker<W> {
                 "mount result exceeds the admitted response bound".to_owned(),
             ));
         }
-        self.persist_completion(
-            &request,
-            request_digest,
-            action,
-            &current,
-            &observation,
-            &response,
-        )?;
+        self.persist_completion(&request, &current, &observation, &response, effect)?;
         Ok(response)
+    }
+
+    fn persist_authority_refresh(
+        &mut self,
+        request: &ValidatedMountRequest,
+        admission: &VerifiedMountAdmissionV1,
+    ) -> Result<()> {
+        let records = vec![
+            JournalRecord::put(
+                RecordNamespace::DesiredState,
+                request.fence().sandbox_id().to_vec(),
+                self.authority
+                    .seal_fence(request.fence().sandbox_id(), &admission.fence)
+                    .map_err(|_| MountError::Fence("mount authority fence could not be sealed"))?,
+            ),
+            JournalRecord::put(
+                RecordNamespace::Effect,
+                request.header().request_id().to_vec(),
+                self.authority
+                    .seal_effect(request.header().request_id(), &admission.effect)
+                    .map_err(|_| MountError::Fence("mount effect intent could not be sealed"))?,
+            ),
+        ];
+        self.journal.commit(&JournalTransaction::new(
+            authority_refresh_transaction(
+                *request.header().request_id(),
+                admission.effect.plan_digest(),
+                admission.effect.lease_digest(),
+            ),
+            records,
+        )?)?;
+        Ok(())
     }
 
     fn persist_intent(
@@ -191,16 +289,23 @@ impl<W: MountWorker> MountBroker<W> {
         idempotency: &IdempotencyKey,
         operation_id: OperationId,
         request_digest: [u8; 32],
-        action: u8,
+        catalog_commitment: Option<ObjectDigest>,
+        admission: &VerifiedMountAdmissionV1,
     ) -> Result<()> {
         let correlation = operation_correlation(request, request_digest);
         let mut resource_records = match request.action() {
             MountAction::MOUNT_ACTION_CREATE_DETACHED => self.resources.plan_allocate(
                 &allocated_resource(request, request_digest, self.kernel_boot_id, correlation)?,
             )?,
-            MountAction::MOUNT_ACTION_INSTALL | MountAction::MOUNT_ACTION_REPLACE => {
-                self.plan_publication_intent(request, request_digest, correlation)?
-            }
+            MountAction::MOUNT_ACTION_INSTALL | MountAction::MOUNT_ACTION_REPLACE => self
+                .plan_publication_intent(
+                    request,
+                    request_digest,
+                    correlation,
+                    catalog_commitment.ok_or(MountError::Fence(
+                        "publication lost its admitted catalog commitment",
+                    ))?,
+                )?,
             MountAction::MOUNT_ACTION_DETACH => self.plan_detach_intent(request, correlation)?,
             MountAction::MOUNT_ACTION_RELEASE => {
                 let current = resource_for_supplied_handle(&self.resources, request)?;
@@ -222,18 +327,22 @@ impl<W: MountWorker> MountBroker<W> {
             JournalRecord::put(
                 RecordNamespace::DesiredState,
                 request.fence().sandbox_id().to_vec(),
-                encode_fence(request.fence()),
+                self.authority
+                    .seal_fence(request.fence().sandbox_id(), &admission.fence)
+                    .map_err(|_| MountError::Fence("mount authority fence could not be sealed"))?,
             ),
             JournalRecord::idempotency(idempotency, request_digest, operation_id),
             JournalRecord::put(
                 RecordNamespace::Effect,
                 request.header().request_id().to_vec(),
-                encode_effect(EffectStatus::Pending, action, request_digest, &[])?,
+                self.authority
+                    .seal_effect(request.header().request_id(), &admission.effect)
+                    .map_err(|_| MountError::Fence("mount effect intent could not be sealed"))?,
             ),
         ];
         records.append(&mut resource_records);
         self.journal.commit(&JournalTransaction::new(
-            *request.header().request_id(),
+            intent_transaction(*request.header().request_id()),
             records,
         )?)?;
         if !applied_records.is_empty() {
@@ -247,6 +356,7 @@ impl<W: MountWorker> MountBroker<W> {
         request: &ValidatedMountRequest,
         request_digest: [u8; 32],
         operation: OperationCorrelationV1,
+        catalog_commitment: aos_sandbox_core::ObjectDigest,
     ) -> Result<Vec<JournalRecord>> {
         let current = resource_for_supplied_handle(&self.resources, request)?;
         validate_request_resource(request, current, self.kernel_boot_id)?;
@@ -271,6 +381,7 @@ impl<W: MountWorker> MountBroker<W> {
             current.handle,
             expected_mount_id,
             predecessor_identity,
+            catalog_commitment,
         )?;
         let valid = match request.action() {
             MountAction::MOUNT_ACTION_INSTALL => {
@@ -360,18 +471,23 @@ impl<W: MountWorker> MountBroker<W> {
     fn persist_completion(
         &mut self,
         request: &ValidatedMountRequest,
-        request_digest: [u8; 32],
-        action: u8,
         current: &MountResourceV1,
         observation: &WorkerObservation,
         response: &[u8],
+        effect: MountEffectIntentV2,
     ) -> Result<()> {
         let resource_records = self.plan_completion(request, current, observation)?;
         let mut records = resource_records.clone();
+        let request_digest = *effect.transport_request_digest().as_bytes();
+        let completed = effect
+            .complete(response.to_vec())
+            .map_err(|_| MountError::State("completed mount effect is invalid".to_owned()))?;
         records.push(JournalRecord::put(
             RecordNamespace::Effect,
             request.header().request_id().to_vec(),
-            encode_effect(EffectStatus::Complete, action, request_digest, response)?,
+            self.authority
+                .seal_effect(request.header().request_id(), &completed)
+                .map_err(|_| MountError::Fence("completed mount effect could not be sealed"))?,
         ));
         self.journal.commit(&JournalTransaction::new(
             completion_transaction(request_digest),
@@ -502,12 +618,17 @@ impl<W: MountWorker> MountBroker<W> {
         )
     }
 
-    fn effect(&self, request_id: &[u8; 16]) -> Result<crate::state::EffectRecord> {
-        decode_effect(
-            self.journal
-                .get(RecordNamespace::Effect, request_id)
-                .ok_or_else(|| MountError::State("durable mount effect is absent".to_owned()))?,
-        )
+    fn effect(&self, request_id: &[u8; 16]) -> Result<MountEffectIntentV2> {
+        self.authority
+            .open_effect(
+                request_id,
+                self.journal
+                    .get(RecordNamespace::Effect, request_id)
+                    .ok_or_else(|| {
+                        MountError::State("durable mount effect is absent".to_owned())
+                    })?,
+            )
+            .map_err(|_| MountError::Fence("durable mount effect authentication failed"))
     }
 }
 
@@ -517,9 +638,18 @@ fn execute_durable_detach<W: MountWorker>(
     request_digest: [u8; 32],
     current: &MountResourceV1,
     handles: EffectHandles,
+    catalog_commitment: aos_sandbox_core::ObjectDigest,
+    before_effect: &mut dyn FnMut() -> Result<EffectDeadlineV1>,
 ) -> Result<WorkerObservation> {
     let expected = mount_id(installed_mount_id(current)?)?;
-    worker.reconcile_detach(request, request_digest, current.handle, expected)?;
+    worker.reconcile_detach(
+        request,
+        request_digest,
+        current.handle,
+        expected,
+        catalog_commitment,
+        before_effect,
+    )?;
     Ok(WorkerObservation {
         state: MountState::MOUNT_STATE_REVOKED,
         handles,
@@ -1535,15 +1665,53 @@ fn completion_transaction(request_digest: [u8; 32]) -> [u8; 16] {
     id
 }
 
-const fn action_code(action: MountAction) -> u8 {
-    match action {
-        MountAction::MOUNT_ACTION_CREATE_DETACHED => 1,
-        MountAction::MOUNT_ACTION_INSTALL => 2,
-        MountAction::MOUNT_ACTION_REPLACE => 3,
-        MountAction::MOUNT_ACTION_DETACH => 4,
-        MountAction::MOUNT_ACTION_RELEASE => 5,
-        MountAction::MOUNT_ACTION_UNSPECIFIED => 0,
+fn intent_transaction(request_id: [u8; 16]) -> [u8; 16] {
+    let mut digest = Sha256::new();
+    digest.update(b"aos.sandbox.mount.intent.v1\0");
+    digest.update(request_id);
+    let output = digest.finalize();
+    let mut id = [0; 16];
+    id.copy_from_slice(&output[..16]);
+    if id == [0; 16] {
+        id[0] = 1;
     }
+    id
+}
+
+fn authority_refresh_transaction(
+    request_id: [u8; 16],
+    plan_digest: ObjectDigest,
+    lease_digest: ObjectDigest,
+) -> [u8; 16] {
+    let mut digest = Sha256::new();
+    digest.update(b"aos.sandbox.mount.authority-refresh.v1\0");
+    digest.update(request_id);
+    digest.update(plan_digest.as_bytes());
+    digest.update(lease_digest.as_bytes());
+    let output = digest.finalize();
+    let mut id = [0; 16];
+    id.copy_from_slice(&output[..16]);
+    if id == [0; 16] {
+        id[0] = 1;
+    }
+    id
+}
+
+fn validate_effect_matches(
+    effect: &MountEffectIntentV2,
+    admission: &VerifiedMountAdmissionV1,
+    transport_request_digest: [u8; 32],
+) -> Result<()> {
+    if effect.transport_request_digest().as_bytes() != &transport_request_digest
+        || effect.request_digest() != admission.effect.request_digest()
+        || effect.verb() != admission.effect.verb()
+        || effect.target() != admission.effect.target()
+    {
+        return Err(MountError::Fence(
+            "durable effect contradicts exact request",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1551,11 +1719,28 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use aos_proto::aos::sandbox::local::v1::{
-        ApplyMountRequest, AssignmentFence, Audience, Descriptor, MountAttributes, RequestHeader,
+        ApplyMountRequest, AssignmentFence, Audience, BrokerAuthorizationArtifactsV1, BrokerMethod,
+        BrokerRequestEnvelope, Descriptor, MountAttributes, RequestHeader,
     };
     use aos_sandbox::journal::JournalLimits;
+    use aos_sandbox_core::format::{
+        encode_broker_authorization_plan, encode_ownership_lease, encode_signature,
+        encode_trust_policy,
+    };
+    use aos_sandbox_core::model::{
+        KeyReference, KeyUsage, SignaturePurpose, SignatureStatement, StableKeyId, TrustPolicy,
+    };
+    use aos_sandbox_core::{
+        AssignmentEpoch, BrokerAssignment, BrokerAudience, BrokerAuthorizationPlan, BrokerGrant,
+        DecodeLimits, DesiredGeneration, IncarnationId, LeaseAssignment, MediaType, NodeId,
+        ObjectDigest, OwnershipLease, OwnershipLeaseTrustAnchor, PortableMediaType, ProtocolId,
+        RawClockProvenance, RevocationScopeId, SandboxId, TrustScopeId, descriptor_for_bytes,
+        sign_statement,
+    };
     use aos_sandbox_linux::inventory::MountObservation;
     use aos_sandbox_linux::pidfd::NamespaceIdentity;
+    use aos_sandbox_protocol::session::decode_request_envelope;
+    use ed25519_dalek::SigningKey;
     use std::os::unix::ffi::OsStringExt as _;
 
     use super::*;
@@ -1563,15 +1748,408 @@ mod tests {
         InstalledMountObservation, PublicationPreflight, ReleasedMountObservation,
     };
 
-    #[derive(Default)]
+    const TEST_WALL_SECONDS: i64 = 150;
+    const TEST_BOOTTIME_NANOSECONDS: u64 = 100;
+    const TEST_NODE: NodeId = NodeId::from_bytes([31; 16]);
+
+    struct AuthorityFixture {
+        plan_key: SigningKey,
+        lease_key: SigningKey,
+        plan_signer: KeyReference,
+        lease_signer: KeyReference,
+        plan_policy: Vec<u8>,
+        plan_policy_descriptor: aos_sandbox_core::ObjectDescriptor,
+        plan_scope: TrustScopeId,
+        lease_policy: Vec<u8>,
+        lease_policy_descriptor: aos_sandbox_core::ObjectDescriptor,
+        lease_scope: TrustScopeId,
+        revocation_scope: RevocationScopeId,
+    }
+
+    impl AuthorityFixture {
+        fn new() -> Self {
+            let plan_key = SigningKey::from_bytes(&[41; 32]);
+            let lease_key = SigningKey::from_bytes(&[42; 32]);
+            let plan_signer = key_reference(
+                "mount-plan-controller",
+                3,
+                KeyUsage::BrokerAuthorization,
+                &plan_key,
+            );
+            let lease_signer = key_reference(
+                "mount-ownership-authority",
+                7,
+                KeyUsage::OwnershipLease,
+                &lease_key,
+            );
+            let plan_scope = TrustScopeId::from_bytes([43; 16]);
+            let lease_scope = TrustScopeId::from_bytes([44; 16]);
+            let (plan_policy, plan_policy_descriptor) = trust_policy(
+                plan_scope,
+                SignaturePurpose::BrokerAuthorization,
+                plan_signer.clone(),
+            );
+            let (lease_policy, lease_policy_descriptor) = trust_policy(
+                lease_scope,
+                SignaturePurpose::OwnershipLease,
+                lease_signer.clone(),
+            );
+            Self {
+                plan_key,
+                lease_key,
+                plan_signer,
+                lease_signer,
+                plan_policy,
+                plan_policy_descriptor,
+                plan_scope,
+                lease_policy,
+                lease_policy_descriptor,
+                lease_scope,
+                revocation_scope: RevocationScopeId::from_bytes([45; 16]),
+            }
+        }
+
+        fn authority(&self) -> MountAuthorityV1 {
+            let plan_anchor = aos_sandbox_core::BrokerPlanTrustAnchor::from_trusted_configuration(
+                self.plan_policy.clone(),
+                self.plan_policy_descriptor.clone(),
+                self.plan_scope,
+                self.plan_signer.clone(),
+                self.plan_key.verifying_key().to_bytes(),
+                self.revocation_scope,
+                DecodeLimits::default(),
+            )
+            .unwrap();
+            let lease_anchor = OwnershipLeaseTrustAnchor::from_trusted_configuration(
+                self.lease_policy.clone(),
+                self.lease_policy_descriptor.clone(),
+                self.lease_scope,
+                self.lease_signer.clone(),
+                self.lease_key.verifying_key().to_bytes(),
+                DecodeLimits::default(),
+            )
+            .unwrap();
+            MountAuthorityV1::new(plan_anchor, lease_anchor, TEST_NODE, [46; 16], [47; 32]).unwrap()
+        }
+
+        fn artifacts(
+            &self,
+            request_bytes: &[u8],
+            catalog_digest: Option<ObjectDigest>,
+            lease_generation: u64,
+            authorized_requests: &[&[u8]],
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            self.artifacts_with_plan_key(
+                request_bytes,
+                catalog_digest,
+                lease_generation,
+                authorized_requests,
+                &self.plan_key,
+            )
+        }
+
+        fn artifacts_with_plan_key(
+            &self,
+            request_bytes: &[u8],
+            catalog_digest: Option<ObjectDigest>,
+            lease_generation: u64,
+            authorized_requests: &[&[u8]],
+            plan_key: &SigningKey,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            let validated =
+                decode_mount_request(request_bytes, peer(), policy(), TEST_BOOTTIME_NANOSECONDS)
+                    .unwrap();
+            let catalog = catalog_digest
+                .map(MountCatalogCommitmentV1::from_verified_digest)
+                .transpose()
+                .unwrap();
+            let semantics = crate::authorization::semantics_v1::canonical_mount_semantics_v1(
+                &validated,
+                catalog,
+                &[],
+            )
+            .unwrap();
+            let assignment = BrokerAssignment::new(
+                SandboxId::from_bytes(*validated.fence().sandbox_id()),
+                IncarnationId::from_bytes(*validated.fence().incarnation_id()),
+                AssignmentEpoch::new(validated.fence().assignment_epoch()),
+                DesiredGeneration::new(validated.fence().desired_generation()),
+                ObjectDigest::from_bytes(*validated.fence().assignment_digest()),
+            )
+            .unwrap();
+            let mut grants = Vec::new();
+            for candidate_bytes in authorized_requests {
+                let candidate = decode_mount_request(
+                    candidate_bytes,
+                    peer(),
+                    policy(),
+                    TEST_BOOTTIME_NANOSECONDS,
+                )
+                .unwrap();
+                if candidate.fence() != validated.fence() {
+                    continue;
+                }
+                let candidate_catalog = (candidate.action() != MountAction::MOUNT_ACTION_RELEASE)
+                    .then(|| {
+                        MountCatalogCommitmentV1::from_verified_digest(ObjectDigest::from_bytes(
+                            [77; 32],
+                        ))
+                        .unwrap()
+                    });
+                let candidate_semantics =
+                    crate::authorization::semantics_v1::canonical_mount_semantics_v1(
+                        &candidate,
+                        candidate_catalog,
+                        &[],
+                    )
+                    .unwrap();
+                grants.push(
+                    BrokerGrant::new(
+                        candidate_semantics.verb(),
+                        candidate_semantics.target(),
+                        candidate_semantics.commitment(),
+                        u32::try_from(candidate_bytes.len()).unwrap(),
+                        0,
+                    )
+                    .unwrap(),
+                );
+            }
+            assert!(grants.iter().any(|grant| {
+                grant.verb() == semantics.verb()
+                    && grant.target() == semantics.target()
+                    && grant.argument_commitment() == semantics.commitment()
+            }));
+            grants.sort_by_key(|grant| (grant.verb(), grant.target()));
+            grants.dedup_by(|right, left| {
+                right.verb() == left.verb()
+                    && right.target() == left.target()
+                    && right.argument_commitment() == left.argument_commitment()
+            });
+            let plan = BrokerAuthorizationPlan::new(
+                BrokerAudience::Mount,
+                ProtocolId::MountBroker,
+                ProtocolVersion::new(1, 1),
+                assignment,
+                TEST_NODE,
+                self.lease_signer.clone(),
+                grants,
+                ObjectDigest::from_bytes([48; 32]),
+                self.revocation_scope,
+                100,
+                300,
+                Vec::new(),
+            )
+            .unwrap();
+            let broker_plan = encode_broker_authorization_plan(&plan);
+            let plan_signer = if plan_key.verifying_key() == self.plan_key.verifying_key() {
+                self.plan_signer.clone()
+            } else {
+                key_reference(
+                    "untrusted-mount-plan-controller",
+                    3,
+                    KeyUsage::BrokerAuthorization,
+                    plan_key,
+                )
+            };
+            let broker_plan_signature = signed_object(
+                &broker_plan,
+                PortableMediaType::BrokerAuthorizationPlan,
+                self.plan_scope,
+                plan_signer,
+                SignaturePurpose::BrokerAuthorization,
+                &self.plan_policy_descriptor,
+                plan_key,
+            );
+            let lease = OwnershipLease::new(
+                LeaseAssignment::new(
+                    assignment.sandbox(),
+                    assignment.incarnation(),
+                    assignment.epoch(),
+                    assignment.digest(),
+                )
+                .unwrap(),
+                TEST_NODE,
+                lease_generation,
+                100,
+                300,
+                10,
+                [u8::try_from(lease_generation).unwrap_or(255); 16],
+            )
+            .unwrap();
+            let ownership_lease = encode_ownership_lease(&lease);
+            let ownership_lease_signature = signed_object(
+                &ownership_lease,
+                PortableMediaType::OwnershipLease,
+                self.lease_scope,
+                self.lease_signer.clone(),
+                SignaturePurpose::OwnershipLease,
+                &self.lease_policy_descriptor,
+                &self.lease_key,
+            );
+            validated_artifacts(BrokerAuthorizationArtifactsV1 {
+                broker_plan,
+                broker_plan_signature,
+                ownership_lease,
+                ownership_lease_signature,
+                ..Default::default()
+            })
+        }
+    }
+
+    fn key_reference(id: &str, generation: u64, usage: KeyUsage, key: &SigningKey) -> KeyReference {
+        KeyReference::new(
+            StableKeyId::new(id.to_owned()).unwrap(),
+            generation,
+            ObjectDigest::from_bytes(Sha256::digest(key.verifying_key().as_bytes()).into()),
+            usage,
+        )
+    }
+
+    fn trust_policy(
+        scope: TrustScopeId,
+        purpose: SignaturePurpose,
+        signer: KeyReference,
+    ) -> (Vec<u8>, aos_sandbox_core::ObjectDescriptor) {
+        let bytes = encode_trust_policy(
+            &TrustPolicy::new(scope, purpose, vec![signer], Vec::new()).unwrap(),
+        );
+        let descriptor = descriptor_for_bytes(
+            MediaType::new(PortableMediaType::TrustPolicy.as_str().to_owned()).unwrap(),
+            &bytes,
+        );
+        (bytes, descriptor)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn signed_object(
+        bytes: &[u8],
+        media_type: PortableMediaType,
+        scope: TrustScopeId,
+        signer: KeyReference,
+        purpose: SignaturePurpose,
+        policy: &aos_sandbox_core::ObjectDescriptor,
+        key: &SigningKey,
+    ) -> Vec<u8> {
+        let subject = descriptor_for_bytes(
+            MediaType::new(media_type.as_str().to_owned()).unwrap(),
+            bytes,
+        );
+        let statement = SignatureStatement::new(
+            subject,
+            scope,
+            signer,
+            purpose,
+            100,
+            Some(300),
+            policy.clone(),
+        )
+        .unwrap();
+        encode_signature(&sign_statement(statement, key).unwrap())
+    }
+
+    fn validated_artifacts(
+        artifacts: BrokerAuthorizationArtifactsV1,
+    ) -> ValidatedUntrustedAuthorizationArtifacts {
+        let envelope = BrokerRequestEnvelope {
+            method: BrokerMethod::BROKER_METHOD_MOUNT_APPLY.into(),
+            body: vec![1],
+            authorization: Some(artifacts).into(),
+            ..Default::default()
+        };
+        decode_request_envelope(&envelope.encode_to_vec(), ProtocolId::MountBroker, 0)
+            .unwrap()
+            .authorization()
+            .unwrap()
+            .clone()
+    }
+
+    fn clock() -> RawPairedClockSample {
+        clock_at(TEST_WALL_SECONDS)
+    }
+
+    fn clock_at(wall_seconds: i64) -> RawPairedClockSample {
+        clock_sample(wall_seconds, TEST_BOOTTIME_NANOSECONDS)
+    }
+
+    fn clock_sample(wall_seconds: i64, boottime_nanoseconds: u64) -> RawPairedClockSample {
+        RawPairedClockSample::new_untrusted(
+            RawClockProvenance::new_untrusted([49; 16]).unwrap(),
+            [50; 16],
+            wall_seconds,
+            boottime_nanoseconds,
+        )
+        .unwrap()
+    }
+
+    fn apply<W: MountWorker>(
+        broker: &mut MountBroker<W>,
+        fixture: &AuthorityFixture,
+        request_bytes: &[u8],
+    ) -> Result<Vec<u8>> {
+        apply_authorized(broker, fixture, request_bytes, &[request_bytes])
+    }
+
+    fn apply_authorized<W: MountWorker>(
+        broker: &mut MountBroker<W>,
+        fixture: &AuthorityFixture,
+        request_bytes: &[u8],
+        authorized_requests: &[&[u8]],
+    ) -> Result<Vec<u8>> {
+        let catalog = broker.worker.catalog_commitment(&decode_mount_request(
+            request_bytes,
+            peer(),
+            policy(),
+            TEST_BOOTTIME_NANOSECONDS,
+        )?)?;
+        let artifacts = fixture.artifacts(request_bytes, catalog, 1, authorized_requests);
+        broker.apply_mount(
+            request_bytes,
+            &artifacts,
+            ProtocolVersion::new(1, 1),
+            peer(),
+            policy(),
+            || Ok(clock()),
+        )
+    }
+
+    fn test_broker<W: MountWorker>(
+        journal: Journal,
+        worker: W,
+    ) -> (MountBroker<W>, AuthorityFixture) {
+        let fixture = AuthorityFixture::new();
+        let broker = MountBroker::new(journal, worker, fixture.authority()).unwrap();
+        (broker, fixture)
+    }
+
     struct ScriptedWorker {
         calls: usize,
         fail_after_custody_once: bool,
         fail_release_after_custody_once: bool,
         custody: Vec<RetainedMountObservation>,
+        catalog_byte: u8,
+    }
+
+    impl Default for ScriptedWorker {
+        fn default() -> Self {
+            Self {
+                calls: 0,
+                fail_after_custody_once: false,
+                fail_release_after_custody_once: false,
+                custody: Vec::new(),
+                catalog_byte: 77,
+            }
+        }
     }
 
     impl MountWorker for ScriptedWorker {
+        fn catalog_commitment(
+            &self,
+            request: &ValidatedMountRequest,
+        ) -> Result<Option<aos_sandbox_core::ObjectDigest>> {
+            Ok((request.action() != MountAction::MOUNT_ACTION_RELEASE)
+                .then(|| aos_sandbox_core::ObjectDigest::from_bytes([self.catalog_byte; 32])))
+        }
+
         fn custody_inventory(&self) -> Result<Vec<RetainedMountObservation>> {
             Ok(self.custody.clone())
         }
@@ -1588,6 +2166,7 @@ mod tests {
             _handle: [u8; 32],
             _expected_mount_id: MountId,
             predecessor: Option<([u8; 32], MountId)>,
+            _expected_catalog_commitment: aos_sandbox_core::ObjectDigest,
         ) -> Result<PublicationPreflight> {
             Ok(PublicationPreflight {
                 target_mount_namespace_id: 500,
@@ -1605,7 +2184,10 @@ mod tests {
             _request_digest: [u8; 32],
             handle: [u8; 32],
             expected_mount_id: MountId,
+            _expected_catalog_commitment: aos_sandbox_core::ObjectDigest,
+            before_effect: &mut dyn FnMut() -> Result<EffectDeadlineV1>,
         ) -> Result<ReleasedMountObservation> {
+            before_effect()?;
             self.custody.retain(|value| value.handle != handle);
             Ok(ReleasedMountObservation {
                 mount_id: expected_mount_id,
@@ -1617,7 +2199,10 @@ mod tests {
             request: &ValidatedMountRequest,
             _request_digest: [u8; 32],
             handles: EffectHandles,
+            _expected_catalog_commitment: Option<aos_sandbox_core::ObjectDigest>,
+            before_effect: &mut dyn FnMut() -> Result<EffectDeadlineV1>,
         ) -> Result<WorkerObservation> {
+            before_effect()?;
             self.calls += 1;
             match request.action() {
                 MountAction::MOUNT_ACTION_CREATE_DETACHED => {
@@ -1815,10 +2400,10 @@ mod tests {
     fn create_completion_atomically_materializes_prepared_resource() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("mount.journal");
-        let mut broker = MountBroker::new(open(&path), ScriptedWorker::default()).unwrap();
+        let (mut broker, fixture) = test_broker(open(&path), ScriptedWorker::default());
         let bytes = request(9);
-        let first = broker.apply_mount(&bytes, peer(), policy(), 100).unwrap();
-        let second = broker.apply_mount(&bytes, peer(), policy(), 100).unwrap();
+        let first = apply(&mut broker, &fixture, &bytes).unwrap();
+        let second = apply(&mut broker, &fixture, &bytes).unwrap();
         assert_eq!(first, second);
         assert_eq!(broker.worker.calls, 1);
         let resource = broker.resources.resources().next().unwrap();
@@ -1842,19 +2427,179 @@ mod tests {
     }
 
     #[test]
-    fn restart_faults_unverifiable_allocated_custody() {
+    fn signed_authority_rejects_wrong_signature_body_and_catalog_substitution() {
+        for attack in ["signature", "body", "catalog"] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join(format!("{attack}.journal"));
+            let (mut broker, fixture) = test_broker(open(&path), ScriptedWorker::default());
+            let original = request(60);
+            let catalog = Some(ObjectDigest::from_bytes([77; 32]));
+            let wrong_key = SigningKey::from_bytes(&[99; 32]);
+            let artifacts = if attack == "signature" {
+                fixture.artifacts_with_plan_key(&original, catalog, 1, &[&original], &wrong_key)
+            } else {
+                fixture.artifacts(&original, catalog, 1, &[&original])
+            };
+            let presented = if attack == "body" {
+                let mut substituted = ApplyMountRequest::decode_from_slice(&original).unwrap();
+                substituted.source_generation += 1;
+                substituted.encode_to_vec()
+            } else {
+                original
+            };
+            if attack == "catalog" {
+                broker.worker.catalog_byte = 78;
+            }
+
+            assert!(
+                broker
+                    .apply_mount(
+                        &presented,
+                        &artifacts,
+                        ProtocolVersion::new(1, 1),
+                        peer(),
+                        policy(),
+                        || Ok(clock()),
+                    )
+                    .is_err()
+            );
+            assert_eq!(broker.worker.calls, 0, "attack {attack} reached worker");
+        }
+    }
+
+    #[test]
+    fn expired_authority_fails_before_effect_intent() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("mount.journal");
-        let bytes = request(10);
-        let mut broker = MountBroker::new(
+        let (mut broker, fixture) = test_broker(open(&path), ScriptedWorker::default());
+        let bytes = request(61);
+        let artifacts = fixture.artifacts(
+            &bytes,
+            Some(ObjectDigest::from_bytes([77; 32])),
+            1,
+            &[&bytes],
+        );
+
+        assert!(
+            broker
+                .apply_mount(
+                    &bytes,
+                    &artifacts,
+                    ProtocolVersion::new(1, 1),
+                    peer(),
+                    policy(),
+                    || Ok(clock_at(301)),
+                )
+                .is_err()
+        );
+        assert_eq!(broker.worker.calls, 0);
+        assert!(
+            broker
+                .journal
+                .get(RecordNamespace::Effect, &[61; 16])
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn request_deadline_crossing_after_intent_prevents_the_worker_effect() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mount.journal");
+        let (mut broker, fixture) = test_broker(open(&path), ScriptedWorker::default());
+        let bytes = request(63);
+        let artifacts = fixture.artifacts(
+            &bytes,
+            Some(ObjectDigest::from_bytes([77; 32])),
+            1,
+            &[&bytes],
+        );
+        let mut reads = 0;
+
+        assert!(
+            broker
+                .apply_mount(
+                    &bytes,
+                    &artifacts,
+                    ProtocolVersion::new(1, 1),
+                    peer(),
+                    policy(),
+                    || {
+                        reads += 1;
+                        Ok(if reads == 1 {
+                            clock()
+                        } else {
+                            clock_sample(TEST_WALL_SECONDS, 1_000)
+                        })
+                    },
+                )
+                .is_err()
+        );
+        assert_eq!(broker.worker.calls, 0);
+        assert!(
+            broker
+                .journal
+                .get(RecordNamespace::Effect, &[63; 16])
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn pending_replay_accepts_a_fresher_lease_without_reallocating() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mount.journal");
+        let (mut broker, fixture) = test_broker(
             open(&path),
             ScriptedWorker {
                 fail_after_custody_once: true,
                 ..Default::default()
             },
-        )
-        .unwrap();
-        assert!(broker.apply_mount(&bytes, peer(), policy(), 100).is_err());
+        );
+        let bytes = request(62);
+        let catalog = Some(ObjectDigest::from_bytes([77; 32]));
+        let first = fixture.artifacts(&bytes, catalog, 1, &[&bytes]);
+        assert!(
+            broker
+                .apply_mount(
+                    &bytes,
+                    &first,
+                    ProtocolVersion::new(1, 1),
+                    peer(),
+                    policy(),
+                    || Ok(clock()),
+                )
+                .is_err()
+        );
+        assert_eq!(broker.worker.calls, 1);
+        assert_eq!(broker.worker.custody.len(), 1);
+
+        let renewed = fixture.artifacts(&bytes, catalog, 2, &[&bytes]);
+        broker
+            .apply_mount(
+                &bytes,
+                &renewed,
+                ProtocolVersion::new(1, 1),
+                peer(),
+                policy(),
+                || Ok(clock()),
+            )
+            .unwrap();
+        assert_eq!(broker.worker.calls, 2);
+        assert_eq!(broker.worker.custody.len(), 1);
+    }
+
+    #[test]
+    fn restart_faults_unverifiable_allocated_custody() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mount.journal");
+        let bytes = request(10);
+        let (mut broker, fixture) = test_broker(
+            open(&path),
+            ScriptedWorker {
+                fail_after_custody_once: true,
+                ..Default::default()
+            },
+        );
+        assert!(apply(&mut broker, &fixture, &bytes).is_err());
         let custody = broker.worker.custody.clone();
         assert!(matches!(
             broker.resources.resources().next().unwrap().state,
@@ -1862,20 +2607,15 @@ mod tests {
         ));
         drop(broker);
 
-        let mut recovered = MountBroker::new(
+        let (mut recovered, recovered_fixture) = test_broker(
             open(&path),
             ScriptedWorker {
                 custody,
                 ..Default::default()
             },
-        )
-        .unwrap();
-        assert!(recovered.worker.custody.is_empty());
-        assert!(
-            recovered
-                .apply_mount(&bytes, peer(), policy(), 100)
-                .is_err()
         );
+        assert!(recovered.worker.custody.is_empty());
+        assert!(apply(&mut recovered, &recovered_fixture, &bytes).is_err());
         assert!(matches!(
             recovered.resources.resources().next().unwrap().state,
             MountResourceStateV1::Faulted {
@@ -1895,17 +2635,23 @@ mod tests {
             }],
             ..Default::default()
         };
-        assert!(MountBroker::new(open(&directory.path().join("mount.journal")), worker).is_err());
+        let fixture = AuthorityFixture::new();
+        assert!(
+            MountBroker::new(
+                open(&directory.path().join("mount.journal")),
+                worker,
+                fixture.authority(),
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn constructor_rejects_wrong_retained_mount_identity() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("mount.journal");
-        let mut broker = MountBroker::new(open(&path), ScriptedWorker::default()).unwrap();
-        broker
-            .apply_mount(&request(39), peer(), policy(), 100)
-            .unwrap();
+        let (mut broker, fixture) = test_broker(open(&path), ScriptedWorker::default());
+        apply(&mut broker, &fixture, &request(39)).unwrap();
         let mut custody = broker.worker.custody.clone();
         custody[0].mount_id = MountId::new(999).unwrap();
         drop(broker);
@@ -1916,7 +2662,8 @@ mod tests {
                 ScriptedWorker {
                     custody,
                     ..Default::default()
-                }
+                },
+                fixture.authority(),
             )
             .is_err()
         );
@@ -1926,16 +2673,9 @@ mod tests {
     fn restart_admits_missing_custody_for_precommitted_release() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("mount.journal");
-        let mut broker = MountBroker::new(open(&path), ScriptedWorker::default()).unwrap();
-        let receipt = broker
-            .apply_mount(&request(40), peer(), policy(), 100)
-            .unwrap();
-        let handle: [u8; 32] = MountResult::decode_from_slice(&receipt)
-            .unwrap()
-            .detached_mount_handle
-            .try_into()
-            .unwrap();
-        broker.worker.fail_release_after_custody_once = true;
+        let (mut broker, fixture) = test_broker(open(&path), ScriptedWorker::default());
+        let create = request(40);
+        let handle = derive_handle(b"detached", Sha256::digest(&create).into());
         let release = action_request(
             41,
             1,
@@ -1944,12 +2684,6 @@ mod tests {
             Some(handle),
             None,
         );
-        assert!(broker.apply_mount(&release, peer(), policy(), 100).is_err());
-        assert!(broker.worker.custody.is_empty());
-        assert!(matches!(
-            broker.resources.get(&handle).unwrap().state,
-            MountResourceStateV1::Releasing { .. }
-        ));
         let competing_release = action_request(
             42,
             1,
@@ -1958,25 +2692,45 @@ mod tests {
             Some(handle),
             None,
         );
+        let authorized = [&create[..], &release[..]];
+        let receipt = apply_authorized(&mut broker, &fixture, &create, &authorized).unwrap();
+        assert_eq!(
+            MountResult::decode_from_slice(&receipt)
+                .unwrap()
+                .detached_mount_handle,
+            handle
+        );
+        broker.worker.fail_release_after_custody_once = true;
+        assert!(apply_authorized(&mut broker, &fixture, &release, &authorized).is_err());
+        assert!(broker.worker.custody.is_empty());
+        assert!(matches!(
+            broker.resources.get(&handle).unwrap().state,
+            MountResourceStateV1::Releasing { .. }
+        ));
+        let release_artifacts = fixture.artifacts(&release, None, 1, &authorized);
         assert!(
             broker
-                .apply_mount(&competing_release, peer(), policy(), 100)
+                .apply_mount(
+                    &competing_release,
+                    &release_artifacts,
+                    ProtocolVersion::new(1, 1),
+                    peer(),
+                    policy(),
+                    || Ok(clock()),
+                )
                 .is_err()
         );
         let custody = broker.worker.custody.clone();
         drop(broker);
 
-        let mut recovered = MountBroker::new(
+        let (mut recovered, recovered_fixture) = test_broker(
             open(&path),
             ScriptedWorker {
                 custody,
                 ..Default::default()
             },
-        )
-        .unwrap();
-        recovered
-            .apply_mount(&release, peer(), policy(), 100)
-            .unwrap();
+        );
+        apply_authorized(&mut recovered, &recovered_fixture, &release, &authorized).unwrap();
         assert!(matches!(
             recovered.resources.get(&handle).unwrap().state,
             MountResourceStateV1::Released { .. }
@@ -1987,7 +2741,7 @@ mod tests {
     fn replacement_draining_release_atomically_retires_both_edges() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("mount.journal");
-        let mut broker = MountBroker::new(open(&path), ScriptedWorker::default()).unwrap();
+        let (mut broker, fixture) = test_broker(open(&path), ScriptedWorker::default());
 
         let create_predecessor = action_request(
             20,
@@ -1997,85 +2751,53 @@ mod tests {
             None,
             None,
         );
-        let predecessor_receipt = broker
-            .apply_mount(&create_predecessor, peer(), policy(), 100)
-            .unwrap();
-        let predecessor: [u8; 32] = MountResult::decode_from_slice(&predecessor_receipt)
-            .unwrap()
-            .detached_mount_handle
-            .try_into()
-            .unwrap();
-        broker
-            .apply_mount(
-                &action_request(
-                    21,
-                    1,
-                    1,
-                    MountAction::MOUNT_ACTION_INSTALL,
-                    Some(predecessor),
-                    None,
-                ),
-                peer(),
-                policy(),
-                100,
-            )
-            .unwrap();
+        let predecessor = derive_handle(b"detached", Sha256::digest(&create_predecessor).into());
+        let install_predecessor = action_request(
+            21,
+            1,
+            1,
+            MountAction::MOUNT_ACTION_INSTALL,
+            Some(predecessor),
+            None,
+        );
+        let create_successor = action_request(
+            22,
+            2,
+            2,
+            MountAction::MOUNT_ACTION_CREATE_DETACHED,
+            None,
+            None,
+        );
+        let successor = derive_handle(b"detached", Sha256::digest(&create_successor).into());
+        let replace = action_request(
+            23,
+            2,
+            2,
+            MountAction::MOUNT_ACTION_REPLACE,
+            Some(successor),
+            Some(predecessor),
+        );
+        let release = action_request(
+            24,
+            2,
+            1,
+            MountAction::MOUNT_ACTION_RELEASE,
+            Some(predecessor),
+            None,
+        );
+        let generation_one = [&create_predecessor[..], &install_predecessor[..]];
+        let generation_two = [&create_successor[..], &replace[..], &release[..]];
 
-        let successor_receipt = broker
-            .apply_mount(
-                &action_request(
-                    22,
-                    2,
-                    2,
-                    MountAction::MOUNT_ACTION_CREATE_DETACHED,
-                    None,
-                    None,
-                ),
-                peer(),
-                policy(),
-                100,
-            )
-            .unwrap();
-        let successor: [u8; 32] = MountResult::decode_from_slice(&successor_receipt)
-            .unwrap()
-            .detached_mount_handle
-            .try_into()
-            .unwrap();
-        broker
-            .apply_mount(
-                &action_request(
-                    23,
-                    2,
-                    2,
-                    MountAction::MOUNT_ACTION_REPLACE,
-                    Some(successor),
-                    Some(predecessor),
-                ),
-                peer(),
-                policy(),
-                100,
-            )
-            .unwrap();
+        apply_authorized(&mut broker, &fixture, &create_predecessor, &generation_one).unwrap();
+        apply_authorized(&mut broker, &fixture, &install_predecessor, &generation_one).unwrap();
+        apply_authorized(&mut broker, &fixture, &create_successor, &generation_two).unwrap();
+        apply_authorized(&mut broker, &fixture, &replace, &generation_two).unwrap();
         assert!(matches!(
             broker.resources.get(&predecessor).unwrap().state,
             MountResourceStateV1::Draining { .. }
         ));
 
-        broker
-            .apply_mount(
-                &action_request(
-                    24,
-                    2,
-                    1,
-                    MountAction::MOUNT_ACTION_RELEASE,
-                    Some(predecessor),
-                    None,
-                ),
-                peer(),
-                policy(),
-                100,
-            )
-            .unwrap();
+        apply_authorized(&mut broker, &fixture, &release, &generation_two).unwrap();
         assert!(matches!(
             broker.resources.get(&predecessor).unwrap().state,
             MountResourceStateV1::Released { .. }
@@ -2092,78 +2814,48 @@ mod tests {
     fn authoritative_inventory_decodes_reciprocal_faulted_replacement_pair() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("mount.journal");
-        let mut broker = MountBroker::new(open(&path), ScriptedWorker::default()).unwrap();
+        let (mut broker, fixture) = test_broker(open(&path), ScriptedWorker::default());
 
-        let predecessor_receipt = broker
-            .apply_mount(
-                &action_request(
-                    50,
-                    1,
-                    1,
-                    MountAction::MOUNT_ACTION_CREATE_DETACHED,
-                    None,
-                    None,
-                ),
-                peer(),
-                policy(),
-                100,
-            )
-            .unwrap();
-        let predecessor: [u8; 32] = MountResult::decode_from_slice(&predecessor_receipt)
-            .unwrap()
-            .detached_mount_handle
-            .try_into()
-            .unwrap();
-        broker
-            .apply_mount(
-                &action_request(
-                    51,
-                    1,
-                    1,
-                    MountAction::MOUNT_ACTION_INSTALL,
-                    Some(predecessor),
-                    None,
-                ),
-                peer(),
-                policy(),
-                100,
-            )
-            .unwrap();
-        let successor_receipt = broker
-            .apply_mount(
-                &action_request(
-                    52,
-                    2,
-                    2,
-                    MountAction::MOUNT_ACTION_CREATE_DETACHED,
-                    None,
-                    None,
-                ),
-                peer(),
-                policy(),
-                100,
-            )
-            .unwrap();
-        let successor: [u8; 32] = MountResult::decode_from_slice(&successor_receipt)
-            .unwrap()
-            .detached_mount_handle
-            .try_into()
-            .unwrap();
-        broker
-            .apply_mount(
-                &action_request(
-                    53,
-                    2,
-                    2,
-                    MountAction::MOUNT_ACTION_REPLACE,
-                    Some(successor),
-                    Some(predecessor),
-                ),
-                peer(),
-                policy(),
-                100,
-            )
-            .unwrap();
+        let create_predecessor = action_request(
+            50,
+            1,
+            1,
+            MountAction::MOUNT_ACTION_CREATE_DETACHED,
+            None,
+            None,
+        );
+        let predecessor = derive_handle(b"detached", Sha256::digest(&create_predecessor).into());
+        let install_predecessor = action_request(
+            51,
+            1,
+            1,
+            MountAction::MOUNT_ACTION_INSTALL,
+            Some(predecessor),
+            None,
+        );
+        let create_successor = action_request(
+            52,
+            2,
+            2,
+            MountAction::MOUNT_ACTION_CREATE_DETACHED,
+            None,
+            None,
+        );
+        let successor = derive_handle(b"detached", Sha256::digest(&create_successor).into());
+        let replace = action_request(
+            53,
+            2,
+            2,
+            MountAction::MOUNT_ACTION_REPLACE,
+            Some(successor),
+            Some(predecessor),
+        );
+        let generation_one = [&create_predecessor[..], &install_predecessor[..]];
+        let generation_two = [&create_successor[..], &replace[..]];
+        apply_authorized(&mut broker, &fixture, &create_predecessor, &generation_one).unwrap();
+        apply_authorized(&mut broker, &fixture, &install_predecessor, &generation_one).unwrap();
+        apply_authorized(&mut broker, &fixture, &create_successor, &generation_two).unwrap();
+        apply_authorized(&mut broker, &fixture, &replace, &generation_two).unwrap();
 
         for (handle, transaction_id) in [(successor, [54; 16]), (predecessor, [55; 16])] {
             let current = broker.resources.get(&handle).unwrap().clone();

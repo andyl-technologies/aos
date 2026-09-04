@@ -15,6 +15,7 @@
 //! - [`state`] encodes the broker's bounded journal records;
 //! - [`worker`] defines the closed effect interface.
 
+pub mod authorization;
 pub mod broker;
 pub mod catalog;
 pub mod helper;
@@ -26,6 +27,8 @@ pub mod spawn;
 mod state;
 pub mod transport;
 pub mod worker;
+
+pub(crate) const KERNEL_CLOCK_PROVENANCE: [u8; 16] = *b"aos-kernel-clock";
 
 /// Errors returned by the fixed mount broker.
 #[derive(Debug, thiserror::Error)]

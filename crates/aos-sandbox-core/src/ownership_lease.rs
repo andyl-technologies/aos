@@ -45,6 +45,12 @@ impl RawClockProvenance {
             Ok(Self(identity))
         }
     }
+
+    /// Returns the stable reader-configuration identity.
+    #[must_use]
+    pub const fn as_bytes(self) -> [u8; 16] {
+        self.0
+    }
 }
 
 /// Pairs caller-supplied wall time with BOOTTIME and host boot identity.
@@ -82,6 +88,12 @@ impl RawPairedClockSample {
             wall_seconds,
             boottime_nanoseconds,
         })
+    }
+
+    /// Returns the reader configuration that produced this paired sample.
+    #[must_use]
+    pub const fn provenance(self) -> RawClockProvenance {
+        self.provenance
     }
 
     /// Returns the host boot identity paired with both clocks.

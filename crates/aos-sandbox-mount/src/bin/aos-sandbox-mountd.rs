@@ -9,6 +9,7 @@ use std::process::ExitCode;
 
 use aos_sandbox::journal::{Journal, JournalLimits};
 use aos_sandbox_linux::path::BeneathRoot;
+use aos_sandbox_mount::authorization::MountAuthorityV1;
 use aos_sandbox_mount::broker::MountBroker;
 use aos_sandbox_mount::catalog::FileMountCatalog;
 use aos_sandbox_mount::helper::PosixSpawnNamespaceHelper;
@@ -56,7 +57,9 @@ fn run() -> Result<()> {
     let catalog = FileMountCatalog::open_root_owned(CATALOG_ROOT)?;
     let helper = PosixSpawnNamespaceHelper::new(helper_executable)?;
     let worker = DescriptorMountWorker::new(catalog, helper, keeper, activation.mounts)?;
-    let broker = MountBroker::new(journal, worker)?;
+    let authority = MountAuthorityV1::from_protected_directory(STATE_ROOT)
+        .map_err(|error| MountError::State(error.to_string()))?;
+    let broker = MountBroker::new(journal, worker, authority)?;
     let verifier = ControllerPeerVerifier::new(open_cgroup_root()?);
     let mut service = MountService::new(broker, verifier, controller_identity);
     loop {

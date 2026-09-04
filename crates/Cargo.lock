@@ -677,6 +677,9 @@ dependencies = [
  "aos-sandbox-linux",
  "aos-sandbox-protocol",
  "buffa",
+ "ed25519-dalek",
+ "hex",
+ "hmac 0.12.1",
  "libc",
  "rustix 1.1.4",
  "serde",
@@ -684,6 +687,7 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
+ "zeroize",
 ]
 
 [[package]]
