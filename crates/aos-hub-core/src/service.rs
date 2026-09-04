@@ -8677,19 +8677,18 @@ impl RpcService {
         let owner_scope_key = self.route_surface_owner_scope(surface).await?;
         self.require_delivery_scope(auth, &owner_scope_key, Permission::RouteRead)
             .await?;
-        let records = self
+        let page = self
             .db
-            .list_routes(surface)
+            .list_routes_page(surface, req.page_size, &req.page_token)
             .await
             .map_err(RpcError::internal)?;
-        let (records, next_page_token) = paginate(records, req.page_size, &req.page_token)?;
-        let mut routes = Vec::with_capacity(records.len());
-        for record in records {
+        let mut routes = Vec::with_capacity(page.records.len());
+        for record in page.records {
             routes.push(self.route_message(record).await?);
         }
         Ok(pb::ListRoutesResponse {
             routes,
-            next_page_token,
+            next_page_token: page.next_cursor.unwrap_or_default(),
         })
     }
 

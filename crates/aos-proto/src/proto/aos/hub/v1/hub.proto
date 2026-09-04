@@ -5430,6 +5430,7 @@ message Route {
 message ListRoutesRequest {
   SurfaceRef surface = 1;
   uint32 page_size = 2;
+  // Exclusive stable route-id cursor returned by the previous page.
   string page_token = 3;
 }
 message ListRoutesResponse {
