@@ -1945,7 +1945,6 @@ fn plan_command(
         CommandDisposition::Success,
         CommandData {
             values: BTreeMap::from([("repositoryState".to_string(), "clean".to_string())]),
-            inventory: Some(envelope),
             discovery: Some(snapshot),
             plan: Some(plan.clone()),
             ..CommandData::default()
@@ -2185,7 +2184,6 @@ async fn run_command(
         run_id: Some(run.run_id.clone()),
         data: CommandData {
             values,
-            inventory: Some(envelope),
             plan: Some(plan),
             run: Some(run.clone()),
             ..CommandData::default()
@@ -2219,7 +2217,7 @@ async fn run_command(
 fn stopped_run_completion(
     command: &str,
     disposition: CommandDisposition,
-    envelope: aos_maintain::envelope::InventoryEnvelopeV1,
+    _envelope: aos_maintain::envelope::InventoryEnvelopeV1,
     plan: aos_maintain::plan::PackageUpdatePlanV1,
     run: aos_maintain::run::PackageUpdateRunV1,
     code: &str,
@@ -2237,7 +2235,6 @@ fn stopped_run_completion(
                 ("branch".to_string(), run.branch.clone()),
                 ("worktree".to_string(), run.worktree.clone()),
             ]),
-            inventory: Some(envelope),
             plan: Some(plan),
             run: Some(run.clone()),
             ..CommandData::default()

@@ -247,30 +247,7 @@ pub(super) async fn observe(
         .iter()
         .any(|check| check.name == authorization_check && check.conclusion == "success");
 
-    let mut latest_reviews = BTreeMap::new();
-    for review in reviews {
-        if let Some(user) = review.user {
-            let state = review.state.to_ascii_uppercase();
-            if latest_reviews
-                .get(&user.id)
-                .is_none_or(|(id, _): &(u64, String)| *id < review.id)
-            {
-                latest_reviews.insert(user.id, (review.id, state));
-            }
-        }
-    }
-    let approvals = latest_reviews
-        .values()
-        .filter(|(_, state)| state == "APPROVED")
-        .count()
-        .try_into()
-        .context("approval count overflow")?;
-    let changes_requested = latest_reviews
-        .values()
-        .filter(|(_, state)| state == "CHANGES_REQUESTED")
-        .count()
-        .try_into()
-        .context("review count overflow")?;
+    let (approvals, changes_requested) = latest_review_counts(reviews)?;
     let merge_commit = pull
         .merged
         .then_some(pull.merge_commit_sha)
@@ -298,6 +275,34 @@ pub(super) async fn observe(
     };
     observation.validate()?;
     Ok(observation)
+}
+
+fn latest_review_counts(reviews: Vec<ReviewResponse>) -> Result<(u32, u32)> {
+    let mut latest_reviews = BTreeMap::new();
+    for review in reviews {
+        if let Some(user) = review.user {
+            let state = review.state.to_ascii_uppercase();
+            if latest_reviews
+                .get(&user.id)
+                .is_none_or(|(id, _): &(u64, String)| *id < review.id)
+            {
+                latest_reviews.insert(user.id, (review.id, state));
+            }
+        }
+    }
+    let approvals = latest_reviews
+        .values()
+        .filter(|(_, state)| state == "APPROVED")
+        .count()
+        .try_into()
+        .context("approval count overflow")?;
+    let changes_requested = latest_reviews
+        .values()
+        .filter(|(_, state)| state == "CHANGES_REQUESTED")
+        .count()
+        .try_into()
+        .context("review count overflow")?;
+    Ok((approvals, changes_requested))
 }
 
 fn verify_candidate(
@@ -746,5 +751,34 @@ mod tests {
             ("andyl-technologies", "aos")
         );
         assert!(github_repository("https://example.com/owner/repo").is_err());
+    }
+
+    #[test]
+    fn review_reduction_uses_numeric_order_not_response_order() {
+        let user = |id| Some(ReviewUser { id });
+        let reviews = vec![
+            ReviewResponse {
+                id: 30,
+                state: "dismissed".to_string(),
+                user: user(1),
+            },
+            ReviewResponse {
+                id: 50,
+                state: "changes_requested".to_string(),
+                user: user(2),
+            },
+            ReviewResponse {
+                id: 20,
+                state: "approved".to_string(),
+                user: user(1),
+            },
+            ReviewResponse {
+                id: 60,
+                state: "approved".to_string(),
+                user: user(2),
+            },
+        ];
+
+        assert_eq!(latest_review_counts(reviews).unwrap(), (1, 0));
     }
 }
