@@ -143,6 +143,12 @@ impl FakeSystemd {
         self.record("thaw_unit");
     }
 
+    async fn kill_unit(&self, _name: &str, whom: &str, signal: i32) {
+        assert_eq!(whom, "all");
+        assert_eq!(signal, libc::SIGKILL);
+        self.record("kill_unit");
+    }
+
     async fn get_unit(&self, name: &str) -> OwnedObjectPath {
         self.record("get_unit");
         *self.state.observed_unit.lock().unwrap() = name.to_string();

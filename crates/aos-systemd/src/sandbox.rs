@@ -440,6 +440,31 @@ impl SystemdClient {
         Ok(())
     }
 
+    /// Stops one incarnation-derived sandbox service and awaits its job.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when systemd rejects the request, the D-Bus transport
+    /// fails, or the job result stream closes before completion.
+    pub async fn stop_sandbox_unit(&self, name: &SandboxUnitName) -> Result<JobOutcome> {
+        self.stop_unit(name.as_str()).await
+    }
+
+    /// Sends `SIGKILL` to every process in one sandbox service cgroup.
+    ///
+    /// The signal and `all` process selector are fixed by this typed method;
+    /// callers cannot use it as a generic signal-delivery API.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when systemd rejects the request or D-Bus fails.
+    pub async fn kill_sandbox_unit(&self, name: &SandboxUnitName) -> Result<()> {
+        self.manager
+            .kill_unit(name.as_str(), "all", libc::SIGKILL)
+            .await?;
+        Ok(())
+    }
+
     /// Observes the current unit, cgroup, invocation, and supervisor leader.
     ///
     /// An unloaded unit returns `Ok(None)`. The returned PID is only systemd's

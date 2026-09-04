@@ -56,6 +56,8 @@ pub trait Manager {
     fn freeze_unit(&self, name: &str) -> zbus::Result<()>;
     /// Thaw every process in a unit's cgroup subtree.
     fn thaw_unit(&self, name: &str) -> zbus::Result<()>;
+    /// Deliver one signal to the selected process set of a loaded unit.
+    fn kill_unit(&self, name: &str, whom: &str, signal: i32) -> zbus::Result<()>;
 
     /// `Manager.Reload()` — the D-Bus equivalent of `systemctl daemon-reload`.
     fn reload(&self) -> zbus::Result<()>;

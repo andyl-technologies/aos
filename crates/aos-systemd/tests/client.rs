@@ -258,6 +258,23 @@ async fn sandbox_freeze_and_thaw_use_manager_methods() {
 }
 
 #[tokio::test]
+async fn sandbox_stop_and_kill_remain_typed() {
+    let h = Harness::new().await;
+    let name = SandboxUnitName::from_incarnation([9; 16]);
+    let outcome = with_timeout(h.client.stop_sandbox_unit(&name))
+        .await
+        .unwrap();
+    assert_eq!(outcome.result, JobResult::Done);
+    with_timeout(h.client.kill_sandbox_unit(&name))
+        .await
+        .unwrap();
+
+    let calls = h.calls();
+    assert!(calls.contains(&"stop_unit".to_string()));
+    assert!(calls.contains(&"kill_unit".to_string()));
+}
+
+#[tokio::test]
 async fn sandbox_observation_reads_typed_live_properties() {
     let h = Harness::new().await;
     let name = SandboxUnitName::from_incarnation([7; 16]);
