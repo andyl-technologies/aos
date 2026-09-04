@@ -1,6 +1,6 @@
 # RFC-0018: Local maintainer package upgrades
 
-- **Status:** Proposed (design-only).
+- **Status:** Implemented; package coverage continues incrementally.
 - **Date:** 2026-09-03.
 - **Audience:** AOS package, build, test, CLI, and release maintainers.
 - **Execution environment:** An interactive maintainer checkout and the
