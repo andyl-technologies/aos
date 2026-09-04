@@ -346,6 +346,14 @@
     then throw "the initrd must recover interrupted credential publication before restoring /etc"
     else if
       !(builtins.elem
+        "nix-overlay-setup.service"
+        system.config.boot.initrd.systemd.services."aos-credential-recovery".requires)
+      || !(builtins.elem
+        "nix-overlay-setup.service"
+        system.config.boot.initrd.systemd.services."aos-credential-recovery".after)
+    then throw "initrd credential recovery must wait for the /nix overlay"
+    else if
+      !(builtins.elem
         "aos-credential-recovery.service"
         system.config.systemd.services.aos-eval.requires)
     then throw "host evaluation must require credential transaction recovery"

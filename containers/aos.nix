@@ -25,11 +25,19 @@
 
   coreRoots = [pkgs.glibc pkgs.gcc-libs pkgs.ca-certificates];
   shellRoots = [pkgs.bash pkgs.coreutils pkgs.findutils pkgs.grep pkgs.sed pkgs.gawk];
-  cliRoots = [pkgs.aos];
+  # The CLI is intentionally split into independently portable outputs.  Keep
+  # all three commands in the image closure and expose their canonical names
+  # explicitly; the server golden profile is not the authority for the base
+  # image's documented command surface.
+  cliRoots = [pkgs.aos pkgs.aos.apm pkgs.aos.apr];
+  packageRoots = lib.unique (goldenRoots ++ cliRoots);
 in {
   config = {
     name = "aos";
-    packageRoots = goldenRoots;
+    # Every facade target must also be a baked GC root.  The split apm/apr
+    # outputs are not necessarily members of the server golden profile, and a
+    # daemonless container must retain them across an explicit APM/Nix GC.
+    inherit packageRoots;
     layers = [
       {
         name = "runtime-core";
@@ -53,6 +61,20 @@ in {
     ];
 
     filesystem = {
+      facade = [
+        {
+          name = "aos";
+          target = "${pkgs.aos}/bin/aos";
+        }
+        {
+          name = "apm";
+          target = "${pkgs.aos.apm}/bin/apm";
+        }
+        {
+          name = "apr";
+          target = "${pkgs.aos.apr}/bin/apr";
+        }
+      ];
       directories = [
         {
           path = "/root";

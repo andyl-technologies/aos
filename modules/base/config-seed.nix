@@ -32,8 +32,19 @@
         "etc-overlay-setup.service"
         "initrd-switch-root.target"
       ];
-      requires = ["mount-var.service"];
-      after = ["mount-var.service"];
+      # Recovery resolves the image's /aos-toplevel pointer into /nix/store.
+      # The pointer exists as soon as sysroot mounts, but its target is not
+      # reachable until the writable /nix overlay is active.
+      requires = [
+        "sysroot.mount"
+        "mount-var.service"
+        "nix-overlay-setup.service"
+      ];
+      after = [
+        "sysroot.mount"
+        "mount-var.service"
+        "nix-overlay-setup.service"
+      ];
       unitConfig.DefaultDependencies = "no";
       serviceConfig = {
         Type = "oneshot";

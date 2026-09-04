@@ -72,7 +72,7 @@ impl RpcService {
         Ok(registry)
     }
 
-    async fn container_distribution_authority(
+    pub(crate) async fn container_distribution_authority(
         &self,
         registry_id: i64,
     ) -> Result<Option<String>, RpcError> {

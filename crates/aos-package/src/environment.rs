@@ -66,8 +66,8 @@ fn selected_root() -> Result<PathBuf> {
 /// Validates the immutable identity of an AOS root.
 fn validate_aos_root(root: &Path, live_only: bool) -> Result<()> {
     let immutable = root.join("aos-toplevel/os-release");
-    let identity = if immutable.is_file() {
-        immutable
+    let identity = if let Some(identity) = immutable_identity(root)? {
+        identity
     } else if !live_only {
         let installed = root.join("etc/os-release");
         if installed.is_file() {
@@ -103,6 +103,65 @@ fn validate_aos_root(root: &Path, live_only: bool) -> Result<()> {
     Ok(())
 }
 
+/// Resolves the immutable identity inside the selected root's mount namespace.
+///
+/// Installed roots use an absolute `/aos-toplevel` symlink. When an initrd
+/// selects that root through `AOS_ROOT=/sysroot`, ordinary host path traversal
+/// would follow the link through the initrd's `/nix/store` instead of the
+/// mounted system's `/sysroot/nix/store`.
+fn immutable_identity(root: &Path) -> Result<Option<PathBuf>> {
+    let identity = root.join("aos-toplevel/os-release");
+    if root == Path::new("/") {
+        return Ok(identity.is_file().then_some(identity));
+    }
+
+    let link = root.join("aos-toplevel");
+    let Ok(metadata) = fs::symlink_metadata(&link) else {
+        return Ok(None);
+    };
+    if !metadata.file_type().is_symlink() {
+        return Ok(identity.is_file().then_some(identity));
+    }
+
+    let target = fs::read_link(&link)
+        .with_context(|| format!("reading immutable AOS identity link {}", link.display()))?;
+    let Some(toplevel) = path_in_selected_root(root, &target)? else {
+        return Ok(None);
+    };
+
+    let identity = toplevel.join("os-release");
+    let Ok(metadata) = fs::symlink_metadata(&identity) else {
+        return Ok(None);
+    };
+    if !metadata.file_type().is_symlink() {
+        return Ok(metadata.is_file().then_some(identity));
+    }
+
+    let target = fs::read_link(&identity)
+        .with_context(|| format!("reading immutable AOS identity link {}", identity.display()))?;
+    let Some(identity) = path_in_selected_root(root, &target)? else {
+        return Ok(None);
+    };
+    Ok(identity.is_file().then_some(identity))
+}
+
+/// Maps an absolute path from the selected root's namespace onto the host path.
+fn path_in_selected_root(root: &Path, target: &Path) -> Result<Option<PathBuf>> {
+    let Ok(relative) = target.strip_prefix("/") else {
+        return Ok(None);
+    };
+    if relative
+        .components()
+        .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        bail!(
+            "immutable AOS identity link escapes the selected root: {}",
+            target.display()
+        );
+    }
+    Ok(Some(root.join(relative)))
+}
+
 /// Reads the fields required from an os-release identity document.
 fn parse_os_release(path: &Path) -> Result<BTreeMap<String, String>> {
     let contents = fs::read_to_string(path)
@@ -124,6 +183,7 @@ fn parse_os_release(path: &Path) -> Result<BTreeMap<String, String>> {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::os::unix::fs::symlink;
 
     use tempfile::tempdir;
 
@@ -140,6 +200,37 @@ mod tests {
         .unwrap();
 
         validate_aos_root(root.path(), false).unwrap();
+    }
+
+    #[test]
+    fn accepts_an_absolute_toplevel_link_inside_an_offline_root() {
+        let root = tempdir().unwrap();
+        let toplevel = "/nix/store/00000000000000000000000000000000-aos-system";
+        let identity = "/nix/store/11111111111111111111111111111111-etc-os-release/os-release";
+        fs::create_dir_all(root.path().join(&toplevel[1..])).unwrap();
+        fs::create_dir_all(root.path().join(&identity[1..]).parent().unwrap()).unwrap();
+        fs::write(
+            root.path().join(&identity[1..]),
+            "NAME=AOS\nID=aos\nAOS_MODULE_ABI=7\n",
+        )
+        .unwrap();
+        symlink(
+            identity,
+            root.path().join(&toplevel[1..]).join("os-release"),
+        )
+        .unwrap();
+        symlink(toplevel, root.path().join("aos-toplevel")).unwrap();
+
+        validate_aos_root(root.path(), false).unwrap();
+    }
+
+    #[test]
+    fn rejects_an_absolute_toplevel_link_that_escapes_the_offline_root() {
+        let root = tempdir().unwrap();
+        symlink("/../etc", root.path().join("aos-toplevel")).unwrap();
+
+        let error = validate_aos_root(root.path(), false).unwrap_err();
+        assert!(format!("{error:#}").contains("escapes the selected root"));
     }
 
     #[test]

@@ -75,6 +75,15 @@ pkgs.mkDerivation {
         jq -e \
           --slurpfile descriptor ${primaryIndex}/index-descriptor.json \
           --slurpfile index ${primaryIndex}/image-index.json '
+            .manifests == [$descriptor[0]]
+            and $descriptor[0].annotations == $index[0].annotations
+            and $descriptor[0].annotations."org.opencontainers.image.ref.name" == "aos:latest"
+          ' ${primaryIndex}/layout/index.json >/dev/null \
+          || fail "production root descriptor annotations diverge from the signed index"
+
+        jq -e \
+          --slurpfile descriptor ${primaryIndex}/index-descriptor.json \
+          --slurpfile index ${primaryIndex}/image-index.json '
             .schema == "aos.container.signature-input/v1"
             and .oci.index == $descriptor[0]
             and .oci.platformManifests == $index[0].manifests

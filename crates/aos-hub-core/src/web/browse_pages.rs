@@ -60,7 +60,7 @@ pub const IMAGES_PER_PAGE: usize = 25;
 /// rather than searched.
 pub const LIST_PER_PAGE: usize = 50;
 
-fn state_line(status: Option<&IndexStatus>, started: Instant) -> StateLine {
+pub(crate) fn state_line(status: Option<&IndexStatus>, started: Instant) -> StateLine {
     match status {
         Some(status) => StateLine {
             surface_commit: status.last_indexed_commit.clone(),
@@ -72,7 +72,7 @@ fn state_line(status: Option<&IndexStatus>, started: Instant) -> StateLine {
     }
 }
 
-fn registry_crumbs(slug: &str, tail: &[(String, String)]) -> Vec<(String, String)> {
+pub(crate) fn registry_crumbs(slug: &str, tail: &[(String, String)]) -> Vec<(String, String)> {
     let mut crumbs = vec![
         ("/".to_string(), "registries".to_string()),
         (format!("/{slug}/"), slug.to_string()),
@@ -81,12 +81,13 @@ fn registry_crumbs(slug: &str, tail: &[(String, String)]) -> Vec<(String, String
     crumbs
 }
 
-fn registry_nav(slug: &str, active: &str) -> String {
+pub(crate) fn registry_nav(slug: &str, active: &str) -> String {
     let items = [
         ("overview", format!("/{slug}/"), "Overview"),
         ("packages", format!("/{slug}/-/packages"), "Packages"),
         ("docs", format!("/{slug}/-/docs"), "Docs"),
         ("images", format!("/{slug}/-/images"), "Images"),
+        ("containers", format!("/{slug}/-/containers"), "Containers"),
         ("channels", format!("/{slug}/-/channels"), "Channels"),
         ("releases", format!("/{slug}/-/releases"), "Releases"),
         ("health", format!("/{slug}/-/health"), "Health"),

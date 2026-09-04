@@ -581,13 +581,19 @@ mod tests {
         let home = classify_request("GET", "/andyl/main/", "hub.example", None);
         let packages = classify_request("GET", "/andyl/main/-/packages", "hub.example", None);
         let images = classify_request("GET", "/andyl/main/-/images", "hub.example", None);
+        let containers = classify_request("GET", "/andyl/main/-/containers", "hub.example", None);
 
         assert!(home.resource_specific);
         assert_eq!(home.key, packages.key);
         assert_eq!(home.key, images.key);
+        assert_eq!(home.key, containers.key);
         assert_eq!(browse_registry_slug("/andyl/main/"), Some("andyl/main"));
         assert_eq!(
             browse_registry_slug("/andyl/main/-/packages"),
+            Some("andyl/main")
+        );
+        assert_eq!(
+            browse_registry_slug("/andyl/main/-/containers/tag"),
             Some("andyl/main")
         );
         assert_eq!(browse_registry_slug("/"), None);

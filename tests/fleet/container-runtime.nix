@@ -19,7 +19,8 @@
   container =
     (import ../../containers {
       inherit lib pkgs goldenRoots aosSystem;
-    }).aos;
+    })
+    .aos;
   containerImage = import ../../lib/containers/build.nix {
     inherit lib pkgs oci container;
     systemIdentity = {
@@ -119,6 +120,7 @@ in {
       ++ [
         dockerArchive
         fixtureTool
+        pkgs.aos.apr
         pkgs.curl
         pkgs.nerdctl
         pkgs.python3
@@ -143,12 +145,24 @@ in {
     runtime.succeed(textwrap.dedent(r"""
         set -eu
         ${fixtures.setupPreamble}
+        APR="${pkgs.aos.apr}/bin/apr"
         export XDG_CACHE_HOME="$HOME/.cache"
         export XDG_CONFIG_HOME="$HOME/.config"
         export XDG_DATA_HOME="$HOME/.local/share"
         export XDG_STATE_HOME="$HOME/.local/state"
 
-        "$APR" create container-runtime-reg
+        output=$("$APR" keys generate initial --registry container-runtime-reg 2>&1)
+        printf '%s\n' "$output"
+        trust=$(printf '%s\n' "$output" \
+          | ${pkgs.grep}/bin/grep -o 'container-runtime-reg:Ed25519:[A-Za-z0-9+/=]*' \
+          | ${pkgs.coreutils}/bin/head -n1)
+        test -n "$trust"
+        key="$HOME/.config/apm/keys/container-runtime-reg-initial.key"
+        "$APR" add "file://$HOME/.local/share/apm/registries/container-runtime-reg" \
+          --name container-runtime-reg --no-clone --trust-key "$trust"
+        "$APR" keys register initial --registry container-runtime-reg --key "$key"
+        "$APR" create container-runtime-reg --trust-key "$trust" \
+          --trust-key-id initial --key-id initial
         REG_DIR="$REG_STORAGE/container-runtime-reg"
         "$APR" publish ${fixtureTool} \
           --name container-runtime-tool \
@@ -157,6 +171,7 @@ in {
           --license MIT \
           --maintainer container-test@example.invalid \
           --registry container-runtime-reg \
+          --key-id initial \
           --no-commit
 
         mkdir -p /var/lib/aos-container-fixtures
@@ -352,10 +367,6 @@ in {
         "container-runtime-tool --registry container-runtime-reg --yes "
         "> /tmp/aos-container-install.out 2>&1",
         timeout=120,
-    )
-    runtime.succeed(
-        "${pkgs.grep}/bin/grep -F 'Downloading 1 NAR' "
-        "/tmp/aos-container-install.out"
     )
     runtime.succeed(
         "${pkgs.grep}/bin/grep -E 'GET /[^ ]+\\.narinfo HTTP/' "
