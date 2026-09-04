@@ -1017,6 +1017,18 @@ completes. The Git history remains authoritative for code details.
   scoped formatting, and independent adversarial review. Directory-handle and
   cookie state, borrowed presentation translation, worker dispatch, and the
   real kernel connection remain open, so neither task is checked.
+- `b59a71d8c` — mechanically splits the connection inode implementation before
+  directory-handle state is added. The 873-line facade retains shared node,
+  lookup, `FORGET`, accounting, and public contracts; a 573-line module owns
+  file-open identities and transitions; a 215-line module owns the keyed
+  node/semantic fixed-slot maps; and the existing test corpus moves separately.
+  Public paths, declarations, functions, constants, hash domains, probing,
+  rehashing, test-only refusal hooks, all 27 inode tests, and compile-fail
+  lifetime proofs remain unchanged. The refactor passes all 74 filesystem
+  tests, the allocator binary, six compile-fail doctests, strict Clippy,
+  warning-denied rustdoc, scoped formatting, and independent inventory review.
+  Explicit imports in the open module remain cleanup debt; directory-handle
+  implementation and worker composition remain open.
 
 The post-`727da7f3e` x86_64 `sandbox-filesystem-capability-proof` rerun built the
 complete hermetic Rust closure, AOS system, initrd, and VM disk and launched
