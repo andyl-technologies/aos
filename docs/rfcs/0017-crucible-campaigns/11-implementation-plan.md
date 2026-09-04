@@ -2491,10 +2491,17 @@ Foreign lifecycles and stable launch failures move to a bounded process-lifetime
 quarantine, while explicit daemon shutdown can take an idle source for orderly
 reap. Focused regressions cover exact identity/event-prefix transfer,
 failure-retained realization ownership, source-slot exclusion, resource-failure
-classification, foreign-factory recovery, and terminal quarantine. A
-multi-template hotness/selection pool, atomic multi-node host-continuation
-installation, concrete modeled driver, and real QEMU flight remain open; this
-checkpoint therefore does not mark T-CAM-6.2 or T-CAM-6.3 complete.
+classification, foreign-factory recovery, and terminal quarantine. A bounded
+exact-key pool now routes up to 256 fixed source workers across
+lineage/configuration keys. It supports duplicate workers for bounded parallel
+children, uses stable insertion-order selection, preserves exact retry classes,
+returns successful lifecycles only to their original pool/key/slot, and moves
+foreign lifecycles to a separate nondroppable quarantine. Count-boundary,
+missing-key, all-busy, duplicate-slot, foreign-recovery, and classification
+regressions exercise the routing contract. Hotness scoring and eviction policy,
+atomic multi-node host-continuation installation, the concrete modeled driver,
+and a real QEMU flight remain open; this checkpoint therefore does not mark
+T-CAM-6.2 or T-CAM-6.3 complete.
 The internal registry now has safe RCU and internal-monitor dispositions, while
 other AIO owners and every generic or external thread remain unresolved. The
 retained AIO/BH/timer and RCU

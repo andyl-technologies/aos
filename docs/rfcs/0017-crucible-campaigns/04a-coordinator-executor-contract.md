@@ -2355,9 +2355,16 @@ remaining source lifecycle rather than fabricating `Failed` and releasing the
 source status. The fixed factory's current fail-closed sink retains at most one
 unrecoverable authority per configured worker for the daemon process lifetime;
 an orderly daemon owner can instead take an idle source for explicit shutdown.
-A multi-template hotness/selection pool, atomic world-continuation installer,
-modeled private-child driver, and real QEMU campaign flight remain required
-before hot fork is advertised.
+A bounded pool may retain at most 256 such fixed workers across exact
+lineage/configuration keys. Duplicate workers for one key are selected in
+stable insertion order to provide bounded parallelism. A returned lifecycle
+binds the pool incarnation, exact key, and stable per-key slot; only that pool
+can route successful recovery back to the source. Missing keys fail without
+touching a worker, all matching busy slots report retryable backpressure, and
+foreign or terminal lifecycles move to the pool's nondroppable quarantine.
+Hotness scoring and eviction/admission policy, the atomic world-continuation
+installer, modeled private-child driver, and real QEMU campaign flight remain
+required before hot fork is advertised.
 
 Exactly one attempt-owned watcher blocks on the same sticky eventfd, and child
 contracts cannot be minted before that watcher is live. Terminal cancellation
