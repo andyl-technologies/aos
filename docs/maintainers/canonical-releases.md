@@ -5,6 +5,9 @@ source revision, registry base, complete package and image matrices, required
 gates, signer roles, deployment identities, intended channels, and retention
 policy before a build or signing effect occurs.
 
+The role boundaries and compromise implications behind this procedure are
+defined in [Maintain the AOS trust model](trust-model.md).
+
 The current implementation provides these fail-closed operations:
 
 - `aos release plan` derives the complete four-target package inventory and

@@ -20,7 +20,7 @@ promise.
 | DHCP and single-address static networking | Implemented | Verify the target interface name before deployment |
 | MTU, VLAN, and bond high-level options | Incomplete rendering | Supply and test complete networkd units if required |
 | APM machine-wide packages | Add/remove reconciliation implemented; upgrade and rollback incomplete | Use `apm install --system --from`; do not confuse sysroot upgrade/rollback with runtime-package operations |
-| Exposed APM service confinement | Implemented, early preview | Applies to services activated through `expose`; inspect signed permissions because broad grants can weaken or remove the boundary, and treat registry trust separately |
+| [Exposed APM service confinement](package-sandbox.md) | Implemented, early preview | Applies to services activated through `expose`; inspect signed permissions because broad grants can weaken or remove the boundary, and treat registry trust separately |
 | Stock unprivileged user package profile | Not provisioned | Do not assume user-scope package mutation is available on a stock host |
 | Configuration generation rollback | Implemented | Same-ABI rollback is direct; cross-ABI rollback re-evaluates retained inputs |
 | Durable image, kernel, and UKI upgrade | Early-preview A/B path implemented with boot counting and redundant ESP synchronization | Qualify inactive-slot staging, reboot, replica failover, and image/config generation binding on the target firmware |
@@ -28,7 +28,7 @@ promise.
 | Opaque runtime credential references | Implemented for system credentials, desired credentials, and TPM2 credstore | Keep bytes outside Nix; external Vault/cloud-secret backends are separate |
 | System-package/configuration generation pruning | Implemented | `apm clean --system --generations --keep N`, then `apm gc` |
 | A/B image-generation pruning | Not implemented | Preserve rollback capacity; size `/var` and reimage rather than deleting image generations manually |
-| Secure Boot, lockdown, measured boot, dm-verity | Fleet-test fixtures implemented | Checked-in variants use public test keys; no complete production key-custody workflow is shipped |
+| [Secure Boot, lockdown, measured boot, dm-verity](secure-boot.md) | Fleet-test fixtures implemented | Checked-in variants use public test keys; no complete production key-custody workflow is shipped |
 | Package supply-chain and runtime attestation | Fleet-test implementation for exposed system packages | Signed registry graphs authenticate every closure member; PCR 15 measures explicitly activated exposed roots and manifests, while only signed dm-verity `RootImage=` workloads have block-level runtime integrity |
 | SELinux module | Present, not enabled by presets | No production policy package is wired into `standard` or `hardened` |
 | Audit, firewall, kernel hardening | Implemented in server baseline | Verify active rules and service state on the deployed host |

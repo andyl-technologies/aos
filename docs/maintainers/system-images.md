@@ -9,6 +9,11 @@ users, access, services, packages, and other general host policy. Keep only
 image capabilities, bootstrap reachability, and initial trust roots in the
 release image; put machine-specific policy in authenticated `host.nix`.
 
+Changes to signing authorities or image-baked anchors must follow [Maintain
+the AOS trust model](trust-model.md). Operators can follow the resulting boot
+and package chain in [Use Secure Boot and verify package
+trust](../users/aos/secure-boot.md).
+
 ## Create a system variant
 
 Files under `systems/` are discovered automatically. A file named
