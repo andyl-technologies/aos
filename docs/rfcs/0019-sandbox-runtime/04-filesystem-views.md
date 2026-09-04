@@ -159,28 +159,50 @@ beneath the view root.
 
 ## Node-local structural index
 
-Portable tree objects compile into a replaceable node-local index. The first
-implementation is a deterministic sequential structural format: it establishes
-the validation, publication, and presentation seams for FS-01 and FS-02, but
-does not claim mmap point lookup, lazy inode instantiation, or the final FUSE
-runtime layout. A later measured format revision may add those properties
-without changing the portable tree.
+Portable tree objects compile into a replaceable node-local index. Format V1 is
+the original deterministic sequential structural format and remains accepted
+by its unchanged validation rules. Format V2 retains V1 record encoding and
+adds an architecture-neutral, fixed-width point-lookup section. New compilation
+emits V2 under a distinct media type; version and media type must agree, so a
+V2 artifact cannot be interpreted under V1 policy.
 
-The eventual runtime index is:
+V2 lookup entries are sorted canonically by parent record ID, a full
+domain-separated SHA-256 digest of the parent and byte-exact component, and
+record ID. Lookup uses binary search, then compares the parent and component
+bytes in every equal-digest candidate record. The digest is a performance
+partition, not a uniqueness or correctness assumption. Validation reconstructs
+the table from exact record starts and requires byte-for-byte equality, proving
+that every non-root record appears exactly once with no extra entry, forged
+offset, or alternative placement. Table lengths and bytes are covered by both
+the internal payload digest and the authenticated outer descriptor.
+
+The current read-only runtime seam borrows the exact validated immutable bytes
+and lazily decodes only the root or lookup candidates. It retains no heap object
+per path and allocates nothing during point lookup. The seam is compatible with
+a caller-owned immutable mapping, but the crate does not yet open files, create
+or seal mappings, prove backing-file immutability, assign per-connection inode
+numbers, or implement FUSE authority. V1 remains validation-compatible but does
+not offer point lookup.
+
+The runtime index contract is:
 
 - immutable after publication;
 - validated before mapping;
 - addressed by source tree commitment, exact root descriptor, closed tree-role
   feature set, and compiler ABI;
-- stored outside language-runtime heaps;
-- lazily paged by the kernel;
+- usable directly from immutable byte backing rather than decoded into
+  per-path language-runtime objects;
 - bounded in mapped virtual size and validated offsets; and
-- safe to delete while mapped, with the mapping remaining valid until the last
-  view releases it.
+- suitable for a later file-opening and mapping layer with explicit immutable
+  backing and lifetime guarantees.
 
-FUSE inodes are instantiated only after kernel lookup and are removed or
-compacted after `FORGET`. The implementation must not create one heap object or
-protobuf object per path at mount time.
+The future FUSE layer will instantiate per-connection inode numbers only after
+kernel lookup and remove or compact them after `FORGET`. V2 record IDs are
+stable only within the exact derived artifact and compiler ABI; they are not
+portable inode numbers and are not stable across recompilation. A portable
+hard-link group digest identifies equal file identity in the source model but
+is likewise not itself an `ino_t`. The implementation must not create one heap
+object or protobuf object per path at mount time.
 
 The index is accepted only when its exact media type, encoded length, and digest
 match an authenticated `ObjectDescriptor` obtained from the sealed publication.
@@ -196,6 +218,11 @@ not authority to serve or map another byte slice. Collection counts are checked
 against remaining record bytes and decoded-memory admission before allocation.
 The compiler's index and per-record limits are authoritative; a caller-provided
 private staging capability may narrow those limits but cannot widen them.
+V2 compilation pre-admits its contiguous fixed-size lookup build storage and
+finish-time sorted table under both the index-output ceiling and the aggregate
+graph working-memory ceiling. Allocation is fallible, and the aggregate charge
+includes live graph queues, hard-link validation state, record scratch, lookup
+storage, and vector container overhead.
 
 The derived format may change between releases and is never the canonical tree.
 Its descriptor may be signed as part of sealed publication, but that signature

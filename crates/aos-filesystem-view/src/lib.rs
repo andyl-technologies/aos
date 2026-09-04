@@ -14,8 +14,9 @@ mod source;
 
 pub use graph::{CompileError, CompileSummary, TreeCompiler};
 pub use index::{
-    INDEX_MEDIA_TYPE, IndexCrosslinks, IndexError, IndexExpectation, IndexStaging, IndexSummary,
-    StagedIndex, ValidatedIndex, validate_index,
+    INDEX_MEDIA_TYPE, INDEX_MEDIA_TYPE_V1, INDEX_MEDIA_TYPE_V2, IndexCrosslinks, IndexError,
+    IndexExpectation, IndexNodeKind, IndexNodeView, IndexStaging, IndexSummary, StagedIndex,
+    ValidatedIndex, validate_index,
 };
 pub use limits::TreeCompileLimits;
 pub use presentation::{

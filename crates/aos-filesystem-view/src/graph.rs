@@ -66,21 +66,34 @@ impl TreeCompiler {
         let feature_bits = validate_tree_features(&features)?;
         let root_descriptor = tree.root().clone();
         let retained_tree = tree_retained_charge(&root_descriptor, &features)?;
-        let initial_working_bytes = retained_tree;
         let maximum_tree_bytes = tree_reservation.max(retained_tree);
         drop(tree);
         drop(tree_bytes);
         let mut index = StructuralIndexBuilder::new(
-            staging.narrow(self.limits.index_bytes, self.limits.index_record_bytes),
+            staging.narrow(
+                self.limits.index_bytes,
+                self.limits.index_record_bytes,
+                self.limits.working_bytes,
+            ),
             compiler_abi,
             tree_descriptor.clone(),
             root_descriptor.clone(),
             feature_bits,
         )?;
+        let initial_working_bytes = checked_add(
+            retained_tree,
+            index.retained_working_bytes()?,
+            "working bytes",
+        )?;
+        enforce(
+            initial_working_bytes,
+            self.limits.working_bytes,
+            "working bytes",
+        )?;
 
         let mut state = WalkState {
             working_bytes: initial_working_bytes,
-            maximum_working_bytes: maximum_tree_bytes,
+            maximum_working_bytes: maximum_tree_bytes.max(initial_working_bytes),
             ..WalkState::default()
         };
         self.charge_node(&mut state)?;
@@ -120,6 +133,16 @@ impl TreeCompiler {
             extents: state.extents,
             hardlink_groups: state.hardlinks.len() as u64,
             maximum_working_bytes: state.maximum_working_bytes,
+        };
+        let finish_working = checked_add(
+            state.working_bytes,
+            index.finish_temporary_working_bytes()?,
+            "working bytes",
+        )?;
+        enforce(finish_working, self.limits.working_bytes, "working bytes")?;
+        let summary = CompileSummary {
+            maximum_working_bytes: summary.maximum_working_bytes.max(finish_working),
+            ..summary
         };
         let staged = index.finish()?;
         Ok((summary, staged))
@@ -823,10 +846,17 @@ where
 {
     let reservation = u64::try_from(record_encoded_len(record)?)
         .map_err(|_| CompileError::LimitExceeded("working bytes"))?;
-    let admitted = checked_add(state.working_bytes, reservation, "working bytes")?;
-    enforce(admitted, maximum_working_bytes, "working bytes")?;
-    state.maximum_working_bytes = state.maximum_working_bytes.max(admitted);
+    let current_index = index.retained_working_bytes()?;
+    let next_index = index.retained_working_bytes_after_push()?;
+    let retained_delta = next_index
+        .checked_sub(current_index)
+        .ok_or(CompileError::InternalAccounting)?;
+    let with_retained = checked_add(state.working_bytes, retained_delta, "working bytes")?;
+    let with_record = checked_add(with_retained, reservation, "working bytes")?;
+    enforce(with_record, maximum_working_bytes, "working bytes")?;
+    state.maximum_working_bytes = state.maximum_working_bytes.max(with_record);
     let id = index.push(record)?;
+    state.working_bytes = with_retained;
     Ok(id)
 }
 
@@ -1248,7 +1278,18 @@ mod tests {
 
     #[test]
     fn compile_is_deterministic_and_declared_working_bound_is_exact() {
-        let (source, tree) = fixture(Vec::new());
+        let entries = [b"alpha".as_slice(), b"omega".as_slice()]
+            .into_iter()
+            .map(|name| DirectoryEntry {
+                name: PathName::new(name.to_vec())
+                    .unwrap_or_else(|error| panic!("name failed: {error}")),
+                node: Node::Symlink(
+                    aos_sandbox_core::model::SymlinkNode::new(metadata(), b"target".to_vec())
+                        .unwrap_or_else(|error| panic!("symlink failed: {error}")),
+                ),
+            })
+            .collect();
+        let (source, tree) = fixture(entries);
         let (summary, first) = compile_bytes(
             &mut MemorySource(source.0.clone()),
             &tree,
@@ -1332,6 +1373,117 @@ mod tests {
                     ..TreeCompileLimits::default()
                 },
             ),
+            Err(CompileError::LimitExceeded("working bytes"))
+        ));
+    }
+
+    #[test]
+    fn retained_lookup_storage_is_combined_with_hardlink_validation_temporary() {
+        let (source, tree) = fixture(Vec::new());
+        let tree_bytes = source
+            .0
+            .iter()
+            .find(|(candidate, _)| candidate == &tree)
+            .map(|(_, bytes)| bytes)
+            .unwrap_or_else(|| panic!("tree missing"));
+        let root = decode_tree(tree_bytes, DecodeLimits::default())
+            .unwrap_or_else(|error| panic!("tree decode failed: {error}"))
+            .root()
+            .clone();
+        let mut index = StructuralIndexBuilder::new(
+            IndexStaging::new(Cursor::new(Vec::new()), 4096, 4096),
+            [9; 32],
+            tree,
+            root.clone(),
+            0,
+        )
+        .unwrap_or_else(|error| panic!("builder failed: {error}"));
+        let mut state = WalkState {
+            working_bytes: index
+                .retained_working_bytes()
+                .unwrap_or_else(|error| panic!("lookup charge failed: {error}")),
+            ..WalkState::default()
+        };
+        let root_metadata = metadata();
+        push_index::<Infallible, _>(
+            &mut index,
+            &IndexRecord {
+                parent: u64::MAX,
+                depth: 0,
+                sibling_ordinal: 0,
+                name: &[],
+                metadata: &root_metadata,
+                node: IndexNode::Directory { descriptor: &root },
+            },
+            &mut state,
+            u64::MAX,
+        )
+        .unwrap_or_else(|error| panic!("root push failed: {error}"));
+        push_index::<Infallible, _>(
+            &mut index,
+            &IndexRecord {
+                parent: 0,
+                depth: 1,
+                sibling_ordinal: 0,
+                name: b"prior",
+                metadata: &root_metadata,
+                node: IndexNode::Symlink { target: b"target" },
+            },
+            &mut state,
+            u64::MAX,
+        )
+        .unwrap_or_else(|error| panic!("child push failed: {error}"));
+
+        let hardlink_metadata = metadata();
+        let content_descriptor = descriptor_for_bytes(
+            MediaType::new("application/vnd.aos.sandbox.content.v1")
+                .unwrap_or_else(|error| panic!("content media failed: {error}")),
+            b"",
+        );
+        let content = ContentLayout::whole(content_descriptor);
+        let paths = [b"a".as_slice(), b"b".as_slice()]
+            .into_iter()
+            .map(|name| {
+                RelativePath::new(vec![
+                    PathName::new(name.to_vec())
+                        .unwrap_or_else(|error| panic!("name failed: {error}")),
+                ])
+                .unwrap_or_else(|error| panic!("path failed: {error}"))
+            })
+            .collect::<Vec<_>>();
+        let group = hardlink_group_digest(&paths, &hardlink_metadata, &content)
+            .unwrap_or_else(|error| panic!("group failed: {error}"));
+        for path in &paths {
+            TreeCompiler::new(TreeCompileLimits::default())
+                .add_hardlink(
+                    &mut state,
+                    group,
+                    path.components(),
+                    &hardlink_metadata,
+                    &content,
+                )
+                .unwrap_or_else(|error: CompileError<Infallible>| {
+                    panic!("hard-link retention failed: {error}")
+                });
+        }
+        let member_charge = hard_member_charge::<Infallible>(&hardlink_metadata, &content)
+            .unwrap_or_else(|error| panic!("member charge failed: {error}"));
+        let validation_temporary = member_charge
+            + paths
+                .iter()
+                .map(|path| {
+                    owned_path_charge::<Infallible>(path.components())
+                        .unwrap_or_else(|error| panic!("path charge failed: {error}"))
+                })
+                .sum::<u64>();
+        let lookup_retained = index
+            .retained_working_bytes()
+            .unwrap_or_else(|error| panic!("lookup charge failed: {error}"));
+        let exact_validation_peak = state.working_bytes + validation_temporary;
+        let below_exact = exact_validation_peak - 1;
+        assert!(exact_validation_peak - lookup_retained <= below_exact);
+        assert!(matches!(
+            validate_hardlinks::<Infallible>(&mut state, below_exact),
             Err(CompileError::LimitExceeded("working bytes"))
         ));
     }
