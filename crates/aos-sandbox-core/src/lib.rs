@@ -39,7 +39,10 @@ pub use crypto::{
     SignatureVerificationError, VerifiedSignature, sign_statement, signature_signing_message,
     verify_signature,
 };
-pub use format::{CanonicalCborError, DecodeLimits, descriptor_for_bytes, validate_canonical_cbor};
+pub use format::{
+    CanonicalCborError, DecodeLimits, StreamingDirectory, descriptor_for_bytes,
+    hardlink_group_digest, validate_canonical_cbor,
+};
 pub use identity::{
     AttachmentId, AttachmentSlotId, AuditId, CacheDomainId, CapabilityId, ExecutionId, ExportId,
     GrantId, IncarnationId, IssuerId, LeaseId, NetworkEndpointId, NodeId, OperationId, PrincipalId,

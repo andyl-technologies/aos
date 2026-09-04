@@ -6,6 +6,7 @@ use crate::model::{
 };
 use crate::registry::{DescriptorRole, validate_descriptor_role, validate_required_features};
 use crate::{FeatureRef, MediaType, ObjectDescriptor, ObjectDigest, PathName};
+use sha2::{Digest, Sha256};
 
 use super::cbor::{CanonicalCborError, DecodeLimits, Decoder, Encoder};
 
@@ -30,13 +31,92 @@ pub fn decode_directory(
     bytes: &[u8],
     limits: DecodeLimits,
 ) -> Result<Directory, CanonicalCborError> {
-    let mut decoder = Decoder::new(bytes, limits)?;
-    decoder.array(3)?;
-    decoder.exact("directory version", 1)?;
-    let metadata = decode_metadata(&mut decoder)?;
-    let entries = decode_vec(&mut decoder, decode_directory_entry)?;
-    decoder.finish()?;
+    let mut stream = StreamingDirectory::new(bytes, limits)?;
+    let metadata = stream.metadata().clone();
+    let mut entries = Vec::with_capacity(stream.remaining());
+    while let Some(entry) = stream.next_entry()? {
+        entries.push(entry);
+    }
     Directory::new(metadata, entries).map_err(|error| semantics("directory", error))
+}
+
+/// Streams entries from one canonical portable directory object.
+///
+/// Construction validates the complete deterministic-CBOR envelope without
+/// allocating from claimed collection sizes. Entries are then decoded one at
+/// a time, allowing graph compilers to avoid a directory-sized `Vec`.
+pub struct StreamingDirectory<'a> {
+    decoder: Decoder<'a>,
+    metadata: FilesystemMetadata,
+    remaining: usize,
+    previous_name: Option<Vec<u8>>,
+    finished: bool,
+}
+
+impl<'a> StreamingDirectory<'a> {
+    /// Opens a canonical directory stream under caller-selected decoder limits.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CanonicalCborError`] for a profile, schema, registry, bound,
+    /// or metadata violation.
+    pub fn new(bytes: &'a [u8], limits: DecodeLimits) -> Result<Self, CanonicalCborError> {
+        let mut decoder = Decoder::new(bytes, limits)?;
+        decoder.array(3)?;
+        decoder.exact("directory version", 1)?;
+        let metadata = decode_metadata(&mut decoder)?;
+        let remaining = decoder.array_len()?;
+        Ok(Self {
+            decoder,
+            metadata,
+            remaining,
+            previous_name: None,
+            finished: false,
+        })
+    }
+
+    /// Returns the directory's own portable metadata.
+    #[must_use]
+    pub const fn metadata(&self) -> &FilesystemMetadata {
+        &self.metadata
+    }
+
+    /// Returns the number of entries not yet decoded.
+    #[must_use]
+    pub const fn remaining(&self) -> usize {
+        self.remaining
+    }
+
+    /// Decodes the next entry without retaining earlier entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CanonicalCborError`] for an invalid entry, non-increasing
+    /// byte-name order, or trailing bytes after the final entry.
+    pub fn next_entry(&mut self) -> Result<Option<DirectoryEntry>, CanonicalCborError> {
+        if self.remaining == 0 {
+            if !self.finished {
+                self.decoder.finish()?;
+                self.finished = true;
+            }
+            return Ok(None);
+        }
+
+        let entry = decode_directory_entry(&mut self.decoder)?;
+        if self
+            .previous_name
+            .as_deref()
+            .is_some_and(|previous| previous >= entry.name.as_bytes())
+        {
+            return Err(semantics(
+                "directory",
+                crate::model::InvalidTreeModel::DirectoryNotCanonical,
+            ));
+        }
+        self.previous_name = Some(entry.name.as_bytes().to_vec());
+        self.remaining -= 1;
+        Ok(Some(entry))
+    }
 }
 
 /// Encodes one tree object in its exact portable v1 CBOR form.
@@ -48,6 +128,47 @@ pub fn encode_tree(tree: &Tree) -> Vec<u8> {
     encode_descriptor(&mut encoder, tree.root());
     encode_slice(&mut encoder, tree.required_features(), encode_feature);
     encoder.finish()
+}
+
+/// Computes the canonical tree-scoped hard-link group identifier.
+///
+/// `paths` must be strictly ordered by component byte order. The function is
+/// deliberately independent of any node-local index representation.
+///
+/// # Errors
+///
+/// Returns [`CanonicalCborError`] when paths are empty, unordered, or repeated.
+pub fn hardlink_group_digest(
+    paths: &[crate::RelativePath],
+    metadata: &FilesystemMetadata,
+    content: &ContentLayout,
+) -> Result<ObjectDigest, CanonicalCborError> {
+    if paths.is_empty()
+        || paths
+            .windows(2)
+            .any(|pair| compare_paths(&pair[0], &pair[1]) != std::cmp::Ordering::Less)
+    {
+        return Err(CanonicalCborError::InvalidSemantics {
+            object: "hard-link group",
+            message: "member paths must be nonempty, strictly ordered, and unique".to_owned(),
+        });
+    }
+    let mut encoder = Encoder::new();
+    encoder.array(3);
+    encode_slice(&mut encoder, paths, encode_path);
+    encode_metadata(&mut encoder, metadata);
+    encode_content_layout(&mut encoder, content);
+    let mut hasher = Sha256::new();
+    hasher.update(b"aos-sandbox-hardlink-v1\0");
+    hasher.update(encoder.finish());
+    Ok(ObjectDigest::from_bytes(hasher.finalize().into()))
+}
+
+fn compare_paths(left: &crate::RelativePath, right: &crate::RelativePath) -> std::cmp::Ordering {
+    left.components()
+        .iter()
+        .map(PathName::as_bytes)
+        .cmp(right.components().iter().map(PathName::as_bytes))
 }
 
 /// Decodes and validates one exact portable v1 tree object.

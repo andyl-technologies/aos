@@ -159,12 +159,19 @@ beneath the view root.
 
 ## Node-local structural index
 
-Portable tree objects compile into a replaceable node-local index optimized for
-mmap and point lookup. The index is:
+Portable tree objects compile into a replaceable node-local index. The first
+implementation is a deterministic sequential structural format: it establishes
+the validation, publication, and presentation seams for FS-01 and FS-02, but
+does not claim mmap point lookup, lazy inode instantiation, or the final FUSE
+runtime layout. A later measured format revision may add those properties
+without changing the portable tree.
+
+The eventual runtime index is:
 
 - immutable after publication;
 - validated before mapping;
-- addressed by source tree commitment plus compiler ABI;
+- addressed by source tree commitment, exact root descriptor, closed tree-role
+  feature set, and compiler ABI;
 - stored outside language-runtime heaps;
 - lazily paged by the kernel;
 - bounded in mapped virtual size and validated offsets; and
@@ -175,8 +182,48 @@ FUSE inodes are instantiated only after kernel lookup and are removed or
 compacted after `FORGET`. The implementation must not create one heap object or
 protobuf object per path at mount time.
 
-The mmap format is a derived cache. It may change between releases and is never
-distributed as the canonical tree or included in signatures.
+The index is accepted only when its exact media type, encoded length, and digest
+match an authenticated `ObjectDescriptor` obtained from the sealed publication.
+The source tree descriptor, exact root directory descriptor, compiler ABI, and
+closed tree-role feature set must also match that publication. A checksum stored
+inside the candidate detects accidental payload corruption; because an attacker
+can recompute it, it is never authority for publication or mapping.
+
+The validator returns an artifact-bound, non-cloneable proof borrowing the
+exact immutable bytes and retaining their authenticated descriptor, source
+cross-links, and validated hard-link counts. A detached diagnostic summary is
+not authority to serve or map another byte slice. Collection counts are checked
+against remaining record bytes and decoded-memory admission before allocation.
+The compiler's index and per-record limits are authoritative; a caller-provided
+private staging capability may narrow those limits but cannot widen them.
+
+The derived format may change between releases and is never the canonical tree.
+Its descriptor may be signed as part of sealed publication, but that signature
+authorizes only the exact derived bytes and their cross-links; it does not turn
+the index into the portable source commitment.
+
+The structural index retains portable UID/GID values and canonical ACL
+qualifiers. It is therefore shareable by compatible consumers within the
+authorized disclosure domain and does not acquire the identity of whichever
+consumer caused it to be compiled first. Identity presentation is a separate,
+exact translation plan bound to the consumer user namespace, its complete
+UID/GID maps, and the negotiated ACL capability profile. A worker translates
+owners and every named ACL qualifier through that plan without truncation; a
+gap, overlap, or overflow rejects the attachment.
+
+The translation component commits only the maps and ACL profile that determine
+output bytes. The mount broker separately binds that plan to the pinned
+consumer user-namespace identity and generation; a presentation-plan digest is
+not namespace authority and cannot authorize connection reuse.
+
+Translation may be performed on demand under the touched-node memory budget.
+If measurement justifies a precompiled metadata sidecar, that sidecar is a
+replaceable derived cache addressed by the source tree commitment, compiler
+ABI, identity-map digest, and ACL capability profile. It is never part of the
+portable tree commitment and cannot be shared by incompatible presentation
+connections. This separation preserves structural-index and backing-inode
+sharing without allowing one sandbox's ID map to contaminate another's
+metadata.
 
 ## FUSE realization
 
@@ -198,9 +245,9 @@ The v1 mount/init contract is `allow_other + default_permissions`; omitting
 either is a hard failure. The mount broker accepts a connection only when its
 mount user namespace is the consumer user namespace or a verified ancestor
 and every presented UID, GID, and ACL qualifier maps without truncation. Until
-idmapped FUSE is proven, the index compiler translates guest IDs through the
-consumer's exact idmap into the IDs interpreted by that connection and creates
-a separate presentation connection for incompatible maps. Unmappable identity
+idmapped FUSE is proven, the worker applies the connection's exact presentation
+translation plan to the portable IDs in the structural index and creates a
+separate presentation connection for incompatible maps. Unmappable identity
 rejects the attachment rather than becoming `nobody` or host root.
 
 The worker negotiates `FUSE_POSIX_ACL` only for a canonical ACL feature whose
@@ -221,8 +268,14 @@ handle close events. A remounted connection may assign new IDs.
 Per connection, separate hard admissions cover touched node records, lookup
 references, open files/directories, backing registrations, in-flight requests,
 kernel-advertised `max_background`, pending user queues, and worker heap/mmap
-budgets. Kernel dentry/inode residency is observed and bounded indirectly by
-connection lifetime and TTL policy; it is not mislabeled worker heap.
+budgets. Compiler and validator admissions occur before object-sized allocation
+or semantic decode and include the encoded candidate, decoded collection
+ceiling, retained tree/root/features, queued paths and ancestors, hard-link
+membership, and one encoded output record. A transport adapter exposes a
+bounded stream and must not first allocate the whole object; the compiler owns
+that allocation and verifies exact EOF and digest. Kernel dentry/inode
+residency is observed and bounded indirectly by connection lifetime and TTL
+policy; it is not mislabeled worker heap.
 
 When a touched-node or reference admission is exhausted, a new lookup returns
 `ENOMEM`, the attachment reports `ResourceExhausted`, and a required attachment

@@ -23,6 +23,7 @@ members = [
     "aos-hub-console",
     "aos-profile",
     "aos-systemd",
+    "aos-filesystem-view",
     "aos-sandbox-core",
     "aos-sandbox-ownership-protocol",
     "aos-sandbox-protocol",
@@ -220,6 +221,7 @@ aos-hub = { path = "aos-hub" }
 aos-registry-surface = { path = "aos-registry-surface" }
 aos-profile = { path = "aos-profile" }
 aos-systemd = { path = "aos-systemd" }
+aos-filesystem-view = { path = "aos-filesystem-view" }
 aos-sandbox-core = { path = "aos-sandbox-core" }
 aos-sandbox-ownership-protocol = { path = "aos-sandbox-ownership-protocol" }
 aos-sandbox-protocol = { path = "aos-sandbox-protocol" }

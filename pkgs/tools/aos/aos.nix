@@ -112,6 +112,7 @@
     "aos-core"
     "aos-doc"
     "aos-doc-model"
+    "aos-filesystem-view"
     "aos-hub"
     "aos-hub-core"
     "aos-hub-worker"

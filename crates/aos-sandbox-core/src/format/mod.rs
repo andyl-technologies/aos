@@ -31,7 +31,8 @@ pub use policy::{decode_optimization, decode_policy, encode_optimization, encode
 pub use snapshot::{decode_snapshot, encode_snapshot};
 pub use spec::{decode_sandbox_spec, encode_sandbox_spec};
 pub use tree::{
-    decode_delta, decode_directory, decode_tree, encode_delta, encode_directory, encode_tree,
+    StreamingDirectory, decode_delta, decode_directory, decode_tree, encode_delta,
+    encode_directory, encode_tree, hardlink_group_digest,
 };
 pub use trust::{
     decode_signature, decode_signature_statement, decode_trust_policy, encode_signature,
