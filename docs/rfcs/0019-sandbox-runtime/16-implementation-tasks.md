@@ -1066,6 +1066,24 @@ completes. The Git history remains authoritative for code details.
   review. FUSE protocol dispatch, connection ownership, cancellation, backing
   registration, and kernel runtime proof remain open, so neither task is
   checked.
+- `315e57b22` — strengthens executable evidence toward `SBX-P0-04` and
+  `SBX-P0-05` without claiming runtime completion. The nspawn fleet proof now
+  launches through retained root and executable descriptors, uses a prepared
+  default-drop network namespace and shifted user namespace, masks machined,
+  and asserts hostile settings are absent. A bounded host observer owns
+  recursive payload discovery and retains supervisor, payload, root, cgroup,
+  and namespace descriptors; Linux 6.18 `PIDFD_GET_INFO` binds thread-group,
+  parent, cgroup, executable, command markers, and liveness before publication,
+  before action, and after transition. Internal reboot is requested only
+  through the retained payload pidfd. The prior namespace generation remains
+  pinned until a distinct successor is fully authenticated under the same
+  supervisor, root, network, and cgroup boundary. Discovery has per-scan work
+  ceilings and one `CLOCK_BOOTTIME` deadline, and signal waiting is race-free.
+  Exact fleet evaluation, hermetic warnings-as-errors C builds, generated unit
+  and Python construction, Alejandra, diff checks, and three adversarial repair
+  rounds pass. The VM body has not run on x86_64 or aarch64, and the proof is
+  still not the production transient-unit, full-argv, MAC, or guardian path;
+  therefore both tasks remain unchecked.
 
 The post-`727da7f3e` x86_64 `sandbox-filesystem-capability-proof` rerun built the
 complete hermetic Rust closure, AOS system, initrd, and VM disk and launched
