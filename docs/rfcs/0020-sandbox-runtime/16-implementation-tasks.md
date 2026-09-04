@@ -1123,6 +1123,25 @@ completes. The Git history remains authoritative for code details.
   adversarial repair pass. Host-state reconciliation and production lifecycle
   action remain open, so all three tasks stay unchecked.
 
+- `9af29efe8` — closes a restart-identity ambiguity toward `SBX-HOST-01`
+  and `SBX-LIFE-06`: current fences and retained request history reserve each
+  incarnation to exactly one sandbox. Admission rejects a collision before
+  persistence or effects, and authenticated broker startup rejects collided
+  history assembled from otherwise valid sealed records. Same-sandbox history
+  remains legal, while advancing to a successor does not release the old
+  incarnation for another sandbox. All 68 host unit tests, one integration
+  test, scoped strict Clippy, rustdoc, and formatting pass. Dependency-wide
+  Clippy encounters master's generated Hub `HashMap` lint errors in
+  `aos-proto`; the scoped check uses `--no-deps` and does not waive host lints.
+- `a77927576` — further adapter work toward `SBX-FS-03`: explicit synchronous
+  OPENDIR commit-after-reply semantics share the existing activation logic.
+  The adapter publishes the pending raw handle, activates only after success
+  and before another dispatch, and treats any post-reply activation error as
+  fatal without cancellation, retry, or a second reply. Failed publication
+  instead aborts the pending reservation. All 92 filesystem unit tests, the
+  allocator harness including post-reply activation, ten compile-fail
+  doctests, strict Clippy, rustdoc, and formatting pass. The external reply
+  remains an adapter-owned ordering obligation, not a fact the core can prove.
 - `4da505397` — closes metadata-adapter gaps toward `SBX-FS-03`: directory
   requests can validate the kernel-supplied inode/handle association before
   reading or releasing state, including after the last lookup reference is
