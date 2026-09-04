@@ -2,9 +2,15 @@
 
 use super::*;
 use crate::db::{GrantResource, NewSurfacePlacementSpec, TokenAuth};
+use base64::Engine as _;
 
 async fn fixture() -> (RpcService, String, pb::DeliveryDestinationIntent, i64) {
     let (service, db) = super::cache_upload_tests::delivery_test_service().await;
+    let keyring = ConfiguredRouteReservationKeyring::from_json(&serde_json::json!({
+        "activeVersion": 1,
+        "keys": [{"version": 1, "keyBase64": base64::engine::general_purpose::STANDARD.encode([7_u8; 32])}],
+    }).to_string()).unwrap();
+    let service = service.with_route_reservation_keyring(Arc::new(keyring));
     let org_id = db
         .create_org("delivery-workflow", "Delivery workflow")
         .await
