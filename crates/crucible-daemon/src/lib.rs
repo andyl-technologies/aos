@@ -73,6 +73,8 @@
 //! producing generation-fenced exact/thin demotion plans;
 //! [`hot_checkpoint_fallback`] authenticates the exact immutable fallback and
 //! enforces a second check at the irreversible source-release boundary;
+//! [`hot_checkpoint_retention`] durably fences those exact/thin roots against
+//! single-host garbage collection across restart;
 //! [`managed_hot_checkpoint_pool`] composes those plans with exact source-pool
 //! authority and process-wide fork-rate admission;
 //! [`qemu_resource_guard`] binds one indivisible host process/filesystem owner
@@ -121,6 +123,8 @@ mod guest_selectable;
 pub mod hot_checkpoint_fallback;
 #[cfg(target_os = "linux")]
 pub mod hot_checkpoint_manager;
+#[cfg(target_os = "linux")]
+pub mod hot_checkpoint_retention;
 #[cfg(target_os = "linux")]
 pub mod managed_hot_checkpoint_pool;
 pub mod packaged_qemu_executor;
@@ -182,6 +186,11 @@ pub use campaign_gc::{
     CampaignGcRootSetId, DirectoryCampaignGcJournal, MAX_CAMPAIGN_GC_BACKEND_ID_BYTES,
     MAX_CAMPAIGN_GC_MANIFEST_ENTRIES, MAX_CAMPAIGN_GC_PHYSICAL_INVENTORIES,
     MAX_CAMPAIGN_GC_PLAN_BYTES, apply_single_host_campaign_gc, plan_single_host_campaign_gc,
+};
+#[cfg(target_os = "linux")]
+pub use campaign_gc::{
+    CampaignGcHotCheckpointRoots, apply_single_host_campaign_gc_with_hot_checkpoints,
+    plan_single_host_campaign_gc_with_hot_checkpoints,
 };
 pub use campaign_loopback::{
     LoopbackCampaignProtocolError, LoopbackCampaignServerError, LoopbackCampaignService,
@@ -369,6 +378,15 @@ pub use hot_checkpoint_manager::{
     HotCheckpointResourceProfile, HotCheckpointResourceProfileError, HotCheckpointRetentionReason,
     HotCheckpointScore, HotCheckpointStatus, HotCheckpointUsage,
     MAX_HOT_CHECKPOINT_SCORE_COMPONENT,
+};
+#[cfg(target_os = "linux")]
+pub use hot_checkpoint_retention::{
+    DirectoryHotCheckpointFallbackRetentionStore, HotCheckpointFallbackRecord,
+    HotCheckpointFallbackRetentionAdmin, HotCheckpointFallbackRetentionCas,
+    HotCheckpointFallbackRetentionError, HotCheckpointFallbackRetentionFence,
+    HotCheckpointFallbackRetentionStore, HotCheckpointFallbackRetentionSummary,
+    HotCheckpointFallbackSlot, MAX_HOT_CHECKPOINT_FALLBACK_ROOTS,
+    MemoryHotCheckpointFallbackRetentionStore,
 };
 #[cfg(target_os = "linux")]
 pub use managed_hot_checkpoint_pool::{

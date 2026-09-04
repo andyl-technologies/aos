@@ -2380,8 +2380,12 @@ fork-rate admission before source-pool routing. The single-host demotion sink
 now authenticates exact checkpoint or fully resolved thin replay identities,
 then consumes the fixed prepared-QEMU source and requires final-drain/reap
 attestation; failure transfers the mutated source into the factory's terminal
-quarantine before stable-coordinate restoration. Durable GC/restart ownership
-of fallback roots, the atomic world-continuation installer, modeled
+quarantine before stable-coordinate restoration. A fixed 65,536-slot
+checksummed operational catalog now retains exact/thin fallback roots across
+restart, and single-host GC planning/apply holds its inventory fence and binds
+its contents into the exact root manifest. Wiring every managed-pool admission,
+demotion, and recovery transition to that catalog remains required, as do the
+atomic world-continuation installer and modeled
 private-child driver, and real QEMU campaign flight remain required before hot
 fork is advertised.
 

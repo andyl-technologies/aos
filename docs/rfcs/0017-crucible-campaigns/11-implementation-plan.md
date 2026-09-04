@@ -2534,8 +2534,13 @@ QEMU template, drains final events, requires backend reap, and transfers a
 failed partial shutdown into terminal factory quarantine. Focused regressions
 cover exact/thin mismatches, missing native bases, missing continuations,
 release-boundary reauthentication, and consuming source shutdown. Durable
-fallback-root retention across GC/restart and the final production owner remain
-open, so this is not yet the production launch boundary and T-CAM-7.5 remains
+fallback-root retention now uses a fixed 65,536-slot checksummed memory/
+directory catalog. Its inventory fence composes with single-host GC plan/apply,
+whose exact root manifest rejects fallback changes before deletion; focused
+regressions cover retention, removal, restart authentication, and the
+plan/apply race. Managed-pool admission/demotion/restart ownership is not yet
+wired to the catalog and the final production owner remains open, so this is
+not yet the production launch boundary and T-CAM-7.5 remains
 unchecked. Atomic multi-node host-continuation installation,
 the concrete modeled driver, and a real QEMU flight also remain open; this
 checkpoint therefore does not mark T-CAM-6.2 or T-CAM-6.3 complete.
