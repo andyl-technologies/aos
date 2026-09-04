@@ -11,8 +11,8 @@ use crate::path::ResolvedPath;
 use crate::pidfd::{NamespaceFd, NamespaceKind};
 use crate::uapi::{
     self, FSCONFIG_CMD_CREATE, FSCONFIG_SET_FD, FSCONFIG_SET_FLAG, FSCONFIG_SET_STRING,
-    MOUNT_ATTR_IDMAP, MOUNT_ATTR_NODEV, MOUNT_ATTR_NOEXEC, MOUNT_ATTR_NOSUID, MOUNT_ATTR_RDONLY,
-    RawMountAttr,
+    MOUNT_ATTR_IDMAP, MOUNT_ATTR_NOATIME, MOUNT_ATTR_NODEV, MOUNT_ATTR_NOEXEC, MOUNT_ATTR_NOSUID,
+    MOUNT_ATTR_RDONLY, RawMountAttr,
 };
 use crate::{Error, Result};
 
@@ -27,6 +27,7 @@ pub struct MountAttributes {
     no_suid: bool,
     no_device: bool,
     no_exec: Option<bool>,
+    no_atime: bool,
 }
 
 impl MountAttributes {
@@ -38,6 +39,7 @@ impl MountAttributes {
             no_suid: true,
             no_device: true,
             no_exec: None,
+            no_atime: false,
         }
     }
 
@@ -45,6 +47,13 @@ impl MountAttributes {
     #[must_use]
     pub const fn with_no_exec(mut self, enabled: bool) -> Self {
         self.no_exec = Some(enabled);
+        self
+    }
+
+    /// Enables or disables access-time suppression.
+    #[must_use]
+    pub const fn with_no_atime(mut self, enabled: bool) -> Self {
+        self.no_atime = enabled;
         self
     }
 
@@ -56,6 +65,7 @@ impl MountAttributes {
             no_suid: true,
             no_device: true,
             no_exec: None,
+            no_atime: false,
         }
     }
 
@@ -81,6 +91,9 @@ impl MountAttributes {
         }
         if self.no_device {
             set |= MOUNT_ATTR_NODEV;
+        }
+        if self.no_atime {
+            set |= MOUNT_ATTR_NOATIME;
         }
         match self.no_exec {
             Some(true) => set |= MOUNT_ATTR_NOEXEC,
@@ -175,7 +188,21 @@ impl DetachedMount {
     /// already been attached, privilege is insufficient, or `move_mount`
     /// fails.
     pub fn attach(self, destination: &ResolvedPath) -> Result<()> {
-        uapi::move_mount(self.fd.as_fd(), destination.as_fd())
+        uapi::move_mount(self.fd.as_fd(), destination.as_fd(), false)
+    }
+
+    /// Atomically inserts this mount beneath the current destination mount.
+    ///
+    /// This is the publication half of replacement on kernels supporting
+    /// `MOVE_MOUNT_BENEATH`. The caller must subsequently detach the former
+    /// top mount while holding the sandbox mutation lock.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if beneath insertion is unsupported, the destination
+    /// is unsuitable, privilege is insufficient, or `move_mount` fails.
+    pub fn attach_beneath(self, destination: &ResolvedPath) -> Result<()> {
+        uapi::move_mount(self.fd.as_fd(), destination.as_fd(), true)
     }
 }
 
@@ -342,11 +369,16 @@ mod tests {
     fn attribute_profiles_are_fail_closed() {
         let read_only = MountAttributes::secure_read_only()
             .with_no_exec(true)
+            .with_no_atime(true)
             .raw(None)
             .unwrap();
         assert_eq!(
             read_only.attr_set,
-            MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV | MOUNT_ATTR_NOEXEC
+            MOUNT_ATTR_RDONLY
+                | MOUNT_ATTR_NOSUID
+                | MOUNT_ATTR_NODEV
+                | MOUNT_ATTR_NOEXEC
+                | MOUNT_ATTR_NOATIME
         );
         assert_eq!(read_only.userns_fd, 0);
         assert_eq!(read_only.attr_clr, 0);

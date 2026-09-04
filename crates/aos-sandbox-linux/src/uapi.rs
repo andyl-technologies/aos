@@ -21,6 +21,7 @@ pub(crate) const AT_EMPTY_PATH: u32 = 0x1000;
 pub(crate) const AT_RECURSIVE: u32 = 0x8000;
 pub(crate) const MOVE_MOUNT_F_EMPTY_PATH: u32 = 0x0000_0004;
 pub(crate) const MOVE_MOUNT_T_EMPTY_PATH: u32 = 0x0000_0040;
+pub(crate) const MOVE_MOUNT_BENEATH: u32 = 0x0000_0200;
 pub(crate) const FSOPEN_CLOEXEC: u32 = 1;
 pub(crate) const FSMOUNT_CLOEXEC: u32 = 1;
 
@@ -33,6 +34,7 @@ pub(crate) const MOUNT_ATTR_RDONLY: u64 = 0x0000_0001;
 pub(crate) const MOUNT_ATTR_NOSUID: u64 = 0x0000_0002;
 pub(crate) const MOUNT_ATTR_NODEV: u64 = 0x0000_0004;
 pub(crate) const MOUNT_ATTR_NOEXEC: u64 = 0x0000_0008;
+pub(crate) const MOUNT_ATTR_NOATIME: u64 = 0x0000_0010;
 pub(crate) const MOUNT_ATTR_IDMAP: u64 = 0x0010_0000;
 
 pub(crate) const STATMOUNT_SB_BASIC: u64 = 0x0000_0001;
@@ -375,7 +377,11 @@ pub(crate) fn mount_setattr(
     unit_result(result, "mount_setattr")
 }
 
-pub(crate) fn move_mount(source: BorrowedFd<'_>, target: BorrowedFd<'_>) -> Result<()> {
+pub(crate) fn move_mount(
+    source: BorrowedFd<'_>,
+    target: BorrowedFd<'_>,
+    beneath: bool,
+) -> Result<()> {
     // SAFETY: both descriptors and both static empty strings remain valid for
     // the syscall. The flags request descriptor-only source and destination.
     let result = unsafe {
@@ -385,7 +391,9 @@ pub(crate) fn move_mount(source: BorrowedFd<'_>, target: BorrowedFd<'_>) -> Resu
             c"".as_ptr(),
             target.as_raw_fd(),
             c"".as_ptr(),
-            MOVE_MOUNT_F_EMPTY_PATH | MOVE_MOUNT_T_EMPTY_PATH,
+            MOVE_MOUNT_F_EMPTY_PATH
+                | MOVE_MOUNT_T_EMPTY_PATH
+                | if beneath { MOVE_MOUNT_BENEATH } else { 0 },
         )
     };
     unit_result(result, "move_mount")

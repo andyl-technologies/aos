@@ -10,6 +10,7 @@ use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path};
 
+use crate::pidfd::{NamespaceFd, NamespaceKind};
 use crate::uapi::{
     self, OpenHow, RESOLVE_BENEATH, RESOLVE_NO_MAGICLINKS, RESOLVE_NO_SYMLINKS, RESOLVE_NO_XDEV,
 };
@@ -140,6 +141,34 @@ impl BeneathRoot {
             });
         }
         Ok(ResolvedFile { fd, identity })
+    }
+
+    /// Opens and type-checks a bind-pinned namespace beneath this root.
+    ///
+    /// Namespace pins are expected to cross from the catalog filesystem onto
+    /// `nsfs`, so this operation intentionally omits `RESOLVE_NO_XDEV` while
+    /// retaining beneath, no-magic-link, and no-symlink resolution.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid relative path, symlink traversal,
+    /// missing pin, wrong namespace type, or kernel inspection failure.
+    pub fn open_namespace(&self, relative: &Path, kind: NamespaceKind) -> Result<NamespaceFd> {
+        let bytes = validate_relative_path(relative)?;
+        let path =
+            CString::new(bytes).map_err(|_| Error::invalid("relative path", "contains NUL"))?;
+        let flags = u64::try_from(libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW)
+            .map_err(|_| Error::invalid("open flags", "platform flag conversion failed"))?;
+        let fd = uapi::openat2(
+            self.fd.as_fd(),
+            &path,
+            &OpenHow {
+                flags,
+                mode: 0,
+                resolve: RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS,
+            },
+        )?;
+        NamespaceFd::from_owned(fd, kind)
     }
 }
 
@@ -343,6 +372,17 @@ mod tests {
         );
         assert!(
             root.resolve(Path::new("link"), ResolveOptions::any())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn ordinary_catalog_file_is_not_a_namespace_pin() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("not-a-namespace"), b"x").unwrap();
+        let root = root(temp.path());
+        assert!(
+            root.open_namespace(Path::new("not-a-namespace"), NamespaceKind::Mount)
                 .is_err()
         );
     }
