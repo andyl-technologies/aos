@@ -50,6 +50,8 @@ pub enum SignerRole {
     Provenance,
     /// Release manifest and journal evidence authority.
     ReleaseEvidence,
+    /// Aggregate staging qualification authority.
+    Qualification,
     /// Signed channel-operation authority.
     Channel,
 }
@@ -60,6 +62,10 @@ pub enum SignerRole {
 pub enum SignatureAlgorithm {
     /// Ed25519 over a domain-separated request digest.
     Ed25519,
+    /// Raw Ed25519 over exact public payload bytes for legacy wire formats.
+    Ed25519Payload,
+    /// SHA-256 signature verified by independently pinned public-key material.
+    PublicKeySha256,
     /// Authenticode signing performed by an external provider.
     Authenticode,
     /// Linux kernel module signature performed by an external provider.
@@ -199,7 +205,7 @@ impl SignerRequirement {
 pub struct SigningRequestV1 {
     /// Exact request schema identifier.
     pub schema_version: String,
-    /// Unique request id retained in the signed journal.
+    /// Unique request id retained in the authenticated journal evidence.
     pub request_id: String,
     /// Unpredictable anti-replay nonce encoded as lowercase hexadecimal.
     pub nonce: String,
@@ -259,6 +265,14 @@ impl SigningRequestV1 {
         let operation_matches = matches!(
             (self.algorithm, self.operation),
             (SignatureAlgorithm::Ed25519, SigningOperation::SignPayload)
+                | (
+                    SignatureAlgorithm::Ed25519Payload,
+                    SigningOperation::SignPayload
+                )
+                | (
+                    SignatureAlgorithm::PublicKeySha256,
+                    SigningOperation::SignPayload
+                )
                 | (SignatureAlgorithm::Ed25519, SigningOperation::SignPcrPolicy)
                 | (SignatureAlgorithm::Authenticode, SigningOperation::SignPe)
                 | (
@@ -273,9 +287,31 @@ impl SigningRequestV1 {
                     SignatureAlgorithm::SshsigEd25519,
                     SigningOperation::SignGitObject
                 )
+                | (
+                    SignatureAlgorithm::SshsigEd25519,
+                    SigningOperation::SignPayload
+                )
         );
         if !operation_matches {
             bail!("signature algorithm is incompatible with the requested operation");
+        }
+        if self.algorithm == SignatureAlgorithm::Ed25519Payload
+            && !matches!(
+                (&self.role, &self.context),
+                (
+                    SignerRole::Cache,
+                    SigningContext::Payload { artifact_kind }
+                ) if artifact_kind == "narinfo-fingerprint"
+            )
+            && !matches!(
+                (&self.role, &self.context),
+                (
+                    SignerRole::Qualification,
+                    SigningContext::Payload { artifact_kind }
+                ) if artifact_kind == "qualification-receipt-digest"
+            )
+        {
+            bail!("raw Ed25519 payload signing is not authorized for this role and context");
         }
         self.context.validate(self.role, self.operation)
     }
@@ -289,6 +325,33 @@ impl SigningRequestV1 {
     pub fn digest(&self) -> Result<Sha256Digest> {
         self.validate()?;
         Sha256Digest::of_canonical(SIGNING_REQUEST_DOMAIN, self)
+    }
+
+    /// Verifies that public payload bytes have the request's declared identity.
+    ///
+    /// Canonical release-manifest and TUF payloads use their protocol domain;
+    /// other signer payloads bind their exact raw bytes. This lets a provider
+    /// receive auditable source bytes without weakening domain separation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the bytes do not produce `payload_digest` under
+    /// the operation's required digest domain.
+    pub fn verify_payload_bytes(&self, payload: &[u8]) -> Result<()> {
+        self.validate()?;
+        let found = match &self.context {
+            SigningContext::Tuf { metadata_role, .. } => {
+                Sha256Digest::separated(&format!("aos.release.tuf-{metadata_role}/v1"), payload)
+            }
+            SigningContext::Payload { artifact_kind } if artifact_kind == "release-manifest" => {
+                Sha256Digest::separated("aos.release.manifest/v1", payload)
+            }
+            _ => Sha256Digest::of_bytes(payload),
+        };
+        if found != self.payload_digest {
+            bail!("signer payload does not match the request digest");
+        }
+        Ok(())
     }
 }
 
@@ -325,6 +388,14 @@ impl SigningContext {
         match (self, operation) {
             (Self::Payload { artifact_kind }, SigningOperation::SignPayload) => {
                 require_identifier(artifact_kind, "signing artifact kind")?;
+                if matches!(role, SignerRole::Provenance)
+                    && artifact_kind != "package-provenance-dsse"
+                {
+                    bail!("provenance signing requires package-provenance-dsse payloads");
+                }
+                if matches!(role, SignerRole::Cache) && artifact_kind != "narinfo-fingerprint" {
+                    bail!("cache signing requires narinfo-fingerprint payloads");
+                }
             }
             (
                 Self::Pe {
@@ -629,6 +700,39 @@ mod tests {
     }
 
     #[test]
+    fn public_key_payload_signatures_are_detached_operations() {
+        let mut request = request();
+        request.role = SignerRole::SecureBootDb;
+        request.algorithm = SignatureAlgorithm::PublicKeySha256;
+        request.context = SigningContext::Payload {
+            artifact_kind: "recovery-slot-manifest".to_owned(),
+        };
+        assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn raw_ed25519_payload_mode_is_confined_to_explicit_wire_formats() {
+        let mut request = request();
+        request.role = SignerRole::Cache;
+        request.algorithm = SignatureAlgorithm::Ed25519Payload;
+        request.context = SigningContext::Payload {
+            artifact_kind: "narinfo-fingerprint".to_owned(),
+        };
+        assert!(request.validate().is_ok());
+
+        request.context = SigningContext::Payload {
+            artifact_kind: "release-manifest".to_owned(),
+        };
+        assert!(request.validate().is_err());
+
+        request.role = SignerRole::Qualification;
+        request.context = SigningContext::Payload {
+            artifact_kind: "qualification-receipt-digest".to_owned(),
+        };
+        assert!(request.validate().is_ok());
+    }
+
+    #[test]
     fn boot_operations_require_linux_platform_context() {
         let mut request = request();
         request.role = SignerRole::SecureBootDb;
@@ -667,5 +771,20 @@ mod tests {
 
         request.role = SignerRole::TufStable;
         assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn canonical_metadata_payloads_retain_domain_separation() -> Result<()> {
+        let mut request = request();
+        request.role = SignerRole::TufStable;
+        request.context = SigningContext::Tuf {
+            metadata_role: "stable".to_owned(),
+            metadata_version: 1,
+        };
+        request.payload_digest = Sha256Digest::separated("aos.release.tuf-stable/v1", b"metadata");
+        request.verify_payload_bytes(b"metadata")?;
+        assert!(request.verify_payload_bytes(b"changed").is_err());
+        assert_ne!(request.payload_digest, Sha256Digest::of_bytes(b"metadata"));
+        Ok(())
     }
 }

@@ -75,6 +75,8 @@
   releaseInventory = support.releaseInventory packageNames;
   x86Packages = publicationMatrix.x86_64-darwin;
   armPackages = publicationMatrix.aarch64-darwin;
+  x86LinuxPackages = publicationMatrix.x86_64-linux;
+  armLinuxPackages = publicationMatrix.aarch64-linux;
   requiredDarwinTools = [
     "aos"
     "bash"
@@ -138,6 +140,9 @@ in
   assert annotationProbe.meta.aos.platformSupport.disposition == "target";
   assert releaseInventory.schema_version == "aos.release.package-inventory/v1";
   assert releaseInventory.platforms == support.canonicalSystems;
+  assert builtins.attrNames publicationMatrix == builtins.sort builtins.lessThan support.canonicalSystems;
+  assert x86LinuxPackages == support.targetPackageNames "x86_64-linux" packageNames;
+  assert armLinuxPackages == support.targetPackageNames "aarch64-linux" packageNames;
   assert builtins.all (
     package: builtins.length package.platforms == 4
   )

@@ -49,5 +49,5 @@ pub const RELEASE_PLAN_V1: &str = "aos.release.plan/v1";
 /// Schema identifier for the first finalized release-manifest contract.
 pub const RELEASE_MANIFEST_V1: &str = "aos.release.manifest/v1";
 
-/// Schema identifier for the first signed journal-entry contract.
+/// Schema identifier for the first hash-chained journal-entry contract.
 pub const RELEASE_JOURNAL_ENTRY_V1: &str = "aos.release.journal-entry/v1";

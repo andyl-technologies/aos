@@ -272,6 +272,16 @@ mod tests {
     }
 
     #[test]
+    fn generated_binding_ids_do_not_require_human_reference_resolution() {
+        assert!(!binding_reference_requires_resolution(
+            "storage-binding:0123456789abcdef0123456789abcdef"
+        ));
+        assert!(binding_reference_requires_resolution("operations:archive"));
+        assert!(binding_reference_requires_resolution("operations/archive"));
+        assert!(!binding_reference_requires_resolution("operator-chosen"));
+    }
+
+    #[test]
     fn documentation_browser_urls_preserve_registry_path_segments() {
         let url = documentation_browser_url(
             "https://hub.example.test",
@@ -4914,12 +4924,16 @@ fn parse_binding_ref(value: &str) -> Result<hub_types::BindingRef> {
     })
 }
 
+fn binding_reference_requires_resolution(reference: &str) -> bool {
+    !reference.starts_with("storage-binding:") && reference.contains([':', '/'])
+}
+
 async fn binding_grant_stable_id(
     client: &HubClient,
     reference: &str,
     mutation: &HubMutationArgs,
 ) -> Result<String> {
-    if mutation.plan_id.is_some() || (!reference.contains([':', '/'])) {
+    if mutation.plan_id.is_some() || !binding_reference_requires_resolution(reference) {
         return Ok(reference.to_string());
     }
     let response: hub_types::GetBindingResponse = client
@@ -9201,6 +9215,29 @@ pub(crate) async fn upload_registry_publication(
     root: &std::path::Path,
     printer: &Printer,
 ) -> Result<hub_types::RegistryPublication> {
+    upload_registry_publication_with_commit(access, registry, manifest, root, printer, true).await
+}
+
+/// Uploads one exact registry surface while leaving its mutable commit to a
+/// release-scoped compare-and-swap RPC.
+pub(crate) async fn prepare_registry_publication(
+    access: &HubAccessArgs,
+    registry: &str,
+    manifest: Option<&std::path::Path>,
+    root: &std::path::Path,
+    printer: &Printer,
+) -> Result<hub_types::RegistryPublication> {
+    upload_registry_publication_with_commit(access, registry, manifest, root, printer, false).await
+}
+
+async fn upload_registry_publication_with_commit(
+    access: &HubAccessArgs,
+    registry: &str,
+    manifest: Option<&std::path::Path>,
+    root: &std::path::Path,
+    printer: &Printer,
+    commit: bool,
+) -> Result<hub_types::RegistryPublication> {
     let mut pinned = match manifest {
         Some(manifest) => {
             let request = publication_manifest_request(manifest, registry)?;
@@ -9243,15 +9280,26 @@ pub(crate) async fn upload_registry_publication(
             "Uploading publication pointers",
         )
         .await?;
-        publication_client(access)
-            .await?
-            .call_topology(
-                HubTopologyMethod::CommitRegistryPublication,
-                &hub_types::CommitRegistryPublicationRequest {
-                    publication_id: publication_id.to_string(),
-                },
-            )
-            .await
+        let client = publication_client(access).await?;
+        if commit {
+            client
+                .call_topology(
+                    HubTopologyMethod::CommitRegistryPublication,
+                    &hub_types::CommitRegistryPublicationRequest {
+                        publication_id: publication_id.to_string(),
+                    },
+                )
+                .await
+        } else {
+            client
+                .call_topology(
+                    HubTopologyMethod::GetRegistryPublication,
+                    &hub_types::GetRegistryPublicationRequest {
+                        publication_id: publication_id.to_string(),
+                    },
+                )
+                .await
+        }
     }
     .await;
     result.with_context(|| {
@@ -9746,11 +9794,12 @@ struct PinnedPublication {
     root: std::os::fd::OwnedFd,
 }
 
-// A complete 258-package origin plus paired narinfo/NAR cache objects is
-// currently just over ten thousand files. Keep admission bounded while
-// retaining enough headroom for normal registry growth between releases.
-const MAX_PUBLICATION_OBJECTS: usize = 20_000;
-const MAX_PUBLICATION_ENTRIES: usize = 20_000;
+// A complete package origin includes immutable Git/index objects and paired
+// narinfo/NAR cache objects. The supported catalog exceeds twenty thousand
+// files, so keep admission bounded at a capacity that leaves useful headroom
+// for catalog and history growth between releases.
+const MAX_PUBLICATION_OBJECTS: usize = 50_000;
+const MAX_PUBLICATION_ENTRIES: usize = 50_000;
 const MAX_PUBLICATION_PATH_BYTES: usize = 512;
 const MAX_PUBLICATION_DIRECTORY_DEPTH: usize = 32;
 

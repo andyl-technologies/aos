@@ -103,6 +103,7 @@
       expectAgent = m.expectAgent or true;
       memoryMiB = m.memoryMiB or 2048;
       tpm = m.tpm or false;
+      hostAliases = m.hostAliases or [];
       name = mname;
       ip = "192.168.50.${toString (i + 10)}";
       mac = mkMac 0 (i + 1);
@@ -116,7 +117,13 @@
   # (curl http://server:8000/).
   mkHostsEntries = machinesWithIndex:
     lib.concatStringsSep "\n"
-    (builtins.map (m: "${m.ip} ${m.name}") machinesWithIndex);
+    (builtins.map (
+        m:
+          "${m.ip} ${m.name}"
+          + lib.optionalString (m.hostAliases != [])
+          " ${lib.concatStringsSep " " m.hostAliases}"
+      )
+      machinesWithIndex);
 
   # ── Per-machine identity module (baked via extendModules) ──────────
   # Bakes each machine's identity into the image.

@@ -397,6 +397,9 @@ impl ReleasePlanV1 {
             bail!("stable and emergency releases require the Linux image matrix");
         }
 
+        if self.gates.is_empty() {
+            bail!("release plan must select at least one qualification gate");
+        }
         require_unique_by(&self.gates, |gate| &gate.policy_id, "gate policy")?;
         for gate in &self.gates {
             require_identifier(&gate.policy_id, "gate policy id")?;
@@ -408,10 +411,19 @@ impl ReleasePlanV1 {
         }
 
         let mut roles = BTreeSet::new();
+        let mut signer_key_roles = std::collections::BTreeMap::new();
         for signer in &self.signers {
             signer.validate()?;
             if !roles.insert(signer.role) {
                 bail!("release plan contains duplicate signer role policy");
+            }
+            for key_id in &signer.key_ids {
+                if let Some(previous_role) = signer_key_roles.insert(key_id, signer.role) {
+                    bail!(
+                        "release signer key id {key_id} is shared by {previous_role:?} and {:?}",
+                        signer.role
+                    );
+                }
             }
         }
         for required in [
@@ -419,7 +431,12 @@ impl ReleasePlanV1 {
             SignerRole::Cache,
             SignerRole::Provenance,
             SignerRole::ReleaseEvidence,
+            SignerRole::Qualification,
+            SignerRole::TufRoot,
+            SignerRole::TufTargets,
             self.release_class.tuf_role(),
+            SignerRole::TufSnapshot,
+            SignerRole::TufTimestamp,
         ] {
             if !roles.contains(&required) {
                 bail!("release plan lacks mandatory signer role {required:?}");

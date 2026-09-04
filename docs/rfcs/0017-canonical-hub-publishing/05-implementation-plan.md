@@ -47,7 +47,7 @@ closed:
    timestamp renewal must not require a registry release.
 4. **Release/channel authorization.** A channel key must not authorize new
    release content, and a staging key must not authorize production content.
-5. **Closed release bundles.** A versioned manifest, signed state journal,
+5. **Closed release bundles.** A versioned manifest, hash-chained state journal,
    exact-byte staging receipt, and public production read-back receipt must be
    machine-validated.
 6. **Hub promotion.** Production import must consume a qualified immutable

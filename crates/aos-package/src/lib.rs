@@ -137,6 +137,8 @@ pub mod platform {
 pub mod policy;
 pub mod profile;
 pub(crate) mod provenance;
+#[doc(hidden)]
+pub use provenance::{DSSE_SIGNATURE_NAMESPACE, ProvenanceSignature, ProvenanceSigner};
 pub mod query;
 pub mod registry;
 pub mod registry_ops;
@@ -850,7 +852,8 @@ pub enum PackageCommand {
 pub enum DocumentationCommand {
     /// Search installed documentation or a Hub index
     Search {
-        /// Terms to search for
+        /// Terms to search for; omit to browse documented packages
+        #[arg(default_value = "")]
         query: String,
         /// Restrict results to package, option, service, credential, or capability
         #[arg(long)]
@@ -4388,7 +4391,7 @@ fn run_verify_package_attestation(
             )?,
             rederived_manifest,
             quoted_generation_quote.as_ref().context(
-                "--generation-attestation requires --quote-dir; a bare PCR 15 value does not authenticate PCR 7/11 or the AK",
+                "--generation-attestation requires --quote-dir; a bare PCR 15 value does not authenticate PCR 7/11/12 or the AK",
             )?,
             &trust,
             &verified,

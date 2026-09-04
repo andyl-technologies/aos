@@ -12,8 +12,8 @@ At minimum the bundle inventories:
   complete authorized-contributor check result;
 - evaluated AOS system and package-set identities;
 - Nix derivations, output paths, NAR hashes, closure edges, and cache narinfos;
-- registry Git commit, release tag, channel-independent TUF metadata, package
-  catalog, documentation objects, and store realization graph;
+- registry Git commit, release tag, package catalog, documentation objects,
+  and store realization graph;
 - source outputs and license-boundary reports, including matching patched-QEMU
   corresponding source when applicable;
 - a machine-readable software bill of materials covering every store path,
@@ -40,6 +40,14 @@ Linux architecture image matrices defined by
 [`06-platform-matrix.md`](06-platform-matrix.md). Every planned cell is an
 artifact, an explicit policy-backed `not-applicable`, or an edge/RC-only
 `blocked` result. Stable-eligible bundles contain no blocked cell.
+
+TUF root, targets, delegated-targets, snapshot, and timestamp files are
+repository metadata on the registry surface, not targets inside this bundle.
+The delegated release entry authorizes the signed manifest envelope; that
+manifest inventories every bundle payload. This direction is intentional: if
+the manifest inventoried TUF bytes that themselves named the manifest or whole
+bundle digest, construction would require a cryptographic hash fixed point.
+Exact-byte Hub receipts separately bind the resulting bundle digest.
 
 The public portion is signed by the provenance/evidence key and published with
 the release. Secrets, personal data, provider account ids, internal host
@@ -278,9 +286,10 @@ storage migration, or key rotation.
 
 ## Failure and recovery
 
-Before a public pointer moves, failures are retried from the signed journal or
-abandon the version. Already-uploaded immutable objects remain harmless and may
-be reused only when their hashes match a later plan.
+Before a public pointer moves, failures are retried from the authenticated
+hash-chained journal and its signed transition evidence or abandon the version.
+Already-uploaded immutable objects remain harmless and may be reused only when
+their hashes match a later plan.
 
 After a public pointer moves:
 

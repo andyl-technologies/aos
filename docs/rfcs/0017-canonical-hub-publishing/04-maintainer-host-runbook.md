@@ -1,10 +1,10 @@
 # Maintainer-host publishing runbook
 
-This is the target operating procedure. Commands that implement the signed
-bundle state machine are intentionally not presented as available today. The
-current `apr release` and Secure Boot fixture path do not satisfy all of the
-production gates in this RFC. The transition to an executable runbook is part
-of [`05-implementation-plan.md`](05-implementation-plan.md).
+This is the operating procedure for the implemented `aos release` command
+family. Production publication remains prohibited until every launch gate in
+[`05-implementation-plan.md`](05-implementation-plan.md) has objective
+evidence and the rehearsals in this runbook have completed. The lower-level
+`apr release` and Secure Boot fixture paths do not satisfy those gates.
 
 ## One-time setup
 
@@ -257,7 +257,8 @@ At success or failure:
 
 - revoke short-lived credentials and remove temporary credential stores;
 - disconnect signing devices and verify no secret-backed process remains;
-- sign the final journal digest and copy evidence to encrypted backup;
+- threshold-authorize the exact rolling journal head, close the deterministic
+  final entry, and copy the journal plus signed evidence to encrypted backup;
 - retain required Nix roots, release bundles, source, recovery, and installer
   closures;
 - reconcile public Hub, registry, channel, timestamp, and retention state; and

@@ -203,7 +203,6 @@ fn validate_production_supply_chain(
     for kind in [
         ArtifactKind::RegistryObject,
         ArtifactKind::NarInfo,
-        ArtifactKind::TufMetadata,
         ArtifactKind::Source,
         ArtifactKind::Provenance,
         ArtifactKind::Sbom,
