@@ -1178,6 +1178,43 @@ completes. The Git history remains authoritative for code details.
   file data, and worker process integration remain open. No task is checked
   from the library alone.
 
+- `b619f4e29` — connects the metadata worker to the installed transport through
+  a Linux-only Rust adapter toward `SBX-FS-03`. Its safe runner consumes the
+  connection and borrows scratch, presentation/index storage, and descriptors
+  for one synchronous call. The private C ABI checks layout and bounded buffer
+  conversions; callback panics poison the connection and never unwind into C.
+  OPENDIR commits only after successful reply publication. Failed FORGET or
+  RELEASEDIR discards the connection because kernel cleanup is not retryable.
+  Typed-page and wire-byte budgets remain distinct, and neither can silently
+  produce false EOF. Seven fixtures, the ownership compile-fail doctest,
+  strict Clippy, warning-denied rustdoc, formatting, and independent review
+  pass. A separate consumer verifies installed dynamic linkage and exact runtime
+  search paths with `LD_LIBRARY_PATH` unset. Hermetic test build inputs and the
+  development shell include the transport without expanding unrelated installed
+  CLI runtime closures. Real-kernel Rust-worker qualification, whole-index ABI
+  admission, data reads, and process integration remain open.
+- `dc3d9599c` — prevents false directory EOF when a nonempty metadata page
+  cannot fit its first complete packed FUSE record. Zero- and one-byte request
+  buffers return `EINVAL`, and a later adequate buffer still returns the
+  expected progressing cookies. The fake-core regressions, installed link,
+  exported-symbol, SONAME, and exact runtime-closure checks pass.
+- `98fdc84af` — further work toward `SBX-HOST-01` and `SBX-LIFE-06`: the host
+  broker joins authenticated durable witnesses and retained obsolete-incarnation
+  history with a structurally revalidated systemd discovery snapshot. Reports
+  distinguish current matches, missing current units, historical residuals,
+  unobserved history, unknown-unit quarantine, and raw prefix conflicts. Intent
+  and durable receipt status remain separate from observed runtime state. The
+  join performs no worker calls, does not establish snapshot provenance, and
+  cannot authorize adoption or cleanup. Shared canonical unit-name parsing and
+  conflict-job regressions align validation with the discovery producer. All
+  74 host unit tests, one host integration test, ten systemd unit tests, 25
+  D-Bus integration tests, scoped strict Clippy, warning-denied rustdoc, and
+  formatting pass. Full boot reconciliation remains open.
+- `ab50360bc` — repairs the existing container-publication test fixture after
+  master added deployment and release-evidence fields to `AppState`. Its
+  complete test target compiles through the realized AOS development shell.
+  This removes a package-build blocker; it is not VM runtime evidence.
+
 The post-`727da7f3e` x86_64 `sandbox-filesystem-capability-proof` rerun built the
 complete hermetic Rust closure, AOS system, initrd, and VM disk and launched
 QEMU with KVM. The guest agent timed out before readiness with a blank serial
