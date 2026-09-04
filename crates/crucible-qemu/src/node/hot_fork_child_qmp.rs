@@ -497,9 +497,9 @@ impl QemuNode {
 
     /// Releases one acknowledged child QMP stage in exact ownership order.
     ///
-    /// Plugin endpoints and their sealed plan must be released first. QEMU
-    /// closes its retained duplicate, then the monitor name, before the node
-    /// drops both original stream endpoints.
+    /// Plugin endpoints, their sealed plan, and the child console must be
+    /// released first. QEMU closes its retained duplicate, then the monitor
+    /// name, before the node drops both original stream endpoints.
     ///
     /// # Errors
     ///
@@ -516,6 +516,12 @@ impl QemuNode {
             return Err(QemuNodeChannelError::new(
                 "release hot-fork child QMP",
                 "plugin endpoints must release their sealed plan first",
+            ));
+        }
+        if self.hot_fork_child_console_stage.is_some() {
+            return Err(QemuNodeChannelError::new(
+                "release hot-fork child QMP",
+                "child console must release before its predecessor child QMP stage",
             ));
         }
         let (name, socket_cookie) = match self.hot_fork_child_qmp_stage.as_ref() {

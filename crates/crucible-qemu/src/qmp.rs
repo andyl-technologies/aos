@@ -37,14 +37,15 @@ use hot_fork::{
     parse_hot_fork_aio_handler_inventory, parse_hot_fork_aio_inventory,
     parse_hot_fork_bh_timer_barrier_state, parse_hot_fork_block_backend_inventory,
     parse_hot_fork_block_barrier_state, parse_hot_fork_bottom_half_inventory,
-    parse_hot_fork_child_diagnostic_state, parse_hot_fork_child_process_contract_state,
-    parse_hot_fork_child_process_state, parse_hot_fork_child_qmp_state,
-    parse_hot_fork_child_runtime_state, parse_hot_fork_monitor_inventory,
-    parse_hot_fork_mutex_inventory, parse_hot_fork_plugin_barrier_state,
-    parse_hot_fork_plugin_endpoint_state, parse_hot_fork_plugin_resource_inventory,
-    parse_hot_fork_private_ring_state, parse_hot_fork_rcu_barrier_state,
-    parse_hot_fork_rcu_inventory, parse_hot_fork_readiness, parse_hot_fork_state,
-    parse_hot_fork_template_state, parse_hot_fork_thread_inventory, parse_hot_fork_timer_inventory,
+    parse_hot_fork_child_console_state, parse_hot_fork_child_diagnostic_state,
+    parse_hot_fork_child_process_contract_state, parse_hot_fork_child_process_state,
+    parse_hot_fork_child_qmp_state, parse_hot_fork_child_runtime_state,
+    parse_hot_fork_monitor_inventory, parse_hot_fork_mutex_inventory,
+    parse_hot_fork_plugin_barrier_state, parse_hot_fork_plugin_endpoint_state,
+    parse_hot_fork_plugin_resource_inventory, parse_hot_fork_private_ring_state,
+    parse_hot_fork_rcu_barrier_state, parse_hot_fork_rcu_inventory, parse_hot_fork_readiness,
+    parse_hot_fork_state, parse_hot_fork_template_state, parse_hot_fork_thread_inventory,
+    parse_hot_fork_timer_inventory,
 };
 pub use hot_fork::{
     QMP_HOT_FORK_AIO_HANDLER_INVENTORY_MAX, QMP_HOT_FORK_AIO_HANDLER_INVENTORY_SCHEMA_VERSION,
@@ -54,7 +55,8 @@ pub use hot_fork::{
     QMP_HOT_FORK_BLOCK_BACKEND_NAME_MAX_BYTES, QMP_HOT_FORK_BLOCK_BARRIER_COMMAND,
     QMP_HOT_FORK_BLOCK_BARRIER_SCHEMA_VERSION, QMP_HOT_FORK_BLOCK_NODE_NAME_MAX_BYTES,
     QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_MAX, QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_SCHEMA_VERSION,
-    QMP_HOT_FORK_BOTTOM_HALF_NAME_MAX_BYTES, QMP_HOT_FORK_CHILD_DIAGNOSTICS_COMMAND,
+    QMP_HOT_FORK_BOTTOM_HALF_NAME_MAX_BYTES, QMP_HOT_FORK_CHILD_CONSOLE_COMMAND,
+    QMP_HOT_FORK_CHILD_CONSOLE_SCHEMA_VERSION, QMP_HOT_FORK_CHILD_DIAGNOSTICS_COMMAND,
     QMP_HOT_FORK_CHILD_DIAGNOSTICS_SCHEMA_VERSION, QMP_HOT_FORK_CHILD_DIAGNOSTICS_TARGET_FD,
     QMP_HOT_FORK_CHILD_PROCESS_COMMAND, QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_COMMAND,
     QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_SCHEMA_VERSION, QMP_HOT_FORK_CHILD_PROCESS_SCHEMA_VERSION,
@@ -83,18 +85,18 @@ pub use hot_fork::{
     QmpHotForkBlockBackend, QmpHotForkBlockBackendInventory, QmpHotForkBlockBarrierState,
     QmpHotForkBlockSnapshotBinding, QmpHotForkBlockSnapshotBindingError,
     QmpHotForkBlockSnapshotRoot, QmpHotForkBottomHalf, QmpHotForkBottomHalfInventory,
-    QmpHotForkChildDiagnosticState, QmpHotForkChildProcessContractIdentity,
-    QmpHotForkChildProcessContractState, QmpHotForkChildProcessPhase, QmpHotForkChildProcessState,
-    QmpHotForkChildQmpState, QmpHotForkChildRuntimePhase, QmpHotForkChildRuntimeState,
-    QmpHotForkMonitorInventory, QmpHotForkMutex, QmpHotForkMutexInventory, QmpHotForkOutcome,
-    QmpHotForkPluginBarrierState, QmpHotForkPluginEndpointDescriptorPlan,
-    QmpHotForkPluginEndpointIdentity, QmpHotForkPluginEndpointState,
-    QmpHotForkPluginResourceInventory, QmpHotForkPrivateRingState, QmpHotForkProof,
-    QmpHotForkRcuBarrierState, QmpHotForkRcuInventory, QmpHotForkRcuReader, QmpHotForkReadiness,
-    QmpHotForkRequest, QmpHotForkRequestError, QmpHotForkState, QmpHotForkTemplateOutcome,
-    QmpHotForkTemplateResourceStageState, QmpHotForkTemplateState, QmpHotForkThread,
-    QmpHotForkThreadDisposition, QmpHotForkThreadInventory, QmpHotForkTimer, QmpHotForkTimerClock,
-    QmpHotForkTimerInventory,
+    QmpHotForkChildConsoleState, QmpHotForkChildDiagnosticState,
+    QmpHotForkChildProcessContractIdentity, QmpHotForkChildProcessContractState,
+    QmpHotForkChildProcessPhase, QmpHotForkChildProcessState, QmpHotForkChildQmpState,
+    QmpHotForkChildRuntimePhase, QmpHotForkChildRuntimeState, QmpHotForkMonitorInventory,
+    QmpHotForkMutex, QmpHotForkMutexInventory, QmpHotForkOutcome, QmpHotForkPluginBarrierState,
+    QmpHotForkPluginEndpointDescriptorPlan, QmpHotForkPluginEndpointIdentity,
+    QmpHotForkPluginEndpointState, QmpHotForkPluginResourceInventory, QmpHotForkPrivateRingState,
+    QmpHotForkProof, QmpHotForkRcuBarrierState, QmpHotForkRcuInventory, QmpHotForkRcuReader,
+    QmpHotForkReadiness, QmpHotForkRequest, QmpHotForkRequestError, QmpHotForkState,
+    QmpHotForkTemplateOutcome, QmpHotForkTemplateResourceStageState, QmpHotForkTemplateState,
+    QmpHotForkThread, QmpHotForkThreadDisposition, QmpHotForkThreadInventory, QmpHotForkTimer,
+    QmpHotForkTimerClock, QmpHotForkTimerInventory,
 };
 pub use snapshot_tag::QmpSnapshotTag;
 pub use vmstate_control::QemuQmpVmStateControlChannel;
@@ -850,6 +852,103 @@ where
                         command: QmpCommandKind::HotForkChildQmp,
                         response: String::from(
                             "child QMP release did not report a positive absent generation",
+                        ),
+                    })
+                } else {
+                    Ok(state)
+                }
+            });
+        self.poison_after_descriptor_mutation_error(result)
+    }
+
+    /// Makes QEMU retain one branch-private child console stream.
+    ///
+    /// The stream must already be imported with [`Self::install_descriptor`].
+    /// QEMU authenticates its Linux `SO_COOKIE` and binds it to the exact
+    /// connected `crucible-console` source chardev at the retained template.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the exchange fails, QEMU rejects the exact
+    /// stream or source-console basis, or its response violates the closed
+    /// schema. Every error poisons the client because retained ownership may
+    /// then be ambiguous.
+    pub fn stage_hot_fork_child_console(
+        &mut self,
+        name: &QmpDescriptorName,
+        socket_cookie: u64,
+        template_generation: u64,
+    ) -> Result<QmpHotForkChildConsoleState, QmpError> {
+        let result = self
+            .send_command_return(QmpCommand::HotForkChildConsole {
+                action: HotForkChildConsoleAction::Stage,
+                name: Some(name),
+                socket_cookie: Some(socket_cookie),
+            })
+            .and_then(|response| parse_hot_fork_child_console_state(&response.value))
+            .and_then(|state| {
+                let exact_basis = state.staged()
+                    && state.descriptor_name() == Some(name)
+                    && state.socket_cookie() == Some(socket_cookie)
+                    && state.template_generation() == template_generation
+                    && state.retained_descriptor().is_some()
+                    && !state.resource_plan_bound();
+                if exact_basis {
+                    Ok(state)
+                } else {
+                    Err(QmpError::MalformedTypedResponse {
+                        command: QmpCommandKind::HotForkChildConsole,
+                        response: format!(
+                            "child console stage did not retain {name:?}/{socket_cookie}/{template_generation}"
+                        ),
+                    })
+                }
+            });
+        self.poison_after_descriptor_mutation_error(result)
+    }
+
+    /// Reads QEMU's exact retained branch-private child-console state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the query fails or the response violates the
+    /// closed version-1 contract.
+    pub fn query_hot_fork_child_console(
+        &mut self,
+    ) -> Result<QmpHotForkChildConsoleState, QmpError> {
+        let response = self.send_command_return(QmpCommand::HotForkChildConsole {
+            action: HotForkChildConsoleAction::Query,
+            name: None,
+            socket_cookie: None,
+        })?;
+        parse_hot_fork_child_console_state(&response.value)
+    }
+
+    /// Releases QEMU's exact independently retained child console stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the exchange fails, the exact basis no longer
+    /// matches, or QEMU still reports a retained stream. Every error poisons
+    /// the client because descriptor ownership may be ambiguous.
+    pub fn release_hot_fork_child_console(
+        &mut self,
+        name: &QmpDescriptorName,
+        socket_cookie: u64,
+    ) -> Result<QmpHotForkChildConsoleState, QmpError> {
+        let result = self
+            .send_command_return(QmpCommand::HotForkChildConsole {
+                action: HotForkChildConsoleAction::Release,
+                name: Some(name),
+                socket_cookie: Some(socket_cookie),
+            })
+            .and_then(|response| parse_hot_fork_child_console_state(&response.value))
+            .and_then(|state| {
+                if state.staged() || state.generation() == 0 {
+                    Err(QmpError::MalformedTypedResponse {
+                        command: QmpCommandKind::HotForkChildConsole,
+                        response: String::from(
+                            "child console release did not report a positive absent generation",
                         ),
                     })
                 } else {
@@ -2373,6 +2472,8 @@ pub enum QmpCommandKind {
     HotForkChildDiagnostics,
     /// QEMU-owned branch-private child QMP retention operation.
     HotForkChildQmp,
+    /// QEMU-owned branch-private child console retention operation.
+    HotForkChildConsole,
     /// QEMU-owned hot-fork allocated-bottom-half inventory query.
     QueryHotForkBottomHalfInventory,
     /// QEMU-owned hot-fork mutex ownership inventory query.
@@ -2429,6 +2530,7 @@ impl QmpCommandKind {
             Self::HotForkPluginEndpoints => QMP_HOT_FORK_PLUGIN_ENDPOINTS_COMMAND,
             Self::HotForkChildDiagnostics => QMP_HOT_FORK_CHILD_DIAGNOSTICS_COMMAND,
             Self::HotForkChildQmp => QMP_HOT_FORK_CHILD_QMP_COMMAND,
+            Self::HotForkChildConsole => QMP_HOT_FORK_CHILD_CONSOLE_COMMAND,
             Self::QueryHotForkBottomHalfInventory => {
                 QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND
             }
@@ -2523,6 +2625,13 @@ enum HotForkChildQmpAction {
     Release,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HotForkChildConsoleAction {
+    Stage,
+    Query,
+    Release,
+}
+
 impl HotForkTemplateAction {
     const fn wire_name(self) -> &'static str {
         match self {
@@ -2564,6 +2673,16 @@ impl HotForkChildDiagnosticAction {
 }
 
 impl HotForkChildQmpAction {
+    const fn wire_name(self) -> &'static str {
+        match self {
+            Self::Stage => "stage",
+            Self::Query => "query",
+            Self::Release => "release",
+        }
+    }
+}
+
+impl HotForkChildConsoleAction {
     const fn wire_name(self) -> &'static str {
         match self {
             Self::Stage => "stage",
@@ -2698,6 +2817,11 @@ enum QmpCommand<'a> {
         name: Option<&'a QmpDescriptorName>,
         socket_cookie: Option<u64>,
     },
+    HotForkChildConsole {
+        action: HotForkChildConsoleAction,
+        name: Option<&'a QmpDescriptorName>,
+        socket_cookie: Option<u64>,
+    },
     QueryHotForkBottomHalfInventory,
     QueryHotForkMutexInventory,
     QueryHotForkTimerInventory,
@@ -2751,6 +2875,7 @@ impl QmpCommand<'_> {
             Self::HotForkPluginEndpoints { .. } => QmpCommandKind::HotForkPluginEndpoints,
             Self::HotForkChildDiagnostics { .. } => QmpCommandKind::HotForkChildDiagnostics,
             Self::HotForkChildQmp { .. } => QmpCommandKind::HotForkChildQmp,
+            Self::HotForkChildConsole { .. } => QmpCommandKind::HotForkChildConsole,
             Self::QueryHotForkBottomHalfInventory => {
                 QmpCommandKind::QueryHotForkBottomHalfInventory
             }
@@ -3073,6 +3198,33 @@ impl QmpCommand<'_> {
                     "arguments": Value::Object(arguments),
                 })
             }
+            Self::HotForkChildConsole {
+                action,
+                name,
+                socket_cookie,
+            } => {
+                let mut arguments = serde_json::Map::new();
+                arguments.insert(
+                    String::from("action"),
+                    Value::String(action.wire_name().to_owned()),
+                );
+                if let Some(name) = name {
+                    arguments.insert(
+                        String::from("fdname"),
+                        Value::String(name.as_str().to_owned()),
+                    );
+                }
+                if let Some(socket_cookie) = socket_cookie {
+                    arguments.insert(
+                        String::from("expected-socket-cookie"),
+                        Value::from(*socket_cookie),
+                    );
+                }
+                json!({
+                    "exec-oob": QMP_HOT_FORK_CHILD_CONSOLE_COMMAND,
+                    "arguments": Value::Object(arguments),
+                })
+            }
             Self::QueryHotForkBottomHalfInventory => json!({
                 "exec-oob": QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND,
             }),
@@ -3188,13 +3340,13 @@ mod tests {
     }
 
     fn hot_fork_request() -> QmpHotForkRequest {
-        QmpHotForkRequest::for_test(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)
+        QmpHotForkRequest::for_test(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14)
     }
 
     fn hot_fork_response(qmp_generation: u64) -> String {
         json!({
             "return": {
-                "schema-version": 1,
+                "schema-version": 2,
                 "outcome": "forked",
                 "parent-status": 0,
                 "child-pid": 321,
@@ -3202,15 +3354,16 @@ mod tests {
                 "private-ring-generation": 2,
                 "diagnostic-generation": 3,
                 "qmp-generation": qmp_generation,
-                "monitor-generation": 5,
-                "plugin-endpoint-generation": 6,
-                "plugin-barrier-generation": 7,
-                "rcu-barrier-generation": 8,
-                "bh-timer-barrier-generation": 9,
-                "block-barrier-generation": 10,
-                "parent-process-generation": 11,
-                "child-process-generation": 12,
-                "child-process-contract-generation": 13,
+                "console-generation": 5,
+                "monitor-generation": 6,
+                "plugin-endpoint-generation": 7,
+                "plugin-barrier-generation": 8,
+                "rcu-barrier-generation": 9,
+                "bh-timer-barrier-generation": 10,
+                "block-barrier-generation": 11,
+                "parent-process-generation": 12,
+                "child-process-generation": 13,
+                "child-process-contract-generation": 14,
             }
         })
         .to_string()
@@ -3253,15 +3406,16 @@ mod tests {
                     "private-ring-generation": 2,
                     "diagnostic-generation": 3,
                     "qmp-generation": 4,
-                    "monitor-generation": 5,
-                    "plugin-endpoint-generation": 6,
-                    "plugin-barrier-generation": 7,
-                    "rcu-barrier-generation": 8,
-                    "bh-timer-barrier-generation": 9,
-                    "block-barrier-generation": 10,
-                    "parent-process-generation": 11,
-                    "child-process-generation": 12,
-                    "child-process-contract-generation": 13,
+                    "console-generation": 5,
+                    "monitor-generation": 6,
+                    "plugin-endpoint-generation": 7,
+                    "plugin-barrier-generation": 8,
+                    "rcu-barrier-generation": 9,
+                    "bh-timer-barrier-generation": 10,
+                    "block-barrier-generation": 11,
+                    "parent-process-generation": 12,
+                    "child-process-generation": 13,
+                    "child-process-contract-generation": 14,
                 },
             })
         );

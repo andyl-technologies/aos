@@ -24,6 +24,7 @@ pub trait QemuHostIoRuntime: Send {
         _shmem_fd: std::os::fd::BorrowedFd<'_>,
         _wake_fd: std::os::fd::BorrowedFd<'_>,
         _region_len: u64,
+        _console: Option<crate::QemuHotForkChildConsoleObservation>,
     ) -> Result<Box<dyn QemuHostIoRuntime>, QemuAsyncDriverRuntimeError> {
         Err(QemuAsyncDriverRuntimeError::new(
             "clone hot-fork host-I/O continuation",

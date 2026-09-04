@@ -538,6 +538,7 @@ fn hot_fork_clone_reconstructs_private_host_devices_without_aliasing_source()
         child_region.as_fd(),
         child_wake.as_fd(),
         region_len,
+        None,
     )?;
 
     assert_eq!(source.checkpoint_host_io(binding)?, before);
@@ -574,6 +575,7 @@ fn hot_fork_clone_requires_fresh_branch_local_fault_coordinator()
         child_region.as_fd(),
         child_wake.as_fd(),
         region_len,
+        None,
     )?;
     let coordinate = crucible::model::FaultCoordinate {
         virtual_nanos: 0,
@@ -613,6 +615,7 @@ fn hot_fork_clone_does_not_fall_back_to_uncoordinated_ninep_service()
         child_region.as_fd(),
         child_wake.as_fd(),
         region_len,
+        None,
     )?;
 
     assert!(
@@ -626,15 +629,16 @@ fn hot_fork_clone_does_not_fall_back_to_uncoordinated_ninep_service()
 
 #[cfg(target_os = "linux")]
 #[test]
-fn hot_fork_clone_rejects_console_before_constructing_child_runtime()
+fn hot_fork_clone_requires_and_accepts_fresh_child_console()
 -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Write;
     use std::os::fd::AsFd;
     use std::os::unix::net::UnixStream;
 
     let (source_region, child_region, region_len) = private_region_pair()?;
     let source_wake = tempfile::tempfile()?;
     let child_wake = tempfile::tempfile()?;
-    let (_writer, reader) = UnixStream::pair()?;
+    let (mut source_writer, reader) = UnixStream::pair()?;
     let console = crate::console_observation::QemuConsoleObservationReader::new(
         reader,
         crate::console_observation::QemuConsoleObservationSpool::new(),
@@ -647,12 +651,29 @@ fn hot_fork_clone_rejects_console_before_constructing_child_runtime()
     )?
     .with_console_observation(console)?;
 
-    let result = source.clone_hot_fork_host_io_continuation(
+    let missing = source.clone_hot_fork_host_io_continuation(
         ContentHash::from_bytes(b"unsupported-console"),
         child_region.as_fd(),
         child_wake.as_fd(),
         region_len,
+        None,
     );
-    assert!(result.is_err());
+    assert!(missing.is_err());
+
+    let (mut child_writer, child_reader) = UnixStream::pair()?;
+    let child_console = crate::QemuHotForkChildConsoleObservation::from_stream(child_reader)?;
+    let child_spool = child_console.spool();
+    let mut child = source.clone_hot_fork_host_io_continuation(
+        ContentHash::from_bytes(b"branch-private-console"),
+        child_region.as_fd(),
+        child_wake.as_fd(),
+        region_len,
+        Some(child_console),
+    )?;
+    source_writer.write_all(b"source-only")?;
+    child_writer.write_all(b"child-only")?;
+    let _completion = child.await_child(QemuAsyncWait::AdvanceCompletion, Duration::from_millis(1));
+    assert_eq!(child_spool.take()?, b"child-only");
+    drop(child);
     Ok(())
 }

@@ -38,6 +38,7 @@ pub(crate) fn scripted_node_with_live_host_runtime(
             private_ring_state: Arc::new(Mutex::new(None)),
             diagnostic_state: Arc::new(Mutex::new(None)),
             child_qmp_state: Arc::new(Mutex::new(None)),
+            child_console_state: Arc::new(Mutex::new(None)),
             fail_descriptor_install: false,
             fail_descriptor_close: false,
             fail_endpoint_install: false,

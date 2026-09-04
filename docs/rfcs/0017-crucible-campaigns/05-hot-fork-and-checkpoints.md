@@ -1322,15 +1322,17 @@ parent-death containment and authenticate the immediate child before any
 reconstruction or externally visible action. A real-fork unit test proves the
 thread ownership and returned-PID contract.
 
-Template contract version 23 now exposes that coordinator as the public
-`crucible-hot-fork` QMP command. The request carries the exact template,
-private-ring, diagnostics, child-QMP, plugin-endpoint, plugin-barrier,
-descriptor-table, parent-process, child-process, child-runtime, and monitor
-generations. QEMU revalidates all twelve fields on the source main loop before
-forking. The child closes the inherited parent QMP channel, commits the exact
-descriptor table, reconstructs the runtime, plugin, and private child-QMP
-resources, and releases block and QMP input only after their owning
-transactions commit. The language-neutral command contract is:
+Template contract version 24, resource-stage version 13, and fork-result schema
+version 2 now expose that coordinator as the public `crucible-hot-fork` QMP
+command. The request carries the exact template, private-ring, diagnostics,
+child-QMP, child-console, monitor, plugin-endpoint, plugin-barrier,
+descriptor-table, parent-process, child-process, child-process-contract, and
+child-runtime generations. QEMU revalidates all fourteen fields on the source
+main loop before forking. The child closes the inherited parent QMP channel,
+commits the exact descriptor table, reconstructs the runtime, plugin, private
+child-QMP, and child-console resources, and releases block, console, and QMP
+input only after their owning transactions commit. The language-neutral command
+contract is:
 
 ```text
 crucible-hot-fork(
@@ -1338,6 +1340,7 @@ crucible-hot-fork(
     private-ring-generation: u64,
     diagnostic-generation: u64,
     qmp-generation: u64,
+    console-generation: u64,
     monitor-generation: u64,
     plugin-endpoint-generation: u64,
     plugin-barrier-generation: u64,
@@ -1346,14 +1349,15 @@ crucible-hot-fork(
     block-barrier-generation: u64,
     parent-process-generation: u64,
     child-process-generation: u64,
+    child-process-contract-generation: u64,
 ) -> CrucibleHotForkState
 
 CrucibleHotForkState {
-    schema-version: u32 = 1,
+    schema-version: u32 = 2,
     outcome: forked | parent-disposition-failed,
     parent-status: i64,
     child-pid: i64 > 0,
-    ...the exact twelve request generations...
+    ...the exact fourteen request generations...
 }
 ```
 
@@ -1400,12 +1404,49 @@ the process, then asks the source QEMU to reap and report the exact generation.
 The numeric PID and retained status record are evidence, not daemon-owned
 process authority.
 
+The branch-private console stage uses this separate language-neutral contract:
+
+```text
+crucible-hot-fork-child-console(
+    action: stage | query | release,
+    fdname?: str,
+    expected-socket-cookie?: u64,
+) -> CrucibleHotForkConsoleState
+
+CrucibleHotForkConsoleState {
+    schema-version: u32 = 1,
+    generation: u64,
+    template-generation: u64,
+    staged: bool,
+    fdname?: str,
+    socket-cookie: u64,
+    retained-fd: i32,
+    resource-plan-bound: bool,
+    nonblocking-unix-stream: bool,
+    console-basis-bound: bool,
+    reinitializer-prepared: bool,
+    reinitialized: bool,
+    disposition-complete: bool,
+    readiness-proof-acknowledged: bool,
+}
+```
+
+`stage` requires one standard-QMP descriptor naming a connected nonblocking
+Unix stream with the exact nonzero Linux `SO_COOKIE`; it independently
+duplicates that stream and binds the inherited `crucible-console` frontend plus
+one-shot child chardev reinitializer. `query` is observational. `release`
+requires the exact descriptor name and cookie and rejects while the retained
+template still owns the plan. It releases after the sealed plugin plan and
+before its predecessor child-QMP endpoint. A successful child disposition
+installs the replacement stream before console input becomes active.
+
 The Rust host boundary now makes that ordering linear. The node operation
 accepts an explicit child-process owner and returns a launch token only after
 that owner authenticates and retains the exact source PID, child PID, and
-thirteen-generation request basis. The token jointly owns the process
-authority, the single branch-private QMP endpoint, and one plugin host
-continuation. That continuation retains the exact private-ring descriptor, the
+fourteen-generation request basis. The token jointly owns the process
+authority, the single branch-private QMP endpoint, and one host continuation.
+That continuation retains the exact private-ring descriptor, branch-private
+console observation spool, the
 host control/wake endpoints, and an independent clone of every scheduler-owned
 shared-memory cursor, pending event, coverage state, selectable continuation,
 and the same scheduler-owned topology send-authorizer capability. The source retains
@@ -1413,9 +1454,12 @@ its own unchanged template state.
 Explicit command rejection leaves the source node and endpoint reusable; every
 indeterminate exchange, parent-disposition failure, missing endpoint, or
 process-retention failure quarantines the complete source node. A positive PID
-is never treated as a direct-child wait handle. Block, 9p, accelerator, console,
-and other writable host-device continuations remain separate branch-local
-cloning work; the plugin continuation does not claim to clone those owners.
+is never treated as a direct-child wait handle. The source console reader is
+duplicated before the fork so an explicit command rejection remains retryable;
+only a known successful transfer consumes the original endpoint. Attaching the
+returned spool to the child keeps source and child console bytes isolated.
+Other writable host-device continuations remain separate branch-local cloning
+work; the console/plugin continuation does not claim to clone those owners.
 
 This is an interface checkpoint, not the concrete daemon process owner. The
 forked process is a direct child of the template QEMU rather than of the daemon.
@@ -1508,7 +1552,7 @@ quiescent block barrier. Version 19 composes plugin-ring proof bit
 6 from the exact transaction-bound frozen ring, diagnostics stream, retained
 child-QMP stream and prepared reinitializer, endpoint pair, worker plan, and
 plugin barrier. The resource-table binding remains nondestructive. Template
-version 23 deliberately requires only bits 0 through 6: descriptor/mapping
+version 24 deliberately requires only bits 0 through 6: descriptor/mapping
 proof bit 7 and child-reinitialization proof bit 8 are child-only results that
 cannot truthfully exist in the retained parent template. A fully parent-bound
 transaction may therefore report `prepared`; only the private child report can
@@ -1778,10 +1822,11 @@ overlays, device queues, visibility state, directives, pending completions, and
 transport cursors may not. A source signal coordinator is world authority, not
 per-node cloneable state: the child remembers that coordinated servicing is
 mandatory and rejects device work until the branch's atomic world transaction
-installs a fresh coordinator. A live console still requires a fresh staged
-endpoint and therefore rejects the fork before process creation in this
-checkpoint. Multi-node pairing and publication remain governed by §05.8 and
-are not implied by the single-node launch token.
+installs a fresh coordinator. A live console uses an exact pre-staged
+branch-private endpoint. Its QEMU generation is part of the sealed resource
+plan and fork request, while its host reader and observation spool move only
+into the successful child continuation. Multi-node pairing and publication
+remain governed by §05.8 and are not implied by the single-node launch token.
 
 ## 05.8 Atomic multi-node world fork
 
