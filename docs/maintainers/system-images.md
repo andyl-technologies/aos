@@ -13,7 +13,9 @@ release image; put machine-specific policy in authenticated `host.nix`.
 
 Files under `systems/` are discovered automatically. A file named
 `systems/acme-server.nix` produces an evaluated system at
-`systems.acme-server` and image outputs named `acme-server-image-<format>`.
+`systems.acme-server`, disk outputs named `acme-server-image-<format>`, and an
+associated default OCI artifact at
+`systems.acme-server.build.defaultContainer`.
 
 ```nix
 # systems/acme-server.nix
@@ -67,6 +69,37 @@ Ethernet interfaces matching `en*` when no explicit interface is declared.
 
 Keep private keys and service credentials out of the module and Nix store.
 Public trust anchors and SSH public keys may be part of a release image.
+
+## Understand the shared artifact evaluation
+
+Disk and OCI artifacts are projections of one system-module evaluation. The
+bootable host remains `system.build.toplevel`; replacing it with a container
+would erase the kernel, initrd, services, and activation contract. The sibling
+`system.build.defaultContainer` is the default container associated with every
+disk format of that system, while `system.build.containers.<name>` exposes all
+of its container definitions. This system-level association avoids repeating
+the same container pointer on raw, QCOW2, VMDK, and VHD encodings of one logical
+image.
+
+Option ownership is explicit:
+
+| Namespace | Applies to |
+| --- | --- |
+| `aos.system`, `environment.systemPackages`, `aos.release` | Shared system identity, userland, and release/registry policy |
+| `aos.image` and boot/storage/security options | Bootable disk artifacts only |
+| `aos.containers` | OCI filesystem, runtime, publication, and default-container selection only |
+
+The OCI projection consumes the evaluated userland packages and shared release
+profile; it does not package or retain `system.build.toplevel`, the kernel,
+initrd, bootloader, TPM state, or disk layout. Container-specific assertions
+are enforced by the same system evaluation and also when the container output
+is forced directly.
+
+The public `aos-testing` system demonstrates the pattern. Its disk and OCI
+artifacts contain exactly one `andyl/testing` registry seed, select `edge`, and
+carry the same experimental-use warning and trust anchor. The production
+server's compatibility container remains available as `container-aos-*`; the
+testing outputs use `container-aos-testing-*`.
 
 ## Compose release policy
 
@@ -125,6 +158,15 @@ nix build .#acme-server-image-raw
 nix build .#acme-server-image-qcow2
 nix build .#acme-server-image-vmdk
 nix build .#acme-server-image-vhd
+```
+
+Build the experimental artifacts from the same variant evaluation:
+
+```sh
+nix build .#aos-testing-image-qcow2
+nix build .#container-aos-testing-oci
+nix build .#container-aos-testing-docker
+nix build .#container-aos-testing-publication-inputs
 ```
 
 From another architecture, use an x86 Linux remote builder and select the

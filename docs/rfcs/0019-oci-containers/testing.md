@@ -60,6 +60,9 @@ binfmt handler. Building `checks.<system>.container-multi-platform` therefore
 requires that handler (or an equivalent builder configuration); a declared
 `extra-platforms` value alone is not evidence that execution works. Flake
 evaluation and check discovery remain total without executing target binaries.
+The experimental profile has parallel `container-aos-testing-*` outputs built
+from `systems.aos-testing.build.defaultContainer`, including its testing-only
+registry seed and warning.
 
 Every production platform is assembled twice from equivalent inputs under
 independent derivation names. The qualification compares the OCI layout and

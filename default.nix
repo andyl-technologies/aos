@@ -222,6 +222,8 @@
             kernel = evaluated.config.system.build.kernel;
             initrd = evaluated.config.system.build.initrd;
             image = evaluated.config.system.build.image;
+            containers = evaluated.config.system.build.containers;
+            defaultContainer = evaluated.config.system.build.defaultContainer;
           };
           # VM test derivations — produced inside the module system by
           # modules/base/checks.nix, not by external collection scripts.
@@ -237,60 +239,7 @@
 
   # The default system used for eval/build checks and package integration tests.
   serverSystem = mkSystem ./systems/server.nix;
-  containerConfigurations = import ./containers {
-    inherit lib pkgs;
-    goldenRoots = discoverSystems.server.config.environment.systemPackages;
-    evidenceOverrides = let
-      artifacts = discoverSystems.server.config.aos.config.artifacts;
-      version = discoverSystems.server.config.aos.system.version;
-      retainedSource = name: source:
-        pkgs.writeTextFile {
-          name = "aos-container-source-${name}";
-          text = builtins.readFile source;
-          destination = "/source/${builtins.baseNameOf source}";
-        };
-      bootStorageSource = retainedSource "boot-storage" ./modules/base/boot-storage.nix;
-    in [
-      {
-        output = artifacts.esp-mount;
-        outputName = "out";
-        pname = "aos-mount-esp";
-        inherit version;
-        licenses = ["Apache-2.0"];
-        sources = [bootStorageSource (retainedSource "mount-esp" ./modules/base/mount-esp.sh.in)];
-      }
-      {
-        output = artifacts.esp-sync;
-        outputName = "out";
-        pname = "aos-sync-esps";
-        inherit version;
-        licenses = ["Apache-2.0"];
-        sources = [bootStorageSource (retainedSource "sync-esps" ./modules/base/sync-esps.sh.in)];
-      }
-    ];
-    aosSystem = hostPlatform.system;
-  };
-  ociBuilders = import ./lib/build/oci {
-    inherit lib;
-    inherit (pkgs) mkDerivation coreutils findutils gzip jq tar;
-  };
-  containerImages =
-    lib.mapAttrs
-    (_: container:
-      import ./lib/containers/build.nix {
-        inherit lib pkgs container;
-        oci = ociBuilders;
-        systemIdentity = {
-          inherit
-            (discoverSystems.server.config.aos.system)
-            name
-            version
-            stateVersion
-            moduleAbi
-            ;
-        };
-      })
-    containerConfigurations;
+  containerImages = discoverSystems.server.build.containers;
   containerDefinitions = lib.mapAttrs (_: image: image.definition) containerImages;
 
   # Testing harness (headless mode for package integration tests)
@@ -1282,8 +1231,9 @@ in {
         goldenRoots = discoverSystems.server.config.environment.systemPackages;
       };
       eval = import ./tests/containers/eval.nix {
-        inherit pkgs lib;
-        goldenRoots = discoverSystems.server.config.environment.systemPackages;
+        inherit pkgs lib mkSystem;
+        serverModule = ./systems/server.nix;
+        testingModule = ./systems/aos-testing.nix;
         aosSystem = hostPlatform.system;
       };
       oci-builders = import ./tests/containers/oci-builders.nix {inherit pkgs lib;};
