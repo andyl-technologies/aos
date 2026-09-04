@@ -850,6 +850,26 @@ completes. The Git history remains authoritative for code details.
   Immutable backing-file opening/sealing, mapping lifetime, per-connection
   inode assignment, FUSE authority, and `FORGET` handling remain open, so
   `SBX-FS-02` remains unchecked.
+- `84724b62a` — further foundation toward `SBX-FS-02`, `SBX-P0-08`, and
+  `SBX-FS-07`: the generic Linux boundary now distinguishes transient fully
+  sealed memfds from durable fs-verity files and lends a read-only shared
+  mapping only through a consuming higher-ranked callback. Safe code cannot
+  let mapped bytes or lifetime-bound device/inode diagnostics outlive the
+  mapping. Memfd admission requires the complete write/grow/shrink/seal set;
+  `F_SEAL_FUTURE_WRITE` and ordinary read-only files are insufficient. Durable
+  path adoption opens once beneath a pinned root, requires an independently
+  authenticated SHA-256 or SHA-512 fs-verity measurement, and measures, maps,
+  re-observes, and remeasures that same descriptor. Exact expected length and
+  the mapped-byte ceiling are checked before `mmap`; unlink does not revoke an
+  existing pin, and verity corruption on a later page fault is explicitly a
+  worker-fatal `SIGBUS`, not a recoverable Rust error. The boundary remains
+  independent of filesystem object semantics and includes fixed Linux 6.18
+  flexible-ioctl layout assertions. The slice passes 40 Linux unit tests, one
+  compile-fail lifetime doctest, strict crate-local all-target Clippy,
+  warning-denied rustdoc, formatting, and independent adversarial review.
+  Publisher enable/fsync/no-replace/catalog transactions, successful VM
+  fs-verity exercise, mapped-byte reservation pins, worker composition,
+  quarantine recovery, and FUSE lifecycle remain open.
 
 The post-`727da7f3e` x86_64 `sandbox-filesystem-capability-proof` rerun built the
 complete hermetic Rust closure, AOS system, initrd, and VM disk and launched
