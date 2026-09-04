@@ -74,7 +74,7 @@ pub enum MethodClass {
     DataPlaneWrite,
     /// A fenced observation reported by an internal controller.
     ControllerObservation,
-    /// Cancellation or retry of an existing operation.
+    /// Cancellation, retry, or resumption of an existing reviewed workflow.
     OperationLifecycle,
     /// Explicit CAS/idempotency replay of one frozen maintenance action.
     MaintenanceReplay,
@@ -317,12 +317,12 @@ pub fn validate_method_manifest(methods: &[MethodDescriptor]) -> Vec<ManifestVio
                     "operation lifecycle methods mutate operation state",
                     &mut violations,
                 );
-                if method.service != "OperationService"
-                    || !matches!(method.method.as_str(), "CancelOperation" | "RetryOperation")
-                {
+                if !matches!(path.as_str(),
+                    "OperationService/CancelOperation" | "OperationService/RetryOperation"
+                        | "DeliveryService/ResumeDeliveryDestination") {
                     violations.push(violation(
                         method,
-                        "operation-lifecycle exception is limited to cancel and retry",
+                        "operation-lifecycle exception is limited to cancel, retry, and reviewed delivery resume",
                     ));
                 }
             }
@@ -489,6 +489,16 @@ pub fn validate_complete_method_manifest(
                     method,
                     "maintenance replay must bind the exact registry, run, action, CAS, and idempotency key",
                 ));
+            }
+        }
+        if method.path() == "DeliveryService/ResumeDeliveryDestination" {
+            let mut fields = descriptor.request_fields.clone();
+            fields.sort();
+            if !fields.iter().map(String::as_str).eq([
+                "expected_resource_version", "idempotency_key", "workflow_id",
+            ]) {
+                violations.push(violation(method,
+                    "delivery resume must bind a reviewed workflow, CAS, and idempotency key"));
             }
         }
         if matches!(method.class, MethodClass::Plan { .. })

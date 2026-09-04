@@ -4542,6 +4542,8 @@ message DeliveryDestinationIntent {
 message PlanDeliveryDestinationRequest {
   DeliveryDestinationIntent intent = 1;
   string idempotency_key = 2;
+  // Creation requires this to be empty; activation has its own reviewed CAS.
+  string expected_resource_version = 3;
 }
 message ApplyDeliveryDestinationRequest {
   string plan_id = 1;
@@ -4570,6 +4572,8 @@ message DeliveryWorkflowStep {
   string state = 3;
   string detail = 4;
   string resource_id = 5;
+  // Durable provider or verification work associated with this step.
+  OperationRef operation = 6;
 }
 message DeliveryWorkflow {
   string workflow_id = 1;

@@ -128,6 +128,11 @@ pub struct HubAccessPolicyArgs {
 
 #[derive(Subcommand)]
 pub enum HubCmd {
+    /// Set up, verify, and activate a delivery destination.
+    Delivery {
+        #[command(subcommand)]
+        command: super::HubDeliveryCmd,
+    },
     /// Sign in through browser-approved device authorization
     Login {
         /// Hub base URL (http:// or https://)

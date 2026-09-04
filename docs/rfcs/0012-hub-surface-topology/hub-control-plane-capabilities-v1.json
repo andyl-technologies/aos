@@ -112,14 +112,14 @@
     {
       "service": "DeliveryService",
       "audience": "end-user",
-      "cli_families": ["endpoint", "gateway"],
-      "web_workflows": ["endpoints", "gateways"],
+      "cli_families": ["endpoint", "gateway", "delivery"],
+      "web_workflows": ["endpoints", "gateways", "routes"],
       "web_method_exceptions": [
         {"method": "GetEndpoint", "reason": "ListEndpoints returns the complete endpoint model rendered by the editor."},
         {"method": "GetEndpointGeneration", "reason": "ListEndpointGenerations returns the complete immutable generation rows rendered by the editor."},
         {"method": "GetGateway", "reason": "ListGateways returns the complete gateway model rendered by the editor."}
       ],
-      "methods": ["ListEndpoints", "GetEndpoint", "PlanCreateEndpoint", "CreateEndpoint", "ListEndpointGenerations", "GetEndpointGeneration", "PlanStageEndpointGeneration", "StageEndpointGeneration", "PlanActivateEndpointGeneration", "ActivateEndpointGeneration", "PlanGrantEndpointScope", "GrantEndpointScope", "PlanRevokeEndpointScope", "RevokeEndpointScope", "PlanDeleteEndpoint", "DeleteEndpoint", "ListGateways", "GetGateway", "PlanCreateGateway", "CreateGateway", "PlanUpdateGateway", "UpdateGateway", "PlanGrantGatewayScope", "GrantGatewayScope", "PlanRevokeGatewayScope", "RevokeGatewayScope", "PreviewGatewayRoutes", "PlanEnableGateway", "EnableGateway", "PlanDisableGateway", "DisableGateway", "PlanDeleteGateway", "DeleteGateway"]
+      "methods": ["PlanDeliveryDestination", "ApplyDeliveryDestination", "GetDeliveryWorkflow", "ListDeliveryWorkflows", "ResumeDeliveryDestination", "PlanActivateDeliveryDestination", "ActivateDeliveryDestination", "ListEndpoints", "GetEndpoint", "PlanCreateEndpoint", "CreateEndpoint", "ListEndpointGenerations", "GetEndpointGeneration", "PlanStageEndpointGeneration", "StageEndpointGeneration", "PlanActivateEndpointGeneration", "ActivateEndpointGeneration", "PlanGrantEndpointScope", "GrantEndpointScope", "PlanRevokeEndpointScope", "RevokeEndpointScope", "PlanDeleteEndpoint", "DeleteEndpoint", "ListGateways", "GetGateway", "PlanCreateGateway", "CreateGateway", "PlanUpdateGateway", "UpdateGateway", "PlanGrantGatewayScope", "GrantGatewayScope", "PlanRevokeGatewayScope", "RevokeGatewayScope", "PreviewGatewayRoutes", "PlanEnableGateway", "EnableGateway", "PlanDisableGateway", "DisableGateway", "PlanDeleteGateway", "DeleteGateway"]
     },
     {
       "service": "RouteService",

@@ -8,6 +8,8 @@
 //! desired-state writes use optimistic concurrency and are plan-only until a
 //! reviewed plan id and confirmation hash are supplied.
 
+mod delivery_workflow;
+
 use anyhow::{Context as _, Result};
 use futures_util::stream::{self, StreamExt as _, TryStreamExt as _};
 
@@ -946,6 +948,7 @@ pub async fn run(printer: &Printer, command: &HubCmd) -> Result<()> {
             .await
         }
         HubCmd::AccessToken { command } => access_token(printer, command).await,
+        HubCmd::Delivery { command } => delivery_workflow::run(printer, command).await,
         HubCmd::Topology { command } => match command {
             HubTopologyCmd::Cutover { command } => match command {
                 HubTopologyCutoverCmd::MaterializeVerifier(args) => {
