@@ -277,6 +277,7 @@ in {
                     --root-email fleet-root@example.test --root-password-stdin
               install -d -o aos-hub -g aos-hub -m 0750 /var/lib/aos-hub/storage/andyl
               systemctl start aos-hub.service
+              systemctl restart release-fleet-tls.service
           """), timeout=180)
           machine.wait_until_succeeds(f"{CURL} -fsS {url}/healthz", timeout=120)
           return machine.succeed(textwrap.dedent(f"""
