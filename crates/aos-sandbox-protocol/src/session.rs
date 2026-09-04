@@ -897,7 +897,7 @@ fn encode_response_envelope(
     if !(MINIMUM_RESPONSE_BYTES..=MAXIMUM_RESPONSE_BYTES).contains(&maximum_bytes) {
         return Err(ProtocolValidationError::InvalidResponseBound);
     }
-    if body.is_empty() == error.is_none() {
+    if !valid_response_body_shape(request.method, body.is_empty(), error.is_some()) {
         return Err(ProtocolValidationError::InvalidField(
             "response body/error shape",
         ));
@@ -996,7 +996,11 @@ pub fn decode_response_envelope(
     if &request_id != expected_request_id || envelope.method.as_known() != Some(expected_method) {
         return Err(ProtocolValidationError::MethodMismatch);
     }
-    if envelope.body.is_empty() == envelope.error.as_option().is_none() {
+    if !valid_response_body_shape(
+        expected_method,
+        envelope.body.is_empty(),
+        envelope.error.as_option().is_some(),
+    ) {
         return Err(ProtocolValidationError::InvalidField(
             "response body/error shape",
         ));
@@ -1019,6 +1023,20 @@ pub fn decode_response_envelope(
         request_descriptor_dispositions,
         error,
     })
+}
+
+fn valid_response_body_shape(
+    method: BrokerMethod,
+    body_is_empty: bool,
+    error_is_present: bool,
+) -> bool {
+    if error_is_present {
+        body_is_empty
+    } else if method == BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME {
+        true
+    } else {
+        !body_is_empty
+    }
 }
 
 fn validate_failed_server_hello(hello: &BrokerServerHello) -> Result<(), ProtocolValidationError> {
@@ -1899,6 +1917,47 @@ mod tests {
     }
 
     #[test]
+    fn current_host_observation_methods_reject_authorization_carriers() {
+        let features = [feature(SIGNED_PLAN_LEASE_FEATURE_NAMESPACE)];
+        let methods = [
+            BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME,
+            BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
+        ];
+        let hello = BrokerClientHello {
+            protocol_major: 1,
+            protocol_minor: 1,
+            audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+            maximum_response_bytes: 8_192,
+            required_methods: methods.iter().copied().map(Into::into).collect(),
+            ..Default::default()
+        };
+        let session = negotiate_client_hello(
+            &hello.encode_to_vec(),
+            peer(),
+            policy(),
+            ProtocolId::HostBroker,
+            &features,
+            &methods,
+        )
+        .unwrap_or_else(|error| panic!("valid host observation hello failed: {error}"));
+
+        for method in methods {
+            let smuggled = BrokerRequestEnvelope {
+                method: method.into(),
+                body: vec![1],
+                authorization: Some(authorization_artifacts()).into(),
+                ..Default::default()
+            };
+            assert_eq!(
+                session.decode_request(&smuggled.encode_to_vec(), 0),
+                Err(ProtocolValidationError::InvalidField(
+                    "envelope.authorization profile"
+                ))
+            );
+        }
+    }
+
+    #[test]
     fn inventory_only_negotiation_cannot_smuggle_a_later_effect() {
         let features = [feature("aos.sandbox.enforcement.broker-ledger")];
         let methods = [
@@ -2154,6 +2213,54 @@ mod tests {
         .unwrap_or_else(|failure| panic!("valid failed hello failed: {failure}"));
         validate_failed_server_hello(&error)
             .unwrap_or_else(|failure| panic!("failed hello shape failed: {failure}"));
+    }
+
+    #[test]
+    fn empty_success_body_is_canonical_only_for_host_inventory() {
+        let request_id = [9; 16];
+        let inventory = decode_request_envelope(
+            &BrokerRequestEnvelope {
+                method: BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME.into(),
+                body: vec![1],
+                ..Default::default()
+            }
+            .encode_to_vec(),
+            ProtocolId::HostBroker,
+            0,
+        )
+        .unwrap_or_else(|error| panic!("valid inventory envelope failed: {error}"));
+        let encoded =
+            encode_success_response_envelope(&request_id, &inventory, Vec::new(), &[], &[], 4_096)
+                .unwrap_or_else(|error| panic!("empty inventory response failed: {error}"));
+        let decoded = decode_response_envelope(
+            &encoded,
+            &request_id,
+            BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
+            &[],
+            0,
+            4_096,
+            4_096,
+        )
+        .unwrap_or_else(|error| panic!("empty inventory response did not decode: {error}"));
+        assert!(decoded.body().is_empty());
+
+        let observe = decode_request_envelope(
+            &BrokerRequestEnvelope {
+                method: BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME.into(),
+                body: vec![1],
+                ..Default::default()
+            }
+            .encode_to_vec(),
+            ProtocolId::HostBroker,
+            0,
+        )
+        .unwrap_or_else(|error| panic!("valid observe envelope failed: {error}"));
+        assert_eq!(
+            encode_success_response_envelope(&request_id, &observe, Vec::new(), &[], &[], 4_096,),
+            Err(ProtocolValidationError::InvalidField(
+                "response body/error shape"
+            ))
+        );
     }
 
     #[test]

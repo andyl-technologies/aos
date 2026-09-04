@@ -24,6 +24,7 @@ pub mod activation;
 pub mod authorization;
 pub mod broker;
 pub mod catalog;
+mod observation;
 pub mod peer;
 pub mod plan;
 pub mod service;
@@ -42,6 +43,12 @@ pub enum HostError {
     /// The trusted catalog could not resolve an exact opaque handle tuple.
     #[error("host catalog rejected launch: {0}")]
     Catalog(String),
+    /// An opaque runtime handle or exact durable assignment is unknown.
+    #[error("host runtime handle is unavailable")]
+    UnknownHandle,
+    /// A complete bounded response cannot represent current durable state.
+    #[error("host runtime inventory exceeds its fixed bound")]
+    ResourceExhausted,
     /// A resolved launch plan violates the fixed backend profile.
     #[error("invalid resolved host launch plan: {0}")]
     InvalidPlan(String),

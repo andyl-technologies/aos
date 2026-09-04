@@ -140,13 +140,31 @@ pub fn canonical_host_semantics_v1(
 pub fn runtime_resource_handle(
     request: &ValidatedRuntimeRequest,
 ) -> Result<BrokerResourceHandle, HostSemanticError> {
+    let digest = runtime_handle_v1(
+        request.fence().incarnation_id(),
+        request.fence().assignment_epoch(),
+        request.fence().assignment_digest(),
+    );
+    BrokerResourceHandle::from_bytes(digest).map_err(|_| HostSemanticError::InvalidTarget)
+}
+
+/// Derives the opaque runtime handle from portable assignment identity.
+///
+/// Desired generation is intentionally absent: generations reconcile the same
+/// runtime resource within an assignment. Callers pair the handle with its
+/// exact assignment fence, which includes the sandbox identity.
+#[must_use]
+pub fn runtime_handle_v1(
+    incarnation_id: &[u8; 16],
+    assignment_epoch: u64,
+    assignment_digest: &[u8; 32],
+) -> [u8; 32] {
     let mut digest = Sha256::new();
     digest.update(RUNTIME_HANDLE_DOMAIN);
-    digest.update(request.fence().incarnation_id());
-    digest.update(request.fence().assignment_epoch().to_le_bytes());
-    digest.update(request.fence().assignment_digest());
-    BrokerResourceHandle::from_bytes(digest.finalize().into())
-        .map_err(|_| HostSemanticError::InvalidTarget)
+    digest.update(incarnation_id);
+    digest.update(assignment_epoch.to_le_bytes());
+    digest.update(assignment_digest);
+    digest.finalize().into()
 }
 
 fn action_semantics(

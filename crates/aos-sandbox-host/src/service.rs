@@ -19,6 +19,7 @@ use rustix::time::{ClockId, clock_gettime};
 
 use crate::KERNEL_CLOCK_PROVENANCE;
 use crate::broker::HostBroker;
+use crate::observation::{decode_inventory_runtime_request, decode_observe_runtime_request};
 use crate::peer::ControllerPeerVerifier;
 use crate::plan::HostCatalog;
 use crate::state::HostStateStore;
@@ -132,49 +133,91 @@ where
         if validate_request_descriptor_roles(&request, &[]).is_err() {
             return Ok(ConnectionOutcome::RequestRejected);
         }
-        let Some(artifacts) = request.authorization() else {
-            return Ok(ConnectionOutcome::RequestRejected);
-        };
-
-        // The broker applies the live deadline to new and pending effects. This
-        // first pass binds the session header and permits an exact authenticated
-        // Complete receipt to remain recoverable after its effect deadline.
-        let Ok(validated) =
-            decode_runtime_request(request.body(), peer.credentials(), self.peer_policy, 0)
-        else {
-            return Ok(ConnectionOutcome::RequestRejected);
-        };
-        if session.validate_header(validated.header()).is_err() {
+        if !valid_service_authorization_profile(request.method(), request.authorization().is_some())
+        {
             return Ok(ConnectionOutcome::RequestRejected);
         }
-        let request_id = *validated.header().request_id();
-        let response_ceiling = validated.header().maximum_response_bytes();
-
-        match self
-            .broker
-            .apply_runtime(
-                request.body(),
-                artifacts,
-                session.version(),
-                peer.credentials(),
-                self.peer_policy,
-                trusted_paired_clock_sample,
-            )
-            .await
-        {
-            Ok(body) => {
-                let Ok(response) = encode_success_response_envelope(
-                    &request_id,
-                    &request,
-                    body,
-                    &[],
-                    &[],
-                    response_ceiling,
+        let dispatch = match request.method() {
+            BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME => {
+                let Some(artifacts) = request.authorization() else {
+                    return Ok(ConnectionOutcome::RequestRejected);
+                };
+                // The broker applies the live deadline to new and pending
+                // effects. This pass permits exact completed-receipt recovery.
+                let Ok(validated) =
+                    decode_runtime_request(request.body(), peer.credentials(), self.peer_policy, 0)
+                else {
+                    return Ok(ConnectionOutcome::RequestRejected);
+                };
+                if session.validate_header(validated.header()).is_err() {
+                    return Ok(ConnectionOutcome::RequestRejected);
+                }
+                let request_id = *validated.header().request_id();
+                let ceiling = validated.header().maximum_response_bytes();
+                let result = self
+                    .broker
+                    .apply_runtime(
+                        request.body(),
+                        artifacts,
+                        session.version(),
+                        peer.credentials(),
+                        self.peer_policy,
+                        trusted_paired_clock_sample,
+                    )
+                    .await;
+                (request_id, ceiling, result)
+            }
+            BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME => {
+                let now = trusted_paired_clock_sample()?.boottime_nanoseconds();
+                let Ok(validated) = decode_observe_runtime_request(
+                    request.body(),
+                    peer.credentials(),
+                    self.peer_policy,
+                    now,
                 ) else {
+                    return Ok(ConnectionOutcome::RequestRejected);
+                };
+                if session.validate_header(&validated.header).is_err() {
+                    return Ok(ConnectionOutcome::RequestRejected);
+                }
+                let request_id = *validated.header.request_id();
+                let ceiling = validated.header.maximum_response_bytes();
+                let result = self
+                    .broker
+                    .observe_runtime(validated.identity, validated.runtime_handle, ceiling)
+                    .await;
+                (request_id, ceiling, result)
+            }
+            BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME => {
+                let now = trusted_paired_clock_sample()?.boottime_nanoseconds();
+                let Ok(header) = decode_inventory_runtime_request(
+                    request.body(),
+                    peer.credentials(),
+                    self.peer_policy,
+                    now,
+                ) else {
+                    return Ok(ConnectionOutcome::RequestRejected);
+                };
+                if session.validate_header(&header).is_err() {
+                    return Ok(ConnectionOutcome::RequestRejected);
+                }
+                let request_id = *header.request_id();
+                let ceiling = header.maximum_response_bytes();
+                let result = self.broker.inventory_runtime(ceiling).await;
+                (request_id, ceiling, result)
+            }
+            _ => return Ok(ConnectionOutcome::RequestRejected),
+        };
+        let (request_id, response_ceiling, result) = dispatch;
+        match result {
+            Ok(body) => {
+                let Ok((response, outcome)) =
+                    encode_method_success(&request_id, &request, body, response_ceiling)
+                else {
                     return Ok(ConnectionOutcome::TransportRejected);
                 };
                 match connection.send(&response) {
-                    Ok(()) => Ok(ConnectionOutcome::Served),
+                    Ok(()) => Ok(outcome),
                     Err(_) => Ok(ConnectionOutcome::TransportRejected),
                 }
             }
@@ -194,12 +237,39 @@ where
 }
 
 fn advertised_methods(launch_available: bool) -> Vec<BrokerMethod> {
-    // Observation and inventory have protocol tags but no host dispatcher yet.
-    // Do not advertise them until their non-authorizing implementations exist.
-    launch_available
-        .then_some(BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME)
-        .into_iter()
-        .collect()
+    let mut methods = Vec::with_capacity(3);
+    if launch_available {
+        methods.push(BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME);
+    }
+    methods.push(BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME);
+    methods.push(BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME);
+    methods
+}
+
+fn valid_service_authorization_profile(method: BrokerMethod, has_authorization: bool) -> bool {
+    (method == BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME) == has_authorization
+}
+
+fn encode_method_success(
+    request_id: &[u8; 16],
+    request: &aos_sandbox_protocol::ValidatedBrokerRequestEnvelope,
+    body: Vec<u8>,
+    maximum_bytes: u32,
+) -> std::result::Result<(Vec<u8>, ConnectionOutcome), ProtocolValidationError> {
+    match encode_success_response_envelope(request_id, request, body, &[], &[], maximum_bytes) {
+        Ok(response) => Ok((response, ConnectionOutcome::Served)),
+        Err(
+            ProtocolValidationError::ResponseTooLarge
+            | ProtocolValidationError::InvalidResponseBound,
+        ) => encode_method_error(
+            request_id,
+            request,
+            &HostError::ResourceExhausted,
+            maximum_bytes,
+        )
+        .map(|response| (response, ConnectionOutcome::RequestRejected)),
+        Err(error) => Err(error),
+    }
 }
 
 fn signed_plan_lease_feature() -> Result<FeatureRef> {
@@ -290,7 +360,7 @@ fn classify_error(error: &HostError) -> (BrokerErrorCode, &'static str, bool) {
             "request is invalid",
             false,
         ),
-        HostError::Catalog(_) => (
+        HostError::Catalog(_) | HostError::UnknownHandle => (
             BrokerErrorCode::BROKER_ERROR_CODE_UNKNOWN_HANDLE,
             "resource handle is unavailable",
             true,
@@ -305,6 +375,11 @@ fn classify_error(error: &HostError) -> (BrokerErrorCode, &'static str, bool) {
             "durable broker state is unavailable",
             false,
         ),
+        HostError::ResourceExhausted => (
+            BrokerErrorCode::BROKER_ERROR_CODE_RESOURCE_EXHAUSTED,
+            "complete runtime inventory exceeds response bounds",
+            true,
+        ),
         HostError::Worker(_) => (
             BrokerErrorCode::BROKER_ERROR_CODE_BACKEND_FAILURE,
             "runtime backend operation failed",
@@ -317,7 +392,7 @@ fn classify_error(error: &HostError) -> (BrokerErrorCode, &'static str, bool) {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use aos_proto::aos::sandbox::local::v1::BrokerRequestEnvelope;
+    use aos_proto::aos::sandbox::local::v1::{BrokerClientHello, BrokerRequestEnvelope};
     use aos_sandbox_protocol::{decode_request_envelope, decode_response_envelope};
 
     use super::*;
@@ -376,10 +451,125 @@ mod tests {
 
     #[test]
     fn launch_method_is_not_advertised_without_readiness() {
-        assert!(advertised_methods(false).is_empty());
+        assert_eq!(
+            advertised_methods(false),
+            [
+                BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME,
+                BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
+            ]
+        );
         assert_eq!(
             advertised_methods(true),
-            [BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME]
+            [
+                BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
+                BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME,
+                BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
+            ]
         );
+    }
+
+    #[test]
+    fn legacy_session_negotiates_both_non_authorizing_host_methods() {
+        let peer = aos_sandbox_protocol::PeerCredentials {
+            uid: 100,
+            gid: 200,
+            pid: Some(300),
+        };
+        let policy = PeerPolicy {
+            uid: 100,
+            gid: Some(200),
+            audience: Audience::AUDIENCE_NODE_CONTROLLER,
+        };
+        let hello = BrokerClientHello {
+            protocol_major: 1,
+            protocol_minor: 0,
+            audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+            maximum_response_bytes: 4_096,
+            required_methods: vec![
+                BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME.into(),
+                BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME.into(),
+            ],
+            ..Default::default()
+        };
+        let session = negotiate_client_hello(
+            &hello.encode_to_vec(),
+            peer,
+            policy,
+            ProtocolId::HostBroker,
+            &[signed_plan_lease_feature().unwrap()],
+            &advertised_methods(false),
+        )
+        .unwrap();
+        assert_eq!(
+            session.version(),
+            aos_sandbox_core::ProtocolVersion::new(1, 0)
+        );
+        for method in [
+            BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME,
+            BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
+        ] {
+            let request = BrokerRequestEnvelope {
+                method: method.into(),
+                body: vec![1],
+                ..Default::default()
+            };
+            assert!(session.decode_request(&request.encode_to_vec(), 0).is_ok());
+        }
+    }
+
+    #[test]
+    fn service_rejects_carriers_on_both_observation_methods() {
+        for method in [
+            BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME,
+            BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
+        ] {
+            assert!(valid_service_authorization_profile(method, false));
+            assert!(!valid_service_authorization_profile(method, true));
+        }
+        assert!(valid_service_authorization_profile(
+            BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
+            true,
+        ));
+        assert!(!valid_service_authorization_profile(
+            BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
+            false,
+        ));
+    }
+
+    #[test]
+    fn envelope_overhead_becomes_a_typed_bounded_error() {
+        let request = decode_request_envelope(
+            &BrokerRequestEnvelope {
+                method: BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME.into(),
+                body: vec![1],
+                ..Default::default()
+            }
+            .encode_to_vec(),
+            ProtocolId::HostBroker,
+            0,
+        )
+        .unwrap();
+        let request_id = [9; 16];
+
+        let (encoded, outcome) =
+            encode_method_success(&request_id, &request, vec![1; 4_090], 4_096).unwrap();
+
+        assert_eq!(outcome, ConnectionOutcome::RequestRejected);
+        assert!(encoded.len() <= 4_096);
+        let decoded = decode_response_envelope(
+            &encoded,
+            &request_id,
+            BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
+            request.descriptors(),
+            0,
+            4_096,
+            4_096,
+        )
+        .unwrap();
+        assert_eq!(
+            decoded.error().unwrap().code(),
+            BrokerErrorCode::BROKER_ERROR_CODE_RESOURCE_EXHAUSTED
+        );
+        assert!(decoded.body().is_empty());
     }
 }

@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use aos_proto::aos::sandbox::local::v1::{
-    AssignmentFence, RuntimeAction, RuntimeObservation, RuntimeState,
+    AssignmentFence, InventoryRuntimeResponse, RuntimeAction, RuntimeObservation, RuntimeState,
 };
 use aos_sandbox_broker::{BrokerAuthorizationFenceV1, BrokerEffectIntentV2, BrokerEffectStatusV2};
 use aos_sandbox_core::{ProtocolVersion, RawPairedClockSample};
@@ -17,10 +17,16 @@ use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
 use crate::authorization::HostAuthorityV1;
+use crate::authorization::semantics_v1::runtime_handle_v1;
 use crate::plan::{HostCatalog, NspawnConfig, ResolvedLaunchResources};
 use crate::state::{Admission, HostState, HostStateStore};
-use crate::worker::{HostWorker, ObservedRuntimeState, WorkerObservation, WorkerOperation};
+use crate::worker::{
+    HostRuntimeIdentity, HostWorker, ObservedRuntimeState, PinnedLeader, WorkerObservation,
+    WorkerOperation,
+};
 use crate::{HostError, Result};
+
+const MAXIMUM_INVENTORY_RUNTIMES: usize = 1_024;
 
 /// Applies validated runtime requests through durable fixed-function effects.
 pub struct HostBroker<C, S, W> {
@@ -230,6 +236,69 @@ where
         self.leaders.get(handle)
     }
 
+    pub(crate) async fn observe_runtime(
+        &mut self,
+        identity: HostRuntimeIdentity,
+        supplied_handle: [u8; 32],
+        maximum_response_bytes: u32,
+    ) -> Result<Vec<u8>> {
+        if runtime_handle(&identity) != supplied_handle || !self.state.contains_runtime(&identity) {
+            return Err(HostError::UnknownHandle);
+        }
+        let observation = self.worker.observe(&identity).await?;
+        let mut proposed = self.state.clone();
+        let sequence = proposed.next_observation_sequence(*identity.incarnation_id())?;
+        let (response, leader) = project_observation(&identity, sequence, observation);
+        let bytes = response.encode_to_vec();
+        ensure_response_bound(&bytes, maximum_response_bytes)?;
+
+        self.store.commit(&proposed)?;
+        self.state = proposed;
+        self.retain_leader(leader);
+        Ok(bytes)
+    }
+
+    pub(crate) async fn inventory_runtime(
+        &mut self,
+        maximum_response_bytes: u32,
+    ) -> Result<Vec<u8>> {
+        let identities = self.state.runtime_inventory();
+        if identities.len() > MAXIMUM_INVENTORY_RUNTIMES {
+            return Err(HostError::ResourceExhausted);
+        }
+        let mut identities = identities
+            .into_iter()
+            .map(|identity| (runtime_handle(&identity), identity))
+            .collect::<Vec<_>>();
+        identities.sort_unstable();
+
+        let mut proposed = self.state.clone();
+        let mut runtimes = Vec::with_capacity(identities.len());
+        let mut leaders = Vec::new();
+        for (_, identity) in identities {
+            let observation = self.worker.observe(&identity).await?;
+            let sequence = proposed.next_observation_sequence(*identity.incarnation_id())?;
+            let (runtime, leader) = project_observation(&identity, sequence, observation);
+            runtimes.push(runtime);
+            if let Some(leader) = leader {
+                leaders.push(leader);
+            }
+        }
+        let bytes = InventoryRuntimeResponse {
+            runtimes,
+            ..Default::default()
+        }
+        .encode_to_vec();
+        ensure_response_bound(&bytes, maximum_response_bytes)?;
+
+        self.store.commit(&proposed)?;
+        self.state = proposed;
+        for leader in leaders {
+            self.retain_leader(Some(leader));
+        }
+        Ok(bytes)
+    }
+
     fn compile_operation(&self, request: &ValidatedRuntimeRequest) -> Result<WorkerOperation> {
         Ok(match request.action() {
             RuntimeAction::RUNTIME_ACTION_LAUNCH => {
@@ -265,27 +334,10 @@ where
         sequence: u64,
         observation: WorkerObservation,
     ) -> Result<Vec<u8>> {
-        let mut response = RuntimeObservation {
-            runtime_handle: runtime_handle(fence).to_vec(),
-            fence: Some(AssignmentFence {
-                sandbox_id: fence.sandbox_id().to_vec(),
-                incarnation_id: fence.incarnation_id().to_vec(),
-                assignment_epoch: fence.assignment_epoch(),
-                desired_generation: fence.desired_generation(),
-                assignment_digest: fence.assignment_digest().to_vec(),
-                ..Default::default()
-            })
-            .into(),
-            state: protocol_state(observation.state).into(),
-            observation_sequence: sequence,
-            ..Default::default()
-        };
-        if let Some(leader) = observation.leader {
-            let (handle, pidfd) = leader.into_parts();
-            response.leader_handle = handle.to_vec();
-            self.leaders.insert(handle, pidfd);
-        }
+        let identity = HostRuntimeIdentity::from(fence);
+        let (response, leader) = project_observation(&identity, sequence, observation);
         let bytes = response.encode_to_vec();
+        self.retain_leader(leader);
         if bytes.is_empty() {
             return Err(HostError::State(
                 "runtime observation encoded to an empty receipt".to_owned(),
@@ -293,6 +345,48 @@ where
         }
         Ok(bytes)
     }
+
+    fn retain_leader(&mut self, leader: Option<PinnedLeader>) {
+        if let Some(leader) = leader {
+            let (handle, pidfd) = leader.into_parts();
+            self.leaders.insert(handle, pidfd);
+        }
+    }
+}
+
+fn project_observation(
+    identity: &HostRuntimeIdentity,
+    sequence: u64,
+    observation: WorkerObservation,
+) -> (RuntimeObservation, Option<PinnedLeader>) {
+    let mut response = RuntimeObservation {
+        runtime_handle: runtime_handle(identity).to_vec(),
+        fence: Some(AssignmentFence {
+            sandbox_id: identity.sandbox_id().to_vec(),
+            incarnation_id: identity.incarnation_id().to_vec(),
+            assignment_epoch: identity.assignment_epoch(),
+            desired_generation: identity.desired_generation(),
+            assignment_digest: identity.assignment_digest().to_vec(),
+            ..Default::default()
+        })
+        .into(),
+        state: protocol_state(observation.state).into(),
+        observation_sequence: sequence,
+        ..Default::default()
+    };
+    if let Some(leader) = &observation.leader {
+        response.leader_handle = leader.handle().to_vec();
+    }
+    (response, observation.leader)
+}
+
+fn ensure_response_bound(bytes: &[u8], maximum_response_bytes: u32) -> Result<()> {
+    let maximum = usize::try_from(maximum_response_bytes)
+        .map_err(|_| HostError::State("response limit does not fit usize".to_owned()))?;
+    if bytes.len() > maximum {
+        return Err(HostError::ResourceExhausted);
+    }
+    Ok(())
 }
 
 fn validate_effect_request(effect: &BrokerEffectIntentV2, request_digest: [u8; 32]) -> Result<()> {
@@ -360,13 +454,12 @@ fn protocol_state(state: ObservedRuntimeState) -> RuntimeState {
     }
 }
 
-fn runtime_handle(fence: &ValidatedAssignmentFence) -> [u8; 32] {
-    let mut digest = Sha256::new();
-    digest.update(b"aos.sandbox.host.runtime.v1\0");
-    digest.update(fence.incarnation_id());
-    digest.update(fence.assignment_epoch().to_le_bytes());
-    digest.update(fence.assignment_digest());
-    digest.finalize().into()
+fn runtime_handle(identity: &HostRuntimeIdentity) -> [u8; 32] {
+    runtime_handle_v1(
+        identity.incarnation_id(),
+        identity.assignment_epoch(),
+        identity.assignment_digest(),
+    )
 }
 
 #[cfg(test)]
@@ -455,13 +548,15 @@ mod tests {
     struct FakeWorker {
         calls: Arc<AtomicUsize>,
         fail_next: Arc<AtomicBool>,
+        observe_calls: Arc<Mutex<Vec<[u8; 16]>>>,
+        fail_observe_at: Arc<AtomicUsize>,
     }
 
     #[async_trait]
     impl HostWorker for FakeWorker {
         async fn execute(
             &self,
-            _fence: &ValidatedAssignmentFence,
+            fence: &ValidatedAssignmentFence,
             operation: WorkerOperation,
             before_effect: &mut (dyn FnMut() -> Result<()> + Send),
         ) -> Result<WorkerObservation> {
@@ -472,26 +567,32 @@ mod tests {
                 spec.executable(),
                 "/nix/store/aos-systemd/bin/systemd-nspawn"
             );
-            assert_eq!(
-                spec.arguments(),
-                [
-                    "--boot",
-                    "--quiet",
-                    "--keep-unit",
-                    "--register=no",
-                    "--settings=no",
-                    "--machine=aos-03030303030303030303030303030303",
-                    "--directory=/run/aos/sandbox-pins/workspaces/test-root",
-                    "--private-users=65536:65536",
-                    "--private-users-ownership=map",
-                    "--notify-ready=yes",
-                    "--selinux-context=system_u:system_r:aos_sandbox_payload_t:s0",
-                    "--no-new-privileges=yes",
-                    "--drop-capability=CAP_AUDIT_CONTROL,CAP_AUDIT_READ,CAP_AUDIT_WRITE,CAP_BLOCK_SUSPEND,CAP_BPF,CAP_CHECKPOINT_RESTORE,CAP_DAC_READ_SEARCH,CAP_IPC_LOCK,CAP_IPC_OWNER,CAP_LEASE,CAP_LINUX_IMMUTABLE,CAP_MAC_ADMIN,CAP_MAC_OVERRIDE,CAP_MKNOD,CAP_NET_ADMIN,CAP_NET_BROADCAST,CAP_NET_RAW,CAP_PERFMON,CAP_SYSLOG,CAP_SYS_ADMIN,CAP_SYS_BOOT,CAP_SYS_CHROOT,CAP_SYS_MODULE,CAP_SYS_NICE,CAP_SYS_PACCT,CAP_SYS_PTRACE,CAP_SYS_RAWIO,CAP_SYS_RESOURCE,CAP_SYS_TIME,CAP_SYS_TTY_CONFIG,CAP_WAKE_ALARM",
-                    "--system-call-filter=~@mount @module @raw-io @reboot bpf perf_event_open ptrace setns unshare",
-                    "--aos-payload-seccomp-profile=aos-sandbox-payload-v1",
-                ]
+            let expected_machine = format!(
+                "--machine=aos-{}",
+                fence
+                    .incarnation_id()
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
             );
+            let expected_arguments = [
+                "--boot",
+                "--quiet",
+                "--keep-unit",
+                "--register=no",
+                "--settings=no",
+                expected_machine.as_str(),
+                "--directory=/run/aos/sandbox-pins/workspaces/test-root",
+                "--private-users=65536:65536",
+                "--private-users-ownership=map",
+                "--notify-ready=yes",
+                "--selinux-context=system_u:system_r:aos_sandbox_payload_t:s0",
+                "--no-new-privileges=yes",
+                "--drop-capability=CAP_AUDIT_CONTROL,CAP_AUDIT_READ,CAP_AUDIT_WRITE,CAP_BLOCK_SUSPEND,CAP_BPF,CAP_CHECKPOINT_RESTORE,CAP_DAC_READ_SEARCH,CAP_IPC_LOCK,CAP_IPC_OWNER,CAP_LEASE,CAP_LINUX_IMMUTABLE,CAP_MAC_ADMIN,CAP_MAC_OVERRIDE,CAP_MKNOD,CAP_NET_ADMIN,CAP_NET_BROADCAST,CAP_NET_RAW,CAP_PERFMON,CAP_SYSLOG,CAP_SYS_ADMIN,CAP_SYS_BOOT,CAP_SYS_CHROOT,CAP_SYS_MODULE,CAP_SYS_NICE,CAP_SYS_PACCT,CAP_SYS_PTRACE,CAP_SYS_RAWIO,CAP_SYS_RESOURCE,CAP_SYS_TIME,CAP_SYS_TTY_CONFIG,CAP_WAKE_ALARM",
+                "--system-call-filter=~@mount @module @raw-io @reboot bpf perf_event_open ptrace setns unshare",
+                "--aos-payload-seccomp-profile=aos-sandbox-payload-v1",
+            ];
+            assert_eq!(spec.arguments(), expected_arguments);
             assert_eq!(
                 spec.root_directory(),
                 "/run/aos/sandbox-pins/workspaces/test-root"
@@ -512,7 +613,15 @@ mod tests {
             })
         }
 
-        async fn observe(&self, _fence: &ValidatedAssignmentFence) -> Result<WorkerObservation> {
+        async fn observe(&self, identity: &HostRuntimeIdentity) -> Result<WorkerObservation> {
+            let call = {
+                let mut calls = self.observe_calls.lock().unwrap();
+                calls.push(*identity.sandbox_id());
+                calls.len()
+            };
+            if self.fail_observe_at.load(Ordering::SeqCst) == call {
+                return Err(HostError::Worker("injected observation failure".to_owned()));
+            }
             Ok(WorkerObservation {
                 state: ObservedRuntimeState::Ready,
                 invocation_id: Some([9; 16]),
@@ -857,6 +966,13 @@ mod tests {
             .await
     }
 
+    fn runtime_identity(request_bytes: &[u8]) -> HostRuntimeIdentity {
+        let request =
+            decode_runtime_request(request_bytes, peer(), policy(), TEST_BOOTTIME_NANOSECONDS)
+                .unwrap();
+        HostRuntimeIdentity::from(request.fence())
+    }
+
     fn request(request_id: u8, generation: u64, digest: u8) -> Vec<u8> {
         request_with_identity(request_id, generation, digest, 65_536, 65_536)
     }
@@ -896,7 +1012,7 @@ mod tests {
         header.maximum_response_bytes = 4096;
         let fence = request.fence.get_or_insert_default();
         fence.sandbox_id = vec![sandbox_id; 16];
-        fence.incarnation_id = vec![3; 16];
+        fence.incarnation_id = vec![sandbox_id.wrapping_add(1); 16];
         fence.assignment_epoch = 1;
         fence.desired_generation = generation;
         fence.assignment_digest = vec![digest; 32];
@@ -973,6 +1089,107 @@ mod tests {
         .unwrap();
         assert_eq!(apply(&mut reopened, &fixture, &bytes).await.unwrap(), first);
         assert_eq!(reopened_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn observation_requires_the_exact_durable_runtime_handle() {
+        let fixture = AuthorityFixture::new();
+        let worker = FakeWorker::default();
+        let observations = worker.observe_calls.clone();
+        let mut broker = HostBroker::open(
+            FixedCatalog,
+            MemoryStore::default(),
+            worker,
+            Some(nspawn()),
+            fixture.authority(),
+        )
+        .unwrap();
+        let bytes = request(1, 1, 4);
+        apply(&mut broker, &fixture, &bytes).await.unwrap();
+        let identity = runtime_identity(&bytes);
+        let handle = runtime_handle(&identity);
+
+        assert!(matches!(
+            broker.observe_runtime(identity, [99; 32], 4_096).await,
+            Err(HostError::UnknownHandle)
+        ));
+        assert!(observations.lock().unwrap().is_empty());
+        let encoded = broker
+            .observe_runtime(identity, handle, 4_096)
+            .await
+            .unwrap();
+        let observation = RuntimeObservation::decode_from_slice(&encoded).unwrap();
+        assert_eq!(observation.runtime_handle, handle);
+        assert_eq!(observation.observation_sequence, 2);
+        assert_eq!(observations.lock().unwrap().as_slice(), &[[2; 16]]);
+    }
+
+    #[tokio::test]
+    async fn inventory_is_complete_ordered_bounded_and_atomic_on_failure() {
+        let fixture = AuthorityFixture::new();
+        let worker = FakeWorker::default();
+        let store = MemoryStore::default();
+        let mut broker = HostBroker::open(
+            FixedCatalog,
+            store,
+            worker.clone(),
+            Some(nspawn()),
+            fixture.authority(),
+        )
+        .unwrap();
+        let first = request(1, 1, 4);
+        let second = request_with_sandbox(2, 1, 4, 8, 65_536, 65_536);
+        apply(&mut broker, &fixture, &first).await.unwrap();
+        apply(&mut broker, &fixture, &second).await.unwrap();
+
+        worker.fail_observe_at.store(2, Ordering::SeqCst);
+        assert!(matches!(
+            broker.inventory_runtime(4_096).await,
+            Err(HostError::Worker(_))
+        ));
+        worker.fail_observe_at.store(0, Ordering::SeqCst);
+        worker.observe_calls.lock().unwrap().clear();
+
+        let encoded = broker.inventory_runtime(4_096).await.unwrap();
+        let inventory = InventoryRuntimeResponse::decode_from_slice(&encoded).unwrap();
+        assert_eq!(inventory.runtimes.len(), 2);
+        assert!(
+            inventory
+                .runtimes
+                .windows(2)
+                .all(|pair| pair[0].runtime_handle < pair[1].runtime_handle)
+        );
+        assert!(
+            inventory
+                .runtimes
+                .iter()
+                .all(|runtime| runtime.observation_sequence == 2)
+        );
+        assert!(matches!(
+            broker.inventory_runtime(1).await,
+            Err(HostError::ResourceExhausted)
+        ));
+    }
+
+    #[tokio::test]
+    async fn empty_inventory_is_a_complete_empty_protobuf() {
+        let fixture = AuthorityFixture::new();
+        let mut broker = HostBroker::open(
+            FixedCatalog,
+            MemoryStore::default(),
+            FakeWorker::default(),
+            None,
+            fixture.authority(),
+        )
+        .unwrap();
+        let bytes = broker.inventory_runtime(4_096).await.unwrap();
+        assert!(bytes.is_empty());
+        assert!(
+            InventoryRuntimeResponse::decode_from_slice(&bytes)
+                .unwrap()
+                .runtimes
+                .is_empty()
+        );
     }
 
     #[tokio::test]

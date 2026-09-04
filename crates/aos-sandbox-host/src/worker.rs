@@ -15,6 +15,76 @@ use sha2::{Digest as _, Sha256};
 
 use crate::{HostError, Result};
 
+/// Identifies one controller-assigned runtime without host paths or process IDs.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct HostRuntimeIdentity {
+    sandbox_id: [u8; 16],
+    incarnation_id: [u8; 16],
+    assignment_epoch: u64,
+    desired_generation: u64,
+    assignment_digest: [u8; 32],
+}
+
+impl HostRuntimeIdentity {
+    pub(crate) const fn new(
+        sandbox_id: [u8; 16],
+        incarnation_id: [u8; 16],
+        assignment_epoch: u64,
+        desired_generation: u64,
+        assignment_digest: [u8; 32],
+    ) -> Self {
+        Self {
+            sandbox_id,
+            incarnation_id,
+            assignment_epoch,
+            desired_generation,
+            assignment_digest,
+        }
+    }
+
+    /// Returns the logical sandbox identifier.
+    #[must_use]
+    pub const fn sandbox_id(&self) -> &[u8; 16] {
+        &self.sandbox_id
+    }
+
+    /// Returns the assigned runtime incarnation.
+    #[must_use]
+    pub const fn incarnation_id(&self) -> &[u8; 16] {
+        &self.incarnation_id
+    }
+
+    /// Returns the controller assignment epoch.
+    #[must_use]
+    pub const fn assignment_epoch(&self) -> u64 {
+        self.assignment_epoch
+    }
+
+    /// Returns the desired-state generation within the assignment.
+    #[must_use]
+    pub const fn desired_generation(&self) -> u64 {
+        self.desired_generation
+    }
+
+    /// Returns the immutable assignment-semantics digest.
+    #[must_use]
+    pub const fn assignment_digest(&self) -> &[u8; 32] {
+        &self.assignment_digest
+    }
+}
+
+impl From<&ValidatedAssignmentFence> for HostRuntimeIdentity {
+    fn from(fence: &ValidatedAssignmentFence) -> Self {
+        Self::new(
+            *fence.sandbox_id(),
+            *fence.incarnation_id(),
+            fence.assignment_epoch(),
+            fence.desired_generation(),
+            *fence.assignment_digest(),
+        )
+    }
+}
+
 /// Selects one closed host mutation.
 #[derive(Debug)]
 pub enum WorkerOperation {
@@ -109,7 +179,7 @@ pub trait HostWorker {
     /// # Errors
     ///
     /// Returns an error when systemd or descriptor validation fails.
-    async fn observe(&self, fence: &ValidatedAssignmentFence) -> Result<WorkerObservation>;
+    async fn observe(&self, identity: &HostRuntimeIdentity) -> Result<WorkerObservation>;
 }
 
 /// Creates a fresh system-bus connection for every fixed host transaction.
@@ -131,9 +201,9 @@ impl SystemdOneShotWorker {
     async fn observe_with_client(
         &self,
         client: &SystemdClient,
-        fence: &ValidatedAssignmentFence,
+        identity: &HostRuntimeIdentity,
     ) -> Result<WorkerObservation> {
-        let name = SandboxUnitName::from_incarnation(*fence.incarnation_id());
+        let name = SandboxUnitName::from_incarnation(*identity.incarnation_id());
         let Some(observation) = client
             .observe_sandbox_unit(&name)
             .await
@@ -147,7 +217,7 @@ impl SystemdOneShotWorker {
         };
         let state = classify_state(&observation);
         let leader = match observation.supervisor_pid {
-            Some(pid) => Some(self.pin_leader(fence, &observation, pid)?),
+            Some(pid) => Some(self.pin_leader(identity, &observation, pid)?),
             None if matches!(
                 state,
                 ObservedRuntimeState::Starting
@@ -170,7 +240,7 @@ impl SystemdOneShotWorker {
 
     fn pin_leader(
         &self,
-        fence: &ValidatedAssignmentFence,
+        identity: &HostRuntimeIdentity,
         observation: &SandboxUnitObservation,
         pid: NonZeroU32,
     ) -> Result<PinnedLeader> {
@@ -213,7 +283,7 @@ impl SystemdOneShotWorker {
 
         let mut digest = Sha256::new();
         digest.update(b"aos.sandbox.host.leader.v1\0");
-        digest.update(fence.incarnation_id());
+        digest.update(identity.incarnation_id());
         digest.update(invocation_id);
         digest.update(cgroup_id.to_le_bytes());
         digest.update(pid.get().to_le_bytes());
@@ -235,8 +305,9 @@ impl HostWorker for SystemdOneShotWorker {
         let client = SystemdClient::connect()
             .await
             .map_err(|error| worker_error(&error))?;
-        let name = SandboxUnitName::from_incarnation(*fence.incarnation_id());
-        let current = self.observe_with_client(&client, fence).await?;
+        let identity = HostRuntimeIdentity::from(fence);
+        let name = SandboxUnitName::from_incarnation(*identity.incarnation_id());
+        let current = self.observe_with_client(&client, &identity).await?;
         match operation {
             WorkerOperation::Launch(_) if current.state != ObservedRuntimeState::Absent => {
                 return Ok(current);
@@ -292,14 +363,14 @@ impl HostWorker for SystemdOneShotWorker {
                     .map_err(|error| worker_error(&error))?;
             }
         }
-        self.observe_with_client(&client, fence).await
+        self.observe_with_client(&client, &identity).await
     }
 
-    async fn observe(&self, fence: &ValidatedAssignmentFence) -> Result<WorkerObservation> {
+    async fn observe(&self, identity: &HostRuntimeIdentity) -> Result<WorkerObservation> {
         let client = SystemdClient::connect()
             .await
             .map_err(|error| worker_error(&error))?;
-        self.observe_with_client(&client, fence).await
+        self.observe_with_client(&client, identity).await
     }
 }
 

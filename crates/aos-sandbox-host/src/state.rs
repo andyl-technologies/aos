@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use crate::authorization::HostAuthorityV1;
+use crate::worker::HostRuntimeIdentity;
 use crate::{HostError, Result};
 
 const MAGIC: &[u8; 8] = b"AOSHOST\0";
@@ -284,6 +285,19 @@ impl HostState {
             .map(|request| request.effect.as_slice())
     }
 
+    pub(crate) fn contains_runtime(&self, identity: &HostRuntimeIdentity) -> bool {
+        self.fences
+            .get(identity.sandbox_id())
+            .is_some_and(|fence| fence.runtime_identity() == *identity)
+    }
+
+    pub(crate) fn runtime_inventory(&self) -> Vec<HostRuntimeIdentity> {
+        self.fences
+            .values()
+            .map(DurableFence::runtime_identity)
+            .collect()
+    }
+
     #[cfg(test)]
     pub(crate) fn corrupt_effect(&mut self, request_id: &[u8; 16]) {
         if let Some(byte) = self
@@ -459,6 +473,16 @@ fn action_verb(action: u8) -> Option<aos_sandbox_core::BrokerVerb> {
 }
 
 impl DurableFence {
+    fn runtime_identity(&self) -> HostRuntimeIdentity {
+        HostRuntimeIdentity::new(
+            self.sandbox_id,
+            self.incarnation_id,
+            self.assignment_epoch,
+            self.desired_generation,
+            self.assignment_digest,
+        )
+    }
+
     fn from_validated(fence: &ValidatedAssignmentFence, authorization: Vec<u8>) -> Self {
         Self {
             sandbox_id: *fence.sandbox_id(),
