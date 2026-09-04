@@ -30,6 +30,7 @@
 
 mod container;
 mod container_admin;
+mod delivery_workflow;
 mod publication_manifest;
 mod release_publication;
 
@@ -6969,13 +6970,14 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("binding"))?;
-        self.require_cloaked_delivery_scope(
-            auth,
-            &binding.owner_scope_key,
-            Permission::BindingRead,
-            "binding",
-        )
-        .await?;
+        self.require_delivery_scope(auth, &scope, Permission::BindingRead).await?;
+        let binding_grant = self.db.load_consumer_scope_grant(
+            crate::db::GrantResource::Binding { id: binding.id, stable_id: &binding.stable_id },
+            &scope,
+        ).await.map_err(RpcError::internal)?;
+        if !binding_grant.is_some_and(|grant| grant.state == "active") {
+            return Err(RpcError::not_found("active binding consumer grant"));
+        }
         Self::gateway_revision_spec(req.revision.clone(), binding.id)?;
         let idempotency_key = std::mem::take(&mut req.idempotency_key);
         let input = GatewayMutationPlanInput {
