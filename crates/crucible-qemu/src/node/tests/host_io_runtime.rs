@@ -39,11 +39,13 @@ pub(crate) fn scripted_node_with_live_host_runtime(
             diagnostic_state: Arc::new(Mutex::new(None)),
             child_qmp_state: Arc::new(Mutex::new(None)),
             child_console_state: Arc::new(Mutex::new(None)),
+            process_contract_state: Arc::new(Mutex::new(None)),
             fail_descriptor_install: false,
             fail_descriptor_close: false,
             fail_endpoint_install: false,
             mismatch_endpoint_disposition: false,
             mismatch_request_basis: false,
+            template_query_count: Arc::new(Mutex::new(0)),
             hot_fork_script: HotForkScript::Rejected,
         },
     );
