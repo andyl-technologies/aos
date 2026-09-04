@@ -2558,6 +2558,12 @@ capability ships.
   non-VM I/O-node semantics.
 - [ ] **T-CAM-7.5** Integrate `HotCheckpointManager`, hotness scoring,
   resource/cgroup limits, demotion to exact/thin, and fallback diagnostics.
+  The current managed owner binds each fallback to an exact
+  `ExactCheckpointId` or thin `ConfigurationArtifactId`, performs read-only
+  fallback and victim preflight before transfer, rechecks fallback validity at
+  the demotion boundary, and releases accounting only after the sink attests
+  source reap. The concrete fallback-retention router and QEMU demotion sink
+  remain required before this item is complete.
 - [ ] **T-CAM-7.6** Add the complete equivalence, isolation, negative,
   resource-leak, and scaling matrix from §10.
 - [ ] **T-CAM-7.7** Complete the §14 Phase 7 atomic multi-machine,

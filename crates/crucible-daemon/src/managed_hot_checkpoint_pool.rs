@@ -13,10 +13,11 @@ use crate::{
     AttemptExecutionContext, AttemptExecutionRuntimeBasis, AttemptWorkerFailure,
     CrucibleAttemptExecution, HotCheckpointAdmissionCommit, HotCheckpointAdmissionCommitError,
     HotCheckpointAdmissionRejection, HotCheckpointCandidate, HotCheckpointDemotion,
-    HotCheckpointDemotionReason, HotCheckpointForkRateError, HotCheckpointInventoryError,
-    HotCheckpointLimits, HotCheckpointManager, HotCheckpointPlannedDemotion, HotCheckpointStatus,
-    QemuHotForkAttemptLifecycleFactory, QemuHotForkAttemptLifecycleRecoveryError,
-    QemuHotForkKeyedLifecycleFactory, QemuHotForkLifecycleQuarantine, QemuHotForkTemplatePool,
+    HotCheckpointDemotionReason, HotCheckpointFallback, HotCheckpointForkRateError,
+    HotCheckpointInventoryError, HotCheckpointLimits, HotCheckpointManager,
+    HotCheckpointPlannedDemotion, HotCheckpointStatus, QemuHotForkAttemptLifecycleFactory,
+    QemuHotForkAttemptLifecycleRecoveryError, QemuHotForkKeyedLifecycleFactory,
+    QemuHotForkLifecycleQuarantine, QemuHotForkTemplateKey, QemuHotForkTemplatePool,
     QemuHotForkTemplatePoolCapacityError, QemuHotForkTemplatePoolError,
     QemuHotForkTemplatePoolLifecycle, QemuHotForkTemplatePoolRetirementError,
 };
@@ -25,12 +26,32 @@ use crate::{
 ///
 /// Success attests that the source process and hot-only host resources were
 /// reaped/released while the planned fallback remains authenticated and
-/// available. A failure must return the unchanged source factory so this owner
-/// can reinstall the exact stable coordinate; quarantine without resource
-/// release is not successful demotion.
+/// available. A failure must return the source factory, retaining any
+/// partially progressed shutdown authority inside it, so this owner can
+/// reinstall the exact stable coordinate; quarantine without resource release
+/// is not successful demotion.
 pub trait HotCheckpointTemplateDemotionSink<F> {
     /// Stable demotion or source-shutdown failure.
     type Error;
+
+    /// Preflights one exact fallback without changing source ownership.
+    ///
+    /// This check must prove that an exact root remains complete and retained,
+    /// or that the named thin configuration and its realization base remain
+    /// available. It is run for a new candidate and for every planned victim
+    /// before the first source transfer. [`Self::demote`] must reauthenticate
+    /// the fallback at the actual release boundary so a later availability
+    /// change cannot permit source teardown.
+    ///
+    /// # Errors
+    ///
+    /// Returns the stable authentication or availability diagnostic without
+    /// changing source, fallback, or manager state.
+    fn validate_fallback(
+        &mut self,
+        key: QemuHotForkTemplateKey,
+        fallback: HotCheckpointFallback,
+    ) -> Result<(), Self::Error>;
 
     /// Demotes one retired idle source exactly as planned.
     ///
@@ -178,6 +199,13 @@ where
                     ManagedHotCheckpointDemotionError::ManagerPlan(source),
                 )
             })?;
+        self.demotions
+            .validate_fallback(slot.template_key(), plan.status().fallback())
+            .map_err(|source| {
+                ManagedHotCheckpointDemotionFailure::without_factory(
+                    ManagedHotCheckpointDemotionError::FallbackValidation(source),
+                )
+            })?;
         match self.pool.slot_available(slot) {
             Some(true) => {}
             Some(false) => {
@@ -255,8 +283,26 @@ where
                 ));
             }
         };
+        if let Err(source) = self
+            .demotions
+            .validate_fallback(candidate.template_key(), candidate.fallback())
+        {
+            return Err(ManagedHotCheckpointAdmissionFailure::candidate(
+                factory,
+                ManagedHotCheckpointAdmissionError::FallbackValidation(source),
+            ));
+        }
 
         for demotion in plan.demotions() {
+            if let Err(source) = self
+                .demotions
+                .validate_fallback(demotion.slot().template_key(), demotion.fallback())
+            {
+                return Err(ManagedHotCheckpointAdmissionFailure::candidate(
+                    factory,
+                    ManagedHotCheckpointAdmissionError::FallbackValidation(source),
+                ));
+            }
             match self.pool.slot_available(demotion.slot()) {
                 Some(true) => {}
                 Some(false) => {
@@ -479,6 +525,9 @@ pub enum ManagedHotCheckpointDemotionError<E> {
     /// The manager no longer recognizes the requested exact coordinate.
     #[error("hot-checkpoint manager rejected the demotion plan")]
     ManagerPlan(HotCheckpointInventoryError),
+    /// The exact fallback is no longer authenticated or available.
+    #[error("hot-checkpoint fallback validation failed")]
+    FallbackValidation(E),
     /// The exact source currently owns a child lifecycle.
     #[error("requested hot-checkpoint demotion victim is busy")]
     VictimBusy,
@@ -579,6 +628,9 @@ pub enum ManagedHotCheckpointAdmissionError<E> {
     /// Factory and candidate name different exact lineage/configuration keys.
     #[error("hot-checkpoint candidate key differs from its source factory")]
     CandidateKeyMismatch,
+    /// A candidate or planned victim lacks its exact authenticated fallback.
+    #[error("hot-checkpoint fallback validation failed")]
+    FallbackValidation(E),
     /// Operational manager policy rejected the candidate without mutation.
     #[error("hot-checkpoint manager rejected candidate admission")]
     Rejected(HotCheckpointAdmissionRejection),
