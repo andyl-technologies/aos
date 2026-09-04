@@ -6,24 +6,25 @@
 //! the HubDb request handler.
 
 use js_sys::Promise;
+use wasm_bindgen::JsCast as _;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use worker_sys::DurableObjectStorage;
 
 #[wasm_bindgen]
 extern "C" {
+    #[wasm_bindgen(typescript_type = "DurableObjectStorage")]
+    type PitrStorage;
+
     #[wasm_bindgen(method, catch, js_name = getCurrentBookmark)]
-    fn get_current_bookmark(this: &DurableObjectStorage) -> Result<Promise, JsValue>;
+    fn get_current_bookmark(this: &PitrStorage) -> Result<Promise, JsValue>;
 
     #[wasm_bindgen(method, catch, js_name = getBookmarkForTime)]
-    fn get_bookmark_for_time(
-        this: &DurableObjectStorage,
-        timestamp_ms: f64,
-    ) -> Result<Promise, JsValue>;
+    fn get_bookmark_for_time(this: &PitrStorage, timestamp_ms: f64) -> Result<Promise, JsValue>;
 
     #[wasm_bindgen(method, catch, js_name = onNextSessionRestoreBookmark)]
     fn on_next_session_restore_bookmark(
-        this: &DurableObjectStorage,
+        this: &PitrStorage,
         bookmark: &str,
     ) -> Result<Promise, JsValue>;
 }
@@ -47,18 +48,18 @@ impl DurableObjectPitr {
     /// Returns an error when storage is unavailable, the runtime lacks the
     /// requested PITR method, or Cloudflare rejects the timestamp.
     pub(crate) async fn bookmark(&self, timestamp_ms: Option<f64>) -> worker::Result<String> {
-        let storage = self.storage()?;
+        let storage: &PitrStorage = self.storage()?.unchecked_ref();
         let promise = match timestamp_ms {
-            Some(timestamp_ms) if timestamp_ms.is_finite() && timestamp_ms >= 0.0 => {
-                get_bookmark_for_time(storage, timestamp_ms)
-                    .map_err(|error| js_error("getBookmarkForTime", error))?
-            }
+            Some(timestamp_ms) if timestamp_ms.is_finite() && timestamp_ms >= 0.0 => storage
+                .get_bookmark_for_time(timestamp_ms)
+                .map_err(|error| js_error("getBookmarkForTime", error))?,
             Some(_) => {
                 return Err(worker_error(
                     "PITR timestamp must be a finite non-negative number",
                 ));
             }
-            None => get_current_bookmark(storage)
+            None => storage
+                .get_current_bookmark()
                 .map_err(|error| js_error("getCurrentBookmark", error))?,
         };
         promise_string(promise, "recovery bookmark").await
@@ -74,7 +75,9 @@ impl DurableObjectPitr {
     /// Returns an error when storage is unavailable, the runtime lacks PITR,
     /// or Cloudflare rejects the bookmark.
     pub(crate) async fn schedule_restore(&self, bookmark: &str) -> worker::Result<String> {
-        let promise = on_next_session_restore_bookmark(self.storage()?, bookmark)
+        let storage: &PitrStorage = self.storage()?.unchecked_ref();
+        let promise = storage
+            .on_next_session_restore_bookmark(bookmark)
             .map_err(|error| js_error("onNextSessionRestoreBookmark", error))?;
         promise_string(promise, "undo bookmark").await
     }
