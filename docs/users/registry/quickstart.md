@@ -5,6 +5,9 @@ registry on the local filesystem, then reads it through `apm`. It exercises the
 same catalog, signature, release, and binary-cache paths used by a hosted
 registry without requiring a server.
 
+For production consumer configuration, including other public and internal
+registries, use [Configure package registries](../aos/registries.md).
+
 You need Nix with flakes enabled, Git with SHA-256 repository support, and an
 incremental builds of the independent `apr` and `apm` programs:
 

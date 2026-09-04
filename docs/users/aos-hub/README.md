@@ -34,6 +34,8 @@ resources.
   patterns.
 - [Choose the right CLI](cli.md) distinguishes local operator commands from
   the remote API client.
+- [Trust an internal AOS Hub deployment](trust.md) defines signing authority,
+  client bootstrap, hosted-key tradeoffs, access boundaries, and recovery.
 - [Operate an AOS package registry](../registry/) covers producer keys,
   releases, uploads, channels, and incident response.
 - [Deploy the native server](native.md) covers initialization, service
