@@ -17,6 +17,12 @@ in {
       defaultText = "pkgs.aos-sandbox-mountd";
       description = "The independently packaged mount broker and helper.";
     };
+
+    maximumRetainedMounts = lib.mkOption {
+      type = lib.types.addCheck lib.types.int (value: value > 0);
+      default = 1024;
+      description = "The hard admission ceiling for mount descriptors retained by PID 1 across broker restarts.";
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -45,9 +51,12 @@ in {
       };
       serviceConfig = {
         Type = "simple";
+        NotifyAccess = "main";
         ExecStart = "${cfg.package}/bin/aos-sandbox-mountd ${toString controller.uid} ${toString controller.gid} ${cfg.package}/bin/aos-sandbox-mount-helper";
         Restart = "on-failure";
         RestartSec = "2s";
+        FileDescriptorStoreMax = cfg.maximumRetainedMounts;
+        FileDescriptorStorePreserve = "yes";
         StateDirectory = "aos/sandbox-mount";
         StateDirectoryMode = "0700";
         RuntimeDirectory = "aos/sandbox-mount-catalog";

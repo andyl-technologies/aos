@@ -18,6 +18,7 @@
 pub mod broker;
 pub mod catalog;
 pub mod helper;
+pub mod keeper;
 pub mod peer;
 pub mod plan;
 pub mod service;
