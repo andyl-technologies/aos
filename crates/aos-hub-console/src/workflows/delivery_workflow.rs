@@ -310,7 +310,7 @@ fn DeliveryDestinationForm(
                             <label><span>"Provider listener"</span><input required prop:value=move || listener_ref.get() on:input=move |event| listener_ref.set(event_target_value(&event))/><small>"The exact CDN or ingress attachment reference Hub will verify."</small></label>
                             <label><span>"TLS provider"</span><input required prop:value=move || tls_provider.get() on:input=move |event| tls_provider.set(event_target_value(&event))/></label>
                             <label><span>"TLS certificate"</span><input required prop:value=move || certificate_ref.get() on:input=move |event| certificate_ref.set(event_target_value(&event))/></label>
-                            <label><span>"Provider probe"</span><input required prop:value=move || probe_ref.get() on:input=move |event| probe_ref.set(event_target_value(&event))/><small>"The provider-specific probe Hub observes before activation."</small></label>
+                            <label class="full-field"><span>"Provider probe"</span><textarea required rows="4" prop:value=move || probe_ref.get() on:input=move |event| probe_ref.set(event_target_value(&event))></textarea><small>"The provider-specific probe Hub observes before activation."</small></label>
                         </fieldset>
                     }.into_any()
                 }}

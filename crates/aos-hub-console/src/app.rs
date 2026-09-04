@@ -10,6 +10,8 @@ use leptos::leptos_dom::helpers::window_event_listener;
 use leptos::prelude::*;
 use wasm_bindgen::{JsCast, JsValue};
 
+use aos_hub_console_contract::settings_navigation_starts_open;
+
 use crate::route::{ConsoleRoute, ConsoleScope, PageSpec, AUTHENTICATED_PRIMARY_NAVIGATION};
 use crate::transport::ApiClient;
 use crate::workflows::ResourceWorkflow;
@@ -105,6 +107,11 @@ fn ManagementShell(
             .map(|href| (label, href))
     })
     .collect::<Vec<_>>();
+    let navigation_open = RwSignal::new(settings_navigation_starts_open(viewport_width()));
+    let navigation_resize = window_event_listener(ev::resize, move |_| {
+        navigation_open.set(settings_navigation_starts_open(viewport_width()));
+    });
+    on_cleanup(move || navigation_resize.remove());
     let on_console_link = move |event: ev::MouseEvent| {
         if event.default_prevented()
             || event.button() != 0
@@ -164,7 +171,17 @@ fn ManagementShell(
             </header>
             {(!announcement.is_empty()).then(|| view! { <div class="announce">{announcement}</div> })}
             <div class="settings">
-                <details class="settings-nav-disclosure" open>
+                <details
+                    class="settings-nav-disclosure"
+                    open=move || navigation_open.get()
+                    on:toggle=move |event| {
+                        let open = event
+                            .target()
+                            .and_then(|target| target.dyn_into::<leptos::web_sys::Element>().ok())
+                            .is_some_and(|details| details.has_attribute("open"));
+                        navigation_open.set(open);
+                    }
+                >
                     <summary>"Settings navigation"</summary>
                     <Transition fallback=move || view! { <nav class="settings-nav" aria-label="Settings navigation" aria-busy="true"><span class="settings-nav-label">"Loading navigation…"</span></nav> }>
                         {move || { let route = navigation_route.clone(); Suspend::new(async move { match session.await.as_ref() { Ok(client) => view! { <Navigation route=route client=client.clone()/> }.into_any(), Err(_) => view! { <nav class="settings-nav" aria-label="Settings navigation"><a href=route.base_path.clone()>"Overview"</a></nav> }.into_any() } }) }}
@@ -436,6 +453,10 @@ fn scope_identity(scope: &ConsoleScope) -> String {
         | ConsoleScope::Registry { path: slug }
         | ConsoleScope::Cache { path: slug } => slug.clone(),
     }
+}
+
+fn viewport_width() -> Option<f64> {
+    leptos::web_sys::window()?.inner_width().ok()?.as_f64()
 }
 
 #[cfg(test)]
