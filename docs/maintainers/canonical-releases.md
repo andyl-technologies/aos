@@ -744,6 +744,45 @@ digests, so disk images need not fit in memory.
 Use public keys from an independently authenticated source. A key shipped only
 inside the bundle it is meant to authenticate is not a trust anchor.
 
+## Exercise the complete Hub transition in a fleet
+
+`checks.fleet.native-hub-release-pipeline` is the production-shaped acceptance
+test for the online half of this runbook. It boots separate native staging and
+production Hub machines with distinct deployment identities, publication keys,
+and channel keys behind TLS at the canonical hostnames. The Hub system module
+loads every private signing seed and trust map through systemd credentials; a
+partial release-evidence configuration fails evaluation.
+
+The publisher is the only machine with `hostStoreMount = true`. It mounts the
+host Nix store read-only through the fleet 9p device, binds and registers only
+four small prebuilt fixture closures, and exports one NAR for each package cell:
+`x86_64-linux`, `aarch64-linux`, `x86_64-darwin`, and `aarch64-darwin`. Those
+payloads are not rebuilt into any guest image. Darwin participates only in the
+package and qualification matrix; no Darwin image cell is created.
+
+The test initializes both empty native Hubs, creates the public `andyl/main`
+delivery topology through reviewed `aos hub` operations, installs the same
+signed base publication in both environments, and then invokes the real
+porcelain for offline verification, staging, four-platform public-byte
+qualification, qualification admission, production promotion, channel
+compare-and-swap, and rollout completion. It verifies the final journal state
+and anonymous production channel object. The deterministic authorities and TLS
+key used by this test are confined to explicit test fixtures and the
+`pkgs.aos.testSupport` output; no test authority is installed in a shipped CLI
+output.
+
+Run the focused evaluation and fleet gate with:
+
+```sh
+nix-build -A checks.registry-hub --no-out-link
+nix-build -A checks.fleet.native-hub-release-pipeline --no-out-link
+```
+
+This gate proves exact-byte publication and all four matrix branches. Native
+functional qualification on each architecture remains the responsibility of
+the platform-specific executors supplied to a real release; the fleet fixture
+does not pretend that one x86 VM executes Darwin or Arm binaries.
+
 ## Operational boundary
 
 Do not bypass the isolated registry transaction, closed bundle finalizer,

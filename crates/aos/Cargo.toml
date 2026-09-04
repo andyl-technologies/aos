@@ -20,6 +20,10 @@ path = "src/apm.rs"
 name = "aos-package-runtime"
 path = "src/package_runtime.rs"
 
+[[bin]]
+name = "aos-release-fleet-fixture"
+path = "tests/support/release_fleet_fixture.rs"
+
 [dependencies]
 rustix = { workspace = true }
 aos-core = { workspace = true }
@@ -58,6 +62,7 @@ serde = { workspace = true }
 rand = { workspace = true }
 axum = { workspace = true }
 tokio-rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
 tokio-util = { workspace = true }
 hyper-util = { workspace = true }
 tower = { workspace = true }
