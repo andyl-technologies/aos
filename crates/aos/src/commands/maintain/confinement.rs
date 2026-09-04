@@ -140,7 +140,7 @@ impl Backend {
         allow_nix_daemon: bool,
         limits: ResourceLimits,
     ) -> Result<(Command, ConfinementEvidence)> {
-        let executable = checked_existing_path(executable, "confined executable")?;
+        let executable = checked_command_executable(executable)?;
         let mut ro = normalize_paths(read_only, "read-only grant")?;
         let mut rw = normalize_paths(read_write, "read-write grant")?;
         add_if_present(&mut ro, Path::new("/nix/store"))?;
@@ -271,6 +271,29 @@ fn checked_existing_path(path: &Path, label: &str) -> Result<PathBuf> {
         .with_context(|| format!("inspecting {label} {}", path.display()))?;
     if !metadata.is_file() || metadata.file_type().is_symlink() {
         bail!("{label} must be a regular non-symlink file");
+    }
+    Ok(path.to_path_buf())
+}
+
+fn checked_command_executable(path: &Path) -> Result<PathBuf> {
+    if !path.is_absolute() {
+        bail!("confined executable must be an absolute path");
+    }
+    let metadata = path
+        .symlink_metadata()
+        .with_context(|| format!("inspecting confined executable {}", path.display()))?;
+    if metadata.is_file() && !metadata.file_type().is_symlink() {
+        return Ok(path.to_path_buf());
+    }
+    let canonical = path
+        .canonicalize()
+        .with_context(|| format!("resolving confined executable {}", path.display()))?;
+    if !metadata.file_type().is_symlink()
+        || !path.starts_with("/nix/store")
+        || !canonical.starts_with("/nix/store")
+        || !canonical.is_file()
+    {
+        bail!("confined executable must be a regular file or immutable store symlink");
     }
     Ok(path.to_path_buf())
 }

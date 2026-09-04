@@ -1,6 +1,7 @@
 //! Bounded source hashing and deterministic attempt-zero mutation.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt as _;
@@ -10,7 +11,6 @@ use std::sync::Arc;
 
 use anyhow::{Context as _, Result, bail};
 use aos_contract::Sha256Digest;
-use aos_core::nix::NixRunner;
 use aos_core::output::Printer;
 use aos_maintain::PACKAGE_UPDATE_MATERIALIZATION_V1;
 use aos_maintain::identity::ArtifactSlotId;
@@ -27,6 +27,7 @@ use futures_util::StreamExt as _;
 use sha2::{Digest as _, Sha256};
 use url::Url;
 
+use super::confinement::{Backend, ResourceLimits};
 use super::state::{self, StateStore};
 use super::{inventory, mutation};
 
@@ -47,7 +48,9 @@ pub(super) fn adopt_candidate(
     verbose: u8,
     quiet: bool,
 ) -> Result<(Vec<u8>, Vec<String>)> {
-    verify_post_inventory(root, plan, verbose, quiet)?;
+    let backend = Backend::detect().context("verifying candidate evaluation confinement")?;
+    let scratch = tempfile::tempdir().context("creating candidate evaluation scratch space")?;
+    verify_post_inventory(root, plan, &backend, scratch.path(), verbose, quiet)?;
     checked_patch(root, plan)
 }
 
@@ -100,6 +103,20 @@ pub(super) async fn execute(
         return Ok(record);
     }
     ensure_clean_base(&root, plan, &run.branch)?;
+    let backend = Backend::detect().context("verifying local materialization confinement")?;
+    let scratch = store.scratch_directory(run.run_id.as_str(), "materialize")?;
+    let (_, confinement) = confined_nix_json(
+        &root,
+        &scratch,
+        &backend,
+        &[
+            "--eval",
+            "--strict",
+            "--json",
+            "-E",
+            "builtins.currentSystem",
+        ],
+    )?;
     if run.state == RunState::WorktreeReady {
         store.transition(
             run,
@@ -151,11 +168,13 @@ pub(super) async fn execute(
         mutation_activity.finish();
         let mut artifacts = Vec::new();
         for unit in &plan.units {
-            artifacts.extend(resolve_artifacts(&root, unit, verbose, quiet, printer)?);
+            artifacts.extend(resolve_artifacts(
+                &root, &scratch, &backend, unit, verbose, quiet, printer,
+            )?);
         }
         let verification = printer.activity("Verify candidate inventory and artifact closure");
-        verify_post_inventory(&root, plan, verbose, quiet)?;
-        verify_post_artifacts(&root, plan, &artifacts, verbose, quiet)?;
+        verify_post_inventory(&root, plan, &backend, &scratch, verbose, quiet)?;
+        verify_post_artifacts(&root, plan, &artifacts, &backend, &scratch, verbose, quiet)?;
         verification.finish();
         Ok::<_, anyhow::Error>(artifacts)
     })();
@@ -174,6 +193,7 @@ pub(super) async fn execute(
         attempt: 0,
         sources,
         artifacts,
+        confinement,
         patch_digest: Sha256Digest::separated("aos.package-update-patch/v1", &patch),
         changed_paths,
         completed_at_unix: state::now_unix()?,
@@ -191,6 +211,8 @@ pub(super) async fn execute(
 
 fn resolve_artifacts(
     root: &Path,
+    scratch: &Path,
+    backend: &Backend,
     unit: &PackageUpdateUnitPlan,
     verbose: u8,
     quiet: bool,
@@ -209,14 +231,22 @@ fn resolve_artifacts(
             );
         }
         apply_artifact_hash(root, unit, intent, &intent.expected_hash, FAKE_HASH)?;
-        let derivation = evaluated_artifact_derivation(root, unit, &intent.slot, verbose, quiet)?;
+        let derivation = evaluated_artifact_derivation(
+            root,
+            scratch,
+            backend,
+            unit,
+            &intent.slot,
+            verbose,
+            quiet,
+        )?;
         if derivation == intent.expected_derivation {
             bail!(
                 "artifact {} did not bind the updated source graph",
                 intent.slot
             );
         }
-        let hash = realize_artifact(&derivation)?;
+        let hash = realize_artifact(root, scratch, backend, &derivation)?;
         apply_artifact_hash(root, unit, intent, FAKE_HASH, &hash)?;
         output.push(MaterializedArtifact {
             unit_id: unit.unit_id.clone(),
@@ -255,13 +285,14 @@ fn apply_artifact_hash(
 
 fn evaluated_artifact_derivation(
     root: &Path,
+    scratch: &Path,
+    backend: &Backend,
     unit_plan: &PackageUpdateUnitPlan,
     slot: &ArtifactSlotId,
     verbose: u8,
     quiet: bool,
 ) -> Result<String> {
-    let runner = NixRunner::for_root(root, verbose, quiet)?;
-    let envelope = inventory::evaluate(&runner, None)?;
+    let envelope = confined_inventory(root, scratch, backend, verbose, quiet)?;
     let unit = envelope
         .inventory
         .units
@@ -272,22 +303,29 @@ fn evaluated_artifact_derivation(
         .members
         .first()
         .ok_or_else(|| anyhow::anyhow!("updated unit has no package member"))?;
-    instantiate_member(root, member.as_str())?;
+    instantiate_member(root, scratch, backend, member.as_str())?;
     unit.artifacts
         .get(slot)
         .map(|artifact| artifact.derivation.clone())
         .ok_or_else(|| anyhow::anyhow!("updated artifact {slot} disappeared from inventory"))
 }
 
-fn instantiate_member(root: &Path, member: &str) -> Result<()> {
-    let mut command = Command::new("nix-instantiate");
-    command
-        .arg(root.join("default.nix"))
-        .args(["-A", &format!("pkgs.{member}")])
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+fn instantiate_member(root: &Path, scratch: &Path, backend: &Backend, member: &str) -> Result<()> {
+    let executable = resolve_executable("nix-instantiate")?;
+    let arguments = [
+        root.join("default.nix").into_os_string(),
+        "-A".into(),
+        format!("pkgs.{member}").into(),
+    ];
+    let (mut command, _) = backend.command(
+        &executable,
+        arguments,
+        &[root.to_path_buf()],
+        &[scratch.to_path_buf()],
+        true,
+        ResourceLimits::gates(),
+    )?;
+    configure_nix_command(&mut command, root, scratch)?;
     let (status, _stdout, stderr, truncated) = bounded_output(command)?;
     if truncated || !status.success() {
         let detail = String::from_utf8_lossy(&stderr);
@@ -299,14 +337,22 @@ fn instantiate_member(root: &Path, member: &str) -> Result<()> {
     Ok(())
 }
 
-fn realize_artifact(derivation: &str) -> Result<String> {
-    let mut command = Command::new("nix-store");
-    command
-        .args(["--realise", derivation])
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+fn realize_artifact(
+    root: &Path,
+    scratch: &Path,
+    backend: &Backend,
+    derivation: &str,
+) -> Result<String> {
+    let executable = resolve_executable("nix-store")?;
+    let (mut command, _) = backend.command(
+        &executable,
+        ["--realise", derivation],
+        &[root.to_path_buf()],
+        &[scratch.to_path_buf()],
+        true,
+        ResourceLimits::gates(),
+    )?;
+    configure_nix_command(&mut command, root, scratch)?;
     let (status, _stdout, stderr, truncated) = bounded_output(command)?;
     if truncated {
         bail!("artifact materializer diagnostics exceeded the bounded log limit");
@@ -327,12 +373,164 @@ fn parse_hash_mismatch(stderr: &[u8]) -> Result<String> {
         .filter(|value| value.starts_with("sha256-") && value.len() <= 128)
         .collect::<BTreeSet<_>>();
     if hashes.len() != 1 {
-        bail!("artifact materializer failed without one unambiguous SRI SHA-256 mismatch");
+        bail!(
+            "artifact materializer failed without one unambiguous SRI SHA-256 mismatch: {}",
+            diagnostic_tail(stderr)
+        );
     }
     hashes
         .first()
         .map(|value| (*value).to_string())
         .ok_or_else(|| anyhow::anyhow!("artifact materializer hash disappeared"))
+}
+
+fn confined_inventory(
+    root: &Path,
+    scratch: &Path,
+    backend: &Backend,
+    _verbose: u8,
+    _quiet: bool,
+) -> Result<aos_maintain::envelope::InventoryEnvelopeV1> {
+    let default_nix = root.join("default.nix");
+    let (inventory_value, inventory_confinement) = confined_nix_json(
+        root,
+        scratch,
+        backend,
+        [
+            OsString::from("--eval"),
+            OsString::from("--strict"),
+            OsString::from("--json"),
+            default_nix.into_os_string(),
+            OsString::from("-A"),
+            OsString::from("maintenanceInventory"),
+        ],
+    )?;
+    let (target_value, target_confinement) = confined_nix_json(
+        root,
+        scratch,
+        backend,
+        [
+            "--eval",
+            "--strict",
+            "--json",
+            "-E",
+            "builtins.currentSystem",
+        ],
+    )?;
+    if inventory_confinement != target_confinement {
+        bail!("candidate inventory evaluations used different confinement policies");
+    }
+    let target = target_value
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!("builtins.currentSystem did not evaluate to text"))?;
+    inventory::bind_evaluated(root, inventory_value, target)
+}
+
+fn confined_nix_json(
+    root: &Path,
+    scratch: &Path,
+    backend: &Backend,
+    arguments: impl IntoIterator<Item = impl AsRef<OsStr>>,
+) -> Result<(serde_json::Value, aos_maintain::run::ConfinementEvidence)> {
+    let executable = resolve_executable("nix-instantiate")?;
+    let (mut command, confinement) = backend.command(
+        &executable,
+        arguments,
+        &[root.to_path_buf()],
+        &[scratch.to_path_buf()],
+        true,
+        ResourceLimits::gates(),
+    )?;
+    configure_nix_command(&mut command, root, scratch)?;
+    let (status, stdout, stderr, truncated) = bounded_output(command)?;
+    if truncated || !status.success() {
+        bail!(
+            "confined Nix evaluation failed: {}",
+            diagnostic_tail(&stderr)
+        );
+    }
+    let value = serde_json::from_slice(&stdout).context("decoding confined Nix JSON output")?;
+    Ok((value, confinement))
+}
+
+fn configure_nix_command(command: &mut Command, root: &Path, scratch: &Path) -> Result<()> {
+    let home = scratch.join("home");
+    let temporary = scratch.join("tmp");
+    let cache = scratch.join("cache");
+    for path in [&home, &temporary, &cache] {
+        fs::create_dir_all(path)?;
+    }
+    command
+        .current_dir(root)
+        .env("HOME", home)
+        .env("TMPDIR", temporary)
+        .env("XDG_CACHE_HOME", cache)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for name in [
+        "PATH",
+        "USER",
+        "LOGNAME",
+        "LANG",
+        "LC_ALL",
+        "NIX_REMOTE",
+        "NIX_CONFIG",
+        "NIX_SSL_CERT_FILE",
+        "SSL_CERT_FILE",
+    ] {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    Ok(())
+}
+
+fn resolve_executable(name: &str) -> Result<std::path::PathBuf> {
+    let search = std::env::var_os("PATH").ok_or_else(|| anyhow::anyhow!("PATH is not set"))?;
+    for directory in std::env::split_paths(&search) {
+        let candidate = directory.join(name);
+        if candidate.is_file() {
+            let metadata = candidate
+                .symlink_metadata()
+                .with_context(|| format!("inspecting AOS {name}"))?;
+            if metadata.file_type().is_symlink() {
+                let target = candidate
+                    .read_link()
+                    .with_context(|| format!("resolving AOS {name} link"))?;
+                let target = if target.is_absolute() {
+                    target
+                } else {
+                    directory.join(target)
+                };
+                if target.starts_with("/nix/store") {
+                    return Ok(target);
+                }
+            }
+            return candidate
+                .canonicalize()
+                .with_context(|| format!("resolving AOS {name}"));
+        }
+    }
+    bail!("AOS {name} is unavailable in PATH")
+}
+
+fn diagnostic_tail(stderr: &[u8]) -> String {
+    const LIMIT: usize = 2048;
+
+    let start = stderr.len().saturating_sub(LIMIT);
+    let mut output = String::from_utf8_lossy(&stderr[start..])
+        .replace(['\r', '\n'], " ")
+        .trim()
+        .to_string();
+    let mut remove = output.len().saturating_sub(LIMIT);
+    while !output.is_char_boundary(remove) {
+        remove += 1;
+    }
+    output.drain(..remove);
+    output
 }
 
 fn bounded_output(
@@ -591,11 +789,12 @@ fn sync_directory(path: &Path) -> Result<()> {
 pub(super) fn verify_post_inventory(
     root: &Path,
     plan: &PackageUpdatePlanV1,
+    backend: &Backend,
+    scratch: &Path,
     verbose: u8,
     quiet: bool,
 ) -> Result<()> {
-    let runner = NixRunner::for_root(root, verbose, quiet)?;
-    let envelope = inventory::evaluate(&runner, None)?;
+    let envelope = confined_inventory(root, scratch, backend, verbose, quiet)?;
     for unit_plan in &plan.units {
         let unit = envelope
             .inventory
@@ -629,11 +828,12 @@ fn verify_post_artifacts(
     root: &Path,
     plan: &PackageUpdatePlanV1,
     materialized: &[MaterializedArtifact],
+    backend: &Backend,
+    scratch: &Path,
     verbose: u8,
     quiet: bool,
 ) -> Result<()> {
-    let runner = NixRunner::for_root(root, verbose, quiet)?;
-    let envelope = inventory::evaluate(&runner, None)?;
+    let envelope = confined_inventory(root, scratch, backend, verbose, quiet)?;
     let expected = plan
         .units
         .iter()
@@ -761,7 +961,7 @@ fn git(root: &Path, arguments: &[&str]) -> Result<std::process::Output> {
 mod tests {
     use anyhow::Result;
 
-    use super::{FAKE_HASH, parse_hash_mismatch};
+    use super::{FAKE_HASH, diagnostic_tail, parse_hash_mismatch};
 
     #[test]
     fn redirect_allowlist_rejects_invalid_host_shapes() {
@@ -784,7 +984,9 @@ mod tests {
             "error: hash mismatch in fixed-output derivation\n  specified: {FAKE_HASH}\n  got:    {expected}\n"
         );
         assert_eq!(parse_hash_mismatch(diagnostic.as_bytes())?, expected);
-        assert!(parse_hash_mismatch(b"error: builder failed\n").is_err());
+        let error = parse_hash_mismatch(b"error: builder failed\n")
+            .expect_err("a non-hash build failure must stop materialization");
+        assert!(error.to_string().contains("builder failed"));
         assert!(
             parse_hash_mismatch(
                 format!(
@@ -795,5 +997,17 @@ mod tests {
             .is_err()
         );
         Ok(())
+    }
+
+    #[test]
+    fn materializer_diagnostic_tail_is_bounded_and_single_line() {
+        let mut diagnostic = vec![b'x'; 4096];
+        diagnostic.extend_from_slice(b"\r\nactual failure\n");
+
+        let tail = diagnostic_tail(&diagnostic);
+        assert!(tail.len() <= 2048);
+        assert!(tail.ends_with("actual failure"));
+        assert!(!tail.contains('\r'));
+        assert!(!tail.contains('\n'));
     }
 }

@@ -172,6 +172,8 @@ pub struct MaterializationRecordV1 {
     /// Generated fixed-output artifacts resolved in dependency order.
     #[serde(default)]
     pub artifacts: Vec<MaterializedArtifact>,
+    /// Verified confinement used for candidate evaluation and artifact realization.
+    pub confinement: ConfinementEvidence,
     /// Digest of the canonical textual patch after formatting.
     pub patch_digest: Sha256Digest,
     /// Exact changed repository-relative paths.
@@ -191,6 +193,7 @@ impl MaterializationRecordV1 {
         if self.schema != crate::PACKAGE_UPDATE_MATERIALIZATION_V1 || self.attempt != 0 {
             bail!("unsupported deterministic materialization record");
         }
+        self.confinement.validate()?;
         if self.sources.len() > 4096
             || self.changed_paths.is_empty()
             || self.changed_paths.len() > 4096
