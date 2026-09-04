@@ -142,6 +142,12 @@ impl OperationPlan {
     pub const fn operation_id(&self) -> OperationId {
         self.operation_id
     }
+
+    /// Returns the digest of the normalized request admitted by this plan.
+    #[must_use]
+    pub const fn request_digest(&self) -> [u8; 32] {
+        self.request_digest
+    }
 }
 
 /// Reports the result of operation admission.
@@ -277,6 +283,9 @@ pub enum ReconcilerError {
     /// A fresh idempotency key attempted to reuse a durable operation ID.
     #[error("operation identity already exists in the durable ledger")]
     OperationAlreadyExists,
+    /// The configured durable nonterminal-operation capacity is exhausted.
+    #[error("controller admission is backpressured by pending durable work")]
+    AdmissionBackpressure,
     /// Durable operation or effect bytes violate the closed v1 schema.
     #[error("corrupt durable effect ledger: {0}")]
     CorruptLedger(&'static str),
@@ -357,6 +366,32 @@ where
     /// Returns [`ReconcilerError`] for an idempotency conflict, record bound
     /// violation, or journal durability failure.
     pub fn accept(&mut self, plan: &OperationPlan) -> Result<AcceptOutcome, ReconcilerError> {
+        self.accept_inner(plan, None)
+    }
+
+    /// Atomically admits a plan while bounding nonterminal durable work.
+    ///
+    /// Exact idempotent replay remains available while the bound is reached.
+    /// This method is crate-private because admission policy belongs to the
+    /// activated controller service rather than the general ledger API.
+    pub(crate) fn accept_bounded(
+        &mut self,
+        plan: &OperationPlan,
+        maximum_pending_operations: usize,
+    ) -> Result<AcceptOutcome, ReconcilerError> {
+        if maximum_pending_operations == 0 {
+            return Err(ReconcilerError::InvalidPlan(
+                "pending operation bound is zero",
+            ));
+        }
+        self.accept_inner(plan, Some(maximum_pending_operations))
+    }
+
+    fn accept_inner(
+        &mut self,
+        plan: &OperationPlan,
+        maximum_pending_operations: Option<usize>,
+    ) -> Result<AcceptOutcome, ReconcilerError> {
         match self
             .journal
             .check_idempotency(&plan.idempotency_key, plan.request_digest)
@@ -373,6 +408,12 @@ where
             .is_some()
         {
             return Err(ReconcilerError::OperationAlreadyExists);
+        }
+        if let Some(maximum) = maximum_pending_operations {
+            // Corrupt operation state must never be treated as spare capacity.
+            if self.pending_operation_count()? >= maximum {
+                return Err(ReconcilerError::AdmissionBackpressure);
+            }
         }
 
         let effect_count = u32::try_from(plan.effects.len())
@@ -408,6 +449,25 @@ where
         let transaction = JournalTransaction::new(OperationId::new().into_bytes(), records)?;
         self.journal.commit(&transaction)?;
         Ok(AcceptOutcome::Accepted(plan.operation_id))
+    }
+
+    fn pending_operation_count(&self) -> Result<usize, ReconcilerError> {
+        let mut pending = 0_usize;
+        for (key, value) in self.journal.records(RecordNamespace::Operation) {
+            decode_operation_key(key)?;
+            let (state, _) = decode_operation(value)?;
+            if !matches!(
+                state,
+                OperationState::Succeeded | OperationState::PermanentlyBlocked
+            ) {
+                pending = pending
+                    .checked_add(1)
+                    .ok_or(ReconcilerError::CorruptLedger(
+                        "pending operation count overflow",
+                    ))?;
+            }
+        }
+        Ok(pending)
     }
 
     /// Advances one operation by at most one durable transition or effect.

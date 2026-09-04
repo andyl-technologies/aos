@@ -6,6 +6,7 @@
 //! broker implementations deliberately live outside this crate.
 
 pub mod authority;
+pub mod controller;
 pub mod dispatch;
 pub mod journal;
 pub mod ownership_authority;
@@ -16,6 +17,11 @@ pub use authority::{
     AuthorizationArtifactQuartet, AuthorizationArtifacts, AuthorizationPreparation,
     AuthorizationPreparationError, BrokerPlanPreparation, PreparedSigningRequest,
     ReturnedSignature, SignedBrokerPlan, SigningAuthority,
+};
+pub use controller::{
+    ActivatedOperationCompiler, ControllerQuantumReport, ControllerReconciliationStep,
+    ControllerRequestScopeV1, ControllerServiceError, NodeController, NodeControllerLimits,
+    OperationCompilationError,
 };
 pub use dispatch::{
     BrokerDispatchAttemptError, BrokerDispatchAttemptV1, BrokerDispatchSemanticIdentityV1,
