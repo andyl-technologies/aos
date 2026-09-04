@@ -22,7 +22,7 @@
   };
   registryToml = registryRenderer.registryToml cfg.clientName registry;
   trustedKeys = registryRenderer.trustedKeys registry;
-  testingRegistryPattern = "andyl/testing(-v[2-9][0-9]*)?";
+  testingRegistryPattern = "andyl/testing(-v([2-9]|[1-9][0-9]+))?";
 in {
   options.aos.release = {
     enabled = lib.mkOption {

@@ -332,7 +332,7 @@ mod tests {
             schema_version: aos_release::receipt::PUBLICATION_RECEIPT_V1.into(),
             environment: aos_release::receipt::HubEnvironment::Staging,
             deployment_id: "staging-deployment".into(),
-            registry: aos_release::CANONICAL_REGISTRY.into(),
+            registry: aos_release::registry::MAIN_REGISTRY.into(),
             release_id: "2026.03.0".into(),
             manifest_digest: Sha256Digest::of_bytes(b"manifest"),
             bundle_digest: Sha256Digest::of_bytes(b"bundle"),

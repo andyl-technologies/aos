@@ -276,6 +276,7 @@ mod tests {
     use base64::Engine as _;
     use ed25519_dalek::{Signer as _, SigningKey};
 
+    use crate::RELEASE_JOURNAL_ENTRY_V1;
     use crate::artifact::{
         ArtifactKind, ArtifactRecord, ArtifactRelation, ArtifactRelationship, BundlePath,
         Compression,
@@ -292,12 +293,12 @@ mod tests {
         ReleasePlanV1, RetentionPolicy, SourceIdentity,
     };
     use crate::platform::{MatrixCell, Platform};
+    use crate::registry::MAIN_REGISTRY;
     use crate::signing::{
         SignatureAlgorithm, SignatureResponseV1, SignerRequirement, SignerRole, SigningOperation,
         SigningRequestV1, TrustedEd25519Key,
     };
     use crate::state::{JournalEntryV1, ReleaseState};
-    use crate::{CANONICAL_REGISTRY, RELEASE_JOURNAL_ENTRY_V1};
 
     use super::{CapturedFile, verify_journal, verify_release};
 
@@ -428,7 +429,7 @@ mod tests {
             release_id: "release-2026.9.0".to_owned(),
             version: "2026.9.0".to_owned(),
             release_class: ReleaseClass::Stable,
-            registry: CANONICAL_REGISTRY.to_owned(),
+            registry: MAIN_REGISTRY.to_owned(),
             registry_base_commit: OID.to_owned(),
             registry_base_generation: 7,
             source: SourceIdentity {
