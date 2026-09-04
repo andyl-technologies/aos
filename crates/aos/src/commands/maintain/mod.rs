@@ -208,16 +208,16 @@ pub async fn run(cli: &Cli, args: &MaintainArgs, printer: &Printer) -> Result<Co
         Some(MaintainCommand::Status(command)) => status_command(args, command),
         Some(MaintainCommand::Ui(command)) => ui_command(args, command).await,
         Some(MaintainCommand::Plan(command)) => plan_command(args, command),
-        Some(MaintainCommand::Run(command)) => run_command(cli, args, command).await,
-        Some(MaintainCommand::Resume(command)) => resume_command(cli, args, command).await,
+        Some(MaintainCommand::Run(command)) => run_command(cli, args, command, printer).await,
+        Some(MaintainCommand::Resume(command)) => resume_command(cli, args, command, printer).await,
         Some(MaintainCommand::Inspect(command)) => inspect_command(args, command),
         Some(MaintainCommand::Diff(command)) => diff_command(args, command),
         Some(MaintainCommand::Abandon(command)) => abandon_command(args, command),
         Some(MaintainCommand::Clean(command)) => clean_command(args, command),
         Some(MaintainCommand::Accept(command)) => accept_command(args, command),
         Some(MaintainCommand::Commit(command)) => commit_command(args, command),
-        Some(MaintainCommand::Test(command)) => test_command(args, command),
-        Some(MaintainCommand::Repair(command)) => repair_command(cli, args, command).await,
+        Some(MaintainCommand::Test(command)) => test_command(args, command, printer),
+        Some(MaintainCommand::Repair(command)) => repair_command(cli, args, command, printer).await,
         Some(MaintainCommand::Evidence(command)) => evidence_command(args, command),
         Some(MaintainCommand::PreparePr(command)) => prepare_pr_command(args, command),
         Some(MaintainCommand::PublishPr(command)) => publish_pr_command(args, command).await,
@@ -486,6 +486,7 @@ fn commit_command(
 fn test_command(
     args: &MaintainArgs,
     command: &crate::cli::MaintainTestArgs,
+    printer: &Printer,
 ) -> Result<CommandCompletion> {
     let (store, _) = current_store(args)?;
     let mut run = resolve_run(&store, &command.run)?;
@@ -499,9 +500,9 @@ fn test_command(
         command.final_gate
     };
     let results = if final_phase {
-        validation::final_gates(&store, &plan, &mut run)
+        validation::final_gates(&store, &plan, &mut run, printer)
     } else {
-        validation::quick(&store, &plan, &mut run)
+        validation::quick(&store, &plan, &mut run, printer)
     };
     match results {
         Ok(results) if results.all_succeeded() => run_view_completion("test", &store, run, None),
@@ -527,6 +528,7 @@ async fn repair_command(
     cli: &Cli,
     args: &MaintainArgs,
     command: &crate::cli::MaintainRepairArgs,
+    printer: &Printer,
 ) -> Result<CommandCompletion> {
     use crate::cli::MaintainAgentMode;
     use aos_maintain::agent::AgentResultDisposition;
@@ -570,7 +572,7 @@ async fn repair_command(
                 );
             }
         };
-        let gates = validation::quick(&store, &plan, &mut run);
+        let gates = validation::quick(&store, &plan, &mut run, printer);
         let failure = match gates {
             Ok(results) if results.all_succeeded() => None,
             Ok(_) => Some((
@@ -1213,6 +1215,7 @@ async fn resume_command(
     cli: &Cli,
     args: &MaintainArgs,
     command: &crate::cli::MaintainResumeArgs,
+    printer: &Printer,
 ) -> Result<CommandCompletion> {
     let (store, _) = current_store(args)?;
     let run = resolve_run(&store, &command.run)?;
@@ -1237,6 +1240,7 @@ async fn resume_command(
             until: command.until,
             worktree: Some(std::path::PathBuf::from(run.worktree)),
         },
+        printer,
     )
     .await?;
     completion.result.command = "resume".to_string();
@@ -1955,6 +1959,7 @@ async fn run_command(
     cli: &Cli,
     args: &MaintainArgs,
     command: &crate::cli::MaintainRunArgs,
+    printer: &Printer,
 ) -> Result<CommandCompletion> {
     use aos_contract::Sha256Digest;
     use aos_maintain::presentation::MaintainCommandResult;
@@ -2086,7 +2091,9 @@ async fn run_command(
     ]);
     if command.until != crate::cli::MaintainRunUntil::WorktreeReady {
         let materialization =
-            match materialize::execute(&store, &plan, &mut run, cli.verbose, cli.quiet).await {
+            match materialize::execute(&store, &plan, &mut run, cli.verbose, cli.quiet, printer)
+                .await
+            {
                 Ok(record) => record,
                 Err(error) => {
                     return stopped_run_completion(
@@ -2115,7 +2122,7 @@ async fn run_command(
         );
     }
     if command.until == crate::cli::MaintainRunUntil::QuickGated {
-        let gates = match validation::quick(&store, &plan, &mut run) {
+        let gates = match validation::quick(&store, &plan, &mut run, printer) {
             Ok(gates) => gates,
             Err(error) => {
                 return stopped_run_completion(
@@ -2950,6 +2957,16 @@ fn render_human(result: &MaintainCommandResult, screen_reader: bool, printer: &P
                 ));
             }
         }
+    } else if result.command == "inspect"
+        && result
+            .data
+            .values
+            .get("inspectionFocus")
+            .map(String::as_str)
+            == Some("failure")
+    {
+        printer.plain("");
+        printer.success("No retained gate failures");
     }
 
     if let Some(log) = &result.data.gate_log {
