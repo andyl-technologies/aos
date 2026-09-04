@@ -941,17 +941,19 @@ fn RegistryOverview(client: ApiClient, slug: String) -> impl IntoView {
         let client = resource_client.clone();
         let slug = request_slug.clone();
         async move {
+            let registry_request = aos_proto_types::GetRegistryRequest { slug: slug.clone() };
+            let topology_request = aos_proto_types::GetSurfaceTopologyRequest {
+                surface: Some(aos_proto_types::SurfaceRef {
+                    target: Some(aos_proto_types::surface_ref::Target::RegistrySlug(slug)),
+                }),
+            };
             let registry = client.call::<_, aos_proto_types::GetRegistryResponse>(
                 aos_proto_types::REGISTRY_SERVICE_GET_REGISTRY_PATH,
-                &aos_proto_types::GetRegistryRequest { slug: slug.clone() },
+                &registry_request,
             );
             let topology = client.call::<_, aos_proto_types::GetSurfaceTopologyResponse>(
                 aos_proto_types::TOPOLOGY_SERVICE_GET_SURFACE_TOPOLOGY_PATH,
-                &aos_proto_types::GetSurfaceTopologyRequest {
-                    surface: Some(aos_proto_types::SurfaceRef {
-                        target: Some(aos_proto_types::surface_ref::Target::RegistrySlug(slug)),
-                    }),
-                },
+                &topology_request,
             );
             let (registry, topology) = futures::join!(registry, topology);
             Ok::<_, crate::transport::TransportError>((registry?, topology?))
@@ -1122,19 +1124,21 @@ fn CacheOverview(client: ApiClient, stable_id: String) -> impl IntoView {
         let client = resource_client.clone();
         let cache_id = request_id.clone();
         async move {
+            let cache_request = aos_proto_types::GetBinaryCacheRequest {
+                cache_id: cache_id.clone(),
+            };
+            let topology_request = aos_proto_types::GetSurfaceTopologyRequest {
+                surface: Some(aos_proto_types::SurfaceRef {
+                    target: Some(aos_proto_types::surface_ref::Target::CacheSlug(cache_id)),
+                }),
+            };
             let cache = client.call::<_, aos_proto_types::BinaryCacheResponse>(
                 aos_proto_types::BINARY_CACHE_SERVICE_GET_BINARY_CACHE_PATH,
-                &aos_proto_types::GetBinaryCacheRequest {
-                    cache_id: cache_id.clone(),
-                },
+                &cache_request,
             );
             let topology = client.call::<_, aos_proto_types::GetSurfaceTopologyResponse>(
                 aos_proto_types::TOPOLOGY_SERVICE_GET_SURFACE_TOPOLOGY_PATH,
-                &aos_proto_types::GetSurfaceTopologyRequest {
-                    surface: Some(aos_proto_types::SurfaceRef {
-                        target: Some(aos_proto_types::surface_ref::Target::CacheSlug(cache_id)),
-                    }),
-                },
+                &topology_request,
             );
             let (cache, topology) = futures::join!(cache, topology);
             Ok::<_, crate::transport::TransportError>((cache?, topology?))
