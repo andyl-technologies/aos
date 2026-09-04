@@ -21,6 +21,8 @@ use super::state;
 
 const GITHUB_API: &str = "https://api.github.com";
 const MAX_REMOTE_BODY: usize = 2 * 1024 * 1024;
+const MAX_REMOTE_PAGES: u32 = 10;
+const REMOTE_PAGE_SIZE: usize = 100;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -93,9 +95,10 @@ pub(super) async fn publish(
     token_environment: &str,
 ) -> Result<PullRequestPublicationV1> {
     validate_environment_name(token_environment)?;
-    verify_candidate(run, draft)?;
+    let token = secret_from_environment(token_environment)?;
+    verify_candidate(run, draft, token_environment)?;
 
-    let actual_remote_head = remote_head(&coordinates.root, &run.branch)?;
+    let actual_remote_head = remote_head(&coordinates.root, &run.branch, token_environment)?;
     let already_published = actual_remote_head.as_deref() == Some(draft.head.as_str());
     if !already_published && actual_remote_head.as_deref() != expected_remote_head {
         bail!(
@@ -109,6 +112,7 @@ pub(super) async fn publish(
             .args(["merge-base", "--is-ancestor", previous, &draft.head])
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_TERMINAL_PROMPT", "0")
+            .env_remove(token_environment)
             .status()
             .context("verifying publication is fast-forward")?;
         if !status.success() {
@@ -135,17 +139,19 @@ pub(super) async fn publish(
             ])
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_TERMINAL_PROMPT", "0")
+            .env_remove(token_environment)
             .status()
             .context("publishing exact candidate branch")?;
         if !status.success() {
             bail!("Git could not atomically publish the exact candidate branch");
         }
     }
-    if remote_head(&coordinates.root, &run.branch)?.as_deref() != Some(draft.head.as_str()) {
+    if remote_head(&coordinates.root, &run.branch, token_environment)?.as_deref()
+        != Some(draft.head.as_str())
+    {
         bail!("remote branch does not contain the exact candidate after push");
     }
 
-    let token = secret_from_environment(token_environment)?;
     let (owner, repository) = github_repository(&coordinates.canonical_remote)?;
     let client = github_client(&token)?;
     let pull = reconcile_pull_request(&client, owner, repository, draft).await?;
@@ -205,55 +211,33 @@ pub(super) async fn observe(
         bail!("pull request no longer matches the exact published head and base");
     }
 
-    let check_runs: CheckRunsResponse = get_json(
-        &client,
-        &format!(
-            "/repos/{owner}/{repository}/commits/{}/check-runs?per_page=100",
-            publication.head.value
-        ),
-        Some("application/vnd.github+json"),
-    )
-    .await?;
-    let statuses: StatusResponse = get_json(
-        &client,
-        &format!(
-            "/repos/{owner}/{repository}/commits/{}/status?per_page=100",
-            publication.head.value
-        ),
-        None,
-    )
-    .await?;
-    let reviews: Vec<ReviewResponse> = get_json(
-        &client,
-        &format!(
-            "/repos/{owner}/{repository}/pulls/{}/reviews?per_page=100",
-            publication.pull_request_number
-        ),
-        None,
-    )
-    .await?;
+    let check_runs = all_check_runs(&client, owner, repository, &publication.head.value).await?;
+    let statuses = all_statuses(&client, owner, repository, &publication.head.value).await?;
+    let reviews = all_reviews(&client, owner, repository, publication.pull_request_number).await?;
 
     let mut checks = BTreeMap::<(String, String), RemoteCheck>::new();
-    for check in check_runs.check_runs {
+    for check in check_runs {
         let conclusion = check.conclusion.unwrap_or_else(|| "pending".to_string());
-        checks.insert(
-            ("check-run".to_string(), check.name.clone()),
-            RemoteCheck {
-                name: check.name,
-                source: "check-run".to_string(),
-                conclusion,
-            },
-        );
+        let key = ("check-run".to_string(), check.name.clone());
+        let candidate = RemoteCheck {
+            name: check.name,
+            source: "check-run".to_string(),
+            conclusion,
+        };
+        if checks.insert(key, candidate).is_some() {
+            bail!("GitHub returned an ambiguous duplicate check-run context");
+        }
     }
-    for status in statuses.statuses {
-        checks.insert(
-            ("commit-status".to_string(), status.context.clone()),
-            RemoteCheck {
-                name: status.context,
-                source: "commit-status".to_string(),
-                conclusion: status.state,
-            },
-        );
+    for status in statuses {
+        let key = ("commit-status".to_string(), status.context.clone());
+        let candidate = RemoteCheck {
+            name: status.context,
+            source: "commit-status".to_string(),
+            conclusion: status.state,
+        };
+        if checks.insert(key, candidate).is_some() {
+            bail!("GitHub returned an ambiguous duplicate commit-status context");
+        }
     }
     let checks = checks.into_values().collect::<Vec<_>>();
     let succeeded = |value: &str| matches!(value, "success" | "neutral" | "skipped");
@@ -266,18 +250,24 @@ pub(super) async fn observe(
     let mut latest_reviews = BTreeMap::new();
     for review in reviews {
         if let Some(user) = review.user {
-            latest_reviews.insert(user.id, review.state.to_ascii_uppercase());
+            let state = review.state.to_ascii_uppercase();
+            if latest_reviews
+                .get(&user.id)
+                .is_none_or(|(id, _): &(u64, String)| *id < review.id)
+            {
+                latest_reviews.insert(user.id, (review.id, state));
+            }
         }
     }
     let approvals = latest_reviews
         .values()
-        .filter(|state| state.as_str() == "APPROVED")
+        .filter(|(_, state)| state == "APPROVED")
         .count()
         .try_into()
         .context("approval count overflow")?;
     let changes_requested = latest_reviews
         .values()
-        .filter(|state| state.as_str() == "CHANGES_REQUESTED")
+        .filter(|(_, state)| state == "CHANGES_REQUESTED")
         .count()
         .try_into()
         .context("review count overflow")?;
@@ -310,7 +300,11 @@ pub(super) async fn observe(
     Ok(observation)
 }
 
-fn verify_candidate(run: &PackageUpdateRunV1, draft: &PullRequestDraft) -> Result<()> {
+fn verify_candidate(
+    run: &PackageUpdateRunV1,
+    draft: &PullRequestDraft,
+    token_environment: &str,
+) -> Result<()> {
     let root = Path::new(&run.worktree);
     let output = Command::new("git")
         .arg("-C")
@@ -318,20 +312,25 @@ fn verify_candidate(run: &PackageUpdateRunV1, draft: &PullRequestDraft) -> Resul
         .args(["status", "--porcelain=v2", "-z"])
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
+        .env_remove(token_environment)
         .output()
         .context("checking candidate worktree cleanliness")?;
     if !output.status.success() || !output.stdout.is_empty() {
         bail!("candidate worktree is not clean");
     }
-    let head = git_text(root, &["rev-parse", "--verify", "HEAD^{commit}"])?;
-    let branch = git_text(root, &["branch", "--show-current"])?;
+    let head = git_text_without(
+        root,
+        &["rev-parse", "--verify", "HEAD^{commit}"],
+        token_environment,
+    )?;
+    let branch = git_text_without(root, &["branch", "--show-current"], token_environment)?;
     if head != draft.head || branch != run.branch || draft.branch != run.branch {
         bail!("publication draft no longer matches the exact candidate branch");
     }
     Ok(())
 }
 
-fn remote_head(repository: &Path, branch: &str) -> Result<Option<String>> {
+fn remote_head(repository: &Path, branch: &str, token_environment: &str) -> Result<Option<String>> {
     validate_ref_component(branch, "source branch")?;
     let reference = format!("refs/heads/{branch}");
     let output = Command::new("git")
@@ -340,6 +339,7 @@ fn remote_head(repository: &Path, branch: &str) -> Result<Option<String>> {
         .args(["ls-remote", "--heads", "origin", &reference])
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
+        .env_remove(token_environment)
         .output()
         .context("querying exact remote branch")?;
     if !output.status.success() {
@@ -362,13 +362,14 @@ fn remote_head(repository: &Path, branch: &str) -> Result<Option<String>> {
     Ok(Some(head.to_string()))
 }
 
-fn git_text(root: &Path, arguments: &[&str]) -> Result<String> {
+fn git_text_without(root: &Path, arguments: &[&str], environment: &str) -> Result<String> {
     let output = Command::new("git")
         .arg("-C")
         .arg(root)
         .args(arguments)
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
+        .env_remove(environment)
         .output()
         .with_context(|| format!("running git {}", arguments.join(" ")))?;
     if !output.status.success() {
@@ -521,6 +522,70 @@ async fn reconcile_pull_request(
     }
 }
 
+async fn all_check_runs(
+    client: &reqwest::Client,
+    owner: &str,
+    repository: &str,
+    head: &str,
+) -> Result<Vec<CheckRunResponse>> {
+    let path = format!("/repos/{owner}/{repository}/commits/{head}/check-runs?filter=latest");
+    paginated(
+        client,
+        &path,
+        Some("application/vnd.github+json"),
+        |page: CheckRunsResponse| page.check_runs,
+    )
+    .await
+}
+
+async fn all_statuses(
+    client: &reqwest::Client,
+    owner: &str,
+    repository: &str,
+    head: &str,
+) -> Result<Vec<CommitStatusResponse>> {
+    let path = format!("/repos/{owner}/{repository}/commits/{head}/status");
+    paginated(client, &path, None, |page: StatusResponse| page.statuses).await
+}
+
+async fn all_reviews(
+    client: &reqwest::Client,
+    owner: &str,
+    repository: &str,
+    pull_request: u64,
+) -> Result<Vec<ReviewResponse>> {
+    let path = format!("/repos/{owner}/{repository}/pulls/{pull_request}/reviews");
+    paginated(client, &path, None, |page: Vec<ReviewResponse>| page).await
+}
+
+async fn paginated<T, U, F>(
+    client: &reqwest::Client,
+    path: &str,
+    accept: Option<&str>,
+    project: F,
+) -> Result<Vec<U>>
+where
+    T: serde::de::DeserializeOwned,
+    F: Fn(T) -> Vec<U>,
+{
+    let mut output = Vec::new();
+    for page in 1..=MAX_REMOTE_PAGES {
+        let mut request = client
+            .get(format!("{GITHUB_API}{path}"))
+            .query(&[("per_page", REMOTE_PAGE_SIZE), ("page", page as usize)]);
+        if let Some(accept) = accept {
+            request = request.header(ACCEPT, accept);
+        }
+        let values = project(decode_response(request.send().await?).await?);
+        let complete = values.len() < REMOTE_PAGE_SIZE;
+        output.extend(values);
+        if complete {
+            return Ok(output);
+        }
+    }
+    bail!("GitHub collection exceeds the bounded pagination limit")
+}
+
 async fn get_json<T: serde::de::DeserializeOwned>(
     client: &reqwest::Client,
     path: &str,
@@ -647,6 +712,7 @@ struct CommitStatusResponse {
 
 #[derive(Deserialize)]
 struct ReviewResponse {
+    id: u64,
     state: String,
     user: Option<ReviewUser>,
 }

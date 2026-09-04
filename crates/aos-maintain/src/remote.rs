@@ -170,6 +170,16 @@ impl PullRequestObservationV1 {
             && self.approvals > 0
             && self.changes_requested == 0
     }
+
+    /// Reports whether an already merged exact head retained every required authorization.
+    #[must_use]
+    pub fn is_qualified_merge(&self) -> bool {
+        self.merged
+            && self.authorization_succeeded
+            && self.checks_succeeded
+            && self.approvals > 0
+            && self.changes_requested == 0
+    }
 }
 
 fn validate_github_url(value: &str, allow_pull: bool) -> Result<()> {
@@ -252,6 +262,12 @@ mod tests {
         };
         observation.validate().unwrap();
         assert!(observation.is_merge_eligible());
+        assert!(!observation.is_qualified_merge());
+        observation.merged = true;
+        observation.merge_commit = Some(object('b'));
+        assert!(observation.is_qualified_merge());
+        observation.merged = false;
+        observation.merge_commit = None;
         observation.authorization_succeeded = false;
         assert!(!observation.is_merge_eligible());
         observation.authorization_succeeded = true;
