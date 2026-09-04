@@ -363,9 +363,10 @@ pub use realization::{
     QemuHotForkTemplateIdentity, QemuHotForkTemplatePreparer, QemuLiveAttemptBackend,
     QemuLiveBackendShutdown, QemuNodeLauncher, QemuNodeRealizationExecutor,
     QemuNodeRealizationLauncher, QemuPreparedHotForkTemplate,
-    QemuPreparedThinWarmRestoreNodeLauncher, QemuRealizedNodeBackend,
-    QemuReplayValidationNodeLauncher, QemuThinProfileWarmRestoreNodeLauncher,
-    QemuVmLiveRealizationExecutor, QemuWarmRestoreNodeLauncher,
+    QemuPreparedHotForkTemplateShutdownFailure, QemuPreparedThinWarmRestoreNodeLauncher,
+    QemuRealizedNodeBackend, QemuReplayValidationNodeLauncher,
+    QemuThinProfileWarmRestoreNodeLauncher, QemuVmLiveRealizationExecutor,
+    QemuWarmRestoreNodeLauncher,
 };
 pub use setup_failure::{
     FailedQemuNodeSetup, QemuNodeSetup, QemuSchedulableNodeSetup, QemuSetupAbortError,

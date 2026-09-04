@@ -71,6 +71,8 @@
 //! installs target guards, and owns terminal quarantine handoff;
 //! [`hot_checkpoint_manager`] bounds and ranks those retained sources while
 //! producing generation-fenced exact/thin demotion plans;
+//! [`hot_checkpoint_fallback`] authenticates the exact immutable fallback and
+//! enforces a second check at the irreversible source-release boundary;
 //! [`managed_hot_checkpoint_pool`] composes those plans with exact source-pool
 //! authority and process-wide fork-rate admission;
 //! [`qemu_resource_guard`] binds one indivisible host process/filesystem owner
@@ -115,6 +117,8 @@ pub mod executor_service;
 pub mod executor_supervisor;
 pub mod executor_worker;
 mod guest_selectable;
+#[cfg(target_os = "linux")]
+pub mod hot_checkpoint_fallback;
 #[cfg(target_os = "linux")]
 pub mod hot_checkpoint_manager;
 #[cfg(target_os = "linux")]
@@ -345,6 +349,14 @@ pub use executor_worker::{
     stage_prepared_checkpoint_result,
 };
 pub use guest_selectable::GuestSelectableError;
+#[cfg(target_os = "linux")]
+pub use hot_checkpoint_fallback::{
+    AuthenticatedHotCheckpointDemotionError, AuthenticatedHotCheckpointDemotionSink,
+    HotCheckpointFallbackAuthenticator, HotCheckpointSourceDemoter,
+    QemuFixedHotCheckpointSourceDemoter, QemuFixedHotCheckpointSourceDemotionError,
+    QemuHotCheckpointFallbackAuthenticationError, QemuHotCheckpointFallbackAuthenticator,
+    QemuHotCheckpointThinFallbackCatalog,
+};
 #[cfg(target_os = "linux")]
 pub use hot_checkpoint_manager::{
     HotCheckpointAdmissionCommit, HotCheckpointAdmissionCommitError, HotCheckpointAdmissionPlan,
