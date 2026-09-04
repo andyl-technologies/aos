@@ -441,3 +441,26 @@ completes. The Git history remains authoritative for code details.
   freezes exact plan and lease bytes, emits core-defined signing messages for
   external protected signers, and rejects mismatched or invalid returned
   signatures without importing private keys.
+- `31f2937c0` — executable evidence toward `SBX-P0-04` and `SBX-P0-05`: a
+  hermetic nspawn isolation probe checks the exact systemd 259.8 boundary,
+  pre-PID1 argument filters, hostile-settings suppression, explicit user
+  mapping, prepared networking, and machined independence. The QEMU guest and
+  an existing control test both timed out before agent readiness with blank
+  serial output, so neither phase-0 task is claimed complete.
+- `fa3136b70` — foundation toward `SBX-BPROTO-04`, `SBX-STOR-01`, and
+  `SBX-NET-01`: the append-only signed-plan registry now assigns closed Storage
+  and Network audiences, protocols, verbs, target shapes, and independently
+  domain-separated authenticated record formats. Guardian remains deliberately
+  lease-direct rather than acquiring an invented broker-plan audience.
+- `e1db7c938` — executable evidence toward `SBX-P0-07`: the kernel-matched
+  OpenZFS 2.4 proof covers snapshot holds, clone identity, enforced quota,
+  reservation accounting, send/receive GUID continuity, and a real idmapped
+  ZFS mount. Its C probe and full system closure build, but the shared QEMU
+  guest-readiness timeout prevented runtime evidence; aarch64 also remains
+  outstanding, so the task stays open.
+- `7d1f57a5e` — foundation toward `SBX-BPROTO-04`, `SBX-HOST-01`, and
+  `SBX-MOUNT-01`: enabled host and mount brokers require the complete protected
+  authority set through fixed systemd credential handles. Only external
+  credential names enter the Nix closure, malformed or partial configuration
+  fails evaluation, and obvious cross-domain journal-key source reuse is
+  rejected.
