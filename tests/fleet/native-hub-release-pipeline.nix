@@ -188,9 +188,9 @@ in {
       import shlex
       import textwrap
 
-      AOS = "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt ${pkgs.aos}/bin/aos"
+      AOS = "NO_PROXY='*' no_proxy='*' SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt ${pkgs.aos}/bin/aos"
       APR = "${pkgs.aos.apr}/bin/apr"
-      CURL = "${pkgs.curl}/bin/curl --cacert /etc/ssl/certs/ca-certificates.crt"
+      CURL = "${pkgs.curl}/bin/curl --noproxy '*' --cacert /etc/ssl/certs/ca-certificates.crt"
       JQ = "${pkgs.jq}/bin/jq"
       NIX_STORE = "${pkgs.nix}/bin/nix-store"
       MOUNT = "${pkgs.util-linux}/bin/mount"
@@ -211,7 +211,7 @@ in {
           execute = machine.execute
           def wrapped(command, timeout=300):
               return execute(
-                  f"export PATH={shlex.quote(OPERATOR_PATH)}:$PATH\n" + command,
+                  f"export PATH={shlex.quote(OPERATOR_PATH)}:$PATH NO_PROXY='*' no_proxy='*'\n" + command,
                   timeout=timeout,
               )
           machine.execute = wrapped
