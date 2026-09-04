@@ -101,6 +101,7 @@ pub mod gitwrite;
 pub mod indexer;
 pub mod mirror;
 pub mod narlist;
+pub mod native_tls;
 pub mod probe;
 pub mod ratelimit;
 pub mod seed;

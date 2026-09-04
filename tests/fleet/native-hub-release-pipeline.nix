@@ -67,6 +67,7 @@
         ({lib, ...}: {
           aos.registry-hub = {
             inherit deploymentId externalUrl;
+            listen = "0.0.0.0:443";
             releaseReceiptKeyId = publicationKeyId;
             channelReceiptKeyId = channelKeyId;
             credentials = {
@@ -75,6 +76,8 @@
               releasePublicationKeys = "release-fleet-publication-keys";
               qualificationKeys = "release-fleet-qualification-keys";
               domainProbeSignerManifest = lib.mkForce "release-fleet-probe-signers";
+              tlsCertificate = "release-fleet-tls-certificate";
+              tlsPrivateKey = "release-fleet-tls-private-key";
             };
           };
           aos.security.pki.certificates = [caCertificate];
@@ -86,6 +89,8 @@
             C /run/credentials/@system/release-fleet-channel-seed 0600 root root - ${credentialFile "release-fleet-channel-seed" channelSeed}/value
             C /run/credentials/@system/release-fleet-publication-keys 0600 root root - ${publicationKeys}/value
             C /run/credentials/@system/release-fleet-qualification-keys 0600 root root - ${qualificationKeys}/value
+            C /run/credentials/@system/release-fleet-tls-certificate 0600 root root - ${serverCertificate}/value
+            C /run/credentials/@system/release-fleet-tls-private-key 0600 root root - ${serverPrivateKey}/value
             C /run/credentials/@system/release-fleet-probe-signers 0600 root root - ${credentialFile "release-fleet-probe-signers" (builtins.toJSON [
               {
                 endpointId = endpointId;
@@ -95,27 +100,6 @@
               }
             ])}/value
           '';
-          systemd.services.release-fleet-tls = {
-            description = "Test-only TLS edge for the native Hub release fleet";
-            after = ["aos-hub.service"];
-            serviceConfig = {
-              Type = "simple";
-              ExecStart = "${releaseTool}/bin/aos-release-fleet-fixture tls-proxy 0.0.0.0:443 127.0.0.1:8420 /run/credentials/release-fleet-tls.service/certificate /run/credentials/release-fleet-tls.service/private-key";
-              LoadCredential = [
-                "certificate:${serverCertificate}/value"
-                "private-key:${serverPrivateKey}/value"
-              ];
-              DynamicUser = true;
-              Restart = "on-failure";
-              NoNewPrivileges = true;
-              AmbientCapabilities = ["CAP_NET_BIND_SERVICE"];
-              CapabilityBoundingSet = ["CAP_NET_BIND_SERVICE"];
-              PrivateTmp = true;
-              ProtectSystem = "strict";
-              ProtectHome = true;
-              RestrictAddressFamilies = ["AF_INET" "AF_INET6"];
-            };
-          };
         })
       ];
     };
@@ -273,11 +257,6 @@ in {
               systemctl start aos-hub.service
           """), timeout=180)
           machine.succeed("systemctl is-active --quiet aos-hub.service")
-          machine.succeed(textwrap.dedent("""
-              systemctl start release-fleet-tls.service
-              sleep 1
-              systemctl is-active --quiet release-fleet-tls.service
-          """))
           machine.wait_until_succeeds(f"{CURL} -fsS {url}/healthz", timeout=120)
           machine.succeed(
               f'test "$({CURL} -fsS {url}/.well-known/aos-deployment)" = fleet-{suffix}-v1'

@@ -7,7 +7,6 @@ use std::env;
 use std::fs::{self, File};
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use anyhow::{Context as _, Result, bail};
 use aos_release::artifact::{ArtifactKind, ArtifactRecord, BundlePath, Compression};
@@ -39,10 +38,6 @@ use aos_release::state::{JournalEntryV1, ReleaseState, parse_journal};
 use base64::Engine as _;
 use ed25519_dalek::{Signer as _, SigningKey};
 use serde_json::json;
-use tokio::net::{TcpListener, TcpStream};
-use tokio_rustls::TlsAcceptor;
-use tokio_rustls::rustls::ServerConfig;
-use tokio_rustls::rustls::pki_types::CertificateDer;
 
 const RELEASE_SEED: [u8; 32] = [7; 32];
 const QUALIFICATION_SEED: [u8; 32] = [8; 32];
@@ -65,7 +60,6 @@ async fn main() -> Result<()> {
         Some("prepare") => prepare(&arguments[1..]),
         Some("sign-exchange-v1") => signer_exchange(),
         Some("completion") => completion(&arguments[1..]),
-        Some("tls-proxy") => tls_proxy(&arguments[1..]).await,
         None => qualification_executor().await,
         Some(command) => bail!("unknown release fleet fixture command: {command}"),
     }
@@ -584,43 +578,6 @@ fn completion(arguments: &[String]) -> Result<()> {
             .encode(key.sign(signature_digest.as_bytes()).to_bytes()),
     };
     write_new(&arguments[5], &canonical::to_vec(&signed)?)
-}
-
-async fn tls_proxy(arguments: &[String]) -> Result<()> {
-    if arguments.len() != 4 {
-        bail!("usage: tls-proxy LISTEN UPSTREAM CERTIFICATE PRIVATE_KEY");
-    }
-    tokio_rustls::rustls::crypto::aws_lc_rs::default_provider()
-        .install_default()
-        .map_err(|_| {
-            anyhow::anyhow!("a process-wide Rustls crypto provider is already installed")
-        })?;
-    let certificates = rustls_pemfile::certs(&mut BufReader::new(File::open(&arguments[2])?))
-        .collect::<std::io::Result<Vec<CertificateDer<'static>>>>()?;
-    let key = rustls_pemfile::private_key(&mut BufReader::new(File::open(&arguments[3])?))?
-        .context("TLS fixture private key is absent")?;
-    let config = ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(certificates, key)?;
-    let acceptor = TlsAcceptor::from(Arc::new(config));
-    let listener = TcpListener::bind(&arguments[0]).await?;
-    loop {
-        let (socket, _) = listener.accept().await?;
-        let acceptor = acceptor.clone();
-        let upstream = arguments[1].clone();
-        tokio::spawn(async move {
-            let result = async {
-                let mut client = acceptor.accept(socket).await?;
-                let mut server = TcpStream::connect(upstream).await?;
-                tokio::io::copy_bidirectional(&mut client, &mut server).await?;
-                Result::<()>::Ok(())
-            }
-            .await;
-            if let Err(error) = result {
-                eprintln!("fleet TLS proxy connection failed: {error:#}");
-            }
-        });
-    }
 }
 
 fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
