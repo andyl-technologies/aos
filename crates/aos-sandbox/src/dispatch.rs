@@ -741,29 +741,36 @@ fn encode_varint(mut value: u64, output: &mut [u8; 10]) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use aos_sandbox_core::format::{encode_signature, encode_trust_policy};
+    use aos_sandbox_core::format::{encode_ownership_lease, encode_signature, encode_trust_policy};
     use aos_sandbox_core::model::{
-        KeyReference, KeyUsage, Signature, SignatureBytes, SignaturePurpose, SignatureStatement,
-        StableKeyId, TrustPolicy,
+        KeyReference, KeyUsage, SignaturePurpose, SignatureStatement, StableKeyId, TrustPolicy,
     };
     use aos_sandbox_core::{
-        AssignmentEpoch, BrokerAssignment, BrokerAudience, BrokerGrant, DesiredGeneration,
-        IncarnationId, LeaseAssignment, MediaType, NodeId, OwnershipLease, PortableMediaType,
-        ProtocolVersion, RevocationScopeId, SandboxId, TrustScopeId, descriptor_for_bytes,
-        sign_statement,
+        AssignmentEpoch, BrokerAssignment, BrokerAudience, BrokerGrant, DecodeLimits,
+        DesiredGeneration, IncarnationId, LeaseAssignment, MediaType, NodeId, OwnershipLease,
+        OwnershipLeaseTrustAnchor, PortableMediaType, ProtocolVersion, RevocationScopeId,
+        SandboxId, TrustScopeId, descriptor_for_bytes, sign_statement,
     };
     use aos_sandbox_protocol::decode_request_envelope;
     use ed25519_dalek::SigningKey;
 
-    use crate::{BrokerPlanPreparation, ReturnedSignature, SigningAuthority};
+    use crate::{
+        BrokerPlanPreparation, OwnershipAuthorityVerifier, OwnershipClaimV1,
+        OwnershipTransactionReceiptV1, ReturnedSignature, SigningAuthority,
+        UnverifiedOwnershipLeaseResponse,
+    };
 
     use super::*;
 
     struct Fixture {
         template: BrokerDispatchTemplateV1,
-        lease_signature: Vec<u8>,
         assignment: BrokerAssignment,
         node: NodeId,
+        lease_key: SigningKey,
+        lease_authority: KeyReference,
+        lease_scope: TrustScopeId,
+        lease_policy_descriptor: aos_sandbox_core::ObjectDescriptor,
+        lease_verifier: OwnershipAuthorityVerifier,
     }
 
     fn key_reference(name: &str, usage: KeyUsage, key: &SigningKey) -> KeyReference {
@@ -850,30 +857,30 @@ mod tests {
             .unwrap_or_else(|error| panic!("test preparation failed: {error}"));
         let signature = sign_statement(preparation.signing_request().statement().clone(), &key)
             .unwrap_or_else(|error| panic!("test signing failed: {error}"));
-        let lease_subject = descriptor_for_bytes(
-            MediaType::new(PortableMediaType::OwnershipLease.as_str().to_owned())
-                .unwrap_or_else(|error| panic!("test lease media type failed: {error}")),
-            b"test lease",
-        );
-        let lease_policy = descriptor_for_bytes(
+        let lease_scope = TrustScopeId::from_bytes([31; 16]);
+        let lease_policy = TrustPolicy::new(
+            lease_scope,
+            SignaturePurpose::OwnershipLease,
+            vec![lease_authority.clone()],
+            Vec::new(),
+        )
+        .unwrap_or_else(|error| panic!("test lease policy failed: {error}"));
+        let lease_policy_bytes = encode_trust_policy(&lease_policy);
+        let lease_policy_descriptor = descriptor_for_bytes(
             MediaType::new(PortableMediaType::TrustPolicy.as_str().to_owned())
                 .unwrap_or_else(|error| panic!("test policy media type failed: {error}")),
-            b"test policy",
+            &lease_policy_bytes,
         );
-        let lease_statement = SignatureStatement::new(
-            lease_subject,
-            TrustScopeId::from_bytes([31; 16]),
-            lease_authority,
-            SignaturePurpose::OwnershipLease,
-            100,
-            Some(200),
-            lease_policy,
+        let lease_anchor = OwnershipLeaseTrustAnchor::from_trusted_configuration(
+            lease_policy_bytes,
+            lease_policy_descriptor.clone(),
+            lease_scope,
+            lease_authority.clone(),
+            lease_key.verifying_key().to_bytes(),
+            DecodeLimits::default(),
         )
-        .unwrap_or_else(|error| panic!("test lease statement failed: {error}"));
-        let lease_signature = encode_signature(&Signature::new(
-            lease_statement,
-            SignatureBytes::new([0; 64]),
-        ));
+        .unwrap_or_else(|error| panic!("test lease anchor failed: {error}"));
+        let lease_verifier = OwnershipAuthorityVerifier::new(lease_anchor, lease_authority.clone());
         let signed_plan = preparation
             .complete(ReturnedSignature::Bytes(signature.signature()), 150)
             .unwrap_or_else(|error| panic!("test completion failed: {error}"));
@@ -891,23 +898,33 @@ mod tests {
         .unwrap_or_else(|error| panic!("test template failed: {error}"));
         Fixture {
             template,
-            lease_signature,
             assignment,
             node,
+            lease_key,
+            lease_authority,
+            lease_scope,
+            lease_policy_descriptor,
+            lease_verifier,
         }
     }
 
-    fn lease(fixture: &Fixture, generation: u64, expiry: i64) -> SignedOwnershipLease {
-        let assignment = LeaseAssignment::new(
-            fixture.assignment.sandbox(),
-            fixture.assignment.incarnation(),
-            fixture.assignment.epoch(),
-            fixture.assignment.digest(),
+    fn lease_for(
+        fixture: &Fixture,
+        assignment: BrokerAssignment,
+        node: NodeId,
+        generation: u64,
+        expiry: i64,
+    ) -> SignedOwnershipLease {
+        let lease_assignment = LeaseAssignment::new(
+            assignment.sandbox(),
+            assignment.incarnation(),
+            assignment.epoch(),
+            assignment.digest(),
         )
         .unwrap_or_else(|error| panic!("test lease assignment failed: {error}"));
         let lease = OwnershipLease::new(
-            assignment,
-            fixture.node,
+            lease_assignment,
+            node,
             generation,
             110,
             expiry,
@@ -915,7 +932,80 @@ mod tests {
             [u8::try_from(generation).unwrap_or(u8::MAX); 16],
         )
         .unwrap_or_else(|error| panic!("test lease failed: {error}"));
-        SignedOwnershipLease::from_test_artifacts(lease, fixture.lease_signature.clone())
+        let lease_bytes = encode_ownership_lease(&lease);
+        let lease_descriptor = descriptor_for_bytes(
+            MediaType::new(PortableMediaType::OwnershipLease.as_str().to_owned())
+                .unwrap_or_else(|error| panic!("test lease media type failed: {error}")),
+            &lease_bytes,
+        );
+        let lease_statement = SignatureStatement::new(
+            lease_descriptor,
+            fixture.lease_scope,
+            fixture.lease_authority.clone(),
+            SignaturePurpose::OwnershipLease,
+            110,
+            Some(expiry),
+            fixture.lease_policy_descriptor.clone(),
+        )
+        .unwrap_or_else(|error| panic!("test lease statement failed: {error}"));
+        let lease_signature = sign_statement(lease_statement, &fixture.lease_key)
+            .unwrap_or_else(|error| panic!("test lease signature failed: {error}"));
+        let claim = OwnershipClaimV1::acquire(
+            [u8::try_from(generation).unwrap_or(u8::MAX).max(1); 16],
+            lease_assignment,
+            assignment.desired_generation(),
+            node,
+            100,
+        )
+        .unwrap_or_else(|error| panic!("test ownership claim failed: {error}"));
+        let receipt = OwnershipTransactionReceiptV1::new(
+            fixture.lease_authority.clone(),
+            &claim,
+            &lease_bytes,
+        )
+        .unwrap_or_else(|error| panic!("test ownership receipt failed: {error}"));
+        let receipt_descriptor = descriptor_for_bytes(
+            MediaType::new(
+                PortableMediaType::OwnershipTransactionReceipt
+                    .as_str()
+                    .to_owned(),
+            )
+            .unwrap_or_else(|error| panic!("test receipt media type failed: {error}")),
+            receipt.canonical_bytes(),
+        );
+        let receipt_statement = SignatureStatement::new(
+            receipt_descriptor,
+            fixture.lease_scope,
+            fixture.lease_authority.clone(),
+            SignaturePurpose::OwnershipLease,
+            110,
+            Some(expiry),
+            fixture.lease_policy_descriptor.clone(),
+        )
+        .unwrap_or_else(|error| panic!("test receipt statement failed: {error}"));
+        let receipt_signature = sign_statement(receipt_statement, &fixture.lease_key)
+            .unwrap_or_else(|error| panic!("test receipt signature failed: {error}"));
+        let response = UnverifiedOwnershipLeaseResponse::from_transport(
+            lease_bytes,
+            encode_signature(&lease_signature),
+            receipt.canonical_bytes().to_vec(),
+            encode_signature(&receipt_signature),
+        )
+        .unwrap_or_else(|error| panic!("test response failed: {error}"));
+        fixture
+            .lease_verifier
+            .verify_response(&claim, response, &clock(150, 1_000))
+            .unwrap_or_else(|error| panic!("test response verification failed: {error}"))
+    }
+
+    fn lease(fixture: &Fixture, generation: u64, expiry: i64) -> SignedOwnershipLease {
+        lease_for(
+            fixture,
+            fixture.assignment,
+            fixture.node,
+            generation,
+            expiry,
+        )
     }
 
     fn clock(wall: i64, boottime: u64) -> RawPairedClockSample {
@@ -1098,10 +1188,15 @@ mod tests {
             base.assignment.digest(),
         )
         .unwrap_or_else(|error| panic!("test other assignment failed: {error}"));
-        let other_lease = OwnershipLease::new(other_assignment, base.node, 1, 110, 190, 5, [1; 16])
-            .unwrap_or_else(|error| panic!("test other lease failed: {error}"));
-        let wrong_assignment =
-            SignedOwnershipLease::from_test_artifacts(other_lease, base.lease_signature.clone());
+        let other_assignment = BrokerAssignment::new(
+            other_assignment.sandbox(),
+            other_assignment.incarnation(),
+            other_assignment.epoch(),
+            base.assignment.desired_generation(),
+            other_assignment.digest(),
+        )
+        .unwrap_or_else(|error| panic!("test broker assignment failed: {error}"));
+        let wrong_assignment = lease_for(&base, other_assignment, base.node, 1, 190);
         assert_eq!(
             BrokerDispatchAttemptV1::new(
                 &base.template,

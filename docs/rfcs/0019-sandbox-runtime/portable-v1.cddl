@@ -342,3 +342,13 @@ ownership-lease-v1 = [
   maximum-clock-skew-seconds: u64,
   renewal-nonce: id,
 ]
+
+; application/vnd.aos.sandbox.ownership-transaction-receipt.v1
+; This registered object is NOT CBOR. Its normative fixed binary layout is:
+; magic "AOSOTR1\0" (8 bytes), receipt-version u16be, protocol-code u16be,
+; protocol-major u16be, protocol-minor u16be, action u8, reserved zero bytes[7],
+; stable-key-id-length u16be, valid UTF-8 stable-key-id bytes[1..255], authority-generation
+; u64be, authority-public-key-sha256 bytes[32], request-id bytes[16],
+; claim-digest bytes[32], lease-size u64be, lease-digest bytes[32].
+; The exact length is therefore 155..409 bytes. CDDL does not redefine this
+; byte-oriented format as a CBOR byte string.

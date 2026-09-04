@@ -35,8 +35,8 @@ pub use ownership_authority::{
     DurableOwnershipAuthority, DurableOwnershipAuthorityError, DurableOwnershipBeginOutcome,
     ExpectedOwnershipLease, OwnershipAuthority, OwnershipAuthorityError,
     OwnershipAuthorityVerifier, OwnershipClaimAction, OwnershipClaimError, OwnershipClaimV1,
-    OwnershipLeaseAcquisitionError, ProtectedOwnershipClockError, SignedOwnershipLease,
-    UnverifiedOwnershipLeaseResponse,
+    OwnershipLeaseAcquisitionError, OwnershipTransactionReceiptV1, ProtectedOwnershipClockError,
+    RecoveredOwnershipLease, SignedOwnershipLease, UnverifiedOwnershipLeaseResponse,
 };
 pub use publication::{
     AuthorityPublicationError, AuthorityPublicationOutcome, AuthorityPublicationProposalV1,

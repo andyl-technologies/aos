@@ -55,6 +55,7 @@ pub use ownership_lease::{
     PendingLocalLeaseRecord, RawClockProvenance, RawPairedClockSample, VerifiedOwnershipLease,
     authenticate_historical_ownership_lease, decode_local_lease_record, encode_local_lease_record,
     intersect_broker_admission, prepare_local_lease_record, verify_ownership_lease,
+    verify_ownership_transaction_receipt_signature,
 };
 pub use registry::{
     DescriptorRole, PortableMediaType, ProtocolId, ProtocolVersion, RegistryError,

@@ -91,6 +91,8 @@ pub enum PortableMediaType {
     BrokerAuthorizationPlan,
     /// One ownership-authority-signed node lease.
     OwnershipLease,
+    /// One ownership-authority-signed claim-to-lease transaction receipt.
+    OwnershipTransactionReceipt,
 }
 
 impl PortableMediaType {
@@ -114,6 +116,9 @@ impl PortableMediaType {
                 "application/vnd.aos.sandbox.broker-authorization-plan.v1+cbor"
             }
             Self::OwnershipLease => "application/vnd.aos.sandbox.ownership-lease.v1+cbor",
+            Self::OwnershipTransactionReceipt => {
+                "application/vnd.aos.sandbox.ownership-transaction-receipt.v1"
+            }
         }
     }
 
@@ -134,7 +139,7 @@ impl PortableMediaType {
     }
 }
 
-const ALL_MEDIA_TYPES: [PortableMediaType; 14] = [
+const ALL_MEDIA_TYPES: [PortableMediaType; 15] = [
     PortableMediaType::Content,
     PortableMediaType::Directory,
     PortableMediaType::Tree,
@@ -149,6 +154,7 @@ const ALL_MEDIA_TYPES: [PortableMediaType; 14] = [
     PortableMediaType::Signature,
     PortableMediaType::BrokerAuthorizationPlan,
     PortableMediaType::OwnershipLease,
+    PortableMediaType::OwnershipTransactionReceipt,
 ];
 
 /// Identifies the semantic field in which a descriptor appears.
@@ -316,7 +322,10 @@ pub fn validate_signature_subject(
         SignaturePurpose::BrokerAuthorization => {
             matches!(kind, PortableMediaType::BrokerAuthorizationPlan)
         }
-        SignaturePurpose::OwnershipLease => matches!(kind, PortableMediaType::OwnershipLease),
+        SignaturePurpose::OwnershipLease => matches!(
+            kind,
+            PortableMediaType::OwnershipLease | PortableMediaType::OwnershipTransactionReceipt
+        ),
     };
     if allowed {
         Ok(kind)
@@ -376,6 +385,8 @@ pub enum ProtocolId {
     MountBroker,
     /// Node-local root network broker.
     NetworkBroker,
+    /// Transport-neutral exclusive ownership authority.
+    OwnershipAuthority,
     /// Per-assignment ownership guardian.
     Guardian,
     /// Authenticated sandbox guest-agent channel.
@@ -445,6 +456,7 @@ const fn protocol_version(protocol: ProtocolId) -> ProtocolVersion {
         | ProtocolId::NetworkBroker => ProtocolVersion::new(1, 1),
         ProtocolId::PublicApi
         | ProtocolId::CoordinatorNode
+        | ProtocolId::OwnershipAuthority
         | ProtocolId::Guardian
         | ProtocolId::GuestAgent => ProtocolVersion::new(1, 0),
     }
@@ -506,6 +518,13 @@ mod tests {
             ),
             Ok(PortableMediaType::OwnershipLease)
         );
+        assert_eq!(
+            validate_signature_subject(
+                SignaturePurpose::OwnershipLease,
+                &descriptor(PortableMediaType::OwnershipTransactionReceipt)
+            ),
+            Ok(PortableMediaType::OwnershipTransactionReceipt)
+        );
         assert!(matches!(
             validate_signature_subject(
                 SignaturePurpose::OwnershipLease,
@@ -529,6 +548,10 @@ mod tests {
             negotiate_protocol(ProtocolId::HostBroker, ProtocolVersion::new(1, 1)),
             Ok(ProtocolVersion::new(1, 1))
         );
+        assert_eq!(
+            negotiate_protocol(ProtocolId::OwnershipAuthority, ProtocolVersion::new(1, 0)),
+            Ok(ProtocolVersion::new(1, 0))
+        );
         assert!(matches!(
             negotiate_protocol(ProtocolId::MountBroker, ProtocolVersion::new(1, 2)),
             Err(RegistryError::IncompatibleProtocol { .. })
@@ -539,6 +562,10 @@ mod tests {
         ));
         assert!(matches!(
             negotiate_protocol(ProtocolId::CoordinatorNode, ProtocolVersion::new(1, 1)),
+            Err(RegistryError::IncompatibleProtocol { .. })
+        ));
+        assert!(matches!(
+            negotiate_protocol(ProtocolId::OwnershipAuthority, ProtocolVersion::new(1, 1)),
             Err(RegistryError::IncompatibleProtocol { .. })
         ));
     }

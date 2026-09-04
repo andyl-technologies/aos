@@ -239,6 +239,7 @@ fn protocol_code(protocol: ProtocolId) -> u64 {
         ProtocolId::NetworkBroker => 3,
         ProtocolId::PublicApi
         | ProtocolId::CoordinatorNode
+        | ProtocolId::OwnershipAuthority
         | ProtocolId::Guardian
         | ProtocolId::GuestAgent => unreachable!("broker plans use only broker protocols"),
     }

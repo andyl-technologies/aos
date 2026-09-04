@@ -18,13 +18,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use aos_sandbox_core::format::{decode_signature, encode_signature};
 use aos_sandbox_core::model::KeyReference;
-use aos_sandbox_core::{
-    BrokerAssignment, DecodeLimits, DesiredGeneration, DurableHistoricalWallClockInstant,
-    HistoricalOwnershipLeaseExpectation, IncarnationId, LeaseAssignment, NodeId, ObjectDigest,
-    OwnershipLease, OwnershipLeaseTrustAnchor, RawPairedClockSample, SandboxId,
-    VerifiedOwnershipLease, authenticate_historical_ownership_lease, verify_ownership_lease,
+use aos_sandbox_core::{ObjectDigest, RawPairedClockSample, SandboxId};
+pub use aos_sandbox_ownership_protocol::{
+    CLAIM_BYTES, ExpectedOwnershipLease, OwnershipAuthority, OwnershipAuthorityError,
+    OwnershipAuthorityVerifier, OwnershipClaimAction, OwnershipClaimError, OwnershipClaimV1,
+    OwnershipLeaseAcquisitionError, OwnershipTransactionReceiptV1, RecoveredOwnershipLease,
+    SignedOwnershipLease, UnverifiedOwnershipLeaseResponse,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -33,25 +33,24 @@ use crate::journal::{
     RecoveryReport,
 };
 
-const CLAIM_MAGIC: &[u8; 8] = b"AOSOCLM1";
-const CLAIM_VERSION: u16 = 1;
-const CLAIM_BYTES: usize = 176;
-const CLAIM_DIGEST_DOMAIN: &[u8] = b"aos-sandbox-ownership-claim-v1\0";
-const MAXIMUM_REQUESTED_DURATION_SECONDS: u64 = 86_400;
 const MAXIMUM_LEASE_BYTES: usize = 64 * 1024;
 const MAXIMUM_SIGNATURE_BYTES: usize = 64 * 1024;
-const DURABLE_ENTRY_MAGIC: &[u8; 8] = b"AOSOWNE1";
-const DURABLE_CURRENT_MAGIC: &[u8; 8] = b"AOSOWNC1";
-const DURABLE_FORMAT_VERSION: u16 = 1;
-const DURABLE_ENTRY_PREFIX: &[u8] = b"ownership-entry-v1:";
-const DURABLE_CURRENT_PREFIX: &[u8] = b"ownership-current-v1:";
-const MAXIMUM_DURABLE_ENTRY_BYTES: usize = 132 * 1024;
+const DURABLE_ENTRY_MAGIC: &[u8; 8] = b"AOSOWNE2";
+const DURABLE_CURRENT_MAGIC: &[u8; 8] = b"AOSOWNC2";
+const LEGACY_DURABLE_ENTRY_MAGIC: &[u8; 8] = b"AOSOWNE1";
+const LEGACY_DURABLE_CURRENT_MAGIC: &[u8; 8] = b"AOSOWNC1";
+const DURABLE_FORMAT_VERSION: u16 = 2;
+const DURABLE_ENTRY_PREFIX: &[u8] = b"ownership-entry-v2:";
+const DURABLE_CURRENT_PREFIX: &[u8] = b"ownership-current-v2:";
+const LEGACY_DURABLE_ENTRY_PREFIX: &[u8] = b"ownership-entry-v1:";
+const LEGACY_DURABLE_CURRENT_PREFIX: &[u8] = b"ownership-current-v1:";
+const MAXIMUM_DURABLE_ENTRY_BYTES: usize = 196 * 1024;
 const MAXIMUM_DURABLE_ENTRIES: usize = 256;
 const MAXIMUM_DURABLE_CURRENT_POINTERS: usize = MAXIMUM_DURABLE_ENTRIES;
 const MAXIMUM_DURABLE_RECORDS: usize = MAXIMUM_DURABLE_ENTRIES + MAXIMUM_DURABLE_CURRENT_POINTERS;
 const MAXIMUM_DURABLE_KEY_BYTES: usize = 64;
-// The fixed entry envelope is 322 bytes plus a bounded 255-byte stable key ID.
-const MAXIMUM_DURABLE_INTENT_BYTES: usize = 577;
+// The fixed entry envelope is 330 bytes plus a bounded 255-byte stable key ID.
+const MAXIMUM_DURABLE_INTENT_BYTES: usize = 585;
 const MAXIMUM_DURABLE_INTENT_RECORD_BYTES: usize =
     7 + MAXIMUM_DURABLE_KEY_BYTES + MAXIMUM_DURABLE_INTENT_BYTES;
 const MAXIMUM_DURABLE_RECORD_BYTES: usize =
@@ -71,664 +70,8 @@ const MAXIMUM_DURABLE_JOURNAL_BYTES: u64 = 72
             + MAXIMUM_DURABLE_KEY_BYTES as u64
             + 657);
 const MAXIMUM_DURABLE_TRANSACTIONS: usize = MAXIMUM_DURABLE_ENTRIES * 2;
-const BEGIN_TRANSACTION_DOMAIN: &[u8] = b"aos-sandbox-ownership-intent-transaction-v1\0";
-const COMPLETION_TRANSACTION_DOMAIN: &[u8] = b"aos-sandbox-ownership-completion-transaction-v1\0";
-
-/// Selects a first acquisition or compare-and-swap renewal.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum OwnershipClaimAction {
-    /// Acquires an assignment that has no prior lease in this authority domain.
-    Acquire,
-    /// Renews exactly the currently fenced lease.
-    Renew,
-}
-
-impl OwnershipClaimAction {
-    const fn code(self) -> u8 {
-        match self {
-            Self::Acquire => 1,
-            Self::Renew => 2,
-        }
-    }
-
-    fn from_code(value: u8) -> Result<Self, OwnershipClaimError> {
-        match value {
-            1 => Ok(Self::Acquire),
-            2 => Ok(Self::Renew),
-            _ => Err(OwnershipClaimError::InvalidEncoding),
-        }
-    }
-}
-
-/// Identifies the exact prior lease a renewal must replace.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ExpectedOwnershipLease {
-    generation: u64,
-    digest: ObjectDigest,
-}
-
-impl ExpectedOwnershipLease {
-    /// Constructs a non-sentinel compare-and-swap fence.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`OwnershipClaimError::InvalidExpectedLease`] for generation
-    /// zero or the all-zero digest.
-    pub fn new(generation: u64, digest: ObjectDigest) -> Result<Self, OwnershipClaimError> {
-        if generation == 0 || digest.as_bytes() == &[0; 32] {
-            Err(OwnershipClaimError::InvalidExpectedLease)
-        } else {
-            Ok(Self { generation, digest })
-        }
-    }
-
-    /// Returns the expected current lease generation.
-    #[must_use]
-    pub const fn generation(self) -> u64 {
-        self.generation
-    }
-
-    /// Returns the expected current signed-lease digest.
-    #[must_use]
-    pub const fn digest(self) -> ObjectDigest {
-        self.digest
-    }
-}
-
-/// Carries one canonical linearizable ownership acquire or renew claim.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct OwnershipClaimV1 {
-    action: OwnershipClaimAction,
-    request_id: [u8; 16],
-    assignment: LeaseAssignment,
-    desired_generation: DesiredGeneration,
-    node: NodeId,
-    expected_prior: Option<ExpectedOwnershipLease>,
-    requested_maximum_seconds: u64,
-    canonical_bytes: [u8; CLAIM_BYTES],
-    digest: ObjectDigest,
-}
-
-impl OwnershipClaimV1 {
-    /// Constructs a first-acquisition claim without issuer-controlled facts.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`OwnershipClaimError`] for a zero request or node identity, or
-    /// a zero/oversized maximum duration.
-    pub fn acquire(
-        request_id: [u8; 16],
-        assignment: LeaseAssignment,
-        desired_generation: DesiredGeneration,
-        node: NodeId,
-        requested_maximum_seconds: u64,
-    ) -> Result<Self, OwnershipClaimError> {
-        Self::new(
-            OwnershipClaimAction::Acquire,
-            request_id,
-            assignment,
-            desired_generation,
-            node,
-            None,
-            requested_maximum_seconds,
-        )
-    }
-
-    /// Constructs a renewal claim fenced to one exact prior signed lease.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`OwnershipClaimError`] for a zero request or node identity, a
-    /// zero/oversized maximum duration, or a sentinel expected-prior fence.
-    pub fn renew(
-        request_id: [u8; 16],
-        assignment: LeaseAssignment,
-        desired_generation: DesiredGeneration,
-        node: NodeId,
-        expected_prior: ExpectedOwnershipLease,
-        requested_maximum_seconds: u64,
-    ) -> Result<Self, OwnershipClaimError> {
-        Self::new(
-            OwnershipClaimAction::Renew,
-            request_id,
-            assignment,
-            desired_generation,
-            node,
-            Some(expected_prior),
-            requested_maximum_seconds,
-        )
-    }
-
-    /// Decodes the exact fixed-width service representation.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`OwnershipClaimError`] for wrong framing, reserved bytes,
-    /// unknown actions, sentinels, or inconsistent action/prior fields.
-    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, OwnershipClaimError> {
-        if bytes.len() != CLAIM_BYTES {
-            return Err(OwnershipClaimError::InvalidEncoding);
-        }
-        let mut cursor = 0;
-        if take::<8>(bytes, &mut cursor)? != *CLAIM_MAGIC
-            || u16::from_be_bytes(take::<2>(bytes, &mut cursor)?) != CLAIM_VERSION
-        {
-            return Err(OwnershipClaimError::InvalidEncoding);
-        }
-        let action = OwnershipClaimAction::from_code(take::<1>(bytes, &mut cursor)?[0])?;
-        if take::<5>(bytes, &mut cursor)? != [0; 5] {
-            return Err(OwnershipClaimError::InvalidEncoding);
-        }
-        let request_id = take::<16>(bytes, &mut cursor)?;
-        let assignment = LeaseAssignment::new(
-            SandboxId::from_bytes(take::<16>(bytes, &mut cursor)?),
-            IncarnationId::from_bytes(take::<16>(bytes, &mut cursor)?),
-            aos_sandbox_core::AssignmentEpoch::new(u64::from_be_bytes(take::<8>(
-                bytes,
-                &mut cursor,
-            )?)),
-            ObjectDigest::from_bytes(take::<32>(bytes, &mut cursor)?),
-        )
-        .map_err(|_| OwnershipClaimError::InvalidEncoding)?;
-        let node = NodeId::from_bytes(take::<16>(bytes, &mut cursor)?);
-        let desired_generation =
-            DesiredGeneration::new(u64::from_be_bytes(take::<8>(bytes, &mut cursor)?));
-        let expected_generation = u64::from_be_bytes(take::<8>(bytes, &mut cursor)?);
-        let expected_digest = ObjectDigest::from_bytes(take::<32>(bytes, &mut cursor)?);
-        let requested_maximum_seconds = u64::from_be_bytes(take::<8>(bytes, &mut cursor)?);
-        if cursor != bytes.len() {
-            return Err(OwnershipClaimError::InvalidEncoding);
-        }
-        let expected_prior = match action {
-            OwnershipClaimAction::Acquire
-                if expected_generation == 0 && expected_digest.as_bytes() == &[0; 32] =>
-            {
-                None
-            }
-            OwnershipClaimAction::Renew => Some(ExpectedOwnershipLease::new(
-                expected_generation,
-                expected_digest,
-            )?),
-            OwnershipClaimAction::Acquire => return Err(OwnershipClaimError::InvalidExpectedLease),
-        };
-        Self::new(
-            action,
-            request_id,
-            assignment,
-            desired_generation,
-            node,
-            expected_prior,
-            requested_maximum_seconds,
-        )
-    }
-
-    fn new(
-        action: OwnershipClaimAction,
-        request_id: [u8; 16],
-        assignment: LeaseAssignment,
-        desired_generation: DesiredGeneration,
-        node: NodeId,
-        expected_prior: Option<ExpectedOwnershipLease>,
-        requested_maximum_seconds: u64,
-    ) -> Result<Self, OwnershipClaimError> {
-        if request_id == [0; 16]
-            || node.as_bytes() == &[0; 16]
-            || desired_generation.get() == 0
-            || requested_maximum_seconds == 0
-            || requested_maximum_seconds > MAXIMUM_REQUESTED_DURATION_SECONDS
-            || (action == OwnershipClaimAction::Acquire) != expected_prior.is_none()
-        {
-            return Err(OwnershipClaimError::InvalidClaim);
-        }
-        let canonical_bytes = encode_claim(
-            action,
-            request_id,
-            assignment,
-            desired_generation,
-            node,
-            expected_prior,
-            requested_maximum_seconds,
-        );
-        let digest = claim_digest(&canonical_bytes);
-        Ok(Self {
-            action,
-            request_id,
-            assignment,
-            desired_generation,
-            node,
-            expected_prior,
-            requested_maximum_seconds,
-            canonical_bytes,
-            digest,
-        })
-    }
-
-    /// Returns whether this claim acquires or renews ownership.
-    #[must_use]
-    pub const fn action(&self) -> OwnershipClaimAction {
-        self.action
-    }
-
-    /// Returns the stable idempotency identity for the authority transaction.
-    #[must_use]
-    pub const fn request_id(&self) -> &[u8; 16] {
-        &self.request_id
-    }
-
-    /// Returns immutable assignment semantics.
-    #[must_use]
-    pub const fn assignment(&self) -> LeaseAssignment {
-        self.assignment
-    }
-
-    /// Returns the desired generation used when constructing broker fences.
-    #[must_use]
-    pub const fn desired_generation(&self) -> DesiredGeneration {
-        self.desired_generation
-    }
-
-    /// Returns the sole node requesting exclusive ownership.
-    #[must_use]
-    pub const fn node(&self) -> NodeId {
-        self.node
-    }
-
-    /// Returns the exact prior lease required by a renewal.
-    #[must_use]
-    pub const fn expected_prior(&self) -> Option<ExpectedOwnershipLease> {
-        self.expected_prior
-    }
-
-    /// Returns the maximum lease interval the controller will accept.
-    #[must_use]
-    pub const fn requested_maximum_seconds(&self) -> u64 {
-        self.requested_maximum_seconds
-    }
-
-    /// Returns the exact fixed-width future service request bytes.
-    #[must_use]
-    pub const fn canonical_bytes(&self) -> &[u8; CLAIM_BYTES] {
-        &self.canonical_bytes
-    }
-
-    /// Returns the domain-separated idempotency digest of the complete claim.
-    #[must_use]
-    pub const fn digest(&self) -> ObjectDigest {
-        self.digest
-    }
-
-    fn broker_assignment(&self) -> Result<BrokerAssignment, OwnershipLeaseAcquisitionError> {
-        BrokerAssignment::new(
-            self.assignment.sandbox(),
-            self.assignment.incarnation(),
-            self.assignment.epoch(),
-            self.desired_generation,
-            self.assignment.digest(),
-        )
-        .map_err(|_| OwnershipLeaseAcquisitionError::InvalidIssuerResponse)
-    }
-}
-
-/// Reports malformed ownership claims before they cross an authority boundary.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum OwnershipClaimError {
-    /// A required field is a sentinel, duration is out of bounds, or action shape is invalid.
-    #[error("ownership claim fields are invalid")]
-    InvalidClaim,
-    /// The fixed-width representation has wrong magic, version, size, or reserved bytes.
-    #[error("ownership claim encoding is invalid")]
-    InvalidEncoding,
-    /// A renewal prior is absent or sentinel, or acquire unexpectedly supplies one.
-    #[error("ownership claim expected-prior lease is invalid")]
-    InvalidExpectedLease,
-}
-
-/// Carries exact issuer response bytes without claiming authenticity.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct UnverifiedOwnershipLeaseResponse {
-    lease: Vec<u8>,
-    signature: Vec<u8>,
-}
-
-impl UnverifiedOwnershipLeaseResponse {
-    /// Adopts bounded response bytes from an authority transport.
-    ///
-    /// This performs no signature or semantic verification.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`OwnershipLeaseAcquisitionError::InvalidIssuerResponse`] for
-    /// empty or oversized fields.
-    pub fn from_transport(
-        lease: Vec<u8>,
-        signature: Vec<u8>,
-    ) -> Result<Self, OwnershipLeaseAcquisitionError> {
-        if lease.is_empty()
-            || lease.len() > MAXIMUM_LEASE_BYTES
-            || signature.is_empty()
-            || signature.len() > MAXIMUM_SIGNATURE_BYTES
-        {
-            return Err(OwnershipLeaseAcquisitionError::InvalidIssuerResponse);
-        }
-        Ok(Self { lease, signature })
-    }
-}
-
-/// Acquires ownership through a linearizable authority transaction.
-///
-/// Implementations must bind `request_id` to the complete claim digest. Exact
-/// replay returns the original response; reuse with different bytes fails.
-/// Acquire is expected-absence CAS, while renew is exact generation/digest CAS.
-pub trait OwnershipAuthority {
-    /// Acquires an assignment whose authoritative lease is absent.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`OwnershipAuthorityError`] for conflict, idempotency misuse,
-    /// unavailable linearizable state, or transport failure.
-    fn acquire(
-        &mut self,
-        claim: &OwnershipClaimV1,
-    ) -> Result<UnverifiedOwnershipLeaseResponse, OwnershipAuthorityError>;
-
-    /// Renews exactly the lease named by the claim's prior fence.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`OwnershipAuthorityError`] for stale CAS state, idempotency
-    /// misuse, unavailable linearizable state, or transport failure.
-    fn renew(
-        &mut self,
-        claim: &OwnershipClaimV1,
-    ) -> Result<UnverifiedOwnershipLeaseResponse, OwnershipAuthorityError>;
-}
-
-/// Classifies authority transaction failures without backend-specific detail.
-#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum OwnershipAuthorityError {
-    /// Expected absence failed because another current lease owns the assignment.
-    #[error("ownership assignment already has a current lease")]
-    AlreadyOwned,
-    /// Renewal did not name the authority's exact current generation and digest.
-    #[error("ownership renewal compare-and-swap fence is stale")]
-    StaleExpectedPrior,
-    /// One request identity was reused with different canonical claim bytes.
-    #[error("ownership request identity is bound to another claim")]
-    IdempotencyConflict,
-    /// Linearizable authority state could not be reached.
-    #[error("ownership authority is unavailable")]
-    Unavailable,
-    /// The selected transport or authority implementation failed safely.
-    #[error("ownership authority transaction failed")]
-    Internal,
-}
-
-/// Verifies issuer responses against one protected authority generation.
-pub struct OwnershipAuthorityVerifier {
-    anchor: OwnershipLeaseTrustAnchor,
-    authority: KeyReference,
-}
-
-impl OwnershipAuthorityVerifier {
-    /// Pins the trust anchor and exact ownership-authority key generation.
-    #[must_use]
-    pub const fn new(anchor: OwnershipLeaseTrustAnchor, authority: KeyReference) -> Self {
-        Self { anchor, authority }
-    }
-
-    /// Performs expected-absence acquisition and verifies the returned lease.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`OwnershipLeaseAcquisitionError`] for a wrong claim action,
-    /// authority transaction failure, malformed or forged response, context
-    /// substitution, expiry, excessive interval, or invalid generation.
-    pub fn acquire<A: OwnershipAuthority>(
-        &self,
-        authority: &mut A,
-        claim: &OwnershipClaimV1,
-        clock: &RawPairedClockSample,
-    ) -> Result<SignedOwnershipLease, OwnershipLeaseAcquisitionError> {
-        if claim.action != OwnershipClaimAction::Acquire {
-            return Err(OwnershipLeaseAcquisitionError::WrongClaimAction);
-        }
-        let response = authority.acquire(claim)?;
-        self.verify_response(claim, response, clock)
-    }
-
-    /// Performs exact compare-and-swap renewal and verifies the returned lease.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`OwnershipLeaseAcquisitionError`] for a wrong claim action,
-    /// authority transaction failure, malformed or forged response, context
-    /// substitution, expiry, excessive interval, or non-advancing generation.
-    pub fn renew<A: OwnershipAuthority>(
-        &self,
-        authority: &mut A,
-        claim: &OwnershipClaimV1,
-        clock: &RawPairedClockSample,
-    ) -> Result<SignedOwnershipLease, OwnershipLeaseAcquisitionError> {
-        if claim.action != OwnershipClaimAction::Renew {
-            return Err(OwnershipLeaseAcquisitionError::WrongClaimAction);
-        }
-        let response = authority.renew(claim)?;
-        self.verify_response(claim, response, clock)
-    }
-
-    fn verify_response(
-        &self,
-        claim: &OwnershipClaimV1,
-        response: UnverifiedOwnershipLeaseResponse,
-        clock: &RawPairedClockSample,
-    ) -> Result<SignedOwnershipLease, OwnershipLeaseAcquisitionError> {
-        let signature = decode_signature(&response.signature, response_limits())
-            .map_err(|_| OwnershipLeaseAcquisitionError::InvalidIssuerResponse)?;
-        if encode_signature(&signature) != response.signature {
-            return Err(OwnershipLeaseAcquisitionError::InvalidIssuerResponse);
-        }
-        let verified = verify_ownership_lease(
-            &response.lease,
-            &signature,
-            &self.anchor,
-            aos_sandbox_core::OwnershipLeaseExpectation {
-                assignment: claim.broker_assignment()?,
-                node: claim.node,
-                ownership_authority: &self.authority,
-                clock,
-            },
-            response_limits(),
-        )
-        .map_err(|_| OwnershipLeaseAcquisitionError::InvalidIssuerResponse)?;
-        validate_verified_response(claim, &verified)?;
-
-        Ok(SignedOwnershipLease {
-            canonical_lease: response.lease,
-            canonical_signature: response.signature,
-            generation: verified.lease().lease_generation(),
-            digest: verified.lease_digest(),
-            assignment: verified.lease().assignment(),
-            node: verified.lease().node(),
-            authority_issued_seconds: verified.lease().authority_issued_seconds(),
-            authority_expires_seconds: verified.lease().authority_expires_seconds(),
-            maximum_clock_skew_seconds: verified.lease().maximum_clock_skew_seconds(),
-            renewal_nonce: *verified.lease().renewal_nonce(),
-            signer: signature.statement().signer().clone(),
-        })
-    }
-}
-
-/// Owns one fully verified signed ownership lease suitable for durable publication.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SignedOwnershipLease {
-    canonical_lease: Vec<u8>,
-    canonical_signature: Vec<u8>,
-    generation: u64,
-    digest: ObjectDigest,
-    assignment: LeaseAssignment,
-    node: NodeId,
-    authority_issued_seconds: i64,
-    authority_expires_seconds: i64,
-    maximum_clock_skew_seconds: u64,
-    renewal_nonce: [u8; 16],
-    signer: KeyReference,
-}
-
-impl SignedOwnershipLease {
-    #[cfg(test)]
-    pub(crate) fn from_test_artifacts(
-        lease: aos_sandbox_core::OwnershipLease,
-        canonical_signature: Vec<u8>,
-    ) -> Self {
-        let canonical_lease = aos_sandbox_core::format::encode_ownership_lease(&lease);
-        let media_type = aos_sandbox_core::MediaType::new(
-            aos_sandbox_core::PortableMediaType::OwnershipLease
-                .as_str()
-                .to_owned(),
-        )
-        .unwrap_or_else(|error| panic!("test lease media type failed: {error}"));
-        let digest = aos_sandbox_core::descriptor_for_bytes(media_type, &canonical_lease).digest();
-        let signature = aos_sandbox_core::format::decode_signature(
-            &canonical_signature,
-            aos_sandbox_core::DecodeLimits::default(),
-        )
-        .unwrap_or_else(|error| panic!("test lease signature failed: {error}"));
-        Self {
-            canonical_lease,
-            canonical_signature,
-            generation: lease.lease_generation(),
-            digest,
-            assignment: lease.assignment(),
-            node: lease.node(),
-            authority_issued_seconds: lease.authority_issued_seconds(),
-            authority_expires_seconds: lease.authority_expires_seconds(),
-            maximum_clock_skew_seconds: lease.maximum_clock_skew_seconds(),
-            renewal_nonce: *lease.renewal_nonce(),
-            signer: signature.statement().signer().clone(),
-        }
-    }
-
-    /// Returns exact canonical ownership-lease bytes.
-    #[must_use]
-    pub fn canonical_lease(&self) -> &[u8] {
-        &self.canonical_lease
-    }
-
-    /// Returns exact canonical detached-signature bytes.
-    #[must_use]
-    pub fn canonical_signature(&self) -> &[u8] {
-        &self.canonical_signature
-    }
-
-    /// Returns the issuer-chosen monotonic lease generation.
-    #[must_use]
-    pub const fn generation(&self) -> u64 {
-        self.generation
-    }
-
-    /// Returns the exact signed-lease descriptor digest.
-    #[must_use]
-    pub const fn digest(&self) -> ObjectDigest {
-        self.digest
-    }
-
-    /// Returns the immutable assignment semantics.
-    #[must_use]
-    pub const fn assignment(&self) -> LeaseAssignment {
-        self.assignment
-    }
-
-    /// Returns the sole owning node.
-    #[must_use]
-    pub const fn node(&self) -> NodeId {
-        self.node
-    }
-
-    /// Returns the issuer-chosen inclusive authority start.
-    #[must_use]
-    pub const fn authority_issued_seconds(&self) -> i64 {
-        self.authority_issued_seconds
-    }
-
-    /// Returns the issuer-chosen exclusive authority expiry.
-    #[must_use]
-    pub const fn authority_expires_seconds(&self) -> i64 {
-        self.authority_expires_seconds
-    }
-
-    /// Returns the issuer-chosen maximum admitted clock skew.
-    #[must_use]
-    pub const fn maximum_clock_skew_seconds(&self) -> u64 {
-        self.maximum_clock_skew_seconds
-    }
-
-    /// Returns the issuer-chosen renewal nonce.
-    #[must_use]
-    pub const fn renewal_nonce(&self) -> &[u8; 16] {
-        &self.renewal_nonce
-    }
-
-    /// Returns the exact ownership-authority key generation that signed the lease.
-    #[must_use]
-    pub const fn signer(&self) -> &KeyReference {
-        &self.signer
-    }
-
-    /// Returns the exact fence required by the next renewal.
-    #[must_use]
-    pub const fn expected_renewal_fence(&self) -> ExpectedOwnershipLease {
-        ExpectedOwnershipLease {
-            generation: self.generation,
-            digest: self.digest,
-        }
-    }
-}
-
-/// Reports a rejected authority response before it can become current.
-#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum OwnershipLeaseAcquisitionError {
-    /// The selected trait method does not match the canonical claim action.
-    #[error("ownership claim action does not match the authority method")]
-    WrongClaimAction,
-    /// The authority transaction failed before returning verifiable bytes.
-    #[error("ownership authority rejected the transaction: {0}")]
-    Authority(#[from] OwnershipAuthorityError),
-    /// Response bytes, signature, context, liveness, duration, or generation are invalid.
-    #[error("ownership authority returned an invalid lease")]
-    InvalidIssuerResponse,
-}
-
-fn validate_verified_response(
-    claim: &OwnershipClaimV1,
-    verified: &VerifiedOwnershipLease,
-) -> Result<(), OwnershipLeaseAcquisitionError> {
-    let lease = verified.lease();
-    let duration = lease
-        .authority_expires_seconds()
-        .checked_sub(lease.authority_issued_seconds())
-        .and_then(|value| u64::try_from(value).ok())
-        .ok_or(OwnershipLeaseAcquisitionError::InvalidIssuerResponse)?;
-    if duration > claim.requested_maximum_seconds {
-        return Err(OwnershipLeaseAcquisitionError::InvalidIssuerResponse);
-    }
-    match claim.expected_prior {
-        None => {}
-        Some(expected) if lease.lease_generation() > expected.generation => {}
-        Some(_) => return Err(OwnershipLeaseAcquisitionError::InvalidIssuerResponse),
-    }
-    Ok(())
-}
-
-fn response_limits() -> DecodeLimits {
-    DecodeLimits {
-        maximum_bytes: MAXIMUM_SIGNATURE_BYTES.max(MAXIMUM_LEASE_BYTES),
-        maximum_collection_items: 64,
-        maximum_total_items: 512,
-        maximum_byte_string_bytes: 1024,
-        maximum_text_bytes: 255,
-        maximum_depth: 16,
-    }
-}
+const BEGIN_TRANSACTION_DOMAIN: &[u8] = b"aos-sandbox-ownership-intent-transaction-v2\0";
+const COMPLETION_TRANSACTION_DOMAIN: &[u8] = b"aos-sandbox-ownership-completion-transaction-v2\0";
 
 /// Reports durable ownership-authority state or recovery failure.
 #[derive(Debug, thiserror::Error)]
@@ -739,6 +82,9 @@ pub enum DurableOwnershipAuthorityError {
     /// Durable records do not form one authenticated linear ownership chain.
     #[error("durable ownership authority state is malformed or inconsistent")]
     CorruptState,
+    /// Durable V1 state exists and requires an explicit authenticated migration.
+    #[error("durable ownership authority V1 state requires migration")]
+    MigrationRequired,
     /// The request identity is already bound to another claim.
     #[error("durable ownership request identity is bound to another claim")]
     IdempotencyConflict,
@@ -748,7 +94,7 @@ pub enum DurableOwnershipAuthorityError {
     /// No unsigned durable intent exists for the requested operation.
     #[error("durable ownership intent was not found")]
     IntentNotFound,
-    /// Issuance or cryptographic live verification failed.
+    /// Issuance or cryptographic response verification failed.
     #[error("ownership lease issuance failed: {0}")]
     Acquisition(#[from] OwnershipLeaseAcquisitionError),
     /// The protected paired-clock source could not provide a sample.
@@ -774,7 +120,7 @@ pub enum DurableOwnershipBeginOutcome {
     /// An unsigned intent is durable and may be completed explicitly.
     Pending,
     /// The exact completed request was replayed without contacting the issuer.
-    Replay(Box<SignedOwnershipLease>),
+    Replay(Box<UnverifiedOwnershipLeaseResponse>),
 }
 
 #[derive(Clone, Debug)]
@@ -782,7 +128,7 @@ enum DurableEntryState {
     Intent,
     Completed {
         accepted_wall_seconds: i64,
-        lease: Box<SignedOwnershipLease>,
+        lease: Box<RecoveredOwnershipLease>,
     },
 }
 
@@ -810,11 +156,13 @@ struct DurableOwnershipEntry {
 /// One journal is also pinned to exactly one authority key generation. Key
 /// rotation requires an explicit authenticated migration into a new journal;
 /// opening old mixed-generation history with a new verifier fails closed.
+/// Durable encoding and namespaces are V2; any V1 namespace or magic requires
+/// an explicit migration and is never treated as absent state.
 pub struct DurableOwnershipAuthority {
     journal: Journal,
     verifier: OwnershipAuthorityVerifier,
     entries: BTreeMap<[u8; 16], DurableOwnershipEntry>,
-    current: BTreeMap<SandboxId, SignedOwnershipLease>,
+    current: BTreeMap<SandboxId, RecoveredOwnershipLease>,
 }
 
 impl DurableOwnershipAuthority {
@@ -857,7 +205,8 @@ impl DurableOwnershipAuthority {
     /// Durably records one unsigned acquire or renew intent.
     ///
     /// This method never contacts an issuer. Exact completed replay returns
-    /// the original verified response; exact pending replay remains pending.
+    /// the original unverified four-artifact response; exact pending replay
+    /// remains pending.
     ///
     /// # Errors
     ///
@@ -878,7 +227,7 @@ impl DurableOwnershipAuthority {
             return Ok(match &existing.state {
                 DurableEntryState::Intent => DurableOwnershipBeginOutcome::Pending,
                 DurableEntryState::Completed { lease, .. } => {
-                    DurableOwnershipBeginOutcome::Replay(lease.clone())
+                    DurableOwnershipBeginOutcome::Replay(Box::new(lease.exact_response()))
                 }
             });
         }
@@ -921,7 +270,7 @@ impl DurableOwnershipAuthority {
         let record = JournalRecord::put(
             RecordNamespace::Operation,
             durable_entry_key(claim.request_id()),
-            encode_durable_entry(&entry, &self.verifier.authority),
+            encode_durable_entry(&entry, self.verifier.authority()),
         );
         let transaction =
             JournalTransaction::new(begin_transaction_id(*claim.request_id()), vec![record])?;
@@ -935,8 +284,11 @@ impl DurableOwnershipAuthority {
     /// The issuer is called only after the exact intent is durable. Calling
     /// this method after a crash is safe only because [`OwnershipAuthority`]
     /// requires exact idempotent response replay for request ID plus claim
-    /// digest. The response is live-verified before one transaction atomically
-    /// commits both completed entry and current pointer.
+    /// digest. The response is authenticated against the supplied clock sample
+    /// before one transaction atomically
+    /// commits both completed entry and current pointer. Success returns the
+    /// exact unverified artifacts for fresh verification at an effect boundary;
+    /// durable replay never manufactures live authority.
     /// `protected_clock` must read a protected paired clock when called. It is
     /// deliberately invoked after the issuer returns, preventing stale
     /// pre-request time from admitting a response that expired in transit.
@@ -951,7 +303,7 @@ impl DurableOwnershipAuthority {
         request_id: [u8; 16],
         issuer: &mut A,
         protected_clock: &mut C,
-    ) -> Result<SignedOwnershipLease, DurableOwnershipAuthorityError>
+    ) -> Result<UnverifiedOwnershipLeaseResponse, DurableOwnershipAuthorityError>
     where
         A: OwnershipAuthority,
         C: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
@@ -962,7 +314,7 @@ impl DurableOwnershipAuthority {
             .cloned()
             .ok_or(DurableOwnershipAuthorityError::IntentNotFound)?;
         if let DurableEntryState::Completed { lease, .. } = entry.state {
-            return Ok(*lease);
+            return Ok(lease.exact_response());
         }
         let claim = entry.claim;
         validate_claim_against_current(&claim, &self.current)?;
@@ -977,24 +329,26 @@ impl DurableOwnershipAuthority {
         // verification, not a transferable clock capability.
         let clock = protected_clock()?;
         let lease = self.verifier.verify_response(&claim, response, &clock)?;
+        let exact_response = lease.exact_response();
         validate_claim_against_current(&claim, &self.current)?;
+        let recovered = lease.into_recovered();
         let completed = DurableOwnershipEntry {
             claim: claim.clone(),
             state: DurableEntryState::Completed {
                 accepted_wall_seconds: clock.wall_seconds(),
-                lease: Box::new(lease.clone()),
+                lease: Box::new(recovered.clone()),
             },
         };
-        let current_record = encode_current_pointer(request_id, &lease);
+        let current_record = encode_current_pointer(request_id, &recovered);
         let records = vec![
             JournalRecord::put(
                 RecordNamespace::Operation,
                 durable_entry_key(&request_id),
-                encode_durable_entry(&completed, &self.verifier.authority),
+                encode_durable_entry(&completed, self.verifier.authority()),
             ),
             JournalRecord::put(
                 RecordNamespace::DesiredState,
-                durable_current_key(lease.assignment().sandbox()),
+                durable_current_key(recovered.assignment().sandbox()),
                 current_record,
             ),
         ];
@@ -1002,17 +356,17 @@ impl DurableOwnershipAuthority {
         self.journal.commit(&transaction)?;
         self.entries.insert(request_id, completed);
         self.current
-            .insert(lease.assignment().sandbox(), lease.clone());
-        Ok(lease)
+            .insert(recovered.assignment().sandbox(), recovered);
+        Ok(exact_response)
     }
 
     /// Returns the unique state-machine head for one sandbox, if completed.
     ///
-    /// The returned signed bytes carry no present-liveness or broker-effect
+    /// The returned recovered artifacts carry no present-liveness or broker-effect
     /// proof. In particular, a head reconstructed historically may be expired
     /// and must pass the normal live broker verification path before use.
     #[must_use]
-    pub fn current(&self, sandbox: SandboxId) -> Option<&SignedOwnershipLease> {
+    pub fn current(&self, sandbox: SandboxId) -> Option<&RecoveredOwnershipLease> {
         self.current.get(&sandbox)
     }
 
@@ -1040,7 +394,7 @@ fn ownership_journal_limits() -> JournalLimits {
 
 fn validate_claim_against_current(
     claim: &OwnershipClaimV1,
-    current: &BTreeMap<SandboxId, SignedOwnershipLease>,
+    current: &BTreeMap<SandboxId, RecoveredOwnershipLease>,
 ) -> Result<(), DurableOwnershipAuthorityError> {
     let existing = current.get(&claim.assignment().sandbox());
     match (claim.action(), existing) {
@@ -1095,7 +449,10 @@ fn encode_durable_entry(entry: &DurableOwnershipEntry, authority: &KeyReference)
     let response_bytes = match &entry.state {
         DurableEntryState::Intent => 0,
         DurableEntryState::Completed { lease, .. } => {
-            lease.canonical_lease().len() + lease.canonical_signature().len()
+            lease.canonical_lease().len()
+                + lease.canonical_signature().len()
+                + lease.canonical_receipt().len()
+                + lease.canonical_receipt_signature().len()
         }
     };
     let mut bytes = Vec::with_capacity(328 + key_id.len() + response_bytes);
@@ -1114,7 +471,7 @@ fn encode_durable_entry(entry: &DurableOwnershipEntry, authority: &KeyReference)
     bytes.extend_from_slice(entry.claim.digest().as_bytes());
     match &entry.state {
         DurableEntryState::Intent => {
-            bytes.extend_from_slice(&[0; 8 + 8 + 32 + 4 + 4]);
+            bytes.extend_from_slice(&[0; 8 + 8 + 32 + 4 + 4 + 4 + 4]);
         }
         DurableEntryState::Completed {
             accepted_wall_seconds,
@@ -1125,8 +482,14 @@ fn encode_durable_entry(entry: &DurableOwnershipEntry, authority: &KeyReference)
             bytes.extend_from_slice(lease.digest().as_bytes());
             bytes.extend_from_slice(&(lease.canonical_lease().len() as u32).to_be_bytes());
             bytes.extend_from_slice(&(lease.canonical_signature().len() as u32).to_be_bytes());
+            bytes.extend_from_slice(&(lease.canonical_receipt().len() as u32).to_be_bytes());
+            bytes.extend_from_slice(
+                &(lease.canonical_receipt_signature().len() as u32).to_be_bytes(),
+            );
             bytes.extend_from_slice(lease.canonical_lease());
             bytes.extend_from_slice(lease.canonical_signature());
+            bytes.extend_from_slice(lease.canonical_receipt());
+            bytes.extend_from_slice(lease.canonical_receipt_signature());
         }
     }
     debug_assert!(bytes.len() <= MAXIMUM_DURABLE_ENTRY_BYTES);
@@ -1138,6 +501,9 @@ fn decode_durable_entry(
     bytes: &[u8],
     verifier: &OwnershipAuthorityVerifier,
 ) -> Result<DurableOwnershipEntry, DurableOwnershipAuthorityError> {
+    if bytes.starts_with(LEGACY_DURABLE_ENTRY_MAGIC) {
+        return Err(DurableOwnershipAuthorityError::MigrationRequired);
+    }
     if key.len() != DURABLE_ENTRY_PREFIX.len() + 16
         || !key.starts_with(DURABLE_ENTRY_PREFIX)
         || bytes.len() > MAXIMUM_DURABLE_ENTRY_BYTES
@@ -1164,9 +530,9 @@ fn decode_durable_entry(
     let key_id = durable_slice(bytes, &mut cursor, key_id_length)?;
     let authority_generation = u64::from_be_bytes(durable_take::<8>(bytes, &mut cursor)?);
     let authority_fingerprint = ObjectDigest::from_bytes(durable_take::<32>(bytes, &mut cursor)?);
-    if key_id != verifier.authority.stable_key_id().as_str().as_bytes()
-        || authority_generation != verifier.authority.generation()
-        || authority_fingerprint != verifier.authority.public_key_sha256()
+    if key_id != verifier.authority().stable_key_id().as_str().as_bytes()
+        || authority_generation != verifier.authority().generation()
+        || authority_fingerprint != verifier.authority().public_key_sha256()
     {
         return Err(DurableOwnershipAuthorityError::CorruptState);
     }
@@ -1185,12 +551,20 @@ fn decode_durable_entry(
     let signature_length =
         usize::try_from(u32::from_be_bytes(durable_take::<4>(bytes, &mut cursor)?))
             .map_err(|_| DurableOwnershipAuthorityError::CorruptState)?;
+    let receipt_length =
+        usize::try_from(u32::from_be_bytes(durable_take::<4>(bytes, &mut cursor)?))
+            .map_err(|_| DurableOwnershipAuthorityError::CorruptState)?;
+    let receipt_signature_length =
+        usize::try_from(u32::from_be_bytes(durable_take::<4>(bytes, &mut cursor)?))
+            .map_err(|_| DurableOwnershipAuthorityError::CorruptState)?;
     if status == 1 {
         if accepted_wall_seconds != 0
             || response_generation != 0
             || response_digest.as_bytes() != &[0; 32]
             || lease_length != 0
             || signature_length != 0
+            || receipt_length != 0
+            || receipt_signature_length != 0
             || cursor != bytes.len()
         {
             return Err(DurableOwnershipAuthorityError::CorruptState);
@@ -1207,48 +581,35 @@ fn decode_durable_entry(
         || lease_length > MAXIMUM_LEASE_BYTES
         || signature_length == 0
         || signature_length > MAXIMUM_SIGNATURE_BYTES
+        || receipt_length == 0
+        || receipt_length > aos_sandbox_ownership_protocol::MAXIMUM_RECEIPT_BYTES
+        || receipt_signature_length == 0
+        || receipt_signature_length > MAXIMUM_SIGNATURE_BYTES
         || lease_length
             .checked_add(signature_length)
+            .and_then(|length| length.checked_add(receipt_length))
+            .and_then(|length| length.checked_add(receipt_signature_length))
             .and_then(|length| cursor.checked_add(length))
             != Some(bytes.len())
     {
         return Err(DurableOwnershipAuthorityError::CorruptState);
     }
-    let lease_bytes = durable_slice(bytes, &mut cursor, lease_length)?;
-    let signature_bytes = durable_slice(bytes, &mut cursor, signature_length)?;
-    let proof = authenticate_historical_ownership_lease(
-        lease_bytes,
-        signature_bytes,
-        &verifier.anchor,
-        HistoricalOwnershipLeaseExpectation {
-            assignment: claim
-                .broker_assignment()
-                .map_err(|_| DurableOwnershipAuthorityError::CorruptState)?,
-            node: claim.node(),
-            ownership_authority: &verifier.authority,
-            lease_generation: response_generation,
-            lease_digest: response_digest,
-            accepted_at: DurableHistoricalWallClockInstant::from_authenticated_record(
-                accepted_wall_seconds,
-            ),
-        },
-        response_limits(),
+    let response = UnverifiedOwnershipLeaseResponse::from_transport(
+        durable_slice(bytes, &mut cursor, lease_length)?.to_vec(),
+        durable_slice(bytes, &mut cursor, signature_length)?.to_vec(),
+        durable_slice(bytes, &mut cursor, receipt_length)?.to_vec(),
+        durable_slice(bytes, &mut cursor, receipt_signature_length)?.to_vec(),
     )
     .map_err(|_| DurableOwnershipAuthorityError::CorruptState)?;
-    validate_recovered_lease(&claim, proof.lease())?;
-    let lease = SignedOwnershipLease {
-        canonical_lease: proof.canonical_lease().to_vec(),
-        canonical_signature: proof.canonical_signature().to_vec(),
-        generation: proof.lease().lease_generation(),
-        digest: proof.lease_digest(),
-        assignment: proof.lease().assignment(),
-        node: proof.lease().node(),
-        authority_issued_seconds: proof.lease().authority_issued_seconds(),
-        authority_expires_seconds: proof.lease().authority_expires_seconds(),
-        maximum_clock_skew_seconds: proof.lease().maximum_clock_skew_seconds(),
-        renewal_nonce: *proof.lease().renewal_nonce(),
-        signer: proof.authority().clone(),
-    };
+    let lease = verifier
+        .authenticate_historical_response(
+            &claim,
+            response,
+            accepted_wall_seconds,
+            response_generation,
+            response_digest,
+        )
+        .map_err(|_| DurableOwnershipAuthorityError::CorruptState)?;
     Ok(DurableOwnershipEntry {
         claim,
         state: DurableEntryState::Completed {
@@ -1258,22 +619,7 @@ fn decode_durable_entry(
     })
 }
 
-fn validate_recovered_lease(
-    claim: &OwnershipClaimV1,
-    lease: &OwnershipLease,
-) -> Result<(), DurableOwnershipAuthorityError> {
-    let duration = lease
-        .authority_expires_seconds()
-        .checked_sub(lease.authority_issued_seconds())
-        .and_then(|value| u64::try_from(value).ok())
-        .ok_or(DurableOwnershipAuthorityError::CorruptState)?;
-    if duration > claim.requested_maximum_seconds() {
-        return Err(DurableOwnershipAuthorityError::CorruptState);
-    }
-    Ok(())
-}
-
-fn encode_current_pointer(request_id: [u8; 16], lease: &SignedOwnershipLease) -> Vec<u8> {
+fn encode_current_pointer(request_id: [u8; 16], lease: &RecoveredOwnershipLease) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(66);
     bytes.extend_from_slice(DURABLE_CURRENT_MAGIC);
     bytes.extend_from_slice(&DURABLE_FORMAT_VERSION.to_be_bytes());
@@ -1287,6 +633,9 @@ fn decode_current_pointer(
     key: &[u8],
     bytes: &[u8],
 ) -> Result<(SandboxId, [u8; 16], u64, ObjectDigest), DurableOwnershipAuthorityError> {
+    if bytes.starts_with(LEGACY_DURABLE_CURRENT_MAGIC) {
+        return Err(DurableOwnershipAuthorityError::MigrationRequired);
+    }
     if key.len() != DURABLE_CURRENT_PREFIX.len() + 16
         || !key.starts_with(DURABLE_CURRENT_PREFIX)
         || bytes.len() != 66
@@ -1320,7 +669,7 @@ fn decode_current_pointer(
 
 type RecoveredOwnershipState = (
     BTreeMap<[u8; 16], DurableOwnershipEntry>,
-    BTreeMap<SandboxId, SignedOwnershipLease>,
+    BTreeMap<SandboxId, RecoveredOwnershipLease>,
 );
 
 fn recover_durable_ownership(
@@ -1331,6 +680,9 @@ fn recover_durable_ownership(
     for (key, value) in journal.records(RecordNamespace::Operation) {
         if entries.len() >= MAXIMUM_DURABLE_ENTRIES {
             return Err(DurableOwnershipAuthorityError::CorruptState);
+        }
+        if key.starts_with(LEGACY_DURABLE_ENTRY_PREFIX) {
+            return Err(DurableOwnershipAuthorityError::MigrationRequired);
         }
         if !key.starts_with(DURABLE_ENTRY_PREFIX) {
             return Err(DurableOwnershipAuthorityError::CorruptState);
@@ -1344,6 +696,9 @@ fn recover_durable_ownership(
     for (key, value) in journal.records(RecordNamespace::DesiredState) {
         if pointers.len() >= MAXIMUM_DURABLE_CURRENT_POINTERS {
             return Err(DurableOwnershipAuthorityError::CorruptState);
+        }
+        if key.starts_with(LEGACY_DURABLE_CURRENT_PREFIX) {
+            return Err(DurableOwnershipAuthorityError::MigrationRequired);
         }
         if !key.starts_with(DURABLE_CURRENT_PREFIX) {
             return Err(DurableOwnershipAuthorityError::CorruptState);
@@ -1389,7 +744,7 @@ fn recover_sandbox_chain(
     scoped: &[(&[u8; 16], &DurableOwnershipEntry)],
     entries: &BTreeMap<[u8; 16], DurableOwnershipEntry>,
     pointers: &BTreeMap<SandboxId, ([u8; 16], u64, ObjectDigest)>,
-    current: &mut BTreeMap<SandboxId, SignedOwnershipLease>,
+    current: &mut BTreeMap<SandboxId, RecoveredOwnershipLease>,
 ) -> Result<(), DurableOwnershipAuthorityError> {
     let pending: Vec<_> = scoped
         .iter()
@@ -1520,81 +875,6 @@ fn durable_slice<'a>(
     Ok(value)
 }
 
-fn encode_claim(
-    action: OwnershipClaimAction,
-    request_id: [u8; 16],
-    assignment: LeaseAssignment,
-    desired_generation: DesiredGeneration,
-    node: NodeId,
-    expected_prior: Option<ExpectedOwnershipLease>,
-    requested_maximum_seconds: u64,
-) -> [u8; CLAIM_BYTES] {
-    let mut bytes = [0_u8; CLAIM_BYTES];
-    let mut cursor = 0;
-    append(&mut bytes, &mut cursor, CLAIM_MAGIC);
-    append(&mut bytes, &mut cursor, &CLAIM_VERSION.to_be_bytes());
-    append(&mut bytes, &mut cursor, &[action.code()]);
-    append(&mut bytes, &mut cursor, &[0; 5]);
-    append(&mut bytes, &mut cursor, &request_id);
-    append(&mut bytes, &mut cursor, assignment.sandbox().as_bytes());
-    append(&mut bytes, &mut cursor, assignment.incarnation().as_bytes());
-    append(
-        &mut bytes,
-        &mut cursor,
-        &assignment.epoch().get().to_be_bytes(),
-    );
-    append(&mut bytes, &mut cursor, assignment.digest().as_bytes());
-    append(&mut bytes, &mut cursor, node.as_bytes());
-    append(
-        &mut bytes,
-        &mut cursor,
-        &desired_generation.get().to_be_bytes(),
-    );
-    match expected_prior {
-        Some(expected) => {
-            append(&mut bytes, &mut cursor, &expected.generation.to_be_bytes());
-            append(&mut bytes, &mut cursor, expected.digest.as_bytes());
-        }
-        None => {
-            append(&mut bytes, &mut cursor, &[0; 8]);
-            append(&mut bytes, &mut cursor, &[0; 32]);
-        }
-    }
-    append(
-        &mut bytes,
-        &mut cursor,
-        &requested_maximum_seconds.to_be_bytes(),
-    );
-    debug_assert_eq!(cursor, CLAIM_BYTES);
-    bytes
-}
-
-fn append<const N: usize>(target: &mut [u8; CLAIM_BYTES], cursor: &mut usize, value: &[u8; N]) {
-    let end = *cursor + N;
-    target[*cursor..end].copy_from_slice(value);
-    *cursor = end;
-}
-
-fn take<const N: usize>(bytes: &[u8], cursor: &mut usize) -> Result<[u8; N], OwnershipClaimError> {
-    let end = cursor
-        .checked_add(N)
-        .ok_or(OwnershipClaimError::InvalidEncoding)?;
-    let value = bytes
-        .get(*cursor..end)
-        .ok_or(OwnershipClaimError::InvalidEncoding)?;
-    *cursor = end;
-    value
-        .try_into()
-        .map_err(|_| OwnershipClaimError::InvalidEncoding)
-}
-
-fn claim_digest(bytes: &[u8; CLAIM_BYTES]) -> ObjectDigest {
-    let mut digest = Sha256::new();
-    digest.update(CLAIM_DIGEST_DOMAIN);
-    digest.update(bytes);
-    ObjectDigest::from_bytes(digest.finalize().into())
-}
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -1610,8 +890,9 @@ mod tests {
         KeyUsage, SignaturePurpose, SignatureStatement, StableKeyId, TrustPolicy,
     };
     use aos_sandbox_core::{
-        AssignmentEpoch, MediaType, OwnershipLease, PortableMediaType, RawClockProvenance,
-        TrustScopeId, descriptor_for_bytes, sign_statement,
+        AssignmentEpoch, DecodeLimits, DesiredGeneration, IncarnationId, LeaseAssignment,
+        MediaType, NodeId, OwnershipLease, OwnershipLeaseTrustAnchor, PortableMediaType,
+        RawClockProvenance, TrustScopeId, descriptor_for_bytes, sign_statement,
     };
     use ed25519_dalek::SigningKey;
 
@@ -1669,9 +950,9 @@ mod tests {
                     Err(OwnershipAuthorityError::IdempotencyConflict)
                 };
             }
-            let assignment = self.override_assignment.unwrap_or(claim.assignment);
-            let node = self.override_node.unwrap_or(claim.node);
-            let nonce_byte = claim.request_id[0].wrapping_add(generation as u8).max(1);
+            let assignment = self.override_assignment.unwrap_or(claim.assignment());
+            let node = self.override_node.unwrap_or(claim.node());
+            let nonce_byte = claim.request_id()[0].wrapping_add(generation as u8).max(1);
             let lease = OwnershipLease::new(
                 assignment,
                 node,
@@ -1700,13 +981,39 @@ mod tests {
             .map_err(|_| OwnershipAuthorityError::Internal)?;
             let signature = sign_statement(statement, &self.signing_key)
                 .map_err(|_| OwnershipAuthorityError::Internal)?;
+            let receipt =
+                OwnershipTransactionReceiptV1::new(self.authority.clone(), claim, &lease_bytes)
+                    .map_err(|_| OwnershipAuthorityError::Internal)?;
+            let receipt_descriptor = descriptor_for_bytes(
+                MediaType::new(
+                    PortableMediaType::OwnershipTransactionReceipt
+                        .as_str()
+                        .to_owned(),
+                )
+                .map_err(|_| OwnershipAuthorityError::Internal)?,
+                receipt.canonical_bytes(),
+            );
+            let receipt_statement = SignatureStatement::new(
+                receipt_descriptor,
+                self.scope,
+                self.authority.clone(),
+                SignaturePurpose::OwnershipLease,
+                lease.authority_issued_seconds(),
+                Some(lease.authority_expires_seconds()),
+                self.policy_descriptor.clone(),
+            )
+            .map_err(|_| OwnershipAuthorityError::Internal)?;
+            let receipt_signature = sign_statement(receipt_statement, &self.signing_key)
+                .map_err(|_| OwnershipAuthorityError::Internal)?;
             let response = UnverifiedOwnershipLeaseResponse::from_transport(
                 lease_bytes,
                 encode_signature(&signature),
+                receipt.canonical_bytes().to_vec(),
+                encode_signature(&receipt_signature),
             )
             .map_err(|_| OwnershipAuthorityError::Internal)?;
             self.requests
-                .insert(claim.request_id, (claim.digest, response.clone()));
+                .insert(*claim.request_id(), (claim.digest(), response.clone()));
             self.current = Some((assignment, node, generation, descriptor.digest()));
             Ok(response)
         }
@@ -1717,7 +1024,7 @@ mod tests {
             &mut self,
             claim: &OwnershipClaimV1,
         ) -> Result<UnverifiedOwnershipLeaseResponse, OwnershipAuthorityError> {
-            if claim.action != OwnershipClaimAction::Acquire {
+            if claim.action() != OwnershipClaimAction::Acquire {
                 return Err(OwnershipAuthorityError::Internal);
             }
             if let Some((digest, response)) = self.requests.get(claim.request_id()) {
@@ -1737,7 +1044,7 @@ mod tests {
             &mut self,
             claim: &OwnershipClaimV1,
         ) -> Result<UnverifiedOwnershipLeaseResponse, OwnershipAuthorityError> {
-            if claim.action != OwnershipClaimAction::Renew {
+            if claim.action() != OwnershipClaimAction::Renew {
                 return Err(OwnershipAuthorityError::Internal);
             }
             if let Some((digest, response)) = self.requests.get(claim.request_id()) {
@@ -1750,9 +1057,13 @@ mod tests {
             let Some((assignment, node, generation, digest)) = self.current else {
                 return Err(OwnershipAuthorityError::StaleExpectedPrior);
             };
-            if assignment != claim.assignment
-                || node != claim.node
-                || claim.expected_prior != Some(ExpectedOwnershipLease { generation, digest })
+            if assignment != claim.assignment()
+                || node != claim.node()
+                || claim.expected_prior()
+                    != Some(
+                        ExpectedOwnershipLease::new(generation, digest)
+                            .map_err(|_| OwnershipAuthorityError::Internal)?,
+                    )
             {
                 return Err(OwnershipAuthorityError::StaleExpectedPrior);
             }
@@ -1878,13 +1189,43 @@ mod tests {
         DurableOwnershipAuthority::from_journal(journal, fixture(key_byte).verifier)
     }
 
-    fn renewal_claim(request: u8, prior: &SignedOwnershipLease) -> OwnershipClaimV1 {
+    trait LeasePrior {
+        fn assignment(&self) -> LeaseAssignment;
+        fn node(&self) -> NodeId;
+        fn fence(&self) -> ExpectedOwnershipLease;
+    }
+
+    impl LeasePrior for SignedOwnershipLease {
+        fn assignment(&self) -> LeaseAssignment {
+            self.assignment()
+        }
+        fn node(&self) -> NodeId {
+            self.node()
+        }
+        fn fence(&self) -> ExpectedOwnershipLease {
+            self.expected_renewal_fence()
+        }
+    }
+
+    impl LeasePrior for RecoveredOwnershipLease {
+        fn assignment(&self) -> LeaseAssignment {
+            self.assignment()
+        }
+        fn node(&self) -> NodeId {
+            self.node()
+        }
+        fn fence(&self) -> ExpectedOwnershipLease {
+            self.expected_renewal_fence()
+        }
+    }
+
+    fn renewal_claim(request: u8, prior: &impl LeasePrior) -> OwnershipClaimV1 {
         OwnershipClaimV1::renew(
             [request; 16],
             prior.assignment(),
             DesiredGeneration::new(6),
             prior.node(),
-            prior.expected_renewal_fence(),
+            prior.fence(),
             60,
         )
         .unwrap_or_else(|error| panic!("test renewal claim failed: {error}"))
@@ -1899,7 +1240,7 @@ mod tests {
             claim,
             state: DurableEntryState::Completed {
                 accepted_wall_seconds,
-                lease: Box::new(lease),
+                lease: Box::new(lease.into_recovered()),
             },
         }
     }
@@ -1913,6 +1254,14 @@ mod tests {
                 .unwrap_or_else(|error| panic!("test hex encoding failed: {error}"));
         }
         encoded
+    }
+
+    fn flip_embedded_artifact(bytes: &mut [u8], artifact: &[u8]) {
+        let offset = bytes
+            .windows(artifact.len())
+            .position(|candidate| candidate == artifact)
+            .unwrap_or_else(|| panic!("test artifact was not embedded"));
+        bytes[offset + artifact.len() / 2] ^= 1;
     }
 
     #[test]
@@ -1934,10 +1283,10 @@ mod tests {
         );
         let changed = OwnershipClaimV1::acquire(
             [6; 16],
-            claim.assignment,
-            claim.desired_generation,
-            claim.node,
-            claim.requested_maximum_seconds,
+            claim.assignment(),
+            claim.desired_generation(),
+            claim.node(),
+            claim.requested_maximum_seconds(),
         )
         .unwrap_or_else(|error| panic!("test changed claim failed: {error}"));
         assert_ne!(claim.digest(), changed.digest());
@@ -2043,11 +1392,16 @@ mod tests {
                 .acquire(&claim)
                 .unwrap_or_else(|error| panic!("test raw acquire failed: {error}"));
             let response = if attack == 4 {
-                let mut signature = response.signature;
+                let mut signature = response.signature().to_vec();
                 let last = signature.len() - 1;
                 signature[last] ^= 1;
-                UnverifiedOwnershipLeaseResponse::from_transport(response.lease, signature)
-                    .unwrap_or_else(|error| panic!("test tamper response failed: {error}"))
+                UnverifiedOwnershipLeaseResponse::from_transport(
+                    response.lease().to_vec(),
+                    signature,
+                    response.receipt().to_vec(),
+                    response.receipt_signature().to_vec(),
+                )
+                .unwrap_or_else(|error| panic!("test tamper response failed: {error}"))
             } else {
                 response
             };
@@ -2091,6 +1445,76 @@ mod tests {
             verifier.acquire(&mut issuer.authority, &claim, &issuer.clock),
             Err(OwnershipLeaseAcquisitionError::InvalidIssuerResponse)
         );
+    }
+
+    #[test]
+    fn receipt_golden_and_verifier_reject_artifact_substitution() {
+        let mut fixture = fixture(52);
+        let first_claim = acquire_claim(5);
+        let second_claim = OwnershipClaimV1::acquire(
+            [6; 16],
+            first_claim.assignment(),
+            DesiredGeneration::new(first_claim.desired_generation().get() + 1),
+            first_claim.node(),
+            first_claim.requested_maximum_seconds(),
+        )
+        .unwrap();
+        let first = fixture.authority.issue(&first_claim, 7).unwrap();
+        assert_eq!(
+            to_hex(first.receipt()),
+            "414f534f545231000001000100010000010000000000000000166f776e6572736869702d617574686f726974792d353200000000000000030cc42263abfb754678ab60fc3511210608a4b3a64b996170d96b4c21eb3cecbc05050505050505050505050505050505621b3094bf91a148412e2debb10c168318b4375e40a2e7164d3076f222ca25e400000000000000703b245020c73f18fa15642185baf02729622427441736ae998e4e955096fb2fe4"
+        );
+        assert_eq!(
+            descriptor_for_bytes(
+                MediaType::new(
+                    PortableMediaType::OwnershipTransactionReceipt
+                        .as_str()
+                        .to_owned()
+                )
+                .unwrap(),
+                first.receipt()
+            )
+            .digest()
+            .to_string(),
+            "sha256:10f29616ee1a08f704510c3d6455c6f85a4cd04fca669c164bc3e093e400f539"
+        );
+        assert_eq!(
+            to_hex(first.receipt_signature()),
+            "82890184783c6170706c69636174696f6e2f766e642e616f732e73616e64626f782e6f776e6572736869702d7472616e73616374696f6e2d726563656970742e763101582010f29616ee1a08f704510c3d6455c6f85a4cd04fca669c164bc3e093e400f53918b0502929292929292929292929292929292984766f776e6572736869702d617574686f726974792d35320358200cc42263abfb754678ab60fc3511210608a4b3a64b996170d96b4c21eb3cecbc050105188c18b48478306170706c69636174696f6e2f766e642e616f732e73616e64626f782e74727573742d706f6c6963792e76312b63626f72015820d46ce9405fdd0318139e73a8eeb324f5e30755b6487945436416f3068a36c9ef18525840dd311e657898ead235189df060efa80aaa585aa49ee3c9f5051c76faa24b7743ceb6ece33117a62111ab9d4277d389f2c8db00ec122246e5e150d324fd96680b"
+        );
+        let second = fixture.authority.issue(&second_claim, 8).unwrap();
+
+        let substitutions = [
+            UnverifiedOwnershipLeaseResponse::from_transport(
+                first.lease().to_vec(),
+                first.signature().to_vec(),
+                second.receipt().to_vec(),
+                second.receipt_signature().to_vec(),
+            )
+            .unwrap(),
+            UnverifiedOwnershipLeaseResponse::from_transport(
+                first.lease().to_vec(),
+                first.signature().to_vec(),
+                first.receipt().to_vec(),
+                second.receipt_signature().to_vec(),
+            )
+            .unwrap(),
+            UnverifiedOwnershipLeaseResponse::from_transport(
+                second.lease().to_vec(),
+                second.signature().to_vec(),
+                first.receipt().to_vec(),
+                first.receipt_signature().to_vec(),
+            )
+            .unwrap(),
+        ];
+        for response in substitutions {
+            assert_eq!(
+                fixture
+                    .verifier
+                    .verify_response(&first_claim, response, &fixture.clock),
+                Err(OwnershipLeaseAcquisitionError::InvalidIssuerResponse)
+            );
+        }
     }
 
     #[test]
@@ -2148,11 +1572,8 @@ mod tests {
         let completed = store
             .complete(*claim.request_id(), &mut authority, &mut || Ok(clock))
             .unwrap();
-        assert_eq!(completed.canonical_lease(), issued_before_commit.lease);
-        assert_eq!(
-            completed.canonical_signature(),
-            issued_before_commit.signature
-        );
+        assert_eq!(completed.lease(), issued_before_commit.lease());
+        assert_eq!(completed.signature(), issued_before_commit.signature());
         drop(store);
 
         assert!(matches!(
@@ -2166,8 +1587,10 @@ mod tests {
             DurableOwnershipBeginOutcome::Replay(Box::new(completed.clone()))
         );
         assert_eq!(
-            store.current(claim.assignment().sandbox()),
-            Some(&completed)
+            store
+                .current(claim.assignment().sandbox())
+                .map(RecoveredOwnershipLease::exact_response),
+            Some(completed)
         );
         let rebound = OwnershipClaimV1::acquire(
             *claim.request_id(),
@@ -2200,17 +1623,25 @@ mod tests {
         let mut store = DurableOwnershipAuthority::from_journal(journal, verifier).unwrap();
         let acquire = acquire_claim(5);
         store.begin(&acquire).unwrap();
-        let old = store
+        store
             .complete(*acquire.request_id(), &mut authority, &mut || Ok(clock))
             .unwrap();
+        let old = store
+            .current(acquire.assignment().sandbox())
+            .unwrap()
+            .clone();
         let renew = renewal_claim(7, &old);
         store.begin(&renew).unwrap();
         authority.now_seconds = 160;
-        let renewed = store
+        store
             .complete(*renew.request_id(), &mut authority, &mut || {
                 Ok(test_clock(160))
             })
             .unwrap();
+        let renewed = store
+            .current(acquire.assignment().sandbox())
+            .unwrap()
+            .clone();
         assert!(renewed.generation() > old.generation());
         let stale = renewal_claim(8, &old);
         assert!(matches!(
@@ -2256,33 +1687,49 @@ mod tests {
         .unwrap();
 
         store.begin(&acquire_a).unwrap();
-        let acquired_a = store
+        store
             .complete(*acquire_a.request_id(), &mut issuer_a, &mut || {
                 Ok(test_clock(150))
             })
             .unwrap();
+        let acquired_a = store
+            .current(acquire_a.assignment().sandbox())
+            .unwrap()
+            .clone();
         store.begin(&acquire_b).unwrap();
-        let acquired_b = store
+        store
             .complete(*acquire_b.request_id(), &mut issuer_b, &mut || {
                 Ok(test_clock(150))
             })
             .unwrap();
+        let acquired_b = store
+            .current(acquire_b.assignment().sandbox())
+            .unwrap()
+            .clone();
         let renew_a = renewal_claim(11, &acquired_a);
         let renew_b = renewal_claim(21, &acquired_b);
         issuer_a.now_seconds = 160;
         issuer_b.now_seconds = 170;
         store.begin(&renew_b).unwrap();
-        let renewed_b = store
+        store
             .complete(*renew_b.request_id(), &mut issuer_b, &mut || {
                 Ok(test_clock(170))
             })
             .unwrap();
+        let renewed_b = store
+            .current(acquire_b.assignment().sandbox())
+            .unwrap()
+            .clone();
         store.begin(&renew_a).unwrap();
-        let renewed_a = store
+        store
             .complete(*renew_a.request_id(), &mut issuer_a, &mut || {
                 Ok(test_clock(160))
             })
             .unwrap();
+        let renewed_a = store
+            .current(acquire_a.assignment().sandbox())
+            .unwrap()
+            .clone();
         drop(store);
 
         let reopened = open_test_store(&path, 45).unwrap();
@@ -2324,17 +1771,25 @@ mod tests {
             )
             .unwrap();
             store.begin(&claim_a).unwrap();
-            let lease_a = store
+            store
                 .complete(*claim_a.request_id(), &mut issuer_a, &mut || {
                     Ok(test_clock(150))
                 })
                 .unwrap();
+            let lease_a = store
+                .current(claim_a.assignment().sandbox())
+                .unwrap()
+                .clone();
             store.begin(&claim_b).unwrap();
-            let lease_b = store
+            store
                 .complete(*claim_b.request_id(), &mut issuer_b, &mut || {
                     Ok(test_clock(150))
                 })
                 .unwrap();
+            let lease_b = store
+                .current(claim_b.assignment().sandbox())
+                .unwrap()
+                .clone();
             drop(store);
 
             let key_a = durable_current_key(claim_a.assignment().sandbox());
@@ -2405,7 +1860,7 @@ mod tests {
                     vec![JournalRecord::put(
                         RecordNamespace::Operation,
                         durable_entry_key(second_claim.request_id()),
-                        encode_durable_entry(&entry, &second.verifier.authority),
+                        encode_durable_entry(&entry, second.verifier.authority()),
                     )],
                 )
                 .unwrap(),
@@ -2424,11 +1879,15 @@ mod tests {
         let mut store = DurableOwnershipAuthority::from_journal(journal, base.verifier).unwrap();
         let root_claim = acquire_claim(5);
         store.begin(&root_claim).unwrap();
-        let root = store
+        store
             .complete(*root_claim.request_id(), &mut base.authority, &mut || {
                 Ok(base.clock)
             })
             .unwrap();
+        let root = store
+            .current(root_claim.assignment().sandbox())
+            .unwrap()
+            .clone();
         drop(store);
         let mut journal = Journal::open(&path, JournalLimits::default()).unwrap().0;
         for (request, transaction) in [(7, 91), (8, 92)] {
@@ -2452,7 +1911,7 @@ mod tests {
                         vec![JournalRecord::put(
                             RecordNamespace::Operation,
                             durable_entry_key(claim.request_id()),
-                            encode_durable_entry(&entry, &branch.verifier.authority),
+                            encode_durable_entry(&entry, branch.verifier.authority()),
                         )],
                     )
                     .unwrap(),
@@ -2477,49 +1936,34 @@ mod tests {
                 DurableOwnershipAuthority::from_journal(journal, base.verifier).unwrap();
             let root_claim = acquire_claim(5);
             store.begin(&root_claim).unwrap();
-            let root = store
+            store
                 .complete(*root_claim.request_id(), &mut base.authority, &mut || {
                     Ok(base.clock)
                 })
                 .unwrap();
+            let root = store
+                .current(root_claim.assignment().sandbox())
+                .unwrap()
+                .clone();
             drop(store);
 
             let mut branch = fixture(35 + attack);
-            let claim = if attack == 0 {
-                OwnershipClaimV1::renew(
-                    [7; 16],
-                    root.assignment(),
-                    DesiredGeneration::new(6),
-                    root.node(),
-                    ExpectedOwnershipLease::new(99, ObjectDigest::from_bytes([99; 32])).unwrap(),
-                    60,
-                )
-                .unwrap()
-            } else {
-                renewal_claim(7, &root)
-            };
+            let claim = renewal_claim(7, &root);
             let raw = branch
                 .authority
-                .issue(
-                    &claim,
-                    match attack {
-                        1 => root.generation(),
-                        2 => root.generation() - 1,
-                        _ => root.generation() + 2,
-                    },
-                )
+                .issue(&claim, root.generation() + 2)
                 .unwrap();
-            let lease = aos_sandbox_core::format::decode_ownership_lease(
-                &raw.lease,
-                DecodeLimits::default(),
-            )
-            .unwrap();
-            let signed = SignedOwnershipLease::from_test_artifacts(lease, raw.signature);
+            let signed = branch
+                .verifier
+                .verify_response(&claim, raw.clone(), &branch.clock)
+                .unwrap();
             let entry = completed_entry(claim.clone(), signed, 150);
             let mut encoded = encode_durable_entry(&entry, &branch.authority.authority);
-            if attack == 3 {
-                let last = encoded.len() - 1;
-                encoded[last] ^= 1;
+            match attack {
+                0 => flip_embedded_artifact(&mut encoded, claim.canonical_bytes()),
+                1 => flip_embedded_artifact(&mut encoded, raw.lease()),
+                2 => flip_embedded_artifact(&mut encoded, raw.receipt()),
+                _ => flip_embedded_artifact(&mut encoded, raw.receipt_signature()),
             }
             let (mut journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
             journal
@@ -2711,8 +2155,10 @@ mod tests {
         assert_eq!(authority.requests.len(), 1);
         assert!(!store.is_pending(claim.request_id()));
         assert_eq!(
-            store.current(claim.assignment().sandbox()),
-            Some(&completed)
+            store
+                .current(claim.assignment().sandbox())
+                .map(RecoveredOwnershipLease::exact_response),
+            Some(completed)
         );
     }
 
@@ -2723,7 +2169,7 @@ mod tests {
         assert_eq!(limits.maximum_records_per_transaction, 2);
         assert_eq!(limits.maximum_materialized_records, MAXIMUM_DURABLE_RECORDS);
         assert!(limits.maximum_journal_bytes < JournalLimits::default().maximum_journal_bytes);
-        assert!(limits.maximum_journal_bytes < 40 * 1024 * 1024);
+        assert!(limits.maximum_journal_bytes < 64 * 1024 * 1024);
 
         let fixture = fixture(43);
         let claim = acquire_claim(5);
@@ -2733,33 +2179,19 @@ mod tests {
             .get(claim.request_id())
             .map(|(_, response)| response.clone());
         assert!(response.is_none());
-        let maximal = SignedOwnershipLease {
-            canonical_lease: vec![0; MAXIMUM_LEASE_BYTES],
-            canonical_signature: vec![0; MAXIMUM_SIGNATURE_BYTES],
-            generation: 1,
-            digest: ObjectDigest::from_bytes([1; 32]),
-            assignment: claim.assignment(),
-            node: claim.node(),
-            authority_issued_seconds: 100,
-            authority_expires_seconds: 200,
-            maximum_clock_skew_seconds: 5,
-            renewal_nonce: [1; 16],
-            signer: fixture.verifier.authority.clone(),
-        };
-        let entry = completed_entry(claim, maximal.clone(), 150);
-        let entry_bytes = encode_durable_entry(&entry, &fixture.verifier.authority);
-        let entry_record_bytes = 7 + durable_entry_key(&[1; 16]).len() + entry_bytes.len();
-        let current_bytes = encode_current_pointer([1; 16], &maximal);
-        let current_record_bytes =
-            7 + durable_current_key(maximal.assignment().sandbox()).len() + current_bytes.len();
+        let maximal_entry_bytes = MAXIMUM_DURABLE_ENTRY_BYTES;
+        let entry_record_bytes = 7 + durable_entry_key(&[1; 16]).len() + maximal_entry_bytes;
+        let current_record_bytes = 7
+            + durable_current_key(claim.assignment().sandbox()).len()
+            + MAXIMUM_DURABLE_CURRENT_BYTES;
         assert!(entry_record_bytes <= limits.maximum_record_bytes);
         assert!(entry_record_bytes + current_record_bytes <= limits.maximum_transaction_bytes);
         let intent = DurableOwnershipEntry {
-            claim: entry.claim.clone(),
+            claim: claim.clone(),
             state: DurableEntryState::Intent,
         };
         assert!(
-            encode_durable_entry(&intent, &fixture.verifier.authority).len()
+            encode_durable_entry(&intent, fixture.verifier.authority()).len()
                 <= MAXIMUM_DURABLE_INTENT_BYTES
         );
 
@@ -2838,11 +2270,69 @@ mod tests {
     }
 
     #[test]
+    fn v1_durable_namespaces_require_migration_before_open_or_write() {
+        for (case, namespace, prefix, value) in [
+            (
+                1_u8,
+                RecordNamespace::Operation,
+                LEGACY_DURABLE_ENTRY_PREFIX,
+                vec![1],
+            ),
+            (
+                2_u8,
+                RecordNamespace::DesiredState,
+                LEGACY_DURABLE_CURRENT_PREFIX,
+                vec![2],
+            ),
+            (
+                3_u8,
+                RecordNamespace::Operation,
+                DURABLE_ENTRY_PREFIX,
+                LEGACY_DURABLE_ENTRY_MAGIC.to_vec(),
+            ),
+            (
+                4_u8,
+                RecordNamespace::DesiredState,
+                DURABLE_CURRENT_PREFIX,
+                LEGACY_DURABLE_CURRENT_MAGIC.to_vec(),
+            ),
+        ] {
+            let directory = TestDirectory::new(&format!("legacy-v1-{case}"));
+            let path = directory.journal();
+            let mut key = prefix.to_vec();
+            key.extend_from_slice(&[case; 16]);
+            let (mut journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
+            journal
+                .commit(
+                    &JournalTransaction::new(
+                        [case; 16],
+                        vec![JournalRecord::put(namespace, key, value)],
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            drop(journal);
+
+            assert!(matches!(
+                open_test_store(&path, 44),
+                Err(DurableOwnershipAuthorityError::MigrationRequired)
+            ));
+            let (journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
+            assert!(matches!(
+                DurableOwnershipAuthority::from_journal(journal, fixture(44).verifier),
+                Err(DurableOwnershipAuthorityError::MigrationRequired)
+            ));
+        }
+    }
+
+    #[test]
     fn malformed_signature_response_is_rejected_before_verification() {
         assert_eq!(
             UnverifiedOwnershipLeaseResponse::from_transport(
                 vec![1],
                 vec![0; MAXIMUM_SIGNATURE_BYTES + 1],
+                vec![1],
+                vec![1],
             ),
             Err(OwnershipLeaseAcquisitionError::InvalidIssuerResponse)
         );

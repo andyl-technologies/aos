@@ -254,6 +254,43 @@ reassignment. Multi-node enablement requires the ownership authority and
 endpoint fencing tests; the exact consensus implementation is replaceable,
 not optional semantics.
 
+The transport-neutral ownership-authority protocol is independently versioned
+as 1.0. `Begin` durably admits one exact canonical acquire or renew claim;
+`CompleteOrResume` explicitly drives or resumes the admitted operation; and
+`Query` observes the exact request-ID/claim-digest binding. Query reports
+`Absent`, `Pending`, or `Completed`; Begin and CompleteOrResume never report
+`Absent`. Completed carries the exact ownership lease, lease signature,
+transaction receipt, and receipt signature. Replays and recovered completions
+are authenticated historical artifacts, not present effect authority.
+
+Negotiation pins the exact ownership-authority key generation, canonical
+method set, request/response bounds, and maximum lease duration. Each client
+hello and server selection adds an independent nonzero 32-byte CSPRNG nonce.
+The domain-separated SHA-256 transcript over both nonces and every negotiated
+field is echoed in requests and responses, so reconnect and authority-epoch
+substitution fail correlation checks. The transcript is not authentication:
+local transports still authenticate peer credentials and service identity,
+while remote transports require an authenticated, integrity-protected channel.
+Paths, file descriptors, local credentials, and `CLOCK_BOOTTIME` values are
+not portable protocol fields.
+
+The authority signs the fixed binary
+`OwnershipTransactionReceipt` with its ownership-lease key and trust policy.
+The receipt binds protocol version, exact authority key generation, immutable
+Acquire/Renew action, request ID, complete canonical claim digest, and exact
+lease descriptor. It deliberately does not bind the observation method or
+session transcript, allowing the same durable receipt to be returned by Begin,
+CompleteOrResume, and Query. A caller-supplied clock sample can authenticate
+artifacts but is not a protected clock capability; privileged effect admission
+must independently verify current time and all broker fences.
+
+The first implementation that retains transaction receipts uses V2 ownership
+journal and controller-publication magic, versions, digest domains, and key
+namespaces. It does not reinterpret the previously committed V1 bytes. Finding
+any V1 ownership entry/current pointer or publication prepared/current record
+fails with `MigrationRequired`; an explicit authenticated migration must move
+that state before V2 reads or writes proceed.
+
 ## Node-local broker protocols
 
 Privileged brokers listen only on protected Unix `SOCK_SEQPACKET` sockets. The

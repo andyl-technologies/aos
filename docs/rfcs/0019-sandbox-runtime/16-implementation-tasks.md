@@ -652,8 +652,10 @@ completes. The Git history remains authoritative for code details.
   be authenticated against a pinned historical trust anchor and an
   integrity-bound acceptance instant. The verifier reproduces the live
   skew-safe wall-clock interval but deliberately carries no BOOTTIME or current
-  liveness; its distinct non-authorizing proof type cannot enter the live lease
-  pipeline. Chain ordering, unique-head recovery, and anchor-history selection
+  liveness; its distinct non-authorizing proof type cannot directly satisfy an
+  API requiring a freshly checked lease, although its exact canonical artifacts
+  may be submitted to that API for independent protected-clock verification.
+  Chain ordering, unique-head recovery, and anchor-history selection
   remain obligations of the protected durable authority backend.
 - `a662b3c6d` — foundation toward `SBX-NET-01`: a root network crate now
   verifies signed Network-audience authority and atomically retains a bounded,

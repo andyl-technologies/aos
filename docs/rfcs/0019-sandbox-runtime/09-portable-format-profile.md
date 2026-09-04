@@ -3,7 +3,8 @@
 ## Scope
 
 Portable policy, filesystem tree, delta, view, environment, sandbox spec,
-snapshot, trust-policy, broker-plan, ownership-lease, and signature objects use
+snapshot, trust-policy, broker-plan, ownership-lease, ownership-transaction
+receipt, and signature objects use
 one exact encoding profile so independent implementations compute identical
 identities. This profile is separate from protobuf RPC messages and from the
 replaceable node-local mmap index.
@@ -16,8 +17,9 @@ semantics requires a new media-type version, not an in-place parser change.
 
 ## Envelope and identity
 
-Canonical objects use deterministic CBOR under RFC 8949 section 4.2 with these
-additional restrictions:
+Except for the explicitly raw content and fixed-binary ownership receipt
+profiles, canonical objects use deterministic CBOR under RFC 8949 section 4.2
+with these additional restrictions:
 
 - definite-length arrays, maps, byte strings, and text strings only;
 - shortest integer and length encodings;
@@ -68,6 +70,7 @@ application/vnd.aos.sandbox.trust-policy.v1+cbor
 application/vnd.aos.sandbox.signature.v1+cbor
 application/vnd.aos.sandbox.broker-authorization-plan.v1+cbor
 application/vnd.aos.sandbox.ownership-lease.v1+cbor
+application/vnd.aos.sandbox.ownership-transaction-receipt.v1
 ```
 
 Object size, media type, and digest are verified before semantic use. The
@@ -188,6 +191,7 @@ matching digest bytes with the wrong media type is invalid:
 | signature verification policy | trust-policy |
 | broker authorization signature subject | broker-authorization-plan |
 | ownership lease signature subject | ownership-lease |
+| ownership transaction receipt signature subject | ownership-transaction-receipt |
 | policy explanation source | a descriptor also present in policy input commitments |
 
 `profile-selector.body` and the feature-owned roles above are legal only when
@@ -468,7 +472,7 @@ policy signs policy; tree signs tree, directory, delta, view, or environment;
 snapshot signs snapshot or spec; distribution signs raw content or any
 portable CBOR object while adding no authority; broker-authorization signs
 only an audience-specific broker plan; ownership-lease signs only an
-authority-wall-clock ownership lease. A mismatched purpose, usage,
+authority-wall-clock ownership lease or ownership transaction receipt. A mismatched purpose, usage,
 fingerprint, generation, subject media type, or trust scope fails.
 
 Authorization is not inferred from a valid signature alone. The verifier
@@ -512,6 +516,38 @@ Negative ownership-lease vectors append a trailing CBOR item, replace the
 registered subject media type, use a zero generation or nonce, invert either
 authority bound, or present an equal generation with a different digest or
 nonce. Readers and lease fences reject each form rather than normalize it.
+
+The ownership transaction receipt is a fixed binary, non-CBOR portable object.
+Its fields are, in order: `AOSOTR1\0`, receipt version `u16be(1)`, ownership
+protocol code `u16be(1)`, protocol version `u16be(1),u16be(0)`, action byte
+(`1` acquire or `2` renew), seven zero reserved bytes, stable-key-ID length
+`u16be`, its 1--255 valid UTF-8 bytes, authority generation `u64be`, authority public
+key SHA-256 (32 bytes), request ID (16 bytes), canonical claim digest (32
+bytes), exact lease size `u64be`, and exact lease digest (32 bytes). It binds
+the immutable authority action, not the Begin, CompleteOrResume, or Query
+method that happens to return it.
+
+The canonical fixture uses ownership authority key `ownership-authority-52`,
+generation 3 and fingerprint `0cc42263abfb754678ab60fc3511210608a4b3a64b996170d96b4c21eb3cecbc`.
+Its exact receipt bytes are:
+
+```text
+414f534f545231000001000100010000010000000000000000166f776e6572736869702d617574686f726974792d353200000000000000030cc42263abfb754678ab60fc3511210608a4b3a64b996170d96b4c21eb3cecbc05050505050505050505050505050505621b3094bf91a148412e2debb10c168318b4375e40a2e7164d3076f222ca25e400000000000000703b245020c73f18fa15642185baf02729622427441736ae998e4e955096fb2fe4
+```
+
+Its descriptor digest is
+`sha256:10f29616ee1a08f704510c3d6455c6f85a4cd04fca669c164bc3e093e400f539`,
+and its exact detached signature object is:
+
+```text
+82890184783c6170706c69636174696f6e2f766e642e616f732e73616e64626f782e6f776e6572736869702d7472616e73616374696f6e2d726563656970742e763101582010f29616ee1a08f704510c3d6455c6f85a4cd04fca669c164bc3e093e400f53918b0502929292929292929292929292929292984766f776e6572736869702d617574686f726974792d35320358200cc42263abfb754678ab60fc3511210608a4b3a64b996170d96b4c21eb3cecbc050105188c18b48478306170706c69636174696f6e2f766e642e616f732e73616e64626f782e74727573742d706f6c6963792e76312b63626f72015820d46ce9405fdd0318139e73a8eeb324f5e30755b6487945436416f3068a36c9ef18525840dd311e657898ead235189df060efa80aaa585aa49ee3c9f5051c76faa24b7743ceb6ece33117a62111ab9d4277d389f2c8db00ec122246e5e150d324fd96680b
+```
+
+Negative receipt vectors change the action, authority generation, request ID,
+claim digest (including desired generation), lease size/digest, receipt
+signature, or any reserved byte; truncate or append bytes; or swap any lease,
+lease signature, receipt, or receipt signature between transactions. All fail
+closed even for otherwise identical assignments.
 
 ## Distribution envelope
 

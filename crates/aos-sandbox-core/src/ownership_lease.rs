@@ -640,6 +640,61 @@ pub fn verify_ownership_lease(
     })
 }
 
+/// Verifies a transaction-receipt signature under the ownership trust anchor.
+///
+/// This helper exposes no trust-policy bytes or public-key material. It accepts
+/// only the registered ownership transaction-receipt media type, the exact
+/// pinned authority generation, and a signature statement whose validity is
+/// identical to the lease interval supplied by the caller. Receipt semantic
+/// decoding remains the portable ownership protocol's responsibility.
+///
+/// # Errors
+///
+/// Rejects descriptor, purpose, authority generation, trust scope, policy,
+/// validity interval, current verification time, or Ed25519 signature
+/// substitution.
+pub fn verify_ownership_transaction_receipt_signature(
+    canonical_receipt: &[u8],
+    signature: &Signature,
+    anchor: &OwnershipLeaseTrustAnchor,
+    authority_issued_seconds: i64,
+    authority_expires_seconds: i64,
+    verification_wall_seconds: i64,
+    limits: DecodeLimits,
+) -> Result<(), OwnershipLeaseVerificationError> {
+    let descriptor = descriptor_for_bytes(
+        crate::MediaType::new(
+            crate::PortableMediaType::OwnershipTransactionReceipt
+                .as_str()
+                .to_owned(),
+        )
+        .map_err(|error| CanonicalCborError::InvalidSemantics {
+            object: "ownership transaction receipt media type",
+            message: error.to_string(),
+        })?,
+        canonical_receipt,
+    );
+    let statement = signature.statement();
+    if statement.subject() != &descriptor
+        || statement.purpose() != SignaturePurpose::OwnershipLease
+        || statement.signer() != &anchor.authority
+        || statement.verification_policy() != &anchor.policy_descriptor
+        || statement.trust_scope() != anchor.trust_scope
+        || statement.issued_seconds() != authority_issued_seconds
+        || statement.expires_seconds() != Some(authority_expires_seconds)
+    {
+        return Err(OwnershipLeaseVerificationError::SignatureStatementMismatch);
+    }
+    verify_signature(
+        signature,
+        &anchor.canonical_policy,
+        &anchor.public_key,
+        verification_wall_seconds,
+        limits,
+    )?;
+    Ok(())
+}
+
 /// Authenticates a persisted lease at its durable historical acceptance time.
 ///
 /// Both inputs must be the exact canonical bytes stored by the authority state

@@ -124,6 +124,7 @@
     "aos-registry-surface"
     "aos-remote"
     "aos-sandbox-core"
+    "aos-sandbox-ownership-protocol"
     "aos-sandbox-protocol"
     "aos-sandbox"
     "aos-sandbox-linux"
