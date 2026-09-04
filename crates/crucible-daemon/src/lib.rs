@@ -390,8 +390,9 @@ pub use qemu_campaign_resume::{
 pub use qemu_exact_resume_executor::QemuExactResumeLiveRealizationExecutor;
 #[cfg(target_os = "linux")]
 pub use qemu_hot_fork_reconciliation::{
-    LinuxQemuHotForkAttemptLaunchError, LinuxQemuHotForkReconciliationBackend,
-    LinuxQemuHotForkReconciliationError, QemuHotForkAttemptBasis, QemuHotForkAttemptReconciliation,
+    LinuxQemuHotForkAttemptLaunchError, LinuxQemuHotForkLiveChild,
+    LinuxQemuHotForkReconciliationBackend, LinuxQemuHotForkReconciliationError,
+    QemuHotForkAttemptBasis, QemuHotForkAttemptReconciliation,
     QemuHotForkAttemptReconciliationError, QemuHotForkChildDisposition,
     QemuHotForkChildObservation, QemuHotForkChildObservationError,
     QemuHotForkPublicationDisposition, QemuHotForkReconciliationBackend,
