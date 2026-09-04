@@ -2065,7 +2065,7 @@ mod tests {
             crate::InodeTable::new(
                 &validated,
                 [0; 32],
-                crate::InodeTableLimits::new(1, 4096, 1, 1),
+                crate::InodeTableLimits::new(1, 4096, 1, 1, 1),
             ),
             Err(crate::InodeError::Index(IndexError::PointLookupUnavailable))
         ));

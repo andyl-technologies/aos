@@ -186,9 +186,11 @@ resulting `ValidatedIndex` for its complete request loop; neither the byte slice
 nor a proof borrowing it can escape after unmap. The generic mapping boundary
 has no dependency on the filesystem-view object model. A backend-neutral table
 now lazily assigns connection-local node IDs after positive V2 lookup, while
-negative lookup retains no node state. FUSE request framing, open handles, and
-kernel connection authority are not implemented yet. V1 remains
-validation-compatible but does not offer point lookup or inode-table creation.
+negative lookup retains no node state. The same backend-neutral table now owns
+file-open identity and lifetime transitions, but still owns no OS descriptor,
+FUSE request framing, directory handle, or kernel connection authority. V1
+remains validation-compatible but does not offer point lookup or inode-table
+creation.
 
 Immutable mapping proofs are distinct backend capabilities. A transient memfd
 is accepted only with `F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW |
@@ -255,11 +257,38 @@ Lookup references have an independent aggregate ceiling. Bounded batch
 preflights every count, reverse-map removal, and resulting counter before its
 first table mutation, then applies with no fallible branch. Zero, stale,
 over-forget, duplicate overflow, and mixed valid/invalid batches leave inode
-state unchanged. The future FUSE worker must preserve these semantics when it
-wires kernel lookup/forget messages, and must add independently admitted open
-handles so a final forget cannot invalidate an active file description. The
-implementation creates no heap object or protobuf object per path at mount
-time; memory grows only with the bounded touched set.
+state unchanged.
+
+File opens use a separate fixed-slot table with an independent live-handle
+ceiling and the same aggregate modeled heap ceiling. Handle IDs are typed,
+connection-scoped, monotonically increasing, and never reused. Reservation
+inserts `Pending` and pins the exact live file inode before any external
+backing work. A non-copyable, non-cloneable opaque token is authenticated to
+the unique connection key, node, and raw handle; only that token can atomically
+abort the pending entry or activate it. The public typed handle carries the
+same connection brand but redacts it from diagnostics, while fixed slots retain
+only the raw integer. A worker routes a raw FUSE `fh` to its authoritative
+connection table and resolves it there; only an existing active slot becomes a
+branded handle. Pending raw values remain non-visible. Active lookup and
+release reject a handle branded by another conforming connection even when its
+raw integer is identical. Directories and symlinks are rejected by this
+file-open path. Active lookup exposes only portable inode attributes, not an OS
+descriptor. `RELEASE` consumes an active handle exactly once; stale, double,
+pending-as-active, wrong-connection, and forged-token transitions fail closed.
+
+A node whose lookup count reaches zero remains pinned while any pending or
+active open refers to it. Aborting a pending open or releasing an active open
+reaps the node only when both lookup references and open pins are zero. Open
+table growth and tombstone compaction pre-admit retained plus replacement slot
+capacity and commit only after allocation succeeds. A zero handle ceiling
+explicitly disables opens while retaining lookup/getattr service. Losing a
+pending reservation token deliberately does not run implicit rollback: it
+leaves a bounded fail-closed pin until connection teardown. The future FUSE
+worker must abort the whole connection whenever it cannot determine whether an
+open reply became visible to the kernel; guessing release versus retry could
+either leak backing authority or double-release it. The implementation creates
+no heap object or protobuf object per path at mount time; memory grows only
+with the bounded touched set.
 
 The index is accepted only when its exact media type, encoded length, and digest
 match an authenticated `ObjectDescriptor` obtained from the sealed publication.

@@ -13,8 +13,9 @@
 //! capacity can be observed; no subsequent allocation is attempted until that
 //! capacity is charged. Allocator metadata and size-class rounding remain
 //! unknowable here, so callers must place the serving process in a cgroup
-//! memory boundary as the final backstop. This module owns no open handles or
-//! kernel inode lifetime.
+//! memory boundary as the final backstop. A third fixed-slot table owns
+//! backend-neutral pending and active open identities; it deliberately owns no
+//! OS descriptor or FUSE framing.
 
 use std::mem::size_of;
 
@@ -25,9 +26,38 @@ use crate::{IndexError, IndexNodeKind, IndexNodeView, ValidatedIndex};
 
 const INITIAL_CAPACITY: usize = 2;
 const SEMANTIC_HASH_DOMAIN: &[u8] = b"aos.filesystem-view.inode-semantic.v1\0";
+const OPEN_RESERVATION_DOMAIN: &[u8] = b"aos.filesystem-view.open-reservation.v1\0";
 
 /// Node ID permanently assigned to the connection's root inode.
 pub const ROOT_NODE_ID: u64 = 1;
+
+/// Monotonic connection-scoped identity for one pending or active open.
+///
+/// IDs are never reused during a connection. This value conveys identity only;
+/// it does not contain or represent an OS file descriptor.
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+pub struct OpenHandleId {
+    raw: u64,
+    connection_key: [u8; 32],
+}
+
+impl std::fmt::Debug for OpenHandleId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("OpenHandleId")
+            .field("raw", &self.raw)
+            .field("connection", &"<redacted>")
+            .finish()
+    }
+}
+
+impl OpenHandleId {
+    /// Returns the connection-scoped integer representation.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.raw
+    }
+}
 
 /// Hard ceilings for one connection-scoped inode table.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -40,6 +70,8 @@ pub struct InodeTableLimits {
     pub maximum_lookup_references: u64,
     /// Maximum entries accepted in one failure-atomic FORGET batch.
     pub maximum_forget_batch: usize,
+    /// Maximum pending and active opens retained across the connection.
+    pub maximum_open_handles: u64,
 }
 
 impl InodeTableLimits {
@@ -50,14 +82,31 @@ impl InodeTableLimits {
         maximum_heap_bytes: u64,
         maximum_lookup_references: u64,
         maximum_forget_batch: usize,
+        maximum_open_handles: u64,
     ) -> Self {
         Self {
             maximum_nodes,
             maximum_heap_bytes,
             maximum_lookup_references,
             maximum_forget_batch,
+            maximum_open_handles,
         }
     }
+}
+
+/// Opaque authority to finish one pending open reservation.
+///
+/// The token is neither copyable nor cloneable. Its private authenticator binds
+/// it to the originating connection, node, and handle. Passing it to another
+/// table or using it after a successful transition is rejected. Dropping a
+/// pending token does not implicitly roll back table state: it leaves a bounded
+/// fail-closed pin that must be drained by tearing down the connection.
+#[must_use = "a pending open must be activated or explicitly aborted"]
+pub struct OpenReservation {
+    raw_handle_id: u64,
+    node_id: u64,
+    authenticator: [u8; 32],
+    consumed: bool,
 }
 
 /// Portable attributes returned by lookup and getattr.
@@ -150,12 +199,27 @@ pub enum InodeError {
     /// A child lookup used a non-directory parent.
     #[error("inode lookup parent is not a directory")]
     ParentNotDirectory,
+    /// A file-open reservation targeted a non-file inode.
+    #[error("inode open target is not a file")]
+    OpenTargetNotFile,
     /// A FORGET item requested zero references.
     #[error("inode FORGET count must be nonzero")]
     ZeroForgetCount,
     /// A FORGET batch would release more references than are retained.
     #[error("inode FORGET count exceeds retained lookup references")]
     ForgetUnderflow,
+    /// An open reservation does not belong to this table or was already used.
+    #[error("inode open reservation is invalid or already consumed")]
+    InvalidOpenReservation,
+    /// The open handle is pending when an active handle was required.
+    #[error("inode open handle is still pending")]
+    OpenStillPending,
+    /// The open handle was never assigned or has already been released.
+    #[error("inode open handle is stale")]
+    StaleOpenHandle,
+    /// The typed open handle belongs to another connection.
+    #[error("inode open handle belongs to another connection")]
+    ForeignOpenHandle,
     /// An internal fixed-table invariant was violated.
     #[error("inode table invariant violated")]
     InternalInvariant,
@@ -173,6 +237,7 @@ struct NodeEntry<'bytes> {
     semantic: SemanticKey,
     record: IndexNodeView<'bytes>,
     lookup_references: u64,
+    open_pins: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -193,6 +258,23 @@ enum SemanticSlot {
     },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OpenState {
+    Pending,
+    Active,
+}
+
+#[derive(Clone, Copy)]
+enum OpenSlot {
+    Empty,
+    Tombstone,
+    Occupied {
+        raw_handle_id: u64,
+        node_id: u64,
+        state: OpenState,
+    },
+}
+
 /// Lazily assigns inode identities for one connection and one immutable index.
 ///
 /// The caller supplies an opaque hashing key that must be unique per
@@ -207,11 +289,20 @@ pub struct InodeTable<'index, 'bytes> {
     limits: InodeTableLimits,
     nodes: Vec<NodeSlot<'bytes>>,
     semantics: Vec<SemanticSlot>,
+    opens: Vec<OpenSlot>,
     live: usize,
     node_tombstones: usize,
     semantic_tombstones: usize,
+    live_opens: usize,
+    pending_opens: usize,
+    open_tombstones: usize,
     total_lookup_references: u64,
     next_node_id: u64,
+    next_open_handle_id: u64,
+    #[cfg(test)]
+    refuse_next_open_allocation: bool,
+    #[cfg(test)]
+    open_rebuilds: u64,
     #[cfg(test)]
     rebuilds: u64,
 }
@@ -269,6 +360,7 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
             semantic,
             record: root,
             lookup_references: 1,
+            open_pins: 0,
         });
         semantics[semantic_slot] = SemanticSlot::Occupied {
             hash,
@@ -282,11 +374,20 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
             limits,
             nodes,
             semantics,
+            opens: Vec::new(),
             live: 1,
             node_tombstones: 0,
             semantic_tombstones: 0,
+            live_opens: 0,
+            pending_opens: 0,
+            open_tombstones: 0,
             total_lookup_references: 1,
             next_node_id: ROOT_NODE_ID + 1,
+            next_open_handle_id: 1,
+            #[cfg(test)]
+            refuse_next_open_allocation: false,
+            #[cfg(test)]
+            open_rebuilds: 0,
             #[cfg(test)]
             rebuilds: 0,
         })
@@ -299,6 +400,7 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
             .and_then(|nodes| {
                 nodes
                     .checked_add(slot_vector_bytes(&self.semantics)?)
+                    .and_then(|value| value.checked_add(slot_vector_bytes(&self.opens).ok()?))
                     .ok_or(InodeError::LimitExceeded("heap bytes"))
             })
             .unwrap_or(u64::MAX)
@@ -314,6 +416,234 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
     #[must_use]
     pub const fn total_lookup_references(&self) -> u64 {
         self.total_lookup_references
+    }
+
+    /// Returns the number of pending and active opens.
+    #[must_use]
+    pub fn live_open_handles(&self) -> u64 {
+        self.live_opens as u64
+    }
+
+    /// Returns the number of reservations awaiting activation or abort.
+    #[must_use]
+    pub fn pending_open_handles(&self) -> u64 {
+        self.pending_opens as u64
+    }
+
+    /// Reserves a handle identity before backend-specific open work begins.
+    ///
+    /// The pending reservation pins its inode immediately. The caller must
+    /// subsequently call [`Self::activate_open`] after successful external
+    /// work or [`Self::abort_open`] after failure. No OS resource is accepted
+    /// or retained by this table.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InodeError`] when the node is stale, a handle/count/heap
+    /// ceiling is exceeded, or fixed-slot allocation fails. Failure leaves all
+    /// table state unchanged.
+    pub fn reserve_open(&mut self, node_id: u64) -> Result<OpenReservation, InodeError> {
+        let node_slot = find_node(&self.nodes, node_id).ok_or(InodeError::StaleNode)?;
+        let NodeSlot::Occupied(mut node) = self.nodes[node_slot] else {
+            return Err(InodeError::InternalInvariant);
+        };
+        if node.record.kind() != IndexNodeKind::File {
+            return Err(InodeError::OpenTargetNotFile);
+        }
+        let next_pin_count = node
+            .open_pins
+            .checked_add(1)
+            .ok_or(InodeError::LimitExceeded("open pins"))?;
+        if self.live_opens as u64 >= self.limits.maximum_open_handles {
+            return Err(InodeError::LimitExceeded("open handles"));
+        }
+
+        let raw_handle_id = self.next_open_handle_id;
+        let next_handle_id = self
+            .next_open_handle_id
+            .checked_add(1)
+            .ok_or(InodeError::LimitExceeded("open handle IDs"))?;
+        let next_live = self
+            .live_opens
+            .checked_add(1)
+            .ok_or(InodeError::LimitExceeded("open handles"))?;
+        let next_pending = self
+            .pending_opens
+            .checked_add(1)
+            .ok_or(InodeError::LimitExceeded("open handles"))?;
+        let insertion = if self.opens.is_empty() {
+            None
+        } else {
+            Some(find_open_insert(&self.opens, raw_handle_id)?)
+        };
+        let reuses_tombstone =
+            insertion.is_some_and(|slot| matches!(self.opens[slot], OpenSlot::Tombstone));
+        let target = self.open_rebuild_capacity(next_live, reuses_tombstone)?;
+
+        if let Some(target) = target {
+            let mut replacement = self.allocate_open_replacement(target)?;
+            rehash_opens(&self.opens, &mut replacement)?;
+            let slot = find_open_insert(&replacement, raw_handle_id)?;
+            replacement[slot] = OpenSlot::Occupied {
+                raw_handle_id,
+                node_id,
+                state: OpenState::Pending,
+            };
+            self.opens = replacement;
+            self.open_tombstones = 0;
+            #[cfg(test)]
+            {
+                self.open_rebuilds = self.open_rebuilds.saturating_add(1);
+            }
+        } else {
+            let slot = insertion.ok_or(InodeError::InternalInvariant)?;
+            let next_tombstones = if reuses_tombstone {
+                self.open_tombstones
+                    .checked_sub(1)
+                    .ok_or(InodeError::InternalInvariant)?
+            } else {
+                self.open_tombstones
+            };
+            self.opens[slot] = OpenSlot::Occupied {
+                raw_handle_id,
+                node_id,
+                state: OpenState::Pending,
+            };
+            self.open_tombstones = next_tombstones;
+        }
+
+        node.open_pins = next_pin_count;
+        self.nodes[node_slot] = NodeSlot::Occupied(node);
+        self.live_opens = next_live;
+        self.pending_opens = next_pending;
+        self.next_open_handle_id = next_handle_id;
+        Ok(OpenReservation {
+            raw_handle_id,
+            node_id,
+            authenticator: open_reservation_authenticator(
+                &self.connection_key,
+                raw_handle_id,
+                node_id,
+            ),
+            consumed: false,
+        })
+    }
+
+    /// Makes a pending reservation visible as an active open.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InodeError::InvalidOpenReservation`] when the token belongs to
+    /// another table, is stale, or has already completed.
+    pub fn activate_open(
+        &mut self,
+        reservation: &mut OpenReservation,
+    ) -> Result<OpenHandleId, InodeError> {
+        let slot = self.pending_reservation_slot(reservation)?;
+        let OpenSlot::Occupied {
+            raw_handle_id,
+            node_id,
+            state: OpenState::Pending,
+        } = self.opens[slot]
+        else {
+            return Err(InodeError::InvalidOpenReservation);
+        };
+        let next_pending = self
+            .pending_opens
+            .checked_sub(1)
+            .ok_or(InodeError::InternalInvariant)?;
+        self.opens[slot] = OpenSlot::Occupied {
+            raw_handle_id,
+            node_id,
+            state: OpenState::Active,
+        };
+        self.pending_opens = next_pending;
+        reservation.consumed = true;
+        Ok(self.brand_handle(raw_handle_id))
+    }
+
+    /// Aborts a pending reservation and releases its inode pin.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InodeError::InvalidOpenReservation`] when the token belongs to
+    /// another table, is stale, or has already completed. Invariant failures
+    /// are reported without partially releasing state.
+    pub fn abort_open(&mut self, reservation: &mut OpenReservation) -> Result<(), InodeError> {
+        let slot = self.pending_reservation_slot(reservation)?;
+        self.remove_open(slot, reservation.node_id, OpenState::Pending)?;
+        reservation.consumed = true;
+        Ok(())
+    }
+
+    /// Returns attributes for an active open without changing its lifetime.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InodeError::OpenStillPending`] for a reserved open and
+    /// [`InodeError::StaleOpenHandle`] for an unknown or released handle.
+    /// A handle branded by another connection returns
+    /// [`InodeError::ForeignOpenHandle`].
+    pub fn active_open(&self, handle_id: OpenHandleId) -> Result<InodeAttributes, InodeError> {
+        let raw_handle_id = self.validate_handle_brand(handle_id)?;
+        let slot = find_open(&self.opens, raw_handle_id).ok_or(InodeError::StaleOpenHandle)?;
+        let OpenSlot::Occupied { node_id, state, .. } = self.opens[slot] else {
+            return Err(InodeError::InternalInvariant);
+        };
+        if state == OpenState::Pending {
+            return Err(InodeError::OpenStillPending);
+        }
+        self.node_entry(node_id)
+            .map(attributes)
+            .ok_or(InodeError::InternalInvariant)
+    }
+
+    /// Releases one active open exactly once and drops its inode pin.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InodeError::OpenStillPending`] for a reserved open,
+    /// [`InodeError::StaleOpenHandle`] for an unknown or already released
+    /// handle, [`InodeError::ForeignOpenHandle`] for a handle branded by
+    /// another connection, or [`InodeError::InternalInvariant`] without
+    /// partial mutation when cross-table state is inconsistent.
+    pub fn release_open(&mut self, handle_id: OpenHandleId) -> Result<(), InodeError> {
+        let raw_handle_id = self.validate_handle_brand(handle_id)?;
+        let slot = find_open(&self.opens, raw_handle_id).ok_or(InodeError::StaleOpenHandle)?;
+        let OpenSlot::Occupied { node_id, state, .. } = self.opens[slot] else {
+            return Err(InodeError::InternalInvariant);
+        };
+        if state == OpenState::Pending {
+            return Err(InodeError::OpenStillPending);
+        }
+        self.remove_open(slot, node_id, OpenState::Active)
+    }
+
+    /// Resolves an untrusted raw FUSE `fh` within this authoritative table.
+    ///
+    /// A worker must first route the request to the table for the kernel
+    /// connection that supplied the raw value. Resolution brands only an
+    /// existing active handle; pending reservations are not protocol-visible.
+    /// The returned type therefore cannot be replayed against another
+    /// conforming connection table.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InodeError::OpenStillPending`] if the raw value names a
+    /// reservation that has not activated, or [`InodeError::StaleOpenHandle`]
+    /// if it is zero, unknown, or already released.
+    pub fn resolve_active_handle(&self, raw: u64) -> Result<OpenHandleId, InodeError> {
+        if raw == 0 {
+            return Err(InodeError::StaleOpenHandle);
+        }
+        let slot = find_open(&self.opens, raw).ok_or(InodeError::StaleOpenHandle)?;
+        let OpenSlot::Occupied { state, .. } = self.opens[slot] else {
+            return Err(InodeError::InternalInvariant);
+        };
+        if state == OpenState::Pending {
+            return Err(InodeError::OpenStillPending);
+        }
+        Ok(self.brand_handle(raw))
     }
 
     /// Looks up a child and lazily assigns or reuses its inode identity.
@@ -447,7 +777,10 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
                 .references_released
                 .checked_add(item.lookup_references)
                 .ok_or(InodeError::ForgetUnderflow)?;
-            if retained == item.lookup_references && item.node_id != ROOT_NODE_ID {
+            if retained == item.lookup_references
+                && entry.open_pins == 0
+                && item.node_id != ROOT_NODE_ID
+            {
                 let hash = semantic_hash(&self.connection_key, entry.semantic);
                 let semantic_slot = find_semantic_slot(&self.semantics, &hash, entry.semantic)
                     .ok_or(InodeError::InternalInvariant)?;
@@ -516,6 +849,7 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
             semantic,
             record,
             lookup_references: 1,
+            open_pins: 0,
         };
         let next_live = self
             .live
@@ -643,6 +977,180 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
         )
     }
 
+    fn pending_reservation_slot(&self, reservation: &OpenReservation) -> Result<usize, InodeError> {
+        if reservation.consumed
+            || reservation.authenticator
+                != open_reservation_authenticator(
+                    &self.connection_key,
+                    reservation.raw_handle_id,
+                    reservation.node_id,
+                )
+        {
+            return Err(InodeError::InvalidOpenReservation);
+        }
+        let slot = find_open(&self.opens, reservation.raw_handle_id)
+            .ok_or(InodeError::InvalidOpenReservation)?;
+        if !matches!(
+            self.opens[slot],
+            OpenSlot::Occupied {
+                node_id,
+                state: OpenState::Pending,
+                ..
+            } if node_id == reservation.node_id
+        ) {
+            return Err(InodeError::InvalidOpenReservation);
+        }
+        Ok(slot)
+    }
+
+    fn open_rebuild_capacity(
+        &self,
+        next_live: usize,
+        reuses_tombstone: bool,
+    ) -> Result<Option<usize>, InodeError> {
+        if self.opens.is_empty() {
+            return Ok(Some(INITIAL_CAPACITY));
+        }
+        if next_live > self.opens.len() / 2 {
+            return self
+                .opens
+                .len()
+                .checked_mul(2)
+                .map(Some)
+                .ok_or(InodeError::LimitExceeded("open handles"));
+        }
+        let occupancy = self
+            .live_opens
+            .checked_add(self.open_tombstones)
+            .and_then(|value| value.checked_add(usize::from(!reuses_tombstone)))
+            .ok_or(InodeError::LimitExceeded("open handles"))?;
+        let compaction_threshold = self.opens.len() - self.opens.len() / 4;
+        Ok((occupancy > compaction_threshold).then_some(self.opens.len()))
+    }
+
+    fn brand_handle(&self, raw: u64) -> OpenHandleId {
+        OpenHandleId {
+            raw,
+            connection_key: self.connection_key,
+        }
+    }
+
+    fn validate_handle_brand(&self, handle_id: OpenHandleId) -> Result<u64, InodeError> {
+        if handle_id.connection_key != self.connection_key {
+            return Err(InodeError::ForeignOpenHandle);
+        }
+        Ok(handle_id.raw)
+    }
+
+    fn allocate_open_replacement(&mut self, target: usize) -> Result<Vec<OpenSlot>, InodeError> {
+        let requested = modeled_bytes::<OpenSlot>(target)?;
+        let peak = self
+            .heap_bytes()
+            .checked_add(requested)
+            .ok_or(InodeError::LimitExceeded("heap bytes"))?;
+        if peak > self.limits.maximum_heap_bytes {
+            return Err(InodeError::LimitExceeded("heap bytes"));
+        }
+        #[cfg(test)]
+        if self.refuse_next_open_allocation {
+            self.refuse_next_open_allocation = false;
+            return Err(InodeError::AllocationRefused);
+        }
+        let replacement = allocate_open_slots(target)?;
+        let actual_peak = self
+            .heap_bytes()
+            .checked_add(slot_vector_bytes(&replacement)?)
+            .ok_or(InodeError::LimitExceeded("heap bytes"))?;
+        if actual_peak > self.limits.maximum_heap_bytes {
+            return Err(InodeError::LimitExceeded("heap bytes"));
+        }
+        Ok(replacement)
+    }
+
+    fn remove_open(
+        &mut self,
+        open_slot: usize,
+        node_id: u64,
+        expected_state: OpenState,
+    ) -> Result<(), InodeError> {
+        if !matches!(
+            self.opens.get(open_slot),
+            Some(OpenSlot::Occupied {
+                node_id: candidate,
+                state,
+                ..
+            }) if *candidate == node_id && *state == expected_state
+        ) {
+            return Err(InodeError::InternalInvariant);
+        }
+        let node_slot = find_node(&self.nodes, node_id).ok_or(InodeError::InternalInvariant)?;
+        let NodeSlot::Occupied(mut node) = self.nodes[node_slot] else {
+            return Err(InodeError::InternalInvariant);
+        };
+        let next_pins = node
+            .open_pins
+            .checked_sub(1)
+            .ok_or(InodeError::InternalInvariant)?;
+        let reap = node_id != ROOT_NODE_ID && node.lookup_references == 0 && next_pins == 0;
+        let semantic_slot = if reap {
+            let hash = semantic_hash(&self.connection_key, node.semantic);
+            let slot = find_semantic_slot(&self.semantics, &hash, node.semantic)
+                .ok_or(InodeError::InternalInvariant)?;
+            if !matches!(
+                self.semantics[slot],
+                SemanticSlot::Occupied { node_id: candidate, .. } if candidate == node_id
+            ) {
+                return Err(InodeError::InternalInvariant);
+            }
+            Some(slot)
+        } else {
+            None
+        };
+        let next_live_opens = self
+            .live_opens
+            .checked_sub(1)
+            .ok_or(InodeError::InternalInvariant)?;
+        let next_pending_opens = if expected_state == OpenState::Pending {
+            self.pending_opens
+                .checked_sub(1)
+                .ok_or(InodeError::InternalInvariant)?
+        } else {
+            self.pending_opens
+        };
+        let next_open_tombstones = self
+            .open_tombstones
+            .checked_add(1)
+            .ok_or(InodeError::InternalInvariant)?;
+        let next_live = self
+            .live
+            .checked_sub(usize::from(reap))
+            .ok_or(InodeError::InternalInvariant)?;
+        let next_node_tombstones = self
+            .node_tombstones
+            .checked_add(usize::from(reap))
+            .ok_or(InodeError::InternalInvariant)?;
+        let next_semantic_tombstones = self
+            .semantic_tombstones
+            .checked_add(usize::from(reap))
+            .ok_or(InodeError::InternalInvariant)?;
+
+        self.opens[open_slot] = OpenSlot::Tombstone;
+        self.live_opens = next_live_opens;
+        self.pending_opens = next_pending_opens;
+        self.open_tombstones = next_open_tombstones;
+        if let Some(semantic_slot) = semantic_slot {
+            self.nodes[node_slot] = NodeSlot::Tombstone;
+            self.semantics[semantic_slot] = SemanticSlot::Tombstone;
+        } else {
+            node.open_pins = next_pins;
+            self.nodes[node_slot] = NodeSlot::Occupied(node);
+        }
+        self.live = next_live;
+        self.node_tombstones = next_node_tombstones;
+        self.semantic_tombstones = next_semantic_tombstones;
+        Ok(())
+    }
+
     fn node_entry(&self, node_id: u64) -> Option<NodeEntry<'bytes>> {
         find_node(&self.nodes, node_id).and_then(|slot| match self.nodes[slot] {
             NodeSlot::Occupied(entry) => Some(entry),
@@ -692,6 +1200,19 @@ fn semantic_hash(connection_key: &[u8; 32], key: SemanticKey) -> [u8; 32] {
             hash.update(group.as_bytes());
         }
     }
+    hash.finalize().into()
+}
+
+fn open_reservation_authenticator(
+    connection_key: &[u8; 32],
+    raw_handle_id: u64,
+    node_id: u64,
+) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(OPEN_RESERVATION_DOMAIN);
+    hash.update(connection_key);
+    hash.update(raw_handle_id.to_le_bytes());
+    hash.update(node_id.to_le_bytes());
     hash.finalize().into()
 }
 
@@ -747,6 +1268,15 @@ fn allocate_semantic_slots(capacity: usize) -> Result<Vec<SemanticSlot>, InodeEr
     Ok(slots)
 }
 
+fn allocate_open_slots(capacity: usize) -> Result<Vec<OpenSlot>, InodeError> {
+    let mut slots = Vec::new();
+    slots
+        .try_reserve_exact(capacity)
+        .map_err(|_| InodeError::AllocationRefused)?;
+    slots.resize(capacity, OpenSlot::Empty);
+    Ok(slots)
+}
+
 fn node_bucket(node_id: u64, capacity: usize) -> usize {
     let mut value = node_id;
     value ^= value >> 30;
@@ -760,6 +1290,53 @@ fn node_bucket(node_id: u64, capacity: usize) -> usize {
 fn semantic_bucket(hash: &[u8; 32], capacity: usize) -> usize {
     let prefix = u64::from_le_bytes(hash[..8].try_into().unwrap_or([0; 8]));
     prefix as usize & (capacity - 1)
+}
+
+fn open_bucket(raw_handle_id: u64, capacity: usize) -> usize {
+    node_bucket(raw_handle_id, capacity)
+}
+
+fn find_open(slots: &[OpenSlot], raw_handle_id: u64) -> Option<usize> {
+    if slots.is_empty() {
+        return None;
+    }
+    let mut position = open_bucket(raw_handle_id, slots.len());
+    for _ in 0..slots.len() {
+        match slots[position] {
+            OpenSlot::Empty => return None,
+            OpenSlot::Occupied {
+                raw_handle_id: candidate,
+                ..
+            } if candidate == raw_handle_id => return Some(position),
+            OpenSlot::Tombstone | OpenSlot::Occupied { .. } => {
+                position = (position + 1) & (slots.len() - 1);
+            }
+        }
+    }
+    None
+}
+
+fn find_open_insert(slots: &[OpenSlot], raw_handle_id: u64) -> Result<usize, InodeError> {
+    if slots.is_empty() {
+        return Err(InodeError::InternalInvariant);
+    }
+    let mut position = open_bucket(raw_handle_id, slots.len());
+    let mut tombstone = None;
+    for _ in 0..slots.len() {
+        match slots[position] {
+            OpenSlot::Empty => return Ok(tombstone.unwrap_or(position)),
+            OpenSlot::Tombstone => {
+                tombstone.get_or_insert(position);
+            }
+            OpenSlot::Occupied {
+                raw_handle_id: candidate,
+                ..
+            } if candidate == raw_handle_id => return Err(InodeError::InternalInvariant),
+            OpenSlot::Occupied { .. } => {}
+        }
+        position = (position + 1) & (slots.len() - 1);
+    }
+    tombstone.ok_or(InodeError::InternalInvariant)
 }
 
 fn find_node(slots: &[NodeSlot<'_>], node_id: u64) -> Option<usize> {
@@ -866,6 +1443,25 @@ fn rehash_semantics(old: &[SemanticSlot], new: &mut [SemanticSlot]) -> Result<()
                 hash: *hash,
                 key: *key,
                 node_id: *node_id,
+            };
+        }
+    }
+    Ok(())
+}
+
+fn rehash_opens(old: &[OpenSlot], new: &mut [OpenSlot]) -> Result<(), InodeError> {
+    for slot in old {
+        if let OpenSlot::Occupied {
+            raw_handle_id,
+            node_id,
+            state,
+        } = slot
+        {
+            let position = find_open_insert(new, *raw_handle_id)?;
+            new[position] = OpenSlot::Occupied {
+                raw_handle_id: *raw_handle_id,
+                node_id: *node_id,
+                state: *state,
             };
         }
     }
@@ -1009,7 +1605,7 @@ mod tests {
     }
 
     fn generous_limits() -> InodeTableLimits {
-        InodeTableLimits::new(32, 1_048_576, 16, 16)
+        InodeTableLimits::new(32, 1_048_576, 16, 16, 16)
     }
 
     fn name(value: &[u8]) -> PathName {
@@ -1177,9 +1773,12 @@ mod tests {
     fn growth_peak_and_reference_limits_fail_without_partial_identity() {
         let fixture = fixture();
         let index = fixture.validate();
-        let mut count_limited =
-            InodeTable::new(&index, [6; 32], InodeTableLimits::new(1, 1_048_576, 8, 8))
-                .unwrap_or_else(|error| panic!("table failed: {error}"));
+        let mut count_limited = InodeTable::new(
+            &index,
+            [6; 32],
+            InodeTableLimits::new(1, 1_048_576, 8, 8, 8),
+        )
+        .unwrap_or_else(|error| panic!("table failed: {error}"));
         assert!(matches!(
             count_limited.lookup(ROOT_NODE_ID, &name(b"a")),
             Err(InodeError::LimitExceeded("nodes"))
@@ -1187,9 +1786,12 @@ mod tests {
         assert_eq!(count_limited.live_nodes(), 1);
         assert_eq!(count_limited.total_lookup_references(), 1);
 
-        let mut exact_boundary =
-            InodeTable::new(&index, [6; 32], InodeTableLimits::new(2, 1_048_576, 8, 8))
-                .unwrap_or_else(|error| panic!("table failed: {error}"));
+        let mut exact_boundary = InodeTable::new(
+            &index,
+            [6; 32],
+            InodeTableLimits::new(2, 1_048_576, 8, 8, 8),
+        )
+        .unwrap_or_else(|error| panic!("table failed: {error}"));
         assert!(matches!(
             exact_boundary.lookup(ROOT_NODE_ID, &name(b"a")),
             Ok(InodeLookup::Positive { .. })
@@ -1203,7 +1805,7 @@ mod tests {
 
         let initial_heap = table_bytes(INITIAL_CAPACITY)
             .unwrap_or_else(|error| panic!("accounting failed: {error}"));
-        let limits = InodeTableLimits::new(8, initial_heap, 8, 8);
+        let limits = InodeTableLimits::new(8, initial_heap, 8, 8, 8);
         let mut table = InodeTable::new(&index, [6; 32], limits)
             .unwrap_or_else(|error| panic!("table failed: {error}"));
         assert!(matches!(
@@ -1223,7 +1825,7 @@ mod tests {
         assert_eq!(id_exhausted.live_nodes(), 1);
         assert_eq!(id_exhausted.total_lookup_references(), 1);
 
-        let reference_limits = InodeTableLimits::new(8, 1_048_576, 2, 8);
+        let reference_limits = InodeTableLimits::new(8, 1_048_576, 2, 8, 8);
         let mut table = InodeTable::new(&index, [6; 32], reference_limits)
             .unwrap_or_else(|error| panic!("table failed: {error}"));
         let (a, _) = positive_parts(
@@ -1355,5 +1957,652 @@ mod tests {
             admit_second_allocation(u64::MAX, 1, 1, u64::MAX),
             Err(InodeError::LimitExceeded("heap bytes"))
         ));
+    }
+
+    #[test]
+    fn pending_and_active_opens_pin_an_inode_until_release() {
+        let fixture = fixture();
+        let index = fixture.validate();
+        let mut table = InodeTable::new(&index, [12; 32], generous_limits())
+            .unwrap_or_else(|error| panic!("table failed: {error}"));
+        let (file, _) = positive_parts(
+            table
+                .lookup(ROOT_NODE_ID, &name(b"c"))
+                .unwrap_or_else(|error| panic!("lookup failed: {error}")),
+        );
+        let mut reservation = table
+            .reserve_open(file.node_id)
+            .unwrap_or_else(|error| panic!("reserve failed: {error}"));
+        let raw_handle = reservation.raw_handle_id;
+        assert_eq!(table.live_open_handles(), 1);
+        assert_eq!(table.pending_open_handles(), 1);
+        assert!(matches!(
+            table.resolve_active_handle(raw_handle),
+            Err(InodeError::OpenStillPending)
+        ));
+
+        let forgotten = table
+            .forget(&mut [ForgetRequest::new(file.node_id, 1)])
+            .unwrap_or_else(|error| panic!("forget failed: {error}"));
+        assert_eq!(forgotten.nodes_evicted, 0);
+        assert!(table.getattr(file.node_id).is_ok());
+
+        let active = table
+            .activate_open(&mut reservation)
+            .unwrap_or_else(|error| panic!("activate failed: {error}"));
+        assert_eq!(active.get(), raw_handle);
+        let resolved = table
+            .resolve_active_handle(raw_handle)
+            .unwrap_or_else(|error| panic!("resolve failed: {error}"));
+        assert_eq!(resolved, active);
+        assert_eq!(
+            format!("{active:?}"),
+            format!("OpenHandleId {{ raw: {raw_handle}, connection: \"<redacted>\" }}")
+        );
+        assert_eq!(table.pending_open_handles(), 0);
+        assert_eq!(
+            table
+                .active_open(active)
+                .unwrap_or_else(|error| panic!("active lookup failed: {error}"))
+                .node_id,
+            file.node_id
+        );
+        table
+            .release_open(active)
+            .unwrap_or_else(|error| panic!("release failed: {error}"));
+        assert_eq!(table.live_open_handles(), 0);
+        assert!(matches!(
+            table.active_open(active),
+            Err(InodeError::StaleOpenHandle)
+        ));
+        assert!(matches!(
+            table.release_open(active),
+            Err(InodeError::StaleOpenHandle)
+        ));
+        assert!(matches!(
+            table.getattr(file.node_id),
+            Err(InodeError::StaleNode)
+        ));
+    }
+
+    #[test]
+    fn abort_releases_pending_pin_and_reservation_is_single_use() {
+        let fixture = fixture();
+        let index = fixture.validate();
+        let mut table = InodeTable::new(&index, [13; 32], generous_limits())
+            .unwrap_or_else(|error| panic!("table failed: {error}"));
+        let (file, _) = positive_parts(
+            table
+                .lookup(ROOT_NODE_ID, &name(b"c"))
+                .unwrap_or_else(|error| panic!("lookup failed: {error}")),
+        );
+        let mut reservation = table
+            .reserve_open(file.node_id)
+            .unwrap_or_else(|error| panic!("reserve failed: {error}"));
+        table
+            .forget(&mut [ForgetRequest::new(file.node_id, 1)])
+            .unwrap_or_else(|error| panic!("forget failed: {error}"));
+        table
+            .abort_open(&mut reservation)
+            .unwrap_or_else(|error| panic!("abort failed: {error}"));
+        assert!(matches!(
+            table.abort_open(&mut reservation),
+            Err(InodeError::InvalidOpenReservation)
+        ));
+        assert_eq!(table.live_open_handles(), 0);
+        assert_eq!(table.pending_open_handles(), 0);
+        assert!(matches!(
+            table.getattr(file.node_id),
+            Err(InodeError::StaleNode)
+        ));
+    }
+
+    #[test]
+    fn reservation_and_typed_handle_are_bound_to_unique_connection() {
+        let fixture = fixture();
+        let index = fixture.validate();
+        let mut first = InodeTable::new(&index, [14; 32], generous_limits())
+            .unwrap_or_else(|error| panic!("first table failed: {error}"));
+        let mut second = InodeTable::new(&index, [20; 32], generous_limits())
+            .unwrap_or_else(|error| panic!("second table failed: {error}"));
+        let (file, _) = positive_parts(
+            first
+                .lookup(ROOT_NODE_ID, &name(b"c"))
+                .unwrap_or_else(|error| panic!("lookup failed: {error}")),
+        );
+        let mut reservation = first
+            .reserve_open(file.node_id)
+            .unwrap_or_else(|error| panic!("reserve failed: {error}"));
+        let authenticator = reservation.authenticator;
+        reservation.authenticator[0] ^= 1;
+        assert!(matches!(
+            first.activate_open(&mut reservation),
+            Err(InodeError::InvalidOpenReservation)
+        ));
+        reservation.authenticator = authenticator;
+        assert!(matches!(
+            second.activate_open(&mut reservation),
+            Err(InodeError::InvalidOpenReservation)
+        ));
+        assert_eq!(second.live_open_handles(), 0);
+        let first_handle = first
+            .activate_open(&mut reservation)
+            .unwrap_or_else(|error| panic!("origin activate failed: {error}"));
+        let (second_file, _) = positive_parts(
+            second
+                .lookup(ROOT_NODE_ID, &name(b"c"))
+                .unwrap_or_else(|error| panic!("second lookup failed: {error}")),
+        );
+        let mut second_reservation = second
+            .reserve_open(second_file.node_id)
+            .unwrap_or_else(|error| panic!("second reserve failed: {error}"));
+        let second_handle = second
+            .activate_open(&mut second_reservation)
+            .unwrap_or_else(|error| panic!("second activate failed: {error}"));
+        assert_eq!(first_handle.get(), second_handle.get());
+        assert_ne!(first_handle, second_handle);
+        assert!(matches!(
+            first.active_open(second_handle),
+            Err(InodeError::ForeignOpenHandle)
+        ));
+        assert!(matches!(
+            first.release_open(second_handle),
+            Err(InodeError::ForeignOpenHandle)
+        ));
+        assert!(first.active_open(first_handle).is_ok());
+        first
+            .release_open(first_handle)
+            .unwrap_or_else(|error| panic!("first release failed: {error}"));
+        second
+            .release_open(second_handle)
+            .unwrap_or_else(|error| panic!("second release failed: {error}"));
+    }
+
+    #[test]
+    fn open_admission_failures_leave_inode_and_handle_state_unchanged() {
+        let fixture = fixture();
+        let index = fixture.validate();
+        let mut disabled_limits = generous_limits();
+        disabled_limits.maximum_open_handles = 0;
+        let mut disabled = InodeTable::new(&index, [15; 32], disabled_limits)
+            .unwrap_or_else(|error| panic!("disabled table failed: {error}"));
+        assert!(matches!(
+            disabled.reserve_open(ROOT_NODE_ID),
+            Err(InodeError::OpenTargetNotFile)
+        ));
+        let (file, _) = positive_parts(
+            disabled
+                .lookup(ROOT_NODE_ID, &name(b"c"))
+                .unwrap_or_else(|error| panic!("lookup failed: {error}")),
+        );
+        assert!(matches!(
+            disabled.reserve_open(file.node_id),
+            Err(InodeError::LimitExceeded("open handles"))
+        ));
+        assert_eq!(disabled.live_open_handles(), 0);
+
+        let mut one_limit = generous_limits();
+        one_limit.maximum_open_handles = 1;
+        let mut one = InodeTable::new(&index, [19; 32], one_limit)
+            .unwrap_or_else(|error| panic!("single-handle table failed: {error}"));
+        let (file, _) = positive_parts(
+            one.lookup(ROOT_NODE_ID, &name(b"c"))
+                .unwrap_or_else(|error| panic!("lookup failed: {error}")),
+        );
+        let mut first = one
+            .reserve_open(file.node_id)
+            .unwrap_or_else(|error| panic!("first reserve failed: {error}"));
+        let first_id = first.raw_handle_id;
+        assert!(matches!(
+            one.reserve_open(file.node_id),
+            Err(InodeError::LimitExceeded("open handles"))
+        ));
+        one.abort_open(&mut first)
+            .unwrap_or_else(|error| panic!("abort failed: {error}"));
+        let second = one
+            .reserve_open(file.node_id)
+            .unwrap_or_else(|error| panic!("second reserve failed: {error}"));
+        assert!(second.raw_handle_id > first_id);
+
+        let mut heap_limited = InodeTable::new(&index, [16; 32], generous_limits())
+            .unwrap_or_else(|error| panic!("heap table failed: {error}"));
+        let (file, _) = positive_parts(
+            heap_limited
+                .lookup(ROOT_NODE_ID, &name(b"c"))
+                .unwrap_or_else(|error| panic!("lookup failed: {error}")),
+        );
+        heap_limited.limits.maximum_heap_bytes = heap_limited.heap_bytes();
+        assert!(matches!(
+            heap_limited.reserve_open(file.node_id),
+            Err(InodeError::LimitExceeded("heap bytes"))
+        ));
+        assert_eq!(heap_limited.live_open_handles(), 0);
+        assert!(heap_limited.getattr(file.node_id).is_ok());
+
+        let mut allocation_refused = InodeTable::new(&index, [17; 32], generous_limits())
+            .unwrap_or_else(|error| panic!("allocation table failed: {error}"));
+        let (file, _) = positive_parts(
+            allocation_refused
+                .lookup(ROOT_NODE_ID, &name(b"c"))
+                .unwrap_or_else(|error| panic!("lookup failed: {error}")),
+        );
+        allocation_refused.refuse_next_open_allocation = true;
+        assert!(matches!(
+            allocation_refused.reserve_open(file.node_id),
+            Err(InodeError::AllocationRefused)
+        ));
+        assert_eq!(allocation_refused.live_open_handles(), 0);
+        assert!(allocation_refused.getattr(file.node_id).is_ok());
+
+        allocation_refused.next_open_handle_id = u64::MAX;
+        assert!(matches!(
+            allocation_refused.reserve_open(file.node_id),
+            Err(InodeError::LimitExceeded("open handle IDs"))
+        ));
+        assert_eq!(allocation_refused.live_open_handles(), 0);
+    }
+
+    #[test]
+    fn lookup_reference_revival_defers_reap_after_release() {
+        let fixture = fixture();
+        let index = fixture.validate();
+        let mut table = InodeTable::new(&index, [18; 32], generous_limits())
+            .unwrap_or_else(|error| panic!("table failed: {error}"));
+        let (file, _) = positive_parts(
+            table
+                .lookup(ROOT_NODE_ID, &name(b"c"))
+                .unwrap_or_else(|error| panic!("lookup failed: {error}")),
+        );
+        let mut reservation = table
+            .reserve_open(file.node_id)
+            .unwrap_or_else(|error| panic!("reserve failed: {error}"));
+        let handle = table
+            .activate_open(&mut reservation)
+            .unwrap_or_else(|error| panic!("activate failed: {error}"));
+        table
+            .forget(&mut [ForgetRequest::new(file.node_id, 1)])
+            .unwrap_or_else(|error| panic!("forget failed: {error}"));
+        let (revived, references) = positive_parts(
+            table
+                .lookup(ROOT_NODE_ID, &name(b"c"))
+                .unwrap_or_else(|error| panic!("revival failed: {error}")),
+        );
+        assert_eq!(revived.node_id, file.node_id);
+        assert_eq!(references, 1);
+        table
+            .release_open(handle)
+            .unwrap_or_else(|error| panic!("release failed: {error}"));
+        assert!(table.getattr(file.node_id).is_ok());
+        table
+            .forget(&mut [ForgetRequest::new(file.node_id, 1)])
+            .unwrap_or_else(|error| panic!("final forget failed: {error}"));
+        assert!(matches!(
+            table.getattr(file.node_id),
+            Err(InodeError::StaleNode)
+        ));
+    }
+
+    #[test]
+    fn open_churn_preserves_load_bounds_and_never_reuses_ids() {
+        let fixture = fixture();
+        let index = fixture.validate();
+        let mut table = InodeTable::new(&index, [21; 32], generous_limits())
+            .unwrap_or_else(|error| panic!("table failed: {error}"));
+        let (file, _) = positive_parts(
+            table
+                .lookup(ROOT_NODE_ID, &name(b"c"))
+                .unwrap_or_else(|error| panic!("lookup failed: {error}")),
+        );
+
+        let mut reservations = Vec::new();
+        for _ in 0..8 {
+            reservations.push(
+                table
+                    .reserve_open(file.node_id)
+                    .unwrap_or_else(|error| panic!("reserve failed: {error}")),
+            );
+        }
+        let mut handles = Vec::new();
+        for reservation in &mut reservations {
+            handles.push(
+                table
+                    .activate_open(reservation)
+                    .unwrap_or_else(|error| panic!("activate failed: {error}")),
+            );
+        }
+        assert!(handles.windows(2).all(|pair| pair[0].get() < pair[1].get()));
+        assert!(table.live_opens <= table.opens.len() / 2);
+        for handle in handles {
+            table
+                .release_open(handle)
+                .unwrap_or_else(|error| panic!("release failed: {error}"));
+        }
+
+        let mut previous = 8;
+        let rebuilds_before = table.open_rebuilds;
+        for _ in 0..128 {
+            let mut reservation = table
+                .reserve_open(file.node_id)
+                .unwrap_or_else(|error| panic!("churn reserve failed: {error}"));
+            let handle = table
+                .activate_open(&mut reservation)
+                .unwrap_or_else(|error| panic!("churn activate failed: {error}"));
+            assert!(handle.get() > previous);
+            previous = handle.get();
+            assert!(table.live_opens <= table.opens.len() / 2);
+            assert!(table.live_opens + table.open_tombstones <= table.opens.len() * 3 / 4);
+            table
+                .release_open(handle)
+                .unwrap_or_else(|error| panic!("churn release failed: {error}"));
+            assert_eq!(table.live_open_handles(), 0);
+            assert!(table.live_opens + table.open_tombstones <= table.opens.len() * 3 / 4);
+        }
+        assert!(table.open_rebuilds - rebuilds_before < 128);
+    }
+
+    #[test]
+    fn open_growth_and_compaction_charge_retained_plus_replacement() {
+        let fixture = fixture();
+        let index = fixture.validate();
+        let mut growth = InodeTable::new(&index, [22; 32], generous_limits())
+            .unwrap_or_else(|error| panic!("growth table failed: {error}"));
+        let (file, _) = positive_parts(
+            growth
+                .lookup(ROOT_NODE_ID, &name(b"c"))
+                .unwrap_or_else(|error| panic!("lookup failed: {error}")),
+        );
+        let mut first = growth
+            .reserve_open(file.node_id)
+            .unwrap_or_else(|error| panic!("first reserve failed: {error}"));
+        let first_handle = growth
+            .activate_open(&mut first)
+            .unwrap_or_else(|error| panic!("activate failed: {error}"));
+        let replacement = modeled_bytes::<OpenSlot>(growth.opens.len() * 2)
+            .unwrap_or_else(|error| panic!("model failed: {error}"));
+        growth.limits.maximum_heap_bytes = growth.heap_bytes() + replacement - 1;
+        assert!(matches!(
+            growth.reserve_open(file.node_id),
+            Err(InodeError::LimitExceeded("heap bytes"))
+        ));
+        assert_eq!(growth.live_open_handles(), 1);
+        assert!(growth.active_open(first_handle).is_ok());
+
+        let mut compaction = InodeTable::new(&index, [23; 32], generous_limits())
+            .unwrap_or_else(|error| panic!("compaction table failed: {error}"));
+        let (file, _) = positive_parts(
+            compaction
+                .lookup(ROOT_NODE_ID, &name(b"c"))
+                .unwrap_or_else(|error| panic!("lookup failed: {error}")),
+        );
+        compaction.opens = allocate_open_slots(4)
+            .unwrap_or_else(|error| panic!("fixture allocation failed: {error}"));
+        compaction.opens.fill(OpenSlot::Tombstone);
+        let empty = open_bucket(compaction.next_open_handle_id, compaction.opens.len());
+        compaction.opens[empty] = OpenSlot::Empty;
+        compaction.open_tombstones = 3;
+        let replacement = modeled_bytes::<OpenSlot>(compaction.opens.len())
+            .unwrap_or_else(|error| panic!("model failed: {error}"));
+        compaction.limits.maximum_heap_bytes = compaction.heap_bytes() + replacement - 1;
+        let heap_before = compaction.heap_bytes();
+        assert!(matches!(
+            compaction.reserve_open(file.node_id),
+            Err(InodeError::LimitExceeded("heap bytes"))
+        ));
+        assert_eq!(compaction.heap_bytes(), heap_before);
+        assert_eq!(compaction.live_open_handles(), 0);
+        assert_eq!(compaction.open_tombstones, 3);
+        assert!(compaction.getattr(file.node_id).is_ok());
+    }
+
+    #[test]
+    fn open_tombstone_reuse_needs_no_replacement_admission() {
+        let fixture = fixture();
+        let index = fixture.validate();
+        let mut table = InodeTable::new(&index, [25; 32], generous_limits())
+            .unwrap_or_else(|error| panic!("table failed: {error}"));
+        let (file, _) = positive_parts(
+            table
+                .lookup(ROOT_NODE_ID, &name(b"c"))
+                .unwrap_or_else(|error| panic!("lookup failed: {error}")),
+        );
+        let mut first = table
+            .reserve_open(file.node_id)
+            .unwrap_or_else(|error| panic!("first reserve failed: {error}"));
+        table
+            .abort_open(&mut first)
+            .unwrap_or_else(|error| panic!("abort failed: {error}"));
+        table.opens.fill(OpenSlot::Empty);
+        let tombstone = open_bucket(table.next_open_handle_id, table.opens.len());
+        table.opens[tombstone] = OpenSlot::Tombstone;
+        table.open_tombstones = 1;
+        table.limits.maximum_heap_bytes = table.heap_bytes();
+        table.refuse_next_open_allocation = true;
+
+        let mut second = table
+            .reserve_open(file.node_id)
+            .unwrap_or_else(|error| panic!("tombstone reserve failed: {error}"));
+        assert!(table.refuse_next_open_allocation);
+        assert_eq!(table.open_tombstones, 0);
+        table
+            .abort_open(&mut second)
+            .unwrap_or_else(|error| panic!("second abort failed: {error}"));
+    }
+
+    #[test]
+    fn release_cross_map_corruption_fails_before_any_removal() {
+        let fixture = fixture();
+        let index = fixture.validate();
+        let mut table = InodeTable::new(&index, [24; 32], generous_limits())
+            .unwrap_or_else(|error| panic!("table failed: {error}"));
+        let (file, _) = positive_parts(
+            table
+                .lookup(ROOT_NODE_ID, &name(b"c"))
+                .unwrap_or_else(|error| panic!("lookup failed: {error}")),
+        );
+        let mut reservation = table
+            .reserve_open(file.node_id)
+            .unwrap_or_else(|error| panic!("reserve failed: {error}"));
+        let handle = table
+            .activate_open(&mut reservation)
+            .unwrap_or_else(|error| panic!("activate failed: {error}"));
+        table
+            .forget(&mut [ForgetRequest::new(file.node_id, 1)])
+            .unwrap_or_else(|error| panic!("forget failed: {error}"));
+
+        let node = table
+            .node_entry(file.node_id)
+            .unwrap_or_else(|| panic!("pinned node missing"));
+        let hash = semantic_hash(&table.connection_key, node.semantic);
+        let semantic_slot = find_semantic_slot(&table.semantics, &hash, node.semantic)
+            .unwrap_or_else(|| panic!("semantic missing"));
+        table.semantics[semantic_slot] = SemanticSlot::Tombstone;
+        let live_before = table.live;
+        let live_opens_before = table.live_opens;
+        let open_tombstones_before = table.open_tombstones;
+        assert!(matches!(
+            table.release_open(handle),
+            Err(InodeError::InternalInvariant)
+        ));
+        assert_eq!(table.live, live_before);
+        assert_eq!(table.live_opens, live_opens_before);
+        assert_eq!(table.open_tombstones, open_tombstones_before);
+        assert!(table.active_open(handle).is_ok());
+        assert_eq!(
+            table
+                .node_entry(file.node_id)
+                .map(|entry| (entry.lookup_references, entry.open_pins)),
+            Some((0, 1))
+        );
+    }
+
+    #[test]
+    fn release_zero_pin_corruption_leaves_slots_and_counters_unchanged() {
+        let fixture = fixture();
+        let index = fixture.validate();
+        let mut table = InodeTable::new(&index, [26; 32], generous_limits())
+            .unwrap_or_else(|error| panic!("table failed: {error}"));
+        let (file, _) = positive_parts(
+            table
+                .lookup(ROOT_NODE_ID, &name(b"c"))
+                .unwrap_or_else(|error| panic!("lookup failed: {error}")),
+        );
+        let mut reservation = table
+            .reserve_open(file.node_id)
+            .unwrap_or_else(|error| panic!("reserve failed: {error}"));
+        let handle = table
+            .activate_open(&mut reservation)
+            .unwrap_or_else(|error| panic!("activate failed: {error}"));
+        let node_slot =
+            find_node(&table.nodes, file.node_id).unwrap_or_else(|| panic!("node slot missing"));
+        let NodeSlot::Occupied(mut node) = table.nodes[node_slot] else {
+            panic!("node slot not occupied");
+        };
+        node.open_pins = 0;
+        table.nodes[node_slot] = NodeSlot::Occupied(node);
+        let open_slot =
+            find_open(&table.opens, handle.get()).unwrap_or_else(|| panic!("open slot missing"));
+        let OpenSlot::Occupied {
+            raw_handle_id,
+            node_id,
+            state,
+        } = table.opens[open_slot]
+        else {
+            panic!("open slot not occupied");
+        };
+        let counters_before = [
+            table.live,
+            table.node_tombstones,
+            table.semantic_tombstones,
+            table.live_opens,
+            table.pending_opens,
+            table.open_tombstones,
+        ];
+        let ids_before = [
+            table.total_lookup_references,
+            table.next_node_id,
+            table.next_open_handle_id,
+        ];
+
+        assert!(matches!(
+            table.release_open(handle),
+            Err(InodeError::InternalInvariant)
+        ));
+        assert_eq!(
+            [
+                table.live,
+                table.node_tombstones,
+                table.semantic_tombstones,
+                table.live_opens,
+                table.pending_opens,
+                table.open_tombstones,
+            ],
+            counters_before
+        );
+        assert_eq!(
+            [
+                table.total_lookup_references,
+                table.next_node_id,
+                table.next_open_handle_id,
+            ],
+            ids_before
+        );
+        assert!(matches!(
+            table.opens[open_slot],
+            OpenSlot::Occupied {
+                raw_handle_id: candidate_raw,
+                node_id: candidate_node,
+                state: candidate_state,
+            } if (candidate_raw, candidate_node, candidate_state)
+                == (raw_handle_id, node_id, state)
+        ));
+        assert_eq!(
+            table
+                .node_entry(file.node_id)
+                .map(|entry| (entry.lookup_references, entry.open_pins)),
+            Some((node.lookup_references, 0))
+        );
+    }
+
+    #[test]
+    fn abort_zero_pending_counter_leaves_slots_and_counters_unchanged() {
+        let fixture = fixture();
+        let index = fixture.validate();
+        let mut table = InodeTable::new(&index, [27; 32], generous_limits())
+            .unwrap_or_else(|error| panic!("table failed: {error}"));
+        let (file, _) = positive_parts(
+            table
+                .lookup(ROOT_NODE_ID, &name(b"c"))
+                .unwrap_or_else(|error| panic!("lookup failed: {error}")),
+        );
+        let mut reservation = table
+            .reserve_open(file.node_id)
+            .unwrap_or_else(|error| panic!("reserve failed: {error}"));
+        let open_slot = find_open(&table.opens, reservation.raw_handle_id)
+            .unwrap_or_else(|| panic!("open slot missing"));
+        let OpenSlot::Occupied {
+            raw_handle_id,
+            node_id,
+            state,
+        } = table.opens[open_slot]
+        else {
+            panic!("open slot not occupied");
+        };
+        let node_before = table
+            .node_entry(file.node_id)
+            .map(|entry| (entry.lookup_references, entry.open_pins));
+        table.pending_opens = 0;
+        let counters_before = [
+            table.live,
+            table.node_tombstones,
+            table.semantic_tombstones,
+            table.live_opens,
+            table.pending_opens,
+            table.open_tombstones,
+        ];
+        let ids_before = [
+            table.total_lookup_references,
+            table.next_node_id,
+            table.next_open_handle_id,
+        ];
+
+        assert!(matches!(
+            table.abort_open(&mut reservation),
+            Err(InodeError::InternalInvariant)
+        ));
+        assert_eq!(
+            [
+                table.live,
+                table.node_tombstones,
+                table.semantic_tombstones,
+                table.live_opens,
+                table.pending_opens,
+                table.open_tombstones,
+            ],
+            counters_before
+        );
+        assert_eq!(
+            [
+                table.total_lookup_references,
+                table.next_node_id,
+                table.next_open_handle_id,
+            ],
+            ids_before
+        );
+        assert!(matches!(
+            table.opens[open_slot],
+            OpenSlot::Occupied {
+                raw_handle_id: candidate_raw,
+                node_id: candidate_node,
+                state: candidate_state,
+            } if (candidate_raw, candidate_node, candidate_state)
+                == (raw_handle_id, node_id, state)
+        ));
+        assert_eq!(
+            table
+                .node_entry(file.node_id)
+                .map(|entry| (entry.lookup_references, entry.open_pins)),
+            node_before
+        );
+        assert!(!reservation.consumed);
     }
 }
