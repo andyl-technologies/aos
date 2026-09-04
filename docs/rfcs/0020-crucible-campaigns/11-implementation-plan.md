@@ -2474,8 +2474,8 @@ cannot release it; explicit pre-fork rejection rolls back the unused slot,
 while ambiguous launch failure, unfinished-share drop, or incomplete aggregate
 finish quarantines the entire guard. The Linux process owner correspondingly
 retains a bounded set of authenticated hot-fork child pidfds instead of
-enforcing an incorrect one-child-per-attempt restriction. Authoritative
-lifecycle construction and ownership handoff, the remaining writable
+enforcing an incorrect one-child-per-attempt restriction. Daemon invocation of
+the lifecycle constructor and ownership handoff, the remaining writable
 host-device endpoints, modeled QEMU driving, observation production, and a real
 fork flight remain open, so T-CAM-6.2, T-CAM-6.3, and T-CAM-7.4 stay unchecked.
 The daemon now also has the linear hot-fork execution-runner boundary above
@@ -2516,9 +2516,17 @@ the target pidfd/cgroup authority through a non-owning process-control loan,
 then consumes both into a real `QemuNode`. The installed node owns the
 child-private modeled planes without fabricating `std::process::Child` or
 gaining authority to release the outer attempt guard; source reuse is rejected
-while any such loan remains. Installing the complete ordered node set together
-with the process-neutral world continuation as one failure-atomic lifecycle
-transaction remains open. Realization now also
+while any such loan remains. The production lifecycle library now consumes the
+complete ordered installed-node set and the opaque world continuation as one
+failure-atomic adoption transaction. It requires an exact child for every
+running node and none for permanently failed nodes, rejects powered-off Worlds,
+checks source generation plus one, reauthenticates child process incarnations,
+and retains the source lifecycle configuration, immutable root identities, and
+resolved block/9p bindings while accepting only a fresh durable run-state root.
+Focused inventory tests cover exact generation, missing/foreign children,
+powered-off rejection, and configuration/root retention. Wiring that constructor
+to the daemon's aggregate child owner and proving the branch-private root
+overlay before handoff remain open. Realization now also
 converts an exact active node into a non-forgeable prepared-template capability only after QEMU has
 completed the retained-template and branch-resource transaction. The capability
 keeps the realized configuration and unified event-log prefix paired with the
