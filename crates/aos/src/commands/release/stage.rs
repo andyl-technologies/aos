@@ -158,7 +158,7 @@ fn publication_surface(
         .prefix("aos-release-stage-surface-")
         .tempdir()?;
     let surface = temporary.path().join("surface");
-    let mut copied_files = capture::copy_surface_tree(bundle, &surface)?;
+    let mut copied_files = capture::copy_ephemeral_surface_tree(bundle, &surface)?;
     copied_files.retain(|file| file.path.as_str() != "release-manifest.json");
     if copied_files != verified_files {
         bail!("release bundle changed between verification and publication capture");

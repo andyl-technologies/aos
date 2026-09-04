@@ -157,7 +157,7 @@ pub(super) fn control_file(path: &Path, label: &str) -> Result<Vec<u8>> {
 /// Returns an error for links, aliases, special files, unstable input,
 /// reserved control paths, excessive depth/count, or destination collisions.
 pub(super) fn copy_payload_tree(source: &Path, destination: &Path) -> Result<Vec<CapturedFile>> {
-    copy_tree(source, destination, true)
+    copy_tree(source, destination, true, true)
 }
 
 /// Copies a publication surface without following links or accepting aliases.
@@ -167,13 +167,31 @@ pub(super) fn copy_payload_tree(source: &Path, destination: &Path) -> Result<Vec
 /// Returns an error for links, aliases, special files, unstable input,
 /// excessive depth/count, or destination collisions.
 pub(super) fn copy_surface_tree(source: &Path, destination: &Path) -> Result<Vec<CapturedFile>> {
-    copy_tree(source, destination, false)
+    copy_tree(source, destination, false, true)
+}
+
+/// Copies a publication surface into a process-lifetime snapshot.
+///
+/// Temporary staging snapshots are consumed before this process returns, so
+/// forcing every object to stable storage adds no crash-recovery guarantee.
+/// The copy still hashes and revalidates every open source file.
+///
+/// # Errors
+///
+/// Returns an error for links, aliases, special files, unstable input,
+/// excessive depth/count, or destination collisions.
+pub(super) fn copy_ephemeral_surface_tree(
+    source: &Path,
+    destination: &Path,
+) -> Result<Vec<CapturedFile>> {
+    copy_tree(source, destination, false, false)
 }
 
 fn copy_tree(
     source: &Path,
     destination: &Path,
     reserve_release_controls: bool,
+    durable: bool,
 ) -> Result<Vec<CapturedFile>> {
     let root = open(
         source,
@@ -197,6 +215,7 @@ fn copy_tree(
         &mut state,
         destination,
         reserve_release_controls,
+        durable,
     )?;
     let reopened = open(
         source,
@@ -216,6 +235,7 @@ fn copy_payload_directory(
     state: &mut CaptureState,
     destination: &Path,
     reserve_release_controls: bool,
+    durable: bool,
 ) -> Result<()> {
     if depth > MAX_DEPTH {
         bail!("release payload exceeds maximum depth of {MAX_DEPTH}");
@@ -261,9 +281,10 @@ fn copy_payload_directory(
                 state,
                 destination,
                 reserve_release_controls,
+                durable,
             )?;
         } else if metadata.is_file() {
-            copy_payload_regular(child, &child_path, &target, state)?;
+            copy_payload_regular(child, &child_path, &target, state, durable)?;
         } else {
             bail!("release payload contains a symlink or special file: {child_path}");
         }
@@ -285,6 +306,7 @@ fn copy_payload_regular(
     relative: &str,
     target: &Path,
     state: &mut CaptureState,
+    durable: bool,
 ) -> Result<()> {
     let mut source = File::from(handle);
     let snapshot = FileSnapshot::of(&source)?;
@@ -303,7 +325,9 @@ fn copy_payload_regular(
             digest: &mut digest,
         },
     )?;
-    destination.sync_all()?;
+    if durable {
+        destination.sync_all()?;
+    }
     if copied != snapshot.size || FileSnapshot::of(&source)? != snapshot {
         bail!("release payload file changed during copy: {relative}");
     }
