@@ -2383,9 +2383,18 @@ attestation; failure transfers the mutated source into the factory's terminal
 quarantine before stable-coordinate restoration. A fixed 65,536-slot
 checksummed operational catalog now retains exact/thin fallback roots across
 restart, and single-host GC planning/apply holds its inventory fence and binds
-its contents into the exact root manifest. Wiring every managed-pool admission,
-demotion, and recovery transition to that catalog remains required, as do the
-atomic world-continuation installer and modeled
+its contents into the exact root manifest. The durable managed-pool owner writes
+the candidate's exact record before live-source installation. Automatic and
+explicit demotion remove only the live source and preserve that record as a
+cold fallback; only an explicit release of a non-hot catalog slot may remove
+the GC root. A failed live admission removes its provisional record, while a
+failed removal returns the exact still-rooted cleanup slot with the candidate.
+After restart, the owner authenticates the complete bounded catalog and treats
+every record as cold; it never infers that a QEMU source survived from an
+operational record. A crash between record creation and live installation may
+therefore leave a conservative cold root, which is recoverable through the same
+explicit release path. Catalog exhaustion rejects admission before source
+ownership changes. The atomic world-continuation installer, modeled
 private-child driver, and real QEMU campaign flight remain required before hot
 fork is advertised.
 

@@ -2538,10 +2538,17 @@ fallback-root retention now uses a fixed 65,536-slot checksummed memory/
 directory catalog. Its inventory fence composes with single-host GC plan/apply,
 whose exact root manifest rejects fallback changes before deletion; focused
 regressions cover retention, removal, restart authentication, and the
-plan/apply race. Managed-pool admission/demotion/restart ownership is not yet
-wired to the catalog and the final production owner remains open, so this is
-not yet the production launch boundary and T-CAM-7.5 remains
-unchecked. Atomic multi-node host-continuation installation,
+plan/apply race. A durable managed-pool owner now roots each candidate before
+installation, preserves automatic and explicit demotions as cold records,
+returns exact cleanup authority after a failed provisional-record removal,
+rejects release while a live source owns the record, and reconstructs all
+records conservatively as cold after restart. Focused regressions cover
+root-before-install ordering, pressure demotion, explicit cold release,
+rejected-admission cleanup, retained cleanup failure, active-release rejection,
+catalog-exhaustion rejection before live ownership, and memory/directory
+restart. The final concrete process owner remains open, so this is not yet the
+production launch boundary and T-CAM-7.5 remains unchecked. Atomic multi-node
+host-continuation installation,
 the concrete modeled driver, and a real QEMU flight also remain open; this
 checkpoint therefore does not mark T-CAM-6.2 or T-CAM-6.3 complete.
 The internal registry now has safe RCU and internal-monitor dispositions, while
@@ -2578,9 +2585,11 @@ capability ships.
   the demotion boundary, and releases accounting only after the sink attests
   source reap. The concrete sink authenticates exact checkpoints or resolved
   thin replay bases and consumes a fixed prepared-QEMU source into attested
-  reap or terminal quarantine. Durable GC/restart retention of each fallback
-  root and the final production owner remain required before this item is
-  complete.
+  reap or terminal quarantine. The composed durable owner now roots candidates
+  before installation, retains demotions as cold exact/thin roots, fences GC,
+  and reconstructs the catalog conservatively after restart. Wiring this owner
+  to the final concrete process/resource lifecycle and completing the real-QEMU
+  validation matrix remain required before this item is complete.
 - [ ] **T-CAM-7.6** Add the complete equivalence, isolation, negative,
   resource-leak, and scaling matrix from §10.
 - [ ] **T-CAM-7.7** Complete the §14 Phase 7 atomic multi-machine,

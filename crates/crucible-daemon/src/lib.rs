@@ -77,6 +77,8 @@
 //! single-host garbage collection across restart;
 //! [`managed_hot_checkpoint_pool`] composes those plans with exact source-pool
 //! authority and process-wide fork-rate admission;
+//! [`durable_managed_hot_checkpoint_pool`] orders durable fallback retention,
+//! live-source admission/demotion, cold-root release, and restart recovery;
 //! [`qemu_resource_guard`] binds one indivisible host process/filesystem owner
 //! to signal-driven cancellation and exact quantum accounting;
 //! [`planner_loopback`] owns
@@ -107,6 +109,8 @@ pub mod crucible_execution;
 pub mod crucible_measurement;
 pub mod crucible_qemu_runner;
 pub mod crucible_qemu_session;
+#[cfg(target_os = "linux")]
+pub mod durable_managed_hot_checkpoint_pool;
 #[cfg(target_os = "linux")]
 pub mod exact_checkpoint_restore;
 pub mod exact_checkpoint_store;
@@ -270,6 +274,13 @@ pub use crucible_qemu_session::{
     QemuAttemptResourceGuardFactory, QemuExactCheckpointRealization, QemuExecutionQuantumCounter,
     QemuGuardedLiveRealizationExecutor, QemuLiveAttemptDriver, QemuLiveAttemptResult,
     QemuLiveAttemptSession, QemuLiveAttemptSessionError, QemuLiveAttemptSessionFactory,
+};
+#[cfg(target_os = "linux")]
+pub use durable_managed_hot_checkpoint_pool::{
+    DurableHotCheckpointCatalogError, DurableManagedHotCheckpointAdmissionError,
+    DurableManagedHotCheckpointAdmissionFailure, DurableManagedHotCheckpointConstructionError,
+    DurableManagedHotCheckpointDemotionError, DurableManagedHotCheckpointDemotionFailure,
+    DurableManagedHotCheckpointReleaseError, DurableManagedQemuHotForkTemplatePool,
 };
 #[cfg(target_os = "linux")]
 pub use exact_checkpoint_restore::{
