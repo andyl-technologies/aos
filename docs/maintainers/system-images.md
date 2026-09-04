@@ -97,9 +97,12 @@ is forced directly.
 
 The public `aos-testing` system demonstrates the pattern. Its disk and OCI
 artifacts contain exactly one `andyl/testing` registry seed, select `edge`, and
-carry the same experimental-use warning and trust anchor. The production
-server's compatibility container remains available as `container-aos-*`; the
-testing outputs use `container-aos-testing-*`.
+carry the same experimental-use warning and trust anchor. The disk displays the
+warning on the console and SSH login; the OCI entrypoint prints it to standard
+error before starting the requested command, based on the immutable release
+profile rather than an overridable OCI environment value. The production server's
+compatibility container remains available as `container-aos-*`; the testing
+outputs use `container-aos-testing-*`.
 
 ## Compose release policy
 
