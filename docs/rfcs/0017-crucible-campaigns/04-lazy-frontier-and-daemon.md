@@ -415,6 +415,27 @@ may be valuable for debugging or replay without being a branch point. A branch
 point without a checkpoint remains valid and is realized through an available
 ancestor; hot-fork eligibility is only a cache capability.
 
+The single-host manager represents each term as a bounded nonnegative
+deployment-normalized score component. It adds the four reuse terms and
+subtracts the three pressure/already-paid terms using signed arithmetic. An
+explicit operator or finding pin is a separate hard bit: it prevents automatic
+pressure demotion rather than relying on a large magic score. Within one
+inventory generation, automatic demotion orders unpinned sources by ascending
+`(score, exact lineage/configuration/pool-slot coordinate)`. An unpinned
+candidate may replace only strictly colder sources, so an existing source wins
+a score tie; a pinned candidate may replace any unpinned source.
+
+Admission is two-phase. Planning is read-only and names the exact stable pool
+slots plus the exact or thin fallback tier that must remain available. The
+daemon retires only idle source authorities and secures those fallbacks before
+committing the generation-bound inventory change. Any intervening signal, pin,
+or inventory update makes the plan stale. The manager accounts template bytes,
+expected private dirty bytes, processes, virtual CPUs, descriptors, and
+writable overlays with checked arithmetic. Actual fork starts separately
+consume one non-cloneable permit from a configured fixed-duration operational
+rate window; failed starts still consume their permit. The window clock and all
+scores are host telemetry and never enter canonical campaign state.
+
 - **[LAZY-15]** Materialization policy MUST expose why a checkpoint is hot,
   pinned, demoted, or evicted. Those reasons are telemetry, not canonical
   campaign evidence.

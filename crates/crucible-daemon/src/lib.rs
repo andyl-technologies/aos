@@ -69,6 +69,8 @@
 //! execution incarnations;
 //! [`qemu_hot_fork_factory`] exact-binds one prepared source per fixed worker,
 //! installs target guards, and owns terminal quarantine handoff;
+//! [`hot_checkpoint_manager`] bounds and ranks those retained sources while
+//! producing generation-fenced exact/thin demotion plans;
 //! [`qemu_resource_guard`] binds one indivisible host process/filesystem owner
 //! to signal-driven cancellation and exact quantum accounting;
 //! [`planner_loopback`] owns
@@ -111,6 +113,8 @@ pub mod executor_service;
 pub mod executor_supervisor;
 pub mod executor_worker;
 mod guest_selectable;
+#[cfg(target_os = "linux")]
+pub mod hot_checkpoint_manager;
 pub mod packaged_qemu_executor;
 #[cfg(target_os = "linux")]
 pub mod paused_checkpoint_promotion;
@@ -337,6 +341,18 @@ pub use executor_worker::{
     stage_prepared_checkpoint_result,
 };
 pub use guest_selectable::GuestSelectableError;
+#[cfg(target_os = "linux")]
+pub use hot_checkpoint_manager::{
+    HotCheckpointAdmissionCommit, HotCheckpointAdmissionCommitError, HotCheckpointAdmissionPlan,
+    HotCheckpointAdmissionRejection, HotCheckpointCandidate, HotCheckpointDemotion,
+    HotCheckpointDemotionReason, HotCheckpointFallbackTier, HotCheckpointForkPermit,
+    HotCheckpointForkRateError, HotCheckpointHotnessComponent, HotCheckpointHotnessError,
+    HotCheckpointHotnessSignals, HotCheckpointInventoryError, HotCheckpointLimits,
+    HotCheckpointLimitsError, HotCheckpointManager, HotCheckpointOrderlyDemotionPlan,
+    HotCheckpointPlannedDemotion, HotCheckpointPressure, HotCheckpointResourceProfile,
+    HotCheckpointResourceProfileError, HotCheckpointRetentionReason, HotCheckpointScore,
+    HotCheckpointStatus, HotCheckpointUsage, MAX_HOT_CHECKPOINT_SCORE_COMPONENT,
+};
 pub use packaged_qemu_executor::{
     AttachedPackagedQemuExecutor, MAX_PACKAGED_SCENARIO_CATALOG_BYTES,
     PackagedExactPinMaterializerError, PackagedQemuExecutor, PackagedQemuExecutorCompletion,
@@ -415,7 +431,7 @@ pub use qemu_hot_fork_pool::{
     QemuHotForkTemplatePool, QemuHotForkTemplatePoolCapacityError,
     QemuHotForkTemplatePoolConstructionError, QemuHotForkTemplatePoolError,
     QemuHotForkTemplatePoolInsertionError, QemuHotForkTemplatePoolLifecycle,
-    QemuHotForkTemplatePoolRetirementError,
+    QemuHotForkTemplatePoolRetirementError, QemuHotForkTemplatePoolSlot,
 };
 #[cfg(target_os = "linux")]
 pub use qemu_hot_fork_reconciliation::{

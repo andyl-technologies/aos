@@ -229,20 +229,26 @@ fn exact_key_selection_uses_duplicate_slots_in_stable_order() {
         ScriptedQuarantine::default(),
     )
     .expect("bounded pool");
-    pool.insert(scripted_factory(
-        key,
-        2,
-        Arc::clone(&starts),
-        Arc::clone(&quarantined),
-    ))
-    .expect("duplicate exact-key slot");
-    pool.insert(scripted_factory(
-        foreign_key(basis),
-        3,
-        Arc::clone(&starts),
-        Arc::clone(&quarantined),
-    ))
-    .expect("second exact key");
+    assert_eq!(pool.first_slot().expect("first coordinate").slot_index(), 0);
+    let duplicate_slot = pool
+        .insert(scripted_factory(
+            key,
+            2,
+            Arc::clone(&starts),
+            Arc::clone(&quarantined),
+        ))
+        .expect("duplicate exact-key slot");
+    assert_eq!(duplicate_slot.template_key(), key);
+    assert_eq!(duplicate_slot.slot_index(), 1);
+    let foreign_slot = pool
+        .insert(scripted_factory(
+            foreign_key(basis),
+            3,
+            Arc::clone(&starts),
+            Arc::clone(&quarantined),
+        ))
+        .expect("second exact key");
+    assert_eq!(foreign_slot.slot_index(), 0);
 
     let mut first = pool.start(&input, &context, basis).expect("first slot");
     let mut second = pool.start(&input, &context, basis).expect("second slot");
@@ -380,7 +386,7 @@ fn idle_retirement_returns_authority_and_busy_retirement_is_read_only() {
     let mut lifecycle = pool.start(&input, &context, basis).expect("busy slot");
 
     assert!(matches!(
-        pool.retire_idle(key, 0),
+        pool.retire_idle(QemuHotForkTemplatePoolSlot::new(key, 0)),
         Err(QemuHotForkTemplatePoolRetirementError::Busy {
             key: actual_key,
             slot: 0,
@@ -390,12 +396,14 @@ fn idle_retirement_returns_authority_and_busy_retirement_is_read_only() {
     reconcile(&mut lifecycle);
     pool.recover(lifecycle).expect("recover before retirement");
 
-    let factory = pool.retire_idle(key, 0).expect("idle retirement");
+    let factory = pool
+        .retire_idle(QemuHotForkTemplatePoolSlot::new(key, 0))
+        .expect("idle retirement");
     assert_eq!(factory.source, 11);
     assert_eq!(pool.slot_count(), 0);
     assert_eq!(pool.key_count(), 0);
     assert!(matches!(
-        pool.retire_idle(key, 0),
+        pool.retire_idle(QemuHotForkTemplatePoolSlot::new(key, 0)),
         Err(QemuHotForkTemplatePoolRetirementError::MissingSlot {
             key: actual_key,
             slot: 0,
@@ -427,7 +435,12 @@ fn retiring_an_idle_sibling_preserves_busy_coordinates_and_reuses_only_the_hole(
 
     let mut original = pool.start(&input, &context, basis).expect("slot zero");
     assert_eq!(original.slot_index(), 0);
-    assert_eq!(pool.retire_idle(key, 1).expect("idle sibling").source, 13);
+    assert_eq!(
+        pool.retire_idle(QemuHotForkTemplatePoolSlot::new(key, 1))
+            .expect("idle sibling")
+            .source,
+        13
+    );
     pool.insert(scripted_factory(key, 14, starts, quarantined))
         .expect("reuse tombstone");
     let mut replacement = pool.start(&input, &context, basis).expect("reused slot");
