@@ -26,7 +26,7 @@
       inherit name text;
       destination = "/value";
     };
-  serverCertificate = credentialFile "maintainer-fleet-server-certificate" (builtins.readFile ../fixtures/maintainer-fleet-server.crt);
+  serverCertificate = credentialFile "maintainer-fleet-server-certificate" (builtins.readFile ../fixtures/maintainer-fleet-server-leaf.crt);
   serverPrivateKey = credentialFile "maintainer-fleet-server-private-key" (builtins.readFile ../fixtures/release-fleet-server.key);
 
   hubSystem = fixture.hubSystem.extendModules {
