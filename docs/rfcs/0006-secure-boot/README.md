@@ -1,6 +1,6 @@
 # RFC-0006: Full Secure Boot integration — sign, measure, attest
 
-- **Status:** Phases 1–4 implemented and CI-green (PR [#102](https://github.com/andyl-technologies/aos/pull/102)). Phase 3's TPM-sealed `/var` is verified end to end by `checks.fleet.measured-boot`, including unattended TPM2 unlock across a reboot. Phase 4's download-time catalog gate is verified end to end by `checks.fleet.registry-sb-catalog` (publish a signed UKI → refuse on unknown signer / SBAT floor → accept), which also cross-checks the recorded `expected_pcr11` against an independent `systemd-measure` recompute. The “attestation inputs only” scope recorded by this RFC was subsequently extended by RFC-0001 package measurements and RFC-0011 generation attestation; current behavior is documented in [`docs/users/aos/security.md`](../../users/aos/security.md)
+- **Status:** Phases 1–4 implemented and CI-green (PR [#102](https://github.com/andyl-technologies/aos/pull/102)). Phase 3's TPM-sealed `/var` is verified end to end by `checks.fleet.measured-boot`, including unattended TPM2 unlock across a reboot. Phase 4's download-time catalog gate is verified end to end by `checks.fleet.registry-sb-catalog` (publish a signed UKI → refuse on unknown signer / SBAT floor → accept), which also cross-checks the recorded `expected_pcr11` against an independent `systemd-measure` recompute. The “attestation inputs only” scope recorded by this RFC was subsequently extended by RFC-0001 package measurements and RFC-0011 generation attestation; current behavior is documented in [`docs/users/aos/secure-boot.md`](../../users/aos/secure-boot.md)
 - **Date:** 2026-06-13
 - **PR:** [#102](https://github.com/andyl-technologies/aos/pull/102)
 - **Audience:** anyone working on `pkgs/boot/`, `pkgs/system/systemd.nix`,
@@ -23,12 +23,14 @@ model, and the phased plan; the topic files hold the detail:
 - [`test-plan.md`](test-plan.md) — CI: positive + negative SB enforcement and
   measured-boot tests, extending `checks.fleet.install-from-image`.
 
-## Problem
+## Historical problem statement
 
-AOS ships a UEFI image that boots sd-boot → UKI → kernel
+At proposal time, AOS shipped a UEFI image that booted sd-boot → UKI → kernel
 ([RFC-0003](../0003-install-from-image.md), `checks.fleet.install-from-image`).
-**Nothing in that chain is signed or measured, and the firmware does not
-enforce Secure Boot.** Concretely (see [`current-state.md`](current-state.md)):
+**Nothing in that pre-implementation chain was signed or measured, and the
+firmware did not enforce Secure Boot.** The bullets below preserve the original
+gap analysis; see [`current-state.md`](current-state.md) and the status above for
+the implemented result.
 
 - `pkgs/boot/edk2.nix` builds `OvmfPkgX64.dsc` with no `-D SECURE_BOOT_ENABLE`
   — the firmware has no authenticated-variable / SB drivers compiled in.

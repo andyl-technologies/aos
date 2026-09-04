@@ -11,6 +11,9 @@ Choose the model before provisioning data. The local `aos-hub` operator CLI
 cannot administer a Worker's Durable Object database, and the native state
 directory is not a Worker backup format.
 
+Use [Trust an internal AOS Hub deployment](trust.md) to assign signing,
+administrative, storage, and client-bootstrap authority before deployment.
+
 ## Choose a topology
 
 Use the native server when the organization wants direct control of the
@@ -174,9 +177,12 @@ Then exercise sign-in, a private read, package publication, registry indexing,
 and a cache download. A database-only test does not prove that sealed
 credentials or storage objects survived.
 
-Native access-token signing keys are regenerated when the process starts, so
-existing one-hour JWTs stop working after restart. Durable provisioning tokens
-can be exchanged again.
+Without a configured JWT credential, native access-token signing keys are
+regenerated when the process starts, so existing one-hour JWTs stop working
+after restart. When the AOS service supplies `credentials.jwtSecret`, that
+runtime credential persists the signing authority across restarts and must be
+included in the deployment's secret backup and rotation plan. Durable
+provisioning tokens can be exchanged again in either case.
 
 ## Back up a Worker deployment
 

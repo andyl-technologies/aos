@@ -11,6 +11,11 @@ This guide builds a small service package called `acme-health-agent`. The
 example is deliberately self-contained so it can be evaluated and built
 without a separate source repository.
 
+Use [Review package security](../../maintainers/package-security.md) while
+choosing dependencies, permissions, and an `expose` contract. The corresponding
+operator-visible boundary is documented in [Understand the package
+sandbox](package-sandbox.md).
+
 ## Define the package
 
 Create `pkgs/acme/acme-health-agent.nix`:
