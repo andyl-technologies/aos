@@ -2340,11 +2340,17 @@ command rejection, and poisons it after every fork-indeterminate failure.
 The Rust node layer now composes that command through a linear host boundary.
 It requires a child-process owner to authenticate the exact source PID, child
 PID, and echoed request before success, and returns that nonduplicable authority
-only together with the one branch-private QMP endpoint. Explicit rejection
-retains the reusable source; ambiguous exchange, failed parent disposition,
-endpoint loss, and process-retention failure quarantine it. Focused scripted
-regressions cover all six outcomes, including proof that a numeric child PID is
-not sufficient process authority.
+only together with the one branch-private QMP endpoint and one linear plugin
+host continuation. The latter owns the private-ring descriptor, host
+control/wake endpoints, and a state-isolated clone of the scheduler-owned
+shared-memory cursors, pending values, coverage state, selectable continuation,
+and the same scheduler-owned topology send-authorizer capability. Explicit rejection
+retains the reusable source; ambiguous
+exchange, failed parent disposition, endpoint loss, and process-retention
+failure quarantine it. Focused scripted regressions cover all six outcomes,
+including proof that a numeric child PID is not sufficient process authority,
+and mapped-channel coverage proves child mutation cannot change the retained
+source continuation.
 
 Patch 0194 now supplies the birth-time process contract. A generation-bound QMP
 operation authenticates and retains the target attempt's cgroup-v2 directory,
@@ -2360,8 +2366,9 @@ This is still an executable T-CAM-6.1 audit checkpoint rather than completion
 of T-CAM-6.2 or T-CAM-6.3. The daemon reconciliation owner now retains the
 complete target attempt guard, including its aggregate filesystem quota,
 sticky cancellation hook, quantum counter, pidfd authority, source child-status
-record, private child QMP channel, and semantic publication outcome as one
-linear state. A process-only cgroup owner no longer satisfies the launch type;
+record, private child QMP channel, private plugin control/wake/ring continuation,
+and semantic publication outcome as one linear state. A process-only cgroup
+owner no longer satisfies the launch type;
 modeled child work receives only a non-releasing operational boundary. The
 worker execution context now carries the exact lineage-qualified attempt and
 process-local execution incarnation without exposing either to modeled input.
@@ -2371,8 +2378,9 @@ the resulting durable semantic disposition through bounded callback steps and
 does not reuse that worker until cleanup completes. A runner error must finish
 or quarantine its incarnation before returning, so a retry cannot overlap it.
 The concrete hot-fork runner still must construct this owner, install the
-complete private plugin and host-I/O channel set, run the modeled child, and
-produce the repository candidate.
+remaining branch-private block, 9p, accelerator, console, and other writable
+host-device continuations, run the modeled child, and produce the repository
+candidate.
 Patch 0193 supplies the parent-QEMU reap half: a fixed 4,096-record
 generation table, one bounded nonblocking `waitpid` attempt per query/release,
 retained exit-or-signal status, and explicit post-reap release. It deliberately
@@ -2400,9 +2408,9 @@ quarantine. Focused tests cover running-to-reaped ordering, publication gating,
 retry without guest rerun, foreign child status, unadmitted-result rejection,
 incomplete drop, the composed guard's unsplittable hot-fork ownership bound, and
 the fixed worker's exact-runtime-basis plus repeated-disposition callback. The
-complete private plugin/host-I/O child channel set, concrete hot-fork runner,
-modeled QEMU driving, observation production, and a real fork flight remain
-open, so T-CAM-6.2 and T-CAM-6.3 stay unchecked.
+remaining writable host-device continuations, concrete hot-fork runner, modeled
+QEMU driving, observation production, and a real fork flight remain open, so
+T-CAM-6.2 and T-CAM-6.3 stay unchecked.
 The internal registry now has safe RCU and internal-monitor dispositions, while
 other AIO owners and every generic or external thread remain unresolved. The
 retained AIO/BH/timer and RCU

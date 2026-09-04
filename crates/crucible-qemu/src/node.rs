@@ -90,14 +90,14 @@ pub use hot_fork_diagnostics::{
 #[cfg(target_os = "linux")]
 pub use hot_fork_operation::{
     QemuHotForkChildLaunch, QemuHotForkChildProcessBasis, QemuHotForkChildProcessOwner,
-    QemuHotForkCommandError, QemuHotForkLaunchError,
+    QemuHotForkCommandError, QemuHotForkLaunchError, QemuHotForkPluginHostContinuation,
 };
 #[cfg(target_os = "linux")]
 use hot_fork_plugin_endpoints::QemuHotForkPluginEndpointStage;
 #[cfg(target_os = "linux")]
 pub use hot_fork_plugin_endpoints::{
     QemuHotForkPluginEndpointStageError, QemuHotForkPluginEndpointStageProof,
-    QemuHotForkPluginEndpointStageState,
+    QemuHotForkPluginEndpointStageState, QemuHotForkPluginHostEndpoint,
 };
 #[cfg(target_os = "linux")]
 use hot_fork_process_contract::QemuHotForkChildProcessContractStage;
@@ -454,6 +454,28 @@ pub trait QemuShmemHotPathChannel: Send {
         Err(QemuNodeChannelError::new(
             "capture hot-fork ring image",
             "hot-fork ring imaging is unavailable on this channel",
+        ))
+    }
+
+    /// Clones the scheduler-owned continuation onto one private ring mapping.
+    ///
+    /// Implementations must preserve every host-only cursor, pending value,
+    /// coverage continuation, selectable continuation, and send authorizer while
+    /// leaving the source channel unchanged. The supplied mapping has already
+    /// passed the source/destination ring-image proof.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when this channel cannot clone its
+    /// complete continuation or the private mapping no longer matches it.
+    #[cfg(target_os = "linux")]
+    fn clone_hot_fork_host_continuation(
+        &self,
+        _mapping: &QemuHotForkPrivateRingMapping,
+    ) -> Result<Box<dyn QemuShmemHotPathChannel>, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "clone hot-fork shared-memory host continuation",
+            "this shared-memory channel does not implement hot-fork continuation cloning",
         ))
     }
 

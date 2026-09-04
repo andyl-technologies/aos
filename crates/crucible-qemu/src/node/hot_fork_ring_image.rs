@@ -162,6 +162,26 @@ impl QemuHotForkPrivateRingMapping {
         self.descriptor.as_fd()
     }
 
+    pub(super) fn clone_descriptor(&self) -> Result<OwnedFd, QemuNodeChannelError> {
+        self.descriptor.try_clone().map_err(|source| {
+            QemuNodeChannelError::new(
+                "clone branch-private hot-fork ring descriptor",
+                source.to_string(),
+            )
+        })
+    }
+
+    pub(crate) fn map_host_view(&self) -> Result<MappedSetupRegion, QemuNodeChannelError> {
+        mmap_setup_region(self.descriptor.as_fd(), self.backing_identity().length()).map_err(
+            |source| {
+                QemuNodeChannelError::new(
+                    "map branch-private hot-fork host continuation",
+                    source.to_string(),
+                )
+            },
+        )
+    }
+
     const fn image_canonical_len(&self) -> usize {
         self.image_canonical_len
     }

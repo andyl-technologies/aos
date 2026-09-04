@@ -6,6 +6,7 @@
 //! quarantined as one process authority. A successful transaction alone moves
 //! the branch-private child QMP endpoint into the returned launch token.
 
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use thiserror::Error;
 
 use super::*;
@@ -77,6 +78,80 @@ pub trait QemuHotForkChildProcessOwner {
     ) -> Result<Self::Authority, QemuNodeChannelError>;
 }
 
+/// Linear branch-private host continuation paired with one hot-fork child.
+///
+/// The continuation owns the host halves of the replacement plugin control and
+/// wake endpoints, a descriptor for the exact private ring mapping, and a clone
+/// of every scheduler-owned shared-memory cursor and pending value. It retains
+/// the same scheduler-owned send-authorization capability so topology changes remain
+/// globally authoritative. The source node retains its independent template
+/// continuation. Host-device continuation cloning remains a separate operation
+/// because writable block and filesystem roots require fresh branch-local
+/// backing rather than descriptor duplication.
+#[must_use = "the child host continuation must remain owned through child teardown"]
+pub struct QemuHotForkPluginHostContinuation {
+    endpoint: QemuHotForkPluginHostEndpoint,
+    ring_descriptor: OwnedFd,
+    ring: QemuHotForkPrivateRingStageProof,
+    endpoint_stage: QemuHotForkPluginEndpointStageProof,
+    shmem_hot_path: Box<dyn QemuShmemHotPathChannel>,
+}
+
+impl std::fmt::Debug for QemuHotForkPluginHostContinuation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("QemuHotForkPluginHostContinuation")
+            .field("endpoint", &self.endpoint)
+            .field("ring", &self.ring)
+            .field("endpoint_stage", &self.endpoint_stage)
+            .finish_non_exhaustive()
+    }
+}
+
+impl QemuHotForkPluginHostContinuation {
+    /// Returns the exact source template generation paired with this continuation.
+    #[must_use]
+    pub const fn template_generation(&self) -> u64 {
+        self.endpoint.template_generation()
+    }
+
+    /// Returns the exact child-private ring generation.
+    #[must_use]
+    pub const fn private_ring_generation(&self) -> u64 {
+        self.endpoint.private_ring_generation()
+    }
+
+    /// Returns the authenticated private setup-region identity.
+    #[must_use]
+    pub fn ring_identity(&self) -> crucible_shmem::SetupRegionBackingIdentity {
+        self.ring.backing_identity()
+    }
+
+    /// Borrows the descriptor retained for branch-local host-I/O reconstruction.
+    #[must_use]
+    pub fn shmem_as_fd(&self) -> BorrowedFd<'_> {
+        self.ring_descriptor.as_fd()
+    }
+
+    /// Borrows the private plugin wake eventfd.
+    #[must_use]
+    pub fn wake_as_fd(&self) -> BorrowedFd<'_> {
+        self.endpoint.wake_as_fd()
+    }
+
+    /// Borrows the private plugin control channel.
+    #[must_use]
+    pub fn plugin_control_mut(&mut self) -> &mut dyn QemuPluginIpcControlChannel {
+        &mut self.endpoint
+    }
+
+    /// Borrows the cloned scheduler-side shared-memory continuation.
+    #[must_use]
+    pub fn shmem_hot_path_mut(&mut self) -> &mut dyn QemuShmemHotPathChannel {
+        self.shmem_hot_path.as_mut()
+    }
+}
+
 /// Linear successful parent result, process authority, and private child endpoint.
 #[derive(Debug)]
 #[must_use = "the forked child endpoint must be authenticated or transferred to quarantine"]
@@ -85,6 +160,7 @@ pub struct QemuHotForkChildLaunch<A> {
     child_process_id: u32,
     process_authority: A,
     child_qmp: QemuHotForkChildQmpHostEndpoint,
+    host_continuation: QemuHotForkPluginHostContinuation,
 }
 
 impl<A> QemuHotForkChildLaunch<A> {
@@ -112,10 +188,26 @@ impl<A> QemuHotForkChildLaunch<A> {
         &self.child_qmp
     }
 
+    /// Returns the exact branch-private host continuation.
+    pub const fn host_continuation(&self) -> &QemuHotForkPluginHostContinuation {
+        &self.host_continuation
+    }
+
     /// Separates the exact parent result from the linear private child endpoint.
-    #[must_use]
-    pub fn into_parts(self) -> (crate::QmpHotForkState, A, QemuHotForkChildQmpHostEndpoint) {
-        (self.parent_state, self.process_authority, self.child_qmp)
+    pub fn into_parts(
+        self,
+    ) -> (
+        crate::QmpHotForkState,
+        A,
+        QemuHotForkChildQmpHostEndpoint,
+        QemuHotForkPluginHostContinuation,
+    ) {
+        (
+            self.parent_state,
+            self.process_authority,
+            self.child_qmp,
+            self.host_continuation,
+        )
     }
 }
 
@@ -271,6 +363,66 @@ impl QemuNode {
             });
         }
 
+        let ring =
+            self.hot_fork_private_ring_stage()
+                .ok_or_else(|| QemuHotForkLaunchError::Rejected {
+                    source: QemuNodeChannelError::new(
+                        "fork retained hot-fork template",
+                        "source node retains no private-ring stage",
+                    ),
+                })?;
+        let endpoint_stage = self.hot_fork_plugin_endpoint_stage().ok_or_else(|| {
+            QemuHotForkLaunchError::Rejected {
+                source: QemuNodeChannelError::new(
+                    "fork retained hot-fork template",
+                    "source node retains no plugin host-endpoint stage",
+                ),
+            }
+        })?;
+        if ring.state() != QemuHotForkPrivateRingStageState::Installed
+            || endpoint_stage.state() != QemuHotForkPluginEndpointStageState::Installed
+            || endpoint_stage.template_generation() != request.template_generation()
+            || endpoint_stage.private_ring_generation() != request.private_ring_generation()
+        {
+            return Err(QemuHotForkLaunchError::Rejected {
+                source: QemuNodeChannelError::new(
+                    "fork retained hot-fork template",
+                    "plugin host continuation does not match the exact fork request",
+                ),
+            });
+        }
+        if !self
+            .hot_fork_plugin_endpoint_stage
+            .as_ref()
+            .is_some_and(QemuHotForkPluginEndpointStage::host_endpoint_available)
+        {
+            return Err(QemuHotForkLaunchError::Rejected {
+                source: QemuNodeChannelError::new(
+                    "fork retained hot-fork template",
+                    "branch-private plugin host endpoint was already transferred",
+                ),
+            });
+        }
+        let mapping = match self.hot_fork_private_ring_stage.as_ref() {
+            Some(QemuHotForkPrivateRingStage::Installed(mapping)) => mapping,
+            Some(QemuHotForkPrivateRingStage::TransferUncertain(_)) | None => {
+                return Err(QemuHotForkLaunchError::Rejected {
+                    source: QemuNodeChannelError::new(
+                        "fork retained hot-fork template",
+                        "private-ring ownership is not installed exactly",
+                    ),
+                });
+            }
+        };
+        let ring_descriptor = mapping
+            .clone_descriptor()
+            .map_err(|source| QemuHotForkLaunchError::Rejected { source })?;
+        let shmem_hot_path = self
+            .channels
+            .shmem_hot_path
+            .clone_hot_fork_host_continuation(mapping)
+            .map_err(|source| QemuHotForkLaunchError::Rejected { source })?;
+
         let parent_state = match self.channels.qmp_machine_control.hot_fork(request) {
             Ok(state) => state,
             Err(QemuHotForkCommandError::Rejected { source }) => {
@@ -292,6 +444,24 @@ impl QemuNode {
             });
         }
 
+        let host_endpoint = self
+            .hot_fork_plugin_endpoint_stage
+            .as_mut()
+            .ok_or_else(|| QemuHotForkLaunchError::EndpointTransfer {
+                parent_state: Box::new(parent_state),
+                source: QemuNodeChannelError::new(
+                    "take hot-fork plugin host endpoint",
+                    "plugin endpoint stage disappeared after child creation",
+                ),
+            })?
+            .take_host_endpoint()
+            .map_err(|source| {
+                self.lifecycle_state = QemuNodeLifecycleState::Quarantined;
+                QemuHotForkLaunchError::EndpointTransfer {
+                    parent_state: Box::new(parent_state),
+                    source,
+                }
+            })?;
         let child_qmp = self
             .take_hot_fork_child_qmp_host_endpoint()
             .map_err(|source| {
@@ -325,11 +495,19 @@ impl QemuNode {
                     source,
                 }
             })?;
+        let host_continuation = QemuHotForkPluginHostContinuation {
+            endpoint: host_endpoint,
+            ring_descriptor,
+            ring,
+            endpoint_stage,
+            shmem_hot_path,
+        };
         Ok(QemuHotForkChildLaunch {
             parent_state,
             child_process_id,
             process_authority,
             child_qmp,
+            host_continuation,
         })
     }
 }

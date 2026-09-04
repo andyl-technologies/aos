@@ -252,6 +252,14 @@ impl QemuPluginIpcControlChannel for ScriptedPluginControl {
 }
 
 impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
+    #[cfg(target_os = "linux")]
+    fn clone_hot_fork_host_continuation(
+        &self,
+        _mapping: &crate::QemuHotForkPrivateRingMapping,
+    ) -> Result<Box<dyn QemuShmemHotPathChannel>, QemuNodeChannelError> {
+        Ok(Box::new(self.clone()))
+    }
+
     fn hot_fork_setup_region_identity(
         &mut self,
     ) -> Result<crucible_shmem::SetupRegionBackingIdentity, QemuNodeChannelError> {
@@ -1747,12 +1755,13 @@ fn sealed_hot_fork_node(script: DescriptorScript) -> Result<QemuNode, Box<dyn Er
 
 #[cfg(target_os = "linux")]
 fn exact_hot_fork_request() -> crate::QmpHotForkRequest {
-    crate::QmpHotForkRequest::for_test(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)
+    crate::QmpHotForkRequest::for_test(1, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)
 }
 
 #[test]
 #[cfg(target_os = "linux")]
-fn hot_fork_success_transfers_only_the_private_child_endpoint() -> Result<(), Box<dyn Error>> {
+fn hot_fork_success_transfers_child_qmp_and_private_host_continuation() -> Result<(), Box<dyn Error>>
+{
     let mut node = sealed_hot_fork_node(DescriptorScript::Success)?;
     let source_process_id = node.process_id();
     let mut process_owner = ScriptedHotForkChildOwner::default();
@@ -1770,8 +1779,37 @@ fn hot_fork_success_transfers_only_the_private_child_endpoint() -> Result<(), Bo
     assert_eq!(retained_basis.source_process_id(), source_process_id);
     assert_eq!(retained_basis.child_process_id(), 321);
     assert_eq!(retained_basis.request(), exact_hot_fork_request());
+    assert_eq!(launch.host_continuation().template_generation(), 1);
+    assert_eq!(launch.host_continuation().private_ring_generation(), 1);
+    assert_ne!(launch.host_continuation().ring_identity().inode(), 0);
     assert_eq!(node.lifecycle_state(), QemuNodeLifecycleState::Running);
     assert!(node.take_hot_fork_child_qmp_host_endpoint().is_err());
+    drop(launch);
+    node.shutdown_child()?;
+    Ok(())
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn hot_fork_rejects_a_foreign_private_ring_before_consuming_host_continuation()
+-> Result<(), Box<dyn Error>> {
+    let mut node = sealed_hot_fork_node(DescriptorScript::Success)?;
+    let mut process_owner = ScriptedHotForkChildOwner::default();
+    let foreign_ring =
+        crate::QmpHotForkRequest::for_test(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13);
+
+    let error = node
+        .fork_hot_fork_template(foreign_ring, &mut process_owner)
+        .expect_err("a foreign private ring must fail before the fork command");
+    assert!(matches!(
+        error,
+        crate::QemuHotForkLaunchError::Rejected { .. }
+    ));
+    assert!(process_owner.retained.is_empty());
+    assert_eq!(node.lifecycle_state(), QemuNodeLifecycleState::Running);
+
+    let launch = node.fork_hot_fork_template(exact_hot_fork_request(), &mut process_owner)?;
+    assert_eq!(launch.host_continuation().private_ring_generation(), 1);
     drop(launch);
     node.shutdown_child()?;
     Ok(())
