@@ -80,7 +80,8 @@
           aos.security.pki.certificates = [caCertificate];
           aos.firewall.allowedTCP = [443];
           environment.systemPackages = [releaseTool];
-          environment.etc."tmpfiles.d/native-hub-credentials.conf".text = ''
+          environment.etc."tmpfiles.d/native-hub-release-credentials.conf".text = ''
+            d /run/credentials/@system 0700 root root -
             C /run/credentials/@system/release-fleet-publication-seed 0600 root root - ${credentialFile "release-fleet-publication-seed" publicationSeed}/value
             C /run/credentials/@system/release-fleet-channel-seed 0600 root root - ${credentialFile "release-fleet-channel-seed" channelSeed}/value
             C /run/credentials/@system/release-fleet-publication-keys 0600 root root - ${publicationKeys}/value
@@ -187,9 +188,9 @@ in {
       import shlex
       import textwrap
 
-      AOS = "${pkgs.aos}/bin/aos"
+      AOS = "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt ${pkgs.aos}/bin/aos"
       APR = "${pkgs.aos.apr}/bin/apr"
-      CURL = "${pkgs.curl}/bin/curl"
+      CURL = "${pkgs.curl}/bin/curl --cacert /etc/ssl/certs/ca-certificates.crt"
       JQ = "${pkgs.jq}/bin/jq"
       NIX_STORE = "${pkgs.nix}/bin/nix-store"
       MOUNT = "${pkgs.util-linux}/bin/mount"
@@ -261,10 +262,6 @@ in {
 
 
       def initialize_hub(machine, url, suffix):
-          machine.succeed("systemctl is-active --quiet aos-hub.service")
-          machine.wait_until_succeeds(
-              f"{CURL} -fsS http://127.0.0.1:8420/healthz", timeout=120
-          )
           machine.succeed(textwrap.dedent(f"""
               systemctl stop aos-hub.service
               printf '%s\\n' 'fleet-root-password' | \\
@@ -274,10 +271,15 @@ in {
                     --root-email fleet-root@example.test --root-password-stdin
               install -d -o aos-hub -g aos-hub -m 0750 /var/lib/aos-hub/storage/andyl
               systemctl start aos-hub.service
+          """), timeout=180)
+          machine.wait_until_succeeds(
+              f"{CURL} -fsS http://127.0.0.1:8420/healthz", timeout=120
+          )
+          machine.succeed(textwrap.dedent("""
               systemctl start release-fleet-tls.service
               sleep 1
               systemctl is-active --quiet release-fleet-tls.service
-          """), timeout=180)
+          """))
           machine.wait_until_succeeds(f"{CURL} -fsS {url}/healthz", timeout=120)
           machine.succeed(
               f'test "$({CURL} -fsS {url}/.well-known/aos-deployment)" = fleet-{suffix}-v1'
