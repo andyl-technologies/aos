@@ -1,5 +1,19 @@
-{mkDerivation, fetchurl, m4, flex, bison, autoconf, automake, texinfo, gnumake, bash, gzip, bzip2, xz, zstd}:
-let
+{
+  mkDerivation,
+  fetchurl,
+  m4,
+  flex,
+  bison,
+  autoconf,
+  automake,
+  texinfo,
+  gnumake,
+  bash,
+  gzip,
+  bzip2,
+  xz,
+  zstd,
+}: let
   version = "1.35";
 in
   mkDerivation {

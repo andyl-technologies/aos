@@ -32,9 +32,10 @@
         "etc-overlay-setup.service"
         "initrd-switch-root.target"
       ];
-      # Recovery resolves the image's /aos-toplevel pointer into /nix/store.
-      # The pointer exists as soon as sysroot mounts, but its target is not
-      # reachable until the writable /nix overlay is active.
+      # Immutable identity and every runtime dependency resolve through the
+      # target root's /nix overlay. Merely waiting for /var leaves recovery
+      # racing nix-overlay-setup on first boot. Recovery also reads the mounted
+      # target root itself, so keep sysroot as an explicit ordering dependency.
       requires = [
         "sysroot.mount"
         "mount-var.service"
