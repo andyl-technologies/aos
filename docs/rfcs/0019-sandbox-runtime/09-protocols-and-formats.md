@@ -284,12 +284,31 @@ CompleteOrResume, and Query. A caller-supplied clock sample can authenticate
 artifacts but is not a protected clock capability; privileged effect admission
 must independently verify current time and all broker fences.
 
-The first implementation that retains transaction receipts uses V2 ownership
-journal and controller-publication magic, versions, digest domains, and key
-namespaces. It does not reinterpret the previously committed V1 bytes. Finding
-any V1 ownership entry/current pointer or publication prepared/current record
-fails with `MigrationRequired`; an explicit authenticated migration must move
-that state before V2 reads or writes proceed.
+The first implementation that retains transaction receipts uses the V2
+ownership journal. It does not reinterpret the previously committed V1 bytes.
+Finding any V1 ownership entry or current pointer fails with
+`MigrationRequired`; an explicit authenticated migration must move that state
+before V2 reads or writes proceed.
+
+Controller publication uses an independently versioned V3 format in its own
+`AuthorityPublication` journal namespace. V3 retains a permanent prepared
+record by publication digest and a sandbox-keyed current pointer whose embedded
+sandbox and complete prepared bytes must cross-link exactly. The namespace is
+closed: unknown key shapes, malformed or substituted values, missing permanent
+records, and digest collisions are corruption. V1 or V2 publication keys or
+magic require explicit authenticated migration rather than reinterpretation.
+
+Ownership-gated admission atomically records desired state, the operation,
+every planned effect, idempotency, and a self-contained, lease-independent
+publication draft. The operation remains `OwnershipPending`; ordinary
+reconciliation cannot execute its effects and cannot contact the ownership
+authority. Only an explicit resume path may obtain and verify the exact signed
+lease and receipt for the gate's canonical claim. Release then atomically
+publishes the permanent prepared record and current pointer, changes the
+operation to `Accepted`, and records the activated gate. Recovery requires the
+permanent record and either that exact current publication or a valid successor.
+Renewal may change only the lease-bound artifacts for the same authority and
+source draft at an unchanged assignment epoch and desired generation.
 
 ## Node-local broker protocols
 

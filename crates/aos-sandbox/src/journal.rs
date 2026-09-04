@@ -88,6 +88,10 @@ pub enum RecordNamespace {
     Effect = 3,
     /// Idempotency decisions indexed by caller-provided request key.
     Idempotency = 4,
+    /// Ownership-pending controller gates indexed by operation identity.
+    OwnershipGate = 5,
+    /// Durable authority publications isolated from generic desired-state keys.
+    AuthorityPublication = 6,
 }
 
 impl RecordNamespace {
@@ -97,6 +101,8 @@ impl RecordNamespace {
             2 => Ok(Self::Operation),
             3 => Ok(Self::Effect),
             4 => Ok(Self::Idempotency),
+            5 => Ok(Self::OwnershipGate),
+            6 => Ok(Self::AuthorityPublication),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }
