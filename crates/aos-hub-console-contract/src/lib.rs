@@ -216,10 +216,12 @@ pub fn delivery_setup_access(permissions: &[String]) -> DeliverySetupAccess {
 
     DeliverySetupAccess {
         can_resume_existing: common,
-        can_resume_new: common && allows("endpoint.manage"),
+        can_resume_new: common && allows("endpoint.manage") && allows("domain.manage"),
         can_use_existing_endpoint: common && allows("endpoint.read"),
         can_create_hostname_endpoint: can_create_endpoint && allows("domain.manage"),
-        can_create_managed_domain_endpoint: can_create_endpoint && allows("domain.read"),
+        can_create_managed_domain_endpoint: can_create_endpoint
+            && allows("domain.read")
+            && allows("domain.manage"),
     }
 }
 
@@ -1550,6 +1552,28 @@ mod tests {
         ]);
         assert!(hostname.can_create_hostname_endpoint);
         assert!(!hostname.can_create_managed_domain_endpoint);
+        assert!(hostname.can_resume_new);
+
+        let managed_domain = delivery_setup_access(&[
+            "read".to_string(),
+            "binding.read".to_string(),
+            "route.manage".to_string(),
+            "gateway.manage".to_string(),
+            "endpoint.manage".to_string(),
+            "network_policy.read".to_string(),
+            "domain.read".to_string(),
+            "domain.manage".to_string(),
+        ]);
+        assert!(managed_domain.can_create_managed_domain_endpoint);
+
+        let endpoint_only = delivery_setup_access(&[
+            "read".to_string(),
+            "binding.read".to_string(),
+            "route.manage".to_string(),
+            "gateway.manage".to_string(),
+            "endpoint.manage".to_string(),
+        ]);
+        assert!(!endpoint_only.can_resume_new);
     }
 
     #[test]
