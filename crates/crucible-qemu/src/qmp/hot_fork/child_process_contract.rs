@@ -103,6 +103,18 @@ impl QmpHotForkChildProcessContractState {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn one_released(generation: u64) -> Self {
+        Self {
+            generation,
+            template_generation: 0,
+            cgroup_name: None,
+            cancellation_name: None,
+            identity: None,
+            consumed: false,
+        }
+    }
+
     /// Returns the source-QEMU mutation generation.
     #[must_use]
     pub const fn generation(&self) -> u64 {

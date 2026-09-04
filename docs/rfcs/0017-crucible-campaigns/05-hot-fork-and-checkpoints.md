@@ -1843,6 +1843,21 @@ plan and fork request, while its host reader and observation spool move only
 into the successful child continuation. Multi-node pairing and publication
 remain governed by §05.8 and are not implied by the single-node launch token.
 
+The host prepares the branch-private ring, diagnostics stream, child QMP,
+child console, and plugin control/wake endpoints through one composite node
+operation. That operation accepts only an active template awaiting exactly the
+plugin-ring/resource proof with no preexisting local stage, performs the six
+descriptor operations in dependency order, and then compares QEMU's complete
+prepared resource report with every node-owned proof. It does not accept raw
+generation values and does not install process authority. The daemon's linear
+launch owner subsequently obtains the exact target attempt's sealed process
+contract, stages it against the authenticated template generation, and only
+then invokes the fork. A proven pre-fork rejection rolls that contract stage
+back before returning the source and target owners. Ambiguous or post-fork
+failure retains the complete staged ownership for reconciliation or
+quarantine. Thus neither a modeled driver nor a caller can omit, reorder, or
+substitute a child resource or containment contract.
+
 ## 05.8 Atomic multi-node world fork
 
 A scenario branch often contains several QEMU nodes. Forking it is an atomic

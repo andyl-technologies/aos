@@ -725,6 +725,34 @@ impl QemuChildProcessContract {
         }
     }
 
+    /// Builds an unvalidated hot-fork process contract for cross-crate tests.
+    ///
+    /// Unlike [`Self::from_unvalidated_test_descriptors`], this value carries a
+    /// directory descriptor so tests can exercise retained-template descriptor
+    /// transfer. No descriptor provenance or credential policy is validated.
+    /// It must never be used as a production containment boundary.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn from_unvalidated_hot_fork_test_descriptors(
+        cgroup_directory: OwnedFd,
+        cgroup_procs: OwnedFd,
+        cancellation_event: OwnedFd,
+        maximum_vcpus: u32,
+        maximum_resident_bytes: u64,
+        maximum_writable_bytes: u64,
+    ) -> Self {
+        Self {
+            cgroup_directory: Some(cgroup_directory),
+            cgroup_procs,
+            cancellation_event,
+            maximum_vcpus,
+            maximum_resident_bytes,
+            maximum_writable_bytes,
+            credentials: None,
+            attempt_binding: Arc::new(AttemptResourceBinding),
+        }
+    }
+
     pub(crate) fn duplicate_hot_fork_descriptors(
         &self,
     ) -> Result<(OwnedFd, OwnedFd), QemuSpawnError> {

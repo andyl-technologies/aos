@@ -67,6 +67,9 @@ mod hot_fork_operation;
 #[path = "node/hot_fork_plugin_endpoints.rs"]
 mod hot_fork_plugin_endpoints;
 #[cfg(target_os = "linux")]
+#[path = "node/hot_fork_preparation.rs"]
+mod hot_fork_preparation;
+#[cfg(target_os = "linux")]
 #[path = "node/hot_fork_process_contract.rs"]
 mod hot_fork_process_contract;
 #[cfg(unix)]
@@ -110,6 +113,10 @@ use hot_fork_plugin_endpoints::QemuHotForkPluginEndpointStage;
 pub use hot_fork_plugin_endpoints::{
     QemuHotForkPluginEndpointStageError, QemuHotForkPluginEndpointStageProof,
     QemuHotForkPluginEndpointStageState, QemuHotForkPluginHostEndpoint,
+};
+#[cfg(target_os = "linux")]
+pub use hot_fork_preparation::{
+    QemuHotForkChildResourcePreparationError, QemuHotForkPreparedChildResources,
 };
 #[cfg(target_os = "linux")]
 use hot_fork_process_contract::QemuHotForkChildProcessContractStage;

@@ -243,11 +243,13 @@ pub use node::{
     QemuHotForkChildProcessContractStageProof, QemuHotForkChildProcessOwner,
     QemuHotForkChildQmpHandshakeError, QemuHotForkChildQmpHostEndpoint,
     QemuHotForkChildQmpStageError, QemuHotForkChildQmpStageProof, QemuHotForkChildQmpStageState,
-    QemuHotForkCommandError, QemuHotForkHostContinuation, QemuHotForkLaunchError,
-    QemuHotForkPluginEndpointStageError, QemuHotForkPluginEndpointStageProof,
-    QemuHotForkPluginEndpointStageState, QemuHotForkPluginHostContinuation,
-    QemuHotForkPluginHostEndpoint, QemuHotForkPrivateRingMapping, QemuHotForkPrivateRingStageError,
-    QemuHotForkPrivateRingStageProof, QemuHotForkPrivateRingStageState,
+    QemuHotForkChildResourcePreparationError, QemuHotForkCommandError, QemuHotForkHostContinuation,
+    QemuHotForkLaunchError, QemuHotForkPluginEndpointStageError,
+    QemuHotForkPluginEndpointStageProof, QemuHotForkPluginEndpointStageState,
+    QemuHotForkPluginHostContinuation, QemuHotForkPluginHostEndpoint,
+    QemuHotForkPreparedChildResources, QemuHotForkPrivateRingMapping,
+    QemuHotForkPrivateRingStageError, QemuHotForkPrivateRingStageProof,
+    QemuHotForkPrivateRingStageState,
 };
 pub use node::{
     QemuLogicalTimeCalibration, QemuNode, QemuNodeChannelError, QemuNodeChannelPlane,

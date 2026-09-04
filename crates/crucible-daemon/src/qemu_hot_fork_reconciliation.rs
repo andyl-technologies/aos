@@ -1092,16 +1092,19 @@ impl<G> LinuxQemuHotForkAttemptLaunchError<G> {
 
 impl<G> QemuHotForkAttemptReconciliation<LinuxQemuHotForkReconciliationBackend<G>>
 where
-    G: crate::QemuAttemptResourceGuard
+    G: crate::QemuAttemptProcessResourceGuard
         + QemuHotForkChildProcessOwner<Authority = LinuxQemuHotForkChildProcessAuthority>,
 {
     /// Forks a retained source directly into one target reconciliation owner.
     ///
     /// The source derives the exact fork request from QEMU's retained template
-    /// and child-resource reports; callers cannot inject generation values. No
-    /// successful launch token is exposed outside the owner. Explicit pre-fork
-    /// rejection returns both reusable authorities; post-fork failures return
-    /// them in their already-quarantined state for caller-directed cleanup.
+    /// and child-resource reports. This operation obtains the target's sealed
+    /// process contract, installs it into the exact prepared template, and
+    /// rolls it back after an explicit pre-fork rejection. Callers therefore
+    /// cannot omit or substitute the target containment basis or inject any
+    /// generation value. No successful launch token is exposed outside the
+    /// owner. Post-fork failures return both authorities in their already-
+    /// quarantined state for caller-directed cleanup.
     ///
     /// # Errors
     ///
@@ -1113,7 +1116,14 @@ where
         mut template: QemuNode,
         mut target: G,
     ) -> Result<Self, LinuxQemuHotForkAttemptLaunchError<G>> {
-        match template.fork_prepared_hot_fork_template(&mut target) {
+        match template.fork_prepared_hot_fork_template_into(&mut target, |target| {
+            target.child_process_contract().map_err(|source| {
+                QemuNodeChannelError::new(
+                    "obtain target hot-fork process contract",
+                    source.to_string(),
+                )
+            })
+        }) {
             Ok(launch) => Ok(Self::new(
                 attempt,
                 LinuxQemuHotForkReconciliationBackend::from_launch(template, target, launch),

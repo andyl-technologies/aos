@@ -70,6 +70,38 @@ pub struct QmpHotForkTemplateResourceStageState {
 }
 
 impl QmpHotForkTemplateResourceStageState {
+    #[cfg(test)]
+    const fn empty() -> Self {
+        Self {
+            template_generation: 0,
+            private_ring_staged: false,
+            private_ring_generation: 0,
+            diagnostics_staged: false,
+            diagnostic_generation: 0,
+            diagnostics_resource_plan_bound: false,
+            qmp_staged: false,
+            qmp_generation: 0,
+            qmp_resource_plan_bound: false,
+            console_staged: false,
+            console_generation: 0,
+            console_resource_plan_bound: false,
+            plugin_endpoints_staged: false,
+            plugin_endpoint_generation: 0,
+            plugin_private_ring_generation: 0,
+            plugin_barrier_generation: 0,
+            worker_mask: 0,
+            parent_resume_worker_mask: 0,
+            child_reinitialize_worker_mask: 0,
+            worker_disposition_bound: false,
+            transaction_bound: false,
+            parent_process_generation: 0,
+            child_process_generation: 0,
+            plugin_child_plan_bound: false,
+            plugin_child_resource_plan_bound: false,
+            readiness_proof_acknowledged: false,
+        }
+    }
+
     /// Returns the template generation that admitted the retained resources.
     #[must_use]
     pub const fn template_generation(self) -> u64 {
@@ -245,6 +277,31 @@ pub struct QmpHotForkTemplateState {
 }
 
 impl QmpHotForkTemplateState {
+    #[cfg(test)]
+    pub(crate) fn one_draining_without_resources(request: super::QmpHotForkRequest) -> Self {
+        let plugin_barrier =
+            QmpHotForkPluginBarrierState::one_quiescent(request.plugin_barrier_generation(), 1);
+        Self {
+            generation: request.template_generation(),
+            outcome: QmpHotForkTemplateOutcome::Draining,
+            transaction_active: true,
+            acknowledged_proofs: QMP_HOT_FORK_TEMPLATE_REQUIRED_PROOFS
+                & !QMP_HOT_FORK_PLUGIN_RING_PROOF,
+            missing_proofs: QMP_HOT_FORK_PLUGIN_RING_PROOF,
+            plugin_barrier,
+            rcu_barrier: QmpHotForkRcuBarrierState::one_quiescent(request.rcu_barrier_generation()),
+            bh_timer_barrier: QmpHotForkBhTimerBarrierState::one_quiescent(
+                request.bh_timer_barrier_generation(),
+            ),
+            block_barrier: QmpHotForkBlockBarrierState::one_quiescent(
+                request.block_barrier_generation(),
+            ),
+            resource_stage: QmpHotForkTemplateResourceStageState::empty(),
+            rollback_complete: false,
+            ready: false,
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn one_prepared(request: super::QmpHotForkRequest) -> Self {
         let plugin_barrier =
