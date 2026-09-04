@@ -307,6 +307,8 @@ in {
           reviewed(url, f"{suffix}-scan", f"placement scan registry:andyl/main primary --wait --timeout 2m --if-version {shlex.quote(placement['resource_version'])}", token, timeout=180)
           placement = json.loads(publisher.succeed(hub_command(url, "placement show registry:andyl/main primary", token)))["data"]["placement"]
           reviewed(url, f"{suffix}-promote-placement", f"placement promote registry:andyl/main primary --if-version {shlex.quote(placement['resource_version'])}", token)
+          hostname = url.removeprefix("https://")
+          reviewed(url, f"{suffix}-domain", f"domain add {hostname} --org andyl", token)
           endpoint_id = f"fleet-{suffix}-endpoint"
           reviewed(
               url, f"{suffix}-endpoint",
