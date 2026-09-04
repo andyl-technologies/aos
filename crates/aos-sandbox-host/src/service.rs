@@ -1,14 +1,17 @@
-//! One-request host broker service orchestration.
+//! Negotiated one-request host broker service orchestration.
 //!
 //! The service verifies the accepted peer's kernel service identity before it
-//! reads bytes, admits exactly one packet, uses `CLOCK_BOOTTIME` for request
-//! expiry, and returns either one durable runtime observation or one bounded,
-//! path-free error observation.
+//! reads bytes, admits a two-packet hello/request session, uses `CLOCK_BOOTTIME`
+//! for request expiry, and returns a bounded envelope containing either one
+//! durable runtime observation or one path-free error.
 
-use aos_proto::aos::sandbox::local::v1::{
-    Audience, BrokerError, BrokerErrorCode, RuntimeObservation, RuntimeState,
+use aos_proto::aos::sandbox::local::v1::{Audience, BrokerErrorCode, BrokerMethod};
+use aos_sandbox_core::ProtocolId;
+use aos_sandbox_protocol::{
+    MAXIMUM_HANDSHAKE_BYTES, MAXIMUM_REQUEST_BYTES, PeerPolicy, ProtocolValidationError,
+    decode_runtime_request, encode_error_response_envelope, encode_success_response_envelope,
+    failed_server_hello, negotiate_client_hello, validate_request_descriptor_roles,
 };
-use aos_sandbox_protocol::{PeerPolicy, ProtocolValidationError};
 use buffa::Message as _;
 use rustix::time::{ClockId, clock_gettime};
 
@@ -66,8 +69,10 @@ where
 
     /// Accepts, verifies, serves, and closes one sequence-packet connection.
     ///
-    /// Unauthorized service peers receive no response. A verified peer gets a
-    /// single safe error observation for malformed, stale, or failed requests.
+    /// Unauthorized service peers receive no response. A verified peer first
+    /// negotiates the host protocol and then sends one enveloped request.
+    /// Method responses are emitted only after the body has supplied a fully
+    /// validated, session-bound request identifier.
     ///
     /// # Errors
     ///
@@ -84,27 +89,90 @@ where
         let Ok(peer) = self.verifier.verify(connection.peer()) else {
             return Ok(ConnectionOutcome::PeerRejected);
         };
-        let request = match connection.receive() {
-            Ok(request) => request,
+        let Ok(hello) = connection.receive(MAXIMUM_HANDSHAKE_BYTES) else {
+            return Ok(ConnectionOutcome::TransportRejected);
+        };
+        if !hello.descriptors.is_empty() {
+            return Ok(send_hello_error(
+                &connection,
+                &HostError::Protocol(ProtocolValidationError::DescriptorTableMismatch),
+            ));
+        }
+        let advertised_methods = [BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME];
+        let session = match negotiate_client_hello(
+            &hello.bytes,
+            peer.credentials(),
+            self.peer_policy,
+            ProtocolId::HostBroker,
+            &[],
+            &advertised_methods,
+        ) {
+            Ok(session) => session,
             Err(error) => {
-                let _ = connection.send(&encode_error(&error));
-                return Ok(ConnectionOutcome::TransportRejected);
+                return Ok(send_hello_error(&connection, &HostError::Protocol(error)));
             }
         };
+        if connection
+            .send(&session.server_hello().encode_to_vec())
+            .is_err()
+        {
+            return Ok(ConnectionOutcome::TransportRejected);
+        }
+
+        let Ok(packet) = connection.receive(MAXIMUM_REQUEST_BYTES) else {
+            return Ok(ConnectionOutcome::TransportRejected);
+        };
+        let Ok(request) = session.decode_request(&packet.bytes, packet.descriptors.len()) else {
+            return Ok(ConnectionOutcome::RequestRejected);
+        };
+        if validate_request_descriptor_roles(&request, &[]).is_err() {
+            return Ok(ConnectionOutcome::RequestRejected);
+        }
+
         let now = boottime_nanoseconds()?;
+        let Ok(validated) =
+            decode_runtime_request(request.body(), peer.credentials(), self.peer_policy, now)
+        else {
+            return Ok(ConnectionOutcome::RequestRejected);
+        };
+        if session.validate_header(validated.header()).is_err() {
+            return Ok(ConnectionOutcome::RequestRejected);
+        }
+        let request_id = *validated.header().request_id();
+        let response_ceiling = validated.header().maximum_response_bytes();
+
         match self
             .broker
-            .apply_runtime(&request, peer.credentials(), self.peer_policy, now)
+            .apply_runtime(request.body(), peer.credentials(), self.peer_policy, now)
             .await
         {
-            Ok(response) => match connection.send(&response) {
-                Ok(()) => Ok(ConnectionOutcome::Served),
-                Err(_) => Ok(ConnectionOutcome::TransportRejected),
-            },
-            Err(error) => match connection.send(&encode_error(&error)) {
-                Ok(()) => Ok(ConnectionOutcome::RequestRejected),
-                Err(_) => Ok(ConnectionOutcome::TransportRejected),
-            },
+            Ok(body) => {
+                let Ok(response) = encode_success_response_envelope(
+                    &request_id,
+                    &request,
+                    body,
+                    &[],
+                    &[],
+                    response_ceiling,
+                ) else {
+                    return Ok(ConnectionOutcome::TransportRejected);
+                };
+                match connection.send(&response) {
+                    Ok(()) => Ok(ConnectionOutcome::Served),
+                    Err(_) => Ok(ConnectionOutcome::TransportRejected),
+                }
+            }
+            Err(error) => {
+                let Ok(response) =
+                    encode_method_error(&request_id, &request, &error, response_ceiling)
+                else {
+                    return Ok(ConnectionOutcome::TransportRejected);
+                };
+                match connection.send(&response) {
+                    Ok(()) => Ok(ConnectionOutcome::RequestRejected),
+                    Err(_) => Ok(ConnectionOutcome::TransportRejected),
+                }
+            }
         }
     }
 }
@@ -121,20 +189,38 @@ fn boottime_nanoseconds() -> Result<u64> {
         .ok_or_else(|| HostError::State("CLOCK_BOOTTIME overflowed u64 nanoseconds".to_owned()))
 }
 
-fn encode_error(error: &HostError) -> Vec<u8> {
+fn encode_method_error(
+    request_id: &[u8; 16],
+    request: &aos_sandbox_protocol::ValidatedBrokerRequestEnvelope,
+    error: &HostError,
+    maximum_bytes: u32,
+) -> std::result::Result<Vec<u8>, ProtocolValidationError> {
     let (code, safe_message, retryable) = classify_error(error);
-    RuntimeObservation {
-        state: RuntimeState::RUNTIME_STATE_FAILED.into(),
-        error: Some(BrokerError {
-            code: code.into(),
-            safe_message: safe_message.to_owned(),
-            retryable,
-            ..Default::default()
-        })
-        .into(),
-        ..Default::default()
+    encode_error_response_envelope(
+        request_id,
+        request,
+        code,
+        safe_message,
+        retryable,
+        None,
+        &[],
+        maximum_bytes,
+    )
+}
+
+fn send_hello_error(
+    connection: &crate::transport::HostConnection,
+    error: &HostError,
+) -> ConnectionOutcome {
+    let (code, safe_message, retryable) = classify_error(error);
+    let Ok(hello) = failed_server_hello(code, safe_message, retryable, None) else {
+        return ConnectionOutcome::TransportRejected;
+    };
+    if connection.send(&hello.encode_to_vec()).is_ok() {
+        ConnectionOutcome::RequestRejected
+    } else {
+        ConnectionOutcome::TransportRejected
     }
-    .encode_to_vec()
 }
 
 fn classify_error(error: &HostError) -> (BrokerErrorCode, &'static str, bool) {
@@ -186,21 +272,51 @@ fn classify_error(error: &HostError) -> (BrokerErrorCode, &'static str, bool) {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    use aos_proto::aos::sandbox::local::v1::BrokerRequestEnvelope;
+    use aos_sandbox_protocol::{decode_request_envelope, decode_response_envelope};
+
     use super::*;
 
     #[test]
     fn errors_are_bounded_and_do_not_disclose_internal_detail() {
-        let encoded = encode_error(&HostError::Catalog(
-            "/private/catalog/path contained secret text".to_owned(),
-        ));
+        let request = decode_request_envelope(
+            &BrokerRequestEnvelope {
+                method: BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME.into(),
+                body: vec![1],
+                ..Default::default()
+            }
+            .encode_to_vec(),
+            ProtocolId::HostBroker,
+            0,
+        )
+        .unwrap();
+        let request_id = [1; 16];
+        let encoded = encode_method_error(
+            &request_id,
+            &request,
+            &HostError::Catalog("/private/catalog/path contained secret text".to_owned()),
+            4096,
+        )
+        .unwrap();
         assert!(encoded.len() < 4096);
-        let decoded = RuntimeObservation::decode_from_slice(&encoded).unwrap();
-        let error = decoded.error.as_option().unwrap();
+        let decoded = decode_response_envelope(
+            &encoded,
+            &request_id,
+            BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
+            request.descriptors(),
+            0,
+            4096,
+            4096,
+        )
+        .unwrap();
+        let error = decoded.error().unwrap();
         assert_eq!(
-            error.code,
+            error.code(),
             BrokerErrorCode::BROKER_ERROR_CODE_UNKNOWN_HANDLE
         );
-        assert!(!error.safe_message.contains("private"));
+        assert_eq!(error.safe_message(), "resource handle is unavailable");
+        assert!(error.retryable());
+        assert!(!encoded.windows(7).any(|window| window == b"private"));
     }
 
     #[test]

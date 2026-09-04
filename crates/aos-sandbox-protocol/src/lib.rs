@@ -14,7 +14,8 @@ pub use session::{
     MAXIMUM_HANDSHAKE_BYTES, MAXIMUM_PACKET_DESCRIPTORS, NegotiatedBrokerSession,
     ValidatedBrokerError, ValidatedBrokerRequestEnvelope, ValidatedBrokerResponseEnvelope,
     ValidatedDescriptorDisposition, ValidatedDescriptorEntry, decode_request_envelope,
-    decode_response_envelope, decode_server_hello, negotiate_client_hello,
+    decode_response_envelope, decode_server_hello, encode_error_response_envelope,
+    encode_success_response_envelope, failed_server_hello, negotiate_client_hello,
     validate_request_descriptor_roles,
 };
 
@@ -66,12 +67,26 @@ pub struct PeerPolicy {
 /// Carries an accepted request header after peer and bound validation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ValidatedHeader {
+    protocol_version: ProtocolVersion,
+    audience: Audience,
     request_id: [u8; 16],
     deadline_boottime_nanoseconds: u64,
     maximum_response_bytes: u32,
 }
 
 impl ValidatedHeader {
+    /// Returns the exact protocol version carried by the request body.
+    #[must_use]
+    pub const fn protocol_version(&self) -> ProtocolVersion {
+        self.protocol_version
+    }
+
+    /// Returns the exact audience carried by the request body.
+    #[must_use]
+    pub const fn audience(&self) -> Audience {
+        self.audience
+    }
+
     /// Returns the nonzero request identifier.
     #[must_use]
     pub const fn request_id(&self) -> &[u8; 16] {
@@ -714,7 +729,7 @@ pub fn validate_request_header(
         return Err(ProtocolValidationError::UnknownFields);
     }
     validate_peer_audience(peer, policy, header.audience.as_known())?;
-    negotiate_protocol(
+    let protocol_version = negotiate_protocol(
         protocol,
         ProtocolVersion::new(
             u16::try_from(header.protocol_major).map_err(|_| {
@@ -745,6 +760,8 @@ pub fn validate_request_header(
         return Err(ProtocolValidationError::InvalidResponseBound);
     }
     Ok(ValidatedHeader {
+        protocol_version,
+        audience: policy.audience,
         request_id,
         deadline_boottime_nanoseconds: header.deadline_boottime_nanoseconds,
         maximum_response_bytes: header.maximum_response_bytes,

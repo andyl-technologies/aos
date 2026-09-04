@@ -1,9 +1,12 @@
-//! One-request synchronous mount-broker service orchestration.
+//! Negotiated one-request mount-broker service orchestration.
 
-use aos_proto::aos::sandbox::local::v1::{
-    Audience, BrokerError, BrokerErrorCode, MountResult, MountState,
+use aos_proto::aos::sandbox::local::v1::{Audience, BrokerErrorCode, BrokerMethod};
+use aos_sandbox_core::ProtocolId;
+use aos_sandbox_protocol::{
+    MAXIMUM_HANDSHAKE_BYTES, MAXIMUM_REQUEST_BYTES, PeerPolicy, ProtocolValidationError,
+    decode_mount_request, encode_error_response_envelope, encode_success_response_envelope,
+    failed_server_hello, negotiate_client_hello, validate_request_descriptor_roles,
 };
-use aos_sandbox_protocol::{PeerPolicy, ProtocolValidationError};
 use buffa::Message as _;
 use rustix::time::{ClockId, clock_gettime};
 
@@ -58,6 +61,7 @@ impl<W: MountWorker> MountService<W> {
     ///
     /// Returns an error only when accepting the next connection or reading
     /// `CLOCK_BOOTTIME` fails. Per-request failures become bounded responses.
+    #[allow(clippy::too_many_lines)]
     pub fn serve_once(
         &mut self,
         listener: &ActivatedSeqpacketListener,
@@ -66,26 +70,89 @@ impl<W: MountWorker> MountService<W> {
         let Ok(peer) = self.verifier.verify(connection.peer()) else {
             return Ok(ConnectionOutcome::PeerRejected);
         };
-        let request = match connection.receive() {
-            Ok(request) => request,
+        let hello = match connection.receive(MAXIMUM_HANDSHAKE_BYTES) {
+            Ok(packet) if packet.descriptors.is_empty() => packet.bytes,
+            Ok(_) | Err(_) => return Ok(ConnectionOutcome::TransportRejected),
+        };
+        let session = match negotiate_client_hello(
+            &hello,
+            peer.credentials(),
+            self.peer_policy,
+            ProtocolId::MountBroker,
+            &[],
+            &[BrokerMethod::BROKER_METHOD_MOUNT_APPLY],
+        ) {
+            Ok(session) => session,
             Err(error) => {
-                let _ = connection.send(&encode_error(&error));
-                return Ok(ConnectionOutcome::TransportRejected);
+                return Ok(send_hello_error(&connection, &error));
             }
         };
-        let now = boottime_nanoseconds()?;
-        match self
-            .broker
-            .apply_mount(&request, peer.credentials(), self.peer_policy, now)
+        if connection
+            .send(&session.server_hello().encode_to_vec())
+            .is_err()
         {
-            Ok(response) => match connection.send(&response) {
-                Ok(()) => Ok(ConnectionOutcome::Served),
-                Err(_) => Ok(ConnectionOutcome::TransportRejected),
-            },
-            Err(error) => match connection.send(&encode_error(&error)) {
-                Ok(()) => Ok(ConnectionOutcome::RequestRejected),
-                Err(_) => Ok(ConnectionOutcome::TransportRejected),
-            },
+            return Ok(ConnectionOutcome::TransportRejected);
+        }
+        let Ok(packet) = connection.receive(MAXIMUM_REQUEST_BYTES) else {
+            return Ok(ConnectionOutcome::TransportRejected);
+        };
+        let Ok(envelope) = session.decode_request(&packet.bytes, packet.descriptors.len()) else {
+            return Ok(ConnectionOutcome::RequestRejected);
+        };
+        if envelope.method() != BrokerMethod::BROKER_METHOD_MOUNT_APPLY
+            || validate_request_descriptor_roles(&envelope, &[]).is_err()
+        {
+            return Ok(ConnectionOutcome::RequestRejected);
+        }
+        let now = boottime_nanoseconds()?;
+        let Ok(validated) =
+            decode_mount_request(envelope.body(), peer.credentials(), self.peer_policy, now)
+        else {
+            return Ok(ConnectionOutcome::RequestRejected);
+        };
+        if session.validate_header(validated.header()).is_err() {
+            return Ok(ConnectionOutcome::RequestRejected);
+        }
+        let request_id = *validated.header().request_id();
+        let response_ceiling = validated.header().maximum_response_bytes();
+        let response = match self.broker.apply_mount(
+            envelope.body(),
+            peer.credentials(),
+            self.peer_policy,
+            now,
+        ) {
+            Ok(body) => (
+                encode_success_response_envelope(
+                    &request_id,
+                    &envelope,
+                    body,
+                    &[],
+                    &[],
+                    response_ceiling,
+                ),
+                ConnectionOutcome::Served,
+            ),
+            Err(error) => {
+                let (code, message, retryable) = classify_error(&error);
+                (
+                    encode_error_response_envelope(
+                        &request_id,
+                        &envelope,
+                        code,
+                        message,
+                        retryable,
+                        None,
+                        &[],
+                        response_ceiling,
+                    ),
+                    ConnectionOutcome::RequestRejected,
+                )
+            }
+        };
+        match response {
+            (Ok(bytes), outcome) if connection.send(&bytes).is_ok() => Ok(outcome),
+            (Ok(_), _) => Ok(ConnectionOutcome::TransportRejected),
+            (Err(_), _) => Ok(ConnectionOutcome::RequestRejected),
         }
     }
 }
@@ -101,22 +168,6 @@ fn boottime_nanoseconds() -> Result<u64> {
         .checked_mul(1_000_000_000)
         .and_then(|value| value.checked_add(nanoseconds))
         .ok_or_else(|| MountError::State("CLOCK_BOOTTIME overflowed u64".to_owned()))
-}
-
-fn encode_error(error: &MountError) -> Vec<u8> {
-    let (code, message, retryable) = classify_error(error);
-    MountResult {
-        state: MountState::MOUNT_STATE_FAILED.into(),
-        error: Some(BrokerError {
-            code: code.into(),
-            safe_message: message.to_owned(),
-            retryable,
-            ..Default::default()
-        })
-        .into(),
-        ..Default::default()
-    }
-    .encode_to_vec()
 }
 
 fn classify_error(error: &MountError) -> (BrokerErrorCode, &'static str, bool) {
@@ -159,22 +210,58 @@ fn classify_error(error: &MountError) -> (BrokerErrorCode, &'static str, bool) {
     }
 }
 
+fn classify_protocol_error(
+    error: &ProtocolValidationError,
+) -> (BrokerErrorCode, &'static str, bool) {
+    match error {
+        ProtocolValidationError::PeerCredentialMismatch => (
+            BrokerErrorCode::BROKER_ERROR_CODE_UNAUTHENTICATED_PEER,
+            "peer authentication failed",
+            false,
+        ),
+        ProtocolValidationError::AudienceMismatch => (
+            BrokerErrorCode::BROKER_ERROR_CODE_WRONG_AUDIENCE,
+            "request audience is not served here",
+            false,
+        ),
+        ProtocolValidationError::RequiredFeatureUnavailable(_) => (
+            BrokerErrorCode::BROKER_ERROR_CODE_INVALID_REQUEST,
+            "required broker semantics are unavailable",
+            false,
+        ),
+        _ => (
+            BrokerErrorCode::BROKER_ERROR_CODE_INVALID_REQUEST,
+            "broker negotiation failed",
+            false,
+        ),
+    }
+}
+
+fn send_hello_error(
+    connection: &crate::transport::MountConnection,
+    error: &ProtocolValidationError,
+) -> ConnectionOutcome {
+    let (code, message, retryable) = classify_protocol_error(error);
+    let Ok(response) = failed_server_hello(code, message, retryable, None) else {
+        return ConnectionOutcome::TransportRejected;
+    };
+    if connection.send(&response.encode_to_vec()).is_ok() {
+        ConnectionOutcome::RequestRejected
+    } else {
+        ConnectionOutcome::TransportRejected
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn private_error_details_do_not_cross_protocol() {
-        let bytes = encode_error(&MountError::Worker(
+        let (_, message, _) = classify_error(&MountError::Worker(
             "/secret/catalog/path changed".to_owned(),
         ));
-        let response = MountResult::decode_from_slice(&bytes)
-            .unwrap_or_else(|error| panic!("decode error response: {error}"));
-        let error = response
-            .error
-            .as_option()
-            .unwrap_or_else(|| panic!("missing error"));
-        assert_eq!(error.safe_message, "mount backend operation failed");
-        assert!(!bytes.windows(7).any(|window| window == b"/secret"));
+        assert_eq!(message, "mount backend operation failed");
+        assert!(!message.contains("/secret"));
     }
 }

@@ -19,7 +19,7 @@ use buffa::Message as _;
 
 use crate::{
     MAXIMUM_REQUEST_BYTES, MAXIMUM_RESPONSE_BYTES, MINIMUM_RESPONSE_BYTES, PeerCredentials,
-    PeerPolicy, ProtocolValidationError, exact_nonzero, validate_feature_set,
+    PeerPolicy, ProtocolValidationError, ValidatedHeader, exact_nonzero, validate_feature_set,
     validate_peer_audience,
 };
 
@@ -110,6 +110,42 @@ impl NegotiatedBrokerSession {
                 .collect(),
             ..Default::default()
         }
+    }
+
+    /// Decodes a request envelope under this negotiated method set.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProtocolValidationError`] when the packet is malformed, its
+    /// descriptor table is inexact, or its method was not advertised on this
+    /// connection.
+    pub fn decode_request(
+        &self,
+        bytes: &[u8],
+        ancillary_descriptor_count: usize,
+    ) -> Result<ValidatedBrokerRequestEnvelope, ProtocolValidationError> {
+        let request = decode_request_envelope(bytes, self.protocol, ancillary_descriptor_count)?;
+        if !self.advertised_methods.contains(&request.method) {
+            return Err(ProtocolValidationError::MethodMismatch);
+        }
+        Ok(request)
+    }
+
+    /// Binds a validated method-body header to this negotiated session.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProtocolValidationError`] unless version and audience exactly
+    /// match the hello exchange and the body response ceiling fits the
+    /// negotiated connection ceiling.
+    pub fn validate_header(&self, header: &ValidatedHeader) -> Result<(), ProtocolValidationError> {
+        if header.protocol_version() != self.version || header.audience() != self.audience {
+            return Err(ProtocolValidationError::MethodMismatch);
+        }
+        if header.maximum_response_bytes() > self.maximum_response_bytes {
+            return Err(ProtocolValidationError::InvalidResponseBound);
+        }
+        Ok(())
     }
 }
 
@@ -441,6 +477,178 @@ pub fn validate_request_descriptor_roles(
         return Err(ProtocolValidationError::DescriptorTableMismatch);
     }
     Ok(())
+}
+
+/// Encodes one successful broker response under the admitted packet ceiling.
+///
+/// Descriptor role arrays are converted to canonical contiguous tables. Each
+/// request descriptor must have exactly one terminal disposition.
+///
+/// # Errors
+///
+/// Returns [`ProtocolValidationError`] for empty bodies, malformed descriptor
+/// accounting, sentinel request IDs, or an encoded packet over `maximum_bytes`.
+pub fn encode_success_response_envelope(
+    request_id: &[u8; 16],
+    request: &ValidatedBrokerRequestEnvelope,
+    body: Vec<u8>,
+    response_descriptor_roles: &[BrokerDescriptorRole],
+    request_descriptor_dispositions: &[BrokerDescriptorDisposition],
+    maximum_bytes: u32,
+) -> Result<Vec<u8>, ProtocolValidationError> {
+    encode_response_envelope(
+        request_id,
+        request,
+        body,
+        None,
+        response_descriptor_roles,
+        request_descriptor_dispositions,
+        maximum_bytes,
+    )
+}
+
+/// Encodes one safe broker error under the admitted packet ceiling.
+///
+/// # Errors
+///
+/// Returns [`ProtocolValidationError`] for malformed error semantics,
+/// descriptor accounting, sentinel request IDs, or an oversized packet.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_error_response_envelope(
+    request_id: &[u8; 16],
+    request: &ValidatedBrokerRequestEnvelope,
+    code: BrokerErrorCode,
+    safe_message: &str,
+    retryable: bool,
+    missing_feature: Option<&FeatureRef>,
+    request_descriptor_dispositions: &[BrokerDescriptorDisposition],
+    maximum_bytes: u32,
+) -> Result<Vec<u8>, ProtocolValidationError> {
+    let error = BrokerError {
+        code: code.into(),
+        safe_message: safe_message.to_owned(),
+        retryable,
+        missing_feature: missing_feature.map(proto_feature).into(),
+        ..Default::default()
+    };
+    validate_broker_error(&error)?;
+    encode_response_envelope(
+        request_id,
+        request,
+        Vec::new(),
+        Some(error),
+        &[],
+        request_descriptor_dispositions,
+        maximum_bytes,
+    )
+}
+
+/// Constructs the only valid failed server-hello shape.
+///
+/// # Errors
+///
+/// Returns [`ProtocolValidationError`] unless the error code, safe message,
+/// and optional missing feature form a valid closed broker error.
+pub fn failed_server_hello(
+    code: BrokerErrorCode,
+    safe_message: &str,
+    retryable: bool,
+    missing_feature: Option<&FeatureRef>,
+) -> Result<BrokerServerHello, ProtocolValidationError> {
+    let error = BrokerError {
+        code: code.into(),
+        safe_message: safe_message.to_owned(),
+        retryable,
+        missing_feature: missing_feature.map(proto_feature).into(),
+        ..Default::default()
+    };
+    validate_broker_error(&error)?;
+    Ok(BrokerServerHello {
+        error: Some(error).into(),
+        ..Default::default()
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn encode_response_envelope(
+    request_id: &[u8; 16],
+    request: &ValidatedBrokerRequestEnvelope,
+    body: Vec<u8>,
+    error: Option<BrokerError>,
+    response_descriptor_roles: &[BrokerDescriptorRole],
+    request_descriptor_dispositions: &[BrokerDescriptorDisposition],
+    maximum_bytes: u32,
+) -> Result<Vec<u8>, ProtocolValidationError> {
+    exact_nonzero::<16>(request_id, "envelope.request_id")?;
+    if !(MINIMUM_RESPONSE_BYTES..=MAXIMUM_RESPONSE_BYTES).contains(&maximum_bytes) {
+        return Err(ProtocolValidationError::InvalidResponseBound);
+    }
+    if body.is_empty() == error.is_none() {
+        return Err(ProtocolValidationError::InvalidField(
+            "response body/error shape",
+        ));
+    }
+    if request_descriptor_dispositions.len() != request.descriptors.len() {
+        return Err(ProtocolValidationError::DescriptorTableMismatch);
+    }
+    let descriptors = descriptor_entries(response_descriptor_roles)?;
+    let dispositions = request
+        .descriptors
+        .iter()
+        .zip(request_descriptor_dispositions)
+        .enumerate()
+        .map(
+            |(index, (descriptor, disposition))| BrokerDescriptorDispositionEntry {
+                request_index: u32::try_from(index).unwrap_or(u32::MAX),
+                role: descriptor.role.into(),
+                disposition: (*disposition).into(),
+                ..Default::default()
+            },
+        )
+        .collect();
+    let envelope = BrokerResponseEnvelope {
+        request_id: request_id.to_vec(),
+        method: request.method.into(),
+        body,
+        descriptors,
+        error: error.into(),
+        request_descriptor_dispositions: dispositions,
+        ..Default::default()
+    };
+    let bytes = envelope.encode_to_vec();
+    decode_response_envelope(
+        &bytes,
+        request_id,
+        request.method,
+        &request.descriptors,
+        response_descriptor_roles.len(),
+        maximum_bytes,
+        maximum_bytes,
+    )?;
+    Ok(bytes)
+}
+
+fn descriptor_entries(
+    roles: &[BrokerDescriptorRole],
+) -> Result<Vec<BrokerDescriptorEntry>, ProtocolValidationError> {
+    if roles.len() > MAXIMUM_PACKET_DESCRIPTORS {
+        return Err(ProtocolValidationError::TooManyEntries {
+            field: "envelope.descriptors",
+            maximum: MAXIMUM_PACKET_DESCRIPTORS,
+        });
+    }
+    let entries = roles
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(index, role)| BrokerDescriptorEntry {
+            index: u32::try_from(index).unwrap_or(u32::MAX),
+            role: role.into(),
+            ..Default::default()
+        })
+        .collect::<Vec<_>>();
+    validate_descriptor_table(&entries, roles.len())?;
+    Ok(entries)
 }
 
 /// Decodes one response under negotiated and per-request allocation bounds.
@@ -930,6 +1138,75 @@ mod tests {
             ),
             Err(ProtocolValidationError::DescriptorTableMismatch)
         );
+    }
+
+    #[test]
+    fn session_rejects_a_registered_but_unadvertised_method() {
+        let features = [feature("aos.sandbox.enforcement.broker-ledger")];
+        let methods = [BrokerMethod::BROKER_METHOD_MOUNT_APPLY];
+        let session = negotiate_client_hello(
+            &client_hello().encode_to_vec(),
+            peer(),
+            policy(),
+            ProtocolId::MountBroker,
+            &features,
+            &methods,
+        )
+        .unwrap_or_else(|error| panic!("valid client hello failed: {error}"));
+        let envelope = BrokerRequestEnvelope {
+            method: BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY.into(),
+            body: vec![1],
+            ..Default::default()
+        };
+        assert_eq!(
+            session.decode_request(&envelope.encode_to_vec(), 0),
+            Err(ProtocolValidationError::MethodMismatch)
+        );
+    }
+
+    #[test]
+    fn response_builders_enforce_ownership_and_packet_ceiling() {
+        let request_id = [9; 16];
+        let request = decode_request_envelope(
+            &BrokerRequestEnvelope {
+                method: BrokerMethod::BROKER_METHOD_MOUNT_APPLY.into(),
+                body: vec![1],
+                descriptors: vec![BrokerDescriptorEntry {
+                    role: BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_TARGET_SLOT.into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }
+            .encode_to_vec(),
+            ProtocolId::MountBroker,
+            1,
+        )
+        .unwrap_or_else(|error| panic!("valid envelope failed: {error}"));
+        let dispositions = [BrokerDescriptorDisposition::BROKER_DESCRIPTOR_DISPOSITION_CLOSED];
+        let encoded = encode_success_response_envelope(
+            &request_id,
+            &request,
+            vec![1],
+            &[],
+            &dispositions,
+            4096,
+        )
+        .unwrap_or_else(|error| panic!("valid response failed: {error}"));
+        assert!(encoded.len() < 4096);
+        assert_eq!(
+            encode_success_response_envelope(&request_id, &request, vec![1], &[], &[], 4096,),
+            Err(ProtocolValidationError::DescriptorTableMismatch)
+        );
+
+        let error = failed_server_hello(
+            BrokerErrorCode::BROKER_ERROR_CODE_BACKEND_FAILURE,
+            "backend failed",
+            true,
+            None,
+        )
+        .unwrap_or_else(|failure| panic!("valid failed hello failed: {failure}"));
+        validate_failed_server_hello(&error)
+            .unwrap_or_else(|failure| panic!("failed hello shape failed: {failure}"));
     }
 
     #[test]

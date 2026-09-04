@@ -2,8 +2,8 @@
 //!
 //! Hostd never binds a caller-selected path. It adopts one socket supplied by
 //! PID 1, validates its type and listening state, accepts close-on-exec peers,
-//! obtains credentials with `SO_PEERCRED`, receives exactly one bounded packet,
-//! rejects and closes all ancillary descriptors, and emits one bounded packet.
+//! obtains credentials with `SO_PEERCRED`, receives bounded packets and their
+//! close-on-exec ancillary descriptors, and emits bounded packets.
 
 use std::io::IoSliceMut;
 use std::mem::MaybeUninit;
@@ -16,13 +16,13 @@ use rustix::net::sockopt::{
     Timeout, set_socket_timeout, socket_acceptconn, socket_peercred, socket_type,
 };
 use rustix::net::{
-    RecvAncillaryBuffer, RecvFlags, ReturnFlags, SendFlags, SocketFlags, SocketType, accept_with,
-    recvmsg, send,
+    RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, ReturnFlags, SendFlags, SocketFlags,
+    SocketType, accept_with, recvmsg, send,
 };
 
 use crate::{HostError, Result};
 
-const MAXIMUM_UNEXPECTED_DESCRIPTORS: usize = 8;
+const MAXIMUM_PACKET_DESCRIPTORS: usize = aos_sandbox_protocol::MAXIMUM_PACKET_DESCRIPTORS;
 const CONNECTION_IO_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Owns the sole validated systemd-activated host broker listener.
@@ -90,6 +90,15 @@ pub struct HostConnection {
     peer: PeerCredentials,
 }
 
+/// Owns one packet and every close-on-exec descriptor received beside it.
+#[derive(Debug)]
+pub struct ReceivedPacket {
+    /// Bounded packet payload.
+    pub bytes: Vec<u8>,
+    /// Ancillary descriptors in their exact `SCM_RIGHTS` order.
+    pub descriptors: Vec<OwnedFd>,
+}
+
 impl HostConnection {
     /// Returns credentials read from the connected kernel socket.
     #[must_use]
@@ -97,18 +106,21 @@ impl HostConnection {
         self.peer
     }
 
-    /// Receives exactly one bounded request packet with no descriptors.
+    /// Receives exactly one bounded packet and adopts its ancillary descriptors.
     ///
     /// # Errors
     ///
-    /// Returns an error for EOF, payload/control truncation, an overlong
-    /// packet, any ancillary message, or a receive failure. Received
-    /// `SCM_RIGHTS` descriptors are owned by rustix and closed on every path.
-    pub fn receive(&self) -> Result<Vec<u8>> {
-        let mut bytes = vec![0; MAXIMUM_REQUEST_BYTES];
+    /// Returns an error for EOF, truncation, an invalid caller ceiling,
+    /// unsupported ancillary messages, too many descriptors, or receive
+    /// failure. Adopted descriptors close on every rejection path.
+    pub fn receive(&self, maximum_bytes: usize) -> Result<ReceivedPacket> {
+        if maximum_bytes == 0 || maximum_bytes > MAXIMUM_REQUEST_BYTES {
+            return Err(protocol_field("invalid receive packet ceiling"));
+        }
+        let mut bytes = vec![0; maximum_bytes];
         let mut iov = [IoSliceMut::new(&mut bytes)];
         let mut control_space =
-            [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(MAXIMUM_UNEXPECTED_DESCRIPTORS))];
+            [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(MAXIMUM_PACKET_DESCRIPTORS))];
         let mut control = RecvAncillaryBuffer::new(&mut control_space);
         let message = recvmsg(
             &self.fd,
@@ -117,22 +129,28 @@ impl HostConnection {
             RecvFlags::TRUNC | RecvFlags::CMSG_CLOEXEC,
         )
         .map_err(transport_error)?;
-        let has_ancillary = control.drain().next().is_some();
         if message.bytes == 0 {
             return Err(protocol_field("empty packet"));
         }
-        if message.bytes > MAXIMUM_REQUEST_BYTES
+        if message.bytes > maximum_bytes
             || message
                 .flags
                 .intersects(ReturnFlags::TRUNC | ReturnFlags::CTRUNC)
         {
             return Err(protocol_field("truncated packet"));
         }
-        if has_ancillary {
-            return Err(protocol_field("unexpected ancillary descriptors"));
+        let mut descriptors = Vec::new();
+        for ancillary in control.drain() {
+            match ancillary {
+                RecvAncillaryMessage::ScmRights(received) => descriptors.extend(received),
+                _ => return Err(protocol_field("unsupported ancillary message")),
+            }
+        }
+        if descriptors.len() > MAXIMUM_PACKET_DESCRIPTORS {
+            return Err(protocol_field("too many ancillary descriptors"));
         }
         bytes.truncate(message.bytes);
-        Ok(bytes)
+        Ok(ReceivedPacket { bytes, descriptors })
     }
 
     /// Sends exactly one bounded response packet.
@@ -209,7 +227,9 @@ mod tests {
         let (listener, client) = listener(&path);
         send(&client, b"request", SendFlags::empty()).unwrap();
         let connection = listener.accept().unwrap();
-        assert_eq!(connection.receive().unwrap(), b"request");
+        let packet = connection.receive(MAXIMUM_REQUEST_BYTES).unwrap();
+        assert_eq!(packet.bytes, b"request");
+        assert!(packet.descriptors.is_empty());
         assert_eq!(connection.peer().uid, rustix::process::getuid().as_raw());
         connection.send(b"response").unwrap();
         let mut response = [0; 8];
@@ -219,7 +239,7 @@ mod tests {
     }
 
     #[test]
-    fn ancillary_descriptors_are_rejected_and_closed() {
+    fn ancillary_descriptors_are_adopted_in_packet_order() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("host.sock");
         let (listener, client) = listener(&path);
@@ -230,7 +250,24 @@ mod tests {
         let iov = [std::io::IoSlice::new(b"request")];
         sendmsg(&client, &iov, &mut control, SendFlags::empty()).unwrap();
         let connection = listener.accept().unwrap();
-        assert!(connection.receive().is_err());
+        let packet = connection.receive(MAXIMUM_REQUEST_BYTES).unwrap();
+        assert_eq!(packet.bytes, b"request");
+        assert_eq!(packet.descriptors.len(), 1);
+        assert!(
+            fcntl_getfd(&packet.descriptors[0])
+                .unwrap()
+                .contains(FdFlags::CLOEXEC)
+        );
+    }
+
+    #[test]
+    fn caller_ceiling_rejects_truncated_packets() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("host.sock");
+        let (listener, client) = listener(&path);
+        send(&client, b"too long", SendFlags::empty()).unwrap();
+        let connection = listener.accept().unwrap();
+        assert!(connection.receive(3).is_err());
     }
 
     #[test]
