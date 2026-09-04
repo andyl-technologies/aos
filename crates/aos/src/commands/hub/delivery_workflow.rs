@@ -11,6 +11,11 @@ use crate::cli::{HubDeliveryActivationCmd, HubDeliveryCmd, HubReviewedApplyArgs}
 
 use super::{confirm_destructive, hub_client, surface_message, topology_read};
 
+enum ReviewedStage {
+    Setup,
+    Activation,
+}
+
 /// Executes one delivery workflow command.
 ///
 /// # Errors
@@ -35,7 +40,7 @@ pub(super) async fn run(printer: &Printer, command: &HubDeliveryCmd) -> Result<(
             )
             .await
         }
-        HubDeliveryCmd::Apply(apply) => apply_reviewed(printer, apply, false).await,
+        HubDeliveryCmd::Apply(apply) => apply_reviewed(printer, apply, ReviewedStage::Setup).await,
         HubDeliveryCmd::Show { access, workflow } => {
             let client = hub_client(&access.hub, access.token.as_deref())?;
             topology_read(
@@ -103,7 +108,9 @@ pub(super) async fn run(printer: &Printer, command: &HubDeliveryCmd) -> Result<(
                 )
                 .await
             }
-            HubDeliveryActivationCmd::Apply(apply) => apply_reviewed(printer, apply, true).await,
+            HubDeliveryActivationCmd::Apply(apply) => {
+                apply_reviewed(printer, apply, ReviewedStage::Activation).await
+            }
         },
     }
 }
@@ -111,7 +118,7 @@ pub(super) async fn run(printer: &Printer, command: &HubDeliveryCmd) -> Result<(
 async fn apply_reviewed(
     printer: &Printer,
     apply: &HubReviewedApplyArgs,
-    activate: bool,
+    stage: ReviewedStage,
 ) -> Result<()> {
     if !confirm_destructive(apply.yes, "reviewed delivery plan application")? {
         printer.info("Cancelled.");
@@ -123,22 +130,25 @@ async fn apply_reviewed(
         confirmation_hash: apply.confirm_hash.clone(),
         idempotency_key: apply.idempotency_key.clone(),
     };
-    if activate {
-        topology_read(
-            printer,
-            &client,
-            hub_rpc::ActivateDeliveryDestination,
-            &request,
-        )
-        .await
-    } else {
-        topology_read(
-            printer,
-            &client,
-            hub_rpc::ApplyDeliveryDestination,
-            &request,
-        )
-        .await
+    match stage {
+        ReviewedStage::Activation => {
+            topology_read(
+                printer,
+                &client,
+                hub_rpc::ActivateDeliveryDestination,
+                &request,
+            )
+            .await
+        }
+        ReviewedStage::Setup => {
+            topology_read(
+                printer,
+                &client,
+                hub_rpc::ApplyDeliveryDestination,
+                &request,
+            )
+            .await
+        }
     }
 }
 
