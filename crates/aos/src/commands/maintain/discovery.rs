@@ -1,6 +1,7 @@
 //! Foreground upstream adapters and repository-bound discovery snapshots.
 
 use std::collections::BTreeMap;
+use std::env;
 
 use anyhow::{Context as _, Result, bail};
 use aos_contract::{Sha256Digest, canonical};
@@ -24,6 +25,7 @@ const MAX_GITHUB_PAGES: u32 = 10;
 const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const USER_AGENT_VALUE: &str =
     "aos-maintain/0.1 (+https://github.com/andyl-technologies/aos/issues)";
+const DEFAULT_GITHUB_API_URL: &str = "https://api.github.com";
 
 /// Returns a completed snapshot plus non-fatal advisory diagnostics.
 pub(super) struct ScanOutcome {
@@ -185,6 +187,7 @@ async fn github_tags(
     token: Option<&str>,
 ) -> Result<UpstreamObservationV1> {
     validate_github_repository(repository)?;
+    let api_base = github_api_base_url()?;
     let mut candidates = Vec::new();
     let mut response_bytes = Vec::new();
     let mut coverage = ObservationCoverage::Truncated {
@@ -193,8 +196,10 @@ async fn github_tags(
     let mut first_url = None;
 
     for page in 1..=MAX_GITHUB_PAGES {
-        let url =
-            format!("https://api.github.com/repos/{repository}/tags?per_page=100&page={page}");
+        let url = api_base
+            .join(&format!("repos/{repository}/tags?per_page=100&page={page}"))
+            .context("constructing GitHub tags URL")?
+            .to_string();
         if first_url.is_none() {
             first_url = Some(url.clone());
         }
@@ -279,6 +284,30 @@ async fn github_tags(
     };
     observation.validate()?;
     Ok(observation)
+}
+
+fn github_api_base_url() -> Result<Url> {
+    let configured =
+        env::var("GITHUB_API_URL").unwrap_or_else(|_| DEFAULT_GITHUB_API_URL.to_string());
+    parse_github_api_base_url(&configured)
+}
+
+fn parse_github_api_base_url(configured: &str) -> Result<Url> {
+    let mut url = Url::parse(configured).context("parsing GITHUB_API_URL")?;
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        bail!("GITHUB_API_URL must be an uncredentialed HTTPS base URL");
+    }
+    if !url.path().ends_with('/') {
+        let path = format!("{}/", url.path());
+        url.set_path(&path);
+    }
+    Ok(url)
 }
 
 fn normalized_github_tag<'a>(tag: &'a str, prefix: &str) -> Option<&'a str> {
@@ -492,5 +521,19 @@ mod tests {
         assert_eq!(normalized_github_tag("release-2.3.4", "v"), None);
         assert_eq!(normalized_github_tag("v", "v"), None);
         assert_eq!(normalized_github_tag("2.3.4", ""), Some("2.3.4"));
+    }
+
+    #[test]
+    fn github_api_base_is_https_and_preserves_enterprise_paths() -> Result<()> {
+        assert_eq!(
+            parse_github_api_base_url("https://github.example/api/v3")?
+                .join("repos/owner/project/tags")?
+                .as_str(),
+            "https://github.example/api/v3/repos/owner/project/tags"
+        );
+        assert!(parse_github_api_base_url("http://github.example/api/v3").is_err());
+        assert!(parse_github_api_base_url("https://token@github.example/api/v3").is_err());
+        assert!(parse_github_api_base_url("https://github.example/api/v3?token=x").is_err());
+        Ok(())
     }
 }
