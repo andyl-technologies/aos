@@ -870,6 +870,28 @@ completes. The Git history remains authoritative for code details.
   Publisher enable/fsync/no-replace/catalog transactions, successful VM
   fs-verity exercise, mapped-byte reservation pins, worker composition,
   quarantine recovery, and FUSE lifecycle remain open.
+- `5e1e33c6d` — further foundation toward `SBX-FS-02`: a V2-only
+  connection-scoped inode table now pins root at node 1, assigns monotonic
+  never-reused node IDs after positive lookup, retains no state for negative
+  lookup, coalesces only validated hard-link groups, and keeps identical
+  ungrouped records distinct. Two explicit fixed-slot maps preserve the live
+  node/semantic bijection using a producer-unpredictable per-connection keyed
+  hash plus exact semantic comparison. Live load is bounded at one half and
+  occupied-plus-tombstone load at three quarters, preventing chosen clustering
+  and per-operation churn rebuilds. Growth and compaction pre-admit old plus
+  replacement storage, incorporate the allocator-returned first capacity
+  before the second allocation, and commit only after both actual capacities
+  fit. Aggregate lookup references have their own ceiling. Bounded batch
+  `FORGET` sorts and coalesces caller scratch without allocation, preflights
+  every reverse-map removal and counter, then applies atomically with no
+  fallible mutation branch; stale, zero, over-forget, duplicate-overflow, and
+  mixed-invalid batches leave inode state unchanged. Public node views remain
+  tied to a validation-proof borrow while the private retained lifetime is
+  available only to the table that owns that proof. The slice passes 41 unit
+  tests, one compile-fail doctest, strict crate-local all-target Clippy,
+  warning-denied rustdoc, formatting, and independent adversarial review. Open
+  handles, kernel FUSE framing/conformance, mapped-byte reservations, and
+  worker lifecycle remain open, so `SBX-FS-02` remains unchecked.
 
 The post-`727da7f3e` x86_64 `sandbox-filesystem-capability-proof` rerun built the
 complete hermetic Rust closure, AOS system, initrd, and VM disk and launched
