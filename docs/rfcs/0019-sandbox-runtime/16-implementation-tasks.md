@@ -981,6 +981,24 @@ completes. The Git history remains authoritative for code details.
   a real `/dev/fuse`, count internal `close(2)` calls, issue backing ioctls, or
   prove kernel passthrough I/O; those broker and VM gates remain open, so
   `SBX-P0-11` and `SBX-FS-03` remain unchecked.
+- `63dd51aec` — further foundation toward `SBX-FS-02`: authenticated V1,
+  V2, and V3 records now expose allocation-free borrowed directory, symlink,
+  whole-file, sparse-file, extent, xattr, ACL, hard-link, descriptor, and
+  logical-size semantics without materializing the owned portable model or
+  changing any wire byte. Returned lifetimes remain bound to the non-cloneable
+  validation proof. V1 root offsets, V2 point-lookup slots, and V3 canonical
+  directory slots independently authenticate node identity before every fixed
+  field and the exact record bytes are compared and reparsed. Forged artifact,
+  ID, offset, parent, depth, ordinal, kind, mode, identity, timestamp, name,
+  and record-body handles fail across all formats. Counts, lengths, slices,
+  ACLs, sparse arithmetic, descriptor roles, and trailing bytes fail closed.
+  A single-threaded harness-free allocator instrument proves public semantic
+  authentication, parsing, and iteration perform zero allocation. The slice
+  passes 66 unit tests, the allocator binary, two compile-fail lifetime tests,
+  strict Clippy, warning-denied rustdoc, scoped formatting, and two independent
+  adversarial reviews. FUSE cookie translation, borrowed presentation mapping,
+  inode-to-record access, connection dispatch, and kernel realization remain
+  open, so `SBX-FS-02` remains unchecked.
 
 The post-`727da7f3e` x86_64 `sandbox-filesystem-capability-proof` rerun built the
 complete hermetic Rust closure, AOS system, initrd, and VM disk and launched
