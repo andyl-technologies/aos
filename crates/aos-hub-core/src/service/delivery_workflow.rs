@@ -46,6 +46,7 @@ struct IntentSeal {
     binding_stable_id: String,
     binding_resource_version: i64,
     origin_prefix: String,
+    route_base_path: String,
     canonical_url: String,
     prerequisites: Vec<PrerequisiteSeal>,
 }
@@ -204,6 +205,9 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("storage binding"))?;
+        let route_base_path =
+            crate::db::join_route_segments(&intent.client_base_path, &placement.prefix)
+                .map_err(|error| RpcError::invalid(format!("delivery path: {error:#}")))?;
         self.require_workflow_grant(
             GrantResource::Binding {
                 id: binding.id,
@@ -241,8 +245,7 @@ impl RpcService {
                         "CDN endpoint must use external or layer7 ingress",
                     ));
                 }
-                self.rendered_route_url(&endpoint, &intent.client_base_path)
-                    .await?
+                self.rendered_route_url(&endpoint, &route_base_path).await?
             }
             Some(pb::delivery_destination_intent::Endpoint::NewEndpoint(input)) => {
                 self.require_delivery_scope(auth, &scope, Permission::EndpointManage)
@@ -307,7 +310,7 @@ impl RpcService {
                     }
                     None => return Err(RpcError::invalid("hostname or domainId is required")),
                 };
-                format!("https://{hostname}{}", intent.client_base_path)
+                format!("https://{hostname}{route_base_path}")
             }
             None => {
                 return Err(RpcError::invalid(
@@ -327,7 +330,12 @@ impl RpcService {
             binding_id: binding.id,
             binding_stable_id: binding.stable_id,
             binding_resource_version: binding.resource_version,
-            origin_prefix: format!("/{}", placement.prefix.trim_matches('/')),
+            origin_prefix: crate::db::join_route_segments(
+                "",
+                binding.object_prefix.as_deref().unwrap_or_default(),
+            )
+            .map_err(|error| RpcError::invalid(format!("storage origin prefix: {error:#}")))?,
+            route_base_path,
             canonical_url,
             prerequisites,
         };
