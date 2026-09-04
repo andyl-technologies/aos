@@ -49,6 +49,8 @@ impl RpcService {
         ) {
             self.require_delivery_scope(auth, &record.owner_scope_key, Permission::EndpointManage)
                 .await?;
+            self.require_delivery_scope(auth, &record.owner_scope_key, Permission::DomainManage)
+                .await?;
         }
         self.require_workflow_grant(
             GrantResource::Binding {
@@ -374,7 +376,9 @@ impl RpcService {
                 seal.intent.endpoint,
                 Some(pb::delivery_destination_intent::Endpoint::NewEndpoint(_))
             )
-            && !self.delivery_probe_in_flight(progress, "endpoint").await?
+            && !self
+                .delivery_probe_in_flight(progress, "endpoint", "domain_probe")
+                .await?
         {
             let revision = self
                 .db
@@ -382,23 +386,62 @@ impl RpcService {
                 .await
                 .map_err(RpcError::internal)?
                 .ok_or_else(|| RpcError::not_found("endpoint generation"))?;
-            let operation_id = digest(&("delivery-endpoint", &seal.workflow_id, request_key))?;
-            self.topology_probes
-                .schedule(
-                    &operation_id,
-                    crate::topology_probe::TopologyProbe::Endpoint {
-                        stable_id: progress.endpoint_id.clone(),
-                        generation: progress.endpoint_generation,
-                        configuration_digest: revision.content_digest,
-                    },
-                )
+            let observation = self
+                .db
+                .endpoint_observation(&progress.endpoint_id)
                 .await
                 .map_err(RpcError::internal)?;
-            progress.operations.insert("endpoint".into(), operation_id);
+            let verified = observation.is_some_and(|observation| {
+                observation.observed_generation == Some(progress.endpoint_generation)
+                    && observation.boundary_revision == Some(revision.boundary_revision)
+                    && observation.state == "healthy"
+                    && observation.listener_observed
+                    && observation.tls_observed
+            });
+            if !verified {
+                let domain = self
+                    .db
+                    .delivery_domain(&progress.domain_id)
+                    .await
+                    .map_err(RpcError::internal)?
+                    .ok_or_else(|| RpcError::not_found("workflow domain"))?;
+                let (endpoint_id, generation, _) = self
+                    .db
+                    .domain_probe_signing_identity(domain.id)
+                    .await
+                    .map_err(|error| RpcError::FailedPrecondition(error.to_string()))?;
+                if endpoint_id != progress.endpoint_id || generation != progress.endpoint_generation
+                {
+                    return Err(RpcError::FailedPrecondition(
+                        "Domain terminator changed; create a new destination plan.".into(),
+                    ));
+                }
+                // The shared controller consumes domain probes and promotes the
+                // exact endpoint only after nonce-bound signed HTTPS evidence.
+                // Endpoint probes have no runtime consumer. Pin the current
+                // domain version, retaining the immutable workflow endpoint.
+                let operation_id = digest(&(
+                    "delivery-domain",
+                    &seal.workflow_id,
+                    request_key,
+                    domain.resource_version,
+                ))?;
+                self.topology_probes
+                    .schedule(
+                        &operation_id,
+                        crate::topology_probe::TopologyProbe::Domain {
+                            stable_id: domain.stable_id,
+                            resource_version: domain.resource_version,
+                        },
+                    )
+                    .await
+                    .map_err(RpcError::internal)?;
+                progress.operations.insert("endpoint".into(), operation_id);
+            }
         }
         if progress.completed.contains("route")
             && !self
-                .delivery_probe_in_flight(progress, "verification")
+                .delivery_probe_in_flight(progress, "verification", "route_probe")
                 .await?
         {
             let route = self.workflow_activation_route(progress).await?;
@@ -433,6 +476,7 @@ impl RpcService {
         &self,
         progress: &Progress,
         step: &str,
+        operation_kind: &str,
     ) -> Result<bool, RpcError> {
         let Some(id) = progress.operations.get(step) else {
             return Ok(false);
@@ -442,6 +486,9 @@ impl RpcService {
             .topology_operation(id)
             .await
             .map_err(RpcError::internal)?
-            .is_some_and(|operation| matches!(operation.state.as_str(), "pending" | "running")))
+            .is_some_and(|operation| {
+                operation.operation_kind == operation_kind
+                    && matches!(operation.state.as_str(), "pending" | "running")
+            }))
     }
 }
