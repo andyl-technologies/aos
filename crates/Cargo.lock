@@ -619,9 +619,27 @@ name = "aos-sandbox"
 version = "0.1.0"
 dependencies = [
  "aos-sandbox-core",
+ "ed25519-dalek",
  "rustix 1.1.4",
  "sha2 0.10.9",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "aos-sandbox-broker"
+version = "0.1.0"
+dependencies = [
+ "aos-sandbox",
+ "aos-sandbox-core",
+ "aos-sandbox-protocol",
+ "ed25519-dalek",
+ "hex",
+ "hmac 0.12.1",
+ "rustix 1.1.4",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+ "zeroize",
 ]
 
 [[package]]
@@ -673,13 +691,13 @@ version = "0.1.0"
 dependencies = [
  "aos-proto",
  "aos-sandbox",
+ "aos-sandbox-broker",
  "aos-sandbox-core",
  "aos-sandbox-linux",
  "aos-sandbox-protocol",
  "buffa",
  "ed25519-dalek",
  "hex",
- "hmac 0.12.1",
  "libc",
  "rustix 1.1.4",
  "serde",
@@ -687,7 +705,6 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
- "zeroize",
 ]
 
 [[package]]

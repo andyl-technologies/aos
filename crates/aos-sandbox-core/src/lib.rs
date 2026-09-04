@@ -33,7 +33,10 @@ pub use capability::{
     CapabilityDraft, CapabilityRecord, CapabilityValidationError, ChannelBinding, DelegationLimits,
     Grant, InvalidGrant,
 };
-pub use crypto::{SignatureVerificationError, VerifiedSignature, sign_statement, verify_signature};
+pub use crypto::{
+    SignatureVerificationError, VerifiedSignature, sign_statement, signature_signing_message,
+    verify_signature,
+};
 pub use format::{CanonicalCborError, DecodeLimits, descriptor_for_bytes, validate_canonical_cbor};
 pub use identity::{
     AttachmentId, AttachmentSlotId, AuditId, CacheDomainId, CapabilityId, ExecutionId, ExportId,

@@ -207,9 +207,11 @@ impl<W: MountWorker> MountBroker<W> {
         )?;
         let authority = &self.authority;
         let mut before_effect = || {
-            let clock = trusted_clock()?;
             authority
-                .validate_effect_clock(&effect, &clock)
+                .check_before_effect(&effect, &mut || {
+                    trusted_clock()
+                        .map_err(|_| crate::authorization::MountAdmissionError::FenceRejected)
+                })
                 .map_err(|_| MountError::Fence("mount authority expired before the effect"))?;
             Ok(EffectDeadlineV1 {
                 clock_provenance: *effect.clock_provenance(),

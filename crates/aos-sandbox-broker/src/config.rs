@@ -1,4 +1,4 @@
-//! Protected node-local mount-authority configuration.
+//! Protected node-local broker-authority configuration.
 //!
 //! The loader opens a real root-owned directory without following a final
 //! symlink, then opens every fixed-name child relative to that descriptor. Each
@@ -37,7 +37,7 @@ use rustix::fs::{FileType, Mode, OFlags, fstat, open, openat};
 use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
-use super::MountAuthorityV1;
+use crate::{BrokerAuthority, BrokerDomain};
 
 const MAXIMUM_POLICY_BYTES: usize = 64 * 1024;
 const PLAN_POLICY_FILE: &str = "broker-plan-policy.cbor";
@@ -48,11 +48,11 @@ const LEASE_PUBLIC_KEY_FILE: &str = "ownership-lease-public-key";
 const NODE_ID_FILE: &str = "node-id";
 const JOURNAL_MAC_KEY_FILE: &str = "journal-mac-key";
 
-/// Reports rejection of protected mount-authority configuration.
+/// Reports rejection of protected broker-authority configuration.
 #[derive(Debug, thiserror::Error)]
-pub enum MountAuthorityConfigError {
+pub enum BrokerAuthorityConfigError {
     /// A protected filesystem operation failed.
-    #[error("cannot read protected mount-authority {object}: {source}")]
+    #[error("cannot read protected broker-authority {object}: {source}")]
     Filesystem {
         /// Stable public name for the object being read.
         object: &'static str,
@@ -60,11 +60,11 @@ pub enum MountAuthorityConfigError {
         source: std::io::Error,
     },
     /// A protected object violates its fixed schema or security invariants.
-    #[error("protected mount-authority {0} is invalid")]
+    #[error("protected broker-authority {0} is invalid")]
     Invalid(&'static str),
 }
 
-impl MountAuthorityV1 {
+impl BrokerAuthority {
     /// Loads authority exclusively from a protected root-owned directory.
     ///
     /// The method never accepts key material, policy bytes, node identity, or
@@ -74,12 +74,13 @@ impl MountAuthorityV1 {
     ///
     /// # Errors
     ///
-    /// Returns [`MountAuthorityConfigError`] when the directory or any fixed
+    /// Returns [`BrokerAuthorityConfigError`] when the directory or any fixed
     /// child is absent, is not a protected real object, exceeds its exact byte
     /// bound, or does not construct internally consistent trust anchors.
     pub fn from_protected_directory(
         path: impl AsRef<Path>,
-    ) -> Result<Self, MountAuthorityConfigError> {
+        domain: BrokerDomain,
+    ) -> Result<Self, BrokerAuthorityConfigError> {
         let directory = open(
             path.as_ref(),
             OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
@@ -109,11 +110,11 @@ impl MountAuthorityV1 {
             KeyUsage::OwnershipLease,
         )?;
         let plan_policy_model = decode_trust_policy(&plan_policy, policy_limits())
-            .map_err(|_| MountAuthorityConfigError::Invalid(PLAN_POLICY_FILE))?;
+            .map_err(|_| BrokerAuthorityConfigError::Invalid(PLAN_POLICY_FILE))?;
         let lease_policy_model = decode_trust_policy(&lease_policy, policy_limits())
-            .map_err(|_| MountAuthorityConfigError::Invalid(LEASE_POLICY_FILE))?;
+            .map_err(|_| BrokerAuthorityConfigError::Invalid(LEASE_POLICY_FILE))?;
         let policy_media_type = MediaType::new(PortableMediaType::TrustPolicy.as_str().to_owned())
-            .map_err(|_| MountAuthorityConfigError::Invalid("trust-policy media type"))?;
+            .map_err(|_| BrokerAuthorityConfigError::Invalid("trust-policy media type"))?;
         let plan_descriptor = descriptor_for_bytes(policy_media_type.clone(), &plan_policy);
         let lease_descriptor = descriptor_for_bytes(policy_media_type, &lease_policy);
 
@@ -126,7 +127,7 @@ impl MountAuthorityV1 {
             RevocationScopeId::from_bytes(revocation_scope),
             policy_limits(),
         )
-        .map_err(|_| MountAuthorityConfigError::Invalid("broker plan trust anchor"))?;
+        .map_err(|_| BrokerAuthorityConfigError::Invalid("broker plan trust anchor"))?;
         let lease_anchor = OwnershipLeaseTrustAnchor::from_trusted_configuration(
             lease_policy,
             lease_descriptor,
@@ -135,30 +136,31 @@ impl MountAuthorityV1 {
             lease_public_key,
             policy_limits(),
         )
-        .map_err(|_| MountAuthorityConfigError::Invalid("ownership lease trust anchor"))?;
+        .map_err(|_| BrokerAuthorityConfigError::Invalid("ownership lease trust anchor"))?;
         let (journal_key_id, journal_secret) = journal_key.split_at(16);
         Self::new(
+            domain,
             plan_anchor,
             lease_anchor,
             NodeId::from_bytes(node),
             journal_key_id
                 .try_into()
-                .map_err(|_| MountAuthorityConfigError::Invalid(JOURNAL_MAC_KEY_FILE))?,
+                .map_err(|_| BrokerAuthorityConfigError::Invalid(JOURNAL_MAC_KEY_FILE))?,
             journal_secret
                 .try_into()
-                .map_err(|_| MountAuthorityConfigError::Invalid(JOURNAL_MAC_KEY_FILE))?,
+                .map_err(|_| BrokerAuthorityConfigError::Invalid(JOURNAL_MAC_KEY_FILE))?,
         )
-        .map_err(|_| MountAuthorityConfigError::Invalid("mount authority"))
+        .map_err(|_| BrokerAuthorityConfigError::Invalid("broker authority"))
     }
 }
 
-fn validate_directory(directory: &OwnedFd) -> Result<(), MountAuthorityConfigError> {
+fn validate_directory(directory: &OwnedFd) -> Result<(), BrokerAuthorityConfigError> {
     let metadata = fstat(directory).map_err(|source| filesystem("directory", source))?;
     if FileType::from_raw_mode(metadata.st_mode) != FileType::Directory
         || metadata.st_uid != 0
         || !protected_directory_permissions(metadata.st_mode)
     {
-        return Err(MountAuthorityConfigError::Invalid("directory"));
+        return Err(BrokerAuthorityConfigError::Invalid("directory"));
     }
     Ok(())
 }
@@ -166,19 +168,19 @@ fn validate_directory(directory: &OwnedFd) -> Result<(), MountAuthorityConfigErr
 fn read_exact<const N: usize>(
     directory: &OwnedFd,
     name: &'static str,
-) -> Result<[u8; N], MountAuthorityConfigError> {
+) -> Result<[u8; N], BrokerAuthorityConfigError> {
     let bytes = Zeroizing::new(read_protected(directory, name, N)?);
     bytes
         .as_slice()
         .try_into()
-        .map_err(|_| MountAuthorityConfigError::Invalid(name))
+        .map_err(|_| BrokerAuthorityConfigError::Invalid(name))
 }
 
 fn read_protected(
     directory: &OwnedFd,
     name: &'static str,
     maximum_bytes: usize,
-) -> Result<Vec<u8>, MountAuthorityConfigError> {
+) -> Result<Vec<u8>, BrokerAuthorityConfigError> {
     let fd = openat(
         directory,
         name,
@@ -192,24 +194,24 @@ fn read_protected(
         || metadata.st_nlink != 1
         || !protected_file_permissions(metadata.st_mode)
     {
-        return Err(MountAuthorityConfigError::Invalid(name));
+        return Err(BrokerAuthorityConfigError::Invalid(name));
     }
     let declared_size =
-        usize::try_from(metadata.st_size).map_err(|_| MountAuthorityConfigError::Invalid(name))?;
+        usize::try_from(metadata.st_size).map_err(|_| BrokerAuthorityConfigError::Invalid(name))?;
     if declared_size == 0 || declared_size > maximum_bytes {
-        return Err(MountAuthorityConfigError::Invalid(name));
+        return Err(BrokerAuthorityConfigError::Invalid(name));
     }
 
     let mut bytes = Vec::with_capacity(declared_size);
     std::fs::File::from(fd)
         .take((maximum_bytes + 1) as u64)
         .read_to_end(&mut bytes)
-        .map_err(|source| MountAuthorityConfigError::Filesystem {
+        .map_err(|source| BrokerAuthorityConfigError::Filesystem {
             object: name,
             source,
         })?;
     if bytes.len() != declared_size || bytes.len() > maximum_bytes {
-        return Err(MountAuthorityConfigError::Invalid(name));
+        return Err(BrokerAuthorityConfigError::Invalid(name));
     }
     Ok(bytes)
 }
@@ -219,11 +221,11 @@ fn select_policy_key(
     public_key: &[u8; 32],
     purpose: SignaturePurpose,
     usage: KeyUsage,
-) -> Result<KeyReference, MountAuthorityConfigError> {
+) -> Result<KeyReference, BrokerAuthorityConfigError> {
     let policy = decode_trust_policy(policy_bytes, policy_limits())
-        .map_err(|_| MountAuthorityConfigError::Invalid("trust policy"))?;
+        .map_err(|_| BrokerAuthorityConfigError::Invalid("trust policy"))?;
     if policy.purpose() != purpose {
-        return Err(MountAuthorityConfigError::Invalid("trust policy purpose"));
+        return Err(BrokerAuthorityConfigError::Invalid("trust policy purpose"));
     }
     let fingerprint = ObjectDigest::from_bytes(Sha256::digest(public_key).into());
     let mut matches = policy
@@ -233,9 +235,9 @@ fn select_policy_key(
     let selected = matches
         .next()
         .cloned()
-        .ok_or(MountAuthorityConfigError::Invalid("configured public key"))?;
+        .ok_or(BrokerAuthorityConfigError::Invalid("configured public key"))?;
     if matches.next().is_some() {
-        return Err(MountAuthorityConfigError::Invalid(
+        return Err(BrokerAuthorityConfigError::Invalid(
             "ambiguous configured public key",
         ));
     }
@@ -261,8 +263,8 @@ const fn policy_limits() -> DecodeLimits {
     }
 }
 
-fn filesystem(object: &'static str, source: rustix::io::Errno) -> MountAuthorityConfigError {
-    MountAuthorityConfigError::Filesystem {
+fn filesystem(object: &'static str, source: rustix::io::Errno) -> BrokerAuthorityConfigError {
+    BrokerAuthorityConfigError::Filesystem {
         object,
         source: std::io::Error::from_raw_os_error(source.raw_os_error()),
     }

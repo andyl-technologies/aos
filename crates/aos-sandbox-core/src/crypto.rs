@@ -98,7 +98,7 @@ pub fn sign_statement(
     let public_key = signing_key.verifying_key().to_bytes();
     validate_public_key_fingerprint(&statement, &public_key)?;
 
-    let message = signature_message(&statement);
+    let message = signature_signing_message(&statement);
     let signature = signing_key.sign(&message);
     Ok(Signature::new(
         statement,
@@ -160,7 +160,7 @@ pub fn verify_signature(
         .map_err(|_| SignatureVerificationError::InvalidPublicKey)?;
     let dalek_signature = ed25519_dalek::Signature::from_bytes(signature.signature().as_bytes());
     verifying_key
-        .verify_strict(&signature_message(statement), &dalek_signature)
+        .verify_strict(&signature_signing_message(statement), &dalek_signature)
         .map_err(|_| SignatureVerificationError::InvalidSignature)?;
 
     Ok(VerifiedSignature {
@@ -192,7 +192,14 @@ fn validate_public_key_fingerprint(
     }
 }
 
-fn signature_message(statement: &SignatureStatement) -> Vec<u8> {
+/// Encodes the exact domain-separated message signed for one statement.
+///
+/// Protected signing services use this function to consume a prepared public
+/// [`SignatureStatement`] without importing a private key into its producer.
+/// The returned bytes, rather than the canonical statement alone, are the
+/// Ed25519 message used by [`sign_statement`] and [`verify_signature`].
+#[must_use]
+pub fn signature_signing_message(statement: &SignatureStatement) -> Vec<u8> {
     let statement_bytes = encode_signature_statement(statement);
     let mut message = Vec::with_capacity(SIGNATURE_DOMAIN.len() + statement_bytes.len());
     message.extend_from_slice(SIGNATURE_DOMAIN);
@@ -317,7 +324,9 @@ mod tests {
             .unwrap_or_else(|error| panic!("test signing failed: {error}"));
 
         assert_eq!(
-            hex::encode(Sha256::digest(signature_message(signature.statement()))),
+            hex::encode(Sha256::digest(signature_signing_message(
+                signature.statement(),
+            ))),
             "5e5ec9e08a6b30742772fad729cc3bdbdaa0cd4a90c83f5e8019f04f337450a3"
         );
         assert_eq!(

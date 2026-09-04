@@ -5,9 +5,14 @@
 //! reconciler is allowed to issue effects. Linux syscalls and privileged
 //! broker implementations deliberately live outside this crate.
 
+pub mod authority;
 pub mod journal;
 pub mod reconciler;
 
+pub use authority::{
+    AuthorizationArtifactQuartet, AuthorizationArtifacts, AuthorizationPreparation,
+    AuthorizationPreparationError, PreparedSigningRequest, ReturnedSignature, SigningAuthority,
+};
 pub use journal::{
     CommitResult, IdempotencyKey, IdempotencyOutcome, Journal, JournalError, JournalLimits,
     JournalRecord, JournalTransaction, RecordNamespace, RecoveryReport,
