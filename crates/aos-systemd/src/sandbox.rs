@@ -29,6 +29,50 @@ const MAX_DEVICES: usize = 64;
 const MIN_CPU_WEIGHT: u64 = 1;
 const MAX_CPU_WEIGHT: u64 = 10_000;
 const USEC_PER_SECOND: u64 = 1_000_000;
+// This is the phase-0 candidate ceiling for the outer nspawn supervisor, not
+// the payload capability set. The VM probe must pin it against the packaged
+// nspawn build before the backend is enabled on a node.
+const NSPAWN_SUPERVISOR_CAPABILITIES: u64 = 1
+    | (1 << 1)
+    | (1 << 3)
+    | (1 << 4)
+    | (1 << 5)
+    | (1 << 6)
+    | (1 << 7)
+    | (1 << 8)
+    | (1 << 10)
+    | (1 << 12)
+    | (1 << 18)
+    | (1 << 21)
+    | (1 << 27)
+    | (1 << 29)
+    | (1 << 31);
+const NSPAWN_ADDRESS_FAMILIES: &[&str] = &["AF_UNIX", "AF_NETLINK", "AF_INET", "AF_INET6"];
+const NSPAWN_ALLOWED_SYSCALLS: &[&str] = &[
+    "@system-service",
+    "chroot",
+    "clone",
+    "clone3",
+    "fsconfig",
+    "fsmount",
+    "fsopen",
+    "mount",
+    "mount_setattr",
+    "move_mount",
+    "open_tree",
+    "pivot_root",
+    "setdomainname",
+    "sethostname",
+    "setns",
+    "umount2",
+    "unshare",
+];
+const NSPAWN_ENVIRONMENT: &[&str] = &["LANG=C.UTF-8", "PATH=", "SYSTEMD_LOG_TARGET=journal"];
+const NSPAWN_SUPERVISOR_SELINUX_CONTEXT: &str = "system_u:system_r:aos_nspawn_t:s0";
+const PAYLOAD_SELINUX_CONTEXT: &str = "system_u:system_r:aos_sandbox_payload_t:s0";
+const PAYLOAD_DROPPED_CAPABILITIES: &str = "CAP_AUDIT_CONTROL,CAP_AUDIT_READ,CAP_AUDIT_WRITE,CAP_BLOCK_SUSPEND,CAP_BPF,CAP_CHECKPOINT_RESTORE,CAP_DAC_READ_SEARCH,CAP_IPC_LOCK,CAP_IPC_OWNER,CAP_LEASE,CAP_LINUX_IMMUTABLE,CAP_MAC_ADMIN,CAP_MAC_OVERRIDE,CAP_MKNOD,CAP_NET_ADMIN,CAP_NET_BROADCAST,CAP_NET_RAW,CAP_PERFMON,CAP_SYSLOG,CAP_SYS_ADMIN,CAP_SYS_BOOT,CAP_SYS_CHROOT,CAP_SYS_MODULE,CAP_SYS_NICE,CAP_SYS_PACCT,CAP_SYS_PTRACE,CAP_SYS_RAWIO,CAP_SYS_RESOURCE,CAP_SYS_TIME,CAP_SYS_TTY_CONFIG,CAP_WAKE_ALARM";
+const PAYLOAD_SYSTEM_CALL_FILTER: &str =
+    "~@mount @module @raw-io @reboot bpf perf_event_open ptrace setns unshare";
 
 /// A node-local systemd service name derived from one sandbox incarnation.
 ///
@@ -128,6 +172,7 @@ pub struct SandboxResources {
     cpu_weight: CpuWeight,
     cpu_quota_per_second: Option<Duration>,
     io_weight: Option<u64>,
+    open_files: Option<u64>,
 }
 
 impl SandboxResources {
@@ -156,6 +201,7 @@ impl SandboxResources {
             cpu_weight: CpuWeight::new(cpu_weight)?,
             cpu_quota_per_second: None,
             io_weight: None,
+            open_files: None,
         })
     }
 
@@ -187,6 +233,19 @@ impl SandboxResources {
         self.io_weight = Some(weight);
         Ok(self)
     }
+
+    /// Adds a finite open-file descriptor ceiling.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidSandboxUnit`] when `limit` is zero.
+    pub fn with_open_file_limit(mut self, limit: u64) -> Result<Self> {
+        if limit == 0 {
+            return Err(invalid("open-file limit must be non-zero"));
+        }
+        self.open_files = Some(limit);
+        Ok(self)
+    }
 }
 
 /// A device class that the outer nspawn supervisor may access.
@@ -204,6 +263,115 @@ pub enum SandboxDevice {
     Fuse,
 }
 
+/// Carries the two host paths resolved atomically for one launch assignment.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SandboxResolvedPaths {
+    root_directory: String,
+    network_namespace_path: String,
+}
+
+/// Carries the sole nspawn command profile accepted by the typed transport.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SandboxNspawnCommand {
+    executable: String,
+    incarnation: [u8; 16],
+    uid_range_start: u32,
+    uid_range_size: u32,
+}
+
+impl SandboxNspawnCommand {
+    /// Constructs the fixed private-user nspawn command profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the executable is an absolute store path ending
+    /// in `/bin/systemd-nspawn`, the incarnation is nonzero, and the identity
+    /// allocation excludes host identity zero and contains at least 65,536 IDs.
+    pub fn private_user_v1(
+        executable: impl Into<String>,
+        incarnation: [u8; 16],
+        uid_range_start: u32,
+        uid_range_size: u32,
+    ) -> Result<Self> {
+        let executable = executable.into();
+        validate_absolute_path(&executable, "nspawn executable")?;
+        if !executable.starts_with("/nix/store/") || !executable.ends_with("/bin/systemd-nspawn") {
+            return Err(invalid("nspawn executable is not an AOS store binary"));
+        }
+        if incarnation == [0; 16]
+            || uid_range_start == 0
+            || uid_range_size < 65_536
+            || uid_range_start.checked_add(uid_range_size).is_none()
+        {
+            return Err(invalid("nspawn identity or private user range is invalid"));
+        }
+        Ok(Self {
+            executable,
+            incarnation,
+            uid_range_start,
+            uid_range_size,
+        })
+    }
+
+    fn arguments(&self, root: &str) -> Vec<String> {
+        let machine = encode_hex(self.incarnation);
+        vec![
+            "--boot".to_owned(),
+            "--quiet".to_owned(),
+            "--keep-unit".to_owned(),
+            "--register=no".to_owned(),
+            "--settings=no".to_owned(),
+            format!("--machine=aos-{machine}"),
+            format!("--directory={root}"),
+            format!(
+                "--private-users={}:{}",
+                self.uid_range_start, self.uid_range_size
+            ),
+            "--private-users-ownership=map".to_owned(),
+            "--notify-ready=yes".to_owned(),
+            format!("--selinux-context={PAYLOAD_SELINUX_CONTEXT}"),
+            "--no-new-privileges=yes".to_owned(),
+            format!("--drop-capability={PAYLOAD_DROPPED_CAPABILITIES}"),
+            format!("--system-call-filter={PAYLOAD_SYSTEM_CALL_FILTER}"),
+            "--aos-payload-seccomp-profile=aos-sandbox-payload-v1".to_owned(),
+        ]
+    }
+}
+
+impl SandboxResolvedPaths {
+    /// Validates the private root and pinned network namespace paths.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidSandboxUnit`] when either path is empty,
+    /// nonabsolute, unnormalized, contains NUL, or exceeds the transport bound.
+    pub fn new(
+        root_directory: impl Into<String>,
+        network_namespace_path: impl Into<String>,
+    ) -> Result<Self> {
+        let root_directory = root_directory.into();
+        let network_namespace_path = network_namespace_path.into();
+        validate_absolute_path(&root_directory, "sandbox root")?;
+        validate_absolute_path(&network_namespace_path, "network namespace")?;
+        Ok(Self {
+            root_directory,
+            network_namespace_path,
+        })
+    }
+
+    /// Returns the resolved private sandbox root.
+    #[must_use]
+    pub fn root_directory(&self) -> &str {
+        &self.root_directory
+    }
+
+    /// Returns the path to the pinned prepared network namespace.
+    #[must_use]
+    pub fn network_namespace_path(&self) -> &str {
+        &self.network_namespace_path
+    }
+}
+
 impl SandboxDevice {
     fn property(self) -> (&'static str, &'static str) {
         match self {
@@ -218,9 +386,9 @@ impl SandboxDevice {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SandboxUnitSpec {
     name: SandboxUnitName,
-    executable: String,
+    command: SandboxNspawnCommand,
     arguments: Vec<String>,
-    network_namespace_path: String,
+    paths: SandboxResolvedPaths,
     resources: SandboxResources,
     devices: Vec<SandboxDevice>,
     timeout_start: Duration,
@@ -230,37 +398,38 @@ pub struct SandboxUnitSpec {
 impl SandboxUnitSpec {
     /// Constructs a closed sandbox service specification.
     ///
-    /// `arguments` excludes argument zero; the compiler always uses the exact
-    /// executable path as `argv[0]`. The network namespace path is expected to
-    /// name a broker-pinned namespace descriptor.
+    /// The command owns the complete fixed argv profile; the root and network
+    /// namespace paths are expected to come from one assignment-bound broker
+    /// catalog resolution.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::InvalidSandboxUnit`] when a path or argument is empty,
-    /// non-absolute where required, contains NUL, exceeds a transport bound,
-    /// or when either timeout is zero or unrepresentable in microseconds.
-    pub fn new(
+    /// Returns [`Error::InvalidSandboxUnit`] when the command incarnation does
+    /// not match the unit, the fixed argv exceeds a transport bound, or either
+    /// timeout is zero or unrepresentable in microseconds.
+    pub fn new_nspawn(
         name: SandboxUnitName,
-        executable: impl Into<String>,
-        arguments: Vec<String>,
-        network_namespace_path: impl Into<String>,
+        command: SandboxNspawnCommand,
+        paths: SandboxResolvedPaths,
         resources: SandboxResources,
         timeout_start: Duration,
         timeout_stop: Duration,
     ) -> Result<Self> {
-        let executable = executable.into();
-        let network_namespace_path = network_namespace_path.into();
-        validate_absolute_path(&executable, "executable")?;
-        validate_absolute_path(&network_namespace_path, "network namespace")?;
+        if name != SandboxUnitName::from_incarnation(command.incarnation) {
+            return Err(invalid(
+                "nspawn command incarnation does not match unit name",
+            ));
+        }
+        let arguments = command.arguments(paths.root_directory());
         validate_arguments(&arguments)?;
         duration_micros(timeout_start, "start timeout")?;
         duration_micros(timeout_stop, "stop timeout")?;
 
         Ok(Self {
             name,
-            executable,
+            command,
             arguments,
-            network_namespace_path,
+            paths,
             resources,
             devices: Vec::new(),
             timeout_start,
@@ -296,7 +465,7 @@ impl SandboxUnitSpec {
     /// Returns the validated absolute executable path.
     #[must_use]
     pub fn executable(&self) -> &str {
-        &self.executable
+        &self.command.executable
     }
 
     /// Returns arguments excluding the executable `argv[0]` inserted by the
@@ -309,12 +478,18 @@ impl SandboxUnitSpec {
     /// Returns the validated pinned network-namespace path.
     #[must_use]
     pub fn network_namespace_path(&self) -> &str {
-        &self.network_namespace_path
+        self.paths.network_namespace_path()
+    }
+
+    /// Returns the broker-resolved private root exposed to the supervisor.
+    #[must_use]
+    pub fn root_directory(&self) -> &str {
+        self.paths.root_directory()
     }
 
     fn properties(&self) -> Result<Vec<TransientProperty>> {
         let mut argv = Vec::with_capacity(self.arguments.len() + 1);
-        argv.push(self.executable.clone());
+        argv.push(self.command.executable.clone());
         argv.extend(self.arguments.iter().cloned());
 
         let mut properties = vec![
@@ -328,14 +503,56 @@ impl SandboxUnitSpec {
             string_property("CollectMode", "inactive-or-failed"),
             string_property("KillMode", "mixed"),
             string_property("OOMPolicy", "kill"),
+            u64_property("CapabilityBoundingSet", NSPAWN_SUPERVISOR_CAPABILITIES),
+            complex_property(
+                "RestrictAddressFamilies",
+                (
+                    true,
+                    NSPAWN_ADDRESS_FAMILIES
+                        .iter()
+                        .map(|value| (*value).to_owned())
+                        .collect::<Vec<_>>(),
+                ),
+            )?,
+            complex_property(
+                "SystemCallFilter",
+                (
+                    true,
+                    NSPAWN_ALLOWED_SYSCALLS
+                        .iter()
+                        .map(|value| (*value).to_owned())
+                        .collect::<Vec<_>>(),
+                ),
+            )?,
+            string_array_property("SystemCallArchitectures", vec!["native".to_owned()])?,
+            string_property("ProtectSystem", "strict"),
+            string_property("SELinuxContext", NSPAWN_SUPERVISOR_SELINUX_CONTEXT),
+            bool_property("LockPersonality", true),
+            bool_property("RestrictRealtime", true),
+            string_property("KeyringMode", "private"),
+            u32_property("UMask", 0o077),
+            string_array_property("ReadWritePaths", vec![self.paths.root_directory.clone()])?,
+            string_array_property(
+                "Environment",
+                NSPAWN_ENVIRONMENT
+                    .iter()
+                    .map(|value| (*value).to_owned())
+                    .collect(),
+            )?,
+            bool_property("SetLoginEnvironment", false),
             string_array_property("BindsTo", vec![self.name.guardian.to_string()])?,
             string_array_property("After", vec![self.name.guardian.to_string()])?,
             u64_property("TasksMax", self.resources.tasks_max),
             u64_property("MemoryHigh", self.resources.memory_high_bytes),
             u64_property("MemoryMax", self.resources.memory_max_bytes),
+            u64_property("MemorySwapMax", 0),
             u64_property("CPUWeight", self.resources.cpu_weight.get()),
+            bool_property("CPUAccounting", true),
+            bool_property("MemoryAccounting", true),
+            bool_property("IOAccounting", true),
+            bool_property("TasksAccounting", true),
             string_property("DevicePolicy", "closed"),
-            string_property("NetworkNamespacePath", &self.network_namespace_path),
+            string_property("NetworkNamespacePath", &self.paths.network_namespace_path),
             u64_property(
                 "TimeoutStartUSec",
                 duration_micros(self.timeout_start, "start timeout")?,
@@ -344,7 +561,7 @@ impl SandboxUnitSpec {
                 "TimeoutStopUSec",
                 duration_micros(self.timeout_stop, "stop timeout")?,
             ),
-            exec_property(&self.executable, argv)?,
+            exec_property(&self.command.executable, argv)?,
         ];
 
         if let Some(quota) = self.resources.cpu_quota_per_second {
@@ -355,6 +572,10 @@ impl SandboxUnitSpec {
         }
         if let Some(weight) = self.resources.io_weight {
             properties.push(u64_property("IOWeight", weight));
+        }
+        if let Some(limit) = self.resources.open_files {
+            properties.push(u64_property("LimitNOFILE", limit));
+            properties.push(u64_property("LimitNOFILESoft", limit));
         }
         if !self.devices.is_empty() {
             let allow = self
@@ -567,7 +788,14 @@ fn validate_absolute_path(path: &str, label: &str) -> Result<()> {
             "{label} path must be absolute, non-empty, and at most {MAX_PATH_BYTES} bytes"
         )));
     }
-    if path.as_bytes().contains(&0) || path.split('/').any(|component| component == "..") {
+    if path.as_bytes().contains(&0)
+        || path.strip_prefix('/').is_none_or(|tail| {
+            tail.is_empty()
+                || tail
+                    .split('/')
+                    .any(|part| part.is_empty() || part == "." || part == "..")
+        })
+    {
         return Err(invalid(format!("{label} path is not normalized")));
     }
     Ok(())
@@ -617,6 +845,10 @@ fn bool_property(name: &str, value: bool) -> TransientProperty {
 }
 
 fn u64_property(name: &str, value: u64) -> TransientProperty {
+    (name.to_string(), OwnedValue::from(value))
+}
+
+fn u32_property(name: &str, value: u32) -> TransientProperty {
     (name.to_string(), OwnedValue::from(value))
 }
 
@@ -670,12 +902,18 @@ mod tests {
         let resources = SandboxResources::new(512, 1024, 128, 100)
             .and_then(|value| value.with_cpu_quota(Duration::from_millis(500)))
             .and_then(|value| value.with_io_weight(200))
+            .and_then(|value| value.with_open_file_limit(1024))
             .unwrap();
-        SandboxUnitSpec::new(
+        SandboxUnitSpec::new_nspawn(
             SandboxUnitName::from_incarnation([0xab; 16]),
-            "/nix/store/nspawn/bin/systemd-nspawn",
-            vec!["--settings=no".to_string(), "--boot".to_string()],
-            "/proc/123/fd/9",
+            SandboxNspawnCommand::private_user_v1(
+                "/nix/store/nspawn/bin/systemd-nspawn",
+                [0xab; 16],
+                65_536,
+                65_536,
+            )
+            .unwrap(),
+            SandboxResolvedPaths::new("/var/lib/aos/sandboxes/root", "/proc/123/fd/9").unwrap(),
             resources,
             Duration::from_secs(30),
             Duration::from_secs(10),
@@ -707,26 +945,34 @@ mod tests {
 
     #[test]
     fn command_and_namespace_paths_are_bounded_and_normalized() {
-        let resources = SandboxResources::new(1, 1, 1, 1).unwrap();
-        let name = SandboxUnitName::from_incarnation([1; 16]);
         assert!(
-            SandboxUnitSpec::new(
-                name.clone(),
-                "relative",
-                Vec::new(),
-                "/proc/1/fd/2",
-                resources,
-                Duration::from_secs(1),
-                Duration::from_secs(1),
+            SandboxNspawnCommand::private_user_v1("/bin/systemd-nspawn", [1; 16], 65_536, 65_536)
+                .is_err()
+        );
+        assert!(
+            SandboxNspawnCommand::private_user_v1(
+                "/nix/store/a/bin/systemd-nspawn",
+                [1; 16],
+                0,
+                65_536
             )
             .is_err()
         );
+        assert!(SandboxResolvedPaths::new("relative-root", "/proc/1/fd/2").is_err());
+        assert!(SandboxResolvedPaths::new("/var/lib/aos/sandboxes/root", "/proc/1/../2").is_err());
+
+        let resources = SandboxResources::new(1, 1, 1, 1).unwrap();
         assert!(
-            SandboxUnitSpec::new(
-                name,
-                "/bin/tool",
-                Vec::new(),
-                "/proc/1/../2",
+            SandboxUnitSpec::new_nspawn(
+                SandboxUnitName::from_incarnation([1; 16]),
+                SandboxNspawnCommand::private_user_v1(
+                    "/nix/store/nspawn/bin/systemd-nspawn",
+                    [2; 16],
+                    65_536,
+                    65_536,
+                )
+                .unwrap(),
+                SandboxResolvedPaths::new("/var/lib/aos/sandboxes/root", "/proc/1/fd/2").unwrap(),
                 resources,
                 Duration::from_secs(1),
                 Duration::from_secs(1),
@@ -755,12 +1001,30 @@ mod tests {
                 "CollectMode",
                 "KillMode",
                 "OOMPolicy",
+                "CapabilityBoundingSet",
+                "RestrictAddressFamilies",
+                "SystemCallFilter",
+                "SystemCallArchitectures",
+                "ProtectSystem",
+                "SELinuxContext",
+                "LockPersonality",
+                "RestrictRealtime",
+                "KeyringMode",
+                "UMask",
+                "ReadWritePaths",
+                "Environment",
+                "SetLoginEnvironment",
                 "BindsTo",
                 "After",
                 "TasksMax",
                 "MemoryHigh",
                 "MemoryMax",
+                "MemorySwapMax",
                 "CPUWeight",
+                "CPUAccounting",
+                "MemoryAccounting",
+                "IOAccounting",
+                "TasksAccounting",
                 "DevicePolicy",
                 "NetworkNamespacePath",
                 "TimeoutStartUSec",
@@ -768,6 +1032,8 @@ mod tests {
                 "ExecStart",
                 "CPUQuotaPerSecUSec",
                 "IOWeight",
+                "LimitNOFILE",
+                "LimitNOFILESoft",
                 "DeviceAllow",
             ]
         );
@@ -779,6 +1045,14 @@ mod tests {
         assert!(signatures.contains(&("ExecStart", "a(sasb)".to_string())));
         assert!(signatures.contains(&("DeviceAllow", "a(ss)".to_string())));
         assert!(signatures.contains(&("BindsTo", "as".to_string())));
+        assert!(signatures.contains(&("CapabilityBoundingSet", "t".to_string())));
+        assert!(signatures.contains(&("RestrictAddressFamilies", "(bas)".to_string())));
+        assert!(signatures.contains(&("SystemCallFilter", "(bas)".to_string())));
+        assert!(signatures.contains(&("SystemCallArchitectures", "as".to_string())));
+        assert!(signatures.contains(&("SELinuxContext", "s".to_string())));
+        assert!(signatures.contains(&("ReadWritePaths", "as".to_string())));
+        assert!(signatures.contains(&("MemorySwapMax", "t".to_string())));
+        assert!(signatures.contains(&("LimitNOFILE", "t".to_string())));
     }
 
     #[test]

@@ -8,13 +8,11 @@
 use std::env;
 use std::os::fd::OwnedFd;
 use std::process::ExitCode;
-use std::time::Duration;
 
 use aos_sandbox_host::activation::take_systemd_listener;
 use aos_sandbox_host::broker::HostBroker;
 use aos_sandbox_host::catalog::FileHostCatalog;
 use aos_sandbox_host::peer::ControllerPeerVerifier;
-use aos_sandbox_host::plan::{NspawnConfig, PayloadSecurityProfile};
 use aos_sandbox_host::service::HostService;
 use aos_sandbox_host::state::FileHostStateStore;
 use aos_sandbox_host::worker::SystemdOneShotWorker;
@@ -24,8 +22,6 @@ use aos_sandbox_linux::path::BeneathRoot;
 const CATALOG_ROOT: &str = "/run/aos/sandbox-host";
 const STATE_ROOT: &str = "/var/lib/aos/sandbox-host";
 const CGROUP_ROOT: &str = "/sys/fs/cgroup";
-const PAYLOAD_SELINUX_CONTEXT: &str = "system_u:system_r:aos_sandbox_payload_t:s0";
-const SYSTEMD_OPERATION_TIMEOUT: Duration = Duration::from_secs(90);
 
 fn main() -> ExitCode {
     match run() {
@@ -43,7 +39,8 @@ fn run() -> Result<()> {
             "host broker must start with real and effective UID zero".to_owned(),
         ));
     }
-    let (controller_identity, nspawn_executable) = arguments()?;
+    let (controller_identity, discarded_nspawn_executable) = arguments()?;
+    drop(discarded_nspawn_executable);
 
     // Adopt FD 3 before Tokio or another dependency can create a thread.
     let listener = take_systemd_listener()?;
@@ -51,14 +48,11 @@ fn run() -> Result<()> {
     let state = FileHostStateStore::open(STATE_ROOT)?;
     let worker = SystemdOneShotWorker::new(open_cgroup_root()?);
     let verifier = ControllerPeerVerifier::new(open_cgroup_root()?);
-    let nspawn = NspawnConfig::new(
-        nspawn_executable,
-        PAYLOAD_SELINUX_CONTEXT,
-        PayloadSecurityProfile::PrivateUserBaseline,
-        SYSTEMD_OPERATION_TIMEOUT,
-        SYSTEMD_OPERATION_TIMEOUT,
-    )?;
-    let broker = HostBroker::open(catalog, state, worker, nspawn)?;
+    // Launch remains unavailable until the phase-0 evidence publisher can
+    // construct an opaque BackendReadiness token bound to the configured
+    // executable. The argv value above is intentionally discarded rather than
+    // being treated as evidence that an arbitrary path is safe to launch.
+    let broker = HostBroker::open(catalog, state, worker, None)?;
     let mut service = HostService::new(broker, verifier, controller_identity);
 
     let runtime = tokio::runtime::Builder::new_current_thread()

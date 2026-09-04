@@ -41,14 +41,14 @@ pub enum Admission {
 }
 
 /// In-memory form of a fully validated durable host snapshot.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct HostState {
     fences: BTreeMap<[u8; 16], DurableFence>,
     requests: BTreeMap<[u8; 16], RequestRecord>,
     observation_sequences: BTreeMap<[u8; 16], u64>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct DurableFence {
     sandbox_id: [u8; 16],
@@ -58,7 +58,7 @@ struct DurableFence {
     assignment_digest: [u8; 32],
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct RequestRecord {
     request_id: [u8; 16],
@@ -68,7 +68,7 @@ struct RequestRecord {
     receipt: Option<Vec<u8>>,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct StateWire {
     fences: Vec<DurableFence>,
@@ -76,7 +76,7 @@ struct StateWire {
     observation_sequences: Vec<ObservationSequence>,
 }
 
-#[derive(Clone, Copy, Deserialize, Serialize)]
+#[derive(Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ObservationSequence {
     incarnation_id: [u8; 16],

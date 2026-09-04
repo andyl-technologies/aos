@@ -23,7 +23,7 @@ pub struct HostBroker<C, S, W> {
     catalog: C,
     store: S,
     worker: W,
-    nspawn: NspawnConfig,
+    nspawn: Option<NspawnConfig>,
     state: HostState,
     leaders: BTreeMap<[u8; 32], PidFd>,
 }
@@ -39,7 +39,7 @@ where
     /// # Errors
     ///
     /// Returns an error when the state snapshot is unavailable or invalid.
-    pub fn open(catalog: C, store: S, worker: W, nspawn: NspawnConfig) -> Result<Self> {
+    pub fn open(catalog: C, store: S, worker: W, nspawn: Option<NspawnConfig>) -> Result<Self> {
         let state = store.load()?;
         Ok(Self {
             catalog,
@@ -49,6 +49,12 @@ where
             state,
             leaders: BTreeMap::new(),
         })
+    }
+
+    /// Reports whether phase-0 evidence permits this process to advertise launch.
+    #[must_use]
+    pub const fn launch_available(&self) -> bool {
+        self.nspawn.is_some()
     }
 
     /// Validates, fences, applies, and durably completes one runtime request.
@@ -77,16 +83,17 @@ where
         let action = action_code(request.action());
 
         let mut proposed = self.state.clone();
-        match proposed.admit(request.fence(), request_id, request_digest, action)? {
-            Admission::Complete(receipt) => return Ok(receipt),
-            Admission::Pending => {}
-            Admission::New => {
-                self.store.commit(&proposed)?;
-                self.state = proposed.clone();
-            }
-        }
-
+        let new_intent =
+            match proposed.admit(request.fence(), request_id, request_digest, action)? {
+                Admission::Complete(receipt) => return Ok(receipt),
+                Admission::Pending => false,
+                Admission::New => true,
+            };
         let operation = self.compile_operation(&request)?;
+        if new_intent {
+            self.store.commit(&proposed)?;
+            self.state = proposed.clone();
+        }
         let observation = self.worker.execute(request.fence(), operation).await?;
         let sequence = proposed.next_observation_sequence(*request.fence().incarnation_id())?;
         let response = self.encode_observation(request.fence(), sequence, observation)?;
@@ -115,10 +122,13 @@ where
     fn compile_operation(&self, request: &ValidatedRuntimeRequest) -> Result<WorkerOperation> {
         Ok(match request.action() {
             RuntimeAction::RUNTIME_ACTION_LAUNCH => {
+                let nspawn = self.nspawn.as_ref().ok_or_else(|| {
+                    HostError::InvalidPlan("nspawn backend readiness is unavailable".to_owned())
+                })?;
                 let plan = request.launch_plan().ok_or(HostError::InvalidPlan(
                     "validated launch request lost its launch plan".to_owned(),
                 ))?;
-                WorkerOperation::Launch(Box::new(self.nspawn.compile(
+                WorkerOperation::Launch(Box::new(nspawn.compile(
                     &self.catalog,
                     request.fence(),
                     plan,
@@ -210,7 +220,6 @@ mod tests {
 
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
-    use std::time::Duration;
 
     use aos_proto::aos::sandbox::local::v1::{
         ApplyRuntimeRequest, Audience, Feature, ResourceLimit,
@@ -219,7 +228,7 @@ mod tests {
 
     use super::*;
     use crate::plan::{
-        PayloadSecurityProfile, ResolvedLaunchResources, ResolvedNetwork, ResolvedWorkspace,
+        ResolvedIdentityAllocation, ResolvedLaunchResources, ResolvedNetwork, ResolvedWorkspace,
     };
 
     #[derive(Clone, Default)]
@@ -252,10 +261,19 @@ mod tests {
             }
             Ok(ResolvedLaunchResources {
                 workspace: ResolvedWorkspace {
-                    root_directory: "/var/lib/aos/sandboxes/root".to_owned(),
+                    root_directory: "/run/aos/sandbox-pins/workspaces/test-root".to_owned(),
+                    device: 1,
+                    inode: 2,
                 },
                 network: ResolvedNetwork {
-                    namespace_path: "/run/aos/netns/pinned".to_owned(),
+                    namespace_path: "/run/aos/sandbox-pins/netns/test-net".to_owned(),
+                    device: 3,
+                    inode: 4,
+                },
+                identity: ResolvedIdentityAllocation {
+                    range_start: 65_536,
+                    range_size: 65_536,
+                    catalog_generation: 1,
                 },
             })
         }
@@ -281,17 +299,34 @@ mod tests {
                 spec.executable(),
                 "/nix/store/aos-systemd/bin/systemd-nspawn"
             );
-            assert!(
-                spec.arguments()
-                    .iter()
-                    .any(|value| value == "--settings=no")
+            assert_eq!(
+                spec.arguments(),
+                [
+                    "--boot",
+                    "--quiet",
+                    "--keep-unit",
+                    "--register=no",
+                    "--settings=no",
+                    "--machine=aos-03030303030303030303030303030303",
+                    "--directory=/run/aos/sandbox-pins/workspaces/test-root",
+                    "--private-users=65536:65536",
+                    "--private-users-ownership=map",
+                    "--notify-ready=yes",
+                    "--selinux-context=system_u:system_r:aos_sandbox_payload_t:s0",
+                    "--no-new-privileges=yes",
+                    "--drop-capability=CAP_AUDIT_CONTROL,CAP_AUDIT_READ,CAP_AUDIT_WRITE,CAP_BLOCK_SUSPEND,CAP_BPF,CAP_CHECKPOINT_RESTORE,CAP_DAC_READ_SEARCH,CAP_IPC_LOCK,CAP_IPC_OWNER,CAP_LEASE,CAP_LINUX_IMMUTABLE,CAP_MAC_ADMIN,CAP_MAC_OVERRIDE,CAP_MKNOD,CAP_NET_ADMIN,CAP_NET_BROADCAST,CAP_NET_RAW,CAP_PERFMON,CAP_SYSLOG,CAP_SYS_ADMIN,CAP_SYS_BOOT,CAP_SYS_CHROOT,CAP_SYS_MODULE,CAP_SYS_NICE,CAP_SYS_PACCT,CAP_SYS_PTRACE,CAP_SYS_RAWIO,CAP_SYS_RESOURCE,CAP_SYS_TIME,CAP_SYS_TTY_CONFIG,CAP_WAKE_ALARM",
+                    "--system-call-filter=~@mount @module @raw-io @reboot bpf perf_event_open ptrace setns unshare",
+                    "--aos-payload-seccomp-profile=aos-sandbox-payload-v1",
+                ]
             );
-            assert!(
-                spec.arguments()
-                    .iter()
-                    .any(|value| value == "--aos-payload-filter=private-user-v1")
+            assert_eq!(
+                spec.root_directory(),
+                "/run/aos/sandbox-pins/workspaces/test-root"
             );
-            assert_eq!(spec.network_namespace_path(), "/run/aos/netns/pinned");
+            assert_eq!(
+                spec.network_namespace_path(),
+                "/run/aos/sandbox-pins/netns/test-net"
+            );
             self.calls.fetch_add(1, Ordering::SeqCst);
             if self.fail_next.swap(false, Ordering::SeqCst) {
                 return Err(HostError::Worker("injected crash boundary".to_owned()));
@@ -313,14 +348,7 @@ mod tests {
     }
 
     fn nspawn() -> NspawnConfig {
-        NspawnConfig::new(
-            "/nix/store/aos-systemd/bin/systemd-nspawn",
-            "aos_sandbox_payload_t",
-            PayloadSecurityProfile::PrivateUserBaseline,
-            Duration::from_secs(30),
-            Duration::from_secs(10),
-        )
-        .unwrap()
+        NspawnConfig::for_tests("/nix/store/aos-systemd/bin/systemd-nspawn").unwrap()
     }
 
     fn policy() -> PeerPolicy {
@@ -340,6 +368,16 @@ mod tests {
     }
 
     fn request(request_id: u8, generation: u64, digest: u8) -> Vec<u8> {
+        request_with_identity(request_id, generation, digest, 65_536, 65_536)
+    }
+
+    fn request_with_identity(
+        request_id: u8,
+        generation: u64,
+        digest: u8,
+        uid_range_start: u32,
+        uid_range_size: u32,
+    ) -> Vec<u8> {
         let mut request = ApplyRuntimeRequest::default();
         let header = request.header.get_or_insert_default();
         header.protocol_major = 1;
@@ -362,8 +400,8 @@ mod tests {
         root.encoded_size = 10;
         plan.workspace_handle = vec![6; 32];
         plan.network_handle = vec![7; 32];
-        plan.uid_range_start = 65_536;
-        plan.uid_range_size = 65_536;
+        plan.uid_range_start = uid_range_start;
+        plan.uid_range_size = uid_range_size;
         plan.limits = vec![
             ResourceLimit {
                 dimension: 2,
@@ -378,6 +416,11 @@ mod tests {
             ResourceLimit {
                 dimension: 4,
                 value: 100,
+                ..Default::default()
+            },
+            ResourceLimit {
+                dimension: 9,
+                value: 1024,
                 ..Default::default()
             },
         ];
@@ -395,7 +438,8 @@ mod tests {
         let store = MemoryStore::default();
         let worker = FakeWorker::default();
         let calls = worker.calls.clone();
-        let mut broker = HostBroker::open(FixedCatalog, store.clone(), worker, nspawn()).unwrap();
+        let mut broker =
+            HostBroker::open(FixedCatalog, store.clone(), worker, Some(nspawn())).unwrap();
         let bytes = request(1, 1, 4);
         let first = broker
             .apply_runtime(&bytes, peer(), policy(), 10)
@@ -411,7 +455,7 @@ mod tests {
         let reopened_worker = FakeWorker::default();
         let reopened_calls = reopened_worker.calls.clone();
         let mut reopened =
-            HostBroker::open(FixedCatalog, store, reopened_worker, nspawn()).unwrap();
+            HostBroker::open(FixedCatalog, store, reopened_worker, Some(nspawn())).unwrap();
         assert_eq!(
             reopened
                 .apply_runtime(&bytes, peer(), policy(), 10)
@@ -428,7 +472,8 @@ mod tests {
         let worker = FakeWorker::default();
         worker.fail_next.store(true, Ordering::SeqCst);
         let bytes = request(1, 1, 4);
-        let mut broker = HostBroker::open(FixedCatalog, store.clone(), worker, nspawn()).unwrap();
+        let mut broker =
+            HostBroker::open(FixedCatalog, store.clone(), worker, Some(nspawn())).unwrap();
         assert!(
             broker
                 .apply_runtime(&bytes, peer(), policy(), 10)
@@ -438,7 +483,7 @@ mod tests {
 
         let worker = FakeWorker::default();
         let calls = worker.calls.clone();
-        let mut reopened = HostBroker::open(FixedCatalog, store, worker, nspawn()).unwrap();
+        let mut reopened = HostBroker::open(FixedCatalog, store, worker, Some(nspawn())).unwrap();
         assert!(
             reopened
                 .apply_runtime(&bytes, peer(), policy(), 10)
@@ -453,7 +498,7 @@ mod tests {
         let store = MemoryStore::default();
         let worker = FakeWorker::default();
         let calls = worker.calls.clone();
-        let mut broker = HostBroker::open(FixedCatalog, store, worker, nspawn()).unwrap();
+        let mut broker = HostBroker::open(FixedCatalog, store, worker, Some(nspawn())).unwrap();
         broker
             .apply_runtime(&request(1, 2, 4), peer(), policy(), 10)
             .await
@@ -471,5 +516,55 @@ mod tests {
                 .is_err()
         );
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn backend_without_readiness_does_not_offer_launch() {
+        let broker = HostBroker::open(
+            FixedCatalog,
+            MemoryStore::default(),
+            FakeWorker::default(),
+            None,
+        )
+        .unwrap();
+        assert!(!broker.launch_available());
+    }
+
+    #[tokio::test]
+    async fn unready_launch_fails_before_durable_intent_or_effect() {
+        let store = MemoryStore::default();
+        let worker = FakeWorker::default();
+        let calls = worker.calls.clone();
+        let mut broker = HostBroker::open(FixedCatalog, store.clone(), worker, None).unwrap();
+        assert!(
+            broker
+                .apply_runtime(&request(1, 1, 4), peer(), policy(), 10)
+                .await
+                .is_err()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(store.load().unwrap(), HostState::default());
+    }
+
+    #[tokio::test]
+    async fn requested_identity_must_equal_catalog_allocation() {
+        let store = MemoryStore::default();
+        let worker = FakeWorker::default();
+        let calls = worker.calls.clone();
+        let mut broker =
+            HostBroker::open(FixedCatalog, store.clone(), worker, Some(nspawn())).unwrap();
+        assert!(
+            broker
+                .apply_runtime(
+                    &request_with_identity(1, 1, 4, 131_072, 65_536),
+                    peer(),
+                    policy(),
+                    10,
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(store.load().unwrap(), HostState::default());
     }
 }

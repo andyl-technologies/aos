@@ -4,6 +4,12 @@
 //! Hostd opens that directory once, resolves the fixed filename with
 //! `openat2`, reads at most sixteen MiB, strictly decodes one generation, and
 //! resolves workspace, network, and attachment state from that same snapshot.
+//!
+//! Pin identity verification below is deliberately not launch authority yet:
+//! a pathname can be replaced after verification. Production readiness stays
+//! unconstructable until the pin publisher proves root ownership, immutable
+//! parent and leaf entries for the complete verify-to-exec interval, and the
+//! worker post-validates the identities after systemd starts the supervisor.
 
 use std::path::Path;
 
@@ -13,7 +19,9 @@ use aos_sandbox_protocol::{ValidatedAssignmentFence, ValidatedRuntimePlan};
 use serde::{Deserialize, Serialize};
 
 use crate::plan::{
-    HostCatalog, OpaqueHandle, ResolvedLaunchResources, ResolvedNetwork, ResolvedWorkspace,
+    HostCatalog, NETWORK_PIN_PREFIX, OpaqueHandle, ResolvedIdentityAllocation,
+    ResolvedLaunchResources, ResolvedNetwork, ResolvedWorkspace, WORKSPACE_PIN_PREFIX,
+    validate_published_pin,
 };
 use crate::{HostError, Result};
 
@@ -21,6 +29,55 @@ const CATALOG_FILE: &str = "catalog.json";
 const MAXIMUM_CATALOG_BYTES: usize = 16 * 1024 * 1024;
 const MAXIMUM_ENTRIES: usize = 16_384;
 const MAXIMUM_ATTACHMENTS: usize = 256;
+const MINIMUM_IDENTITY_RANGE: u32 = 65_536;
+
+/// Records one incarnation-bound, nonoverlapping subordinate identity range.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogIdentityAllocation {
+    range_start: u32,
+    range_size: u32,
+    catalog_generation: u64,
+}
+
+impl CatalogIdentityAllocation {
+    /// Constructs a catalog-backed private user-namespace allocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for host identity zero, fewer than 65,536 identities,
+    /// range overflow, or missing allocation-generation evidence.
+    pub fn new(range_start: u32, range_size: u32, catalog_generation: u64) -> Result<Self> {
+        let value = Self {
+            range_start,
+            range_size,
+            catalog_generation,
+        };
+        value.validate()?;
+        Ok(value)
+    }
+
+    fn validate(self) -> Result<()> {
+        if self.range_start == 0
+            || self.range_size < MINIMUM_IDENTITY_RANGE
+            || self.range_start.checked_add(self.range_size).is_none()
+            || self.catalog_generation == 0
+        {
+            return Err(HostError::Catalog(
+                "catalog identity allocation is invalid".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn end(self) -> u32 {
+        self.range_start + self.range_size
+    }
+
+    fn matches(self, plan: &ValidatedRuntimePlan) -> bool {
+        self.range_start == plan.uid_range_start() && self.range_size == plan.uid_range_size()
+    }
+}
 
 /// Binds one catalog entry to exact assignment semantics.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -89,6 +146,9 @@ pub struct WorkspaceCatalogEntry {
     assignment: CatalogAssignment,
     root_image: ObjectDescriptor,
     root_directory: String,
+    device: u64,
+    inode: u64,
+    identity: CatalogIdentityAllocation,
     attachment_handles: Vec<OpaqueHandle>,
 }
 
@@ -99,11 +159,18 @@ impl WorkspaceCatalogEntry {
     ///
     /// Returns an error for a zero handle, unsafe path, too many attachments,
     /// or attachment handles that are not strictly byte ordered.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the constructor mirrors one closed, serialized catalog record"
+    )]
     pub fn new(
         handle: OpaqueHandle,
         assignment: CatalogAssignment,
         root_image: ObjectDescriptor,
         root_directory: String,
+        device: u64,
+        inode: u64,
+        identity: CatalogIdentityAllocation,
         attachment_handles: Vec<OpaqueHandle>,
     ) -> Result<Self> {
         let value = Self {
@@ -111,6 +178,9 @@ impl WorkspaceCatalogEntry {
             assignment,
             root_image,
             root_directory,
+            device,
+            inode,
+            identity,
             attachment_handles,
         };
         value.validate()?;
@@ -120,7 +190,14 @@ impl WorkspaceCatalogEntry {
     fn validate(&self) -> Result<()> {
         self.assignment.validate()?;
         validate_handle(self.handle, "workspace")?;
-        validate_absolute(&self.root_directory, "workspace root")?;
+        validate_published_pin(&self.root_directory, WORKSPACE_PIN_PREFIX, "workspace root")
+            .map_err(|error| HostError::Catalog(error.to_string()))?;
+        if self.device == 0 || self.inode == 0 {
+            return Err(HostError::Catalog(
+                "workspace pin identity contains a sentinel".to_owned(),
+            ));
+        }
+        self.identity.validate()?;
         if self.attachment_handles.len() > MAXIMUM_ATTACHMENTS
             || !strictly_ordered(&self.attachment_handles)
             || self.attachment_handles.contains(&[0; 32])
@@ -140,6 +217,8 @@ pub struct NetworkCatalogEntry {
     handle: OpaqueHandle,
     assignment: CatalogAssignment,
     namespace_path: String,
+    device: u64,
+    inode: u64,
 }
 
 impl NetworkCatalogEntry {
@@ -152,11 +231,15 @@ impl NetworkCatalogEntry {
         handle: OpaqueHandle,
         assignment: CatalogAssignment,
         namespace_path: String,
+        device: u64,
+        inode: u64,
     ) -> Result<Self> {
         let value = Self {
             handle,
             assignment,
             namespace_path,
+            device,
+            inode,
         };
         value.validate()?;
         Ok(value)
@@ -165,7 +248,18 @@ impl NetworkCatalogEntry {
     fn validate(&self) -> Result<()> {
         self.assignment.validate()?;
         validate_handle(self.handle, "network")?;
-        validate_absolute(&self.namespace_path, "network namespace")
+        validate_published_pin(
+            &self.namespace_path,
+            NETWORK_PIN_PREFIX,
+            "network namespace",
+        )
+        .map_err(|error| HostError::Catalog(error.to_string()))?;
+        if self.device == 0 || self.inode == 0 {
+            return Err(HostError::Catalog(
+                "network pin identity contains a sentinel".to_owned(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -176,6 +270,7 @@ pub struct HostCatalogSnapshot {
     generation: u64,
     workspaces: Vec<WorkspaceCatalogEntry>,
     networks: Vec<NetworkCatalogEntry>,
+    retired_identity_allocations: Vec<CatalogIdentityAllocation>,
 }
 
 impl HostCatalogSnapshot {
@@ -194,9 +289,28 @@ impl HostCatalogSnapshot {
             generation,
             workspaces,
             networks,
+            retired_identity_allocations: Vec::new(),
         };
         value.validate()?;
         Ok(value)
+    }
+
+    /// Adds bounded publisher-asserted allocation tombstones that block reuse.
+    ///
+    /// The catalog publisher, not this snapshot decoder, owns continuity with
+    /// prior generations and removal only after cleanup is proven.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a tombstone is invalid, newer than the snapshot,
+    /// overlaps another tombstone, or overlaps a live allocation.
+    pub fn with_retired_identity_allocations(
+        mut self,
+        allocations: Vec<CatalogIdentityAllocation>,
+    ) -> Result<Self> {
+        self.retired_identity_allocations = allocations;
+        self.validate()?;
+        Ok(self)
     }
 
     /// Encodes the strict node-local snapshot for an atomic root-owned write.
@@ -227,6 +341,7 @@ impl HostCatalogSnapshot {
         if self.generation == 0
             || self.workspaces.len() > MAXIMUM_ENTRIES
             || self.networks.len() > MAXIMUM_ENTRIES
+            || self.retired_identity_allocations.len() > MAXIMUM_ENTRIES
             || !strictly_ordered_by(&self.workspaces, |entry| entry.handle)
             || !strictly_ordered_by(&self.networks, |entry| entry.handle)
         {
@@ -239,6 +354,37 @@ impl HostCatalogSnapshot {
         }
         for network in &self.networks {
             network.validate()?;
+        }
+        let mut allocations = self
+            .workspaces
+            .iter()
+            .map(|workspace| workspace.identity)
+            .collect::<Vec<_>>();
+        if allocations
+            .iter()
+            .any(|allocation| allocation.catalog_generation != self.generation)
+        {
+            return Err(HostError::Catalog(
+                "catalog identity allocation has a stale generation".to_owned(),
+            ));
+        }
+        for retired in &self.retired_identity_allocations {
+            retired.validate()?;
+            if retired.catalog_generation > self.generation {
+                return Err(HostError::Catalog(
+                    "retired identity allocation is from a future generation".to_owned(),
+                ));
+            }
+        }
+        allocations.extend(self.retired_identity_allocations.iter().copied());
+        allocations.sort_unstable_by_key(|allocation| allocation.range_start);
+        if allocations
+            .windows(2)
+            .any(|pair| pair[0].end() > pair[1].range_start)
+        {
+            return Err(HostError::Catalog(
+                "catalog identity allocations overlap".to_owned(),
+            ));
         }
         Ok(())
     }
@@ -258,6 +404,9 @@ impl FileHostCatalog {
     }
 
     /// Opens a root-owned catalog directory that is not group/other writable.
+    ///
+    /// This does not establish readiness of the separate workspace/network
+    /// pin publisher; [`crate::plan::BackendReadiness`] remains unavailable.
     ///
     /// # Errors
     ///
@@ -318,17 +467,29 @@ impl HostCatalog for FileHostCatalog {
             || !network.assignment.matches(fence)
             || workspace.root_image != *plan.root_image()
             || workspace.attachment_handles != plan.attachment_handles()
+            || !workspace.identity.matches(plan)
         {
             return Err(HostError::Catalog(
                 "catalog resources do not bind the exact launch assignment".to_owned(),
             ));
         }
+        verify_workspace_pin(&workspace.root_directory, workspace.device, workspace.inode)?;
+        verify_network_pin(&network.namespace_path, network.device, network.inode)?;
         Ok(ResolvedLaunchResources {
             workspace: ResolvedWorkspace {
                 root_directory: workspace.root_directory.clone(),
+                device: workspace.device,
+                inode: workspace.inode,
             },
             network: ResolvedNetwork {
                 namespace_path: network.namespace_path.clone(),
+                device: network.device,
+                inode: network.inode,
+            },
+            identity: ResolvedIdentityAllocation {
+                range_start: workspace.identity.range_start,
+                range_size: workspace.identity.range_size,
+                catalog_generation: workspace.identity.catalog_generation,
             },
         })
     }
@@ -341,16 +502,54 @@ fn validate_handle(handle: OpaqueHandle, label: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_absolute(value: &str, label: &str) -> Result<()> {
-    if value.is_empty()
-        || value.len() > 4096
-        || !value.starts_with('/')
-        || value.as_bytes().contains(&0)
-        || value.split('/').any(|component| component == "..")
-    {
-        return Err(HostError::Catalog(format!(
-            "{label} is not a bounded normalized absolute path"
-        )));
+fn verify_workspace_pin(path: &str, device: u64, inode: u64) -> Result<()> {
+    let fd = rustix::fs::open(
+        path,
+        rustix::fs::OFlags::PATH
+            | rustix::fs::OFlags::DIRECTORY
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(|error| HostError::Catalog(error.to_string()))?;
+    let stat = rustix::fs::fstat(fd).map_err(|error| HostError::Catalog(error.to_string()))?;
+    if stat.st_dev != device || stat.st_ino != inode {
+        return Err(HostError::Catalog(
+            "workspace pin identity changed".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn verify_network_pin(path: &str, device: u64, inode: u64) -> Result<()> {
+    use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceKind};
+
+    let fd = rustix::fs::open(
+        path,
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(|error| HostError::Catalog(error.to_string()))?;
+    let namespace = NamespaceFd::from_owned(fd, NamespaceKind::Network)
+        .map_err(|error| HostError::Catalog(error.to_string()))?;
+    let identity = namespace.identity();
+    if identity.device != device || identity.inode != inode {
+        return Err(HostError::Catalog(
+            "network namespace pin identity changed".to_owned(),
+        ));
+    }
+    let host_fd = rustix::fs::open(
+        "/proc/self/ns/net",
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(|error| HostError::Catalog(error.to_string()))?;
+    let host = NamespaceFd::from_owned(host_fd, NamespaceKind::Network)
+        .map_err(|error| HostError::Catalog(error.to_string()))?;
+    if host.identity() == identity {
+        return Err(HostError::Catalog(
+            "network pin resolves to the host network namespace".to_owned(),
+        ));
     }
     Ok(())
 }
@@ -366,9 +565,6 @@ fn strictly_ordered_by<T>(values: &[T], key: impl Fn(&T) -> OpaqueHandle) -> boo
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
-
-    use std::fs::File;
-    use std::os::fd::OwnedFd;
 
     use aos_proto::aos::sandbox::local::v1::{
         ApplyRuntimeRequest, Audience, Feature, ResourceLimit, RuntimeAction,
@@ -456,7 +652,10 @@ mod tests {
                     [9; 32],
                     assignment,
                     plan.root_image().clone(),
-                    "/var/lib/aos/root".to_owned(),
+                    "/run/aos/sandbox-pins/workspaces/root-a".to_owned(),
+                    11,
+                    12,
+                    CatalogIdentityAllocation::new(65_536, 65_536, 1).unwrap(),
                     vec![[11; 32]],
                 )
                 .unwrap(),
@@ -465,23 +664,18 @@ mod tests {
                 NetworkCatalogEntry::new(
                     [10; 32],
                     assignment,
-                    "/run/aos/netns/assigned".to_owned(),
+                    "/run/aos/sandbox-pins/netns/net-a".to_owned(),
+                    13,
+                    14,
                 )
                 .unwrap(),
             ],
         )
         .unwrap();
-        let directory = tempfile::tempdir().unwrap();
-        std::fs::write(
-            directory.path().join(CATALOG_FILE),
-            snapshot.encode().unwrap(),
-        )
-        .unwrap();
-        let fd: OwnedFd = File::open(directory.path()).unwrap().into();
-        let catalog = FileHostCatalog::new(BeneathRoot::from_owned(fd).unwrap());
-        let resolved = catalog.resolve(fence, plan).unwrap();
-        assert_eq!(resolved.workspace.root_directory, "/var/lib/aos/root");
-        assert_eq!(resolved.network.namespace_path, "/run/aos/netns/assigned");
+        let decoded = HostCatalogSnapshot::decode(&snapshot.encode().unwrap()).unwrap();
+        assert_eq!(decoded, snapshot);
+        assert!(decoded.workspaces[0].identity.matches(plan));
+        assert!(decoded.workspaces[0].assignment.matches(fence));
     }
 
     #[test]
@@ -497,10 +691,122 @@ mod tests {
             [9; 32],
             assignment,
             descriptor,
-            "/var/lib/aos/root".to_owned(),
+            "/run/aos/sandbox-pins/workspaces/root-a".to_owned(),
+            11,
+            12,
+            CatalogIdentityAllocation::new(65_536, 65_536, 1).unwrap(),
             Vec::new(),
         )
         .unwrap();
         assert!(HostCatalogSnapshot::new(1, vec![entry.clone(), entry], Vec::new()).is_err());
+    }
+
+    #[test]
+    fn identity_allocations_reject_host_ids_small_ranges_and_overflow() {
+        assert!(CatalogIdentityAllocation::new(0, 65_536, 1).is_err());
+        assert!(CatalogIdentityAllocation::new(65_536, 65_535, 1).is_err());
+        assert!(CatalogIdentityAllocation::new(u32::MAX - 1, 65_536, 1).is_err());
+        assert!(CatalogIdentityAllocation::new(65_536, 65_536, 0).is_err());
+    }
+
+    #[test]
+    fn snapshot_rejects_overlapping_or_stale_identity_allocations() {
+        let assignment = CatalogAssignment::new([2; 16], [3; 16], 4, 5, [6; 32]).unwrap();
+        let descriptor = aos_sandbox_core::ObjectDescriptor::new(
+            aos_sandbox_core::MediaType::new("application/vnd.aos.sandbox.view.v1+cbor".to_owned())
+                .unwrap(),
+            aos_sandbox_core::ObjectDigest::from_bytes([7; 32]),
+            8,
+        );
+        let first = WorkspaceCatalogEntry::new(
+            [8; 32],
+            assignment,
+            descriptor.clone(),
+            "/run/aos/sandbox-pins/workspaces/first".to_owned(),
+            11,
+            12,
+            CatalogIdentityAllocation::new(65_536, 65_536, 1).unwrap(),
+            Vec::new(),
+        )
+        .unwrap();
+        let overlap = WorkspaceCatalogEntry::new(
+            [9; 32],
+            assignment,
+            descriptor.clone(),
+            "/run/aos/sandbox-pins/workspaces/second".to_owned(),
+            13,
+            14,
+            CatalogIdentityAllocation::new(98_304, 65_536, 1).unwrap(),
+            Vec::new(),
+        )
+        .unwrap();
+        assert!(HostCatalogSnapshot::new(1, vec![first.clone(), overlap], Vec::new()).is_err());
+
+        let stale = WorkspaceCatalogEntry::new(
+            [9; 32],
+            assignment,
+            descriptor,
+            "/run/aos/sandbox-pins/workspaces/second".to_owned(),
+            13,
+            14,
+            CatalogIdentityAllocation::new(131_072, 65_536, 2).unwrap(),
+            Vec::new(),
+        )
+        .unwrap();
+        assert!(HostCatalogSnapshot::new(1, vec![first, stale], Vec::new()).is_err());
+    }
+
+    #[test]
+    fn retired_identity_tombstone_prevents_range_reuse() {
+        let assignment = CatalogAssignment::new([2; 16], [3; 16], 4, 5, [6; 32]).unwrap();
+        let descriptor = aos_sandbox_core::ObjectDescriptor::new(
+            aos_sandbox_core::MediaType::new("application/vnd.aos.sandbox.view.v1+cbor".to_owned())
+                .unwrap(),
+            aos_sandbox_core::ObjectDigest::from_bytes([7; 32]),
+            8,
+        );
+        let live = WorkspaceCatalogEntry::new(
+            [9; 32],
+            assignment,
+            descriptor,
+            "/run/aos/sandbox-pins/workspaces/reused".to_owned(),
+            11,
+            12,
+            CatalogIdentityAllocation::new(65_536, 65_536, 2).unwrap(),
+            Vec::new(),
+        )
+        .unwrap();
+        let snapshot = HostCatalogSnapshot::new(2, vec![live], Vec::new()).unwrap();
+        assert!(
+            snapshot
+                .with_retired_identity_allocations(vec![
+                    CatalogIdentityAllocation::new(65_536, 65_536, 1).unwrap(),
+                ])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn workspace_pin_rejects_identity_change_and_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("target");
+        std::fs::create_dir(&target).unwrap();
+        let stat = rustix::fs::stat(&target).unwrap();
+        assert!(verify_workspace_pin(target.to_str().unwrap(), stat.st_dev, stat.st_ino).is_ok());
+        assert!(
+            verify_workspace_pin(target.to_str().unwrap(), stat.st_dev, stat.st_ino + 1).is_err()
+        );
+
+        let link = directory.path().join("link");
+        symlink(&target, &link).unwrap();
+        assert!(verify_workspace_pin(link.to_str().unwrap(), stat.st_dev, stat.st_ino).is_err());
+    }
+
+    #[test]
+    fn host_network_namespace_is_never_an_admissible_pin() {
+        let stat = rustix::fs::stat("/proc/self/ns/net").unwrap();
+        assert!(verify_network_pin("/proc/self/ns/net", stat.st_dev, stat.st_ino).is_err());
     }
 }

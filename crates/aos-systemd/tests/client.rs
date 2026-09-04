@@ -5,7 +5,10 @@ mod common;
 
 use std::time::Duration;
 
-use aos_systemd::{Error, JobResult, SandboxResources, SandboxUnitName, SandboxUnitSpec};
+use aos_systemd::{
+    Error, JobResult, SandboxNspawnCommand, SandboxResolvedPaths, SandboxResources,
+    SandboxUnitName, SandboxUnitSpec,
+};
 use common::Harness;
 
 /// Cap every client await so a logic bug surfaces as a fast failure rather
@@ -217,11 +220,16 @@ async fn transient_sandbox_uses_typed_exact_transport() {
     let h = Harness::new().await;
     let name = SandboxUnitName::from_incarnation([0x42; 16]);
     let resources = SandboxResources::new(512, 1024, 64, 100).unwrap();
-    let spec = SandboxUnitSpec::new(
+    let spec = SandboxUnitSpec::new_nspawn(
         name.clone(),
-        "/nix/store/test-systemd/bin/systemd-nspawn",
-        vec!["--settings=no".into(), "--boot".into()],
-        "/proc/123/fd/7",
+        SandboxNspawnCommand::private_user_v1(
+            "/nix/store/test-systemd/bin/systemd-nspawn",
+            [0x42; 16],
+            65_536,
+            65_536,
+        )
+        .unwrap(),
+        SandboxResolvedPaths::new("/var/lib/aos/sandboxes/root", "/proc/123/fd/7").unwrap(),
         resources,
         Duration::from_secs(30),
         Duration::from_secs(10),

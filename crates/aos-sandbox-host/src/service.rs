@@ -98,7 +98,7 @@ where
                 &HostError::Protocol(ProtocolValidationError::DescriptorTableMismatch),
             ));
         }
-        let advertised_methods = [BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME];
+        let advertised_methods = advertised_methods(self.broker.launch_available());
         let session = match negotiate_client_hello(
             &hello.bytes,
             peer.credentials(),
@@ -175,6 +175,13 @@ where
             }
         }
     }
+}
+
+fn advertised_methods(launch_available: bool) -> Vec<BrokerMethod> {
+    launch_available
+        .then_some(BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME)
+        .into_iter()
+        .collect()
 }
 
 fn boottime_nanoseconds() -> Result<u64> {
@@ -322,5 +329,14 @@ mod tests {
     #[test]
     fn boottime_is_positive_and_normalized() {
         assert!(boottime_nanoseconds().unwrap() > 0);
+    }
+
+    #[test]
+    fn launch_method_is_not_advertised_without_readiness() {
+        assert!(advertised_methods(false).is_empty());
+        assert_eq!(
+            advertised_methods(true),
+            [BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME]
+        );
     }
 }
