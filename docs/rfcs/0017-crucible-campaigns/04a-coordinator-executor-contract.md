@@ -2368,10 +2368,12 @@ fallback. Removal leaves a stable tombstone while sibling children exist, so
 their recovery coordinates cannot shift; a later same-key insertion may reuse
 that slot only after the old idle authority has been transferred. Hotness
 scoring and pressure selection are enforced by a single managed-pool owner. It
-preflights all exact victims as idle, requires the demotion sink to preserve the
-planned exact/thin fallback and attest source reap before accounting release,
-restores a failed source at its exact coordinate, and reconciles any earlier
-successful releases when a multi-victim plan fails partway through. Explicit
+binds every fallback to an exact checkpoint or thin configuration-artifact
+identity, preflights all fallback identities and exact victims before the first
+transfer, and requires the demotion sink to reauthenticate the planned fallback
+and attest source reap before accounting release. It restores a failed source
+authority at its exact coordinate and reconciles any earlier successful
+releases when a multi-victim plan fails partway through. Explicit
 operator, shutdown, and source-invalidation demotions use the same ordering.
 Every attempted child start consumes the owner's process-wide monotonic-time
 fork-rate admission before source-pool routing. A concrete production demotion
