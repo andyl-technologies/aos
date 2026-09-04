@@ -53,6 +53,7 @@ struct Progress {
     active: bool,
     activation_plan_id: Option<String>,
     route_identity: Option<DeliveryActivationRoute>,
+    operations: BTreeMap<String, String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -89,6 +90,7 @@ impl RpcService {
         auth: Option<&str>,
         req: pb::PlanDeliveryDestinationRequest,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
+        super::require_absent_resource_version(&req.expected_resource_version)?;
         let claims = self.require_claims(auth)?;
         let mut intent = req
             .intent
@@ -300,7 +302,7 @@ impl RpcService {
             .map_err(RpcError::internal)?;
         if !grant.is_some_and(|grant| grant.state == "active") {
             return Err(RpcError::FailedPrecondition(
-                "an active prerequisite grant to the destination owner scope is required".into(),
+                format!("an active grant for {resource:?} to consumer scope '{scope}' is required; ask the resource owner to grant access"),
             ));
         }
         Ok(())
@@ -496,13 +498,33 @@ impl RpcService {
         let record = self
             .authorized_delivery_workflow(auth, &req.workflow_id, true)
             .await?;
-        if req.expected_resource_version != record.resource_version.to_string() {
-            return Err(RpcError::FailedPrecondition(
-                "workflow changed; reload before resuming".into(),
-            ));
-        }
-        self.run_delivery_workflow(auth, record, &req.idempotency_key)
+        let claims = self.require_claims(auth)?;
+        let expected = req
+            .expected_resource_version
+            .parse::<i64>()
+            .map_err(|_| RpcError::invalid("expectedResourceVersion must be a positive version"))?;
+        let completed = self
+            .db
+            .begin_delivery_resumption(
+                &claims.owner_kind,
+                claims.owner_id,
+                &req.idempotency_key,
+                &req.workflow_id,
+                expected,
+            )
             .await
+            .map_err(|error| RpcError::FailedPrecondition(error.to_string()))?;
+        if completed {
+            return self.delivery_workflow_response(record).await;
+        }
+        let response = self
+            .run_delivery_workflow(auth, record, &req.idempotency_key)
+            .await?;
+        self.db
+            .complete_delivery_resumption(&claims.owner_kind, claims.owner_id, &req.idempotency_key)
+            .await
+            .map_err(RpcError::internal)?;
+        Ok(response)
     }
 
     async fn save_delivery_progress(
@@ -589,15 +611,17 @@ impl RpcService {
                         error
                     );
                     self.save_delivery_progress(&mut record, &progress).await?;
-                    self.schedule_delivery_verification(&seal, &progress, request_key)
+                    self.schedule_delivery_verification(&seal, &mut progress, request_key)
                         .await?;
+                    self.save_delivery_progress(&mut record, &progress).await?;
                     return self.delivery_workflow_response(record).await;
                 }
             }
             self.save_delivery_progress(&mut record, &progress).await?;
         }
-        self.schedule_delivery_verification(&seal, &progress, request_key)
+        self.schedule_delivery_verification(&seal, &mut progress, request_key)
             .await?;
+        self.save_delivery_progress(&mut record, &progress).await?;
         self.delivery_workflow_response(record).await
     }
 
@@ -852,7 +876,7 @@ impl RpcService {
     async fn schedule_delivery_verification(
         &self,
         seal: &IntentSeal,
-        progress: &Progress,
+        progress: &mut Progress,
         request_key: &str,
     ) -> Result<(), RpcError> {
         if progress.completed.contains("endpoint")
@@ -879,6 +903,7 @@ impl RpcService {
                 )
                 .await
                 .map_err(RpcError::internal)?;
+            progress.operations.insert("endpoint".into(), operation_id);
         }
         if progress.completed.contains("route") {
             let route = self.workflow_activation_route(progress).await?;
@@ -894,6 +919,9 @@ impl RpcService {
                 )
                 .await
                 .map_err(RpcError::internal)?;
+            progress
+                .operations
+                .insert("verification".into(), operation_id);
         }
         Ok(())
     }
@@ -936,6 +964,7 @@ impl RpcService {
         record: DeliveryWorkflowRecord,
     ) -> Result<pb::DeliveryWorkflowResponse, RpcError> {
         let (seal, progress) = decode(&record)?;
+        let mut drift = None;
         let ready = if progress.completed.contains("route") {
             match self.workflow_activation_route(&progress).await {
                 Ok(route) => self
@@ -943,7 +972,10 @@ impl RpcService {
                     .delivery_workflow_route_ready(&route)
                     .await
                     .map_err(RpcError::internal)?,
-                Err(RpcError::NotFound(_) | RpcError::FailedPrecondition(_)) => false,
+                Err(error @ (RpcError::NotFound(_) | RpcError::FailedPrecondition(_))) => {
+                    drift = Some(error.to_string());
+                    false
+                }
                 Err(error) => return Err(error),
             }
         } else {
@@ -953,7 +985,7 @@ impl RpcService {
             "active"
         } else if ready {
             "ready"
-        } else if !progress.error.is_empty() {
+        } else if !progress.error.is_empty() || drift.is_some() {
             "blocked"
         } else if progress.completed.contains("route") {
             "awaiting_verification"
@@ -961,19 +993,46 @@ impl RpcService {
             "preparing"
         };
         let mut blockers = Vec::new();
+        if let Some(error) = &drift {
+            blockers.push(error.clone());
+        }
         if !progress.error.is_empty() && !progress.active {
             blockers.push(progress.error.clone());
         }
         if !ready && !progress.active {
             blockers.push("The CDN attachment, gateway, current storage publication, and delivery route must pass verification.".into());
         }
-        let next_actions = match state {
-            "active" => Vec::new(),
-            "ready" => vec!["Review and activate the verified destination.".into()],
-            _ => vec![
-                "Complete the provider attachment configuration and resume verification.".into(),
-            ],
+        let next_actions = if drift.is_some() {
+            vec!["Inspect the changed resources and create a new destination plan.".into()]
+        } else {
+            match state {
+                "active" => Vec::new(),
+                "ready" => vec!["Review and activate the verified destination.".into()],
+                _ => vec![
+                    "Complete the provider attachment configuration and resume verification."
+                        .into(),
+                ],
+            }
         };
+        let mut operations = BTreeMap::new();
+        for (step, operation_id) in &progress.operations {
+            if let Some(operation) = self
+                .db
+                .topology_operation(operation_id)
+                .await
+                .map_err(RpcError::internal)?
+            {
+                operations.insert(
+                    step.as_str(),
+                    pb::OperationRef {
+                        operation_id: operation.operation_id,
+                        kind: operation.operation_kind,
+                        state: operation.state,
+                        created_at: operation.created_at,
+                    },
+                );
+            }
+        }
         let steps = STEPS
             .iter()
             .map(|(key, label)| pb::DeliveryWorkflowStep {
@@ -997,6 +1056,7 @@ impl RpcService {
                     _ => &progress.route_id,
                 }
                 .clone(),
+                operation: operations.get(key).cloned(),
             })
             .chain(std::iter::once(pb::DeliveryWorkflowStep {
                 key: "verification".into(),
@@ -1004,6 +1064,7 @@ impl RpcService {
                 state: if ready { "complete" } else { "pending" }.into(),
                 detail: String::new(),
                 resource_id: progress.route_id.clone(),
+                operation: operations.get("verification").cloned(),
             }))
             .chain(std::iter::once(pb::DeliveryWorkflowStep {
                 key: "activation".into(),
@@ -1016,6 +1077,7 @@ impl RpcService {
                 .into(),
                 detail: String::new(),
                 resource_id: progress.route_id.clone(),
+                operation: None,
             }))
             .collect();
         Ok(pb::DeliveryWorkflowResponse {
