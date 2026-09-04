@@ -144,7 +144,9 @@ in
           store_uri="local?root=$test_root"
           runtime_path='profile-bin:profile-sbin:/usr/bin:/usr/sbin:/bin'
 
-          mkdir -p "$store_dir" "$state_dir"
+          mkdir -p "$store_dir" "$state_dir" "$test_root/etc/aos"
+          printf 'tier=testing\n' > "$test_root/etc/aos/release-profile"
+          printf 'ANDYL OS TESTING\nnot for production use\n' > "$test_root/etc/issue"
           while IFS= read -r store_path; do
             cp -a --no-preserve=ownership "$store_path" "$store_dir/"
           done < ${referenceGraph}/store-paths
@@ -152,11 +154,17 @@ in
           record="$TMPDIR/record"
           literal='literal; touch /build/aos-container-runtime-shell-reparse'
           PATH="$runtime_path" \
+            AOS_RELEASE_TIER=production \
             AOS_CONTAINER_TEST_RECORD="$record" \
             AOS_CONTAINER_TEST_LOCK="$state_dir/.aos-container-init.lock" \
             ${initProgram}/init \
               ${recorder}/bin/aos-container-runtime-recorder \
-              'first argument' "$literal"
+              'first argument' "$literal" 2> "$TMPDIR/testing-warning"
+
+          grep -Fx 'ANDYL OS TESTING' "$TMPDIR/testing-warning" >/dev/null \
+            || fail "testing container init did not display its release warning"
+          grep -Fx 'not for production use' "$TMPDIR/testing-warning" >/dev/null \
+            || fail "testing container init omitted the support disclaimer"
 
           grep -Fx "path=$runtime_path" "$record" >/dev/null \
             || fail "init did not restore the exact OCI PATH before exec"

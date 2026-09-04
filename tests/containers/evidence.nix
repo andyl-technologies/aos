@@ -227,7 +227,7 @@ in
               .schema == "aos.container.signature-input/v1"
               and .qualification == $qualification[0]
               and .qualification.readyForVerifiedPublication == true
-              and .nix.definition.attribute == "containerImages.aos"
+              and .nix.definition.attribute == "systems.server.build.containers.aos"
               and (.nix.definition.derivationPath | test("^/nix/store/[0-9a-z]{32}-.*[.]drv$"))
               and .nix.output.name == "out"
               and (.nix.output.storePath | test("^/nix/store/[0-9a-z]{32}-"))

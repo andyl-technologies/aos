@@ -52,8 +52,8 @@ const RELEASE_KEY_ID: &str = "release-evidence-v1";
 const QUALIFICATION_KEY_ID: &str = "qualification-v1";
 const PROVIDER_REVISION: &str = "fleet-provider-v1";
 const QUALIFICATION_IDENTITY: &str = "fleet-qualification-authority";
-const RELEASE_ID: &str = "aos-2026.9.0-dev.20260903.1";
-const RELEASE_VERSION: &str = "2026.9.0-dev.20260903.1";
+const RELEASE_ID: &str = "aos-2026.9.0-rc.1";
+const RELEASE_VERSION: &str = "2026.9.0-rc.1";
 const STAGING_DEPLOYMENT: &str = "fleet-staging-v1";
 const PRODUCTION_DEPLOYMENT: &str = "fleet-production-v1";
 const TIME: &str = "2026-09-03T12:00:00Z";
@@ -127,7 +127,7 @@ fn prepare(arguments: &[String]) -> Result<()> {
     let mut artifacts = Vec::new();
     inventory_tree(output, output, &mut artifacts)?;
     for (platform, source) in &package_inputs {
-        let relative = format!("releases/edge/{RELEASE_VERSION}/packages/{platform}.nar");
+        let relative = format!("releases/candidate/{RELEASE_VERSION}/packages/{platform}.nar");
         let destination = output.join(&relative);
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)?;
@@ -146,7 +146,7 @@ fn prepare(arguments: &[String]) -> Result<()> {
         "schema_version": "aos.release.fleet-gate-report/v1",
         "result": "passed"
     }))?;
-    let gate_path = "releases/edge/2026.9.0-dev.20260903.1/evidence/preflight.json";
+    let gate_path = "releases/candidate/2026.9.0-rc.1/evidence/preflight.json";
     write_new(output.join(gate_path), &gate_report)?;
     let gate_record = record(
         "evidence/fleet-preflight".into(),
@@ -163,8 +163,8 @@ fn prepare(arguments: &[String]) -> Result<()> {
         schema_version: aos_release::RELEASE_MANIFEST_V1.into(),
         release_id: RELEASE_ID.into(),
         version: RELEASE_VERSION.into(),
-        release_class: ReleaseClass::Edge,
-        registry: aos_release::CANONICAL_REGISTRY.into(),
+        release_class: ReleaseClass::Candidate,
+        registry: aos_release::registry::MAIN_REGISTRY.into(),
         plan_digest: Sha256Digest::of_bytes(&plan_bytes),
         source_commit: base_commit.clone(),
         packages: vec![PackageResult {
@@ -240,7 +240,7 @@ fn release_plan(
         SignerRole::Qualification,
         SignerRole::TufRoot,
         SignerRole::TufTargets,
-        SignerRole::TufEdge,
+        SignerRole::TufCandidate,
         SignerRole::TufSnapshot,
         SignerRole::TufTimestamp,
         SignerRole::Channel,
@@ -249,15 +249,15 @@ fn release_plan(
         schema_version: aos_release::RELEASE_PLAN_V1.into(),
         release_id: RELEASE_ID.into(),
         version: RELEASE_VERSION.into(),
-        release_class: ReleaseClass::Edge,
-        registry: aos_release::CANONICAL_REGISTRY.into(),
+        release_class: ReleaseClass::Candidate,
+        registry: aos_release::registry::MAIN_REGISTRY.into(),
         registry_base_commit: base_commit.into(),
         registry_base_generation: 1,
         source: SourceIdentity {
             commit: base_commit.into(),
             tree_digest: digest("fleet-source-tree"),
             protected_branch: "master".into(),
-            source_tag: "release/2026.9.0-dev.20260903.1".into(),
+            source_tag: "release/2026.9.0-rc.1".into(),
             contributor_authorization_digest: digest("fleet-contributor-authorization"),
         },
         packages: vec![PackagePlan {
@@ -293,7 +293,7 @@ fn release_plan(
             })
             .collect(),
         intended_channels: vec![ChannelIntent {
-            channel: "edge".into(),
+            channel: "candidate".into(),
             first_partition: 0,
             last_partition: 255,
         }],
@@ -383,7 +383,7 @@ fn signing_request(
         schema_version: SIGNING_REQUEST_DOMAIN.into(),
         request_id: format!("fleet/{artifact_kind}"),
         nonce: "2".repeat(64),
-        registry: aos_release::CANONICAL_REGISTRY.into(),
+        registry: aos_release::registry::MAIN_REGISTRY.into(),
         release_id: RELEASE_ID.into(),
         plan_digest,
         manifest_digest,

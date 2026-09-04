@@ -64,7 +64,7 @@ use aos_doc_model::{
 };
 use aos_oci_types::{
     CONTAINER_RELEASE_SIDECAR_PATH, ContainerRelease, ContainerSignatureInput,
-    limits::MAX_JSON_BYTES,
+    definition_attribute_matches_image, limits::MAX_JSON_BYTES,
 };
 use clap::ValueEnum as _;
 use regex::Regex;
@@ -15637,7 +15637,18 @@ pub async fn release(
     Ok(())
 }
 
-fn load_container_release_attachment(
+/// Loads and binds an optional externally signed container-release attachment.
+///
+/// Both paths must be supplied together. The canonical sidecar must match its
+/// Nix-produced signature input, the requested release version, and the
+/// initial `aos` package/image publication policy.
+///
+/// # Errors
+///
+/// Returns an error when only one path is supplied, either input is malformed
+/// or noncanonical, their signed identities differ, or the release, package,
+/// image, or Nix definition identity violates policy.
+pub fn load_container_release_attachment(
     version: &semver::Version,
     release_path: Option<&Path>,
     signature_input_path: Option<&Path>,
@@ -15675,8 +15686,10 @@ fn load_container_release_attachment(
     if release.identity.package != "aos" || release.identity.image != "aos" {
         bail!("the initial container release policy requires package 'aos' and image 'aos'");
     }
-    if release.nix.definition.attribute != "containerImages.aos" {
-        bail!("the initial container release policy requires Nix attribute 'containerImages.aos'");
+    if !definition_attribute_matches_image(&release.nix.definition.attribute, "aos") {
+        bail!(
+            "the initial container release policy requires the system-owned 'aos' Nix definition attribute"
+        );
     }
 
     Ok(Some(ContainerReleaseAttachment {
@@ -19424,6 +19437,14 @@ mod tests {
         let release_path = tmp.path().join("containers-v1-index.json");
         let input_path = tmp.path().join("signature-input.json");
         let version = semver::Version::parse("1.0.0").unwrap();
+        let (mut release, mut input) = container_release_inputs("1.0.0");
+        release.nix.definition.attribute = "systems.aos-testing.build.containers.aos".to_string();
+        input.nix.definition.attribute = release.nix.definition.attribute.clone();
+        fs::write(&release_path, to_canonical_json(&release).unwrap()).unwrap();
+        fs::write(&input_path, to_canonical_json(&input).unwrap()).unwrap();
+        load_container_release_attachment(&version, Some(&release_path), Some(&input_path))
+            .expect("system-owned definition attribute");
+
         let (release, mut input) = container_release_inputs("1.0.0");
         fs::write(&release_path, to_canonical_json(&release).unwrap()).unwrap();
         input.identity.package_version = "0.2.0".to_string();

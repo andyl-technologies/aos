@@ -64,6 +64,7 @@ glob = { workspace = true }
 regex = { workspace = true }
 rnix = { workspace = true }
 serde = { workspace = true }
+semver = { workspace = true }
 rand = { workspace = true }
 axum = { workspace = true }
 tokio-rustls = { workspace = true }
