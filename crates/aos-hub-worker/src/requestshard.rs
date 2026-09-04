@@ -148,7 +148,10 @@ pub(crate) fn classify_request(
     let path_key = resource_key_from_path(kind, path);
     let body_key = json_body
         .and_then(|body| serde_json::from_slice::<serde_json::Value>(body).ok())
-        .and_then(|value| resource_key_from_json(kind, &value));
+        .and_then(|value| match delivery_workflow_method(path) {
+            Some(method) => delivery_workflow_affinity(method, &value),
+            None => resource_key_from_json(kind, &value),
+        });
     let authority_key =
         (!authority.is_empty() && !is_connect_path(path)).then(|| format!("authority:{authority}"));
     let resource_key = path_key.or(body_key).or(authority_key);
@@ -163,6 +166,59 @@ pub(crate) fn classify_request(
         key: key[..32].to_string(),
         read_only: request_is_read_only(method, path),
         resource_specific,
+    }
+}
+
+fn delivery_workflow_method(path: &str) -> Option<&str> {
+    let method = path.strip_prefix("/aos.hub.v1.DeliveryService/")?;
+    matches!(
+        method,
+        "PlanDeliveryDestination"
+            | "ApplyDeliveryDestination"
+            | "GetDeliveryWorkflow"
+            | "ListDeliveryWorkflows"
+            | "ResumeDeliveryDestination"
+            | "PlanActivateDeliveryDestination"
+            | "ActivateDeliveryDestination"
+    )
+    .then_some(method)
+}
+
+// These keys are execution hints only. In particular, a plan/workflow identity
+// never supplies its authorization scope; the service reloads that from SQL.
+fn delivery_workflow_affinity(method: &str, value: &serde_json::Value) -> Option<String> {
+    fn scalar(value: &serde_json::Value, field: &str) -> Option<String> {
+        let text = value.get(field)?.as_str()?;
+        (!text.is_empty() && text.len() <= 255 && !text.chars().any(char::is_whitespace))
+            .then(|| format!("{field}:{text}"))
+    }
+    fn surface(value: &serde_json::Value) -> Option<String> {
+        let surface = value.get("surface")?;
+        match (
+            scalar(surface, "registrySlug"),
+            scalar(surface, "cacheSlug"),
+        ) {
+            (Some(key), None) | (None, Some(key)) => Some(key),
+            _ => None,
+        }
+    }
+    match method {
+        "PlanDeliveryDestination" => {
+            let intent = value.get("intent")?;
+            let owner = intent
+                .get("ownerScopeKey")
+                .and_then(serde_json::Value::as_str)
+                .filter(|scope| aos_hub_core::domain::Scope::is_canonical(scope));
+            owner
+                .map(|scope| format!("ownerScopeKey:{scope}"))
+                .or_else(|| surface(intent))
+        }
+        "GetDeliveryWorkflow" | "ResumeDeliveryDestination" | "PlanActivateDeliveryDestination" => {
+            scalar(value, "workflowId")
+        }
+        "ApplyDeliveryDestination" | "ActivateDeliveryDestination" => scalar(value, "planId"),
+        "ListDeliveryWorkflows" => surface(value),
+        _ => None,
     }
 }
 
@@ -442,6 +498,90 @@ fn request_is_read_only(method: &str, path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delivery_workflow_affinity_uses_stable_request_identity() {
+        for (method, body, retry) in [
+            (
+                "PlanDeliveryDestination",
+                r#"{"intent":{"ownerScopeKey":"instance"},"idempotencyKey":"first"}"#,
+                r#"{"intent":{"ownerScopeKey":"instance"},"idempotencyKey":"retry"}"#,
+            ),
+            (
+                "PlanDeliveryDestination",
+                r#"{"intent":{"surface":{"registrySlug":"acme/main"}}}"#,
+                r#"{"intent":{"surface":{"registrySlug":"acme/main"}},"idempotencyKey":"retry"}"#,
+            ),
+            (
+                "GetDeliveryWorkflow",
+                r#"{"workflowId":"workflow-one"}"#,
+                r#"{"workflowId":"workflow-one","unused":"hint"}"#,
+            ),
+            (
+                "ResumeDeliveryDestination",
+                r#"{"workflowId":"workflow-one","expectedResourceVersion":"1"}"#,
+                r#"{"workflowId":"workflow-one","expectedResourceVersion":"2"}"#,
+            ),
+            (
+                "PlanActivateDeliveryDestination",
+                r#"{"workflowId":"workflow-one","idempotencyKey":"first"}"#,
+                r#"{"workflowId":"workflow-one","idempotencyKey":"retry"}"#,
+            ),
+            (
+                "ApplyDeliveryDestination",
+                r#"{"planId":"plan-one","idempotencyKey":"first"}"#,
+                r#"{"planId":"plan-one","idempotencyKey":"retry"}"#,
+            ),
+            (
+                "ActivateDeliveryDestination",
+                r#"{"planId":"plan-one","confirmationHash":"first"}"#,
+                r#"{"planId":"plan-one","confirmationHash":"retry"}"#,
+            ),
+            (
+                "ListDeliveryWorkflows",
+                r#"{"surface":{"cacheSlug":"acme/cache"},"pageToken":""}"#,
+                r#"{"surface":{"cacheSlug":"acme/cache"},"pageToken":"next"}"#,
+            ),
+        ] {
+            let path = format!("/aos.hub.v1.DeliveryService/{method}");
+            let first = classify_request("POST", &path, "hub.example", Some(body.as_bytes()));
+            let second = classify_request("POST", &path, "hub.example", Some(retry.as_bytes()));
+            assert_eq!(first.kind, RequestShardKind::Tenant, "{method}");
+            assert!(first.resource_specific, "{method}");
+            assert_eq!(first.key, second.key, "{method}");
+        }
+    }
+
+    #[test]
+    fn malformed_delivery_workflow_affinity_uses_shared_fallback() {
+        for (method, body) in [
+            (
+                "PlanDeliveryDestination",
+                r#"{"intent":{"ownerScopeKey":123},"bindingId":"unrelated"}"#,
+            ),
+            (
+                "GetDeliveryWorkflow",
+                r#"{"workflowId":null,"domainId":"unrelated"}"#,
+            ),
+            (
+                "ResumeDeliveryDestination",
+                r#"{"workflowId":" ","org":"unrelated"}"#,
+            ),
+            ("PlanActivateDeliveryDestination", r#"{"workflowId":false}"#),
+            ("ApplyDeliveryDestination", r#"{"planId":[]}"#),
+            ("ActivateDeliveryDestination", r#"{"planId":{}}"#),
+            (
+                "ListDeliveryWorkflows",
+                r#"{"surface":{"registrySlug":"acme/main","cacheSlug":"acme/cache"}}"#,
+            ),
+        ] {
+            let path = format!("/aos.hub.v1.DeliveryService/{method}");
+            let malformed = classify_request("POST", &path, "hub.example", Some(body.as_bytes()));
+            let fallback = classify_request("POST", &path, "hub.example", None);
+            assert!(!malformed.resource_specific, "{method}");
+            assert_eq!(malformed.key, fallback.key, "{method}");
+        }
+    }
 
     #[test]
     fn routes_resource_families_and_stable_affinity() {
