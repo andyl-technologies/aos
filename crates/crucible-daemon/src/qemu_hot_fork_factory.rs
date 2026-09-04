@@ -130,6 +130,10 @@ pub trait QemuHotForkTemplateLauncher<G> {
 
     /// Forks one exact source into a fresh target owner.
     ///
+    /// `input` is the complete repository-resolved semantic execution paired
+    /// with `runtime_basis`. The lifecycle must retain or reconstruct this
+    /// exact scenario/start basis before exposing modeled child execution.
+    ///
     /// # Errors
     ///
     /// Returns [`QemuHotForkTemplateLaunchFailure`] retaining both authorities
@@ -139,6 +143,7 @@ pub trait QemuHotForkTemplateLauncher<G> {
         template: Self::Template,
         target: G,
         runtime_basis: AttemptExecutionRuntimeBasis,
+        input: &CrucibleAttemptExecution,
     ) -> Result<Self::Lifecycle, QemuHotForkTemplateLaunchFailure<Self::Template, G, Self::Error>>;
 
     /// Recovers the exact source after complete lifecycle reconciliation.
@@ -514,7 +519,7 @@ where
             .take()
             .ok_or_else(|| AttemptWorkerFailure::Terminal(Self::Error::TemplateUnavailable))?;
         let QemuHotForkBoundTemplate { key, source } = retained;
-        match self.launcher.launch(source, target, runtime_basis) {
+        match self.launcher.launch(source, target, runtime_basis, input) {
             Ok(lifecycle) => Ok(QemuHotForkPooledLifecycle {
                 factory: Arc::clone(&self.factory),
                 key,
@@ -695,9 +700,10 @@ where
         template: Self::Template,
         target: G,
         runtime_basis: AttemptExecutionRuntimeBasis,
+        input: &CrucibleAttemptExecution,
     ) -> Result<Self::Lifecycle, QemuHotForkTemplateLaunchFailure<Self::Template, G, Self::Error>>
     {
-        QemuHotForkAttemptReconciliation::launch(runtime_basis, template, target).map_err(
+        QemuHotForkAttemptReconciliation::launch(runtime_basis, input, template, target).map_err(
             |error: LinuxQemuHotForkAttemptLaunchError<G>| {
                 let (source, template, target) = error.into_parts();
                 QemuHotForkTemplateLaunchFailure::new(

@@ -4,6 +4,8 @@
 #![allow(clippy::expect_used)]
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+#[cfg(target_os = "linux")]
+use std::os::unix::net::UnixStream;
 
 use crucible::model::{
     Aggregation, BoundarySelector, CohortPolicy, MeasurementDefinition, MeasurementDefinitions,
@@ -24,9 +26,121 @@ use crucible_campaign::{
 };
 use crucible_protocol::SelectionRequest;
 use crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest;
+#[cfg(target_os = "linux")]
+use crucible_qemu::{
+    QemuHotForkChildDiagnosticDrain, QemuHotForkHostContinuation, QemuQmpVmStateControlChannel,
+    QemuVmRealizationError,
+};
 
 use super::*;
 use crate::{ExecutionCancellation, ExecutionCheckpointRequest, QemuFreshAttemptLifecycleOwner};
+
+#[cfg(target_os = "linux")]
+struct HotModeledLive<'a> {
+    modeled: &'a mut dyn QemuModeledAttemptLifecycle,
+    resources: AttemptResourceLimits,
+    cancellation: ExecutionCancellation,
+    event_log: EventLog,
+}
+
+#[cfg(target_os = "linux")]
+impl crate::QemuAttemptOperationalBoundary for HotModeledLive<'_> {
+    fn resource_limits(&self) -> AttemptResourceLimits {
+        self.resources
+    }
+
+    fn cancellation(&self) -> &ExecutionCancellation {
+        &self.cancellation
+    }
+
+    fn check_operational_boundary(&mut self) -> Result<(), QemuVmRealizationError> {
+        if self.cancellation.is_canceled() {
+            Err(QemuVmRealizationError::Canceled {
+                operation: "test hot-fork modeled boundary",
+            })
+        } else {
+            Ok(())
+        }
+    }
+
+    fn charge_execution_quantum(&mut self) -> Result<(), QemuVmRealizationError> {
+        self.check_operational_boundary()
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl crate::QemuHotForkLiveExecution for HotModeledLive<'_> {
+    fn modeled_lifecycle(
+        &mut self,
+    ) -> Result<&mut dyn QemuModeledAttemptLifecycle, QemuVmRealizationError> {
+        Ok(self.modeled)
+    }
+
+    fn child_qmp_mut(&mut self) -> &mut QemuQmpVmStateControlChannel<UnixStream> {
+        panic!("modeled-driver test does not use raw child QMP")
+    }
+
+    fn host_continuation_mut(&mut self) -> &mut QemuHotForkHostContinuation {
+        panic!("modeled-driver test does not use raw host continuation")
+    }
+
+    fn event_log_mut(&mut self) -> &mut EventLog {
+        &mut self.event_log
+    }
+
+    fn drain_diagnostics(
+        &mut self,
+    ) -> Result<QemuHotForkChildDiagnosticDrain, QemuVmRealizationError> {
+        panic!("modeled-driver test does not use child diagnostics")
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct RawHotLive {
+    resources: AttemptResourceLimits,
+    cancellation: ExecutionCancellation,
+    event_log: EventLog,
+}
+
+#[cfg(target_os = "linux")]
+impl crate::QemuAttemptOperationalBoundary for RawHotLive {
+    fn resource_limits(&self) -> AttemptResourceLimits {
+        self.resources
+    }
+
+    fn cancellation(&self) -> &ExecutionCancellation {
+        &self.cancellation
+    }
+
+    fn check_operational_boundary(&mut self) -> Result<(), QemuVmRealizationError> {
+        Ok(())
+    }
+
+    fn charge_execution_quantum(&mut self) -> Result<(), QemuVmRealizationError> {
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl crate::QemuHotForkLiveExecution for RawHotLive {
+    fn child_qmp_mut(&mut self) -> &mut QemuQmpVmStateControlChannel<UnixStream> {
+        panic!("raw-live test does not use child QMP")
+    }
+
+    fn host_continuation_mut(&mut self) -> &mut QemuHotForkHostContinuation {
+        panic!("raw-live test does not use host continuation")
+    }
+
+    fn event_log_mut(&mut self) -> &mut EventLog {
+        &mut self.event_log
+    }
+
+    fn drain_diagnostics(
+        &mut self,
+    ) -> Result<QemuHotForkChildDiagnosticDrain, QemuVmRealizationError> {
+        panic!("raw-live test does not use child diagnostics")
+    }
+}
 
 struct FakeLifecycle {
     outcomes: VecDeque<Result<QuantumOutcome, SchedulerError>>,
@@ -333,6 +447,117 @@ fn event_count_seals_final_drain_coverage_into_exact_candidate() {
     assert!(candidate.measurements().evaluation().is_some());
     assert!(candidate.properties().properties().is_empty());
     assert_eq!(owner.drives, 1);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn hot_fork_driver_reuses_the_common_modeled_loop_and_seals_a_candidate() {
+    let input = input(StopCondition::EventCount(1));
+    let configuration = starting_configuration(&input);
+    let node = node("node-a");
+    let mut observed = EventLog::new();
+    let append = observed
+        .append_observable_events([ObservableEvent::guest_marker(
+            Icount { retired: 1 },
+            node,
+            MarkerId::from_name("hot-fork-observation"),
+        )])
+        .expect("hot-fork observable event");
+    let mut owner = FakeLifecycle {
+        outcomes: VecDeque::from([Ok(outcome(
+            configuration.clone(),
+            append.entries,
+            append.offset,
+            1,
+        ))]),
+        terminal: None,
+        drives: 0,
+    };
+    let mut modeled = QemuFreshAttemptLifecycle::new(&mut owner);
+    let context = context();
+    let mut live = HotModeledLive {
+        modeled: &mut modeled,
+        resources: context.resources(),
+        cancellation: context.cancellation().clone(),
+        event_log: EventLog::new(),
+    };
+    let mut driver = QemuHotForkModeledDriver;
+
+    let pending = crate::QemuHotForkAttemptDriver::drive(&mut driver, &mut live, &input, &context)
+        .expect("hot-fork modeled stop");
+    let product =
+        crate::QemuHotForkAttemptDriver::seal(&mut driver, pending, &mut live, &input, &context)
+            .expect("hot-fork modeled candidate");
+    let AttemptExecutionProduct::Observation(candidate) = product else {
+        panic!("hot-fork modeled driver must return an observation")
+    };
+
+    assert_eq!(
+        candidate.child().configuration(),
+        configuration_id(&configuration)
+    );
+    assert_eq!(
+        candidate.observation().stop(),
+        &StopOutcome::Reached(StopCondition::EventCount(1))
+    );
+    assert_eq!(owner.drives, 1);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn hot_fork_driver_rejects_raw_channels_without_a_modeled_lifecycle() {
+    let input = input(StopCondition::Terminal);
+    let context = context();
+    let mut live = RawHotLive {
+        resources: context.resources(),
+        cancellation: context.cancellation().clone(),
+        event_log: EventLog::new(),
+    };
+    let mut driver = QemuHotForkModeledDriver;
+
+    let error = crate::QemuHotForkAttemptDriver::drive(&mut driver, &mut live, &input, &context)
+        .expect_err("raw child channels must not imply modeled execution readiness");
+
+    assert!(matches!(
+        error,
+        AttemptWorkerFailure::Terminal(QemuHotForkModeledDriverError::LifecycleUnavailable(_))
+    ));
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn hot_fork_driver_rejects_checkpoint_handoff_before_driving() {
+    let input = input(StopCondition::Terminal);
+    let checkpoint_request = ExecutionCheckpointRequest::default();
+    checkpoint_request.request_for_test();
+    let context = AttemptExecutionContext::new(
+        AttemptResourceLimits::new(1, 1, 0, 1).expect("checkpoint resources"),
+        ExecutionRetentionIntent::Discard,
+        ExecutionCancellation::default(),
+        checkpoint_request,
+    );
+    let mut owner = FakeLifecycle {
+        outcomes: VecDeque::new(),
+        terminal: None,
+        drives: 0,
+    };
+    let mut modeled = QemuFreshAttemptLifecycle::new(&mut owner);
+    let mut live = HotModeledLive {
+        modeled: &mut modeled,
+        resources: context.resources(),
+        cancellation: context.cancellation().clone(),
+        event_log: EventLog::new(),
+    };
+    let mut driver = QemuHotForkModeledDriver;
+
+    let error = crate::QemuHotForkAttemptDriver::drive(&mut driver, &mut live, &input, &context)
+        .expect_err("hot-child checkpoint handoff must remain owner-controlled");
+
+    assert!(matches!(
+        error,
+        AttemptWorkerFailure::Terminal(QemuHotForkModeledDriverError::CheckpointRequested)
+    ));
+    assert_eq!(owner.drives, 0);
 }
 
 #[test]

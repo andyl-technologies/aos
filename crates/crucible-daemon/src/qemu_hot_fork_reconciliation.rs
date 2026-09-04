@@ -29,6 +29,8 @@ use crucible_qemu::{
 };
 use thiserror::Error;
 
+use crate::CrucibleAttemptExecution;
+
 /// Exact supervisor reservation owning one hot-fork realization.
 pub type QemuHotForkAttemptBasis = crate::AttemptExecutionRuntimeBasis;
 
@@ -758,6 +760,7 @@ where
 {
     source: QemuNode,
     template_identity: QemuHotForkTemplateIdentity,
+    input: CrucibleAttemptExecution,
     child_event_log: EventLog,
     target: G,
     process: LinuxQemuHotForkChildProcessAuthority,
@@ -778,6 +781,7 @@ where
 /// available diagnostics. Direct QMP access is for bounded control exchange;
 /// guest progress must remain behind the operational methods.
 pub struct LinuxQemuHotForkLiveChild<'a> {
+    input: &'a CrucibleAttemptExecution,
     child_qmp: &'a mut QemuQmpVmStateControlChannel<UnixStream>,
     diagnostics: &'a mut QemuHotForkChildDiagnosticConsumer,
     host_continuation: &'a mut QemuHotForkHostContinuation,
@@ -799,6 +803,12 @@ impl fmt::Debug for LinuxQemuHotForkLiveChild<'_> {
 }
 
 impl LinuxQemuHotForkLiveChild<'_> {
+    /// Returns the exact resolved semantic input retained at child creation.
+    #[must_use]
+    pub const fn execution_input(&self) -> &CrucibleAttemptExecution {
+        self.input
+    }
+
     /// Borrows the authenticated private child QMP channel for bounded control.
     #[must_use]
     pub fn child_qmp_mut(&mut self) -> &mut QemuQmpVmStateControlChannel<UnixStream> {
@@ -885,6 +895,7 @@ where
     fn from_launch(
         source: QemuNode,
         template_identity: QemuHotForkTemplateIdentity,
+        input: CrucibleAttemptExecution,
         target: G,
         launch: QemuHotForkChildLaunch<LinuxQemuHotForkChildProcessAuthority>,
     ) -> Self {
@@ -895,6 +906,7 @@ where
         Self {
             source,
             template_identity,
+            input,
             child_event_log,
             target,
             process,
@@ -910,6 +922,7 @@ where
 
     fn live_child_mut(&mut self) -> Option<LinuxQemuHotForkLiveChild<'_>> {
         Some(LinuxQemuHotForkLiveChild {
+            input: &self.input,
             child_qmp: self.child_qmp.as_mut()?,
             diagnostics: &mut self.diagnostics_consumer,
             host_continuation: self.host_continuation.as_mut()?,
@@ -1134,6 +1147,7 @@ where
     /// established exactly.
     pub fn launch(
         attempt: QemuHotForkAttemptBasis,
+        input: &CrucibleAttemptExecution,
         template: QemuPreparedHotForkTemplate<QemuNode>,
         mut target: G,
     ) -> Result<Self, LinuxQemuHotForkAttemptLaunchError<G>> {
@@ -1151,6 +1165,7 @@ where
                 LinuxQemuHotForkReconciliationBackend::from_launch(
                     source_node,
                     template_identity,
+                    input.clone(),
                     target,
                     launch,
                 ),

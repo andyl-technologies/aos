@@ -25,7 +25,7 @@ use crate::{
     LinuxQemuHotForkReconciliationError, QemuAttemptOperationalBoundary,
     QemuAttemptProcessResourceGuard, QemuHotForkAttemptReconciliation,
     QemuHotForkAttemptReconciliationError, QemuHotForkReconciliationPhase,
-    QemuHotForkReconciliationStep,
+    QemuHotForkReconciliationStep, QemuModeledAttemptLifecycle,
 };
 
 const MIN_QEMU_HOT_FORK_REAP_POLL_INTERVAL: Duration = Duration::from_millis(1);
@@ -108,6 +108,28 @@ pub enum QemuHotForkChildExitPolicyError {
 /// must pass through [`QemuAttemptOperationalBoundary`], while bounded control
 /// and host-I/O operations use the exact private child channels.
 pub trait QemuHotForkLiveExecution: QemuAttemptOperationalBoundary {
+    /// Borrows the assembled process-owner-neutral scheduler lifecycle.
+    ///
+    /// Raw child channels do not imply modeled execution readiness. The Linux
+    /// hot-fork owner returns an error until it has atomically assembled the
+    /// branch-private node/world continuation and installed every branch-local
+    /// coordinator required by the scenario.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError`] when the child has no complete modeled
+    /// lifecycle or its assembly failed closed.
+    fn modeled_lifecycle(
+        &mut self,
+    ) -> Result<&mut dyn QemuModeledAttemptLifecycle, QemuVmRealizationError> {
+        Err(QemuVmRealizationError::Executor {
+            operation: "borrow hot-fork modeled lifecycle",
+            message: String::from(
+                "branch-private process-owner-neutral lifecycle is not assembled",
+            ),
+        })
+    }
+
     /// Borrows the authenticated branch-private child QMP channel.
     #[must_use]
     fn child_qmp_mut(&mut self) -> &mut QemuQmpVmStateControlChannel<UnixStream>;
