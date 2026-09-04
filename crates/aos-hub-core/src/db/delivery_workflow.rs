@@ -41,6 +41,12 @@ const READY_ROUTE: &str = "SELECT 1 FROM routes r
       AND g.desired_generation = de.gateway_generation
       AND g.observed_generation = de.gateway_generation AND g.reconciliation_state = 'ready'
     JOIN endpoints e ON e.id = de.endpoint_id
+    JOIN endpoint_revisions er ON er.endpoint_id = e.id
+      AND er.generation = de.endpoint_generation
+    JOIN network_policy_revision_lifecycle nl ON nl.boundary_id = e.network_policy_id
+      AND nl.revision = er.boundary_revision AND nl.state = 'active'
+    JOIN network_policy_observations no ON no.boundary_id = e.network_policy_id
+      AND no.revision = er.boundary_revision AND no.state = 'verified'
     JOIN endpoint_route_scopes eg ON eg.endpoint_id = r.endpoint_id
       AND eg.endpoint_generation = r.endpoint_generation
       AND eg.consumer_scope_key = r.consumer_scope_key AND eg.state = 'active'
@@ -59,6 +65,10 @@ const READY_ROUTE: &str = "SELECT 1 FROM routes r
       AND r.resource_version = ?4
       AND (r.access_boundary_id IS NULL OR EXISTS (
         SELECT 1 FROM network_policy_consumer_scopes ag
+        JOIN network_policy_revision_lifecycle al ON al.boundary_id = ag.boundary_id
+          AND al.revision = r.access_boundary_revision AND al.state = 'active'
+        JOIN network_policy_observations ao ON ao.boundary_id = ag.boundary_id
+          AND ao.revision = r.access_boundary_revision AND ao.state = 'verified'
         WHERE ag.boundary_id = r.access_boundary_id
           AND ag.consumer_scope_key = r.consumer_scope_key AND ag.state = 'active'))";
 

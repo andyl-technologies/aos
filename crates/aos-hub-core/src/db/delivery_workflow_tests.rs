@@ -226,6 +226,26 @@ async fn activation_rechecks_route_evidence_inside_the_transaction() {
 }
 
 #[tokio::test]
+async fn activation_rechecks_network_policy_posture_inside_the_transaction() {
+    let (db, workflow, route) = verified_fixture().await;
+    assert!(db.delivery_workflow_route_ready(&route).await.unwrap());
+    db.backend.execute("UPDATE network_policy_observations SET state = 'degraded' WHERE boundary_id = 'instance:public'", &[]).await.unwrap();
+    let audiences = [DeliveryAudienceBaseline {
+        audience: "git".into(),
+        resource_version: None,
+    }];
+    assert!(db
+        .activate_delivery_workflow(&workflow, &route, &audiences, "active")
+        .await
+        .is_err());
+    assert!(db
+        .route_advertisement(workflow.surface, "git")
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
 async fn resume_replays_after_progress_changes_and_rejects_different_input() {
     let (db, workflow, _) = verified_fixture().await;
     assert!(!db
