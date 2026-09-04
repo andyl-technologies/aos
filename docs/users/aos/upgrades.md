@@ -16,6 +16,10 @@ enrollment and the first enforcing boot have created the TPM-sealed `/var`.
 Do not stage an image update while the machine is still using the disposable
 plaintext `/var` provided in UEFI Setup Mode.
 
+[Use Secure Boot and verify package trust](secure-boot.md) explains why the
+image catalog, signed registry graph, immutable root, and package generations
+are distinct but connected verification steps.
+
 ## Prepare the rollout
 
 The system registry must contain one package with the same name as the running

@@ -16,6 +16,13 @@
 > [`../../registry/current-state.md`](../../registry/current-state.md) or
 > [`TODO.md`](./TODO.md) explicitly says they are still live.
 >
+> **Superseding security policy:** this capture's one-key registry/narinfo
+> design predates RFC-0017. Production publication uses separate registry and
+> cache signing roles. Follow
+> [`../../maintainers/trust-model.md`](../../maintainers/trust-model.md) and
+> [`../../registry/signing-and-trust.md`](../../registry/signing-and-trust.md)
+> for current policy.
+>
 > **Audience:** implementers, architects, engineers, and the doc-authoring agents.
 
 ---

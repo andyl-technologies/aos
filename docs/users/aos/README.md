@@ -55,14 +55,26 @@ consumption, and on-host activation as distinct installed capabilities.
 
 ## Operate the host
 
-- [Manage packages](packages.md) covers registry trust, user packages,
-  declarative machine-wide packages, profiles, and package rollback.
+- [Manage packages](packages.md) covers user packages, declarative machine-wide
+  packages, profiles, and package rollback.
+- [Configure package registries](registries.md) covers the built-in registry,
+  other public and internal registries, priorities, credentials, and trust.
+- [Understand the package sandbox](package-sandbox.md) explains the runtime
+  boundary for exposed services and how to inspect its effective policy.
 - [Operate an AOS host](operations.md) covers services, logs, storage,
   packages, monitoring, and maintenance.
 - [Upgrade and roll back a host](upgrades.md) covers the independent image and
   configuration generation axes, A/B boot counting, and failure semantics.
-- [Secure an AOS host](security.md) covers security presets, remote access,
-  firewall, audit policy, trust roots, and the verified-boot boundary.
+- [Use Secure Boot and verify package trust](secure-boot.md) follows the chain
+  from firmware through the immutable root to signed package content.
+- [Control access](access-control.md) covers accounts, SSH, privilege, and
+  break-glass access.
+- [Harden an AOS host](security-hardening.md) covers security presets, kernel
+  policy, service isolation, and production qualification.
+- [Audit an AOS host](auditing.md) covers audit policy, logs, evidence, and
+  verification limits.
+- [Manage certificates and CA trust](certificates.md) covers TLS identities,
+  internal CAs, rotation, and compromise response.
 - [Manage secrets on AOS](secrets.md) defines safe build-time and runtime
   handling, rotation, and incident response.
 - [Recover an AOS host](recovery.md) covers first boot, activation, packages,
