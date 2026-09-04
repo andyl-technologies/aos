@@ -95,7 +95,10 @@ pub fn registry_policy(identity: &str) -> Result<RegistryPolicy> {
         });
     }
     if let Some(epoch) = identity.strip_prefix("andyl/testing-v") {
-        if epoch.len() > 1 && epoch.starts_with('0') {
+        if epoch.is_empty()
+            || !epoch.bytes().all(|byte| byte.is_ascii_digit())
+            || (epoch.len() > 1 && epoch.starts_with('0'))
+        {
             bail!("testing registry epochs must use canonical decimal notation");
         }
         let root_epoch = epoch
@@ -151,6 +154,8 @@ mod tests {
         );
         assert!(registry_policy("andyl/testing-v1").is_err());
         assert!(registry_policy("andyl/testing-v02").is_err());
+        assert!(registry_policy("andyl/testing-v+2").is_err());
+        assert!(registry_policy("andyl/testing-v+02").is_err());
         assert!(registry_policy("andyl/nightly").is_err());
     }
 }

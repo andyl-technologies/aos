@@ -2699,8 +2699,20 @@ mod entry {
             // Worker, so they must install their own tracing subscriber.
             crate::tracinglog::init();
 
-            if let Err(err) = self.ensure_migrated().await {
-                return Response::error(format!("hubdb migrate: {err:#}"), 500);
+            // Recovery must remain available when the current schema migration
+            // fails. These exact POST routes still require the seal and live
+            // deployment identity below, and never access the relational router.
+            let recovery_request = req.method() == Method::Post
+                && req.url().is_ok_and(|url| {
+                    matches!(
+                        url.path(),
+                        "/_admin/recovery/bookmark" | "/_admin/recovery/restore"
+                    )
+                });
+            if !recovery_request {
+                if let Err(err) = self.ensure_migrated().await {
+                    return Response::error(format!("hubdb migrate: {err:#}"), 500);
+                }
             }
             // Live-workerd bootstrap (`do-e2e` only, never production). This
             // endpoint installs disposable topology and authentication state;
