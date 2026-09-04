@@ -15,8 +15,7 @@
         "-c"
         ''
           set -eu
-          mkdir -p "$out"
-          printf '%s\n' passed > "$out/result"
+          printf '%s\n' passed > "$out"
         ''
       ];
     };
@@ -70,9 +69,7 @@
         "-c"
         ''
           set -eu
-          mkdir -p "$out/share/maintain-fixture"
-          cp "$src" "$out/share/maintain-fixture/source.css"
-          printf '%s\n' "$version" > "$out/share/maintain-fixture/version"
+          printf '%s\n' "$version" > "$out"
         ''
       ];
       inherit version;

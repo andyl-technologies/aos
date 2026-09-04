@@ -119,7 +119,9 @@
             "$out/pkgs/maintain-fixture.nix"
           printf '%s\n' \
             '{' \
-            '  bash = "${pkgs.bash}";' \
+            '  bash = builtins.appendContext "${pkgs.bash}" {' \
+            '    "${pkgs.bash}" = {path = true;};' \
+            '  };' \
             '}' > "$out/fixture-inputs.nix"
         '';
       }
@@ -188,7 +190,9 @@ in {
       JQ = TOOLS + "/bin/jq"
       MOUNT = "${pkgs.util-linux}/bin/mount"
       NIX = TOOLS + "/bin/nix --extra-experimental-features nix-command"
+      NIX_DAEMON = "${pkgs.nix}/bin/nix-daemon"
       NIX_STORE = "${pkgs.nix}/bin/nix-store"
+      SLEEP = "${pkgs.coreutils}/bin/sleep"
       CLOSURE_INFO = "${mountedClosure}"
       FIXTURE_REPOSITORY = "${fixtureRepository}"
       PACKAGE_DERIVATION = "${mountedPackageDerivation}"
@@ -262,6 +266,22 @@ in {
           register_derivation {PACKAGE_DERIVATION} {PACKAGE_DERIVATION_RECORD}
           {NIX_STORE} --load-db < /tmp/derivation-registration
 
+          printf '%s\n' \
+            'experimental-features = nix-command' \
+            'sandbox = true' \
+            'build-users-group =' > /tmp/maintainer-nix.conf
+          {MOUNT} --bind /tmp/maintainer-nix.conf /etc/nix/nix.conf
+          NIX_CONFIG= {NIX_DAEMON} > /tmp/maintainer-nix-daemon.log 2>&1 &
+          attempt=0
+          while ! NIX_CONFIG= NIX_REMOTE=daemon {NIX} store ping > /dev/null 2>&1; do
+            attempt=$((attempt + 1))
+            if test "$attempt" -ge 100; then
+              cat /tmp/maintainer-nix-daemon.log >&2
+              exit 1
+            fi
+            {SLEEP} 0.1
+          done
+
           {NIX_STORE} --check-validity {TOOLS}
           {NIX_STORE} --check-validity {FIXTURE_REPOSITORY}
           {NIX_STORE} --check-validity {PACKAGE_DERIVATION}
@@ -286,7 +306,7 @@ in {
           f"{CURL_CA} -fsS https://aos.andyl.org/healthz | grep -q ok"
       )
       maintainer.succeed(
-          f"{CURL_CA} -fsS 'https://api.github.com/repos/andyl-technologies/maintain-fixture/tags?per_page=100&page=1' "
+          f"{CURL_CA} -fsS 'https://aos.andyl.org/repos/andyl-technologies/maintain-fixture/tags?per_page=100&page=1' "
           "| grep -q 'v1.1.0'"
       )
       maintainer.succeed(
@@ -325,7 +345,7 @@ in {
               export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
               export NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
               export NIX_CONFIG='experimental-features = nix-command'
-              export NIX_REMOTE=local
+              export NIX_REMOTE=daemon
               export GITHUB_API_URL=https://aos.andyl.org
               export PATH={TOOLS}/bin:$PATH
               {AOS} maintain --state-dir {STATE} --json {arguments}
@@ -411,12 +431,17 @@ in {
 
       final = invoke("test " + shlex.quote(run_id) + " --final", timeout=900)
       assert final["data"]["run"]["state"] == "final-gated", final
-      final_gates = final["data"]["gateResults"]
-      assert len(final_gates) == 1 and final_gates[0]["phase"] == "final", final
+      final_inspection = invoke("inspect " + shlex.quote(run_id))
+      final_gates = [
+          execution
+          for execution in final_inspection["data"]["gateResults"]
+          if execution["phase"] == "final"
+      ]
+      assert len(final_gates) == 1, final_inspection
       assert all(
           gate["outcome"] == "success"
           for gate in final_gates[0]["results"]
-      ), final
+      ), final_inspection
 
       evidence = invoke("evidence " + shlex.quote(run_id))
       evidence_digest = primary(evidence, "evidenceDigest")
@@ -437,7 +462,9 @@ in {
       inspected = invoke("inspect " + shlex.quote(run_id))
       assert inspected["data"]["run"]["evidenceDigest"] == evidence_digest, inspected
       active = invoke("status --active")
-      assert active["data"]["runs"] == [], active
+      assert len(active["data"]["runs"]) == 1, active
+      assert active["data"]["runs"][0]["runId"] == run_id, active
+      assert active["data"]["runs"][0]["state"] == "ready-for-pr", active
 
       maintainer.succeed(textwrap.dedent(f"""
           set -eu
