@@ -889,6 +889,25 @@ impl ResolvedCatalogCommitmentV1 {
     pub const fn binding(&self) -> CatalogBindingV1 {
         self.binding
     }
+
+    /// Checks that persisted node-local bytes retain their exact digest binding.
+    pub(crate) fn authenticates_persisted_bytes(binding: CatalogBindingV1, bytes: &[u8]) -> bool {
+        let mut hasher = Sha256::new();
+        hasher.update(DIGEST_DOMAIN);
+        hasher.update(bytes);
+        ObjectDigest::from_bytes(hasher.finalize().into()) == binding.digest()
+            && encoded_generation(bytes) == Some(binding.generation())
+    }
+}
+
+fn encoded_generation(bytes: &[u8]) -> Option<u64> {
+    // V1 starts with fixed fields 1 (magic), 2 (version), then 3 (generation).
+    let generation_offset = 5 + FORMAT_MAGIC.len() + 5 + 2;
+    let field = bytes.get(generation_offset..generation_offset.checked_add(13)?)?;
+    if field.first().copied() != Some(3) || field.get(1..5)? != 8_u32.to_be_bytes() {
+        return None;
+    }
+    Some(u64::from_be_bytes(field.get(5..13)?.try_into().ok()?))
 }
 
 fn validate_plan(plan: &CatalogPlanV1) -> Result<(), CatalogSemanticError> {

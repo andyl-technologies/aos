@@ -11,13 +11,15 @@
 //! coupled under a catalog lock. It never accepts command fragments, property
 //! names, shell text, or `PATH` lookup.
 //!
-//! Durable admission, catalog persistence, postcondition observation, and the
-//! long-running storage service and one-shot helper executable are intentionally
-//! separate layers. This crate does not spawn processes or claim that a
-//! mutation reached the catalog's expected GUID and property state.
+//! [`state`] owns the bounded, authenticated durable intent/result state
+//! machine and its exclusive catalog lock. Postcondition observation, the
+//! long-running storage service, and the one-shot helper executable remain
+//! intentionally separate layers. This crate does not spawn processes or
+//! claim that a mutation reached the catalog's expected state.
 
 pub mod catalog;
 pub mod request;
+pub mod state;
 pub mod zfs;
 
 pub use catalog::{
@@ -29,6 +31,10 @@ pub use catalog::{
 pub use request::{
     CanonicalStorageSemanticsV1, CatalogBindingV1, StorageOperation, StorageRequestError,
     StorageSemanticsError, decode_resolved,
+};
+pub use state::{
+    BeginStorageTransaction, CommittedStorageResultV1, DurableStoragePhase, StorageStateError,
+    StorageStateKey, StorageTransactionStore, VerifiedStorageResultV1,
 };
 pub use zfs::{
     AncestorPolicyTransaction, ZfsHelperContract, ZfsPrecondition, ZfsTransaction,

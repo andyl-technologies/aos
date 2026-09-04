@@ -6,11 +6,16 @@ license.workspace = true
 
 [dependencies]
 aos-proto.workspace = true
+aos-sandbox.workspace = true
 aos-sandbox-core.workspace = true
 aos-sandbox-protocol.workspace = true
 buffa.workspace = true
+hmac.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true
