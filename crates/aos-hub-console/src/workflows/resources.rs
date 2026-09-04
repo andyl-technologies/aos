@@ -352,17 +352,10 @@ fn OrganizationCreate(client: ApiClient) -> impl IntoView {
 fn OrganizationOverview(client: ApiClient, slug: String) -> impl IntoView {
     let request_slug = slug.clone();
     let resource_client = client.clone();
-    let organization = LocalResource::new(move || {
+    let snapshot = LocalResource::new(move || {
         let client = resource_client.clone();
         let slug = request_slug.clone();
-        async move {
-            client
-                .call::<_, aos_proto_types::OrganizationResponse>(
-                    aos_proto_types::ORGANIZATION_SERVICE_GET_ORGANIZATION_PATH,
-                    &aos_proto_types::GetOrganizationRequest { slug },
-                )
-                .await
-        }
+        async move { load_organization_snapshot(&client, &slug).await }
     });
 
     view! {
@@ -370,16 +363,141 @@ fn OrganizationOverview(client: ApiClient, slug: String) -> impl IntoView {
             {move || {
                 let client = client.clone();
                 Suspend::new(async move {
-                    match organization.await.as_ref() {
-                        Ok(response) => match response.organization.clone() {
-                            Some(value) => view! { <OrganizationEditor client=client organization=value/> }.into_any(),
-                            None => view! { <InlineError detail="The Hub omitted the organization.".to_string()/> }.into_any(),
-                        },
-                        Err(error) => view! { <InlineError detail=error.to_string()/> }.into_any(),
+                    match snapshot.await.as_ref() {
+                        Ok(snapshot) => view! {
+                            <OrganizationSnapshotView snapshot=snapshot.clone()/>
+                            <OrganizationEditor client=client organization=snapshot.organization.clone()/>
+                        }.into_any(),
+                        Err(detail) => view! { <InlineError detail=detail.clone()/> }.into_any(),
                     }
                 })
             }}
         </Suspense>
+    }
+}
+
+#[derive(Clone)]
+struct OrganizationSnapshot {
+    organization: aos_proto_types::Organization,
+    projects: Vec<aos_proto_types::Project>,
+    registries: Vec<aos_proto_types::Registry>,
+    caches: Vec<aos_proto_types::BinaryCache>,
+    bindings: Option<Vec<aos_proto_types::Binding>>,
+}
+
+async fn load_organization_snapshot(
+    client: &ApiClient,
+    slug: &str,
+) -> Result<OrganizationSnapshot, String> {
+    let response = client
+        .call::<_, aos_proto_types::OrganizationResponse>(
+            aos_proto_types::ORGANIZATION_SERVICE_GET_ORGANIZATION_PATH,
+            &aos_proto_types::GetOrganizationRequest {
+                slug: slug.to_string(),
+            },
+        )
+        .await
+        .map_err(|failure| failure.to_string())?;
+    let organization = response
+        .organization
+        .ok_or_else(|| "The Hub omitted the organization.".to_string())?;
+
+    let project_slug = slug.to_string();
+    let projects = client.collect_pages::<_, aos_proto_types::ListProjectsResponse, _, _, _>(
+        aos_proto_types::PROJECT_SERVICE_LIST_PROJECTS_PATH,
+        move |page_token| aos_proto_types::ListProjectsRequest {
+            org_slug: project_slug.clone(),
+            page_size: 100,
+            page_token,
+        },
+        |response| (response.projects, response.next_page_token),
+    );
+    let registries = client.collect_pages::<_, aos_proto_types::ListRegistriesResponse, _, _, _>(
+        aos_proto_types::REGISTRY_SERVICE_LIST_REGISTRIES_PATH,
+        |page_token| aos_proto_types::ListRegistriesRequest {
+            page_size: 250,
+            page_token,
+        },
+        |response| (response.registries, response.next_page_token),
+    );
+    let cache_scope = organization.owner_scope_key.clone();
+    let caches = client.collect_pages::<_, aos_proto_types::ListBinaryCachesResponse, _, _, _>(
+        aos_proto_types::BINARY_CACHE_SERVICE_LIST_BINARY_CACHES_PATH,
+        move |page_token| aos_proto_types::ListBinaryCachesRequest {
+            owner_scope_key: cache_scope.clone(),
+            page_size: 100,
+            page_token,
+        },
+        |response| (response.caches, response.next_page_token),
+    );
+    let binding_scope = organization.owner_scope_key.clone();
+    let bindings = async {
+        if !client.allows("binding.read") {
+            return Ok(None);
+        }
+        client
+            .collect_pages::<_, aos_proto_types::ListBindingsResponse, _, _, _>(
+                aos_proto_types::STORAGE_SERVICE_LIST_BINDINGS_PATH,
+                move |page_token| aos_proto_types::ListBindingsRequest {
+                    owner_scope_key: binding_scope.clone(),
+                    page_size: 100,
+                    page_token,
+                    include_granted: false,
+                },
+                |response| (response.bindings, response.next_page_token),
+            )
+            .await
+            .map(Some)
+    };
+    let (projects, registries, caches, bindings) =
+        futures::join!(projects, registries, caches, bindings);
+    let prefix = format!("{slug}/");
+
+    Ok(OrganizationSnapshot {
+        organization,
+        projects: projects.map_err(|failure| failure.to_string())?,
+        registries: registries
+            .map_err(|failure| failure.to_string())?
+            .into_iter()
+            .filter(|registry| registry.slug.starts_with(&prefix))
+            .collect(),
+        caches: caches.map_err(|failure| failure.to_string())?,
+        bindings: bindings.map_err(|failure| failure.to_string())?,
+    })
+}
+
+#[component]
+fn OrganizationSnapshotView(snapshot: OrganizationSnapshot) -> impl IntoView {
+    let slug = snapshot.organization.slug.clone();
+    let healthy_bindings = snapshot.bindings.as_ref().map(|bindings| {
+        bindings
+            .iter()
+            .filter(|binding| {
+                binding
+                    .health
+                    .as_ref()
+                    .is_some_and(|health| health.state == "healthy")
+            })
+            .count()
+    });
+    let binding_count = snapshot.bindings.as_ref().map(Vec::len);
+
+    view! {
+        <section class="panel resource-panel">
+            <div class="section-heading"><div><p class="section-kicker">"Organization scope"</p><h2>{snapshot.organization.display_name}</h2><p>"Resources and infrastructure owned by this organization."</p></div></div>
+            <div class="resource-identity">
+                <div><span>"Projects"</span><strong>{snapshot.projects.len()}</strong></div>
+                <div><span>"Registries"</span><strong>{snapshot.registries.len()}</strong></div>
+                <div><span>"Binary caches"</span><strong>{snapshot.caches.len()}</strong></div>
+                <div><span>"Healthy storage bindings"</span><strong>{match (healthy_bindings, binding_count) { (Some(healthy), Some(total)) => format!("{healthy} of {total}"), _ => "No access".to_string() }}</strong></div>
+            </div>
+            <div class="resource-grid">
+                <a class="resource-card" href=format!("/-/org/{slug}/projects")><div><span class="resource-kind">"Logical resources"</span><h3>"Projects"</h3><p>"Organize registry paths and ownership."</p></div><span class="card-arrow">"→"</span></a>
+                <a class="resource-card" href=format!("/-/org/{slug}/registries")><div><span class="resource-kind">"Content"</span><h3>"Registries"</h3><p>"Package, documentation, and container surfaces."</p></div><span class="card-arrow">"→"</span></a>
+                <a class="resource-card" href=format!("/-/org/{slug}/caches")><div><span class="resource-kind">"Shared cache"</span><h3>"Binary caches"</h3><p>"Independent cache resources used by registry stacks."</p></div><span class="card-arrow">"→"</span></a>
+                <a class="resource-card" href=format!("/-/org/{slug}/bindings")><div><span class="resource-kind">"Infrastructure"</span><h3>"Storage and delivery"</h3><p>"Bindings, domains, network policies, endpoints, and gateways."</p></div><span class="card-arrow">"→"</span></a>
+            </div>
+        </section>
     }
 }
 
@@ -388,17 +506,26 @@ fn OrganizationEditor(
     client: ApiClient,
     organization: aos_proto_types::Organization,
 ) -> impl IntoView {
+    let can_manage = client.allows("members.manage");
     let display_name = RwSignal::new(organization.display_name.clone());
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
     let slug = organization.slug.clone();
     let resource_version = organization.resource_version.clone();
+    let draft_epoch = watch_draft(
+        move || {
+            let _ = display_name.get();
+        },
+        pending,
+        error,
+    );
 
     let plan_client = client.clone();
     let plan_slug = slug.clone();
     let on_plan = move |event: SubmitEvent| {
         event.prevent_default();
+        pending.set(None);
         let client = plan_client.clone();
         let idempotency_key = idempotency_key("organization-update");
         let request = aos_proto_types::PlanUpdateOrganizationRequest {
@@ -407,6 +534,7 @@ fn OrganizationEditor(
             expected_resource_version: resource_version.clone(),
             idempotency_key: idempotency_key.clone(),
         };
+        let planned_epoch = draft_epoch.get_untracked();
         busy.set(true);
         error.set(None);
         spawn_local(async move {
@@ -419,7 +547,10 @@ fn OrganizationEditor(
                 .map_err(|failure| failure.to_string())
                 .and_then(|response| PendingPlan::from_response(response, idempotency_key));
             match result {
-                Ok(reviewed) => pending.set(Some(reviewed)),
+                Ok(reviewed) if draft_epoch.get_untracked() == planned_epoch => {
+                    pending.set(Some(reviewed));
+                }
+                Ok(_) => {}
                 Err(detail) => error.set(Some(detail)),
             }
             busy.set(false);
@@ -451,13 +582,14 @@ fn OrganizationEditor(
     });
 
     view! {
-        <section class="panel editor-panel">
+        <details class="panel editor-panel">
+            <summary>"Advanced organization profile"</summary>
             <div class="resource-identity">
                 <div><span>"Stable ID"</span><code>{organization.stable_id}</code></div>
                 <div><span>"Scope"</span><code>{organization.owner_scope_key}</code></div>
                 <div><span>"Version"</span><code>{organization.resource_version}</code></div>
             </div>
-            <form class="editor-form" on:submit=on_plan>
+            {can_manage.then(|| view! { <form class="editor-form" on:submit=on_plan>
                 <label>
                     <span>"Organization slug"<HelpTooltip term="Organization slug" summary="This canonical identity cannot change after creation."/></span>
                     <input disabled value=organization.slug />
@@ -470,7 +602,7 @@ fn OrganizationEditor(
                 <div class="form-actions">
                     <button class="button" type="submit" disabled=move || busy.get()>"Review update"</button>
                 </div>
-            </form>
+            </form> })}
             {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
             {move || pending.get().map(|reviewed| view! {
                 <ReviewedPlanCard
@@ -480,7 +612,7 @@ fn OrganizationEditor(
                     on_cancel=Callback::new(move |()| pending.set(None))
                 />
             })}
-        </section>
+        </details>
     }
 }
 

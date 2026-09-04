@@ -15,6 +15,7 @@ use crate::transport::ApiClient;
 /// Renders population targets, observed coverage, and the reviewed set editor.
 #[component]
 pub(super) fn CachePopulation(client: ApiClient, cache_id: String) -> impl IntoView {
+    let can_manage = client.allows("registry.configure");
     let read_client = client.clone();
     let read_cache = cache_id.clone();
     let targets = LocalResource::new(move || {
@@ -61,7 +62,7 @@ pub(super) fn CachePopulation(client: ApiClient, cache_id: String) -> impl IntoV
                             Ok(targets) => view! {
                                 <div class="binding-list">
                                     {targets.iter().cloned().map(|target| view! {
-                                        <PopulationTargetCard client=client.clone() cache_id=cache_id.clone() target=target/>
+                                        <PopulationTargetCard client=client.clone() cache_id=cache_id.clone() target=target can_manage=can_manage/>
                                     }).collect_view()}
                                 </div>
                             }
@@ -71,7 +72,7 @@ pub(super) fn CachePopulation(client: ApiClient, cache_id: String) -> impl IntoV
                     })
                 }}
             </Suspense>
-            <PopulationEditor client=client cache_id=cache_id/>
+            {can_manage.then(|| view! { <PopulationEditor client=client cache_id=cache_id/> })}
         </section>
     }
 }
@@ -81,6 +82,7 @@ fn PopulationTargetCard(
     client: ApiClient,
     cache_id: String,
     target: aos_proto_types::PopulationTarget,
+    can_manage: bool,
 ) -> impl IntoView {
     let edit_target = target.clone();
     let registry_id = target.registry_id.clone();
@@ -137,7 +139,7 @@ fn PopulationTargetCard(
                     }
                 })}
             </Suspense>
-            <div class="form-actions">
+            {can_manage.then(|| view! { <div class="form-actions">
                 <PopulationAction client=client.clone() cache_id=cache_id.clone() registry_id=registry_id.clone() version=version.clone() action=PopulationActionKind::Run/>
                 <PopulationAction client=client.clone() cache_id=cache_id.clone() registry_id=registry_id.clone() version=version.clone() action=PopulationActionKind::Validate/>
                 <PopulationAction client=client.clone() cache_id=cache_id.clone() registry_id=registry_id.clone() version=version.clone() action=PopulationActionKind::Repair/>
@@ -146,7 +148,7 @@ fn PopulationTargetCard(
             <details>
                 <summary>"Edit this population target"</summary>
                 <PopulationEditor client=client cache_id=cache_id initial=edit_target/>
-            </details>
+            </details> })}
         </article>
     }
 }
