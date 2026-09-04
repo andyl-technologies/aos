@@ -167,6 +167,26 @@ in
           jq -e -s 'any(.[]; has("error"))' "$out/stock-child-qmp.json" >/dev/null \
             || fail "stock QEMU unexpectedly exposed the Crucible child-QMP stage"
           qmp "$stock_socket" \
+            '{"exec-oob":"crucible-hot-fork","arguments":{"template-generation":0,"private-ring-generation":0,"diagnostic-generation":0,"qmp-generation":0,"console-generation":0,"monitor-generation":0,"plugin-endpoint-generation":0,"plugin-barrier-generation":0,"rcu-barrier-generation":0,"bh-timer-barrier-generation":0,"block-barrier-generation":0,"parent-process-generation":0,"child-process-generation":0,"child-process-contract-generation":0}}' \
+            "$out/stock-fork.json"
+          jq -e -s 'any(.[]; has("error"))' "$out/stock-fork.json" >/dev/null \
+            || fail "stock QEMU unexpectedly exposed the Crucible retained-template fork command"
+          qmp "$stock_socket" \
+            '{"exec-oob":"crucible-hot-fork-child-process","arguments":{"action":"query","generation":1}}' \
+            "$out/stock-child-process.json"
+          jq -e -s 'any(.[]; has("error"))' "$out/stock-child-process.json" >/dev/null \
+            || fail "stock QEMU unexpectedly exposed the Crucible retained-child status command"
+          qmp "$stock_socket" \
+            '{"exec-oob":"crucible-hot-fork-child-process-contract","arguments":{"action":"query"}}' \
+            "$out/stock-child-process-contract.json"
+          jq -e -s 'any(.[]; has("error"))' "$out/stock-child-process-contract.json" >/dev/null \
+            || fail "stock QEMU unexpectedly exposed the Crucible child-process contract stage"
+          qmp "$stock_socket" \
+            '{"exec-oob":"crucible-hot-fork-child-console","arguments":{"action":"query"}}' \
+            "$out/stock-child-console.json"
+          jq -e -s 'any(.[]; has("error"))' "$out/stock-child-console.json" >/dev/null \
+            || fail "stock QEMU unexpectedly exposed the Crucible child-console stage"
+          qmp "$stock_socket" \
             '{"exec-oob":"crucible-hot-fork-plugin-endpoints","arguments":{"action":"query"}}' \
             "$out/stock-plugin-endpoints.json"
           jq -e -s 'any(.[]; has("error"))' "$out/stock-plugin-endpoints.json" >/dev/null \
@@ -222,6 +242,59 @@ in
             || { cat "$out/prelaunch-readiness.json" >&2; fail "prelaunch readiness was not exact"; }
 
           qmp "$patched_socket" \
+            '{"exec-oob":"crucible-hot-fork","arguments":{"template-generation":0,"private-ring-generation":0,"diagnostic-generation":0,"qmp-generation":0,"console-generation":0,"monitor-generation":0,"plugin-endpoint-generation":0,"plugin-barrier-generation":0,"rcu-barrier-generation":0,"bh-timer-barrier-generation":0,"block-barrier-generation":0,"parent-process-generation":0,"child-process-generation":0,"child-process-contract-generation":0}}' \
+            "$out/fork-without-template.json"
+          jq -e -s 'any(.[]; has("error"))' "$out/fork-without-template.json" >/dev/null \
+            || { cat "$out/fork-without-template.json" >&2; fail "retained-template fork did not fail closed without an admitted template"; }
+
+          qmp "$patched_socket" \
+            '{"exec-oob":"crucible-hot-fork-child-process","arguments":{"action":"query","generation":1}}' \
+            "$out/child-process-unknown.json"
+          jq -e -s 'any(.[]; has("error"))' "$out/child-process-unknown.json" >/dev/null \
+            || { cat "$out/child-process-unknown.json" >&2; fail "unknown retained-child generation was accepted"; }
+
+          qmp "$patched_socket" \
+            '{"exec-oob":"crucible-hot-fork-child-process-contract","arguments":{"action":"query"}}' \
+            "$out/child-process-contract-initial.json"
+          jq -e -s '
+            [.[] | select(has("return"))][-1].return == {
+              "schema-version": 1,
+              "generation": 0,
+              "template-generation": 0,
+              "staged": false,
+              "consumed": false,
+              "cgroup-device": 0,
+              "cgroup-inode": 0,
+              "cancellation-eventfd-id": 0,
+              "maximum-file-bytes": 0,
+              "clone-into-cgroup": false
+            }
+          ' "$out/child-process-contract-initial.json" >/dev/null \
+            || { cat "$out/child-process-contract-initial.json" >&2; fail "initial child-process contract state was not exact"; }
+
+          qmp "$patched_socket" \
+            '{"exec-oob":"crucible-hot-fork-child-console","arguments":{"action":"query"}}' \
+            "$out/child-console-initial.json"
+          jq -e -s '
+            [.[] | select(has("return"))][-1].return == {
+              "schema-version": 1,
+              "generation": 0,
+              "template-generation": 0,
+              "staged": false,
+              "socket-cookie": 0,
+              "retained-fd": -1,
+              "resource-plan-bound": false,
+              "nonblocking-unix-stream": false,
+              "console-basis-bound": false,
+              "reinitializer-prepared": false,
+              "reinitialized": false,
+              "disposition-complete": false,
+              "readiness-proof-acknowledged": false
+            }
+          ' "$out/child-console-initial.json" >/dev/null \
+            || { cat "$out/child-console-initial.json" >&2; fail "initial child-console state was not exact"; }
+
+          qmp "$patched_socket" \
             '{"exec-oob":"crucible-hot-fork-private-rings","arguments":{"action":"query"}}' \
             "$out/private-rings-initial.json"
           jq -e -s '
@@ -269,7 +342,7 @@ in
             "$out/child-qmp-initial.json"
           jq -e -s '
             [.[] | select(has("return"))][-1].return == {
-              "schema-version": 7,
+              "schema-version": 8,
               "generation": 0,
               "template-generation": 0,
               "monitor-generation": 0,
@@ -1452,13 +1525,13 @@ in
               "schema-version",
               "transaction-active"
             ] and
-            $report."schema-version" == 22 and
+            $report."schema-version" == 24 and
             $report.generation == 0 and
             $report.outcome == "idle" and
             $report."transaction-active" == false and
-            $report."required-proofs" == 511 and
+            $report."required-proofs" == 127 and
             $report."acknowledged-proofs" == 3 and
-            $report."missing-proofs" == 508 and
+            $report."missing-proofs" == 124 and
             $report."plugin-barrier" == {
               "schema-version": 6,
               "generation": 0,
@@ -1486,7 +1559,7 @@ in
             $report."bh-timer-barrier" == $bh_report and
             $report."block-barrier" == $block_report and
             $report."resource-stage" == {
-              "schema-version": 12,
+              "schema-version": 13,
               "template-generation": 0,
               "private-ring-staged": false,
               "private-ring-generation": 2,
@@ -1496,6 +1569,9 @@ in
               "qmp-staged": false,
               "qmp-generation": 0,
               "qmp-resource-plan-bound": false,
+              "console-staged": false,
+              "console-generation": 0,
+              "console-resource-plan-bound": false,
               "plugin-endpoints-staged": false,
               "plugin-endpoint-generation": 2,
               "plugin-private-ring-generation": 0,
@@ -1849,12 +1925,20 @@ in
           patch=0189-crucible-retain-async-fork-barrier-through-child-release.patch
           patch=0190-crucible-release-child-async-barrier-before-qmp-start.patch
           patch=0191-crucible-coordinate-fork-on-main-loop.patch
+          patch=0192-crucible-fork-retained-templates-through-private-qmp.patch
+          patch=0193-crucible-retain-hot-fork-child-status.patch
+          patch=0194-crucible-contain-hot-fork-children-from-birth.patch
+          patch=0195-crucible-replace-fork-child-console-endpoint.patch
+          retained_template_fork_rejects_unprepared=true
+          retained_child_unknown_generation_rejected=true
+          child_process_contract_initially_absent=true
+          child_console_initially_absent=true
           plugin_endpoint_schema_version=4
           plugin_endpoint_source_descriptors_observed=true
           plugin_endpoint_replacement_plan_bound=false
           child_diagnostics_schema_version=1
           child_diagnostics_initially_absent=true
-          child_qmp_schema_version=7
+          child_qmp_schema_version=8
           child_qmp_initially_absent=true
           child_qmp_monitor_basis_bound=false
           child_qmp_monitor_disposition_bound=false
@@ -1949,13 +2033,13 @@ in
           plugin_endpoint_two_layer_release=true
           plugin_endpoint_disposition_complete=false
           plugin_endpoint_readiness_proof_acknowledged=false
-          template_coordinator_schema_version=22
+          template_coordinator_schema_version=24
           plugin_child_plan_report_bound=true
           plugin_child_resource_plan_report_bound=true
           child_resource_contribution_composition=true
           sealed_child_resource_plan_application=true
           child_descriptor_replacement_composition=true
-          template_resource_stage_schema_version=12
+          template_resource_stage_schema_version=13
           template_worker_disposition_bound=false
           template_resource_stage_empty_after_release=true
           template_coordinator_idle_stable=true

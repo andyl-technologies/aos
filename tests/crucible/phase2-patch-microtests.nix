@@ -3163,6 +3163,78 @@
         '';
       };
     }
+    {
+      patch = "0192-crucible-fork-retained-templates-through-private-qmp.patch";
+      check = certifyExactPatch {
+        patchName = "0192-crucible-fork-retained-templates-through-private-qmp.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "qemu-hot-fork-private-qmp-transaction";
+        liveEvidence = ''
+          grep -Fxq 'patch=0192-crucible-fork-retained-templates-through-private-qmp.patch' "$live_result"
+          grep -Fxq 'retained_template_fork_rejects_unprepared=true' "$live_result"
+          grep -Fq "'command': 'crucible-hot-fork'" \
+            ${patchDir}/0192-crucible-fork-retained-templates-through-private-qmp.patch
+          grep -Fq 'qemu_crucible_hot_fork_complete_child_resource_plan' \
+            ${patchDir}/0192-crucible-fork-retained-templates-through-private-qmp.patch
+          grep -Fq 'monitor_hot_fork_release_child_protocol_input' \
+            ${patchDir}/0192-crucible-fork-retained-templates-through-private-qmp.patch
+        '';
+      };
+    }
+    {
+      patch = "0193-crucible-retain-hot-fork-child-status.patch";
+      check = certifyExactPatch {
+        patchName = "0193-crucible-retain-hot-fork-child-status.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "qemu-hot-fork-parent-reap-status";
+        liveEvidence = ''
+          grep -Fxq 'patch=0193-crucible-retain-hot-fork-child-status.patch' "$live_result"
+          grep -Fxq 'retained_child_unknown_generation_rejected=true' "$live_result"
+          grep -Fq 'CRUCIBLE_HOT_FORK_MAX_RETAINED_CHILDREN 4096' \
+            ${patchDir}/0193-crucible-retain-hot-fork-child-status.patch
+          grep -Fq 'waitpid(child->process_id, &child->wait_status,' \
+            ${patchDir}/0193-crucible-retain-hot-fork-child-status.patch
+          grep -Fq "'command': 'crucible-hot-fork-child-process'" \
+            ${patchDir}/0193-crucible-retain-hot-fork-child-status.patch
+        '';
+      };
+    }
+    {
+      patch = "0194-crucible-contain-hot-fork-children-from-birth.patch";
+      check = certifyExactPatch {
+        patchName = "0194-crucible-contain-hot-fork-children-from-birth.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "qemu-hot-fork-child-process-contract";
+        liveEvidence = ''
+          grep -Fxq 'patch=0194-crucible-contain-hot-fork-children-from-birth.patch' "$live_result"
+          grep -Fxq 'child_process_contract_initially_absent=true' "$live_result"
+          grep -Fq 'CLONE_INTO_CGROUP' \
+            ${patchDir}/0194-crucible-contain-hot-fork-children-from-birth.patch
+          grep -Fq 'qemu_crucible_hot_fork_child_check_process_contract' \
+            ${patchDir}/0194-crucible-contain-hot-fork-children-from-birth.patch
+          grep -Fq "'command': 'crucible-hot-fork-child-process-contract'" \
+            ${patchDir}/0194-crucible-contain-hot-fork-children-from-birth.patch
+        '';
+      };
+    }
+    {
+      patch = "0195-crucible-replace-fork-child-console-endpoint.patch";
+      check = certifyExactPatch {
+        patchName = "0195-crucible-replace-fork-child-console-endpoint.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "qemu-hot-fork-child-console";
+        liveEvidence = ''
+          grep -Fxq 'patch=0195-crucible-replace-fork-child-console-endpoint.patch' "$live_result"
+          grep -Fxq 'child_console_initially_absent=true' "$live_result"
+          grep -Fq 'QEMU_CRUCIBLE_HOT_FORK_CONSOLE_CHILD_FLAGS_COMPLETE' \
+            ${patchDir}/0195-crucible-replace-fork-child-console-endpoint.patch
+          grep -Fq 'qemu_chr_socket_hot_fork_reconstruct_child_held' \
+            ${patchDir}/0195-crucible-replace-fork-child-console-endpoint.patch
+          grep -Fq "'command': 'crucible-hot-fork-child-console'" \
+            ${patchDir}/0195-crucible-replace-fork-child-console-endpoint.patch
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =

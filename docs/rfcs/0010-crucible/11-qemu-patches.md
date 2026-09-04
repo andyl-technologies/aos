@@ -3504,6 +3504,77 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   versioned command before guest admission or readiness bits 7 and 8.
 - **Risk:** F.
 
+### crucible-hot-fork-private-qmp-transaction — fork retained templates through private QMP
+
+- **Patch:** `0192-crucible-fork-retained-templates-through-private-qmp.patch`.
+- **Enforces:** [HFORK-3], [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10],
+  [HFORK-11], [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** a generation-bound QMP command submits the retained template
+  operation to the source main-loop coordinator. The immediate child proves
+  inherited descriptor disposition, reconstructs registered runtime and
+  private plugin/QMP endpoints, releases the copied block barrier, and remains
+  paused behind its authenticated private-QMP readiness report.
+- **Micro-test:** the live readiness flight proves the command is absent from
+  stock QEMU and rejects a fork without an admitted template. The child-resource
+  unit suite exercises the complete descriptor and runtime transaction, and
+  exact drop-one attribution binds those effects to this patch.
+- **Inertness:** the command fails closed until every exact retained-template
+  prerequisite is staged. Daemon direct-child quarantine, hard containment,
+  modeled guest admission, and the full production flight remain open.
+- **Risk:** F.
+
+### crucible-hot-fork-parent-reap-status — retain exact child wait status
+
+- **Patch:** `0193-crucible-retain-hot-fork-child-status.patch`.
+- **Enforces:** [HFORK-3], [HFORK-4], [HFORK-11], [HFORK-22].
+- **Mechanism:** the source QEMU reserves one of 4096 unique child-process
+  generations before fork, performs at most one nonblocking `waitpid(2)` per
+  query or release, retains exact exit or signal status after reap, and requires
+  explicit release before a generation can be reused.
+- **Micro-test:** the live readiness flight proves the command is absent from
+  stock QEMU and rejects an unknown generation. The coordinator unit suite
+  covers retained running, exited, signaled, release, and reuse behavior, with
+  exact drop-one attribution to this patch.
+- **Inertness:** records exist only for children created through the retained
+  fork command. Daemon reconciliation and the full production flight remain
+  open.
+- **Risk:** F.
+
+### crucible-hot-fork-child-process-contract — contain children from birth
+
+- **Patch:** `0194-crucible-contain-hot-fork-children-from-birth.patch`.
+- **Enforces:** [HFORK-3], [HFORK-4], [HFORK-11], [HFORK-22].
+- **Mechanism:** a generation-bound QMP transaction retains an authenticated
+  cgroup-v2 directory, sticky nonblocking cancellation eventfd, and file-size
+  ceiling. The coordinator uses `clone3(CLONE_INTO_CGROUP)`, and the immediate
+  child checks cancellation and installs `RLIMIT_FSIZE` before reconstructing
+  runtime state.
+- **Micro-test:** the live readiness flight proves the command is absent from
+  stock QEMU and checks the exact empty initial state. Coordinator tests cover
+  the birth-time process contract, and exact drop-one attribution binds the
+  surface and implementation to this patch.
+- **Inertness:** no child contract exists until the host stages an exact basis;
+  an unstaged retained fork fails closed. Terminal source/target reconciliation
+  and modeled guest admission remain open.
+- **Risk:** F.
+
+### crucible-hot-fork-child-console — replace the fork-child console endpoint
+
+- **Patch:** `0195-crucible-replace-fork-child-console-endpoint.patch`.
+- **Enforces:** [HFORK-3], [HFORK-4], [HFORK-8], [HFORK-11], [HFORK-22].
+- **Mechanism:** one generation-bound nonblocking Unix stream replaces the
+  inherited `crucible-console` connection in the child while the source console
+  remains unchanged. Input stays held until reconstruction and exact endpoint
+  disposition complete.
+- **Micro-test:** the live readiness flight proves the command is absent from
+  stock QEMU and checks the exact empty initial state. Child-resource tests
+  exercise one-shot console reconstruction and alias rejection, with exact
+  drop-one attribution to this patch.
+- **Inertness:** the endpoint cannot be staged without the exact active template,
+  private QMP basis, connected console frontend, and authenticated socket.
+  Modeled guest admission and the full production flight remain open.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.
