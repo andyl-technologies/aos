@@ -224,6 +224,14 @@ open the relative path once with beneath, no-magic-link, no-symlink, and
 no-mount-crossing resolution, measure that same descriptor before mapping, and
 repeat the measurement and identity check after mapping; it must never validate
 and reopen.
+The measurement ioctl alone is not a kernel immutability proof: FUSE can
+forward it to an untrusted userspace implementation. The Linux boundary first
+checks the filesystem type on the same descriptor and admits only audited
+kernel ext4, Btrfs, and F2FS implementations. FUSE, overlay, and unknown
+filesystems fail closed; adding a backend requires an audit of its proof
+provenance and verification semantics. The same rule applies to unmapped
+backing-file admission. Fs-verity protects content, not mutable ownership,
+mode bits, or xattrs, which require independent presentation policy.
 Ordinary files, mode-bit read-only files, and descriptor hashes do not satisfy
 either proof.
 

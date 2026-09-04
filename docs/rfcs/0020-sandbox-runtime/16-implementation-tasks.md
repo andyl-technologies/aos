@@ -1178,6 +1178,22 @@ completes. The Git history remains authoritative for code details.
   file data, and worker process integration remain open. No task is checked
   from the library alone.
 
+- `81247127a` — adds owned, read-only fs-verity backing admission without
+  mapping the full file. Exact-size ceilings precede opening; filesystem type,
+  measurement, size, and identity are checked on the same pinned descriptor.
+  Both backing and existing mapping admission now reject forwarded/emulated
+  ioctl proofs: only audited kernel ext4, Btrfs, and F2FS implementations are
+  admitted. Regular-file candidate opening is nonblocking and cannot acquire
+  a controlling terminal before type rejection. All 47 Linux unit tests, four
+  ownership doctests, strict scoped Clippy, rustdoc, and independent review pass.
+  This is not publication/disclosure authorization, revocation, or positive
+  real-kernel Rust backing admission evidence.
+- `f72bbee84` — adds a bounded incremental verifier for the exact existing v1
+  object-descriptor framing. It retains no payload, rejects overrun before
+  hashing, permanently poisons on length failure, and checks exact length and
+  digest at completion. One-shot golden framing remains unchanged. All 145
+  core unit tests, one doctest, strict Clippy, rustdoc, and independent review
+  pass. Full-file publisher effects and authority remain open.
 - `9b0820b33` — qualifies the actual Rust metadata worker toward `SBX-FS-03`
   on AOS Linux 6.18.33 x86_64. A narrow, unpublished fixture compiles a canonical
   tree, validates its index and presentation, and calls the public scoped runner
@@ -1282,3 +1298,12 @@ offline `/sysroot` identity and entering initrd emergency mode; the printed
 tail concealed the earlier failure. Master includes target-root symlink
 resolution and Nix-overlay ordering fixes for this path. A post-merge runtime
 rerun is required before either fix counts as platform evidence.
+
+The post-merge run
+(`rchvf07nymqvpb3ihp87af8ym7rk59cv-aos-fleet-test-sandbox-filesystem-capability-proof-0.drv`)
+completed the hermetic AOS package build/check and reached full-system guest
+readiness. Credential recovery succeeds in both initrd and the booted system.
+The test body passed fs-verity and failed passthrough because its captured probe
+predates `44e0abf1d`'s receive-buffer repair. That failure cancelled the sibling
+metadata fleet gate after readiness; it is being rerun independently. This
+resolves the observed boot blocker, not the complete filesystem fleet gate.
