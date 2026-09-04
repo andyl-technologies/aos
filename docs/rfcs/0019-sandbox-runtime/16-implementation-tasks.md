@@ -999,6 +999,24 @@ completes. The Git history remains authoritative for code details.
   adversarial reviews. FUSE cookie translation, borrowed presentation mapping,
   inode-to-record access, connection dispatch, and kernel realization remain
   open, so `SBX-FS-02` remains unchecked.
+- `c24786738` — further foundation toward `SBX-FS-02` and `SBX-FS-03`:
+  portable component validation now accepts borrowed kernel/protocol bytes
+  without allocation and is the single implementation used by owned names.
+  Exact byte lookup retains full-digest partitioning and byte comparison, while
+  the inode table exposes the same borrowed path. A `LiveInode` capability
+  reauthenticates the record against V2/V3 format structure, recomputes its
+  semantic identity and keyed reverse mapping, and immutably borrows the table
+  while record, semantic, or V3 directory views exist. Parent lookup, semantic
+  reuse, `getattr`, file-open reservation, and active-open observation all use
+  that same proof; same-artifact record substitution fails before references,
+  pins, handles, heap, or monotonic IDs change. Pending reservations expose a
+  raw reply identity without transitioning state; the originating table still
+  resolves it as pending, active after activation, or stale after abort. The
+  slice passes 140 core tests, 74 filesystem tests, the harness-free allocator
+  binary, seven compile-fail doctests, strict Clippy, warning-denied rustdoc,
+  scoped formatting, and independent adversarial review. Directory-handle and
+  cookie state, borrowed presentation translation, worker dispatch, and the
+  real kernel connection remain open, so neither task is checked.
 
 The post-`727da7f3e` x86_64 `sandbox-filesystem-capability-proof` rerun built the
 complete hermetic Rust closure, AOS system, initrd, and VM disk and launched
