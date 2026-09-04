@@ -833,6 +833,23 @@ completes. The Git history remains authoritative for code details.
   rustdoc, formatting, and multi-round independent adversarial review. The
   production seqpacket client, systemd service binding, and Host Apply
   advertisement remain open.
+- `d96752e94` — further foundation toward `SBX-FS-02`: structural-index V2
+  retains V1's validated record encoding and adds a fixed-width canonical
+  child-lookup table under a distinct media type. Entries sort by parent,
+  full domain-separated SHA-256 component digest, and record ID; lookup uses a
+  binary lower bound and then requires byte-exact parent and component matches,
+  so digest collisions cannot change correctness. Validation reconstructs the
+  table from exact record starts and requires byte-for-byte equality, rejecting
+  omissions, duplicates, forged offsets, and alternate orderings before a
+  lazy borrowed node view is exposed. V1 remains golden-compatible and
+  validation-only. Compilation pre-admits retained lookup storage together
+  with graph queues, record scratch, hard-link state, and the finish-time
+  sorting copy under the aggregate working-memory ceiling. The slice passes 33
+  unit tests, one doctest, strict all-target crate-local Clippy,
+  warning-denied rustdoc, formatting, and independent adversarial review.
+  Immutable backing-file opening/sealing, mapping lifetime, per-connection
+  inode assignment, FUSE authority, and `FORGET` handling remain open, so
+  `SBX-FS-02` remains unchecked.
 
 The post-`727da7f3e` x86_64 `sandbox-filesystem-capability-proof` rerun built the
 complete hermetic Rust closure, AOS system, initrd, and VM disk and launched
