@@ -716,6 +716,25 @@ completes. The Git history remains authoritative for code details.
   state fails closed. The implementation passes 105 unit tests plus doctests,
   strict all-target Clippy, warning-denied rustdoc, formatting, and adversarial
   review. The production explicit authority-resume path remains open.
+- `042ed7be3` — foundation toward `SBX-CTRL-03` and `SBX-MULTI-01`: the public
+  controller can now explicitly resume a durably ownership-gated operation.
+  Pending work always queries its exact request-ID and claim digest first,
+  begins only confirmed-absent intent, and completes only a confirmed-pending
+  transaction. The client pins one immutable negotiated authority, method set,
+  and request/response/duration bounds; independently decoded response fields
+  remain hostile until exact transcript, method, and transaction validation.
+  Completed responses are cryptographically checked as four exact artifacts,
+  bound to the canonical claim and publication draft, and released only through
+  the crate-private atomic activation bridge. Restarted activated replay makes
+  no session, network, or clock call. Unavailable, malformed, forged, stale,
+  and clock-observation failures do not publish authority or release the gate,
+  and retry starts with Query. The local paired-clock observation is explicitly
+  non-authorizing; every privileged broker must reverify protected current time
+  and all fences immediately before an effect. Recovery behavior now comes only
+  from the protocol's canonical error mapping, including wrong-authority-epoch
+  replanning. The implementation passes 114 sandbox unit tests, one downstream
+  public-API integration test, 14 ownership-protocol tests, all doctests, strict
+  Clippy, warning-denied rustdoc, formatting, and adversarial review.
 
 The post-`727da7f3e` x86_64 `sandbox-filesystem-capability-proof` rerun built the
 complete hermetic Rust closure, AOS system, initrd, and VM disk and launched
