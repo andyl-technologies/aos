@@ -5,6 +5,7 @@ use std::io::{self, Read};
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 
+use crucible_protocol::ControlLifecycleStream;
 use thiserror::Error;
 
 use super::*;
@@ -99,12 +100,71 @@ impl QemuHotForkPluginEndpointStageProof {
     }
 }
 
+/// Linear host endpoint for one branch-private hot-fork plugin continuation.
+///
+/// The endpoint starts directly in the authenticated shared-memory run phase:
+/// the child reinitializer, rather than this host, installed the paired plugin
+/// descriptor after `fork(2)`. Its wake descriptor is the exact eventfd named by
+/// [`QemuHotForkPluginEndpointStageProof`].
+pub struct QemuHotForkPluginHostEndpoint {
+    control: ControlLifecycleStream<UnixStream>,
+    wake: OwnedFd,
+    identity: crate::QmpHotForkPluginEndpointIdentity,
+    private_ring_generation: u64,
+    template_generation: u64,
+}
+
+impl std::fmt::Debug for QemuHotForkPluginHostEndpoint {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("QemuHotForkPluginHostEndpoint")
+            .field("identity", &self.identity)
+            .field("private_ring_generation", &self.private_ring_generation)
+            .field("template_generation", &self.template_generation)
+            .finish_non_exhaustive()
+    }
+}
+
+impl QemuHotForkPluginHostEndpoint {
+    /// Returns the authenticated socket/eventfd identity.
+    #[must_use]
+    pub const fn identity(&self) -> crate::QmpHotForkPluginEndpointIdentity {
+        self.identity
+    }
+
+    /// Returns the exact private-ring generation installed in the child.
+    #[must_use]
+    pub const fn private_ring_generation(&self) -> u64 {
+        self.private_ring_generation
+    }
+
+    /// Returns the source template generation that created the child.
+    #[must_use]
+    pub const fn template_generation(&self) -> u64 {
+        self.template_generation
+    }
+
+    /// Borrows the branch-private plugin wake eventfd.
+    #[must_use]
+    pub fn wake_as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        self.wake.as_fd()
+    }
+}
+
+impl QemuPluginIpcControlChannel for QemuHotForkPluginHostEndpoint {
+    fn send_quit(&mut self) -> Result<(), QemuNodeChannelError> {
+        self.control.host_send_quit().map_err(|source| {
+            QemuNodeChannelError::new("send hot-fork plugin control Quit", source.to_string())
+        })
+    }
+}
+
 pub(super) struct QemuHotForkPluginEndpointPair {
     // Both sides remain owned until a complete fork-child handoff consumes the
     // host continuation and QEMU's retained duplicates.
-    _host_control: UnixStream,
+    host_control: Option<UnixStream>,
     child_control: UnixStream,
-    _host_wake: OwnedFd,
+    host_wake: Option<OwnedFd>,
     child_wake: OwnedFd,
     control_name: crate::QmpDescriptorName,
     wake_name: crate::QmpDescriptorName,
@@ -149,6 +209,35 @@ impl QemuHotForkPluginEndpointPair {
             replacement_plan: self.replacement_plan,
         }
     }
+
+    fn host_endpoint_available(&self) -> bool {
+        self.host_control.is_some() && self.host_wake.is_some()
+    }
+
+    fn take_host_endpoint(
+        &mut self,
+    ) -> Result<QemuHotForkPluginHostEndpoint, QemuNodeChannelError> {
+        let Some(control) = self.host_control.take() else {
+            return Err(QemuNodeChannelError::new(
+                "take hot-fork plugin host endpoint",
+                "branch-private plugin control endpoint was already transferred",
+            ));
+        };
+        let Some(wake) = self.host_wake.take() else {
+            self.host_control = Some(control);
+            return Err(QemuNodeChannelError::new(
+                "take hot-fork plugin host endpoint",
+                "branch-private plugin wake endpoint is unavailable",
+            ));
+        };
+        Ok(QemuHotForkPluginHostEndpoint {
+            control: ControlLifecycleStream::restored_run_via_shared_memory(control),
+            wake,
+            identity: self.identity,
+            private_ring_generation: self.private_ring_generation,
+            template_generation: self.template_generation,
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -166,6 +255,25 @@ impl QemuHotForkPluginEndpointStage {
             Self::TransferUncertain(endpoints) => {
                 endpoints.proof(QemuHotForkPluginEndpointStageState::TransferUncertain)
             }
+        }
+    }
+
+    pub(super) fn host_endpoint_available(&self) -> bool {
+        match self {
+            Self::Installed(endpoints) => endpoints.host_endpoint_available(),
+            Self::TransferUncertain(_) => false,
+        }
+    }
+
+    pub(super) fn take_host_endpoint(
+        &mut self,
+    ) -> Result<QemuHotForkPluginHostEndpoint, QemuNodeChannelError> {
+        match self {
+            Self::Installed(endpoints) => endpoints.take_host_endpoint(),
+            Self::TransferUncertain(_) => Err(QemuNodeChannelError::new(
+                "take hot-fork plugin host endpoint",
+                "plugin endpoint transfer ownership is uncertain",
+            )),
         }
     }
 }
@@ -210,7 +318,8 @@ impl QemuNode {
     /// its exact held plugin and host barriers, creates a fresh connected/empty
     /// Unix stream plus empty nonblocking eventfd, and transfers both child
     /// endpoints through typed QMP. It retains the corresponding host endpoints
-    /// but exposes no host-continuation or child-release authority yet.
+    /// until one successful fork consumes them into the branch-private plugin
+    /// host continuation.
     ///
     /// # Errors
     ///
@@ -548,9 +657,9 @@ fn create_plugin_endpoint_pair(
             .map_err(|source| QemuHotForkPluginEndpointError::DescriptorName { source })?;
 
     Ok(QemuHotForkPluginEndpointPair {
-        _host_control: host_control,
+        host_control: Some(host_control),
         child_control,
-        _host_wake: host_wake,
+        host_wake: Some(host_wake),
         child_wake,
         control_name,
         wake_name,

@@ -1,6 +1,7 @@
 //! Owned mapped shared-memory adapter for QEMU quantum channels.
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use crucible::{
     AppRandomDecision, BackendInput, ExecutionFingerprint, ExecutionHorizon, Icount,
@@ -73,7 +74,7 @@ pub struct QemuMappedQuantumShmemHotPath {
     pending_selectable_requests: Vec<SelectablePlanPendingRequest>,
     selectable_catalog_plan: Option<SelectableCatalogPlan>,
     queued_selectable_reply: Option<SelectionReply>,
-    send_authorizer: Box<dyn SchedulerSendAuthorizer>,
+    send_authorizer: Arc<dyn SchedulerSendAuthorizer>,
 }
 
 impl QemuMappedQuantumShmemHotPath {
@@ -240,7 +241,52 @@ impl QemuMappedQuantumShmemHotPath {
             pending_selectable_requests,
             selectable_catalog_plan,
             queued_selectable_reply: None,
-            send_authorizer: Box::new(send_authorizer),
+            send_authorizer: Arc::new(send_authorizer),
+        })
+    }
+
+    /// Clones the scheduler-owned continuation onto one authenticated private ring.
+    ///
+    /// The ring contents were copied while both endpoints were held. This method
+    /// clones only host-owned cursors, pending values, coverage state, selectable
+    /// continuation, and the topology authorizer. The source channel remains
+    /// unchanged and usable as the retained template continuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuMappedQuantumShmemHotPathError`] when the private mapping no
+    /// longer has the exact configured layout or slot topology.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn clone_onto_hot_fork_region(
+        &self,
+        mut region: MappedSetupRegion,
+    ) -> Result<Self, QemuMappedQuantumShmemHotPathError> {
+        validate_config(&self.config)?;
+        {
+            let _view = mapped_view(&mut region, &self.config)?;
+        }
+
+        Ok(Self {
+            config: self.config.clone(),
+            region,
+            next_router_inbound_sequence: self.next_router_inbound_sequence,
+            inbound_delivery_ledger: self.inbound_delivery_ledger.clone(),
+            coverage_bridge: self.coverage_bridge.clone(),
+            next_coverage_sequence: self.next_coverage_sequence,
+            last_coverage_icount: self.last_coverage_icount,
+            seen_coverage_map_indices: self.seen_coverage_map_indices.clone(),
+            next_marker_sequence: self.next_marker_sequence,
+            next_guest_introspection_request_sequence: self
+                .next_guest_introspection_request_sequence,
+            next_guest_introspection_response_sequence: self
+                .next_guest_introspection_response_sequence,
+            last_marker_icount: self.last_marker_icount,
+            pending_marker_events: self.pending_marker_events.clone(),
+            pending_app_random_decisions: self.pending_app_random_decisions.clone(),
+            pending_selectable_requests: self.pending_selectable_requests.clone(),
+            selectable_catalog_plan: self.selectable_catalog_plan.clone(),
+            queued_selectable_reply: self.queued_selectable_reply.clone(),
+            send_authorizer: Arc::clone(&self.send_authorizer),
         })
     }
 
@@ -662,6 +708,20 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
             .map_err(|source| {
                 QemuNodeChannelError::new("capture hot-fork ring image", source.to_string())
             })
+    }
+
+    fn clone_hot_fork_host_continuation(
+        &self,
+        mapping: &crate::QemuHotForkPrivateRingMapping,
+    ) -> Result<Box<dyn QemuShmemHotPathChannel>, QemuNodeChannelError> {
+        let region = mapping.map_host_view()?;
+        let continuation = self.clone_onto_hot_fork_region(region).map_err(|source| {
+            QemuNodeChannelError::new(
+                "clone hot-fork shared-memory host continuation",
+                source.to_string(),
+            )
+        })?;
+        Ok(Box::new(continuation))
     }
 
     fn checkpoint_network_transport(
@@ -1238,3 +1298,7 @@ mod fingerprint_tests;
 #[cfg(test)]
 #[path = "mapped_quantum/selectable_tests.rs"]
 mod selectable_tests;
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "mapped_quantum/hot_fork_continuation_tests.rs"]
+mod hot_fork_continuation_tests;

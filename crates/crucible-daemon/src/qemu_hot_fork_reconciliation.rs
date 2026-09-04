@@ -4,10 +4,11 @@
 //! hierarchies: the source QEMU remains the child's direct parent and owns its
 //! exact `waitpid` result, while the target attempt owner retains the cgroup,
 //! sticky cancellation signal, and an independent pidfd. This module keeps
-//! those authorities, the private child QMP endpoint, executor accounting
-//! basis, and publication disposition in one linear state machine. No source
-//! record or process-contract descriptor is released until child reap, target
-//! cgroup cleanup, and the semantic publication outcome are all known.
+//! those authorities, the private child QMP endpoint, the plugin control/wake
+//! and shared-memory continuation, executor accounting basis, and publication
+//! disposition in one linear state machine. No source record or
+//! process-contract descriptor is released until child reap, target cgroup
+//! cleanup, and the semantic publication outcome are all known.
 
 use std::error::Error;
 use std::fmt;
@@ -17,8 +18,9 @@ use crucible_campaign::{ExactCheckpointId, ObservationId};
 use crucible_qemu::{
     LinuxQemuHotForkChildProcessAuthority, QemuHotForkChildLaunch, QemuHotForkChildProcessBasis,
     QemuHotForkChildProcessOwner, QemuHotForkChildQmpHandshakeError, QemuHotForkLaunchError,
-    QemuNode, QemuNodeChannelError, QemuQmpVmStateControlChannel, QemuVmRealizationError,
-    QmpHotForkChildProcessPhase, QmpHotForkChildProcessState,
+    QemuHotForkPluginHostContinuation, QemuNode, QemuNodeChannelError,
+    QemuQmpVmStateControlChannel, QemuVmRealizationError, QmpHotForkChildProcessPhase,
+    QmpHotForkChildProcessState,
 };
 use thiserror::Error;
 
@@ -709,6 +711,7 @@ where
     basis: QemuHotForkChildProcessBasis,
     pending_child_qmp: Option<crucible_qemu::QemuHotForkChildQmpHostEndpoint>,
     child_qmp: Option<QemuQmpVmStateControlChannel<UnixStream>>,
+    host_continuation: Option<QemuHotForkPluginHostContinuation>,
     source_release: LinuxSourceReleasePhase,
     diagnostics: Option<crucible_qemu::QemuHotForkChildDiagnosticCapture>,
 }
@@ -724,6 +727,7 @@ where
             .field("basis", &self.basis)
             .field("pending_child_qmp", &self.pending_child_qmp.is_some())
             .field("child_qmp_admitted", &self.child_qmp.is_some())
+            .field("host_continuation", &self.host_continuation.is_some())
             .field("source_release", &self.source_release)
             .field("diagnostics", &self.diagnostics.is_some())
             .finish_non_exhaustive()
@@ -740,7 +744,7 @@ where
         target: G,
         launch: QemuHotForkChildLaunch<LinuxQemuHotForkChildProcessAuthority>,
     ) -> Self {
-        let (_parent, process, child_qmp) = launch.into_parts();
+        let (_parent, process, child_qmp, host_continuation) = launch.into_parts();
         let basis = process.basis();
         Self {
             source,
@@ -749,6 +753,7 @@ where
             basis,
             pending_child_qmp: Some(child_qmp),
             child_qmp: None,
+            host_continuation: Some(host_continuation),
             source_release: LinuxSourceReleasePhase::CloseChildChannel,
             diagnostics: None,
         }
@@ -758,6 +763,12 @@ where
     #[must_use]
     pub fn child_qmp_mut(&mut self) -> Option<&mut QemuQmpVmStateControlChannel<UnixStream>> {
         self.child_qmp.as_mut()
+    }
+
+    /// Returns mutable access to the exact branch-private plugin continuation.
+    #[must_use]
+    pub fn host_continuation_mut(&mut self) -> Option<&mut QemuHotForkPluginHostContinuation> {
+        self.host_continuation.as_mut()
     }
 
     /// Returns the narrow operational boundary paired with the live child.
@@ -773,6 +784,25 @@ where
     )> {
         let child_qmp = self.child_qmp.as_mut()?;
         Some((child_qmp, &mut self.target))
+    }
+
+    /// Returns every admitted child channel with the non-releasing boundary.
+    ///
+    /// The plugin continuation owns the branch-private control socket, wake
+    /// eventfd, mapped ring continuation, and retained ring descriptor. The
+    /// returned operational boundary can check cancellation and charge quanta,
+    /// but cannot finish or quarantine the complete target guard.
+    #[must_use]
+    pub fn live_child_plugin_parts_mut(
+        &mut self,
+    ) -> Option<(
+        &mut QemuQmpVmStateControlChannel<UnixStream>,
+        &mut QemuHotForkPluginHostContinuation,
+        &mut dyn crate::QemuAttemptOperationalBoundary,
+    )> {
+        let child_qmp = self.child_qmp.as_mut()?;
+        let host_continuation = self.host_continuation.as_mut()?;
+        Some((child_qmp, host_continuation, &mut self.target))
     }
 
     /// Returns the bounded final child diagnostic capture after source release.
@@ -828,6 +858,7 @@ where
                 LinuxSourceReleasePhase::CloseChildChannel => {
                     self.pending_child_qmp = None;
                     self.child_qmp = None;
+                    self.host_continuation = None;
                     self.source_release = LinuxSourceReleasePhase::PluginEndpoints;
                 }
                 LinuxSourceReleasePhase::PluginEndpoints => {
@@ -1008,6 +1039,24 @@ where
             return None;
         }
         self.backend.as_mut()?.live_child_operational_parts_mut()
+    }
+
+    /// Returns the admitted QMP and private plugin continuation with its boundary.
+    ///
+    /// The triple is available only while the exact child is live. It exposes no
+    /// release, cgroup, quota, or quarantine authority to modeled code.
+    #[must_use]
+    pub fn live_child_plugin_parts_mut(
+        &mut self,
+    ) -> Option<(
+        &mut QemuQmpVmStateControlChannel<UnixStream>,
+        &mut QemuHotForkPluginHostContinuation,
+        &mut dyn crate::QemuAttemptOperationalBoundary,
+    )> {
+        if self.phase != QemuHotForkReconciliationPhase::Live {
+            return None;
+        }
+        self.backend.as_mut()?.live_child_plugin_parts_mut()
     }
 }
 
