@@ -21,9 +21,9 @@ use aos_sandbox_core::model::{
     SignatureStatement,
 };
 use aos_sandbox_core::{
+    descriptor_for_bytes, signature_signing_message, validate_descriptor_role, verify_signature,
     BrokerAuthorizationPlan, CanonicalCborError, DecodeLimits, DescriptorRole, MediaType,
     ObjectDescriptor, ObjectDigest, OwnershipLease, PortableMediaType, RegistryError, TrustScopeId,
-    descriptor_for_bytes, signature_signing_message, validate_descriptor_role, verify_signature,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -118,7 +118,7 @@ impl SigningAuthority {
 
 /// Describes one exact statement submitted to a protected signer.
 ///
-/// Both byte slices are owned by the enclosing [`AuthorizationPreparation`].
+/// Both byte slices are owned by the enclosing preparation object.
 /// `signing_message` is the precise Ed25519 input, including the RFC-0019
 /// domain separator. Signing only `canonical_statement` is invalid.
 #[derive(Clone, Copy, Debug)]
@@ -180,8 +180,109 @@ impl PreparedArtifact {
 /// through completion.
 #[derive(Clone, Debug)]
 pub struct AuthorizationPreparation {
-    broker_plan: PreparedArtifact,
+    broker_plan: BrokerPlanPreparation,
     ownership_lease: PreparedArtifact,
+}
+
+/// Holds one immutable broker plan while its protected signature is pending.
+#[derive(Clone, Debug)]
+pub struct BrokerPlanPreparation {
+    plan: BrokerAuthorizationPlan,
+    artifact: PreparedArtifact,
+}
+
+impl BrokerPlanPreparation {
+    /// Canonicalizes and freezes one broker authorization plan for signing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthorizationPreparationError`] when `authority` is not a
+    /// broker-plan authority or statement construction rejects the plan.
+    pub fn new(
+        plan: BrokerAuthorizationPlan,
+        authority: SigningAuthority,
+    ) -> Result<Self, AuthorizationPreparationError> {
+        if authority.purpose != SignaturePurpose::BrokerAuthorization {
+            return Err(AuthorizationPreparationError::PurposeMismatch);
+        }
+        let canonical = encode_broker_authorization_plan(&plan);
+        let artifact = prepare_artifact(
+            canonical,
+            PortableMediaType::BrokerAuthorizationPlan,
+            authority,
+            plan.issued_seconds(),
+            plan.expires_seconds(),
+        )?;
+        Ok(Self { plan, artifact })
+    }
+
+    /// Returns the exact broker-plan signing request.
+    #[must_use]
+    pub fn signing_request(&self) -> PreparedSigningRequest<'_> {
+        self.artifact.signing_request()
+    }
+
+    /// Returns the frozen canonical broker-plan bytes.
+    #[must_use]
+    pub fn canonical_plan(&self) -> &[u8] {
+        &self.artifact.canonical_object
+    }
+
+    /// Accepts a protected signer response and produces an immutable plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthorizationPreparationError`] when the response is
+    /// malformed, differs from the prepared statement, fails verification, or
+    /// is outside its validity interval.
+    pub fn complete(
+        self,
+        signature: ReturnedSignature<'_>,
+        now_seconds: i64,
+    ) -> Result<SignedBrokerPlan, AuthorizationPreparationError> {
+        let canonical_signature = accept_signature(&self.artifact, signature, now_seconds)?;
+        Ok(SignedBrokerPlan {
+            plan: self.plan,
+            digest: self.artifact.statement.subject().digest(),
+            canonical_plan: self.artifact.canonical_object,
+            canonical_signature,
+        })
+    }
+}
+
+/// Owns one verified, byte-exact controller-signed broker plan.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SignedBrokerPlan {
+    pub(crate) plan: BrokerAuthorizationPlan,
+    digest: ObjectDigest,
+    canonical_plan: Vec<u8>,
+    canonical_signature: Vec<u8>,
+}
+
+impl SignedBrokerPlan {
+    /// Returns the decoded immutable plan semantics.
+    #[must_use]
+    pub const fn plan(&self) -> &BrokerAuthorizationPlan {
+        &self.plan
+    }
+
+    /// Returns the digest of the exact canonical plan bytes.
+    #[must_use]
+    pub const fn digest(&self) -> ObjectDigest {
+        self.digest
+    }
+
+    /// Returns the exact canonical broker-plan bytes.
+    #[must_use]
+    pub fn canonical_plan(&self) -> &[u8] {
+        &self.canonical_plan
+    }
+
+    /// Returns the exact canonical detached-signature bytes.
+    #[must_use]
+    pub fn canonical_signature(&self) -> &[u8] {
+        &self.canonical_signature
+    }
 }
 
 impl AuthorizationPreparation {
@@ -222,14 +323,7 @@ impl AuthorizationPreparation {
             return Err(AuthorizationPreparationError::SignerMismatch);
         }
 
-        let plan_bytes = encode_broker_authorization_plan(&broker_plan);
-        let plan = prepare_artifact(
-            plan_bytes,
-            PortableMediaType::BrokerAuthorizationPlan,
-            broker_authority,
-            broker_plan.issued_seconds(),
-            broker_plan.expires_seconds(),
-        )?;
+        let plan = BrokerPlanPreparation::new(broker_plan, broker_authority)?;
         let lease_bytes = encode_ownership_lease(&ownership_lease);
         let lease = prepare_artifact(
             lease_bytes,
@@ -260,7 +354,7 @@ impl AuthorizationPreparation {
     /// Returns the frozen canonical broker-plan bytes committed by its statement.
     #[must_use]
     pub fn broker_plan_bytes(&self) -> &[u8] {
-        &self.broker_plan.canonical_object
+        self.broker_plan.canonical_plan()
     }
 
     /// Returns the frozen canonical ownership-lease bytes committed by its statement.
@@ -286,8 +380,9 @@ impl AuthorizationPreparation {
         ownership_lease_signature: ReturnedSignature<'_>,
         now_seconds: i64,
     ) -> Result<AuthorizationArtifacts, AuthorizationPreparationError> {
-        let plan_signature =
-            accept_signature(&self.broker_plan, broker_plan_signature, now_seconds)?;
+        let signed_plan = self
+            .broker_plan
+            .complete(broker_plan_signature, now_seconds)?;
         let lease_signature = accept_signature(
             &self.ownership_lease,
             ownership_lease_signature,
@@ -295,8 +390,8 @@ impl AuthorizationPreparation {
         )?;
 
         Ok(AuthorizationArtifacts {
-            broker_plan: self.broker_plan.canonical_object,
-            broker_plan_signature: plan_signature,
+            broker_plan: signed_plan.canonical_plan,
+            broker_plan_signature: signed_plan.canonical_signature,
             ownership_lease: self.ownership_lease.canonical_object,
             ownership_lease_signature: lease_signature,
         })
@@ -481,7 +576,11 @@ const fn bounded_policy_limits(requested: DecodeLimits) -> DecodeLimits {
 }
 
 const fn min_usize(left: usize, right: usize) -> usize {
-    if left < right { left } else { right }
+    if left < right {
+        left
+    } else {
+        right
+    }
 }
 
 #[cfg(test)]
@@ -491,9 +590,10 @@ mod tests {
     };
     use aos_sandbox_core::model::{KeyUsage, StableKeyId, TrustPolicy};
     use aos_sandbox_core::{
-        AssignmentEpoch, BrokerArgumentCommitment, BrokerAssignment, BrokerAudience, BrokerGrant,
-        BrokerGrantTarget, BrokerVerb, DesiredGeneration, IncarnationId, LeaseAssignment, NodeId,
-        ProtocolId, ProtocolVersion, RevocationScopeId, SandboxId, sign_statement,
+        sign_statement, AssignmentEpoch, BrokerArgumentCommitment, BrokerAssignment,
+        BrokerAudience, BrokerGrant, BrokerGrantTarget, BrokerVerb, DesiredGeneration,
+        IncarnationId, LeaseAssignment, NodeId, ProtocolId, ProtocolVersion, RevocationScopeId,
+        SandboxId,
     };
     use ed25519_dalek::SigningKey;
 
@@ -577,17 +677,15 @@ mod tests {
             assignment,
             node,
             lease_authority.signer().clone(),
-            vec![
-                BrokerGrant::new(
-                    BrokerVerb::MountCreate,
-                    BrokerGrantTarget::Assignment,
-                    BrokerArgumentCommitment::from_digest(ObjectDigest::from_bytes([7; 32]))
-                        .unwrap_or_else(|error| panic!("test argument commitment failed: {error}")),
-                    4096,
-                    0,
-                )
-                .unwrap_or_else(|error| panic!("test grant failed: {error}")),
-            ],
+            vec![BrokerGrant::new(
+                BrokerVerb::MountCreate,
+                BrokerGrantTarget::Assignment,
+                BrokerArgumentCommitment::from_digest(ObjectDigest::from_bytes([7; 32]))
+                    .unwrap_or_else(|error| panic!("test argument commitment failed: {error}")),
+                4096,
+                0,
+            )
+            .unwrap_or_else(|error| panic!("test grant failed: {error}"))],
             ObjectDigest::from_bytes([8; 32]),
             RevocationScopeId::from_bytes([9; 16]),
             100,

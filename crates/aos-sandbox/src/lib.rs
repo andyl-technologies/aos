@@ -6,13 +6,19 @@
 //! broker implementations deliberately live outside this crate.
 
 pub mod authority;
+pub mod dispatch;
 pub mod journal;
 pub mod ownership_authority;
 pub mod reconciler;
 
 pub use authority::{
     AuthorizationArtifactQuartet, AuthorizationArtifacts, AuthorizationPreparation,
-    AuthorizationPreparationError, PreparedSigningRequest, ReturnedSignature, SigningAuthority,
+    AuthorizationPreparationError, BrokerPlanPreparation, PreparedSigningRequest,
+    ReturnedSignature, SignedBrokerPlan, SigningAuthority,
+};
+pub use dispatch::{
+    BrokerDispatchAttemptError, BrokerDispatchAttemptV1, BrokerDispatchSemanticIdentityV1,
+    BrokerDispatchTemplateError, BrokerDispatchTemplateV1,
 };
 pub use journal::{
     CommitResult, IdempotencyKey, IdempotencyOutcome, Journal, JournalError, JournalLimits,

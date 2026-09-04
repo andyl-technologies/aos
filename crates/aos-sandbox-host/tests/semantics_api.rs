@@ -68,6 +68,8 @@ fn controller_can_build_a_grant_without_reimplementing_host_canonicalization() {
     )
     .unwrap();
     let semantics = canonical_host_semantics_v1(&validated).unwrap();
+    let protocol_semantics =
+        aos_sandbox_protocol::semantics::host::canonical_host_semantics_v1(&validated).unwrap();
     let grant = BrokerGrant::new(
         semantics.verb(),
         semantics.target(),
@@ -80,4 +82,12 @@ fn controller_can_build_a_grant_without_reimplementing_host_canonicalization() {
     assert_eq!(grant.verb(), BrokerVerb::HostLaunch);
     assert_eq!(grant.target(), BrokerGrantTarget::Assignment);
     assert_eq!(grant.argument_commitment(), semantics.commitment());
+    assert_eq!(semantics, protocol_semantics);
+    assert_eq!(
+        semantics.commitment().digest().as_bytes(),
+        &[
+            35, 227, 95, 238, 242, 122, 252, 129, 22, 98, 12, 91, 146, 108, 223, 185, 213, 86, 198,
+            225, 216, 229, 109, 118, 22, 185, 126, 180, 74, 178, 141, 35,
+        ]
+    );
 }

@@ -18,9 +18,9 @@
 use aos_sandbox_core::format::{decode_signature, encode_signature};
 use aos_sandbox_core::model::KeyReference;
 use aos_sandbox_core::{
-    BrokerAssignment, DecodeLimits, DesiredGeneration, IncarnationId, LeaseAssignment, NodeId,
-    ObjectDigest, OwnershipLeaseTrustAnchor, RawPairedClockSample, SandboxId,
-    VerifiedOwnershipLease, verify_ownership_lease,
+    verify_ownership_lease, BrokerAssignment, DecodeLimits, DesiredGeneration, IncarnationId,
+    LeaseAssignment, NodeId, ObjectDigest, OwnershipLeaseTrustAnchor, RawPairedClockSample,
+    SandboxId, VerifiedOwnershipLease,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -511,6 +511,7 @@ impl OwnershipAuthorityVerifier {
             authority_expires_seconds: verified.lease().authority_expires_seconds(),
             maximum_clock_skew_seconds: verified.lease().maximum_clock_skew_seconds(),
             renewal_nonce: *verified.lease().renewal_nonce(),
+            signer: signature.statement().signer().clone(),
         })
     }
 }
@@ -528,9 +529,43 @@ pub struct SignedOwnershipLease {
     authority_expires_seconds: i64,
     maximum_clock_skew_seconds: u64,
     renewal_nonce: [u8; 16],
+    signer: KeyReference,
 }
 
 impl SignedOwnershipLease {
+    #[cfg(test)]
+    pub(crate) fn from_test_artifacts(
+        lease: aos_sandbox_core::OwnershipLease,
+        canonical_signature: Vec<u8>,
+    ) -> Self {
+        let canonical_lease = aos_sandbox_core::format::encode_ownership_lease(&lease);
+        let media_type = aos_sandbox_core::MediaType::new(
+            aos_sandbox_core::PortableMediaType::OwnershipLease
+                .as_str()
+                .to_owned(),
+        )
+        .unwrap_or_else(|error| panic!("test lease media type failed: {error}"));
+        let digest = aos_sandbox_core::descriptor_for_bytes(media_type, &canonical_lease).digest();
+        let signature = aos_sandbox_core::format::decode_signature(
+            &canonical_signature,
+            aos_sandbox_core::DecodeLimits::default(),
+        )
+        .unwrap_or_else(|error| panic!("test lease signature failed: {error}"));
+        Self {
+            canonical_lease,
+            canonical_signature,
+            generation: lease.lease_generation(),
+            digest,
+            assignment: lease.assignment(),
+            node: lease.node(),
+            authority_issued_seconds: lease.authority_issued_seconds(),
+            authority_expires_seconds: lease.authority_expires_seconds(),
+            maximum_clock_skew_seconds: lease.maximum_clock_skew_seconds(),
+            renewal_nonce: *lease.renewal_nonce(),
+            signer: signature.statement().signer().clone(),
+        }
+    }
+
     /// Returns exact canonical ownership-lease bytes.
     #[must_use]
     pub fn canonical_lease(&self) -> &[u8] {
@@ -589,6 +624,12 @@ impl SignedOwnershipLease {
     #[must_use]
     pub const fn renewal_nonce(&self) -> &[u8; 16] {
         &self.renewal_nonce
+    }
+
+    /// Returns the exact ownership-authority key generation that signed the lease.
+    #[must_use]
+    pub const fn signer(&self) -> &KeyReference {
+        &self.signer
     }
 
     /// Returns the exact fence required by the next renewal.
@@ -731,8 +772,8 @@ mod tests {
         KeyUsage, SignaturePurpose, SignatureStatement, StableKeyId, TrustPolicy,
     };
     use aos_sandbox_core::{
-        AssignmentEpoch, MediaType, OwnershipLease, PortableMediaType, RawClockProvenance,
-        TrustScopeId, descriptor_for_bytes, sign_statement,
+        descriptor_for_bytes, sign_statement, AssignmentEpoch, MediaType, OwnershipLease,
+        PortableMediaType, RawClockProvenance, TrustScopeId,
     };
     use ed25519_dalek::SigningKey;
 

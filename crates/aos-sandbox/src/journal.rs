@@ -22,7 +22,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use aos_sandbox_core::OperationId;
-use rustix::fs::{FlockOperation, flock};
+use rustix::fs::{flock, FlockOperation};
 use sha2::{Digest, Sha256};
 
 const MAGIC: &[u8; 8] = b"AOSJRN01";
@@ -1286,8 +1286,8 @@ mod tests {
     use aos_sandbox_core::OperationId;
 
     use super::{
-        HEADER_BYTES, IdempotencyKey, IdempotencyOutcome, Journal, JournalError, JournalLimits,
-        JournalRecord, JournalTransaction, RecordNamespace, encode_transaction,
+        encode_transaction, IdempotencyKey, IdempotencyOutcome, Journal, JournalError,
+        JournalLimits, JournalRecord, JournalTransaction, RecordNamespace, HEADER_BYTES,
     };
 
     struct TestDirectory(PathBuf);

@@ -618,7 +618,9 @@ dependencies = [
 name = "aos-sandbox"
 version = "0.1.0"
 dependencies = [
+ "aos-proto",
  "aos-sandbox-core",
+ "aos-sandbox-protocol",
  "ed25519-dalek",
  "rustix 1.1.4",
  "sha2 0.10.9",
@@ -716,6 +718,7 @@ dependencies = [
  "aos-proto",
  "aos-sandbox-core",
  "buffa",
+ "sha2 0.10.9",
  "thiserror 2.0.18",
 ]
 

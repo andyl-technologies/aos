@@ -8,4 +8,5 @@ license.workspace = true
 aos-proto = { path = "../aos-proto" }
 aos-sandbox-core = { path = "../aos-sandbox-core" }
 buffa = "0.3"
+sha2.workspace = true
 thiserror.workspace = true
