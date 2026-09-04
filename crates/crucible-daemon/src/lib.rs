@@ -453,7 +453,10 @@ pub use qemu_baked_genesis::{
 pub use qemu_campaign_driver::{
     MAX_QEMU_CAMPAIGN_ASSERTION_EVENT_VISITS, MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
     MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES, QemuFreshModeledDriver, QemuFreshModeledDriverError,
+    QemuModeledAttemptLifecycle,
 };
+#[cfg(target_os = "linux")]
+pub use qemu_campaign_driver::{QemuHotForkModeledDriver, QemuHotForkModeledDriverError};
 pub use qemu_campaign_lifecycle::{
     QemuAttemptProductionVmLifecycleError, QemuAttemptProductionVmLifecycleFactory,
     QemuFreshAttemptDriver, QemuFreshAttemptLifecycle, QemuFreshAttemptLifecycleFactory,
