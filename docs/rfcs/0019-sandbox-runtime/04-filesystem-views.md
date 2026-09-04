@@ -176,25 +176,57 @@ that every non-root record appears exactly once with no extra entry, forged
 offset, or alternative placement. Table lengths and bytes are covered by both
 the internal payload digest and the authenticated outer descriptor.
 
-The current read-only runtime seam borrows the exact validated immutable bytes
-and lazily decodes only the root or lookup candidates. It retains no heap object
-per path and allocates nothing during point lookup. The seam is compatible with
-a caller-owned immutable mapping, but the crate does not yet open files, create
-or seal mappings, prove backing-file immutability, assign per-connection inode
-numbers, or implement FUSE authority. V1 remains validation-compatible but does
-not offer point lookup.
+The read-only runtime seam borrows the exact validated immutable bytes and
+lazily decodes only the root or lookup candidates. It retains no heap object
+per path and allocates nothing during point lookup. A separate generic Linux
+boundary now opens seal-proven files and lends their mapped bytes only to a
+higher-ranked scoped callback. A future filesystem worker must validate the
+descriptor and cross-links once inside that callback, then may retain the
+resulting `ValidatedIndex` for its complete request loop; neither the byte slice
+nor a proof borrowing it can escape after unmap. The generic mapping boundary
+has no dependency on the filesystem-view object model. Per-connection inode
+numbers and FUSE request authority are not implemented yet. V1 remains
+validation-compatible but does not offer point lookup.
+
+Immutable mapping proofs are distinct backend capabilities. A transient memfd
+is accepted only with `F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW |
+F_SEAL_WRITE`; `F_SEAL_FUTURE_WRITE` is insufficient. A fully sealed `O_RDWR`
+handoff is safe to read because the proven seals deny mutation, while a
+write-only description is rejected. This memfd type is not durable cache
+authority. A durable catalog file instead uses a separate fs-verity type. Its
+publication authority supplies the exact expected fs-verity algorithm and
+measurement independently of the AOS object descriptor. A future worker must
+open the relative path once with beneath, no-magic-link, no-symlink, and
+no-mount-crossing resolution, measure that same descriptor before mapping, and
+repeat the measurement and identity check after mapping; it must never validate
+and reopen.
+Ordinary files, mode-bit read-only files, and descriptor hashes do not satisfy
+either proof.
+
+Both mapping paths compare the authenticated expected length with the regular
+file size and a hard mapped-byte ceiling before converting the length or calling
+`mmap`. The resulting mapping is shared and read-only. The descriptor and
+mapping pin the admitted inode, so rename or unlink changes catalog reachability
+but neither revokes existing sessions nor permits early physical reclamation.
+On an fs-verity page-integrity failure, a later mapped access may terminate the
+worker with `SIGBUS`. The worker does not attempt signal-handler recovery: it
+validates before readiness, the supervisor treats an unexpected worker death as
+attachment failure, and recovery quarantines the suspect publication before
+replacement.
 
 The runtime index contract is:
 
 - immutable after publication;
-- validated before mapping;
+- authenticated descriptor, expected size, and backend immutability evidence
+  verified before mapping, followed by structural validation of the mapped
+  bytes before readiness or serving;
 - addressed by source tree commitment, exact root descriptor, closed tree-role
   feature set, and compiler ABI;
 - usable directly from immutable byte backing rather than decoded into
   per-path language-runtime objects;
 - bounded in mapped virtual size and validated offsets; and
-- suitable for a later file-opening and mapping layer with explicit immutable
-  backing and lifetime guarantees.
+- composable with the scoped file-opening and mapping layer without allowing a
+  byte borrow or validation proof to outlive immutable backing.
 
 The future FUSE layer will instantiate per-connection inode numbers only after
 kernel lookup and remove or compact them after `FORGET`. V2 record IDs are

@@ -249,6 +249,10 @@ pub struct ResolvedFile {
 }
 
 impl ResolvedFile {
+    pub(crate) fn into_owned_fd(self) -> OwnedFd {
+        self.fd
+    }
+
     /// Returns the device/inode/type identity captured after resolution.
     #[must_use]
     pub const fn identity(&self) -> FileIdentity {

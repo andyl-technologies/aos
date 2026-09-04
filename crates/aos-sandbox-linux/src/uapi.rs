@@ -41,6 +41,22 @@ pub(crate) const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
 pub(crate) const RESOLVE_NO_SYMLINKS: u64 = 0x04;
 pub(crate) const RESOLVE_BENEATH: u64 = 0x08;
 
+pub(crate) const REQUIRED_IMMUTABLE_SEALS: libc::c_int =
+    libc::F_SEAL_SEAL | libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE;
+
+pub(crate) struct VerityMeasurement {
+    pub(crate) algorithm: u16,
+    pub(crate) length: usize,
+    pub(crate) digest: [u8; 64],
+}
+
+#[repr(C)]
+struct RawVerityDigest {
+    algorithm: u16,
+    digest_size: u16,
+    digest: [u8; 64],
+}
+
 pub(crate) const OPEN_TREE_CLONE: u32 = 1;
 pub(crate) const OPEN_TREE_CLOEXEC: u32 = libc::O_CLOEXEC as u32;
 pub(crate) const AT_EMPTY_PATH: u32 = 0x1000;
@@ -79,6 +95,8 @@ pub(crate) const LISTMOUNT_REVERSE: u32 = 1 << 0;
 
 const NSFS_MAGIC: libc::c_long = 0x6e73_6673;
 const NS_GET_NSTYPE: libc::c_ulong = 0xb703;
+// Linux 6.18 `FS_IOC_MEASURE_VERITY`: _IOWR('f', 134, struct fsverity_digest).
+const FS_IOC_MEASURE_VERITY: libc::c_ulong = 0xc004_6686;
 const PIDFD_GET_MNT_NAMESPACE: libc::c_ulong = 0xff03;
 const PIDFD_GET_NET_NAMESPACE: libc::c_ulong = 0xff04;
 const PIDFD_GET_PID_NAMESPACE: libc::c_ulong = 0xff05;
@@ -340,6 +358,93 @@ pub(crate) fn fstat(fd: BorrowedFd<'_>) -> Result<libc::stat> {
         return Err(Error::syscall("fstat"));
     }
     Ok(stat)
+}
+
+pub(crate) fn get_seals(fd: BorrowedFd<'_>) -> Result<libc::c_int> {
+    // SAFETY: `F_GET_SEALS` only observes the file description borrowed for
+    // the duration of this call and takes no pointer argument.
+    let result = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GET_SEALS) };
+    if result < 0 {
+        Err(Error::syscall("fcntl(F_GET_SEALS)"))
+    } else {
+        Ok(result)
+    }
+}
+
+pub(crate) fn get_status_flags(fd: BorrowedFd<'_>) -> Result<libc::c_int> {
+    // SAFETY: `F_GETFL` only observes the borrowed file description.
+    let result = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
+    if result < 0 {
+        Err(Error::syscall("fcntl(F_GETFL)"))
+    } else {
+        Ok(result)
+    }
+}
+
+pub(crate) fn measure_verity(fd: BorrowedFd<'_>) -> Result<VerityMeasurement> {
+    let mut measurement = RawVerityDigest {
+        algorithm: 0,
+        digest_size: 64,
+        digest: [0; 64],
+    };
+    // SAFETY: the borrowed descriptor and writable fixed-capacity response
+    // remain live for the ioctl. `digest_size` advertises the exact tail
+    // capacity following the Linux `fsverity_digest` header.
+    let result = unsafe {
+        libc::ioctl(
+            fd.as_raw_fd(),
+            FS_IOC_MEASURE_VERITY,
+            std::ptr::addr_of_mut!(measurement),
+        )
+    };
+    if result < 0 {
+        return Err(Error::syscall("ioctl(FS_IOC_MEASURE_VERITY)"));
+    }
+    if result != 0 {
+        return Err(Error::MalformedKernelResponse {
+            object: "fs-verity measurement",
+            message: "ioctl returned a positive success value".to_string(),
+        });
+    }
+    let length = usize::from(measurement.digest_size);
+    if length > measurement.digest.len() {
+        return Err(Error::MalformedKernelResponse {
+            object: "fs-verity measurement",
+            message: "kernel returned an oversized digest".to_string(),
+        });
+    }
+    Ok(VerityMeasurement {
+        algorithm: measurement.algorithm,
+        length,
+        digest: measurement.digest,
+    })
+}
+
+pub(crate) fn map_readonly_shared(fd: BorrowedFd<'_>, length: usize) -> Result<*mut libc::c_void> {
+    // SAFETY: the descriptor remains borrowed for the call, the nonzero
+    // length is admitted by the caller, and a null address asks the kernel to
+    // choose a fresh range. The returned range is owned by the caller.
+    let address = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            length,
+            libc::PROT_READ,
+            libc::MAP_SHARED,
+            fd.as_raw_fd(),
+            0,
+        )
+    };
+    if address == libc::MAP_FAILED {
+        Err(Error::syscall("mmap(read-only shared immutable file)"))
+    } else {
+        Ok(address)
+    }
+}
+
+pub(crate) fn unmap(address: *mut libc::c_void, length: usize) {
+    // SAFETY: callers pass the exact address and length returned by
+    // `map_readonly_shared` and invoke this exactly once during drop.
+    let _ = unsafe { libc::munmap(address, length) };
 }
 
 pub(crate) fn statx_unique_mount_id(fd: BorrowedFd<'_>) -> Result<u64> {
@@ -1034,6 +1139,26 @@ pub(crate) fn duplicate_at_least(fd: BorrowedFd<'_>, minimum: RawFd) -> Result<O
     fd_result(result.into(), "fcntl(F_DUPFD_CLOEXEC)")
 }
 
+#[cfg(test)]
+pub(crate) fn create_sealable_memfd() -> Result<OwnedFd> {
+    // SAFETY: the static name is NUL terminated and successful memfd_create
+    // returns a fresh descriptor.
+    let result = unsafe {
+        libc::memfd_create(
+            c"aos-index-test".as_ptr(),
+            libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+        )
+    };
+    fd_result(result.into(), "memfd_create")
+}
+
+#[cfg(test)]
+pub(crate) fn add_seals(fd: BorrowedFd<'_>, seals: libc::c_int) -> Result<()> {
+    // SAFETY: F_ADD_SEALS consumes only the scalar mask and borrowed fd.
+    let result = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_ADD_SEALS, seals) };
+    unit_result(result.into(), "fcntl(F_ADD_SEALS)")
+}
+
 fn fd_result(result: libc::c_long, operation: &'static str) -> Result<OwnedFd> {
     if result < 0 {
         return Err(Error::syscall(operation));
@@ -1069,6 +1194,9 @@ mod tests {
         assert_eq!(size_of::<MountIdRequest>(), 32);
         assert_eq!(size_of::<RawStatMount>(), 512);
         assert_eq!(size_of::<StatMountBuffer>(), 512 + STAT_STRING_BYTES);
+        assert_eq!(std::mem::offset_of!(RawVerityDigest, digest), 4);
+        assert_eq!(size_of::<RawVerityDigest>(), 68);
+        assert_eq!(FS_IOC_MEASURE_VERITY, 0xc004_6686);
     }
 
     #[test]
