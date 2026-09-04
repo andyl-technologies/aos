@@ -668,6 +668,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-sandbox-mount"
+version = "0.1.0"
+dependencies = [
+ "aos-proto",
+ "aos-sandbox",
+ "aos-sandbox-core",
+ "aos-sandbox-protocol",
+ "buffa",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "aos-sandbox-protocol"
 version = "0.1.0"
 dependencies = [
