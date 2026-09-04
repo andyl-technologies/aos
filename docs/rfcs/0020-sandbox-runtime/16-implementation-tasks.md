@@ -1178,6 +1178,25 @@ completes. The Git history remains authoritative for code details.
   file data, and worker process integration remain open. No task is checked
   from the library alone.
 
+- `9b0820b33` — qualifies the actual Rust metadata worker toward `SBX-FS-03`
+  on AOS Linux 6.18.33 x86_64. A narrow, unpublished fixture compiles a canonical
+  tree, validates its index and presentation, and calls the public scoped runner
+  on inherited FUSE/cancellation descriptors. The existing C mount/client
+  coordinator transfers only the three selected non-stdio descriptors across
+  exec. Real-kernel metadata, identity/mode/size/link-count/timestamp semantics,
+  stable pinned lookup identity, cross-UID DAC, read-only behavior, idle
+  survival, cancellation, borrowed descriptor retention, worker exit,
+  disconnection, and normal unmount pass. The Rust proof deliberately omits
+  unobservable callback/release/destruction counts. The original C gate also
+  passes after the coordinator changes. Independent review and formatting pass;
+  the fixture runtime closure contains only itself, transport, libfuse, and
+  glibc. Result: `dd9f2622xafcd7m9cqfx5myic5ppjaya-aos-vm-test-aos-fuse-transport-kernel-rust-metadata-0`.
+  File-data operations, production broker integration, and aarch64 remain open.
+- `52e220a01` — repairs master-integration drift in existing OCI migration
+  tests without changing production migrations. Uniqueness-checked SQL markers
+  select the intended migrations independently of insertion order; the
+  concurrent-upgrade fixture derives its pre-GC boundary and terminal version.
+  All six focused schema, dialect, concurrency, and replay regressions pass.
 - `cf3138c2b` and `1b4978377` — move metadata ABI representability failure
   before FUSE initialization. Backend-neutral prepared-presentation admission
   bounds the record scan before traversal and checks translated scalar IDs,
