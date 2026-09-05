@@ -347,7 +347,7 @@ fn BindingCard(
                     {owned.then(|| view! {
                     <div class="subworkflow-grid">
                         <div class="subworkflow-stack">
-                            <StorageWriteRevisions client=client.clone() binding=binding.clone() organization_slug=organization_slug/>
+                            <StorageWriteRevisions client=client.clone() binding=binding.clone() organization_slug=organization_slug.clone()/>
                             {can_manage.then(|| view! { <StorageCredentialEditor client=client.clone() binding=binding.clone()/> })}
                             {can_manage.then(|| view! { <StorageCredentialValidation client=client.clone() binding=binding.clone()/> })}
                         </div>
