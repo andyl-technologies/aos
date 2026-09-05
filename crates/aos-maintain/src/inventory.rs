@@ -415,6 +415,14 @@ impl ComponentVersion {
     deny_unknown_fields
 )]
 pub enum DiscoveryProvider {
+    /// Enumerates published releases from one GitHub repository.
+    GithubReleases {
+        /// Repository in `owner/name` form.
+        repository: String,
+        /// Literal prefix removed before version normalization.
+        #[serde(default)]
+        tag_prefix: String,
+    },
     /// Enumerates tags from one GitHub repository with pagination proof.
     GithubTags {
         /// Repository in `owner/name` form.
@@ -444,7 +452,7 @@ pub struct ReleasePolicy {
     /// Allows prerelease candidates when true.
     #[serde(default)]
     pub allow_prerelease: bool,
-    /// Minimum elapsed days since first observation.
+    /// Minimum elapsed days since provider publication or first observation.
     #[serde(default)]
     pub minimum_age_days: u32,
 }

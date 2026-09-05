@@ -9,6 +9,7 @@
   version,
   upstreamId,
   repository,
+  provider ? "github-tags",
   tagPrefix ? "",
   repology ? null,
   major,
@@ -53,7 +54,7 @@
         };
         discovery = {
           primary = {
-            provider = "github-tags";
+            inherit provider;
             inherit repository tagPrefix;
           };
           inherit advisors;

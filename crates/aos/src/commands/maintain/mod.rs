@@ -186,7 +186,16 @@ pub async fn run(cli: &Cli, args: &MaintainArgs, printer: &Printer) -> Result<Co
             };
             let store = state::StateStore::open_for_envelope(args.state_dir.as_deref(), &envelope)?;
             store.write_inventory(&envelope)?;
-            match discovery::scan(&envelope, &store, command.offline, &command.token_env).await {
+            match discovery::scan(
+                &envelope,
+                &store,
+                command.offline,
+                &command.token_env,
+                command.repology_fallback,
+                command.repology_limit,
+            )
+            .await
+            {
                 Ok(outcome) => {
                     let digest = store.write_discovery(&outcome.snapshot)?;
                     scan_completion(envelope, outcome, digest)
@@ -1787,6 +1796,15 @@ fn cached_completion(
                     unit.decision == DiscoveryDecision::UpdateAvailable
                 }
                 Some(selection) if selection.unknown => unit.decision == DiscoveryDecision::Unknown,
+                Some(selection) if selection.advisory => !unit.advisories.is_empty(),
+                Some(selection) if selection.vulnerable => unit.advisories.iter().any(|finding| {
+                    finding.kind == aos_maintain::discovery::AdvisoryKind::VulnerableCurrent
+                }),
+                Some(selection) if selection.license_change => {
+                    unit.advisories.iter().any(|finding| {
+                        finding.kind == aos_maintain::discovery::AdvisoryKind::LicenseChange
+                    })
+                }
                 Some(_) => true,
                 None => {
                     matches!(
@@ -1843,6 +1861,36 @@ fn cached_completion(
                     .to_string(),
             );
         }
+        let advisory_count = |kind| {
+            snapshot
+                .units
+                .iter()
+                .flat_map(|unit| &unit.advisories)
+                .filter(|finding| finding.kind == kind)
+                .count()
+                .to_string()
+        };
+        values.insert(
+            "advisoryNewer".to_string(),
+            advisory_count(aos_maintain::discovery::AdvisoryKind::NewerVersion),
+        );
+        values.insert(
+            "advisoryVulnerable".to_string(),
+            advisory_count(aos_maintain::discovery::AdvisoryKind::VulnerableCurrent),
+        );
+        values.insert(
+            "advisoryLicenseChange".to_string(),
+            advisory_count(aos_maintain::discovery::AdvisoryKind::LicenseChange),
+        );
+        values.insert(
+            "repologyFallbacks".to_string(),
+            snapshot
+                .observations
+                .keys()
+                .filter(|key| key.ends_with("/fallback-repology"))
+                .count()
+                .to_string(),
+        );
     }
     let mut diagnostics = Vec::new();
     let mut actions = Vec::new();
@@ -1941,6 +1989,22 @@ fn scan_completion(
         .chain([
             ("requiredUnknown".to_string(), required.0.to_string()),
             ("requiredQuarantined".to_string(), required.1.to_string()),
+            (
+                "repologyFallbacks".to_string(),
+                outcome.repology_fallbacks.to_string(),
+            ),
+            (
+                "advisoryNewer".to_string(),
+                outcome.advisory_newer.to_string(),
+            ),
+            (
+                "advisoryVulnerable".to_string(),
+                outcome.advisory_vulnerable.to_string(),
+            ),
+            (
+                "advisoryLicenseChange".to_string(),
+                outcome.advisory_license_change.to_string(),
+            ),
             (
                 "repositoryState".to_string(),
                 if envelope.content.permits_write_plan() {
@@ -3218,8 +3282,24 @@ fn render_human(result: &MaintainCommandResult, screen_reader: bool, printer: &P
                 &format!("{unknown} unknown, {quarantined} quarantined"),
             );
         }
+        if let (Some(fallbacks), Some(newer), Some(vulnerable), Some(license_change)) = (
+            result.data.values.get("repologyFallbacks"),
+            result.data.values.get("advisoryNewer"),
+            result.data.values.get("advisoryVulnerable"),
+            result.data.values.get("advisoryLicenseChange"),
+        ) {
+            printer.kv(
+                "Repology",
+                &format!(
+                    "{fallbacks} fallback observations, {newer} newer, {vulnerable} vulnerable, {license_change} license changes"
+                ),
+            );
+        }
         let visible = snapshot.units.iter().filter(|unit| {
             if result.command != "scan" {
+                return true;
+            }
+            if !unit.advisories.is_empty() {
                 return true;
             }
             if matches!(
@@ -3246,11 +3326,24 @@ fn render_human(result: &MaintainCommandResult, screen_reader: bool, printer: &P
                 .find_map(|component| component.selected.as_ref())
                 .map(|version| version.comparison_version.as_str())
                 .unwrap_or("-");
+            let mut advisories = unit
+                .advisories
+                .iter()
+                .map(|finding| advisory_name(finding.kind))
+                .collect::<Vec<_>>();
+            advisories.sort_unstable();
+            advisories.dedup();
+            let advisory_suffix = if advisories.is_empty() {
+                String::new()
+            } else {
+                format!("  advisory={}", advisories.join(","))
+            };
             printer.plain(&format!(
-                "{}  candidate={}  discovery={}",
+                "{}  candidate={}  discovery={}{}",
                 escape_terminal(&unit.unit_id, 256),
                 escape_terminal(candidate, 256),
                 discovery_name(unit.decision),
+                advisory_suffix,
             ));
         }
     }
@@ -3659,6 +3752,16 @@ fn discovery_name(decision: aos_maintain::workflow::DiscoveryDecision) -> &'stat
         DiscoveryDecision::UpdateAvailable => "update-available",
         DiscoveryDecision::Unknown => "unknown",
         DiscoveryDecision::Quarantined => "quarantined",
+    }
+}
+
+fn advisory_name(kind: aos_maintain::discovery::AdvisoryKind) -> &'static str {
+    use aos_maintain::discovery::AdvisoryKind;
+
+    match kind {
+        AdvisoryKind::NewerVersion => "newer",
+        AdvisoryKind::VulnerableCurrent => "vulnerable",
+        AdvisoryKind::LicenseChange => "license-change",
     }
 }
 

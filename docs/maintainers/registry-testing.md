@@ -213,8 +213,11 @@ rollout complete.
 Use `aos maintain` to prepare source updates, not to mutate the registry:
 
 ```sh
-aos maintain scan
+aos maintain scan --repology-fallback --repology-limit 400
 aos maintain report --outdated
+aos maintain report --advisory
+aos maintain report --vulnerable
+aos maintain report --license-change
 aos maintain plan <unit>
 # Or plan one atomic update cohort:
 aos maintain plan --campaign <cohort>
@@ -233,6 +236,20 @@ aos maintain observe-pr <run> \
   --authorization-check <required-check-name>
 aos maintain handoff <run> --confirm <protected-merge-commit>
 ```
+
+The fallback probes a same-named Repology project only when the package does
+not already declare a reviewed Repology mapping. It is a first-signal source:
+newer-version, vulnerable-version, and license-drift records enter the
+maintainer report, but they cannot select or materialize an update. A declared
+direct provider must still identify the exact release, and the source URL,
+hash, and any required signature checks must succeed before a candidate can be
+accepted. Review fallback mappings that do not corroborate the package's
+current version before promoting them into package metadata.
+
+Repology requests are cached for 24 hours, paced to at most one request per
+second, and bounded by `--repology-limit`. Use a smaller limit for a quick
+sample. Re-running the command reuses fresh cached observations and can extend
+an earlier bounded scan without repeating those requests.
 
 If the remote branch already exists, replace `absent` with its exact expected
 head. `prepare-pr` prints the publication request and confirmation digest;

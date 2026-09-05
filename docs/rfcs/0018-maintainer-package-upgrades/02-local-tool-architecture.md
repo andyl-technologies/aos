@@ -98,9 +98,13 @@ interaction and rendering contract is defined in
 | `aos maintain inventory` | Evaluate and print the canonical maintenance inventory |
 | `aos maintain inventory --check` | Fail on coverage/schema/association errors |
 | `aos maintain scan` | Refresh declared upstream and advisory observations |
+| `aos maintain scan --repology-fallback` | Add bounded same-name Repology trigger signals for unmapped packages |
 | `aos maintain scan --offline` | Re-evaluate only sufficiently fresh cached observations |
 | `aos maintain report --outdated` | Show selectable newer releases by unit/stream |
 | `aos maintain report --unknown` | Show incomplete or contradictory discovery |
+| `aos maintain report --advisory` | Show non-authoritative version, vulnerability, and license signals |
+| `aos maintain report --vulnerable` | Show current versions reported vulnerable by an advisory provider |
+| `aos maintain report --license-change` | Show corroborated license-set differences between current and newer records |
 | `aos maintain report --family bazel` | Show every maintained stream and lifecycle in one family |
 
 ### Planning and execution
