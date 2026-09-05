@@ -1,7 +1,8 @@
 # Canonical release coordinator
 
-Use the shared [release checklist](release-checklist.md) and
-[qualification contract](qualification.md) for every release class. New plans
+Start with the [release checklist](release-checklist.md) for the order of
+operations and the conditions for proceeding. This page is the command reference;
+the [qualification specification](qualification.md) defines the evidence. New plans
 embed the source-controlled contract in `aos.release.plan/v2`; the contract
 selects applicable requirements and thresholds for testing and production.
 Export the contract with `aos release contract` before preparing a request.

@@ -82,7 +82,8 @@ Creating the topology row does not authorize or publish a base.
   without a prerelease component, and the `stable` channel.
 - Edge plans are rejected. Publish experimental work to `andyl/testing`.
 
-Run every phase in [`canonical-releases.md`](canonical-releases.md), including
+Follow the [release checklist](release-checklist.md), using
+[`canonical-releases.md`](canonical-releases.md) for command arguments, including
 staging, public-byte qualification, production promotion, partitioned channel
 advance, completion approval, TUF timestamp publication, and offline
 verification. Preserve the full evidence set for the retention period. Stable

@@ -37,6 +37,19 @@ in
   assert builtins.all (rule: rule.inherit_dependency_obligations) contract.package_rules;
   assert builtins.all (phase: builtins.elem phase phases) ["build" "staging" "rollout" "complete"];
   assert builtins.length contract.targets == 4;
+  assert builtins.all (target:
+    if target.kind == "container"
+    then
+      target.configuration.runtime
+      == "aos-containerd-runc"
+      && target.configuration.host == "native-linux-matching-image-architecture"
+      && target.configuration.lifecycle_cycles == "10"
+    else
+      target.configuration.reboot_cycles
+      == "10"
+      && target.configuration.cold_boot_cycles == "3"
+      && target.configuration.update_rollback_cycles == "3")
+  contract.targets;
   assert contract.thresholds.edge.soak_seconds < contract.thresholds.stable.soak_seconds;
   assert contract.thresholds.stable.require_complete_matrix;
     pkgs.writeTextFile {
