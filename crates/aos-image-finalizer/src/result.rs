@@ -89,7 +89,7 @@ impl FinalizedImageSetV1 {
     /// logical disk.
     pub fn validate(&self, assembly: &UnsignedImageAssemblyV1) -> Result<()> {
         assembly.validate()?;
-        let expected = Sha256Digest::of_canonical("aos.image.unsigned-assembly/v1", assembly)?;
+        let expected = Sha256Digest::of_canonical(&assembly.schema_version, assembly)?;
         if self.schema_version != FINALIZED_IMAGE_SET_V1
             || self.assembly_digest != expected
             || self.platform != assembly.platform

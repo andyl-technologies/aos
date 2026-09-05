@@ -8,6 +8,7 @@ mod build;
 mod capture;
 mod channel;
 mod compose_surface;
+mod contract;
 mod finalize;
 mod finalize_cache;
 mod finalize_image;
@@ -16,6 +17,8 @@ mod hub_transition;
 mod plan;
 mod promote;
 mod qualification_run;
+mod qualification_executor;
+mod qualification_transition;
 mod qualify;
 mod signer;
 mod stage;
@@ -37,6 +40,8 @@ use crate::cli::ReleaseCommand;
 /// Returns an error when planning, capture, or release verification fails.
 pub fn run(command: &ReleaseCommand, nix: &NixRunner, printer: &Printer) -> Result<()> {
     match command {
+        ReleaseCommand::Qualification { command } => qualification_executor::inspect(command, printer),
+        ReleaseCommand::Contract(args) => contract::run(args, nix, printer),
         ReleaseCommand::Plan(args) => plan::run(args, nix, printer),
         ReleaseCommand::Build(args) => build::run(args, nix, printer),
         ReleaseCommand::Status(args) => status::run(args, printer),
@@ -275,4 +280,12 @@ pub fn verify_offline(args: &crate::cli::ReleaseVerifyArgs, printer: &Printer) -
 /// Returns an error when the journal cannot be captured or is invalid.
 pub fn status_offline(args: &crate::cli::ReleaseStatusArgs, printer: &Printer) -> Result<()> {
     status::run(args, printer)
+}
+
+/// Runs qualification inspection or a bounded native scenario without evaluating Nix.
+///
+/// # Errors
+/// Returns an error for malformed cases, untrusted downloads, or failed observations.
+pub async fn qualification_offline(command: &crate::cli::ReleaseQualificationCommand, printer: &Printer) -> Result<()> {
+    qualification_executor::run(command, printer).await
 }
