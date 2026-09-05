@@ -559,6 +559,8 @@ mod registry_delete;
 mod registry_index_build;
 mod release_publication;
 mod settings_reads;
+pub(crate) mod surface_topology;
+pub(crate) use surface_topology::*;
 mod signing_keys;
 mod topology;
 mod worker_jobs;

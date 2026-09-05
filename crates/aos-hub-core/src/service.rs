@@ -31,6 +31,7 @@
 mod container;
 mod container_admin;
 mod delivery_workflow;
+mod surface_topology;
 #[cfg(test)]
 mod delivery_workflow_tests;
 mod publication_manifest;
@@ -3066,11 +3067,18 @@ impl RpcService {
             .consumer_scope_grant_pin_records(resource, &record.consumer_scope_key)
             .await
             .map_err(RpcError::internal)?;
+        Ok(Self::topology_grant_message_with_pins(record, impacts))
+    }
+
+    fn topology_grant_message_with_pins(
+        record: crate::db::ConsumerScopeGrantRecord,
+        impacts: Vec<crate::db::ConsumerScopeGrantPinRecord>,
+    ) -> pb::ConsumerScopeGrant {
         let impacts = impacts
             .into_iter()
             .map(Self::topology_pin_impact_message)
             .collect::<Vec<_>>();
-        Ok(pb::ConsumerScopeGrant {
+        pb::ConsumerScopeGrant {
             resource_kind: record.resource_kind,
             resource_stable_id: record.resource_stable_id,
             resource_generation: record.resource_generation,
@@ -3085,7 +3093,7 @@ impl RpcService {
             live_pin_count: u64::try_from(impacts.len()).unwrap_or_default(),
             live_pin_impacts: impacts,
             resource_version: record.resource_version.to_string(),
-        })
+        }
     }
 
     async fn network_policy_message(
@@ -5189,19 +5197,21 @@ impl RpcService {
             })
             .await
             .map_err(RpcError::internal)?;
-        let mut grants = Vec::with_capacity(grant_records.len());
-        for grant in grant_records {
-            grants.push(
-                self.topology_grant_message(
-                    grant,
-                    crate::db::GrantResource::Endpoint {
-                        id: &record.id,
-                        generation,
-                    },
-                )
-                .await?,
-            );
-        }
+        let mut pins = if grant_records.is_empty() {
+            BTreeMap::new()
+        } else {
+            self.db
+                .endpoint_grant_pins_by_consumer(&record.id, generation)
+                .await
+                .map_err(RpcError::internal)?
+        };
+        let grants = grant_records
+            .into_iter()
+            .map(|grant| {
+                let impacts = pins.remove(&grant.consumer_scope_key).unwrap_or_default();
+                Self::topology_grant_message_with_pins(grant, impacts)
+            })
+            .collect();
         let host = Self::endpoint_host_message(&record)?;
         Ok(pb::Endpoint {
             stable_id: record.id.clone(),
@@ -8639,6 +8649,16 @@ impl RpcService {
                 },
             })
         };
+        let surface = self.route_surface_message(route.surface).await?;
+        Self::route_message_from_parts(route, snapshot, target, surface)
+    }
+
+    fn route_message_from_parts(
+        route: crate::db::RouteRecord,
+        snapshot: crate::db::RouteSnapshotRecord,
+        target: pb::route_target::Target,
+        surface: pb::SurfaceRef,
+    ) -> Result<pb::Route, RpcError> {
         let access_policy =
             serde_json::from_str(&snapshot.spec.access_policy_json).map_err(RpcError::internal)?;
         let configuration_generation = route.configuration_generation.unwrap_or_default();
@@ -8646,7 +8666,7 @@ impl RpcService {
         Ok(pb::Route {
             stable_id: route.id,
             spec: Some(pb::RouteSpec {
-                surface: Some(self.route_surface_message(route.surface).await?),
+                surface: Some(surface),
                 endpoint_id: snapshot.spec.endpoint_id,
                 endpoint_generation: snapshot.spec.endpoint_generation,
                 base_path: snapshot.spec.base_path,
@@ -14932,6 +14952,13 @@ impl RpcService {
                     placement.binding_id
                 ))
             })?;
+        Self::placement_message_with_binding(placement, binding.name)
+    }
+
+    fn placement_message_with_binding(
+        placement: crate::db::SurfacePlacementRecord,
+        binding_name: String,
+    ) -> Result<pb::Placement, RpcError> {
         let hash_range = match (placement.hash_range_start, placement.hash_range_end) {
             (Some(start), Some(end)) => Some(pb::HashRangeV1 {
                 start: u32::try_from(start).map_err(RpcError::internal)?,
@@ -14949,7 +14976,7 @@ impl RpcService {
         let observed_writer = placement.authority_observed_placement_id == Some(placement.id);
         Ok(pb::Placement {
             name: placement.name,
-            binding_name: binding.name,
+            binding_name,
             prefix: placement.prefix,
             spec: Some(pb::PlacementSpec {
                 kind: placement.kind,
@@ -15017,9 +15044,21 @@ impl RpcService {
             }
             None => String::new(),
         };
-        Ok(pb::SurfaceWriteAuthority {
+        Ok(Self::write_authority_message_with_names(
+            authority,
+            desired.name,
+            observed_placement_name,
+        ))
+    }
+
+    fn write_authority_message_with_names(
+        authority: crate::db::SurfaceWriteAuthorityRecord,
+        desired_placement_name: String,
+        observed_placement_name: String,
+    ) -> pb::SurfaceWriteAuthority {
+        pb::SurfaceWriteAuthority {
             mode: authority.mode,
-            desired_placement_name: desired.name,
+            desired_placement_name,
             observed_placement_name,
             desired_write_spec_version: authority.desired_write_spec_version,
             observed_write_spec_version: authority.observed_write_spec_version.unwrap_or_default(),
@@ -15033,7 +15072,7 @@ impl RpcService {
             reconciliation_error: authority.reconciliation_error.unwrap_or_default(),
             resource_version: authority.resource_version.to_string(),
             incarnation_id: authority.incarnation_id,
-        })
+        }
     }
 
     fn policy_retry_name(value: i32) -> Result<String, RpcError> {
@@ -15440,123 +15479,6 @@ impl RpcService {
             allow_remote_fallback,
             retry_on: retry_names,
             groups,
-        })
-    }
-
-    /// Returns the complete current topology projection for one surface.
-    pub async fn get_surface_topology(
-        &self,
-        auth: Option<&str>,
-        req: pb::GetSurfaceTopologyRequest,
-    ) -> Result<pb::GetSurfaceTopologyResponse, RpcError> {
-        let surface = self
-            .readable_topology_surface(auth, req.surface.clone())
-            .await?;
-        let owner_scope_key = self.route_surface_owner_scope(surface).await?;
-        self.require_delivery_scope(auth, &owner_scope_key, Permission::RouteRead)
-            .await?;
-        let placement_records = self
-            .db
-            .list_surface_placements(surface)
-            .await
-            .map_err(RpcError::internal)?;
-        let mut placements = Vec::with_capacity(placement_records.len());
-        for record in placement_records {
-            placements.push(self.placement_message(record).await?);
-        }
-        let route_records = self
-            .db
-            .list_routes(surface)
-            .await
-            .map_err(RpcError::internal)?;
-        let mut routes = Vec::with_capacity(route_records.len());
-        for record in &route_records {
-            routes.push(self.route_message(record.clone()).await?);
-        }
-        let mut route_advertisements = Vec::new();
-        let mut canonical_endpoint_ids = BTreeSet::new();
-        for audience in ["git", "nix_cache", "web"] {
-            if let Some(record) = self
-                .db
-                .route_advertisement(surface, audience)
-                .await
-                .map_err(RpcError::internal)?
-            {
-                route_advertisements.push(pb::RouteAdvertisement {
-                    surface: Some(self.route_surface_message(surface).await?),
-                    audience: record.audience,
-                    route_id: record.route_id.clone(),
-                    resource_version: record.resource_version.to_string(),
-                });
-                if let Some(route) = route_records
-                    .iter()
-                    .find(|route| route.id == record.route_id)
-                {
-                    canonical_endpoint_ids.insert(route.endpoint_id.clone());
-                }
-            }
-        }
-        let write_authority = self
-            .db
-            .surface_write_authority(surface)
-            .await
-            .map_err(RpcError::internal)?;
-        let policy_records = self
-            .db
-            .list_placement_policy_identities(surface)
-            .await
-            .map_err(RpcError::internal)?;
-        let mut placement_policies = Vec::with_capacity(policy_records.len());
-        for record in policy_records {
-            placement_policies.push(self.placement_policy_message(record).await?);
-        }
-        let equivalence_records = self
-            .db
-            .list_placement_equivalences(surface)
-            .await
-            .map_err(RpcError::internal)?;
-        let mut placement_equivalences = Vec::with_capacity(equivalence_records.len());
-        for record in equivalence_records {
-            placement_equivalences.push(self.placement_equivalence_message(record).await?);
-        }
-        let mut canonical_endpoints = Vec::with_capacity(canonical_endpoint_ids.len());
-        for endpoint_id in canonical_endpoint_ids {
-            let endpoint = self
-                .db
-                .endpoint(&endpoint_id)
-                .await
-                .map_err(RpcError::internal)?
-                .ok_or_else(|| {
-                    RpcError::internal(anyhow::anyhow!("route advertisement endpoint is missing"))
-                })?;
-            canonical_endpoints.push(self.endpoint_message(endpoint).await?);
-        }
-        let active_operations = self
-            .db
-            .list_active_surface_operations(surface)
-            .await
-            .map_err(RpcError::internal)?
-            .into_iter()
-            .map(|operation| pb::OperationRef {
-                operation_id: operation.operation_id,
-                kind: operation.operation_kind,
-                state: operation.state,
-                created_at: operation.created_at,
-            })
-            .collect();
-        Ok(pb::GetSurfaceTopologyResponse {
-            surface: Some(self.route_surface_message(surface).await?),
-            placements,
-            routes,
-            route_advertisements,
-            write_authority: match write_authority {
-                Some(authority) => Some(self.write_authority_message(authority).await?),
-                None => None,
-            },
-            placement_policies,
-            placement_equivalences,
-            canonical_endpoints,
-            active_operations,
         })
     }
 
