@@ -421,7 +421,7 @@ Longer diagnostic execution also stalled waiting for a post-device control
 acknowledgement and returned cleanup-pending on shutdown; the short successful
 flight does not close that liveness investigation.
 
-Version-3 campaign snapshots now carry a childless, version-1 aggregate budget
+Version-3 campaign snapshots introduced a childless, version-1 aggregate budget
 ledger. Genesis starts empty; every successor authenticates exact grant and
 spending deltas. New proposals and unique attempts require aggregate allowance,
 in addition to request-local limits. Additional causes do not spend another
@@ -438,7 +438,7 @@ per scanned index. Planner drivers bound invocation output by available
 allowance, return a waitable budget-blocked outcome, and avoid reinvoking on an
 unchanged blocked head. A later grant permits a fresh invocation.
 
-The current canonical and PUCT engines now advertise the versioned
+Canonical engine version 3 and PUCT engine version 4 advertise the versioned
 `canonical-frontier-budget-v1` capability. Every Ready offer retains its exact
 owner-computed aggregate allowances and semantic new-attempt cost, including
 unaffordable offers. Both engines scan through EOF and choose only affordable
@@ -468,6 +468,51 @@ API unit tests, 269 CLI tests, and 459 daemon tests with one existing ignored
 test. Strict affected-crate Clippy and the source-size guard pass. All six
 packaged campaign VM cases also pass with the budget-aware planner build;
 their execution scope remains the six flights described above.
+
+Canonical engine version 5 and PUCT engine version 6 additionally consume
+owner-authenticated request-local attempt allowances. They pass capped new
+attempts, settle a frontier blocked only by local caps, and retain eligibility
+for a convergent cause without charging another attempt. An aggregate grant
+does not reset the local cap. The owner rejects an inflated local allowance
+before publishing objects; historical engine versions retain their exact
+original selection and portable-state interpretation.
+
+New version-2 budget ledgers authenticate a nested request-spending Merkle map.
+Each request's spent allowance is the exact entry count of its execution-basis
+map, so admission and candidate projection avoid a campaign-history scan.
+Successors update only newly admitted execution bases; a legacy ledger upgrades
+once from its complete dense admission sequence, excluding additional causes
+and discovery admissions. Cold validation reconstructs the same roots and
+rejects a forged index even when aggregate totals are unchanged. A downgrade
+to an unindexed ledger fails closed. Legacy candidate projections retain a
+bounded dense request-local fallback.
+
+The distinct-request scale flight exposed two unrelated history-wide scans in
+planner invocation preparation. New campaigns now maintain an authenticated
+ordered position index in their exploration root; request transitions update
+its branch-point/schema/digest order, and cold validation rejects omitted or
+forged positions. Invocation preparation also reuses already-authenticated head
+roots instead of rewalking the retained graph for each page, while still
+checking new dependencies and the complete closure bound. Historical root
+layouts and planner byte identities remain supported.
+
+The request-local-cap increment passes all 253 campaign unit tests and both
+integration tests across the complete unit/integration sweep and focused scale
+runs. The three non-ignored 10,000-mutation flights cover mixed request/control
+transitions, convergent budget spending, and 2,500 distinct capped requests.
+The distinct-request flight checks at most 66 backend reads for each indexed
+cap lookup, at most 16,384 reads per 64-position invocation page, exact
+aggregate and request-local accounting, complete frontier settlement, and final
+cold validation. A separate mixed-schema regression compares indexed pages
+against legacy canonical ordering at widths 1, 3, and 7 and rejects a forged
+index without validation writes. Request-local regressions cover both engines,
+single-position/wide pages, restart, local-cap settlement, grant behavior,
+convergent causes, and forged eligibility. API, CLI, and daemon suites pass
+255, 269, and 459 tests respectively, with one existing ignored daemon test;
+strict affected-crate Clippy and the source-size guard also pass. These are
+repository/planner scale results, not real-QEMU lifecycle or pressure evidence.
+All six packaged campaign VM cases also pass with the indexed request-budget
+and ordered-frontier build; their execution scope remains unchanged.
 
 Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
 `crucible-daemon`.

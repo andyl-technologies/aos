@@ -178,14 +178,27 @@ pub struct CampaignSnapshot {
 }
 ```
 
-Version-3 snapshots append a required version-1 budget ledger child after the
-transition field. Its canonical body is `u32 version`, two `u128` cumulative
+Version-3 snapshots append a required budget ledger child after the transition
+field. The version-1 ledger body is `u32 version`, two `u128` cumulative
 grants (proposals, attempts), and two `u64` cumulative spending counts in the
 same order, all big-endian. Genesis requires zero totals. Successor validation
 reconstructs exact deltas from the causal fact and unique admission sequence;
 the ledger's bytes alone never confer authority. Version-2 snapshots retain
 their original encoding and identities. New successors upgrade them with exact
 historical debt; a version-3 lineage cannot downgrade to version 2.
+
+New ledgers use schema version 2, appending a `ContentId` for the authenticated
+request-spending Merkle map. This is the ledger's sole child. Its outer map
+indexes request identities; each value is a nested map from semantic attempt
+identity to the exact execution-basis admission. Additional causes and
+discovery admissions do not spend a request-local attempt. The nested root's
+authenticated entry count gives exact local spending without scanning campaign
+history. Genesis requires the canonical empty map. Successors derive updates
+from newly added dense global admissions; validation recomputes the root without
+publishing objects. The first new successor of a version-1 ledger reconstructs
+the index from its complete admission sequence, preserving all spending.
+Historical version-1 identities remain readable, but an indexed lineage cannot
+downgrade to a version-1 ledger.
 
 Snapshot ancestry for one campaign ref is linear in this RFC because exactly
 one coordinator owns that ref. `derive` creates another named ref whose first
@@ -848,6 +861,23 @@ frontier index under `exploration_root`. Each nested key is the exact
 corresponding projection. The projection body names its request as a typed
 envelope child, so closure traversal retains the authoritative request without
 store listing.
+
+New genesis also anchors `crucible.campaign.planner-scan-index.v1` under the
+exploration root. This separate ordered index contains every request, including
+closed and currently unaffordable continuations. Three nested Merkle levels
+order positions by semantic branch-point hash, request schema version, and
+request content digest; leaf values are the exact request content IDs. Schema
+keys are the big-endian `u32` version followed by 28 zero bytes. This preserves
+`PlanningScanPosition` ordering across request schemas 1 through 4. Request
+transitions update the index atomically, and cold validation recomputes every
+delta. Other transitions preserve it. An indexed lineage cannot drop or omit
+positions. Histories without the anchor retain the legacy exploration scan.
+
+Planner page construction reads only the requested ordered window plus one
+lookahead position. Invocation closure validation reuses exact roots already
+authenticated by the current head, checks all newly supplied basis objects and
+dependencies, and retains the complete closure bound; a conservative bound
+near the limit falls back to exact union validation.
 
 The snapshot owner updates the nested index in the same transition that issues
 a request, records a proposal, admits a disposition, or accepts an atomic

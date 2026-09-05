@@ -4,6 +4,7 @@ use super::*;
 
 mod budget;
 mod budget_scale;
+mod local_budget;
 
 #[test]
 fn planner_no_work_is_owned_replayable_and_state_continuous() {
@@ -688,14 +689,13 @@ fn canonical_frontier_planner_carries_the_first_ready_offer_across_pages() {
                         original.remaining_attempts(),
                         original.requires_new_attempt(),
                     )
-                    .expect("rebind budget");
-                    ObjectEnvelope::for_record(
-                        crate::CampaignRecordKind::PlannerCandidateBudget,
-                        crate::object::content_children(budget.content_children())
-                            .expect("budget children"),
-                        budget.canonical_bytes(),
-                    )
-                    .expect("forged budget envelope")
+                    .expect("rebind budget")
+                    .with_request_attempts(
+                        original
+                            .remaining_request_attempts()
+                            .expect("request allowance"),
+                    );
+                    ObjectEnvelope::for_candidate_budget(&budget).expect("forged budget envelope")
                 }
                 _ => object,
             }

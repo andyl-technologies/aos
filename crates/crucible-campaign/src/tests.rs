@@ -543,6 +543,17 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
         assert_eq!(record[3], "administrative-record");
         owned_campaign_schemas.insert(schema);
     }
+    let scan_index_schema = "crucible.campaign.planner-scan-index";
+    let scan_index = rows
+        .get(scan_index_schema)
+        .unwrap_or_else(|| panic!("missing ordered planner scan index schema"));
+    assert_eq!(scan_index[1], "1");
+    assert_eq!(
+        scan_index[2],
+        "crucible-campaign::repository::planner_scan_index"
+    );
+    assert_eq!(scan_index[3], "merkle-node");
+    owned_campaign_schemas.insert(scan_index_schema);
     for schema in rows.keys() {
         if schema.starts_with("crucible.campaign.") {
             assert!(

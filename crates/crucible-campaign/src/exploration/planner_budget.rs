@@ -8,6 +8,7 @@
 //! ```text
 //! v1 | input_view | position | proposal | remaining_proposals:u128
 //!    | remaining_attempts:u128 | new_attempt:bool
+//! v2 | <same fields> | remaining_request_attempts:u64
 //! ```
 
 use super::*;
@@ -21,6 +22,7 @@ pub struct PlannerCandidateBudget {
     remaining_proposals: u128,
     remaining_attempts: u128,
     new_attempt: bool,
+    remaining_request_attempts: Option<u64>,
 }
 
 impl PlannerCandidateBudget {
@@ -44,7 +46,41 @@ impl PlannerCandidateBudget {
             remaining_proposals,
             remaining_attempts,
             new_attempt,
+            remaining_request_attempts: None,
         })
+    }
+
+    /// Adds exact request-local allowance using the version-2 projection format.
+    ///
+    /// The allowance counts only execution bases charged to the served request.
+    /// Construction does not establish repository authority over this value.
+    #[must_use]
+    pub const fn with_request_attempts(mut self, remaining: u64) -> Self {
+        self.remaining_request_attempts = Some(remaining);
+        self
+    }
+
+    /// Returns the request-local allowance, or `None` for a legacy v1 projection.
+    #[must_use]
+    pub const fn remaining_request_attempts(&self) -> Option<u64> {
+        self.remaining_request_attempts
+    }
+
+    /// Returns whether request-local allowance permits this candidate.
+    ///
+    /// A convergent candidate spends no request-local attempt. Legacy projections
+    /// do not constrain this dimension; their owner still enforces it on admission.
+    #[must_use]
+    pub const fn request_can_issue(&self) -> bool {
+        !self.new_attempt || !matches!(self.remaining_request_attempts, Some(0))
+    }
+
+    pub(crate) const fn schema_version(&self) -> u32 {
+        if self.remaining_request_attempts.is_some() {
+            2
+        } else {
+            1
+        }
     }
 
     /// Returns the exact served frontier position.
@@ -71,12 +107,14 @@ impl PlannerCandidateBudget {
         self.new_attempt
     }
 
-    /// Returns whether this single offer fits the aggregate campaign budgets.
+    /// Returns whether this offer fits every budget dimension in the projection.
     ///
     /// Convergent offers still spend one proposal but spend no attempt allowance.
     #[must_use]
     pub const fn can_issue(&self) -> bool {
-        self.remaining_proposals != 0 && (!self.new_attempt || self.remaining_attempts != 0)
+        self.request_can_issue()
+            && self.remaining_proposals != 0
+            && (!self.new_attempt || self.remaining_attempts != 0)
     }
 
     /// Authenticates the exact offer and planning-view binding.
@@ -96,13 +134,13 @@ impl PlannerCandidateBudget {
         Ok(())
     }
 
-    /// Returns the strict version-1 canonical encoding.
+    /// Returns the strict canonical encoding, preserving the projection version.
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
         codec::encode(self)
     }
 
-    /// Decodes one exact version-1 projection without trailing bytes.
+    /// Decodes one exact version-1 or version-2 projection without trailing bytes.
     ///
     /// # Errors
     ///
@@ -118,12 +156,7 @@ impl PlannerCandidateBudget {
     /// Returns [`CampaignCodecError`] if strict envelope construction fails.
     pub fn id(&self) -> Result<crate::PlannerCandidateBudgetId, CampaignCodecError> {
         crate::PlannerCandidateBudgetId::from_content_id(
-            crate::ObjectEnvelope::for_record(
-                crate::CampaignRecordKind::PlannerCandidateBudget,
-                crate::object::content_children(self.content_children())?,
-                self.canonical_bytes(),
-            )?
-            .content_id(),
+            crate::ObjectEnvelope::for_candidate_budget(self)?.content_id(),
         )
     }
 
@@ -138,17 +171,21 @@ impl PlannerCandidateBudget {
 
 impl Canonical for PlannerCandidateBudget {
     fn encode(&self, encoder: &mut Encoder) {
-        1_u32.encode(encoder);
+        self.schema_version().encode(encoder);
         self.input_view.encode(encoder);
         self.position.encode(encoder);
         self.proposal.encode(encoder);
         self.remaining_proposals.encode(encoder);
         self.remaining_attempts.encode(encoder);
         self.new_attempt.encode(encoder);
+        if let Some(remaining) = self.remaining_request_attempts {
+            remaining.encode(encoder);
+        }
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        if u32::decode(decoder)? != 1 {
+        let version = u32::decode(decoder)?;
+        if !matches!(version, 1 | 2) {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported planner candidate budget schema version",
             });
@@ -160,6 +197,11 @@ impl Canonical for PlannerCandidateBudget {
             remaining_proposals: u128::decode(decoder)?,
             remaining_attempts: u128::decode(decoder)?,
             new_attempt: bool::decode(decoder)?,
+            remaining_request_attempts: if version == 2 {
+                Some(u64::decode(decoder)?)
+            } else {
+                None
+            },
         })
     }
 }

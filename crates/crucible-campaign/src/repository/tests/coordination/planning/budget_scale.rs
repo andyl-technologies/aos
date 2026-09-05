@@ -67,6 +67,23 @@ fn ten_thousand_budget_transitions_preserve_exact_spending_and_cold_replay() {
         let budget = repository
             .budget_projection(CAMPAIGN)
             .expect("indexed ledger");
+        let loaded = repository
+            .read_snapshot(admitted.new_snapshot.content_id())
+            .expect("snapshot");
+        let mut work = 0;
+        assert_eq!(
+            repository
+                .remaining_request_attempts_before(
+                    &loaded,
+                    request.id().expect("request id"),
+                    2,
+                    2,
+                    &mut work,
+                )
+                .expect("bounded request-local allowance"),
+            if ordinal == 0 { 1 } else { 2 },
+        );
+        assert_eq!(work, 0, "indexed counts do not visit proposal history");
         assert_eq!(budget.granted_proposals, u128::from(ordinal + 1));
         assert_eq!(budget.spent_proposals, ordinal + 1);
         assert_eq!((budget.granted_attempts, budget.spent_attempts), (1, 1));

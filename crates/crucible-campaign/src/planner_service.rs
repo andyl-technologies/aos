@@ -42,6 +42,9 @@ pub const CANONICAL_FRONTIER_OFFERS_CAPABILITY: &str = "canonical-frontier-offer
 pub const CANONICAL_FRONTIER_PUCT_CAPABILITY: &str = "canonical-frontier-puct-v1";
 /// Planner-engine capability for all Ready offers and exact campaign-budget eligibility.
 pub const CANONICAL_FRONTIER_BUDGET_CAPABILITY: &str = "canonical-frontier-budget-v1";
+/// Planner-engine capability for exact request-local attempt-cap eligibility.
+pub const CANONICAL_FRONTIER_REQUEST_BUDGET_CAPABILITY: &str =
+    "canonical-frontier-request-budget-v1";
 /// Maximum bundle-object count accepted by the initial coordinator store.
 pub const MAX_RETAINED_PLANNER_REQUEST_BUNDLE_OBJECTS: usize =
     MAX_PLANNING_BUNDLE_OBJECTS - RETAINED_PLANNER_REQUEST_FIXED_CHILDREN;
@@ -218,6 +221,24 @@ impl CampaignPlanningBundle {
         &self,
         request: &PlannerRequest,
     ) -> Result<BTreeMap<PlanningScanPosition, PlannerCandidateInput>, CampaignCodecError> {
+        let request_budget = request
+            .engine
+            .capabilities()
+            .contains(CANONICAL_FRONTIER_REQUEST_BUDGET_CAPABILITY);
+        if request_budget
+            && (!request
+                .engine
+                .capabilities()
+                .contains(CANONICAL_FRONTIER_BUDGET_CAPABILITY)
+                || !request
+                    .engine
+                    .capabilities()
+                    .contains(CANONICAL_FRONTIER_OFFERS_CAPABILITY))
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "request-budget capability requires frontier offers and aggregate budgets",
+            });
+        }
         if !request
             .engine
             .capabilities()
@@ -354,6 +375,11 @@ impl CampaignPlanningBundle {
                 }
                 if let Some(candidate_budget) = &candidate_budget {
                     candidate_budget.validate_for(offer)?;
+                    if candidate_budget.remaining_request_attempts().is_some() != request_budget {
+                        return Err(CampaignCodecError::InvalidValue {
+                            reason: "candidate budget version disagrees with request-budget capability",
+                        });
+                    }
                 }
             }
             inputs.insert(

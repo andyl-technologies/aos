@@ -27,13 +27,13 @@ use crate::{
 };
 
 const ENGINE_NAME: &str = "crucible-canonical-frontier";
-const ENGINE_IMPLEMENTATION_VERSION: u32 = 3;
+const ENGINE_IMPLEMENTATION_VERSION: u32 = 5;
 const ENGINE_PROTOCOL_VERSION: u32 = 1;
 const STATE_FORMAT: &str = "canonical-frontier-planner";
 const STATE_FORMAT_VERSION: u32 = 2;
 const STATE_SCHEMA_VERSION: u32 = 2;
 const POLICY_ARTIFACT_ABI_VERSION: u32 = 1;
-const POLICY_DEPENDENCY_LOCK_BYTES: &[u8] = b"crucible-canonical-frontier-planner.v3";
+const POLICY_DEPENDENCY_LOCK_BYTES: &[u8] = b"crucible-canonical-frontier-planner.v5";
 
 /// Complete deterministic repository basis for the built-in planner.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -81,7 +81,7 @@ impl CanonicalFrontierPlanner {
     /// Returns [`CampaignCodecError`] if the closed descriptor unexpectedly
     /// violates the canonical planner-engine grammar.
     pub fn descriptor() -> Result<PlannerEngine, CampaignCodecError> {
-        Self::descriptor_for_budget(true)
+        Self::descriptor_for_budget(true, true)
     }
 
     /// Returns whether this implementation can replay the exact engine descriptor.
@@ -92,18 +92,28 @@ impl CanonicalFrontierPlanner {
     ///
     /// Returns [`CampaignCodecError`] if a closed descriptor cannot be constructed.
     pub fn supports_descriptor(engine: &PlannerEngine) -> Result<bool, CampaignCodecError> {
-        Ok(engine == &Self::descriptor()? || engine == &Self::descriptor_for_budget(false)?)
+        Ok(engine == &Self::descriptor()?
+            || engine == &Self::descriptor_for_budget(true, false)?
+            || engine == &Self::descriptor_for_budget(false, false)?)
     }
 
-    fn descriptor_for_budget(budget_aware: bool) -> Result<PlannerEngine, CampaignCodecError> {
+    fn descriptor_for_budget(
+        budget_aware: bool,
+        request_budget: bool,
+    ) -> Result<PlannerEngine, CampaignCodecError> {
         let mut capabilities = BTreeSet::from([CANONICAL_FRONTIER_OFFERS_CAPABILITY.to_owned()]);
         if budget_aware {
             capabilities.insert(CANONICAL_FRONTIER_BUDGET_CAPABILITY.to_owned());
         }
+        if request_budget {
+            capabilities.insert(CANONICAL_FRONTIER_REQUEST_BUDGET_CAPABILITY.to_owned());
+        }
         PlannerEngine::new(
             ENGINE_NAME,
-            if budget_aware {
+            if request_budget {
                 ENGINE_IMPLEMENTATION_VERSION
+            } else if budget_aware {
+                3
             } else {
                 1
             },
@@ -267,6 +277,15 @@ impl PurePlannerEngine for CanonicalFrontierPlanner {
         let inputs = request.input_bundle().candidate_inputs(request)?;
         let mut offered_on_page = 0_u64;
         for (position, input) in inputs {
+            if input
+                .budget
+                .as_ref()
+                .is_some_and(|budget| !budget.request_can_issue())
+            {
+                // A spent request cap is not repaired by an aggregate grant.
+                // A later semantic basis may still enable a convergent cause.
+                continue;
+            }
             if input
                 .budget
                 .as_ref()
@@ -481,11 +500,11 @@ impl Canonical for CarriedCandidate {
     }
 }
 
-const PUCT_ENGINE_IMPLEMENTATION_VERSION: u32 = 4;
+const PUCT_ENGINE_IMPLEMENTATION_VERSION: u32 = 6;
 const PUCT_STATE_FORMAT: &str = "canonical-frontier-puct-planner";
 const PUCT_STATE_FORMAT_VERSION: u32 = 2;
 const PUCT_STATE_SCHEMA_VERSION: u32 = 2;
-const PUCT_POLICY_DEPENDENCY_LOCK_BYTES: &[u8] = b"crucible-canonical-frontier-planner.v4";
+const PUCT_POLICY_DEPENDENCY_LOCK_BYTES: &[u8] = b"crucible-canonical-frontier-planner.v6";
 
 /// Complete deterministic repository basis for the PUCT-ranked planner.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -533,7 +552,7 @@ impl CanonicalPuctPlanner {
     /// Returns [`CampaignCodecError`] if the closed descriptor unexpectedly
     /// violates the planner-engine grammar.
     pub fn descriptor() -> Result<PlannerEngine, CampaignCodecError> {
-        Self::descriptor_for_budget(true)
+        Self::descriptor_for_budget(true, true)
     }
 
     /// Returns whether this implementation can replay the exact engine descriptor.
@@ -544,10 +563,15 @@ impl CanonicalPuctPlanner {
     ///
     /// Returns [`CampaignCodecError`] if a closed descriptor cannot be constructed.
     pub fn supports_descriptor(engine: &PlannerEngine) -> Result<bool, CampaignCodecError> {
-        Ok(engine == &Self::descriptor()? || engine == &Self::descriptor_for_budget(false)?)
+        Ok(engine == &Self::descriptor()?
+            || engine == &Self::descriptor_for_budget(true, false)?
+            || engine == &Self::descriptor_for_budget(false, false)?)
     }
 
-    fn descriptor_for_budget(budget_aware: bool) -> Result<PlannerEngine, CampaignCodecError> {
+    fn descriptor_for_budget(
+        budget_aware: bool,
+        request_budget: bool,
+    ) -> Result<PlannerEngine, CampaignCodecError> {
         let mut capabilities = BTreeSet::from([
             CANONICAL_FRONTIER_OFFERS_CAPABILITY.to_owned(),
             CANONICAL_FRONTIER_PUCT_CAPABILITY.to_owned(),
@@ -555,10 +579,15 @@ impl CanonicalPuctPlanner {
         if budget_aware {
             capabilities.insert(CANONICAL_FRONTIER_BUDGET_CAPABILITY.to_owned());
         }
+        if request_budget {
+            capabilities.insert(CANONICAL_FRONTIER_REQUEST_BUDGET_CAPABILITY.to_owned());
+        }
         PlannerEngine::new(
             ENGINE_NAME,
-            if budget_aware {
+            if request_budget {
                 PUCT_ENGINE_IMPLEMENTATION_VERSION
+            } else if budget_aware {
+                4
             } else {
                 2
             },
@@ -728,6 +757,13 @@ impl PurePlannerEngine for CanonicalPuctPlanner {
         let inputs = request.input_bundle().candidate_inputs(request)?;
         let mut offered_on_page = 0_u64;
         for input in inputs.into_values() {
+            if input
+                .budget
+                .as_ref()
+                .is_some_and(|budget| !budget.request_can_issue())
+            {
+                continue;
+            }
             if input
                 .budget
                 .as_ref()

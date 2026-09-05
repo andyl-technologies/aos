@@ -398,6 +398,11 @@ impl CampaignRepository {
             branch_request_index_anchor_key(),
             branch_request_index,
         )?;
+        let exploration = self.merkle.insert(
+            exploration.content_id(),
+            planner_scan_index_anchor_key(),
+            empty,
+        )?;
         let snapshot = CampaignSnapshot::genesis(
             CampaignLineageId::from_content_id(lineage_content)?,
             CampaignPolicyId::from_content_id(policy_content)?,
@@ -413,7 +418,12 @@ impl CampaignRepository {
                 coordination: empty,
             },
         )?
-        .with_budget_ledger(self.put_budget_ledger(crate::CampaignBudgetLedger::empty())?);
+        .with_budget_ledger(
+            self.put_budget_ledger(
+                crate::CampaignBudgetLedger::empty()
+                    .with_request_spending(MerkleMap::empty_content_id()?)?,
+            )?,
+        );
         let content_id = self.put_snapshot(&snapshot)?;
         self.validate_complete_head(content_id)?;
         match self
@@ -1123,6 +1133,12 @@ impl CampaignRepository {
             &indexed_requests,
             false,
         )?;
+        let scan_requests = [(request_id, request.branch_point())];
+        let projected_scan_index = self.planner_scan_index_after(
+            current.snapshot.roots().exploration,
+            &scan_requests,
+            false,
+        )?;
         let initial_continuation = if let Some(index) = frontier_index {
             if self
                 .merkle
@@ -1177,6 +1193,24 @@ impl CampaignRepository {
                 exploration.content_id(),
                 frontier_index_anchor_key(),
                 next_frontier,
+            )?;
+        }
+
+        if let Some(projected) = projected_scan_index {
+            let published = self
+                .planner_scan_index_after(
+                    current.snapshot.roots().exploration,
+                    &scan_requests,
+                    true,
+                )?
+                .ok_or_else(|| integrity("planner-scan-index-disappeared"))?;
+            if published != projected {
+                return Err(integrity("planner-scan-index-publication-mismatch"));
+            }
+            exploration = self.merkle.insert(
+                exploration.content_id(),
+                planner_scan_index_anchor_key(),
+                published,
             )?;
         }
 
@@ -1957,7 +1991,22 @@ impl CampaignRepository {
         )?;
         self.validate_planner_invocation_start(head.snapshot().roots().coordination, &invocation)?;
         let invocation_content = self.put_planner_invocation(&invocation)?;
-        self.verify_campaign_closure(invocation_content)?;
+        // `head` authenticated this complete immutable history. Rewalking the
+        // view roots on every scan page makes frontier selection history-wide;
+        // only the new invocation/basis closure needs fresh authentication.
+        let loaded = self.read_snapshot(head.snapshot_id().content_id())?;
+        let anchors = self.authenticated_head_closure_anchors(&loaded)?;
+        let added = self.verify_campaign_closure_anchored(invocation_content, &anchors)?;
+        let prior = self.load_validation_checkpoint(head.snapshot_id().content_id())?;
+        if prior
+            .closure_objects
+            .checked_add(added)
+            .is_none_or(|upper| upper > MAX_CAMPAIGN_CLOSURE_OBJECTS)
+        {
+            // A conservative head bound can overcount this invocation's union.
+            // Near the limit, retain the original exact closure admission rule.
+            self.verify_campaign_closure(invocation_content)?;
+        }
         Ok(invocation)
     }
 
@@ -2193,11 +2242,7 @@ impl CampaignRepository {
                 }
             }
             if let Some(budget) = input.budget {
-                let content = self.put_envelope(ObjectEnvelope::for_record(
-                    crate::CampaignRecordKind::PlannerCandidateBudget,
-                    crate::object::content_children(budget.content_children())?,
-                    budget.canonical_bytes(),
-                )?)?;
+                let content = self.put_envelope(ObjectEnvelope::for_candidate_budget(&budget)?)?;
                 if content != budget.id()?.content_id() {
                     return Err(integrity(
                         "planner-candidate-budget-publication-id-mismatch",
@@ -2381,6 +2426,10 @@ impl CampaignRepository {
                 .contains(crate::CANONICAL_FRONTIER_BUDGET_CAPABILITY)
                 .then(|| self.parent_budget_ledger(&snapshot))
                 .transpose()?;
+            let mut request_budget_work = engine
+                .capabilities()
+                .contains(crate::CANONICAL_FRONTIER_REQUEST_BUDGET_CAPABILITY)
+                .then_some(super::budget::MAX_PLANNER_REQUEST_BUDGET_PROPOSALS);
             let mut ready_positions = Vec::new();
             let mut candidate_cache = PlannerCandidateProjectionCache::default();
             for position in invocation.scan_page().positions() {
@@ -2436,15 +2485,16 @@ impl CampaignRepository {
             }
             for (position, offer) in ready_offers {
                 if let Some(ledger) = budget {
-                    let eligibility = self.planner_candidate_budget(&snapshot, &offer, ledger)?;
+                    let eligibility = self.planner_candidate_budget(
+                        &snapshot,
+                        &offer,
+                        ledger,
+                        request_budget_work.as_mut(),
+                    )?;
                     push_retained_planner_input(
                         &mut retained,
                         &mut retained_bytes,
-                        ObjectEnvelope::for_record(
-                            crate::CampaignRecordKind::PlannerCandidateBudget,
-                            crate::object::content_children(eligibility.content_children())?,
-                            eligibility.canonical_bytes(),
-                        )?,
+                        ObjectEnvelope::for_candidate_budget(&eligibility)?,
                     )?;
                 }
                 push_retained_planner_input(
@@ -2744,7 +2794,7 @@ impl CampaignRepository {
         Ok(())
     }
 
-    fn planner_scan_page(
+    pub(super) fn planner_scan_page(
         &self,
         view: &CampaignPlanningView,
         after: Option<PlanningScanPosition>,
@@ -2770,6 +2820,39 @@ impl CampaignRepository {
         let retained_limit = limit_usize
             .checked_add(1)
             .ok_or_else(|| integrity("planner-scan-page-limit-is-invalid"))?;
+        let retained = if let Some(indexed) =
+            self.indexed_planner_scan_positions(view.exploration(), after, retained_limit)?
+        {
+            indexed
+        } else {
+            self.legacy_planner_scan_positions(view, after, retained_limit)?
+        };
+        let mut retained = retained;
+        let complete = retained.len() <= limit_usize;
+        if !complete {
+            retained.pop_last();
+        }
+        let input_bytes = retained.values().try_fold(0_u64, |total, bytes| {
+            total
+                .checked_add(*bytes)
+                .ok_or_else(|| integrity("planner-scan-page-input-byte-overflow"))
+        })?;
+        PlanningScanPage::new(
+            after,
+            limit,
+            retained.into_keys().collect(),
+            complete,
+            input_bytes,
+        )
+        .map_err(Into::into)
+    }
+
+    pub(super) fn legacy_planner_scan_positions(
+        &self,
+        view: &CampaignPlanningView,
+        after: Option<PlanningScanPosition>,
+        retained_limit: usize,
+    ) -> Result<BTreeMap<PlanningScanPosition, u64>, CampaignRepositoryError> {
         let mut retained = BTreeMap::<PlanningScanPosition, u64>::new();
         let mut storage_after = None;
         loop {
@@ -2800,23 +2883,7 @@ impl CampaignRepository {
             storage_after = Some(next);
         }
 
-        let complete = retained.len() <= limit_usize;
-        if !complete {
-            retained.pop_last();
-        }
-        let input_bytes = retained.values().try_fold(0_u64, |total, bytes| {
-            total
-                .checked_add(*bytes)
-                .ok_or_else(|| integrity("planner-scan-page-input-byte-overflow"))
-        })?;
-        PlanningScanPage::new(
-            after,
-            limit,
-            retained.into_keys().collect(),
-            complete,
-            input_bytes,
-        )
-        .map_err(Into::into)
+        Ok(retained)
     }
 }
 

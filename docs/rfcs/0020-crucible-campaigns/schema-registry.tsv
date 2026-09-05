@@ -21,7 +21,7 @@ crucible.campaign.lineage	1	crucible-campaign::object	campaign-fact	gate:campaig
 crucible.campaign.policy	1	crucible-campaign::object	policy	gate:campaign-model,gate:content-address
 crucible.campaign.snapshot	3	crucible-campaign::object	campaign-snapshot	gate:campaign-model,gate:content-address
 crucible.campaign.fact	6	crucible-campaign::object	campaign-fact	gate:campaign-model,gate:content-address
-crucible.campaign.budget-ledger	1	crucible-campaign::object	campaign-fact	gate:campaign-model,gate:content-address
+crucible.campaign.budget-ledger	2	crucible-campaign::object	campaign-fact	gate:campaign-model,gate:content-address
 crucible.campaign.planning-view	1	crucible-campaign::object	campaign-fact	gate:campaign-model,gate:content-address
 crucible.campaign.planner-engine	1	crucible-campaign::object	policy	gate:campaign-model,gate:content-address
 crucible.campaign.policy-artifact	1	crucible-campaign::object	policy	gate:campaign-model,gate:content-address
@@ -147,7 +147,8 @@ crucible.execution.checkpoint	4	crucible::model	checkpoint	gate:typed-choice,gat
 crucible.campaign.expansion-state	2	crucible-campaign::exploration	projection	gate:lazy-frontier,gate:content-address
 crucible.campaign.continuation-projection	1	crucible-campaign::exploration	projection	gate:lazy-frontier,gate:content-address
 crucible.campaign.planner-candidate-guidance	2	crucible-campaign::object	projection	gate:component-contract,gate:lazy-frontier,gate:content-address
-crucible.campaign.planner-candidate-budget	1	crucible-campaign::object	projection	gate:component-contract,gate:lazy-frontier,gate:content-address
+crucible.campaign.planner-candidate-budget	2	crucible-campaign::object	projection	gate:component-contract,gate:lazy-frontier,gate:content-address
+crucible.campaign.planner-scan-index	1	crucible-campaign::repository::planner_scan_index	merkle-node	gate:component-contract,gate:lazy-frontier,gate:content-address
 crucible.campaign.expansion-credit	1	crucible-campaign::exploration	campaign-fact	gate:lazy-frontier,gate:campaign-replay,gate:content-address
 crucible.campaign.measurement-set	2	crucible-campaign::observation	observation	gate:campaign-replay,gate:content-address
 crucible.campaign.property-verdict-set	1	crucible-campaign::observation	observation	gate:campaign-replay,gate:content-address

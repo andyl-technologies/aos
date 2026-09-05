@@ -166,10 +166,23 @@ fn imported_successors_cannot_inflate_or_drop_the_budget_contract() {
     .expect("legacy-shaped successor");
     let inflated = CampaignBudgetLedger::empty()
         .with_grant(BudgetGrant::new(2, 2).expect("grant"))
-        .expect("inflated");
+        .expect("inflated")
+        .with_request_spending(MerkleMap::empty_content_id().expect("empty index"))
+        .expect("indexed ledger");
     let inflated_id = repository.put_budget_ledger(inflated).expect("ledger");
+    let unindexed_id = repository
+        .put_budget_ledger(
+            CampaignBudgetLedger::empty()
+                .with_grant(BudgetGrant::new(1, 1).expect("grant"))
+                .expect("unindexed ledger"),
+        )
+        .expect("ledger");
     for (forged, reason) in [
         (bare.clone(), "campaign-budget-contract-downgrade"),
+        (
+            bare.clone().with_budget_ledger(unindexed_id),
+            "campaign-request-budget-contract-downgrade",
+        ),
         (
             bare.with_budget_ledger(inflated_id),
             "campaign-budget-successor-mismatch",
@@ -319,11 +332,154 @@ fn strip_current_ledger(repository: &CampaignRepository) -> CampaignHead {
         None => CampaignSnapshot::genesis(
             snapshot.lineage(),
             snapshot.active_policy(),
-            snapshot.roots(),
+            legacy_genesis_roots(repository, snapshot.roots()),
         ),
     }
     .expect("version two snapshot");
     install_legacy_snapshot(repository, legacy)
+}
+
+fn strip_request_spending_index(repository: &CampaignRepository) -> CampaignHead {
+    let current = repository.head("legacy").expect("current");
+    let budget = repository.budget_projection("legacy").expect("totals");
+    let ledger = CampaignBudgetLedger::from_accounted_totals(
+        budget.granted_proposals,
+        budget.granted_attempts,
+        budget.spent_proposals,
+        budget.spent_attempts,
+    );
+    let base = if current.snapshot().parent().is_none() {
+        CampaignSnapshot::genesis(
+            current.snapshot().lineage(),
+            current.snapshot().active_policy(),
+            legacy_genesis_roots(repository, current.snapshot().roots()),
+        )
+        .expect("legacy genesis")
+    } else {
+        current.snapshot().clone()
+    };
+    let snapshot = base.with_budget_ledger(
+        repository
+            .put_budget_ledger(ledger)
+            .expect("aggregate-only ledger"),
+    );
+    install_legacy_snapshot(repository, snapshot)
+}
+
+#[test]
+fn request_spending_index_upgrades_legacy_admissions_and_rejects_forged_counts() {
+    let (repository, lineage, policy, blobs) = counted_fixture();
+    repository
+        .create("legacy", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    strip_request_spending_index(&repository);
+    grant(&repository, "legacy", "legacy-funding", 4, 2);
+    strip_request_spending_index(&repository);
+    let first = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "legacy-index",
+    );
+    let second = BranchRequest::new(
+        first.branch_point(),
+        first.parent(),
+        first.opportunity(),
+        first.domain(),
+        first.source().clone(),
+        BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
+            "test.legacy-index",
+            b"second-cause",
+        ))),
+        first.budget(),
+        first.stop().clone(),
+    )
+    .expect("second cause");
+    let head = repository.head("legacy").expect("head");
+    repository
+        .discover_choice_opportunity(
+            "legacy",
+            head.snapshot_id(),
+            first.parent(),
+            first.opportunity(),
+        )
+        .expect("discover legacy choice");
+    strip_request_spending_index(&repository);
+    for request in [&first, &second] {
+        let head = repository.head("legacy").expect("head");
+        repository
+            .submit_branch_request("legacy", head.snapshot_id(), request)
+            .expect("submit");
+        let head = strip_request_spending_index(&repository);
+        let proposal = finite_proposal(request, &policy, &head, ChoiceValue::Boolean(false), 1);
+        let issued = repository
+            .issue_proposal("legacy", head.snapshot_id(), &proposal)
+            .expect("issue");
+        let head = strip_request_spending_index(&repository);
+        let (selection, path, attempt) = branch_attempt(&repository, request, &proposal);
+        repository
+            .admit_proposal(
+                "legacy",
+                head.snapshot_id(),
+                issued.proposal,
+                &selection,
+                &path,
+                &attempt,
+            )
+            .expect("admit");
+        strip_request_spending_index(&repository);
+    }
+    let cold = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let head = cold.head("legacy").expect("cold legacy head");
+    let old_ledger = cold
+        .read_budget_ledger(head.snapshot().budget_ledger().expect("ledger id"))
+        .expect("legacy ledger");
+    assert_eq!(old_ledger.request_spending(), None);
+    assert_eq!(
+        (old_ledger.spent_proposals(), old_ledger.spent_attempts()),
+        (2, 1)
+    );
+    let upgraded = grant(&cold, "legacy", "upgrade-index", 1, 0);
+    let ledger = cold
+        .read_budget_ledger(upgraded.snapshot().budget_ledger().expect("ledger id"))
+        .expect("indexed ledger");
+    assert!(ledger.request_spending().is_some());
+    assert_eq!(
+        cold.indexed_request_execution_bases(ledger, first.id().expect("first id"))
+            .expect("first count"),
+        Some(1)
+    );
+    assert_eq!(
+        cold.indexed_request_execution_bases(ledger, second.id().expect("second id"))
+            .expect("second count"),
+        Some(0)
+    );
+    CampaignRepository::new(cold.blobs.clone(), cold.refs.clone())
+        .validate_complete_head(upgraded.content_id())
+        .expect("cold upgraded index");
+
+    let forged_ledger = ledger
+        .with_request_spending(MerkleMap::empty_content_id().expect("empty index"))
+        .expect("forged index");
+    let forged = upgraded.snapshot().clone().with_budget_ledger(
+        cold.put_budget_ledger(forged_ledger)
+            .expect("forged ledger"),
+    );
+    let content = cold.put_snapshot(&forged).expect("forged snapshot");
+    let before = blobs.object_count().expect("before rejection");
+    assert!(matches!(
+        CampaignRepository::new(cold.blobs.clone(), cold.refs.clone())
+            .validate_complete_head(content),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "campaign-budget-successor-mismatch"
+        })
+    ));
+    assert_eq!(blobs.object_count().expect("after rejection"), before);
+    assert_eq!(
+        cold.head("legacy").expect("unchanged head").snapshot_id(),
+        upgraded.snapshot_id()
+    );
 }
 
 #[test]

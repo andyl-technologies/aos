@@ -1334,15 +1334,44 @@ after complete read-only preflight. They are evidence, not spending authority:
 the final atomic issue transaction separately enforces aggregate proposal and
 unique-attempt costs across the whole batch.
 
-Both current engines rank only affordable offers, scan through EOF, and carry a
+Both budget-aware engines rank only affordable offers, scan through EOF, and carry a
 blocked-offer bit in version-2 portable state, including across an empty final
 page. A complete scan with no affordable offer and a retained blocker yields a
 waitable driver outcome without committing `NoWork` as settled. Repeating the
 unchanged blocked head does not reinvoke the engine. A grant changes the
 accounting planning-view root and restarts selection with fresh eligibility.
 Exact legacy engine descriptors retain their original offer sets, ranking,
-version-1 state bytes, and owner-recomputed transitions; the new capability
-does not reinterpret historical planner steps.
+state bytes, and owner-recomputed transitions; the new capability does not
+reinterpret historical planner steps.
+
+Implementation versions 5 (canonical order) and 6 (PUCT) additionally require
+`canonical-frontier-request-budget-v1`. Their candidate budget schema is version
+2: the same fields and children above, followed by the exact big-endian `u64`
+`remaining_request_attempts`. Owner validation recomputes this allowance from
+the authenticated request-spending ledger index and the served request's cap.
+For legacy ledgers only, a dense prior proposal/admission traversal is bounded
+by 65,536 pairs shared across the entire input bundle; exceeding it fails
+closed. Indexed ledgers instead need one outer trie lookup and one nested root
+read per request, independent of unrelated campaign history.
+
+These engines skip a locally capped new attempt before recording aggregate
+blockage. A frontier containing only locally capped new attempts settles as
+`NoWork`; an aggregate grant cannot reset a request's cap. A later view in which
+another cause creates that semantic execution basis can make its convergent
+offer eligible without additional request-local spending. Version-2 portable
+state remains unchanged because its blocked bit still denotes aggregate
+funding only. Versions 3 and 4 retain schema-1 budget projections and their
+original aggregate-only selection; versions 1 and 2 retain their original
+version-1 portable states. No retained request changes interpretation.
+
+New campaigns serve these canonical positions from an authenticated ordered
+scan index in the exploration root, not a sort over all exploration records.
+The index includes all request states and preserves branch-point, request-schema,
+and request-digest ordering. Each page reads its bounded window and one
+lookahead; current-head authentication supplies trusted roots for reused
+invocation dependencies. New basis objects still require closure authentication,
+and the global closure bound is preserved. Legacy roots lacking the index keep
+their original page computation and byte identities.
 
 Bounded
 model-resolved finite masses are retained in branch-request schema v3 and

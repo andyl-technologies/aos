@@ -645,6 +645,11 @@ impl CampaignRepository {
             .contains(crate::CANONICAL_FRONTIER_BUDGET_CAPABILITY)
             .then(|| self.parent_budget_ledger(&snapshot))
             .transpose()?;
+        let mut request_budget_work = request
+            .engine()
+            .capabilities()
+            .contains(crate::CANONICAL_FRONTIER_REQUEST_BUDGET_CAPABILITY)
+            .then_some(super::budget::MAX_PLANNER_REQUEST_BUDGET_PROPOSALS);
         let mut guidance_points = candidate_inputs
             .iter()
             .filter_map(|(position, input)| {
@@ -689,7 +694,12 @@ impl CampaignRepository {
                     return Err(integrity("planner-request-candidate-projection-mismatch"));
                 }
                 if let Some(ledger) = budget_ledger {
-                    let expected = self.planner_candidate_budget(&snapshot, offer, ledger)?;
+                    let expected = self.planner_candidate_budget(
+                        &snapshot,
+                        offer,
+                        ledger,
+                        request_budget_work.as_mut(),
+                    )?;
                     if input.budget.as_ref() != Some(&expected) {
                         return Err(integrity("planner-request-candidate-budget-mismatch"));
                     }
@@ -2495,7 +2505,7 @@ impl CampaignRepository {
 
         match (indexed_attempt, indexed_basis) {
             (None, None) => {
-                if self.count_request_execution_bases(accounting_root, proposal_record.request())?
+                if self.request_execution_bases_at(snapshot, proposal_record.request())?
                     >= request.budget().maximum_attempts()
                 {
                     return Err(integrity("branch-request-attempt-budget-exhausted"));
