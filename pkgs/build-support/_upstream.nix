@@ -130,7 +130,7 @@
   in "${normalized.scheme}://${normalized.authority}/${path}";
 
   normalizeProvider = provider: let
-    providerName = requireEnum "discovery provider" ["github-tags"] provider.provider;
+    providerName = requireEnum "discovery provider" ["github-releases" "github-tags"] provider.provider;
     checked = assertFields "primary discovery" ["provider" "repository"] ["tagPrefix"] provider;
   in {
     provider = providerName;
