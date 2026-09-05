@@ -49,6 +49,18 @@ identity now uses version 3 so the normal maintenance pass rebuilds the release
 catalog and documentation tree once after upgrade. A regression compares the
 new identity with the previous version for identical publication inputs.
 
+Cold rebuilds verify at most two release generations concurrently and serialize
+the larger browse-projection writes. Reusable snapshots keep the eight-release
+fetch window. This bounds overlapping document, SQL-parameter, and remote-request
+buffers during historical rebuilds.
+
+A read-only native diagnostic indexed staging's exact signed public surface
+(`b3a53cf9f223de417805df8bbe2181d070699fd1fc2d7b56b71f7c17136189f6`):
+265 packages, nine releases, and one channel. With a temporary file database,
+the final implementation took 3.84 seconds and reached a process high-water
+resident size of 104,216 KiB in one local sample. The diagnostic source and logs
+remain local; no staging content or credentials are committed as fixtures.
+
 ## Native validation
 
 The AOS development environment supplies the Rust tools; the browser harness uses
