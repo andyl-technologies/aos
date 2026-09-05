@@ -1378,6 +1378,13 @@
       enforces = "HFORK-4,HFORK-8,HFORK-22";
       capability = "a process-local owner retains the exact writable backend and root, drains and reopens the complete reachable source graph read-only before fork barriers, rejects explicit writable descendants, and restores original native access after a partial failure; inherited children cannot restore or free the parent token; coordinator integration and branch-private child graph handoff remain open";
     }
+    {
+      file = "0198-crucible-retire-native-workers-before-hot-fork.patch";
+      catalogName = "crucible-hot-fork-native-worker-retirement";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-22";
+      capability = "the main-loop coordinator retires drained default-context native block workers before AIO barriers and rechecks pool absence at acknowledgement and fork; pending work, foreign-context pools, held barriers, and writable native block nodes fail closed; an actual fork fixture proves child source reads, private QCOW2 writes, and parent-source preservation after retirement, while complete source-set preparation and production child graph handoff remain open";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

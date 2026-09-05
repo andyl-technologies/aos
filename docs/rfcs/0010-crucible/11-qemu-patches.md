@@ -3607,6 +3607,29 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   remain open; no hot-fork readiness bit is acknowledged by this patch.
 - **Risk:** F.
 
+### crucible-hot-fork-native-worker-retirement — rebuild native child I/O
+
+- **Patch:** `0198-crucible-retire-native-workers-before-hot-fork.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-22].
+- **Mechanism:** after snapshot allocation queries, the main-loop coordinator
+  retires drained default-context native block workers before retaining AIO
+  barriers. It rejects outstanding work, foreign-context pools, and held
+  barriers without changing pool ownership. Acknowledgement and physical fork
+  recheck pool absence; the fork also rejects any writable native block node,
+  including unowned VMState nodes absent from backend enumeration.
+- **Micro-test:** an actual fork with an inherited single-worker pool cannot
+  complete a native read. After parent-side retirement, another child reads the
+  frozen source and durably writes a private QCOW2 overlay; the parent verifies
+  the overlay through a fresh graph and checks that its source is unchanged.
+  Named rejection fixtures cover pending work, foreign pools, held barriers,
+  and unowned writable nodes. The package retains their TAP evidence;
+  `checks.crucible.phase6.qemuNativeWorkerRetirement` checks all four cases.
+- **Inertness:** ordinary I/O keeps upstream lazy pool creation and sizing.
+  Retirement does not authorize writable-source inheritance. Complete source-set
+  preparation and production child-private graph installation remain open;
+  this native fork fixture is not the whole-world production flight.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.

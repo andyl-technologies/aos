@@ -1,0 +1,469 @@
+diff --git a/block/crucible-hot-fork-source.c b/block/crucible-hot-fork-source.c
+index dbcfda5e6..3cac3f887 100644
+--- a/block/crucible-hot-fork-source.c
++++ b/block/crucible-hot-fork-source.c
+@@ -35,6 +35,23 @@ struct QemuBlockBackendHotForkReadOnlySource {
+     ReadOnlySourcePhase phase;
+ };
+ 
++bool qemu_block_hot_fork_all_sources_read_only(Error **errp)
++{
++    BlockDriverState *node = NULL;
++    size_t remaining = HOT_FORK_SOURCE_MAX_VISITS;
++
++    GLOBAL_STATE_CODE();
++    while ((node = bdrv_next_all_states(node))) {
++        if (!remaining || !bdrv_is_read_only(node)) {
++            error_setg(errp, "Crucible fork requires a complete "
++                       "read-only native block graph");
++            return false;
++        }
++        remaining--;
++    }
++    return true;
++}
++
+ static bool GRAPH_RDLOCK source_graph_read_only(BlockDriverState *node,
+                                                unsigned depth,
+                                                size_t *remaining,
+diff --git a/include/block/aio.h b/include/block/aio.h
+index 79520683a..1e29a8618 100644
+--- a/include/block/aio.h
++++ b/include/block/aio.h
+@@ -296,6 +296,15 @@ void qemu_aio_hot_fork_inventory(QemuAioHotForkInventory *inventory);
+ void qemu_aio_hot_fork_inventory_destroy(QemuAioHotForkInventory *inventory);
+ void qemu_aio_hot_fork_mark_home(AioContext *ctx);
+ 
++/*
++ * Retire drained native block workers before retaining AIO/BH/timer barriers.
++ * Only the default AioContext may own a pool in the supported fork profile.
++ * This does not drain requests or authorize a fork: after admission is closed,
++ * the coordinator must recheck that no context has recreated a native pool.
++ */
++bool qemu_aio_hot_fork_prepare_thread_pools(Error **errp);
++bool qemu_aio_hot_fork_thread_pools_empty(void);
++
+ #define QEMU_AIO_HANDLER_HOT_FORK_INVENTORY_MAX 65536
+ 
+ typedef struct QemuAioHandlerHotForkInventoryEntry {
+diff --git a/include/block/thread-pool.h b/include/block/thread-pool.h
+index dd48cf07e..1223c0632 100644
+--- a/include/block/thread-pool.h
++++ b/include/block/thread-pool.h
+@@ -28,6 +28,8 @@ typedef struct ThreadPoolAio ThreadPoolAio;
+ 
+ ThreadPoolAio *thread_pool_new_aio(struct AioContext *ctx);
+ void thread_pool_free_aio(ThreadPoolAio *pool);
++/* Called only by the pool's owning AioContext, before retiring its workers. */
++bool thread_pool_is_empty_aio(ThreadPoolAio *pool);
+ 
+ /*
+  * thread_pool_submit_{aio,co} API: submit I/O requests in the thread's
+diff --git a/include/system/block-backend-global-state.h b/include/system/block-backend-global-state.h
+index 0aedf6482..ddc0f06e6 100644
+--- a/include/system/block-backend-global-state.h
++++ b/include/system/block-backend-global-state.h
+@@ -134,6 +134,13 @@ void qemu_block_backend_hot_fork_barrier_inventory_destroy(
+ typedef struct QemuBlockBackendHotForkReadOnlySource
+     QemuBlockBackendHotForkReadOnlySource;
+ 
++/*
++ * Requires every allocated native block node to be read-only, including
++ * named VMState roots without a BlockBackend. This necessary pre-fork fence
++ * does not replace exact source identity or child-private graph installation.
++ */
++bool qemu_block_hot_fork_all_sources_read_only(Error **errp);
++
+ /*
+  * Retain one exact backend/root pair before preparing an immutable template.
+  * The caller has already stopped guest execution and owns that backend's
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 6e6297a21..72f3b4045 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -2927,6 +2927,10 @@ static void crucible_hot_fork_template_block_transition(void *opaque)
+             success = inventory.snapshot_complete;
+             qemu_block_backend_hot_fork_barrier_inventory_destroy(&inventory);
+         }
++        if (success) {
++            /* Allocation queries above can create native block-I/O workers. */
++            success = qemu_aio_hot_fork_prepare_thread_pools(&local_err);
++        }
+         if (!success) {
+             error_free(local_err);
+             crucible_hot_fork_template_completion =
+@@ -3353,7 +3357,8 @@ static uint64_t crucible_hot_fork_template_acknowledged_proofs(
+     if (crucible_hot_fork_template_active && rcu_barrier->quiescent) {
+         acknowledged |= CRUCIBLE_HOT_FORK_PROOF_RCU;
+     }
+-    if (crucible_hot_fork_template_active && bh_timer_barrier->quiescent) {
++    if (crucible_hot_fork_template_active && bh_timer_barrier->quiescent &&
++        qemu_aio_hot_fork_thread_pools_empty()) {
+         acknowledged |= CRUCIBLE_HOT_FORK_PROOF_AIO_BH_TIMERS;
+     }
+     if (crucible_hot_fork_template_active &&
+@@ -3897,6 +3902,16 @@ unlock:
+         return result;
+     }
+ 
++    /*
++     * Empty backend bindings do not cover named, unowned VMState nodes.
++     * Removing native workers must never make those writable descriptors
++     * forkable before the complete child-private block graph is installed.
++     */
++    if (!qemu_aio_hot_fork_thread_pools_empty() ||
++        !qemu_block_hot_fork_all_sources_read_only(NULL)) {
++        return -ENOTSUP;
++    }
++
+     result = qemu_crucible_hot_fork_capture_parent_identity(
+         &operation->parent_identity);
+     if (result != 0) {
+diff --git a/tests/unit/test-block-backend.c b/tests/unit/test-block-backend.c
+index d05cfd88e..df2bc691c 100644
+--- a/tests/unit/test-block-backend.c
++++ b/tests/unit/test-block-backend.c
+@@ -26,6 +26,7 @@
+ #include "block/block.h"
+ #include "block/block-global-state.h"
+ #include "block/block_int.h"
++#include "block/thread-pool.h"
+ #include "system/block-backend.h"
+ #include "qapi/error.h"
+ #include "qobject/qdict.h"
+@@ -402,6 +403,209 @@ static void test_hot_fork_source_writable_file(void)
+     test_hot_fork_snapshot_binding_case(true);
+ }
+ 
++static void test_hot_fork_unowned_writable_source(void)
++{
++    QDict *options = qdict_new();
++    BlockDriverState *node;
++    QemuBlockBackendHotForkInventory backends;
++
++    qdict_put_str(options, "driver", "null-co");
++    qdict_put_str(options, "node-name", "crucible-unowned-vmstate");
++    qdict_put_int(options, "size", 4096);
++    node = bdrv_open(NULL, NULL, options, BDRV_O_RDWR, &error_abort);
++    g_assert_nonnull(node);
++    qemu_block_backend_hot_fork_inventory(&backends);
++    g_assert_cmpuint(backends.entry_count, ==, 0);
++    qemu_block_backend_hot_fork_inventory_destroy(&backends);
++
++    /* Backend enumeration alone misses the production VMState node shape. */
++    g_assert_false(qemu_block_hot_fork_all_sources_read_only(NULL));
++    bdrv_unref(node);
++    g_assert_true(qemu_block_hot_fork_all_sources_read_only(&error_abort));
++}
++
++static int test_hot_fork_worker_request(void *opaque)
++{
++    return 0;
++}
++
++static void test_hot_fork_worker_completed(void *opaque, int ret)
++{
++    g_assert_cmpint(ret, ==, 0);
++    *(bool *)opaque = true;
++}
++
++static void test_hot_fork_pending_native_worker(void)
++{
++    AioContext *ctx = qemu_get_aio_context();
++    bool completed = false;
++    ThreadPoolAio *pool;
++
++    thread_pool_submit_aio(test_hot_fork_worker_request, NULL,
++                           test_hot_fork_worker_completed, &completed);
++    pool = ctx->thread_pool;
++    g_assert_nonnull(pool);
++    g_assert_false(qemu_aio_hot_fork_prepare_thread_pools(NULL));
++    g_assert_true(pool == ctx->thread_pool);
++    g_assert_false(completed);
++    while (!completed) {
++        aio_poll(ctx, true);
++    }
++    g_assert_true(qemu_aio_hot_fork_prepare_thread_pools(&error_abort));
++    g_assert_null(ctx->thread_pool);
++    g_assert_true(qemu_aio_hot_fork_thread_pools_empty());
++}
++
++static void test_hot_fork_native_worker_retirement_rejections(void)
++{
++    AioContext *ctx = qemu_get_aio_context();
++    AioContext *foreign = aio_context_new(&error_abort);
++    ThreadPoolAio *main_pool = aio_get_thread_pool(ctx);
++    ThreadPoolAio *foreign_pool = aio_get_thread_pool(foreign);
++    QemuBhTimerHotForkBarrierInventory barrier;
++
++    /* A foreign context must reject the entire operation without effects. */
++    g_assert_false(qemu_aio_hot_fork_prepare_thread_pools(NULL));
++    g_assert_true(ctx->thread_pool == main_pool);
++    g_assert_true(foreign->thread_pool == foreign_pool);
++    g_assert_false(qemu_aio_hot_fork_thread_pools_empty());
++    aio_context_unref(foreign);
++
++    /* Retirement cannot wait behind barriers owned by its own coordinator. */
++    qemu_bh_timer_hot_fork_barrier(QEMU_BH_TIMER_HOT_FORK_BARRIER_HOLD,
++                                  &barrier);
++    g_assert_true(barrier.held);
++    g_assert_false(qemu_aio_hot_fork_prepare_thread_pools(NULL));
++    g_assert_true(ctx->thread_pool == main_pool);
++    qemu_bh_timer_hot_fork_barrier(QEMU_BH_TIMER_HOT_FORK_BARRIER_RELEASE,
++                                  &barrier);
++    g_assert_false(barrier.held);
++    g_assert_true(qemu_aio_hot_fork_prepare_thread_pools(&error_abort));
++    g_assert_null(ctx->thread_pool);
++    g_assert_true(qemu_aio_hot_fork_thread_pools_empty());
++}
++
++#ifdef __linux__
++static void test_hot_fork_child_alarm(unsigned seconds)
++{
++    sigset_t unblocked;
++
++    g_assert_true(signal(SIGALRM, SIG_DFL) != SIG_ERR);
++    sigemptyset(&unblocked);
++    sigaddset(&unblocked, SIGALRM);
++    g_assert_cmpint(sigprocmask(SIG_UNBLOCK, &unblocked, NULL), ==, 0);
++    alarm(seconds);
++}
++
++static void test_hot_fork_native_io_after_worker_retirement(void)
++{
++    char source_path[] = "/tmp/qemu-hot-fork-io-source-XXXXXX";
++    char child_path[] = "/tmp/qemu-hot-fork-io-child-XXXXXX";
++    AioContext *ctx = qemu_get_aio_context();
++    int original_min = ctx->thread_pool_min;
++    int original_max = ctx->thread_pool_max;
++    QemuBlockBackendHotForkReadOnlySource *source;
++    BlockBackend *blk, *private;
++    QDict *options;
++    uint8_t original[1024], observed[1024], changed[512];
++    int source_fd = mkstemp(source_path);
++    int child_fd = mkstemp(child_path);
++    pid_t child;
++    int status;
++
++    g_assert_cmpint(source_fd, >=, 0);
++    g_assert_cmpint(child_fd, >=, 0);
++    close(source_fd);
++    close(child_fd);
++    bdrv_img_create(source_path, "qcow2", NULL, NULL, NULL,
++                    HOT_FORK_SNAPSHOT_SIZE, BDRV_O_RDWR, true, &error_abort);
++    bdrv_img_create(child_path, "qcow2", source_path, "qcow2", NULL,
++                    HOT_FORK_SNAPSHOT_SIZE, BDRV_O_RDWR, true, &error_abort);
++    options = qdict_new();
++    qdict_put_str(options, "driver", "qcow2");
++    qdict_put_str(options, "node-name", "crucible-frozen-io-source");
++    qdict_put_str(options, "file.driver", "file");
++    qdict_put_str(options, "file.filename", source_path);
++    blk = blk_new_open(NULL, NULL, options, BDRV_O_RDWR, &error_abort);
++    g_assert_nonnull(blk);
++    ctx->thread_pool_min = 1;
++    /* No child may mask the inherited-worker bug by spawning a spare worker. */
++    ctx->thread_pool_max = 1;
++    thread_pool_update_params(aio_get_thread_pool(ctx), ctx);
++    memset(original, 0x37, sizeof(original));
++    memset(changed, 0xa5, sizeof(changed));
++    g_assert_cmpint(blk_pwrite(blk, 0, sizeof(original), original, 0), ==, 0);
++    source = qemu_block_backend_hot_fork_read_only_source_new(blk, &error_abort);
++    g_assert_true(qemu_block_backend_hot_fork_read_only_source_freeze(
++        source, &error_abort));
++    g_assert_true(qemu_block_hot_fork_all_sources_read_only(&error_abort));
++    g_assert_nonnull(ctx->thread_pool);
++
++    /* The inherited idle count cannot service even a native read. */
++    child = fork();
++    g_assert_cmpint(child, >=, 0);
++    if (child == 0) {
++        test_hot_fork_child_alarm(2);
++        blk_pread(blk, 0, sizeof(observed), observed, 0);
++        _exit(1);
++    }
++    g_assert_cmpint(waitpid(child, &status, 0), ==, child);
++    g_assert_true(WIFSIGNALED(status));
++    g_assert_cmpint(WTERMSIG(status), ==, SIGALRM);
++
++    g_assert_true(qemu_aio_hot_fork_prepare_thread_pools(&error_abort));
++    g_assert_true(qemu_aio_hot_fork_thread_pools_empty());
++    child = fork();
++    g_assert_cmpint(child, >=, 0);
++    if (child == 0) {
++        test_hot_fork_child_alarm(10);
++        g_assert_null(ctx->thread_pool);
++        g_assert_cmpint(blk_pread(blk, 0, sizeof(observed), observed, 0), ==, 0);
++        g_assert_cmpmem(observed, sizeof(observed), original, sizeof(original));
++        g_assert_nonnull(ctx->thread_pool);
++
++        options = qdict_new();
++        qdict_put_str(options, "driver", "qcow2");
++        qdict_put_str(options, "file.driver", "file");
++        qdict_put_str(options, "file.filename", child_path);
++        qdict_put_str(options, "backing", "crucible-frozen-io-source");
++        private = blk_new_open(NULL, NULL, options, BDRV_O_RDWR, &error_abort);
++        g_assert_nonnull(private);
++        g_assert_cmpint(blk_pwrite(private, 0, sizeof(changed), changed, 0), ==, 0);
++        g_assert_cmpint(blk_flush(private), ==, 0);
++        blk_unref(private);
++        _exit(0);
++    }
++    g_assert_cmpint(waitpid(child, &status, 0), ==, child);
++    g_assert_true(WIFEXITED(status));
++    g_assert_cmpint(WEXITSTATUS(status), ==, 0);
++
++    /* Read the child's durable image through a fresh graph, not its caches. */
++    options = qdict_new();
++    qdict_put_str(options, "driver", "qcow2");
++    qdict_put_str(options, "file.driver", "file");
++    qdict_put_str(options, "file.filename", child_path);
++    private = blk_new_open(NULL, NULL, options, 0, &error_abort);
++    g_assert_cmpint(blk_pread(private, 0, sizeof(observed), observed, 0), ==, 0);
++    g_assert_cmpmem(observed, sizeof(changed), changed, sizeof(changed));
++    g_assert_cmpmem(observed + sizeof(changed), sizeof(changed),
++                    original + sizeof(changed), sizeof(changed));
++    blk_unref(private);
++    g_assert_cmpint(blk_pread(blk, 0, sizeof(observed), observed, 0), ==, 0);
++    g_assert_cmpmem(observed, sizeof(observed), original, sizeof(original));
++    g_assert_true(qemu_block_backend_hot_fork_read_only_source_restore(
++        source, &error_abort));
++    g_assert_true(qemu_block_backend_hot_fork_read_only_source_free(
++        source, &error_abort));
++    blk_unref(blk);
++    ctx->thread_pool_min = original_min;
++    ctx->thread_pool_max = original_max;
++    g_assert_true(qemu_aio_hot_fork_prepare_thread_pools(&error_abort));
++    unlink(child_path);
++    unlink(source_path);
++}
++#endif
++
+ int main(int argc, char **argv)
+ {
+     bdrv_init();
+@@ -420,6 +624,16 @@ int main(int argc, char **argv)
+                     test_hot_fork_snapshot_binding);
+     g_test_add_func("/block-backend/hot_fork_source_writable_file",
+                     test_hot_fork_source_writable_file);
++    g_test_add_func("/block-backend/hot_fork_unowned_writable_source",
++                    test_hot_fork_unowned_writable_source);
++    g_test_add_func("/block-backend/hot_fork_pending_native_worker",
++                    test_hot_fork_pending_native_worker);
++    g_test_add_func("/block-backend/hot_fork_native_worker_retirement_rejections",
++                    test_hot_fork_native_worker_retirement_rejections);
++#ifdef __linux__
++    g_test_add_func("/block-backend/hot_fork_native_io_after_worker_retirement",
++                    test_hot_fork_native_io_after_worker_retirement);
++#endif
+ 
+     return g_test_run();
+ }
+diff --git a/util/async.c b/util/async.c
+index a18df292b..6a17dadb9 100644
+--- a/util/async.c
++++ b/util/async.c
+@@ -1005,14 +1005,84 @@ GSource *aio_get_g_source(AioContext *ctx)
+     return &ctx->source;
+ }
+ 
++bool qemu_aio_hot_fork_thread_pools_empty(void)
++{
++    AioContext *ctx;
++    size_t count = 0;
++    QEMU_LOCK_GUARD(&crucible_hot_fork_aio_lock);
++
++    QTAILQ_FOREACH(ctx, &crucible_hot_fork_aio_contexts,
++                   crucible_hot_fork_node) {
++        if (++count > QEMU_AIO_HOT_FORK_INVENTORY_MAX ||
++            qatomic_read(&ctx->thread_pool)) {
++            return false;
++        }
++    }
++    return true;
++}
++
++bool qemu_aio_hot_fork_prepare_thread_pools(Error **errp)
++{
++    AioContext *main_ctx = qemu_get_aio_context();
++    AioContext *ctx;
++    ThreadPoolAio *pool;
++    size_t count = 0;
++    bool supported = true;
++
++    if (!main_ctx || !qemu_in_main_thread() ||
++        qemu_get_current_aio_context() != main_ctx) {
++        error_setg(errp, "Crucible native worker retirement requires "
++                   "the main AioContext");
++        return false;
++    }
++    if (!qemu_bh_timer_hot_fork_admission_try_begin()) {
++        error_setg(errp, "Crucible native workers must retire before AIO barriers");
++        return false;
++    }
++
++    qemu_mutex_lock(&crucible_hot_fork_aio_lock);
++    QTAILQ_FOREACH(ctx, &crucible_hot_fork_aio_contexts,
++                   crucible_hot_fork_node) {
++        if (++count > QEMU_AIO_HOT_FORK_INVENTORY_MAX ||
++            (ctx != main_ctx && qatomic_read(&ctx->thread_pool))) {
++            supported = false;
++            break;
++        }
++    }
++    qemu_mutex_unlock(&crucible_hot_fork_aio_lock);
++    pool = qatomic_read(&main_ctx->thread_pool);
++    if (!supported || !thread_pool_is_empty_aio(pool)) {
++        error_setg(errp, "Crucible native worker retirement requires "
++                   "drained main-context work only");
++        qemu_bh_timer_hot_fork_admission_end();
++        return false;
++    }
++
++    /*
++     * Destroy the live workers and their synchronization objects in the parent.
++     * Copying idle counts or resetting inherited condition variables in the
++     * child would leave requests waiting for threads that no longer exist.
++     * Neither native guest state nor pool sizing policy changes; after abort
++     * or child reconstruction, ordinary I/O creates a fresh pool lazily.
++     */
++    qatomic_set(&main_ctx->thread_pool, NULL);
++    thread_pool_free_aio(pool);
++    qemu_bh_timer_hot_fork_admission_end();
++    return true;
++}
++
+ ThreadPoolAio *aio_get_thread_pool(AioContext *ctx)
+ {
++    ThreadPoolAio *pool;
++
+     qemu_bh_timer_hot_fork_admission_begin();
+-    if (!ctx->thread_pool) {
+-        ctx->thread_pool = thread_pool_new_aio(ctx);
++    pool = qatomic_read(&ctx->thread_pool);
++    if (!pool) {
++        pool = thread_pool_new_aio(ctx);
++        qatomic_set(&ctx->thread_pool, pool);
+     }
+     qemu_bh_timer_hot_fork_admission_end();
+-    return ctx->thread_pool;
++    return pool;
+ }
+ 
+ #ifdef CONFIG_LINUX_AIO
+diff --git a/util/thread-pool.c b/util/thread-pool.c
+index d2ead6b72..20c1447f8 100644
+--- a/util/thread-pool.c
++++ b/util/thread-pool.c
+@@ -344,6 +344,12 @@ ThreadPoolAio *thread_pool_new_aio(AioContext *ctx)
+     return pool;
+ }
+ 
++bool thread_pool_is_empty_aio(ThreadPoolAio *pool)
++{
++    /* Every queued, active, or completion-pending request remains on head. */
++    return !pool || QLIST_EMPTY(&pool->head);
++}
++
+ void thread_pool_free_aio(ThreadPoolAio *pool)
+ {
+     if (!pool) {

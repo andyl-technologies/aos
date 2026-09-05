@@ -1740,6 +1740,10 @@ in rec {
     };
   };
   phase6 = {
+    qemuNativeWorkerRetirement = import ./phase6-qemu-native-worker-retirement.nix {
+      inherit pkgs;
+      taskIds = [];
+    };
     qemuReadOnlyBlockSource = import ./phase6-qemu-read-only-block-source.nix {
       inherit pkgs;
       taskIds = [];
