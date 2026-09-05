@@ -1512,5 +1512,6 @@ denied and changed-file formatting checks pass. The fixed internal record golden
 is 1,068 bytes with SHA-256
 `a7eb0f1c0e6306a04252c17046788aa1680081b4405fea31f8791c629982e331`.
 Independent registry and existing effect-path reviews found no remaining blocker.
-Warning-denied rustdoc is still running/queued on the shared Cargo cache at this
-checkpoint; the post-change workspace-wide compile check is not yet recorded.
+Warning-denied rustdoc and the locked all-target workspace compile check also
+pass on `40f419b57`. The latter uses the cached AOS environment and realized AOS
+FUSE transport pkg-config path, with unrelated existing workspace warnings.
