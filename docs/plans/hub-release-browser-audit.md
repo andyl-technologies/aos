@@ -42,6 +42,13 @@ and release. Refreshes preserve existing completed IDs after checking their
 registry ownership and complete content identity. Regression coverage exercises
 both identical registries and an existing legacy ID.
 
+The first staging deployment exposed an upgrade-only issue: Worker maintenance
+coalesced an unchanged publication against its completed pre-browser build ID,
+bypassing the indexer's new projection-completeness checks. The Worker build
+identity now uses version 3 so the normal maintenance pass rebuilds the release
+catalog and documentation tree once after upgrade. A regression compares the
+new identity with the previous version for identical publication inputs.
+
 ## Native validation
 
 The AOS development environment supplies the Rust tools; the browser harness uses
@@ -50,6 +57,7 @@ AOS Python and Chrome against an isolated signed development origin.
 - Native library suite: 141 passed.
 - Shared core suite: 812 passed; registry schema suite: 69 passed.
 - Native web and seed suites: 17 passed.
+- Worker library suite: 32 passed, including the completed-index upgrade case.
 - Real-browser release harness: 49 passed, including a 137-child subtree,
   bounded search, no prefetch, one request per expansion, reused children,
   arbitrary-depth options, legacy links, and authenticated private expansion.
