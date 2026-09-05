@@ -466,6 +466,14 @@ fn shell_meta(name: &str) -> Option<String> {
         .get_attribute("content")
 }
 
+/// Returns whether the authenticated shell explicitly advertises one feature.
+///
+/// Missing metadata means unavailable, so rollout-gated controls remain
+/// fail-closed when an older shell cannot make the server capability known.
+pub(crate) fn shell_feature(name: &str) -> bool {
+    shell_meta(name).is_some_and(|value| value == "true")
+}
+
 fn scope_title(scope: &ConsoleScope) -> String {
     match scope {
         ConsoleScope::Instance => "Settings".to_string(),

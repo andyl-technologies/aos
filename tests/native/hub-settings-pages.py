@@ -46,7 +46,7 @@ ORGANIZATION_SUFFIXES = (
 )
 REGISTRY_SUFFIXES = (
     "", "placements", "delivery", "caches", "access", "signing-keys", "tokens",
-    "containers", "mirror", "configuration", "changes", "publish-history", "operations",
+    "containers", "mirror", "configuration", "change-requests", "publish-history", "operations",
     "danger",
 )
 CACHE_SUFFIXES = (

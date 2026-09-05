@@ -57,6 +57,7 @@ pub(super) fn RegistryContainers(client: ApiClient, registry_id: String) -> impl
     let workspace_client = client.clone();
     let workspace_registry = registry_id.clone();
     let gc_requested = RwSignal::new(false);
+    let gc_enabled = crate::app::shell_feature("aos-container-gc-enabled");
 
     view! {
         <div class="workflow-stack">
@@ -104,12 +105,19 @@ pub(super) fn RegistryContainers(client: ApiClient, registry_id: String) -> impl
                 }
             />
             <ContainerRetention client=client.clone() registry=registry_id.clone()/>
-            <details class="panel advanced-controls" on:toggle=move |_| gc_requested.set(true)>
-                <summary>"Garbage collection & provider reconciliation"</summary>
-                {move || gc_requested.get().then(|| view! {
-                    <ContainerGc client=client.clone() registry=registry_id.clone()/>
-                })}
-            </details>
+            {gc_enabled.then(|| view! {
+                <details class="panel advanced-controls" on:toggle=move |_| gc_requested.set(true)>
+                    <summary>"Garbage collection & provider reconciliation"</summary>
+                    {move || gc_requested.get().then(|| view! {
+                        <ContainerGc client=client.clone() registry=registry_id.clone()/>
+                    })}
+                </details>
+            })}
+            {(!gc_enabled).then(|| view! {
+                <section class="panel resource-panel">
+                    <div class="section-heading"><div><p class="section-kicker">"Unavailable rollout"</p><h2>"Garbage collection & provider reconciliation"</h2><p>"This Hub has not enabled container garbage collection. Repository inspection and retention remain available; no GC inventory or run data is requested until the server advertises this capability."</p></div></div>
+                </section>
+            })}
         </div>
     }
 }
@@ -272,6 +280,15 @@ pub(super) fn display_or(value: &str, fallback: &str) -> String {
     }
 }
 
+/// Formats a server timestamp while making an unset value explicit.
+pub(super) fn format_timestamp(seconds: i64, absent: &str) -> String {
+    if seconds <= 0 {
+        absent.to_string()
+    } else {
+        format!("Unix {seconds}")
+    }
+}
+
 pub(super) fn format_bytes(value: u64) -> String {
     const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
     const MIB: f64 = 1024.0 * 1024.0;
@@ -281,5 +298,16 @@ pub(super) fn format_bytes(value: u64) -> String {
         format!("{:.1} MiB", value as f64 / MIB)
     } else {
         format!("{value} bytes")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_timestamp;
+
+    #[test]
+    fn unset_timestamps_use_the_page_specific_absence_label() {
+        assert_eq!(format_timestamp(0, "Not configured"), "Not configured");
+        assert_eq!(format_timestamp(12, "Not configured"), "Unix 12");
     }
 }
