@@ -29,6 +29,39 @@ channel rollout policy.
   child JSON uses private, no-store caching and the same visibility checks as
   the page.
 
+## Scaling the release choice and the reader
+
+The first browser only offered an empty reader beside the tree and a flat
+release dropdown, neither of which holds up at hundreds of releases or deep
+option trees. Both were reworked on September 5, 2026.
+
+- The selector offers channel targets, the ten newest releases, and the current
+  selection in labelled groups, with channel pills above it. A typed jump field
+  accepts a version, commit, or channel name; the server resolves channel
+  names to their frontier and redirects to the exact version, so links never
+  carry a moving alias. A compact JSON index (versions and channel names only)
+  powers a typeahead over the field; the Releases directory lists everything.
+- The reader lists the current scope as a folder: immediate children with
+  representative type and description, or every documented option beneath the
+  scope as dotted paths with `view=all`. Both listings use the same 50-entry
+  bound and keyset cursors as the tree, and the flattened listing joins the
+  precomputed ancestry table so it stays indexed at any depth. Children carry
+  one representative variant's kind, type, and summary through bounded
+  correlated lookups on the variant index; no schema or reindex was needed.
+- With scripts, choosing a scope from the tree, a folder row, breadcrumbs, or
+  search swaps only the reader and breadcrumbs, marks and expands the chosen
+  branch, and pushes history; the tree keeps its expanded state. A filter box
+  narrows loaded tree labels and escalates to subtree search on Enter. Every
+  link still works as an ordinary page load without JavaScript.
+
+The native release harness grew from 49 to 71 checks: folder and flattened
+pagination over the 137-option subtree, dotted relative paths, the channel
+alias redirect, grouped selector contents, one-request in-place navigation with
+retained tree state, folder-row expansion, filter narrowing, history
+restoration, the typeahead choosing `stable`, and no-JavaScript folder pages.
+Eight desktop and mobile screenshots fit their viewport widths with no browser
+errors.
+
 ## Publication correctness
 
 The native seed now records measured file hashes, sizes, and strong storage

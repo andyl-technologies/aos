@@ -3,6 +3,12 @@
 //! Content links carry `?release=1.2.3`; Images and Containers also accept an
 //! explicit `?release=all`. Overview, the release directory, and Channels are
 //! registry-wide. An unavailable selection never falls back to live content.
+//!
+//! A request may name a channel (`?release=stable`) or a commit; both resolve
+//! to the exact published version and redirect to it, so shared links always
+//! carry an immutable identity. The selector shows channels, the newest
+//! releases, and the current selection rather than every historical tag; the
+//! Releases directory lists the rest.
 
 use crate::clock::Instant;
 use std::cmp::Ordering;
@@ -13,15 +19,19 @@ use super::browse_pages::{registry_crumbs, registry_nav_at_release, state_line};
 use super::console_render::{page_with_session, urlencode, SessionIndicator};
 use super::render::escape;
 use crate::db::{
-    Database, IndexStatus, PackageDetail, PackageRow, PlatformDetail, RegistryRecord, ReleaseRow,
-    VersionDetail,
+    ChannelSummary, Database, IndexStatus, PackageDetail, PackageRow, PlatformDetail,
+    RegistryRecord, ReleaseRow, VersionDetail,
 };
 use aos_registry_surface::manifest::PackageToml;
+
+/// Number of newest releases offered directly in the selector.
+const RECENT_RELEASES: usize = 10;
 
 /// Exact content selection and available registry release versions.
 #[derive(Debug, Clone, Default)]
 pub struct ReleaseContext {
     releases: Vec<ReleaseRow>,
+    channels: Vec<ChannelSummary>,
     selected: Option<String>,
     all_releases: bool,
     allow_all: bool,
@@ -39,13 +49,15 @@ impl ReleaseContext {
         requested: Option<&str>,
         allow_all: bool,
     ) -> Result<Self, Rendered> {
-        let (releases, default) = futures_util::future::join(
+        let (releases, channels, default) = futures_util::future::join3(
             db.list_releases(registry_id),
+            db.list_channels(registry_id),
             db.default_browse_release(registry_id),
         )
         .await;
-        Self::select(
+        Self::select_among(
             releases.map_err(|_| Rendered::ServiceUnavailable)?,
+            channels.map_err(|_| Rendered::ServiceUnavailable)?,
             default
                 .map_err(|_| Rendered::ServiceUnavailable)?
                 .as_deref(),
@@ -60,7 +72,23 @@ impl ReleaseContext {
     /// Returns `None` for unknown selections or unsupported all-release views.
     #[must_use]
     pub fn select(
+        releases: Vec<ReleaseRow>,
+        default: Option<&str>,
+        requested: Option<&str>,
+        allow_all: bool,
+    ) -> Option<Self> {
+        Self::select_among(releases, Vec::new(), default, requested, allow_all)
+    }
+
+    /// Selects a release, also resolving channel names to their current target.
+    ///
+    /// A channel alias resolves to the release its frontier names; a channel
+    /// without a frontier is unknown. Returns `None` for unknown selections or
+    /// unsupported all-release views.
+    #[must_use]
+    pub fn select_among(
         mut releases: Vec<ReleaseRow>,
+        channels: Vec<ChannelSummary>,
         default: Option<&str>,
         requested: Option<&str>,
         allow_all: bool,
@@ -76,6 +104,11 @@ impl ReleaseContext {
         let selected = if all_releases {
             None
         } else if let Some(value) = requested.or(default) {
+            let value = channels
+                .iter()
+                .find(|channel| channel.name == value)
+                .map(|channel| channel.frontier.as_deref())
+                .unwrap_or(Some(value))?;
             Some(
                 releases
                     .iter()
@@ -96,6 +129,7 @@ impl ReleaseContext {
         };
         Some(Self {
             releases,
+            channels,
             selected,
             all_releases,
             allow_all,
@@ -144,26 +178,74 @@ impl ReleaseContext {
         registry_nav_at_release(slug, active, self.query_value())
     }
 
+    /// Returns each channel paired with the release its frontier currently names.
+    ///
+    /// Channels whose frontier is not a published release are omitted: the
+    /// selector only offers destinations that resolve.
+    #[must_use]
+    pub fn channel_targets(&self) -> Vec<(&str, &str)> {
+        self.channels
+            .iter()
+            .filter_map(|channel| {
+                let frontier = channel.frontier.as_deref()?;
+                self.releases
+                    .iter()
+                    .any(|release| release.semver == frontier)
+                    .then_some((channel.name.as_str(), frontier))
+            })
+            .collect()
+    }
+
     /// Builds the shared selector with page-specific filters preserved.
     ///
-    /// An explicit action lets detail pages resolve the package in the newly
-    /// selected release. Pagination and digests belong to the old selection
-    /// and must not be included in `filters`.
+    /// The selector stays small at any release count: channel targets, the
+    /// newest releases, and the current selection are offered directly, a
+    /// typed jump resolves any version, commit, or channel name, and the
+    /// Releases directory lists everything else. An explicit action lets
+    /// detail pages resolve the package in the newly selected release.
+    /// Pagination and digests belong to the old selection and must not be
+    /// included in `filters`.
     #[must_use]
     pub fn selector(&self, slug: &str, action: &str, filters: &[(&str, &str)]) -> String {
-        let mut body = format!(
-            "<form method=\"get\" action=\"{}\" class=\"release-selector\">",
-            escape(action)
-        );
+        let mut hidden = String::new();
         for (key, value) in filters {
             let _ = write!(
-                body,
+                hidden,
                 "<input type=\"hidden\" name=\"{}\" value=\"{}\">",
                 escape(key),
                 escape(value)
             );
         }
-        body.push_str("<label>Release <select name=\"release\">");
+        let channel_targets = self.channel_targets();
+
+        let mut body = String::from("<div class=\"release-selector\" data-release-picker>");
+        if !channel_targets.is_empty() {
+            body.push_str("<div class=\"release-rail\" role=\"group\" aria-label=\"Channels\">");
+            for (name, version) in &channel_targets {
+                let mut href = format!("{}?release={}", escape(action), urlencode(version));
+                for (key, value) in filters {
+                    let _ = write!(href, "&amp;{}={}", urlencode(key), urlencode(value));
+                }
+                let _ = write!(
+                    body,
+                    "<a class=\"release-pill\" href=\"{href}\"{}>{} <strong>{}</strong></a>",
+                    if Some(*version) == self.selected() {
+                        " aria-current=\"true\""
+                    } else {
+                        ""
+                    },
+                    escape(name),
+                    escape(version)
+                );
+            }
+            body.push_str("</div>");
+        }
+
+        let _ = write!(
+            body,
+            "<form method=\"get\" action=\"{}\" class=\"release-choice\">{hidden}<label>Release <select name=\"release\">",
+            escape(action)
+        );
         if self.allow_all {
             let _ = write!(
                 body,
@@ -174,10 +256,10 @@ impl ReleaseContext {
         if self.selected.is_none() && !self.all_releases {
             body.push_str("<option value=\"\" selected disabled>Choose a release</option>");
         }
-        for release in &self.releases {
+        let option = |body: &mut String, release: &ReleaseRow, prefix: &str| {
             let _ = write!(
                 body,
-                "<option value=\"{}\"{}>{}{}</option>",
+                "<option value=\"{}\"{}>{prefix}{}{}</option>",
                 escape(&release.semver),
                 if Some(release.semver.as_str()) == self.selected() {
                     " selected"
@@ -191,8 +273,55 @@ impl ReleaseContext {
                     ""
                 }
             );
+        };
+        let mut offered = std::collections::BTreeSet::new();
+        if !channel_targets.is_empty() {
+            body.push_str("<optgroup label=\"Channels\">");
+            for (name, version) in &channel_targets {
+                if let Some(release) = self.releases.iter().find(|r| r.semver == *version) {
+                    option(&mut body, release, &format!("{} → ", escape(name)));
+                    offered.insert(release.semver.as_str());
+                }
+            }
+            body.push_str("</optgroup>");
         }
-        body.push_str("</select></label><button type=\"submit\">Show release</button>");
+        let recent = self
+            .releases
+            .iter()
+            .filter(|release| !offered.contains(release.semver.as_str()))
+            .take(RECENT_RELEASES)
+            .collect::<Vec<_>>();
+        if !recent.is_empty() {
+            body.push_str("<optgroup label=\"Recent\">");
+            for release in recent {
+                option(&mut body, release, "");
+                offered.insert(release.semver.as_str());
+            }
+            body.push_str("</optgroup>");
+        }
+        if let Some(release) = self
+            .release()
+            .filter(|release| !offered.contains(release.semver.as_str()))
+        {
+            body.push_str("<optgroup label=\"Selected\">");
+            option(&mut body, release, "");
+            body.push_str("</optgroup>");
+        }
+        body.push_str("</select></label><button type=\"submit\">Show release</button></form>");
+
+        // A second form keeps the typed value out of the select's field name;
+        // the server resolves versions, commits, and channel names alike.
+        let _ = write!(
+            body,
+            "<form method=\"get\" action=\"{}\" class=\"release-jump\" role=\"search\">{hidden}<label><span class=\"visually-hidden\">Jump to release</span><input type=\"search\" name=\"release\" data-release-jump placeholder=\"Jump to version, commit, or channel\" autocomplete=\"off\" autocapitalize=\"off\" spellcheck=\"false\"></label><button type=\"submit\">Go</button><div class=\"filter-suggest release-suggest\" hidden></div></form>",
+            escape(action)
+        );
+        let _ = write!(
+            body,
+            "<a class=\"release-directory\" href=\"/{}/-/releases\">All {} releases →</a>",
+            escape(slug),
+            self.releases.len()
+        );
         if let Some(release) = self.release() {
             let _ = write!(
                 body,
@@ -201,13 +330,41 @@ impl ReleaseContext {
                 verification(release)
             );
         }
-        body.push_str("</form>");
+        body.push_str(&self.index_json());
+        body.push_str("</div>");
         if self.releases.is_empty() {
             body.push_str("<p class=\"dim\">No releases have been published yet.</p>");
         } else if self.selected.is_none() && !self.all_releases {
             body.push_str("<p class=\"dim\">No verified release is available. Choose a release to inspect its contents and verification status.</p>");
         }
         body
+    }
+
+    /// Embeds the compact release index that powers the typed jump's typeahead.
+    ///
+    /// Versions only, plus channel names: a few bytes per release rather than
+    /// a rendered option each, and inert data under the strict script policy.
+    fn index_json(&self) -> String {
+        let channels = self
+            .channel_targets()
+            .into_iter()
+            .map(|(name, version)| serde_json::json!({"name": name, "release": version}))
+            .collect::<Vec<_>>();
+        let releases = self
+            .releases
+            .iter()
+            .map(|release| {
+                serde_json::json!({
+                    "version": release.semver,
+                    "verified": release.signer.is_some(),
+                    "prerelease": is_prerelease(&release.semver),
+                })
+            })
+            .collect::<Vec<_>>();
+        let json = serde_json::json!({"channels": channels, "releases": releases})
+            .to_string()
+            .replace('<', "\\u003c");
+        format!("<script type=\"application/json\" data-release-index>{json}</script>")
     }
 }
 
@@ -470,6 +627,106 @@ mod tests {
         )
         .unwrap();
         assert_eq!(preview.selected(), Some("2.0.0-rc.1"));
+    }
+
+    fn channel(name: &str, frontier: Option<&str>) -> ChannelSummary {
+        ChannelSummary {
+            name: name.into(),
+            frontier: frontier.map(str::to_string),
+            partitions: vec![None; 256],
+        }
+    }
+
+    #[test]
+    fn channel_names_resolve_to_their_current_target_or_nothing() {
+        let releases = vec![
+            release("1.9.0", "main", true),
+            release("1.10.0", "maintenance-branch", true),
+            release("2.0.0-rc.1", "preview", true),
+        ];
+        let channels = vec![
+            channel("stable", Some("1.9.0")),
+            channel("beta", Some("2.0.0-rc.1")),
+            channel("staged", None),
+            channel("dangling", Some("3.0.0")),
+        ];
+        let stable = ReleaseContext::select_among(
+            releases.clone(),
+            channels.clone(),
+            None,
+            Some("stable"),
+            false,
+        )
+        .unwrap();
+        assert_eq!(stable.selected(), Some("1.9.0"));
+        assert_eq!(
+            stable.channel_targets(),
+            vec![("stable", "1.9.0"), ("beta", "2.0.0-rc.1")]
+        );
+        assert!(ReleaseContext::select_among(
+            releases.clone(),
+            channels.clone(),
+            None,
+            Some("staged"),
+            false
+        )
+        .is_none());
+        assert!(ReleaseContext::select_among(
+            releases.clone(),
+            channels.clone(),
+            None,
+            Some("dangling"),
+            false
+        )
+        .is_none());
+        assert_eq!(
+            ReleaseContext::select_among(releases, channels, Some("beta"), None, false)
+                .unwrap()
+                .selected(),
+            Some("2.0.0-rc.1")
+        );
+    }
+
+    #[test]
+    fn selector_offers_channels_and_recent_releases_instead_of_every_tag() {
+        let mut releases = (0..120)
+            .map(|index| release(&format!("1.{index}.0"), &format!("commit-{index}"), true))
+            .collect::<Vec<_>>();
+        releases.push(release("0.1.0", "ancient", true));
+        let channels = vec![channel("stable", Some("1.100.0"))];
+        let context = ReleaseContext::select_among(
+            releases.clone(),
+            channels.clone(),
+            None,
+            Some("0.1.0"),
+            false,
+        )
+        .unwrap();
+        let html = context.selector("org/main", "/org/main/-/docs", &[("root", "abc")]);
+        assert_eq!(html.matches("<option ").count(), 12, "{html}");
+        assert!(html.contains(
+            "<optgroup label=\"Channels\"><option value=\"1.100.0\">stable → 1.100.0</option>"
+        ));
+        assert!(
+            html.contains("<optgroup label=\"Recent\"><option value=\"1.119.0\">1.119.0</option>")
+        );
+        assert!(html.contains(
+            "<optgroup label=\"Selected\"><option value=\"0.1.0\" selected>0.1.0</option>"
+        ));
+        assert!(html.contains(
+            "class=\"release-pill\" href=\"/org/main/-/docs?release=1.100.0&amp;root=abc\""
+        ));
+        assert!(html.contains("name=\"release\" data-release-jump"));
+        assert!(html.contains("All 121 releases →"));
+        assert!(html.contains("\"channels\":[{\"name\":\"stable\",\"release\":\"1.100.0\"}]"));
+        assert!(html.contains("<input type=\"hidden\" name=\"root\" value=\"abc\">"));
+        assert_eq!(html.matches("name=\"root\" value=\"abc\"").count(), 2);
+
+        let current = ReleaseContext::select_among(releases, channels, None, Some("stable"), false)
+            .unwrap()
+            .selector("org/main", "/org/main/-/docs", &[]);
+        assert!(current.contains("aria-current=\"true\">stable <strong>1.100.0</strong>"));
+        assert!(!current.contains("<optgroup label=\"Selected\">"));
     }
 
     #[test]
