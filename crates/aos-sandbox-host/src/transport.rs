@@ -194,14 +194,29 @@ impl HostConnection {
         bytes: &[u8],
         descriptors: [BorrowedFd<'_>; 2],
     ) -> Result<()> {
+        self.send_scope_descriptors(bytes, &descriptors)
+    }
+
+    /// Sends the closed RootMount scope table after fresh authority verification.
+    pub(crate) fn send_mount_scope(
+        &self,
+        bytes: &[u8],
+        descriptors: [BorrowedFd<'_>; 5],
+    ) -> Result<()> {
+        self.send_scope_descriptors(bytes, &descriptors)
+    }
+
+    fn send_scope_descriptors(&self, bytes: &[u8], descriptors: &[BorrowedFd<'_>]) -> Result<()> {
         if bytes.is_empty() || bytes.len() > MAXIMUM_RESPONSE_BYTES as usize {
             return Err(protocol_field("invalid payload-scope response length"));
         }
-        let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(2))];
+
+        let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(5))];
         let mut control = SendAncillaryBuffer::new(&mut space);
-        if !control.push(SendAncillaryMessage::ScmRights(&descriptors)) {
+        if !control.push(SendAncillaryMessage::ScmRights(descriptors)) {
             return Err(protocol_field("payload-scope ancillary capacity"));
         }
+
         let written = sendmsg(
             &self.fd,
             &[IoSlice::new(bytes)],
@@ -212,6 +227,7 @@ impl HostConnection {
         if written != bytes.len() {
             return Err(protocol_field("partial payload-scope response"));
         }
+
         Ok(())
     }
 }

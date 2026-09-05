@@ -19,6 +19,7 @@ pub mod authorization;
 pub mod broker;
 pub mod catalog;
 pub mod helper;
+pub mod host_scope;
 pub mod keeper;
 pub mod peer;
 pub mod plan;

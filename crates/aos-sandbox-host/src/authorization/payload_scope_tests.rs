@@ -8,6 +8,103 @@ use aos_sandbox_protocol::payload_scope::{
 };
 use aos_sandbox_protocol::semantics::payload_scope::canonical_payload_scope_semantics_v1;
 
+#[test]
+fn mount_scope_requires_distinct_signed_authority_for_the_exact_retained_scope() {
+    use aos_proto::aos::sandbox::local::v1::ObserveMountScopeRequest;
+    use aos_sandbox_protocol::mount_scope::decode_mount_scope_request;
+    use aos_sandbox_protocol::semantics::mount_scope::canonical_mount_scope_semantics_v1;
+
+    let fixture = AuthorityFixture::new();
+    let authority = fixture.authority();
+    let launch = request(90, 1, 4);
+    let (payload_bytes, payload_query) = query_for(&launch);
+    let payload_raw = ObservePayloadScopeRequest::decode_from_slice(&payload_bytes).unwrap();
+
+    let mut raw = ObserveMountScopeRequest {
+        header: payload_raw.header,
+        fence: payload_raw.fence,
+        runtime_handle: payload_raw.runtime_handle,
+        payload_scope_handle: vec![72; 32],
+        ..Default::default()
+    };
+    raw.header.get_or_insert_default().protocol_minor = 3;
+    raw.header.get_or_insert_default().audience = Audience::AUDIENCE_ROOT_MOUNT.into();
+
+    let decode = |raw: &ObserveMountScopeRequest| {
+        decode_mount_scope_request(
+            &raw.encode_to_vec(),
+            PeerCredentials {
+                uid: 0,
+                gid: 0,
+                pid: Some(7),
+            },
+            PeerPolicy {
+                uid: 0,
+                gid: Some(0),
+                audience: Audience::AUDIENCE_ROOT_MOUNT,
+            },
+            TEST_BOOTTIME_NANOSECONDS,
+        )
+        .unwrap()
+    };
+    let query = decode(&raw);
+    let commitment = canonical_mount_scope_semantics_v1(&query)
+        .unwrap()
+        .commitment();
+    let artifacts = scope_artifacts(&fixture, &launch, &payload_query, commitment, 1);
+    let (sealed, current) = install_fence(&authority, &launch, &artifacts);
+
+    let admitted = authority
+        .admit_mount_scope(&artifacts, &query, &raw.encode_to_vec(), &clock(), &sealed)
+        .unwrap();
+    assert_eq!(admitted.fence, current);
+
+    let payload_commitment = canonical_payload_scope_semantics_v1(&payload_query)
+        .unwrap()
+        .commitment();
+    let controller_artifacts =
+        scope_artifacts(&fixture, &launch, &payload_query, payload_commitment, 1);
+    let (controller_fence, _) = install_fence(&authority, &launch, &controller_artifacts);
+
+    assert!(
+        authority
+            .admit_mount_scope(
+                &controller_artifacts,
+                &query,
+                &raw.encode_to_vec(),
+                &clock(),
+                &controller_fence,
+            )
+            .is_err()
+    );
+    assert!(
+        authority
+            .admit_payload_scope(
+                &artifacts,
+                &payload_query,
+                &payload_bytes,
+                &clock(),
+                &sealed,
+            )
+            .is_err()
+    );
+
+    raw.payload_scope_handle[0] ^= 1;
+    let replacement = decode(&raw);
+
+    assert!(
+        authority
+            .admit_mount_scope(
+                &artifacts,
+                &replacement,
+                &raw.encode_to_vec(),
+                &clock(),
+                &sealed,
+            )
+            .is_err()
+    );
+}
+
 fn query_for(launch: &[u8]) -> (Vec<u8>, ValidatedPayloadScopeRequest) {
     let launch = ApplyRuntimeRequest::decode_from_slice(launch).unwrap();
     let mut query = ObservePayloadScopeRequest {

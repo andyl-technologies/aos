@@ -93,5 +93,12 @@ in
       run_tests ${fixtures}/bin/aos_sandbox_host peer::tests::unregistered_controller_path_rejects_a_live_socket_peer
       run_tests ${fixtures}/bin/aos_sandbox_host broker::tests::service_peer::stale_accepted_peer_is_nonfatal_and_next_connection_is_handled
       run_tests ${fixtures}/bin/aos_sandbox_mount broker::tests::service_peer::stale_accepted_peer_is_nonfatal_and_next_connection_is_handled
+      run_tests ${fixtures}/bin/aos_sandbox_mount broker::tests::host_scope_exchange::
+
+      # Verify the distinct fixed RootMount peer profile under its deployed
+      # cgroup name, without granting controller-method identity to that peer.
+      mkdir -p /sys/fs/cgroup/aos-control.slice/aos-sandbox-mountd.service
+      echo $$ > /sys/fs/cgroup/aos-control.slice/aos-sandbox-mountd.service/cgroup.procs
+      run_tests ${fixtures}/bin/aos_sandbox_host peer::tests::registered_root_mount_path_accepts_only_the_distinct_peer_profile
     '';
   }

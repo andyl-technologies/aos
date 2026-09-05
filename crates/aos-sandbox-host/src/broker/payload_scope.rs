@@ -23,21 +23,21 @@ use crate::worker::{HostRuntimeIdentity, HostWorker};
 use crate::{HostError, Result};
 
 /// Keeps the exact runtime pins and authority borrowed until the send finishes.
-pub(crate) struct PreparedPayloadScopeReply<'a> {
-    body: Vec<u8>,
-    descriptors: [OwnedFd; 2],
-    pins: &'a RetainedRuntimePins,
-    authority: &'a HostAuthorityV1,
-    effect: BrokerEffectIntentV2,
+pub(crate) struct PreparedPayloadScopeReply<'a, const N: usize = 2> {
+    pub(super) body: Vec<u8>,
+    pub(super) descriptors: [OwnedFd; N],
+    pub(super) pins: &'a RetainedRuntimePins,
+    pub(super) authority: &'a HostAuthorityV1,
+    pub(super) effect: BrokerEffectIntentV2,
 }
 
-impl PreparedPayloadScopeReply<'_> {
+impl<const N: usize> PreparedPayloadScopeReply<'_, N> {
     pub(crate) fn body(&self) -> &[u8] {
         &self.body
     }
 
-    pub(crate) fn descriptors(&self) -> [BorrowedFd<'_>; 2] {
-        [self.descriptors[0].as_fd(), self.descriptors[1].as_fd()]
+    pub(crate) fn descriptors(&self) -> [BorrowedFd<'_>; N] {
+        std::array::from_fn(|index| self.descriptors[index].as_fd())
     }
 
     /// Rechecks both retained kernel identity and the live query deadline.

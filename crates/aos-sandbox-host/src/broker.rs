@@ -1,5 +1,6 @@
 //! Durable ordering and replay for fixed host runtime effects.
 
+mod mount_scope;
 mod payload_scope;
 mod runtime_pins;
 

@@ -585,7 +585,11 @@ pub fn decode_request_envelope(
     let descriptors = validate_descriptor_table(&envelope.descriptors, ancillary_descriptor_count)?;
     // The new roles are response-only and cannot widen any existing method's
     // descriptor vocabulary merely by becoming known enum values.
-    if (method == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE && !descriptors.is_empty())
+    if (matches!(
+        method,
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
+            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+    ) && !descriptors.is_empty())
         || descriptors
             .iter()
             .any(|entry| crate::payload_scope::PAYLOAD_SCOPE_DESCRIPTOR_ROLES.contains(&entry.role))
@@ -956,6 +960,7 @@ const fn method_requires_authorization(method: BrokerMethod) -> bool {
         BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
+            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
             | BrokerMethod::BROKER_METHOD_MOUNT_APPLY
             | BrokerMethod::BROKER_METHOD_STORAGE_APPLY
             | BrokerMethod::BROKER_METHOD_NETWORK_APPLY
@@ -966,9 +971,7 @@ fn validate_session_role_and_carriers(
     audience: Audience,
     request: &ValidatedBrokerRequestEnvelope,
 ) -> Result<(), ProtocolValidationError> {
-    if audience != Audience::AUDIENCE_NODE_CONTROLLER {
-        return Err(ProtocolValidationError::MethodMismatch);
-    }
+    validate_role_methods(audience, &[request.method])?;
     let roles = request
         .descriptors
         .iter()
@@ -981,7 +984,17 @@ fn validate_role_methods(
     audience: Audience,
     methods: &[BrokerMethod],
 ) -> Result<(), ProtocolValidationError> {
-    if audience == Audience::AUDIENCE_NODE_CONTROLLER && !methods.is_empty() {
+    let valid = !methods.is_empty()
+        && match audience {
+            Audience::AUDIENCE_NODE_CONTROLLER => methods
+                .iter()
+                .all(|method| *method != BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE),
+            Audience::AUDIENCE_ROOT_MOUNT => methods
+                .iter()
+                .all(|method| *method == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE),
+            _ => false,
+        };
+    if valid {
         Ok(())
     } else {
         Err(ProtocolValidationError::MethodMismatch)
@@ -1007,6 +1020,7 @@ fn validate_outbound_carriers(
         BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
         | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
+        | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
         | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME
         | BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME
         | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY
@@ -1270,9 +1284,15 @@ pub fn decode_response_envelope(
         .map(validate_broker_error)
         .transpose()?;
     let descriptors = validate_descriptor_table(&envelope.descriptors, ancillary_descriptor_count)?;
-    if expected_method == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE {
+    if matches!(
+        expected_method,
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
+            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+    ) {
         let expected_roles: &[BrokerDescriptorRole] = if error.is_some() {
             &[]
+        } else if expected_method == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE {
+            &crate::mount_scope::MOUNT_SCOPE_DESCRIPTOR_ROLES
         } else {
             &crate::payload_scope::PAYLOAD_SCOPE_DESCRIPTOR_ROLES
         };
@@ -1384,6 +1404,7 @@ fn validate_method(
                 | BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME
                 | BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
                 | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
+                | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
         ) | (
             ProtocolId::MountBroker,
             BrokerMethod::BROKER_METHOD_MOUNT_APPLY
@@ -1406,6 +1427,9 @@ fn validate_method(
 }
 
 fn method_available_in_version(method: BrokerMethod, version: ProtocolVersion) -> bool {
+    if method == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE {
+        return version.minor() >= 3;
+    }
     !matches!(
         method,
         BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
@@ -1688,28 +1712,40 @@ mod tests {
 
     #[test]
     fn payload_scope_requires_authority_new_carrier_and_exact_response_roles() {
-        let method = BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE;
+        assert_scope_response_profile(
+            BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE,
+            2,
+            &crate::payload_scope::PAYLOAD_SCOPE_DESCRIPTOR_ROLES,
+        );
+        assert_scope_response_profile(
+            BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE,
+            3,
+            &crate::mount_scope::MOUNT_SCOPE_DESCRIPTOR_ROLES,
+        );
+    }
+
+    fn assert_scope_response_profile(
+        method: BrokerMethod,
+        minimum_minor: u16,
+        roles: &[BrokerDescriptorRole],
+    ) {
         assert!(method_requires_authorization(method));
         assert!(!method_available_in_version(
             method,
-            ProtocolVersion::new(1, 1)
+            ProtocolVersion::new(1, minimum_minor - 1)
         ));
         assert!(method_available_in_version(
             method,
-            ProtocolVersion::new(1, 2)
+            ProtocolVersion::new(1, minimum_minor)
         ));
+
+        let version = ProtocolVersion::new(1, minimum_minor);
+        assert!(validate_negotiated_authorization_profile(version, &[], &[method]).is_err());
         assert!(
-            validate_negotiated_authorization_profile(ProtocolVersion::new(1, 2), &[], &[method])
-                .is_err()
+            validate_negotiated_authorization_profile(version, &client_features(), &[method])
+                .is_ok()
         );
-        assert!(
-            validate_negotiated_authorization_profile(
-                ProtocolVersion::new(1, 2),
-                &client_features(),
-                &[method]
-            )
-            .is_ok()
-        );
+
         let unauthenticated = ValidatedBrokerRequestEnvelope {
             method,
             body: vec![1],
@@ -1717,12 +1753,7 @@ mod tests {
             authorization: None,
         };
         assert!(
-            validate_authorization_profile(
-                ProtocolVersion::new(1, 2),
-                &client_features(),
-                &unauthenticated
-            )
-            .is_err()
+            validate_authorization_profile(version, &client_features(), &unauthenticated).is_err()
         );
         assert!(
             validate_outbound_carriers(
@@ -1750,6 +1781,7 @@ mod tests {
                 .into(),
                 ..Default::default()
             };
+
             decode_response_envelope(
                 &envelope.encode_to_vec(),
                 &[1; 16],
@@ -1760,13 +1792,32 @@ mod tests {
                 8192,
             )
         };
-        let roles = crate::payload_scope::PAYLOAD_SCOPE_DESCRIPTOR_ROLES;
-        assert!(decode(&roles, false).is_ok());
+
+        assert!(decode(roles, false).is_ok());
         assert!(decode(&[], false).is_err());
         assert!(decode(&roles[..1], false).is_err());
         assert!(decode(&[roles[1], roles[0]], false).is_err());
-        assert!(decode(&roles, true).is_err());
+        assert!(decode(roles, true).is_err());
         assert!(decode(&[], true).is_ok());
+    }
+
+    #[test]
+    fn root_mount_session_cannot_negotiate_controller_methods_or_transfer_request_fds() {
+        let mount = BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE;
+        let controller = BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE;
+
+        assert!(validate_role_methods(Audience::AUDIENCE_ROOT_MOUNT, &[mount]).is_ok());
+        assert!(validate_role_methods(Audience::AUDIENCE_NODE_CONTROLLER, &[mount]).is_err());
+        assert!(validate_role_methods(Audience::AUDIENCE_ROOT_MOUNT, &[controller]).is_err());
+        assert!(
+            validate_role_methods(Audience::AUDIENCE_ROOT_MOUNT, &[mount, controller]).is_err()
+        );
+        assert!(validate_role_methods(Audience::AUDIENCE_ROOT_MOUNT, &[]).is_err());
+
+        assert!(validate_outbound_carriers(mount, &[]).is_ok());
+        for role in crate::mount_scope::MOUNT_SCOPE_DESCRIPTOR_ROLES {
+            assert!(validate_outbound_carriers(mount, &[role]).is_err());
+        }
     }
 
     fn client_hello() -> BrokerClientHello {

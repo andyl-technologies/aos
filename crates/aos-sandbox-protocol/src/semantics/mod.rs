@@ -6,6 +6,7 @@
 
 pub mod host;
 pub mod mount;
+pub mod mount_scope;
 pub mod network;
 pub mod payload_scope;
 pub mod storage;

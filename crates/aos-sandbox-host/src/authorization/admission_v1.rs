@@ -166,6 +166,55 @@ impl HostAuthorityV1 {
         self.0.open_fence(sandbox_id, bytes)
     }
 
+    /// Admits only the distinct exact-scope RootMount observation commitment.
+    pub(crate) fn admit_mount_scope(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        request: &aos_sandbox_protocol::mount_scope::ValidatedMountScopeRequest,
+        request_body: &[u8],
+        current_clock: &RawPairedClockSample,
+        prior_fence: &[u8],
+    ) -> Result<VerifiedHostAdmissionV1, HostAdmissionError> {
+        let semantics =
+            aos_sandbox_protocol::semantics::mount_scope::canonical_mount_scope_semantics_v1(
+                request,
+            )
+            .map_err(|_| HostAdmissionError::RequestMismatch)?;
+
+        let fence = request.fence();
+        let assignment = BrokerAssignment::new(
+            SandboxId::from_bytes(*fence.sandbox_id()),
+            IncarnationId::from_bytes(*fence.incarnation_id()),
+            AssignmentEpoch::new(fence.assignment_epoch()),
+            DesiredGeneration::new(fence.desired_generation()),
+            ObjectDigest::from_bytes(*fence.assignment_digest()),
+        )
+        .map_err(|_| HostAdmissionError::RequestMismatch)?;
+
+        self.0.admit(
+            artifacts,
+            AdmissionRequest {
+                audience: BrokerAudience::Host,
+                protocol: ProtocolId::HostBroker,
+                // The carrier is 1.3; the separately signed authority format
+                // remains 1.1. The new canonical domain binds its semantics.
+                protocol_version: ProtocolVersion::new(1, 1),
+                assignment,
+                request_id: *request.header().request_id(),
+                request_body,
+                descriptor_count: 0,
+                verb: semantics.verb(),
+                target: semantics.target(),
+                argument_commitment: semantics.commitment(),
+                request_deadline_boottime_nanoseconds: request
+                    .header()
+                    .deadline_boottime_nanoseconds(),
+            },
+            current_clock,
+            Some(prior_fence),
+        )
+    }
+
     pub(crate) fn check_before_effect<F>(
         &self,
         effect: &BrokerEffectIntentV2,

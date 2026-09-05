@@ -35,6 +35,7 @@ impl RetainedRuntimePins {
             || payload.relative_cgroup_hint() != self.payload.relative_cgroup_hint()
             || payload.mount().identity() != self.payload.mount().identity()
             || payload.network().identity() != self.payload.network().identity()
+            || payload.user().identity() != self.payload.user().identity()
         {
             return Ok(None);
         }

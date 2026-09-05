@@ -215,7 +215,7 @@ fn check_body_bound(bytes: &[u8]) -> Result<(), ProtocolValidationError> {
     Ok(())
 }
 
-fn validate_runtime_handle(
+pub(crate) fn validate_runtime_handle(
     fence: &ValidatedAssignmentFence,
     bytes: &[u8],
 ) -> Result<[u8; 32], ProtocolValidationError> {

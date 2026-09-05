@@ -4,8 +4,9 @@
 //! forbid `SCM_RIGHTS`. Each packet here requires one credential message, one
 //! kernel-generated subject pidfd, and exactly the caller-selected number of
 //! transferred descriptors, bounded to two (or the reply profile's zero/two).
-//! Descriptor roles and application
-//! authority are validated by the higher-level protocol.
+//! A separate privileged mount-scope reply profile permits only zero or five
+//! descriptors; it does not widen the controller reply profile. Descriptor
+//! roles and application authority are validated by the higher-level protocol.
 //!
 //! The connection establisher is not authenticated as the response service:
 //! socket activation can make that establisher PID 1. Services must instead
@@ -131,10 +132,38 @@ impl DescriptorSubjectSocket {
         &mut self,
         maximum_bytes: usize,
     ) -> Result<ReceivedDescriptorRecord, SeqpacketError> {
+        self.receive_reply_profile(maximum_bytes, 2)
+    }
+
+    /// Receives a privileged mount-scope reply with zero or five descriptors.
+    ///
+    /// The success profile carries a payload pidfd, cgroup, root directory,
+    /// mount namespace, and user namespace, in that order. The caller must
+    /// authenticate the response subject and validate the protocol's roles,
+    /// scope, and authority before using any descriptor. This carrier alone
+    /// neither identifies the Host broker nor authorizes namespace entry.
+    /// Descriptor-free replies are reserved for protocol errors.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same bound, subject, transport, and fatal-close errors as
+    /// [`Self::receive`], rejecting every descriptor count except zero and five.
+    pub fn receive_mount_scope_reply(
+        &mut self,
+        maximum_bytes: usize,
+    ) -> Result<ReceivedDescriptorRecord, SeqpacketError> {
+        self.receive_reply_profile(maximum_bytes, 5)
+    }
+
+    fn receive_reply_profile(
+        &mut self,
+        maximum_bytes: usize,
+        expected_descriptors: usize,
+    ) -> Result<ReceivedDescriptorRecord, SeqpacketError> {
         if maximum_bytes == 0 || maximum_bytes > MAXIMUM_PACKET_BYTES {
             return Err(SeqpacketError::InvalidMaximum);
         }
-        let result = self.receive_inner(maximum_bytes, 2, true);
+        let result = self.receive_inner(maximum_bytes, expected_descriptors, true);
         if result.as_ref().is_err_and(SeqpacketError::is_fatal) {
             self.fd.take();
         }

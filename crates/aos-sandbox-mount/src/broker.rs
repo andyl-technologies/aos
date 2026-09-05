@@ -1723,6 +1723,9 @@ mod tests {
     #[cfg(feature = "kernel-tests")]
     mod service_peer;
 
+    #[cfg(feature = "kernel-tests")]
+    mod host_scope_exchange;
+
     use aos_proto::aos::sandbox::local::v1::{
         ApplyMountRequest, AssignmentFence, Audience, BrokerAuthorizationArtifactsV1, BrokerMethod,
         BrokerRequestEnvelope, Descriptor, MountAttributes, RequestHeader,

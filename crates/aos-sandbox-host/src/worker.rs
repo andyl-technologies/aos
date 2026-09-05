@@ -188,6 +188,7 @@ pub struct PinnedPayloadLeader {
     root: OwnedFd,
     network: NamespaceFd,
     mount: NamespaceFd,
+    user: NamespaceFd,
 }
 
 /// Retains proof that pidfd namespace inspection works in the current service.
@@ -381,10 +382,15 @@ impl PinnedPayloadLeader {
             .pidfd
             .namespace(NamespaceKind::Mount)
             .map_err(|error| HostError::Worker(error.to_string()))?;
+        let current_user = self
+            .pidfd
+            .namespace(NamespaceKind::User)
+            .map_err(|error| HostError::Worker(error.to_string()))?;
         if (current_root.st_dev, current_root.st_ino)
             != (retained_root.st_dev, retained_root.st_ino)
             || current_network.identity() != self.network.identity()
             || current_mount.identity() != self.mount.identity()
+            || current_user.identity() != self.user.identity()
         {
             return Err(HostError::Worker(
                 "retained payload root or namespaces changed".to_owned(),
@@ -434,6 +440,12 @@ impl PinnedPayloadLeader {
     #[must_use]
     pub fn mount(&self) -> &NamespaceFd {
         &self.mount
+    }
+
+    /// Returns the launch-retained payload user namespace identity.
+    #[must_use]
+    pub fn user(&self) -> &NamespaceFd {
+        &self.user
     }
 }
 
@@ -891,6 +903,9 @@ impl PayloadInspectionBackend for LinuxPayloadInspector<'_> {
         let mount = pidfd
             .namespace(NamespaceKind::Mount)
             .map_err(|error| HostError::Worker(error.to_string()))?;
+        let user = pidfd
+            .namespace(NamespaceKind::User)
+            .map_err(|error| HostError::Worker(error.to_string()))?;
         let network_identity = network.identity();
         let final_info = pidfd
             .info()
@@ -925,6 +940,7 @@ impl PayloadInspectionBackend for LinuxPayloadInspector<'_> {
                 root,
                 network,
                 mount,
+                user,
             }),
         ))
     }
@@ -1758,6 +1774,10 @@ mod tests {
             root,
             network: NamespaceFd::from_owned(network, NamespaceKind::Network).unwrap(),
             mount: NamespaceFd::from_owned(mount, NamespaceKind::Mount).unwrap(),
+            user: PidFd::open(pid)
+                .unwrap()
+                .namespace(NamespaceKind::User)
+                .unwrap(),
         }
     }
 

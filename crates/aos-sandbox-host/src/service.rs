@@ -5,6 +5,8 @@
 //! for request expiry, and returns a bounded envelope containing either one
 //! durable runtime observation or one path-free error.
 
+mod mount_scope;
+
 use aos_proto::aos::sandbox::local::v1::{Audience, BrokerErrorCode, BrokerMethod};
 use aos_sandbox_core::{FeatureRef, ProtocolId, RawClockProvenance, RawPairedClockSample};
 use aos_sandbox_linux::boot::KernelBootId;
@@ -104,6 +106,13 @@ where
             }
             Err(error) => return Err(error),
         };
+        if self
+            .verifier
+            .verify_mount_broker(connection.peer_identity())
+            .is_ok()
+        {
+            return self.serve_mount_scope(&connection).await;
+        }
         let Ok(peer) = self.verifier.verify(connection.peer_identity()) else {
             return Ok(ConnectionOutcome::PeerRejected);
         };

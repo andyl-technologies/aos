@@ -6,6 +6,7 @@
 )]
 
 use super::*;
+use std::os::unix::fs::MetadataExt as _;
 
 fn pair() -> (DescriptorSubjectSocket, OwnedFd) {
     let (receiver, sender) = uapi::seqpacket_pair().expect("socket pair");
@@ -94,7 +95,7 @@ fn invalid_bounds_do_not_consume_or_close_the_channel() {
 
 #[test]
 fn reply_profile_accepts_only_zero_or_two_descriptors() {
-    for count in 0..=3 {
+    for count in 0..=6 {
         let (mut receiver, sender) = pair();
         let file = tempfile::tempfile().expect("transferred file");
         if count == 0 {
@@ -111,4 +112,86 @@ fn reply_profile_accepts_only_zero_or_two_descriptors() {
             assert!(matches!(receiver.as_fd(), Err(SeqpacketError::Closed)));
         }
     }
+}
+
+#[test]
+fn mount_scope_reply_profile_accepts_only_zero_or_five_descriptors() {
+    for count in 0..=6 {
+        let (mut receiver, sender) = pair();
+        let file = tempfile::tempfile().expect("transferred file");
+        if count == 0 {
+            uapi::send_seqpacket(sender.as_fd(), b"reply").expect("no-rights reply");
+        } else {
+            uapi::send_seqpacket_rights(sender.as_fd(), b"reply", &vec![file.as_fd(); count])
+                .expect("rights reply");
+        }
+        let result = receiver.receive_mount_scope_reply(64);
+        if count == 0 || count == 5 {
+            let record = result.expect("valid mount-scope descriptor count");
+            assert_eq!(record.descriptors().len(), count);
+            assert_eq!(record.subject().initial_info().pid(), std::process::id());
+            for descriptor in record.descriptors() {
+                assert!(uapi::is_cloexec(descriptor.as_fd()).expect("transferred CLOEXEC"));
+            }
+        } else {
+            assert!(result.is_err(), "unexpected descriptor count {count}");
+            assert!(matches!(receiver.as_fd(), Err(SeqpacketError::Closed)));
+        }
+    }
+}
+
+#[test]
+fn mount_scope_reply_bounds_leave_the_record_queued_but_oversize_closes() {
+    let (mut receiver, sender) = pair();
+    let file = tempfile::tempfile().expect("transferred file");
+    uapi::send_seqpacket_rights(sender.as_fd(), b"reply", &[file.as_fd(); 5])
+        .expect("mount-scope reply");
+    for maximum in [0, MAXIMUM_PACKET_BYTES + 1] {
+        assert!(matches!(
+            receiver.receive_mount_scope_reply(maximum),
+            Err(SeqpacketError::InvalidMaximum)
+        ));
+    }
+    assert!(matches!(
+        receiver.receive_mount_scope_reply(4),
+        Err(SeqpacketError::RecordTooLarge { .. })
+    ));
+    assert!(matches!(receiver.as_fd(), Err(SeqpacketError::Closed)));
+}
+
+#[test]
+fn mount_scope_reply_preserves_order_and_owns_descriptors_after_sender_closes() {
+    let (mut receiver, sender) = pair();
+    let files: Vec<_> = (0..5)
+        .map(|_| tempfile::tempfile().expect("distinct transferred file"))
+        .collect();
+    let identities: Vec<_> = files
+        .iter()
+        .map(|file| {
+            let metadata = file.metadata().expect("sender identity");
+            (metadata.dev(), metadata.ino())
+        })
+        .collect();
+    let descriptors: Vec<_> = files.iter().map(AsFd::as_fd).collect();
+    uapi::send_seqpacket_rights(sender.as_fd(), b"reply", &descriptors).expect("mount-scope reply");
+    drop(descriptors);
+    drop(files);
+    drop(sender);
+
+    let record = receiver
+        .receive_mount_scope_reply(64)
+        .expect("queued reply");
+    let (payload, subject, descriptors) = record.into_parts();
+    assert_eq!(payload, b"reply");
+    assert_eq!(subject.initial_info().pid(), std::process::id());
+    let received: Vec<_> = descriptors
+        .into_iter()
+        .map(|descriptor| {
+            let metadata = std::fs::File::from(descriptor)
+                .metadata()
+                .expect("retained receiver identity");
+            (metadata.dev(), metadata.ino())
+        })
+        .collect();
+    assert_eq!(received, identities);
 }

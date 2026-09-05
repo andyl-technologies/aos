@@ -81,8 +81,11 @@ in {
         FileDescriptorName = "aos-sandbox-host";
         Service = "aos-sandbox-hostd.service";
         SocketUser = "aos-sandboxd";
-        SocketGroup = "aos-sandboxd";
-        SocketMode = "0600";
+        # RootMount has no DAC-override capability. Give its root group the
+        # narrow socket access path; hostd still verifies its exact service
+        # cgroup and exposes only the RootMount scope-query method to that peer.
+        SocketGroup = "root";
+        SocketMode = "0660";
         DirectoryMode = "0710";
         RemoveOnStop = true;
       };

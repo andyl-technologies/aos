@@ -593,6 +593,29 @@ facts inferred from descriptor types. This observation does not itself grant
 holder mapping, current assignment authority, or permission to deliver a local
 channel; those remain separate controller admission requirements.
 
+Host 1.3 adds `ObserveMountScope` for the privileged Mount broker. This keeps
+payload root and namespace descriptors out of the node controller. The Host
+accepts the method only from a root peer in the fixed Mount service cgroup;
+that peer cannot negotiate controller methods. The existing controller 1.2
+query and its two-descriptor response remain unchanged.
+
+The request binds the assignment, deterministic runtime handle, and exact
+opaque payload-scope handle. A distinct canonical argument commitment binds
+the RootMount audience and five response roles. The installed signed Host
+plan must already grant this exact query, and the supplied plan/lease fence
+must equal the installed fence. Querying cannot install or renew authority.
+A replacement payload scope, including after reboot, requires new authority
+for its new handle; the query cannot silently select the replacement.
+
+Success transfers the payload pidfd, payload-subtree cgroup, root directory,
+mount namespace, and user namespace in that order. Errors transfer none.
+The Mount client authenticates the actual Host response writer and retains
+that execution with the payload descriptors. It checks exact response bindings,
+descriptor types, live membership, and deadlines. These observations do not
+authorize a mount effect or continuously prove the payload's root/namespace
+selection: Mount admission and the worker's exact-resource checks remain
+mandatory before use.
+
 Caller role derives from peer credentials, socket activation, and the expected
 service-unit identity; a serialized role is descriptive only. Unknown
 operations, features, or FD roles fail before effects. An exact request replay

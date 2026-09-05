@@ -15,6 +15,23 @@ use aos_sandbox_protocol::PeerCredentials;
 use crate::{HostError, Result};
 
 const NODE_CONTROLLER_CGROUP: &str = "aos-control.slice/aos-sandboxd.service";
+const ROOT_MOUNT_CGROUP: &str = "aos-control.slice/aos-sandbox-mountd.service";
+
+/// Retains a root-account proof for the fixed Mount broker service only.
+#[derive(Debug)]
+pub struct VerifiedMountBrokerPeer<'a> {
+    credentials: PeerCredentials,
+    _identity: &'a ConnectionPeerIdentity,
+    _cgroup: RetainedCgroupAnchor,
+}
+
+impl VerifiedMountBrokerPeer<'_> {
+    /// Returns kernel credentials bound to this live RootMount proof.
+    #[must_use]
+    pub const fn credentials(&self) -> PeerCredentials {
+        self.credentials
+    }
+}
 
 /// Retains proof that one accepted peer belongs to `aos-sandboxd.service`.
 ///
@@ -84,11 +101,52 @@ impl ControllerPeerVerifier {
         self.verify_in_cgroup(identity, Path::new(NODE_CONTROLLER_CGROUP))
     }
 
+    /// Verifies a root peer in the exact fixed Mount broker service cgroup.
+    ///
+    /// This distinct proof never authorizes controller methods. Like controller
+    /// verification, it authenticates the connection establisher, not individual
+    /// packet writers on a subsequently delegated connection.
+    ///
+    /// # Errors
+    ///
+    /// Rejects non-root credentials, a missing or substituted service cgroup,
+    /// non-leader peers, and failed live pidfd membership verification.
+    pub fn verify_mount_broker<'a>(
+        &self,
+        identity: &'a ConnectionPeerIdentity,
+    ) -> Result<VerifiedMountBrokerPeer<'a>> {
+        if identity.credentials().uid() != 0 || identity.credentials().gid() != 0 {
+            return Err(HostError::Protocol(peer_mismatch()));
+        }
+
+        let (credentials, cgroup) = self.verify_service(identity, Path::new(ROOT_MOUNT_CGROUP))?;
+
+        Ok(VerifiedMountBrokerPeer {
+            credentials,
+            _identity: identity,
+            _cgroup: cgroup,
+        })
+    }
+
     fn verify_in_cgroup<'a>(
         &self,
         identity: &'a ConnectionPeerIdentity,
         expected_relative_cgroup: &Path,
     ) -> Result<VerifiedControllerPeer<'a>> {
+        let (credentials, cgroup) = self.verify_service(identity, expected_relative_cgroup)?;
+
+        Ok(VerifiedControllerPeer {
+            credentials,
+            _identity: identity,
+            _cgroup: cgroup,
+        })
+    }
+
+    fn verify_service(
+        &self,
+        identity: &ConnectionPeerIdentity,
+        expected_relative_cgroup: &Path,
+    ) -> Result<(PeerCredentials, RetainedCgroupAnchor)> {
         let observed = identity.credentials();
         let pid = observed.pid();
         let expected = self
@@ -101,15 +159,15 @@ impl ControllerPeerVerifier {
         if info.pid() != pid.get() || info.thread_group_id() != pid.get() {
             return Err(HostError::Protocol(peer_mismatch()));
         }
-        Ok(VerifiedControllerPeer {
-            credentials: PeerCredentials {
+
+        Ok((
+            PeerCredentials {
                 uid: observed.uid(),
                 gid: observed.gid(),
                 pid: Some(pid.get()),
             },
-            _identity: identity,
-            _cgroup: expected,
-        })
+            expected,
+        ))
     }
 }
 
@@ -125,6 +183,29 @@ mod tests {
     use std::os::fd::OwnedFd;
 
     use super::*;
+
+    #[test]
+    fn registered_root_mount_path_accepts_only_the_distinct_peer_profile() {
+        // The VM harness places only this fixture in the exact RootMount
+        // service cgroup. No test mutates the host's cgroup hierarchy.
+        let root: OwnedFd = File::open("/sys/fs/cgroup").unwrap().into();
+        let verifier = ControllerPeerVerifier::new(CgroupV2Root::from_owned(root).unwrap());
+        let (socket, _other) = rustix::net::socketpair(
+            rustix::net::AddressFamily::UNIX,
+            rustix::net::SocketType::SEQPACKET,
+            rustix::net::SocketFlags::CLOEXEC,
+            None,
+        )
+        .unwrap();
+        let identity =
+            ConnectionPeerIdentity::from_socket(std::os::fd::AsFd::as_fd(&socket)).unwrap();
+
+        let mount_peer = verifier.verify_mount_broker(&identity).unwrap();
+
+        assert_eq!(mount_peer.credentials().uid, 0);
+        assert_eq!(mount_peer.credentials().gid, 0);
+        assert!(verifier.verify(&identity).is_err());
+    }
 
     #[test]
     fn unregistered_controller_path_rejects_a_live_socket_peer() {
