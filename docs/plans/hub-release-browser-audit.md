@@ -80,3 +80,31 @@ AOS Python and Chrome against an isolated signed development origin.
 The repeatable browser entry point is `tests/native/hub-release-browser.py`.
 Earlier settings, CLI, and VM evidence remains separately dated in
 `hub-experience-audit.md` and `hub-cli-independence-audit.md`.
+
+## Staging validation
+
+On 2026-09-05, staging was deployed as
+`staging-28cd153e93103d739d2854dce1caa86079ae54a5` from the hermetic installer
+`/nix/store/ycj550lii6v6a3riyz7hrkcqjqlwrd75-aos-hub-cloudflare-0.1.0`.
+The existing database instance, bindings, custom domains, and OCI pull setting
+were preserved. Fresh recovery bookmarks were retained locally before and after
+deployment.
+
+The Worker successfully rebuilt all nine historical releases and acknowledged
+the index job. One recorded cold run used 146.8 seconds of wall time and
+6.47 seconds of CPU time. Registry status then reported a fresh index.
+
+The public staging browser audit passed 42 checks with 16 inspected desktop and
+mobile screenshots. It covered Overview, release details, Packages, Channels,
+the configuration tree, paginated search, an individual option, and the original
+AOS package-documentation URL. The initial documentation page contained only
+27 root children and fetched no subtrees. Expanding `aos` made one request for
+22 immediate children; reopening it reused the loaded result. Initial HTML was
+16,059 bytes, and that child response was 4,535 bytes. Search pages remained
+bounded at 50 entries and retained the selected release across continuation.
+
+The selected option rendered one structured panel. The historical URL retained
+its exact document digest and selected registry release. No JavaScript or CSP
+errors were observed; narrow data tables scroll within their own regions.
+Staging has no published images or containers, so populated content and private
+session interactions remain covered by the isolated native fixture.
