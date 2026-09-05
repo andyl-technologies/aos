@@ -3630,6 +3630,31 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   this native fork fixture is not the whole-world production flight.
 - **Risk:** F.
 
+### crucible-hot-fork-native-source-ownership — retain VMState and file identities
+
+- **Patch:** `0199-crucible-retain-native-vmstate-source-ownership.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-22].
+- **Mechanism:** native source ownership covers named parentless VMState roots
+  as well as exact backend/root pairs. It retains graph edges and native
+  regular-file identities; a file pin rejects reopen onto a replacement inode
+  before discarding the original descriptor. Frozen validation checks actual
+  read-only descriptor access. Block-node teardown destroys the dirty-bitmap
+  mutex before freeing its intrusive hot-fork registry storage.
+- **Micro-test:** native VMState bytes survive freeze and restore with exact
+  read-only file identity. Unexpected root consumers and inherited parent
+  tokens are rejected. Pathname replacement fails without replacing the source
+  descriptor. Another fixture creates and destroys 1,024 block nodes, checking
+  that both mutex entries appear and the exact inventory baseline returns each
+  time. The control omitting dirty-bitmap mutex destruction fails on its first
+  cycle. `checks.crucible.phase6.qemuNativeSourceOwnership` retains and validates
+  the three named package TAP cases.
+- **Inertness:** ordinary file reopen is unchanged without a native source pin;
+  mutex teardown balances existing initialization. These internal process-local
+  interfaces do not cross the socket/shared-memory boundary. Complete source-set
+  coordinator integration and child-private graph installation remain open;
+  the patch does not authorize whole-world child execution.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.

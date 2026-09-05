@@ -867,6 +867,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0199-crucible-retain-native-vmstate-source-ownership.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =
