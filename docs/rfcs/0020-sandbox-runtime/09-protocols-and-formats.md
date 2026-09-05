@@ -539,6 +539,34 @@ it does not admit or refresh a fence, write state, resolve a catalog handle, or
 invoke a worker. Protocol 1.0 and 1.1 do not advertise, negotiate, or accept the
 query method.
 
+Host 1.2 also defines `ObservePayloadScope`, a live authority-bearing query
+with zero request descriptors. Its exact signed plan must already grant the
+query semantic operation for the installed runtime; the complete admitted
+plan/lease fence must equal the installed durable fence. Unlike effect receipt
+queries, this operation always checks current protected time and requires live
+launch-retained payload pins. It never installs a newer lease, advances durable
+state, or reconstructs kernel authority from a receipt after restart.
+
+A successful response echoes the exact assignment fence and runtime handle,
+adds a nonzero process-local opaque scope handle, and transfers exactly two
+descriptors in order: the retained payload leader pidfd and the retained
+payload-subtree cgroup `O_PATH` descriptor. Bodies are bounded at 8 KiB and the
+raw leader-cgroup hint at 4 KiB. The hint is only an empty exact-membership or
+strict descendant locator; it is not membership proof. Error responses carry
+no descriptors. The broker retains its proof through the atomic response send
+and rechecks kernel identity and the live query deadline immediately before it.
+
+The controller authenticates the kernel-authorized subject of the actual hello
+response against trusted host-service credentials and a retained service cgroup.
+Subsequent response records must identify that same live execution. Listener
+creator credentials alone do not authenticate the responder under socket
+activation. The controller validates descriptor roles, pidfd liveness, cgroup-v2
+identity, and leader membership using the received objects. Payload PID-1,
+root, and namespace verification remain an authenticated host attestation, not
+facts inferred from descriptor types. This observation does not itself grant
+holder mapping, current assignment authority, or permission to deliver a local
+channel; those remain separate controller admission requirements.
+
 Caller role derives from peer credentials, socket activation, and the expected
 service-unit identity; a serialized role is descriptive only. Unknown
 operations, features, or FD roles fail before effects. An exact request replay

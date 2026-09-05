@@ -13,7 +13,8 @@ aos-proto.workspace = true
 aos-sandbox-core.workspace = true
 aos-sandbox-ownership-protocol.workspace = true
 aos-sandbox-protocol.workspace = true
-rustix.workspace = true
+rustix = { workspace = true, features = ["event", "net", "process", "time"] }
+buffa.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -24,8 +25,6 @@ aos-sandbox-linux.workspace = true
 rand.workspace = true
 
 [dev-dependencies]
-rustix = { workspace = true, features = ["net"] }
-buffa.workspace = true
 ed25519-dalek.workspace = true
 tempfile.workspace = true
 

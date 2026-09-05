@@ -8,6 +8,9 @@
 use aos_proto::aos::sandbox::local::v1::{Audience, BrokerErrorCode, BrokerMethod};
 use aos_sandbox_core::{FeatureRef, ProtocolId, RawClockProvenance, RawPairedClockSample};
 use aos_sandbox_linux::boot::KernelBootId;
+use aos_sandbox_protocol::payload_scope::{
+    PAYLOAD_SCOPE_DESCRIPTOR_ROLES, decode_payload_scope_request,
+};
 use aos_sandbox_protocol::session::SIGNED_PLAN_LEASE_FEATURE_NAMESPACE;
 use aos_sandbox_protocol::{
     MAXIMUM_HANDSHAKE_BYTES, PeerPolicy, ProtocolValidationError, decode_runtime_request,
@@ -148,6 +151,99 @@ where
         {
             return Ok(ConnectionOutcome::RequestRejected);
         }
+        if request.method() == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE {
+            let Some(artifacts) = request.authorization() else {
+                return Ok(ConnectionOutcome::RequestRejected);
+            };
+            let now = trusted_paired_clock_sample()?.boottime_nanoseconds();
+            let Ok(validated) = decode_payload_scope_request(
+                request.body(),
+                peer.credentials(),
+                self.peer_policy,
+                now,
+            ) else {
+                return Ok(ConnectionOutcome::RequestRejected);
+            };
+            if session.validate_header(validated.header()).is_err() {
+                return Ok(ConnectionOutcome::RequestRejected);
+            }
+            let request_id = validated.header().request_id();
+            let ceiling = validated.header().maximum_response_bytes();
+            let prepared = self
+                .broker
+                .prepare_payload_scope(
+                    artifacts,
+                    &validated,
+                    request.body(),
+                    &mut trusted_paired_clock_sample,
+                )
+                .await;
+            let reply = match prepared {
+                Ok(reply) => reply,
+                Err(error) => {
+                    let Ok(bytes) = encode_method_error(request_id, &request, &error, ceiling)
+                    else {
+                        return Ok(ConnectionOutcome::TransportRejected);
+                    };
+                    return Ok(if connection.send(&bytes).is_ok() {
+                        ConnectionOutcome::RequestRejected
+                    } else {
+                        ConnectionOutcome::TransportRejected
+                    });
+                }
+            };
+            let response = encode_success_response_envelope(
+                request_id,
+                &request,
+                reply.body().to_vec(),
+                &PAYLOAD_SCOPE_DESCRIPTOR_ROLES,
+                &[],
+                ceiling,
+            );
+            let response = match response {
+                Ok(response) => response,
+                Err(_) => {
+                    let Ok(bytes) = encode_method_error(
+                        request_id,
+                        &request,
+                        &HostError::ResourceExhausted,
+                        ceiling,
+                    ) else {
+                        return Ok(ConnectionOutcome::TransportRejected);
+                    };
+                    return Ok(if connection.send(&bytes).is_ok() {
+                        ConnectionOutcome::RequestRejected
+                    } else {
+                        ConnectionOutcome::TransportRejected
+                    });
+                }
+            };
+            // A descriptor response cannot reuse historical receipt replay.
+            // Keep both peer and payload proof live through the final bounded send.
+            if self.verifier.verify(connection.peer_identity()).is_err() {
+                return Ok(ConnectionOutcome::PeerRejected);
+            }
+            if let Err(error) = reply.check_before_send(&mut trusted_paired_clock_sample) {
+                let Ok(bytes) = encode_method_error(request_id, &request, &error, ceiling) else {
+                    return Ok(ConnectionOutcome::TransportRejected);
+                };
+                return Ok(if connection.send(&bytes).is_ok() {
+                    ConnectionOutcome::RequestRejected
+                } else {
+                    ConnectionOutcome::TransportRejected
+                });
+            }
+            return Ok(
+                if connection
+                    .send_payload_scope(&response, reply.descriptors())
+                    .is_ok()
+                {
+                    ConnectionOutcome::Served
+                } else {
+                    ConnectionOutcome::TransportRejected
+                },
+            );
+        }
         let dispatch = match request.method() {
             BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME => {
                 let Some(artifacts) = request.authorization() else {
@@ -279,13 +375,14 @@ where
 }
 
 fn advertised_methods(launch_available: bool) -> Vec<BrokerMethod> {
-    let mut methods = Vec::with_capacity(4);
+    let mut methods = Vec::with_capacity(5);
     if launch_available {
         methods.push(BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME);
     }
     methods.push(BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME);
     methods.push(BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME);
     methods.push(BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT);
+    methods.push(BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE);
     methods
 }
 
@@ -294,6 +391,7 @@ fn valid_service_authorization_profile(method: BrokerMethod, has_authorization: 
         method,
         BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
+            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
     ) == has_authorization
 }
 
@@ -427,7 +525,7 @@ fn classify_error(error: &HostError) -> (BrokerErrorCode, &'static str, bool) {
             "complete runtime inventory exceeds response bounds",
             true,
         ),
-        HostError::Worker(_) => (
+        HostError::Worker(_) | HostError::Descriptor { .. } => (
             BrokerErrorCode::BROKER_ERROR_CODE_BACKEND_FAILURE,
             "runtime backend operation failed",
             true,
@@ -504,6 +602,7 @@ mod tests {
                 BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME,
                 BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
                 BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT,
+                BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE,
             ]
         );
         assert_eq!(
@@ -513,6 +612,7 @@ mod tests {
                 BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME,
                 BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
                 BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT,
+                BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE,
             ]
         );
     }
@@ -589,6 +689,14 @@ mod tests {
         ));
         assert!(!valid_service_authorization_profile(
             BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT,
+            false,
+        ));
+        assert!(valid_service_authorization_profile(
+            BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE,
+            true,
+        ));
+        assert!(!valid_service_authorization_profile(
+            BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE,
             false,
         ));
     }

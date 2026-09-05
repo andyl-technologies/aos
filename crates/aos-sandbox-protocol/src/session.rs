@@ -583,6 +583,15 @@ pub fn decode_request_envelope(
         return Err(ProtocolValidationError::InvalidField("envelope.body"));
     }
     let descriptors = validate_descriptor_table(&envelope.descriptors, ancillary_descriptor_count)?;
+    // The new roles are response-only and cannot widen any existing method's
+    // descriptor vocabulary merely by becoming known enum values.
+    if (method == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE && !descriptors.is_empty())
+        || descriptors
+            .iter()
+            .any(|entry| crate::payload_scope::PAYLOAD_SCOPE_DESCRIPTOR_ROLES.contains(&entry.role))
+    {
+        return Err(ProtocolValidationError::DescriptorTableMismatch);
+    }
     let authorization = envelope
         .authorization
         .as_option()
@@ -946,6 +955,7 @@ const fn method_requires_authorization(method: BrokerMethod) -> bool {
         method,
         BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
+            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
             | BrokerMethod::BROKER_METHOD_MOUNT_APPLY
             | BrokerMethod::BROKER_METHOD_STORAGE_APPLY
             | BrokerMethod::BROKER_METHOD_NETWORK_APPLY
@@ -996,6 +1006,7 @@ fn validate_outbound_carriers(
         }),
         BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
+        | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
         | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME
         | BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME
         | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY
@@ -1259,6 +1270,27 @@ pub fn decode_response_envelope(
         .map(validate_broker_error)
         .transpose()?;
     let descriptors = validate_descriptor_table(&envelope.descriptors, ancillary_descriptor_count)?;
+    if expected_method == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE {
+        let expected_roles: &[BrokerDescriptorRole] = if error.is_some() {
+            &[]
+        } else {
+            &crate::payload_scope::PAYLOAD_SCOPE_DESCRIPTOR_ROLES
+        };
+        if !request_descriptors.is_empty()
+            || descriptors.len() != expected_roles.len()
+            || descriptors
+                .iter()
+                .zip(expected_roles)
+                .any(|(actual, expected)| actual.role != *expected)
+        {
+            return Err(ProtocolValidationError::DescriptorTableMismatch);
+        }
+    } else if descriptors
+        .iter()
+        .any(|entry| crate::payload_scope::PAYLOAD_SCOPE_DESCRIPTOR_ROLES.contains(&entry.role))
+    {
+        return Err(ProtocolValidationError::DescriptorTableMismatch);
+    }
     let request_descriptor_dispositions = validate_descriptor_dispositions(
         &envelope.request_descriptor_dispositions,
         request_descriptors,
@@ -1351,6 +1383,7 @@ fn validate_method(
                 | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME
                 | BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME
                 | BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
+                | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
         ) | (
             ProtocolId::MountBroker,
             BrokerMethod::BROKER_METHOD_MOUNT_APPLY
@@ -1373,7 +1406,11 @@ fn validate_method(
 }
 
 fn method_available_in_version(method: BrokerMethod, version: ProtocolVersion) -> bool {
-    method != BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT || version.minor() >= 2
+    !matches!(
+        method,
+        BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
+            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
+    ) || version.minor() >= 2
 }
 
 const fn maximum_request_bytes(protocol: ProtocolId, version: ProtocolVersion) -> usize {
@@ -1647,6 +1684,89 @@ mod tests {
         ];
         features.sort();
         features
+    }
+
+    #[test]
+    fn payload_scope_requires_authority_new_carrier_and_exact_response_roles() {
+        let method = BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE;
+        assert!(method_requires_authorization(method));
+        assert!(!method_available_in_version(
+            method,
+            ProtocolVersion::new(1, 1)
+        ));
+        assert!(method_available_in_version(
+            method,
+            ProtocolVersion::new(1, 2)
+        ));
+        assert!(
+            validate_negotiated_authorization_profile(ProtocolVersion::new(1, 2), &[], &[method])
+                .is_err()
+        );
+        assert!(
+            validate_negotiated_authorization_profile(
+                ProtocolVersion::new(1, 2),
+                &client_features(),
+                &[method]
+            )
+            .is_ok()
+        );
+        let unauthenticated = ValidatedBrokerRequestEnvelope {
+            method,
+            body: vec![1],
+            descriptors: vec![],
+            authorization: None,
+        };
+        assert!(
+            validate_authorization_profile(
+                ProtocolVersion::new(1, 2),
+                &client_features(),
+                &unauthenticated
+            )
+            .is_err()
+        );
+        assert!(
+            validate_outbound_carriers(
+                method,
+                &crate::payload_scope::PAYLOAD_SCOPE_DESCRIPTOR_ROLES
+            )
+            .is_err()
+        );
+
+        let decode = |roles: &[BrokerDescriptorRole], error: bool| {
+            let envelope = BrokerResponseEnvelope {
+                request_id: vec![1; 16],
+                method: method.into(),
+                body: if error { vec![] } else { vec![1] },
+                descriptors: descriptor_entries(roles).unwrap(),
+                error: if error {
+                    Some(BrokerError {
+                        code: BrokerErrorCode::BROKER_ERROR_CODE_INVALID_REQUEST.into(),
+                        safe_message: "denied".to_owned(),
+                        ..Default::default()
+                    })
+                } else {
+                    None
+                }
+                .into(),
+                ..Default::default()
+            };
+            decode_response_envelope(
+                &envelope.encode_to_vec(),
+                &[1; 16],
+                method,
+                &[],
+                roles.len(),
+                8192,
+                8192,
+            )
+        };
+        let roles = crate::payload_scope::PAYLOAD_SCOPE_DESCRIPTOR_ROLES;
+        assert!(decode(&roles, false).is_ok());
+        assert!(decode(&[], false).is_err());
+        assert!(decode(&roles[..1], false).is_err());
+        assert!(decode(&[roles[1], roles[0]], false).is_err());
+        assert!(decode(&roles, true).is_err());
+        assert!(decode(&[], true).is_ok());
     }
 
     fn client_hello() -> BrokerClientHello {

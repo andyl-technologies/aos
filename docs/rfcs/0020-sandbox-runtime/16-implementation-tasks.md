@@ -1761,3 +1761,37 @@ immutable challenge retries, stale heads, policy-clamped frozen-wall deadlines,
 and failed journal append retention through the real registration path.
 Cgroup mutation/migration races, aarch64, production runtime provisioning,
 and publication admission/effects remain unqualified by this gate.
+
+### Live payload-scope handoff (in progress)
+
+Host 1.2 `ObservePayloadScope` now carries a fresh signed query against the
+exact installed plan/lease fence. The broker exports only launch-retained
+payload PID-1 and cgroup objects after refreshing the same invocation,
+supervisor, root, namespaces, and subtree membership. Process-local scope
+handles and strong pins are not reconstructed from receipts after restart.
+Failed state commits latch the broker unhealthy and retire retained pins.
+
+The response transfers a closed pidfd/cgroup descriptor pair with bounded
+metadata. Final delivery rechecks the accepted controller, live authority,
+and kernel pins; the descriptor send is nonblocking and never retries stale
+checks. The controller authenticates actual response subjects against trusted
+host-service configuration, including when the listener creator differs from
+the responder under socket activation. Descriptor validation establishes
+kernel identity and membership; strong payload verification is a host
+attestation, not an inference from descriptor types.
+
+Validation passes: 477 all-feature unit tests across controller, Host, Linux,
+mount, and protocol crates, three integration tests, and eighteen doctests,
+with serial kernel-fixture execution. This includes the saturated-send-queue
+regression. All-target all-feature strict Clippy, warning-denied rustdoc,
+changed-file formatting, and the locked all-target workspace check pass;
+the workspace check retains unrelated existing warnings.
+
+The updated `checks.vm.sandbox-local-identity` derivation passes all 380 default
+library tests inside the Nix build sandbox and all 38 selected kernel test
+entries in AOS Linux 6.18.33 x86_64. The new fixtures qualify actual responder
+identity under socket activation and closed descriptor-carrier behavior, not
+the strong payload attestation of a real launched sandbox.
+End-to-end production runtime provisioning, real strong
+payload handoff qualification, holder-channel delivery/admission, and
+publication effects remain open; this does not complete `SBX-PUB-02`.

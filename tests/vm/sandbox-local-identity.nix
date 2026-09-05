@@ -81,6 +81,8 @@ in
       }
 
       run_tests ${fixtures}/bin/aos_sandbox_linux cgroup::tests::real_readonly_hierarchy_resolves_exact_current_membership
+      run_tests ${fixtures}/bin/aos_sandbox_linux seqpacket::descriptor_subject::tests::
+      run_tests ${fixtures}/bin/aos_sandbox runtime_scope::kernel_tests::
       run_tests ${fixtures}/bin/aos_sandbox local_sessions::tests::
       run_tests ${fixtures}/bin/aos_sandbox local_provisioning::tests::
       run_tests ${fixtures}/bin/aos_sandbox publisher_sessions::kernel_tests::

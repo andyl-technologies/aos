@@ -7,6 +7,7 @@
 pub mod host;
 pub mod mount;
 pub mod network;
+pub mod payload_scope;
 pub mod storage;
 
 pub use host::{

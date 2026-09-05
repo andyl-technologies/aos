@@ -21,6 +21,7 @@ aos-sandbox-protocol = { path = "../aos-sandbox-protocol" }
 aos-systemd = { path = "../aos-systemd" }
 async-trait.workspace = true
 buffa = "0.3"
+rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

@@ -69,6 +69,7 @@ enum BrokerMethod {
   BROKER_METHOD_NETWORK_APPLY = 9;
   BROKER_METHOD_NETWORK_INVENTORY = 10;
   BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT = 11;
+  BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE = 12;
 }
 
 // Semantic roles for SCM_RIGHTS descriptors carried beside one packet.
@@ -81,6 +82,8 @@ enum BrokerDescriptorRole {
   BROKER_DESCRIPTOR_ROLE_RUNTIME_LEADER = 5;
   BROKER_DESCRIPTOR_ROLE_PAYLOAD_USER_NAMESPACE = 6;
   BROKER_DESCRIPTOR_ROLE_TARGET_SLOT = 7;
+  BROKER_DESCRIPTOR_ROLE_PAYLOAD_LEADER_PIDFD = 8;
+  BROKER_DESCRIPTOR_ROLE_PAYLOAD_CGROUP = 9;
 }
 
 // Declares response-side ownership of a descriptor received with the request.
@@ -226,6 +229,24 @@ message ObserveRuntimeRequest {
   bytes runtime_handle = 3;
 }
 
+// Authority-bearing descriptor acquisition, unlike legacy ObserveRuntime.
+// Requires the exact signed HostObserve grant and current ownership lease.
+message ObservePayloadScopeRequest {
+  RequestHeader header = 1;
+  AssignmentFence fence = 2;
+  bytes runtime_handle = 3; // Exactly 32 nonzero bytes.
+}
+
+// Success returns exactly [PAYLOAD_LEADER_PIDFD, PAYLOAD_CGROUP] SCM_RIGHTS.
+// The cgroup O_PATH anchor is the retained payload subtree, not its PID1 leaf.
+// These descriptors may exercise the receiver's existing kernel rights.
+message ObservePayloadScopeResponse {
+  AssignmentFence fence = 1;
+  bytes runtime_handle = 2; // Exactly 32 nonzero bytes.
+  bytes payload_scope_handle = 3; // Opaque retained-pin handle, not authority alone.
+  bytes leader_cgroup_hint = 4; // At most 4096 bytes; empty exact, otherwise strict relative.
+}
+
 message InventoryRuntimeRequest { RequestHeader header = 1; }
 message InventoryRuntimeResponse { repeated RuntimeObservation runtimes = 1; }
 
@@ -252,6 +273,7 @@ message QueryRuntimeEffectResponse {
 service HostBroker {
   rpc ApplyRuntime(ApplyRuntimeRequest) returns (RuntimeObservation);
   rpc ObserveRuntime(ObserveRuntimeRequest) returns (RuntimeObservation);
+  rpc ObservePayloadScope(ObservePayloadScopeRequest) returns (ObservePayloadScopeResponse);
   rpc InventoryRuntime(InventoryRuntimeRequest) returns (InventoryRuntimeResponse);
   rpc QueryRuntimeEffect(QueryRuntimeEffectRequest) returns (QueryRuntimeEffectResponse);
 }

@@ -66,6 +66,15 @@ pub enum HostError {
     /// The fixed systemd worker could not complete or verify an effect.
     #[error("host worker failure: {0}")]
     Worker(String),
+    /// A retained kernel descriptor could not be duplicated for a bounded reply.
+    #[error("host descriptor operation {operation} failed: {source}")]
+    Descriptor {
+        /// Fixed operation label, without caller-selected paths or handles.
+        operation: &'static str,
+        /// Original descriptor error retained for local diagnostics.
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 /// Convenience result type for host broker operations.

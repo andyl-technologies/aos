@@ -4,9 +4,10 @@ use std::collections::VecDeque;
 use std::fs::File;
 use std::io::Read as _;
 use std::num::NonZeroU32;
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 use std::path::Path;
 
+use aos_sandbox_linux::cgroup::CgroupV2Root;
 use aos_sandbox_linux::path::{BeneathRoot, ResolveOptions};
 use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceKind, PidFd};
 use aos_sandbox_protocol::ValidatedAssignmentFence;
@@ -155,8 +156,19 @@ impl PinnedLeader {
         &self.pidfd
     }
 
-    pub(crate) fn into_parts(self) -> ([u8; 32], PidFd) {
-        (self.handle, self.pidfd)
+    /// Duplicates the same supervisor pin for independent broker registries.
+    pub(crate) fn try_clone(&self) -> Result<Self> {
+        let descriptor = self
+            .pidfd
+            .as_fd()
+            .try_clone_to_owned()
+            .map_err(|error| HostError::Worker(error.to_string()))?;
+        Ok(Self {
+            handle: self.handle,
+            pidfd: PidFd::from_owned(descriptor)
+                .map_err(|error| HostError::Worker(error.to_string()))?,
+            cgroup: self.cgroup.clone(),
+        })
     }
 }
 
@@ -171,6 +183,8 @@ impl PinnedLeader {
 #[derive(Debug)]
 pub struct PinnedPayloadLeader {
     pidfd: PidFd,
+    cgroup: BeneathRoot,
+    relative_cgroup_hint: String,
     root: OwnedFd,
     network: NamespaceFd,
     mount: NamespaceFd,
@@ -298,6 +312,111 @@ impl PinnedPayloadLeader {
         &self.pidfd
     }
 
+    /// Borrows the launch-verified payload subtree anchor.
+    #[must_use]
+    pub(crate) fn cgroup(&self) -> BorrowedFd<'_> {
+        self.cgroup.as_fd()
+    }
+
+    /// Reports whether another proof pins the same payload subtree object.
+    #[must_use]
+    pub(crate) fn has_same_cgroup(&self, other: &Self) -> bool {
+        self.cgroup.identity() == other.cgroup.identity()
+    }
+
+    /// Returns the PID 1 cgroup hint relative to the payload subtree anchor.
+    #[must_use]
+    pub(crate) fn relative_cgroup_hint(&self) -> &str {
+        &self.relative_cgroup_hint
+    }
+
+    /// Rechecks the retained payload proof immediately before descriptor use.
+    pub(crate) fn recheck_kernel(&self, supervisor: &PinnedLeader) -> Result<()> {
+        let supervisor_before = supervisor
+            .pidfd
+            .info()
+            .map_err(|error| HostError::Worker(error.to_string()))?;
+        let cgroup = CgroupV2Root::from_owned(
+            self.cgroup
+                .as_fd()
+                .try_clone_to_owned()
+                .map_err(|error| HostError::Worker(error.to_string()))?,
+        )
+        .map_err(|error| HostError::Worker(error.to_string()))?;
+        let anchor = cgroup
+            .resolve(Path::new("."))
+            .map_err(|error| HostError::Worker(error.to_string()))?;
+        let payload_before = if self.relative_cgroup_hint.is_empty() {
+            anchor.verify_exact_membership(&self.pidfd)
+        } else {
+            anchor.verify_descendant_membership(&self.pidfd, Path::new(&self.relative_cgroup_hint))
+        }
+        .map_err(|error| HostError::Worker(error.to_string()))?;
+        if payload_before.thread_group_id() != payload_before.pid()
+            || payload_before.parent_pid() != supervisor_before.pid()
+            || read_nested_pid(
+                NonZeroU32::new(payload_before.pid()).ok_or_else(|| {
+                    HostError::Worker("payload pidfd returned PID zero".to_owned())
+                })?,
+            )? != 1
+        {
+            return Err(HostError::Worker(
+                "retained payload process no longer satisfies its exact scope".to_owned(),
+            ));
+        }
+
+        let current_root = open_payload_root(
+            NonZeroU32::new(payload_before.pid())
+                .ok_or_else(|| HostError::Worker("payload pidfd returned PID zero".to_owned()))?,
+        )?;
+        let current_root = rustix::fs::fstat(&current_root)
+            .map_err(|error| HostError::Worker(error.to_string()))?;
+        let retained_root =
+            rustix::fs::fstat(&self.root).map_err(|error| HostError::Worker(error.to_string()))?;
+        let current_network = self
+            .pidfd
+            .namespace(NamespaceKind::Network)
+            .map_err(|error| HostError::Worker(error.to_string()))?;
+        let current_mount = self
+            .pidfd
+            .namespace(NamespaceKind::Mount)
+            .map_err(|error| HostError::Worker(error.to_string()))?;
+        if (current_root.st_dev, current_root.st_ino)
+            != (retained_root.st_dev, retained_root.st_ino)
+            || current_network.identity() != self.network.identity()
+            || current_mount.identity() != self.mount.identity()
+        {
+            return Err(HostError::Worker(
+                "retained payload root or namespaces changed".to_owned(),
+            ));
+        }
+
+        let payload_after = self
+            .pidfd
+            .info()
+            .map_err(|error| HostError::Worker(error.to_string()))?;
+        let supervisor_after = supervisor
+            .pidfd
+            .info()
+            .map_err(|error| HostError::Worker(error.to_string()))?;
+        if payload_before != payload_after
+            || supervisor_before != supervisor_after
+            || !self
+                .pidfd
+                .is_alive()
+                .map_err(|error| HostError::Worker(error.to_string()))?
+            || !supervisor
+                .pidfd
+                .is_alive()
+                .map_err(|error| HostError::Worker(error.to_string()))?
+        {
+            return Err(HostError::Worker(
+                "retained payload identity changed during revalidation".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Borrows the point-in-time payload root descriptor.
     #[must_use]
     pub fn root(&self) -> std::os::fd::BorrowedFd<'_> {
@@ -318,10 +437,11 @@ impl PinnedPayloadLeader {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct PayloadCandidate {
     pid: NonZeroU32,
     cgroup_id: u64,
+    relative_cgroup_hint: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -340,22 +460,21 @@ struct PayloadEvidence {
 trait PayloadInspectionBackend {
     type Proof;
 
-    fn snapshot(&self, payload: &SandboxCgroupPath) -> Result<Vec<PayloadCandidate>>;
+    fn snapshot(&self) -> Result<Vec<PayloadCandidate>>;
     fn prove(&self, candidate: PayloadCandidate) -> Result<(PayloadEvidence, Option<Self::Proof>)>;
     fn is_alive(&self, proof: &Self::Proof) -> Result<bool>;
 }
 
 fn discover_payload_leader<B: PayloadInspectionBackend>(
     backend: &B,
-    payload: &SandboxCgroupPath,
     supervisor_pid: u32,
     expected_root: (u64, u64),
     expected_network: (u64, u64),
 ) -> Result<B::Proof> {
-    let first = canonical_payload_snapshot(backend.snapshot(payload)?)?;
+    let first = canonical_payload_snapshot(backend.snapshot()?)?;
     let mut selected = None;
-    for candidate in first.iter().copied() {
-        let (evidence, proof) = backend.prove(candidate)?;
+    for candidate in first.iter().cloned() {
+        let (evidence, proof) = backend.prove(candidate.clone())?;
         if evidence.pid != candidate.pid
             || evidence.thread_group_id != candidate.pid.get()
             || evidence.cgroup_id != candidate.cgroup_id
@@ -390,7 +509,7 @@ fn discover_payload_leader<B: PayloadInspectionBackend>(
     let proof = selected.ok_or_else(|| {
         HostError::Worker("payload subtree has no direct nested PID 1 candidate".to_owned())
     })?;
-    let second = canonical_payload_snapshot(backend.snapshot(payload)?)?;
+    let second = canonical_payload_snapshot(backend.snapshot()?)?;
     if first != second {
         return Err(HostError::Worker(
             "payload cgroup changed during leader discovery".to_owned(),
@@ -432,6 +551,8 @@ pub struct WorkerObservation {
     pub invocation_id: Option<[u8; 16]>,
     /// Pinned supervisor leader, present only after cgroup validation.
     pub leader: Option<PinnedLeader>,
+    /// Launch-verified payload proof, present only after strong pin validation.
+    pub payload: Option<PinnedPayloadLeader>,
 }
 
 /// Executes one idempotent fixed-function host transaction.
@@ -462,6 +583,20 @@ pub trait HostWorker {
     ///
     /// Returns an error when systemd or descriptor validation fails.
     async fn observe(&self, identity: &HostRuntimeIdentity) -> Result<WorkerObservation>;
+
+    /// Revalidates one retained launch proof against fresh runtime state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the same invocation, supervisor, payload PID 1,
+    /// root, namespaces, and exact payload subtree remain current.
+    async fn refresh_payload_scope(
+        &self,
+        identity: &HostRuntimeIdentity,
+        invocation_id: [u8; 16],
+        supervisor: &PinnedLeader,
+        payload: &PinnedPayloadLeader,
+    ) -> Result<WorkerObservation>;
 }
 
 /// Creates a fresh system-bus connection for every fixed host transaction.
@@ -495,6 +630,7 @@ impl SystemdOneShotWorker {
                 state: ObservedRuntimeState::Absent,
                 invocation_id: None,
                 leader: None,
+                payload: None,
             });
         };
         let state = classify_state(&observation);
@@ -517,6 +653,7 @@ impl SystemdOneShotWorker {
             state,
             invocation_id: observation.invocation_id,
             leader,
+            payload: None,
         })
     }
 
@@ -579,23 +716,24 @@ impl SystemdOneShotWorker {
 }
 
 struct LinuxPayloadInspector<'a> {
-    cgroup_root: &'a BeneathRoot,
+    payload_root: &'a BeneathRoot,
 }
 
 impl PayloadInspectionBackend for LinuxPayloadInspector<'_> {
     type Proof = PinnedPayloadLeader;
 
-    fn snapshot(&self, payload: &SandboxCgroupPath) -> Result<Vec<PayloadCandidate>> {
-        let relative = payload.as_str().trim_start_matches('/');
-        let payload = self
-            .cgroup_root
-            .resolve(Path::new(relative), ResolveOptions::directory())
+    fn snapshot(&self) -> Result<Vec<PayloadCandidate>> {
+        let duplicate = self
+            .payload_root
+            .as_fd()
+            .try_clone_to_owned()
             .map_err(|error| HostError::Worker(error.to_string()))?;
-        let mut pending = VecDeque::from([BeneathRoot::from_resolved(payload)
-            .map_err(|error| HostError::Worker(error.to_string()))?]);
+        let root = BeneathRoot::from_owned(duplicate)
+            .map_err(|error| HostError::Worker(error.to_string()))?;
+        let mut pending = VecDeque::from([(root, String::new())]);
         let mut candidates = Vec::new();
         let mut directories = 0_usize;
-        while let Some(directory) = pending.pop_front() {
+        while let Some((directory, relative_cgroup_hint)) = pending.pop_front() {
             directories = directories
                 .checked_add(1)
                 .ok_or_else(|| HostError::Worker("payload cgroup count overflow".to_owned()))?;
@@ -615,7 +753,11 @@ impl PayloadInspectionBackend for LinuxPayloadInspector<'_> {
                         "payload process snapshot exceeds its fixed bound".to_owned(),
                     ));
                 }
-                candidates.push(PayloadCandidate { pid, cgroup_id });
+                candidates.push(PayloadCandidate {
+                    pid,
+                    cgroup_id,
+                    relative_cgroup_hint: relative_cgroup_hint.clone(),
+                });
             }
 
             let entries = rustix::fs::Dir::read_from(directory.as_fd())
@@ -634,10 +776,21 @@ impl PayloadInspectionBackend for LinuxPayloadInspector<'_> {
                         let child = directory
                             .resolve(Path::new(name), ResolveOptions::directory())
                             .map_err(|error| HostError::Worker(error.to_string()))?;
-                        pending.push_back(
+                        let relative = if relative_cgroup_hint.is_empty() {
+                            name.to_owned()
+                        } else {
+                            format!("{relative_cgroup_hint}/{name}")
+                        };
+                        if relative.len() > 4096 {
+                            return Err(HostError::Worker(
+                                "payload cgroup hint exceeds its fixed bound".to_owned(),
+                            ));
+                        }
+                        pending.push_back((
                             BeneathRoot::from_resolved(child)
                                 .map_err(|error| HostError::Worker(error.to_string()))?,
-                        );
+                            relative,
+                        ));
                     }
                     rustix::fs::FileType::Unknown => {
                         return Err(HostError::Worker(
@@ -713,6 +866,14 @@ impl PayloadInspectionBackend for LinuxPayloadInspector<'_> {
             },
             Some(PinnedPayloadLeader {
                 pidfd,
+                cgroup: BeneathRoot::from_owned(
+                    self.payload_root
+                        .as_fd()
+                        .try_clone_to_owned()
+                        .map_err(|error| HostError::Worker(error.to_string()))?,
+                )
+                .map_err(|error| HostError::Worker(error.to_string()))?,
+                relative_cgroup_hint: candidate.relative_cgroup_hint,
                 root,
                 network,
                 mount,
@@ -868,13 +1029,15 @@ async fn reconcile_launch<B: LaunchBackend + Sync>(
     spec: &SandboxUnitSpec,
     pins: &LaunchPins,
     before_effect: &mut (dyn FnMut() -> Result<()> + Send),
-    verify_pins: &mut (dyn FnMut(&WorkerObservation, &LaunchPins) -> Result<()> + Send),
+    verify_pins: &mut (
+             dyn FnMut(&WorkerObservation, &LaunchPins) -> Result<PinnedPayloadLeader> + Send
+         ),
 ) -> Result<WorkerObservation> {
     let initial = match backend.observe().await {
         Ok(observation) => observation,
         Err(error) => return rollback_launch(backend, error).await,
     };
-    let observation = if initial.state == ObservedRuntimeState::Absent {
+    let mut observation = if initial.state == ObservedRuntimeState::Absent {
         before_effect()?;
         if let Err(error) = backend.start(spec).await {
             return rollback_launch(backend, error).await;
@@ -889,7 +1052,10 @@ async fn reconcile_launch<B: LaunchBackend + Sync>(
 
     let proof = validate_launch_observation(&observation, pins, verify_pins);
     match proof {
-        Ok(()) => Ok(observation),
+        Ok(payload) => {
+            observation.payload = Some(payload);
+            Ok(observation)
+        }
         Err(error) => rollback_launch(backend, error).await,
     }
 }
@@ -897,8 +1063,10 @@ async fn reconcile_launch<B: LaunchBackend + Sync>(
 fn validate_launch_observation(
     observation: &WorkerObservation,
     pins: &LaunchPins,
-    verify_pins: &mut (dyn FnMut(&WorkerObservation, &LaunchPins) -> Result<()> + Send),
-) -> Result<()> {
+    verify_pins: &mut (
+             dyn FnMut(&WorkerObservation, &LaunchPins) -> Result<PinnedPayloadLeader> + Send
+         ),
+) -> Result<PinnedPayloadLeader> {
     if !matches!(
         observation.state,
         ObservedRuntimeState::Ready | ObservedRuntimeState::Frozen
@@ -1023,6 +1191,86 @@ impl HostWorker for SystemdOneShotWorker {
             .map_err(|error| worker_error(&error))?;
         self.observe_with_client(&client, identity).await
     }
+
+    async fn refresh_payload_scope(
+        &self,
+        identity: &HostRuntimeIdentity,
+        invocation_id: [u8; 16],
+        supervisor: &PinnedLeader,
+        payload: &PinnedPayloadLeader,
+    ) -> Result<WorkerObservation> {
+        let client = SystemdClient::connect()
+            .await
+            .map_err(|error| worker_error(&error))?;
+        let mut observation = self.observe_with_client(&client, identity).await?;
+        if !matches!(
+            observation.state,
+            ObservedRuntimeState::Ready | ObservedRuntimeState::Frozen
+        ) || observation.invocation_id != Some(invocation_id)
+        {
+            return Err(HostError::Worker(
+                "retained payload invocation is no longer current".to_owned(),
+            ));
+        }
+        let current_supervisor = observation.leader.as_ref().ok_or_else(|| {
+            HostError::Worker("current runtime has no pinned supervisor".to_owned())
+        })?;
+        if current_supervisor.handle() != supervisor.handle()
+            || current_supervisor
+                .pidfd
+                .info()
+                .map_err(|error| HostError::Worker(error.to_string()))?
+                != supervisor
+                    .pidfd
+                    .info()
+                    .map_err(|error| HostError::Worker(error.to_string()))?
+        {
+            return Err(HostError::Worker(
+                "retained payload supervisor is no longer current".to_owned(),
+            ));
+        }
+
+        let current_payload = resolve_payload_root(&self.cgroup_root, &current_supervisor.cgroup)?;
+        if current_payload.identity() != payload.cgroup.identity() {
+            return Err(HostError::Worker(
+                "payload subtree differs from its retained anchor".to_owned(),
+            ));
+        }
+        let root = rustix::fs::fstat(payload.root.as_fd())
+            .map_err(|error| HostError::Worker(error.to_string()))?;
+        let network = payload.network.identity();
+        let inspector = LinuxPayloadInspector {
+            payload_root: &payload.cgroup,
+        };
+        let supervisor_info = current_supervisor
+            .pidfd
+            .info()
+            .map_err(|error| HostError::Worker(error.to_string()))?;
+        let refreshed = discover_payload_leader(
+            &inspector,
+            supervisor_info.pid(),
+            (root.st_dev, root.st_ino),
+            (network.device, network.inode),
+        )?;
+        if refreshed
+            .pidfd
+            .info()
+            .map_err(|error| HostError::Worker(error.to_string()))?
+            != payload
+                .pidfd
+                .info()
+                .map_err(|error| HostError::Worker(error.to_string()))?
+            || refreshed.mount.identity() != payload.mount.identity()
+            || refreshed.relative_cgroup_hint != payload.relative_cgroup_hint
+        {
+            return Err(HostError::Worker(
+                "payload PID 1 changed since launch verification".to_owned(),
+            ));
+        }
+        refreshed.recheck_kernel(current_supervisor)?;
+        observation.payload = Some(refreshed);
+        Ok(observation)
+    }
 }
 
 fn verify_supervisor_pins(
@@ -1030,7 +1278,7 @@ fn verify_supervisor_pins(
     pins: &LaunchPins,
     leader: &PinnedLeader,
     _root_policy: PayloadRootContinuityPolicyV1,
-) -> Result<()> {
+) -> Result<PinnedPayloadLeader> {
     // The unforgeable policy witness couples this point-in-time root check to
     // the immutable command which prevents PID 1 and descendants from later
     // replacing their root. Binary identity is checked below before the
@@ -1067,10 +1315,12 @@ fn verify_supervisor_pins(
     let root = rustix::fs::fstat(pins.workspace())
         .map_err(|error| HostError::Worker(error.to_string()))?;
     let network = pins.network().identity();
-    let inspector = LinuxPayloadInspector { cgroup_root };
+    let payload_root = resolve_payload_root(cgroup_root, &leader.cgroup)?;
+    let inspector = LinuxPayloadInspector {
+        payload_root: &payload_root,
+    };
     let payload = discover_payload_leader(
         &inspector,
-        &leader.cgroup.payload_subgroup(),
         info.pid(),
         (root.st_dev, root.st_ino),
         (network.device, network.inode),
@@ -1099,7 +1349,20 @@ fn verify_supervisor_pins(
             "nspawn supervisor exited during launch identity validation".to_owned(),
         ));
     }
-    Ok(())
+    payload.recheck_kernel(leader)?;
+    Ok(payload)
+}
+
+fn resolve_payload_root(
+    cgroup_root: &BeneathRoot,
+    service: &SandboxCgroupPath,
+) -> Result<BeneathRoot> {
+    let payload = service.payload_subgroup();
+    let relative = payload.as_str().trim_start_matches('/');
+    let resolved = cgroup_root
+        .resolve(Path::new(relative), ResolveOptions::directory())
+        .map_err(|error| HostError::Worker(error.to_string()))?;
+    BeneathRoot::from_resolved(resolved).map_err(|error| HostError::Worker(error.to_string()))
 }
 
 fn classify_state(observation: &SandboxUnitObservation) -> ObservedRuntimeState {
@@ -1163,7 +1426,7 @@ mod tests {
     impl PayloadInspectionBackend for FakePayloadBackend {
         type Proof = u32;
 
-        fn snapshot(&self, _payload: &SandboxCgroupPath) -> Result<Vec<PayloadCandidate>> {
+        fn snapshot(&self) -> Result<Vec<PayloadCandidate>> {
             self.snapshots
                 .lock()
                 .unwrap()
@@ -1191,6 +1454,7 @@ mod tests {
         PayloadCandidate {
             pid: NonZeroU32::new(pid).unwrap(),
             cgroup_id,
+            relative_cgroup_hint: String::new(),
         }
     }
 
@@ -1280,6 +1544,53 @@ mod tests {
         LaunchPins::for_tests(executable, workspace, network)
     }
 
+    fn current_payload_proof() -> PinnedPayloadLeader {
+        // Launch-ordering tests need an owned value from the private callback,
+        // not a usable runtime proof. The ordinary filesystem anchor ensures
+        // any accidental fresh-query recheck fails closed as non-cgroup2.
+        let pid = NonZeroU32::new(std::process::id()).unwrap();
+        let cgroup = rustix::fs::open(
+            "/",
+            rustix::fs::OFlags::PATH | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .unwrap();
+        let root = rustix::fs::open(
+            "/",
+            rustix::fs::OFlags::PATH | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .unwrap();
+        let network = rustix::fs::open(
+            "/proc/self/ns/net",
+            rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .unwrap();
+        let mount = rustix::fs::open(
+            "/proc/self/ns/mnt",
+            rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .unwrap();
+        PinnedPayloadLeader {
+            pidfd: PidFd::open(pid).unwrap(),
+            cgroup: BeneathRoot::from_owned(cgroup).unwrap(),
+            relative_cgroup_hint: String::new(),
+            root,
+            network: NamespaceFd::from_owned(network, NamespaceKind::Network).unwrap(),
+            mount: NamespaceFd::from_owned(mount, NamespaceKind::Mount).unwrap(),
+        }
+    }
+
+    #[test]
+    fn ordering_fixture_is_not_a_runtime_payload_proof() {
+        let supervisor = observation(ObservedRuntimeState::Ready, true)
+            .leader
+            .unwrap();
+        assert!(current_payload_proof().recheck_kernel(&supervisor).is_err());
+    }
+
     fn observation(state: ObservedRuntimeState, leader: bool) -> WorkerObservation {
         let leader = leader.then(|| PinnedLeader {
             handle: [1; 32],
@@ -1290,6 +1601,7 @@ mod tests {
             state,
             invocation_id: Some([2; 16]),
             leader,
+            payload: None,
         }
     }
 
@@ -1367,7 +1679,6 @@ mod tests {
 
     #[test]
     fn payload_discovery_pins_one_direct_nested_pid_one() {
-        let service = SandboxUnitName::from_incarnation([1; 16]).cgroup_path();
         let snapshot = vec![payload_candidate(41, 101), payload_candidate(42, 102)];
         let backend = payload_backend(
             vec![snapshot.clone(), snapshot],
@@ -1375,48 +1686,35 @@ mod tests {
         );
 
         assert_eq!(
-            discover_payload_leader(
-                &backend,
-                &service.payload_subgroup(),
-                40,
-                (11, 12),
-                (13, 14),
-            )
-            .unwrap(),
+            discover_payload_leader(&backend, 40, (11, 12), (13, 14)).unwrap(),
             41
         );
     }
 
     #[test]
     fn payload_discovery_rejects_churn_and_pid_reuse() {
-        let payload = SandboxUnitName::from_incarnation([1; 16])
-            .cgroup_path()
-            .payload_subgroup();
         let first = vec![payload_candidate(41, 101)];
         let churn = payload_backend(
             vec![first.clone(), vec![payload_candidate(41, 103)]],
             vec![payload_evidence(41, 101, 1)],
         );
-        assert!(discover_payload_leader(&churn, &payload, 40, (11, 12), (13, 14)).is_err());
+        assert!(discover_payload_leader(&churn, 40, (11, 12), (13, 14)).is_err());
 
         let mut reused = payload_evidence(41, 101, 1);
         reused.pid = NonZeroU32::new(99).unwrap();
         let mut reuse = payload_backend(vec![first.clone(), first], Vec::new());
         reuse.evidence.insert(41, reused);
-        assert!(discover_payload_leader(&reuse, &payload, 40, (11, 12), (13, 14)).is_err());
+        assert!(discover_payload_leader(&reuse, 40, (11, 12), (13, 14)).is_err());
     }
 
     #[test]
     fn payload_discovery_rejects_ambiguous_or_substituted_identity() {
-        let payload = SandboxUnitName::from_incarnation([1; 16])
-            .cgroup_path()
-            .payload_subgroup();
         let snapshot = vec![payload_candidate(41, 101), payload_candidate(42, 102)];
         let ambiguous = payload_backend(
             vec![snapshot.clone(), snapshot.clone()],
             vec![payload_evidence(41, 101, 1), payload_evidence(42, 102, 1)],
         );
-        assert!(discover_payload_leader(&ambiguous, &payload, 40, (11, 12), (13, 14)).is_err());
+        assert!(discover_payload_leader(&ambiguous, 40, (11, 12), (13, 14)).is_err());
 
         let duplicate = payload_backend(
             vec![
@@ -1425,28 +1723,30 @@ mod tests {
             ],
             vec![payload_evidence(41, 101, 1)],
         );
-        assert!(discover_payload_leader(&duplicate, &payload, 40, (11, 12), (13, 14)).is_err());
+        assert!(discover_payload_leader(&duplicate, 40, (11, 12), (13, 14)).is_err());
 
         let mut wrong_root = payload_evidence(41, 101, 1);
         wrong_root.root_inode = 99;
-        let substituted =
-            payload_backend(vec![vec![snapshot[0]], vec![snapshot[0]]], vec![wrong_root]);
-        assert!(discover_payload_leader(&substituted, &payload, 40, (11, 12), (13, 14)).is_err());
+        let substituted = payload_backend(
+            vec![vec![snapshot[0].clone()], vec![snapshot[0].clone()]],
+            vec![wrong_root],
+        );
+        assert!(discover_payload_leader(&substituted, 40, (11, 12), (13, 14)).is_err());
 
         let mut wrong_network = payload_evidence(41, 101, 1);
         wrong_network.network_inode = 99;
         let substituted = payload_backend(
-            vec![vec![snapshot[0]], vec![snapshot[0]]],
+            vec![vec![snapshot[0].clone()], vec![snapshot[0].clone()]],
             vec![wrong_network],
         );
-        assert!(discover_payload_leader(&substituted, &payload, 40, (11, 12), (13, 14)).is_err());
+        assert!(discover_payload_leader(&substituted, 40, (11, 12), (13, 14)).is_err());
 
         let mut dead = payload_backend(
-            vec![vec![snapshot[0]], vec![snapshot[0]]],
+            vec![vec![snapshot[0].clone()], vec![snapshot[0].clone()]],
             vec![payload_evidence(41, 101, 1)],
         );
         dead.alive = false;
-        assert!(discover_payload_leader(&dead, &payload, 40, (11, 12), (13, 14)).is_err());
+        assert!(discover_payload_leader(&dead, 40, (11, 12), (13, 14)).is_err());
     }
 
     #[test]
@@ -1485,7 +1785,7 @@ mod tests {
                 Err(HostError::Worker("expired effect guard".to_owned()))
             }
         };
-        let mut verify = |_: &WorkerObservation, _: &LaunchPins| Ok(());
+        let mut verify = |_: &WorkerObservation, _: &LaunchPins| Ok(current_payload_proof());
 
         assert!(
             reconcile_launch(
@@ -1511,7 +1811,7 @@ mod tests {
             Ok(observation(ObservedRuntimeState::Ready, false)),
         ]);
         let mut guard = || Ok(());
-        let mut verify = |_: &WorkerObservation, _: &LaunchPins| Ok(());
+        let mut verify = |_: &WorkerObservation, _: &LaunchPins| Ok(current_payload_proof());
         assert!(
             reconcile_launch(
                 &missing,
@@ -1551,7 +1851,7 @@ mod tests {
     async fn preexisting_running_unit_requires_and_passes_exact_pin_proof() {
         let backend = backend(vec![Ok(observation(ObservedRuntimeState::Ready, true))]);
         let mut guard = || Err(HostError::Worker("must not start".to_owned()));
-        let mut verify = |_: &WorkerObservation, _: &LaunchPins| Ok(());
+        let mut verify = |_: &WorkerObservation, _: &LaunchPins| Ok(current_payload_proof());
         let result = reconcile_launch(
             &backend,
             &spec(),
@@ -1561,6 +1861,7 @@ mod tests {
         )
         .await;
         assert!(result.is_ok(), "{result:?}");
+        assert!(result.unwrap().payload.is_some());
         assert_eq!(backend.starts.load(Ordering::SeqCst), 0);
         assert_eq!(backend.kills.load(Ordering::SeqCst), 0);
         assert_eq!(backend.stops.load(Ordering::SeqCst), 0);

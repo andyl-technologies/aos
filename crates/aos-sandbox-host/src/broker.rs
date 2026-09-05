@@ -1,5 +1,7 @@
 //! Durable ordering and replay for fixed host runtime effects.
 
+mod payload_scope;
+
 use std::collections::BTreeMap;
 
 use aos_proto::aos::sandbox::local::v1::{
@@ -11,11 +13,11 @@ use aos_sandbox_core::{ProtocolVersion, RawClockProvenance, RawPairedClockSample
 use aos_sandbox_linux::pidfd::PidFd;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use aos_sandbox_protocol::{
-    PeerCredentials, PeerPolicy, ValidatedAssignmentFence, ValidatedRuntimeRequest,
-    decode_runtime_request,
+    PeerCredentials, PeerPolicy, ValidatedRuntimeRequest, decode_runtime_request,
 };
 use aos_systemd::SandboxUnitDiscoverySnapshot;
 use buffa::Message as _;
+use rand::{TryRngCore as _, rngs::OsRng};
 use sha2::{Digest as _, Sha256};
 
 use crate::authorization::HostAuthorityV1;
@@ -24,12 +26,13 @@ use crate::plan::{HostCatalog, NspawnConfig, ResolvedLaunchResources};
 use crate::recovery::{HostRuntimeRecoveryReport, reconcile};
 use crate::state::{Admission, HostState, HostStateStore, RuntimeEffectQuery};
 use crate::worker::{
-    HostRuntimeIdentity, HostWorker, ObservedRuntimeState, PinnedLeader, WorkerObservation,
-    WorkerOperation,
+    HostRuntimeIdentity, HostWorker, ObservedRuntimeState, PinnedLeader, PinnedPayloadLeader,
+    WorkerObservation, WorkerOperation,
 };
 use crate::{HostError, Result};
 
 const MAXIMUM_INVENTORY_RUNTIMES: usize = 1_024;
+const MAXIMUM_SCOPE_HANDLE_ATTEMPTS: usize = 16;
 const HOST_APPLY_AUTHORIZATION_VERSION: ProtocolVersion = ProtocolVersion::new(1, 1);
 
 pub(crate) struct RuntimeEffectQueryContext<'a> {
@@ -49,7 +52,22 @@ pub struct HostBroker<C, S, W> {
     authority: HostAuthorityV1,
     nspawn: Option<NspawnConfig>,
     state: HostState,
-    leaders: BTreeMap<[u8; 32], PidFd>,
+    state_healthy: bool,
+    observed_leaders: BTreeMap<HostRuntimeIdentity, PinnedLeader>,
+    pub(crate) runtime_pins: BTreeMap<HostRuntimeIdentity, RetainedRuntimePins>,
+}
+
+pub(crate) struct RetainedRuntimePins {
+    pub(crate) invocation_id: [u8; 16],
+    pub(crate) supervisor: PinnedLeader,
+    pub(crate) payload: PinnedPayloadLeader,
+    pub(crate) scope_handle: [u8; 32],
+}
+
+impl RetainedRuntimePins {
+    pub(crate) fn recheck_kernel(&self) -> Result<()> {
+        self.payload.recheck_kernel(&self.supervisor)
+    }
 }
 
 impl<C, S, W> HostBroker<C, S, W>
@@ -79,7 +97,9 @@ where
             authority,
             nspawn,
             state,
-            leaders: BTreeMap::new(),
+            state_healthy: true,
+            observed_leaders: BTreeMap::new(),
+            runtime_pins: BTreeMap::new(),
         })
     }
 
@@ -106,6 +126,7 @@ where
         &self,
         snapshot: SandboxUnitDiscoverySnapshot,
     ) -> Result<HostRuntimeRecoveryReport> {
+        self.ensure_healthy()?;
         reconcile(self.state.runtime_recovery_inventory()?, snapshot)
     }
 
@@ -130,6 +151,7 @@ where
         policy: PeerPolicy,
         mut trusted_clock: impl FnMut() -> Result<RawPairedClockSample> + Send,
     ) -> Result<Vec<u8>> {
+        self.ensure_healthy()?;
         if !host_apply_carrier_version(protocol_version) {
             return Err(HostError::Authority(
                 aos_sandbox_broker::BrokerAdmissionError::RequestMismatch,
@@ -223,8 +245,7 @@ where
                 ));
             }
         }
-        self.store.commit(&proposed)?;
-        self.state = proposed.clone();
+        self.commit_state(&proposed)?;
 
         let effect = admitted.effect;
         let observation = {
@@ -242,7 +263,8 @@ where
                 .await?
         };
         let sequence = proposed.next_observation_sequence(*request.fence().incarnation_id())?;
-        let response = self.encode_observation(request.fence(), sequence, observation)?;
+        let identity = HostRuntimeIdentity::from(request.fence());
+        let response = encode_observation(&identity, sequence, &observation)?;
         let response_limit = usize::try_from(request.header().maximum_response_bytes())
             .map_err(|_| HostError::State("response limit does not fit usize".to_owned()))?;
         if response.len() > response_limit {
@@ -250,6 +272,7 @@ where
                 "runtime observation exceeds the admitted response bound".to_owned(),
             ));
         }
+        self.retain_runtime_observation(identity, observation)?;
         let completed = effect
             .complete(response.clone())
             .map_err(|_| HostError::Fence("completed host effect is invalid"))?;
@@ -260,8 +283,7 @@ where
             sealed_completed,
             response.clone(),
         )?;
-        self.store.commit(&proposed)?;
-        self.state = proposed;
+        self.commit_state(&proposed)?;
         Ok(response)
     }
 
@@ -277,6 +299,7 @@ where
         artifacts: &ValidatedUntrustedAuthorizationArtifacts,
         context: RuntimeEffectQueryContext<'_>,
     ) -> Result<Vec<u8>> {
+        self.ensure_healthy()?;
         let RuntimeEffectQueryContext {
             original_request_bytes,
             request_id: query_request_id,
@@ -379,7 +402,13 @@ where
     /// serialized as descriptor integers.
     #[must_use]
     pub fn leader(&self, handle: &[u8; 32]) -> Option<&PidFd> {
-        self.leaders.get(handle)
+        if !self.state_healthy {
+            return None;
+        }
+        self.observed_leaders
+            .values()
+            .find(|leader| leader.handle() == handle)
+            .map(PinnedLeader::pidfd)
     }
 
     pub(crate) async fn observe_runtime(
@@ -388,19 +417,19 @@ where
         supplied_handle: [u8; 32],
         maximum_response_bytes: u32,
     ) -> Result<Vec<u8>> {
+        self.ensure_healthy()?;
         if runtime_handle(&identity) != supplied_handle || !self.state.contains_runtime(&identity) {
             return Err(HostError::UnknownHandle);
         }
         let observation = self.worker.observe(&identity).await?;
         let mut proposed = self.state.clone();
         let sequence = proposed.next_observation_sequence(*identity.incarnation_id())?;
-        let (response, leader) = project_observation(&identity, sequence, observation);
+        let response = project_observation(&identity, sequence, &observation);
         let bytes = response.encode_to_vec();
         ensure_response_bound(&bytes, maximum_response_bytes)?;
 
-        self.store.commit(&proposed)?;
-        self.state = proposed;
-        self.retain_leader(leader);
+        self.commit_state(&proposed)?;
+        self.retain_runtime_observation(identity, observation)?;
         Ok(bytes)
     }
 
@@ -408,6 +437,7 @@ where
         &mut self,
         maximum_response_bytes: u32,
     ) -> Result<Vec<u8>> {
+        self.ensure_healthy()?;
         let identities = self.state.runtime_inventory();
         if identities.len() > MAXIMUM_INVENTORY_RUNTIMES {
             return Err(HostError::ResourceExhausted);
@@ -420,15 +450,13 @@ where
 
         let mut proposed = self.state.clone();
         let mut runtimes = Vec::with_capacity(identities.len());
-        let mut leaders = Vec::new();
+        let mut observations = Vec::new();
         for (_, identity) in identities {
             let observation = self.worker.observe(&identity).await?;
             let sequence = proposed.next_observation_sequence(*identity.incarnation_id())?;
-            let (runtime, leader) = project_observation(&identity, sequence, observation);
+            let runtime = project_observation(&identity, sequence, &observation);
             runtimes.push(runtime);
-            if let Some(leader) = leader {
-                leaders.push(leader);
-            }
+            observations.push((identity, observation));
         }
         let bytes = InventoryRuntimeResponse {
             runtimes,
@@ -437,10 +465,9 @@ where
         .encode_to_vec();
         ensure_response_bound(&bytes, maximum_response_bytes)?;
 
-        self.store.commit(&proposed)?;
-        self.state = proposed;
-        for leader in leaders {
-            self.retain_leader(Some(leader));
+        self.commit_state(&proposed)?;
+        for (identity, observation) in observations {
+            self.retain_runtime_observation(identity, observation)?;
         }
         Ok(bytes)
     }
@@ -475,29 +502,191 @@ where
         })
     }
 
-    fn encode_observation(
+    fn retain_runtime_observation(
         &mut self,
-        fence: &ValidatedAssignmentFence,
-        sequence: u64,
-        observation: WorkerObservation,
-    ) -> Result<Vec<u8>> {
-        let identity = HostRuntimeIdentity::from(fence);
-        let (response, leader) = project_observation(&identity, sequence, observation);
-        let bytes = response.encode_to_vec();
-        self.retain_leader(leader);
-        if bytes.is_empty() {
-            return Err(HostError::State(
-                "runtime observation encoded to an empty receipt".to_owned(),
-            ));
+        identity: HostRuntimeIdentity,
+        mut observation: WorkerObservation,
+    ) -> Result<()> {
+        self.runtime_pins.retain(|retained, _| {
+            retained.sandbox_id() != identity.sandbox_id() || retained == &identity
+        });
+        self.observed_leaders.retain(|retained, _| {
+            retained.sandbox_id() != identity.sandbox_id() || retained == &identity
+        });
+        if matches!(
+            observation.state,
+            ObservedRuntimeState::Absent
+                | ObservedRuntimeState::Stopping
+                | ObservedRuntimeState::Exited
+                | ObservedRuntimeState::Failed
+        ) {
+            self.runtime_pins.remove(&identity);
+            self.observed_leaders.remove(&identity);
+            return Ok(());
         }
-        Ok(bytes)
+        let supervisor = observation.leader.take();
+        if let Some(leader) = &supervisor {
+            self.observed_leaders.insert(identity, leader.try_clone()?);
+        } else {
+            self.observed_leaders.remove(&identity);
+        }
+        if let (Some(invocation_id), Some(supervisor), Some(payload)) = (
+            observation.invocation_id,
+            supervisor,
+            observation.payload.take(),
+        ) {
+            let scope_handle = self
+                .runtime_pins
+                .get(&identity)
+                .filter(|retained| {
+                    retained.invocation_id == invocation_id
+                        && retained.supervisor.handle() == supervisor.handle()
+                        && retained.payload.relative_cgroup_hint() == payload.relative_cgroup_hint()
+                        && retained.payload.has_same_cgroup(&payload)
+                        && retained
+                            .payload
+                            .pidfd()
+                            .info()
+                            .ok()
+                            .zip(payload.pidfd().info().ok())
+                            .is_some_and(|(retained, current)| retained == current)
+                })
+                .map(|retained| retained.scope_handle)
+                .map_or_else(|| self.mint_scope_handle(), Ok)?;
+            self.runtime_pins.insert(
+                identity,
+                RetainedRuntimePins {
+                    invocation_id,
+                    supervisor,
+                    payload,
+                    scope_handle,
+                },
+            );
+            return Ok(());
+        }
+        let remains_exact = self.runtime_pins.get(&identity).is_some_and(|retained| {
+            observation.invocation_id == Some(retained.invocation_id)
+                && self
+                    .observed_leaders
+                    .get(&identity)
+                    .is_some_and(|leader| leader.handle() == retained.supervisor.handle())
+        });
+        if !remains_exact {
+            self.runtime_pins.remove(&identity);
+        }
+        Ok(())
     }
 
-    fn retain_leader(&mut self, leader: Option<PinnedLeader>) {
-        if let Some(leader) = leader {
-            let (handle, pidfd) = leader.into_parts();
-            self.leaders.insert(handle, pidfd);
+    fn mint_scope_handle(&self) -> Result<[u8; 32]> {
+        for _ in 0..MAXIMUM_SCOPE_HANDLE_ATTEMPTS {
+            let mut handle = [0_u8; 32];
+            OsRng
+                .try_fill_bytes(&mut handle)
+                .map_err(|_| HostError::State("payload scope entropy unavailable".to_owned()))?;
+            if handle != [0; 32]
+                && self
+                    .runtime_pins
+                    .values()
+                    .all(|retained| retained.scope_handle != handle)
+            {
+                return Ok(handle);
+            }
         }
+        Err(HostError::ResourceExhausted)
+    }
+
+    pub(crate) async fn refresh_payload_scope(
+        &mut self,
+        identity: HostRuntimeIdentity,
+    ) -> Result<()> {
+        self.ensure_healthy()?;
+        if !self.state.contains_runtime(&identity) {
+            return Err(HostError::UnknownHandle);
+        }
+        let retained = self
+            .runtime_pins
+            .remove(&identity)
+            .ok_or(HostError::UnknownHandle)?;
+        let observation = self
+            .worker
+            .refresh_payload_scope(
+                &identity,
+                retained.invocation_id,
+                &retained.supervisor,
+                &retained.payload,
+            )
+            .await?;
+        let invocation_id = observation.invocation_id.ok_or_else(|| {
+            HostError::Worker("refreshed payload proof omitted its invocation".to_owned())
+        })?;
+        let supervisor = observation.leader.ok_or_else(|| {
+            HostError::Worker("refreshed payload proof omitted its supervisor".to_owned())
+        })?;
+        let payload = observation.payload.ok_or_else(|| {
+            HostError::Worker("refreshed payload proof omitted its payload".to_owned())
+        })?;
+        if !matches!(
+            observation.state,
+            ObservedRuntimeState::Ready | ObservedRuntimeState::Frozen
+        ) || invocation_id != retained.invocation_id
+            || supervisor.handle() != retained.supervisor.handle()
+            || !payload.has_same_cgroup(&retained.payload)
+            || payload.relative_cgroup_hint() != retained.payload.relative_cgroup_hint()
+            || payload
+                .pidfd()
+                .info()
+                .ok()
+                .zip(retained.payload.pidfd().info().ok())
+                .is_none_or(|(current, prior)| current != prior)
+        {
+            return Err(HostError::Worker(
+                "refreshed payload proof changed its retained identity".to_owned(),
+            ));
+        }
+        self.observed_leaders
+            .insert(identity, supervisor.try_clone()?);
+        self.runtime_pins.insert(
+            identity,
+            RetainedRuntimePins {
+                invocation_id,
+                supervisor,
+                payload,
+                scope_handle: retained.scope_handle,
+            },
+        );
+        Ok(())
+    }
+
+    pub(crate) fn payload_pin(
+        &self,
+        identity: &HostRuntimeIdentity,
+    ) -> Option<&RetainedRuntimePins> {
+        self.state_healthy
+            .then(|| {
+                self.state
+                    .contains_runtime(identity)
+                    .then(|| self.runtime_pins.get(identity))
+                    .flatten()
+            })
+            .flatten()
+    }
+
+    pub(crate) fn ensure_healthy(&self) -> Result<()> {
+        if self.state_healthy {
+            Ok(())
+        } else {
+            Err(HostError::State(
+                "host state is indeterminate after a failed commit".to_owned(),
+            ))
+        }
+    }
+
+    fn commit_state(&mut self, proposed: &HostState) -> Result<()> {
+        self.state_healthy = false;
+        self.store.commit(proposed)?;
+        self.state = proposed.clone();
+        self.state_healthy = true;
+        Ok(())
     }
 }
 
@@ -517,11 +706,25 @@ fn host_apply_carrier_version(version: ProtocolVersion) -> bool {
     version == ProtocolVersion::new(1, 1) || version == ProtocolVersion::new(1, 2)
 }
 
+fn encode_observation(
+    identity: &HostRuntimeIdentity,
+    sequence: u64,
+    observation: &WorkerObservation,
+) -> Result<Vec<u8>> {
+    let bytes = project_observation(identity, sequence, observation).encode_to_vec();
+    if bytes.is_empty() {
+        return Err(HostError::State(
+            "runtime observation encoded to an empty receipt".to_owned(),
+        ));
+    }
+    Ok(bytes)
+}
+
 fn project_observation(
     identity: &HostRuntimeIdentity,
     sequence: u64,
-    observation: WorkerObservation,
-) -> (RuntimeObservation, Option<PinnedLeader>) {
+    observation: &WorkerObservation,
+) -> RuntimeObservation {
     let mut response = RuntimeObservation {
         runtime_handle: runtime_handle(identity).to_vec(),
         fence: Some(AssignmentFence {
@@ -540,7 +743,7 @@ fn project_observation(
     if let Some(leader) = &observation.leader {
         response.leader_handle = leader.handle().to_vec();
     }
-    (response, observation.leader)
+    response
 }
 
 fn ensure_response_bound(bytes: &[u8], maximum_response_bytes: u32) -> Result<()> {
@@ -632,6 +835,9 @@ mod tests {
     #[cfg(feature = "kernel-tests")]
     mod service_peer;
 
+    #[path = "../../authorization/payload_scope_tests.rs"]
+    mod payload_scope_tests;
+
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
@@ -653,6 +859,7 @@ mod tests {
         RawClockProvenance, RevocationScopeId, SandboxId, TrustScopeId, descriptor_for_bytes,
         sign_statement,
     };
+    use aos_sandbox_protocol::ValidatedAssignmentFence;
     use aos_sandbox_protocol::session::decode_request_envelope;
     use async_trait::async_trait;
     use ed25519_dalek::SigningKey;
@@ -673,6 +880,18 @@ mod tests {
         fn commit(&self, state: &HostState) -> Result<()> {
             *self.0.lock().unwrap() = state.clone();
             Ok(())
+        }
+    }
+
+    struct FailingStore;
+
+    impl HostStateStore for FailingStore {
+        fn load(&self) -> Result<HostState> {
+            Ok(HostState::default())
+        }
+
+        fn commit(&self, _state: &HostState) -> Result<()> {
+            Err(HostError::State("injected ambiguous commit".to_owned()))
         }
     }
 
@@ -801,6 +1020,7 @@ mod tests {
                 state,
                 invocation_id: Some([9; 16]),
                 leader: None,
+                payload: None,
             })
         }
 
@@ -817,7 +1037,20 @@ mod tests {
                 state: ObservedRuntimeState::Ready,
                 invocation_id: Some([9; 16]),
                 leader: None,
+                payload: None,
             })
+        }
+
+        async fn refresh_payload_scope(
+            &self,
+            _identity: &HostRuntimeIdentity,
+            _invocation_id: [u8; 16],
+            _supervisor: &PinnedLeader,
+            _payload: &PinnedPayloadLeader,
+        ) -> Result<WorkerObservation> {
+            Err(HostError::Worker(
+                "fake worker has no retained payload proof".to_owned(),
+            ))
         }
     }
 
@@ -1332,6 +1565,28 @@ mod tests {
             units,
             conflicts: Vec::new(),
         }
+    }
+
+    #[test]
+    fn failed_commit_latches_all_state_authority_unhealthy() {
+        let fixture = AuthorityFixture::new();
+        let mut broker = HostBroker::open(
+            FixedCatalog,
+            FailingStore,
+            FakeWorker::default(),
+            Some(nspawn()),
+            fixture.authority(),
+        )
+        .unwrap();
+
+        assert!(broker.commit_state(&HostState::default()).is_err());
+        assert!(broker.ensure_healthy().is_err());
+        assert!(
+            broker
+                .payload_pin(&HostRuntimeIdentity::new([1; 16], [2; 16], 1, 1, [3; 32]))
+                .is_none()
+        );
+        assert!(broker.leader(&[4; 32]).is_none());
     }
 
     #[tokio::test]

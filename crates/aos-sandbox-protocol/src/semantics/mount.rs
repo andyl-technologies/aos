@@ -318,5 +318,7 @@ const fn descriptor_role_code(role: BrokerDescriptorRole) -> u16 {
         BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_RUNTIME_LEADER => 5,
         BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_PAYLOAD_USER_NAMESPACE => 6,
         BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_TARGET_SLOT => 7,
+        BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_PAYLOAD_LEADER_PIDFD => 8,
+        BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_PAYLOAD_CGROUP => 9,
     }
 }

@@ -25,6 +25,8 @@ use crate::uapi::{self, RawAncillary};
 mod listener;
 pub use listener::RecordSubjectListener;
 
+pub mod descriptor_subject;
+
 #[cfg(test)]
 mod process_tests;
 

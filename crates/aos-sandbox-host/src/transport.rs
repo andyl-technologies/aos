@@ -8,9 +8,9 @@
 //! A delegated connection retains its establisher identity; this carrier does
 //! not authenticate individual packet writers.
 
-use std::io::IoSliceMut;
+use std::io::{IoSlice, IoSliceMut};
 use std::mem::MaybeUninit;
-use std::os::fd::{AsFd, OwnedFd};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::time::Duration;
 
 use aos_sandbox_linux::seqpacket::ConnectionPeerIdentity;
@@ -19,8 +19,8 @@ use aos_sandbox_protocol::{MAXIMUM_RESPONSE_BYTES, PeerCredentials};
 use rustix::io::{FdFlags, fcntl_getfd, fcntl_setfd};
 use rustix::net::sockopt::{Timeout, set_socket_timeout, socket_acceptconn, socket_type};
 use rustix::net::{
-    RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, ReturnFlags, SendFlags, SocketFlags,
-    SocketType, accept_with, recvmsg, send,
+    RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, ReturnFlags, SendAncillaryBuffer,
+    SendAncillaryMessage, SendFlags, SocketFlags, SocketType, accept_with, recvmsg, send, sendmsg,
 };
 
 use crate::{HostError, Result};
@@ -180,6 +180,40 @@ impl HostConnection {
         }
         Ok(())
     }
+
+    /// Sends the closed payload-scope descriptor pair in one atomic packet.
+    ///
+    /// The service must check signed query authority and fresh scope immediately
+    /// before calling this method. These descriptors retain kernel objects; they
+    /// are not kernel-attenuated read-only capabilities. The receiver authenticates
+    /// the kernel record subject separately from the activated listener's creator.
+    /// A full send queue fails immediately: waiting or retrying here would reuse
+    /// authority observations taken before the wait.
+    pub(crate) fn send_payload_scope(
+        &self,
+        bytes: &[u8],
+        descriptors: [BorrowedFd<'_>; 2],
+    ) -> Result<()> {
+        if bytes.is_empty() || bytes.len() > MAXIMUM_RESPONSE_BYTES as usize {
+            return Err(protocol_field("invalid payload-scope response length"));
+        }
+        let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(2))];
+        let mut control = SendAncillaryBuffer::new(&mut space);
+        if !control.push(SendAncillaryMessage::ScmRights(&descriptors)) {
+            return Err(protocol_field("payload-scope ancillary capacity"));
+        }
+        let written = sendmsg(
+            &self.fd,
+            &[IoSlice::new(bytes)],
+            &mut control,
+            SendFlags::NOSIGNAL | SendFlags::DONTWAIT,
+        )
+        .map_err(transport_error)?;
+        if written != bytes.len() {
+            return Err(protocol_field("partial payload-scope response"));
+        }
+        Ok(())
+    }
 }
 
 fn protocol_field(field: &'static str) -> HostError {
@@ -281,6 +315,68 @@ mod tests {
         send(&client, b"too long", SendFlags::empty()).unwrap();
         let connection = listener.accept().unwrap();
         assert!(connection.receive(3).is_err());
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "Elapsed host time detects a blocking test send, never enters runtime state."
+    )]
+    fn saturated_payload_scope_send_fails_without_waiting_or_queuing_descriptors() {
+        let directory = tempfile::tempdir().unwrap();
+        let (listener, client) = listener(&directory.path().join("full-send.sock"));
+        let connection = listener.accept().unwrap();
+        rustix::net::sockopt::set_socket_send_buffer_size(&connection.fd, 4096).unwrap();
+
+        // Fill with minimum-size records so the descriptor response cannot fit
+        // merely because it is smaller than the record that reached EAGAIN.
+        let mut queued = 0;
+        for _ in 0..4096 {
+            match send(
+                &connection.fd,
+                b"q",
+                SendFlags::NOSIGNAL | SendFlags::DONTWAIT,
+            ) {
+                Ok(1) => queued += 1,
+                Err(rustix::io::Errno::AGAIN) => break,
+                outcome => panic!("unexpected queue-fill result: {outcome:?}"),
+            }
+        }
+        assert!((1..4096).contains(&queued), "send queue was not saturated");
+        let started = std::time::Instant::now();
+        let result = connection.send_payload_scope(b"scope", [client.as_fd(), listener.as_fd()]);
+        assert!(result.is_err());
+        // The accepted socket retains its five-second blocking send timeout.
+        // This method must instead use per-call DONTWAIT, without changing the
+        // descriptor's shared status flags or retrying after authority expires.
+        assert!(started.elapsed() < CONNECTION_IO_TIMEOUT - Duration::from_secs(1));
+
+        for _ in 0..queued {
+            let mut bytes = [0; 16];
+            let mut iov = [IoSliceMut::new(&mut bytes)];
+            let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(2))];
+            let mut control = RecvAncillaryBuffer::new(&mut space);
+            let message = recvmsg(
+                &client,
+                &mut iov,
+                &mut control,
+                RecvFlags::DONTWAIT | RecvFlags::CMSG_CLOEXEC,
+            )
+            .unwrap();
+            assert_eq!(message.bytes, 1);
+            assert!(
+                !message
+                    .flags
+                    .intersects(ReturnFlags::TRUNC | ReturnFlags::CTRUNC)
+            );
+            assert!(control.drain().next().is_none());
+            assert_eq!(bytes[0], b'q');
+        }
+        let mut remaining = [0; 16];
+        assert_eq!(
+            rustix::net::recv(&client, &mut remaining, RecvFlags::DONTWAIT),
+            Err(rustix::io::Errno::AGAIN)
+        );
     }
 
     #[test]

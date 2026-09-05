@@ -30,6 +30,8 @@ pub mod publisher_policy;
 #[cfg(target_os = "linux")]
 pub mod publisher_sessions;
 pub mod reconciler;
+#[cfg(target_os = "linux")]
+pub mod runtime_scope;
 
 pub use authority::{
     AuthorizationArtifactQuartet, AuthorizationArtifacts, AuthorizationPreparation,

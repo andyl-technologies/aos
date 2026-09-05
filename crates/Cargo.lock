@@ -839,6 +839,7 @@ dependencies = [
  "async-trait",
  "buffa",
  "ed25519-dalek",
+ "rand 0.9.4",
  "rustix 1.1.4",
  "serde",
  "serde_json",

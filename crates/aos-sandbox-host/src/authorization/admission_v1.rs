@@ -108,6 +108,56 @@ impl HostAuthorityV1 {
         self.0.open_effect(request_id, bytes)
     }
 
+    /// Checks the exact signed payload-scope query against live ownership.
+    ///
+    /// The carrier's new method does not change the signed authority profile.
+    /// The current assignment plan must already contain this query's distinct
+    /// argument commitment; an ordinary runtime-observe grant is insufficient.
+    pub(crate) fn admit_payload_scope(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        request: &aos_sandbox_protocol::payload_scope::ValidatedPayloadScopeRequest,
+        request_body: &[u8],
+        current_clock: &RawPairedClockSample,
+        prior_fence: &[u8],
+    ) -> Result<VerifiedHostAdmissionV1, HostAdmissionError> {
+        let semantics =
+            aos_sandbox_protocol::semantics::payload_scope::canonical_payload_scope_semantics_v1(
+                request,
+            )
+            .map_err(|_| HostAdmissionError::RequestMismatch)?;
+        let fence = request.fence();
+        let assignment = BrokerAssignment::new(
+            SandboxId::from_bytes(*fence.sandbox_id()),
+            IncarnationId::from_bytes(*fence.incarnation_id()),
+            AssignmentEpoch::new(fence.assignment_epoch()),
+            DesiredGeneration::new(fence.desired_generation()),
+            ObjectDigest::from_bytes(*fence.assignment_digest()),
+        )
+        .map_err(|_| HostAdmissionError::RequestMismatch)?;
+
+        self.0.admit(
+            artifacts,
+            AdmissionRequest {
+                audience: BrokerAudience::Host,
+                protocol: ProtocolId::HostBroker,
+                protocol_version: ProtocolVersion::new(1, 1),
+                assignment,
+                request_id: *request.header().request_id(),
+                request_body,
+                descriptor_count: 0,
+                verb: semantics.verb(),
+                target: semantics.target(),
+                argument_commitment: semantics.commitment(),
+                request_deadline_boottime_nanoseconds: request
+                    .header()
+                    .deadline_boottime_nanoseconds(),
+            },
+            current_clock,
+            Some(prior_fence),
+        )
+    }
+
     pub(crate) fn open_fence(
         &self,
         sandbox_id: &[u8; 16],
