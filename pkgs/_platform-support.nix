@@ -30,6 +30,7 @@ let
     "hwdata"
     "nvidia-gsp-firmware"
     "darwin-sdk"
+    "publicsuffix-list"
     "secure-boot-test-keys"
     "server-initrd-firmware"
     "tzdata"
@@ -112,6 +113,7 @@ let
   # to execute during their build.
   targetWave2 = [
     "acpica"
+    "boringssl"
     "cups"
     "curl"
     "cyrus-sasl"
@@ -148,6 +150,7 @@ let
     "libisofs"
     "libksba"
     "libpcap"
+    "libpsl"
     "libqcow"
     "libslirp"
     "libsodium"
@@ -165,6 +168,8 @@ let
     "mtools"
     "nettle"
     "nghttp2"
+    "nghttp3"
+    "ngtcp2"
     "nginx"
     "npth"
     "openldap"
