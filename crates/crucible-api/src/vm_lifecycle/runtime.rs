@@ -912,6 +912,54 @@ impl ProductionVmLifecycleLoop {
         Ok(evidence.scheduler_frontier(graph_fallback))
     }
 
+    /// Fires authored entrypoints before any record leaves the genesis prefix.
+    pub(super) fn settle_genesis_entrypoints(
+        &mut self,
+    ) -> Result<Option<SchedulerEventLogAppend>, SchedulerError> {
+        if !self.initial_lifecycle_observations_pending {
+            return Ok(None);
+        }
+        // Initial node-state and fault observations turn the prefix into an
+        // event boundary. Entrypoints must run first; conditional events still
+        // wait for the ordinary pass over those initial observations.
+        let entrypoints = EventGraph::new_for_world(
+            self.trigger_graph
+                .events()
+                .iter()
+                .filter(|event| event.trigger.is_none())
+                .cloned()
+                .collect(),
+            &self.trigger_world,
+        )
+        .map_err(|error| SchedulerError::BoundaryViolation {
+            message: format!("isolate initial trigger entrypoints: {error}"),
+        })?;
+        if entrypoints.events().is_empty() {
+            return Ok(None);
+        }
+        let scheduler = self.inner.loop_impl();
+        let prefix = scheduler.condition_event_log_prefix().clone();
+        if prefix.point().kind() != crucible::EventEvaluationKind::Genesis {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("initial trigger entrypoints lost their genesis boundary"),
+            });
+        }
+        let mut pass = ConditionEvaluationPass::from_log_prefix(prefix, no_named_trigger_leaf)
+            .with_timer_fires(scheduler.trigger_actions().armed_timers.clone())
+            .with_scheduler_quiescence(scheduler.quiescence()?)
+            .with_world_white_box_policies(&self.trigger_world);
+        let firings = pass.evaluate_event_graph(&entrypoints, &mut self.trigger_state);
+        if firings.is_empty() {
+            return Ok(None);
+        }
+        merge_terminal_verdict(&mut self.terminal_verdict, &firings);
+        let append = self.inner.loop_impl_mut().apply_trigger_firings(&firings)?;
+        self.inner
+            .loop_impl_mut()
+            .apply_queued_topology_changes_at_boundary()?;
+        Ok(Some(append))
+    }
+
     pub(super) fn settle_trigger_graph(
         &mut self,
     ) -> Result<Vec<SchedulerEventLogAppend>, SchedulerError> {
