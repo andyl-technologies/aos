@@ -394,6 +394,7 @@ content_object_id!(
 content_object_id!(
     CampaignBudgetLedgerId,
     ObjectKind::CampaignFact,
+    [1, 2],
     "crucible.campaign.budget-ledger",
     "Identifies one exact aggregate campaign budget ledger."
 );
@@ -646,6 +647,7 @@ content_object_id!(
 content_object_id!(
     PlannerCandidateBudgetId,
     ObjectKind::Projection,
+    [1, 2],
     "crucible.campaign.planner-candidate-budget",
     "Identifies one snapshot-bound candidate budget eligibility projection."
 );

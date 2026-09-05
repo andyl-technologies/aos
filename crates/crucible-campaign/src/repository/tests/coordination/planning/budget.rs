@@ -405,8 +405,8 @@ fn candidate_budget_forgery_is_rejected_before_publication() {
     );
     for malformed in [
         [bytes.as_slice(), &[0]].concat(),
-        [&2_u32.to_be_bytes()[..], &bytes[4..]].concat(),
-        [&bytes[..bytes.len() - 1], &[2]].concat(),
+        [&3_u32.to_be_bytes()[..], &bytes[4..]].concat(),
+        [&bytes[..bytes.len() - 9], &[2], &bytes[bytes.len() - 8..]].concat(),
     ] {
         assert!(crate::PlannerCandidateBudget::from_canonical_bytes(&malformed).is_err());
     }
@@ -425,18 +425,17 @@ fn candidate_budget_forgery_is_rejected_before_publication() {
         crate::PlannerCandidateBudget::new(offer, original.remaining_proposals(), 0, false)
             .expect("forged dedup"),
     ] {
+        let forged = forged.with_request_attempts(
+            original
+                .remaining_request_attempts()
+                .expect("request allowance"),
+        );
         let objects = request
             .input_bundle()
             .object_ids()
             .map(|id| {
                 if id == original.id().expect("budget id").content_id() {
-                    ObjectEnvelope::for_record(
-                        crate::CampaignRecordKind::PlannerCandidateBudget,
-                        crate::object::content_children(forged.content_children())
-                            .expect("children"),
-                        forged.canonical_bytes(),
-                    )
-                    .expect("forged envelope")
+                    ObjectEnvelope::for_candidate_budget(&forged).expect("forged envelope")
                 } else {
                     request
                         .input_bundle()
@@ -692,5 +691,93 @@ fn legacy_builtin_descriptors_keep_their_original_unfiltered_semantics() {
         )
         .validate_complete_head(result.new_snapshot.content_id())
         .expect("cold legacy replay");
+    }
+}
+
+#[test]
+fn aggregate_only_builtin_descriptors_replay_version_one_budget_records() {
+    for puct in [false, true] {
+        let mut fixture = mixed_budget_fixture(puct);
+        let mut capabilities = BTreeSet::from([
+            crate::CANONICAL_FRONTIER_OFFERS_CAPABILITY.to_owned(),
+            crate::CANONICAL_FRONTIER_BUDGET_CAPABILITY.to_owned(),
+        ]);
+        if puct {
+            capabilities.insert(crate::CANONICAL_FRONTIER_PUCT_CAPABILITY.to_owned());
+        }
+        fixture.engine = PlannerEngine::new(
+            "crucible-canonical-frontier",
+            if puct { 4 } else { 3 },
+            1,
+            capabilities,
+        )
+        .expect("aggregate-only engine");
+        fixture.state = if puct {
+            crate::CanonicalPuctPlanner::initial_state_for_engine(&fixture.engine).expect("state")
+        } else {
+            CanonicalFrontierPlanner::initial_state_for_engine(&fixture.engine).expect("state")
+        };
+        fixture.artifact = PolicyArtifact::new(
+            fixture.engine.id().expect("engine id"),
+            1,
+            fixture.artifact.dependency_lock(),
+            BTreeSet::new(),
+            BTreeMap::new(),
+        )
+        .expect("artifact");
+        let request = request_for(&fixture, &fixture.state, None, 8);
+        for input in request
+            .input_bundle()
+            .candidate_inputs(&request)
+            .expect("inputs")
+            .into_values()
+        {
+            let Some(budget) = input.budget else {
+                continue;
+            };
+            assert_eq!(budget.remaining_request_attempts(), None);
+            assert_eq!(
+                budget
+                    .id()
+                    .expect("budget id")
+                    .content_id()
+                    .schema_version(),
+                1
+            );
+            let envelope = ObjectEnvelope::for_candidate_budget(&budget).expect("legacy envelope");
+            assert_eq!(
+                ObjectEnvelope::from_canonical_bytes(&envelope.canonical_bytes())
+                    .expect("legacy envelope round trip"),
+                envelope
+            );
+            assert_eq!(
+                crate::PlannerCandidateBudget::from_canonical_bytes(&budget.canonical_bytes())
+                    .expect("legacy body round trip"),
+                budget
+            );
+        }
+        let output = plan(&request, puct);
+        let expected = PlanningScanPosition::new(
+            fixture.convergent.branch_point(),
+            fixture.convergent.id().expect("request id"),
+        );
+        assert!(
+            matches!(output.proposal().disposition(), PlannerProposalDisposition::Issue { selected, .. } if *selected == expected)
+        );
+        let result = fixture
+            .repository
+            .accept_planner_step(
+                CAMPAIGN,
+                request.expected_snapshot(),
+                output.proposal(),
+                output.proposal().usage_claim(),
+            )
+            .expect("accept aggregate-only step");
+        CampaignRepository::new(
+            fixture.repository.blobs.clone(),
+            fixture.repository.refs.clone(),
+        )
+        .validate_complete_head(result.new_snapshot.content_id())
+        .expect("cold aggregate-only replay");
     }
 }

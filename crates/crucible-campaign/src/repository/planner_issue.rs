@@ -74,6 +74,7 @@ impl CampaignRepository {
         snapshot: &LoadedSnapshot,
         offer: &Proposal,
         ledger: crate::CampaignBudgetLedger,
+        request_budget_work: Option<&mut usize>,
     ) -> Result<crate::PlannerCandidateBudget, CampaignRepositoryError> {
         let request = self.read_branch_request(offer.request().content_id())?;
         let opportunity = self.read_opportunity(request.opportunity().content_id())?;
@@ -118,12 +119,24 @@ impl CampaignRepository {
             }
             _ => return Err(integrity("planner-budget-attempt-index-mismatch")),
         };
-        Ok(crate::PlannerCandidateBudget::new(
+        let budget = crate::PlannerCandidateBudget::new(
             offer,
             ledger.remaining_proposals(),
             ledger.remaining_attempts(),
             new_attempt,
-        )?)
+        )?;
+        if let Some(work) = request_budget_work {
+            let remaining = self.remaining_request_attempts_before(
+                snapshot,
+                offer.request(),
+                offer.ordinal(),
+                request.budget().maximum_attempts(),
+                work,
+            )?;
+            Ok(budget.with_request_attempts(remaining))
+        } else {
+            Ok(budget)
+        }
     }
 
     pub(super) fn preflight_planner_issue(
@@ -266,6 +279,7 @@ impl CampaignRepository {
         let mut generator_validation = IssueGeneratorValidation::new();
         let mut branch_request_ids = Vec::with_capacity(branch_requests.len());
         let mut indexed_requests = Vec::new();
+        let mut scan_requests = Vec::new();
         for request in branch_requests {
             self.validate_planner_issue_request(
                 snapshot,
@@ -310,6 +324,13 @@ impl CampaignRepository {
                 indexed_requests.push((request_id, request.branch_point()));
             }
             branch_request_ids.push(request_id);
+            scan_requests.push((request_id, request.branch_point()));
+        }
+        if !scan_requests.is_empty()
+            && let Some(index) =
+                self.planner_scan_index_after(prior_exploration, &scan_requests, mode.publishes())?
+        {
+            exploration_upserts.insert(planner_scan_index_anchor_key(), index);
         }
         if !indexed_requests.is_empty()
             && let Some(next_index) = self.branch_request_index_after(
@@ -372,7 +393,7 @@ impl CampaignRepository {
         let mut request_attempts = if proposals.is_empty() {
             0
         } else {
-            self.count_request_execution_bases(prior_accounting, selected.source())?
+            self.request_execution_bases_at(snapshot, selected.source())?
         };
         let mut next_ordinal = if proposals.is_empty() {
             None

@@ -218,7 +218,7 @@ impl CampaignRecordKind {
             Self::BranchPath => 2,
             Self::MeasurementSet => 2,
             Self::ReproductionArtifact | Self::Finding => 2,
-            Self::PlannerCandidateGuidance => 2,
+            Self::PlannerCandidateGuidance | Self::PlannerCandidateBudget | Self::BudgetLedger => 2,
             _ => RECORD_SCHEMA_VERSION,
         }
     }
@@ -380,7 +380,7 @@ pub struct ObjectEnvelope {
 }
 
 impl ObjectEnvelope {
-    /// Builds the fixed-width aggregate-budget envelope without hidden children.
+    /// Builds a budget envelope with the exact versioned request-spending child.
     ///
     /// # Errors
     ///
@@ -388,9 +388,10 @@ impl ObjectEnvelope {
     pub fn for_budget_ledger(
         value: &crate::CampaignBudgetLedger,
     ) -> Result<Self, CampaignCodecError> {
-        Self::new(
+        Self::new_versioned(
             CampaignRecordKind::BudgetLedger,
-            BTreeSet::new(),
+            value.schema_version(),
+            content_children(value.content_children())?,
             value.canonical_bytes(),
         )
     }
@@ -431,6 +432,22 @@ impl ObjectEnvelope {
             CampaignRecordKind::Snapshot,
             value.schema_version(),
             snapshot_children(value)?,
+            value.canonical_bytes(),
+        )
+    }
+
+    /// Builds a candidate-budget envelope while preserving its schema version.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] if a generated role or envelope is invalid.
+    pub fn for_candidate_budget(
+        value: &crate::PlannerCandidateBudget,
+    ) -> Result<Self, CampaignCodecError> {
+        Self::new_versioned(
+            CampaignRecordKind::PlannerCandidateBudget,
+            value.schema_version(),
+            content_children(value.content_children())?,
             value.canonical_bytes(),
         )
     }
@@ -635,6 +652,8 @@ impl ObjectEnvelope {
                     | CampaignRecordKind::ReproductionArtifact
                     | CampaignRecordKind::Finding
                     | CampaignRecordKind::PlannerCandidateGuidance
+                    | CampaignRecordKind::PlannerCandidateBudget
+                    | CampaignRecordKind::BudgetLedger
             ) && envelope.schema_version() == 1;
         if !version_supported {
             return Err(CampaignCodecError::InvalidValue {
@@ -690,8 +709,8 @@ fn expected_children(
 ) -> Result<BTreeSet<ContentChild>, CampaignCodecError> {
     match kind {
         CampaignRecordKind::BudgetLedger => {
-            crate::CampaignBudgetLedger::from_canonical_bytes(body)?;
-            Ok(BTreeSet::new())
+            let ledger = crate::CampaignBudgetLedger::from_canonical_bytes(body)?;
+            content_children(ledger.content_children())
         }
         CampaignRecordKind::Lineage => {
             let value = CampaignLineage::from_canonical_bytes(body)?;

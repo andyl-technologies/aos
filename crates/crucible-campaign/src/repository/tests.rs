@@ -159,6 +159,28 @@ impl MutableRefBackend for ConflictAfterCreateRefBackend {
     }
 }
 
+/// Reconstructs the historical empty exploration root for fixed identity vectors.
+fn legacy_genesis_roots(
+    repository: &CampaignRepository,
+    mut roots: crate::CampaignRoots,
+) -> crate::CampaignRoots {
+    let empty = repository.merkle.empty().expect("empty").content_id();
+    let frontier = repository
+        .merkle
+        .insert(empty, frontier_index_anchor_key(), empty)
+        .expect("legacy frontier");
+    roots.exploration = repository
+        .merkle
+        .insert(
+            frontier.content_id(),
+            branch_request_index_anchor_key(),
+            empty,
+        )
+        .expect("legacy requests")
+        .content_id();
+    roots
+}
+
 fn fixture() -> (CampaignRepository, CampaignLineage, CampaignPolicy) {
     let (repository, lineage, policy, _) = counted_fixture();
     (repository, lineage, policy)
@@ -809,4 +831,6 @@ mod budget_enforcement;
 mod coordination;
 mod discovery;
 mod execution;
+mod planner_scan_index;
+mod request_budget_scale;
 mod validation;

@@ -878,9 +878,13 @@ mod objective;
 mod observation;
 mod planner_driver;
 mod planner_issue;
+mod planner_scan_index;
 mod projection;
 mod queue;
 mod records;
+mod request_budget;
+
+use planner_scan_index::planner_scan_index_anchor_key;
 mod retention;
 mod supervisor;
 mod transactions;
