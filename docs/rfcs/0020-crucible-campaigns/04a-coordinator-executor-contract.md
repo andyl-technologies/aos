@@ -239,7 +239,7 @@ ListCampaignsResponseV1 = version | request_digest |
 
 GetCampaignSnapshotRequestV1 = version | principal | campaign | snapshot
 GetCampaignSnapshotResponseV1 = version | request_digest | snapshot |
-                                CampaignSnapshotV2
+                                CampaignSnapshotV2OrV3
 
 WatchCampaignRequestV1 = version | principal | campaign |
                          optional after_snapshot
@@ -252,21 +252,21 @@ MerkleScanProofV1 = node_count:u64 |
 QueryCampaignGraphRequestV1 = version | principal | campaign | snapshot |
                               optional after_key | limit
 QueryCampaignGraphResponseV1 = version | request_digest | snapshot |
-                               CampaignSnapshotV2 |
+                               CampaignSnapshotV2OrV3 |
                                entries[CampaignGraphEntryV1] |
                                optional next_after | MerkleScanProofV1
 
 QueryCampaignFindingsRequestV1 = version | principal | campaign | snapshot |
                                  optional after_signature_key | limit
 QueryCampaignFindingsResponseV1 = version | request_digest |
-                                  CampaignSnapshotV2 |
+                                  CampaignSnapshotV2OrV3 |
                                   findings[FindingV1] |
                                   optional next_after_signature_key |
                                   MerkleScanProofV1
 GetCampaignFindingObjectRequestV1 = version | principal | campaign | snapshot |
                                     finding_id | object_kind
 GetCampaignFindingObjectResponseV1 = version | request_digest |
-                                     CampaignSnapshotV2 | FindingV1 |
+                                     CampaignSnapshotV2OrV3 | FindingV1 |
                                      FindingObjectV1 | MerkleLookupProofV1
 FindingObjectV1 = 0 ObservationV1 |
                   1 latest ObservationV1 |
@@ -276,7 +276,7 @@ FindingObjectV1 = 0 ObservationV1 |
 ExplainCampaignAttemptRequestV1 = version | principal | campaign | snapshot |
                                   AttemptId
 ExplainCampaignAttemptResponseV2 = version | request_digest |
-                                   CampaignSnapshotV2 | AttemptV1 |
+                                   CampaignSnapshotV2OrV3 | AttemptV1 |
                                    AttemptAdmissionV1 | BranchPathV2 |
                                    optional SelectionV2 | optional ProposalV1 |
                                    optional PlannerStepV4 |
@@ -290,7 +290,7 @@ ExplainCampaignAttemptResponseV2 = version | request_digest |
 GetCampaignPlannerRankingsRequestV1 = version | principal | campaign |
                                       snapshot | PlannerStepId
 GetCampaignPlannerRankingsResponseV1 = version | request_digest |
-                                       CampaignSnapshotV2 | PlannerStepV4 |
+                                       CampaignSnapshotV2OrV3 | PlannerStepV4 |
                                        RetainedPlannerRequestV1 |
                                        MerkleLookupProofV1
 
@@ -310,7 +310,7 @@ MerkleLookupProofV1 = node_count:u64 |
 GetCampaignGraphObjectRequestV1 = version | principal | campaign | snapshot |
                                   graph_key
 GetCampaignGraphObjectResponseV1 = version | request_digest |
-                                   CampaignSnapshotV2 |
+                                   CampaignSnapshotV2OrV3 |
                                    canonical ObjectEnvelopeV1 bytes |
                                    MerkleLookupProofV1
 
@@ -318,7 +318,7 @@ CampaignChoiceEntryV1 = ChoiceOpportunityId
 QueryCampaignChoicesRequestV1 = version | principal | campaign | snapshot |
                                 optional after_opportunity | limit
 QueryCampaignChoicesResponseV1 = version | request_digest |
-                                 CampaignSnapshotV2 |
+                                 CampaignSnapshotV2OrV3 |
                                  entries[CampaignChoiceEntryV1] |
                                  optional next_after |
                                  MerkleLookupProofV1 |
@@ -333,7 +333,7 @@ ContinuationProjectionV1 = version | BranchRequestId | BranchPointId |
 QueryCampaignFrontierRequestV1 = version | principal | campaign | snapshot |
                                  optional after_request | limit
 QueryCampaignFrontierResponseV1 = version | request_digest |
-                                  CampaignSnapshotV2 |
+                                  CampaignSnapshotV2OrV3 |
                                   projections[ContinuationProjectionV1] |
                                   optional next_after |
                                   MerkleLookupProofV1 |
@@ -341,7 +341,7 @@ QueryCampaignFrontierResponseV1 = version | request_digest |
 GetCampaignFrontierObjectRequestV1 = version | principal | campaign |
                                      snapshot | BranchRequestId
 GetCampaignFrontierObjectResponseV1 = version | request_digest |
-                                      CampaignSnapshotV2 |
+                                      CampaignSnapshotV2OrV3 |
                                       ContinuationProjectionV1 |
                                      BranchRequestV1-or-V2 |
                                       MerkleLookupProofV1 |
@@ -352,7 +352,7 @@ CampaignChoiceObjectV1 = kind | SelectableDeclarationV1-or-ChoiceDomainV1
 GetCampaignChoiceObjectRequestV1 = version | principal | campaign | snapshot |
                                    opportunity | CampaignChoiceObjectKindV1
 GetCampaignChoiceObjectResponseV1 = version | request_digest |
-                                    CampaignSnapshotV2 | ChoiceOpportunityV1 |
+                                    CampaignSnapshotV2OrV3 | ChoiceOpportunityV1 |
                                     CampaignChoiceObjectV1 |
                                     MerkleLookupProofV1
 

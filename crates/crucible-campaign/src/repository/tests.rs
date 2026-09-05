@@ -28,6 +28,28 @@ use crate::{
 
 struct AllowCampaignQueries;
 
+impl CampaignRepository {
+    /// Creates an explicitly funded fixture for tests that issue semantic work.
+    fn create_funded(
+        &self,
+        name: &str,
+        lineage: &CampaignLineage,
+        policy: &CampaignPolicy,
+        generators: &BTreeMap<CandidateGeneratorSpecId, CandidateGeneratorSpec>,
+    ) -> Result<CampaignHead, CampaignRepositoryError> {
+        let head = self.create(name, lineage, policy, generators)?;
+        self.apply_control(
+            name,
+            &command(
+                "fixture-initial-budget",
+                head.snapshot_id(),
+                CampaignControlAction::GrantBudget(BudgetGrant::new(1_000_000, 1_000_000)?),
+            ),
+        )?;
+        self.head(name)
+    }
+}
+
 impl CampaignPrincipalAuthorizer for AllowCampaignQueries {
     fn authorize(
         &self,
@@ -557,7 +579,7 @@ fn admitted_observation_fixture(
     name: &str,
 ) -> (CampaignSnapshotId, AttemptAdmissionResult, Observation) {
     let genesis = repository
-        .create(name, lineage, policy, &BTreeMap::new())
+        .create_funded(name, lineage, policy, &BTreeMap::new())
         .expect("create observation campaign");
     let request = branch_request(
         repository,
@@ -783,6 +805,7 @@ fn test_planner_request_digest(invocation: PlannerInvocationId) -> CampaignHash 
 }
 
 mod budget;
+mod budget_enforcement;
 mod coordination;
 mod discovery;
 mod execution;

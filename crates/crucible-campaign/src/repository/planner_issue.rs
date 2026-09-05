@@ -76,14 +76,18 @@ impl CampaignRepository {
         branch_requests: &[BranchRequest],
         proposals: &[Proposal],
     ) -> Result<PlannerIssueProjection, CampaignRepositoryError> {
-        self.project_planner_issue(
+        let projected = self.project_planner_issue(
             snapshot,
             invocation,
             selected,
             branch_requests,
             proposals,
             IssueProjectionMode::Preflight,
-        )
+        )?;
+        let proposals = u64::try_from(proposals.len())
+            .map_err(|_| integrity("campaign-budget-proposal-count-overflow"))?;
+        self.ensure_budget_available(snapshot, proposals, projected.attempts)?;
+        Ok(projected)
     }
 
     pub(super) fn publish_planner_issue(

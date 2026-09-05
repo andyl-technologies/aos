@@ -359,20 +359,27 @@ These flights do not prove guest-choice branching, arbitrary exact-time trigger
 deadlines between rendezvous, checkpoint-pause recovery, or hot-fork acceptance.
 Longer diagnostic execution also stalled waiting for a post-device control
 acknowledgement and returned cleanup-pending on shutdown; the short successful
-flight does not close that liveness investigation. Aggregate campaign grant
-enforcement for subsequent planner issuance remains open; request-local
-admission budgets are a separate check.
+flight does not close that liveness investigation.
 
-`CampaignRepository::budget_projection` now reports snapshot-bound aggregate
-grants and spending without changing historical validity. It counts grants only
-at canonical command keys, proposals only at canonical proposal keys, and unique
-attempts from the authenticated dense admission sequence. Repeated auxiliary
-indexes and command retries do not inflate totals. Additive `u64` grants sum
-exactly in `u128`; historical overspending remains visible with zero remaining
-allowance. Regressions cover paged grants, retries, cold reconstruction, large
-totals, initial discovery spending, and a real historical unbudgeted admission.
-This read-only query fails closed beyond 65,536 entries per scanned index; it is
-not yet admission enforcement or the final large-campaign indexed projection.
+Version-3 campaign snapshots now carry a childless, version-1 aggregate budget
+ledger. Genesis starts empty; every successor authenticates exact grant and
+spending deltas. New proposals and unique attempts require aggregate allowance,
+in addition to request-local limits. Additional causes do not spend another
+attempt, and exact retries spend neither resource. Owner preflight rejects
+unfunded issuance before publishing its work; final head acceptance and cold
+validation independently check the ledger. A forged grant total or a downgrade
+to an unbudgeted successor fails closed.
+
+`CampaignRepository::budget_projection` reads this indexed ledger after head
+authentication. Additive `u64` grants sum exactly in `u128`. Legacy version-2
+histories remain readable and upgrade on their next new transition, preserving
+historical debt; their one-time projection fails closed beyond 65,536 entries
+per scanned index. Planner drivers bound invocation output by available
+allowance, return a waitable budget-blocked outcome, and avoid reinvoking on an
+unchanged blocked head. A later grant permits a fresh invocation. This does not
+yet prove exhaustive budget-aware selection among convergent and new candidates
+across an otherwise blocked frontier, or the required large-campaign stress
+flights.
 
 Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
 `crucible-daemon`.

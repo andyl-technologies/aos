@@ -68,16 +68,14 @@ fn budget_projection_adds_u64_grants_without_wrapping_or_saturating() {
 }
 
 #[test]
-fn budget_projection_never_turns_historical_debt_into_allowance() {
+fn budget_projection_counts_accepted_work_once_across_auxiliary_indexes() {
     let (repository, lineage, policy) = fixture();
     admitted_observation_fixture(&repository, &lineage, &policy, "budget");
-    let projection = repository
-        .budget_projection("budget")
-        .expect("historical projection");
-    assert_eq!(projection.granted_attempts, 0);
-    assert_eq!(projection.granted_proposals, 0);
+    let projection = repository.budget_projection("budget").expect("projection");
+    assert_eq!(projection.granted_attempts, 1_000_000);
+    assert_eq!(projection.granted_proposals, 1_000_000);
     assert_eq!(projection.spent_attempts, 1);
     assert_eq!(projection.spent_proposals, 1);
-    assert_eq!(projection.remaining_attempts(), 0);
-    assert_eq!(projection.remaining_proposals(), 0);
+    assert_eq!(projection.remaining_attempts(), 999_999);
+    assert_eq!(projection.remaining_proposals(), 999_999);
 }

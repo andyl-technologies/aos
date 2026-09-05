@@ -2232,6 +2232,7 @@ impl CampaignServiceFailureSource for CampaignRepositoryError {
 
 fn repository_service_failure(error: &CampaignRepositoryError) -> CampaignServiceFailure {
     match error {
+        CampaignRepositoryError::Budget(_) => CampaignServiceFailure::ResourceExhausted,
         CampaignRepositoryError::Store(error) => store_service_failure(error),
         CampaignRepositoryError::Codec(_) => CampaignServiceFailure::IntegrityFailure,
         CampaignRepositoryError::Merkle(crate::CampaignStoreError::Store(error)) => {

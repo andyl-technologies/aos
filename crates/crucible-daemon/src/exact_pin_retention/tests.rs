@@ -1963,7 +1963,8 @@ fn selection_authenticates_pin_and_checkpoint_and_survives_restart() {
             &bytes,
         )
         .to_hex(),
-        "ca7198fa080f09a40df4c9142425566ad40958c1d9d8c30404749aee642614bb"
+        // Version-3 campaign snapshots include the authenticated budget ledger.
+        "943d0847422b89df1156560390729ae595e1d343c6babace0ad44ce43b5f34a4"
     );
     assert_eq!(decoded.campaign(), &fixture.campaign);
     assert_eq!(decoded.configuration(), fixture.configuration);

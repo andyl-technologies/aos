@@ -269,7 +269,7 @@ impl CampaignRepository {
         let transition_content = self.put_fact(&fact)?;
         let mut roots = source.snapshot.roots();
         roots.coordination = self.coordination_with_parent_result(source_content, &source)?;
-        let next = CampaignSnapshot::successor(
+        let next = self.budgeted_successor(
             source_snapshot,
             source.snapshot.lineage(),
             active_policy,
@@ -412,7 +412,8 @@ impl CampaignRepository {
                 accounting: empty,
                 coordination: empty,
             },
-        )?;
+        )?
+        .with_budget_ledger(self.put_budget_ledger(crate::CampaignBudgetLedger::empty())?);
         let content_id = self.put_snapshot(&snapshot)?;
         self.validate_complete_head(content_id)?;
         match self
@@ -1004,7 +1005,7 @@ impl CampaignRepository {
         let mut roots = current.snapshot.roots();
         roots.graph = graph.content_id();
         roots.coordination = self.coordination_with_parent_result(current_content, &current)?;
-        let next = CampaignSnapshot::successor(
+        let next = self.budgeted_successor(
             current_id,
             current.snapshot.lineage(),
             current.snapshot.active_policy(),
@@ -1190,7 +1191,7 @@ impl CampaignRepository {
                 .insert(roots.accounting, command_key, transition_content)?
                 .content_id();
         }
-        let next = CampaignSnapshot::successor(
+        let next = self.budgeted_successor(
             current_id,
             current.snapshot.lineage(),
             current.snapshot.active_policy(),
@@ -1276,7 +1277,8 @@ impl CampaignRepository {
     ///
     /// Returns an error for a stale precondition, nonauthoritative request,
     /// noncanonical finite order, duplicate ordinal or value, invalid closure,
-    /// publication failure, or final authoritative-ref conflict.
+    /// exhausted aggregate proposal allowance, publication failure, or final
+    /// authoritative-ref conflict.
     pub fn issue_proposal(
         &self,
         name: &str,
@@ -1312,6 +1314,7 @@ impl CampaignRepository {
             });
         }
         self.validate_proposal_campaign_scope(&current, proposal)?;
+        self.ensure_budget_available(&current, 1, 0)?;
 
         let planning_view = current.snapshot.planning_view();
         let planning_view_content = self.put_planning_view(&planning_view)?;
@@ -1397,7 +1400,7 @@ impl CampaignRepository {
         let mut roots = current.snapshot.roots();
         roots.exploration = exploration.content_id();
         roots.coordination = self.coordination_with_parent_result(current_content, &current)?;
-        let next = CampaignSnapshot::successor(
+        let next = self.budgeted_successor(
             current_id,
             current.snapshot.lineage(),
             current.snapshot.active_policy(),
@@ -1501,6 +1504,18 @@ impl CampaignRepository {
             });
         }
 
+        let new_basis = self
+            .merkle
+            .get(
+                current.snapshot.roots().accounting,
+                map_key_content(
+                    "accounting.attempt-execution-basis",
+                    attempt_id.content_id(),
+                ),
+            )?
+            .is_none();
+        self.ensure_budget_available(&current, 0, u64::from(new_basis))?;
+
         let selection_content = self.put_selection(selection)?;
         if selection_content != selection_id.content_id() {
             return Err(integrity("selection-publication-id-mismatch"));
@@ -1596,7 +1611,7 @@ impl CampaignRepository {
         roots.exploration = exploration;
         roots.accounting = accounting;
         roots.coordination = self.coordination_with_parent_result(current_content, &current)?;
-        let next = CampaignSnapshot::successor(
+        let next = self.budgeted_successor(
             current_id,
             current.snapshot.lineage(),
             current.snapshot.active_policy(),
@@ -1733,7 +1748,7 @@ impl CampaignRepository {
         let mut roots = current.snapshot.roots();
         roots.accounting = accounting.content_id();
         roots.coordination = self.coordination_with_parent_result(current_content, &current)?;
-        let next = CampaignSnapshot::successor(
+        let next = self.budgeted_successor(
             current_id,
             current.snapshot.lineage(),
             active_policy,
@@ -1849,7 +1864,7 @@ impl CampaignRepository {
         roots.pins = pins.content_id();
         roots.accounting = accounting.content_id();
         roots.coordination = self.coordination_with_parent_result(current_content, &current)?;
-        let next = CampaignSnapshot::successor(
+        let next = self.budgeted_successor(
             current_id,
             current.snapshot.lineage(),
             current.snapshot.active_policy(),
@@ -2204,7 +2219,7 @@ impl CampaignRepository {
             roots.accounting = projected.accounting;
         }
         roots.coordination = coordination;
-        let next = CampaignSnapshot::successor(
+        let next = self.budgeted_successor(
             current_id,
             current.snapshot.lineage(),
             current.snapshot.active_policy(),

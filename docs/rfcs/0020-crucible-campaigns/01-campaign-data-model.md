@@ -174,8 +174,18 @@ pub struct CampaignSnapshot {
     pub accounting_root: ContentId,
     pub coordination_root: ContentId,
     pub transition: Option<CampaignFactId>,
+    pub budget_ledger: CampaignBudgetLedgerId,
 }
 ```
+
+Version-3 snapshots append a required version-1 budget ledger child after the
+transition field. Its canonical body is `u32 version`, two `u128` cumulative
+grants (proposals, attempts), and two `u64` cumulative spending counts in the
+same order, all big-endian. Genesis requires zero totals. Successor validation
+reconstructs exact deltas from the causal fact and unique admission sequence;
+the ledger's bytes alone never confer authority. Version-2 snapshots retain
+their original encoding and identities. New successors upgrade them with exact
+historical debt; a version-3 lineage cannot downgrade to version 2.
 
 Snapshot ancestry for one campaign ref is linear in this RFC because exactly
 one coordinator owns that ref. `derive` creates another named ref whose first

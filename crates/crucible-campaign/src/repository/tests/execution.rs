@@ -272,6 +272,17 @@ fn attempt_admission_assigns_one_basis_and_deduplicates_later_causes() {
     let genesis = repository
         .create("admission", &lineage, &policy, &BTreeMap::new())
         .expect("create");
+    repository
+        .apply_control(
+            "admission",
+            &command(
+                "exact-allowance",
+                genesis.snapshot_id(),
+                CampaignControlAction::GrantBudget(BudgetGrant::new(3, 2).expect("allowance")),
+            ),
+        )
+        .expect("fund three causes and two attempts");
+    let genesis = repository.head("admission").expect("funded head");
     let request = branch_request(
         &repository,
         &lineage,
@@ -323,7 +334,11 @@ fn attempt_admission_assigns_one_basis_and_deduplicates_later_causes() {
             .inspect_shallow(basis_head.snapshot().roots().accounting)
             .expect("accounting root")
             .entry_count(),
-        7
+        7 + repository
+            .merkle
+            .inspect_shallow(genesis.snapshot().roots().accounting)
+            .expect("funded accounting root")
+            .entry_count()
     );
 
     let valid_admission_snapshot = repository
@@ -464,11 +479,22 @@ fn attempt_admission_assigns_one_basis_and_deduplicates_later_causes() {
     let second_head = repository.head("admission").expect("second head");
     assert_eq!(
         repository
+            .budget_projection("admission")
+            .expect("exhausted attempts")
+            .remaining_attempts(),
+        0
+    );
+    assert_eq!(
+        repository
             .merkle
             .inspect_shallow(second_head.snapshot().roots().accounting)
             .expect("second accounting root")
             .entry_count(),
-        12
+        12 + repository
+            .merkle
+            .inspect_shallow(genesis.snapshot().roots().accounting)
+            .expect("funded accounting root")
+            .entry_count()
     );
 
     let duplicate_request = BranchRequest::new(
@@ -537,7 +563,19 @@ fn attempt_admission_assigns_one_basis_and_deduplicates_later_causes() {
             .inspect_shallow(deduplicated_head.snapshot().roots().accounting)
             .expect("deduplicated accounting root")
             .entry_count(),
-        15
+        15 + repository
+            .merkle
+            .inspect_shallow(genesis.snapshot().roots().accounting)
+            .expect("funded accounting root")
+            .entry_count()
+    );
+    let budget = repository
+        .budget_projection("admission")
+        .expect("deduplicated budget");
+    assert_eq!((budget.spent_proposals, budget.spent_attempts), (3, 2));
+    assert_eq!(
+        (budget.remaining_proposals(), budget.remaining_attempts()),
+        (0, 0)
     );
     assert_eq!(
         repository
@@ -555,7 +593,7 @@ fn attempt_admission_assigns_one_basis_and_deduplicates_later_causes() {
 fn attempt_admission_enforces_request_budget_without_materializing_accounting() {
     let (repository, lineage, policy) = fixture();
     let genesis = repository
-        .create("admission-budget", &lineage, &policy, &BTreeMap::new())
+        .create_funded("admission-budget", &lineage, &policy, &BTreeMap::new())
         .expect("create");
     let base = branch_request(
         &repository,
@@ -2610,7 +2648,7 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
     )
     .expect("objective-guided finite-expansion policy");
     let genesis = repository
-        .create("finite-expansion", &lineage, &policy, &BTreeMap::new())
+        .create_funded("finite-expansion", &lineage, &policy, &BTreeMap::new())
         .expect("create");
     let model = ProbabilityModelId::from_hash(CampaignHash::derive(
         "test.finite-expansion-model.v1",

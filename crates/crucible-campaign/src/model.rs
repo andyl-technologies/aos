@@ -1,6 +1,9 @@
 //! Canonical campaign lineage, snapshots, planning basis, and accounting facts.
 
+mod budget;
 mod facts;
+
+pub use budget::{CampaignBudgetError, CampaignBudgetLedger};
 
 pub use facts::{
     ActiveAttemptPolicy, BudgetGrant, CampaignControlAction, CampaignDerivation, CampaignFact,
@@ -20,7 +23,7 @@ use super::{
 use crucible_cas::content_store::ContentId;
 
 const LINEAGE_SCHEMA_VERSION: u32 = 1;
-const SNAPSHOT_SCHEMA_VERSION: u32 = 2;
+const LEGACY_SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 const PLANNING_VIEW_SCHEMA_VERSION: u32 = 1;
 const PLANNER_ENGINE_SCHEMA_VERSION: u32 = 1;
 const POLICY_ARTIFACT_SCHEMA_VERSION: u32 = 1;
@@ -327,10 +330,15 @@ pub struct CampaignSnapshot {
     active_policy: CampaignPolicyId,
     roots: CampaignRoots,
     transition: Option<CampaignFactId>,
+    budget_ledger: Option<crate::CampaignBudgetLedgerId>,
 }
 
 impl CampaignSnapshot {
     /// Builds an immutable genesis snapshot.
+    ///
+    /// Preserves the legacy version-2 encoding until [`Self::with_budget_ledger`]
+    /// attaches the version-3 accounting contract. Repository creation always
+    /// attaches an empty ledger before publication.
     ///
     /// # Errors
     ///
@@ -342,16 +350,21 @@ impl CampaignSnapshot {
     ) -> Result<Self, CampaignCodecError> {
         validate_roots(roots)?;
         Ok(Self {
-            schema_version: SNAPSHOT_SCHEMA_VERSION,
+            schema_version: LEGACY_SNAPSHOT_SCHEMA_VERSION,
             parent: None,
             lineage,
             active_policy,
             roots,
             transition: None,
+            budget_ledger: None,
         })
     }
 
     /// Builds one immutable successor snapshot and its causal transition.
+    ///
+    /// Preserves the legacy version-2 encoding until [`Self::with_budget_ledger`]
+    /// attaches the version-3 accounting contract. Repository mutations always
+    /// attach the authenticated successor ledger before publication.
     ///
     /// # Errors
     ///
@@ -365,13 +378,36 @@ impl CampaignSnapshot {
     ) -> Result<Self, CampaignCodecError> {
         validate_roots(roots)?;
         Ok(Self {
-            schema_version: SNAPSHOT_SCHEMA_VERSION,
+            schema_version: LEGACY_SNAPSHOT_SCHEMA_VERSION,
             parent: Some(parent),
             lineage,
             active_policy,
             roots,
             transition: Some(transition),
+            budget_ledger: None,
         })
+    }
+
+    /// Attaches the exact budget ledger and selects the version-3 contract.
+    ///
+    /// Repository publication authenticates this ledger against the parent and
+    /// causal transition. Attaching an arbitrary identity does not authorize
+    /// spending or make the snapshot valid.
+    #[must_use]
+    pub const fn with_budget_ledger(mut self, ledger: crate::CampaignBudgetLedgerId) -> Self {
+        self.schema_version = 3;
+        self.budget_ledger = Some(ledger);
+        self
+    }
+
+    /// Returns the indexed budget ledger, absent only in legacy version 2.
+    #[must_use]
+    pub const fn budget_ledger(&self) -> Option<crate::CampaignBudgetLedgerId> {
+        self.budget_ledger
+    }
+
+    pub(crate) const fn schema_version(&self) -> u32 {
+        self.schema_version
     }
 
     /// Returns the linear parent snapshot, if any.
@@ -452,20 +488,24 @@ impl Canonical for CampaignSnapshot {
         self.active_policy.encode(encoder);
         self.roots.encode(encoder);
         self.transition.encode(encoder);
+        if let Some(ledger) = self.budget_ledger {
+            ledger.encode(encoder);
+        }
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        require_schema(
-            u32::decode(decoder)?,
-            SNAPSHOT_SCHEMA_VERSION,
-            "campaign-snapshot",
-        )?;
+        let version = u32::decode(decoder)?;
+        if !matches!(version, 2 | 3) {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "unsupported campaign snapshot schema version",
+            });
+        }
         let parent = Option::decode(decoder)?;
         let lineage = CampaignLineageId::decode(decoder)?;
         let active_policy = CampaignPolicyId::decode(decoder)?;
         let roots = CampaignRoots::decode(decoder)?;
         let transition = Option::decode(decoder)?;
-        match (parent, transition) {
+        let snapshot = match (parent, transition) {
             (None, None) => Self::genesis(lineage, active_policy, roots),
             (Some(parent), Some(transition)) => {
                 Self::successor(parent, lineage, active_policy, roots, transition)
@@ -473,6 +513,11 @@ impl Canonical for CampaignSnapshot {
             _ => Err(CampaignCodecError::InvalidValue {
                 reason: "snapshot parent and transition presence disagree",
             }),
+        }?;
+        if version == 3 {
+            Ok(snapshot.with_budget_ledger(crate::CampaignBudgetLedgerId::decode(decoder)?))
+        } else {
+            Ok(snapshot)
         }
     }
 }

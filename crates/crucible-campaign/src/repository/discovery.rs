@@ -54,7 +54,7 @@ impl CampaignRepository {
         roots.coordination = self.coordination_with_parent_result(current_content, &current)?;
         let fact = CampaignFact::AttemptAdmitted(admission.id()?);
         let transition = self.put_fact(&fact)?;
-        let next = CampaignSnapshot::successor(
+        let next = self.budgeted_successor(
             current.snapshot.id()?,
             current.snapshot.lineage(),
             current.snapshot.active_policy(),
@@ -111,9 +111,12 @@ impl CampaignRepository {
             .merkle
             .get(roots.exploration, frontier_index_anchor_key())?
             .ok_or_else(|| integrity("initial-discovery-frontier-index-missing"))?;
-        if !self.merkle.scan(frontier, None, 1)?.entries().is_empty()
-            || !self.initial_discovery_has_budget(roots.accounting)?
-        {
+        let has_budget = if parent.snapshot.budget_ledger().is_some() {
+            self.project_campaign_budget(parent)?.remaining_attempts() > 0
+        } else {
+            self.initial_discovery_has_budget(roots.accounting)?
+        };
+        if !self.merkle.scan(frontier, None, 1)?.entries().is_empty() || !has_budget {
             return Ok(None);
         }
         let lineage = self.read_lineage(parent.snapshot.lineage().content_id())?;

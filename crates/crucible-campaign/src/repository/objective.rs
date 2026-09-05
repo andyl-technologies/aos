@@ -88,7 +88,7 @@ impl CampaignRepository {
         roots.coordination = self.coordination_with_parent_result(current_content, &current)?;
         let transition =
             self.put_fact(&CampaignFact::ObjectiveEvaluationPublished(evaluation_id))?;
-        let next = CampaignSnapshot::successor(
+        let next = self.budgeted_successor(
             current_id,
             current.snapshot.lineage(),
             current.snapshot.active_policy(),

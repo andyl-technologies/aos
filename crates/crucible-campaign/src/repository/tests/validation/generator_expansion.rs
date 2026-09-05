@@ -6,7 +6,7 @@ use super::*;
 fn branch_request_staleness_and_campaign_scope_fail_before_ref_advance() {
     let (repository, lineage, policy) = fixture();
     let genesis = repository
-        .create("scope", &lineage, &policy, &BTreeMap::new())
+        .create_funded("scope", &lineage, &policy, &BTreeMap::new())
         .expect("create");
     let request = branch_request(
         &repository,
@@ -69,7 +69,7 @@ fn branch_request_staleness_and_campaign_scope_fail_before_ref_advance() {
 fn generated_branch_requests_validate_the_complete_domain_compatible_spec() {
     let (repository, lineage, policy) = fixture();
     let genesis = repository
-        .create("generators", &lineage, &policy, &BTreeMap::new())
+        .create_funded("generators", &lineage, &policy, &BTreeMap::new())
         .expect("create");
     let finite = branch_request(
         &repository,
@@ -386,7 +386,7 @@ fn exhaustive_all_requests_bind_policy_cardinality_and_replay_exactly() {
     let policy =
         exhaustive_policy_with_generator(lineage.scenario(), all_id, "product.network.retry", 2);
     let genesis = repository
-        .create(
+        .create_funded(
             "exhaustive-all",
             &lineage,
             &policy,
@@ -504,7 +504,7 @@ fn exhaustive_all_requests_bind_policy_cardinality_and_replay_exactly() {
     let narrow_policy =
         exhaustive_policy_with_generator(lineage.scenario(), all_id, "product.network.retry", 1);
     let narrow_genesis = repository
-        .create(
+        .create_funded(
             "exhaustive-too-wide",
             &lineage,
             &narrow_policy,
@@ -565,7 +565,7 @@ fn exhaustive_all_requests_bind_policy_cardinality_and_replay_exactly() {
 fn generated_all_discrete_uses_stable_alternative_order() {
     let (repository, lineage, policy) = fixture();
     let genesis = repository
-        .create("generated-discrete", &lineage, &policy, &BTreeMap::new())
+        .create_funded("generated-discrete", &lineage, &policy, &BTreeMap::new())
         .expect("create");
     let alternative_ids = ["third", "first", "second"].map(|name| {
         AlternativeId::from_hash(CampaignHash::derive("test-alternative", name.as_bytes()))
@@ -676,7 +676,7 @@ fn generated_all_discrete_uses_stable_alternative_order() {
 fn weighted_categorical_generator_is_exact_keyed_and_restart_stable() {
     let (repository, lineage, policy) = fixture();
     let genesis = repository
-        .create("generated-weighted", &lineage, &policy, &BTreeMap::new())
+        .create_funded("generated-weighted", &lineage, &policy, &BTreeMap::new())
         .expect("create");
     let ids = ["alpha", "beta", "gamma", "delta"]
         .into_iter()
@@ -1003,7 +1003,7 @@ fn weighted_categorical_generator_bounds_and_versions_fail_closed() {
 fn ordered_mixture_generator_schedules_deduplicates_and_restarts_exactly() {
     let (repository, lineage, policy) = fixture();
     let genesis = repository
-        .create("generated-mixture", &lineage, &policy, &BTreeMap::new())
+        .create_funded("generated-mixture", &lineage, &policy, &BTreeMap::new())
         .expect("create");
     let ids = ["alpha", "beta", "gamma", "delta"]
         .into_iter()
@@ -1225,7 +1225,7 @@ fn ordered_mixture_generator_schedules_deduplicates_and_restarts_exactly() {
 fn ordered_mixture_generator_enforces_output_work_and_depth_bounds() {
     let (repository, lineage, policy, blobs) = counted_fixture();
     let genesis = repository
-        .create("mixture-bounds", &lineage, &policy, &BTreeMap::new())
+        .create_funded("mixture-bounds", &lineage, &policy, &BTreeMap::new())
         .expect("create");
     let alternatives = (0_u32..=crate::ORDERED_MIXTURE_GENERATOR_MAX_CANDIDATES as u32)
         .map(|index| {
@@ -1476,7 +1476,7 @@ fn ordered_mixture_generator_enforces_output_work_and_depth_bounds() {
 fn progressive_integer_generator_refines_only_after_exact_feedback() {
     let (repository, lineage, policy, blobs) = counted_fixture();
     let genesis = repository
-        .create("generated-progressive", &lineage, &policy, &BTreeMap::new())
+        .create_funded("generated-progressive", &lineage, &policy, &BTreeMap::new())
         .expect("create progressive campaign");
     let domain = ChoiceDomain::Integer(
         IntegerDomain::new(
@@ -1841,7 +1841,7 @@ fn progressive_integer_generator_refines_only_after_exact_feedback() {
 fn feedback_progressive_integer_refines_the_highest_owner_scored_interval() {
     let (repository, lineage, policy, blobs) = counted_fixture();
     let genesis = repository
-        .create(
+        .create_funded(
             "generated-feedback-progressive",
             &lineage,
             &policy,
@@ -2041,7 +2041,7 @@ fn feedback_progressive_integer_refines_the_highest_owner_scored_interval() {
 fn landmark_progressive_integer_prioritizes_an_authenticated_producer_landmark() {
     let (repository, lineage, policy, blobs) = counted_fixture();
     let genesis = repository
-        .create(
+        .create_funded(
             "generated-landmark-progressive",
             &lineage,
             &policy,
@@ -2227,7 +2227,7 @@ fn measurement_progressive_integer_prioritizes_verified_objective_discontinuity(
     .expect("measurement-progressive policy");
     let campaign = "generated-measurement-progressive";
     let genesis = repository
-        .create(campaign, &lineage, &policy, &BTreeMap::new())
+        .create_funded(campaign, &lineage, &policy, &BTreeMap::new())
         .expect("create measurement-progressive campaign");
     let domain = ChoiceDomain::Integer(
         IntegerDomain::new(
@@ -2408,7 +2408,7 @@ fn coverage_progressive_integer_prioritizes_verified_novelty_discontinuity() {
     .expect("coverage-progressive policy");
     let campaign = "generated-coverage-progressive";
     let genesis = repository
-        .create(campaign, &lineage, &policy, &BTreeMap::new())
+        .create_funded(campaign, &lineage, &policy, &BTreeMap::new())
         .expect("create coverage-progressive campaign");
     let domain = ChoiceDomain::Integer(
         IntegerDomain::new(
@@ -2598,7 +2598,7 @@ fn finding_progressive_integer_prioritizes_verified_reward_discontinuity() {
     .expect("finding-progressive policy");
     let campaign = "generated-finding-progressive";
     let genesis = repository
-        .create(campaign, &lineage, &policy, &BTreeMap::new())
+        .create_funded(campaign, &lineage, &policy, &BTreeMap::new())
         .expect("create finding-progressive campaign");
     let domain = ChoiceDomain::Integer(
         IntegerDomain::new(
@@ -2796,7 +2796,7 @@ fn rarity_progressive_integer_prioritizes_inverse_frequency_discontinuity() {
     let (repository, lineage, policy, blobs) = counted_fixture();
     let campaign = "generated-rarity-progressive";
     let genesis = repository
-        .create(campaign, &lineage, &policy, &BTreeMap::new())
+        .create_funded(campaign, &lineage, &policy, &BTreeMap::new())
         .expect("create rarity-progressive campaign");
     let domain = ChoiceDomain::Integer(
         IntegerDomain::new(
