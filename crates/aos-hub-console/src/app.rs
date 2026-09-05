@@ -20,6 +20,7 @@ use crate::workflows::ResourceWorkflow;
 #[component]
 pub fn App() -> impl IntoView {
     let route = RwSignal::new(current_route());
+    let workflow_revision = RwSignal::new(0_u64);
     let navigate = Callback::new(move |path: String| {
         let Some(next_route) = ConsoleRoute::resolve(&path) else {
             return;
@@ -40,7 +41,14 @@ pub fn App() -> impl IntoView {
         window.scroll_to_with_x_and_y(0.0, 0.0);
         route.set(Some(next_route));
     });
-    let popstate = window_event_listener(ev::popstate, move |_| route.set(current_route()));
+    let popstate = window_event_listener(ev::popstate, move |_| {
+        let next_route = current_route();
+        if next_route == route.get_untracked() {
+            workflow_revision.update(|revision| *revision = revision.wrapping_add(1));
+        } else {
+            route.set(next_route);
+        }
+    });
     on_cleanup(move || popstate.remove());
     let navigation_open = RwSignal::new(settings_navigation_starts_open(viewport_width()));
     let navigation_resize = window_event_listener(ev::resize, move |_| {
@@ -77,6 +85,7 @@ pub fn App() -> impl IntoView {
                         session=session
                         navigate=navigate
                         navigation_open=navigation_open
+                        workflow_revision=workflow_revision
                     />
                 }.into_any()
             },
@@ -97,6 +106,7 @@ fn ManagementShell(
     session: LocalResource<Result<ApiClient, crate::transport::TransportError>>,
     navigate: Callback<String>,
     navigation_open: RwSignal<bool>,
+    workflow_revision: RwSignal<u64>,
 ) -> impl IntoView {
     let context = scope_title(&route.scope);
     let page_label = route.page.label;
@@ -196,9 +206,18 @@ fn ManagementShell(
                 <main id="main-content" class="settings-body">
                     <ScopeHeader route=route.clone()/>
                     <ContextRail route=context_route.clone()/>
-                    <Transition fallback=move || view! { <p class="loading-row" aria-busy="true">"Loading management data…"</p> }>
-                        {move || { let route = workflow_route.clone(); Suspend::new(async move { match session.await.as_ref() { Ok(client) if client.allows(route.page.navigation_permission()) => view! { <ResourceWorkflow route=route client=client.clone()/> }.into_any(), Ok(_) => view! { <PermissionDenied route=route/> }.into_any(), Err(error) => view! { <FailureShell route=route detail=error.to_string()/> }.into_any() } }) }}
-                    </Transition>
+                    <For
+                        each=move || vec![workflow_revision.get()]
+                        key=|revision| *revision
+                        children=move |_| {
+                            let route = workflow_route.clone();
+                            view! {
+                                <Transition fallback=move || view! { <p class="loading-row" aria-busy="true">"Loading management data…"</p> }>
+                                    {move || { let route = route.clone(); Suspend::new(async move { match session.await.as_ref() { Ok(client) if client.allows(route.page.navigation_permission()) => view! { <ResourceWorkflow route=route client=client.clone()/> }.into_any(), Ok(_) => view! { <PermissionDenied route=route/> }.into_any(), Err(error) => view! { <FailureShell route=route detail=error.to_string()/> }.into_any() } }) }}
+                                </Transition>
+                            }
+                        }
+                    />
                 </main>
             </div>
             <footer class="statline">
