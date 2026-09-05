@@ -23,6 +23,23 @@ named `cdn` in the `acme` organization:
 | System images | `/acme/cdn/-/images` |
 | Registry health | `/acme/cdn/-/health` |
 
+Packages, Docs, Images, and Containers show one exact release at a time. The
+release selector offers each channel's current target, the newest releases,
+and the selected release; the Releases page lists every publication. The jump
+field accepts a version, a commit, or a channel name such as `stable` and
+redirects to the exact version, so a copied link never drifts when a channel
+moves. Unknown releases are not found rather than falling back to another
+release.
+
+The Docs page is a configuration browser. The tree on the left is the scope:
+expand branches lazily or filter the loaded labels. The reader lists the
+current scope's children with their types and descriptions, or every option
+beneath it as dotted paths with **All options beneath**, fifty per page.
+Opening a documented option shows its type, default, example, allowed values,
+activation, and declaration. With JavaScript enabled, choosing a scope swaps
+the reader in place and keeps the tree expanded; every link also works as an
+ordinary page load.
+
 The `/-/` segment keeps human-facing routes separate from the machine facade at
 the registry root. Git objects, AOS releases and channels, Nix cache metadata,
 and NARs therefore keep their native paths.

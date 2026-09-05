@@ -1626,9 +1626,19 @@ label.inline {
 }
 
 /* Shared release context and focused configuration browser. */
-.release-selector { display: flex; flex-wrap: wrap; align-items: center; gap: .7rem; padding: .9rem 0; border-bottom: 1px solid var(--rule); margin-bottom: 1.2rem; }
+.release-selector { display: flex; flex-wrap: wrap; align-items: center; gap: .7rem 1rem; padding: .9rem 0; border-bottom: 1px solid var(--rule); margin-bottom: 1.2rem; }
 .release-selector label { display: flex; align-items: center; gap: .6rem; }
 .release-selector select { max-width: 20rem; }
+.release-selector form { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin: 0; max-width: 100%; }
+.release-rail { display: flex; flex-wrap: wrap; gap: .4rem; flex-basis: 100%; }
+.release-pill { display: inline-flex; align-items: center; gap: .35rem; padding: .2rem .6rem; border: 1px solid var(--rule); border-radius: 999px; font-size: .8rem; text-decoration: none; color: var(--ink); }
+.release-pill strong { font-weight: 600; }
+.release-pill[aria-current="true"] { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.release-jump { position: relative; }
+.release-jump input[type=search] { width: 17rem; max-width: 60vw; font: inherit; }
+.release-suggest { min-width: 100%; }
+.release-suggest .release-suggest-channel { font-weight: 600; }
+.release-directory { font-size: .85rem; }
 .registry-utility { margin-left: auto; }
 .release-contents { display: flex; flex-wrap: wrap; gap: .7rem; }
 .release-contents a { display: flex; flex-direction: column; padding: .65rem; min-width: 6rem; border: 1px solid var(--rule); }
@@ -1668,12 +1678,39 @@ label.inline {
 .doc-result { padding: .8rem 0; border-bottom: 1px solid var(--rule); }
 .doc-result h3, .doc-result p { margin: .3rem 0; }
 .doc-variants { margin: 1rem 0; }
+.doc-tree-filter { width: 100%; box-sizing: border-box; margin: 0 0 .6rem; font-size: .85rem; }
+.doc-tree-filter[hidden] { display: none; }
+.doc-tree li[aria-current="location"] > a { font-weight: 600; text-decoration: underline; }
+.doc-browser[aria-busy="true"] .doc-reader { opacity: .6; transition: opacity .15s; }
+.doc-reader:focus { outline: none; }
+.doc-folder { margin-top: 1rem; }
+.doc-folder-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: .6rem 1.2rem; }
+.doc-folder-head h2 { margin: .4rem 0; }
+.doc-view-toggle { display: inline-flex; gap: .2rem; font-size: .85rem; border: 1px solid var(--rule); }
+.doc-view-toggle a { padding: .3rem .7rem; text-decoration: none; }
+.doc-view-toggle a[aria-current="true"] { background: var(--ink); color: var(--paper); }
+.doc-folder-table { width: 100%; border-collapse: collapse; font-size: .9rem; table-layout: fixed; }
+.doc-folder-table th { text-align: left; font-weight: 600; font-size: .8rem; color: var(--dim); padding: .4rem .5rem .4rem 0; border-bottom: 1px solid var(--rule); }
+.doc-folder-table th:nth-child(1) { width: 36%; }
+.doc-folder-table th:nth-child(2) { width: 18%; }
+.doc-folder-table td { padding: .45rem .5rem .45rem 0; border-bottom: 1px solid var(--rule); vertical-align: top; overflow-wrap: anywhere; }
+.doc-folder-table td code { font-size: .8rem; }
+.doc-folder-branch > td:first-child a::before { content: "\25B8\00a0"; color: var(--dim); }
+.doc-folder-count { display: block; font-size: .7rem; }
 @media (max-width: 720px) {
+  .doc-folder-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .doc-folder-table, .doc-folder-table tbody, .doc-folder-table tr, .doc-folder-table td { display: block; width: auto; }
+  .doc-folder-table tr { padding: .5rem 0; border-bottom: 1px solid var(--rule); }
+  .doc-folder-table td { border: 0; padding: .1rem 0; }
+  .doc-folder-table td:empty { display: none; }
   .doc-layout { grid-template-columns: 1fr; gap: 1rem; }
   .doc-tree { position: static; max-height: 17rem; border-right: 0; border-bottom: 1px solid var(--rule); padding-bottom: .8rem; }
   .doc-search { gap: .5rem; }
   .doc-search input[type=search] { flex-basis: 100%; }
   .release-selector select { max-width: 13rem; }
+  .release-jump { flex-basis: 100%; }
+  .release-jump label { flex: 1 1 auto; min-width: 0; }
+  .release-jump input[type=search] { width: 100%; max-width: none; box-sizing: border-box; }
   .registry-utility { margin-left: 0; }
 }
 .rollout-bar { display: block; width: 100%; }

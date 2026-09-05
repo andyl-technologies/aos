@@ -131,6 +131,38 @@ class BrowserAudit:
         status, body, _, _ = self.get(self.base + "&root=" + storage + "&scope=subtree&q=worker")
         self.check(status == 200 and b"No matching documentation" in body, "subtree search excludes matches outside its ancestry")
 
+        status, body, _, _ = self.get(self.base)
+        text = body.decode()
+        self.check(status == 200 and "data-doc-folder" in text and text.count('class="doc-folder-branch"') == 1, "root reader lists its children as a folder")
+        self.check("Open a child to explore" not in text, "a branch never renders an empty reader")
+        status, body, _, _ = self.get(self.base + "&root=" + workers)
+        text = body.decode()
+        self.check(status == 200 and text.count('class="doc-folder-branch"') == 50 and 'class="doc-more"' in text, "folder children page is bounded with a continuation")
+        flat = self.base + "&root=" + workers + "&view=all"
+        total, pages = 0, 0
+        while flat:
+            status, body, _, _ = self.get(flat)
+            text = body.decode()
+            rows = text.count('class="doc-folder-option"')
+            self.check(status == 200 and 0 < rows <= 50 and 'aria-current="true">All options beneath' in text, "flattened subtree page stays within one 50-option page")
+            total += rows
+            pages += 1
+            next_link = re.search(r'<a class="doc-more" href="([^"]+)">Next options', text)
+            flat = html.unescape(next_link[1]) if next_link else None
+        self.check(total == 137 and pages == 3, "flattened subtree pagination covers all 137 worker options once")
+        status, body, _, _ = self.get(self.base + "&root=" + demo + "&view=all")
+        text = body.decode()
+        self.check(status == 200 and ">workers.worker000.enable</a>" in text and ">storage.backend</a>" in text, "flattened rows show dotted paths relative to the scope")
+        self.check("<code>bool</code>" in text, "flattened rows carry the representative option type")
+
+        status, _, _, url = self.get("/demo/cdn/-/docs?release=stable")
+        self.check(status == 200 and "release=1.0.0" in url and "release=stable" not in url, "channel name resolves to its exact release and redirects")
+        status, body, _, _ = self.get(self.base)
+        text = body.decode()
+        self.check('class="release-pill"' in text and "stable <strong>1.0.0</strong>" in text, "selector shows channel targets as pills")
+        self.check("data-release-jump" in text and '"channels":[{"name":"stable","release":"1.0.0"}]' in text, "selector offers a typed jump backed by a compact release index")
+        self.check('<optgroup label="Channels">' in text and text.count("<option ") <= 12, "selector offers grouped releases instead of every tag")
+
         self.navigate(self.base)
         self.check(self.chrome.evaluate("document.querySelectorAll('.doc-tree-list > li').length") == 1, "initial browser DOM contains no expanded descendants")
         self.check(self.chrome.evaluate("performance.getEntriesByType('resource').filter(x => x.name.includes('/docs/children')).length") == 0, "browser does not prefetch subtrees")
@@ -148,6 +180,32 @@ class BrowserAudit:
         self.chrome.evaluate(f"document.querySelector('[data-doc-expand=\"{workers}\"]').click(); document.querySelector('[data-doc-expand=\"{workers}\"]').click()")
         self.check(self.chrome.evaluate("performance.getEntriesByType('resource').length") == requests_before, "collapse and reopen reuse already loaded children")
         self.screenshot("lazy-tree")
+
+        self.navigate(self.base)
+        page_loads = "performance.getEntriesByType('resource').filter(x => x.name.includes('/-/docs?')).length"
+        before = self.chrome.evaluate(page_loads)
+        self.chrome.evaluate(f"document.querySelector('.doc-tree li[data-node=\"{services}\"] > a').click()")
+        self.wait(f"document.querySelector('#doc-folder-title')?.textContent === 'services' && location.search.includes('root={services}')", "in-place scope navigation")
+        self.check(self.chrome.evaluate(page_loads) == before + 1, "choosing a scope fetches one page and swaps only the reader")
+        self.check(self.chrome.evaluate("document.querySelectorAll('.doc-tree > .doc-tree-list > li').length") == 1, "the tree keeps its own state across reader navigation")
+        self.wait(f"document.querySelector('.doc-tree li[data-node=\"{services}\"]').getAttribute('aria-current') === 'location' && document.querySelector('[data-node=\"{services}\"] > .doc-subtree > ul') !== null", "the chosen scope is marked and expanded in the tree")
+        self.chrome.evaluate(f"document.querySelector('[data-doc-folder] tr[data-node=\"{demo}\"] a').click()")
+        self.wait(f"document.querySelector('#doc-folder-title')?.textContent === 'services.demo' && document.querySelector('[data-node=\"{demo}\"] > .doc-subtree > ul') !== null", "a folder row opens its scope and expands the tree branch")
+        self.check(self.chrome.evaluate("document.querySelectorAll('[data-doc-folder] tbody tr').length") == 3, "the reader lists the scope's children with descriptions")
+        self.chrome.evaluate("(() => { const f = document.querySelector('[data-doc-tree-filter]'); f.value = 'stor'; f.dispatchEvent(new Event('input')); })()")
+        self.check(self.chrome.evaluate(f"!document.querySelector('.doc-tree li[data-node=\"{storage}\"]').hidden && document.querySelector('.doc-tree li[data-node=\"{workers}\"]').hidden && !document.querySelector('.doc-tree li[data-node=\"{services}\"]').hidden"), "tree filter narrows loaded branches and keeps matching ancestors")
+        self.chrome.evaluate("(() => { const f = document.querySelector('[data-doc-tree-filter]'); f.value = ''; f.dispatchEvent(new Event('input')); })()")
+        self.chrome.evaluate("history.back()")
+        self.wait("document.querySelector('#doc-folder-title')?.textContent === 'services'", "history navigation restores the previous scope")
+        self.chrome.evaluate("document.querySelector('.doc-view-toggle a:last-child').click()")
+        self.wait("location.search.includes('view=all') && document.querySelectorAll('[data-doc-folder] tr.doc-folder-option').length === 50", "the flattened view swaps in place")
+        self.screenshot("folder-view")
+
+        self.navigate(self.base)
+        self.chrome.evaluate("(() => { const j = document.querySelector('[data-release-jump]'); j.focus(); j.value = 'sta'; j.dispatchEvent(new Event('input')); })()")
+        self.check(self.chrome.evaluate("Array.from(document.querySelectorAll('.release-suggest .fs-item')).map(x => x.textContent)") == ["stable \u2192 1.0.0"], "release jump suggests matching channels first")
+        self.chrome.evaluate("window.__beforeJump = true; (() => { const j = document.querySelector('[data-release-jump]'); j.dispatchEvent(new KeyboardEvent('keydown', {key: 'ArrowDown', bubbles: true})); j.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true})); })()")
+        self.wait("window.__beforeJump === undefined && document.querySelector('[data-doc-browser]') !== null && location.search.includes('release=1.0.0')", "release jump resolves the channel to its exact release")
 
         self.navigate(self.base + "&root=" + backend)
         self.check(self.chrome.evaluate("document.querySelectorAll('.doc-option').length") == 1, "reader renders one option panel")
@@ -171,6 +229,9 @@ class BrowserAudit:
         next_page = self.chrome.evaluate("document.querySelector('a.doc-more').getAttribute('href')")
         self.navigate(next_page)
         self.check(self.chrome.evaluate("document.querySelector('.doc-tree-list').textContent.includes('worker050')"), "ordinary next-page link works without JavaScript")
+        self.check(self.chrome.evaluate("document.querySelectorAll('[data-doc-folder] tr.doc-folder-branch').length") == 50 and self.chrome.evaluate("document.querySelector('[data-doc-tree-filter]').hidden"), "no-JavaScript reader lists the folder and hides the script-only filter")
+        self.navigate(self.base + "&root=" + workers + "&view=all")
+        self.check(self.chrome.evaluate("document.querySelectorAll('[data-doc-folder] tr.doc-folder-option').length") == 50, "no-JavaScript flattened view is bounded")
         self.screenshot("no-javascript-tree")
         self.chrome.call("Emulation.setScriptExecutionDisabled", {"value": False})
 

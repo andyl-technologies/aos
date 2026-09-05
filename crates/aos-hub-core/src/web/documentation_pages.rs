@@ -1,4 +1,10 @@
-//! Progressive configuration-tree navigation and one selected documentation panel.
+//! Progressive configuration-tree navigation beside a folder listing or one
+//! selected documentation panel.
+//!
+//! The tree aside is the scope selector: it shows the current node's immediate
+//! children and lazily expands branches. The reader shows the selected option
+//! or guide, and beneath any branch a bounded folder listing of that node's
+//! children or, with `view=all`, every documented option in the subtree.
 
 use super::browse::BrowseQuery;
 use super::browse_pages::{registry_crumbs, state_line};
@@ -44,14 +50,108 @@ fn children_html(
             "<a href=\"{}\">{}</a><span class=\"dim doc-count\">{}</span></li>",
             escape(&node_href(slug, release, &node.key)),
             escape(&node.label),
-            if node.child_count > 0 {
-                format!("{} children", node.child_count)
-            } else {
-                format!("{} variants", node.entry_count)
+            match (node.child_count, node.entry_count) {
+                (1, _) => "1 child".to_string(),
+                (children, _) if children > 0 => format!("{children} children"),
+                (_, 1) => "1 variant".to_string(),
+                (_, variants) => format!("{variants} variants"),
             }
         );
     }
     html.push_str("</ul>");
+    html
+}
+
+/// Joins typed path segments into their dotted display form.
+fn dotted(path: &[aos_doc_model::PathSegment]) -> String {
+    path.iter()
+        .map(path_segment_label)
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+/// Renders the folder listing of a branch: its children or its whole subtree.
+///
+/// Children keep their branch/option identity and counts; the flattened view
+/// shows dotted paths relative to the current node so deep options read in one
+/// pass. Both views share the release's 50-entry page bound and cursor links.
+fn folder_html(
+    slug: &str,
+    release: &str,
+    node: &DocumentationTreeNode,
+    children: &DocumentationTreePage<DocumentationTreeNode>,
+    descendants: Option<&DocumentationTreePage<DocumentationTreeNode>>,
+) -> String {
+    let base = node_href(slug, release, &node.key);
+    let flattened = descendants.is_some();
+    let listing = descendants.unwrap_or(children);
+    let heading = if node.path.is_empty() {
+        "Configuration".to_string()
+    } else {
+        dotted(&node.path)
+    };
+    let mut html = format!(
+        "<section class=\"doc-folder\" data-doc-folder aria-labelledby=\"doc-folder-title\"><div class=\"doc-folder-head\"><h2 id=\"doc-folder-title\">{}</h2><nav class=\"doc-view-toggle\" aria-label=\"Listing\"><a href=\"{}\"{}>Children <span class=\"dim\">{}</span></a><a href=\"{}&amp;view=all\"{}>All options beneath</a></nav></div>",
+        escape(&heading),
+        escape(&base),
+        if flattened { "" } else { " aria-current=\"true\"" },
+        node.child_count,
+        escape(&base),
+        if flattened { " aria-current=\"true\"" } else { "" },
+    );
+    if listing.items.is_empty() {
+        html.push_str("<p class=\"dim\">No documented options here.</p></section>");
+        return html;
+    }
+    html.push_str("<table class=\"doc-folder-table\"><thead><tr><th>Option</th><th>Type</th><th>Description</th></tr></thead><tbody>");
+    for child in &listing.items {
+        let name = if flattened {
+            dotted(&child.path[node.path.len().min(child.path.len())..])
+        } else {
+            child.label.clone()
+        };
+        let is_branch = child.child_count > 0;
+        let detail = if is_branch {
+            format!(
+                "<span class=\"dim doc-folder-count\">{} {}</span>",
+                child.child_count,
+                if child.child_count == 1 {
+                    "child"
+                } else {
+                    "children"
+                }
+            )
+        } else {
+            String::new()
+        };
+        let _ = write!(
+            html,
+            "<tr class=\"{}\" data-node=\"{}\"><td><a href=\"{}\">{}</a>{}</td><td>{}</td><td>{}</td></tr>",
+            if is_branch { "doc-folder-branch" } else { "doc-folder-option" },
+            escape(&child.key),
+            escape(&node_href(slug, release, &child.key)),
+            escape(&name),
+            detail,
+            child
+                .type_signature
+                .as_deref()
+                .map(|signature| format!("<code>{}</code>", escape(signature)))
+                .or_else(|| child.kind.as_deref().map(escape))
+                .unwrap_or_default(),
+            escape(child.summary.as_deref().unwrap_or_default())
+        );
+    }
+    html.push_str("</tbody></table>");
+    if let Some(cursor) = &listing.next_cursor {
+        let _ = write!(
+            html,
+            "<a class=\"doc-more\" href=\"{}{}&amp;cursor={}\">Next options →</a>",
+            escape(&base),
+            if flattened { "&amp;view=all" } else { "" },
+            urlencode(cursor)
+        );
+    }
+    html.push_str("</section>");
     html
 }
 
@@ -63,6 +163,7 @@ pub(super) fn page(
     query: &BrowseQuery,
     node: &DocumentationTreeNode,
     children: &DocumentationTreePage<DocumentationTreeNode>,
+    descendants: Option<&DocumentationTreePage<DocumentationTreeNode>>,
     variants: &DocumentationTreePage<DocumentationTreeEntry>,
     results: Option<&DocumentationTreePage<DocumentationTreeEntry>>,
     selected: Option<&DocumentationTreeEntry>,
@@ -76,8 +177,8 @@ pub(super) fn page(
     let mut html = context.nav(slug, "docs");
     html.push_str("<h1>Docs</h1>");
     html.push_str(&context.selector(slug, &format!("/{slug}/-/docs"), &[("root", &node.key)]));
-    let _ = write!(html, "<div class=\"doc-browser\" data-doc-browser data-doc-base=\"/{}/-/docs\" data-doc-release=\"{}\"><form class=\"doc-search\" action=\"/{}/-/docs\" method=\"get\" role=\"search\"><input type=\"hidden\" name=\"release\" value=\"{}\"><input type=\"hidden\" name=\"root\" value=\"{}\"><label for=\"doc-query\">Search documentation</label><input id=\"doc-query\" type=\"search\" name=\"q\" value=\"{}\" placeholder=\"Option path, purpose, or package…\"><label>Within <select name=\"scope\"><option value=\"release\">Entire release</option><option value=\"subtree\"{}>This subtree</option></select></label><button type=\"submit\">Search</button></form>",
-        escape(slug), escape(release), escape(slug), escape(release), escape(&node.key), escape(query.q.as_deref().unwrap_or_default()), if query.scope.as_deref() == Some("subtree") { " selected" } else { "" });
+    let _ = write!(html, "<div class=\"doc-browser\" data-doc-browser data-doc-base=\"/{}/-/docs\" data-doc-release=\"{}\" data-doc-root=\"{}\"><form class=\"doc-search\" action=\"/{}/-/docs\" method=\"get\" role=\"search\"><input type=\"hidden\" name=\"release\" value=\"{}\"><input type=\"hidden\" name=\"root\" value=\"{}\"><label for=\"doc-query\">Search documentation</label><input id=\"doc-query\" type=\"search\" name=\"q\" value=\"{}\" placeholder=\"Option path, purpose, or package…\"><label>Within <select name=\"scope\"><option value=\"release\">Entire release</option><option value=\"subtree\"{}>This subtree</option></select></label><button type=\"submit\">Search</button></form>",
+        escape(slug), escape(release), escape(&node.key), escape(slug), escape(release), escape(&node.key), escape(query.q.as_deref().unwrap_or_default()), if query.scope.as_deref() == Some("subtree") { " selected" } else { "" });
     html.push_str("<nav class=\"doc-breadcrumbs\" aria-label=\"Configuration path\">");
     let _ = write!(
         html,
@@ -96,7 +197,9 @@ pub(super) fn page(
             escape(&path_segment_label(&node.path[depth - 1]))
         );
     }
-    html.push_str("</nav><div class=\"doc-layout\"><aside class=\"doc-tree\" aria-label=\"Configuration subtree\"><h2>Configuration tree</h2>");
+    // The tree filter is a JavaScript-only convenience over already loaded
+    // labels; without scripts the search form above is the equivalent path.
+    html.push_str("</nav><div class=\"doc-layout\"><aside class=\"doc-tree\" aria-label=\"Configuration subtree\"><h2>Configuration tree</h2><input type=\"search\" class=\"doc-tree-filter\" data-doc-tree-filter placeholder=\"Filter loaded tree\" aria-label=\"Filter loaded tree\" hidden>");
     if !node.path.is_empty() {
         let _ = write!(
             html,
@@ -121,7 +224,7 @@ pub(super) fn page(
             urlencode(cursor)
         );
     }
-    html.push_str("</aside><div class=\"doc-reader\">");
+    html.push_str("</aside><div class=\"doc-reader\" data-doc-reader>");
     if let Some(results) = results {
         let _ = write!(
             html,
@@ -222,13 +325,21 @@ pub(super) fn page(
             }
             html.push_str("</article>");
         }
-    } else {
-        let label = if node.path.is_empty() {
-            "Configuration"
-        } else {
-            &node.label
-        };
-        let _ = write!(html, "<h2>{}</h2><p>Open a child to explore its subtree, or search this release for an option or guide.</p><p class=\"dim\">{} immediate children. Branches load when expanded.</p>", escape(label), node.child_count);
+    }
+    // A branch always lists what lies beneath it, even under a submodule
+    // option's own panel, so readers never face an empty reader.
+    if results.is_none() && (node.child_count > 0 || descendants.is_some()) {
+        html.push_str(&folder_html(slug, release, node, children, descendants));
+    } else if results.is_none() && selected.is_none() {
+        let _ = write!(
+            html,
+            "<h2>{}</h2><p class=\"dim\">No documented options here. Search this release for an option or guide.</p>",
+            escape(if node.path.is_empty() {
+                "Configuration"
+            } else {
+                &node.label
+            })
+        );
     }
     html.push_str("</div></div></div>");
     page_with_session(

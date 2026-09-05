@@ -355,6 +355,8 @@ pub struct BrowseQuery {
     pub doc_key: Option<String>,
     /// Stable configuration subtree identity.
     pub root: Option<String>,
+    /// Documentation folder listing: `all` flattens every option beneath the root.
+    pub view: Option<String>,
     /// Exact documented option or guide variant.
     pub entry: Option<String>,
     /// Search scope: release (default) or subtree.
@@ -460,6 +462,7 @@ impl BrowseQuery {
             match key.as_ref() {
                 "doc_key" => out.doc_key = Some(value.into_owned()),
                 "root" => out.root = Some(value.into_owned()),
+                "view" => out.view = Some(value.into_owned()),
                 "entry" => out.entry = Some(value.into_owned()),
                 "scope" => out.scope = Some(value.into_owned()),
                 "variant_cursor" => out.variant_cursor = Some(value.into_owned()),

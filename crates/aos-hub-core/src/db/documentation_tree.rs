@@ -32,6 +32,12 @@ pub struct DocumentationTreeNode {
     pub child_count: usize,
     /// Number of exact documented variants at this path.
     pub entry_count: usize,
+    /// Kind of the representative documented variant, absent for pure branches.
+    pub kind: Option<String>,
+    /// Human-readable option type of the representative variant.
+    pub type_signature: Option<String>,
+    /// Bounded plain-text description of the representative variant.
+    pub summary: Option<String>,
     #[serde(skip)]
     sort_key: String,
 }
@@ -164,7 +170,17 @@ fn search_token(term: &str) -> String {
     term.chars().take(128).collect()
 }
 
-const NODE_COLUMNS: &str = "node_key, path_json, label, child_count, entry_count, sort_key";
+// Every node read carries one representative documented variant so listings can
+// show a type and description without a second round trip. The variant index
+// makes each correlated lookup a bounded seek; the smallest entry key wins so
+// the representative is stable across pages and releases.
+const NODE_COLUMNS: &str = "node.node_key, node.path_json, node.label, node.child_count, node.entry_count, node.sort_key,
+    (SELECT entry.kind FROM release_browse_tree_entries entry WHERE entry.registry_id = node.registry_id
+       AND entry.source_commit = node.source_commit AND entry.node_key = node.node_key ORDER BY entry.entry_key LIMIT 1),
+    (SELECT entry.type_signature FROM release_browse_tree_entries entry WHERE entry.registry_id = node.registry_id
+       AND entry.source_commit = node.source_commit AND entry.node_key = node.node_key ORDER BY entry.entry_key LIMIT 1),
+    (SELECT entry.summary FROM release_browse_tree_entries entry WHERE entry.registry_id = node.registry_id
+       AND entry.source_commit = node.source_commit AND entry.node_key = node.node_key ORDER BY entry.entry_key LIMIT 1)";
 const ENTRY_COLUMNS: &str = "entry_key, node_key, document_sha256, package_name, package_version,
     platform, kind, document_key, title, summary, type_signature";
 
@@ -257,8 +273,8 @@ impl Database {
         self.backend
             .query_opt(
                 &format!(
-                    "SELECT {NODE_COLUMNS} FROM release_browse_tree_nodes
-            WHERE registry_id = ?1 AND source_commit = ?2 AND node_key = ?3"
+                    "SELECT {NODE_COLUMNS} FROM release_browse_tree_nodes node
+            WHERE node.registry_id = ?1 AND node.source_commit = ?2 AND node.node_key = ?3"
                 ),
                 &vals![registry_id, commit, key],
             )
@@ -285,10 +301,10 @@ impl Database {
             .backend
             .query(
                 &format!(
-                    "SELECT {NODE_COLUMNS} FROM release_browse_tree_nodes
-            WHERE registry_id = ?1 AND source_commit = ?2 AND parent_key = ?3
-              AND (?4 IS NULL OR sort_key > ?4 OR (sort_key = ?4 AND node_key > ?5))
-            ORDER BY sort_key, node_key LIMIT ?6"
+                    "SELECT {NODE_COLUMNS} FROM release_browse_tree_nodes node
+            WHERE node.registry_id = ?1 AND node.source_commit = ?2 AND node.parent_key = ?3
+              AND (?4 IS NULL OR node.sort_key > ?4 OR (node.sort_key = ?4 AND node.node_key > ?5))
+            ORDER BY node.sort_key, node.node_key LIMIT ?6"
                 ),
                 &vals![
                     registry_id,
@@ -313,6 +329,75 @@ impl Database {
                     encode_cursor(Cursor {
                         scope,
                         sort: node.sort_key.clone(),
+                        key: node.key.clone(),
+                        score: 0,
+                    })
+                })
+                .transpose()?
+        } else {
+            None
+        };
+        Ok(DocumentationTreePage { items, next_cursor })
+    }
+
+    /// Lists one bounded page of every documented option beneath a node.
+    ///
+    /// The listing flattens the subtree: pure branches are skipped and each
+    /// documented path appears once, in dotted-path order, regardless of depth.
+    /// The root itself is included when it is documented. Ancestry comes from
+    /// the precomputed table, so the query stays indexed at any depth.
+    ///
+    /// # Errors
+    /// Returns an error for invalid or stale cursors, database failures, or
+    /// malformed indexed rows.
+    pub async fn documentation_tree_descendants(
+        &self,
+        registry_id: i64,
+        commit: &str,
+        root: &str,
+        after: Option<&str>,
+    ) -> Result<DocumentationTreePage<DocumentationTreeNode>> {
+        let scope = cursor_scope(registry_id, commit, &format!("descendants:{root}"));
+        let cursor = decode_cursor(after, &scope)?;
+        // Ordering by the serialized path keeps each subtree contiguous and its
+        // siblings in label order; a documented branch sorts after its own
+        // descendants because the closing bracket outranks a continuing comma.
+        let rows = self
+            .backend
+            .query(
+                &format!(
+                    "SELECT {NODE_COLUMNS} FROM release_browse_tree_ancestors ancestor
+            JOIN release_browse_tree_nodes node
+              ON node.registry_id = ancestor.registry_id AND node.source_commit = ancestor.source_commit
+             AND node.node_key = ancestor.node_key
+            WHERE ancestor.registry_id = ?1 AND ancestor.source_commit = ?2 AND ancestor.ancestor_key = ?3
+              AND node.entry_count > 0
+              AND (?4 IS NULL OR node.path_json > ?4 OR (node.path_json = ?4 AND node.node_key > ?5))
+            ORDER BY node.path_json, node.node_key LIMIT ?6"
+                ),
+                &vals![
+                    registry_id,
+                    commit,
+                    root,
+                    cursor.as_ref().map(|cursor| cursor.sort.as_str()),
+                    cursor.as_ref().map(|cursor| cursor.key.as_str()),
+                    (DOCUMENTATION_TREE_PAGE_SIZE + 1) as i64
+                ],
+            )
+            .await?;
+        let mut items = rows
+            .into_iter()
+            .map(node_from_row)
+            .collect::<Result<Vec<_>>>()?;
+        let has_more = items.len() > DOCUMENTATION_TREE_PAGE_SIZE;
+        items.truncate(DOCUMENTATION_TREE_PAGE_SIZE);
+        let next_cursor = if has_more {
+            items
+                .last()
+                .map(|node| {
+                    encode_cursor(Cursor {
+                        scope,
+                        sort: serde_json::to_string(&node.path)?,
                         key: node.key.clone(),
                         score: 0,
                     })
@@ -464,6 +549,9 @@ fn node_from_row(row: crate::value::Row) -> Result<DocumentationTreeNode> {
         child_count: usize::try_from(row.get::<i64>(3)?)?,
         entry_count: usize::try_from(row.get::<i64>(4)?)?,
         sort_key: row.get(5)?,
+        kind: row.get(6)?,
+        type_signature: row.get(7)?,
+        summary: row.get(8)?,
     };
     ensure!(
         node.key == documentation_node_key(&node.path),
@@ -595,6 +683,13 @@ mod tests {
         );
     }
 
+    async fn first_page_cursor(db: &Database, registry: i64, node: &str) -> Option<String> {
+        db.documentation_tree_descendants(registry, "commit-a", node, None)
+            .await
+            .unwrap()
+            .next_cursor
+    }
+
     #[tokio::test]
     async fn lazy_children_search_and_cursors_stay_bounded_and_isolated() {
         let db = Database::open_in_memory().await.unwrap();
@@ -635,6 +730,55 @@ mod tests {
             }
         }
         assert_eq!(keys.len(), 137);
+        // Every documented path beneath `services` is one flattened page set,
+        // in dotted order, with the representative variant's summary and type.
+        let mut flattened = Vec::new();
+        let mut cursor = None;
+        loop {
+            let page = db
+                .documentation_tree_descendants(registry, "commit-a", services, cursor.as_deref())
+                .await
+                .unwrap();
+            assert!(page.items.len() <= 50);
+            for node in page.items {
+                assert_eq!(node.child_count, 0);
+                assert_eq!(node.entry_count, 1);
+                assert_eq!(node.kind.as_deref(), Some("option"));
+                assert_eq!(node.type_signature.as_deref(), Some("bool"));
+                assert_eq!(node.summary.as_deref(), Some("Enable service"));
+                flattened.push(path_segment_label(&node.path[1]));
+            }
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        let mut expected = (0..137)
+            .map(|index| format!("child{index:03}"))
+            .collect::<Vec<_>>();
+        expected.sort();
+        assert_eq!(flattened, expected);
+        let everything = db
+            .documentation_tree_descendants(registry, "commit-a", &root, None)
+            .await
+            .unwrap();
+        assert_eq!(everything.items.len(), 50);
+        assert!(everything.next_cursor.is_some());
+        assert!(db
+            .documentation_tree_descendants(
+                registry,
+                "commit-a",
+                &root,
+                first_page_cursor(&db, registry, services).await.as_deref()
+            )
+            .await
+            .is_err());
+        let branches = db
+            .documentation_tree_children(registry, "commit-a", &root, None)
+            .await
+            .unwrap();
+        assert!(branches.items[0].kind.is_none() && branches.items[0].summary.is_none());
+
         let first = db
             .documentation_tree_children(registry, "commit-a", services, None)
             .await

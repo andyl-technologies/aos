@@ -111,13 +111,16 @@ pub(crate) async fn browse(
         .as_deref()
         .map(str::trim)
         .filter(|term| !term.is_empty());
+    // One cursor per page: it continues the children list, the flattened
+    // subtree listing, or the search results, never more than one of them.
+    let flattened = term.is_none() && query.view.as_deref() == Some("all");
     let children = match svc
         .db
         .documentation_tree_children(
             registry.id,
             &commit,
             key,
-            if term.is_none() {
+            if term.is_none() && !flattened {
                 query.cursor.as_deref()
             } else {
                 None
@@ -134,6 +137,18 @@ pub(crate) async fn browse(
             Err(_) => Rendered::ServiceUnavailable,
         };
     }
+    let descendants = if flattened {
+        match svc
+            .db
+            .documentation_tree_descendants(registry.id, &commit, key, query.cursor.as_deref())
+            .await
+        {
+            Ok(page) => Some(page),
+            Err(error) => return query_error(error),
+        }
+    } else {
+        None
+    };
     let results = if let Some(term) = term {
         match svc
             .db
@@ -201,6 +216,7 @@ pub(crate) async fn browse(
         query,
         &node,
         &children,
+        descendants.as_ref(),
         &variants,
         results.as_ref(),
         selected.as_ref(),
