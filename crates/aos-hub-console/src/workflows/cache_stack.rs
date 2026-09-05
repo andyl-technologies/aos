@@ -133,7 +133,7 @@ fn ManagedCacheSelect(caches: CacheInventory, selected: RwSignal<String>) -> imp
                             <option value="">"Select a cache"</option>
                             {caches.iter().map(|cache| view! { <option value=cache.slug.clone()>{format!("{} ({})", cache.name, cache.slug)}</option> }).collect_view()}
                         </select>
-                        <span class="muted">"The cache needs a ready canonical Nix cache delivery route before it can be added. Configure Delivery in its settings above."</span>
+                        <small>"The cache needs a ready canonical Nix cache delivery route before it can be added. Configure Delivery in its settings above."</small>
                     </label> }.into_any(),
                     Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any(),
                 }

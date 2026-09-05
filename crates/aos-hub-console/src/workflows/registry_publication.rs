@@ -138,9 +138,9 @@ fn PublicationHistory(
         <section class="panel resource-panel">
             <div class="section-heading">
                 <div>
-                    <p class="section-kicker">"Durable transaction inventory"</p>
+                    <p class="section-kicker">"Registry publishing"</p>
                     <h2>"Publish history"</h2>
-                    <p>"Inspect or resume any exact publication without retaining an out-of-band session ID."</p>
+                    <p>"Track publication progress, inspect failures, and resume interrupted uploads."</p>
                 </div>
             </div>
             <Suspense fallback=move || view! { <p class="loading-row">"Loading publication history…"</p> }>

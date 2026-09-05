@@ -86,11 +86,11 @@ fn Placements(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl I
             <WriteAuthorityPanel client=client surface=authority_surface/>
             <section class="panel resource-panel">
                 <h2>"Storage actions"</h2>
-                <label><span>"Choose a task"</span><select prop:value=move || action.get() on:change=move |event| action.set(event_target_value(&event))>
+                <div class="editor-form"><label><span>"Choose a task"</span><select prop:value=move || action.get() on:change=move |event| action.set(event_target_value(&event))>
                     <option value="overview">"Choose a task…"</option>
                     {can_manage.then(|| view! { <option value="add">"Add a storage location"</option><option value="replicate">"Copy data to a replica"</option> })}
                     <option value="advanced">"Advanced policies and diagnostics"</option>
-                </select></label>
+                </select></label></div>
                 <p class="muted">"To add a replica, first connect its storage location, then copy data from a healthy source. Copying data does not change write authority."</p>
             </section>
             {move || {
