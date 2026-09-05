@@ -7,9 +7,9 @@
 
 use std::collections::BTreeSet;
 
+use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
-use leptos::task::spawn_local;
 
 use crate::components::{EmptyState, HashValue, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
@@ -44,6 +44,7 @@ struct WebhookInventory {
 
 #[component]
 fn OrganizationWebhooks(client: ApiClient, organization: String) -> impl IntoView {
+    let can_manage = client.allows("members.manage");
     let read_client = client.clone();
     let read_org = organization.clone();
     let inventory = LocalResource::new(move || {
@@ -73,12 +74,9 @@ fn OrganizationWebhooks(client: ApiClient, organization: String) -> impl IntoVie
                                 <WebhookList
                                     client=client.clone()
                                     webhooks=inventory.webhooks.clone()
+                                    can_manage=can_manage
                                 />
-                                <CreateWebhook
-                                    client=client
-                                    organization=organization
-                                    event_types=inventory.event_types.clone()
-                                />
+                                {if can_manage { view! { <details class="advanced-controls"><summary>"Create webhook"</summary><CreateWebhook client=client organization=organization event_types=inventory.event_types.clone()/></details> }.into_any() } else { view! { <p class="muted">"You can inspect webhook delivery but cannot change subscriptions."</p> }.into_any() }}
                             }
                             .into_any(),
                             Err(detail) => view! { <InlineError detail=detail.clone()/> }.into_any(),
@@ -122,7 +120,11 @@ async fn load_webhooks(client: &ApiClient, organization: &str) -> Result<Webhook
 }
 
 #[component]
-fn WebhookList(client: ApiClient, webhooks: Vec<aos_proto_types::Webhook>) -> impl IntoView {
+fn WebhookList(
+    client: ApiClient,
+    webhooks: Vec<aos_proto_types::Webhook>,
+    can_manage: bool,
+) -> impl IntoView {
     if webhooks.is_empty() {
         return view! {
             <EmptyState
@@ -138,7 +140,7 @@ fn WebhookList(client: ApiClient, webhooks: Vec<aos_proto_types::Webhook>) -> im
     view! {
         <div class="binding-list">
             {webhooks.into_iter().map(|webhook| view! {
-                <WebhookCard client=client.clone() webhook=webhook/>
+                <WebhookCard client=client.clone() webhook=webhook can_manage=can_manage/>
             }).collect_view()}
         </div>
     }
@@ -146,7 +148,11 @@ fn WebhookList(client: ApiClient, webhooks: Vec<aos_proto_types::Webhook>) -> im
 }
 
 #[component]
-fn WebhookCard(client: ApiClient, webhook: aos_proto_types::Webhook) -> impl IntoView {
+fn WebhookCard(
+    client: ApiClient,
+    webhook: aos_proto_types::Webhook,
+    can_manage: bool,
+) -> impl IntoView {
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
@@ -205,16 +211,15 @@ fn WebhookCard(client: ApiClient, webhook: aos_proto_types::Webhook) -> impl Int
                     .into_any()
                 }}
             </details>
-            <button
+            {can_manage.then(|| view! { <button
                 class="danger-button"
                 type="button"
                 disabled=move || busy.get()
                 on:click=on_plan_delete
             >
                 "Review deletion"
-            </button>
-            {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
-            <PlanReview pending=pending busy=busy on_apply=apply/>
+            </button> })}
+            {can_manage.then(|| view! { {move || error.get().map(|detail| view! { <InlineError detail=detail/> })} <PlanReview pending=pending busy=busy on_apply=apply/> })}
         </article>
     }
 }

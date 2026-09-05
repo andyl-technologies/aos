@@ -4,9 +4,9 @@
 //! endpoints, and gateways are separate resources layered above it;
 //! this module never presents them as one overloaded frontend.
 
+use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
-use leptos::task::spawn_local;
 
 use crate::components::{HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
@@ -104,6 +104,10 @@ fn Domains(
         }
     });
     let inventory_client = client.clone();
+    let inventory_path = organization.as_ref().map_or_else(
+        || "/-/instance/domains".to_string(),
+        |slug| format!("/-/org/{slug}/domains"),
+    );
 
     view! {
         <div class="workflow-stack">
@@ -119,13 +123,13 @@ fn Domains(
                     }) }}
                 </Suspense>
             </section> })}
-            {creation_only.then(|| view! { <DomainCreate client=client owner_scope_key=owner_scope_key/> })}
+            {creation_only.then(|| view! { <DomainCreate client=client owner_scope_key=owner_scope_key return_path=inventory_path/> })}
         </div>
     }
 }
 
 #[component]
-fn DomainCreate(client: ApiClient, owner_scope_key: String) -> impl IntoView {
+fn DomainCreate(client: ApiClient, owner_scope_key: String, return_path: String) -> impl IntoView {
     let hostname = RwSignal::new(String::new());
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
@@ -181,14 +185,16 @@ fn DomainCreate(client: ApiClient, owner_scope_key: String) -> impl IntoView {
         });
     });
 
-    view! { <section class="panel editor-panel"><h2>"Add domain"</h2><form class="editor-form" on:submit=on_plan><label class="full-field"><span>"Hostname"<HelpTooltip term="Hostname" summary="Hostname identity is immutable. Configure DNS and certificates after creation."/></span><input required placeholder="packages.example.com" autocomplete="off" prop:value=move || hostname.get() on:input=move |event| hostname.set(event_target_value(&event))/></label><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review creation"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
+    view! { <section class="panel editor-panel"><div class="section-heading"><div><p class="section-kicker">"Hostname ownership"</p><h2>"Add domain"</h2><p>"Create the durable hostname first, then configure DNS and certificate intent from its card."</p></div></div><form class="editor-form" on:submit=on_plan><label class="full-field"><span>"Hostname"<HelpTooltip term="Hostname" summary="Hostname identity is immutable. Configure DNS and certificates after creation."/></span><input required placeholder="packages.example.com" autocomplete="off" prop:value=move || hostname.get() on:input=move |event| hostname.set(event_target_value(&event))/></label><div class="form-actions"><a class="secondary-button" href=return_path>"Cancel"</a><button class="button" type="submit" disabled=move || busy.get()>"Review creation"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
 }
 
 #[component]
 fn DomainCard(client: ApiClient, domain: aos_proto_types::Domain) -> impl IntoView {
     let observed = domain.observed.clone().unwrap_or_default();
     let positive = observed.dns_state == "verified" && observed.certificate_state == "ready";
-    view! { <details class="binding-card"><summary><div><span class="resource-kind">"Domain"</span><h3>{domain.hostname.clone()}</h3><code>{domain.stable_id.clone()}</code></div><div class="binding-summary-state"><StatusBadge state=format!("DNS {} · TLS {}", state_or_unknown(&observed.dns_state), state_or_unknown(&observed.certificate_state)) positive=positive/></div></summary><div class="binding-details"><div class="resource-identity"><div><span>"Owner"</span><code>{domain.owner_scope_key.clone()}</code></div><div><span>"Version"</span><code>{domain.resource_version.clone()}</code></div><div><span>"Observed"</span><strong>{format_timestamp(observed.observed_at)}</strong></div></div>{(!observed.error.is_empty()).then(|| view! { <InlineError detail=observed.error/> })}<div class="subworkflow-grid"><DomainDnsEditor client=client.clone() domain=domain.clone()/><DomainCertificateEditor client=client.clone() domain=domain.clone()/></div><div class="subworkflow-grid"><DomainVerify client=client.clone() domain=domain.clone()/><DomainDelete client=client domain=domain/></div></div></details> }
+    let can_manage = client.allows("domain.manage");
+    let controls_requested = RwSignal::new(false);
+    view! { <details class="binding-card" on:toggle=move |_| controls_requested.set(true)><summary><div><span class="resource-kind">"Domain"</span><h3>{domain.hostname.clone()}</h3><code>{domain.stable_id.clone()}</code></div><div class="binding-summary-state"><StatusBadge state=format!("DNS {} · TLS {}", state_or_unknown(&observed.dns_state), state_or_unknown(&observed.certificate_state)) positive=positive/></div></summary><div class="binding-details"><div class="resource-identity"><div><span>"Owner"</span><code>{domain.owner_scope_key.clone()}</code></div><div><span>"Version"</span><code>{domain.resource_version.clone()}</code></div><div><span>"Observed"</span><strong>{format_timestamp(observed.observed_at)}</strong></div></div>{(!observed.error.is_empty()).then(|| view! { <InlineError detail=observed.error/> })}{move || controls_requested.get().then(|| if can_manage { view! { <div class="subworkflow-grid"><DomainDnsEditor client=client.clone() domain=domain.clone()/><DomainCertificateEditor client=client.clone() domain=domain.clone()/></div><div class="subworkflow-grid"><DomainVerify client=client.clone() domain=domain.clone()/><DomainDelete client=client.clone() domain=domain.clone()/></div> }.into_any() } else { view! { <p class="muted">"You have read-only access to this domain."</p> }.into_any() })}</div></details> }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

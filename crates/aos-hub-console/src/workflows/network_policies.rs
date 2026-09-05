@@ -4,9 +4,9 @@
 //! revisions. Activation and retirement remain explicit lifecycle operations,
 //! so an editor cannot silently replace policy used by live endpoints.
 
+use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
-use leptos::task::spawn_local;
 
 use crate::components::{HashValue, HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
@@ -110,11 +110,19 @@ fn NetworkPolicies(
     });
     let view_client = client.clone();
     let card_scope = owner_scope_key.clone();
-    view! { <div class="workflow-stack">{(!creation_only).then(|| view! { <section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Trust and reachability"</p><div class="section-title"><h2>"Network policies"</h2><HelpTooltip term="Network policies" summary="Boundaries name verifiable network identity. Immutable revisions hold protected-transport, trusted-ingress, source, and probe policy."/></div></div>{create_href.map(|href| view! { <a class="button" href=href>"Create network policy"</a> })}</div><Suspense fallback=move || view! { <p class="loading-row">"Loading network policies…"</p> }>{move || { let client = view_client.clone(); let consumer_scope_key = card_scope.clone(); Suspend::new(async move { match inventory.await.as_ref() { Ok(boundaries) if boundaries.is_empty() => view! { <p class="muted">"No network policies in this scope."</p> }.into_any(), Ok(boundaries) => view! { <div class="binding-list">{boundaries.iter().cloned().map(|boundary| view! { <NetworkPolicyCard client=client.clone() boundary=boundary consumer_scope_key=consumer_scope_key.clone()/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section> })}{creation_only.then(|| view! { <NetworkPolicyCreate client=client owner_scope_key=owner_scope_key/> })}</div> }
+    let inventory_path = organization.as_ref().map_or_else(
+        || "/-/instance/network-policies".to_string(),
+        |slug| format!("/-/org/{slug}/network-policies"),
+    );
+    view! { <div class="workflow-stack">{(!creation_only).then(|| view! { <section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Trust and reachability"</p><div class="section-title"><h2>"Network policies"</h2><HelpTooltip term="Network policies" summary="Boundaries name verifiable network identity. Immutable revisions hold protected-transport, trusted-ingress, source, and probe policy."/></div></div>{create_href.map(|href| view! { <a class="button" href=href>"Create network policy"</a> })}</div><Suspense fallback=move || view! { <p class="loading-row">"Loading network policies…"</p> }>{move || { let client = view_client.clone(); let consumer_scope_key = card_scope.clone(); Suspend::new(async move { match inventory.await.as_ref() { Ok(boundaries) if boundaries.is_empty() => view! { <p class="muted">"No network policies in this scope."</p> }.into_any(), Ok(boundaries) => view! { <div class="binding-list">{boundaries.iter().cloned().map(|boundary| view! { <NetworkPolicyCard client=client.clone() boundary=boundary consumer_scope_key=consumer_scope_key.clone()/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section> })}{creation_only.then(|| view! { <NetworkPolicyCreate client=client owner_scope_key=owner_scope_key return_path=inventory_path/> })}</div> }
 }
 
 #[component]
-fn NetworkPolicyCreate(client: ApiClient, owner_scope_key: String) -> impl IntoView {
+fn NetworkPolicyCreate(
+    client: ApiClient,
+    owner_scope_key: String,
+    return_path: String,
+) -> impl IntoView {
     let name = RwSignal::new(String::new());
     let kind = RwSignal::new("vpn".to_string());
     let provider = RwSignal::new(String::new());
@@ -194,7 +202,7 @@ fn NetworkPolicyCreate(client: ApiClient, owner_scope_key: String) -> impl IntoV
             busy.set(false);
         });
     });
-    view! { <section class="panel editor-panel"><h2>"Create network policy"</h2><form class="editor-form" on:submit=on_plan><label><span>"Name"</span><input required prop:value=move || name.get() on:input=move |event| name.set(event_target_value(&event))/></label><label><span>"Identity kind"</span><select prop:value=move || kind.get() on:change=move |event| kind.set(event_target_value(&event))><option value="vpn">"VPN"</option><option value="vpc">"Provider network / VPC"</option><option value="tunnel">"Tunnel"</option><option value="source-allowlist">"Source allowlist"</option><option value="trusted-ingress">"Trusted ingress"</option></select></label>{move || if kind.get() == "source-allowlist" { view! { <label class="full-field"><span>"Allowlist resource ID"</span><input required prop:value=move || allowlist_id.get() on:input=move |event| allowlist_id.set(event_target_value(&event))/></label> }.into_any() } else { let needs_listener = matches!(kind.get().as_str(), "vpc" | "trusted-ingress"); view! { <label><span>"Provider"</span><input required prop:value=move || provider.get() on:input=move |event| provider.set(event_target_value(&event))/></label><label><span>"Account or tenant"</span><input required prop:value=move || account.get() on:input=move |event| account.set(event_target_value(&event))/></label><label><span>"Provider resource ID"</span><input required prop:value=move || resource_id.get() on:input=move |event| resource_id.set(event_target_value(&event))/></label>{needs_listener.then(|| view! { <label><span>"Listener ID"</span><input required prop:value=move || listener_id.get() on:input=move |event| listener_id.set(event_target_value(&event))/></label> })} }.into_any() }}<div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review creation"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
+    view! { <section class="panel editor-panel"><div class="section-heading"><div><p class="section-kicker">"Network identity"</p><h2>"Create network policy"</h2><p>"Identify the provider boundary first. Transport, trusted-ingress, source, and probe rules advance through reviewed revisions."</p></div></div><form class="editor-form" on:submit=on_plan><label><span>"Name"</span><input required prop:value=move || name.get() on:input=move |event| name.set(event_target_value(&event))/></label><label><span>"Identity kind"</span><select prop:value=move || kind.get() on:change=move |event| kind.set(event_target_value(&event))><option value="vpn">"VPN"</option><option value="vpc">"Provider network / VPC"</option><option value="tunnel">"Tunnel"</option><option value="source-allowlist">"Source allowlist"</option><option value="trusted-ingress">"Trusted ingress"</option></select></label>{move || if kind.get() == "source-allowlist" { view! { <label class="full-field"><span>"Allowlist resource ID"</span><input required prop:value=move || allowlist_id.get() on:input=move |event| allowlist_id.set(event_target_value(&event))/></label> }.into_any() } else { let needs_listener = matches!(kind.get().as_str(), "vpc" | "trusted-ingress"); view! { <label><span>"Provider"</span><input required prop:value=move || provider.get() on:input=move |event| provider.set(event_target_value(&event))/></label><label><span>"Account or tenant"</span><input required prop:value=move || account.get() on:input=move |event| account.set(event_target_value(&event))/></label><label><span>"Provider resource ID"</span><input required prop:value=move || resource_id.get() on:input=move |event| resource_id.set(event_target_value(&event))/></label>{needs_listener.then(|| view! { <label><span>"Listener ID"</span><input required prop:value=move || listener_id.get() on:input=move |event| listener_id.set(event_target_value(&event))/></label> })} }.into_any() }}<div class="form-actions"><a class="secondary-button" href=return_path>"Cancel"</a><button class="button" type="submit" disabled=move || busy.get()>"Review creation"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
 }
 
 #[component]
@@ -205,11 +213,18 @@ fn NetworkPolicyCard(
 ) -> impl IntoView {
     let has_default_revision = boundary.default_revision > 0;
     let owned = boundary.owner_scope_key == consumer_scope_key;
-    view! { <details class="binding-card"><summary><div><span class="resource-kind">{if owned { boundary.kind.clone() } else { "granted".to_string() }}</span><h3>{boundary.name.clone()}</h3><code>{boundary.stable_id.clone()}</code></div><div class="binding-summary-state"><StatusBadge state=format!("revision {}", boundary.default_revision) positive=has_default_revision/></div></summary><div class="binding-details"><div class="resource-identity"><div><span>"Owner"</span><code>{boundary.owner_scope_key.clone()}</code></div><div><span>"Identity fingerprint"</span><HashValue value=boundary.identity_fingerprint.clone()/></div><div><span>"Version"</span><code>{boundary.resource_version.clone()}</code></div></div>{owned.then(|| view! { <BoundaryRevisions client=client.clone() boundary=boundary.clone()/><div class="subworkflow-grid"><BoundaryRevisionCreate client=client.clone() boundary=boundary.clone()/><BoundaryGrants client=client.clone() boundary=boundary.clone()/></div><BoundaryDelete client=client boundary=boundary/> })}</div></details> }
+    let can_manage = owned && client.allows("network_policy.manage");
+    let can_grant = owned && client.allows("network_policy.grant");
+    let controls_requested = RwSignal::new(false);
+    view! { <details class="binding-card" on:toggle=move |_| controls_requested.set(true)><summary><div><span class="resource-kind">{if owned { boundary.kind.clone() } else { "granted".to_string() }}</span><h3>{boundary.name.clone()}</h3><code>{boundary.stable_id.clone()}</code></div><div class="binding-summary-state"><StatusBadge state=format!("revision {}", boundary.default_revision) positive=has_default_revision/></div></summary><div class="binding-details"><div class="resource-identity"><div><span>"Owner"</span><code>{boundary.owner_scope_key.clone()}</code></div><div><span>"Identity fingerprint"</span><HashValue value=boundary.identity_fingerprint.clone()/></div><div><span>"Version"</span><code>{boundary.resource_version.clone()}</code></div></div>{move || controls_requested.get().then(|| view! { <BoundaryRevisions client=client.clone() boundary=boundary.clone() can_manage=can_manage/>{can_manage.then(|| view! { <BoundaryRevisionCreate client=client.clone() boundary=boundary.clone()/> })}{owned.then(|| view! { <BoundaryGrants client=client.clone() boundary=boundary.clone() can_grant=can_grant/> })}{can_manage.then(|| view! { <BoundaryDelete client=client.clone() boundary=boundary.clone()/> })}{(owned && !can_manage && !can_grant).then(|| view! { <p class="muted">"You have read-only access to this network policy."</p> })} })}</div></details> }
 }
 
 #[component]
-fn BoundaryRevisions(client: ApiClient, boundary: aos_proto_types::NetworkPolicy) -> impl IntoView {
+fn BoundaryRevisions(
+    client: ApiClient,
+    boundary: aos_proto_types::NetworkPolicy,
+    can_manage: bool,
+) -> impl IntoView {
     let boundary_id = boundary.stable_id;
     let read_client = client.clone();
     let revisions = LocalResource::new(move || {
@@ -229,7 +244,7 @@ fn BoundaryRevisions(client: ApiClient, boundary: aos_proto_types::NetworkPolicy
                 .await
         }
     });
-    view! { <section class="subworkflow"><h4>"Immutable revisions"</h4><Suspense fallback=move || view! { <p class="loading-row">"Loading revisions…"</p> }>{move || { let client = client.clone(); Suspend::new(async move { match revisions.await.as_ref() { Ok(revisions) => view! { <div class="compact-list">{revisions.iter().cloned().map(|revision| view! { <BoundaryRevisionRow client=client.clone() revision=revision/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section> }
+    view! { <section class="subworkflow"><h4>"Immutable revisions"</h4><Suspense fallback=move || view! { <p class="loading-row">"Loading revisions…"</p> }>{move || { let client = client.clone(); Suspend::new(async move { match revisions.await.as_ref() { Ok(revisions) => view! { <div class="compact-list">{revisions.iter().cloned().map(|revision| view! { <BoundaryRevisionRow client=client.clone() revision=revision can_manage=can_manage/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section> }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -242,6 +257,7 @@ enum BoundaryLifecycleAction {
 fn BoundaryRevisionRow(
     client: ApiClient,
     revision: aos_proto_types::NetworkPolicyRevision,
+    can_manage: bool,
 ) -> impl IntoView {
     let lifecycle = revision.lifecycle.clone().unwrap_or_default();
     let observation = revision.observation.clone().unwrap_or_default();
@@ -324,7 +340,7 @@ fn BoundaryRevisionRow(
             busy.set(false);
         });
     });
-    view! { <div class="revision-card"><div class="compact-list-row"><div><strong>{format!("Revision {}", revision.revision)}</strong><span>{format!("{} · observation {}", lifecycle.state, observation.state)}</span><HashValue value=revision.content_digest/></div><StatusBadge state=lifecycle.state.clone() positive=lifecycle.state == "active"/></div>{matches!(lifecycle.state.as_str(), "staged" | "active" | "retiring").then(|| view! { <div class="inline-controls">{(lifecycle.state == "staged").then(|| view! { <select prop:value=move || mode.get() on:change=move |event| mode.set(event_target_value(&event))><option value="overlap">"Overlap"</option><option value="coordinated">"Coordinated"</option></select><label class="inline-check"><input type="checkbox" prop:checked=move || make_default.get() on:change=move |event| make_default.set(event_target_checked(&event))/><span>"Default for new plans"</span></label><button class="secondary-button" type="button" disabled=move || busy.get() on:click=move |_| plan_action.run(BoundaryLifecycleAction::Activate)>"Review activation"</button> })}{matches!(lifecycle.state.as_str(), "active" | "retiring").then(|| view! { <button class="danger-button" type="button" disabled=move || busy.get() on:click=move |_| plan_action.run(BoundaryLifecycleAction::Retire)>"Review retirement"</button> })}</div> })}{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|(reviewed, _)| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</div> }
+    view! { <div class="revision-card"><div class="compact-list-row"><div><strong>{format!("Revision {}", revision.revision)}</strong><span>{format!("{} · observation {}", lifecycle.state, observation.state)}</span><HashValue value=revision.content_digest/></div><StatusBadge state=lifecycle.state.clone() positive=lifecycle.state == "active"/></div>{(can_manage && matches!(lifecycle.state.as_str(), "staged" | "active" | "retiring")).then(|| view! { <div class="inline-controls">{(lifecycle.state == "staged").then(|| view! { <select prop:value=move || mode.get() on:change=move |event| mode.set(event_target_value(&event))><option value="overlap">"Overlap"</option><option value="coordinated">"Coordinated"</option></select><label class="inline-check"><input type="checkbox" prop:checked=move || make_default.get() on:change=move |event| make_default.set(event_target_checked(&event))/><span>"Default for new plans"</span></label><button class="secondary-button" type="button" disabled=move || busy.get() on:click=move |_| plan_action.run(BoundaryLifecycleAction::Activate)>"Review activation"</button> })}{matches!(lifecycle.state.as_str(), "active" | "retiring").then(|| view! { <button class="danger-button" type="button" disabled=move || busy.get() on:click=move |_| plan_action.run(BoundaryLifecycleAction::Retire)>"Review retirement"</button> })}</div> })}{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|(reviewed, _)| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</div> }
 }
 
 #[component]
@@ -424,7 +440,11 @@ fn BoundaryRevisionCreate(
 }
 
 #[component]
-fn BoundaryGrants(client: ApiClient, boundary: aos_proto_types::NetworkPolicy) -> impl IntoView {
+fn BoundaryGrants(
+    client: ApiClient,
+    boundary: aos_proto_types::NetworkPolicy,
+    can_grant: bool,
+) -> impl IntoView {
     let scope = RwSignal::new(String::new());
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
@@ -483,13 +503,14 @@ fn BoundaryGrants(client: ApiClient, boundary: aos_proto_types::NetworkPolicy) -
             busy.set(false);
         });
     });
-    view! { <section class="subworkflow"><h4>"Consumer scopes"</h4><div class="compact-list">{boundary.grants.into_iter().filter(|grant| grant.state == "active").map(|grant| view! { <BoundaryGrantRow client=row_client.clone() grant=grant/> }).collect_view()}</div><form class="stacked-form" on:submit=on_plan><label><span>"Consumer scope key"</span><input required prop:value=move || scope.get() on:input=move |event| scope.set(event_target_value(&event))/></label><button class="secondary-button" type="submit" disabled=move || busy.get()>"Grant"</button></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
+    view! { <section class="subworkflow"><h4>"Consumer scopes"</h4><div class="compact-list">{boundary.grants.into_iter().filter(|grant| grant.state == "active").map(|grant| view! { <BoundaryGrantRow client=row_client.clone() grant=grant can_grant=can_grant/> }).collect_view()}</div>{can_grant.then(|| view! { <form class="stacked-form" on:submit=on_plan><label><span>"Consumer scope key"</span><input required prop:value=move || scope.get() on:input=move |event| scope.set(event_target_value(&event))/></label><button class="secondary-button" type="submit" disabled=move || busy.get()>"Review grant"</button></form> })}{can_grant.then(|| view! { {move || error.get().map(|detail| view! { <InlineError detail=detail/> })} {move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })} })}</section> }
 }
 
 #[component]
 fn BoundaryGrantRow(
     client: ApiClient,
     grant: aos_proto_types::ConsumerScopeGrant,
+    can_grant: bool,
 ) -> impl IntoView {
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
@@ -545,7 +566,7 @@ fn BoundaryGrantRow(
             busy.set(false);
         });
     });
-    view! { <div class="compact-list-row"><div><code>{grant.consumer_scope_key}</code><span>{format!("{} live pins", grant.live_pin_count)}</span></div><button class="table-action" type="button" disabled=move || busy.get() on:click=on_plan>"Revoke"</button></div>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })} }
+    view! { <div class="compact-list-row"><div><code>{grant.consumer_scope_key}</code><span>{format!("{} live pins", grant.live_pin_count)}</span></div>{can_grant.then(|| view! { <button class="table-action" type="button" disabled=move || busy.get() on:click=on_plan>"Review revoke"</button> })}</div>{can_grant.then(|| view! { {move || error.get().map(|detail| view! { <InlineError detail=detail/> })} {move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })} })} }
 }
 
 #[component]

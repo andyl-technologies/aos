@@ -61,6 +61,13 @@ impl GatewayScope {
             } => owner_scope_key.clone(),
         }
     }
+
+    fn inventory_path(&self) -> String {
+        match self {
+            Self::Instance => "/-/instance/gateways".to_string(),
+            Self::Organization { slug, .. } => format!("/-/org/{slug}/gateways"),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -324,6 +331,7 @@ fn GatewayCreateForm(
     scope: GatewayScope,
     choices: GatewayCreateChoices,
 ) -> impl IntoView {
+    let return_path = scope.inventory_path();
     let stable_id = RwSignal::new(String::new());
     let binding_id = RwSignal::new(
         choices
@@ -445,7 +453,7 @@ fn GatewayCreateForm(
                 <label><span>"Client base path"</span><input required prop:value=move || client_base_path.get() on:input=move |event| client_base_path.set(event_target_value(&event))/></label>
                 <label><span>"Origin prefix"</span><input required prop:value=move || origin_prefix.get() on:input=move |event| origin_prefix.set(event_target_value(&event))/></label>
                 <AccessPolicyFields signals=access boundaries=boundaries/>
-                <div class="form-actions"><button class="button" type="submit" disabled=move || busy.get() || binding_id.get().is_empty() || endpoint_id.get().is_empty()>"Create gateway"</button></div>
+                <div class="form-actions"><a class="secondary-button" href=return_path>"Cancel"</a><button class="button" type="submit" disabled=move || busy.get() || binding_id.get().is_empty() || endpoint_id.get().is_empty()>"Review creation"</button></div>
             </form>
             {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
             {move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}
@@ -548,9 +556,11 @@ fn GatewayCard(
         &consumer_scope_key,
         client.allows("gateway.grant"),
     );
+    let details_requested = RwSignal::new(false);
+    let advanced_requested = RwSignal::new(false);
 
     view! {
-        <details class="binding-card">
+        <details class="binding-card" on:toggle=move |_| details_requested.set(true)>
             <summary>
                 <div>
                     <span class="resource-kind">{if owned { if gateway.enabled { "enabled" } else { "disabled" } } else { "granted" }}</span>
@@ -570,18 +580,23 @@ fn GatewayCard(
                     <div><span>"Version"</span><code>{gateway.resource_version.clone()}</code></div>
                 </div>
                 {(!gateway.reconciliation_error.is_empty()).then(|| view! { <InlineError detail=gateway.reconciliation_error.clone()/> })}
-                <GatewayPreview client=client.clone() gateway_id=gateway.stable_id.clone()/>
-                <details class="advanced-controls">
-                    <summary>"Advanced gateway details"</summary>
-                    <GatewayGrants client=client.clone() gateway=gateway.clone() can_grant=can_grant/>
-                    {can_manage.then(|| view! {
-                        <div class="subworkflow-grid">
-                            <GatewayUpdate client=client.clone() gateway=gateway.clone()/>
-                            <GatewayState client=client.clone() gateway=gateway.clone()/>
-                        </div>
-                        <GatewayDelete client=client gateway=gateway/>
-                    })}
-                </details>
+                {move || details_requested.get().then(|| view! {
+                    <GatewayPreview client=client.clone() gateway_id=gateway.stable_id.clone()/>
+                    <details class="advanced-controls" on:toggle=move |_| advanced_requested.set(true)>
+                        <summary>"Advanced gateway details"</summary>
+                        {move || advanced_requested.get().then(|| view! {
+                            <GatewayGrants client=client.clone() gateway=gateway.clone() can_grant=can_grant/>
+                            {can_manage.then(|| view! {
+                                <div class="subworkflow-grid">
+                                    <GatewayUpdate client=client.clone() gateway=gateway.clone()/>
+                                    <GatewayState client=client.clone() gateway=gateway.clone()/>
+                                </div>
+                                <GatewayDelete client=client.clone() gateway=gateway.clone()/>
+                            })}
+                            {(!can_manage && !can_grant).then(|| view! { <p class="muted">"You have read-only access to this gateway."</p> })}
+                        })}
+                    </details>
+                })}
             </div>
         </details>
     }
