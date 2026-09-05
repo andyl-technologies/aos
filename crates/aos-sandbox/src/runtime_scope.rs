@@ -15,6 +15,11 @@
 //! signature verification, and a non-renewable paired-clock bound through the
 //! controller API. It retains this complete observation and still grants no
 //! endpoint or publication permission.
+//!
+//! [`CurrentRuntimeGeneration`] consumes that proof through the controller to
+//! associate it with a durable, monotone execution number. Protected generation
+//! history survives restart and compaction, but neither its replay nor a fresh
+//! observation establishes that filesystem attachments have been restored.
 
 use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt as _;
@@ -40,6 +45,7 @@ use aos_sandbox_protocol::{
 use buffa::Message as _;
 
 mod current;
+mod generation;
 #[cfg(all(test, feature = "kernel-tests"))]
 mod kernel_tests;
 #[cfg(test)]
@@ -50,6 +56,8 @@ pub(crate) use current::acquire as acquire_current_runtime;
 pub use current::{
     CurrentRuntimeScope, CurrentRuntimeScopeError, CurrentRuntimeScopePolicy, RuntimeScopeHolder,
 };
+pub(crate) use generation::validate_namespace as validate_generation_namespace;
+pub use generation::{CurrentRuntimeGeneration, RuntimeGenerationError};
 
 const VERSION: ProtocolVersion = ProtocolVersion::new(1, 2);
 const METHOD: BrokerMethod = BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE;

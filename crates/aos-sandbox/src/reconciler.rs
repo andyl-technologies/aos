@@ -511,6 +511,10 @@ pub enum ReconcileOutcome {
 /// Reports admission, ledger, journal, or executor-contract failures.
 #[derive(Debug, thiserror::Error)]
 pub enum ReconcilerError {
+    /// Protected runtime-generation history could not be validated.
+    #[cfg(target_os = "linux")]
+    #[error("runtime generation failed: {0}")]
+    RuntimeGeneration(#[source] Box<crate::runtime_scope::RuntimeGenerationError>),
     /// Protected runtime-authority validation or mutation preparation failed.
     #[error("runtime authority failed: {0}")]
     RuntimeAuthority(#[from] crate::runtime_authority::RuntimeAuthorityError),
@@ -1140,6 +1144,20 @@ where
                 .is_some()
             {
                 RuntimeAuthorityStore::load(&mut self.journal, RuntimeAuthorityLimits::default())?;
+            }
+            if self
+                .journal
+                .records(RecordNamespace::RuntimeGeneration)
+                .next()
+                .is_some()
+            {
+                #[cfg(target_os = "linux")]
+                crate::runtime_scope::validate_generation_namespace(&mut self.journal)
+                    .map_err(|error| ReconcilerError::RuntimeGeneration(Box::new(error)))?;
+                #[cfg(not(target_os = "linux"))]
+                return Err(ReconcilerError::CorruptLedger(
+                    "runtime generations require Linux validation",
+                ));
             }
             self.ledger_validated = true;
         }

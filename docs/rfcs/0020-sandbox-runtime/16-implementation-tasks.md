@@ -2376,3 +2376,53 @@ assertions for denied containment. The post-start expiry test still requires
 kill and stop. All-feature Host tests and strict Clippy pass. This narrows the
 older ledger's unconditional pre-existing containment behavior; it does not
 adopt an unverified unit or weaken post-attempt fail-stop cleanup.
+
+### Protected runtime-generation history
+
+The controller can now consume a real `CurrentRuntimeScope` to track a durable
+generation within a sandbox incarnation. Reobserving the same Host runtime,
+scope handle, payload PID, leaf cgroup, and retained anchor preserves its
+number, including across ordinary holder/lease renewal. A distinct scope
+advances the generation; reuse of a historical handle, or reuse with changed
+execution facts, fails closed. A Host restart may conservatively require a
+new generation even if the underlying namespaces did not change.
+
+Journal namespace 11 stores fixed-width, versioned audit records and exact
+latest-generation heads in one transaction. Replay requires contiguous,
+hash-linked history and checks every originating binding against protected
+runtime-authority history. The fixed capacity is 4096 historical generations
+across all sandbox incarnations; no implicit pruning is supported. Older
+builds reject the new namespace rather than reinterpret it. Reconciliation
+validates retained generation state before dispatching effects.
+
+The non-cloneable result retains the original live Host/payload proof and its
+non-renewable deadline. Tracking checks current authority before and after
+commit; later use must recheck both that proof and the protected generation
+head. Stored PID/cgroup identifiers and digests are audit evidence, never
+reconstructed live authority. Failure after commit can leave an inert record
+without returning a live result.
+
+Twelve new inert-ledger regressions cover exact codec bounds and corruption,
+scope reuse, renewal and revocation history, restart and compaction, corrupt
+heads and binding references, capacity, and rejection before reconciler
+effects. Default-feature tests, serial all-feature sandbox tests, API/doc tests,
+and strict Clippy pass. Parallel all-feature reruns intermittently failed
+existing descriptor-close and journal-lock assertions while subprocess
+fixtures ran; the kernel-test harness already uses serial execution.
+These are not live controller/Host reboot tests. Recording or recovering a
+generation does **not** mark attachment replay complete, issue an endpoint,
+or enable backend readiness. The observed execution number is not by itself
+the signed assignment's expected namespace generation: matching and publishing
+that binding remains part of the replay integration. Controller-driven
+attachment replay and its live reboot qualification remain open under
+`SBX-RT-06` and `SBX-VIEW-03`.
+
+The full `checks.eval` attempt built the release CLI but failed its workspace
+test phase: 4442 tests passed and two unrelated Hub tests failed. The OCI
+multi-platform roundtrip test exhausted its upload-cancellation retry deadline;
+the concurrent pre-GC migration test encountered a SQLite database lock.
+No sandbox test failed in that hermetic run. Isolated Hub reruns in the shared
+incremental target stopped before execution because a cached protocol build
+script referenced another worktree's Hub API manifest. The full evaluation
+gate is therefore not qualified by this increment; no unrelated Hub code or
+test assertions were changed to bypass these failures.

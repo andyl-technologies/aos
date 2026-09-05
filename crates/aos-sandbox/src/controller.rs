@@ -311,6 +311,64 @@ where
         scope.recheck(self.reconciler.journal_mut(), clock)
     }
 
+    /// Tracks a freshly observed runtime in the protected generation ledger.
+    ///
+    /// Consumes the real Host proof. A new execution advances the incarnation's
+    /// generation atomically; another observation of the same execution keeps
+    /// its number. Neither case proves attachment replay or grants readiness.
+    /// The clock must be the protected adapter used for scope acquisition.
+    ///
+    /// # Errors
+    ///
+    /// Rejects corrupt or exhausted history, reused scope handles, stale live
+    /// authority, and failed protected commits. A post-commit failure can leave
+    /// an inert generation record without returning any live proof.
+    #[cfg(target_os = "linux")]
+    pub fn track_current_runtime_generation<T>(
+        &mut self,
+        scope: crate::runtime_scope::CurrentRuntimeScope,
+        clock: &mut T,
+    ) -> Result<
+        crate::runtime_scope::CurrentRuntimeGeneration,
+        crate::runtime_scope::RuntimeGenerationError,
+    >
+    where
+        T: FnMut() -> Result<
+            RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        crate::runtime_scope::CurrentRuntimeGeneration::track(
+            scope,
+            self.reconciler.journal_mut(),
+            clock,
+        )
+    }
+
+    /// Rechecks a generation's current head, original deadline, and live scope.
+    ///
+    /// The callback must use the same protected clock adapter as acquisition.
+    /// Successful validation does not extend the proof or attest replay.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed generation heads, corrupt history, stale authority,
+    /// expired observations, and unavailable retained kernel executions.
+    #[cfg(target_os = "linux")]
+    pub fn recheck_current_runtime_generation<T>(
+        &mut self,
+        generation: &crate::runtime_scope::CurrentRuntimeGeneration,
+        clock: &mut T,
+    ) -> Result<(), crate::runtime_scope::RuntimeGenerationError>
+    where
+        T: FnMut() -> Result<
+            RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        generation.recheck(self.reconciler.journal_mut(), clock)
+    }
+
     /// Issues a local holder channel from an acquired current-runtime scope.
     ///
     /// The complete Host and payload proof moves into the live session. Scope

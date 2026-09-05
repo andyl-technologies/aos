@@ -100,6 +100,8 @@ pub enum RecordNamespace {
     PublisherIngress = 9,
     /// Runtime holder decisions, pending intents, and monotone sandbox heads.
     RuntimeAuthority = 10,
+    /// Immutable observed runtime generations and exact latest-generation heads.
+    RuntimeGeneration = 11,
 }
 
 impl RecordNamespace {
@@ -115,6 +117,7 @@ impl RecordNamespace {
             8 => Ok(Self::PublisherPolicy),
             9 => Ok(Self::PublisherIngress),
             10 => Ok(Self::RuntimeAuthority),
+            11 => Ok(Self::RuntimeGeneration),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }
@@ -1868,13 +1871,14 @@ mod tests {
             RecordNamespace::PublisherPolicy,
             RecordNamespace::PublisherIngress,
             RecordNamespace::RuntimeAuthority,
+            RecordNamespace::RuntimeGeneration,
         ];
         for (index, namespace) in namespaces.into_iter().enumerate() {
             let code = u8::try_from(index + 1).unwrap();
             assert_eq!(namespace as u8, code);
             assert_eq!(RecordNamespace::from_byte(code).unwrap(), namespace);
         }
-        for code in [0, 11, 255] {
+        for code in [0, 12, 255] {
             assert!(RecordNamespace::from_byte(code).is_err());
         }
     }
