@@ -6,6 +6,8 @@ use clap::{Args, Subcommand};
 
 #[derive(Subcommand)]
 pub enum ReleaseCommand {
+    /// Inspect the shared qualification contract and required release gates
+    Contract(ReleaseContractArgs),
     /// Derive and freeze a release plan from Git and the Nix inventory
     Plan(ReleasePlanArgs),
     /// Realize and repeat-check every planned Nix output
@@ -51,6 +53,21 @@ pub enum ReleaseCommand {
     },
     /// Verify a captured release bundle using only public trust inputs
     Verify(ReleaseVerifyArgs),
+}
+
+#[derive(Args)]
+pub struct ReleaseContractArgs {
+    /// Select the release class whose obligations are displayed
+    #[arg(long = "class", default_value = "edge", value_parser = ["edge", "candidate", "stable", "emergency"])]
+    pub release_class: String,
+
+    /// Read an exported contract offline instead of evaluating Nix
+    #[arg(long)]
+    pub input: Option<PathBuf>,
+
+    /// Write canonical contract bytes to a new file
+    #[arg(long)]
+    pub output: Option<PathBuf>,
 }
 
 #[derive(Args)]

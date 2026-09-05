@@ -184,6 +184,7 @@ fn prepare(arguments: &[String]) -> Result<()> {
         images: Vec::new(),
         artifacts,
         evidence: vec![EvidenceRecord {
+            qualification: None,
             id: "fleet-preflight".into(),
             policy_id: "fleet-release-gate-v1".into(),
             policy_digest: digest("fleet-release-gate-policy"),
@@ -247,6 +248,8 @@ fn release_plan(
     ];
     ReleasePlanV1 {
         schema_version: aos_release::RELEASE_PLAN_V1.into(),
+        qualification: None,
+        qualification_predecessor: None,
         release_id: RELEASE_ID.into(),
         version: RELEASE_VERSION.into(),
         release_class: ReleaseClass::Candidate,
@@ -534,6 +537,7 @@ async fn qualification_executor() -> Result<()> {
         schema_version: QUALIFICATION_EXECUTOR_RESPONSE_V1.into(),
         request_digest: request.digest()?,
         evidence: EvidenceRecord {
+            qualification: None,
             id: format!("qualification/{}/{}", request.policy_id, request.platform),
             policy_id: request.policy_id.clone(),
             policy_digest: request.policy_digest,

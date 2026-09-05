@@ -31,6 +31,8 @@ pub mod inventory;
 pub mod manifest;
 pub mod plan;
 pub mod platform;
+pub mod qualification;
+pub mod qualification_evidence;
 pub mod receipt;
 pub mod registry;
 pub mod sbom;
@@ -43,6 +45,9 @@ pub use digest::Sha256Digest;
 
 /// Schema identifier for the first frozen release-plan contract.
 pub const RELEASE_PLAN_V1: &str = "aos.release.plan/v1";
+
+/// Schema for release plans with the shared qualification contract.
+pub const RELEASE_PLAN_V2: &str = "aos.release.plan/v2";
 
 /// Schema identifier for the first finalized release-manifest contract.
 pub const RELEASE_MANIFEST_V1: &str = "aos.release.manifest/v1";

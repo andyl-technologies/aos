@@ -1,5 +1,7 @@
 # Maintain AOS
 
+Release operators use the shared [qualification contract](qualification.md), [release checklist](release-checklist.md), and [qualification exercises](qualification-exercises.md) for testing and production.
+
 This section is for people changing the AOS source tree, package graph, system
 modules, release images, or Rust tools. Installing and operating a published
 AOS image should not require any of these workflows.

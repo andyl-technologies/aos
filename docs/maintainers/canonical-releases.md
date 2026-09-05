@@ -1,5 +1,11 @@
 # Canonical release coordinator
 
+Use the shared [release checklist](release-checklist.md) and
+[qualification contract](qualification.md) for every release class. New plans
+embed the source-controlled contract in `aos.release.plan/v2`; the contract
+selects applicable requirements and thresholds for testing and production.
+Export the contract with `aos release contract` before preparing a request.
+
 Canonical AOS releases are driven by one reviewed plan. The plan freezes the
 source revision, registry base, complete package and image matrices, required
 gates, signer roles, deployment identities, intended channels, and retention
@@ -580,9 +586,14 @@ directory contains `staging-receipt.json` and a successor
 
 ## Run the native qualification matrix
 
-Configure four absolute executable paths. The Linux paths invoke native Linux
+Configure absolute executable paths for the applicable platforms. The Linux paths invoke Linux
 test closures. The Darwin paths are credential-free authenticated remote
 adapters whose far ends execute on supported Intel and Apple Silicon macOS.
+Release-wide cases use the x86_64 Linux executor. Image and container cases
+select their declared reference target; package cases select each published
+package/platform independently. An absent unrelated platform requires no
+adapter. Legacy plans retain their original platform-wide execution semantics.
+
 Each adapter reads one canonical request from standard input and writes one
 canonical `aos.release.qualification-executor-response/v1` object to standard
 output. Successful adapters must not write diagnostics. They download every

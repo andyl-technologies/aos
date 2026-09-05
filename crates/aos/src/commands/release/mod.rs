@@ -8,6 +8,7 @@ mod build;
 mod capture;
 mod channel;
 mod compose_surface;
+mod contract;
 mod finalize;
 mod finalize_cache;
 mod finalize_image;
@@ -37,6 +38,7 @@ use crate::cli::ReleaseCommand;
 /// Returns an error when planning, capture, or release verification fails.
 pub fn run(command: &ReleaseCommand, nix: &NixRunner, printer: &Printer) -> Result<()> {
     match command {
+        ReleaseCommand::Contract(args) => contract::run(args, nix, printer),
         ReleaseCommand::Plan(args) => plan::run(args, nix, printer),
         ReleaseCommand::Build(args) => build::run(args, nix, printer),
         ReleaseCommand::Status(args) => status::run(args, printer),
