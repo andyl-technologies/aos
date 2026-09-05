@@ -1056,19 +1056,51 @@ impl StateStore {
 
     /// Records an immutable provider identity's earliest observed time.
     pub(super) fn record_first_observed(&self, identity: &str, observed_at: u64) -> Result<u64> {
-        if identity.is_empty()
-            || identity.len() > 4096
-            || identity.bytes().any(|byte| byte.is_ascii_control())
-        {
-            bail!("provider first-observed identity is invalid");
+        let identity = identity.to_string();
+        let values =
+            self.record_first_observed_batch(std::slice::from_ref(&identity), observed_at)?;
+        values
+            .get(&identity)
+            .copied()
+            .ok_or_else(|| anyhow::anyhow!("provider first-observed identity was not recorded"))
+    }
+
+    /// Records a provider response's identities with one atomic index update.
+    pub(super) fn record_first_observed_batch(
+        &self,
+        identities: &[String],
+        observed_at: u64,
+    ) -> Result<BTreeMap<String, u64>> {
+        for identity in identities {
+            if identity.is_empty()
+                || identity.len() > 4096
+                || identity.bytes().any(|byte| byte.is_ascii_control())
+            {
+                bail!("provider first-observed identity is invalid");
+            }
         }
+
         self.with_provider_lock(|| {
             let path = self.root.join("provider-first-observed.json");
             let mut values: BTreeMap<String, u64> =
                 read_optional(&path, "provider first-observed index")?.unwrap_or_default();
-            let value = *values.entry(identity.to_string()).or_insert(observed_at);
-            atomic_write(&self.root, "provider-first-observed.json", &values)?;
-            Ok(value)
+            let mut observed = BTreeMap::new();
+            let mut changed = false;
+            for identity in identities {
+                let value = match values.get(identity) {
+                    Some(value) => *value,
+                    None => {
+                        values.insert(identity.clone(), observed_at);
+                        changed = true;
+                        observed_at
+                    }
+                };
+                observed.insert(identity.clone(), value);
+            }
+            if changed {
+                atomic_write(&self.root, "provider-first-observed.json", &values)?;
+            }
+            Ok(observed)
         })
     }
 
@@ -1484,6 +1516,40 @@ mod tests {
         store.claim_repology_request(100_000)?;
         assert!(store.claim_repology_request(100_000).is_err());
         store.claim_repology_request(100_001)?;
+        Ok(())
+    }
+
+    #[test]
+    fn first_observed_batch_preserves_each_identitys_earliest_time() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let repository = temporary.path().join("repository");
+        secure_directory(&repository)?;
+        let store = StateStore {
+            root: temporary.path().to_path_buf(),
+            repository,
+        };
+        let initial = vec!["provider:a".to_string(), "provider:b".to_string()];
+        assert_eq!(
+            store.record_first_observed_batch(&initial, 200)?,
+            BTreeMap::from([
+                ("provider:a".to_string(), 200),
+                ("provider:b".to_string(), 200),
+            ])
+        );
+
+        let repeated = vec!["provider:b".to_string(), "provider:c".to_string()];
+        assert_eq!(
+            store.record_first_observed_batch(&repeated, 300)?,
+            BTreeMap::from([
+                ("provider:b".to_string(), 200),
+                ("provider:c".to_string(), 300),
+            ])
+        );
+        assert!(
+            store
+                .record_first_observed_batch(&["provider:\n".to_string()], 400)
+                .is_err()
+        );
         Ok(())
     }
 
