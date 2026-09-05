@@ -117,22 +117,40 @@ not covered by the current system tests.
 
 ## Discover and download system images
 
-`aos image` consumes the signed system-image catalog of a Hub registry and
-downloads disk bytes directly. It does not require a source checkout:
+`aos image` reads signed system-image metadata from a configured APM registry.
+Git and static HTTP registries work without a Hub, source checkout, or Nix
+installation. `--registry` names the local configuration shown by
+`apm registry list` (see [Registry configuration](registries.md)):
 
 ```sh
-aos image list --registry andyl/main --channel stable
-aos image show --registry andyl/main --channel stable \
+apm registry list
+aos image list --registry andyl --channel stable
+aos image show --registry andyl --channel stable \
   --architecture x86_64 --target qemu-kvm
-aos image download --registry andyl/main --channel stable \
+aos image download --registry andyl --channel stable \
   --architecture x86_64 --target qemu-kvm --output aos.qcow2
 ```
 
-Use `--release` instead of `--channel` for an immutable release, or add
+Use `--release` instead of `--channel` for an exact signed release, or add
 `--format raw|qcow2|vmdk|vhd` when the target permits several encodings.
-`--package` disambiguates registries that publish more than one sysroot
-package. `--hub` defaults to the public AOS Hub. `--token` or `AOS_TOKEN`
-authorizes a private registry and is rejected over cleartext HTTP.
+`--package` disambiguates registries that publish more than one sysroot package.
+Channel resolution uses the client's persisted partition and rollback floor.
+An explicit historical release does not change package tracking or lower that
+floor. Signature verification cannot be disabled for image discovery.
+
+Select Hub discovery explicitly with `--hub` (or `AOS_HUB`). In this mode,
+`--registry` is the Hub's organization/registry slug:
+
+```sh
+aos image show --hub https://aos.andyl.org --registry andyl/main \
+  --channel stable --architecture x86_64 --target qemu-kvm
+```
+
+`--token` or `AOS_TOKEN` authorizes a private Hub registry and requires Hub mode;
+bearer tokens are rejected over cleartext HTTP. A failed explicit Hub request
+never falls back to another registry. Portable registry discovery uses the
+configured trust anchors and the selected registry's committed/client cache
+chain, and rejects failed signature, freshness, or continuity checks.
 
 Downloads resume an existing hidden partial file with an HTTP range request.
 The command enforces the signed size and SHA-256 before atomically installing

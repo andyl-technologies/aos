@@ -71,6 +71,7 @@ pub(crate) mod exposed_units;
 pub(crate) mod gitcmd;
 pub mod graph_compile;
 pub mod hold;
+pub mod images;
 pub mod install;
 pub mod metadata;
 pub(crate) mod package_attestation;

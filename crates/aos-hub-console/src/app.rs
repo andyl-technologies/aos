@@ -6,9 +6,11 @@
 //! transport.
 
 use leptos::ev;
-use leptos::leptos_dom::helpers::window_event_listener;
+use leptos::leptos_dom::helpers::{set_timeout, window_event_listener};
 use leptos::prelude::*;
 use wasm_bindgen::{JsCast, JsValue};
+
+use aos_hub_console_contract::settings_navigation_starts_open;
 
 use crate::route::{ConsoleRoute, ConsoleScope, PageSpec, AUTHENTICATED_PRIMARY_NAVIGATION};
 use crate::transport::ApiClient;
@@ -18,10 +20,14 @@ use crate::workflows::ResourceWorkflow;
 #[component]
 pub fn App() -> impl IntoView {
     let route = RwSignal::new(current_route());
+    let workflow_revision = RwSignal::new(0_u64);
     let navigate = Callback::new(move |path: String| {
         let Some(next_route) = ConsoleRoute::resolve(&path) else {
             return;
         };
+        if route.get_untracked().as_ref() == Some(&next_route) {
+            return;
+        }
         let Some(window) = leptos::web_sys::window() else {
             return;
         };
@@ -38,8 +44,20 @@ pub fn App() -> impl IntoView {
         window.scroll_to_with_x_and_y(0.0, 0.0);
         route.set(Some(next_route));
     });
-    let popstate = window_event_listener(ev::popstate, move |_| route.set(current_route()));
+    let popstate = window_event_listener(ev::popstate, move |_| {
+        let next_route = current_route();
+        if next_route == route.get_untracked() {
+            workflow_revision.update(|revision| *revision = revision.wrapping_add(1));
+        } else {
+            route.set(next_route);
+        }
+    });
     on_cleanup(move || popstate.remove());
+    let navigation_open = RwSignal::new(settings_navigation_starts_open(viewport_width()));
+    let navigation_resize = window_event_listener(ev::resize, move |_| {
+        navigation_open.set(settings_navigation_starts_open(viewport_width()));
+    });
+    on_cleanup(move || navigation_resize.remove());
     let csrf = shell_meta("aos-session-csrf").unwrap_or_default();
     let session_scope = Memo::new(move |_| {
         route
@@ -62,20 +80,28 @@ pub fn App() -> impl IntoView {
     });
 
     view! {
-        {move || match route.get() {
-            Some(route) => {
+        <For
+            each=move || route.get().into_iter()
+            key=|route| route.href(route.page)
+            children=move |route| {
                 view! {
-                    <ManagementShell route=route session=session navigate=navigate/>
-                }.into_any()
-            },
-            None => view! {
+                    <ManagementShell
+                        route=route
+                        session=session
+                        navigate=navigate
+                        navigation_open=navigation_open
+                        workflow_revision=workflow_revision
+                    />
+                }
+            }
+        />
+        {move || route.get().is_none().then(|| view! {
                 <main class="fatal-page">
                     <p class="eyebrow">"AOS Hub"</p>
                     <h1>"Unknown management route"</h1>
                     <p>"This path is not part of the closed control-plane route registry."</p>
                 </main>
-            }.into_any(),
-        }}
+        })}
     }
 }
 
@@ -84,6 +110,8 @@ fn ManagementShell(
     route: ConsoleRoute,
     session: LocalResource<Result<ApiClient, crate::transport::TransportError>>,
     navigate: Callback<String>,
+    navigation_open: RwSignal<bool>,
+    workflow_revision: RwSignal<u64>,
 ) -> impl IntoView {
     let context = scope_title(&route.scope);
     let page_label = route.page.label;
@@ -164,18 +192,37 @@ fn ManagementShell(
             </header>
             {(!announcement.is_empty()).then(|| view! { <div class="announce">{announcement}</div> })}
             <div class="settings">
-                <details class="settings-nav-disclosure" open>
+                <details
+                    class="settings-nav-disclosure"
+                    open=move || navigation_open.get()
+                    on:toggle=move |event| {
+                        let open = event
+                            .target()
+                            .and_then(|target| target.dyn_into::<leptos::web_sys::Element>().ok())
+                            .is_some_and(|details| details.has_attribute("open"));
+                        navigation_open.set(open);
+                    }
+                >
                     <summary>"Settings navigation"</summary>
                     <Transition fallback=move || view! { <nav class="settings-nav" aria-label="Settings navigation" aria-busy="true"><span class="settings-nav-label">"Loading navigation…"</span></nav> }>
                         {move || { let route = navigation_route.clone(); Suspend::new(async move { match session.await.as_ref() { Ok(client) => view! { <Navigation route=route client=client.clone()/> }.into_any(), Err(_) => view! { <nav class="settings-nav" aria-label="Settings navigation"><a href=route.base_path.clone()>"Overview"</a></nav> }.into_any() } }) }}
                     </Transition>
                 </details>
                 <main id="main-content" class="settings-body">
-                    <h1>{page_label}</h1>
+                    <ScopeHeader route=route.clone()/>
                     <ContextRail route=context_route.clone()/>
-                    <Transition fallback=move || view! { <p class="loading-row" aria-busy="true">"Loading management data…"</p> }>
-                        {move || { let route = workflow_route.clone(); Suspend::new(async move { match session.await.as_ref() { Ok(client) if client.allows(route.page.navigation_permission()) => view! { <ResourceWorkflow route=route client=client.clone()/> }.into_any(), Ok(_) => view! { <PermissionDenied route=route/> }.into_any(), Err(error) => view! { <FailureShell route=route detail=error.to_string()/> }.into_any() } }) }}
-                    </Transition>
+                    <For
+                        each=move || vec![workflow_revision.get()]
+                        key=|revision| *revision
+                        children=move |_| {
+                            let route = workflow_route.clone();
+                            view! {
+                                <Transition fallback=move || view! { <p class="loading-row" aria-busy="true">"Loading management data…"</p> }>
+                                    {move || { let route = route.clone(); Suspend::new(async move { match session.await.as_ref() { Ok(client) if client.allows(route.page.navigation_permission()) => view! { <ResourceWorkflow route=route client=client.clone()/> }.into_any(), Ok(_) => view! { <PermissionDenied route=route/> }.into_any(), Err(error) => view! { <FailureShell route=route detail=error.to_string()/> }.into_any() } }) }}
+                                </Transition>
+                            }
+                        }
+                    />
                 </main>
             </div>
             <footer class="statline">
@@ -194,19 +241,33 @@ fn ManagementShell(
 }
 
 #[component]
+fn ScopeHeader(route: ConsoleRoute) -> impl IntoView {
+    let kind = scope_kind(&route.scope);
+    let identity = scope_identity(&route.scope);
+    let overview = route.base_path.clone();
+
+    view! {
+        <header class="scope-header">
+            <div>
+                <p class="section-kicker">{format!("{kind} settings")}</p>
+                <h1>{route.page.label}</h1>
+                <p class="scope-identity"><span>"Scope"</span><strong>{identity}</strong></p>
+            </div>
+            {(route.page.key != "overview").then(|| view! { <a href=overview>"View scope overview"</a> })}
+        </header>
+    }
+}
+
+#[component]
 fn ContextRail(route: ConsoleRoute) -> impl IntoView {
     let visible = matches!(route.page.group, "Infrastructure" | "Topology")
         || matches!(route.page.key, "integrations" | "retention" | "gc");
     visible.then(|| {
-        let (owns, uses, used_by) = topology_context(&route);
+        let edges = related_settings(&route);
         view! {
             <details class="topology-context">
-                <summary>"Topology context"</summary>
-                <div class="topology-context-grid">
-                    <ContextEdges label="Owns" edges=owns/>
-                    <ContextEdges label="Uses" edges=uses/>
-                    <ContextEdges label="Used by" edges=used_by/>
-                </div>
+                <summary>"Related settings"</summary>
+                <ContextEdges label="Configuration areas" edges=edges/>
             </details>
         }
     })
@@ -228,52 +289,33 @@ fn ContextEdges(label: &'static str, edges: Vec<(&'static str, String)>) -> impl
     }
 }
 
-fn topology_context(
-    route: &ConsoleRoute,
-) -> (
-    Vec<(&'static str, String)>,
-    Vec<(&'static str, String)>,
-    Vec<(&'static str, String)>,
-) {
+fn related_settings(route: &ConsoleRoute) -> Vec<(&'static str, String)> {
     let sibling = |suffix: &str| format!("{}/{suffix}", route.base_path);
     match &route.scope {
-        ConsoleScope::Registry { .. } => (
-            vec![
-                ("Placements", sibling("placements")),
-                ("Routes", sibling("delivery")),
-            ],
-            vec![("Binary caches", sibling("caches"))],
-            Vec::new(),
-        ),
-        ConsoleScope::Cache { .. } => (
-            vec![
-                ("Placements", sibling("placements")),
-                ("Routes", sibling("delivery")),
-            ],
-            Vec::new(),
-            vec![("Registry integrations", sibling("integrations"))],
-        ),
-        ConsoleScope::Organization { .. } => (
-            vec![
-                ("Bindings", sibling("bindings")),
-                ("Endpoints", sibling("endpoints")),
-            ],
-            Vec::new(),
-            vec![
-                ("Registries", sibling("registries")),
-                ("Binary caches", sibling("caches")),
-            ],
-        ),
-        ConsoleScope::Instance => (
-            vec![
-                ("Bindings", sibling("bindings")),
-                ("Endpoints", sibling("endpoints")),
-            ],
-            Vec::new(),
-            vec![("Organizations", "/-/orgs".to_string())],
-        ),
-        ConsoleScope::Caches => (Vec::new(), Vec::new(), Vec::new()),
-        ConsoleScope::Organizations => (Vec::new(), Vec::new(), Vec::new()),
+        ConsoleScope::Registry { .. } => vec![
+            ("Placements", sibling("placements")),
+            ("Delivery", sibling("delivery")),
+            ("Binary caches", sibling("caches")),
+        ],
+        ConsoleScope::Cache { .. } => vec![
+            ("Placements", sibling("placements")),
+            ("Delivery", sibling("delivery")),
+            ("Registry integrations", sibling("integrations")),
+        ],
+        ConsoleScope::Organization { .. } => vec![
+            ("Bindings", sibling("bindings")),
+            ("Endpoints", sibling("endpoints")),
+            ("Gateways", sibling("gateways")),
+            ("Registries", sibling("registries")),
+            ("Binary caches", sibling("caches")),
+        ],
+        ConsoleScope::Instance => vec![
+            ("Bindings", sibling("bindings")),
+            ("Endpoints", sibling("endpoints")),
+            ("Gateways", sibling("gateways")),
+            ("Organizations", "/-/orgs".to_string()),
+        ],
+        ConsoleScope::Caches | ConsoleScope::Organizations => Vec::new(),
     }
 }
 
@@ -352,7 +394,8 @@ fn navigation_groups(route: &ConsoleRoute, client: &ApiClient) -> Vec<Navigation
 /// Mutation workflows use this path after a successful apply so the mounted
 /// application chrome and in-memory browser session survive. Dispatching a
 /// synthetic `popstate` event drives the same route refresh as browser
-/// back/forward navigation.
+/// back/forward navigation. The dispatch runs in the next browser task so the
+/// mutation callback can finish its terminal reactive updates before unmount.
 pub(crate) fn navigate(path: &str) {
     let Some(route) = ConsoleRoute::resolve(path) else {
         return;
@@ -372,29 +415,42 @@ pub(crate) fn navigate(path: &str) {
         document.set_title(&format!("{} — AOS Hub", route.page.label));
     }
     window.scroll_to_with_x_and_y(0.0, 0.0);
-    match leptos::web_sys::PopStateEvent::new("popstate") {
-        Ok(event) => {
-            let _ = window.dispatch_event(&event);
-        }
-        Err(_) => {
-            let _ = window.location().set_href(path);
-        }
-    }
+    let fallback_path = path.to_string();
+    set_timeout(
+        move || match leptos::web_sys::PopStateEvent::new("popstate") {
+            Ok(event) => {
+                let _ = window.dispatch_event(&event);
+            }
+            Err(_) => {
+                let _ = window.location().set_href(&fallback_path);
+            }
+        },
+        std::time::Duration::ZERO,
+    );
 }
 
 /// Refreshes the active workflow without unloading the management application.
+///
+/// The refresh runs in the next browser task. Mutation callbacks and their
+/// queued reactive updates can therefore finish before the workflow subtree
+/// is disposed and mounted again.
 pub(crate) fn refresh() {
-    let Some(window) = leptos::web_sys::window() else {
-        return;
-    };
-    match leptos::web_sys::PopStateEvent::new("popstate") {
-        Ok(event) => {
-            let _ = window.dispatch_event(&event);
-        }
-        Err(_) => {
-            let _ = window.location().reload();
-        }
-    }
+    set_timeout(
+        || {
+            let Some(window) = leptos::web_sys::window() else {
+                return;
+            };
+            match leptos::web_sys::PopStateEvent::new("popstate") {
+                Ok(event) => {
+                    let _ = window.dispatch_event(&event);
+                }
+                Err(_) => {
+                    let _ = window.location().reload();
+                }
+            }
+        },
+        std::time::Duration::ZERO,
+    );
 }
 
 fn current_route() -> Option<ConsoleRoute> {
@@ -410,6 +466,14 @@ fn shell_meta(name: &str) -> Option<String> {
         .get_attribute("content")
 }
 
+/// Returns whether the authenticated shell explicitly advertises one feature.
+///
+/// Missing metadata means unavailable, so rollout-gated controls remain
+/// fail-closed when an older shell cannot make the server capability known.
+pub(crate) fn shell_feature(name: &str) -> bool {
+    shell_meta(name).is_some_and(|value| value == "true")
+}
+
 fn scope_title(scope: &ConsoleScope) -> String {
     match scope {
         ConsoleScope::Instance => "Settings".to_string(),
@@ -419,6 +483,32 @@ fn scope_title(scope: &ConsoleScope) -> String {
         ConsoleScope::Registry { path } => path.clone(),
         ConsoleScope::Cache { path } => path.clone(),
     }
+}
+
+fn scope_kind(scope: &ConsoleScope) -> &'static str {
+    match scope {
+        ConsoleScope::Instance => "Instance",
+        ConsoleScope::Caches => "Cache inventory",
+        ConsoleScope::Organizations => "Organization inventory",
+        ConsoleScope::Organization { .. } => "Organization",
+        ConsoleScope::Registry { .. } => "Registry",
+        ConsoleScope::Cache { .. } => "Binary cache",
+    }
+}
+
+fn scope_identity(scope: &ConsoleScope) -> String {
+    match scope {
+        ConsoleScope::Instance => "AOS Hub deployment".to_string(),
+        ConsoleScope::Caches => "All visible caches".to_string(),
+        ConsoleScope::Organizations => "All visible organizations".to_string(),
+        ConsoleScope::Organization { slug }
+        | ConsoleScope::Registry { path: slug }
+        | ConsoleScope::Cache { path: slug } => slug.clone(),
+    }
+}
+
+fn viewport_width() -> Option<f64> {
+    leptos::web_sys::window()?.inner_width().ok()?.as_f64()
 }
 
 #[cfg(test)]
@@ -449,18 +539,25 @@ mod tests {
     }
 
     #[test]
-    fn topology_context_uses_relationship_labels_and_canonical_links() {
+    fn related_settings_use_canonical_links_without_claiming_resource_relationships() {
         let registry = ConsoleRoute::resolve("/acme/main/-/settings/placements")
             .expect("registry topology route");
-        let (owns, uses, used_by) = topology_context(&registry);
-        assert_eq!(owns[0].1, "/acme/main/-/settings/placements");
-        assert_eq!(uses[0].1, "/acme/main/-/settings/caches");
-        assert!(used_by.is_empty());
+        let registry_links = related_settings(&registry);
+        assert_eq!(registry_links[0].1, "/acme/main/-/settings/placements");
+        assert_eq!(registry_links[2].1, "/acme/main/-/settings/caches");
 
         let cache = ConsoleRoute::resolve("/-/org/acme/caches/build/delivery")
             .expect("cache topology route");
-        let (_, _, used_by) = topology_context(&cache);
-        assert_eq!(used_by[0].1, "/-/org/acme/caches/build/integrations");
+        let cache_links = related_settings(&cache);
+        assert_eq!(cache_links[2].1, "/-/org/acme/caches/build/integrations");
+    }
+
+    #[test]
+    fn scope_header_names_resource_kind_and_exact_identity() {
+        let route = ConsoleRoute::resolve("/acme/main/-/settings/delivery")
+            .expect("registry delivery route");
+        assert_eq!(scope_kind(&route.scope), "Registry");
+        assert_eq!(scope_identity(&route.scope), "acme/main");
     }
 
     #[test]

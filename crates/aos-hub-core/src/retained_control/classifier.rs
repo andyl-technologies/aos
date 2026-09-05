@@ -35,6 +35,8 @@ pub enum ApplyOutcome {
     Immediate,
     /// Apply commits desired state and schedules a durable operation.
     Operation,
+    /// Apply persists reviewed workflow progress with linked durable operations.
+    Workflow,
 }
 
 /// The only durable mutations exempt from reviewed plan/apply as append-only collaboration.
@@ -74,7 +76,7 @@ pub enum MethodClass {
     DataPlaneWrite,
     /// A fenced observation reported by an internal controller.
     ControllerObservation,
-    /// Cancellation or retry of an existing operation.
+    /// Cancellation, retry, or resumption of an existing reviewed workflow.
     OperationLifecycle,
     /// Explicit CAS/idempotency replay of one frozen maintenance action.
     MaintenanceReplay,
@@ -138,8 +140,8 @@ pub struct ManifestViolation {
 ///
 /// The validator fails closed: every method needs an explicit class; every
 /// durable desired-state mutation must be one half of exactly one plan/apply
-/// pair; external reviewed effects must return an Operation; controller
-/// observations cannot be public.
+/// pair; external reviewed effects must return an operation or the explicitly
+/// declared durable workflow; controller observations cannot be public.
 #[must_use]
 pub fn validate_method_manifest(methods: &[MethodDescriptor]) -> Vec<ManifestViolation> {
     let mut violations = Vec::new();
@@ -210,10 +212,12 @@ pub fn validate_method_manifest(methods: &[MethodDescriptor]) -> Vec<ManifestVio
                         "apply method has an invalid pair identity",
                     ));
                 }
-                if method.external_effects && *outcome != ApplyOutcome::Operation {
+                if method.external_effects
+                    && !matches!(outcome, ApplyOutcome::Operation | ApplyOutcome::Workflow)
+                {
                     violations.push(violation(
                         method,
-                        "external reviewed effects must return an operation",
+                        "external reviewed effects must return an operation or reviewed workflow",
                     ));
                 }
                 pairs.entry(pair.as_str()).or_default().1.push(method);
@@ -317,12 +321,15 @@ pub fn validate_method_manifest(methods: &[MethodDescriptor]) -> Vec<ManifestVio
                     "operation lifecycle methods mutate operation state",
                     &mut violations,
                 );
-                if method.service != "OperationService"
-                    || !matches!(method.method.as_str(), "CancelOperation" | "RetryOperation")
-                {
+                if !matches!(
+                    path.as_str(),
+                    "OperationService/CancelOperation"
+                        | "OperationService/RetryOperation"
+                        | "DeliveryService/ResumeDeliveryDestination"
+                ) {
                     violations.push(violation(
                         method,
-                        "operation-lifecycle exception is limited to cancel and retry",
+                        "operation-lifecycle exception is limited to cancel, retry, and reviewed delivery resume",
                     ));
                 }
             }
@@ -373,12 +380,28 @@ pub fn validate_method_manifest(methods: &[MethodDescriptor]) -> Vec<ManifestVio
         }
         let canonical_names =
             plans[0].method.strip_prefix("Plan") == Some(applies[0].method.as_str());
-        let registry_purge_fence_names = plans[0].service == "ContainerService"
-            && plans[0].method == "PlanContainerRegistryPurgeFence"
-            && applies[0].method == "ApplyContainerRegistryPurgeFence";
+        // These names deliberately retain `Apply` to distinguish durable
+        // workflow initiation from the activation operation. Keep the
+        // exception exact so new reviewed mutations still use paired names.
+        let explicitly_paired_names = matches!(
+            (
+                plans[0].service.as_str(),
+                plans[0].method.as_str(),
+                applies[0].method.as_str(),
+            ),
+            (
+                "ContainerService",
+                "PlanContainerRegistryPurgeFence",
+                "ApplyContainerRegistryPurgeFence"
+            ) | (
+                "DeliveryService",
+                "PlanDeliveryDestination",
+                "ApplyDeliveryDestination"
+            )
+        );
         if plans[0].service != applies[0].service
             || plans[0].exposure != applies[0].exposure
-            || (!canonical_names && !registry_purge_fence_names)
+            || (!canonical_names && !explicitly_paired_names)
         {
             violations.push(ManifestViolation {
                 subject: pair.into(),
@@ -491,6 +514,20 @@ pub fn validate_complete_method_manifest(
                 ));
             }
         }
+        if method.path() == "DeliveryService/ResumeDeliveryDestination" {
+            let mut fields = descriptor.request_fields.clone();
+            fields.sort();
+            if !fields.iter().map(String::as_str).eq([
+                "expected_resource_version",
+                "idempotency_key",
+                "workflow_id",
+            ]) {
+                violations.push(violation(
+                    method,
+                    "delivery resume must bind a reviewed workflow, CAS, and idempotency key",
+                ));
+            }
+        }
         if matches!(method.class, MethodClass::Plan { .. })
             && (!descriptor
                 .request_fields
@@ -563,6 +600,18 @@ pub fn validate_complete_method_manifest(
                 method,
                 "operation applies must independently return OperationResponse",
             ));
+        }
+        if matches!(
+            method.class,
+            MethodClass::Apply {
+                outcome: ApplyOutcome::Workflow,
+                ..
+            }
+        ) && (method.path() != "DeliveryService/ApplyDeliveryDestination"
+            || descriptor.response != "DeliveryWorkflowResponse")
+        {
+            violations.push(violation(method,
+                "workflow applies must return the declared delivery workflow with durable operation references"));
         }
     }
     violations
@@ -1459,6 +1508,27 @@ mod tests {
                 external_effects: true,
             },
             MethodDescriptor {
+                service: "DeliveryService".into(),
+                method: "PlanDeliveryDestination".into(),
+                exposure: MethodExposure::Public,
+                durability: MethodDurability::Durable,
+                class: MethodClass::Plan {
+                    pair: "delivery_destination".into(),
+                },
+                external_effects: false,
+            },
+            MethodDescriptor {
+                service: "DeliveryService".into(),
+                method: "ApplyDeliveryDestination".into(),
+                exposure: MethodExposure::Public,
+                durability: MethodDurability::Durable,
+                class: MethodClass::Apply {
+                    pair: "delivery_destination".into(),
+                    outcome: ApplyOutcome::Workflow,
+                },
+                external_effects: true,
+            },
+            MethodDescriptor {
                 service: "ChangeRequestService".into(),
                 method: "AddComment".into(),
                 exposure: MethodExposure::Public,
@@ -1732,6 +1802,49 @@ mod tests {
                 .iter()
                 .any(|violation| violation.reason.contains("apply requests may contain only"))
         );
+    }
+
+    #[test]
+    fn delivery_resume_cannot_accept_new_intent_or_widen_the_lifecycle_exception() {
+        let method = MethodDescriptor {
+            service: "DeliveryService".into(),
+            method: "ResumeDeliveryDestination".into(),
+            exposure: MethodExposure::Public,
+            durability: MethodDurability::Durable,
+            class: MethodClass::OperationLifecycle,
+            external_effects: true,
+        };
+        let descriptor = ApiMethodDescriptor {
+            service: method.service.clone(),
+            method: method.method.clone(),
+            request: "ResumeDeliveryDestinationRequest".into(),
+            response: "DeliveryWorkflowResponse".into(),
+            request_fields: [
+                "workflow_id",
+                "expected_resource_version",
+                "idempotency_key",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        };
+        assert!(
+            validate_complete_method_manifest(&[method.clone()], &[descriptor.clone()]).is_empty()
+        );
+
+        let mut mutable = descriptor;
+        mutable.request_fields.push("intent".into());
+        assert!(
+            validate_complete_method_manifest(&[method.clone()], &[mutable])
+                .iter()
+                .any(|violation| violation.reason.contains("delivery resume must bind"))
+        );
+
+        let mut unrelated = method;
+        unrelated.method = "ResumeUnreviewedDestination".into();
+        assert!(validate_method_manifest(&[unrelated])
+            .iter()
+            .any(|violation| violation.reason.contains("operation-lifecycle exception")));
     }
 
     #[test]

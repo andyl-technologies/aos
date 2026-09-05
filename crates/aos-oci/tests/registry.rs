@@ -42,6 +42,9 @@ struct RegistryState {
     delay_tag_once: AtomicBool,
     tag_started: Notify,
     fail_token: AtomicBool,
+    require_seed: AtomicBool,
+    anonymous_token_denied: AtomicBool,
+    anonymous: AtomicBool,
     reject_registry_token_once: AtomicBool,
     token_requests: AtomicU64,
     token_scopes: Mutex<Vec<Vec<String>>>,
@@ -1280,6 +1283,143 @@ async fn local_corruption_prevents_every_registry_mutation() {
 }
 
 #[tokio::test]
+async fn deferred_credentials_are_unused_for_public_and_anonymous_bearer_pulls() {
+    for anonymous in [true, false] {
+        let fixture = support::fixture();
+        let registry = spawn_registry(Some(&fixture), false, false, false).await;
+        registry.state.anonymous.store(anonymous, Ordering::SeqCst);
+        let client = RegistryClient::with_credential_provider(
+            &registry.reference,
+            Some(&registry.origin),
+            || async { anyhow::bail!("public requests must not load stored credentials") },
+        )
+        .expect("deferred client");
+        let parent = tempfile::tempdir().expect("pull parent");
+        client
+            .pull(
+                &registry.reference,
+                &PullOptions::native(parent.path().join("layout")),
+            )
+            .await
+            .expect("public pull");
+        assert_eq!(
+            registry.state.token_requests.load(Ordering::SeqCst),
+            u64::from(!anonymous)
+        );
+    }
+}
+
+#[tokio::test]
+async fn deferred_credentials_authenticate_once_and_preserve_provider_errors() {
+    for failure in [false, true] {
+        let fixture = support::fixture();
+        let registry = spawn_registry(Some(&fixture), false, false, false).await;
+        registry.state.require_seed.store(true, Ordering::SeqCst);
+        let calls = Arc::new(AtomicU64::new(0));
+        let provider_calls = calls.clone();
+        let client = RegistryClient::with_credential_provider(
+            &registry.reference,
+            Some(&registry.origin),
+            move || {
+                provider_calls.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    anyhow::ensure!(!failure, "refreshing matching profile failed");
+                    Ok(Some("hub-seed-secret".to_string()))
+                }
+            },
+        )
+        .expect("deferred client");
+        let parent = tempfile::tempdir().expect("pull parent");
+        let result = client
+            .pull(
+                &registry.reference,
+                &PullOptions::native(parent.path().join("layout")),
+            )
+            .await;
+        if failure {
+            assert!(
+                format!("{:#}", result.expect_err("provider failure"))
+                    .contains("refreshing matching profile failed")
+            );
+        } else {
+            result.expect("private pull");
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            registry.state.token_requests.load(Ordering::SeqCst),
+            if failure { 1 } else { 2 }
+        );
+    }
+}
+
+#[tokio::test]
+async fn deferred_credentials_retry_an_anonymous_token_with_insufficient_scope() {
+    let fixture = support::fixture();
+    let registry = spawn_registry(Some(&fixture), false, false, false).await;
+    registry
+        .state
+        .anonymous_token_denied
+        .store(true, Ordering::SeqCst);
+    let calls = Arc::new(AtomicU64::new(0));
+    let provider_calls = calls.clone();
+    let client = RegistryClient::with_credential_provider(
+        &registry.reference,
+        Some(&registry.origin),
+        move || {
+            provider_calls.fetch_add(1, Ordering::SeqCst);
+            async { Ok(Some("hub-seed-secret".to_string())) }
+        },
+    )
+    .expect("deferred client");
+    let parent = tempfile::tempdir().expect("pull parent");
+    client
+        .pull(
+            &registry.reference,
+            &PullOptions::native(parent.path().join("layout")),
+        )
+        .await
+        .expect("authenticated pull after reduced anonymous grant");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(registry.state.token_requests.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn deferred_credentials_are_not_loaded_for_a_cross_origin_plaintext_realm() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let address = listener.local_addr().expect("address");
+    let router = Router::new().fallback(any(|| async {
+        Response::builder()
+            .status(StatusCode::UNAUTHORIZED)
+            .header(
+                WWW_AUTHENTICATE,
+                "Bearer realm=\"http://127.0.0.1:9/token\"",
+            )
+            .body(Body::empty())
+            .expect("challenge")
+    }));
+    let task = tokio::spawn(async move {
+        axum::serve(listener, router).await.expect("server");
+    });
+    let reference = RegistryReference::parse(&format!("{address}/aos:latest")).expect("reference");
+    let client = RegistryClient::with_credential_provider(
+        &reference,
+        Some(&format!("http://{address}")),
+        || async { panic!("cross-origin realm must not load credentials") },
+    )
+    .expect("deferred client");
+    let parent = tempfile::tempdir().expect("pull parent");
+    let error = client
+        .pull(
+            &reference,
+            &PullOptions::native(parent.path().join("layout")),
+        )
+        .await
+        .expect_err("unsafe realm");
+    assert!(format!("{error:#}").contains("plaintext Bearer realm must match"));
+    task.abort();
+}
+
+#[tokio::test]
 async fn bearer_failures_never_render_seed_credentials() {
     let fixture = support::fixture();
     let registry = spawn_registry(Some(&fixture), false, false, true).await;
@@ -1456,6 +1596,9 @@ async fn spawn_registry(
         delay_tag_once: AtomicBool::new(false),
         tag_started: Notify::new(),
         fail_token: AtomicBool::new(fail_token),
+        require_seed: AtomicBool::new(false),
+        anonymous_token_denied: AtomicBool::new(false),
+        anonymous: AtomicBool::new(false),
         reject_registry_token_once: AtomicBool::new(false),
         token_requests: AtomicU64::new(0),
         token_scopes: Mutex::new(Vec::new()),
@@ -1538,7 +1681,7 @@ async fn handle(State(state): State<Arc<RegistryState>>, request: Request<Body>)
     {
         return challenge(&state);
     }
-    if !authorized(&parts.headers) {
+    if !state.anonymous.load(Ordering::SeqCst) && !authorized(&parts.headers) {
         return challenge(&state);
     }
     state
@@ -1630,6 +1773,15 @@ fn token_response(state: &RegistryState, headers: &HeaderMap, uri: &Uri) -> Resp
                 Some("Bearer hub-seed-secret" | "Bearer credential-that-must-not-appear")
             )
     );
+    if state.anonymous_token_denied.load(Ordering::SeqCst) && authorization.is_none() {
+        return response(
+            StatusCode::OK,
+            Body::from(r#"{"token":"insufficient-scope"}"#),
+        );
+    }
+    if state.require_seed.load(Ordering::SeqCst) && authorization.is_none() {
+        return response(StatusCode::UNAUTHORIZED, Body::empty());
+    }
     if state.fail_token.load(Ordering::SeqCst) {
         return response(StatusCode::INTERNAL_SERVER_ERROR, Body::empty());
     }

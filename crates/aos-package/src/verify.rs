@@ -209,15 +209,47 @@ pub fn verify_nar_hash_with_compression(
 /// unsupported root type, either signed size disagrees, or writing fails.
 pub fn extract_regular_file_nar(
     path: &Path,
+    output: impl Write,
+    expected_file_size: u64,
+    expected_nar_size: u64,
+) -> Result<()> {
+    extract_regular_file_nar_with_compression(
+        path,
+        output,
+        expected_file_size,
+        expected_nar_size,
+        "zstd",
+    )
+}
+
+/// Extracts an authenticated regular-file NAR using its declared transport encoding.
+///
+/// Applies the same canonical root, padding, trailing-data, and signed-size
+/// checks as [`extract_regular_file_nar`]. Callers must verify the transport
+/// hash and uncompressed NAR hash before extracting.
+///
+/// # Errors
+///
+/// Returns an error for unsupported compression, malformed NARs, signed-size
+/// disagreements, decompression failures, or output I/O failures.
+pub fn extract_regular_file_nar_with_compression(
+    path: &Path,
     mut output: impl Write,
     expected_file_size: u64,
     expected_nar_size: u64,
+    compression: &str,
 ) -> Result<()> {
     let file = File::open(path)
         .with_context(|| format!("opening {} for NAR extraction", path.display()))?;
     let reader = BufReader::new(file);
-    let decoder = zstd::stream::read::Decoder::new(reader)
-        .with_context(|| format!("creating zstd decoder for {}", path.display()))?;
+    let decoder: Box<dyn Read> = match compression {
+        "none" => Box::new(reader),
+        "zstd" => Box::new(
+            zstd::stream::read::Decoder::new(reader)
+                .with_context(|| format!("creating zstd decoder for {}", path.display()))?,
+        ),
+        other => bail!("unsupported NAR compression '{other}'"),
+    };
     let mut reader = CountingReader::new(decoder);
 
     expect_nix_string(&mut reader, b"nix-archive-1", "archive magic")?;

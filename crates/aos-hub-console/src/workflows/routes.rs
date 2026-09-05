@@ -4,19 +4,22 @@
 //! redirect routes own an access policy; direct routes inherit access and path
 //! from their exact storage-gateway generation.
 
+use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
-use leptos::task::spawn_local;
 
 use crate::components::{HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
-use crate::mutation::{idempotency_key, PendingPlan};
-use crate::route::{ConsoleRoute, ConsoleScope};
+use crate::mutation::{idempotency_key, watch_draft, PendingPlan};
+use crate::route::{
+    delivery_setup_access, route_selection_for_audience, ConsoleRoute, ConsoleScope,
+};
 use crate::transport::ApiClient;
 
 use super::access_policy::{
     access_policy_name, canonical_path, AccessPolicyFields, AccessPolicySignals,
 };
 use super::cache_integrations::CacheIntegrationWorkflow;
+use super::delivery_workflow::DeliveryDestinationWorkflows;
 use super::gateways::{endpoint_option_label, gateway_option_label};
 use super::organization_scope::surface_authorization_scope;
 
@@ -38,34 +41,9 @@ pub(super) fn RouteWorkflow(route: ConsoleRoute, client: ApiClient) -> impl Into
 
 #[component]
 fn Routes(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl IntoView {
-    let read_client = client.clone();
-    let read_surface = surface.clone();
-    let routes = LocalResource::new(move || {
-        let client = read_client.clone();
-        let surface = read_surface.clone();
-        async move {
-            client
-                .collect_pages::<_, aos_proto_types::ListRoutesResponse, _, _, _>(
-                    aos_proto_types::ROUTE_SERVICE_LIST_ROUTES_PATH,
-                    move |page_token| aos_proto_types::ListRoutesRequest {
-                        surface: Some(surface.clone()),
-                        page_size: 100,
-                        page_token,
-                    },
-                    |response| (response.routes, response.next_page_token),
-                )
-                .await
-        }
-    });
-    let view_client = client.clone();
-    let view_surface = surface.clone();
-    let choices_client = client.clone();
-    let choices_surface = surface.clone();
-    let choices = LocalResource::new(move || {
-        let client = choices_client.clone();
-        let surface = choices_surface.clone();
-        async move { load_route_create_choices(&client, &surface).await }
-    });
+    let can_manage = client.allows("route.manage");
+    let setup_access = delivery_setup_access(&client.session().route_permissions);
+    let choices_requested = RwSignal::new(false);
     let topology_client = client.clone();
     let topology_surface = surface.clone();
     let topology = LocalResource::new(move || {
@@ -82,13 +60,127 @@ fn Routes(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl IntoV
                 .await
         }
     });
-    let canonical_client = client.clone();
-    let canonical_surface = surface.clone();
-    let create_client = client;
-    let create_surface = surface;
+    let choices_client = client.clone();
+    let choices_surface = surface.clone();
+    let choices_topology = topology;
+    let choices = LocalResource::new(move || {
+        let requested = choices_requested.get();
+        let client = choices_client.clone();
+        let surface = choices_surface.clone();
+        async move {
+            if !can_manage || !requested {
+                return Ok(None);
+            }
+            let topology = choices_topology
+                .await
+                .as_ref()
+                .map_err(ToString::to_string)?
+                .clone();
+            load_route_create_choices(&client, &surface, topology)
+                .await
+                .map(Some)
+        }
+    });
+    let view_client = client.clone();
+    let view_surface = surface.clone();
 
     view! {
-        <div class="workflow-stack"><section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Simultaneous delivery paths"</p><div class="section-title"><h2>"Routes"</h2><HelpTooltip term="Routes" summary="Multiple Hub-proxied, redirected, CDN-fronted, and direct routes can serve the same logical surface concurrently."/></div></div></div><Suspense fallback=move || view! { <p class="loading-row">"Loading routes…"</p> }>{move || { let client = view_client.clone(); let surface = view_surface.clone(); Suspend::new(async move { match (routes.await.as_ref(), choices.await.as_ref()) { (Ok(routes), Ok(_)) if routes.is_empty() => view! { <p class="muted">"No routes for this surface."</p> }.into_any(), (Ok(routes), Ok(choices)) => view! { <div class="binding-list">{routes.iter().cloned().map(|route| view! { <RouteCard client=client.clone() surface=surface.clone() route=route choices=choices.clone()/> }).collect_view()}</div> }.into_any(), (Err(failure), _) => view! { <InlineError detail=failure.to_string()/> }.into_any(), (_, Err(detail)) => view! { <InlineError detail=detail.clone()/> }.into_any() } }) }}</Suspense></section><Suspense fallback=move || view! { <section class="panel"><p class="loading-row">"Loading route advertisements…"</p></section> }>{move || { let client = canonical_client.clone(); let surface = canonical_surface.clone(); Suspend::new(async move { match topology.await.as_ref() { Ok(response) => view! { <RouteAdvertisements client=client surface=surface canonical=response.route_advertisements.clone() routes=response.routes.clone()/> }.into_any(), Err(failure) => view! { <section class="panel"><InlineError detail=failure.to_string()/></section> }.into_any() } }) }}</Suspense><RouteCreate client=create_client surface=create_surface/></div>
+        <div class="workflow-stack">
+            <Suspense fallback=move || view! { <p class="loading-row">"Loading effective delivery…"</p> }>
+                {move || {
+                    let client = view_client.clone();
+                    let surface = view_surface.clone();
+                    Suspend::new(async move {
+                        match topology.await.as_ref() {
+                            Ok(response) => view! {
+                                <DeliverySummary topology=response.clone()/>
+                                <DeliveryDestinationWorkflows client=client.clone() surface=surface.clone() choices=choices choices_requested=choices_requested access=setup_access/>
+                                <section class="panel resource-panel">
+                                    <div class="section-heading"><div><p class="section-kicker">"Simultaneous delivery paths"</p><div class="section-title"><h2>"Routes"</h2><HelpTooltip term="Routes" summary="Multiple Hub-proxied, redirected, CDN-fronted, and direct routes can serve the same logical surface concurrently."/></div></div></div>
+                                    {if response.routes.is_empty() {
+                                        view! { <p class="muted">"No routes for this surface."</p> }.into_any()
+                                    } else {
+                                        view! { <div class="binding-list">{response.routes.iter().cloned().map(|route| view! { <RouteCard client=client.clone() surface=surface.clone() route=route choices=choices choices_requested=choices_requested can_manage=can_manage/> }).collect_view()}</div> }.into_any()
+                                    }}
+                                </section>
+                                <RouteAdvertisements client=client surface=surface canonical=response.route_advertisements.clone() routes=response.routes.clone() can_manage=can_manage/>
+                            }.into_any(),
+                            Err(failure) => view! { <section class="panel"><InlineError detail=failure.to_string()/></section> }.into_any(),
+                        }
+                    })
+                }}
+            </Suspense>
+            {can_manage.then(|| view! { <RouteCreate client=client surface=surface choices=choices choices_requested=choices_requested/> })}
+        </div>
+    }
+}
+
+#[component]
+fn DeliverySummary(topology: aos_proto_types::GetSurfaceTopologyResponse) -> impl IntoView {
+    let enabled = topology
+        .routes
+        .iter()
+        .filter(|route| route.spec.as_ref().is_some_and(|spec| spec.enabled))
+        .count();
+    let healthy = topology
+        .routes
+        .iter()
+        .filter(|route| {
+            route.spec.as_ref().is_some_and(|spec| spec.enabled)
+                && route
+                    .observation
+                    .as_ref()
+                    .is_some_and(|observation| observation.state == "healthy")
+        })
+        .count();
+    let audiences = topology.route_advertisements.len();
+    let destinations = topology.route_advertisements.iter().map(|selection| {
+        let route = topology.routes.iter().find(|route| route.stable_id == selection.route_id);
+        let Some(route) = route else {
+            return view! { <article class="revision-card"><h3>{selection.audience.clone()}</h3><p>"The selected route is unavailable. Inspect the audience selection below."</p></article> }.into_any();
+        };
+        let spec = route.spec.clone().unwrap_or_default();
+        let endpoint = topology.canonical_endpoints.iter()
+            .find(|endpoint| endpoint.stable_id == spec.endpoint_id);
+        let target = target_name(&spec);
+        let observation = route.observation.as_ref();
+        let current = observation.is_some_and(|observed|
+            observed.configuration_generation == route.configuration_generation
+                && observed.configuration_digest == route.configuration_digest);
+        let state = if !spec.enabled { "disabled" } else if !current { "awaiting observation" }
+            else { observation.map(|value| value.state.as_str()).unwrap_or("unknown") };
+        view! {
+            <article class="revision-card">
+                <div class="section-heading"><h3>{selection.audience.clone()}</h3><StatusBadge state=state.to_string() positive=state == "healthy"/></div>
+                <div class="resource-identity">
+                    <div><span>"Selected client URL"</span><code>{route.canonical_rendered_url.clone()}</code></div>
+                    <div><span>"Access policy"</span><strong>{access_policy_name(spec.access_policy.as_ref())}</strong></div>
+                    <div><span>"Storage target"</span><strong>{target}</strong></div>
+                    <div><span>"Endpoint"</span><code>{format!("{} · generation {}", spec.endpoint_id, spec.endpoint_generation)}</code></div>
+                    {endpoint.map(|endpoint| view! { <div><span>"Endpoint owner"</span><code>{endpoint.owner_scope_key.clone()}</code></div> })}
+                </div>
+                {observation.filter(|observed| current && !observed.error.is_empty()).map(|observed| view! { <p>{observed.error.clone()}</p> })}
+            </article>
+        }.into_any()
+    }).collect_view();
+
+    view! {
+        <section class="panel delivery-summary" aria-labelledby="effective-delivery-title">
+            <div class="section-heading">
+                <div>
+                    <p class="section-kicker">"Effective configuration"</p>
+                    <h2 id="effective-delivery-title">"Delivery at a glance"<HelpTooltip term="Delivery at a glance" summary="See the URL selected for each client audience and the infrastructure behind it. Observed state is shown separately from the selection."/></h2>
+                </div>
+            </div>
+            <div class="resource-identity">
+                <div><span>"Enabled routes"</span><strong>{enabled}</strong></div>
+                <div><span>"Healthy routes"</span><strong>{format!("{healthy} of {enabled}")}</strong></div>
+                <div><span>"Audience defaults"</span><strong>{audiences}</strong></div>
+                <div><span>"Storage placements"</span><strong>{topology.placements.len()}</strong></div>
+            </div>
+            <div class="binding-list">{destinations}</div>
+            {(audiences == 0).then(|| view! { <p class="muted">"No audience has a selected destination. Add and verify delivery, then review activation."</p> })}
+        </section>
     }
 }
 
@@ -110,12 +202,14 @@ struct RouteSignals {
 }
 
 #[derive(Clone, Debug)]
-struct RouteCreateChoices {
-    endpoints: Vec<aos_proto_types::Endpoint>,
-    placements: Vec<aos_proto_types::Placement>,
-    policies: Vec<aos_proto_types::PlacementPolicy>,
-    gateways: Vec<aos_proto_types::Gateway>,
-    boundaries: Vec<aos_proto_types::NetworkPolicy>,
+pub(super) struct RouteCreateChoices {
+    pub(super) owner_scope_key: String,
+    pub(super) endpoints: Vec<aos_proto_types::Endpoint>,
+    pub(super) domains: Vec<aos_proto_types::Domain>,
+    pub(super) placements: Vec<aos_proto_types::Placement>,
+    pub(super) policies: Vec<aos_proto_types::PlacementPolicy>,
+    pub(super) gateways: Vec<aos_proto_types::Gateway>,
+    pub(super) boundaries: Vec<aos_proto_types::NetworkPolicy>,
 }
 
 impl RouteSignals {
@@ -178,6 +272,25 @@ impl RouteSignals {
         }
         signals
     }
+
+    fn draft_key(self) -> String {
+        [
+            self.endpoint_id.get(),
+            self.endpoint_generation.get(),
+            self.base_path.get(),
+            self.mode.get(),
+            self.target_kind.get(),
+            self.target_ref.get(),
+            self.gateway_ref.get(),
+            self.serves_git.get().to_string(),
+            self.serves_cache.get().to_string(),
+            self.serves_web.get().to_string(),
+            self.serves_oci.get().to_string(),
+            self.enabled.get().to_string(),
+            self.access.draft_key(),
+        ]
+        .join("\u{1f}")
+    }
 }
 
 #[component]
@@ -227,125 +340,125 @@ fn RouteFields(
 }
 
 #[component]
-fn RouteCreate(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl IntoView {
-    let choices_client = client.clone();
-    let choices_surface = surface.clone();
-    let choices = LocalResource::new(move || {
-        let client = choices_client.clone();
-        let surface = choices_surface.clone();
-        async move { load_route_create_choices(&client, &surface).await }
-    });
-
+fn RouteCreate(
+    client: ApiClient,
+    surface: aos_proto_types::SurfaceRef,
+    choices: LocalResource<Result<Option<RouteCreateChoices>, String>>,
+    choices_requested: RwSignal<bool>,
+) -> impl IntoView {
     view! {
-        <Suspense fallback=move || view! { <section class="panel editor-panel"><p class="loading-row">"Loading endpoints, placements, and gateways…"</p></section> }>
+        <details class="panel editor-panel" on:toggle=move |_| choices_requested.set(true)>
+        <summary>"Create a route manually"</summary>
+        <Suspense fallback=move || view! { <p class="loading-row">"Loading endpoints, placements, and gateways…"</p> }>
             {move || {
                 let client = client.clone();
                 let surface = surface.clone();
                 Suspend::new(async move {
                     match choices.await.as_ref() {
-                        Ok(choices) => view! { <RouteCreateForm client=client surface=surface choices=choices.clone()/> }.into_any(),
+                        Ok(Some(choices)) => view! { <RouteCreateForm client=client surface=surface choices=choices.clone()/> }.into_any(),
+                        Ok(None) => ().into_any(),
                         Err(detail) => view! { <section class="panel editor-panel"><InlineError detail=detail.clone()/></section> }.into_any(),
                     }
                 })
             }}
         </Suspense>
+        </details>
     }
 }
 
 async fn load_route_create_choices(
     client: &ApiClient,
     surface: &aos_proto_types::SurfaceRef,
+    topology: aos_proto_types::GetSurfaceTopologyResponse,
 ) -> Result<RouteCreateChoices, String> {
-    let topology = client
-        .call::<_, aos_proto_types::GetSurfaceTopologyResponse>(
-            aos_proto_types::TOPOLOGY_SERVICE_GET_SURFACE_TOPOLOGY_PATH,
-            &aos_proto_types::GetSurfaceTopologyRequest {
-                surface: Some(surface.clone()),
-            },
-        )
-        .await
-        .map_err(|failure| failure.to_string())?;
-    let (owner_scope_key, organization) = surface_authorization_scope(client, surface).await?;
+    let (owner_scope_key, _) = surface_authorization_scope(client, surface).await?;
+    let can_read_endpoints = client.allows("endpoint.read");
+    let can_read_boundaries = client.allows("network_policy.read");
+    let can_read_domains = client.allows("domain.read");
+    let can_read_gateways = client.allows("gateway.read");
     let endpoint_scope = owner_scope_key.clone();
-    let endpoints = client
-        .collect_pages::<_, aos_proto_types::ListEndpointsResponse, _, _, _>(
-            aos_proto_types::DELIVERY_SERVICE_LIST_ENDPOINTS_PATH,
-            move |page_token| aos_proto_types::ListTopologyResourcesRequest {
-                owner_scope_key: endpoint_scope.clone(),
-                page_size: 100,
-                page_token,
-                include_granted: true,
-            },
-            |response| (response.endpoints, response.next_page_token),
-        )
-        .await
-        .map_err(|failure| failure.to_string())?;
+    let endpoints = async {
+        if !can_read_endpoints {
+            return Ok(Vec::new());
+        }
+        client
+            .collect_pages::<_, aos_proto_types::ListEndpointsResponse, _, _, _>(
+                aos_proto_types::DELIVERY_SERVICE_LIST_ENDPOINTS_PATH,
+                move |page_token| aos_proto_types::ListTopologyResourcesRequest {
+                    owner_scope_key: endpoint_scope.clone(),
+                    page_size: 100,
+                    page_token,
+                    include_granted: true,
+                },
+                |response| (response.endpoints, response.next_page_token),
+            )
+            .await
+    };
     let boundary_scope = owner_scope_key.clone();
-    let boundaries = client
-        .collect_pages::<_, aos_proto_types::ListNetworkPoliciesResponse, _, _, _>(
-            aos_proto_types::NETWORK_POLICY_SERVICE_LIST_NETWORK_POLICIES_PATH,
-            move |page_token| aos_proto_types::ListTopologyResourcesRequest {
-                owner_scope_key: boundary_scope.clone(),
-                page_size: 100,
-                page_token,
-                include_granted: true,
-            },
-            |response| (response.network_policies, response.next_page_token),
-        )
-        .await
-        .map_err(|failure| failure.to_string())?;
-    let bindings = client
-        .collect_pages::<_, aos_proto_types::ListBindingsResponse, _, _, _>(
-            aos_proto_types::BINDING_SERVICE_LIST_BINDINGS_PATH,
-            move |page_token| aos_proto_types::ListBindingsRequest {
-                owner_scope_key: owner_scope_key.clone(),
-                page_size: 100,
-                page_token,
-                include_granted: true,
-            },
-            |response| (response.bindings, response.next_page_token),
-        )
-        .await
-        .map_err(|failure| failure.to_string())?;
-
-    let mut gateways = Vec::new();
-    for binding in bindings {
-        let Some(spec) = binding.spec else {
-            continue;
-        };
-        let binding = match organization.as_ref() {
-            Some(org_slug) => aos_proto_types::BindingRef {
-                target: Some(aos_proto_types::binding_ref::Target::Organization(
-                    aos_proto_types::OrganizationBindingRef {
-                        org_slug: org_slug.clone(),
-                        name: spec.name,
-                    },
-                )),
-            },
-            None => aos_proto_types::BindingRef {
-                target: Some(aos_proto_types::binding_ref::Target::InstanceDefault(true)),
-            },
-        };
-        let mut binding_gateways = client
+    let boundaries = async {
+        if !can_read_boundaries {
+            return Ok(Vec::new());
+        }
+        client
+            .collect_pages::<_, aos_proto_types::ListNetworkPoliciesResponse, _, _, _>(
+                aos_proto_types::NETWORK_POLICY_SERVICE_LIST_NETWORK_POLICIES_PATH,
+                move |page_token| aos_proto_types::ListTopologyResourcesRequest {
+                    owner_scope_key: boundary_scope.clone(),
+                    page_size: 100,
+                    page_token,
+                    include_granted: true,
+                },
+                |response| (response.network_policies, response.next_page_token),
+            )
+            .await
+    };
+    let domain_scope = owner_scope_key.clone();
+    let domains = async {
+        if !can_read_domains {
+            return Ok(Vec::new());
+        }
+        client
+            .collect_pages::<_, aos_proto_types::ListDomainsResponse, _, _, _>(
+                aos_proto_types::DOMAIN_SERVICE_LIST_DOMAINS_PATH,
+                move |page_token| aos_proto_types::ListDomainsRequest {
+                    owner_scope_key: domain_scope.clone(),
+                    page_size: 100,
+                    page_token,
+                },
+                |response| (response.domains, response.next_page_token),
+            )
+            .await
+    };
+    let gateway_scope = owner_scope_key.clone();
+    let gateways = async {
+        if !can_read_gateways {
+            return Ok(Vec::new());
+        }
+        client
             .collect_pages::<_, aos_proto_types::ListGatewaysResponse, _, _, _>(
                 aos_proto_types::DELIVERY_SERVICE_LIST_GATEWAYS_PATH,
                 move |page_token| aos_proto_types::ListGatewaysRequest {
-                    binding: Some(binding.clone()),
+                    binding: None,
                     page_size: 100,
                     page_token,
+                    owner_scope_key: gateway_scope.clone(),
+                    include_granted: true,
                 },
                 |response| (response.gateways, response.next_page_token),
             )
             .await
-            .map_err(|failure| failure.to_string())?;
-        gateways.append(&mut binding_gateways);
-        if organization.is_none() {
-            break;
-        }
-    }
+    };
+    let (endpoints, boundaries, domains, gateways) =
+        futures::join!(endpoints, boundaries, domains, gateways);
+    let endpoints = endpoints.map_err(|failure| failure.to_string())?;
+    let boundaries = boundaries.map_err(|failure| failure.to_string())?;
+    let domains = domains.map_err(|failure| failure.to_string())?;
+    let gateways = gateways.map_err(|failure| failure.to_string())?;
 
     Ok(RouteCreateChoices {
+        owner_scope_key,
         endpoints,
+        domains,
         placements: topology.placements,
         policies: topology.placement_policies,
         gateways,
@@ -379,6 +492,14 @@ fn RouteCreateForm(
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
+    let draft_epoch = watch_draft(
+        move || {
+            let _ = stable_id.get();
+            let _ = signals.draft_key();
+        },
+        pending,
+        error,
+    );
     let endpoint_choices = choices.endpoints.clone();
     let selected_endpoints = choices.endpoints;
     let direct_placement_choices = choices.placements.clone();
@@ -448,6 +569,7 @@ fn RouteCreateForm(
             pending,
             error,
             busy,
+            Some(draft_epoch),
         );
     };
     let on_apply = apply_route(
@@ -457,7 +579,7 @@ fn RouteCreateForm(
         error,
         busy,
     );
-    view! { <section class="panel editor-panel"><div class="section-heading"><div><p class="section-kicker">"Guided setup"</p><h2>"Create route"</h2><p>"Choose named topology resources; exact stable IDs and generations are pinned automatically."</p></div></div><form class="editor-form" on:submit=on_plan><label><span>"Route name"</span><input prop:value=move || stable_id.get() on:input=move |event| stable_id.set(event_target_value(&event))/></label><label><span>"Endpoint"</span><select required prop:value=move || signals.endpoint_id.get() on:change=on_endpoint_change>{endpoint_choices.iter().map(|endpoint| view! { <option value=endpoint.stable_id.clone()>{endpoint_option_label(endpoint)}</option> }).collect_view()}</select>{endpoint_choices.is_empty().then(|| view! { <small>"No endpoints are available in this surface's owner scope."</small> })}</label><label><span>"Endpoint generation"</span><input readonly aria-readonly="true" prop:value=move || signals.endpoint_generation.get()/></label><label><span>"Base path"</span><input required prop:value=move || signals.base_path.get() on:input=move |event| signals.base_path.set(event_target_value(&event))/></label><label><span>"Delivery mode"</span><select prop:value=move || signals.mode.get() on:change=move |event| signals.mode.set(event_target_value(&event))><option value="hub-proxy">"Hub proxy"</option><option value="hub-redirect">"Hub redirect"</option><option value="direct">"Direct gateway"</option></select></label>{move || if signals.mode.get() == "direct" { view! { <label><span>"Placement"</span><select required prop:value=move || signals.target_ref.get() on:change=move |event| signals.target_ref.set(event_target_value(&event))>{direct_placement_choices.iter().map(|placement| view! { <option value=placement.name.clone()>{format!("{} · {}", placement.name, placement.binding_name)}</option> }).collect_view()}</select></label><label><span>"Gateway"</span><select required prop:value=move || signals.gateway_ref.get() on:change=move |event| signals.gateway_ref.set(event_target_value(&event))>{gateway_choices.iter().map(|gateway| view! { <option value=format!("{}@{}", gateway.stable_id, gateway.desired_generation)>{gateway_option_label(gateway)}</option> }).collect_view()}</select>{gateway_choices.is_empty().then(|| view! { <small>"No gateways are available. Create one from Settings or the owning organization first."</small> })}</label> }.into_any() } else { let on_target_kind_change = on_target_kind_change.clone(); let policy_choices = policy_choices.clone(); let hub_placement_choices = hub_placement_choices.clone(); let boundaries = boundaries.clone(); view! { <label><span>"Target kind"</span><select prop:value=move || signals.target_kind.get() on:change=move |event| on_target_kind_change.run(event_target_value(&event))><option value="placement">"Placement"</option><option value="policy">"Placement policy revision"</option></select></label>{move || { let policy_choices = policy_choices.clone(); let hub_placement_choices = hub_placement_choices.clone(); if signals.target_kind.get() == "policy" { view! { <label><span>"Placement policy"</span><select required prop:value=move || signals.target_ref.get() on:change=move |event| signals.target_ref.set(event_target_value(&event))>{policy_choices.iter().map(|policy| view! { <option value=format!("{}@{}", policy.name, policy.current_revision)>{format!("{} · revision {}", policy.name, policy.current_revision)}</option> }).collect_view()}</select></label> }.into_any() } else { view! { <label><span>"Placement"</span><select required prop:value=move || signals.target_ref.get() on:change=move |event| signals.target_ref.set(event_target_value(&event))>{hub_placement_choices.iter().map(|placement| view! { <option value=placement.name.clone()>{format!("{} · {}", placement.name, placement.binding_name)}</option> }).collect_view()}</select></label> }.into_any() }}}<AccessPolicyFields signals=signals.access allow_hub_auth=true boundaries=boundaries/> }.into_any() }}<label class="checkbox-field"><input type="checkbox" prop:checked=move || signals.serves_git.get() on:change=move |event| signals.serves_git.set(event_target_checked(&event))/><span>"Serve Git"</span></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || signals.serves_cache.get() on:change=move |event| signals.serves_cache.set(event_target_checked(&event))/><span>"Serve Nix cache"</span></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || signals.serves_web.get() on:change=move |event| signals.serves_web.set(event_target_checked(&event))/><span>"Serve Web"</span></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || signals.serves_oci.get() on:change=move |event| signals.serves_oci.set(event_target_checked(&event))/><span>"Serve OCI"</span></label><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get() || signals.endpoint_id.get().is_empty() || signals.target_ref.get().is_empty()>"Review route"</button></div></form><PlanReview pending=pending error=error busy=busy on_apply=on_apply/></section> }
+    view! { <section class="panel editor-panel"><div class="section-heading"><div><p class="section-kicker">"Guided setup"</p><h2>"Create route"<HelpTooltip term="Create route" summary="Choose named topology resources; exact stable IDs and generations are pinned automatically."/></h2></div></div><form class="editor-form" on:submit=on_plan><label><span>"Route name"</span><input prop:value=move || stable_id.get() on:input=move |event| stable_id.set(event_target_value(&event))/></label><label><span>"Endpoint"</span><select required prop:value=move || signals.endpoint_id.get() on:change=on_endpoint_change>{endpoint_choices.iter().map(|endpoint| view! { <option value=endpoint.stable_id.clone()>{endpoint_option_label(endpoint)}</option> }).collect_view()}</select>{endpoint_choices.is_empty().then(|| view! { <small>"No endpoints are available in this surface's owner scope."</small> })}</label><label><span>"Endpoint generation"</span><input readonly aria-readonly="true" prop:value=move || signals.endpoint_generation.get()/></label><label><span>"Base path"</span><input required prop:value=move || signals.base_path.get() on:input=move |event| signals.base_path.set(event_target_value(&event))/></label><label><span>"Delivery mode"</span><select prop:value=move || signals.mode.get() on:change=move |event| signals.mode.set(event_target_value(&event))><option value="hub-proxy">"Hub proxy"</option><option value="hub-redirect">"Hub redirect"</option><option value="direct">"Direct gateway"</option></select></label>{move || if signals.mode.get() == "direct" { view! { <label><span>"Placement"</span><select required prop:value=move || signals.target_ref.get() on:change=move |event| signals.target_ref.set(event_target_value(&event))>{direct_placement_choices.iter().map(|placement| view! { <option value=placement.name.clone()>{format!("{} · {}", placement.name, placement.binding_name)}</option> }).collect_view()}</select></label><label><span>"Gateway"</span><select required prop:value=move || signals.gateway_ref.get() on:change=move |event| signals.gateway_ref.set(event_target_value(&event))>{gateway_choices.iter().map(|gateway| view! { <option value=format!("{}@{}", gateway.stable_id, gateway.desired_generation)>{gateway_option_label(gateway)}</option> }).collect_view()}</select>{gateway_choices.is_empty().then(|| view! { <small>"No gateways are available. Create one from Settings or the owning organization first."</small> })}</label> }.into_any() } else { let on_target_kind_change = on_target_kind_change.clone(); let policy_choices = policy_choices.clone(); let hub_placement_choices = hub_placement_choices.clone(); let boundaries = boundaries.clone(); view! { <label><span>"Target kind"</span><select prop:value=move || signals.target_kind.get() on:change=move |event| on_target_kind_change.run(event_target_value(&event))><option value="placement">"Placement"</option><option value="policy">"Placement policy revision"</option></select></label>{move || { let policy_choices = policy_choices.clone(); let hub_placement_choices = hub_placement_choices.clone(); if signals.target_kind.get() == "policy" { view! { <label><span>"Placement policy"</span><select required prop:value=move || signals.target_ref.get() on:change=move |event| signals.target_ref.set(event_target_value(&event))>{policy_choices.iter().map(|policy| view! { <option value=format!("{}@{}", policy.name, policy.current_revision)>{format!("{} · revision {}", policy.name, policy.current_revision)}</option> }).collect_view()}</select></label> }.into_any() } else { view! { <label><span>"Placement"</span><select required prop:value=move || signals.target_ref.get() on:change=move |event| signals.target_ref.set(event_target_value(&event))>{hub_placement_choices.iter().map(|placement| view! { <option value=placement.name.clone()>{format!("{} · {}", placement.name, placement.binding_name)}</option> }).collect_view()}</select></label> }.into_any() }}}<AccessPolicyFields signals=signals.access allow_hub_auth=true boundaries=boundaries/> }.into_any() }}<label class="checkbox-field"><input type="checkbox" prop:checked=move || signals.serves_git.get() on:change=move |event| signals.serves_git.set(event_target_checked(&event))/><span>"Serve Git"</span></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || signals.serves_cache.get() on:change=move |event| signals.serves_cache.set(event_target_checked(&event))/><span>"Serve Nix cache"</span></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || signals.serves_web.get() on:change=move |event| signals.serves_web.set(event_target_checked(&event))/><span>"Serve Web"</span></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || signals.serves_oci.get() on:change=move |event| signals.serves_oci.set(event_target_checked(&event))/><span>"Serve OCI"</span></label><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get() || signals.endpoint_id.get().is_empty() || signals.target_ref.get().is_empty()>"Review route"</button></div></form><PlanReview pending=pending error=error busy=busy on_apply=on_apply/></section> }
 }
 
 #[component]
@@ -465,12 +587,52 @@ fn RouteCard(
     client: ApiClient,
     surface: aos_proto_types::SurfaceRef,
     route: aos_proto_types::Route,
-    choices: RouteCreateChoices,
+    choices: LocalResource<Result<Option<RouteCreateChoices>, String>>,
+    choices_requested: RwSignal<bool>,
+    can_manage: bool,
 ) -> impl IntoView {
     let spec = route.spec.clone().unwrap_or_default();
     let observation = route.observation.clone().unwrap_or_default();
     let mode = route_mode(&spec);
-    view! { <details class="binding-card"><summary><div><span class="resource-kind">{mode}</span><h3>{route.canonical_rendered_url.clone()}</h3><code>{route.stable_id.clone()}</code></div><StatusBadge state=observation.state.clone() positive=observation.state == "healthy"/></summary><div class="binding-details"><div class="resource-identity"><div><span>"Endpoint"</span><code>{format!("{}@{}", spec.endpoint_id, spec.endpoint_generation)}</code></div><div><span>"Target"</span><code>{target_name(&spec)}</code></div><div><span>"Access"</span><strong>{access_policy_name(spec.access_policy.as_ref())}</strong></div><div><span>"Configuration generation"</span><strong>{route.configuration_generation}</strong></div><div><span>"Observed generation"</span><strong>{observation.configuration_generation}</strong></div><div><span>"Version"</span><code>{route.resource_version.clone()}</code></div></div>{(!observation.error.is_empty()).then(|| view! { <InlineError detail=observation.error/> })}<div class="subworkflow-grid"><RouteUpdate client=client.clone() surface=surface.clone() route=route.clone() choices=choices.clone()/><RouteLifecycle client=client.clone() route=route.clone()/></div><RouteExplain client=client.clone() route=route.clone()/><RouteReplace client=client surface=surface route=route choices=choices/></div></details> }
+    view! {
+        <details class="binding-card">
+            <summary><div><span class="resource-kind">{mode}</span><h3>{route.canonical_rendered_url.clone()}</h3><code>{route.stable_id.clone()}</code></div><StatusBadge state=observation.state.clone() positive=observation.state == "healthy"/></summary>
+            <div class="binding-details">
+                <div class="topology-path" aria-label="Effective route topology">
+                    <span><small>"Endpoint"</small><code>{format!("{}@{}", spec.endpoint_id, spec.endpoint_generation)}</code></span>
+                    <b aria-hidden="true">"→"</b>
+                    <span><small>"Target"</small><code>{target_name(&spec)}</code></span>
+                    <b aria-hidden="true">"→"</b>
+                    <span><small>"Public URL"</small><code>{route.canonical_rendered_url.clone()}</code></span>
+                </div>
+                <div class="resource-identity"><div><span>"Access"</span><strong>{access_policy_name(spec.access_policy.as_ref())}</strong></div><div><span>"Configuration generation"</span><strong>{route.configuration_generation}</strong></div><div><span>"Observed generation"</span><strong>{observation.configuration_generation}</strong></div><div><span>"Version"</span><code>{route.resource_version.clone()}</code></div></div>
+                {(!observation.error.is_empty()).then(|| view! { <InlineError detail=observation.error/> })}
+                <RouteExplain client=client.clone() route=route.clone()/>
+                {can_manage.then(|| view! {
+                    <details class="advanced-controls" on:toggle=move |_| choices_requested.set(true)>
+                        <summary>"Advanced route controls"</summary>
+                        <Suspense fallback=move || view! { <p class="loading-row">"Loading route controls…"</p> }>
+                            {move || {
+                                let client = client.clone();
+                                let surface = surface.clone();
+                                let route = route.clone();
+                                Suspend::new(async move {
+                                    match choices.await.as_ref() {
+                                        Ok(Some(choices)) => view! {
+                                            <div class="subworkflow-grid"><RouteUpdate client=client.clone() surface=surface.clone() route=route.clone() choices=choices.clone()/><RouteLifecycle client=client.clone() route=route.clone()/></div>
+                                            <RouteReplace client=client surface=surface route=route choices=choices.clone()/>
+                                        }.into_any(),
+                                        Ok(None) => ().into_any(),
+                                        Err(detail) => view! { <InlineError detail=detail.clone()/> }.into_any(),
+                                    }
+                                })
+                            }}
+                        </Suspense>
+                    </details>
+                })}
+            </div>
+        </details>
+    }
 }
 
 #[component]
@@ -484,6 +646,13 @@ fn RouteUpdate(
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
+    let draft_epoch = watch_draft(
+        move || {
+            let _ = signals.draft_key();
+        },
+        pending,
+        error,
+    );
     let route_id = route.stable_id;
     let version = route.resource_version;
     let plan_client = client.clone();
@@ -517,6 +686,7 @@ fn RouteUpdate(
             pending,
             error,
             busy,
+            Some(draft_epoch),
         );
     };
     let on_apply = apply_route(
@@ -561,6 +731,7 @@ fn RouteLifecycle(client: ApiClient, route: aos_proto_types::Route) -> impl Into
             pending,
             error,
             busy,
+            None,
         );
     });
     let on_apply = Callback::new(move |()| {
@@ -640,6 +811,14 @@ fn RouteReplace(
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
+    let draft_epoch = watch_draft(
+        move || {
+            let _ = successor_id.get();
+            let _ = signals.draft_key();
+        },
+        pending,
+        error,
+    );
     let predecessor_id = route.stable_id;
     let version = route.resource_version;
     let plan_client = client.clone();
@@ -668,6 +847,7 @@ fn RouteReplace(
             pending,
             error,
             busy,
+            Some(draft_epoch),
         );
     };
     let on_apply = apply_route(
@@ -686,21 +866,38 @@ fn RouteAdvertisements(
     surface: aos_proto_types::SurfaceRef,
     canonical: Vec<aos_proto_types::RouteAdvertisement>,
     routes: Vec<aos_proto_types::Route>,
+    can_manage: bool,
 ) -> impl IntoView {
     // Keep the initial signal aligned with the first server-rendered option.
     // Otherwise hydration displays Git while submissions retain Web until the
     // user changes the select to a different value and back.
     let audience = RwSignal::new("git".to_string());
-    let initial_route = routes
+    let enabled_route_ids = routes
         .iter()
-        .find(|value| value.spec.as_ref().is_some_and(|spec| spec.enabled))
+        .filter(|value| value.spec.as_ref().is_some_and(|spec| spec.enabled))
         .map(|value| value.stable_id.clone())
-        .unwrap_or_default();
+        .collect::<Vec<_>>();
+    let advertisement_choices = canonical
+        .iter()
+        .map(|value| (value.audience.clone(), value.route_id.clone()))
+        .collect::<Vec<_>>();
+    let initial_route =
+        route_selection_for_audience("git", &advertisement_choices, &enabled_route_ids);
     let route_id = RwSignal::new(initial_route);
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
+    let draft_epoch = watch_draft(
+        move || {
+            let _ = audience.get();
+            let _ = route_id.get();
+        },
+        pending,
+        error,
+    );
     let request_canonical = canonical.clone();
+    let selected_advertisements = advertisement_choices;
+    let selected_enabled_routes = enabled_route_ids;
     let plan_client = client.clone();
     let on_plan = move |event: SubmitEvent| {
         event.prevent_default();
@@ -726,6 +923,7 @@ fn RouteAdvertisements(
             pending,
             error,
             busy,
+            Some(draft_epoch),
         );
     };
     let on_apply = Callback::new(move |()| {
@@ -748,7 +946,7 @@ fn RouteAdvertisements(
             busy.set(false);
         });
     });
-    view! { <section class="panel editor-panel"><div class="section-heading"><div><p class="section-kicker">"Audience defaults"</p><div class="section-title"><h2>"Route advertisements"</h2><HelpTooltip term="Route advertisements" summary="Each audience resolves to one enabled route while alternate routes remain simultaneously available."/></div></div></div><div class="compact-list">{canonical.into_iter().map(|value| view! { <div class="compact-list-row"><div><strong>{value.audience}</strong><code>{value.route_id}</code></div></div> }).collect_view()}</div><form class="editor-form" on:submit=on_plan><label><span>"Audience"</span><select prop:value=move || audience.get() on:change=move |event| audience.set(event_target_value(&event))><option value="git">"Git"</option><option value="nix_cache">"Nix cache"</option><option value="web">"Web"</option></select></label><label><span>"Enabled route"</span><select prop:value=move || route_id.get() on:change=move |event| route_id.set(event_target_value(&event))>{routes.iter().filter(|route| route.spec.as_ref().is_some_and(|spec| spec.enabled)).map(|route| view! { <option value=route.stable_id.clone()>{route.canonical_rendered_url.clone()}</option> }).collect_view()}</select></label><div class="form-actions"><button class="secondary-button" type="submit" disabled=move || busy.get()>"Review canonical selection"</button></div></form><PlanReview pending=pending error=error busy=busy on_apply=on_apply/></section> }
+    view! { <section class="panel editor-panel"><div class="section-heading"><div><p class="section-kicker">"Audience defaults"</p><div class="section-title"><h2>"Route advertisements"</h2><HelpTooltip term="Route advertisements" summary="Each audience resolves to one enabled route while alternate routes remain simultaneously available."/></div></div></div><div class="compact-list">{canonical.into_iter().map(|value| view! { <div class="compact-list-row"><div><strong>{value.audience}</strong><code>{value.route_id}</code></div></div> }).collect_view()}</div>{can_manage.then(|| view! { <form class="editor-form" on:submit=on_plan><label><span>"Audience"</span><select prop:value=move || audience.get() on:change=move |event| { let selected = event_target_value(&event); audience.set(selected.clone()); route_id.set(route_selection_for_audience(&selected, &selected_advertisements, &selected_enabled_routes)); }><option value="git">"Git"</option><option value="nix_cache">"Nix cache"</option><option value="web">"Web"</option></select></label><label><span>"Enabled route"</span><select prop:value=move || route_id.get() on:change=move |event| route_id.set(event_target_value(&event))>{routes.iter().filter(|route| route.spec.as_ref().is_some_and(|spec| spec.enabled)).map(|route| view! { <option value=route.stable_id.clone()>{route.canonical_rendered_url.clone()}</option> }).collect_view()}</select></label><div class="form-actions"><button class="secondary-button" type="submit" disabled=move || busy.get()>"Review canonical selection"</button></div></form><PlanReview pending=pending error=error busy=busy on_apply=on_apply/> })}</section> }
 }
 
 fn build_spec(
@@ -907,9 +1105,12 @@ fn plan<Req: serde::Serialize + 'static>(
     pending: RwSignal<Option<PendingPlan>>,
     error: RwSignal<Option<String>>,
     busy: RwSignal<bool>,
+    draft_epoch: Option<RwSignal<u64>>,
 ) {
+    let planned_epoch = draft_epoch.map(|epoch| (epoch, epoch.get_untracked()));
     busy.set(true);
     error.set(None);
+    pending.set(None);
     spawn_local(async move {
         let result = client
             .call::<_, aos_proto_types::TopologyPlanResponse>(path, &request)
@@ -917,12 +1118,20 @@ fn plan<Req: serde::Serialize + 'static>(
             .map_err(|failure| failure.to_string())
             .and_then(|response| PendingPlan::from_response(response, idempotency_key));
         match result {
-            Ok(reviewed) => pending.set(Some(reviewed)),
+            Ok(reviewed)
+                if planned_epoch
+                    .as_ref()
+                    .map_or(true, |(epoch, planned)| epoch.get_untracked() == *planned) =>
+            {
+                pending.set(Some(reviewed));
+            }
+            Ok(_) => {}
             Err(detail) => error.set(Some(detail)),
         }
         busy.set(false);
     });
 }
+
 fn apply_route(
     client: ApiClient,
     path: &'static str,
@@ -962,6 +1171,6 @@ fn cache_surface(path: &str) -> aos_proto_types::SurfaceRef {
         )),
     }
 }
-fn reload() {
+pub(super) fn reload() {
     crate::app::refresh();
 }

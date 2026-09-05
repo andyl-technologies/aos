@@ -8,7 +8,7 @@ use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::components::{HashValue, InlineError, StatusBadge};
+use crate::components::{HashValue, HelpTooltip, InlineError, StatusBadge};
 use crate::transport::ApiClient;
 
 /// Renders filters and provenance for effective retention roots.
@@ -80,10 +80,7 @@ pub(super) fn RetentionReasons(client: ApiClient, cache_id: String) -> impl Into
             <div class="section-heading">
                 <div>
                     <p class="section-kicker">"GC provenance"</p>
-                    <h2>"Explain effective roots"</h2>
-                    <p>
-                        "Inspect every reason an object remains live before changing retention or running garbage collection."
-                    </p>
+                    <h2>"Explain effective roots"<HelpTooltip term="Explain effective roots" summary="Inspect every reason an object remains live before changing retention or running garbage collection."/></h2>
                 </div>
             </div>
             <form class="editor-form" on:submit=on_submit>

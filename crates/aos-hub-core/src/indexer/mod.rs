@@ -137,6 +137,11 @@ struct SignedClosureLayer {
 /// while keeping Worker memory and subrequests bounded.
 const RELEASE_TREE_FETCH_CONCURRENCY: usize = 8;
 
+/// Limits cold release rebuilds, which also retain canonical documentation and
+/// construct browse projections. Revalidating an existing snapshot is smaller
+/// and keeps the wider fetch window above.
+const RELEASE_REBUILD_CONCURRENCY: usize = 2;
+
 /// Outcome of one indexing run.
 #[derive(Debug)]
 pub struct IndexOutcome {
@@ -442,7 +447,8 @@ async fn index_registry_inner(
         || db.has_container_release_catalog(registry.id).await?;
     let release_documentation_complete = db
         .release_documentation_projection_complete(registry.id)
-        .await?;
+        .await?
+        && db.release_browse_projection_complete(registry.id).await?;
     if incremental_preconditions(
         status.as_ref().map(|status| status.state.as_str()),
         status
@@ -541,12 +547,22 @@ async fn index_registry_inner(
         "registry index phase prepared"
     );
     let release_tags: Vec<_> = refs.tags.iter().collect();
+    let release_concurrency = if reusable_releases.len() == release_tags.len() {
+        RELEASE_TREE_FETCH_CONCURRENCY
+    } else {
+        RELEASE_REBUILD_CONCURRENCY
+    };
     let mut releases = Vec::new();
     let mut release_artifact_snapshots = Vec::new();
     let mut release_images = Vec::new();
     let mut image_presence = Vec::new();
     let mut image_release_tag_oids = std::collections::BTreeSet::new();
-    for batch in release_tags.chunks(RELEASE_TREE_FETCH_CONCURRENCY) {
+    // Each tree projection expands into SQL parameters and a serialized remote
+    // request. Keep only one such write in flight: overlapping eight complete
+    // projection buffers can exceed the Worker's memory limit. Signed trees
+    // and canonical documents may still be fetched and verified concurrently.
+    let browse_projection_gate = futures_util::lock::Mutex::new(());
+    for batch in release_tags.chunks(release_concurrency) {
         let verified = try_join_all(batch.iter().copied().map(|(tag_name, tag_oid)| {
             let reader = &reader;
             let reusable = reusable_releases.get(tag_name.as_str()).cloned();
@@ -554,6 +570,7 @@ async fn index_registry_inner(
             let trusted = trusted.as_slice();
             let advertised_commit = advertised_commit.as_str();
             let refs_digest = refs_digest.as_str();
+            let browse_projection_gate = &browse_projection_gate;
             async move {
                 if let Some(reusable) = reusable.filter(|reusable| {
                     reusable.release.tag_oid == tag_oid.to_hex()
@@ -720,6 +737,26 @@ async fn index_registry_inner(
                 }
 
                 let artifacts = release_snapshot_artifacts(&release_tree.packages);
+                let search = verify_package_documentation(fetch, &release_tree.packages).await?;
+                {
+                    let _projection = browse_projection_gate.lock().await;
+                    db.retain_release_browse_catalog(
+                        registry.id,
+                        &source_commit,
+                        &release_tree.packages,
+                        release_tree.root.registry.default_release.as_deref(),
+                        &search,
+                    )
+                    .await?;
+                }
+                let signed_text = std::str::from_utf8(&signed.signed_payload)
+                    .context("release tag message is not UTF-8")?;
+                let notes = signed_text
+                    .split_once("\n\n")
+                    .map(|(_, message)| message.trim())
+                    .unwrap_or_default();
+                db.retain_release_notes(registry.id, &tag_oid.to_hex(), notes)
+                    .await?;
                 let documentation = release_snapshot_documentation(&release_tree.packages);
                 let manifest_digest = hex::encode(Sha256::digest(serde_json::to_vec(&artifacts)?));
                 let artifact_snapshot = ReleaseArtifactSnapshot {
@@ -823,6 +860,14 @@ async fn index_registry_inner(
     let image_presence = deduplicated_presence;
 
     let package_documentation = verify_package_documentation(fetch, &tree.packages).await?;
+    db.retain_release_browse_catalog(
+        registry.id,
+        &commit_oid.to_hex(),
+        &tree.packages,
+        tree.root.registry.default_release.as_deref(),
+        &package_documentation,
+    )
+    .await?;
     let snapshot = IndexSnapshot {
         commit: commit_oid.to_hex(),
         name: tree.root.registry.name.clone(),
@@ -2000,6 +2045,7 @@ async fn reusable_release_snapshots(
     if !db
         .release_documentation_projection_complete(registry_id)
         .await?
+        || !db.release_browse_projection_complete(registry_id).await?
     {
         return Ok(BTreeMap::new());
     }
@@ -2528,6 +2574,15 @@ async fn verify_package_documentation(
                     platform: platform.clone(),
                     artifact: artifact.clone(),
                     search: document.search_documents(),
+                    options: document
+                        .options
+                        .iter()
+                        .map(|option| crate::db::IndexedDocumentationOption {
+                            key: option.display_path.clone(),
+                            path: option.path.clone(),
+                            type_signature: option.type_signature.clone(),
+                        })
+                        .collect(),
                 });
             }
         }
@@ -3599,6 +3654,22 @@ mod tests {
         )
         .await
         .unwrap();
+
+        assert!(
+            reusable_release_snapshots(&db, registry_id)
+                .await
+                .unwrap()
+                .is_empty(),
+            "upgraded indexes must rebuild missing browse projections"
+        );
+        for commit in [&release.commit_oid, &"c".repeat(64)] {
+            db.retain_release_browse_catalog(registry_id, commit, &[], None, &[])
+                .await
+                .unwrap();
+        }
+        db.retain_release_notes(registry_id, &release.tag_oid, "Release notes")
+            .await
+            .unwrap();
 
         let reusable = reusable_release_snapshots(&db, registry_id).await.unwrap();
         let snapshot = reusable.get("1.0.0").unwrap();

@@ -25,7 +25,7 @@ use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Component, Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use futures_util::{StreamExt, stream};
 
 use crate::download::join_cache_url;
@@ -119,6 +119,50 @@ pub async fn sync_git(
     trusted_keys_dirs: &[PathBuf],
     state: &mut RegistryState,
     printer: &Printer,
+) -> Result<SyncResult> {
+    sync_git_with_continuity(
+        config,
+        tracking_mode,
+        cache_dir,
+        registries_dir,
+        trusted_keys_dirs,
+        state,
+        printer,
+        SyncContinuity::default(),
+    )
+    .await
+}
+
+/// Additional consumer cursors that must advance before extracted metadata or
+/// rotated trust keys can be published.
+#[derive(Default)]
+pub(crate) struct SyncContinuity<'a> {
+    /// Other consumer's verified roster commit.
+    pub roster: Option<&'a str>,
+    /// Other consumer's selected commit when tracking the same source.
+    pub selected: Option<&'a str>,
+    /// Frozen selected commit that must not change, even by fast-forward.
+    pub exact_selected: Option<&'a str>,
+    /// Previously accepted live TUF root, independent of selection ancestry.
+    pub tuf_previous: Option<&'a str>,
+}
+
+/// Synchronizes with another consumer's continuity anchors in the same trust
+/// transaction. Used by independent image selection without changing APM state.
+///
+/// # Errors
+///
+/// Returns the same errors as [`sync_git`], including refusal of a new roster
+/// or selected release that does not descend from an additional anchor.
+pub(crate) async fn sync_git_with_continuity(
+    config: &RegistryConfig,
+    tracking_mode: &TrackingMode,
+    cache_dir: &Path,
+    registries_dir: &Path,
+    trusted_keys_dirs: &[PathBuf],
+    state: &mut RegistryState,
+    printer: &Printer,
+    continuity: SyncContinuity<'_>,
 ) -> Result<SyncResult> {
     let git_url = normalize_git_url(&config.url);
     let repo_dir = cache_dir.join(&config.name).join("repo.git");
@@ -237,6 +281,9 @@ pub async fn sync_git(
         if let Some(old_commit) = previous_roster_commit {
             enforce_fast_forward(&repo_dir, old_commit, &roster_commit).await?;
         }
+        if let Some(anchor) = continuity.roster {
+            enforce_fast_forward(&repo_dir, anchor, &roster_commit).await?;
+        }
         let roster = load_verified_roster(config, &repo_dir, &roster_commit)?;
         post_pin_trusted_keys = trusted_keys_from_roster(config, &roster)?;
         pending_roster = Some(roster);
@@ -322,6 +369,17 @@ pub async fn sync_git(
         enforce_fast_forward(&repo_dir, old_commit, &new_commit).await?;
     }
 
+    if let Some(anchor) = continuity.selected {
+        enforce_fast_forward(&repo_dir, anchor, &new_commit).await?;
+    }
+
+    if let Some(anchor) = continuity.exact_selected {
+        ensure!(
+            anchor == new_commit,
+            "immutable image release changed its commit"
+        );
+    }
+
     let release_trust = if enforcing {
         if let Some(release_tag) = release_tag.as_deref() {
             verify_release_tag(&repo_dir, release_tag, &post_pin_trusted_keys)?;
@@ -351,7 +409,9 @@ pub async fn sync_git(
             &repo_dir,
             &config.name,
             &new_commit,
-            previous_selected_commit.as_deref(),
+            continuity
+                .tuf_previous
+                .or(previous_selected_commit.as_deref()),
             &post_pin_trusted_keys,
             state,
             unix_now_secs(),
@@ -667,7 +727,8 @@ fn trusted_keys_from_roster(
     Ok(trusted)
 }
 
-fn tracking_mode_is_immutable_pin(tracking_mode: &TrackingMode) -> bool {
+/// Returns whether a tracking mode deliberately selects one frozen release.
+pub(crate) fn tracking_mode_is_immutable_pin(tracking_mode: &TrackingMode) -> bool {
     match tracking_mode {
         TrackingMode::Commit(_) | TrackingMode::Tag(_) => true,
         TrackingMode::Version(req) => version_req_is_exact(req),

@@ -8,7 +8,7 @@ use leptos::ev::{Event, SubmitEvent};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::components::{HashValue, InlineError, StatusBadge};
+use crate::components::{HashValue, HelpTooltip, InlineError, StatusBadge};
 use crate::transport::ApiClient;
 
 /// Renders cache search and exact object/closure inspection.
@@ -17,9 +17,18 @@ pub(super) fn CacheObjects(client: ApiClient, cache_id: String) -> impl IntoView
     let can_upload = client.allows("registry.configure");
     view! {
         <div class="workflow-stack">
-            {can_upload.then(|| view! { <ObjectUpload client=client.clone() cache_id=cache_id.clone()/> })}
             <ObjectSearch client=client.clone() cache_id=cache_id.clone()/>
-            <ObjectInspector client=client cache_id=cache_id/>
+            <ObjectInspector client=client.clone() cache_id=cache_id.clone()/>
+            {can_upload.then(|| view! {
+                <details class="panel editor-panel">
+                    <summary>"Upload a cache object"</summary>
+                    <p class="section-kicker">"Advanced producer operation"</p>
+                    <p>
+                        "Use this only when producing an exact cache path. Search and inspect objects above before writing new content."
+                    </p>
+                    <ObjectUpload client=client.clone() cache_id=cache_id.clone()/>
+                </details>
+            })}
         </div>
     }
 }
@@ -55,15 +64,13 @@ fn ObjectUpload(client: ApiClient, cache_id: String) -> impl IntoView {
     };
 
     view! {
-        <section class="panel editor-panel">
-            <div class="section-heading"><div><p class="section-kicker">"Authenticated producer path"</p><h2>"Upload cache object"</h2><p>"Upload one canonical cache machine path. The Hub selects a direct-origin capability or its authenticated proxy and switches large objects to multipart storage."</p></div></div>
-            <div class="editor-form">
+        <div class="editor-form">
                 <label><span>"Cache-relative path"</span><input required placeholder="nar/<hash>.nar.zst or <store-hash>.narinfo" prop:value=move || path.get() on:input=move |event| path.set(event_target_value(&event))/></label>
                 <label><span>"Exact object bytes"</span><input type="file" disabled=move || busy.get() on:change=on_file/></label>
-            </div>
-            {move || status.get().map(|value| view! { <StatusBadge state=value positive=true/> })}
-            {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
-        </section>
+        </div>
+        <p class="field-note">"Choosing a file starts the authenticated upload. Large objects use multipart storage automatically."</p>
+        {move || status.get().map(|value| view! { <StatusBadge state=value positive=true/> })}
+        {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
     }
 }
 
@@ -229,8 +236,7 @@ fn ObjectSearch(client: ApiClient, cache_id: String) -> impl IntoView {
             <div class="section-heading">
                 <div>
                     <p class="section-kicker">"Logical Nix content"</p>
-                    <h2>"Search objects"</h2>
-                    <p>"Search store hashes and names across the complete cache inventory."</p>
+                    <h2>"Search objects"<HelpTooltip term="Search objects" summary="Search store hashes and names across the complete cache inventory."/></h2>
                 </div>
             </div>
             <form class="editor-form" on:submit=on_submit>

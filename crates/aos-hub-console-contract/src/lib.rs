@@ -101,6 +101,152 @@ pub fn container_pull_commands(distribution_reference: &str) -> Vec<ContainerPul
     .collect()
 }
 
+/// Selects the effective enabled route for one delivery audience.
+///
+/// The current advertisement wins when it still names an enabled route. An
+/// absent or stale advertisement falls back to the first enabled route so a
+/// browser form and its submitted value begin in the same state.
+#[must_use]
+pub fn route_selection_for_audience(
+    audience: &str,
+    advertisements: &[(String, String)],
+    enabled_route_ids: &[String],
+) -> String {
+    advertisements
+        .iter()
+        .find(|(candidate, route_id)| candidate == audience && enabled_route_ids.contains(route_id))
+        .map(|(_, route_id)| route_id.clone())
+        .or_else(|| enabled_route_ids.first().cloned())
+        .unwrap_or_default()
+}
+
+/// Primary action available for one durable delivery workflow state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeliveryWorkflowAction {
+    /// Rechecks prerequisites and continues unfinished provisioning.
+    Resume,
+    /// Opens the reviewed activation step after verification succeeds.
+    ReviewActivation,
+}
+
+/// Returns the primary action supported by a delivery workflow state.
+#[must_use]
+pub fn delivery_workflow_action(state: &str) -> Option<DeliveryWorkflowAction> {
+    match state {
+        "preparing" | "awaiting_verification" | "blocked" => Some(DeliveryWorkflowAction::Resume),
+        "ready" => Some(DeliveryWorkflowAction::ReviewActivation),
+        "active" => None,
+        _ => Some(DeliveryWorkflowAction::Resume),
+    }
+}
+
+/// Returns prerequisite messages for a delivery-destination draft.
+#[must_use]
+pub fn delivery_draft_prerequisites(
+    placement_selected: bool,
+    endpoint_selected: bool,
+    new_endpoint: bool,
+    hostname_source_present: bool,
+    network_policy_selected: bool,
+    provider_attachment_present: bool,
+) -> Vec<&'static str> {
+    let mut missing = Vec::new();
+    if !placement_selected {
+        missing.push("A storage placement is required.");
+    }
+    if !new_endpoint && !endpoint_selected {
+        missing.push("Choose an existing endpoint or configure a new one.");
+    }
+    if new_endpoint && !hostname_source_present {
+        missing.push("A hostname or managed domain is required for the new endpoint.");
+    }
+    if new_endpoint && !network_policy_selected {
+        missing.push("A network policy is required for the new endpoint.");
+    }
+    if new_endpoint && !provider_attachment_present {
+        missing.push("Provider listener, TLS, and probe references are required for verification.");
+    }
+    missing
+}
+
+/// Returns whether owner-only controls belong on a scoped resource card.
+#[must_use]
+pub fn owner_controls_visible(
+    owner_scope_key: &str,
+    consumer_scope_key: &str,
+    permission_granted: bool,
+) -> bool {
+    permission_granted && owner_scope_key == consumer_scope_key
+}
+
+/// Returns whether settings navigation starts expanded at a viewport width.
+///
+/// An unavailable width preserves the desktop behavior. Narrow clients start
+/// with the scope and workflow visible and can expand navigation on demand.
+#[must_use]
+pub fn settings_navigation_starts_open(viewport_width: Option<f64>) -> bool {
+    viewport_width.is_none_or(|width| width > 768.0)
+}
+
+/// Permissions that determine which delivery-destination setup paths are usable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DeliverySetupAccess {
+    /// Whether an existing-endpoint workflow can be resumed.
+    pub can_resume_existing: bool,
+    /// Whether a new-endpoint workflow can be resumed.
+    pub can_resume_new: bool,
+    /// Whether an existing endpoint can be connected to the surface.
+    pub can_use_existing_endpoint: bool,
+    /// Whether a hostname, domain, and endpoint can be created inline.
+    pub can_create_hostname_endpoint: bool,
+    /// Whether a new endpoint can use an existing managed domain.
+    pub can_create_managed_domain_endpoint: bool,
+}
+
+impl DeliverySetupAccess {
+    /// Returns whether at least one guided delivery setup path is usable.
+    #[must_use]
+    pub fn can_start(self) -> bool {
+        self.can_use_existing_endpoint
+            || self.can_create_hostname_endpoint
+            || self.can_create_managed_domain_endpoint
+    }
+}
+
+/// Derives delivery setup access from the live route-scoped session permissions.
+#[must_use]
+pub fn delivery_setup_access(permissions: &[String]) -> DeliverySetupAccess {
+    let allows = |required: &str| permissions.iter().any(|value| value == required);
+    let common = allows("read")
+        && allows("binding.read")
+        && allows("route.manage")
+        && allows("gateway.manage");
+    let can_create_endpoint = common && allows("endpoint.manage") && allows("network_policy.read");
+
+    DeliverySetupAccess {
+        can_resume_existing: common,
+        can_resume_new: common && allows("endpoint.manage") && allows("domain.manage"),
+        can_use_existing_endpoint: common && allows("endpoint.read"),
+        can_create_hostname_endpoint: can_create_endpoint && allows("domain.manage"),
+        can_create_managed_domain_endpoint: can_create_endpoint
+            && allows("domain.read")
+            && allows("domain.manage"),
+    }
+}
+
+/// Joins a gateway URL prefix and binding-relative placement prefix for display.
+#[must_use]
+pub fn delivery_public_path(client_base_path: &str, placement_prefix: &str) -> String {
+    let base = client_base_path.trim_end_matches('/');
+    let placement = placement_prefix.trim_matches('/');
+    match (base.is_empty(), placement.is_empty()) {
+        (true, true) => "/".to_string(),
+        (true, false) => format!("/{placement}"),
+        (false, true) => base.to_string(),
+        (false, false) => format!("{base}/{placement}"),
+    }
+}
+
 /// One page in a scope's deterministic settings navigation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PageSpec {
@@ -149,8 +295,23 @@ impl PageSpec {
     /// capability even though the API remains the final authorization gate.
     #[must_use]
     pub fn navigation_permission(&self) -> &'static str {
+        if self.workflow == "instance-settings" {
+            return "iam.admin";
+        }
         match self.key {
-            "audit" => "audit.read",
+            "defaults" => "binding.manage",
+            "audit" | "operations" => "audit.read",
+            "signing" => "keys.manage",
+            "mirror" => "registry.configure",
+            "publish-history" => "publish",
+            "webhooks" => "members.manage",
+            "storage" => "binding.read",
+            "domains" => "domain.read",
+            "boundaries" => "network_policy.read",
+            "endpoints" => "endpoint.read",
+            "gateways" => "gateway.read",
+            "placements" => "placement.read",
+            "delivery" => "route.read",
             "danger" | "sso" => "iam.admin",
             "tokens" => "tokens.self",
             // Every authenticated user may open the organization bootstrap
@@ -324,6 +485,29 @@ impl ConsoleRoute {
             format!("{}/{}", self.base_path, page.suffix)
         }
     }
+}
+
+/// Returns the public catalog destination for a former read-only settings page.
+///
+/// Catalogs belong to registry browsing. Exact old bookmarks remain usable,
+/// including nested registry paths, without retaining duplicate settings UIs.
+#[must_use]
+pub fn registry_catalog_redirect(path: &str) -> Option<String> {
+    let segments = canonical_segments(path)?;
+    let settings = segments
+        .windows(2)
+        .position(|window| window == ["-", "settings"])?;
+    if settings == 0 || segments.len() != settings + 3 {
+        return None;
+    }
+    let catalog = match segments[settings + 2] {
+        "packages" => "packages",
+        "documentation" => "docs",
+        "images" => "images",
+        "channels" => "channels",
+        _ => return None,
+    };
+    Some(format!("/{}/-/{catalog}", segments[..settings].join("/")))
 }
 
 fn resolve_registry(segments: &[&str]) -> Option<ConsoleRoute> {
@@ -714,32 +898,11 @@ pub const REGISTRY_PAGES: &[PageSpec] = &[
         "access-tokens",
     ),
     PageSpec::new(
-        "images",
-        "System images",
-        "Publishing",
-        "images",
-        "registry-images",
-    ),
-    PageSpec::new(
         "containers",
         "Containers",
         "Publishing",
         "containers",
         "registry-containers",
-    ),
-    PageSpec::new(
-        "packages",
-        "Packages",
-        "Publishing",
-        "packages",
-        "registry-packages",
-    ),
-    PageSpec::new(
-        "docs",
-        "Package docs",
-        "Publishing",
-        "documentation",
-        "registry-package-documentation",
     ),
     PageSpec::new(
         "mirror",
@@ -750,29 +913,22 @@ pub const REGISTRY_PAGES: &[PageSpec] = &[
     ),
     PageSpec::new(
         "configuration",
-        "Configuration",
-        "Publishing",
+        "Configuration history",
+        "Activity",
         "configuration",
         "registry-configuration",
     ),
     PageSpec::new(
-        "channels",
-        "Channels",
-        "Publishing",
-        "channels",
-        "registry-channels",
-    ),
-    PageSpec::new(
         "changes",
         "Change requests",
-        "Publishing",
+        "Activity",
         "change-requests",
         "change-requests",
     ),
     PageSpec::new(
         "publish-history",
-        "Publish history",
-        "Publishing",
+        "Publications",
+        "Activity",
         "publish-history",
         "registry-publication",
     ),
@@ -873,6 +1029,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn catalog_bookmarks_leave_settings_without_accepting_unknown_paths() {
+        for (old, new) in [
+            ("packages", "packages"),
+            ("documentation", "docs"),
+            ("images", "images"),
+            ("channels", "channels"),
+        ] {
+            let path = format!("/acme/project/main/-/settings/{old}");
+            assert_eq!(
+                registry_catalog_redirect(&path),
+                Some(format!("/acme/project/main/-/{new}"))
+            );
+            assert!(ConsoleRoute::resolve(&path).is_none());
+        }
+        for path in [
+            "/-/settings/packages",
+            "/acme/main/-/settings/packages/extra",
+            "/acme/main/-/settings/unknown",
+            "/acme/../main/-/settings/packages",
+        ] {
+            assert!(registry_catalog_redirect(path).is_none(), "{path}");
+        }
+    }
+
+    #[test]
     fn container_pull_commands_require_and_preserve_the_server_reference() {
         assert!(container_pull_commands("").is_empty());
 
@@ -937,6 +1118,7 @@ mod tests {
                 &[
                     "overview",
                     "storage",
+                    "storage-new",
                     "domains",
                     "domains-new",
                     "boundaries",
@@ -995,13 +1177,9 @@ mod tests {
                     "access",
                     "signing",
                     "tokens",
-                    "images",
                     "containers",
-                    "packages",
-                    "docs",
                     "mirror",
                     "configuration",
-                    "channels",
                     "changes",
                     "publish-history",
                     "operations",
@@ -1068,17 +1246,8 @@ mod tests {
                     "projects",
                     "registries",
                     "caches",
-                    "storage",
-                    "domains",
-                    "boundaries",
-                    "endpoints",
-                    "gateways",
-                    "defaults",
                     "identity",
                     "members",
-                    "signing",
-                    "webhooks",
-                    "operations",
                 ][..],
             ),
             (
@@ -1088,18 +1257,9 @@ mod tests {
                     "projects",
                     "registries",
                     "caches",
-                    "storage",
-                    "domains",
-                    "boundaries",
-                    "endpoints",
-                    "gateways",
-                    "defaults",
                     "identity",
                     "members",
-                    "signing",
                     "tokens",
-                    "webhooks",
-                    "operations",
                 ][..],
             ),
             (
@@ -1109,17 +1269,9 @@ mod tests {
                     "projects",
                     "registries",
                     "caches",
-                    "storage",
-                    "domains",
-                    "boundaries",
-                    "endpoints",
-                    "gateways",
-                    "defaults",
                     "identity",
                     "members",
                     "sso",
-                    "signing",
-                    "webhooks",
                     "operations",
                     "audit",
                     "danger",
@@ -1137,6 +1289,31 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(actual, expected, "{permissions:?}");
         }
+    }
+
+    #[test]
+    fn administrative_settings_match_their_read_api_permissions() {
+        for (path, permission) in [
+            ("/acme/main/-/settings/mirror", "registry.configure"),
+            ("/acme/main/-/settings/publish-history", "publish"),
+            ("/acme/main/-/settings/signing-keys", "keys.manage"),
+            ("/acme/main/-/settings/operations", "audit.read"),
+            ("/-/org/acme/signing-keys", "keys.manage"),
+            ("/-/instance/operations", "audit.read"),
+        ] {
+            let route = ConsoleRoute::resolve(path).expect("settings route");
+            assert_eq!(route.page.navigation_permission(), permission, "{path}");
+            assert!(!route
+                .visible_navigation(&["read".into()])
+                .contains(&route.page));
+            assert!(route
+                .visible_navigation(&["read".into(), permission.into()])
+                .contains(&route.page));
+        }
+        let tokens = ConsoleRoute::resolve("/acme/main/-/settings/tokens").expect("tokens");
+        assert!(tokens
+            .visible_navigation(&["read".into(), "tokens.self".into()])
+            .contains(&tokens.page));
     }
 
     #[test]
@@ -1320,6 +1497,144 @@ mod tests {
                 "pull command inferred a browser origin: {forbidden}"
             );
         }
+    }
+
+    #[test]
+    fn route_selection_starts_from_the_current_audience_advertisement() {
+        let advertisements = vec![
+            ("git".to_string(), "route-git".to_string()),
+            ("web".to_string(), "route-web".to_string()),
+        ];
+        let enabled = vec!["route-other".to_string(), "route-git".to_string()];
+
+        assert_eq!(
+            route_selection_for_audience("git", &advertisements, &enabled),
+            "route-git"
+        );
+    }
+
+    #[test]
+    fn route_selection_falls_back_when_the_advertisement_is_not_enabled() {
+        let advertisements = vec![("git".to_string(), "route-disabled".to_string())];
+        let enabled = vec!["route-ready".to_string()];
+
+        assert_eq!(
+            route_selection_for_audience("git", &advertisements, &enabled),
+            "route-ready"
+        );
+        assert!(route_selection_for_audience("web", &[], &[]).is_empty());
+    }
+
+    #[test]
+    fn delivery_workflow_actions_follow_verification_and_activation() {
+        assert_eq!(
+            delivery_workflow_action("awaiting_verification"),
+            Some(DeliveryWorkflowAction::Resume)
+        );
+        assert_eq!(
+            delivery_workflow_action("ready"),
+            Some(DeliveryWorkflowAction::ReviewActivation)
+        );
+        assert_eq!(delivery_workflow_action("active"), None);
+    }
+
+    #[test]
+    fn new_delivery_endpoint_requires_verifiable_provider_attachment() {
+        assert_eq!(
+            delivery_draft_prerequisites(true, false, true, true, true, false),
+            vec!["Provider listener, TLS, and probe references are required for verification."]
+        );
+        assert!(delivery_draft_prerequisites(true, true, false, false, false, false).is_empty());
+    }
+
+    #[test]
+    fn granted_infrastructure_never_exposes_owner_mutations() {
+        assert!(owner_controls_visible(
+            "scope:org:acme",
+            "scope:org:acme",
+            true
+        ));
+        assert!(!owner_controls_visible(
+            "scope:instance",
+            "scope:org:acme",
+            true
+        ));
+        assert!(!owner_controls_visible(
+            "scope:org:acme",
+            "scope:org:acme",
+            false
+        ));
+    }
+
+    #[test]
+    fn narrow_settings_navigation_starts_collapsed() {
+        assert!(!settings_navigation_starts_open(Some(390.0)));
+        assert!(settings_navigation_starts_open(Some(1440.0)));
+        assert!(settings_navigation_starts_open(None));
+    }
+
+    #[test]
+    fn delivery_setup_requires_each_resource_permission() {
+        let existing = delivery_setup_access(&[
+            "read".to_string(),
+            "binding.read".to_string(),
+            "endpoint.read".to_string(),
+            "route.manage".to_string(),
+            "gateway.manage".to_string(),
+        ]);
+        assert!(existing.can_use_existing_endpoint);
+        assert!(existing.can_resume_existing);
+        assert!(!existing.can_resume_new);
+        assert!(!existing.can_create_hostname_endpoint);
+
+        let hostname = delivery_setup_access(&[
+            "read".to_string(),
+            "binding.read".to_string(),
+            "route.manage".to_string(),
+            "gateway.manage".to_string(),
+            "endpoint.manage".to_string(),
+            "network_policy.read".to_string(),
+            "domain.manage".to_string(),
+        ]);
+        assert!(hostname.can_create_hostname_endpoint);
+        assert!(!hostname.can_create_managed_domain_endpoint);
+        assert!(hostname.can_resume_new);
+
+        let managed_domain = delivery_setup_access(&[
+            "read".to_string(),
+            "binding.read".to_string(),
+            "route.manage".to_string(),
+            "gateway.manage".to_string(),
+            "endpoint.manage".to_string(),
+            "network_policy.read".to_string(),
+            "domain.read".to_string(),
+            "domain.manage".to_string(),
+        ]);
+        assert!(managed_domain.can_create_managed_domain_endpoint);
+
+        let endpoint_only = delivery_setup_access(&[
+            "read".to_string(),
+            "binding.read".to_string(),
+            "route.manage".to_string(),
+            "gateway.manage".to_string(),
+            "endpoint.manage".to_string(),
+        ]);
+        assert!(!endpoint_only.can_resume_new);
+    }
+
+    #[test]
+    fn delivery_path_appends_the_placement_prefix() {
+        assert_eq!(delivery_public_path("/cdn", "org/cache"), "/cdn/org/cache");
+        assert_eq!(delivery_public_path("/", "org/cache"), "/org/cache");
+    }
+
+    #[test]
+    fn delivery_inventory_does_not_wait_on_duplicate_route_or_binding_reads() {
+        let source = include_str!("../../aos-hub-console/src/workflows/routes.rs");
+        assert!(!source.contains("ROUTE_SERVICE_LIST_ROUTES_PATH"));
+        assert!(!source.contains("OrganizationBindingRef"));
+        assert!(source.contains("owner_scope_key: gateway_scope.clone()"));
+        assert!(source.contains("include_granted: true"));
     }
 
     #[test]

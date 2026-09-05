@@ -8,9 +8,9 @@
 
 use std::collections::BTreeMap;
 
+use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
-use leptos::task::spawn_local;
 
 use crate::components::{EmptyState, HashValue, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
@@ -185,11 +185,14 @@ fn SigningSettings(client: ApiClient, context: SigningContext) -> impl IntoView 
                             match keys.await.as_ref() {
                                 Ok(keys) => view! {
                                     <SigningKeyInventory keys=keys.clone()/>
-                                    <EnrollKey client=client.clone() context=context.clone()/>
-                                    <KeyLifecycle
-                                        client=client.clone()
-                                        keys=keys.clone()
-                                    />
+                                    {client.allows("keys.manage").then(|| view! {
+                                        <details class="advanced-controls"><summary>"Enroll a public signing key"</summary>
+                                            <EnrollKey client=client.clone() context=context.clone()/>
+                                        </details>
+                                        <details class="advanced-controls"><summary>"Rotate or retire a key"</summary>
+                                            <KeyLifecycle client=client.clone() keys=keys.clone()/>
+                                        </details>
+                                    })}
                                     {context.consumer.clone().map(|consumer| view! {
                                         <SigningUsage
                                             client=client
@@ -223,7 +226,7 @@ fn signing_keys_resource(
             }
 
             let mut keys = BTreeMap::new();
-            for scope in scopes {
+            for (index, scope) in scopes.into_iter().enumerate() {
                 let page = client
                     .collect_pages::<_, aos_proto_types::ListSigningKeysResponse, _, _, _>(
                         aos_proto_types::SIGNING_KEY_SERVICE_LIST_SIGNING_KEYS_PATH,
@@ -234,8 +237,15 @@ fn signing_keys_resource(
                         },
                         |response| (response.signing_keys, response.next_page_token),
                     )
-                    .await
-                    .map_err(|failure| failure.to_string())?;
+                    .await;
+                let page = match page {
+                    Ok(page) => page,
+                    // A resource administrator need not administer its owning
+                    // organization. Keep local keys usable when that optional
+                    // parent inventory is outside the caller's permissions.
+                    Err(TransportError::Http { status: 403, .. }) if index > 0 => continue,
+                    Err(failure) => return Err(failure.to_string()),
+                };
                 for key in page {
                     keys.insert(key.stable_id.clone(), key);
                 }
@@ -631,6 +641,7 @@ fn SigningUsageEditor(
     keys: Vec<aos_proto_types::SigningKey>,
     current: Option<aos_proto_types::SigningKeyUsage>,
 ) -> impl IntoView {
+    let can_manage = client.allows("keys.manage");
     let active = keys
         .into_iter()
         .filter(|key| {
@@ -716,7 +727,7 @@ fn SigningUsageEditor(
                 "Enroll an active compatible signing key before attaching this usage."
             </p>
         })}
-        {(!active.is_empty()).then(|| view! {
+        {(can_manage && !active.is_empty()).then(|| view! {
             <form class="editor-form" on:submit=on_plan>
                 <label>
                     <span>"Signing-key generation"</span>

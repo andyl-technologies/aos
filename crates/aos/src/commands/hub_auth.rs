@@ -90,6 +90,35 @@ pub async fn prepare_active_profile() -> Result<()> {
     }))
 }
 
+/// Prepares the selected Hub profile without refreshing superseded credentials.
+///
+/// An explicit token bypasses stored credentials. When the origin is omitted,
+/// only the active profile's origin is retained alongside that explicit token.
+///
+/// # Errors
+/// Returns an error for an unreadable profile, invalid origin, or failed refresh
+/// when the command actually needs the stored credential.
+pub async fn prepare_hub_access(hub: Option<&str>, token: Option<&str>) -> Result<()> {
+    if let Some(token) = token {
+        if hub.is_some() {
+            return replace_active(None);
+        }
+        let origin = profile_path()?
+            .map(|path| load_store(&path))
+            .transpose()?
+            .and_then(|store| store.active_origin)
+            .context("provide --hub or run `aos hub login --hub URL`")?;
+        return replace_active(Some(ResolvedProfile {
+            origin: normalize_origin(&origin)?,
+            access_token: token.to_owned(),
+        }));
+    }
+    match hub {
+        Some(origin) => prepare_registry_profile(origin).await,
+        None => prepare_active_profile().await,
+    }
+}
+
 /// Loads and refreshes the active profile only when it matches a registry origin.
 ///
 /// An unrelated active profile is deliberately ignored, so a stale AOS Hub

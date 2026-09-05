@@ -4,11 +4,11 @@
 //! read-only audit views. Draft Git change requests remain separate because
 //! promotion is performed by the signed `apr change merge` workflow.
 
+use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
-use leptos::task::spawn_local;
 
-use crate::components::{HashValue, InlineError, StatusBadge};
+use crate::components::{HashValue, HelpTooltip, InlineError, StatusBadge};
 use crate::transport::ApiClient;
 
 /// Renders committed configuration history or draft change requests.
@@ -33,11 +33,14 @@ pub(super) fn RegistryConfiguration(
 
 #[component]
 fn ConfigurationHistory(client: ApiClient, registry_id: String) -> impl IntoView {
+    let can_audit = client.allows("audit.read");
     view! {
         <div class="workflow-stack">
             <GitHistory client=client.clone() registry_id=registry_id.clone()/>
-            <GitDiffInspector client=client.clone() registry_id=registry_id.clone()/>
-            <Changesets client=client registry_id=registry_id/>
+            <details class="panel advanced-controls"><summary>"Compare two commits"</summary>
+                <GitDiffInspector client=client.clone() registry_id=registry_id.clone()/>
+            </details>
+            {can_audit.then(|| view! { <Changesets client=client registry_id=registry_id/> })}
         </div>
     }
 }
@@ -256,15 +259,15 @@ fn Changesets(client: ApiClient, registry_id: String) -> impl IntoView {
         <section class="panel resource-panel">
             <div class="section-heading">
                 <div>
-                    <p class="section-kicker">"Retained-control audit"</p>
-                    <h2>"Semantic changesets"</h2>
+                    <p class="section-kicker">"Settings audit"</p>
+                    <h2>"Configuration changes"<HelpTooltip term="Configuration changes" summary="Reviewed settings changes recorded by the Hub, alongside the registry's Git history above."/></h2>
                 </div>
             </div>
             <Suspense fallback=move || view! { <p class="loading-row">"Loading changesets…"</p> }>
                 {move || Suspend::new(async move {
                     match changesets.await.as_ref() {
                         Ok(changesets) if changesets.is_empty() => view! {
-                            <p class="muted">"No semantic changesets at this scope."</p>
+                            <p class="muted">"No settings changes have been recorded for this registry."</p>
                         }
                         .into_any(),
                         Ok(changesets) => view! {
@@ -365,8 +368,8 @@ fn ChangesetInspector(client: ApiClient) -> impl IntoView {
     };
 
     view! {
-        <section class="subworkflow">
-            <h4>"Inspect exact changeset"</h4>
+        <details class="advanced-controls">
+            <summary>"Find a change by ID"</summary>
             <form class="editor-form" on:submit=on_submit>
                 <label>
                     <span>"Change ID"</span>
@@ -382,7 +385,7 @@ fn ChangesetInspector(client: ApiClient) -> impl IntoView {
             </form>
             {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
             {move || result.get().map(|result| view! { <ChangesetDetail result=result/> })}
-        </section>
+        </details>
     }
 }
 
@@ -454,11 +457,11 @@ fn ChangeRequests(client: ApiClient, registry_id: String) -> impl IntoView {
         <section class="panel resource-panel">
             <div class="section-heading">
                 <div>
-                    <p class="section-kicker">"Signed draft refs"</p>
+                    <p class="section-kicker">"Proposed registry changes"</p>
                     <h2>"Change requests"</h2>
                     <p>
-                        "Review draft file diffs here; promotion remains the signed "
-                        "`apr change merge` workflow shown on each request."
+                        "Review proposed file changes here. To publish an approved change, use the signed "
+                        <code>"apr change merge"</code>" command shown on its request."
                     </p>
                 </div>
             </div>

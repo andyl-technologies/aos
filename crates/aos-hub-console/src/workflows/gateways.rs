@@ -4,13 +4,13 @@
 //! Inventory follows the API's binding-scoped read model so operators can see
 //! which storage origin each direct-delivery path exposes.
 
+use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
-use leptos::task::spawn_local;
 
 use crate::components::{HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
-use crate::route::{ConsoleRoute, ConsoleScope};
+use crate::route::{owner_controls_visible, ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
 
 use super::access_policy::{
@@ -59,6 +59,13 @@ impl GatewayScope {
             Self::Organization {
                 owner_scope_key, ..
             } => owner_scope_key.clone(),
+        }
+    }
+
+    fn inventory_path(&self) -> String {
+        match self {
+            Self::Instance => "/-/instance/gateways".to_string(),
+            Self::Organization { slug, .. } => format!("/-/org/{slug}/gateways"),
         }
     }
 }
@@ -126,6 +133,7 @@ fn Gateways(client: ApiClient, scope: GatewayScope, creation_only: bool) -> impl
         async move { load_gateway_inventory(&client, &scope).await }
     });
     let view_client = client.clone();
+    let consumer_scope_key = scope.owner_scope_key();
     let create_scope = scope;
     let create_href = match (&create_scope, client.allows("gateway.manage")) {
         (GatewayScope::Organization { slug, .. }, true) => {
@@ -151,6 +159,7 @@ fn Gateways(client: ApiClient, scope: GatewayScope, creation_only: bool) -> impl
                 <Suspense fallback=move || view! { <p class="loading-row">"Loading gateways…"</p> }>
                     {move || {
                         let client = view_client.clone();
+                        let consumer_scope_key = consumer_scope_key.clone();
                         Suspend::new(async move {
                             match inventory.await.as_ref() {
                                 Ok(groups) if groups.iter().all(|group| group.gateways.is_empty()) => {
@@ -159,7 +168,7 @@ fn Gateways(client: ApiClient, scope: GatewayScope, creation_only: bool) -> impl
                                 Ok(groups) => view! {
                                     <div class="binding-list">
                                         {groups.iter().cloned().map(|group| view! {
-                                            <GatewayBindingGroup client=client.clone() inventory=group/>
+                            <GatewayBindingGroup client=client.clone() inventory=group consumer_scope_key=consumer_scope_key.clone()/>
                                         }).collect_view()}
                                     </div>
                                 }.into_any(),
@@ -176,8 +185,9 @@ fn Gateways(client: ApiClient, scope: GatewayScope, creation_only: bool) -> impl
 
 async fn load_gateway_inventory(
     client: &ApiClient,
-    _scope: &GatewayScope,
+    scope: &GatewayScope,
 ) -> Result<Vec<GatewayInventory>, String> {
+    let owner_scope_key = scope.owner_scope_key();
     let gateways = client
         .collect_pages::<_, aos_proto_types::ListGatewaysResponse, _, _, _>(
             aos_proto_types::DELIVERY_SERVICE_LIST_GATEWAYS_PATH,
@@ -185,6 +195,8 @@ async fn load_gateway_inventory(
                 binding: None,
                 page_size: 100,
                 page_token,
+                owner_scope_key: owner_scope_key.clone(),
+                include_granted: true,
             },
             |response| (response.gateways, response.next_page_token),
         )
@@ -215,7 +227,11 @@ async fn load_gateway_inventory(
 }
 
 #[component]
-fn GatewayBindingGroup(client: ApiClient, inventory: GatewayInventory) -> impl IntoView {
+fn GatewayBindingGroup(
+    client: ApiClient,
+    inventory: GatewayInventory,
+    consumer_scope_key: String,
+) -> impl IntoView {
     view! {
         <section class="subworkflow">
             <div class="section-heading compact-heading">
@@ -226,7 +242,7 @@ fn GatewayBindingGroup(client: ApiClient, inventory: GatewayInventory) -> impl I
             </div>
             <div class="binding-list">
                 {inventory.gateways.into_iter().map(|gateway| view! {
-                    <GatewayCard client=client.clone() gateway=gateway/>
+                    <GatewayCard client=client.clone() gateway=gateway consumer_scope_key=consumer_scope_key.clone()/>
                 }).collect_view()}
             </div>
         </section>
@@ -265,33 +281,27 @@ async fn load_gateway_create_choices(
 ) -> Result<GatewayCreateChoices, String> {
     let owner_scope_key = scope.owner_scope_key();
     let binding_scope = owner_scope_key.clone();
-    let bindings = client
-        .collect_pages::<_, aos_proto_types::ListBindingsResponse, _, _, _>(
-            aos_proto_types::BINDING_SERVICE_LIST_BINDINGS_PATH,
-            move |page_token| aos_proto_types::ListBindingsRequest {
-                owner_scope_key: binding_scope.clone(),
-                page_size: 100,
-                page_token,
-                include_granted: true,
-            },
-            |response| (response.bindings, response.next_page_token),
-        )
-        .await
-        .map_err(|failure| failure.to_string())?;
+    let bindings = client.collect_pages::<_, aos_proto_types::ListBindingsResponse, _, _, _>(
+        aos_proto_types::BINDING_SERVICE_LIST_BINDINGS_PATH,
+        move |page_token| aos_proto_types::ListBindingsRequest {
+            owner_scope_key: binding_scope.clone(),
+            page_size: 100,
+            page_token,
+            include_granted: true,
+        },
+        |response| (response.bindings, response.next_page_token),
+    );
     let endpoint_scope = owner_scope_key.clone();
-    let endpoints = client
-        .collect_pages::<_, aos_proto_types::ListEndpointsResponse, _, _, _>(
-            aos_proto_types::DELIVERY_SERVICE_LIST_ENDPOINTS_PATH,
-            move |page_token| aos_proto_types::ListTopologyResourcesRequest {
-                owner_scope_key: endpoint_scope.clone(),
-                page_size: 100,
-                page_token,
-                include_granted: true,
-            },
-            |response| (response.endpoints, response.next_page_token),
-        )
-        .await
-        .map_err(|failure| failure.to_string())?;
+    let endpoints = client.collect_pages::<_, aos_proto_types::ListEndpointsResponse, _, _, _>(
+        aos_proto_types::DELIVERY_SERVICE_LIST_ENDPOINTS_PATH,
+        move |page_token| aos_proto_types::ListTopologyResourcesRequest {
+            owner_scope_key: endpoint_scope.clone(),
+            page_size: 100,
+            page_token,
+            include_granted: true,
+        },
+        |response| (response.endpoints, response.next_page_token),
+    );
     let boundaries = client
         .collect_pages::<_, aos_proto_types::ListNetworkPoliciesResponse, _, _, _>(
             aos_proto_types::NETWORK_POLICY_SERVICE_LIST_NETWORK_POLICIES_PATH,
@@ -302,9 +312,11 @@ async fn load_gateway_create_choices(
                 include_granted: true,
             },
             |response| (response.network_policies, response.next_page_token),
-        )
-        .await
-        .map_err(|failure| failure.to_string())?;
+        );
+    let (bindings, endpoints, boundaries) = futures::join!(bindings, endpoints, boundaries);
+    let bindings = bindings.map_err(|failure| failure.to_string())?;
+    let endpoints = endpoints.map_err(|failure| failure.to_string())?;
+    let boundaries = boundaries.map_err(|failure| failure.to_string())?;
 
     Ok(GatewayCreateChoices {
         bindings,
@@ -319,6 +331,7 @@ fn GatewayCreateForm(
     scope: GatewayScope,
     choices: GatewayCreateChoices,
 ) -> impl IntoView {
+    let return_path = scope.inventory_path();
     let stable_id = RwSignal::new(String::new());
     let binding_id = RwSignal::new(
         choices
@@ -431,7 +444,7 @@ fn GatewayCreateForm(
 
     view! {
         <section class="panel editor-panel">
-            <div class="section-heading"><div><p class="section-kicker">"Guided setup"</p><h2>"Create gateway"</h2><p>"Choose the storage and endpoint by name. The gateway pins the endpoint's selected generation automatically."</p></div></div>
+            <div class="section-heading"><div><p class="section-kicker">"Guided setup"</p><h2>"Create gateway"<HelpTooltip term="Create gateway" summary="Choose the storage and endpoint by name. The gateway pins the endpoint's selected generation automatically."/></h2></div></div>
             <form class="editor-form" on:submit=on_plan>
                 <label><span>"Gateway name"</span><input required prop:value=move || stable_id.get() on:input=move |event| stable_id.set(event_target_value(&event))/></label>
                 <label><span>"Binding"</span><select required prop:value=move || binding_id.get() on:change=move |event| binding_id.set(event_target_value(&event))>{binding_choices.iter().map(|binding| view! { <option value=binding.stable_id.clone()>{binding_option_label(binding)}</option> }).collect_view()}</select>{binding_choices.is_empty().then(|| view! { <small>"No bindings exist in this scope."</small> })}</label>
@@ -440,7 +453,7 @@ fn GatewayCreateForm(
                 <label><span>"Client base path"</span><input required prop:value=move || client_base_path.get() on:input=move |event| client_base_path.set(event_target_value(&event))/></label>
                 <label><span>"Origin prefix"</span><input required prop:value=move || origin_prefix.get() on:input=move |event| origin_prefix.set(event_target_value(&event))/></label>
                 <AccessPolicyFields signals=access boundaries=boundaries/>
-                <div class="form-actions"><button class="button" type="submit" disabled=move || busy.get() || binding_id.get().is_empty() || endpoint_id.get().is_empty()>"Create gateway"</button></div>
+                <div class="form-actions"><a class="secondary-button" href=return_path>"Cancel"</a><button class="button" type="submit" disabled=move || busy.get() || binding_id.get().is_empty() || endpoint_id.get().is_empty()>"Review creation"</button></div>
             </form>
             {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
             {move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}
@@ -478,7 +491,7 @@ fn storage_provider_label(binding: &aos_proto_types::Binding) -> &'static str {
 pub(super) fn endpoint_option_label(endpoint: &aos_proto_types::Endpoint) -> String {
     format!(
         "{} · generation {}",
-        endpoint_origin_label(endpoint),
+        super::endpoints::endpoint_identity(endpoint),
         endpoint.desired_generation
     )
 }
@@ -495,32 +508,12 @@ pub(super) fn gateway_option_label(gateway: &aos_proto_types::Gateway) -> String
     )
 }
 
-fn endpoint_origin_label(endpoint: &aos_proto_types::Endpoint) -> String {
-    use aos_proto_types::endpoint_host::Host;
-
-    let host = endpoint
-        .host
-        .as_ref()
-        .and_then(|value| value.host.as_ref())
-        .map(|host| match host {
-            Host::DomainId(domain) => domain.clone(),
-            Host::Ipv4(bytes) => bytes
-                .iter()
-                .map(u8::to_string)
-                .collect::<Vec<_>>()
-                .join("."),
-            Host::Ipv6(bytes) => bytes
-                .chunks_exact(2)
-                .map(|part| format!("{:02x}{:02x}", part[0], part[1]))
-                .collect::<Vec<_>>()
-                .join(":"),
-        })
-        .unwrap_or_else(|| "unknown host".to_string());
-    format!("{}://{}:{}", endpoint.scheme, host, endpoint.effective_port)
-}
-
 #[component]
-fn GatewayCard(client: ApiClient, gateway: aos_proto_types::Gateway) -> impl IntoView {
+fn GatewayCard(
+    client: ApiClient,
+    gateway: aos_proto_types::Gateway,
+    consumer_scope_key: String,
+) -> impl IntoView {
     let desired = gateway.desired.clone().unwrap_or_default();
     let state = if gateway.reconciliation_state.is_empty() {
         "unknown".to_string()
@@ -528,12 +521,25 @@ fn GatewayCard(client: ApiClient, gateway: aos_proto_types::Gateway) -> impl Int
         gateway.reconciliation_state.clone()
     };
     let positive = gateway.enabled && state == "ready";
+    let owned = gateway.owner_scope_key == consumer_scope_key;
+    let can_manage = owner_controls_visible(
+        &gateway.owner_scope_key,
+        &consumer_scope_key,
+        client.allows("gateway.manage"),
+    );
+    let can_grant = owner_controls_visible(
+        &gateway.owner_scope_key,
+        &consumer_scope_key,
+        client.allows("gateway.grant"),
+    );
+    let details_requested = RwSignal::new(false);
+    let advanced_requested = RwSignal::new(false);
 
     view! {
-        <details class="binding-card">
+        <details class="binding-card" on:toggle=move |_| details_requested.set(true)>
             <summary>
                 <div>
-                    <span class="resource-kind">{if gateway.enabled { "enabled" } else { "disabled" }}</span>
+                    <span class="resource-kind">{if owned { if gateway.enabled { "enabled" } else { "disabled" } } else { "granted" }}</span>
                     <h3>{gateway.stable_id.clone()}</h3>
                     <code>{format!("{} → {}@{}", desired.binding_id, desired.endpoint_id, desired.endpoint_generation)}</code>
                 </div>
@@ -543,21 +549,33 @@ fn GatewayCard(client: ApiClient, gateway: aos_proto_types::Gateway) -> impl Int
                 <div class="resource-identity">
                     <div><span>"Client path"</span><code>{desired.client_base_path.clone()}</code></div>
                     <div><span>"Origin prefix"</span><code>{desired.origin_prefix.clone()}</code></div>
+                    <div><span>"Owner scope"</span><code>{gateway.owner_scope_key.clone()}</code></div>
                     <div><span>"Desired generation"</span><strong>{gateway.desired_generation}</strong></div>
                     <div><span>"Observed generation"</span><strong>{gateway.observed_generation}</strong></div>
                     <div><span>"Access"</span><strong>{access_policy_name(desired.access_policy.as_ref())}</strong></div>
                     <div><span>"Version"</span><code>{gateway.resource_version.clone()}</code></div>
                 </div>
                 {(!gateway.reconciliation_error.is_empty()).then(|| view! { <InlineError detail=gateway.reconciliation_error.clone()/> })}
-                <GatewayPreview client=client.clone() gateway_id=gateway.stable_id.clone()/>
-                <div class="subworkflow-grid">
-                    <GatewayUpdate client=client.clone() gateway=gateway.clone()/>
-                    <GatewayGrants client=client.clone() gateway=gateway.clone()/>
-                </div>
-                <div class="subworkflow-grid">
-                    <GatewayState client=client.clone() gateway=gateway.clone()/>
-                    <GatewayDelete client=client gateway=gateway/>
-                </div>
+                {move || details_requested.get().then(|| {
+                    let client = client.clone();
+                    let gateway = gateway.clone();
+                    view! {
+                    <GatewayPreview client=client.clone() gateway_id=gateway.stable_id.clone()/>
+                    <details class="advanced-controls" on:toggle=move |_| advanced_requested.set(true)>
+                        <summary>"Advanced gateway details"</summary>
+                        {move || advanced_requested.get().then(|| view! {
+                            <GatewayGrants client=client.clone() gateway=gateway.clone() can_grant=can_grant/>
+                            {can_manage.then(|| view! {
+                                <div class="subworkflow-grid">
+                                    <GatewayUpdate client=client.clone() gateway=gateway.clone()/>
+                                    <GatewayState client=client.clone() gateway=gateway.clone()/>
+                                </div>
+                                <GatewayDelete client=client.clone() gateway=gateway.clone()/>
+                            })}
+                            {(!can_manage && !can_grant).then(|| view! { <p class="muted">"You have read-only access to this gateway."</p> })}
+                        })}
+                    </details>
+                } })}
             </div>
         </details>
     }
@@ -728,7 +746,11 @@ fn GatewayUpdate(client: ApiClient, gateway: aos_proto_types::Gateway) -> impl I
 }
 
 #[component]
-fn GatewayGrants(client: ApiClient, gateway: aos_proto_types::Gateway) -> impl IntoView {
+fn GatewayGrants(
+    client: ApiClient,
+    gateway: aos_proto_types::Gateway,
+    can_grant: bool,
+) -> impl IntoView {
     let consumer_scope = RwSignal::new(String::new());
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
@@ -793,21 +815,24 @@ fn GatewayGrants(client: ApiClient, gateway: aos_proto_types::Gateway) -> impl I
             <h4>"Consumer scopes"</h4>
             <div class="compact-list">
                 {gateway.grants.into_iter().filter(|grant| grant.state == "active").map(|grant| view! {
-                    <GatewayGrantRow client=row_client.clone() grant=grant/>
+                    <GatewayGrantRow client=row_client.clone() grant=grant can_grant=can_grant/>
                 }).collect_view()}
             </div>
-            <form class="stacked-form" on:submit=on_plan>
+            {can_grant.then(|| view! { <form class="stacked-form" on:submit=on_plan>
                 <label><span>"Consumer scope key"</span><input required prop:value=move || consumer_scope.get() on:input=move |event| consumer_scope.set(event_target_value(&event))/></label>
                 <button class="secondary-button" type="submit" disabled=move || busy.get()>"Grant"</button>
-            </form>
-            {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
-            {move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}
+            </form> })}
+            {can_grant.then(|| view! { {move || error.get().map(|detail| view! { <InlineError detail=detail/> })} {move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })} })}
         </section>
     }
 }
 
 #[component]
-fn GatewayGrantRow(client: ApiClient, grant: aos_proto_types::ConsumerScopeGrant) -> impl IntoView {
+fn GatewayGrantRow(
+    client: ApiClient,
+    grant: aos_proto_types::ConsumerScopeGrant,
+    can_grant: bool,
+) -> impl IntoView {
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
@@ -865,10 +890,9 @@ fn GatewayGrantRow(client: ApiClient, grant: aos_proto_types::ConsumerScopeGrant
     view! {
         <div class="compact-list-row">
             <div><code>{grant.consumer_scope_key}</code><span>{format!("generation {} · {} live pins", grant.resource_generation, grant.live_pin_count)}</span></div>
-            <button class="table-action" type="button" disabled=move || busy.get() on:click=on_plan>"Revoke"</button>
+            {can_grant.then(|| view! { <button class="table-action" type="button" disabled=move || busy.get() on:click=on_plan>"Revoke"</button> })}
         </div>
-        {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
-        {move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}
+        {can_grant.then(|| view! { {move || error.get().map(|detail| view! { <InlineError detail=detail/> })} {move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })} })}
     }
 }
 

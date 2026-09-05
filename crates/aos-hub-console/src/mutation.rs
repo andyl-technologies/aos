@@ -5,7 +5,115 @@
 //! plan or combine confirmation material from two requests.
 
 #[cfg(target_arch = "wasm32")]
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::{
+    cell::RefCell,
+    future::Future,
+    sync::atomic::{AtomicU32, Ordering},
+};
+
+#[cfg(target_arch = "wasm32")]
+use futures::future::{AbortHandle, Abortable};
+#[cfg(target_arch = "wasm32")]
+use leptos::prelude::*;
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) struct WorkflowTaskScope {
+    handles: StoredValue<Option<Vec<(u32, AbortHandle)>>>,
+}
+
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    static ACTIVE_WORKFLOW_TASK_SCOPE: RefCell<Option<WorkflowTaskScope>> = const {
+        RefCell::new(None)
+    };
+}
+
+#[cfg(target_arch = "wasm32")]
+static WORKFLOW_TASK_SEQUENCE: AtomicU32 = AtomicU32::new(0);
+
+#[cfg(target_arch = "wasm32")]
+impl WorkflowTaskScope {
+    fn new() -> Self {
+        Self {
+            handles: StoredValue::new(Some(Vec::new())),
+        }
+    }
+
+    /// Spawns one task within this component-owned cancellation scope.
+    pub(crate) fn spawn(self, task: impl Future<Output = ()> + 'static) {
+        let task_id = WORKFLOW_TASK_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let (handle, registration) = AbortHandle::new_pair();
+        let registered = self.handles.try_update_value(|handles| {
+            handles.as_mut().is_some_and(|handles| {
+                handles.push((task_id, handle));
+                true
+            })
+        });
+        if registered != Some(true) {
+            return;
+        }
+
+        leptos::task::spawn_local(async move {
+            let _ = Abortable::new(task, registration).await;
+            let _ = self.handles.try_update_value(|handles| {
+                if let Some(handles) = handles {
+                    handles.retain(|(id, _)| *id != task_id);
+                }
+            });
+        });
+    }
+
+    fn close(self) {
+        let handles = self
+            .handles
+            .try_update_value(Option::take)
+            .flatten()
+            .unwrap_or_default();
+        for (_, handle) in handles {
+            handle.abort();
+        }
+    }
+}
+
+/// Creates an async task scope owned by the component currently mounting.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn scoped_workflow_tasks() -> WorkflowTaskScope {
+    let scope = WorkflowTaskScope::new();
+    on_cleanup(move || scope.close());
+    scope
+}
+
+/// Installs the async task scope owned by one mounted resource workflow.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn install_workflow_task_scope() {
+    let scope = WorkflowTaskScope::new();
+    // App mounts exactly one keyed ResourceWorkflow. Keeping its Copy scope
+    // handle here lets event callbacks find the owner-created cancellation
+    // registry without relying on the unrelated owner active during an event.
+    ACTIVE_WORKFLOW_TASK_SCOPE.with(|active| {
+        *active.borrow_mut() = Some(scope);
+    });
+    on_cleanup(move || {
+        ACTIVE_WORKFLOW_TASK_SCOPE.with(|active| {
+            let mut active = active.borrow_mut();
+            if *active == Some(scope) {
+                *active = None;
+            }
+        });
+        scope.close();
+    });
+}
+
+/// Spawns a task that is canceled when its resource workflow is unmounted.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn spawn_workflow_task(task: impl Future<Output = ()> + 'static) {
+    ACTIVE_WORKFLOW_TASK_SCOPE.with(|active| {
+        if let Some(scope) = *active.borrow() {
+            scope.spawn(task);
+        }
+    });
+}
 
 /// One exact reviewed mutation awaiting confirmation.
 #[derive(Clone, Debug, PartialEq)]
@@ -14,6 +122,26 @@ pub(crate) struct PendingPlan {
     pub(crate) plan: aos_proto_types::TopologyPlan,
     /// Idempotency key shared by the plan and apply request.
     pub(crate) idempotency_key: String,
+}
+
+/// Invalidates a reviewed plan whenever any signal observed by `observe` changes.
+///
+/// The returned epoch lets an asynchronous planning request discard a response
+/// when the draft changed while the request was in flight.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn watch_draft(
+    observe: impl Fn() + 'static,
+    pending: RwSignal<Option<PendingPlan>>,
+    error: RwSignal<Option<String>>,
+) -> RwSignal<u64> {
+    let epoch = RwSignal::new(0_u64);
+    Effect::new(move |_| {
+        observe();
+        epoch.update(|value| *value = value.wrapping_add(1));
+        pending.set(None);
+        error.set(None);
+    });
+    epoch
 }
 
 /// Returns whether a tag ownership class accepts manual CAS mutation.
@@ -289,6 +417,17 @@ impl PendingPlan {
         &self,
     ) -> aos_proto_types::ApplyRouteAdvertisementRequest {
         aos_proto_types::ApplyRouteAdvertisementRequest {
+            plan_id: self.plan.plan_id.clone(),
+            idempotency_key: self.idempotency_key.clone(),
+            confirmation_hash: self.plan.confirmation_hash.clone(),
+        }
+    }
+
+    /// Builds a coordinated delivery-workflow apply envelope for this plan.
+    pub(crate) fn delivery_workflow_apply(
+        &self,
+    ) -> aos_proto_types::ApplyDeliveryDestinationRequest {
+        aos_proto_types::ApplyDeliveryDestinationRequest {
             plan_id: self.plan.plan_id.clone(),
             idempotency_key: self.idempotency_key.clone(),
             confirmation_hash: self.plan.confirmation_hash.clone(),
