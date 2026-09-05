@@ -20,12 +20,15 @@ mod linux {
     };
     use aos_sandbox_linux::Error as LinuxError;
     use aos_sandbox_linux::immutable_file::{
-        FsVerityBacking, FsVerityDigest, FsVerityPublicationRoot, MaterializationCallbacks,
-        MaterializationFailure, PublicationName, RetainedPrivatePhase,
+        BeforeRenameFailure, FsVerityBacking, FsVerityDigest, FsVerityPublicationRoot,
+        MaterializationCallbacks, MaterializationFailure, NoReplacePublicationError,
+        PublicationName, RetainedPrivatePhase,
     };
     use aos_sandbox_linux::path::BeneathRoot;
 
     const SUCCESS_NAME: &str = ".materialize-success";
+    const FINAL_NAME: &str = "materialized-object";
+    const RENAME_CONFLICT_NAME: &str = "materialized-conflict";
     const OVER_LIMIT_NAME: &str = ".materialize-over-limit";
     const EXISTING_NAME: &str = ".materialize-existing";
     const REJECTED_NAME: &str = ".materialize-rejected";
@@ -145,26 +148,94 @@ mod linux {
         let exact_size = sealed.bytes() == expected.encoded_size();
         let measurement = sealed.verity_digest();
         let measurement_is_sha256 = matches!(measurement, FsVerityDigest::Sha256(_));
+        let sealed_device = sealed.device();
+        let sealed_inode = sealed.inode();
 
         let mut pinned_bytes = Vec::new();
         File::from(sealed.as_fd().try_clone_to_owned()?).read_to_end(&mut pinned_bytes)?;
         let exact_bytes = pinned_bytes == bytes;
 
+        let (same_name_preserved, sealed) = match sealed
+            .publish_noreplace(publication_name(SUCCESS_NAME)?)
+        {
+            Err(NoReplacePublicationError::BeforeRename {
+                failure: BeforeRenameFailure::SameName,
+                private,
+            }) => {
+                let private_metadata = std::fs::metadata(root_path.join(SUCCESS_NAME))?;
+                let preserved = private.device() == sealed_device
+                    && private.inode() == sealed_inode
+                    && private.bytes() == expected.encoded_size()
+                    && private.verity_digest() == measurement
+                    && private_metadata.dev() == sealed_device
+                    && private_metadata.ino() == sealed_inode;
+                (preserved, *private)
+            }
+            _ => {
+                return Err("same-name publication did not return the exact private token".into());
+            }
+        };
+
+        let rename_conflict_path = root_path.join(RENAME_CONFLICT_NAME);
+        std::fs::write(&rename_conflict_path, b"rename conflict")?;
+        let rename_conflict_before = std::fs::metadata(&rename_conflict_path)?;
+        let (rename_conflict_preserved, sealed) = match sealed
+            .publish_noreplace(publication_name(RENAME_CONFLICT_NAME)?)
+        {
+            Err(NoReplacePublicationError::BeforeRename {
+                failure: BeforeRenameFailure::DestinationExists,
+                private,
+            }) => {
+                let rename_conflict_after = std::fs::metadata(&rename_conflict_path)?;
+                let private_metadata = std::fs::metadata(root_path.join(SUCCESS_NAME))?;
+                let preserved = std::fs::read(&rename_conflict_path)? == b"rename conflict"
+                    && rename_conflict_before.dev() == rename_conflict_after.dev()
+                    && rename_conflict_before.ino() == rename_conflict_after.ino()
+                    && private.device() == sealed_device
+                    && private.inode() == sealed_inode
+                    && private.verity_digest() == measurement
+                    && private_metadata.dev() == sealed_device
+                    && private_metadata.ino() == sealed_inode;
+                (preserved, *private)
+            }
+            _ => {
+                return Err("EEXIST publication did not preserve the exact private token".into());
+            }
+        };
+
+        let named = match sealed.publish_noreplace(publication_name(FINAL_NAME)?) {
+            Ok(named) => named,
+            Err(_) => return Err("retry to a free final name failed".into()),
+        };
+        let final_metadata = std::fs::metadata(root_path.join(FINAL_NAME))?;
+        let durable_rename_preserved = named.device() == sealed_device
+            && named.inode() == sealed_inode
+            && named.bytes() == expected.encoded_size()
+            && named.verity_digest() == measurement
+            && final_metadata.dev() == sealed_device
+            && final_metadata.ino() == sealed_inode
+            && final_metadata.len() == expected.encoded_size();
+        let old_private_absent = matches!(
+            std::fs::symlink_metadata(root_path.join(SUCCESS_NAME)),
+            Err(ref error) if error.raw_os_error() == Some(libc::ENOENT)
+        );
+        let conflict_retry_succeeded = named.final_name().as_os_str() == OsStr::new(FINAL_NAME);
+
         let reopen_root = BeneathRoot::from_owned(File::open(&root_path)?.into())?;
         let reopened = FsVerityBacking::open_beneath(
             &reopen_root,
-            Path::new(SUCCESS_NAME),
+            Path::new(FINAL_NAME),
             measurement,
             expected.encoded_size(),
             expected.encoded_size(),
         )?;
         let reopened_identity = reopened.identity();
-        let backing_verified = reopened_identity.device() == sealed.device()
-            && reopened_identity.inode() == sealed.inode()
-            && reopened_identity.bytes() == sealed.bytes();
+        let backing_verified = reopened_identity.device() == named.device()
+            && reopened_identity.inode() == named.inode()
+            && reopened_identity.bytes() == named.bytes();
         let writable_open = OpenOptions::new()
             .write(true)
-            .open(root_path.join(SUCCESS_NAME));
+            .open(root_path.join(FINAL_NAME));
         let writable_open_denied = matches!(
             writable_open,
             Err(ref error) if error.raw_os_error() == Some(libc::EPERM)
@@ -247,7 +318,10 @@ mod linux {
              \"descriptor_verified\":{},\"fresh_inode\":{},\"exact_size\":{},\
              \"exact_bytes\":{},\"source_offset_unchanged\":{},\
              \"measurement_is_sha256\":{},\"backing_verified\":{},\
-             \"writable_open_denied\":{},\"quota_rejected_before_create\":{},\
+             \"writable_open_denied\":{},\"same_name_preserved\":{},\
+             \"rename_conflict_preserved\":{},\"durable_rename_preserved\":{},\
+             \"old_private_absent\":{},\"conflict_retry_succeeded\":{},\
+             \"quota_rejected_before_create\":{},\
              \"existing_name_untouched\":{},\"callback_failure_retained\":{},\
              \"retained_unsealed_writable\":{}}}",
             exact.verifier.is_none(),
@@ -258,6 +332,11 @@ mod linux {
             measurement_is_sha256,
             backing_verified,
             writable_open_denied,
+            same_name_preserved,
+            rename_conflict_preserved,
+            durable_rename_preserved,
+            old_private_absent,
+            conflict_retry_succeeded,
             quota_rejected_before_create,
             existing_name_untouched,
             callback_failure_retained,
