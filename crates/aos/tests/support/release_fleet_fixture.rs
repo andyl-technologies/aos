@@ -394,7 +394,14 @@ fn release_plan(
                 platform,
                 decision: MatrixCell::Artifact {
                     artifact: PlannedArtifactSet {
-                        artifacts: Vec::new(),
+                        artifacts: vec![PlannedArtifact {
+                            id: format!("image/server/{platform}"),
+
+                            derivation: None,
+                            output: None,
+                            store_path: None,
+                            source_store_paths: Vec::new(),
+                        }],
                     },
                 },
             })

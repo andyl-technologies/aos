@@ -35,6 +35,15 @@ pub(super) async fn run(args: &ReleaseStageArgs, printer: &Printer) -> Result<()
     let plan: aos_release::plan::ReleasePlanV1 =
         canonical::from_slice(&captured.plan_bytes, "release plan")?;
     plan.require_current_qualification()?;
+    let manifest: aos_release::manifest::ManifestEnvelopeV1 =
+        canonical::from_slice(&captured.manifest_bytes, "release manifest")?;
+    aos_release::qualification_evidence::validate_observations(
+        &plan,
+        &manifest.payload,
+        aos_release::qualification::QualificationPhase::Build,
+        &manifest.payload.evidence,
+        &humantime::format_rfc3339(std::time::SystemTime::now()).to_string(),
+    )?;
     let journal_bytes = capture::control_file(&args.journal, "release journal")?;
     let journal = parse_journal(&journal_bytes)?;
     require_finalized_journal(&journal, summary.plan_digest, summary.manifest_digest)?;

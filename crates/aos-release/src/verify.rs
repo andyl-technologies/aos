@@ -1046,6 +1046,17 @@ mod tests {
     }
 
     #[test]
+    fn archival_plans_are_readable_but_cannot_authorize_new_publication() -> anyhow::Result<()> {
+        let fixture = release_fixture()?;
+        let legacy: ReleasePlanV1 = canonical::from_slice(&fixture.plan, "archival plan")?;
+        legacy.validate()?;
+        assert!(legacy.require_current_qualification().is_err());
+        let (current, _) = qualification_fixture()?;
+        current.require_current_qualification()?;
+        Ok(())
+    }
+
+    #[test]
     fn complete_release_fixture_verifies() -> anyhow::Result<()> {
         let fixture = release_fixture()?;
         let summary = verify_release(
