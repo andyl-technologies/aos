@@ -10,6 +10,7 @@
 //!
 //! - [`assembly`] defines the unsigned, public-only input closure.
 //! - [`bundle`] seals image metadata and the signed recovery bundle.
+//! - [`capabilities`] inventories final drivers, firmware and kernel options.
 //! - [`capture`] captures a Nix assembly without following filesystem links.
 //! - [`filesystem`] reconstructs deterministic EROFS and initrd bytes.
 //! - [`disk`] constructs and verifies the canonical GPT/ESP layout.
@@ -31,6 +32,7 @@
 
 pub mod assembly;
 pub mod bundle;
+pub mod capabilities;
 pub mod capture;
 pub mod disk;
 pub mod filesystem;

@@ -37,6 +37,9 @@ pub struct QualificationObjectV1 {
 pub struct QualificationExecutorRequestV1 {
     /// Exact request schema identifier.
     pub schema_version: String,
+    /// Applicable v2 execution case, absent only in legacy requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qualification_case: Option<crate::qualification_evidence::QualificationCase>,
     /// Canonical registry identity.
     pub registry: String,
     /// Immutable release identity.
@@ -67,8 +70,24 @@ impl QualificationExecutorRequestV1 {
     /// Returns an error for malformed identity, ordering, subject, URL, or
     /// nonce fields.
     pub fn validate(&self) -> Result<()> {
-        if self.schema_version != QUALIFICATION_EXECUTOR_REQUEST_V1 {
+        if self.schema_version != QUALIFICATION_EXECUTOR_REQUEST_V1
+            && self.schema_version != "aos.release.qualification-executor-request/v2"
+        {
             bail!("unsupported qualification executor request schema");
+        }
+        if let Some(case) = &self.qualification_case {
+            if self.schema_version != "aos.release.qualification-executor-request/v2"
+                || case.requirement_id != self.policy_id
+                || case.policy_digest != self.policy_digest
+                || case.subjects != self.subjects
+                || case
+                    .platform
+                    .is_some_and(|platform| platform != self.platform)
+            {
+                bail!("qualification request differs from its exact execution case");
+            }
+        } else if self.schema_version != QUALIFICATION_EXECUTOR_REQUEST_V1 {
+            bail!("v2 qualification request lacks an execution case");
         }
         require_identifier(&self.registry, "qualification registry")?;
         require_identifier(&self.release_id, "qualification release id")?;
@@ -149,6 +168,9 @@ pub enum GateResult {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct EvidenceRecord {
+    /// Structured observations for shared-contract evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qualification: Option<crate::qualification_evidence::QualificationObservation>,
     /// Stable evidence identity unique within the release.
     pub id: String,
     /// Versioned gate or qualification policy identifier.
@@ -209,6 +231,15 @@ impl EvidenceRecord {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct QualificationReportV1 {
+    /// Coordinator-derived claim outcomes at admission, present in v3 reports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claims: Option<Vec<crate::qualification::claims::ClaimOutcome>>,
+    /// Explicit v2 hold point; legacy reports cover staging only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<crate::qualification::QualificationPhase>,
+    /// Admission time bound by the qualification authority's signature.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admitted_at: Option<String>,
     /// Exact report schema identifier.
     pub schema_version: String,
     /// Digest of the signed staging publication receipt.
@@ -220,6 +251,66 @@ pub struct QualificationReportV1 {
 }
 
 impl QualificationReportV1 {
+    /// Recomputes stored assurance results and checks freshness at a hold point.
+    ///
+    /// Results describe the report's signed admission time. A later consumer
+    /// also checks evidence at its own trusted time before authorizing effects.
+    ///
+    /// # Errors
+    /// Returns an error for unsupported semantics, a wrong phase, fabricated
+    /// assurance, future admission time or unmet release-blocking obligations.
+    pub fn validate_phase(
+        &self,
+        plan: &ReleasePlanV1,
+        manifest: &ReleaseManifestV1,
+        phase: crate::qualification::QualificationPhase,
+        now: &str,
+    ) -> Result<()> {
+        let contract = plan
+            .qualification
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("report has no qualification contract"))?;
+        let current = contract.schema_version == crate::qualification::CONTRACT_V2;
+        if self.phase != Some(phase)
+            || self.schema_version
+                != if current {
+                    "aos.release.qualification-report/v3"
+                } else {
+                    "aos.release.qualification-report/v2"
+                }
+        {
+            bail!("qualification report schema or phase differs from its contract");
+        }
+        let admitted = self
+            .admitted_at
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("report admission time is absent"))?;
+        if humantime::parse_rfc3339(admitted)? > humantime::parse_rfc3339(now)? {
+            bail!("report admission time is in the future");
+        }
+        if current {
+            let derived = crate::qualification_evidence::assess_observations(
+                plan,
+                manifest,
+                phase,
+                &self.evidence,
+                admitted,
+            )?;
+            if self.claims.as_ref() != Some(&derived) {
+                bail!("reported assurance differs from independently validated evidence");
+            }
+        } else if self.claims.is_some() {
+            bail!("archival reports cannot carry current assurance results");
+        }
+        crate::qualification_evidence::validate_observations(
+            plan,
+            manifest,
+            phase,
+            &self.evidence,
+            now,
+        )
+    }
+
     /// Validates full planned-gate coverage across every artifact platform.
     ///
     /// A target-independent record covers all platforms for its gate. When a
@@ -237,11 +328,26 @@ impl QualificationReportV1 {
         staging_receipt_digest: Sha256Digest,
         manifest_digest: Sha256Digest,
     ) -> Result<()> {
-        if self.schema_version != QUALIFICATION_REPORT_V1
+        if (self.schema_version != QUALIFICATION_REPORT_V1
+            && self.schema_version != "aos.release.qualification-report/v2"
+            && self.schema_version != "aos.release.qualification-report/v3")
             || self.staging_receipt_digest != staging_receipt_digest
             || self.manifest_digest != manifest_digest
         {
             bail!("qualification report identity differs from staged release bytes");
+        }
+        if plan.qualification.is_some() {
+            return self.validate_phase(
+                plan,
+                manifest,
+                crate::qualification::QualificationPhase::Staging,
+                self.admitted_at
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("qualification admission time is absent"))?,
+            );
+        }
+        if self.claims.is_some() || self.schema_version != QUALIFICATION_REPORT_V1 {
+            bail!("archival qualification report cannot carry current assurance results");
         }
         if self.evidence.is_empty()
             || self
@@ -408,6 +514,8 @@ mod tests {
         let gate_digest = digest("gate");
         let plan = ReleasePlanV1 {
             schema_version: crate::RELEASE_PLAN_V1.to_owned(),
+            qualification: None,
+            qualification_predecessor: None,
             release_id: "release-2026.9.0".to_owned(),
             version: "2026.9.0".to_owned(),
             release_class: ReleaseClass::Stable,
@@ -495,6 +603,7 @@ mod tests {
     fn record(platform: Option<Platform>, policy_digest: Sha256Digest) -> EvidenceRecord {
         let suffix = platform.map_or("all", Platform::as_str);
         EvidenceRecord {
+            qualification: None,
             id: format!("package-install-{suffix}"),
             policy_id: "package-install-v1".to_owned(),
             policy_digest,
@@ -522,6 +631,9 @@ mod tests {
             .collect::<Vec<_>>();
         evidence.sort_by(|left, right| left.id.cmp(&right.id));
         let report = QualificationReportV1 {
+            claims: None,
+            phase: None,
+            admitted_at: None,
             schema_version: QUALIFICATION_REPORT_V1.to_owned(),
             staging_receipt_digest: staging,
             manifest_digest,
@@ -548,6 +660,9 @@ mod tests {
     fn target_independent_evidence_covers_the_matrix() {
         let (plan, manifest, staging, manifest_digest) = fixture();
         let report = QualificationReportV1 {
+            claims: None,
+            phase: None,
+            admitted_at: None,
             schema_version: QUALIFICATION_REPORT_V1.to_owned(),
             staging_receipt_digest: staging,
             manifest_digest,
@@ -567,6 +682,9 @@ mod tests {
         let mut unknown_gate = record(None, digest("different-gate"));
         unknown_gate.policy_id = "different-gate-v1".to_owned();
         let report = QualificationReportV1 {
+            claims: None,
+            phase: None,
+            admitted_at: None,
             schema_version: QUALIFICATION_REPORT_V1.to_owned(),
             staging_receipt_digest: staging,
             manifest_digest,
@@ -581,6 +699,9 @@ mod tests {
         let mut unknown_subject = record(None, plan.gates[0].policy_digest);
         unknown_subject.subjects = vec!["package/not-in-manifest".to_owned()];
         let report = QualificationReportV1 {
+            claims: None,
+            phase: None,
+            admitted_at: None,
             schema_version: QUALIFICATION_REPORT_V1.to_owned(),
             staging_receipt_digest: staging,
             manifest_digest,
@@ -596,6 +717,7 @@ mod tests {
     #[test]
     fn executor_request_closes_public_objects_and_subjects() {
         let request = QualificationExecutorRequestV1 {
+            qualification_case: None,
             schema_version: QUALIFICATION_EXECUTOR_REQUEST_V1.to_owned(),
             registry: crate::registry::MAIN_REGISTRY.to_owned(),
             release_id: "release-2026.9.0".to_owned(),
