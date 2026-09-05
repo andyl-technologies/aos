@@ -2218,3 +2218,22 @@ its fleet fixture. Strict all-target/all-feature Clippy with `--no-deps` and
 Rust/Nix formatting checks pass. A dependency-inclusive Clippy invocation
 fails on generated `aos-proto` HashMap fields under the repository's ordered
 container lint. The updated VM gates are being rerun and are not yet qualified.
+
+### Production namespace ioctl ABI and reboot evidence
+
+The worker VM passed the corrected manager-property reads, then rejected a
+pidfd namespace ioctl with `EINVAL`. The production Rust UAPI wrapper also
+omitted the scalar third argument. It now passes an explicit zero of the
+correct C unsigned-long type, and does the same for `NS_GET_NSTYPE`. The
+worker VM qualification first requires successful acquisition and type
+validation of all five supported namespaces from its own pidfd. It cannot
+treat `EINVAL` or unavailable namespace support as a portable-test skip.
+
+The platform reboot diagnostic shows guest systemd reaching its reboot path,
+then nspawn exiting with status 133. Upstream deliberately requests a whole
+service restart when `--keep-unit` is active. That contradicts the required
+retained-supervisor/internal-payload-reboot behavior; `Restart=no` and the
+observer's exact supervisor identity checks remain unchanged. This requires
+explicit lifecycle implementation, not a longer timeout or accepting a new
+supervisor as the same execution. The worker VM is rerunning after the Rust
+ABI correction; no readiness or reboot qualification is claimed.

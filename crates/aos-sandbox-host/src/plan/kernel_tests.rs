@@ -16,7 +16,7 @@ use aos_proto::aos::sandbox::local::v1::{
 };
 use aos_sandbox_linux::mount::DetachedMount;
 use aos_sandbox_linux::path::BeneathRoot;
-use aos_sandbox_linux::pidfd::NamespaceKind;
+use aos_sandbox_linux::pidfd::{NamespaceKind, PidFd};
 use aos_sandbox_protocol::{PeerCredentials, PeerPolicy, decode_runtime_request};
 use buffa::Message as _;
 
@@ -128,6 +128,20 @@ async fn production_compiler_worker_launch_refresh_and_stop() {
         "1"
     );
     assert!(rustix::process::geteuid().is_root());
+    // The qualified kernel must support these ioctls; unlike portable unit
+    // tests, this gate must not accept EINVAL as an unsupported-kernel skip.
+    let own_pid = std::num::NonZeroU32::new(std::process::id()).unwrap();
+    let own_pidfd = PidFd::open(own_pid).unwrap();
+    for kind in [
+        NamespaceKind::Mount,
+        NamespaceKind::Network,
+        NamespaceKind::Pid,
+        NamespaceKind::User,
+        NamespaceKind::Uts,
+    ] {
+        assert_eq!(own_pidfd.namespace(kind).unwrap().kind(), kind);
+    }
+
     let executable = std::env::var("AOS_SANDBOX_QUALIFICATION_NSPAWN").unwrap();
     validate_fixed_nspawn_path(&executable).unwrap();
     // A test-only candidate config exercises production compilation. It does

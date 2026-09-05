@@ -303,9 +303,9 @@ pub(crate) fn pidfd_namespace(pidfd: BorrowedFd<'_>, namespace: NamespaceIoctl) 
         NamespaceIoctl::User => PIDFD_GET_USER_NAMESPACE,
         NamespaceIoctl::Uts => PIDFD_GET_UTS_NAMESPACE,
     };
-    // SAFETY: `_IO` namespace requests take no pointer argument, borrow the
-    // pidfd, and return a new close-on-exec namespace descriptor.
-    let result = unsafe { libc::ioctl(pidfd.as_raw_fd(), request) };
+    // SAFETY: pidfs requires an explicit zero scalar argument for these `_IO`
+    // requests. The call borrows the pidfd and returns a new close-on-exec fd.
+    let result = unsafe { libc::ioctl(pidfd.as_raw_fd(), request, 0 as libc::c_ulong) };
     fd_result(libc::c_long::from(result), "pidfd namespace ioctl")
 }
 
@@ -328,7 +328,7 @@ pub(crate) fn filesystem_type(fd: BorrowedFd<'_>) -> Result<libc::c_long> {
 pub(crate) fn namespace_type(fd: BorrowedFd<'_>) -> Result<i32> {
     // SAFETY: `NS_GET_NSTYPE` takes no pointer argument and only observes the
     // namespace descriptor borrowed for the duration of the ioctl.
-    let result = unsafe { libc::ioctl(fd.as_raw_fd(), NS_GET_NSTYPE) };
+    let result = unsafe { libc::ioctl(fd.as_raw_fd(), NS_GET_NSTYPE, 0 as libc::c_ulong) };
     if result < 0 {
         return Err(Error::syscall("NS_GET_NSTYPE"));
     }
