@@ -15,6 +15,8 @@
 //! expected-lease-digest:32 || requested-maximum-seconds:u64be
 //! ```
 
+mod transition;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -89,7 +91,7 @@ pub enum DurableOwnershipAuthorityError {
     /// The request identity is already bound to another claim.
     #[error("durable ownership request identity is bound to another claim")]
     IdempotencyConflict,
-    /// Acquire or renewal does not match the durable current state.
+    /// Acquisition, renewal, or advancement does not match the durable current state.
     #[error("durable ownership compare-and-swap precondition failed")]
     CompareAndSwapConflict,
     /// No unsigned durable intent exists for the requested operation.
@@ -165,9 +167,10 @@ struct DurableOwnershipEntry {
 /// The protected journal is dedicated to this owner; recovery rejects records
 /// from other subsystems rather than sharing a writable journal namespace.
 ///
-/// The current trait has no release, expiry retirement, or transfer operation.
-/// Consequently a completed assignment remains owned for CAS purposes even
-/// after expiry, and cross-assignment transfer is intentionally incomplete.
+/// Same-owner advancement changes assignment semantics without transferring
+/// node, incarnation, or epoch. Release, expiry retirement, and ownership
+/// transfer remain separate, unsupported operations. A completed assignment
+/// therefore remains owned for CAS purposes even after expiry.
 /// One journal is also pinned to exactly one authority key generation. Key
 /// rotation requires an explicit authenticated migration into a new journal;
 /// opening old mixed-generation history with a new verifier fails closed.
@@ -253,7 +256,21 @@ impl DurableOwnershipAuthority {
         })
     }
 
-    /// Durably records one unsigned acquire or renew intent.
+    /// Checks the exact transaction binding before session-version admission.
+    pub(crate) fn transaction_action(
+        &self,
+        reference: OwnershipTransactionReferenceV1,
+    ) -> Result<Option<OwnershipClaimAction>, DurableOwnershipAuthorityError> {
+        let Some(entry) = self.entries.get(reference.request_id()) else {
+            return Ok(None);
+        };
+        if entry.claim.digest() != reference.claim_digest() {
+            return Err(DurableOwnershipAuthorityError::IdempotencyConflict);
+        }
+        Ok(Some(entry.claim.action()))
+    }
+
+    /// Durably records one unsigned ownership transaction intent.
     ///
     /// This method never contacts an issuer. Exact completed replay returns
     /// the original unverified four-artifact response; exact pending replay
@@ -264,7 +281,9 @@ impl DurableOwnershipAuthority {
     /// Returns [`DurableOwnershipAuthorityError::IdempotencyConflict`] when a
     /// request ID is rebound, or
     /// [`DurableOwnershipAuthorityError::CompareAndSwapConflict`] when acquire
-    /// is not expected-absence or renew does not name the exact current fence.
+    /// is not expected-absence, renewal changes semantics, or advancement does
+    /// not preserve owner/incarnation/epoch while increasing desired generation
+    /// and changing assignment digest. Both successors require the exact prior fence.
     /// Returns [`DurableOwnershipAuthorityError::ResourceExhausted`] before
     /// writing an intent when the fixed epoch request capacity is exhausted.
     pub fn begin(
@@ -296,24 +315,7 @@ impl DurableOwnershipAuthority {
         }) {
             return Err(DurableOwnershipAuthorityError::CompareAndSwapConflict);
         }
-        match claim.action() {
-            OwnershipClaimAction::Acquire if self.current.contains_key(&sandbox) => {
-                return Err(DurableOwnershipAuthorityError::CompareAndSwapConflict);
-            }
-            OwnershipClaimAction::Acquire => {}
-            OwnershipClaimAction::Renew => {
-                let current = self
-                    .current
-                    .get(&sandbox)
-                    .ok_or(DurableOwnershipAuthorityError::CompareAndSwapConflict)?;
-                if current.assignment() != claim.assignment()
-                    || current.node() != claim.node()
-                    || Some(current.expected_renewal_fence()) != claim.expected_prior()
-                {
-                    return Err(DurableOwnershipAuthorityError::CompareAndSwapConflict);
-                }
-            }
-        }
+        validate_claim_against_current(claim, &self.current)?;
         let entry = DurableOwnershipEntry {
             claim: claim.clone(),
             state: DurableEntryState::Intent,
@@ -372,6 +374,7 @@ impl DurableOwnershipAuthority {
         let response = match claim.action() {
             OwnershipClaimAction::Acquire => issuer.acquire(&claim),
             OwnershipClaimAction::Renew => issuer.renew(&claim),
+            OwnershipClaimAction::Advance => issuer.advance(&claim),
         };
         let response = response.map_err(OwnershipLeaseAcquisitionError::Authority)?;
         // The protected clock is sampled only after the possibly blocking
@@ -450,13 +453,7 @@ fn validate_claim_against_current(
     let existing = current.get(&claim.assignment().sandbox());
     match (claim.action(), existing) {
         (OwnershipClaimAction::Acquire, None) => Ok(()),
-        (OwnershipClaimAction::Renew, Some(lease))
-            if lease.assignment() == claim.assignment()
-                && lease.node() == claim.node()
-                && Some(lease.expected_renewal_fence()) == claim.expected_prior() =>
-        {
-            Ok(())
-        }
+        (_, Some(lease)) if transition::is_valid_successor(claim, lease) => Ok(()),
         _ => Err(DurableOwnershipAuthorityError::CompareAndSwapConflict),
     }
 }
@@ -837,7 +834,7 @@ fn recover_sandbox_chain(
     }
     let mut children = BTreeMap::new();
     for (request, entry, lease) in &completed {
-        if entry.claim.action() == OwnershipClaimAction::Renew {
+        if entry.claim.action() != OwnershipClaimAction::Acquire {
             let prior = entry
                 .claim
                 .expected_prior()
@@ -856,8 +853,7 @@ fn recover_sandbox_chain(
                 return Err(DurableOwnershipAuthorityError::CorruptState);
             };
             if lease.generation() <= predecessor_lease.generation()
-                || lease.assignment() != predecessor_lease.assignment()
-                || lease.node() != predecessor_lease.node()
+                || !transition::is_valid_successor(&entry.claim, predecessor_lease)
                 || children.insert(*predecessor, **request).is_some()
             {
                 return Err(DurableOwnershipAuthorityError::CorruptState);
@@ -930,6 +926,8 @@ fn durable_slice<'a>(
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    mod advance;
+
     use std::cell::Cell;
     use std::collections::BTreeMap;
     use std::fs;
@@ -995,7 +993,13 @@ mod tests {
         scope: TrustScopeId,
         policy_descriptor: aos_sandbox_core::ObjectDescriptor,
         requests: BTreeMap<[u8; 16], (ObjectDigest, UnverifiedOwnershipLeaseResponse)>,
-        current: Option<(LeaseAssignment, NodeId, u64, ObjectDigest)>,
+        current: Option<(
+            LeaseAssignment,
+            NodeId,
+            u64,
+            ObjectDigest,
+            DesiredGeneration,
+        )>,
         now_seconds: i64,
         duration_seconds: i64,
         generation_increment: u64,
@@ -1081,7 +1085,13 @@ mod tests {
             .map_err(|_| OwnershipAuthorityError::Internal)?;
             self.requests
                 .insert(*claim.request_id(), (claim.digest(), response.clone()));
-            self.current = Some((assignment, node, generation, descriptor.digest()));
+            self.current = Some((
+                assignment,
+                node,
+                generation,
+                descriptor.digest(),
+                claim.desired_generation(),
+            ));
             Ok(response)
         }
     }
@@ -1123,11 +1133,13 @@ mod tests {
                     Err(OwnershipAuthorityError::IdempotencyConflict)
                 };
             }
-            let Some((assignment, node, generation, digest)) = self.current else {
+            let Some((assignment, node, generation, digest, desired_generation)) = self.current
+            else {
                 return Err(OwnershipAuthorityError::StaleExpectedPrior);
             };
             if assignment != claim.assignment()
                 || node != claim.node()
+                || desired_generation != claim.desired_generation()
                 || claim.expected_prior()
                     != Some(
                         ExpectedOwnershipLease::new(generation, digest)
@@ -1140,6 +1152,47 @@ mod tests {
                 .checked_add(self.generation_increment)
                 .ok_or(OwnershipAuthorityError::Internal)?;
             self.issue(claim, next)
+        }
+
+        fn advance(
+            &mut self,
+            claim: &OwnershipClaimV1,
+        ) -> Result<UnverifiedOwnershipLeaseResponse, OwnershipAuthorityError> {
+            self.calls.set(self.calls.get() + 1);
+            if claim.action() != OwnershipClaimAction::Advance {
+                return Err(OwnershipAuthorityError::Internal);
+            }
+            if let Some((digest, response)) = self.requests.get(claim.request_id()) {
+                return if *digest == claim.digest() {
+                    Ok(response.clone())
+                } else {
+                    Err(OwnershipAuthorityError::IdempotencyConflict)
+                };
+            }
+            let Some((assignment, node, generation, digest, desired)) = self.current else {
+                return Err(OwnershipAuthorityError::StaleExpectedPrior);
+            };
+            let proposed = claim.assignment();
+            if assignment.sandbox() != proposed.sandbox()
+                || assignment.incarnation() != proposed.incarnation()
+                || assignment.epoch() != proposed.epoch()
+                || assignment.digest() == proposed.digest()
+                || node != claim.node()
+                || desired >= claim.desired_generation()
+                || claim.expected_prior()
+                    != Some(
+                        ExpectedOwnershipLease::new(generation, digest)
+                            .map_err(|_| OwnershipAuthorityError::Internal)?,
+                    )
+            {
+                return Err(OwnershipAuthorityError::StaleExpectedPrior);
+            }
+            self.issue(
+                claim,
+                generation
+                    .checked_add(self.generation_increment)
+                    .ok_or(OwnershipAuthorityError::Internal)?,
+            )
         }
     }
 
@@ -1967,6 +2020,7 @@ mod tests {
                 root.node(),
                 root.generation(),
                 root.digest(),
+                root.desired_generation(),
             ));
             let claim = renewal_claim(request, &root);
             let lease = branch
@@ -2157,6 +2211,13 @@ mod tests {
                 claim: &OwnershipClaimV1,
             ) -> Result<UnverifiedOwnershipLeaseResponse, OwnershipAuthorityError> {
                 self.inner.renew(claim)
+            }
+
+            fn advance(
+                &mut self,
+                claim: &OwnershipClaimV1,
+            ) -> Result<UnverifiedOwnershipLeaseResponse, OwnershipAuthorityError> {
+                self.inner.advance(claim)
             }
         }
 
@@ -2799,6 +2860,94 @@ mod tests {
         assert_eq!(issuer_calls.get(), 1);
         assert_eq!(protected_clock_calls.get(), 1);
 
+        // Advance the signed namespace target through the actual controller
+        // resume and publication path. This is still an inert Stop template,
+        // not live namespace replay or permission to use historical pins.
+        let advanced_draft =
+            crate::publication::tests::descriptor_free_stop_draft_with_generations(8, 9);
+        let proposed = activation_claim(&advanced_draft, 2);
+        let previous = authority_store
+            .current(proposed.assignment().sandbox())
+            .unwrap();
+        let advance_claim = OwnershipClaimV1::advance(
+            [2; 16],
+            proposed.assignment(),
+            proposed.desired_generation(),
+            proposed.node(),
+            previous.expected_renewal_fence(),
+            100,
+        )
+        .unwrap();
+        let advance_transaction = OwnershipTransactionReferenceV1::from_claim(&advance_claim);
+        let advance_operation = aos_sandbox_core::OperationId::from_bytes([0x91; 16]);
+        let advance_effect = advanced_draft
+            .bind_effect(advanced_draft.templates()[0].digest())
+            .unwrap();
+        let advance_plan = OperationPlan::ownership_gated(
+            advance_operation,
+            IdempotencyKey::new(b"controller-service-advance".to_vec()).unwrap(),
+            [0x92; 32],
+            b"sandbox".to_vec(),
+            b"advanced-ownership-pending".to_vec(),
+            vec![advance_effect],
+            advance_claim,
+            advanced_draft,
+        )
+        .unwrap();
+        drop(controller);
+        let (controller_journal, _) =
+            Journal::open(directory.controller_journal(), JournalLimits::default()).unwrap();
+        let mut reconciler = Reconciler::new(controller_journal, CompositionExecutor);
+        reconciler.accept(&advance_plan).unwrap();
+        let mut controller = NodeController::new(
+            crate::ControllerRequestScopeV1::new(ObjectDigest::from_bytes([0x83; 32])).unwrap(),
+            NodeControllerLimits::default(),
+            CompositionCompiler,
+            reconciler,
+        );
+        {
+            let mut old_client = crate::InProcessOwnershipSessionClient::new(
+                session.clone(),
+                &mut authority_store,
+                &mut issuer,
+                &mut protected_clock,
+            )
+            .unwrap();
+            assert!(matches!(
+                controller.resume_ownership(
+                    advance_operation,
+                    &mut old_client,
+                    &controller_verifier,
+                    &mut || panic!("version rejection sampled time"),
+                ),
+                Err(crate::OwnershipResumeError::SessionContract)
+            ));
+        }
+        assert_eq!(issuer_calls.get(), 1);
+        let advanced_session = advance::session(&issuer.authority, 1);
+        {
+            let mut client = crate::InProcessOwnershipSessionClient::new(
+                advanced_session.clone(),
+                &mut authority_store,
+                &mut issuer,
+                &mut protected_clock,
+            )
+            .unwrap();
+            assert_eq!(
+                controller
+                    .resume_ownership(
+                        advance_operation,
+                        &mut client,
+                        &controller_verifier,
+                        &mut || Ok(test_clock(150)),
+                    )
+                    .unwrap(),
+                OwnershipResumeOutcomeV1::Activated
+            );
+        }
+        assert_eq!(issuer_calls.get(), 2);
+        assert_eq!(protected_clock_calls.get(), 2);
+
         drop(authority_store);
         drop(controller);
         let (authority_journal, _) =
@@ -2809,8 +2958,30 @@ mod tests {
             authority_store.query(transaction).unwrap(),
             DurableOwnershipQueryOutcome::Completed(_)
         ));
-        let (controller_journal, _) =
+        assert!(matches!(
+            authority_store.query(advance_transaction).unwrap(),
+            DurableOwnershipQueryOutcome::Completed(_)
+        ));
+        let (mut controller_journal, _) =
             Journal::open(directory.controller_journal(), JournalLimits::default()).unwrap();
+        let current = crate::AuthorityPublicationStore::new(&mut controller_journal)
+            .current(proposed.assignment().sandbox())
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.manifest().manifest().desired_generation().get(), 8);
+        assert_eq!(
+            current.manifest().manifest().namespace_generation().get(),
+            9
+        );
+        assert_eq!(current.manifest().digest(), proposed.assignment().digest());
+        assert_eq!(
+            OwnershipTransactionReceiptV1::from_canonical_bytes(
+                current.lease().canonical_receipt(),
+            )
+            .unwrap()
+            .action(),
+            OwnershipClaimAction::Advance
+        );
         let mut controller = NodeController::new(
             crate::ControllerRequestScopeV1::new(ObjectDigest::from_bytes([0x83; 32])).unwrap(),
             NodeControllerLimits::default(),
@@ -2818,7 +2989,7 @@ mod tests {
             Reconciler::new(controller_journal, CompositionExecutor),
         );
         let mut replay_client = crate::InProcessOwnershipSessionClient::new(
-            session,
+            advanced_session,
             &mut authority_store,
             &mut issuer,
             &mut protected_clock,
@@ -2835,7 +3006,18 @@ mod tests {
                 .unwrap(),
             OwnershipResumeOutcomeV1::Replay
         );
-        assert_eq!(issuer_calls.get(), 1);
-        assert_eq!(protected_clock_calls.get(), 1);
+        assert_eq!(
+            controller
+                .resume_ownership(
+                    advance_operation,
+                    &mut replay_client,
+                    &controller_verifier,
+                    &mut || panic!("advanced replay sampled time"),
+                )
+                .unwrap(),
+            OwnershipResumeOutcomeV1::Replay
+        );
+        assert_eq!(issuer_calls.get(), 2);
+        assert_eq!(protected_clock_calls.get(), 2);
     }
 }

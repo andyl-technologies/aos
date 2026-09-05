@@ -61,6 +61,14 @@ fn descriptor(kind: PortableMediaType, byte: u8) -> ObjectDescriptor {
 }
 
 fn manifest_with_node(node: u8) -> CanonicalAssignmentManifestV1 {
+    manifest_with_generations(node, 7, 8)
+}
+
+fn manifest_with_generations(
+    node: u8,
+    desired: u64,
+    namespace: u64,
+) -> CanonicalAssignmentManifestV1 {
     let sandbox = SandboxId::from_bytes([1; 16]);
     let feature = FeatureRef::new("aos.sandbox.runtime.linux-systemd", 1, 0)
         .unwrap_or_else(|error| panic!("test feature failed: {error}"));
@@ -72,8 +80,8 @@ fn manifest_with_node(node: u8) -> CanonicalAssignmentManifestV1 {
         IncarnationId::from_bytes([4; 16]),
         NodeId::from_bytes([node; 16]),
         AssignmentEpoch::new(6),
-        DesiredGeneration::new(7),
-        NamespaceGeneration::new(8),
+        DesiredGeneration::new(desired),
+        NamespaceGeneration::new(namespace),
         descriptor(PortableMediaType::SandboxSpec, 9),
         descriptor(PortableMediaType::Policy, 10),
         descriptor(PortableMediaType::Environment, 11),
@@ -511,7 +519,19 @@ pub(crate) fn descriptor_free_activation_fixture(
 }
 
 pub(crate) fn descriptor_free_stop_draft_with_node(node: u8) -> AuthorityPublicationDraftV1 {
-    let manifest = manifest_with_node(node);
+    descriptor_free_stop_draft(manifest_with_node(node))
+}
+
+pub(crate) fn descriptor_free_stop_draft_with_generations(
+    desired: u64,
+    namespace: u64,
+) -> AuthorityPublicationDraftV1 {
+    descriptor_free_stop_draft(manifest_with_generations(5, desired, namespace))
+}
+
+fn descriptor_free_stop_draft(
+    manifest: CanonicalAssignmentManifestV1,
+) -> AuthorityPublicationDraftV1 {
     let lease_key = SigningKey::from_bytes(&[41; 32]);
     let lease_signer = key_reference("lease", KeyUsage::OwnershipLease, &lease_key);
     let (plan, semantics, body) = signed_host_plan(&manifest, lease_signer);

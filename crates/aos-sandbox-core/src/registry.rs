@@ -462,13 +462,13 @@ pub fn negotiate_protocol(
 const fn protocol_version(protocol: ProtocolId) -> ProtocolVersion {
     match protocol {
         ProtocolId::HostBroker => ProtocolVersion::new(1, 2),
-        ProtocolId::MountBroker | ProtocolId::StorageBroker | ProtocolId::NetworkBroker => {
-            ProtocolVersion::new(1, 1)
-        }
+        ProtocolId::MountBroker
+        | ProtocolId::StorageBroker
+        | ProtocolId::NetworkBroker
+        | ProtocolId::OwnershipAuthority => ProtocolVersion::new(1, 1),
         ProtocolId::PublicApi
         | ProtocolId::PublisherAuthority
         | ProtocolId::CoordinatorNode
-        | ProtocolId::OwnershipAuthority
         | ProtocolId::Guardian
         | ProtocolId::GuestAgent => ProtocolVersion::new(1, 0),
     }
@@ -623,6 +623,10 @@ mod tests {
             negotiate_protocol(ProtocolId::OwnershipAuthority, ProtocolVersion::new(1, 0)),
             Ok(ProtocolVersion::new(1, 0))
         );
+        assert_eq!(
+            negotiate_protocol(ProtocolId::OwnershipAuthority, ProtocolVersion::new(1, 1)),
+            Ok(ProtocolVersion::new(1, 1))
+        );
         assert!(matches!(
             negotiate_protocol(ProtocolId::MountBroker, ProtocolVersion::new(1, 2)),
             Err(RegistryError::IncompatibleProtocol { .. })
@@ -636,7 +640,7 @@ mod tests {
             Err(RegistryError::IncompatibleProtocol { .. })
         ));
         assert!(matches!(
-            negotiate_protocol(ProtocolId::OwnershipAuthority, ProtocolVersion::new(1, 1)),
+            negotiate_protocol(ProtocolId::OwnershipAuthority, ProtocolVersion::new(1, 2)),
             Err(RegistryError::IncompatibleProtocol { .. })
         ));
     }

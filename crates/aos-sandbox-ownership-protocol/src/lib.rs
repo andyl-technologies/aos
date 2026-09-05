@@ -27,6 +27,9 @@
 //!
 //! [`protocol`] defines the bounded transport-neutral V1 transaction
 //! semantics. It intentionally defines no socket framing or remote carrier.
+//! Protocol 1.1 adds same-owner assignment advancement as action 3. Existing
+//! acquire/renew encodings remain byte-exact; advance receipts alone require
+//! protocol minor 1, and 1.0 sessions cannot admit the new action.
 
 pub mod protocol;
 
@@ -58,16 +61,21 @@ const RECEIPT_MAGIC: &[u8; 8] = b"AOSOTR1\0";
 const RECEIPT_VERSION: u16 = 1;
 const RECEIPT_PROTOCOL_CODE: u16 = 1;
 const RECEIPT_PROTOCOL_MAJOR: u16 = 1;
-const RECEIPT_PROTOCOL_MINOR: u16 = 0;
 const RECEIPT_FIXED_BYTES: usize = 154;
 
-/// Selects a first acquisition or compare-and-swap renewal.
+/// Selects acquisition, exact renewal, or a same-owner assignment advance.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OwnershipClaimAction {
     /// Acquires an assignment that has no prior lease in this authority domain.
     Acquire,
     /// Renews exactly the currently fenced lease.
     Renew,
+    /// Advances desired assignment semantics on the same node, incarnation, and epoch.
+    ///
+    /// Protocol 1.1 requires an exact prior lease fence, a strictly greater
+    /// desired generation, and a different assignment digest. This is not
+    /// ownership transfer and does not admit another node or incarnation.
+    Advance,
 }
 
 impl OwnershipClaimAction {
@@ -75,6 +83,7 @@ impl OwnershipClaimAction {
         match self {
             Self::Acquire => 1,
             Self::Renew => 2,
+            Self::Advance => 3,
         }
     }
 
@@ -82,12 +91,25 @@ impl OwnershipClaimAction {
         match value {
             1 => Ok(Self::Acquire),
             2 => Ok(Self::Renew),
+            3 => Ok(Self::Advance),
             _ => Err(OwnershipClaimError::InvalidEncoding),
         }
     }
+
+    /// Returns the earliest protocol version that admits this action.
+    #[must_use]
+    pub const fn minimum_protocol_version(self) -> aos_sandbox_core::ProtocolVersion {
+        aos_sandbox_core::ProtocolVersion::new(
+            1,
+            match self {
+                Self::Acquire | Self::Renew => 0,
+                Self::Advance => 1,
+            },
+        )
+    }
 }
 
-/// Identifies the exact prior lease a renewal must replace.
+/// Identifies the exact prior lease a renewal or advancement must replace.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ExpectedOwnershipLease {
     generation: u64,
@@ -122,7 +144,7 @@ impl ExpectedOwnershipLease {
     }
 }
 
-/// Carries one canonical linearizable ownership acquire or renew claim.
+/// Carries one canonical linearizable ownership claim.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnershipClaimV1 {
     action: OwnershipClaimAction,
@@ -186,6 +208,37 @@ impl OwnershipClaimV1 {
         )
     }
 
+    /// Constructs an exact-fence same-owner assignment advance.
+    ///
+    /// The authority must compare this proposal with its current signed
+    /// transaction: node, sandbox, incarnation, and epoch remain equal;
+    /// desired generation strictly increases and assignment digest changes.
+    /// The claim alone does not prove those preconditions or grant authority.
+    /// A protocol 1.0 session cannot submit or resume this action.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OwnershipClaimError`] for sentinel identities or generations,
+    /// an invalid prior fence, or a zero/oversized maximum duration.
+    pub fn advance(
+        request_id: [u8; 16],
+        assignment: LeaseAssignment,
+        desired_generation: DesiredGeneration,
+        node: NodeId,
+        expected_prior: ExpectedOwnershipLease,
+        requested_maximum_seconds: u64,
+    ) -> Result<Self, OwnershipClaimError> {
+        Self::new(
+            OwnershipClaimAction::Advance,
+            request_id,
+            assignment,
+            desired_generation,
+            node,
+            Some(expected_prior),
+            requested_maximum_seconds,
+        )
+    }
+
     /// Decodes the exact fixed-width service representation.
     ///
     /// # Errors
@@ -232,10 +285,9 @@ impl OwnershipClaimV1 {
             {
                 None
             }
-            OwnershipClaimAction::Renew => Some(ExpectedOwnershipLease::new(
-                expected_generation,
-                expected_digest,
-            )?),
+            OwnershipClaimAction::Renew | OwnershipClaimAction::Advance => Some(
+                ExpectedOwnershipLease::new(expected_generation, expected_digest)?,
+            ),
             OwnershipClaimAction::Acquire => return Err(OwnershipClaimError::InvalidExpectedLease),
         };
         Self::new(
@@ -290,7 +342,7 @@ impl OwnershipClaimV1 {
         })
     }
 
-    /// Returns whether this claim acquires or renews ownership.
+    /// Returns the immutable ownership transaction action.
     #[must_use]
     pub const fn action(&self) -> OwnershipClaimAction {
         self.action
@@ -320,7 +372,7 @@ impl OwnershipClaimV1 {
         self.node
     }
 
-    /// Returns the exact prior lease required by a renewal.
+    /// Returns the exact prior lease required by renewal or advancement.
     #[must_use]
     pub const fn expected_prior(&self) -> Option<ExpectedOwnershipLease> {
         self.expected_prior
@@ -444,13 +496,15 @@ impl OwnershipTransactionReceiptV1 {
             || u16::from_be_bytes(receipt_take::<2>(bytes, &mut cursor)?) != RECEIPT_VERSION
             || u16::from_be_bytes(receipt_take::<2>(bytes, &mut cursor)?) != RECEIPT_PROTOCOL_CODE
             || u16::from_be_bytes(receipt_take::<2>(bytes, &mut cursor)?) != RECEIPT_PROTOCOL_MAJOR
-            || u16::from_be_bytes(receipt_take::<2>(bytes, &mut cursor)?) != RECEIPT_PROTOCOL_MINOR
         {
             return Err(OwnershipReceiptError::InvalidEncoding);
         }
+        let protocol_minor = u16::from_be_bytes(receipt_take::<2>(bytes, &mut cursor)?);
         let action = OwnershipClaimAction::from_code(receipt_take::<1>(bytes, &mut cursor)?[0])
             .map_err(|_| OwnershipReceiptError::InvalidEncoding)?;
-        if receipt_take::<7>(bytes, &mut cursor)? != [0; 7] {
+        if protocol_minor != action.minimum_protocol_version().minor()
+            || receipt_take::<7>(bytes, &mut cursor)? != [0; 7]
+        {
             return Err(OwnershipReceiptError::InvalidEncoding);
         }
         let key_id_length = usize::from(u16::from_be_bytes(receipt_take::<2>(bytes, &mut cursor)?));
@@ -654,7 +708,8 @@ impl UnverifiedOwnershipLeaseResponse {
 ///
 /// Implementations must bind `request_id` to the complete claim digest. Exact
 /// replay returns the original response; reuse with different bytes fails.
-/// Acquire is expected-absence CAS, while renew is exact generation/digest CAS.
+/// Acquire is expected-absence CAS. Renewal and same-owner advancement are
+/// exact generation/digest CAS with distinct semantic transition rules.
 pub trait OwnershipAuthority {
     /// Acquires an assignment whose authoritative lease is absent.
     ///
@@ -677,6 +732,24 @@ pub trait OwnershipAuthority {
         &mut self,
         claim: &OwnershipClaimV1,
     ) -> Result<UnverifiedOwnershipLeaseResponse, OwnershipAuthorityError>;
+
+    /// Advances assignment semantics without changing the exclusive owner.
+    ///
+    /// Exact generation/digest CAS is mandatory. Node, sandbox, incarnation,
+    /// and assignment epoch must remain equal, desired generation must increase,
+    /// and assignment digest must change. The issued lease generation must
+    /// advance. This method cannot implement migration or reuse renewal to
+    /// bypass its unchanged-semantics contract. Exact replay returns the
+    /// original four artifacts, including the protocol 1.1 receipt.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OwnershipAuthorityError`] for stale or invalid prior state,
+    /// idempotency misuse, unavailable linearizable state, or transport failure.
+    fn advance(
+        &mut self,
+        claim: &OwnershipClaimV1,
+    ) -> Result<UnverifiedOwnershipLeaseResponse, OwnershipAuthorityError>;
 }
 
 /// Classifies authority transaction failures without backend-specific detail.
@@ -685,8 +758,8 @@ pub enum OwnershipAuthorityError {
     /// Expected absence failed because another current lease owns the assignment.
     #[error("ownership assignment already has a current lease")]
     AlreadyOwned,
-    /// Renewal did not name the authority's exact current generation and digest.
-    #[error("ownership renewal compare-and-swap fence is stale")]
+    /// Renewal or advancement did not match the exact prior state and transition.
+    #[error("ownership compare-and-swap fence is stale")]
     StaleExpectedPrior,
     /// One request identity was reused with different canonical claim bytes.
     #[error("ownership request identity is bound to another claim")]
@@ -758,6 +831,29 @@ impl OwnershipAuthorityVerifier {
         self.verify_response(claim, response, clock)
     }
 
+    /// Performs same-owner assignment advancement and verifies its artifacts.
+    ///
+    /// The authority enforces the prior-state transition; this method verifies
+    /// that the response signs exactly the proposed claim and a newer lease.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OwnershipLeaseAcquisitionError`] for a wrong action, authority
+    /// failure, invalid signatures or context, expiry, excessive interval, or
+    /// non-advancing lease generation.
+    pub fn advance<A: OwnershipAuthority>(
+        &self,
+        authority: &mut A,
+        claim: &OwnershipClaimV1,
+        clock: &RawPairedClockSample,
+    ) -> Result<SignedOwnershipLease, OwnershipLeaseAcquisitionError> {
+        if claim.action != OwnershipClaimAction::Advance {
+            return Err(OwnershipLeaseAcquisitionError::WrongClaimAction);
+        }
+        let response = authority.advance(claim)?;
+        self.verify_response(claim, response, clock)
+    }
+
     /// Verifies exact transport bytes against a claim and caller-supplied clock sample.
     ///
     /// This is the verifier entry point for a durable transaction manager that
@@ -823,6 +919,7 @@ impl OwnershipAuthorityVerifier {
             generation: verified.lease().lease_generation(),
             digest: verified.lease_digest(),
             assignment: verified.lease().assignment(),
+            desired_generation: claim.desired_generation(),
             node: verified.lease().node(),
             authority_issued_seconds: verified.lease().authority_issued_seconds(),
             authority_expires_seconds: verified.lease().authority_expires_seconds(),
@@ -899,6 +996,7 @@ impl OwnershipAuthorityVerifier {
             generation: proof.lease().lease_generation(),
             digest: proof.lease_digest(),
             assignment: proof.lease().assignment(),
+            desired_generation: claim.desired_generation(),
             node: proof.lease().node(),
             authority_issued_seconds: proof.lease().authority_issued_seconds(),
             authority_expires_seconds: proof.lease().authority_expires_seconds(),
@@ -923,6 +1021,7 @@ pub struct SignedOwnershipLease {
     generation: u64,
     digest: ObjectDigest,
     assignment: LeaseAssignment,
+    desired_generation: DesiredGeneration,
     node: NodeId,
     authority_issued_seconds: i64,
     authority_expires_seconds: i64,
@@ -972,6 +1071,12 @@ impl SignedOwnershipLease {
     #[must_use]
     pub const fn assignment(&self) -> LeaseAssignment {
         self.assignment
+    }
+
+    /// Returns the desired generation authenticated by the signed claim receipt.
+    #[must_use]
+    pub const fn desired_generation(&self) -> DesiredGeneration {
+        self.desired_generation
     }
 
     /// Returns the sole owning node.
@@ -1041,6 +1146,7 @@ impl SignedOwnershipLease {
             generation: self.generation,
             digest: self.digest,
             assignment: self.assignment,
+            desired_generation: self.desired_generation,
             node: self.node,
             authority_issued_seconds: self.authority_issued_seconds,
             authority_expires_seconds: self.authority_expires_seconds,
@@ -1065,6 +1171,7 @@ pub struct RecoveredOwnershipLease {
     generation: u64,
     digest: ObjectDigest,
     assignment: LeaseAssignment,
+    desired_generation: DesiredGeneration,
     node: NodeId,
     authority_issued_seconds: i64,
     authority_expires_seconds: i64,
@@ -1119,6 +1226,11 @@ impl RecoveredOwnershipLease {
     #[must_use]
     pub const fn assignment(&self) -> LeaseAssignment {
         self.assignment
+    }
+    /// Returns the desired generation authenticated by the historical receipt.
+    #[must_use]
+    pub const fn desired_generation(&self) -> DesiredGeneration {
+        self.desired_generation
     }
     /// Returns the sole owning node.
     #[must_use]
@@ -1293,7 +1405,7 @@ fn encode_receipt(
     bytes.extend_from_slice(&RECEIPT_VERSION.to_be_bytes());
     bytes.extend_from_slice(&RECEIPT_PROTOCOL_CODE.to_be_bytes());
     bytes.extend_from_slice(&RECEIPT_PROTOCOL_MAJOR.to_be_bytes());
-    bytes.extend_from_slice(&RECEIPT_PROTOCOL_MINOR.to_be_bytes());
+    bytes.extend_from_slice(&action.minimum_protocol_version().minor().to_be_bytes());
     bytes.push(action.code());
     bytes.extend_from_slice(&[0; 7]);
     bytes.extend_from_slice(&(key_id.len() as u16).to_be_bytes());

@@ -575,13 +575,21 @@ nonce. Readers and lease fences reject each form rather than normalize it.
 
 The ownership transaction receipt is a fixed binary, non-CBOR portable object.
 Its fields are, in order: `AOSOTR1\0`, receipt version `u16be(1)`, ownership
-protocol code `u16be(1)`, protocol version `u16be(1),u16be(0)`, action byte
-(`1` acquire or `2` renew), seven zero reserved bytes, stable-key-ID length
+protocol code `u16be(1)`, protocol major `u16be(1)`, protocol minor `u16be`,
+action byte (`1` acquire, `2` renew, or `3` same-owner advance), seven zero
+reserved bytes, stable-key-ID length
 `u16be`, its 1--255 valid UTF-8 bytes, authority generation `u64be`, authority public
 key SHA-256 (32 bytes), request ID (16 bytes), canonical claim digest (32
 bytes), exact lease size `u64be`, and exact lease digest (32 bytes). It binds
 the immutable authority action, not the Begin, CompleteOrResume, or Query
 method that happens to return it.
+
+Acquire and renew require receipt protocol minor `0`; same-owner advance
+requires minor `1`. Other action/version pairings are non-canonical and fail
+closed. The claim's fixed V1 framing adds action code `3` only under negotiated
+protocol 1.1, with a mandatory exact prior generation/digest. Existing acquire
+and renew golden bytes and signatures are unchanged. Older readers reject
+advance claims and receipts; they cannot reinterpret them as renewal.
 
 The canonical fixture uses ownership authority key `ownership-authority-52`,
 generation 3 and fingerprint `0cc42263abfb754678ab60fc3511210608a4b3a64b996170d96b4c21eb3cecbc`.

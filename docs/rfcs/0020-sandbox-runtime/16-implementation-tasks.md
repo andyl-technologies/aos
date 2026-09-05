@@ -2467,3 +2467,45 @@ checks pass. The final-source `checks.eval` and Host worker VM gates pass.
 An earlier final-source build failed the unrelated OCI roundtrip test's
 upload-cancellation deadline; its exact retained binary passed in isolation,
 and the full workspace test phase passed on retry without code changes.
+
+### Same-owner signed assignment advancement
+
+Ownership protocol 1.1 adds a distinct `Advance` action for changing the
+assignment digest and increasing desired generation without changing node,
+sandbox, incarnation, or assignment epoch. It requires the exact prior lease
+generation/digest and a newer issued lease. Renewal still preserves assignment
+semantics and now explicitly checks the receipt-authenticated desired
+generation. Admission, post-issuance validation, and historical chain recovery
+share the same transition rules; pending advancement excludes competing renewals
+and updates for that sandbox.
+
+Acquire/renew claim and receipt bytes remain unchanged. Advance claims use
+the previously unknown action code 3, and advance receipts require protocol
+minor 1. A 1.0 session cannot submit, query, or resume an advance transaction.
+Older journal readers reject the new action rather than reinterpret it.
+Completed replay returns the original four artifacts without consulting an
+issuer or manufacturing current authority.
+
+Regression coverage includes exact claim/receipt version binding, malformed
+prior fences, owner and generation substitutions, signed but invalid historical
+chains, pending-operation conflicts, the external-issued/local-uncommitted
+crash window, renewal after advancement, compaction/reopen, and old-session
+rejection before issuance. The controller/in-process-service composition test
+publishes a signed namespace target change from 8 to 9 at desired generation 8,
+reopens both journals, verifies the recovered current manifest and advance
+receipt, and replays both operations without contacting the issuer again.
+This uses an inert descriptor-free Stop template, not live attachment replay.
+
+This advances `SBX-CTRL-03` and removes an ownership-publication dependency for
+`SBX-RT-06`/`SBX-VIEW-03`. The controller still needs to bind observed runtime
+generations to signed namespace targets and drive descriptor-backed attachment
+replay. Migration, endpoint fencing, production ownership issuance/deployment,
+and backend readiness are not qualified by same-owner advancement. A new lease
+alone does not install broker fences, update the guardian, or revoke old grants.
+
+Validation passes the serial all-feature sandbox, ownership-protocol, and core
+test suites, API/doc tests, strict Clippy for all targets of those crates,
+Rust formatting, and diff checks. The hermetic `checks.eval` gate passes,
+including the release CLI build, full workspace test phase, configuration
+evaluation, and system-structure checks. No live Host or attachment VM
+qualification is claimed for this protocol/publication increment.

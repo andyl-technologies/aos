@@ -72,7 +72,8 @@ where
         issuer: &'a mut I,
         protected_clock: &'a mut C,
     ) -> Result<Self, OwnershipProtocolServiceError> {
-        if session.version() != ProtocolVersion::new(1, 0)
+        if (session.version() != ProtocolVersion::new(1, 0)
+            && session.version() != ProtocolVersion::new(1, 1))
             || session.authority() != authority.authority()
             || session.methods() != SERVICE_METHODS
             || session.maximum_request_bytes() != MAXIMUM_OWNERSHIP_REQUEST_BYTES
@@ -117,6 +118,25 @@ where
             request.method(),
             request.body().clone(),
         )?;
+        // Follow-up requests carry only a reference. Check the retained
+        // action before Query reveals its state or Complete contacts an issuer;
+        // a 1.0 reconnect cannot resume a transaction requiring 1.1.
+        let retained_action = self.authority.transaction_action(request.transaction());
+        let version_error = match retained_action {
+            Ok(Some(action))
+                if action.minimum_protocol_version().minor() > self.session.version().minor() =>
+            {
+                Some(OwnershipProtocolErrorCodeV1::RequiredCapabilityUnavailable)
+            }
+            Err(error) => Some(map_durable_error(error, None)),
+            _ => None,
+        };
+        if let Some(error) = version_error {
+            return self
+                .session
+                .response(&request, protocol_error(error))
+                .map_err(OwnershipProtocolServiceError::Protocol);
+        }
         let outcome = match request.body() {
             OwnershipRequestBodyV1::Query(reference) => self.query(*reference),
             OwnershipRequestBodyV1::Begin(claim) => self.begin(claim),
@@ -276,7 +296,9 @@ fn map_durable_error(
         }
         DurableOwnershipAuthorityError::CompareAndSwapConflict => match action {
             Some(OwnershipClaimAction::Acquire) => OwnershipProtocolErrorCodeV1::AlreadyOwned,
-            Some(OwnershipClaimAction::Renew) => OwnershipProtocolErrorCodeV1::StaleExpectedPrior,
+            Some(OwnershipClaimAction::Renew | OwnershipClaimAction::Advance) => {
+                OwnershipProtocolErrorCodeV1::StaleExpectedPrior
+            }
             None => OwnershipProtocolErrorCodeV1::IntegrityFailure,
         },
         DurableOwnershipAuthorityError::IntentNotFound => OwnershipProtocolErrorCodeV1::NotFound,

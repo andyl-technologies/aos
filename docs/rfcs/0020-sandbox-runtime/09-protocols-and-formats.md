@@ -255,13 +255,39 @@ endpoint fencing tests; the exact consensus implementation is replaceable,
 not optional semantics.
 
 The transport-neutral ownership-authority protocol is independently versioned
-as 1.0. `Begin` durably admits one exact canonical acquire or renew claim;
+as 1.1, retaining 1.0 sessions for acquire and renew. `Begin` durably admits one
+exact canonical acquire, renew, or same-owner advance claim;
 `CompleteOrResume` explicitly drives or resumes the admitted operation; and
 `Query` observes the exact request-ID/claim-digest binding. Query reports
 `Absent`, `Pending`, or `Completed`; Begin and CompleteOrResume never report
 `Absent`. Completed carries the exact ownership lease, lease signature,
 transaction receipt, and receipt signature. Replays and recovered completions
 are authenticated historical artifacts, not present effect authority.
+
+Protocol 1.1 adds the distinct `Advance` action. It compare-and-swaps the exact
+prior lease generation and digest while keeping node, sandbox, incarnation,
+and assignment epoch unchanged. Desired generation must strictly increase and
+assignment digest must change. The resulting signed receipt binds the new
+desired generation, and the lease generation must advance. Renewal continues
+to require identical assignment semantics, including the receipt-authenticated
+desired generation. Admission, post-issuance checks, and historical chain
+recovery enforce the same transition rules.
+
+Same-owner advancement does not transfer ownership and need not wait for the
+prior lease to expire: the exclusive node remains unchanged. It does not
+invalidate old broker grants by itself. Publication, broker fence installation,
+guardian update, and effect-time authority checks remain mandatory before
+claiming the new generation is observed. Node, incarnation, or epoch changes
+require a separate fenced ownership transition; `Advance` cannot authorize
+migration or satisfy its endpoint-fencing obligations.
+
+The fixed claim retains its V1 framing with action code `3` for advancement;
+old readers reject that unknown action. Advance receipts bind protocol 1.1;
+acquire and renew receipts retain their exact 1.0 encoding, even in a 1.1
+session. A 1.0 session rejects advance Begin requests and cannot query or
+complete retained advance transactions. Existing V2 ownership journals retain
+their encoding; older programs fail closed on entries containing the new
+action rather than reinterpret or discard them.
 
 Negotiation pins the exact ownership-authority key generation, canonical
 method set, request/response bounds, and maximum lease duration. Each client
@@ -277,7 +303,7 @@ not portable protocol fields.
 The authority signs the fixed binary
 `OwnershipTransactionReceipt` with its ownership-lease key and trust policy.
 The receipt binds protocol version, exact authority key generation, immutable
-Acquire/Renew action, request ID, complete canonical claim digest, and exact
+Acquire/Renew/Advance action, request ID, complete canonical claim digest, and exact
 lease descriptor. It deliberately does not bind the observation method or
 session transcript, allowing the same durable receipt to be returned by Begin,
 CompleteOrResume, and Query. A caller-supplied clock sample can authenticate
