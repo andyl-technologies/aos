@@ -188,6 +188,15 @@ fn signed_host_control_plan(
     lease_signer: KeyReference,
     action: RuntimeAction,
 ) -> (SignedBrokerPlan, BrokerDispatchSemanticIdentityV1, Vec<u8>) {
+    signed_host_control_plan_with_scope(manifest, lease_signer, action, false)
+}
+
+fn signed_host_control_plan_with_scope(
+    manifest: &CanonicalAssignmentManifestV1,
+    lease_signer: KeyReference,
+    action: RuntimeAction,
+    observe_scope: bool,
+) -> (SignedBrokerPlan, BrokerDispatchSemanticIdentityV1, Vec<u8>) {
     let key = SigningKey::from_bytes(&[40; 32]);
     let assignment = manifest
         .broker_assignment()
@@ -195,7 +204,7 @@ fn signed_host_control_plan(
     let body = ApplyRuntimeRequest {
         header: Some(RequestHeader {
             protocol_major: 1,
-            protocol_minor: 1,
+            protocol_minor: if observe_scope { 2 } else { 1 },
             request_id: vec![0x44; 16],
             audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
             deadline_boottime_nanoseconds: 0,
@@ -226,23 +235,28 @@ fn signed_host_control_plan(
         canonical.target(),
         canonical.commitment(),
     );
+    let mut grants = vec![
+        BrokerGrant::new(
+            semantics.verb(),
+            semantics.target(),
+            semantics.argument_commitment(),
+            4096,
+            1,
+        )
+        .unwrap_or_else(|error| panic!("test Host grant failed: {error}")),
+    ];
+    if observe_scope {
+        grants.push(payload_scope_grant(assignment));
+        grants.sort_by_key(|grant| (grant.verb(), grant.target(), grant.argument_commitment()));
+    }
     let plan = BrokerAuthorizationPlan::new(
         BrokerAudience::Host,
         ProtocolId::HostBroker,
-        ProtocolVersion::new(1, 1),
+        ProtocolVersion::new(1, if observe_scope { 2 } else { 1 }),
         assignment,
         manifest.manifest().node(),
         lease_signer,
-        vec![
-            BrokerGrant::new(
-                semantics.verb(),
-                semantics.target(),
-                semantics.argument_commitment(),
-                4096,
-                1,
-            )
-            .unwrap_or_else(|error| panic!("test Host grant failed: {error}")),
-        ],
+        grants,
         ObjectDigest::from_bytes([50; 32]),
         RevocationScopeId::from_bytes([51; 16]),
         100,
@@ -258,6 +272,67 @@ fn signed_host_control_plan(
         .complete(ReturnedSignature::Bytes(signature.signature()), 150)
         .unwrap_or_else(|error| panic!("test signed Host plan failed: {error}"));
     (signed, semantics, body)
+}
+
+fn payload_scope_grant(assignment: BrokerAssignment) -> BrokerGrant {
+    use aos_proto::aos::sandbox::local::v1::ObservePayloadScopeRequest;
+    use aos_sandbox_protocol::{PeerCredentials, PeerPolicy};
+    let request = ObservePayloadScopeRequest {
+        header: Some(RequestHeader {
+            protocol_major: 1,
+            protocol_minor: 2,
+            request_id: vec![1; 16],
+            audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+            deadline_boottime_nanoseconds: 101,
+            maximum_response_bytes: 16384,
+            ..Default::default()
+        })
+        .into(),
+        fence: Some(AssignmentFence {
+            sandbox_id: assignment.sandbox().as_bytes().to_vec(),
+            incarnation_id: assignment.incarnation().as_bytes().to_vec(),
+            assignment_epoch: assignment.epoch().get(),
+            desired_generation: assignment.desired_generation().get(),
+            assignment_digest: assignment.digest().as_bytes().to_vec(),
+            ..Default::default()
+        })
+        .into(),
+        runtime_handle: aos_sandbox_protocol::semantics::host::runtime_handle_v1(
+            assignment.incarnation().as_bytes(),
+            assignment.epoch().get(),
+            assignment.digest().as_bytes(),
+        )
+        .to_vec(),
+        ..Default::default()
+    };
+    let checked = aos_sandbox_protocol::payload_scope::decode_payload_scope_request(
+        &request.encode_to_vec(),
+        PeerCredentials {
+            uid: 1,
+            gid: 1,
+            pid: Some(1),
+        },
+        PeerPolicy {
+            uid: 1,
+            gid: Some(1),
+            audience: Audience::AUDIENCE_NODE_CONTROLLER,
+        },
+        100,
+    )
+    .unwrap_or_else(|error| panic!("test scope request failed: {error}"));
+    let semantics =
+        aos_sandbox_protocol::semantics::payload_scope::canonical_payload_scope_semantics_v1(
+            &checked,
+        )
+        .unwrap_or_else(|error| panic!("test scope semantics failed: {error}"));
+    BrokerGrant::new(
+        semantics.verb(),
+        semantics.target(),
+        semantics.commitment(),
+        8192,
+        0,
+    )
+    .unwrap_or_else(|error| panic!("test scope grant failed: {error}"))
 }
 
 fn signed_ownership_lease(
@@ -456,9 +531,24 @@ pub(crate) fn descriptor_free_control_activation_fixture(
     lease_generation: u64,
     action: RuntimeAction,
 ) -> (AuthorityPublicationDraftV1, PreparedAuthorityPublicationV1) {
+    control_activation_fixture(lease_generation, action, false)
+}
+
+pub(crate) fn runtime_scope_activation_fixture(
+    lease_generation: u64,
+) -> (AuthorityPublicationDraftV1, PreparedAuthorityPublicationV1) {
+    control_activation_fixture(lease_generation, RuntimeAction::RUNTIME_ACTION_STOP, true)
+}
+
+fn control_activation_fixture(
+    lease_generation: u64,
+    action: RuntimeAction,
+    observe_scope: bool,
+) -> (AuthorityPublicationDraftV1, PreparedAuthorityPublicationV1) {
     let mut source = proposal(lease_generation, 190);
     let lease_signer = source.lease.signer().clone();
-    let (plan, semantics, body) = signed_host_control_plan(&source.manifest, lease_signer, action);
+    let (plan, semantics, body) =
+        signed_host_control_plan_with_scope(&source.manifest, lease_signer, action, observe_scope);
     source.templates = vec![
         BrokerDispatchTemplateV1::new(
             plan,

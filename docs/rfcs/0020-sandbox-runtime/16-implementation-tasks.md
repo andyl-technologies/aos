@@ -1922,3 +1922,39 @@ test, and seven doctests. Strict controller all-target/all-feature Clippy
 (`--no-deps`), warning-denied rustdoc, changed-file formatting, and diff checks
 pass. This increment does not qualify the full Host observation-to-session flow
 or rerun kernel/VM tests.
+
+### Protected current-runtime observation acquisition
+
+The controller now has a distinct acquisition API that accepts an authenticated
+holder selector, not caller-selected assignment, lease, plan, or cgroup facts.
+Under one exclusive journal borrow it resolves the current Bound holder and
+publication, recovers the exact activated ownership claim, cryptographically
+reverifies the lease and transaction receipt, and verifies the selected Host 1.2
+plan against independently configured trust anchors. The signed plan must grant
+the exact payload-scope query and its request bounds. The real authenticated
+Host exchange alone constructs the non-cloneable `CurrentRuntimeScope`.
+
+The scope retains the complete Host and payload observation. Its fixed deadline
+is bounded by conservative lease expiry (including skew and safety margin),
+signed-plan expiry, and a configured lifetime of at most 30 seconds. Rechecks
+repeat protected current selection, signatures, kernel observations, and clock
+checks without extending validity. They reject even same-holder renewal or ABA
+rebind through exact immutable revision comparison. Independent kernel BOOTTIME
+checks prevent stale adapter samples from extending an observation.
+
+Protected preflight regressions cover reopen, absent/unprotected state, holder
+and node mismatch, tombstones, renewal, same-holder revoke/rebind, missing Host
+grants, substituted trust keys, conservative expiry, clock rollback/divergence,
+and arithmetic overflow. They exercise real signatures and protected journal
+replay but intentionally do not construct a live Host proof from fixture clocks.
+
+Current-holder session issuance, durable issuance provenance, admission-time
+runtime refresh, and full Host-to-session kernel/VM qualification remain open.
+The existing trusted-administration issuance API is unchanged and is not
+silently promoted to current-runtime authorization. `SBX-PUB-02` remains
+unchecked; no durable record or wire encoding changes in this increment.
+
+The controller, core, local protocol, and ownership protocol default-feature
+suites pass 452 unit tests, one integration test, and twelve doctests. Strict
+controller all-target/all-feature Clippy (`--no-deps`), warning-denied rustdoc,
+changed-file formatting, and diff checks pass. No kernel/VM tests were rerun.

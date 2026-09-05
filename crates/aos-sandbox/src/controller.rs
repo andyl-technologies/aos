@@ -246,6 +246,71 @@ where
         PublisherPolicyStore::load(self.reconciler.journal_mut(), limits)
     }
 
+    /// Observes the protected current runtime of an authenticated holder.
+    ///
+    /// Trusted deployment supplies the Host connection, trust anchors, and
+    /// protected paired-clock adapter. The selector supplies no assignment,
+    /// lease, plan, or cgroup facts; these derive from current protected state
+    /// and an authenticated Host exchange under one exclusive journal borrow.
+    /// Success does not issue a channel or authorize publication.
+    ///
+    /// # Errors
+    ///
+    /// Rejects absent/revoked/substituted holders, corrupt current state,
+    /// invalid signatures or clocks, missing Host grants, broker denial, and
+    /// stale or substituted kernel execution observations.
+    #[cfg(target_os = "linux")]
+    pub fn observe_current_runtime<T>(
+        &mut self,
+        holder: crate::runtime_scope::RuntimeScopeHolder,
+        client: crate::runtime_scope::RuntimeScopeClient,
+        policy: crate::runtime_scope::CurrentRuntimeScopePolicy,
+        clock: &mut T,
+    ) -> Result<
+        crate::runtime_scope::CurrentRuntimeScope,
+        crate::runtime_scope::CurrentRuntimeScopeError,
+    >
+    where
+        T: FnMut() -> Result<
+            RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        crate::runtime_scope::acquire_current_runtime(
+            self.reconciler.journal_mut(),
+            holder,
+            client,
+            policy,
+            clock,
+        )
+    }
+
+    /// Rechecks an acquired runtime against current authority and its fixed deadline.
+    ///
+    /// The callback must read the same protected paired-clock adapter used at
+    /// acquisition. Renewal or any holder revision change requires a new Host
+    /// observation; successful rechecks never extend the original lifetime.
+    /// This read-only operation grants no endpoint or publication permission.
+    ///
+    /// # Errors
+    ///
+    /// Rejects current-state changes, signature or clock failures, elapsed
+    /// deadlines, and stale retained Host or payload executions.
+    #[cfg(target_os = "linux")]
+    pub fn recheck_current_runtime<T>(
+        &mut self,
+        scope: &crate::runtime_scope::CurrentRuntimeScope,
+        clock: &mut T,
+    ) -> Result<(), crate::runtime_scope::CurrentRuntimeScopeError>
+    where
+        T: FnMut() -> Result<
+            RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        scope.recheck(self.reconciler.journal_mut(), clock)
+    }
+
     /// Provisions a channel for an explicitly authorized local holder assignment.
     ///
     /// This trusted administration interface requires its caller to authorize

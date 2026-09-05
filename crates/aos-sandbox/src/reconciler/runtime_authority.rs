@@ -177,6 +177,17 @@ pub(crate) fn validate_runtime_authority_binding(
     .map_err(|_| ReconcilerError::CorruptLedger("runtime authority publication is corrupt"))
 }
 
+/// Recovers the exact activated claim after validating the binding's cross-links.
+pub(crate) fn runtime_authority_claim(
+    journal: &Journal,
+    binding: &RuntimeAuthorityBindingV1,
+) -> Result<OwnershipClaimV1, ReconcilerError> {
+    journal.ensure_protected_authority()?;
+    validate_runtime_authority_binding(journal, binding)?;
+    let gate = runtime_gate(journal, binding.operation())?;
+    Ok(gate_plan(&gate).claim().clone())
+}
+
 fn gate_plan(gate: &OwnershipGateStatusV1) -> &OwnershipGatePlanV1 {
     match gate {
         OwnershipGateStatusV1::Pending(plan) | OwnershipGateStatusV1::Activated { plan, .. } => {

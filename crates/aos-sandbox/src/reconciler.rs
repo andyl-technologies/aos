@@ -43,8 +43,8 @@ use crate::runtime_authority::{
     RuntimeAuthorityStore,
 };
 pub(crate) use runtime_authority::{
-    validate_runtime_authority_binding, validate_runtime_authority_operations,
-    validate_runtime_authority_pending,
+    runtime_authority_claim, validate_runtime_authority_binding,
+    validate_runtime_authority_operations, validate_runtime_authority_pending,
 };
 
 pub use effect::{

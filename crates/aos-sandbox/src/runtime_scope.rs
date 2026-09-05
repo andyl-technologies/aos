@@ -10,6 +10,11 @@
 //! checks reinforce exact process and subtree membership, but do not authorize
 //! a holder mapping, prove current assignment ownership, or grant an endpoint.
 //! Descriptor numbers and persisted identifiers never reconstruct this observation.
+//!
+//! [`CurrentRuntimeScope`] adds protected holder/publication selection, fresh
+//! signature verification, and a non-renewable paired-clock bound through the
+//! controller API. It retains this complete observation and still grants no
+//! endpoint or publication permission.
 
 use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt as _;
@@ -34,11 +39,17 @@ use aos_sandbox_protocol::{
 };
 use buffa::Message as _;
 
+mod current;
 #[cfg(all(test, feature = "kernel-tests"))]
 mod kernel_tests;
 #[cfg(test)]
 mod tests;
 mod transport;
+
+pub(crate) use current::acquire as acquire_current_runtime;
+pub use current::{
+    CurrentRuntimeScope, CurrentRuntimeScopeError, CurrentRuntimeScopePolicy, RuntimeScopeHolder,
+};
 
 const VERSION: ProtocolVersion = ProtocolVersion::new(1, 2);
 const METHOD: BrokerMethod = BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE;
