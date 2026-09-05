@@ -46,6 +46,7 @@ let
     "boost"
     "brotli"
     "bzip2"
+    "c-ares"
     "cmocka"
     "coreutils"
     "cpio"
@@ -78,6 +79,7 @@ let
     "lua"
     "lowdown"
     "lz4"
+    "lzip"
     "m4"
     "mandoc"
     "mpfr"
@@ -123,6 +125,7 @@ let
     "dbus"
     "dosfstools"
     "dtc"
+    "duktape"
     "e2fsprogs"
     "fakeroot"
     "fontconfig"
@@ -130,6 +133,8 @@ let
     "fstrm"
     "glib"
     "gnupg"
+    "gpgme"
+    "gsettings-desktop-schemas"
     "gnutls"
     "gptfdisk"
     "icu"
@@ -150,12 +155,14 @@ let
     "libidn2"
     "liblinear"
     "libmaxminddb"
+    "libmetalink"
     "libpciaccess"
     "libisoburn"
     "libisofs"
     "libksba"
     "libpcap"
     "libpsl"
+    "libproxy"
     "libqcow"
     "libslirp"
     "libsodium"
@@ -185,6 +192,19 @@ let
     "openssl"
     "pv"
     "perl"
+    "perl-b-cow"
+    "perl-clone"
+    "perl-encode-locale"
+    "perl-http-daemon"
+    "perl-http-date"
+    "perl-http-message"
+    "perl-io-html"
+    "perl-io-socket-ssl"
+    "perl-lwp-mediatypes"
+    "perl-mozilla-ca"
+    "perl-net-ssleay"
+    "perl-timedate"
+    "perl-uri"
     "pigz"
     "pixman"
     "protobuf"
@@ -202,6 +222,7 @@ let
     "tcpdump"
     "tpm2-tools"
     "tpm2-tss"
+    "wget"
     "xorg-stubs"
   ];
 
@@ -613,6 +634,7 @@ let
     "build-support/_generated-expose-config-module.nix" = "target-independent-source";
     "build-support/_github-upstream.nix" = "native-build-helper";
     "build-support/_manual-upstream.nix" = "native-build-helper";
+    "build-support/_perl-module.nix" = "native-build-helper";
     "build-support/_upstream.nix" = "native-build-helper";
     "darwin/_apple-libtapi.nix" = "linux-only-build-helper";
     "darwin/_darwin-binutils.nix" = "cross-build-helper";
