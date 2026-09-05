@@ -29,55 +29,6 @@ channel rollout policy.
   child JSON uses private, no-store caching and the same visibility checks as
   the page.
 
-## Scaling the release choice and the reader
-
-The first browser only offered an empty reader beside the tree and a flat
-release dropdown, neither of which holds up at hundreds of releases or deep
-option trees. Both were reworked on September 5, 2026.
-
-- The selector offers channel targets, the ten newest releases, and the current
-  selection in labelled groups, with channel pills above it. A typed jump field
-  accepts a version, commit, or channel name; the server resolves channel
-  names to their frontier and redirects to the exact version, so links never
-  carry a moving alias. A compact JSON index (versions and channel names only)
-  powers a typeahead over the field; the Releases directory lists everything.
-- The reader lists the current scope as a folder: immediate children with
-  representative type and description, or every documented option beneath the
-  scope as dotted paths with `view=all`. Both listings use the same 50-entry
-  bound and keyset cursors as the tree, and the flattened listing joins the
-  precomputed ancestry table so it stays indexed at any depth. Children carry
-  one representative variant's kind, type, and summary through bounded
-  correlated lookups on the variant index; no schema or reindex was needed.
-- With scripts, choosing a scope from the tree, a folder row, breadcrumbs, or
-  search swaps only the reader and breadcrumbs, marks and expands the chosen
-  branch, and pushes history; the tree keeps its expanded state. A filter box
-  narrows loaded tree labels and escalates to subtree search on Enter. Every
-  link still works as an ordinary page load without JavaScript.
-
-The native release harness grew from 49 to 71 checks: folder and flattened
-pagination over the 137-option subtree, dotted relative paths, the channel
-alias redirect, grouped selector contents, one-request in-place navigation with
-retained tree state, folder-row expansion, filter narrowing, history
-restoration, the typeahead choosing `stable`, and no-JavaScript folder pages.
-Eight desktop and mobile screenshots fit their viewport widths with no browser
-errors.
-
-## Channel page and settings prose
-
-The channel page led with a bulleted rollout list, a long sentence of facts,
-and a paragraph of bucket instructions, with the map hidden in a disclosure.
-It now opens with three facts (target release, minimum allowed release, share
-of buckets assigned), the rollout bar with colour swatches in its labels, one
-lookup form with a single help line, and a colour-coded 16×16 bucket map whose
-cells name their bucket and release on hover. The map shares the rollout bar's
-palette so the bar, its labels, and the map read as one legend.
-
-Settings pages carried an explanatory paragraph under most section titles.
-Forty-five of those paragraphs moved into the existing `?` help mark beside the
-title, so each panel opens with its kicker and title alone and the explanation
-stays one hover, focus, or click away. The Binary caches page also shortened
-its status lines to one clause each.
-
 ## Publication correctness
 
 The native seed now records measured file hashes, sizes, and strong storage
@@ -131,27 +82,6 @@ Earlier settings, CLI, and VM evidence remains separately dated in
 `hub-experience-audit.md` and `hub-cli-independence-audit.md`.
 
 ## Staging validation
-
-On 2026-09-05, staging was redeployed as
-`staging-1e023fce89353a1b8047487a5ac877c4c4d50e57` from the hermetic installer
-`/nix/store/vabjdv9jjfzvf37cxhpvw8mrqh0yv5nh-aos-hub-cloudflare-0.1.0` with the
-folder view and release picker. The existing database instance, bindings,
-custom domains, and OCI pull setting were preserved; recovery bookmarks were
-retained locally before and after deployment, and the post-deployment bookmark
-carries the new deployment identity. No reindex was required.
-
-Live checks over HTTP and in Chrome: the Docs page pinned `0.1.1-rc.220.9` and
-listed its 27 root children as a folder; `?release=stable` redirected (307) to
-that exact version and an unknown alias returned 404; the selector rendered the
-`stable` pill, Channels and Recent groups with eleven options, and the jump
-field with its index; choosing `aos` from the tree issued one page fetch,
-swapped the reader to 22 children, and marked and expanded the branch; the
-flattened view of that subtree returned 50 options with types and a
-continuation; the typeahead suggested `stable`; the mobile viewport fit; and
-Chrome reported no JavaScript or content-security errors. Packages rendered the
-same selector.
-
-### Earlier release-browser deployment
 
 On 2026-09-05, staging was deployed as
 `staging-28cd153e93103d739d2854dce1caa86079ae54a5` from the hermetic installer

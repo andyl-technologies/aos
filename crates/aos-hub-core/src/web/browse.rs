@@ -357,6 +357,12 @@ pub struct BrowseQuery {
     pub root: Option<String>,
     /// Documentation folder listing: `all` flattens every option beneath the root.
     pub view: Option<String>,
+    /// Release directory filter: first version field (the calendar year).
+    pub major: Option<String>,
+    /// Release directory filter: second version field (the monthly train).
+    pub minor: Option<String>,
+    /// Release directory filter: `stable`, `candidate`, `edge`, or `prerelease`.
+    pub status: Option<String>,
     /// Exact documented option or guide variant.
     pub entry: Option<String>,
     /// Search scope: release (default) or subtree.
@@ -463,6 +469,9 @@ impl BrowseQuery {
                 "doc_key" => out.doc_key = Some(value.into_owned()),
                 "root" => out.root = Some(value.into_owned()),
                 "view" => out.view = Some(value.into_owned()),
+                "major" => out.major = Some(value.into_owned()),
+                "minor" => out.minor = Some(value.into_owned()),
+                "status" => out.status = Some(value.into_owned()),
                 "entry" => out.entry = Some(value.into_owned()),
                 "scope" => out.scope = Some(value.into_owned()),
                 "variant_cursor" => out.variant_cursor = Some(value.into_owned()),
@@ -520,7 +529,7 @@ impl BrowseQuery {
     }
 
     /// The requested 1-based page, clamped to at least 1.
-    fn page_number(&self) -> usize {
+    pub(super) fn page_number(&self) -> usize {
         self.page.unwrap_or(1).max(1)
     }
 }
@@ -1562,7 +1571,7 @@ pub async fn releases(
         &context,
         &contents,
         &channels,
-        query.page_number(),
+        query,
         started,
         &session,
     ))

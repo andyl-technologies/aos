@@ -50,6 +50,14 @@ verification state. Public downloads may use a ready CDN or direct delivery
 route. Private downloads stay on the Hub origin so the signed-in browser can
 authorize the exact disk bytes with its session cookie.
 
+The Releases page opens with a support board: one tile per supported stable
+train (its `major.minor`, newest release, and the channels targeting it), the
+newest candidate and edge snapshots, and a count of end-of-life trains. Until a
+registry publishes an explicit support policy, the newest two stable trains and
+any channel-targeted train count as supported. Filters narrow the directory by
+major version, minor version, and status (stable, candidate, edge, or other
+prerelease).
+
 A channel page shows the target release, the minimum allowed release, and the
 share of the 256 rollout buckets assigned, then the rollout bar and a
 colour-coded bucket map. Enter a host's bucket to see which release it gets.
