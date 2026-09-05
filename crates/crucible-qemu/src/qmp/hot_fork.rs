@@ -37,9 +37,9 @@ pub use bh_timer_barrier::{
 pub(crate) use block_barrier::parse_hot_fork_block_barrier_state;
 pub use block_barrier::{
     QMP_HOT_FORK_BLOCK_BARRIER_COMMAND, QMP_HOT_FORK_BLOCK_BARRIER_SCHEMA_VERSION,
-    QMP_HOT_FORK_BLOCK_NODE_NAME_MAX_BYTES, QmpHotForkBlockBarrierState,
-    QmpHotForkBlockSnapshotBinding, QmpHotForkBlockSnapshotBindingError,
-    QmpHotForkBlockSnapshotRoot,
+    QMP_HOT_FORK_BLOCK_NODE_NAME_MAX_BYTES, QMP_HOT_FORK_BLOCK_SOURCE_PROOF_SCHEMA_VERSION,
+    QmpHotForkBlockBarrierState, QmpHotForkBlockSnapshotBinding,
+    QmpHotForkBlockSnapshotBindingError, QmpHotForkBlockSnapshotRoot, QmpHotForkBlockSourceProof,
 };
 pub(crate) use child_console::parse_hot_fork_child_console_state;
 pub use child_console::{

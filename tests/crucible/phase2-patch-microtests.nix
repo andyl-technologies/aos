@@ -36,6 +36,9 @@
   qemuNativeSourceSet = import ./phase6-qemu-native-source-set.nix {
     inherit pkgs qemuPackage;
   };
+  qemuSourceSetLifecycle = import ./phase6-qemu-source-set-lifecycle.nix {
+    inherit pkgs lib qemuPackage;
+  };
   qemuPluginFailLoud = import ./phase2-plugin-fail-loud.nix {inherit pkgs lib;};
   qemuRrQuantumIcount = import ./phase2-qemu-rr-quantum-icount.nix {inherit pkgs lib;};
   qemuDetIpi = import ./phase2-qemu-det-ipi.nix {inherit pkgs lib;};
@@ -3328,6 +3331,24 @@
           grep -Fxq 'vmstate_and_disk_bytes_preserved=true' "$live_result"
           grep -Fxq 'held_barrier_restoration_rejected=true' "$live_result"
           grep -Fxq 'whole_world_child_handoff=false' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0201-crucible-freeze-retained-template-native-sources.patch";
+      check = certifyExactPatch {
+        patchName = "0201-crucible-freeze-retained-template-native-sources.patch";
+        liveCheck = qemuSourceSetLifecycle;
+        evidenceName = "coordinator-frozen-sources-and-owned-restoration";
+        liveEvidence = ''
+          grep -Fxq 'retained_transactions=2' "$live_result"
+          grep -Fxq 'restored_vmstate_saves=2' "$live_result"
+          grep -Fxq 'suffix_icount=9000001' "$live_result"
+          grep -Fxq 'whole_world_child_handoff=false' "$live_result"
+          grep -Eq '^ok [0-9]+ /block-backend/hot_fork_snapshot_binding$' \
+            ${qemuSourceSetLifecycle}/block-backend-tests.tap
+          grep -Eq '^ok [0-9]+ /block-backend/hot_fork_empty_source_set_child$' \
+            ${qemuSourceSetLifecycle}/block-backend-tests.tap
         '';
       };
     }

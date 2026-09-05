@@ -3136,7 +3136,7 @@ resets the proven-empty callback state, reopens admission, and starts one fresh
 callback worker before returning. Any pre-fork acquisition failure rolls the
 outer RCU barrier back.
 
-Template contract version 24, resource-stage version 13, and fork-result schema
+Template contract version 25, resource-stage version 13, and fork-result schema
 version 2 expose the composed transaction through the public
 `crucible-hot-fork` QMP command. Its request binds the exact fourteen template,
 resource, process, runtime, descriptor, monitor, and branch-private console

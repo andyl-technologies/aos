@@ -1154,10 +1154,11 @@ in
               "snapshot-graph-mutation-generation",
               "snapshot-owner-thread-id",
               "snapshot-roots",
+              "snapshot-sources",
               "writable-backends",
               "writable-rooted-backends"
             ] and
-            $report."schema-version" == 3 and
+            $report."schema-version" == 4 and
             $report.generation == 0 and
             $report."owner-thread-id" == 0 and
             ($report."graph-barrier-generation" | type) == "number" and
@@ -1176,6 +1177,14 @@ in
             $report."snapshot-bound" == false and
             $report."snapshot-complete" == false and
             $report."snapshot-roots" == [] and
+            $report."snapshot-sources" == {
+              "schema-version": 1,
+              "frozen": false,
+              "root-count": 0,
+              "node-count": 0,
+              "originally-writable-root-count": 0,
+              "originally-writable-backend-count": 0
+            } and
             $report.complete == true and
             $report."backend-count" == $inventory_report."backend-count" and
             $report."rooted-backends" == $inventory_report."rooted-backends" and
@@ -1525,7 +1534,7 @@ in
               "schema-version",
               "transaction-active"
             ] and
-            $report."schema-version" == 24 and
+            $report."schema-version" == 25 and
             $report.generation == 0 and
             $report.outcome == "idle" and
             $report."transaction-active" == false and
@@ -1988,7 +1997,7 @@ in
           block_backend_inventory_stable=true
           block_backends_context_bound=true
           block_backends_vmstate_observed=true
-          block_barrier_schema_version=3
+          block_barrier_schema_version=4
           block_barrier_released_stable=true
           block_barrier_hold_without_exact_boundary_rejected=true
           block_graph_writer_admission_retained=true
@@ -2033,7 +2042,7 @@ in
           plugin_endpoint_two_layer_release=true
           plugin_endpoint_disposition_complete=false
           plugin_endpoint_readiness_proof_acknowledged=false
-          template_coordinator_schema_version=24
+          template_coordinator_schema_version=25
           plugin_child_plan_report_bound=true
           plugin_child_resource_plan_report_bound=true
           child_resource_contribution_composition=true

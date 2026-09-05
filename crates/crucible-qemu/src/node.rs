@@ -1469,6 +1469,9 @@ impl QemuNode {
 
     /// Aborts QEMU's retained hot-fork template transaction.
     ///
+    /// A draining response leaves restoration pending. The owner must keep the
+    /// source stopped and retry until `rollback_complete()` is true.
+    ///
     /// # Errors
     ///
     /// Returns [`QemuNodeChannelError`] when QEMU cannot roll back every

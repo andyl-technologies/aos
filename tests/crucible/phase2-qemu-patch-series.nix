@@ -1399,6 +1399,13 @@
       enforces = "HFORK-4,HFORK-8,HFORK-22";
       capability = "a process-local source-set owner authenticates the complete explicit native root, node, backend, and consumer closure before freezing; it preserves already-read-only access, retains original writable-root provenance independently of live permissions, and owns partial-failure restoration; unknown or extra resources and inherited parent tokens fail closed; native tests cover VMState and disk preservation, read-only restoration, held barriers, closure changes, non-backend file consumers, and partial recovery; production coordinator integration and child-private graph installation remain open";
     }
+    {
+      file = "0201-crucible-freeze-retained-template-native-sources.patch";
+      catalogName = "crucible-hot-fork-template-native-sources";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-22";
+      capability = "the retained-template coordinator freezes a complete native source set outside block barriers, then rebinds immutable roots using original backend write provenance and schema-versioned source proof; abort restores and frees sources only after barrier release and retains partial recovery; native tests cover frozen binding and empty-child container disposal, while a live VMState flight verifies two prepare/abort cycles and resumed saves; nonempty native graph forks remain rejected until child-private graph installation is implemented";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

@@ -875,6 +875,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0201-crucible-freeze-retained-template-native-sources.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =
