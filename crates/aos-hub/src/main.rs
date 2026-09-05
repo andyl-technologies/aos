@@ -226,6 +226,10 @@ enum WorkerCommand {
     /// Create the instance root admin against a deployed Worker's seal-gated
     /// `HubDb` bootstrap endpoint.
     BootstrapRoot(BootstrapRootArgs),
+    /// Capture a HubDb SQLite PITR bookmark for the active database instance.
+    BackupBookmark(BackupBookmarkArgs),
+    /// Schedule a confirmed HubDb SQLite PITR restore on its next session.
+    RestoreBookmark(RestoreBookmarkArgs),
     /// Authenticate with the hosting provider (browser OAuth, as an alternative
     /// to a provider API token in the environment).
     Login(ProviderOpt),
@@ -261,6 +265,40 @@ struct BootstrapRootArgs {
     #[arg(long)]
     password_stdin: bool,
     /// The deployment's `HUB_SEAL_KEY` (falls back to the `HUB_SEAL_KEY` env var).
+    #[arg(long)]
+    seal_key: Option<String>,
+}
+
+// Options for a seal-authenticated HubDb recovery bookmark.
+#[derive(Args)]
+struct BackupBookmarkArgs {
+    /// Base URL of the deployed Worker.
+    #[arg(long)]
+    url: String,
+    /// Approximate UTC Unix timestamp in milliseconds; omit for current state.
+    #[arg(long)]
+    timestamp_ms: Option<f64>,
+    /// The deployment's HUB_SEAL_KEY (falls back to the environment).
+    #[arg(long)]
+    seal_key: Option<String>,
+}
+
+// Options for scheduling a destructive HubDb point-in-time restore.
+#[derive(Args)]
+struct RestoreBookmarkArgs {
+    /// Base URL of the deployed Worker.
+    #[arg(long)]
+    url: String,
+    /// Exact Cloudflare PITR bookmark selected from retained evidence.
+    #[arg(long)]
+    bookmark: String,
+    /// Confirm the live HUB_DATABASE_INSTANCE value.
+    #[arg(long)]
+    confirm_database_instance: String,
+    /// Confirm the live deployment identity.
+    #[arg(long)]
+    confirm_deployment_id: String,
+    /// The deployment's HUB_SEAL_KEY (falls back to the environment).
     #[arg(long)]
     seal_key: Option<String>,
 }
@@ -1292,6 +1330,34 @@ async fn run_worker_command(_root: &Option<PathBuf>, command: WorkerCommand) -> 
         println!("root admin '{}' ready (user id {id})", args.email);
         return Ok(());
     }
+    if let WorkerCommand::BackupBookmark(args) = &command {
+        let seal = args
+            .seal_key
+            .clone()
+            .or_else(|| std::env::var("HUB_SEAL_KEY").ok())
+            .context("no seal key: pass --seal-key or set HUB_SEAL_KEY (the deploy value)")?;
+        let bookmark =
+            cloudflare::recovery_bookmark_remote(&args.url, &seal, args.timestamp_ms).await?;
+        println!("{}", serde_json::to_string_pretty(&bookmark)?);
+        return Ok(());
+    }
+    if let WorkerCommand::RestoreBookmark(args) = &command {
+        let seal = args
+            .seal_key
+            .clone()
+            .or_else(|| std::env::var("HUB_SEAL_KEY").ok())
+            .context("no seal key: pass --seal-key or set HUB_SEAL_KEY (the deploy value)")?;
+        let restore = cloudflare::schedule_recovery_restore_remote(
+            &args.url,
+            &seal,
+            &args.bookmark,
+            &args.confirm_database_instance,
+            &args.confirm_deployment_id,
+        )
+        .await?;
+        println!("{}", serde_json::to_string_pretty(&restore)?);
+        return Ok(());
+    }
 
     let provider = match &command {
         WorkerCommand::Deploy(a) | WorkerCommand::Provision(a) | WorkerCommand::Install(a) => {
@@ -1299,7 +1365,9 @@ async fn run_worker_command(_root: &Option<PathBuf>, command: WorkerCommand) -> 
         }
         WorkerCommand::Login(p) | WorkerCommand::Logout(p) | WorkerCommand::Whoami(p) => p.provider,
         // Handled above with an early return.
-        WorkerCommand::BootstrapRoot(_) => Provider::Cloudflare,
+        WorkerCommand::BootstrapRoot(_)
+        | WorkerCommand::BackupBookmark(_)
+        | WorkerCommand::RestoreBookmark(_) => Provider::Cloudflare,
     };
     // Only Cloudflare is implemented; the match documents the extension point
     // for future providers (each would resolve its own assets + auth).
@@ -1313,7 +1381,9 @@ async fn run_worker_command(_root: &Option<PathBuf>, command: WorkerCommand) -> 
         WorkerCommand::Logout(_) => cloudflare::logout(&assets).await?,
         WorkerCommand::Whoami(_) => cloudflare::whoami(&assets).await?,
         // Handled by the early return at the top of this function.
-        WorkerCommand::BootstrapRoot(_) => {}
+        WorkerCommand::BootstrapRoot(_)
+        | WorkerCommand::BackupBookmark(_)
+        | WorkerCommand::RestoreBookmark(_) => {}
         WorkerCommand::Provision(args) => {
             let cfg = provision_worker(&assets, args).await?;
             println!("provisioned: R2 {}, KV id {}", cfg.bucket, cfg.kv_id);
@@ -1794,9 +1864,64 @@ mod production_vm_coverage {
     use std::fs;
     use std::path::Path;
 
-    use clap::{Command as ClapCommand, CommandFactory as _};
+    use clap::{Command as ClapCommand, CommandFactory as _, Parser as _};
 
-    use super::Cli;
+    use super::{Cli, Command, WorkerCommand};
+
+    #[test]
+    fn parses_closed_worker_recovery_commands() {
+        let backup = Cli::try_parse_from([
+            "aos-hub",
+            "worker",
+            "backup-bookmark",
+            "--url",
+            "https://aos.andyl.org",
+            "--timestamp-ms",
+            "1788541200000",
+        ])
+        .expect("backup command must parse");
+        let Command::Worker {
+            command: WorkerCommand::BackupBookmark(backup),
+        } = backup.command
+        else {
+            panic!("expected backup-bookmark command");
+        };
+        assert_eq!(backup.timestamp_ms, Some(1_788_541_200_000.0));
+
+        let restore = Cli::try_parse_from([
+            "aos-hub",
+            "worker",
+            "restore-bookmark",
+            "--url",
+            "https://aos.andyl.org",
+            "--bookmark",
+            "0000007b-0000b26e",
+            "--confirm-database-instance",
+            "hub-v2",
+            "--confirm-deployment-id",
+            "deployment-1",
+        ])
+        .expect("restore command must parse");
+        let Command::Worker {
+            command: WorkerCommand::RestoreBookmark(restore),
+        } = restore.command
+        else {
+            panic!("expected restore-bookmark command");
+        };
+        assert_eq!(restore.confirm_database_instance, "hub-v2");
+        assert_eq!(restore.confirm_deployment_id, "deployment-1");
+
+        assert!(Cli::try_parse_from([
+            "aos-hub",
+            "worker",
+            "restore-bookmark",
+            "--url",
+            "https://aos.andyl.org",
+            "--bookmark",
+            "0000007b-0000b26e",
+        ])
+        .is_err());
+    }
 
     fn collect_native_leaves(
         command: &ClapCommand,

@@ -735,7 +735,7 @@ mod tests {
             schema_version: "aos.release.signing-request/v1".to_owned(),
             request_id: "request-1".to_owned(),
             nonce: "00".repeat(32),
-            registry: aos_release::CANONICAL_REGISTRY.to_owned(),
+            registry: aos_release::registry::MAIN_REGISTRY.to_owned(),
             release_id: "release-1".to_owned(),
             plan_digest: Sha256Digest::of_bytes("plan"),
             manifest_digest: None,

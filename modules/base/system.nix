@@ -14,6 +14,15 @@
   ...
 }: let
   cfg = config.aos.system;
+  releaseOsMetadata = lib.optionalString config.aos.release.enabled (
+    lib.concatStringsSep "\n" [
+      "AOS_RELEASE_TIER=${config.aos.release.tier}"
+      "AOS_REGISTRY=${config.aos.release.registry}"
+      "AOS_CHANNEL=${config.aos.release.channel}"
+      "AOS_REGISTRY_ROOT_EPOCH=${toString config.aos.release.rootEpoch}"
+    ]
+    + "\n"
+  );
 
   # `script` is Python source — run by the AOS test driver
   # (pkgs/tools/aos/aos-test-driver) against the guest agent. Each
@@ -246,6 +255,7 @@ in {
         AOS_MODULE_ABI=${toString cfg.moduleAbi}
         AOS_CONFIG_INPUT_ABI=${toString cfg.configInputAbi}
         AOS_BASELIB_DIGEST=sha256:${builtins.hashString "sha256" (toString config.aos.config.evalAtBoot.baseLib)}
+        ${releaseOsMetadata}
       '';
     };
 

@@ -76,6 +76,7 @@
       else "no"
     }
     PrintMotd no
+    ${lib.optionalString (cfg.banner != null) "Banner ${cfg.banner}"}
     PrintLastLog yes
     TCPKeepAlive yes
     UseDNS no
@@ -103,6 +104,12 @@
   '';
 in {
   options.aos.services.ssh = {
+    banner = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Absolute pre-authentication banner file, or null to disable it.";
+    };
+
     ## Enable the OpenSSH server (sshd).
     ##
     ## # Examples

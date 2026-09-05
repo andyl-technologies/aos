@@ -148,6 +148,8 @@ pub mod handlers;
 pub mod indexer;
 // Pure (no `worker`/wasm dependency) DO-SQLite placeholder translation, so it
 // is unit-tested on the native target too — see [`placeholder`].
+#[cfg(target_arch = "wasm32")]
+pub(crate) mod pitr;
 pub mod placeholder;
 pub(crate) mod r2_adapter;
 #[cfg(target_arch = "wasm32")]
@@ -2644,10 +2646,34 @@ mod entry {
             Option<Arc<aos_hub_core::delivery_attestation::DeliveryAttestationVerifier>>,
     }
 
+    fn recovery_identity(env: &Env) -> Result<(String, String)> {
+        let database_instance = env
+            .var("HUB_DATABASE_INSTANCE")
+            .map_err(|_| {
+                worker::Error::RustError(
+                    "HUB_DATABASE_INSTANCE is required for recovery".to_owned(),
+                )
+            })?
+            .to_string();
+        let deployment_id = env
+            .var(HUB_DEPLOYMENT_ID)
+            .map_err(|_| {
+                worker::Error::RustError("HUB_DEPLOYMENT_ID is required for recovery".to_owned())
+            })?
+            .to_string();
+        if database_instance.trim().is_empty() || deployment_id.trim().is_empty() {
+            return Err(worker::Error::RustError(
+                "HubDb recovery requires non-empty database and deployment identities".to_owned(),
+            ));
+        }
+        Ok((database_instance, deployment_id))
+    }
+
     #[durable_object]
     pub struct HubDb {
         state: State,
         env: Env,
+        pitr: crate::pitr::DurableObjectPitr,
         migrated: Mutex<bool>,
         #[cfg(not(feature = "do-e2e"))]
         request_runtime: Mutex<Option<HubRequestRuntime>>,
@@ -2655,9 +2681,13 @@ mod entry {
 
     impl DurableObject for HubDb {
         fn new(state: State, env: Env) -> Self {
+            let raw_state = state._inner();
+            let pitr = crate::pitr::DurableObjectPitr::new(raw_state.storage().ok());
+            let state = State::from(raw_state);
             HubDb {
                 state,
                 env,
+                pitr,
                 migrated: Mutex::new(false),
                 #[cfg(not(feature = "do-e2e"))]
                 request_runtime: Mutex::new(None),
@@ -2669,8 +2699,20 @@ mod entry {
             // Worker, so they must install their own tracing subscriber.
             crate::tracinglog::init();
 
-            if let Err(err) = self.ensure_migrated().await {
-                return Response::error(format!("hubdb migrate: {err:#}"), 500);
+            // Recovery must remain available when the current schema migration
+            // fails. These exact POST routes still require the seal and live
+            // deployment identity below, and never access the relational router.
+            let recovery_request = req.method() == Method::Post
+                && req.url().is_ok_and(|url| {
+                    matches!(
+                        url.path(),
+                        "/_admin/recovery/bookmark" | "/_admin/recovery/restore"
+                    )
+                });
+            if !recovery_request {
+                if let Err(err) = self.ensure_migrated().await {
+                    return Response::error(format!("hubdb migrate: {err:#}"), 500);
+                }
             }
             // Live-workerd bootstrap (`do-e2e` only, never production). This
             // endpoint installs disposable topology and authentication state;
@@ -2713,7 +2755,9 @@ mod entry {
                     && (path == "/_internal/cron"
                         || path == "/_internal/job"
                         || path == crate::remotebackend::REMOTE_SQL_PATH
-                        || path == "/_admin/bootstrap-root")
+                        || path == "/_admin/bootstrap-root"
+                        || path == "/_admin/recovery/bookmark"
+                        || path == "/_admin/recovery/restore")
                 {
                     let want = self
                         .env
@@ -2783,6 +2827,111 @@ mod entry {
                             ),
                             Err(err) => Response::error(format!("bootstrap-root: {err:#}"), 500),
                         };
+                    }
+                    if path == "/_admin/recovery/bookmark" {
+                        #[derive(serde::Deserialize)]
+                        #[serde(deny_unknown_fields)]
+                        struct BookmarkRequest {
+                            timestamp_ms: Option<f64>,
+                        }
+                        let body: BookmarkRequest = match req.json().await {
+                            Ok(body) => body,
+                            Err(err) => {
+                                return Response::error(
+                                    format!("recovery bookmark decode: {err}"),
+                                    400,
+                                );
+                            }
+                        };
+                        if body
+                            .timestamp_ms
+                            .is_some_and(|timestamp| !timestamp.is_finite() || timestamp < 0.0)
+                        {
+                            return Response::error(
+                                "recovery timestamp must be finite and non-negative",
+                                400,
+                            );
+                        }
+                        let (database_instance, deployment_id) = match recovery_identity(&self.env)
+                        {
+                            Ok(identity) => identity,
+                            Err(error) => {
+                                return Response::error(format!("recovery identity: {error}"), 500);
+                            }
+                        };
+                        let bookmark = match self.pitr.bookmark(body.timestamp_ms).await {
+                            Ok(bookmark) => bookmark,
+                            Err(error) => {
+                                return Response::error(format!("recovery bookmark: {error}"), 500);
+                            }
+                        };
+                        return Response::from_json(&serde_json::json!({
+                            "schema_version": "aos.hub.worker-recovery-bookmark/v1",
+                            "database_instance": database_instance,
+                            "deployment_id": deployment_id,
+                            "bookmark": bookmark,
+                            "requested_timestamp_ms": body.timestamp_ms,
+                            "captured_at_ms": worker::Date::now().as_millis(),
+                        }));
+                    }
+                    if path == "/_admin/recovery/restore" {
+                        #[derive(serde::Deserialize)]
+                        #[serde(deny_unknown_fields)]
+                        struct RestoreRequest {
+                            bookmark: String,
+                            confirm_database_instance: String,
+                            confirm_deployment_id: String,
+                        }
+                        let body: RestoreRequest = match req.json().await {
+                            Ok(body) => body,
+                            Err(err) => {
+                                return Response::error(
+                                    format!("recovery restore decode: {err}"),
+                                    400,
+                                );
+                            }
+                        };
+                        let (database_instance, deployment_id) = match recovery_identity(&self.env)
+                        {
+                            Ok(identity) => identity,
+                            Err(error) => {
+                                return Response::error(format!("recovery identity: {error}"), 500);
+                            }
+                        };
+                        if body.confirm_database_instance != database_instance
+                            || body.confirm_deployment_id != deployment_id
+                        {
+                            return Response::error(
+                                "restore confirmation differs from the live deployment",
+                                409,
+                            );
+                        }
+                        if body.bookmark.is_empty()
+                            || body.bookmark.len() > 4096
+                            || body
+                                .bookmark
+                                .chars()
+                                .any(|character| character.is_control())
+                        {
+                            return Response::error("invalid recovery bookmark", 400);
+                        }
+                        let undo_bookmark = match self.pitr.schedule_restore(&body.bookmark).await {
+                            Ok(bookmark) => bookmark,
+                            Err(error) => {
+                                return Response::error(
+                                    format!("schedule recovery restore: {error}"),
+                                    500,
+                                );
+                            }
+                        };
+                        return Response::from_json(&serde_json::json!({
+                            "schema_version": "aos.hub.worker-recovery-restore/v1",
+                            "database_instance": database_instance,
+                            "deployment_id": deployment_id,
+                            "restore_bookmark": body.bookmark,
+                            "undo_bookmark": undo_bookmark,
+                            "restart_required": true,
+                        }));
                     }
                     let envelope: aos_hub_core::jobs::JobEnvelope = match req.json().await {
                         Ok(envelope) => envelope,
