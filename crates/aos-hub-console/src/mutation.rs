@@ -18,7 +18,7 @@ use leptos::prelude::*;
 
 #[cfg(target_arch = "wasm32")]
 #[derive(Clone, Copy, PartialEq)]
-struct WorkflowTaskScope {
+pub(crate) struct WorkflowTaskScope {
     handles: StoredValue<Option<Vec<(u32, AbortHandle)>>>,
 }
 
@@ -40,7 +40,8 @@ impl WorkflowTaskScope {
         }
     }
 
-    fn spawn(self, task: impl Future<Output = ()> + 'static) {
+    /// Spawns one task within this component-owned cancellation scope.
+    pub(crate) fn spawn(self, task: impl Future<Output = ()> + 'static) {
         let task_id = WORKFLOW_TASK_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let (handle, registration) = AbortHandle::new_pair();
         let registered = self.handles.try_update_value(|handles| {
@@ -62,6 +63,25 @@ impl WorkflowTaskScope {
             });
         });
     }
+
+    fn close(self) {
+        let handles = self
+            .handles
+            .try_update_value(Option::take)
+            .flatten()
+            .unwrap_or_default();
+        for (_, handle) in handles {
+            handle.abort();
+        }
+    }
+}
+
+/// Creates an async task scope owned by the component currently mounting.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn scoped_workflow_tasks() -> WorkflowTaskScope {
+    let scope = WorkflowTaskScope::new();
+    on_cleanup(move || scope.close());
+    scope
 }
 
 /// Installs the async task scope owned by one mounted resource workflow.
@@ -81,14 +101,7 @@ pub(crate) fn install_workflow_task_scope() {
                 *active = None;
             }
         });
-        let handles = scope
-            .handles
-            .try_update_value(Option::take)
-            .flatten()
-            .unwrap_or_default();
-        for (_, handle) in handles {
-            handle.abort();
-        }
+        scope.close();
     });
 }
 
