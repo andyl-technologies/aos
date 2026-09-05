@@ -486,6 +486,8 @@ all six stops, pending-work overlap, exact retained retry, fresh-process restore
 matching network evidence, and orderly exit. A diagnostic-only flight before
 the startup change also passed, so these results do not establish the cause of
 the earlier intermittent first-stop failure. The complete packaged network
+gate also passes, including the production two-VM hostless link, loss branch,
+exact restore, and packet/fault-decision continuation. The broader patch-series
 gate and the separate longer-run acknowledgement/cleanup investigation remain
 open.
 
