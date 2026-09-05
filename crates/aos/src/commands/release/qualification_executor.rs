@@ -174,19 +174,31 @@ async fn execute(args: &ReleaseQualificationExecuteArgs) -> Result<()> {
             || observation
                 .checks
                 .values()
-                .any(|check| !check.passed || check.detail.trim().is_empty())
+                .any(|check| check.detail.trim().is_empty())
             || observation.predecessor != case.predecessor
         {
             bail!("scenario observations differ from the configured executor or required case");
         }
-        let environment = response
-            .report
-            .get("environment")
-            .context("scenario report lacks actual environment inventory")?;
-        if observation.environment_digest
-            != Sha256Digest::of_bytes(&canonical::canonical_json(environment)?)
-        {
-            bail!("scenario environment digest differs from its recorded inventory");
+        if let Some(assessment) = &observation.assessment {
+            if response.report.get("assessment") != Some(&serde_json::to_value(assessment)?) {
+                bail!("scenario assessment differs from its retained report");
+            }
+        }
+        if observation.environment.is_some() || observation.assessment.is_none() {
+            let environment = response
+                .report
+                .get("environment")
+                .context("scenario report lacks actual environment inventory")?;
+            if observation.environment_digest
+                != Sha256Digest::of_bytes(&canonical::canonical_json(environment)?)
+            {
+                bail!("scenario environment digest differs from its recorded inventory");
+            }
+            if let Some(inventory) = &observation.environment {
+                if &serde_json::to_value(inventory)? != environment {
+                    bail!("structured execution inventory differs from the retained report");
+                }
+            }
         }
         Result::<Vec<u8>>::Ok(bytes)
     };

@@ -1074,7 +1074,10 @@ in {
   # Pure, fail-closed release eligibility data. The release coordinator reads
   # this value with strict JSON evaluation before resolving any derivation.
   releasePackageInventory = pkgs.platformSupport.releaseInventory pkgs.allPackageNames;
-  releaseQualification = import ./qualification {packageNames = pkgs.allPackageNames;};
+  releaseQualification = import ./qualification {
+    inherit lib;
+    packageNames = pkgs.allPackageNames;
+  };
   releasePackageDerivations =
     pkgs.platformSupport.releaseDerivations
     hostPlatform.system

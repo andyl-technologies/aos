@@ -221,20 +221,13 @@ pub(super) fn verify_admission(
         bail!("qualification observation digest mismatch");
     }
     let parsed: QualificationReportV1 = canonical::from_slice(&report, "hold-point observations")?;
-    if parsed.schema_version != "aos.release.qualification-report/v2"
-        || parsed.phase != Some(phase)
+    if parsed.phase != Some(phase)
         || parsed.manifest_digest != manifest_digest
         || parsed.staging_receipt_digest != production_digest
     {
         bail!("qualification report scope mismatch");
     }
-    aos_release::qualification_evidence::validate_observations(
-        plan,
-        manifest,
-        phase,
-        &parsed.evidence,
-        &now,
-    )?;
+    parsed.validate_phase(plan, manifest, phase, &now)?;
     verify_report_files(directory, &parsed)?;
     verify_reviews(plan, &report, &review_paths(directory)?, manifest_keys)?;
     Ok(Some(Sha256Digest::of_bytes(&signed)))
@@ -266,13 +259,7 @@ pub(super) fn verify_staging_report(
         bail!("qualification signer differs from the frozen plan");
     }
     let parsed: QualificationReportV1 = canonical::from_slice(report, "staging report")?;
-    aos_release::qualification_evidence::validate_observations(
-        plan,
-        manifest,
-        QualificationPhase::Staging,
-        &parsed.evidence,
-        &now,
-    )?;
+    parsed.validate_phase(plan, manifest, QualificationPhase::Staging, &now)?;
     let directory = report_path
         .parent()
         .context("qualification report lacks parent directory")?;

@@ -4,13 +4,13 @@ use std::io::Write as _;
 
 use anyhow::{Context as _, Result, bail};
 use aos_core::{nix::NixRunner, output::Printer};
-use aos_release::qualification::{CONTRACT_V1, QualificationContractV1};
-use aos_release::{canonical, digest::Sha256Digest, plan::ReleaseClass};
+use aos_release::qualification::QualificationContract;
+use aos_release::{canonical, plan::ReleaseClass};
 
 use crate::cli::ReleaseContractArgs;
 
 pub(super) fn run(args: &ReleaseContractArgs, nix: &NixRunner, printer: &Printer) -> Result<()> {
-    let contract: QualificationContractV1 = match &args.input {
+    let contract: QualificationContract = match &args.input {
         Some(path) => canonical::from_slice(
             &super::capture::control_file(path, "qualification contract")?,
             "qualification contract",
@@ -39,7 +39,7 @@ pub(super) fn run(args: &ReleaseContractArgs, nix: &NixRunner, printer: &Printer
             .persist_noclobber(path)
             .map_err(|error| error.error)?;
     }
-    let digest = Sha256Digest::of_canonical(CONTRACT_V1, &contract)?;
+    let digest = contract.digest()?;
     if printer.json_if_active(&serde_json::json!({
         "schema_version": "aos.release.contract-result/v1",
         "contract": contract,
@@ -61,6 +61,26 @@ pub(super) fn run(args: &ReleaseContractArgs, nix: &NixRunner, printer: &Printer
         for check in &requirement.checks {
             println!("  [ ] {check}");
         }
+        for (name, bound) in &requirement.measurements {
+            match bound.maximum {
+                Some(maximum) => println!("  {name}: {}..={maximum}", bound.minimum),
+                None => println!("  {name}: >= {}", bound.minimum),
+            }
+        }
+    }
+    for claim in &contract.claims {
+        println!(
+            "{:?}: {} on {} requires {:?} ({})",
+            claim.phase,
+            claim.id,
+            claim.target,
+            claim.minimum_assurance,
+            if claim.blocks_release {
+                "release-blocking"
+            } else {
+                "advisory"
+            }
+        );
     }
     println!(
         "Qualification status: not evaluated. This contract describes requirements, not passing evidence."

@@ -272,7 +272,7 @@ fn verify_file_closure(envelope: &ManifestEnvelopeV1, files: &[CapturedFile]) ->
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use base64::Engine as _;
     use ed25519_dalek::{Signer as _, SigningKey};
     use std::collections::BTreeMap;
@@ -694,14 +694,14 @@ mod tests {
         })
     }
 
-    fn qualification_fixture() -> anyhow::Result<(ReleasePlanV1, crate::manifest::ReleaseManifestV1)>
-    {
+    pub(crate) fn qualification_fixture()
+    -> anyhow::Result<(ReleasePlanV1, crate::manifest::ReleaseManifestV1)> {
         let fixture = release_fixture()?;
         let mut plan: ReleasePlanV1 = canonical::from_slice(&fixture.plan, "fixture plan")?;
         let envelope: ManifestEnvelopeV1 =
             canonical::from_slice(&fixture.envelope, "fixture manifest")?;
         let mut manifest = envelope.payload;
-        let mut policy: crate::qualification::QualificationContractV1 = canonical::from_slice(
+        let mut policy: crate::qualification::QualificationContract = canonical::from_slice(
             include_bytes!("../tests/fixtures/qualification-contract.json"),
             "contract",
         )?;
@@ -722,8 +722,7 @@ mod tests {
                 manifest_digest: digest("predecessor"),
             });
         plan.gates = policy.gates(plan.release_class)?;
-        plan.public_evidence_policy_digest =
-            Sha256Digest::of_canonical(crate::qualification::CONTRACT_V1, &policy)?;
+        plan.public_evidence_policy_digest = policy.digest()?;
         plan.qualification = Some(policy);
         for platform in Platform::LINUX {
             let (mut value, _) = artifact(
@@ -744,11 +743,21 @@ mod tests {
             Vec::new(),
         )?;
         manifest.artifacts.push(value);
+        let metadata =
+            crate::canonical::canonical_json(&crate::qualification_fixture::metadata()?)?;
+        for artifact in manifest
+            .artifacts
+            .iter_mut()
+            .filter(|artifact| artifact.kind == ArtifactKind::ImageMetadata)
+        {
+            artifact.sha256 = Sha256Digest::of_bytes(&metadata);
+            artifact.size_bytes = u64::try_from(metadata.len())?;
+        }
         plan.validate()?;
         Ok((plan, manifest))
     }
 
-    fn observations(
+    pub(crate) fn observations(
         plan: &ReleasePlanV1,
         manifest: &crate::manifest::ReleaseManifestV1,
         phase: crate::qualification::QualificationPhase,
@@ -756,6 +765,33 @@ mod tests {
         crate::qualification_evidence::cases(plan, manifest, phase)?
             .into_iter()
             .map(|case| {
+                let assessment_only = case.claim.as_ref().is_some_and(|claim| {
+                    claim.minimum_assurance == crate::qualification::claims::AssuranceLevel::A1
+                });
+                let assessment = crate::qualification_fixture::assessment(&case)?;
+                let environment = if assessment_only {
+                    None
+                } else {
+                    crate::qualification_fixture::environment(&case)?
+                };
+                let capabilities = crate::qualification_fixture::capabilities(&case)?;
+                let environment_digest = environment
+                    .as_ref()
+                    .map(|environment| environment.digest())
+                    .transpose()?
+                    .or_else(|| {
+                        assessment
+                            .as_ref()
+                            .map(|assessment| assessment.scope_digest)
+                    })
+                    .unwrap_or(digest("environment"));
+                let mut operations = crate::qualification_fixture::measurements();
+                if case.target.is_none() {
+                    operations = BTreeMap::from([("requests".into(), 1)]);
+                }
+                if assessment_only {
+                    operations.clear();
+                }
                 Ok(EvidenceRecord {
                     id: format!("qualification/{}", case.id),
                     policy_id: case.requirement_id.clone(),
@@ -769,9 +805,12 @@ mod tests {
                     started_at: "2026-09-01T00:00:00Z".into(),
                     finished_at: "2026-09-01T00:00:01Z".into(),
                     qualification: Some(crate::qualification_evidence::QualificationObservation {
+                        environment,
+                        capabilities,
+                        assessment,
                         case_digest: case.digest()?,
                         executor_digest: digest("executor"),
-                        environment_digest: digest("environment"),
+                        environment_digest,
                         checks: case
                             .checks
                             .iter()
@@ -785,8 +824,8 @@ mod tests {
                                 )
                             })
                             .collect(),
-                        observed_seconds: 1,
-                        operations: BTreeMap::from([("requests".into(), 1)]),
+                        observed_seconds: if assessment_only { 0 } else { 1 },
+                        operations,
                         predecessor: case.predecessor,
                     }),
                 })
@@ -924,7 +963,12 @@ mod tests {
         let mut wrong_prior = records.clone();
         let update = wrong_prior
             .iter_mut()
-            .find(|record| record.policy_id == "image-update-recovery")
+            .find(|record| {
+                record
+                    .qualification
+                    .as_ref()
+                    .is_some_and(|observation| observation.predecessor.is_some())
+            })
             .unwrap();
         update.qualification.as_mut().unwrap().predecessor = None;
         assert!(check(&wrong_prior, now).is_err());
@@ -957,8 +1001,10 @@ mod tests {
             )
         };
         assert!(check(&records).is_err());
-        records[0].finished_at = "2026-09-15T00:00:00Z".into();
-        records[0].qualification.as_mut().unwrap().observed_seconds = 1209600;
+        for record in &mut records {
+            record.finished_at = "2026-09-15T00:00:00Z".into();
+            record.qualification.as_mut().unwrap().observed_seconds = 1209600;
+        }
         check(&records)?;
         records[0]
             .qualification

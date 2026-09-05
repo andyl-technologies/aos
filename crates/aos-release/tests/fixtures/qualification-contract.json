@@ -1,4 +1,98 @@
 {
+  "claims": [
+    {
+      "blocks_release": true,
+      "id": "container-aarch64-linux-functional",
+      "minimum_assurance": "A2",
+      "phase": "staging",
+      "requirements": [
+        "container-lifecycle"
+      ],
+      "target": "container-aarch64-linux"
+    },
+    {
+      "blocks_release": true,
+      "id": "container-aarch64-linux-qualified",
+      "minimum_assurance": "A3",
+      "phase": "complete",
+      "requirements": [
+        "container-lifecycle",
+        "container-observation"
+      ],
+      "target": "container-aarch64-linux"
+    },
+    {
+      "blocks_release": true,
+      "id": "container-x86_64-linux-functional",
+      "minimum_assurance": "A2",
+      "phase": "staging",
+      "requirements": [
+        "container-lifecycle"
+      ],
+      "target": "container-x86_64-linux"
+    },
+    {
+      "blocks_release": true,
+      "id": "container-x86_64-linux-qualified",
+      "minimum_assurance": "A3",
+      "phase": "complete",
+      "requirements": [
+        "container-lifecycle",
+        "container-observation"
+      ],
+      "target": "container-x86_64-linux"
+    },
+    {
+      "blocks_release": true,
+      "id": "disk-aarch64-linux-functional",
+      "minimum_assurance": "A2",
+      "phase": "staging",
+      "requirements": [
+        "image-installation",
+        "image-lifecycle",
+        "image-update-recovery"
+      ],
+      "target": "disk-aarch64-linux"
+    },
+    {
+      "blocks_release": true,
+      "id": "disk-aarch64-linux-qualified",
+      "minimum_assurance": "A3",
+      "phase": "complete",
+      "requirements": [
+        "image-installation",
+        "image-lifecycle",
+        "image-update-recovery",
+        "image-observation"
+      ],
+      "target": "disk-aarch64-linux"
+    },
+    {
+      "blocks_release": true,
+      "id": "disk-x86_64-linux-functional",
+      "minimum_assurance": "A2",
+      "phase": "staging",
+      "requirements": [
+        "image-installation",
+        "image-lifecycle",
+        "image-update-recovery"
+      ],
+      "target": "disk-x86_64-linux"
+    },
+    {
+      "blocks_release": true,
+      "id": "disk-x86_64-linux-qualified",
+      "minimum_assurance": "A3",
+      "phase": "complete",
+      "requirements": [
+        "image-installation",
+        "image-lifecycle",
+        "image-update-recovery",
+        "image-observation"
+      ],
+      "target": "disk-x86_64-linux"
+    }
+  ],
   "exclusions": [
     "No implicit qualification of other hardware, hypervisors, clouds, or container runtimes.",
     "No SELinux enforcement claim until labeled-root and enforcing-policy gates pass.",
@@ -6,7 +100,7 @@
     "No stock unprivileged per-user package mutation contract.",
     "No uptime SLA or failure-rate inference from a finite qualification campaign."
   ],
-  "id": "aos-server-v1",
+  "id": "aos-system-v2",
   "package_rules": [
     {
       "inherit_dependency_obligations": true,
@@ -56,6 +150,7 @@
         "executor",
         "environment"
       ],
+      "measurements": {},
       "method": "automated",
       "phase": "build",
       "production_only": false,
@@ -67,26 +162,68 @@
     },
     {
       "checks": [
-        "anonymous-download",
-        "closure-verification",
-        "functional-behavior",
-        "dependency-obligations",
-        "permissions-and-confinement"
+        "signed-index-and-platform-selection",
+        "anonymous-pull",
+        "native-platform-execution",
+        "start-stop-network",
+        "repeated-stop-start-and-recreate",
+        "persistent-state",
+        "resource-limits-and-signals",
+        "declared-privileges-only",
+        "runtime-identity",
+        "testing-or-production-profile"
       ],
-      "id": "package-function",
+      "id": "container-lifecycle",
       "invalidated_by": [
         "subject",
         "policy",
         "executor",
         "environment"
       ],
+      "measurements": {
+        "lifecycle_cycles": {
+          "maximum": null,
+          "minimum": 10
+        }
+      },
       "method": "automated",
       "phase": "staging",
       "production_only": false,
       "regressions": [
-        "checks.fleet.apm-e2e"
+        "checks.container.all",
+        "checks.fleet.container-runtime",
+        "checks.fleet.hub-oci"
       ],
-      "scope": "packages"
+      "scope": "containers"
+    },
+    {
+      "checks": [
+        "mixed-workload-soak",
+        "operation-denominators",
+        "committed-data-preserved"
+      ],
+      "id": "container-observation",
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "measurements": {
+        "data_integrity_failures": {
+          "maximum": 0,
+          "minimum": 0
+        },
+        "workload_operations": {
+          "maximum": null,
+          "minimum": 1
+        }
+      },
+      "method": "automated",
+      "phase": "complete",
+      "production_only": false,
+      "regressions": [],
+      "scope": "containers"
     },
     {
       "checks": [
@@ -107,6 +244,16 @@
         "executor",
         "environment"
       ],
+      "measurements": {
+        "cold_boot_cycles": {
+          "maximum": null,
+          "minimum": 3
+        },
+        "reboot_cycles": {
+          "maximum": null,
+          "minimum": 10
+        }
+      },
       "method": "automated",
       "phase": "staging",
       "production_only": false,
@@ -133,6 +280,7 @@
         "executor",
         "environment"
       ],
+      "measurements": {},
       "method": "automated",
       "phase": "staging",
       "production_only": false,
@@ -140,6 +288,35 @@
         "checks.fleet.runtime-config-all",
         "checks.fleet.qualification-workload"
       ],
+      "scope": "images"
+    },
+    {
+      "checks": [
+        "mixed-workload-soak",
+        "operation-denominators",
+        "committed-data-preserved"
+      ],
+      "id": "image-observation",
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "measurements": {
+        "data_integrity_failures": {
+          "maximum": 0,
+          "minimum": 0
+        },
+        "workload_operations": {
+          "maximum": null,
+          "minimum": 1
+        }
+      },
+      "method": "automated",
+      "phase": "complete",
+      "production_only": false,
+      "regressions": [],
       "scope": "images"
     },
     {
@@ -163,6 +340,12 @@
         "executor",
         "environment"
       ],
+      "measurements": {
+        "update_rollback_cycles": {
+          "maximum": null,
+          "minimum": 3
+        }
+      },
       "method": "automated",
       "phase": "staging",
       "production_only": false,
@@ -171,59 +354,6 @@
         "checks.fleet.boot-identity-fail-closed"
       ],
       "scope": "images"
-    },
-    {
-      "checks": [
-        "signed-index-and-platform-selection",
-        "anonymous-pull",
-        "native-platform-execution",
-        "start-stop-network",
-        "repeated-stop-start-and-recreate",
-        "persistent-state",
-        "resource-limits-and-signals",
-        "declared-privileges-only",
-        "runtime-identity",
-        "testing-or-production-profile"
-      ],
-      "id": "container-lifecycle",
-      "invalidated_by": [
-        "subject",
-        "policy",
-        "executor",
-        "environment"
-      ],
-      "method": "automated",
-      "phase": "staging",
-      "production_only": false,
-      "regressions": [
-        "checks.container.all",
-        "checks.fleet.container-runtime",
-        "checks.fleet.hub-oci"
-      ],
-      "scope": "containers"
-    },
-    {
-      "checks": [
-        "deployment-identity",
-        "anonymous-package-and-image-consumption",
-        "tuf-expiry-and-renewal",
-        "interrupted-publication",
-        "immutable-source-retention"
-      ],
-      "id": "staging-delivery",
-      "invalidated_by": [
-        "subject",
-        "policy",
-        "executor",
-        "environment"
-      ],
-      "method": "automated",
-      "phase": "staging",
-      "production_only": false,
-      "regressions": [
-        "checks.fleet.native-hub-release-pipeline"
-      ],
-      "scope": "release"
     },
     {
       "checks": [
@@ -241,11 +371,36 @@
         "executor",
         "environment"
       ],
+      "measurements": {},
       "method": "operator",
       "phase": "staging",
       "production_only": false,
       "regressions": [],
       "scope": "release"
+    },
+    {
+      "checks": [
+        "anonymous-download",
+        "closure-verification",
+        "functional-behavior",
+        "dependency-obligations",
+        "permissions-and-confinement"
+      ],
+      "id": "package-function",
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "measurements": {},
+      "method": "automated",
+      "phase": "staging",
+      "production_only": false,
+      "regressions": [
+        "checks.fleet.apm-e2e"
+      ],
+      "scope": "packages"
     },
     {
       "checks": [
@@ -261,6 +416,7 @@
         "executor",
         "environment"
       ],
+      "measurements": {},
       "method": "operator",
       "phase": "staging",
       "production_only": true,
@@ -282,6 +438,7 @@
         "executor",
         "environment"
       ],
+      "measurements": {},
       "method": "automated",
       "phase": "rollout",
       "production_only": false,
@@ -303,65 +460,146 @@
         "executor",
         "environment"
       ],
+      "measurements": {},
       "method": "automated",
       "phase": "complete",
       "production_only": false,
       "regressions": [],
       "scope": "release"
-    }
-  ],
-  "schema_version": "aos.release.qualification-contract/v1",
-  "targets": [
-    {
-      "configuration": {
-        "acceleration": "kvm",
-        "cold_boot_cycles": "3",
-        "disk_mib": "32768",
-        "firmware": "aos-edk2-uefi",
-        "firmware_state": "persistent",
-        "machine": "q35",
-        "memory_mib": "8192",
-        "network": "virtio-single-nic",
-        "reboot_cycles": "10",
-        "security": "external-secureboot-measuredboot-verity-encrypted-state-recovery",
-        "storage": "virtio-single-disk",
-        "tpm": "2.0-persistent",
-        "update_rollback_cycles": "3",
-        "vcpus": "2"
-      },
-      "id": "disk-x86_64-linux",
-      "kind": "image",
-      "platform": "x86_64-linux",
-      "required": true
     },
     {
-      "configuration": {
-        "acceleration": "tcg-functional-only",
-        "cold_boot_cycles": "3",
-        "disk_mib": "32768",
-        "firmware": "aos-edk2-uefi",
-        "firmware_state": "persistent",
-        "machine": "virt",
-        "memory_mib": "8192",
-        "network": "virtio-single-nic",
-        "reboot_cycles": "10",
-        "security": "external-secureboot-measuredboot-verity-encrypted-state-recovery",
-        "storage": "virtio-single-disk",
-        "tpm": "2.0-persistent",
-        "update_rollback_cycles": "3",
-        "vcpus": "2"
+      "checks": [
+        "deployment-identity",
+        "anonymous-package-and-image-consumption",
+        "tuf-expiry-and-renewal",
+        "interrupted-publication",
+        "immutable-source-retention"
+      ],
+      "id": "staging-delivery",
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "measurements": {},
+      "method": "automated",
+      "phase": "staging",
+      "production_only": false,
+      "regressions": [
+        "checks.fleet.native-hub-release-pipeline"
+      ],
+      "scope": "release"
+    }
+  ],
+  "schema_version": "aos.release.qualification-contract/v2",
+  "targets": [
+    {
+      "environment": {
+        "boot": "linux-container",
+        "devices": [],
+        "kernel_options": {},
+        "layers": [
+          {
+            "backend": {
+              "board": null,
+              "chipset": null,
+              "kind": "physical"
+            },
+            "cpu": {
+              "features": [],
+              "models": [],
+              "skus": [],
+              "vendors": []
+            },
+            "platform": "aarch64-linux"
+          },
+          {
+            "backend": {
+              "cgroup": null,
+              "kind": "container",
+              "network": null,
+              "runtime": "containerd-runc",
+              "version": null,
+              "volume": null
+            },
+            "cpu": {
+              "features": [],
+              "models": [],
+              "skus": [],
+              "vendors": []
+            },
+            "platform": "aarch64-linux"
+          }
+        ],
+        "resources": {
+          "cpus": 1,
+          "disk_mib": 0,
+          "memory_mib": 0
+        },
+        "security": {
+          "encrypted_state": false,
+          "measured_boot": false,
+          "persistent_firmware": false,
+          "secure_boot": false,
+          "verity": false
+        }
       },
-      "id": "disk-aarch64-linux",
-      "kind": "image",
+      "id": "container-aarch64-linux",
+      "kind": "container",
       "platform": "aarch64-linux",
       "required": true
     },
     {
-      "configuration": {
-        "host": "native-linux-matching-image-architecture",
-        "lifecycle_cycles": "10",
-        "runtime": "aos-containerd-runc",
-        "workload": "persistent-network-service"
+      "environment": {
+        "boot": "linux-container",
+        "devices": [],
+        "kernel_options": {},
+        "layers": [
+          {
+            "backend": {
+              "board": null,
+              "chipset": null,
+              "kind": "physical"
+            },
+            "cpu": {
+              "features": [],
+              "models": [],
+              "skus": [],
+              "vendors": []
+            },
+            "platform": "x86_64-linux"
+          },
+          {
+            "backend": {
+              "cgroup": null,
+              "kind": "container",
+              "network": null,
+              "runtime": "containerd-runc",
+              "version": null,
+              "volume": null
+            },
+            "cpu": {
+              "features": [],
+              "models": [],
+              "skus": [],
+              "vendors": []
+            },
+            "platform": "x86_64-linux"
+          }
+        ],
+        "resources": {
+          "cpus": 1,
+          "disk_mib": 0,
+          "memory_mib": 0
+        },
+        "security": {
+          "encrypted_state": false,
+          "measured_boot": false,
+          "persistent_firmware": false,
+          "secure_boot": false,
+          "verity": false
+        }
       },
       "id": "container-x86_64-linux",
       "kind": "container",
@@ -369,15 +607,157 @@
       "required": true
     },
     {
-      "configuration": {
-        "host": "native-linux-matching-image-architecture",
-        "lifecycle_cycles": "10",
-        "runtime": "aos-containerd-runc",
-        "workload": "persistent-network-service"
+      "environment": {
+        "boot": "systemd-boot-uki",
+        "devices": [
+          {
+            "bus": null,
+            "driver": "virtio_blk",
+            "firmware": [],
+            "product": null,
+            "revision": null,
+            "stage": "initrd",
+            "vendor": null
+          },
+          {
+            "bus": null,
+            "driver": "virtio_net",
+            "firmware": [],
+            "product": null,
+            "revision": null,
+            "stage": "initrd",
+            "vendor": null
+          }
+        ],
+        "kernel_options": {
+          "CONFIG_EFI": "y"
+        },
+        "layers": [
+          {
+            "backend": {
+              "board": null,
+              "chipset": null,
+              "kind": "physical"
+            },
+            "cpu": {
+              "features": [],
+              "models": [],
+              "skus": [],
+              "vendors": []
+            },
+            "platform": null
+          },
+          {
+            "backend": {
+              "accelerator": "tcg",
+              "cpu_model": null,
+              "kind": "qemu",
+              "machine": "virt",
+              "machine_version": null,
+              "version": null
+            },
+            "cpu": {
+              "features": [],
+              "models": [],
+              "skus": [],
+              "vendors": []
+            },
+            "platform": "aarch64-linux"
+          }
+        ],
+        "resources": {
+          "cpus": 2,
+          "disk_mib": 32768,
+          "memory_mib": 8192
+        },
+        "security": {
+          "encrypted_state": true,
+          "measured_boot": true,
+          "persistent_firmware": true,
+          "secure_boot": true,
+          "verity": true
+        }
       },
-      "id": "container-aarch64-linux",
-      "kind": "container",
+      "id": "disk-aarch64-linux",
+      "kind": "image",
       "platform": "aarch64-linux",
+      "required": true
+    },
+    {
+      "environment": {
+        "boot": "systemd-boot-uki",
+        "devices": [
+          {
+            "bus": null,
+            "driver": "virtio_blk",
+            "firmware": [],
+            "product": null,
+            "revision": null,
+            "stage": "initrd",
+            "vendor": null
+          },
+          {
+            "bus": null,
+            "driver": "virtio_net",
+            "firmware": [],
+            "product": null,
+            "revision": null,
+            "stage": "initrd",
+            "vendor": null
+          }
+        ],
+        "kernel_options": {
+          "CONFIG_EFI": "y"
+        },
+        "layers": [
+          {
+            "backend": {
+              "board": null,
+              "chipset": null,
+              "kind": "physical"
+            },
+            "cpu": {
+              "features": [],
+              "models": [],
+              "skus": [],
+              "vendors": []
+            },
+            "platform": "x86_64-linux"
+          },
+          {
+            "backend": {
+              "accelerator": "kvm",
+              "cpu_model": null,
+              "kind": "qemu",
+              "machine": "q35",
+              "machine_version": null,
+              "version": null
+            },
+            "cpu": {
+              "features": [],
+              "models": [],
+              "skus": [],
+              "vendors": []
+            },
+            "platform": "x86_64-linux"
+          }
+        ],
+        "resources": {
+          "cpus": 2,
+          "disk_mib": 32768,
+          "memory_mib": 8192
+        },
+        "security": {
+          "encrypted_state": true,
+          "measured_boot": true,
+          "persistent_firmware": true,
+          "secure_boot": true,
+          "verity": true
+        }
+      },
+      "id": "disk-x86_64-linux",
+      "kind": "image",
+      "platform": "x86_64-linux",
       "required": true
     }
   ],
