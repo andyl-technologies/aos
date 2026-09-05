@@ -164,7 +164,7 @@ impl CampaignRepository {
         Ok(CampaignBudgetLedger::from_canonical_bytes(envelope.body())?)
     }
 
-    fn parent_budget_ledger(
+    pub(super) fn parent_budget_ledger(
         &self,
         parent: &LoadedSnapshot,
     ) -> Result<CampaignBudgetLedger, CampaignRepositoryError> {

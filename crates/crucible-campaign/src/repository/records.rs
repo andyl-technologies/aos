@@ -617,6 +617,14 @@ impl CampaignRepository {
                 .map(|result| result.map(|id| id.content_id()))
                 .collect::<Result<BTreeSet<_>, _>>()?,
         );
+        unpublished_derived_inputs.extend(
+            candidate_inputs
+                .values()
+                .filter_map(|input| input.budget.as_ref())
+                .map(crate::PlannerCandidateBudget::id)
+                .map(|result| result.map(|id| id.content_id()))
+                .collect::<Result<BTreeSet<_>, _>>()?,
+        );
         for object_id in request.input_bundle().object_ids() {
             match self.read_envelope(object_id) {
                 Ok(stored) => {
@@ -631,6 +639,12 @@ impl CampaignRepository {
             }
         }
         let snapshot = self.read_snapshot(request.expected_snapshot().content_id())?;
+        let budget_ledger = request
+            .engine()
+            .capabilities()
+            .contains(crate::CANONICAL_FRONTIER_BUDGET_CAPABILITY)
+            .then(|| self.parent_budget_ledger(&snapshot))
+            .transpose()?;
         let mut guidance_points = candidate_inputs
             .iter()
             .filter_map(|(position, input)| {
@@ -674,6 +688,12 @@ impl CampaignRepository {
                 if expected != (input.continuation, Some(offer.clone())) {
                     return Err(integrity("planner-request-candidate-projection-mismatch"));
                 }
+                if let Some(ledger) = budget_ledger {
+                    let expected = self.planner_candidate_budget(&snapshot, offer, ledger)?;
+                    if input.budget.as_ref() != Some(&expected) {
+                        return Err(integrity("planner-request-candidate-budget-mismatch"));
+                    }
+                }
             }
             if let Some(guidance) = &input.guidance {
                 let offer = input
@@ -700,11 +720,11 @@ impl CampaignRepository {
         request: &PlannerRequest,
         proposal: &PlannerStepProposal,
     ) -> Result<(), CampaignRepositoryError> {
-        let expected = if request.engine() == &CanonicalFrontierPlanner::descriptor()? {
+        let expected = if CanonicalFrontierPlanner::supports_descriptor(request.engine())? {
             CanonicalFrontierPlanner
                 .plan(request)
                 .map_err(CampaignRepositoryError::Codec)?
-        } else if request.engine() == &CanonicalPuctPlanner::descriptor()? {
+        } else if CanonicalPuctPlanner::supports_descriptor(request.engine())? {
             CanonicalPuctPlanner
                 .plan(request)
                 .map_err(CampaignRepositoryError::Codec)?
@@ -722,11 +742,11 @@ impl CampaignRepository {
         request: &PlannerRequest,
         step: &PlannerStep,
     ) -> Result<(), CampaignRepositoryError> {
-        let expected = if request.engine() == &CanonicalFrontierPlanner::descriptor()? {
+        let expected = if CanonicalFrontierPlanner::supports_descriptor(request.engine())? {
             CanonicalFrontierPlanner
                 .plan(request)
                 .map_err(CampaignRepositoryError::Codec)?
-        } else if request.engine() == &CanonicalPuctPlanner::descriptor()? {
+        } else if CanonicalPuctPlanner::supports_descriptor(request.engine())? {
             CanonicalPuctPlanner
                 .plan(request)
                 .map_err(CampaignRepositoryError::Codec)?

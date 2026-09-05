@@ -107,9 +107,9 @@ pub use exploration::{
     MAX_BRANCH_NOVELTY_OBSERVATIONS, MAX_BRANCH_NOVELTY_PROJECTION_BYTES,
     MAX_BRANCH_NOVELTY_ROOT_ENTRIES, MAX_BRANCH_OBJECTIVE_EVALUATIONS,
     MAX_BRANCH_OBJECTIVE_PROJECTION_BYTES, MAX_BRANCH_PRIOR_NORMALIZATION_VISITS,
-    MAX_PLANNER_GUIDANCE_DOMAIN_BYTES, PlannerCandidateGuidance, PlannerDisposition,
-    PlannerProposalDisposition, PlannerStep, PlannerStepProposal, PlanningAccounting,
-    PlanningScanCursor, PlanningScanPage, PlanningScanPosition, PlanningUsage,
+    MAX_PLANNER_GUIDANCE_DOMAIN_BYTES, PlannerCandidateBudget, PlannerCandidateGuidance,
+    PlannerDisposition, PlannerProposalDisposition, PlannerStep, PlannerStepProposal,
+    PlanningAccounting, PlanningScanCursor, PlanningScanPage, PlanningScanPosition, PlanningUsage,
     ProgressiveWideningDecision, Proposal, PuctEdgeStatistics, PuctScore, StopCondition,
 };
 pub use finding::{
@@ -128,11 +128,11 @@ pub use identity::{
     ChoiceOpportunityId, ChoiceOpportunitySemanticId, ChoiceRngStreamId, ConfigurationArtifactId,
     ConfigurationId, ContinuationProjectionId, CoverageProjectionId, CreditId, DebugSessionId,
     ExactCheckpointId, ExpansionStateId, FindingId, MeasurementSetId, ObjectiveEvaluationId,
-    ObservationId, PlannerCandidateGuidanceId, PlannerEngineId, PlannerInvocationId,
-    PlannerStateId, PlannerStepId, PolicyArtifactId, ProbabilityModelId, PropertyVerdictSetId,
-    ProposalId, RankingExplanationId, ReproductionArtifactId, RetainedPlannerRequestId,
-    ScenarioArtifactId, ScenarioDefId, SelectableId, SelectableSemanticId, SelectionId,
-    SurvivorSelectionId,
+    ObservationId, PlannerCandidateBudgetId, PlannerCandidateGuidanceId, PlannerEngineId,
+    PlannerInvocationId, PlannerStateId, PlannerStepId, PolicyArtifactId, ProbabilityModelId,
+    PropertyVerdictSetId, ProposalId, RankingExplanationId, ReproductionArtifactId,
+    RetainedPlannerRequestId, ScenarioArtifactId, ScenarioDefId, SelectableId,
+    SelectableSemanticId, SelectionId, SurvivorSelectionId,
 };
 pub use merkle::{
     CampaignStoreError, MAX_PROVEN_PAGE_ITEMS, MerkleMap, MerkleMapLookupProof, MerkleMapPage,
@@ -159,13 +159,14 @@ pub use observation::{
     MetricValue, Observation, PropertyEvidence, PropertyVerdict, PropertyVerdictSet, StopOutcome,
 };
 pub use planner_service::{
-    AuthorizedPlannerService, AuthorizedPlannerServiceError, CANONICAL_FRONTIER_OFFERS_CAPABILITY,
-    CANONICAL_FRONTIER_PUCT_CAPABILITY, CampaignPlanningBundle, CanonicalFrontierPlanner,
-    CanonicalFrontierPlannerBasis, CanonicalPuctPlanner, CanonicalPuctPlannerBasis,
-    MAX_PLANNER_COMPONENT_MESSAGE_BYTES, MAX_RETAINED_PLANNER_REQUEST_BUNDLE_OBJECTS,
-    MAX_RETAINED_PLANNER_REQUEST_BYTES, PlannerCandidateRanking, PlannerClient, PlannerClientError,
-    PlannerEngineOutput, PlannerExecutionSupervisor, PlannerRequest, PlannerResponse,
-    PlannerService, PurePlannerEngine, SupervisedPlannerExecution,
+    AuthorizedPlannerService, AuthorizedPlannerServiceError, CANONICAL_FRONTIER_BUDGET_CAPABILITY,
+    CANONICAL_FRONTIER_OFFERS_CAPABILITY, CANONICAL_FRONTIER_PUCT_CAPABILITY,
+    CampaignPlanningBundle, CanonicalFrontierPlanner, CanonicalFrontierPlannerBasis,
+    CanonicalPuctPlanner, CanonicalPuctPlannerBasis, MAX_PLANNER_COMPONENT_MESSAGE_BYTES,
+    MAX_RETAINED_PLANNER_REQUEST_BUNDLE_OBJECTS, MAX_RETAINED_PLANNER_REQUEST_BYTES,
+    PlannerCandidateRanking, PlannerClient, PlannerClientError, PlannerEngineOutput,
+    PlannerExecutionSupervisor, PlannerRequest, PlannerResponse, PlannerService, PurePlannerEngine,
+    SupervisedPlannerExecution,
 };
 pub use policy::{
     BOUNDARY_INTEGER_GENERATOR_IMPLEMENTATION_VERSION, BOUNDARY_INTEGER_GENERATOR_MAX_LANDMARKS,

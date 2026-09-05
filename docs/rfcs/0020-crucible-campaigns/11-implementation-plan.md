@@ -436,10 +436,38 @@ histories remain readable and upgrade on their next new transition, preserving
 historical debt; their one-time projection fails closed beyond 65,536 entries
 per scanned index. Planner drivers bound invocation output by available
 allowance, return a waitable budget-blocked outcome, and avoid reinvoking on an
-unchanged blocked head. A later grant permits a fresh invocation. This does not
-yet prove exhaustive budget-aware selection among convergent and new candidates
-across an otherwise blocked frontier, or the required large-campaign stress
-flights.
+unchanged blocked head. A later grant permits a fresh invocation.
+
+The current canonical and PUCT engines now advertise the versioned
+`canonical-frontier-budget-v1` capability. Every Ready offer retains its exact
+owner-computed aggregate allowances and semantic new-attempt cost, including
+unaffordable offers. Both engines scan through EOF and choose only affordable
+candidates; a convergent cause can therefore pass an earlier canonical or
+higher-ranked PUCT candidate that needs an unfunded attempt. Version-2 portable
+state retains blockers across pages and empty EOF, while the exact legacy
+engine descriptors continue to replay their original version-1 transitions.
+Acceptance and cold validation recompute eligibility before trusting it;
+missing records, inflated allowances, and forged deduplication costs fail
+closed before publication.
+
+Campaign regressions exercise both engines with wide and single-position
+pages, reconstruct the owner after each accepted page, restore portable state
+from retained objects, verify additional-cause accounting, and resume new
+attempts after a grant. A checked-client driver regression separately proves
+cross-page restart and unchanged-head call suppression without settling the
+blocked frontier. A mutation-scale flight completes 10,000 real grant,
+branch-request, proposal, and admission transitions: 2,500 separately funded
+proposals converge on one execution basis. Every iteration checks exact ledger
+totals; cold validation, deep grant/proposal/admission retries, and rejection of
+a valid unfunded next proposal preserve the final ledger and publish no retry
+or rejected work. These are repository and planner results, not evidence for
+the separate real-QEMU child-lifecycle, pressure, or dogfood stress gates.
+
+This increment passes 246 campaign unit tests and both integration tests, 255
+API unit tests, 269 CLI tests, and 459 daemon tests with one existing ignored
+test. Strict affected-crate Clippy and the source-size guard pass. All six
+packaged campaign VM cases also pass with the budget-aware planner build;
+their execution scope remains the six flights described above.
 
 Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
 `crucible-daemon`.

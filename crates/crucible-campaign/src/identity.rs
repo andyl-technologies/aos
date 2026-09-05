@@ -643,6 +643,12 @@ content_object_id!(
     "crucible.campaign.planner-candidate-guidance",
     "Identifies one snapshot-bound PUCT input; schema v1 remains readable."
 );
+content_object_id!(
+    PlannerCandidateBudgetId,
+    ObjectKind::Projection,
+    "crucible.campaign.planner-candidate-budget",
+    "Identifies one snapshot-bound candidate budget eligibility projection."
+);
 semantic_id!(
     CreditId,
     "Identifies one idempotent observation-to-branch credit."

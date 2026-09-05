@@ -1230,7 +1230,8 @@ included once.
 Planner engines advertising `canonical-frontier-offers-v1` additionally
 require, for every served position, the exact `ContinuationProjectionV1`
 envelope authenticated by the expected snapshot's nested frontier index. For an
-engine that does not also advertise `canonical-frontier-puct-v1`, the least
+engine that advertises neither `canonical-frontier-puct-v1` nor
+`canonical-frontier-budget-v1`, the least
 Ready position on the page has exactly one `ProposalV1` candidate-offer
 envelope and every other position has none. An offer names the served request,
 branch point, domain, active policy, exact invocation, input view, and next
@@ -1303,7 +1304,47 @@ first, then lower `BranchEdgeId`, then lower `PlanningScanPosition`, carries the
 winner across pages in `canonical-frontier-puct-planner` state version 1, and
 issues only at EOF. Acceptance publishes guidance envelopes with offers only
 after complete zero-write preflight and recomputes/reruns the exact transition
-on restart and import. Version 1 remains canonically replayable. Bounded
+on restart and import. Version 1 remains canonically replayable.
+
+Implementation versions 3 (canonical order) and 4 (PUCT) additionally advertise
+`canonical-frontier-budget-v1`. Every Ready position has an exact offer and one
+`PlannerCandidateBudgetV1`, including positions that cannot currently afford
+issuance. Non-Ready positions have neither. This preserves request-local
+continuation semantics while allowing a scan to pass an unfunded new attempt
+and select a convergent cause that needs no additional attempt allowance. The
+budget body encodes, in order:
+
+```text
+schema_version = 1
+input_view: CampaignViewId
+position: PlanningScanPosition
+proposal: ProposalId
+remaining_proposals: u128
+remaining_attempts: u128
+new_attempt: bool
+```
+
+Its exact envelope children are the input view, served request, and offered
+proposal. Structural validation binds the record to that exact offer; the
+owner independently recomputes both remaining allowances and the semantic
+attempt's existing execution-basis membership before accepting or replaying a
+request. Missing, repeated, mismatched, or forged eligibility fails closed.
+As with guidance, these derived records become retained request children only
+after complete read-only preflight. They are evidence, not spending authority:
+the final atomic issue transaction separately enforces aggregate proposal and
+unique-attempt costs across the whole batch.
+
+Both current engines rank only affordable offers, scan through EOF, and carry a
+blocked-offer bit in version-2 portable state, including across an empty final
+page. A complete scan with no affordable offer and a retained blocker yields a
+waitable driver outcome without committing `NoWork` as settled. Repeating the
+unchanged blocked head does not reinvoke the engine. A grant changes the
+accounting planning-view root and restarts selection with fresh eligibility.
+Exact legacy engine descriptors retain their original offer sets, ranking,
+version-1 state bytes, and owner-recomputed transitions; the new capability
+does not reinterpret historical planner steps.
+
+Bounded
 model-resolved finite masses are retained in branch-request schema v3 and
 exact-checked against the opportunity's model ID. Schema v4 additionally
 retains an exact model ID and generator ID for modeled generated sources. The

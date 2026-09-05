@@ -92,6 +92,7 @@ fn profile_record(kind: CampaignRecordKind, logical_length: u64) -> ObjectProfil
         Record::ExpansionState
             | Record::ContinuationProjection
             | Record::PlannerCandidateGuidance
+            | Record::PlannerCandidateBudget
             | Record::CoverageProjection
             | Record::RankingExplanation
     ) {
