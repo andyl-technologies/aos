@@ -1446,6 +1446,9 @@ in {
         sandbox-filesystem-capability = import ./tests/vm/sandbox-filesystem-capability.nix {
           inherit testing pkgs lib;
         };
+        sandbox-service-journal = import ./tests/vm/sandbox-service-journal.nix {
+          inherit testing pkgs lib;
+        };
         apm-install-at-boot = apmInstallAtBootCheck;
         package-expose-lifecycle = packageExposeLifecycleCheck;
         package-preset = packagePresetCheck;

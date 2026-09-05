@@ -37,6 +37,7 @@ members = [
     "aos-sandbox-ownership-protocol",
     "aos-sandbox-protocol",
     "aos-sandbox",
+    "aos-sandbox/tests/fixtures/service-journal",
     "aos-sandbox-linux",
     "aos-sandbox-linux/tests/fixtures/verity-backing",
     "aos-sandbox-broker",
