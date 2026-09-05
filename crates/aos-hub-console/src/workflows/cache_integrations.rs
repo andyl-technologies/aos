@@ -19,10 +19,8 @@ use super::cache_retention::CacheRetentionWorkflow;
 use super::cache_stack::RegistryCacheStack;
 use super::operations::{OperationSurface, OperationsWorkflow};
 use super::organization_activity::OrganizationActivity;
-use super::registry_catalog::RegistryCatalog;
 use super::registry_configuration::RegistryConfiguration;
 use super::registry_containers::RegistryContainers;
-use super::registry_images::RegistryImages;
 use super::registry_mirror::RegistryMirrorWorkflow;
 use super::registry_publication::RegistryPublicationWorkflow;
 use super::resource_access::{ResourceAccessSurface, ResourceAccessWorkflow};
@@ -90,16 +88,8 @@ pub(super) fn CacheIntegrationWorkflow(route: ConsoleRoute, client: ApiClient) -
             <RegistryPublicationWorkflow client=client registry_id=path.clone()/>
         }
         .into_any(),
-        (ConsoleScope::Registry { path }, "images") => view! {
-            <RegistryImages client=client registry_id=path.clone()/>
-        }
-        .into_any(),
         (ConsoleScope::Registry { path }, "containers") => view! {
             <RegistryContainers client=client registry_id=path.clone()/>
-        }
-        .into_any(),
-        (ConsoleScope::Registry { path }, page @ ("packages" | "docs" | "channels")) => view! {
-            <RegistryCatalog client=client registry_id=path.clone() page=page/>
         }
         .into_any(),
         (ConsoleScope::Registry { path }, page @ ("configuration" | "changes")) => view! {

@@ -3,7 +3,7 @@
 The driver reuses the real Chrome DevTools transport from ``hub-settings-browser``.
 It signs in to an isolated native fixture, discovers each scope's visible settings
 navigation and create links, then records page semantics, layout width, requests,
-and a bounded desktop/narrow screenshot set.  It never submits a mutation form.
+and desktop/narrow screenshots for every canonical settings page.  It never submits a mutation form.
 """
 
 import argparse
@@ -46,8 +46,8 @@ ORGANIZATION_SUFFIXES = (
 )
 REGISTRY_SUFFIXES = (
     "", "placements", "delivery", "caches", "access", "signing-keys", "tokens",
-    "images", "containers", "packages", "docs", "mirror", "configuration",
-    "channels", "changes", "publish-history", "operations", "danger",
+    "containers", "mirror", "configuration",
+    "change-requests", "publish-history", "operations", "danger",
 )
 CACHE_SUFFIXES = (
     "", "placements", "delivery", "objects", "integrations", "access",
@@ -161,7 +161,7 @@ class Audit:
         canonical_paths += paths("/-/org/workflow-test", ORGANIZATION_SUFFIXES)
         canonical_paths += paths("/workflow-test/main/-/settings", REGISTRY_SUFFIXES)
         canonical_paths += paths("/-/org/workflow-test/caches/builds", CACHE_SUFFIXES)
-        self.check(len(canonical_paths) == 78, "canonical route matrix contains all 78 settings pages")
+        self.check(len(canonical_paths) == 74, "canonical route matrix contains all 74 settings pages")
         for path in canonical_paths:
             self.inspect(path)
         self.chrome.drain_events(0.25)

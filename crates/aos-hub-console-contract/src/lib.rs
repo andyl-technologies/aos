@@ -295,8 +295,20 @@ impl PageSpec {
     /// capability even though the API remains the final authorization gate.
     #[must_use]
     pub fn navigation_permission(&self) -> &'static str {
+        if self.workflow == "instance-settings" {
+            return "iam.admin";
+        }
         match self.key {
+            "defaults" => "binding.manage",
             "audit" => "audit.read",
+            "webhooks" => "members.manage",
+            "storage" => "binding.read",
+            "domains" => "domain.read",
+            "boundaries" => "network_policy.read",
+            "endpoints" => "endpoint.read",
+            "gateways" => "gateway.read",
+            "placements" => "placement.read",
+            "delivery" => "route.read",
             "danger" | "sso" => "iam.admin",
             "tokens" => "tokens.self",
             // Every authenticated user may open the organization bootstrap
@@ -470,6 +482,29 @@ impl ConsoleRoute {
             format!("{}/{}", self.base_path, page.suffix)
         }
     }
+}
+
+/// Returns the public catalog destination for a former read-only settings page.
+///
+/// Catalogs belong to registry browsing. Exact old bookmarks remain usable,
+/// including nested registry paths, without retaining duplicate settings UIs.
+#[must_use]
+pub fn registry_catalog_redirect(path: &str) -> Option<String> {
+    let segments = canonical_segments(path)?;
+    let settings = segments
+        .windows(2)
+        .position(|window| window == ["-", "settings"])?;
+    if settings == 0 || segments.len() != settings + 3 {
+        return None;
+    }
+    let catalog = match segments[settings + 2] {
+        "packages" => "packages",
+        "documentation" => "docs",
+        "images" => "images",
+        "channels" => "channels",
+        _ => return None,
+    };
+    Some(format!("/{}/-/{catalog}", segments[..settings].join("/")))
 }
 
 fn resolve_registry(segments: &[&str]) -> Option<ConsoleRoute> {
@@ -860,32 +895,11 @@ pub const REGISTRY_PAGES: &[PageSpec] = &[
         "access-tokens",
     ),
     PageSpec::new(
-        "images",
-        "System images",
-        "Publishing",
-        "images",
-        "registry-images",
-    ),
-    PageSpec::new(
         "containers",
         "Containers",
         "Publishing",
         "containers",
         "registry-containers",
-    ),
-    PageSpec::new(
-        "packages",
-        "Packages",
-        "Publishing",
-        "packages",
-        "registry-packages",
-    ),
-    PageSpec::new(
-        "docs",
-        "Package docs",
-        "Publishing",
-        "documentation",
-        "registry-package-documentation",
     ),
     PageSpec::new(
         "mirror",
@@ -896,28 +910,21 @@ pub const REGISTRY_PAGES: &[PageSpec] = &[
     ),
     PageSpec::new(
         "configuration",
-        "Configuration",
-        "Publishing",
+        "Configuration history",
+        "Activity",
         "configuration",
         "registry-configuration",
     ),
     PageSpec::new(
-        "channels",
-        "Channels",
-        "Publishing",
-        "channels",
-        "registry-channels",
-    ),
-    PageSpec::new(
         "changes",
         "Change requests",
-        "Publishing",
+        "Activity",
         "change-requests",
         "change-requests",
     ),
     PageSpec::new(
         "publish-history",
-        "Publish history",
+        "Publications",
         "Publishing",
         "publish-history",
         "registry-publication",
@@ -1017,6 +1024,31 @@ pub const CACHE_PAGES: &[PageSpec] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn catalog_bookmarks_leave_settings_without_accepting_unknown_paths() {
+        for (old, new) in [
+            ("packages", "packages"),
+            ("documentation", "docs"),
+            ("images", "images"),
+            ("channels", "channels"),
+        ] {
+            let path = format!("/acme/project/main/-/settings/{old}");
+            assert_eq!(
+                registry_catalog_redirect(&path),
+                Some(format!("/acme/project/main/-/{new}"))
+            );
+            assert!(ConsoleRoute::resolve(&path).is_none());
+        }
+        for path in [
+            "/-/settings/packages",
+            "/acme/main/-/settings/packages/extra",
+            "/acme/main/-/settings/unknown",
+            "/acme/../main/-/settings/packages",
+        ] {
+            assert!(registry_catalog_redirect(path).is_none(), "{path}");
+        }
+    }
 
     #[test]
     fn container_pull_commands_require_and_preserve_the_server_reference() {
@@ -1142,13 +1174,9 @@ mod tests {
                     "access",
                     "signing",
                     "tokens",
-                    "images",
                     "containers",
-                    "packages",
-                    "docs",
                     "mirror",
                     "configuration",
-                    "channels",
                     "changes",
                     "publish-history",
                     "operations",

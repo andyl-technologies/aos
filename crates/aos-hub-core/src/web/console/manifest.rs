@@ -168,7 +168,9 @@ pub fn declared_route(template: &str) -> Option<&'static RouteSpec> {
 /// Resolves the declared methods for one concrete request path.
 #[must_use]
 pub fn route_methods_for_path(path: &str) -> Option<RouteMethods> {
-    if aos_hub_console_contract::ConsoleRoute::resolve(path).is_some() {
+    if aos_hub_console_contract::ConsoleRoute::resolve(path).is_some()
+        || aos_hub_console_contract::registry_catalog_redirect(path).is_some()
+    {
         return Some(RouteMethods::Get);
     }
     let path = path.trim_start_matches('/');
