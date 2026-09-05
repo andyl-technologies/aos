@@ -10,56 +10,89 @@ manual recovery checks and when to perform them. This page specifies the
 contract and evidence formats; the [command reference](canonical-releases.md)
 documents command arguments.
 
-## Support levels and target checks
+## Target support matrix
 
-Support scope answers where an artifact must work. Release class answers how
-long it is observed and who approves it. Testing releases still need working
-install, update, recovery, and workload behavior on the required runtimes.
+A target is an architecture and execution environment, such as x86_64 on QEMU
+or x86_64 on physical hardware. Its tier defines the release guarantees for
+that environment. The release class separately sets observation time and review
+requirements; tier assignments apply across all release classes.
 
-| Runtime or hardware category | Architecture | Priority and required coverage |
-| --- | --- | --- |
-| QEMU VM, `q35`, UEFI, virtio disk/network, persistent TPM 2.0 | x86_64 | Required now; KVM boot, lifecycle, update/recovery, workload and soak checks |
-| QEMU VM, `virt`, UEFI, virtio disk/network, persistent TPM 2.0 | aarch64 | Required now; same functional checks under TCG; native KVM support needs its own evidence |
-| OCI containers using containerd/runc on native Linux | x86_64 | Required now; signed OCI selection, pull, lifecycle, network, volumes and soak checks |
-| OCI containers using containerd/runc on native Linux | aarch64 | Required now; same container checks on a native aarch64 host |
-| Physical servers and workstations | x86_64 | Next; general hardware support using representative equipment and the physical checks below |
-| Cloud VMs | x86_64 and aarch64 | After physical hardware; image lifecycle plus cloud provisioning, storage and recovery checks below |
+### Tier guarantees
 
-These are requirements and rollout priorities, not claims of completed testing.
-The current machine-readable contract requires the four QEMU/container rows.
-Physical and cloud rows are planned. Before advertising either as supported,
-add required configurations to `qualification/targets.nix`, implement their
-scenarios, and pass them in the frozen release. The recorded configurations
-describe the coverage used to justify a category; they are not a model allowlist.
-The target schema supports additional configurations, but those scenarios and
-their capability coverage still need implementation.
+| Guarantee | Tier 1: qualified | Tier 2: builds provided | Tier 3: experimental |
+| --- | --- | --- | --- |
+| Official artifacts | Required for every release | Required; may use the same generic image as a Tier 1 target | No target-specific artifact commitment |
+| Hermetic build, signatures, complete closure and source | Required | Required | Required for any artifact actually published |
+| Installation and basic operation | Tested on the target for every release | Generic image is tested on its Tier 1 reference; operation on this hardware is not guaranteed | No release qualification guarantee |
+| Configuration, packages, networking and workload | All applicable target checks must pass | Target-specific testing is best effort; publish known limitations | Development testing only |
+| Update, rollback, recovery and data preservation | Tested on the target with the exact predecessor/candidate pair | No target-specific guarantee | No target-specific guarantee |
+| Workload observation | Full release-class window on the target | No target-specific observation requirement | No observation requirement |
+| Maintenance | Assigned owner and maintained regression scenarios | Assigned owner for artifact builds and compatibility reports | Contributions accepted; no release-maintenance commitment |
+| What blocks release | Missing artifacts, failed or missing qualification, or unresolved required-function/integrity failure | Missing or invalid promised artifacts; a hardware-only failure is documented and does not block unrelated Tier 1 targets | No target-specific blocker; shared defects still block affected higher-tier targets |
 
-For each row and package/platform cell, record one of these levels:
+All published bytes retain the same integrity requirements at every tier. Known
+defects in shared boot, storage, trust or update code must be evaluated against
+every affected target.
 
-| Level | Required evidence | Release decision |
-| --- | --- | --- |
-| Planned | Scope, missing work and owner recorded | No support claim; does not block until made required |
-| Preview | Authentic published artifacts, meaningful basic functional checks, explicit unqualified behaviors | Allowed only outside the required baseline; cannot hide failure of an advertised basic function |
-| Supported for this release class | All applicable checks below, class observation window and required review passed | Failure or missing evidence blocks release for a required/supported row |
-| Blocked | Failure or missing prerequisite recorded with affected artifacts | Do not publish the affected artifact as usable; stable/emergency permit no blocked package/platform cells |
-| Not applicable | Recorded architectural or product-scope reason | Cannot be used for an unavailable runner, failed build or one of the four required runtimes |
+### Architecture and environment assignments
 
-Maintain this table in the release record before generating the plan. The
-planned/preview labels are planning and communication states; they do not waive
-the plan's required cases or create a separate CLI support-status control.
-Passing on one architecture, runtime, release, or package cannot check off another.
-Record exact QEMU/containerd/runc versions, host kernel, firmware, CPU, device inventory,
-image/index digests and test-program identity. Emulation can establish the stated
-TCG functional result; it does not establish native acceleration or performance.
-Docker Engine is not a separate qualification prerequisite. Record any untested
-frontend or host-specific behavior instead of extending the runtime results to it.
+| Target | x86_64 | aarch64 | Artifact | Scope |
+| --- | --- | --- | --- | --- |
+| QEMU virtual machine | Tier 1 | Tier 1 | Disk image | UEFI, persistent TPM 2.0, virtio disk/network; x86_64 `q35` with KVM, aarch64 `virt` with TCG functional coverage |
+| OCI container on native Linux | Tier 1 | Tier 1 | OCI image and multi-platform index | AOS-built containerd/runc; matching host/image architecture; persistent volumes and network workload |
+| Physical server | Tier 2 | Unassigned | Generic disk image | x86_64 server hardware meeting the boot/storage requirements below |
+| Physical workstation | Tier 2 | Unassigned | Generic disk image | x86_64 workstation hardware; headless OS operation |
+| Cloud virtual machine | Tier 3 | Tier 3 | Generic disk image where importable | Provider image import, firmware, virtual devices and metadata compatibility require environment-specific validation |
+
+Unassigned targets carry no support commitment. Hardware and cloud requirements
+are expressed in terms of boot, storage, network and provisioning capabilities.
+Qualification reports retain equipment inventories and firmware versions so
+coverage can be reproduced and reviewed.
+
+Release approval requires evidence satisfying the assigned tiers and resolution
+of the [current release blockers](release-checklist.md). An unavailable Tier 1
+runner or scenario blocks qualification; it does not change the target's tier.
+
+`qualification/targets.nix` encodes those four Tier 1 configurations as required
+cases. Tier 2 physical targets consume the same frozen generic images; the build
+and artifact checks apply, but physical qualification is not presently a required
+case. Tier 3 has no additional required target case.
+
+### Changing a target's tier
+
+A tier change requires a reviewed policy change before freezing a release.
+To enter Tier 2, identify an owner, the exact official artifact and its automated
+build/integrity checks, and document hardware requirements and known limitations.
+To enter Tier 1, also add required target configurations and maintained scenarios,
+pass every applicable acceptance check below, and complete the class observation
+window on representative equipment. Record that evidence with the release that
+first carries the stronger guarantee. Downgrading a target requires an explicit
+support notice; it cannot be an operator workaround for a failed required case.
+
+Record exact runtime versions, host kernel, firmware, CPU, devices, image digests
+and test-program identity in qualification evidence. TCG qualification covers
+functional behavior; native KVM and performance claims need separate evidence.
+
+### Images, packages and optional hardware features
+
+The target tier covers the base OS or container contract and its required
+workloads. Each advertised disk format must pass artifact-equivalence checks.
+Cloud-provider compatibility requires separate environment qualification.
+Each published package/platform cell needs the functional checks below;
+package roles add obligations according to their effect on the system.
+
+Record optional features such as redundant storage, GPU acceleration, hardware
+watchdogs and server management separately, with their tested capability scope
+and limitations. Missing package or feature evidence blocks its qualification.
+Stable and emergency releases prohibit blocked package/platform cells under
+the shared contract.
 
 ### QEMU and disk-image acceptance
 
 Apply these checks to each published image variant on each required configuration.
 Use its public signed bytes and supported provisioning path. The current VM
-baseline is 2 vCPUs, 8 GiB RAM and a 32 GiB disk; that is a tested configuration,
-not a demonstrated minimum system requirement.
+test configuration is 2 vCPUs, 8 GiB RAM and a 32 GiB disk. Minimum system
+requirements require a separate resource-sizing campaign.
 
 | Test | Pass condition |
 | --- | --- |
@@ -96,20 +129,17 @@ exact published artifacts are required before a public release can pass this gat
 
 ### Physical-hardware acceptance
 
-The intended support category is **x86_64 servers and workstations**, not a list
-of approved models. Initially the image's boot/security contract requires UEFI,
-Secure Boot, persistent TPM 2.0, supported storage/network drivers, and a working
-console/recovery path. State capability requirements and known exclusions in the
-support record; a machine's marketing category alone does not establish those
-capabilities. Workstation hardware runs the same headless server contract here;
-graphical desktop, GPU acceleration and suspend are additional feature claims.
+Physical targets require UEFI, Secure Boot, persistent TPM 2.0, supported
+storage/network drivers, and a console/recovery path. Record capability
+requirements and known exclusions in the support record. The base contract
+covers headless operation; graphical desktop, GPU acceleration and suspend
+require separate feature qualification.
 
-Before promoting this category, run the disk-image checks on representative
-server and workstation equipment. Cover both Intel and AMD CPUs, onboard and
-discrete NICs, SATA and NVMe storage, and different UEFI implementations across
-the sample. Record models and firmware for reproducibility, without restricting
-support to those models. Any uncovered capability must be added to the test
-campaign or explicitly excluded from the initial supported scope.
+Tier 1 qualification requires disk-image checks on representative server and
+workstation equipment covering Intel and AMD CPUs, onboard and discrete NICs,
+SATA and NVMe storage, and different UEFI implementations. Retain models and
+firmware versions in the test inventory. Add uncovered capabilities to the
+campaign or exclude them explicitly from the qualified scope.
 
 In addition, verify installer media boots, disks/NICs enumerate correctly,
 storage read/write checksums agree under load, link loss/reconnection recovers,
@@ -124,9 +154,8 @@ coverage after kernel, driver, firmware or boot/security changes.
 Promote x86_64 and aarch64 cloud support separately. For each advertised cloud
 environment, record image import format, boot/security capabilities, virtual
 storage/NIC drivers and provisioning interface. Test representative instance
-families covering those capabilities; individual VM identities are evidence,
-not a permanent list of supported instances. Unsupported boot/security features
-need an explicit reviewed contract change, not an unrecorded test exception.
+families covering those capabilities and retain the environment inventory.
+Unsupported boot/security features require a reviewed contract change.
 
 Pass the disk-image checks plus image import, clean instance creation, metadata
 and SSH-key provisioning, DNS and time synchronization, persistent-volume
