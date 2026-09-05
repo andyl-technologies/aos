@@ -99,11 +99,64 @@ Changed code passes formatting checks. A workspace-wide format check also
 reports existing differences in `crates/aos-hub-core/src/db/oci_gc/plan.rs` and
 `crates/aos/src/commands/build.rs`; those unrelated files were left unchanged.
 
-Runtime latency on a deployed Worker and authenticated browser rendering have
-not been measured. No browser automation harness is available in this
-workspace; HTTP console tests and WebAssembly compilation do not establish
-visual behavior. The read/query changes are structural improvements, not
-production latency benchmarks.
+Follow-up local verification uses `tests/native/hub-settings.py` to launch a
+real native Hub process with fresh state and compiled console assets. Its 29
+checks pass over TCP, including reviewed setup, incorrect confirmation,
+explicit credentials with stale profiles, replay, process restart, concurrent
+resume, blocked activation, and wrong-kind activation-plan rejection without
+fabricated controller observations.
+The same test is registered as `checks.vm.hub-settings`. At `dc731de33`,
+the Firecracker/KVM VM passed all 29 checks with `TEST_RESULT:PASS` and exit 0.
+Its hermetic package prerequisite passed 3,709 tests, with 5 skipped. Later
+production changes affect console callback lifetime, refresh, and narrow-layout
+CSS, covered separately
+by the final browser run.
+
+The real Chrome driver in `tests/native/hub-settings-browser.py` exercises
+rendered login and settings pages, guided delivery review, stale-draft
+invalidation, advanced controls, repeated workflow resume/remount, browser
+history, and response completion after navigating away. It records
+desktop/narrow screenshots,
+JavaScript errors, and nonsecret request timings. The final run at
+`3b9801a90` passed all 76 checks with no skips, JavaScript exceptions, console
+errors, or failed requests. All six narrow captures stayed at 390px; the
+12 desktop/narrow screenshots were visually reviewed. The final console
+distribution matches the assets embedded in the tested native executable.
+
+This verification found and corrected an unconsumed endpoint probe operation,
+unnecessary refresh of unrelated CLI credentials, and initially expanded
+mobile navigation. Domain verification now uses the consumed controller path;
+its failure/retry regression passes with the full delivery suite (11 tests).
+The updated console contract suite passes all 28 tests. Provider probe editors
+are multiline, and the registry overview links directly to Containers. Disabled
+container GC diagnostics load only when their advanced section is opened.
+Browser resume exposed disposed reactive state during same-page replacement;
+workflow refresh now remounts keyed content within the persistent settings
+shell, while application-owned navigation state survives. Different settings
+routes also use keyed shells to avoid reusing disposed page state. Refresh
+defers disposal until mutation callbacks and queued reactive updates settle.
+Changed settings callbacks use an owner-free cancellation registry that closes
+when their page is disposed; the selected container editor has its own scope.
+Mutation navigation also defers unmount until callback cleanup finishes.
+Main workflow steps show status and blockers, with resource IDs kept in
+advanced inspection.
+Console asset staging also preserves rebuildability when inputs are read-only
+Nix store files. The full package gate caught stale migration-count assertions
+and missing CLI coverage registration. The packaged source filter now includes
+the executable native harness required by that coverage check.
+
+Delivery topology now selects active operations through scoped SQL primary
+and secondary target matching, eliminating per-operation remote reads for
+unrelated tenants and correcting placement identity matching.
+
+The read/query changes are structural improvements, not deployed Worker
+latency benchmarks. Full topology still expands each route and placement.
+The local fixture measured six topology reads at about 12 ms each; this is
+not representative of deployed Worker state. Its remaining read cost should
+be measured with authenticated Worker request and SQL diagnostics against
+representative state. Unauthenticated staging
+requests measure the login redirect, not authenticated delivery loading;
+existing staging credentials were rejected, so no authenticated latency claim is made.
 
 The schema additions use the existing migration ledger and require no reset.
 The route-list continuation token is now a stable route-ID cursor; callers
