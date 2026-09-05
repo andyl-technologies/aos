@@ -135,7 +135,6 @@ shape-line|crates/aos-package/src/registry/store.rs|797
 shape-line|crates/aos-package/src/registry/thinpack.rs|983
 shape-line|crates/aos-package/src/registry/tuf.rs|1633
 shape-line|crates/aos-package/src/registry/webgen.rs|1369
-shape-line|crates/aos-package/src/registry_ops.rs|21044
 shape-line|crates/aos-package/src/remove.rs|1181
 shape-line|crates/aos-package/src/resolve.rs|968
 shape-line|crates/aos-package/src/rollback.rs|645
@@ -318,7 +317,6 @@ shape-line|crates/crucible-daemon/src/executor_worker.rs|1465
 shape-line|crates/crucible-daemon/src/packaged_qemu_executor.rs|1066
 shape-line|crates/crucible-daemon/src/packaged_qemu_executor/tests.rs|781
 shape-line|crates/crucible-daemon/src/paused_checkpoint_promotion.rs|997
-shape-line|crates/crucible-daemon/src/planner_process.rs|620
 shape-line|crates/crucible-daemon/src/qemu_baked_genesis.rs|716
 shape-line|crates/crucible-daemon/src/qemu_campaign_driver.rs|1186
 shape-line|crates/crucible-daemon/src/qemu_campaign_driver/tests.rs|1423
