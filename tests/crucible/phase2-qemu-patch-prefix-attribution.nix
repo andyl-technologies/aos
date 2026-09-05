@@ -879,6 +879,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0202-crucible-adopt-child-private-native-files.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

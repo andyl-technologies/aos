@@ -3352,6 +3352,22 @@
         '';
       };
     }
+    {
+      patch = "0202-crucible-adopt-child-private-native-files.patch";
+      check = certifyExactPatch {
+        patchName = "0202-crucible-adopt-child-private-native-files.patch";
+        liveCheck = qemuSourceSetLifecycle;
+        evidenceName = "child-private-native-file-adoption";
+        liveEvidence = ''
+          grep -Fxq 'retained_transactions=2' "$live_result"
+          grep -Fxq 'whole_world_child_handoff=false' "$live_result"
+          grep -Eq '^ok [0-9]+ /block-backend/hot_fork_child_native_files$' \
+            ${qemuSourceSetLifecycle}/block-backend-tests.tap
+          grep -Eq '^ok [0-9]+ /block-backend/hot_fork_empty_source_set_child$' \
+            ${qemuSourceSetLifecycle}/block-backend-tests.tap
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =

@@ -3048,6 +3048,28 @@ findings), with no QEMU-token or manifest-boundary findings in that evaluation.
 No size limit or debt exemption was increased, and complete packaged
 license-boundary acceptance remains open.
 
+Patch 0202 adds the native child-private file primitive beneath the coordinator.
+While a source set is frozen, the parent prepares one bounded plan from
+caller-owned empty destinations: each originally writable leaf receives an exact
+private copy (`FICLONE` when available, sparse copy otherwise) checked against
+the frozen length and modification time, and each read-only leaf receives an
+independent read-only descriptor. Aliased, non-empty, append-mode, or
+over-budget destinations, foreign nodes, and a second plan per source set fail
+closed, and a retained plan blocks parent-side restoration. Only the immediate
+child installs the plan, after native worker retirement and with block barriers
+released; it reopens every prepared descriptor through an independent open file
+description so its byte-range locks never share the parent's staged description,
+rebinds the raw driver, restores original access against the private inode, and
+consumes the inherited source capability. Child raw nodes reopen through their
+descriptor, never through the parent's launch pathname. The new
+`/block-backend/hot_fork_child_native_files` case covers the negative plans,
+parent-side installation refusal, child adoption with identical VMState and disk
+bytes, read-only/writable reopen through the private inode, child writes that
+the parent never observes, and parent restoration afterwards. The canonical
+202-patch package builds and passes all 17 native cases. No coordinator path
+prepares or installs a plan yet, so physical fork still rejects nonempty native
+graphs and T-CAM-6.3 remains open.
+
 **Exit:** either the spike satisfies the structural and minimum-speedup targets,
 its manual lab evidence is accepted, or hot fork remains rejected and the RFC is
 revised around another measured local-COW mechanism. No optimistic partial

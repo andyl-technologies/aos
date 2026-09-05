@@ -3707,6 +3707,41 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   acceptance is claimed by this increment.
 - **Risk:** F.
 
+### crucible-hot-fork-child-native-files — adopt child-private native files
+
+- **Patch:** `0202-crucible-adopt-child-private-native-files.patch`.
+- **Enforces:** [HFORK-9], [HFORK-22].
+- **Mechanism:** while a complete source set is frozen, the parent prepares one
+  bounded child file plan from caller-owned descriptors: every originally
+  writable native leaf (VMState container or active overlay) receives an exact
+  private copy in an empty, unlinked-count-one, writable destination, cloned
+  with `FICLONE` when the filesystem supports it and otherwise sparse-copied,
+  then verified against the frozen source length and modification time; every
+  read-only leaf receives an independent read-only descriptor for the same
+  inode. Destinations must not alias any source or each other, at most 4,096
+  files and the caller's aggregate byte budget are accepted, and a source set
+  retains at most one plan, which blocks restoration until released. Only the
+  immediate fork child installs the plan, after native worker retirement, with
+  block barriers released, and with all sources still read-only. Installation
+  reopens each prepared descriptor through an independent open file
+  description so the child's byte-range locks never share the parent's staged
+  description, verifies device/inode/size/mtime identity, rebinds the raw
+  driver to the private file, and then restores the original access mode and
+  frees the inherited source capability. A child-adopted raw node reopens
+  through its descriptor rather than the parent's launch pathname.
+- **Micro-test:** `/block-backend/hot_fork_child_native_files` rejects plans
+  before freeze, with a zero byte budget, with a missing writable leaf, with a
+  duplicated destination, and with a foreign node; refuses installation and
+  source restoration in the parent while a plan is retained; forks a child that
+  installs the plan, observes identical VMState and disk bytes, reopens the
+  VMState root read-only and writable again through the private inode, and
+  writes changed bytes; then proves the parent's sources still hold the
+  original bytes while the private files hold the child's writes.
+- **Inertness:** no coordinator path prepares or installs a plan yet, so the
+  physical fork still rejects nonempty native graphs. The primitives are
+  QEMU-private; nothing crosses QMP or the shared-memory protocol.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.
