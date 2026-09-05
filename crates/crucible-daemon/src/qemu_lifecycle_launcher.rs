@@ -522,6 +522,7 @@ fn launcher_message(message: impl Into<String>) -> LifecycleApiError {
 
 /// Preserves typed causes when crossing the lifecycle's string-only boundary.
 /// Bounds also contain unexpectedly recursive or verbose backend errors.
+// crucible-lint: allow erased-error -- diagnostic formatting follows Error::source without replacing the typed launch error.
 fn launch_error_chain(error: &(dyn std::error::Error + 'static)) -> String {
     let mut message = String::new();
     let mut current = Some(error);

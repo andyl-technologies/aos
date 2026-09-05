@@ -1,3 +1,5 @@
+//! Tests bounded retained-template pooling and exact lifecycle return.
+
 // crucible-lint: allow panic-shortcut -- fixtures use panic shortcuts for precise failures.
 #![allow(clippy::expect_used)]
 

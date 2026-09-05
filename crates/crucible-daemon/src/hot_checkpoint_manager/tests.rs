@@ -1,3 +1,5 @@
+//! Tests bounded hotness scoring and deterministic template retention decisions.
+
 // crucible-lint: allow panic-shortcut -- fixtures use panic shortcuts for precise failures.
 #![allow(clippy::expect_used)]
 

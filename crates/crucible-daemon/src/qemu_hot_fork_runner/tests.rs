@@ -1,3 +1,5 @@
+//! Tests hot-fork attempt execution, reconciliation, and source-template recovery.
+
 // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts.
 #![allow(clippy::expect_used)]
 
