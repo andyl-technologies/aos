@@ -783,5 +783,6 @@ fn test_planner_request_digest(invocation: PlannerInvocationId) -> CampaignHash 
 }
 
 mod coordination;
+mod discovery;
 mod execution;
 mod validation;

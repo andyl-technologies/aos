@@ -970,7 +970,7 @@ impl CampaignRepository {
             }
             | AttemptAdmissionRole::AdditionalCause { proposal } => proposal,
             AttemptAdmissionRole::ExecutionBasis { proposal: None, .. } => {
-                return Err(integrity("proposal-admission-is-discovery-basis"));
+                return self.validate_initial_discovery_successor(parent, child, admission_record);
             }
         };
         let expected =

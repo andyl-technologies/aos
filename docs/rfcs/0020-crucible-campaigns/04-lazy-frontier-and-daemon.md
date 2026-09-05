@@ -777,6 +777,28 @@ observation.
   execution basis has ordinal one; every later basis uses the checked successor
   of the prior sequence entry.
 
+### Initial discovery admission
+
+A newly created campaign has a genesis configuration but no discovered choice
+or planner source. After an idle executor scan, the coordinator admits one
+initial discovery only when the campaign is Running, its canonical frontier
+index is empty, no admission sequence exists, and an authenticated additive
+command has granted at least one attempt. Proposal-only grants do not qualify.
+The grant check streams bounded accounting pages and recognizes only canonical
+command keys, not repeated auxiliary grant facts.
+
+The owner derives `Discover(lineage.genesis_content)`, the empty version-2
+branch path, and `NextChoice`. Its execution basis has no proposal, ordinal one,
+and the active-policy cause. It uses the existing optional-proposal admission
+encoding and the same five execution-basis accounting entries above, omitting
+the proposal-admission index. The successor retains the normal parent-result
+coordination link and changes no other roots. Cold validation recomputes the
+same running state, grant, frontier, attempt, path, and admission before accepting
+the exact delta. Restart sees the retained sequence and cannot issue a second
+initial discovery. Explicitly seeded frontiers retain their existing planner
+path. This first-attempt admission rule is not a claim that campaign-wide
+proposal and attempt grant enforcement is complete for later planner issuance.
+
 ## 04.14 Snapshot-bound finite expansion projection
 
 `ProjectFiniteExpansion(source_snapshot, branch_point, page_after, page_size)`

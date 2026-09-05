@@ -211,6 +211,16 @@ campaign = "*"
 principal = "{PRINCIPAL}"
 operation = "get-campaign"
 campaign = "*"
+
+[[grants]]
+principal = "{PRINCIPAL}"
+operation = "get-campaign-snapshot"
+campaign = "*"
+
+[[grants]]
+principal = "{PRINCIPAL}"
+operation = "explain-campaign-attempt"
+campaign = "*"
 "#,
                 metadata.uid(),
                 metadata.gid(),
@@ -343,11 +353,15 @@ struct CampaignServiceChild {
 impl CampaignServiceChild {
     fn stop(&mut self) -> Result<(), Box<dyn Error>> {
         send_sigterm(&self.child)?;
-        let status = wait_for_exit(&mut self.child, Duration::from_secs(15))?;
+        let status = wait_for_exit(&mut self.child, Duration::from_secs(15));
         let mut stderr = String::new();
         if let Some(mut stream) = self.child.stderr.take() {
             stream.read_to_string(&mut stderr)?;
         }
+        if !stderr.is_empty() {
+            eprintln!("campaign service stderr: {stderr}");
+        }
+        let status = status.map_err(|error| format!("{error}; stderr={stderr}"))?;
         if !status.success() {
             return Err(format!("campaign service failed: {status}; stderr={stderr}").into());
         }
