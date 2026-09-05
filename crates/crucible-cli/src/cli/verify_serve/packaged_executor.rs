@@ -130,9 +130,32 @@ pub(super) fn prepare_cli_packaged_executor(
     .map_err(|error| serve_error(format!("campaign executor configuration error: {error}")))?;
     let executor = prepared
         .prepare_packaged_executor(config)
-        .map_err(|error| serve_error(format!("campaign executor preparation error: {error}")))?;
+        .map_err(|error| {
+            serve_error(format!(
+                "campaign executor preparation error: {}",
+                preparation_error_chain(&error)
+            ))
+        })?;
     crucible_daemon::AttachedPackagedQemuExecutor::start(executor)
         .map_err(|error| serve_error(format!("campaign executor startup error: {error}")))
+}
+
+/// Keeps nested startup causes visible without unbounded diagnostic traversal.
+fn preparation_error_chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut message = String::new();
+    let mut current = Some(error);
+    for _ in 0..12 {
+        let Some(error) = current else { break };
+        if !message.is_empty() {
+            message.push_str("; caused by: ");
+        }
+        message.extend(error.to_string().chars().take(1024));
+        current = error.source();
+    }
+    if current.is_some() {
+        message.push_str("; further causes omitted");
+    }
+    message
 }
 
 fn packaged_store_namespace(state: &Path) -> crucible_campaign::CampaignHash {
@@ -232,6 +255,30 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     use super::*;
+
+    #[derive(Debug)]
+    struct CyclicCause;
+
+    impl std::fmt::Display for CyclicCause {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("bounded cause")
+        }
+    }
+
+    impl std::error::Error for CyclicCause {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(self)
+        }
+    }
+
+    #[test]
+    fn preparation_diagnostics_bound_cyclic_and_long_causes() {
+        let cycle = preparation_error_chain(&CyclicCause);
+        assert_eq!(cycle.matches("bounded cause").count(), 12);
+        assert!(cycle.ends_with("further causes omitted"));
+        let long = std::io::Error::other("x".repeat(4096));
+        assert_eq!(preparation_error_chain(&long).len(), 1024);
+    }
 
     fn authored() -> String {
         String::from(

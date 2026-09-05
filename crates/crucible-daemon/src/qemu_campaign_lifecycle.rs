@@ -710,8 +710,8 @@ impl QemuFreshGenesisCheckpointCandidate {
 #[derive(Debug, Error)]
 pub enum QemuFreshGenesisCheckpointError<E> {
     /// Fresh lifecycle construction failed with its original retry class.
-    #[error("start fresh genesis checkpoint lifecycle")]
-    Start(AttemptWorkerFailure<E>),
+    #[error("start fresh genesis checkpoint lifecycle: {0}")]
+    Start(#[source] AttemptWorkerFailure<E>),
     /// Capture failed after lifecycle construction and teardown succeeded.
     #[error(transparent)]
     Capture(#[from] QemuFreshGenesisCheckpointCaptureFailure),
