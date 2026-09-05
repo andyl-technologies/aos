@@ -12,11 +12,8 @@ const TEST_RUST_LINE_LIMIT: usize = 4_000;
 // follow-up splits can proceed independently.
 const SOURCE_LINE_DEBT: &[(&str, usize)] = &[
     ("crucible-api/src/vm_lifecycle/checkpoint_store.rs", 3_217),
-    ("crucible-campaign/src/campaign_service.rs", 3_024),
     ("crucible-cas/src/content_store/tests.rs", 5_357),
     ("crucible-cli/src/cli/campaign/tests.rs", 4_140),
-    ("crucible-qemu/src/node.rs", 3_609),
-    ("crucible-qemu/src/qmp/hot_fork.rs", 3_086),
 ];
 
 #[test]
