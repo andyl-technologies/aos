@@ -74,6 +74,7 @@ pub(crate) const OPEN_TREE_CLONE: u32 = 1;
 pub(crate) const OPEN_TREE_CLOEXEC: u32 = libc::O_CLOEXEC as u32;
 pub(crate) const AT_EMPTY_PATH: u32 = 0x1000;
 pub(crate) const AT_RECURSIVE: u32 = 0x8000;
+pub(crate) const RENAME_NOREPLACE: u32 = 1;
 pub(crate) const STATX_MNT_ID_UNIQUE: u32 = 0x0000_4000;
 pub(crate) const MOVE_MOUNT_F_EMPTY_PATH: u32 = 0x0000_0004;
 pub(crate) const MOVE_MOUNT_T_EMPTY_PATH: u32 = 0x0000_0040;
@@ -486,6 +487,29 @@ pub(crate) fn fsync(fd: BorrowedFd<'_>) -> Result<()> {
 pub(crate) fn effective_uid() -> u32 {
     // SAFETY: `geteuid` has no pointer arguments or process-state mutation.
     unsafe { libc::geteuid() }
+}
+
+pub(crate) fn renameat2(
+    old_directory: BorrowedFd<'_>,
+    old_name: &CStr,
+    new_directory: BorrowedFd<'_>,
+    new_name: &CStr,
+    flags: u32,
+) -> Result<()> {
+    // SAFETY: both NUL-terminated names and borrowed directory descriptors
+    // remain valid for the complete syscall. The caller supplies a vendored,
+    // validated flag set.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            old_directory.as_raw_fd(),
+            old_name.as_ptr(),
+            new_directory.as_raw_fd(),
+            new_name.as_ptr(),
+            flags,
+        )
+    };
+    unit_result(result, "renameat2")
 }
 
 pub(crate) fn map_readonly_shared(fd: BorrowedFd<'_>, length: usize) -> Result<*mut libc::c_void> {
@@ -1267,6 +1291,7 @@ mod tests {
         assert_eq!(size_of::<RawVerityEnableArg>(), 128);
         assert_eq!(FS_IOC_MEASURE_VERITY, 0xc004_6686);
         assert_eq!(FS_IOC_ENABLE_VERITY, 0x4080_6685);
+        assert_eq!(RENAME_NOREPLACE, 1);
     }
 
     #[test]

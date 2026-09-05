@@ -4,8 +4,17 @@
 //! a readable source into a newly created private inode beneath a retained,
 //! protected directory, lets the caller verify exactly the copied stream,
 //! closes the never-exposed writer, enables fs-verity, and returns the measured
-//! read-only inode. It does not authenticate content, select a cache domain,
-//! publish a canonical name, or authorize cleanup of retained failures.
+//! read-only inode. Its naming submodule can durably apply a caller-selected
+//! no-replace basename, but this module does not authenticate content, select a
+//! cache domain, authorize a canonical catalog name, commit catalog state, or
+//! authorize cleanup of retained failures.
+
+mod naming;
+
+pub use naming::{
+    AfterRenameFailure, AmbiguousNamedSealedFile, BeforeRenameFailure, DurablyNamedSealedFile,
+    NoReplacePublicationError, RenamedSealedFile,
+};
 
 use std::error::Error as StdError;
 use std::ffi::{CStr, CString, OsStr};
@@ -260,15 +269,23 @@ impl<E: StdError + 'static> MaterializationError<E> {
 /// Its measurement proves the kernel seal created by this operation, not AOS
 /// content identity or publication authority. The private name has not been
 /// promoted to a canonical catalog name or durably committed to a catalog.
+///
+/// ```compile_fail
+/// use aos_sandbox_linux::immutable_file::SealedPrivateFile;
+/// fn extend(file: SealedPrivateFile<'_>) -> SealedPrivateFile<'static> {
+///     file
+/// }
+/// ```
 #[derive(Debug)]
-pub struct SealedPrivateFile {
+pub struct SealedPrivateFile<'root> {
     file: OwnedFd,
     name: PublicationName,
+    root: &'root FsVerityPublicationRoot,
     identity: PrivateIdentity,
     verity: FsVerityDigest,
 }
 
-impl SealedPrivateFile {
+impl SealedPrivateFile<'_> {
     /// Returns the still-private basename.
     #[must_use]
     pub fn name(&self) -> &PublicationName {
@@ -300,7 +317,7 @@ impl SealedPrivateFile {
     }
 }
 
-impl AsFd for SealedPrivateFile {
+impl AsFd for SealedPrivateFile<'_> {
     fn as_fd(&self) -> BorrowedFd<'_> {
         self.file.as_fd()
     }
@@ -379,13 +396,13 @@ impl FsVerityPublicationRoot {
     /// byte-ceiling exhaustion, callback rejection, I/O or fs-verity failure,
     /// or a private-inode identity/protection race. The error identifies whether
     /// a newly created private inode may remain for recovery.
-    pub fn materialize_and_seal<C: MaterializationCallbacks>(
-        &self,
+    pub fn materialize_and_seal<'root, C: MaterializationCallbacks>(
+        &'root self,
         source: OwnedFd,
         private_name: PublicationName,
         maximum_bytes: u64,
         callbacks: &mut C,
-    ) -> Result<SealedPrivateFile, MaterializationError<C::Error>> {
+    ) -> Result<SealedPrivateFile<'root>, MaterializationError<C::Error>> {
         let source = File::from(source);
         if let Err(cause) = inspect_source(source.as_fd(), maximum_bytes) {
             return Err(MaterializationError {
@@ -492,8 +509,8 @@ impl FsVerityPublicationRoot {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn finish_materialization<C: MaterializationCallbacks>(
-        &self,
+    fn finish_materialization<'root, C: MaterializationCallbacks>(
+        &'root self,
         source: File,
         mut writer: File,
         private_name: PublicationName,
@@ -501,7 +518,7 @@ impl FsVerityPublicationRoot {
         callbacks: &mut C,
         retained: &mut RetainedPrivateArtifact,
         created: PrivateIdentity,
-    ) -> Result<SealedPrivateFile, MaterializationFailure<C::Error>> {
+    ) -> Result<SealedPrivateFile<'root>, MaterializationFailure<C::Error>> {
         copy_and_verify(&source, &mut writer, maximum_bytes, callbacks, retained)?;
         callbacks
             .checkpoint()
@@ -558,6 +575,7 @@ impl FsVerityPublicationRoot {
         Ok(SealedPrivateFile {
             file: reader.into(),
             name: private_name,
+            root: self,
             identity: reopened,
             verity,
         })

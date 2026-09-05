@@ -23,9 +23,11 @@ mod publication;
 
 pub use backing::{BackingFileIdentity, FsVerityBacking};
 pub use publication::{
+    AfterRenameFailure, AmbiguousNamedSealedFile, BeforeRenameFailure, DurablyNamedSealedFile,
     FsVerityPublicationRoot, InvalidPublicationName, MaterializationCallbacks,
-    MaterializationError, MaterializationFailure, PublicationName, PublicationRootError,
-    RetainedPrivateArtifact, RetainedPrivatePhase, SealedPrivateFile,
+    MaterializationError, MaterializationFailure, NoReplacePublicationError, PublicationName,
+    PublicationRootError, RenamedSealedFile, RetainedPrivateArtifact, RetainedPrivatePhase,
+    SealedPrivateFile,
 };
 
 use std::marker::PhantomData;
