@@ -88,6 +88,65 @@ expect mutable caches receive one of:
 - an explicitly trusted shared-write view with coherency outside this RFC's
   default guarantees.
 
+### Publisher authority
+
+The content publisher is an unprivileged, domain-scoped service, not another
+assignment-bound privileged broker. It must operate for a project that has no
+running sandbox. The initial service scope is one configured project domain;
+public publication requires a separate promotion decision and cannot be inferred
+from permission to read or publish inside a project. No fictitious sandbox,
+assignment epoch, or ownership lease is used to fit an existing broker plan.
+
+A distinct versioned publisher-domain plan binds the configured publisher
+principal, instance and node; project and exact cache/isolation-policy domain;
+holder and authenticated channel; complete content descriptor and source
+authorization commitment; policy, controller-authority and revocation
+generations; root-registry generation; operation/reservation identities and
+limits; request commitment; validity interval; and required features. It uses a
+dedicated signature purpose and protocol/media-type registration. Existing
+broker encodings remain unchanged and reject publisher messages. Local peer
+credentials identify a configured channel, not project authority; a future
+remote transport supplies authenticated principal and possession/channel binding.
+
+The first authority path is online. Before admission the publisher sends the
+controller a fresh challenge bound to its service incarnation and exact request.
+The controller evaluates capability, policy, source authorization and reservation
+state, then signs a challenge-bound decision. Canonical naming/catalog completion
+requires a fresh, exact-operation completion permit for the same immutable plan.
+The permit also binds the prepared artifact/seal commitment, root generation,
+reservation, and live publisher incarnation. Issuance and revocation initiation
+are serialized by the controller.
+Version 1 uses retained controller-owned permits, not a timed completion window:
+a pre-syscall clock check cannot bound an already-entered rename or fsync.
+The controller durably records the one-shot permit before issuing it. It remains
+valid only for that exact authorized completion across controller loss or later
+admission expiry; it cannot authorize another object, operation, incarnation,
+domain, or reservation. Revocation remains pending for the outstanding effect.
+
+Controller loss or admission expiry denies new admissions and new permits, not
+the exact completion already permitted. Publisher restart cannot replay an old
+permit as authority: online reconciliation must establish the old executor's
+fencing/quiescence and authorize the recovery incarnation. Controller failover
+must preserve outstanding permit state rather than mint conflicting authority.
+Neither an abort request nor an acknowledgment frees a permit or reservation
+while an old executor can still finish an in-flight effect. Private and uncertain
+artifacts remain charged until authority-bound reconciliation establishes the
+terminal result. A stuck executor may therefore delay revocation; the API must
+not promise an unsupported bounded revocation latency.
+Completion converts reserved capacity into committed residency charges rather
+than freeing occupied capacity. Lost replies and receipt replay are idempotent:
+they cannot create another permit or release capacity twice. A recovery decision
+may finish or reconcile an existing irrevocable obligation, not manufacture a
+new publication grant from revoked authority.
+
+Canonical-name existence is internal storage state, not consumer visibility.
+Readers and the mount broker still require committed catalog state and their
+own current disclosure authorization; they never infer publication from a path.
+The journal retains decisions and exact recovery evidence, not an `authorized`
+boolean. Capability-record construction is not authentication, a producer
+signature is not publication permission, and an arbitrary caller-supplied
+generation is not an online controller decision.
+
 ## Reservations, pins, and residency
 
 These concepts remain separate:

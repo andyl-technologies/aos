@@ -144,6 +144,20 @@ successful `FUSE_POSIX_ACL` conformance. Kernel DAC is defense in depth inside
 an already authorized view, while filtered view contents—not mode bits—enforce
 cross-sandbox disclosure.
 
+This limitation also applies to mutually distrustful users sharing one mount:
+a compromised worker controls reported metadata as well as backing selectors.
+Passing a cross-UID DAC test does not prove containment of that worker. A
+connection must not contain bytes whose disclosure to any of its admitted
+consumers is forbidden by the worker-compromise threat model. Such audiences
+require separately filtered connections and an independently enforced consumer
+boundary, not just different mode bits or ACLs within one connection.
+Worker authority must be isolated too: one compromised process serving several
+connections can transfer information between them. Every consumer it can answer
+must be authorized for the union of bytes reachable through that worker's
+authority; otherwise separate worker/MAC domains or an equivalent enforced
+boundary are required. Independent per-connection resource accounting alone
+does not establish disclosure isolation.
+
 FUSE stack depth is explicitly bounded. Backing files on FUSE and recursive
 service dependencies are rejected. Worker binaries and control files live
 outside served namespaces.

@@ -1178,6 +1178,58 @@ completes. The Git history remains authoritative for code details.
   file data, and worker process integration remain open. No task is checked
   from the library alone.
 
+- `0646bf819` — qualifies protected journal creation, locking, compaction,
+  and replay under actual UID/GID 1000 in an AOS Linux 6.18.33 VM, with cleared
+  supplementary groups. Exact error checks reject a second live opener,
+  UID/GID 1001, and an otherwise private leaf beneath writable ancestry.
+  The unpublished fixture uses declared AOS protobuf generation and AOS
+  coreutils credential switching while preserving the guest's root directory.
+  Independent review, scoped Clippy/formatting, hermetic build, and headless
+  runtime pass. Result: `jdijqmzicwl6wwvav3d3rhkmyrkdskgf-aos-vm-test-sandbox-service-journal-0`.
+- `00dfcc4e4` — qualifies no-replace naming on the same AOS kernel. Exact
+  `SameName` and `DestinationExists` errors preserve ownership and conflicting
+  files; retry to a free basename succeeds. Final inode/bytes/measurement match,
+  the private name returns `ENOENT`, final backing admission succeeds, and a
+  writable open returns `EPERM`. All seventeen materialization/naming assertions
+  and prior capability/fake-FUSE/backing proofs pass after independent review.
+  Result: `i9axckxkz2kaizgszd7v42bhwwzg1n9n-aos-vm-test-sandbox-filesystem-kernel-capabilities-0`.
+  Real power-loss recovery, authoritative catalog integration, and aarch64
+  qualification remain open.
+- `6ca7dccf6` — adds same-directory no-replace naming for sealed private files.
+  Private and every returned success/error token borrow the actual creating
+  root, keeping its descriptor alive rather than relying on numeric identity.
+  Exact `EEXIST` is a pre-effect conflict; other rename errors are explicitly
+  ambiguous. Post-rename errors retain the inode pin and both candidate names.
+  Parent fsync is bracketed by exact name/inode/measurement validation. No
+  failure deletes, adopts, rolls back, or commits catalog authority. All 56
+  Linux unit tests, eight ownership doctests, strict Clippy, rustdoc, and
+  independent review pass; the fault seam checks post-rename ordering and
+  stopping behavior. Positive real-kernel naming and crash-recovery qualification
+  remain separate gates.
+- `6178aa02a` — qualifies adversarial proof provenance and fresh-inode sealing
+  on AOS Linux 6.18.33 x86_64. An unprivileged ordinary FUSE daemon fabricates
+  a complete measurement accepted by the coordinator's raw ioctl; both Rust
+  admission APIs reject its filesystem before another measurement request.
+  Exact counters prove one ioctl, two STATFS, three ordinary opens, zero READ,
+  and no backing registration. The materialization fixture verifies all twelve
+  creation assertions, including independent streamed descriptor verification,
+  fresh inode identity, source-offset preservation, verified backing reopening,
+  exact `EPERM`/`EEXIST` outcomes, quota-before-create, and retained unsealed
+  callback failures. All original capability/backing proofs remain passing.
+  Strict GCC, scoped Clippy/rustdoc/formatting, and independent review pass.
+  Result: `i2sqah03hmvs9dsrfxhyv82nwpavqgz5-aos-vm-test-sandbox-filesystem-kernel-capabilities-0`.
+  Canonical naming, publisher catalog/authority, and aarch64 remain open.
+- `403bd0085` — implements fresh private-inode materialization and sealing
+  beneath a retained, exact-service-owner 0700 kernel-filesystem root. Bounded
+  positional copying preserves the source offset, checkpoints read/write
+  retries, and feeds only fully written chunks to caller verification. The
+  writable destination never escapes; data sync and same-inode read-only
+  reopen precede writer closure, fixed SHA-256/4096 fs-verity enablement,
+  measurement rechecks, and inode/directory fsync. Every post-create failure
+  retains non-authorizing artifact evidence for recovery; no cleanup, adoption,
+  replacement, or canonical publication is performed. All 54 Linux unit tests,
+  four ownership doctests, strict Clippy, rustdoc, and independent review pass.
+  Positive real-kernel creation and publisher authority integration remain open.
 - `c4e801616` — qualifies the public Rust owned-backing and mapping admission
   APIs on exact AOS Linux 6.18.33 x86_64. The narrow unpublished fixture verifies
   bytes, EOF, identity, mapping compatibility, and retained-pin reads after
