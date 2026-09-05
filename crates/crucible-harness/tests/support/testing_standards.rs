@@ -234,6 +234,26 @@ pub(super) fn source_shape_failures(
         ));
     }
 
+    if standard.shape == TestShape::CampaignModel {
+        for required in [
+            "CampaignRepository::new",
+            "CampaignLineage::new",
+            "assert_eq!(lineage.id()?, reverse_lineage.id()?)",
+            "CampaignRepositoryError::Stale",
+            "derive_campaign",
+            "assert_eq!(rebuilt.snapshot_id(), derived.new_snapshot)",
+            "restarted.state",
+        ] {
+            if !code.contains(required) {
+                failures.push(format!(
+                    "{}:{} must prove canonical identities, stale-command refusal, derivation, and restart through the public campaign repository",
+                    target.package, target.test_target,
+                ));
+                break;
+            }
+        }
+    }
+
     if standard.shape == TestShape::CampaignContinuity {
         for required in [
             "seed_next_run_for_provenance",

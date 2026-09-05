@@ -1,3 +1,5 @@
+//! Tests hot checkpoint retention leases and fail-closed release accounting.
+
 // crucible-lint: allow panic-shortcut -- fixtures use panic shortcuts for exact failures.
 #![allow(clippy::expect_used)]
 

@@ -161,7 +161,6 @@ shape-line|crates/aos-server/src/tokens.rs|614
 shape-line|crates/aos-systemd/src/client.rs|729
 shape-line|crates/aos/src/cli/hub.rs|3732
 shape-line|crates/aos/src/cli/hub_retained_control.rs|713
-shape-line|crates/aos/src/commands/hub.rs|10804
 shape-line|crates/aos/src/commands/hub_cutover_verify/bundle.rs|3439
 shape-line|crates/aos/src/commands/hub_cutover_verify/fixtures.rs|699
 shape-line|crates/aos/src/commands/hub_cutover_verify/schema.rs|721
