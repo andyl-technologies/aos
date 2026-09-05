@@ -1672,9 +1672,6 @@ label.inline {
 .support-tile { display: flex; flex-direction: column; gap: .15rem; min-width: 11rem; padding: .7rem .9rem; border: 1px solid var(--rule); border-top: 3px solid var(--rule); text-decoration: none; color: var(--ink); }
 .support-tile:hover { border-color: var(--ink); text-decoration: none; }
 .support-tile.supported { border-top-color: var(--ok); }
-.support-tile.candidate { border-top-color: var(--warn); }
-.support-tile.edge { border-top-color: var(--link); }
-.support-tile.eol { border-top-color: var(--rule-strong); color: var(--dim); }
 .support-train { font-size: .75rem; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); }
 .support-tile strong { font-size: 1.1rem; }
 .support-state, .support-channels { font-size: .8rem; color: var(--dim); }
