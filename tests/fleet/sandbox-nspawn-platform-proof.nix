@@ -378,10 +378,15 @@ in {
     assert int(vm.succeed("systemctl show aos-nspawn-platform-proof.service -p MainPID --value").strip()) == supervisor_pid
 
     vm.succeed("systemctl kill --kill-whom=main --signal=USR1 aos-nspawn-host-observer.service")
-    vm.wait_until_succeeds(
-        "test $(jq -r .state /run/aos-nspawn-host-observer.json) = rebooted",
-        timeout=90,
-    )
+    try:
+        vm.wait_until_succeeds(
+            "test $(jq -r .state /run/aos-nspawn-host-observer.json) = rebooted",
+            timeout=90,
+        )
+    except Exception:
+        print(vm.execute("journalctl -u aos-nspawn-host-observer.service -u aos-nspawn-platform-proof.service --no-pager")[1].decode("utf-8", errors="replace"))
+        print(vm.execute("systemd-cgls --no-pager /aos.slice/aos-sandboxes.slice/aos-nspawn-platform-proof.service")[1].decode("utf-8", errors="replace"))
+        raise
     second_report = json.loads(vm.succeed(f"cat {report_path}"))
     assert second_report["passed"] is True, second_report
     assert second_report["network_namespace_inode"] == pinned_inode, second_report

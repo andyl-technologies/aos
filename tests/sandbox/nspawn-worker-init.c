@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/resource.h>
+#include <sys/reboot.h>
 #include <sys/statvfs.h>
 #include <unistd.h>
 
@@ -32,6 +33,11 @@ int main(int argc, char **argv) {
     }
     if (statvfs("/nix/store", &store) < 0 || !(store.f_flag & ST_RDONLY)) {
         fputs("prepared read-only Nix-store mount did not survive root setup\n", stderr);
+        return EXIT_FAILURE;
+    }
+    errno = 0;
+    if (reboot(RB_DISABLE_CAD) != -1 || errno != EPERM) {
+        fputs("guest reboot probe did not receive its nonfatal denial\n", stderr);
         return EXIT_FAILURE;
     }
 

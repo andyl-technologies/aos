@@ -140,7 +140,7 @@ pub trait Unit {
     #[zbus(property)]
     fn freezer_state(&self) -> zbus::Result<String>;
     /// Per-activation identifier; all zeroes while no invocation exists.
-    #[zbus(property)]
+    #[zbus(property, name = "InvocationID")]
     fn invocation_id(&self) -> zbus::Result<Vec<u8>>;
 }
 
@@ -164,7 +164,7 @@ pub trait Service {
     #[zbus(property)]
     fn n_restarts(&self) -> zbus::Result<u32>;
     /// Current main PID, or zero when the service has none.
-    #[zbus(property)]
+    #[zbus(property, name = "MainPID")]
     fn main_pid(&self) -> zbus::Result<u32>;
     /// Unit cgroup path relative to the cgroup-v2 root.
     #[zbus(property)]

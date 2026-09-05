@@ -2176,3 +2176,45 @@ binary for the exact executable path. The platform VM passed initial payload
 and corrected cgroup assertions, then failed while waiting for its observer
 report; observer journal and cgroup-tree diagnostics are added for that run.
 The repaired VM gates are being rerun; neither gate is yet green.
+
+### Inherited startup denials and observer leaf identity
+
+With the executable reference retained, the worker reached guest systemd.
+Its startup `reboot(RB_DISABLE_CAD)` probe was terminated by the inherited
+supervisor filter (`SIGSYS`, x86-64 syscall 169). An intermediate allowance
+passed that probe but exposed the same fatal-denial issue on systemd's BPF
+probe. The supervisor now applies an ordered errno-denial overlay after its
+closed allowlist: both `bpf` and `reboot` remain forbidden with `EPERM`.
+Other unknown syscalls retain the default kill action. This avoids granting
+BPF operations to the `CAP_SYS_ADMIN`-bearing supervisor. The payload's
+separate denials remain intact, and neither process gains `CAP_SYS_BOOT`. The first
+guest executable explicitly tests the nonfatal denial before exec, and the
+property regression checks the layered syscall/capability contract.
+
+The platform observer's cgroup-tree diagnostic confirmed guest PID 1 in
+`payload/init.scope`. The fixture was comparing its pidfd cgroup identity
+against the payload subtree root. It now opens the exact `init.scope` child
+relative to the payload descriptor, disallows a final symlink, and compares
+the pidfd identity and strict `/proc` membership with that leaf before and
+after observation. Discovery still searches the full payload subtree and
+rejects ambiguous candidates. The production Rust worker already handles
+descriptor-checked descendant membership; this correction is to the separate
+platform fixture, not a relaxation of production scope checks. The fixture's
+pidfd namespace ioctls also now pass an explicit zero third argument, as
+required by the kernel ABI, instead of leaving a variadic argument undefined.
+
+The resulting VM run boots the production worker's payload to its default
+target and passes the platform observer's initial and restarted identity
+checks. Worker observation then exposed incorrect generated D-Bus property
+names: `InvocationId` instead of `InvocationID`, and the analogous `MainPid`
+instead of `MainPID`. Proxy and independent fake-service declarations now
+name these wire properties explicitly. The platform gate times out waiting
+for guest reboot; its timeout path now captures runtime and observer journals
+and the live cgroup tree. Neither failure is treated as qualification.
+
+The latest all-feature Host/systemd suites pass 97 unit tests, 26 integration
+tests, and two doctests; the explicitly VM-only test remains ignored outside
+its fleet fixture. Strict all-target/all-feature Clippy with `--no-deps` and
+Rust/Nix formatting checks pass. A dependency-inclusive Clippy invocation
+fails on generated `aos-proto` HashMap fields under the repository's ordered
+container lint. The updated VM gates are being rerun and are not yet qualified.

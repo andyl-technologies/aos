@@ -314,20 +314,32 @@ static int observe(pid_t pid, pid_t supervisor, const char *root, const char *ne
         struct stat cgroup_status = { 0 };
         char root_path[64];
         char cgroup_path[MAX_PATH];
+        char pid_one_cgroup[MAX_PATH];
+        const char *stage = "payload process";
+        int payload_fd = -1;
         bool nested_one = false;
         int written;
         *o = (struct observation) { .pid = pid, .pidfd = -1, .rootfd = -1, .cgroupfd = -1, .mntfd = -1,
                                     .netfd = -1, .pidnsfd = -1, .userfd = -1 };
+        /* This fixture boots guest systemd, which moves PID 1 into init.scope.
+         * Discovery still searches the entire payload tree for ambiguity, but
+         * process membership must be compared with the pinned leaf object. */
+        written = snprintf(pid_one_cgroup, sizeof(pid_one_cgroup), "%s/init.scope", cgroup);
+        if (written < 0 || (size_t) written >= sizeof(pid_one_cgroup)) goto fail;
         o->pidfd = (int) syscall(SYS_pidfd_open, pid, 0U);
         if (o->pidfd < 0 || pidfd_info(o->pidfd, &first) < 0 ||
             first.pid != (unsigned) pid || first.tgid != (unsigned) pid ||
             first.ppid != (unsigned) supervisor || !pidfd_alive(o->pidfd) ||
-            read_status(pid, supervisor, &nested_one, NULL) < 0 || !nested_one || !exact_cgroup(pid, cgroup)) goto fail;
+            read_status(pid, supervisor, &nested_one, NULL) < 0 || !nested_one || !exact_cgroup(pid, pid_one_cgroup)) goto fail;
+        stage = "payload cgroup";
         written = snprintf(cgroup_path, sizeof(cgroup_path), "/sys/fs/cgroup%s", cgroup);
         if (written < 0 || (size_t) written >= sizeof(cgroup_path)) goto fail;
-        o->cgroupfd = open(cgroup_path, O_PATH | O_DIRECTORY | O_CLOEXEC);
+        payload_fd = open(cgroup_path, O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        if (payload_fd < 0) goto fail;
+        o->cgroupfd = openat(payload_fd, "init.scope", O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
         if (o->cgroupfd < 0 || fstat(o->cgroupfd, &cgroup_status) < 0 ||
             first.cgroup_id != (unsigned long long) cgroup_status.st_ino) goto fail;
+        stage = "payload root";
         {
                 int written = snprintf(root_path, sizeof(root_path), "/proc/%ld/root", (long) pid);
                 if (written < 0 || (size_t) written >= sizeof(root_path)) goto fail;
@@ -335,21 +347,27 @@ static int observe(pid_t pid, pid_t supervisor, const char *root, const char *ne
         o->rootfd = open(root_path, O_PATH | O_CLOEXEC);
         if (o->rootfd < 0 || identity_fd(o->rootfd, &o->root) < 0 ||
             identity_path(root, &expected_root) < 0 || !same_identity(o->root, expected_root)) goto fail;
-        o->mntfd = ioctl(o->pidfd, PIDFD_GET_MNT_NAMESPACE);
-        o->netfd = ioctl(o->pidfd, PIDFD_GET_NET_NAMESPACE);
-        o->pidnsfd = ioctl(o->pidfd, PIDFD_GET_PID_NAMESPACE);
-        o->userfd = ioctl(o->pidfd, PIDFD_GET_USER_NAMESPACE);
+        stage = "payload namespaces";
+        /* The pidfs namespace ABI rejects any nonzero ioctl argument. */
+        o->mntfd = ioctl(o->pidfd, PIDFD_GET_MNT_NAMESPACE, 0UL);
+        o->netfd = ioctl(o->pidfd, PIDFD_GET_NET_NAMESPACE, 0UL);
+        o->pidnsfd = ioctl(o->pidfd, PIDFD_GET_PID_NAMESPACE, 0UL);
+        o->userfd = ioctl(o->pidfd, PIDFD_GET_USER_NAMESPACE, 0UL);
         if (o->mntfd < 0 || o->netfd < 0 || o->pidnsfd < 0 || o->userfd < 0 ||
             identity_fd(o->mntfd, &o->mnt) < 0 || identity_fd(o->netfd, &o->net) < 0 ||
             identity_fd(o->pidnsfd, &o->pidns) < 0 || identity_fd(o->userfd, &o->user) < 0 ||
             identity_path(netns, &expected_net) < 0 || !same_identity(o->net, expected_net) ||
             !pidfd_alive(o->pidfd)) goto fail;
+        stage = "payload recheck";
         if (pidfd_info(o->pidfd, &second) < 0 || second.pid != first.pid ||
             second.tgid != first.tgid || second.ppid != first.ppid ||
-            second.cgroup_id != first.cgroup_id || !exact_cgroup(pid, cgroup) ||
+            second.cgroup_id != first.cgroup_id || !exact_cgroup(pid, pid_one_cgroup) ||
             !pidfd_alive(o->pidfd)) goto fail;
+        (void) close(payload_fd);
         return 0;
 fail:
+        fprintf(stderr, "nspawn observer rejected %s evidence\n", stage);
+        if (payload_fd >= 0) (void) close(payload_fd);
         close_observation(o);
         return -1;
 }

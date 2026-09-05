@@ -245,7 +245,8 @@ impl FakeUnit {
         "frozen"
     }
 
-    #[zbus(property)]
+    // Match the wire ABI explicitly, independently of proxy name conversion.
+    #[zbus(property, name = "InvocationID")]
     fn invocation_id(&self) -> Vec<u8> {
         vec![9; 16]
     }
@@ -257,7 +258,7 @@ struct FakeService {
 
 #[zbus::interface(name = "org.freedesktop.systemd1.Service")]
 impl FakeService {
-    #[zbus(property)]
+    #[zbus(property, name = "MainPID")]
     fn main_pid(&self) -> u32 {
         4242
     }

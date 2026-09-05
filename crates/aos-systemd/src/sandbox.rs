@@ -674,6 +674,17 @@ impl SandboxUnitSpec {
                         .collect::<Vec<_>>(),
                 ),
             )?,
+            // systemd applies repeated filter properties in order. Keep the
+            // closed allowlist, then give known startup probes nonfatal denials.
+            // Allowing bpf here would grant a SYS_ADMIN-bearing supervisor an
+            // unnecessary operation; these errno rules keep it forbidden.
+            complex_property(
+                "SystemCallFilter",
+                (
+                    false,
+                    vec!["bpf:EPERM".to_owned(), "reboot:EPERM".to_owned()],
+                ),
+            )?,
             string_array_property("SystemCallArchitectures", vec!["native".to_owned()])?,
             string_property("ProtectSystem", "strict"),
             string_property("SELinuxContext", NSPAWN_SUPERVISOR_SELINUX_CONTEXT),
@@ -1291,6 +1302,7 @@ mod tests {
                 "CapabilityBoundingSet",
                 "RestrictAddressFamilies",
                 "SystemCallFilter",
+                "SystemCallFilter",
                 "SystemCallArchitectures",
                 "ProtectSystem",
                 "SELinuxContext",
@@ -1367,8 +1379,28 @@ mod tests {
             <(bool, Vec<String>)>::try_from(syscall_filter.1.try_clone().unwrap()).unwrap();
         assert!(allowlist);
         assert!(syscalls.iter().any(|syscall| syscall == "mount_setattr"));
+        assert!(!syscalls.iter().any(|syscall| syscall == "reboot"));
+        assert!(!syscalls.iter().any(|syscall| syscall == "bpf"));
+        assert!(
+            PAYLOAD_SYSTEM_CALL_FILTER
+                .split_whitespace()
+                .any(|group| group == "@reboot")
+        );
+        assert_eq!(NSPAWN_SUPERVISOR_CAPABILITIES & (1 << 22), 0);
         assert!(!syscalls.iter().any(|syscall| syscall == "open_tree_attr"));
         assert!(!syscalls.iter().any(|syscall| syscall == "@mount"));
+        let filters = properties
+            .iter()
+            .filter(|(name, _)| name == "SystemCallFilter")
+            .collect::<Vec<_>>();
+        assert_eq!(filters.len(), 2);
+        assert_eq!(
+            <(bool, Vec<String>)>::try_from(filters[1].1.try_clone().unwrap()).unwrap(),
+            (
+                false,
+                vec!["bpf:EPERM".to_owned(), "reboot:EPERM".to_owned()]
+            )
+        );
     }
 
     #[test]
