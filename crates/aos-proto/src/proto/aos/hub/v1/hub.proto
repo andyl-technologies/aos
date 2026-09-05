@@ -126,6 +126,13 @@ service NetworkPolicyService {
 }
 
 service DeliveryService {
+  rpc PlanDeliveryDestination(PlanDeliveryDestinationRequest) returns (TopologyPlanResponse);
+  rpc ApplyDeliveryDestination(ApplyDeliveryDestinationRequest) returns (DeliveryWorkflowResponse);
+  rpc GetDeliveryWorkflow(GetDeliveryWorkflowRequest) returns (DeliveryWorkflowResponse);
+  rpc ListDeliveryWorkflows(ListDeliveryWorkflowsRequest) returns (ListDeliveryWorkflowsResponse);
+  rpc ResumeDeliveryDestination(ResumeDeliveryDestinationRequest) returns (DeliveryWorkflowResponse);
+  rpc PlanActivateDeliveryDestination(PlanActivateDeliveryDestinationRequest) returns (TopologyPlanResponse);
+  rpc ActivateDeliveryDestination(ApplyDeliveryDestinationRequest) returns (DeliveryWorkflowResponse);
   rpc ListEndpoints(ListTopologyResourcesRequest) returns (ListEndpointsResponse);
   rpc GetEndpoint(GetTopologyResourceRequest) returns (EndpointResponse);
   rpc PlanCreateEndpoint(PlanEndpointMutationRequest) returns (TopologyPlanResponse);
@@ -4504,6 +4511,96 @@ message ApplyDeleteTopologyResourceRequest {
 
 message DeleteTopologyResourceResponse { bool deleted = 1; }
 
+// A delivery workflow coordinates existing topology resources without changing
+// their ownership or granting cross-scope permissions implicitly.
+message DeliveryEndpointReference {
+  string endpoint_id = 1;
+  int64 generation = 2;
+}
+message DeliveryEndpointInput {
+  oneof hostname_source {
+    string hostname = 1;
+    string domain_id = 2;
+  }
+  string network_policy_id = 3;
+  EndpointRevisionSpec revision = 4;
+}
+message DeliveryDestinationIntent {
+  SurfaceRef surface = 1;
+  // Must be the surface's owner scope. Shared prerequisites need existing grants.
+  string owner_scope_key = 2;
+  oneof endpoint {
+    DeliveryEndpointReference existing_endpoint = 3;
+    DeliveryEndpointInput new_endpoint = 4;
+  }
+  string placement_name = 5;
+  // Gateway URL prefix. The selected placement's storage prefix is appended
+  // to derive the final immutable delivery URL shown in the review plan.
+  string client_base_path = 6;
+  DeliveryAccessPolicy access_policy = 7;
+  RouteCapabilities capabilities = 8;
+  repeated string audiences = 9;
+}
+message PlanDeliveryDestinationRequest {
+  DeliveryDestinationIntent intent = 1;
+  string idempotency_key = 2;
+  // Creation requires this to be empty; activation has its own reviewed CAS.
+  string expected_resource_version = 3;
+}
+message ApplyDeliveryDestinationRequest {
+  string plan_id = 1;
+  string idempotency_key = 2;
+  string confirmation_hash = 3;
+}
+message GetDeliveryWorkflowRequest { string workflow_id = 1; }
+message ListDeliveryWorkflowsRequest {
+  SurfaceRef surface = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+message ResumeDeliveryDestinationRequest {
+  string workflow_id = 1;
+  string expected_resource_version = 2;
+  string idempotency_key = 3;
+}
+message PlanActivateDeliveryDestinationRequest {
+  string workflow_id = 1;
+  string expected_resource_version = 2;
+  string idempotency_key = 3;
+}
+message DeliveryWorkflowStep {
+  string key = 1;
+  string label = 2;
+  string state = 3;
+  string detail = 4;
+  string resource_id = 5;
+  // Durable provider or verification work associated with this step.
+  OperationRef operation = 6;
+}
+message DeliveryWorkflow {
+  string workflow_id = 1;
+  DeliveryDestinationIntent intent = 2;
+  // preparing, awaiting_verification, ready, active, or blocked.
+  string state = 3;
+  repeated DeliveryWorkflowStep steps = 4;
+  repeated string blockers = 5;
+  repeated string next_actions = 6;
+  string domain_id = 7;
+  string endpoint_id = 8;
+  int64 endpoint_generation = 9;
+  string gateway_id = 10;
+  string route_id = 11;
+  string canonical_url = 12;
+  string resource_version = 13;
+  int64 created_at = 14;
+  int64 updated_at = 15;
+}
+message DeliveryWorkflowResponse { DeliveryWorkflow workflow = 1; }
+message ListDeliveryWorkflowsResponse {
+  repeated DeliveryWorkflow workflows = 1;
+  string next_page_token = 2;
+}
+
 message BindingRef {
   oneof target {
     bool instance_default = 1;
@@ -5223,6 +5320,12 @@ message ListGatewaysRequest {
   BindingRef binding = 1;
   uint32 page_size = 2;
   string page_token = 3;
+  // Selects an exact owner/consumer scope. Empty preserves the legacy inventory.
+  // Scoped requests cannot also specify binding and use stable-id page cursors.
+  string owner_scope_key = 4;
+  // Includes gateways whose desired generation has an active grant to this scope.
+  // Requires owner_scope_key; grants do not confer permission to manage the owner.
+  bool include_granted = 5;
 }
 message GatewayResponse { Gateway gateway = 1; }
 message PlanGatewayMutationRequest {
@@ -5327,6 +5430,7 @@ message Route {
 message ListRoutesRequest {
   SurfaceRef surface = 1;
   uint32 page_size = 2;
+  // Exclusive stable route-id cursor returned by the previous page.
   string page_token = 3;
 }
 message ListRoutesResponse {

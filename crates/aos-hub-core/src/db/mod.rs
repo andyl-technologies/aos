@@ -542,6 +542,8 @@ mod cache_write_admission;
 pub use cache_write_admission::*;
 mod delivery_identity;
 pub use delivery_identity::*;
+mod delivery_workflow;
+pub use delivery_workflow::*;
 mod egress_nonce;
 mod gc_topology;
 pub use gc_topology::*;
@@ -551,11 +553,19 @@ mod oci_admin;
 pub use oci_admin::*;
 mod oci_gc;
 pub use oci_gc::*;
+mod package_documentation_reads;
 mod placement_policy;
 mod publication_admission;
 mod registry_delete;
 mod registry_index_build;
+mod release_browse;
 mod release_publication;
+pub use release_browse::*;
+mod documentation_tree;
+pub use documentation_tree::*;
+mod settings_reads;
+pub(crate) mod surface_topology;
+pub(crate) use surface_topology::*;
 mod signing_keys;
 mod topology;
 mod worker_jobs;
@@ -632,6 +642,8 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("oci_admin.sql"),
     include_str!("oci_gc.sql"),
     include_str!("oci_gc_remediation.sql"),
+    include_str!("delivery_workflow.sql"),
+    include_str!("release_browse.sql"),
 ];
 
 /// Identity stamped into databases created by the topology hard-cutover
@@ -1797,6 +1809,19 @@ pub struct IndexedPackageDocumentation {
     pub artifact: aos_registry_surface::manifest::DocumentationArtifactMeta,
     /// Disposable search rows derived from the canonical document.
     pub search: Vec<aos_doc_model::SearchDocument>,
+    /// Structural option paths and compact types for the release-wide tree.
+    pub options: Vec<IndexedDocumentationOption>,
+}
+
+/// One option's structural navigation metadata, derived from verified bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexedDocumentationOption {
+    /// Stable display path used as the document's option key.
+    pub key: String,
+    /// Exact literal and wildcard path segments; dots inside a literal remain literal.
+    pub path: Vec<aos_doc_model::PathSegment>,
+    /// Human-readable type for option summaries.
+    pub type_signature: String,
 }
 
 /// One searchable package-documentation result returned by the database.
@@ -4844,9 +4869,12 @@ impl Database {
             }
             let expected_count = i64::try_from(release_snapshot.artifacts.len())
                 .context("release artifact snapshot is too large")?;
-            let snapshot_id = hex::encode(sha2::Sha256::digest(
+            // Snapshot rows own registry-local release membership, even when
+            // two registries publish byte-identical signed releases.
+            let mut snapshot_id = hex::encode(sha2::Sha256::digest(
                 format!(
-                    "{}\0{}\0{}",
+                    "{registry_id}\0{}\0{}\0{}\0{}",
+                    release_snapshot.release_tag,
                     release_snapshot.verified_tag_oid,
                     release_snapshot.source_commit,
                     release_snapshot.manifest_digest
@@ -4871,7 +4899,6 @@ impl Database {
                 .await?
             {
                 let existing_identity = (
-                    existing.get::<String>(0)?,
                     existing.get::<String>(1)?,
                     existing.get::<String>(2)?,
                     existing.get::<String>(3)?,
@@ -4880,7 +4907,6 @@ impl Database {
                 );
                 if existing_identity
                     != (
-                        snapshot_id.clone(),
                         release_snapshot.source_commit.clone(),
                         release_snapshot.verified_tag_oid.clone(),
                         release_snapshot.manifest_digest.clone(),
@@ -4893,6 +4919,10 @@ impl Database {
                         release_snapshot.release_tag
                     );
                 }
+                // Retain preexisting IDs after validating their full content
+                // identity and registry ownership. This also preserves rows
+                // created before IDs included the owning registry.
+                snapshot_id = existing.get(0)?;
             }
             let snapshot_started_at = unix_now();
             stmts.push(Statement::new(
@@ -12974,75 +13004,6 @@ impl Database {
             .collect()
     }
 
-    /// Lists pending/running operations whose immutable targets touch a surface.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on database failure or malformed target data.
-    pub async fn list_active_surface_operations(
-        &self,
-        surface: SurfaceTarget,
-    ) -> Result<Vec<TopologyOperationRecord>> {
-        let mut targets = std::collections::BTreeSet::new();
-        match surface {
-            SurfaceTarget::Registry(id) => {
-                let registry = self
-                    .registry_by_id(id)
-                    .await?
-                    .context("registry surface does not exist")?;
-                targets.insert(("registry".to_string(), registry.stable_id));
-            }
-            SurfaceTarget::BinaryCache(id) => {
-                let cache = self
-                    .binary_cache_by_id(id)
-                    .await?
-                    .context("binary-cache surface does not exist")?;
-                targets.insert(("binary_cache".to_string(), cache.stable_id));
-            }
-        }
-        for placement in self.list_surface_placements(surface).await? {
-            targets.insert((
-                "placement".to_string(),
-                self.surface_placement_operation_target_id(placement.id)
-                    .await?,
-            ));
-        }
-        let mut selected = Vec::new();
-        let active_operations = self
-            .backend
-            .query(
-                &format!(
-                    "SELECT {OPERATION_COLUMNS} FROM topology_operations o
-                     WHERE o.state IN ('pending', 'running')
-                     ORDER BY o.created_at DESC, o.operation_id"
-                ),
-                &[],
-            )
-            .await?
-            .iter()
-            .map(row_to_topology_operation)
-            .collect::<Result<Vec<_>>>()?;
-        for operation in active_operations {
-            if !matches!(operation.state.as_str(), "pending" | "running") {
-                continue;
-            }
-            if targets.contains(&(
-                operation.primary_target_kind.clone(),
-                operation.primary_target_stable_id.clone(),
-            )) || self
-                .topology_operation_targets(&operation.operation_id)
-                .await?
-                .iter()
-                .any(|target| {
-                    targets.contains(&(target.target_kind.clone(), target.stable_id.clone()))
-                })
-            {
-                selected.push(operation);
-            }
-        }
-        Ok(selected)
-    }
-
     /// Lists the immutable target snapshot for an operation.
     ///
     /// # Errors
@@ -13945,6 +13906,36 @@ impl Database {
             }
         }
         Ok(packages)
+    }
+
+    /// Lists release tags and commits with a complete authenticated artifact snapshot.
+    ///
+    /// Empty snapshots remain selectable; incomplete snapshots never masquerade as
+    /// empty catalogs. Reads are scoped to the registry and current signed tag.
+    ///
+    /// # Errors
+    /// Returns an error on database failure or invalid retained row values.
+    pub async fn list_complete_package_snapshots(
+        &self,
+        registry_id: i64,
+    ) -> Result<Vec<(String, String)>> {
+        self.backend
+            .query(
+                "SELECT rel.semver, rel.commit_oid FROM releases rel
+             JOIN release_artifact_snapshot_heads head
+               ON head.release_id = rel.id AND head.registry_id = rel.registry_id
+             JOIN release_artifact_snapshots snapshot
+               ON snapshot.snapshot_id = head.complete_artifact_snapshot_id
+              AND snapshot.release_id = rel.id AND snapshot.registry_id = rel.registry_id
+              AND snapshot.state = 'complete' AND snapshot.source_commit = rel.commit_oid
+              AND snapshot.verified_tag_oid = rel.tag_oid
+             WHERE rel.registry_id = ?1 ORDER BY rel.semver",
+                &vals![registry_id],
+            )
+            .await?
+            .iter()
+            .map(|row| Ok((row.get(0)?, row.get(1)?)))
+            .collect()
     }
 
     /// Counts distinct packages in every complete verified release snapshot.
@@ -27823,7 +27814,11 @@ source_nar_hash = ""
     fn oci_phase5_v23_migration_upgrades_v22_and_backfills_contextual_media() {
         const OCI_UPLOAD_PUBLICATION_INDEX: usize = 26;
 
-        assert_eq!(MIGRATIONS.len(), 30, "reviewed schema version changed");
+        assert_eq!(
+            MIGRATIONS[OCI_UPLOAD_PUBLICATION_INDEX],
+            include_str!("oci_upload_publication.sql"),
+            "the fixture must stop immediately before the reviewed OCI migration"
+        );
         let connection = Connection::open_in_memory().unwrap();
         for migration in &MIGRATIONS[..OCI_UPLOAD_PUBLICATION_INDEX] {
             connection.execute_batch(migration).unwrap();
@@ -28152,7 +28147,23 @@ source_nar_hash = ""
             .unwrap()
             .get(0)
             .unwrap();
-        assert_eq!(version, 30);
+        assert_eq!(version, MIGRATIONS.len() as i64);
+        let workflow_tables: i64 = reopened
+            .backend
+            .query_opt(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'
+                   AND name IN ('delivery_workflows', 'delivery_workflow_resumptions')",
+                &[],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(
+            workflow_tables, 2,
+            "the latest migration must also be applied"
+        );
     }
 
     #[test]
@@ -28833,6 +28844,7 @@ source_nar_hash = ""
             serde_json::to_vec(&release_snapshot_artifacts).unwrap(),
         ));
         let mut documentation = IndexedPackageDocumentation {
+            options: Vec::new(),
             package_name: "curl".into(),
             package_version: "8.5.0".into(),
             platform: "x86_64-linux".into(),
@@ -29040,6 +29052,35 @@ source_nar_hash = ""
             .artifacts
             .iter()
             .any(|artifact| artifact.artifact_kind == "output" && artifact.store_hash == "abc"));
+        assert_eq!(
+            db.list_complete_package_snapshots(id).await.unwrap(),
+            [("1.0.0".to_string(), "c".repeat(64))]
+        );
+        assert!(db
+            .list_complete_package_snapshots(id + 1000)
+            .await
+            .unwrap()
+            .is_empty());
+        // A moved tag must not select a stale, formerly complete snapshot.
+        db.backend
+            .execute(
+                "UPDATE releases SET commit_oid = ?1 WHERE registry_id = ?2",
+                &vals!["d".repeat(64), id],
+            )
+            .await
+            .unwrap();
+        assert!(db
+            .list_complete_package_snapshots(id)
+            .await
+            .unwrap()
+            .is_empty());
+        db.backend
+            .execute(
+                "UPDATE releases SET commit_oid = ?1 WHERE registry_id = ?2",
+                &vals!["c".repeat(64), id],
+            )
+            .await
+            .unwrap();
         let release_packages = db.list_packages_at_release(id, "1.0.0").await.unwrap();
         assert_eq!(release_packages.len(), 1);
         assert_eq!(release_packages[0].name, "curl");

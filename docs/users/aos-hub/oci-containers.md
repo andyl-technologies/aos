@@ -6,6 +6,15 @@ registry fallback. Copy the repository's `distribution_reference` from the Hub
 console or `aos hub registry container repository show` and use that exact
 authority.
 
+`aos container inspect`, `pull`, and `push` use the reference's registry origin.
+Use `--registry-origin URL` or `AOS_REGISTRY_ORIGIN` to override its HTTP(S)
+origin; `--hub` remains a compatibility alias. These commands try anonymous access, including anonymous
+Bearer token exchange, before loading a matching stored Hub profile. An expired
+login therefore does not block public transfers. If the same-origin token
+endpoint requires authentication, or its anonymous token cannot access the
+requested content, the matching profile is refreshed and any refresh error is
+reported. An explicit `--token` is used directly.
+
 ## Rollout gates
 
 OCI capabilities are disabled by default and enabled independently. Native and

@@ -25,13 +25,18 @@ use aos_package::download::{
     DownloadRequest as NarDownloadRequest, default_engine as default_nar_engine, download_nars,
     fetch_narinfos,
 };
-use aos_package::verify::{extract_regular_file_nar, verify_download_hash, verify_nar_hash};
+use aos_package::verify::{
+    extract_regular_file_nar_with_compression, verify_download_hash,
+    verify_nar_hash_with_compression,
+};
 use aos_remote::hub::{HubClient, hub_rpc};
 use aos_remote::hub_types::{ListImagesRequest, ResolveImageRequest, SystemImage};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use crate::cli::{ImageCommand, ImageDownloadArgs, ImageSelectionArgs};
+
+mod registry;
 
 const IMAGE_PAGE_SIZE: u32 = 1_000;
 const MAX_IMAGE_RESULTS: usize = 100_000;
@@ -48,11 +53,21 @@ const RETRY_BASE_DELAY: Duration = Duration::from_secs(1);
 pub async fn run(command: &ImageCommand, printer: &Printer) -> Result<()> {
     match command {
         ImageCommand::List(args) => {
-            let activity =
-                printer.activity(&format!("Resolving images from {}", args.selection.hub));
-            let images =
-                request_images(&args.selection, false, DEFAULT_DISCOVERY_RETRIES, &activity)
-                    .await?;
+            let activity = printer.activity(&format!(
+                "Resolving images from {}",
+                args.selection
+                    .hub
+                    .as_deref()
+                    .unwrap_or(&args.selection.registry)
+            ));
+            let images = request_images(
+                &args.selection,
+                false,
+                DEFAULT_DISCOVERY_RETRIES,
+                &activity,
+                printer,
+            )
+            .await?;
             activity.finish();
             if printer.json_if_active(&serde_json::to_value(&images)?) {
                 return Ok(());
@@ -61,10 +76,20 @@ pub async fn run(command: &ImageCommand, printer: &Printer) -> Result<()> {
             Ok(())
         }
         ImageCommand::Show(args) => {
-            let activity =
-                printer.activity(&format!("Resolving image from {}", args.selection.hub));
-            let image =
-                resolve_image(&args.selection, DEFAULT_DISCOVERY_RETRIES, &activity).await?;
+            let activity = printer.activity(&format!(
+                "Resolving image from {}",
+                args.selection
+                    .hub
+                    .as_deref()
+                    .unwrap_or(&args.selection.registry)
+            ));
+            let image = resolve_image(
+                &args.selection,
+                DEFAULT_DISCOVERY_RETRIES,
+                &activity,
+                printer,
+            )
+            .await?;
             activity.finish();
             if !printer.json_if_active(&serde_json::to_value(&image)?) {
                 print_image_details(&image);
@@ -80,7 +105,11 @@ async fn request_images(
     resolve: bool,
     retries: u32,
     activity: &ActivityProgress,
+    printer: &Printer,
 ) -> Result<Vec<SystemImage>> {
+    if selection.hub.is_none() {
+        return registry::images(selection, resolve, printer).await;
+    }
     let mut attempt = 0_u32;
     loop {
         match request_images_once(selection, resolve).await {
@@ -102,14 +131,28 @@ async fn request_images(
     }
 }
 
+/// Reads ambient credentials only after the caller selected Hub discovery.
+fn hub_token(selection: &ImageSelectionArgs) -> Option<String> {
+    selection.hub.as_ref()?;
+    selection
+        .token
+        .clone()
+        .or_else(|| std::env::var("AOS_TOKEN").ok())
+}
+
 async fn request_images_once(
     selection: &ImageSelectionArgs,
     resolve: bool,
 ) -> Result<Vec<SystemImage>> {
-    reject_insecure_bearer(&selection.hub, selection.token.as_deref())?;
-    let client = match selection.token.as_deref() {
-        Some(token) => HubClient::connect_with_token(&selection.hub, token)?,
-        None => HubClient::connect_anonymous(&selection.hub)?,
+    let hub = selection
+        .hub
+        .as_deref()
+        .context("Hub image selection requires an origin")?;
+    let token = hub_token(selection);
+    reject_insecure_bearer(hub, token.as_deref())?;
+    let client = match token.as_deref() {
+        Some(token) => HubClient::connect_with_token(hub, token)?,
+        None => HubClient::connect_anonymous(hub)?,
     };
     if resolve {
         let response = client
@@ -203,14 +246,23 @@ async fn resolve_image(
     selection: &ImageSelectionArgs,
     retries: u32,
     activity: &ActivityProgress,
+    printer: &Printer,
 ) -> Result<SystemImage> {
-    let mut images = request_images(selection, true, retries, activity).await?;
-    images.pop().context("Hub returned no resolved image")
+    let mut images = request_images(selection, true, retries, activity, printer).await?;
+    images
+        .pop()
+        .context("no image matches the selected registry and filters")
 }
 
 async fn download(args: &ImageDownloadArgs, printer: &Printer) -> Result<()> {
-    let activity = printer.activity(&format!("Resolving image from {}", args.selection.hub));
-    let image = resolve_image(&args.selection, args.retries, &activity).await?;
+    let activity = printer.activity(&format!(
+        "Resolving image from {}",
+        args.selection
+            .hub
+            .as_deref()
+            .unwrap_or(&args.selection.registry)
+    ));
+    let image = resolve_image(&args.selection, args.retries, &activity, printer).await?;
     activity.finish();
     validate_filename(&image.filename)?;
     validate_sha256(&image.sha256)?;
@@ -294,20 +346,27 @@ async fn download_store_backed_image(
     printer: &Printer,
 ) -> Result<()> {
     if image.nar_hash.is_empty() || image.nar_size == 0 {
-        bail!("Hub returned an incomplete signed image store identity");
+        bail!("image catalog returned an incomplete signed image store identity");
     }
     if image.cache_urls.is_empty() {
-        bail!("Hub returned no signed cache route for the selected image");
+        bail!("image catalog returned no cache route for the selected image");
     }
     let mut cache_urls = Vec::with_capacity(image.cache_urls.len());
     for value in &image.cache_urls {
-        let url = validate_cache_url(value)?;
-        cache_urls.push(url.as_str().trim_end_matches('/').to_string());
+        if args.selection.hub.is_some() {
+            let url = validate_cache_url(value)?;
+            cache_urls.push(url.as_str().trim_end_matches('/').to_string());
+        } else {
+            // Portable registries retain APM's cache transports, including
+            // plain HTTP and local file caches. The common pipeline verifies
+            // every returned NAR against the signed registry identity.
+            cache_urls.push(value.trim_end_matches('/').to_string());
+        }
     }
     let (mirror_url, fallback_mirrors) = cache_urls
         .split_first()
         .map(|(first, rest)| (first.clone(), rest.to_vec()))
-        .context("Hub returned no usable signed cache route")?;
+        .context("image catalog returned no usable cache route")?;
 
     prepare_partial_identity(output, image, args.no_resume, printer)?;
     let nar_cache = nar_cache_path(output)?;
@@ -339,7 +398,7 @@ async fn download_store_backed_image(
         .first()
         .context("image cache returned no NAR download")?;
     verify_download_hash(&result.local_path, &result.download_hash)?;
-    verify_nar_hash(&result.local_path, &image.nar_hash)
+    verify_nar_hash_with_compression(&result.local_path, &image.nar_hash, &result.compression)
         .with_context(|| format!("verifying image NAR for {}", image.store_path))?;
     let started = Instant::now();
     let transfer = printer.transfer("Extracting verified image NAR", image.byte_size);
@@ -349,11 +408,12 @@ async fn download_store_backed_image(
         sink: sink.as_ref(),
         transfer: &transfer,
     };
-    extract_regular_file_nar(
+    extract_regular_file_nar_with_compression(
         &result.local_path,
         &mut writer,
         image.byte_size,
         image.nar_size,
+        &result.compression,
     )?;
     destination.restore_sink(sink)?;
     destination.sync_all()?;
@@ -406,7 +466,13 @@ async fn download_image_bytes(
     transfer: &TransferProgress,
 ) -> Result<()> {
     let download_url = validate_download_url(&image.download_url)?;
-    let hub_url = reqwest::Url::parse(&args.selection.hub).context("invalid Hub URL")?;
+    let hub_url = args
+        .selection
+        .hub
+        .as_deref()
+        .map(reqwest::Url::parse)
+        .transpose()
+        .context("invalid Hub URL")?;
     let mut config = TransferManagerConfig::default();
     config.pool.connect_timeout = Duration::from_secs(15);
     config.retry.max_attempts = args.retries.saturating_add(1).max(1);
@@ -424,8 +490,10 @@ async fn download_image_bytes(
         .with_expected_size(image.byte_size)
         .with_maximum_bytes(image.byte_size);
     request.output = TransferOutput::Sink(output_sink);
-    if same_origin(&hub_url, &download_url)
-        && let Some(token) = &args.selection.token
+    if hub_url
+        .as_ref()
+        .is_some_and(|hub| same_origin(hub, &download_url))
+        && let Some(token) = hub_token(&args.selection)
     {
         request = request.with_header("Authorization", &format!("Bearer {token}"));
     }

@@ -7,11 +7,11 @@
 
 use std::collections::BTreeSet;
 
+use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
-use leptos::task::spawn_local;
 
-use crate::components::{EmptyState, HashValue, InlineError, ReviewedPlanCard, StatusBadge};
+use crate::components::{EmptyState, HashValue, HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge, format_timestamp};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::transport::ApiClient;
 
@@ -44,6 +44,7 @@ struct WebhookInventory {
 
 #[component]
 fn OrganizationWebhooks(client: ApiClient, organization: String) -> impl IntoView {
+    let can_manage = client.allows("members.manage");
     let read_client = client.clone();
     let read_org = organization.clone();
     let inventory = LocalResource::new(move || {
@@ -57,10 +58,7 @@ fn OrganizationWebhooks(client: ApiClient, organization: String) -> impl IntoVie
             <div class="section-heading">
                 <div>
                     <p class="section-kicker">"Signed event delivery"</p>
-                    <h2>"Webhooks"</h2>
-                    <p>
-                        "Subscriptions resolve an immutable secret version only while signing outbound deliveries."
-                    </p>
+                    <h2>"Webhooks"<HelpTooltip term="Webhooks" summary="Subscriptions resolve an immutable secret version only while signing outbound deliveries."/></h2>
                 </div>
             </div>
             <Suspense fallback=move || view! { <p class="loading-row">"Loading webhooks…"</p> }>
@@ -73,12 +71,9 @@ fn OrganizationWebhooks(client: ApiClient, organization: String) -> impl IntoVie
                                 <WebhookList
                                     client=client.clone()
                                     webhooks=inventory.webhooks.clone()
+                                    can_manage=can_manage
                                 />
-                                <CreateWebhook
-                                    client=client
-                                    organization=organization
-                                    event_types=inventory.event_types.clone()
-                                />
+                                {if can_manage { view! { <details class="advanced-controls"><summary>"Create webhook"</summary><CreateWebhook client=client organization=organization event_types=inventory.event_types.clone()/></details> }.into_any() } else { view! { <p class="muted">"You can inspect webhook delivery but cannot change subscriptions."</p> }.into_any() }}
                             }
                             .into_any(),
                             Err(detail) => view! { <InlineError detail=detail.clone()/> }.into_any(),
@@ -122,7 +117,11 @@ async fn load_webhooks(client: &ApiClient, organization: &str) -> Result<Webhook
 }
 
 #[component]
-fn WebhookList(client: ApiClient, webhooks: Vec<aos_proto_types::Webhook>) -> impl IntoView {
+fn WebhookList(
+    client: ApiClient,
+    webhooks: Vec<aos_proto_types::Webhook>,
+    can_manage: bool,
+) -> impl IntoView {
     if webhooks.is_empty() {
         return view! {
             <EmptyState
@@ -138,7 +137,7 @@ fn WebhookList(client: ApiClient, webhooks: Vec<aos_proto_types::Webhook>) -> im
     view! {
         <div class="binding-list">
             {webhooks.into_iter().map(|webhook| view! {
-                <WebhookCard client=client.clone() webhook=webhook/>
+                <WebhookCard client=client.clone() webhook=webhook can_manage=can_manage/>
             }).collect_view()}
         </div>
     }
@@ -146,7 +145,11 @@ fn WebhookList(client: ApiClient, webhooks: Vec<aos_proto_types::Webhook>) -> im
 }
 
 #[component]
-fn WebhookCard(client: ApiClient, webhook: aos_proto_types::Webhook) -> impl IntoView {
+fn WebhookCard(
+    client: ApiClient,
+    webhook: aos_proto_types::Webhook,
+    can_manage: bool,
+) -> impl IntoView {
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
@@ -205,16 +208,15 @@ fn WebhookCard(client: ApiClient, webhook: aos_proto_types::Webhook) -> impl Int
                     .into_any()
                 }}
             </details>
-            <button
+            {can_manage.then(|| view! { <button
                 class="danger-button"
                 type="button"
                 disabled=move || busy.get()
                 on:click=on_plan_delete
             >
                 "Review deletion"
-            </button>
-            {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
-            <PlanReview pending=pending busy=busy on_apply=apply/>
+            </button> })}
+            {can_manage.then(|| view! { {move || error.get().map(|detail| view! { <InlineError detail=detail/> })} <PlanReview pending=pending busy=busy on_apply=apply/> })}
         </article>
     }
 }
@@ -315,7 +317,7 @@ fn CreateWebhook(
                             let checked_event = event_type.clone();
                             let changed_event = event_type.clone();
                             view! {
-                                <label class="checkbox-field">
+                                <label class="checkbox-field compact-list-row">
                                     <input
                                         type="checkbox"
                                         prop:checked=move || selected.get().contains(&checked_event)
@@ -402,8 +404,7 @@ fn OrganizationAudit(client: ApiClient, organization: String) -> impl IntoView {
             <div class="section-heading">
                 <div>
                     <p class="section-kicker">"Append-only history"</p>
-                    <h2>"Audit log"</h2>
-                    <p>"Entries link semantic changesets to signed Git history where applicable."</p>
+                    <h2>"Audit log"<HelpTooltip term="Audit log" summary="Entries link semantic changesets to signed Git history where applicable."/></h2>
                 </div>
             </div>
             <Suspense fallback=move || view! { <p class="loading-row">"Loading audit history…"</p> }>
@@ -441,7 +442,7 @@ fn AuditCard(entry: aos_proto_types::AuditEntry) -> impl IntoView {
         <article class="revision-card">
             <div class="compact-list-row">
                 <div><strong>{entry.action}</strong><code>{entry.change_id}</code></div>
-                <span>{entry.created_at}</span>
+                <span>{format_timestamp(entry.created_at, "Time unavailable")}</span>
             </div>
             <div class="resource-identity">
                 <div><span>"Actor"</span><strong>{entry.actor_label}</strong></div>
@@ -450,7 +451,7 @@ fn AuditCard(entry: aos_proto_types::AuditEntry) -> impl IntoView {
                 <div><span>"Result tag"</span><code>{display_or(&entry.result_tag, "none")}</code></div>
             </div>
             {(!entry.detail.is_empty()).then(|| view! {
-                <details><summary>"Detail"</summary><pre>{entry.detail}</pre></details>
+                <details><summary>"Detail"</summary><pre class="json-view">{entry.detail}</pre></details>
             })}
         </article>
     }

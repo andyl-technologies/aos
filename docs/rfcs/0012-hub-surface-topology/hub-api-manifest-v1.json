@@ -14,6 +14,7 @@
       "network-boundary",
       "endpoint",
       "gateway",
+      "delivery",
       "route",
       "operation",
       "image",
@@ -29,6 +30,55 @@
    },
    "manifest_version" : "aos.hub.api/v1",
    "methods" : [
+      {
+         "method" : "PlanDeliveryDestination",
+         "path" : "aos.hub.v1.DeliveryService/PlanDeliveryDestination",
+         "request" : "PlanDeliveryDestinationRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "ApplyDeliveryDestination",
+         "path" : "aos.hub.v1.DeliveryService/ApplyDeliveryDestination",
+         "request" : "ApplyDeliveryDestinationRequest",
+         "response" : "DeliveryWorkflowResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "GetDeliveryWorkflow",
+         "path" : "aos.hub.v1.DeliveryService/GetDeliveryWorkflow",
+         "request" : "GetDeliveryWorkflowRequest",
+         "response" : "DeliveryWorkflowResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "ListDeliveryWorkflows",
+         "path" : "aos.hub.v1.DeliveryService/ListDeliveryWorkflows",
+         "request" : "ListDeliveryWorkflowsRequest",
+         "response" : "ListDeliveryWorkflowsResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "ResumeDeliveryDestination",
+         "path" : "aos.hub.v1.DeliveryService/ResumeDeliveryDestination",
+         "request" : "ResumeDeliveryDestinationRequest",
+         "response" : "DeliveryWorkflowResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "PlanActivateDeliveryDestination",
+         "path" : "aos.hub.v1.DeliveryService/PlanActivateDeliveryDestination",
+         "request" : "PlanActivateDeliveryDestinationRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "ActivateDeliveryDestination",
+         "path" : "aos.hub.v1.DeliveryService/ActivateDeliveryDestination",
+         "request" : "ApplyDeliveryDestinationRequest",
+         "response" : "DeliveryWorkflowResponse",
+         "service" : "DeliveryService"
+      },
       {
          "method" : "ListRegistries",
          "path" : "aos.hub.v1.RegistryService/ListRegistries",

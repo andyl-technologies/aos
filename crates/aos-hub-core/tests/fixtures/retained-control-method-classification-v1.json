@@ -1,5 +1,81 @@
 [
   {
+    "service": "DeliveryService",
+    "method": "PlanDeliveryDestination",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "plan",
+      "pair": "delivery_destination"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "DeliveryService",
+    "method": "ApplyDeliveryDestination",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "apply",
+      "pair": "delivery_destination",
+      "outcome": "workflow"
+    },
+    "external_effects": true
+  },
+  {
+    "service": "DeliveryService",
+    "method": "GetDeliveryWorkflow",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": {
+      "class": "read"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "DeliveryService",
+    "method": "ListDeliveryWorkflows",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": {
+      "class": "read"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "DeliveryService",
+    "method": "ResumeDeliveryDestination",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "operation_lifecycle"
+    },
+    "external_effects": true
+  },
+  {
+    "service": "DeliveryService",
+    "method": "PlanActivateDeliveryDestination",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "plan",
+      "pair": "activate_delivery_destination"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "DeliveryService",
+    "method": "ActivateDeliveryDestination",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "apply",
+      "pair": "activate_delivery_destination",
+      "outcome": "immediate"
+    },
+    "external_effects": false
+  },
+  {
     "service": "RegistryService",
     "method": "ListRegistries",
     "exposure": "public",

@@ -80,6 +80,23 @@ impl AccessPolicySignals {
         signals
     }
 
+    /// Returns a reactive key for invalidating a reviewed plan after edits.
+    pub(super) fn draft_key(self) -> String {
+        [
+            self.kind.get(),
+            self.provider_kind.get(),
+            self.provider_resource.get(),
+            self.provider_revision.get(),
+            self.mechanisms.get(),
+            self.client_classes.get(),
+            self.hub_principals.get(),
+            self.hub_client_classes.get(),
+            self.boundary_id.get(),
+            self.boundary_revision.get(),
+        ]
+        .join("\u{1f}")
+    }
+
     /// Validates and builds the protocol policy represented by this draft.
     ///
     /// # Errors

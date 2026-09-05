@@ -48,6 +48,7 @@ mod binding;
 mod cache;
 mod client;
 mod config;
+mod delivery_workflow;
 mod documentation;
 mod domain;
 mod endpoint;
@@ -78,7 +79,10 @@ mod webhook;
 pub async fn run(printer: &Printer, command: &HubCmd) -> Result<()> {
     if !matches!(
         command,
-        HubCmd::Login { .. } | HubCmd::Logout { .. } | HubCmd::Topology { .. }
+        HubCmd::Login { .. }
+            | HubCmd::Logout { .. }
+            | HubCmd::Topology { .. }
+            | HubCmd::Delivery { .. }
     ) {
         crate::commands::hub_auth::prepare_active_profile().await?;
     }
@@ -118,6 +122,7 @@ pub async fn run(printer: &Printer, command: &HubCmd) -> Result<()> {
             .await
         }
         HubCmd::AccessToken { command } => access_token(printer, command).await,
+        HubCmd::Delivery { command } => delivery_workflow::run(printer, command).await,
         HubCmd::Topology { command } => match command {
             HubTopologyCmd::Cutover { command } => match command {
                 HubTopologyCutoverCmd::MaterializeVerifier(args) => {

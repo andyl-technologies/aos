@@ -4297,6 +4297,7 @@ impl Database {
                      WHERE (e.owner_scope_key = ?1 OR (?4 AND EXISTS (
                          SELECT 1 FROM endpoint_route_scopes grant_record
                          WHERE grant_record.endpoint_id = e.id
+                           AND grant_record.endpoint_generation = e.desired_generation
                            AND grant_record.consumer_scope_key = ?1
                            AND grant_record.state = 'active'
                      ))) AND e.id > ?2 ORDER BY e.id LIMIT ?3"
