@@ -128,10 +128,11 @@ with an optional Hub URL (`crates/aos/src/entry.rs:249`). When `--hub` is
 absent, the documentation implementation silently searches installed local
 documents (`crates/aos-package/src/documentation.rs:62`).
 
-The wrapper also accepts `--registry`, `--token`, `--version`, and `--platform`
-without `--hub` (`crates/aos/src/cli/mod.rs:367`). Those values can be ignored
-by a local lookup. The corresponding `apm docs` arguments correctly require
-`--hub` for the current remote mode (`crates/aos-package/src/lib.rs:859`).
+The wrapper also accepted remote selectors in local modes and exact-document
+selectors in searches, where those values were ignored. The corresponding
+`apm docs` arguments already require `--hub` for registry/token selectors.
+Version and platform are valid filters for exact installed documentation;
+they must remain available for installed package lookup.
 
 Represent the wrapper source as an explicit mode and validate its flags:
 
@@ -143,6 +144,20 @@ Represent the wrapper source as an explicit mode and validate its flags:
 Add process tests proving that package mode works with an empty environment and
 no repository, that Hub mode cannot silently become local mode, and that
 remote-only flags produce an actionable error in local modes.
+
+The wrapper now resolves repository, installed-package, and Hub modes before
+constructing a Nix runner. Hub search requires an HTTP(S) origin and registry
+slug, rejects installed-profile and exact-document selectors, and never falls
+back to local search. Installed mode rejects explicit Hub-only flags but ignores
+unrelated `AOS_HUB`/`AOS_TOKEN` environment values. Exact installed version and
+platform filters remain supported. Repository-only index controls are rejected
+in package/Hub modes. The implementation delegates actual lookup and canonical
+document validation to the existing APM documentation commands.
+
+Process regressions in `crates/aos/tests/documentation_cli.rs` cover offline
+installed search, exact installed lookup, invalid mode combinations, malformed
+remote selectors, and an explicit Hub authorization failure without local
+fallback. Configured-registry documentation reads remain a separate task.
 
 ### 3. Add configured-registry documentation reads
 

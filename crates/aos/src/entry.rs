@@ -246,48 +246,7 @@ async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
         .await;
     }
 
-    if let Commands::Doc {
-        source: Some(mode),
-        path,
-        search,
-        system,
-        hub,
-        registry,
-        token,
-        version,
-        platform,
-        ..
-    } = &cli.command
-        && matches!(mode.as_str(), "package" | "hub")
-    {
-        let command = if mode == "hub" || search.is_some() {
-            aos_package::DocumentationCommand::Search {
-                query: search
-                    .clone()
-                    .or_else(|| path.clone())
-                    .ok_or_else(|| anyhow::anyhow!("aos doc hub requires a search query"))?,
-                kind: None,
-                limit: 25,
-                hub: hub.clone(),
-                registry: registry.clone(),
-                token: token.clone(),
-                system: *system,
-            }
-        } else {
-            aos_package::DocumentationCommand::Show {
-                package: path
-                    .clone()
-                    .ok_or_else(|| anyhow::anyhow!("aos doc package requires a package name"))?,
-                version: version.clone(),
-                platform: platform.clone(),
-                format: None,
-                output: None,
-                hub: hub.clone(),
-                registry: registry.clone(),
-                token: token.clone(),
-                system: *system,
-            }
-        };
+    if let Some(command) = cli.command.documentation_command()? {
         return aos_package::run(
             &aos_package::PackageCommand::Docs { command },
             false,
