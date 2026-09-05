@@ -4,9 +4,9 @@
 //! resource identity is always visible, mutable policy is edited separately,
 //! and every durable change crosses the immutable plan review boundary.
 
+use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
-use leptos::task::spawn_local_scoped_with_cancellation as spawn_local;
 
 use crate::app::navigate;
 use crate::components::{EmptyState, HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
@@ -20,6 +20,8 @@ use super::organization_scope::organization_authorization_scope;
 /// Renders the typed resource adapter owned by the current canonical page.
 #[component]
 pub(crate) fn ResourceWorkflow(route: ConsoleRoute, client: ApiClient) -> impl IntoView {
+    crate::mutation::install_workflow_task_scope();
+
     match (&route.scope, route.page.key) {
         (ConsoleScope::Caches, "overview") => {
             view! { <GlobalCacheInventory client=client/> }.into_any()
