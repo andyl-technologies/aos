@@ -521,6 +521,7 @@ div.partition-grid > span.r4 { background: var(--ink); }
 div.partition-grid > span.r5 { background: var(--link); }
 div.partition-grid > span.unassigned { background: var(--rule); }
 div.partition-grid > span.hit { outline: 3px solid var(--ink); outline-offset: -1px; box-shadow: 0 0 0 2px var(--paper) inset; z-index: 1; }
+.rollout-labels { list-style: none; padding-left: 0; }
 .rollout-swatch { display: inline-block; width: .8em; height: .8em; margin-right: .4em; border-radius: 2px; background: var(--accent); vertical-align: -.05em; }
 .rollout-swatch.r1 { background: var(--ok); }
 .rollout-swatch.r2 { background: var(--warn); }
@@ -1670,7 +1671,8 @@ label.inline {
 .release-directory .table-scroll table { width: 100%; min-width: 0; }
 .release-directory td { white-space: normal; overflow-wrap: anywhere; }
 .release-directory td:first-child { white-space: nowrap; }
-.release-contents-line { display: inline-block; max-width: 22rem; }
+.release-contents-line { display: inline-grid; grid-template-columns: auto auto; gap: .1rem 1rem; }
+.release-contents-line a { white-space: nowrap; }
 .release-contents { display: flex; flex-wrap: wrap; gap: .7rem; }
 .release-contents a { display: flex; flex-direction: column; padding: .65rem; min-width: 6rem; border: 1px solid var(--rule); }
 .rollout-bar { display: flex; height: 1rem; overflow: hidden; border-radius: 3px; background: var(--rule); }
