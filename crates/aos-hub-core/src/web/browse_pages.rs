@@ -2074,7 +2074,9 @@ pub fn channel_page(
     let class_for: BTreeMap<&str, usize> = rollout_shares(channel)
         .into_iter()
         .enumerate()
-        .filter_map(|(index, (release, _))| release.map(|release| (release, index % ROLLOUT_PALETTE)))
+        .filter_map(|(index, (release, _))| {
+            release.map(|release| (release, index % ROLLOUT_PALETTE))
+        })
         .collect();
     let assigned = channel.partitions.iter().flatten().count();
     let hit = bucket_query.and_then(parse_bucket);
@@ -2167,7 +2169,13 @@ pub fn channel_page(
     for bucket in 0..256usize {
         let (class, title) = match channel.partitions[bucket].as_deref() {
             Some(release) => (
-                format!("r{}", class_for.get(release).copied().unwrap_or(ROLLOUT_PALETTE - 1)),
+                format!(
+                    "r{}",
+                    class_for
+                        .get(release)
+                        .copied()
+                        .unwrap_or(ROLLOUT_PALETTE - 1)
+                ),
                 format!("bucket 0x{bucket:02X} ({bucket}) → {}", escape(release)),
             ),
             None => (
@@ -2178,10 +2186,16 @@ pub fn channel_page(
         let _ = write!(
             body,
             "<span class=\"{class}{}\" title=\"{title}\"></span>",
-            if hit == Some(bucket as u8) { " hit" } else { "" }
+            if hit == Some(bucket as u8) {
+                " hit"
+            } else {
+                ""
+            }
         );
     }
-    body.push_str("</div><p class=\"dim\">Rows run left to right from bucket 0x00 to 0xFF.</p></section>");
+    body.push_str(
+        "</div><p class=\"dim\">Rows run left to right from bucket 0x00 to 0xFF.</p></section>",
+    );
 
     page_with_session(
         &format!("{} channel", channel.name),
@@ -3564,7 +3578,10 @@ mod tests {
         assert!(html.contains("No release is assigned to this channel yet"));
         assert!(html.contains("[registry.state] bucket") && html.contains("name=\"bucket\""));
         assert!(html.contains("Look up release"));
-        assert_eq!(html.matches("class=\"unassigned\" title=\"bucket").count(), 256);
+        assert_eq!(
+            html.matches("class=\"unassigned\" title=\"bucket").count(),
+            256
+        );
     }
 
     #[tokio::test]
@@ -3599,8 +3616,14 @@ mod tests {
         assert_eq!(grid.matches("</span>").count(), 256);
         // The frontier is the newest release, so it takes the first colour on
         // exactly its 64 buckets, and each cell names its bucket and release.
-        assert_eq!(grid.matches("<span class=\"r0\" title=\"bucket").count(), 64);
-        assert_eq!(grid.matches("<span class=\"r1\" title=\"bucket").count(), 192);
+        assert_eq!(
+            grid.matches("<span class=\"r0\" title=\"bucket").count(),
+            64
+        );
+        assert_eq!(
+            grid.matches("<span class=\"r1\" title=\"bucket").count(),
+            192
+        );
         assert!(grid.contains("title=\"bucket 0x3F (63) → 1.2.0\""));
         assert!(grid.contains("title=\"bucket 0x40 (64) → 1.1.0\""));
         assert!(html.contains(
