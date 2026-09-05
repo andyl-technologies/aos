@@ -445,7 +445,16 @@ per-layer coverage, with negative checks for every required public repository
 and recovery proof. Rustdoc, checklist consistency, and bounded-wait/test-rerun
 classification checks pass. The license-boundary source suite passes, but the
 complete packaged license-boundary check remains blocked by controller
-engineering-hygiene size/boundary and nondeterminism-confinement findings. Those
+engineering-hygiene size/boundary findings. Nondeterminism confinement now passes:
+canonical-planner, hot-pool admission, hot-child wait, QMP, and image-helper clocks
+are private operational supervision capabilities, with no raw host timestamp
+export from those lifecycle interfaces. The complete harness-lint suite passes
+25 tests, alongside 259 API, 462 daemon, and 612 QEMU unit tests (the latter two
+retain one subprocess fixture ignored by direct execution). Strict affected-crate
+Clippy passes. A watchdog regression now establishes the real process stop before
+expiring the production watchdog wait, removing a controller-startup timing race
+without weakening the direct-resume or completion/disarm assertions. The remaining
+engineering-hygiene findings
 are separate from the passing standalone source-size guard above; no complete
 packaging or release-gate closure is claimed.
 

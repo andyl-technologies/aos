@@ -8,6 +8,7 @@
 
 use std::sync::Arc;
 
+// crucible-lint: allow host-nondeterminism-state -- immutable decoded configurations are authenticated by content identity, never changed using host observations.
 use crucible::{BackendError, Configuration, ContentHash};
 use crucible_campaign::{
     CampaignExecutorStore, CampaignHash, CampaignRepositoryError, ConfigurationId, ScenarioDefId,
@@ -231,6 +232,7 @@ where
 
 fn require_decoded_configuration(
     key: QemuHotForkTemplateKey,
+    // crucible-lint: allow host-nondeterminism-state -- only compares the authenticated immutable identity with the retained source; no modeled mutation is permitted.
     configuration: &Configuration,
 ) -> Result<(), QemuHotCheckpointFallbackAuthenticationError> {
     if configuration.id() != key.configuration() {

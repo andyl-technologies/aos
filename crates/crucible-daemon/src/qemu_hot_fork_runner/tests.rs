@@ -705,16 +705,17 @@ fn exit_policy_rejects_unbounded_or_busy_polling() {
 
 #[test]
 fn reconciliation_classification_retries_only_recoverable_owner_operations() {
-    let release = classify_reconciliation_failure(QemuHotForkAttemptReconciliationError::Backend {
-        operation: "release branch-private child resources",
-        source: LinuxQemuHotForkReconciliationError::Source(QemuNodeChannelError::new(
-            "release resource",
-            "temporary source channel failure",
-        )),
-    });
+    let release =
+        classify_reconciliation_failure(QemuHotForkAttemptReconciliationError::Operation {
+            operation: "release branch-private child resources",
+            source: LinuxQemuHotForkReconciliationError::Source(QemuNodeChannelError::new(
+                "release resource",
+                "temporary source channel failure",
+            )),
+        });
     assert!(matches!(release, AttemptWorkerFailure::Retryable(_)));
 
-    let drain = classify_reconciliation_failure(QemuHotForkAttemptReconciliationError::Backend {
+    let drain = classify_reconciliation_failure(QemuHotForkAttemptReconciliationError::Operation {
         operation: "drain branch-private child diagnostics",
         source: LinuxQemuHotForkReconciliationError::Source(QemuNodeChannelError::new(
             "drain diagnostics",

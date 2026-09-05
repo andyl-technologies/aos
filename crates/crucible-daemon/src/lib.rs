@@ -159,6 +159,7 @@ pub mod qemu_hot_fork_world_resource;
 pub mod qemu_lifecycle_launcher;
 pub mod qemu_resource_guard;
 pub mod repository_admission;
+mod supervision;
 
 pub use assignment_ledger::{
     AssignmentLedger, AssignmentLedgerError, AssignmentPublish, AssignmentRecord,

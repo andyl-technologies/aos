@@ -15,7 +15,7 @@ const CLEANUP_WAIT: Duration = Duration::from_secs(1);
 const CLEANUP_RETRY: Duration = Duration::from_millis(10);
 
 #[derive(Default)]
-struct State {
+struct ChildCleanup {
     child: Option<Child>,
     requested: bool,
     closed: bool,
@@ -23,7 +23,7 @@ struct State {
 
 #[derive(Default)]
 struct Shared {
-    state: Mutex<State>,
+    state: Mutex<ChildCleanup>,
     changed: Condvar,
 }
 
