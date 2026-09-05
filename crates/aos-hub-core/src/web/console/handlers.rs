@@ -325,6 +325,10 @@ pub(crate) async fn management_app(deps: ConsoleDeps, headers: HeaderMap) -> Res
     let privacy_url = html_attribute(&chrome.privacy_url);
     let support_url = html_attribute(&chrome.support_url);
     let app_version = html_attribute(crate::web::console_render::app_version());
+    let container_gc_enabled = deps
+        .control
+        .as_ref()
+        .is_some_and(|control| control.container_rollout.garbage_collection);
     let css = crate::web::assets::console_css_name();
     let bootstrap = crate::web::assets::console_bootstrap_name();
     let asset_version = crate::web::assets::asset_version();
@@ -340,6 +344,7 @@ pub(crate) async fn management_app(deps: ConsoleDeps, headers: HeaderMap) -> Res
          <meta name=\"aos-site-privacy-url\" content=\"{privacy_url}\">\n\
          <meta name=\"aos-site-support-url\" content=\"{support_url}\">\n\
          <meta name=\"aos-app-version\" content=\"{app_version}\">\n\
+         <meta name=\"aos-container-gc-enabled\" content=\"{container_gc_enabled}\">\n\
          <title>AOS Hub</title>\n\
          <link rel=\"stylesheet\" href=\"/_assets/style.css?v={asset_version}\">\n\
          <link rel=\"stylesheet\" href=\"/_assets/{css}\">\n\
