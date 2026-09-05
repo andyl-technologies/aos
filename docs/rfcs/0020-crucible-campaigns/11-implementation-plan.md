@@ -414,12 +414,40 @@ unchanged node ownership evidence. The flight still requires its original
 queued-network, volatile-storage, shared-cause crash/restart, terminal ownership,
 pre-event exact-restore, and locked-effect replay assertions.
 
+The focused production-QEMU reactivation flight also passes. After the same
+terminal ownership matrix, a virtual-time event boots the powered-off node at
+12,000,003,072. The guest resumes execution and reaches the passing terminal
+frontier at 13,000,003,072, retaining its process generation and exact ownership;
+the permanently failed peer stays unchanged. Repeating from the inactive exact
+checkpoint in fresh processes produces identical authenticated fault evidence
+and event-log segments. The scheduler is idle after reaching its selected RUN
+ceiling; the preceding VM-advance outcome proves resumed execution.
+
+This flight required event-binding deadlines to remain schedulable without a
+running VM, failed-node checkpoint counters to retain their scheduler-owned
+origins, and QEMU patch 0196 to tolerate the virtio-net announcement timer removed
+by exact restore. The patch does not recreate migration announcements. Canonical
+patch regeneration and the focused same-builder drop-one check pass; the generic
+drop-one boot probe is non-discriminating, so the reactivation flight supplies
+the behavioral evidence. The full packaged shared-cause check completed inactive
+restore but failed at a subsequent live-node assembly before reaching the added
+reactivation flight. Its launch diagnostic did not retain the underlying cause;
+the full check remains red and the focused proof is not a substitute for it.
+
 These flights do not prove guest-choice branching, the full public
-checkpoint-pause recovery workflow, powered-off-node reactivation through QEMU,
-or hot-fork acceptance.
+checkpoint-pause recovery workflow, or hot-fork acceptance.
 Longer diagnostic execution also stalled waiting for a post-device control
 acknowledgement and returned cleanup-pending on shutdown; the short successful
 flight does not close that liveness investigation.
+
+Repository-wide gate maintenance restores campaign-model phase ordering and
+per-layer coverage, with negative checks for every required public repository
+and recovery proof. Rustdoc, checklist consistency, and bounded-wait/test-rerun
+classification checks pass. The license-boundary source suite passes, but the
+complete packaged license-boundary check remains blocked by controller
+engineering-hygiene size/boundary and nondeterminism-confinement findings. Those
+are separate from the passing standalone source-size guard above; no complete
+packaging or release-gate closure is claimed.
 
 Version-3 campaign snapshots introduced a childless, version-1 aggregate budget
 ledger. Genesis starts empty; every successor authenticates exact grant and

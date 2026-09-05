@@ -209,6 +209,7 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0193-crucible-retain-hot-fork-child-status.patch",
     "0194-crucible-contain-hot-fork-children-from-birth.patch",
     "0195-crucible-replace-fork-child-console-endpoint.patch",
+    "0196-crucible-reset-virtio-net-after-exact-restore.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each

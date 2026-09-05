@@ -1,19 +1,5 @@
-From d112b2a75199d75a0dc992f9ae13c079d6518245 Mon Sep 17 00:00:00 2001
-From: Dylan Plecki <dylan@andyl.com>
-Date: Mon, 1 Jan 2001 00:00:01 +0000
-Subject: [PATCH] crucible: contain hot fork children from birth
-
-Signed-off-by: Dylan Plecki <dylan@andyl.com>
----
- .../system/crucible-hot-fork-coordinator.h    |   6 +
- monitor/qmp-cmds.c                            | 382 +++++++++++++++++-
- qapi/run-state.json                           | 115 +++++-
- system/crucible-hot-fork-coordinator.c        |  28 +-
- .../unit/test-crucible-hot-fork-coordinator.c |   1 +
- 5 files changed, 527 insertions(+), 5 deletions(-)
-
 diff --git a/include/system/crucible-hot-fork-coordinator.h b/include/system/crucible-hot-fork-coordinator.h
-index 77e03f7..32b6ede 100644
+index 77e03f7f1..32b6ede2b 100644
 --- a/include/system/crucible-hot-fork-coordinator.h
 +++ b/include/system/crucible-hot-fork-coordinator.h
 @@ -31,6 +31,12 @@ typedef struct QemuCrucibleHotForkMainLoopOperation {
@@ -30,7 +16,7 @@ index 77e03f7..32b6ede 100644
  
  typedef enum QemuCrucibleHotForkChildProcessPhase {
 diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
-index 243a936..b7ba728 100644
+index 243a93622..b7ba72830 100644
 --- a/monitor/qmp-cmds.c
 +++ b/monitor/qmp-cmds.c
 @@ -15,6 +15,11 @@
@@ -514,7 +500,7 @@ index 243a936..b7ba728 100644
  }
  
 diff --git a/qapi/run-state.json b/qapi/run-state.json
-index 53e0160..d634895 100644
+index 53e0160cb..d634895b9 100644
 --- a/qapi/run-state.json
 +++ b/qapi/run-state.json
 @@ -1758,6 +1758,9 @@
@@ -668,7 +654,7 @@ index 53e0160..d634895 100644
  # @CrucibleHotForkPrivateRingAction:
  #
 diff --git a/system/crucible-hot-fork-coordinator.c b/system/crucible-hot-fork-coordinator.c
-index 131fdfd..0bc6630 100644
+index 131fdfd2c..0bc663019 100644
 --- a/system/crucible-hot-fork-coordinator.c
 +++ b/system/crucible-hot-fork-coordinator.c
 @@ -13,6 +13,11 @@
@@ -721,7 +707,7 @@ index 131fdfd..0bc6630 100644
          /*
           * The copied waiter and notifier are parent-only.  Close the raw wake
 diff --git a/tests/unit/test-crucible-hot-fork-coordinator.c b/tests/unit/test-crucible-hot-fork-coordinator.c
-index a5e892d..d06a64a 100644
+index a5e892d01..d06a64ab3 100644
 --- a/tests/unit/test-crucible-hot-fork-coordinator.c
 +++ b/tests/unit/test-crucible-hot-fork-coordinator.c
 @@ -117,6 +117,7 @@ static void test_main_loop_owns_fork(void)
@@ -732,6 +718,3 @@ index a5e892d..d06a64a 100644
          },
          .source_process_id = getpid(),
          .main_thread_id = qemu_get_thread_id(),
--- 
-2.48.1
-

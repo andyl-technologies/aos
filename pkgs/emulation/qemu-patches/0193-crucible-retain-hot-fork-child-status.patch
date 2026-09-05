@@ -1,19 +1,5 @@
-From 0cbc4f3d826066b5b753f641c47c691e6f9e404a Mon Sep 17 00:00:00 2001
-From: Dylan Plecki <dylan@andyl.com>
-Date: Mon, 1 Jan 2001 00:00:01 +0000
-Subject: [PATCH] crucible: retain hot fork child status
-
-Signed-off-by: Dylan Plecki <dylan@andyl.com>
----
- .../system/crucible-hot-fork-coordinator.h    |  26 +++
- monitor/qmp-cmds.c                            |  51 ++++-
- qapi/run-state.json                           |  81 +++++++
- system/crucible-hot-fork-coordinator.c        | 197 ++++++++++++++++++
- .../unit/test-crucible-hot-fork-coordinator.c |  47 ++++-
- 5 files changed, 395 insertions(+), 7 deletions(-)
-
 diff --git a/include/system/crucible-hot-fork-coordinator.h b/include/system/crucible-hot-fork-coordinator.h
-index 77f94c8..77e03f7 100644
+index 77f94c86c..77e03f7f1 100644
 --- a/include/system/crucible-hot-fork-coordinator.h
 +++ b/include/system/crucible-hot-fork-coordinator.h
 @@ -33,6 +33,20 @@ typedef struct QemuCrucibleHotForkMainLoopOperation {
@@ -57,7 +43,7 @@ index 77f94c8..77e03f7 100644
 +
  #endif
 diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
-index 1ccf335..243a936 100644
+index 1ccf335b5..243a93622 100644
 --- a/monitor/qmp-cmds.c
 +++ b/monitor/qmp-cmds.c
 @@ -3544,7 +3544,8 @@ CrucibleHotForkState *qmp_crucible_hot_fork(
@@ -126,7 +112,7 @@ index 1ccf335..243a936 100644
  qmp_query_crucible_hot_fork_thread_inventory(Error **errp)
  {
 diff --git a/qapi/run-state.json b/qapi/run-state.json
-index 9bbfda4..53e0160 100644
+index 9bbfda462..53e0160cb 100644
 --- a/qapi/run-state.json
 +++ b/qapi/run-state.json
 @@ -1832,6 +1832,87 @@
@@ -218,7 +204,7 @@ index 9bbfda4..53e0160 100644
  # @CrucibleHotForkPrivateRingAction:
  #
 diff --git a/system/crucible-hot-fork-coordinator.c b/system/crucible-hot-fork-coordinator.c
-index 76c45e4..131fdfd 100644
+index 76c45e406..131fdfd2c 100644
 --- a/system/crucible-hot-fork-coordinator.c
 +++ b/system/crucible-hot-fork-coordinator.c
 @@ -13,6 +13,22 @@
@@ -481,7 +467,7 @@ index 76c45e4..131fdfd 100644
 +    return result;
 +}
 diff --git a/tests/unit/test-crucible-hot-fork-coordinator.c b/tests/unit/test-crucible-hot-fork-coordinator.c
-index 2236413..a5e892d 100644
+index 2236413b6..a5e892d01 100644
 --- a/tests/unit/test-crucible-hot-fork-coordinator.c
 +++ b/tests/unit/test-crucible-hot-fork-coordinator.c
 @@ -39,6 +39,7 @@ typedef struct CoordinatorTestState {
@@ -567,6 +553,3 @@ index 2236413..a5e892d 100644
  
      close(coordinator_test.report_pipe[0]);
      close(coordinator_test.report_pipe[1]);
--- 
-2.48.1
-

@@ -1,0 +1,16 @@
+diff --git a/hw/net/virtio-net.c b/hw/net/virtio-net.c
+index 447be11ac..dd2275530 100644
+--- a/hw/net/virtio-net.c
++++ b/hw/net/virtio-net.c
+@@ -4030,7 +4030,10 @@ static void virtio_net_reset(VirtIODevice *vdev)
+     n->nobcast = 0;
+     /* multiqueue is disabled by default */
+     n->curr_queue_pairs = 1;
+-    timer_del(n->announce_timer.tm);
++    /* Exact restore removes migration announcements and their timer. */
++    if (n->announce_timer.tm) {
++        timer_del(n->announce_timer.tm);
++    }
+     n->announce_timer.round = 0;
+     n->status &= ~VIRTIO_NET_S_ANNOUNCE;
+ 

@@ -23,6 +23,7 @@
   productionLoop = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/quantum_loop.rs;
   productionCheckpointCapture = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/quantum_loop/checkpoint_capture.rs;
   productionRuntime = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle.rs;
+  productionConstruction = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/construction.rs;
   taskList = builtins.concatStringsSep "," taskIds;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
   failures =
@@ -159,6 +160,8 @@
         label = "artifact authentication";
         needle = "failed content authentication";
       }
+    ]
+    ++ failuresFor "crates/crucible-api/src/vm_lifecycle/construction.rs" productionConstruction [
       {
         label = "restored fingerprint check";
         needle = "restored_fingerprint != expected_fingerprint";
