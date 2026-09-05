@@ -7,6 +7,8 @@
 use std::ffi::CStr;
 use std::mem::size_of;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
+use std::os::unix::ffi::OsStrExt as _;
+use std::path::Path;
 
 use crate::{Error, Result};
 
@@ -1149,7 +1151,6 @@ pub(crate) fn seqpacket_pair_with_flags(flags: i32) -> Result<(OwnedFd, OwnedFd)
     })
 }
 
-#[cfg(test)]
 pub(crate) fn unconnected_seqpacket() -> Result<OwnedFd> {
     // SAFETY: socket returns one fresh descriptor on success.
     let result = unsafe {
@@ -1160,6 +1161,63 @@ pub(crate) fn unconnected_seqpacket() -> Result<OwnedFd> {
         )
     };
     fd_result(result.into(), "socket(SOCK_SEQPACKET)")
+}
+
+pub(crate) fn bind_record_subject_listener(path: &Path, backlog: u32) -> Result<OwnedFd> {
+    let bytes = path.as_os_str().as_bytes();
+    if bytes.is_empty() || !path.is_absolute() {
+        return Err(Error::invalid(
+            "record subject listener path",
+            "must be a nonempty absolute filesystem path",
+        ));
+    }
+    if bytes.contains(&0) {
+        return Err(Error::invalid(
+            "record subject listener path",
+            "must not contain a NUL byte",
+        ));
+    }
+    // Filesystem addresses require a trailing NUL inside `sun_path`.
+    if bytes.len()
+        >= size_of::<libc::sockaddr_un>() - std::mem::offset_of!(libc::sockaddr_un, sun_path)
+    {
+        return Err(Error::invalid(
+            "record subject listener path",
+            "exceeds the Unix socket pathname limit",
+        ));
+    }
+    if !(1..=4096).contains(&backlog) {
+        return Err(Error::invalid(
+            "record subject listener backlog",
+            "must be within 1..=4096",
+        ));
+    }
+
+    let socket = unconnected_seqpacket()?;
+    enable_seqpacket_identity(socket.as_fd())?;
+
+    // All-zero initializes the pathname terminator after the copied bytes.
+    // SAFETY: every field of `sockaddr_un` admits the all-zero bit pattern.
+    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    for (destination, source) in address.sun_path.iter_mut().zip(bytes) {
+        *destination = *source as libc::c_char;
+    }
+    let length = std::mem::offset_of!(libc::sockaddr_un, sun_path) + bytes.len() + 1;
+    // SAFETY: the address length covers the initialized family, pathname, and
+    // trailing NUL; the owned socket remains live throughout the call.
+    let result = unsafe {
+        libc::bind(
+            socket.as_raw_fd(),
+            std::ptr::addr_of!(address).cast(),
+            length as libc::socklen_t,
+        )
+    };
+    unit_result(result.into(), "bind(record-subject SOCK_SEQPACKET)")?;
+    // SAFETY: `listen` consumes only the live descriptor and validated scalar backlog.
+    let result = unsafe { libc::listen(socket.as_raw_fd(), backlog as libc::c_int) };
+    unit_result(result.into(), "listen(record-subject SOCK_SEQPACKET)")?;
+    Ok(socket)
 }
 
 #[cfg(test)]

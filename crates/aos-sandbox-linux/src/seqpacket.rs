@@ -69,6 +69,15 @@ impl SeqpacketSocket {
         Ok(Self { fd: Some(fd), peer })
     }
 
+    /// Closes the transport while retaining its pinned connection identity.
+    ///
+    /// Repeated calls have no effect. The retained peer pidfd remains available
+    /// for observing the old execution after transport failure; closure alone
+    /// is neither process termination nor proof that its effects have stopped.
+    pub fn close(&mut self) {
+        self.fd.take();
+    }
+
     /// Returns the process that established this socket connection.
     ///
     /// This identity does not prove which process later writes a record. Unix

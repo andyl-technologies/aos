@@ -96,6 +96,8 @@ pub enum RecordNamespace {
     PublisherAuthority = 7,
     /// Current publisher policy, resource bindings, and controller generation heads.
     PublisherPolicy = 8,
+    /// Publisher execution and immutable challenge-registration audit records.
+    PublisherIngress = 9,
 }
 
 impl RecordNamespace {
@@ -109,6 +111,7 @@ impl RecordNamespace {
             6 => Ok(Self::AuthorityPublication),
             7 => Ok(Self::PublisherAuthority),
             8 => Ok(Self::PublisherPolicy),
+            9 => Ok(Self::PublisherIngress),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }
@@ -1860,13 +1863,14 @@ mod tests {
             RecordNamespace::AuthorityPublication,
             RecordNamespace::PublisherAuthority,
             RecordNamespace::PublisherPolicy,
+            RecordNamespace::PublisherIngress,
         ];
         for (index, namespace) in namespaces.into_iter().enumerate() {
             let code = u8::try_from(index + 1).unwrap();
             assert_eq!(namespace as u8, code);
             assert_eq!(RecordNamespace::from_byte(code).unwrap(), namespace);
         }
-        for code in [0, 9, 255] {
+        for code in [0, 10, 255] {
             assert!(RecordNamespace::from_byte(code).is_err());
         }
     }
@@ -1895,6 +1899,11 @@ mod tests {
                         RecordNamespace::PublisherPolicy,
                         key.clone(),
                         b"policy-record".to_vec(),
+                    ),
+                    JournalRecord::put(
+                        RecordNamespace::PublisherIngress,
+                        key.clone(),
+                        b"ingress-record".to_vec(),
                     ),
                 ],
             ))
@@ -1929,6 +1938,12 @@ mod tests {
                 .records(RecordNamespace::PublisherPolicy)
                 .collect::<Vec<_>>(),
             vec![(key.as_slice(), b"policy-record".as_slice())],
+        );
+        assert_eq!(
+            journal
+                .records(RecordNamespace::PublisherIngress)
+                .collect::<Vec<_>>(),
+            vec![(key.as_slice(), b"ingress-record".as_slice())],
         );
     }
 
@@ -2783,6 +2798,90 @@ mod tests {
         );
         // Replay, not the poisoned in-memory view, establishes that this
         // injected pre-write failure committed neither capability nor audit.
+        reopened.ensure_protected_authority().unwrap();
+    }
+
+    #[cfg(all(target_os = "linux", feature = "kernel-tests"))]
+    #[test]
+    fn failed_publisher_registration_commit_retires_execution_pin() {
+        use crate::local_provisioning::tests::{anchor, fixture, open_journal, sample};
+        use crate::publisher_control::{PublisherControlError, PublisherControlPolicy};
+        use crate::publisher_ingress::{PublisherIngressError, PublisherIngressLimits};
+        use crate::publisher_sessions::{
+            PublisherSessionError, PublisherSessionLimits, PublisherSessionRegistry,
+            PublisherSessionScope,
+        };
+        use aos_sandbox_linux::seqpacket::RecordSubjectListener;
+        use rustix::net::{
+            AddressFamily, SocketAddrUnix, SocketFlags, SocketType, connect, socket_with,
+        };
+
+        let mut fixture = fixture(true, true);
+        let socket_directory = tempfile::tempdir().unwrap();
+        let path = socket_directory.path().join("publisher.sock");
+        let mut listener = RecordSubjectListener::bind(&path, 2).unwrap();
+        let sender = socket_with(
+            AddressFamily::UNIX,
+            SocketType::SEQPACKET,
+            SocketFlags::CLOEXEC,
+            None,
+        )
+        .unwrap();
+        connect(&sender, &SocketAddrUnix::new(&path).unwrap()).unwrap();
+        let scope = PublisherSessionScope {
+            principal: fixture.scope.holder,
+            node: aos_sandbox_core::NodeId::from_bytes([0x73; 16]),
+            project: fixture.scope.project,
+            cache_resource: fixture.scope.cache_resource,
+        };
+        let config = PublisherControlPolicy {
+            clock_provenance: fixture.config.clock_provenance,
+            maximum_challenge_seconds: 60,
+            policy_limits: fixture.config.policy_limits,
+            ingress_limits: PublisherIngressLimits::default(),
+        };
+        let mut sessions = PublisherSessionRegistry::new(PublisherSessionLimits {
+            maximum_sessions: 1,
+        })
+        .unwrap();
+        // Keep protected policy real, but fail the append before any write.
+        // The caller cannot assume that every possible I/O failure is pre-write.
+        fixture.journal.file = OpenOptions::new()
+            .read(true)
+            .open(fixture.directory.path().join("issuance.journal"))
+            .unwrap();
+        assert!(matches!(
+            crate::publisher_control::register(
+                &mut fixture.journal,
+                &mut sessions,
+                &mut listener,
+                scope,
+                anchor(),
+                config,
+                &mut || Ok(sample(150, 1000)),
+            ),
+            Err(PublisherControlError::Ingress(
+                PublisherIngressError::Journal(JournalError::Io(_))
+            ))
+        ));
+        assert!(matches!(
+            fixture.journal.ensure_healthy(),
+            Err(JournalError::Poisoned)
+        ));
+        // No instance greeting escaped, but the exact process pin still reserves
+        // this service: an ambiguous commit cannot make it available for reuse.
+        assert!(matches!(
+            sessions.prepare(&mut listener, scope, anchor()),
+            Err(PublisherSessionError::ServiceReserved)
+        ));
+
+        let directory = fixture.directory.path().to_path_buf();
+        drop(fixture.journal);
+        let reopened = open_journal(&directory);
+        assert_eq!(
+            reopened.records(RecordNamespace::PublisherIngress).count(),
+            0
+        );
         reopened.ensure_protected_authority().unwrap();
     }
 

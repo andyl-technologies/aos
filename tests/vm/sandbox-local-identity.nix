@@ -83,7 +83,10 @@ in
       run_tests ${fixtures}/bin/aos_sandbox_linux cgroup::tests::real_readonly_hierarchy_resolves_exact_current_membership
       run_tests ${fixtures}/bin/aos_sandbox local_sessions::tests::
       run_tests ${fixtures}/bin/aos_sandbox local_provisioning::tests::
+      run_tests ${fixtures}/bin/aos_sandbox publisher_sessions::kernel_tests::
+      run_tests ${fixtures}/bin/aos_sandbox publisher_control::tests::
       run_tests ${fixtures}/bin/aos_sandbox journal::tests::failed_local_issuance_commit_never_activates_a_session
+      run_tests ${fixtures}/bin/aos_sandbox journal::tests::failed_publisher_registration_commit_retires_execution_pin
       run_tests ${fixtures}/bin/aos_sandbox_host peer::tests::unregistered_controller_path_rejects_a_live_socket_peer
       run_tests ${fixtures}/bin/aos_sandbox_host broker::tests::service_peer::stale_accepted_peer_is_nonfatal_and_next_connection_is_handled
       run_tests ${fixtures}/bin/aos_sandbox_mount broker::tests::service_peer::stale_accepted_peer_is_nonfatal_and_next_connection_is_handled

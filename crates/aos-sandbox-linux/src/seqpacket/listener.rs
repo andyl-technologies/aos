@@ -11,6 +11,7 @@
 //! independently and rejected, never repaired, if either option is missing.
 
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::path::Path;
 
 use super::{SeqpacketError, SeqpacketSocket, map_kernel_error};
 use crate::uapi;
@@ -33,6 +34,35 @@ pub struct RecordSubjectListener {
 }
 
 impl RecordSubjectListener {
+    /// Creates an owned record-subject listener at a filesystem pathname.
+    ///
+    /// The pathname must be absolute, nonempty, NUL-free, and short enough for
+    /// a trailing NUL in `sockaddr_un::sun_path`. `backlog` must be within
+    /// `1..=4096`. The socket is nonblocking and close-on-exec, and both record
+    /// identity options are enabled before the pathname is bound or exposed to
+    /// connecting peers.
+    ///
+    /// This method never removes or replaces an existing pathname. A successful
+    /// caller owns pathname cleanup; dropping the listener closes its descriptor
+    /// but does not unlink the socket. A failure after a successful bind, such as
+    /// a listen failure, can likewise leave the newly created socket entry for
+    /// the caller to inspect and remove. Removing paths automatically would race
+    /// another owner that replaced the entry.
+    ///
+    /// Filesystem pathname ownership and permissions control reachability; the
+    /// pathname itself does not authenticate a host application principal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when pathname or backlog validation fails, socket
+    /// creation or configuration fails, or the kernel rejects bind or listen.
+    /// In particular, binding an occupied pathname reports the kernel's
+    /// `EADDRINUSE` error without unlinking that pathname.
+    pub fn bind(path: &Path, backlog: u32) -> Result<Self, SeqpacketError> {
+        let fd = uapi::bind_record_subject_listener(path, backlog).map_err(map_kernel_error)?;
+        Self::from_owned(fd)
+    }
+
     /// Adopts an already-configured Unix sequenced-packet listener.
     ///
     /// Requires both identity options already enabled, without modifying them.
@@ -84,12 +114,84 @@ impl RecordSubjectListener {
 mod tests {
     use super::*;
     use crate::Error;
+    use std::ffi::OsStr;
     use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStrExt as _;
+    use std::os::unix::fs::FileTypeExt as _;
 
     fn configured_listener() -> RecordSubjectListener {
         let fd = uapi::seqpacket_listener().expect("create listener");
         uapi::enable_seqpacket_identity(fd.as_fd()).expect("configure listener");
         RecordSubjectListener::from_owned(fd).expect("adopt listener")
+    }
+
+    #[test]
+    fn filesystem_bind_preserves_identity_flags_collision_and_path_ownership() {
+        let directory = tempfile::tempdir().expect("test directory");
+        let path = directory.path().join("record-subject.sock");
+        let mut listener = RecordSubjectListener::bind(&path, 1).expect("bind listener");
+
+        assert!(
+            std::fs::symlink_metadata(&path)
+                .expect("socket metadata")
+                .file_type()
+                .is_socket()
+        );
+        assert!(uapi::is_cloexec(listener.as_fd()).expect("listener CLOEXEC"));
+        assert!(matches!(listener.accept(), Err(SeqpacketError::WouldBlock)));
+
+        assert!(matches!(
+            RecordSubjectListener::bind(&path, 1),
+            Err(SeqpacketError::Kernel(Error::Syscall { source, .. }))
+                if source.raw_os_error() == Some(libc::EADDRINUSE)
+        ));
+
+        let sender = uapi::connect_seqpacket_listener(listener.as_fd()).expect("connect sender");
+        uapi::send_seqpacket(sender.as_fd(), b"filesystem listener").expect("enqueue record");
+        let mut child = listener.accept().expect("accept configured child");
+        let record = child.receive(128).expect("receive record");
+        assert_eq!(record.payload(), b"filesystem listener");
+        assert_eq!(
+            record.subject().credentials().pid().get(),
+            std::process::id()
+        );
+
+        drop(listener);
+        assert!(path.exists(), "listener drop must not unlink its pathname");
+        std::fs::remove_file(path).expect("caller-owned pathname cleanup");
+    }
+
+    #[test]
+    fn filesystem_bind_rejects_invalid_paths_and_backlogs() {
+        let directory = tempfile::tempdir().expect("test directory");
+        let valid_path = directory.path().join("valid.sock");
+        let nul_path = Path::new(OsStr::from_bytes(b"/tmp/aos\0listener"));
+        let long_path = Path::new(OsStr::from_bytes(&[b'/'; 200]));
+
+        for path in [
+            Path::new(""),
+            Path::new("relative.sock"),
+            nul_path,
+            long_path,
+        ] {
+            assert!(matches!(
+                RecordSubjectListener::bind(path, 1),
+                Err(SeqpacketError::Kernel(Error::InvalidInput {
+                    field: "record subject listener path",
+                    ..
+                }))
+            ));
+        }
+        for backlog in [0, 4097] {
+            assert!(matches!(
+                RecordSubjectListener::bind(&valid_path, backlog),
+                Err(SeqpacketError::Kernel(Error::InvalidInput {
+                    field: "record subject listener backlog",
+                    ..
+                }))
+            ));
+        }
+        assert!(!valid_path.exists());
     }
 
     #[test]

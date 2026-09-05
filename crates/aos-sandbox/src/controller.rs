@@ -293,6 +293,108 @@ where
         )
     }
 
+    /// Registers an explicitly authorized publisher service's exact execution.
+    ///
+    /// Trusted administration must bind the configured principal and node to
+    /// this listener and retained service cgroup. A UID or incoming request is
+    /// not that authorization. The clock must come from the configured protected
+    /// adapter. Registration commits audit facts before greeting the peer; it
+    /// grants no admission, root access, signing, or completion authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects exhausted capacity, invalid execution identity, stale policy or
+    /// clock, and protected storage failures. A failed or ambiguous commit may
+    /// retain a retired execution pin until its original process exits.
+    #[cfg(target_os = "linux")]
+    pub fn register_publisher_execution<T>(
+        &mut self,
+        sessions: &mut crate::publisher_sessions::PublisherSessionRegistry,
+        listener: &mut aos_sandbox_linux::seqpacket::RecordSubjectListener,
+        service: crate::publisher_control::PublisherServiceRegistration,
+        config: crate::publisher_control::PublisherControlPolicy,
+        clock: &mut T,
+    ) -> Result<
+        crate::publisher_ingress::PublisherExecutionRegistrationV1,
+        crate::publisher_control::PublisherControlError,
+    >
+    where
+        T: FnMut() -> Result<
+            aos_sandbox_core::ownership_lease::RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        crate::publisher_control::register(
+            self.reconciler.journal_mut(),
+            sessions,
+            listener,
+            service.scope,
+            service.anchor,
+            config,
+            clock,
+        )
+    }
+
+    /// Registers a pending challenge received from its exact publisher execution.
+    ///
+    /// The request is read from the live authenticated session, never supplied as
+    /// caller-authorized bytes. Current policy, resource, controller, revocation,
+    /// and time checks constrain the immutable audit record. Its root-registry
+    /// generation and holder/source authority remain unverified prerequisites
+    /// for future admission. This receipt permits no publication or signing.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid transport identity or encoding, stale protected heads,
+    /// expired or changed challenges, exhausted audit limits, and storage failure.
+    /// Post-commit failure can leave an inert pending record without a receipt.
+    #[cfg(target_os = "linux")]
+    pub fn register_publisher_challenge<T>(
+        &mut self,
+        sessions: &mut crate::publisher_sessions::PublisherSessionRegistry,
+        instance: aos_sandbox_core::PublisherInstanceId,
+        config: crate::publisher_control::PublisherControlPolicy,
+        clock: &mut T,
+    ) -> Result<
+        crate::publisher_control::PendingPublisherChallengeReceipt,
+        crate::publisher_control::PublisherControlError,
+    >
+    where
+        T: FnMut() -> Result<
+            aos_sandbox_core::ownership_lease::RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        crate::publisher_control::register_challenge(
+            self.reconciler.journal_mut(),
+            sessions,
+            instance,
+            config,
+            clock,
+        )
+    }
+
+    /// Releases a retired volatile publisher slot after its pinned process exits.
+    ///
+    /// This does not erase audit records, release durable publication accounting,
+    /// transfer old completion permits, or restore a session after restart.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unhealthy protected storage, unknown or active sessions, and an
+    /// original publisher process that remains alive or cannot be observed.
+    #[cfg(target_os = "linux")]
+    pub fn release_exited_publisher(
+        &mut self,
+        sessions: &mut crate::publisher_sessions::PublisherSessionRegistry,
+        instance: aos_sandbox_core::PublisherInstanceId,
+    ) -> Result<
+        aos_sandbox_core::PublisherInstanceId,
+        crate::publisher_control::PublisherControlError,
+    > {
+        crate::publisher_control::release_exited(self.reconciler.journal_mut(), sessions, instance)
+    }
+
     /// Compiles and atomically admits one canonical activated request.
     ///
     /// The call has no volatile queue: success means the desired mutation,

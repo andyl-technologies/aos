@@ -24,6 +24,7 @@ aos-sandbox-linux.workspace = true
 rand.workspace = true
 
 [dev-dependencies]
+rustix = { workspace = true, features = ["net"] }
 buffa.workspace = true
 ed25519-dalek.workspace = true
 tempfile.workspace = true

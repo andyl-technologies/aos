@@ -4,7 +4,10 @@
 //! journal. It validates and replays durable transactions before a future
 //! reconciler is allowed to issue effects. Protected publisher stores retain
 //! current policy and capabilities; Linux local provisioning commits issuance
-//! before activating process-local holder channels. Raw Linux syscalls and
+//! before activating process-local holder channels. [`publisher_ingress`] owns
+//! inert execution/challenge audit records; Linux publisher control and sessions
+//! bind their registration to the original live process without granting effects.
+//! Raw Linux syscalls and
 //! privileged broker implementations deliberately live outside this crate.
 
 pub mod authority;
@@ -20,7 +23,12 @@ pub mod ownership_resume;
 pub mod ownership_service;
 pub mod publication;
 pub mod publisher_authority;
+#[cfg(target_os = "linux")]
+pub mod publisher_control;
+pub mod publisher_ingress;
 pub mod publisher_policy;
+#[cfg(target_os = "linux")]
+pub mod publisher_sessions;
 pub mod reconciler;
 
 pub use authority::{

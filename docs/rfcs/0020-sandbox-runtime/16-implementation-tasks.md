@@ -1700,3 +1700,64 @@ the exact-AOS-kernel gap for the carried exact/descendant cgroup and stale-peer
 cases, not cgroup mutation/migration races, aarch64 qualification, or full
 production runtime provisioning. Independent implementation and packaging
 reviews found no remaining blocker for this increment.
+
+### Exact-process publisher execution and pending challenge registration
+
+Publisher registration now accepts an explicitly configured service mapping
+through a listener whose kernel record-subject options precede connection
+exposure. The controller pins the original connector and its exact retained
+cgroup, mints a fresh execution identity and channel binding, and commits
+immutable execution audit facts before sending the fixed instance greeting.
+Neither the configured socket path nor Unix credentials supply a principal.
+The retained PIDFD identifies process lifetime, not executable-image provenance.
+
+The fixed-capacity session table rejects delegated writers even within the
+same cgroup. Fatal transport or identity failures close the channel but retain
+the original process pin and principal/node reservation. Post-commit failures
+and indeterminate journal errors also retain a retired reservation. Only
+observed exit releases that volatile slot; it does not release durable
+accounting or transfer completion permits. Restart never reconstructs a live
+execution from diagnostic PID, cgroup, boot, or channel fields.
+
+Namespace-nine execution and pending-challenge records use independently
+versioned, canonical bounded encodings. Execution identities cannot be
+reinstalled, even with identical facts. Challenge retries must retain exact
+original facts; changed keys are rejected, and expired keys remain retained
+under finite lifetime quotas. The controller reads canonical challenge requests
+only from the original publisher's authenticated session, matches the complete
+execution/resource target, and resolves current protected policy, controller,
+and revocation heads. Wall and boottime deadlines are independently checked
+before and after commit; an exact retry cannot reset either deadline. The
+holder channel named in a request is not the publisher's channel and remains
+an unverified claim until the separate holder-channel join.
+
+These records are audit state, not publication admission, source provenance,
+challenge consumption, reservations, or signing
+authority. Future admission must consume a challenge atomically with its
+decision and accounting. Production publisher dispatch, the holder-channel
+join, root-registry validation, source-slot/release decisions, and completion
+permits remain open; `SBX-PUB-02` remains incomplete.
+
+Validation passes: 368 default unit tests (167 controller, 69 Linux boundary,
+73 host, 59 mount), three integration tests, and seventeen doctests. The
+all-feature four-crate suite passes 401 unit tests, the same integration
+tests and doctests, with serial kernel-fixture execution. Subprocess fixtures
+can temporarily inherit unrelated descriptors between fork and exec; running
+them concurrently with close/flock assertions produced transient failures.
+The explicit kernel gate runs serially, while default hermetic tests exclude
+these fixtures. No production behavior or journal-lock checks were weakened
+to accommodate that test-process interaction.
+
+All-feature scoped strict Clippy, warning-denied rustdoc, changed-file
+formatting, and the locked all-target workspace check pass. The workspace
+check retains unrelated existing warnings. Independent registration/session
+and challenge reviews found no remaining blocker for this increment.
+
+The final `checks.vm.sandbox-local-identity` derivation passes all 368 default
+library tests inside the actual Nix build sandbox and all 31 selected kernel
+test entries, including subprocess fixtures, on AOS Linux 6.18.33 x86_64.
+It exercises same-cgroup delegated-writer rejection, pinned-process exit,
+immutable challenge retries, stale heads, policy-clamped frozen-wall deadlines,
+and failed journal append retention through the real registration path.
+Cgroup mutation/migration races, aarch64, production runtime provisioning,
+and publication admission/effects remain unqualified by this gate.
