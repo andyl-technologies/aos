@@ -8,7 +8,7 @@ use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 
-use crate::components::{InlineError, ReviewedPlanCard, StatusBadge};
+use crate::components::{HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, watch_draft, PendingPlan};
 use crate::transport::ApiClient;
 
@@ -82,7 +82,7 @@ fn GcConfiguredControls(
     view! {
         <GcPolicyEditor client=client.clone() cache_id=cache_id.clone() policy=policy/>
         <section class="panel resource-panel">
-            <div class="section-heading"><div><p class="section-kicker">"Current concurrency boundary"</p><h2>"GC generation"</h2><p>"Every sweep and acknowledgement below is bound to this generation. Changing policy creates a new review boundary before deletion work can begin."</p></div></div>
+            <div class="section-heading"><div><p class="section-kicker">"Current concurrency boundary"</p><h2>"GC generation"<HelpTooltip term="GC generation" summary="Every sweep and acknowledgement below is bound to this generation. Changing policy creates a new review boundary before deletion work can begin."/></h2></div></div>
             <div class="compact-list-row gc-generation-status">
                 <div><strong>"GC concurrency fence"</strong><code>{generation_version.clone()}</code></div>
                 <StatusBadge state=generation_label.to_string() positive=generation.state == "enabled"/>
@@ -233,8 +233,7 @@ fn GcPolicyEditor(
             <div class="section-heading">
                 <div>
                     <p class="section-kicker">"Deletion policy"</p>
-                    <h2>"Garbage collection"</h2>
-                    <p>"Soft limits never override live roots, leases, required coverage, or the unreferenced grace period."</p>
+                    <h2>"Garbage collection"<HelpTooltip term="Garbage collection" summary="Soft limits never override live roots, leases, required coverage, or the unreferenced grace period."/></h2>
                 </div>
                 <span>"Policy version "<code>{display_version}</code></span>
             </div>
@@ -352,8 +351,7 @@ fn GcPlanner(
             <div class="section-heading">
                 <div>
                     <p class="section-kicker">"Immutable candidate snapshot"</p>
-                    <h2>"Plan a sweep"</h2>
-                    <p>"Planning freezes root, object, topology, policy, and placement inventory versions before review."</p>
+                    <h2>"Plan a sweep"<HelpTooltip term="Plan a sweep" summary="Planning freezes root, object, topology, policy, and placement inventory versions before review."/></h2>
                 </div>
             </div>
             <div class="compact-list-row"><span>"Bound GC resource version"</span><code>{version}</code></div>

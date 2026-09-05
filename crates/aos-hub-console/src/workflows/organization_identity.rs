@@ -8,7 +8,7 @@ use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 
-use crate::components::{InlineError, ReviewedPlanCard, StatusBadge};
+use crate::components::{HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
@@ -62,7 +62,7 @@ fn ServiceAccounts(client: ApiClient, organization: String) -> impl IntoView {
     view! {
         <div class="workflow-stack">
             <section class="panel resource-panel">
-                <div class="section-heading"><div><p class="section-kicker">"Machine identity"</p><h2>"Service accounts"</h2><p>"Non-human principals receive scoped memberships and issue separately revocable access tokens."</p></div></div>
+                <div class="section-heading"><div><p class="section-kicker">"Machine identity"</p><h2>"Service accounts"<HelpTooltip term="Service accounts" summary="Non-human principals receive scoped memberships and issue separately revocable access tokens."/></h2></div></div>
                 <Suspense fallback=move || view! { <p class="loading-row">"Loading service accounts…"</p> }>
                     {move || {
                         let client = view_client.clone();
@@ -243,7 +243,7 @@ fn MembershipLookup(client: ApiClient, organization: String, can_manage: bool) -
     };
 
     view! {
-        <section class="panel editor-panel"><div class="section-heading"><div><p class="section-kicker">"Direct access"</p><h2>"Members"</h2><p>"Look up a user or service account at this organization or one of its child scopes. Role changes replace the exact direct grant."</p></div></div><form class="editor-form" on:submit=on_lookup><label><span>"Principal kind"</span><select prop:value=move || principal_kind.get() on:change=move |event| principal_kind.set(event_target_value(&event))><option value="user">"User"</option><option value="service_account">"Service account"</option></select></label><label><span>"Email or service-account path"</span><input required placeholder="person@example.com or org/name" prop:value=move || principal_ref.get() on:input=move |event| principal_ref.set(event_target_value(&event))/></label><label><span>"Resource scope"</span><input prop:value=move || scope.get() on:input=move |event| scope.set(event_target_value(&event))/><small>"Use the organization slug for organization-wide access, or a child resource's canonical scope."</small></label><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Load membership"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || loaded.get().map(|membership| view! { <MembershipEditor client=client.clone() membership=membership can_manage=can_manage/> })}</section>
+        <section class="panel editor-panel"><div class="section-heading"><div><p class="section-kicker">"Direct access"</p><h2>"Members"<HelpTooltip term="Members" summary="Look up a user or service account at this organization or one of its child scopes. Role changes replace the exact direct grant."/></h2></div></div><form class="editor-form" on:submit=on_lookup><label><span>"Principal kind"</span><select prop:value=move || principal_kind.get() on:change=move |event| principal_kind.set(event_target_value(&event))><option value="user">"User"</option><option value="service_account">"Service account"</option></select></label><label><span>"Email or service-account path"</span><input required placeholder="person@example.com or org/name" prop:value=move || principal_ref.get() on:input=move |event| principal_ref.set(event_target_value(&event))/></label><label><span>"Resource scope"</span><input prop:value=move || scope.get() on:input=move |event| scope.set(event_target_value(&event))/><small>"Use the organization slug for organization-wide access, or a child resource's canonical scope."</small></label><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Load membership"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || loaded.get().map(|membership| view! { <MembershipEditor client=client.clone() membership=membership can_manage=can_manage/> })}</section>
     }
 }
 
@@ -328,7 +328,7 @@ fn Invitations(client: ApiClient, organization: String, can_manage: bool) -> imp
 
     view! {
         <section class="panel resource-panel">
-            <div class="section-heading"><div><p class="section-kicker">"Human onboarding"</p><h2>"Invitations"</h2><p>"Invitation secrets are displayed once after reviewed creation and delivered out of band."</p></div></div>
+            <div class="section-heading"><div><p class="section-kicker">"Human onboarding"</p><h2>"Invitations"<HelpTooltip term="Invitations" summary="Invitation secrets are displayed once after reviewed creation and delivered out of band."/></h2></div></div>
             <Suspense fallback=move || view! { <p class="loading-row">"Loading invitations…"</p> }>
                 {move || {
                     let client = view_client.clone();

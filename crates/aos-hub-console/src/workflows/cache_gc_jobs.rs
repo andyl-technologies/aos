@@ -7,7 +7,7 @@ use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::components::{HashValue, InlineError, ReviewedPlanCard, StatusBadge};
+use crate::components::{HashValue, HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::transport::ApiClient;
 
@@ -56,8 +56,7 @@ pub(super) fn GcDeletionJobs(client: ApiClient, cache_id: String) -> impl IntoVi
             <div class="section-heading">
                 <div>
                     <p class="section-kicker">"Physical deletion recovery"</p>
-                    <h2>"Deletion jobs"</h2>
-                    <p>"Retry transient placement failures or explicitly abandon a permanently failed physical deletion while preserving its audit record."</p>
+                    <h2>"Deletion jobs"<HelpTooltip term="Deletion jobs" summary="Retry transient placement failures or explicitly abandon a permanently failed physical deletion while preserving its audit record."/></h2>
                 </div>
             </div>
             <form class="editor-form" on:submit=on_submit>

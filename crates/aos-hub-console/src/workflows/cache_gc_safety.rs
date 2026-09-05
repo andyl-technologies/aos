@@ -8,7 +8,7 @@ use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 
-use crate::components::{HashValue, InlineError, ReviewedPlanCard, StatusBadge};
+use crate::components::{HashValue, HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::transport::ApiClient;
 
@@ -220,8 +220,7 @@ fn FirstSweepAcknowledgement(
             <div class="section-heading">
                 <div>
                     <p class="section-kicker">"One-time safety interlock"</p>
-                    <h2>"Acknowledge the first sweep"</h2>
-                    <p>"Acknowledge only after inspecting the exact candidate manifest above. Later plans remain version-bound but do not repeat this bootstrap gate."</p>
+                    <h2>"Acknowledge the first sweep"<HelpTooltip term="Acknowledge the first sweep" summary="Acknowledge only after inspecting the exact candidate manifest above. Later plans remain version-bound but do not repeat this bootstrap gate."/></h2>
                 </div>
             </div>
             <form class="editor-form" on:submit=on_plan>

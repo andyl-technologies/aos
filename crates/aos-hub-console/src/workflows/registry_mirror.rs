@@ -9,7 +9,7 @@ use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 
-use crate::components::{format_timestamp, HashValue, InlineError, ReviewedPlanCard, StatusBadge};
+use crate::components::{HashValue, HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge, format_timestamp};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::transport::{ApiClient, TransportError};
 
@@ -41,10 +41,7 @@ pub(super) fn RegistryMirrorWorkflow(client: ApiClient, registry_id: String) -> 
             <div class="section-heading">
                 <div>
                     <p class="section-kicker">"Verified upstream replication"</p>
-                    <h2>"Registry mirror"</h2>
-                    <p>
-                        "Full mirrors synchronize on a schedule. Pull-through mirrors fetch verified objects on demand."
-                    </p>
+                    <h2>"Registry mirror"<HelpTooltip term="Registry mirror" summary="Full mirrors synchronize on a schedule. Pull-through mirrors fetch verified objects on demand."/></h2>
                 </div>
             </div>
             <Suspense fallback=move || view! { <p class="loading-row">"Loading mirror…"</p> }>

@@ -7,7 +7,7 @@ use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 
-use crate::components::{InlineError, ReviewedPlanCard, StatusBadge};
+use crate::components::{HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, watch_draft, PendingPlan};
 use crate::transport::ApiClient;
 
@@ -146,10 +146,7 @@ pub(super) fn CacheRetentionWorkflow(client: ApiClient, cache_id: String) -> imp
                 <div class="section-heading">
                     <div>
                         <p class="section-kicker">"Registry-derived GC roots"</p>
-                        <h2>"Retention subscriptions"</h2>
-                        <p>
-                            "Retain signed catalogs, channels, releases, tags, or semantic-version ranges without changing client cache publication. Subscription roots are inherited from registry metadata; manual roots below supplement them for local recovery or incident control."
-                        </p>
+                        <h2>"Retention subscriptions"<HelpTooltip term="Retention subscriptions" summary="Retain signed catalogs, channels, releases, tags, or semantic-version ranges without changing client cache publication. Subscription roots are inherited from registry metadata; manual roots below supplement them for local recovery or incident control."/></h2>
                     </div>
                 </div>
                 <Suspense fallback=move || view! { <p class="loading-row">"Loading subscriptions…"</p> }>

@@ -8,7 +8,7 @@ use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 
-use crate::components::{HashValue, InlineError, ReviewedPlanCard, StatusBadge};
+use crate::components::{HashValue, HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::transport::ApiClient;
 
@@ -31,10 +31,7 @@ pub(super) fn RegistryCacheStack(client: ApiClient, registry_id: String) -> impl
                 <div class="section-heading">
                     <div>
                         <p class="section-kicker">"Signed consumer configuration"</p>
-                        <h2>"Client cache sources"</h2>
-                        <p>
-                            "Clients try these signed sources in order. Adding a source references an existing cache; it does not create storage, copy packages, or retain them."
-                        </p>
+                        <h2>"Client cache sources"<HelpTooltip term="Client cache sources" summary="Clients try these signed sources in order. Adding a source references an existing cache; it does not create storage, copy packages, or retain them."/></h2>
                     </div>
                 </div>
                 <Suspense fallback=move || view! { <p class="loading-row">"Loading consumer cache stack…"</p> }>
@@ -90,18 +87,16 @@ fn ManagedCaches(caches: CacheInventory, create_href: Option<String>) -> impl In
     view! {
         <section class="panel resource-panel">
             <div class="section-heading"><div>
-                <p class="section-kicker">"Cache resources"</p><h2>"Managed binary caches"</h2>
-                <p>"Configure each cache's storage, delivery, signing, retention, and population in its own settings. Caches can be shared by multiple registries."</p>
+                <p class="section-kicker">"Cache resources"</p><h2>"Managed binary caches"<HelpTooltip term="Managed binary caches" summary="Configure each cache's storage, delivery, signing, retention, and population in its own settings. Caches can be shared by multiple registries."/></h2>
             </div></div>
             <div class="form-actions">
                 {create_href.map(|href| view! { <a class="button" href=href>"Create binary cache in this organization"</a> })}
                 <a class="secondary-button" href="/-/caches">"Browse all caches"</a>
             </div>
-            <p class="muted">"These are caches you can read, including shared caches. Configuring a cache requires permission in its own scope. A registry cache-stack entry is a reference, not a separate cache resource."</p>
             <Suspense fallback=move || view! { <p class="loading-row">"Loading managed caches…"</p> }>
                 {move || Suspend::new(async move {
                     match caches.await.as_ref() {
-                        Ok(caches) if caches.is_empty() => view! { <p class="muted">"No managed caches are available. Create one in an organization you manage, or ask a cache owner for access. External sources can be added below."</p> }.into_any(),
+                        Ok(caches) if caches.is_empty() => view! { <p class="muted">"No managed caches yet. Create one, or add an external cache URL below."</p> }.into_any(),
                         Ok(caches) => view! { <div class="binding-list">{caches.iter().map(|cache| {
                             let href = cache_href(&cache.slug);
                             view! { <article class="revision-card">
@@ -221,9 +216,9 @@ fn render_stack(
             <div><span>"Indexed commit"</span>{if stack.indexed_commit.is_empty() { view! { <span>"not indexed"</span> }.into_any() } else { view! { <HashValue value=stack.indexed_commit/> }.into_any() }}</div>
             <div><span>"Version"</span><code>{display_or(&version, "initial")}</code></div>
         </div>
-        <p>"Changes create a signed change request. Merge it and index the registry to update this published list. "<a href=changes_href>"View change requests"</a></p>
-        {entries.is_empty().then(|| view! { <p class="muted">"No cache sources are published. Create or configure a managed cache above, then add it here; you can also use an external cache URL."</p> })}
-        {(!can_manage).then(|| view! { <p class="muted">"Registry configuration permission is required to change cache sources."</p> })}
+        <p class="muted">"Edits become a signed change request. "<a href=changes_href>"View change requests"</a></p>
+        {entries.is_empty().then(|| view! { <p class="muted">"No cache sources published yet."</p> })}
+        {(!can_manage).then(|| view! { <p class="muted">"Read only: registry configuration permission is required."</p> })}
         <div class="binding-list">
             {stack
                 .entries
@@ -259,8 +254,7 @@ fn ValidationPanel(
             <div class="section-heading">
                 <div>
                     <p class="section-kicker">"Published source checks"</p>
-                    <h2>"Source validation"</h2>
-                    <p>"Checks configured sources and managed cache routes. This does not test downloading packages from every source."</p>
+                    <h2>"Source validation"<HelpTooltip term="Source validation" summary="Checks configured sources and managed cache routes. This does not test downloading packages from every source."/></h2>
                 </div>
             </div>
             <Suspense fallback=move || view! { <p class="loading-row">"Validating cache stack…"</p> }>

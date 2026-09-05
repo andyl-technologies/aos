@@ -8,7 +8,7 @@ use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 
-use crate::components::{InlineError, ReviewedPlanCard, StatusBadge};
+use crate::components::{HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, watch_draft, PendingPlan};
 use crate::route::{
     delivery_draft_prerequisites, delivery_public_path, delivery_workflow_action,
@@ -56,8 +56,7 @@ pub(super) fn DeliveryDestinationWorkflows(
             <div class="section-heading">
                 <div>
                     <p class="section-kicker">"Guided delivery"</p>
-                    <h2 id="delivery-workflows-title">"Delivery destinations"</h2>
-                    <p>"Provision, verify, and activate one complete destination without losing progress."</p>
+                    <h2 id="delivery-workflows-title">"Delivery destinations"<HelpTooltip term="Delivery destinations" summary="Provision, verify, and activate one complete destination without losing progress."/></h2>
                 </div>
             </div>
             <Suspense fallback=move || view! { <p class="loading-row">"Loading delivery progress…"</p> }>

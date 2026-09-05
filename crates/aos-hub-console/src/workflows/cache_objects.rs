@@ -8,7 +8,7 @@ use leptos::ev::{Event, SubmitEvent};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::components::{HashValue, InlineError, StatusBadge};
+use crate::components::{HashValue, HelpTooltip, InlineError, StatusBadge};
 use crate::transport::ApiClient;
 
 /// Renders cache search and exact object/closure inspection.
@@ -236,8 +236,7 @@ fn ObjectSearch(client: ApiClient, cache_id: String) -> impl IntoView {
             <div class="section-heading">
                 <div>
                     <p class="section-kicker">"Logical Nix content"</p>
-                    <h2>"Search objects"</h2>
-                    <p>"Search store hashes and names across the complete cache inventory."</p>
+                    <h2>"Search objects"<HelpTooltip term="Search objects" summary="Search store hashes and names across the complete cache inventory."/></h2>
                 </div>
             </div>
             <form class="editor-form" on:submit=on_submit>

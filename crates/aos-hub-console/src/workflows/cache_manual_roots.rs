@@ -7,7 +7,7 @@ use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::components::{HashValue, InlineError, ReviewedPlanCard, StatusBadge};
+use crate::components::{HashValue, HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::transport::ApiClient;
 
@@ -41,10 +41,7 @@ pub(super) fn ManualRetentionRoots(client: ApiClient, cache_id: String) -> impl 
             <div class="section-heading">
                 <div>
                     <p class="section-kicker">"Operator exceptions"</p>
-                    <h2>"Manual roots and leases"</h2>
-                    <p>
-                        "Protect an exact store object permanently or until a Unix timestamp. These are local exceptions: registry-derived subscription roots continue to apply alongside them, and GC records the operator reason with the root."
-                    </p>
+                    <h2>"Manual roots and leases"<HelpTooltip term="Manual roots and leases" summary="Protect an exact store object permanently or until a Unix timestamp. These are local exceptions: registry-derived subscription roots continue to apply alongside them, and GC records the operator reason with the root."/></h2>
                 </div>
             </div>
             <Suspense fallback=move || view! { <p class="loading-row">"Loading manual roots…"</p> }>

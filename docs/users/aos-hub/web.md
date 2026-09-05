@@ -50,10 +50,16 @@ verification state. Public downloads may use a ready CDN or direct delivery
 route. Private downloads stay on the Hub origin so the signed-in browser can
 authorize the exact disk bytes with its session cookie.
 
+A channel page shows the target release, the minimum allowed release, and the
+share of the 256 rollout buckets assigned, then the rollout bar and a
+colour-coded bucket map. Enter a host's bucket to see which release it gets.
+
 ## Sign in and administer a Hub
 
 Open `/login`. A deployment may offer password, passkey, magic-link, or OIDC
-sign-in depending on its configuration. The browser session is separate from
+sign-in depending on its configuration. Settings pages keep their headings
+short; the `?` mark beside a section title opens its explanation on hover,
+focus, or click. The browser session is separate from
 the bearer tokens used by API clients.
 
 After signing in, use:

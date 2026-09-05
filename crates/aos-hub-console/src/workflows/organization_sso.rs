@@ -8,7 +8,7 @@ use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 
-use crate::components::{InlineError, ReviewedPlanCard, StatusBadge};
+use crate::components::{HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::{ApiClient, TransportError};
@@ -240,7 +240,7 @@ fn OrganizationDomains(client: ApiClient, organization: String) -> impl IntoView
 
     view! {
         <section class="panel resource-panel">
-            <div class="section-heading"><div><p class="section-kicker">"Identity ownership"</p><h2>"Organization email domains"</h2><p>"Verified DNS claims bind email domains to this organization's SSO and invitation policy."</p></div></div>
+            <div class="section-heading"><div><p class="section-kicker">"Identity ownership"</p><h2>"Organization email domains"<HelpTooltip term="Organization email domains" summary="Verified DNS claims bind email domains to this organization's SSO and invitation policy."/></h2></div></div>
             <Suspense fallback=move || view! { <p class="loading-row">"Loading email domains…"</p> }>
                 {move || {
                     let client = view_client.clone();

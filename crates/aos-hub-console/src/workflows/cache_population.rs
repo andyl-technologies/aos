@@ -8,7 +8,7 @@ use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 
-use crate::components::{HashValue, InlineError, ReviewedPlanCard, StatusBadge};
+use crate::components::{HashValue, HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, watch_draft, PendingPlan};
 use crate::transport::ApiClient;
 
@@ -43,10 +43,7 @@ pub(super) fn CachePopulation(client: ApiClient, cache_id: String) -> impl IntoV
             <div class="section-heading">
                 <div>
                     <p class="section-kicker">"Release availability"</p>
-                    <h2>"Population and coverage"</h2>
-                    <p>
-                        "Required targets record availability policy and expose coverage failures. Publication visibility is not currently gated by this setting."
-                    </p>
+                    <h2>"Population and coverage"<HelpTooltip term="Population and coverage" summary="Required targets record availability policy and expose coverage failures. Publication visibility is not currently gated by this setting."/></h2>
                 </div>
             </div>
             <Suspense fallback=move || view! { <p class="loading-row">"Loading population targets…"</p> }>

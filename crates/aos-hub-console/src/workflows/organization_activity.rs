@@ -11,9 +11,7 @@ use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 
-use crate::components::{
-    format_timestamp, EmptyState, HashValue, InlineError, ReviewedPlanCard, StatusBadge,
-};
+use crate::components::{EmptyState, HashValue, HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge, format_timestamp};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::transport::ApiClient;
 
@@ -60,10 +58,7 @@ fn OrganizationWebhooks(client: ApiClient, organization: String) -> impl IntoVie
             <div class="section-heading">
                 <div>
                     <p class="section-kicker">"Signed event delivery"</p>
-                    <h2>"Webhooks"</h2>
-                    <p>
-                        "Subscriptions resolve an immutable secret version only while signing outbound deliveries."
-                    </p>
+                    <h2>"Webhooks"<HelpTooltip term="Webhooks" summary="Subscriptions resolve an immutable secret version only while signing outbound deliveries."/></h2>
                 </div>
             </div>
             <Suspense fallback=move || view! { <p class="loading-row">"Loading webhooks…"</p> }>
@@ -409,8 +404,7 @@ fn OrganizationAudit(client: ApiClient, organization: String) -> impl IntoView {
             <div class="section-heading">
                 <div>
                     <p class="section-kicker">"Append-only history"</p>
-                    <h2>"Audit log"</h2>
-                    <p>"Entries link semantic changesets to signed Git history where applicable."</p>
+                    <h2>"Audit log"<HelpTooltip term="Audit log" summary="Entries link semantic changesets to signed Git history where applicable."/></h2>
                 </div>
             </div>
             <Suspense fallback=move || view! { <p class="loading-row">"Loading audit history…"</p> }>
