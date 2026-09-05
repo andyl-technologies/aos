@@ -965,7 +965,10 @@ where
     let mut production_config = if args.production_qemu {
         let backend = require_selftest_qemu_backend(cli)?;
         let mut config = production_qemu_lifecycle_config(&backend)?;
-        if let Some(interval) = args.qemu_rendezvous_icount {
+        if let Some(interval) = packaged_executor::production_rendezvous_interval(
+            args.qemu_rendezvous_icount,
+            args.campaign_packaged_executor.is_some(),
+        ) {
             config = config.with_rendezvous_interval_icount(interval);
         }
         Some(config.with_debug_gdbstubs_for_all_nodes("127.0.0.1:0"))

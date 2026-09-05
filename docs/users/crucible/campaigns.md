@@ -406,6 +406,15 @@ in that startup catalog; otherwise restart with the enlarged catalog or use a
 separate pool. The durable store locality derives from `--campaign-state`, so
 reordering or adding a compatible campaign does not change the pool identity.
 
+Packaged CLI mode defaults to a scheduler rendezvous every 1,000,000 guest
+instructions. This caps each RUN without reducing the terminal run ceiling,
+allowing condition evaluation, checkpoint requests, and resource checks between
+slices. `--qemu-rendezvous-icount N` explicitly overrides the interval; ordinary
+non-packaged sessions retain their existing default. Keep the chosen execution
+settings stable when replaying a campaign. A larger interval trades fewer host
+handshakes for slower boundary-level control. Existing quantum budgets still
+apply; this is an instruction bound, not a wall-clock response guarantee.
+
 The version-1 deployment file is strict TOML, must be an exact-owner regular
 file with mode `0600`, and is bounded to 64 KiB:
 

@@ -15,6 +15,18 @@ const PACKAGED_EXECUTOR_SCHEMA: &str = "crucible.campaign-packaged-executor";
 const PACKAGED_EXECUTOR_VERSION: u32 = 1;
 const MAX_PACKAGED_EXECUTOR_CONFIG_BYTES: usize = 64 * 1024;
 const OS_ENTROPY_DEVICE: &str = "/dev/urandom";
+const DEFAULT_PACKAGED_RUN_INTERVAL_ICOUNT: u64 = 1_000_000;
+
+/// Keeps packaged campaign RUNs bounded without reducing the terminal ceiling.
+pub(super) fn production_rendezvous_interval(
+    requested: Option<u64>,
+    packaged: bool,
+) -> Option<u64> {
+    // Conditions, checkpoint requests, and resource checks run at modeled
+    // boundaries. Without rendezvous, an isolated VM can consume the complete
+    // forty-billion-instruction CLI run allowance before returning to them.
+    requested.or_else(|| packaged.then_some(DEFAULT_PACKAGED_RUN_INTERVAL_ICOUNT))
+}
 
 /// Authored deployment contract; unknown fields fail closed.
 #[derive(Debug, Deserialize)]
@@ -321,6 +333,22 @@ qemu_profile = "deterministic-tcg-v1"
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644))
             .expect("weaken deployment mode");
         assert!(load_deployment(&path).is_err());
+    }
+
+    #[test]
+    fn packaged_runs_default_to_bounded_rendezvous_without_overriding_explicit_policy() {
+        assert_eq!(production_rendezvous_interval(None, false), None);
+        assert_eq!(production_rendezvous_interval(None, true), Some(1_000_000));
+        for packaged in [false, true] {
+            assert_eq!(
+                production_rendezvous_interval(Some(100), packaged),
+                Some(100)
+            );
+            assert_eq!(
+                production_rendezvous_interval(Some(2_000_000), packaged),
+                Some(2_000_000)
+            );
+        }
     }
 
     #[test]
