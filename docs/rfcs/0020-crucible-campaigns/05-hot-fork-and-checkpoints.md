@@ -613,7 +613,22 @@ its proof. Abort restores and frees retained native sources only after block
 release; partial restoration retains the transaction for an explicit retry.
 Physical fork revalidates the actual source set rather than trusting cached
 counts. Nonempty native graphs remain rejected at that boundary until private
-child VMState/disk installation is implemented and verified.
+child VMState/disk installation is bound to the coordinator and verified.
+
+The native child-file primitive already exists below the coordinator. While the
+source set is frozen, the parent prepares one bounded plan from caller-owned
+empty destination files: each originally writable leaf receives an exact private
+copy (reflink when available, sparse copy otherwise) and each read-only leaf an
+independent read-only descriptor. Destinations MUST NOT alias any source or each
+other; at most 4,096 files and an explicit aggregate byte budget are accepted;
+one plan per source set blocks restoration until it is released. Only the
+immediate child installs the plan, after native worker retirement and with block
+barriers released. Installation reopens every prepared descriptor through an
+independent open file description so child byte-range locks never share the
+parent's staged description, checks device, inode, size, and modification time,
+rebinds the raw driver to the private file, restores the original access mode,
+and consumes the inherited source capability. Child raw nodes reopen through
+their descriptor, never through the parent's launch pathname.
 
 An active transaction acknowledges proof bit 5 exactly while the complete
 immutable-root binding and frozen-source proof are retained. The binding does not create the

@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "54add28c24249fedc247740f36f9e2797d07f8cd53c8b321ab01ae99caf85337";
+  patchBranchBundleSha256 = "30838bb812990a6576e81ffed7128b0268f61aa2e5f94519771dec561cffcbc9";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "14821e8a826de955fe7177ca07c18862014346e5";
+  patchBranchHeadCommit = "210cfd9504e90caddf3240fb6aba4071c86f5558";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1945,6 +1945,16 @@ let
       class = "F";
       enforces = "HFORK-4,HFORK-8,HFORK-22";
       capability = "the retained-template coordinator freezes a complete native source set outside block barriers, then rebinds immutable roots using original backend write provenance and schema-versioned source proof; abort restores and frees sources only after barrier release and retains partial recovery; native tests cover frozen binding and empty-child container disposal, while a live VMState flight verifies two prepare/abort cycles and resumed saves; nonempty native graph forks remain rejected until child-private graph installation is implemented";
+    }
+    {
+      file = "0202-crucible-adopt-child-private-native-files.patch";
+      branchSubject = "crucible: adopt child-private native files";
+      branchCommit = "210cfd9504e90caddf3240fb6aba4071c86f5558";
+      branchTree = "d61675333d51c77f9f32a76d3297c32752b20eb8";
+      catalogName = "crucible-hot-fork-child-native-files";
+      class = "F";
+      enforces = "HFORK-9,HFORK-22";
+      capability = "a frozen source set prepares one bounded child file plan in the parent: every originally writable native leaf receives an exact private copy in a caller-supplied empty destination (reflink when available, sparse copy otherwise) and every read-only leaf an independent read-only descriptor, with aliasing, byte-budget, and identity checks; the immediate child adopts the plan outside block barriers after native worker retirement, rebinds file locks on independent open descriptions, restores original access against the private files, never reopens parent launch pathnames, and consumes its inherited source capability; native tests cover rejection before freeze, budget, aliasing, foreign nodes, parent-side installation refusal, child adoption, private writes invisible to the parent, and reopen through the private inode; coordinator binding and whole-world execution remain open";
     }
   ];
   catalogOnlyCapabilities = [
