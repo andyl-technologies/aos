@@ -127,8 +127,8 @@
       {
         # The canonical release publisher exercises the complete AOS CLI and
         # APR surface. Keep the closure audit enforced with narrow headroom
-        # above this branch's measured 917.2 MiB publisher closure.
-        aos.image.budgets.maxRuntimeClosureMiB = lib.mkForce 920;
+        # above the measured 922 MiB closure with qualification adapters.
+        aos.image.budgets.maxRuntimeClosureMiB = lib.mkForce 928;
         aos.security.pki.certificates = [caCertificate];
       }
     ];
@@ -451,12 +451,13 @@ in {
             --hub-receipt-key staging-publication-v1={staging_key} \\
             --token {shlex.quote(staging_token)} --output /var/tmp/staged
       """), timeout=1800)
-      print("==> running four-platform qualification")
-      publisher.succeed(textwrap.dedent(f"""
+      def collect_and_sign(phase, journal, publication, receipt_key, output):
+          # The authority reviews the exact retained report before signing it.
+          command = textwrap.dedent(f"""
           {AOS} release qualify-run --bundle /var/tmp/release-surface \\
-            --staging-receipt /var/tmp/staged/staging-receipt.json \\
+            --staging-receipt {publication} \\
             --trusted-key release-evidence-v1={release_key} \\
-            --hub-receipt-key staging-publication-v1={staging_key} \\
+            --hub-receipt-key {receipt_key} \\
             --executor x86_64-linux={FIXTURE} --executor aarch64-linux={FIXTURE} \\
             --executor x86_64-darwin={FIXTURE} --executor aarch64-darwin={FIXTURE} \\
             --executor-identity x86_64-linux=fleet-executor-x86_64-linux \\
@@ -468,8 +469,23 @@ in {
             --authority-key qualification-v1={qualification_key} \\
             --authority-verification-identity fleet-qualification-authority \\
             --executor-nonce {'3' * 64} --authority-nonce {'4' * 64} \\
-            --qualified-at 2026-09-03T12:00:00Z --output /var/tmp/qualification-run
-      """), timeout=600)
+            --qualified-at now --phase {phase} --journal {journal}
+          """).strip()
+          if phase == "rollout":
+              intent = json.dumps({"channel": "candidate", "prior_generation": 0,
+                                   "first_partition": 0, "last_partition": 255}, sort_keys=True, separators=(",", ":"))
+              publisher.succeed("printf %s " + shlex.quote(intent) + " > /var/tmp/qualification-rollout-intent.json")
+              command += " --rollout-intent /var/tmp/qualification-rollout-intent.json"
+          publisher.succeed(command + f" --prepare-only --output {output}-prepared", timeout=600)
+          publisher.succeed(f"{FIXTURE} review /var/tmp/release-surface/release-plan.json "
+                            f"{output}-prepared/qualification-report.json {output}-review.json")
+          publisher.succeed(command + f" --report-input {output}-prepared/qualification-report.json "
+                            f"--review-receipt {output}-review.json --output {output}", timeout=300)
+
+      print("==> collecting, reviewing, and signing shared-contract qualification")
+      collect_and_sign("staging", "/var/tmp/staged/release-journal.jsonl",
+                       "/var/tmp/staged/staging-receipt.json",
+                       f"staging-publication-v1={staging_key}", "/var/tmp/qualification-run")
       print("==> admitting signed qualification")
       publisher.succeed(textwrap.dedent(f"""
           {AOS} release qualify --bundle /var/tmp/release-surface \\
@@ -489,13 +505,19 @@ in {
             --staging-receipt /var/tmp/staged/staging-receipt.json \\
             --qualification-receipt /var/tmp/qualified/qualification-receipt.json \\
             --signed-qualification /var/tmp/qualified/signed-qualification.json \\
-            --qualification-report /var/tmp/qualified/qualification-report.json \\
+            --qualification-report /var/tmp/qualification-run/qualification-report.json \\
             --trusted-key release-evidence-v1={release_key} \\
             --staging-receipt-key staging-publication-v1={staging_key} \\
             --qualification-key qualification-v1={qualification_key} \\
             --production-receipt-key production-publication-v1={production_key} \\
             --token {shlex.quote(production_token)} --output /var/tmp/promoted
+      """), timeout=1800)
+      collect_and_sign("rollout", "/var/tmp/promoted/release-journal.jsonl",
+                       "/var/tmp/promoted/production-receipt.json",
+                       f"production-publication-v1={production_key}", "/var/tmp/rollout-qualification")
+      publisher.succeed(textwrap.dedent(f"""
           {AOS} release channel advance --bundle /var/tmp/release-surface \\
+            --qualification /var/tmp/rollout-qualification --qualification-key qualification-v1={qualification_key} \\
             --journal /var/tmp/promoted/release-journal.jsonl \\
             --production-receipt /var/tmp/promoted/production-receipt.json \\
             --channel candidate --prior-generation 0 --first-partition 0 --last-partition 255 \\
@@ -507,7 +529,13 @@ in {
             /var/tmp/release-surface/release-manifest.json \\
             /var/tmp/promoted/production-receipt.json /var/tmp/rolling/channel-receipt.json \\
             /var/tmp/rolling/release-journal.jsonl /var/tmp/completion-receipt.json
+      """), timeout=1800)
+      collect_and_sign("complete", "/var/tmp/rolling/release-journal.jsonl",
+                       "/var/tmp/promoted/production-receipt.json",
+                       f"production-publication-v1={production_key}", "/var/tmp/complete-qualification")
+      publisher.succeed(textwrap.dedent(f"""
           {AOS} release channel complete --bundle /var/tmp/release-surface \\
+            --qualification /var/tmp/complete-qualification --qualification-key qualification-v1={qualification_key} \\
             --journal /var/tmp/rolling/release-journal.jsonl \\
             --production-receipt /var/tmp/promoted/production-receipt.json \\
             --channel-receipt /var/tmp/rolling/channel-receipt.json \\
@@ -523,10 +551,20 @@ in {
       report = json.loads(publisher.succeed(
           f"{JQ} -c . /var/tmp/qualification-run/qualification-report.json"
       ))
-      assert len(report["evidence"]) == 4, report
+      assert report["schema_version"] == "aos.release.qualification-report/v3", report
+      assert len(report["evidence"]) == 11, report
+      assert len(report["claims"]) == 4, report
+      assert all(claim["achieved_assurance"] == "A2" and claim["disposition"] == "passed"
+                 and claim["environment_digest"] for claim in report["claims"]), report
       assert {item["platform"] for item in report["evidence"]} == {
-          "x86_64-linux", "aarch64-linux", "x86_64-darwin", "aarch64-darwin",
+          None, "x86_64-linux", "aarch64-linux", "x86_64-darwin", "aarch64-darwin",
       }, report
+      complete_report = json.loads(publisher.succeed(
+          f"{JQ} -c . /var/tmp/complete-qualification/qualification-report.json"
+      ))
+      assert len(complete_report["claims"]) == 4, complete_report
+      assert all(claim["achieved_assurance"] == "A3" and claim["disposition"] == "passed"
+                 for claim in complete_report["claims"]), complete_report
       publisher.succeed(f"{CURL} -fsS {PRODUCTION}/andyl/main/channels/candidate/00 >/dev/null")
     '';
 }

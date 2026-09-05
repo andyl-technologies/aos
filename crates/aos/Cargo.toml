@@ -25,7 +25,7 @@ name = "aos-release-fleet-fixture"
 path = "tests/support/release_fleet_fixture.rs"
 
 [dependencies]
-rustix = { workspace = true }
+rustix = { workspace = true, features = ["process"] }
 aos-contract = { workspace = true }
 aos-core = { workspace = true }
 aos-net = { workspace = true }

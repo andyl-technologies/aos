@@ -1,5 +1,8 @@
 //! Closed unsigned-image assembly manifest.
 //!
+//! Current v2 assemblies include the resolved kernel configuration as a
+//! captured input. Archived v1 assemblies retain their original file contract.
+//!
 //! ```json
 //! {"schema_version":"aos.image.unsigned-assembly/v1",
 //!  "platform":"x86_64-linux","system_variant":"production",
@@ -18,12 +21,17 @@ use serde::{Deserialize, Serialize};
 /// Schema for deterministic public-only image inputs.
 pub const UNSIGNED_IMAGE_ASSEMBLY_V1: &str = "aos.image.unsigned-assembly/v1";
 
+/// Assembly schema requiring the resolved kernel configuration for qualification.
+pub const UNSIGNED_IMAGE_ASSEMBLY_V2: &str = "aos.image.unsigned-assembly/v2";
+
 /// Required deterministic input or public trust artifact.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum AssemblyFileKind {
     /// Linux kernel output, including its embedded module authority.
     Kernel,
+    /// Resolved configuration of the exact built kernel; required by v2.
+    KernelConfig,
     /// Unsigned normal initrd input.
     Initrd,
     /// Unsigned immutable root filesystem input.
@@ -267,8 +275,12 @@ impl UnsignedImageAssemblyV1 {
     /// missing/duplicate/reordered input kinds, invalid paths or byte facts,
     /// or an unpinned/non-store assembly tool.
     pub fn validate(&self) -> Result<()> {
-        if self.schema_version != UNSIGNED_IMAGE_ASSEMBLY_V1 || !self.platform.supports_images() {
-            bail!("unsigned image assembly requires the v1 schema and a Linux platform");
+        if !matches!(
+            self.schema_version.as_str(),
+            UNSIGNED_IMAGE_ASSEMBLY_V1 | UNSIGNED_IMAGE_ASSEMBLY_V2
+        ) || !self.platform.supports_images()
+        {
+            bail!("unsigned image assembly requires a supported schema and a Linux platform");
         }
         for (value, label) in [
             (&self.release_id, "release id"),
@@ -345,6 +357,11 @@ impl UnsignedImageAssemblyV1 {
             if !kinds.contains(&required) {
                 bail!("unsigned image assembly lacks required {required:?} input");
             }
+        }
+        if kinds.contains(&AssemblyFileKind::KernelConfig)
+            != (self.schema_version == UNSIGNED_IMAGE_ASSEMBLY_V2)
+        {
+            bail!("resolved kernel configuration requires the v2 assembly schema");
         }
         for tool in &self.tools {
             require_identifier(&tool.id, "assembly tool id")?;

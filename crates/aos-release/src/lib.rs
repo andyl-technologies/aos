@@ -14,6 +14,8 @@
 //! - [`plan`] freezes release intent before build effects begin.
 //! - [`manifest`] binds finalized artifacts to the frozen plan.
 //! - [`evidence`] records public gate and qualification results.
+//! - [`qualification`] defines typed scopes, built capabilities and assurance obligations.
+//! - [`qualification_evidence`] expands cases and derives assurance from observations.
 //! - [`inventory`] validates the Nix-derived four-target package inventory.
 //! - [`signing`] defines role-bound signing requests and responses.
 //! - [`state`] defines the append-only release journal state machine.
@@ -21,6 +23,17 @@
 //! - [`verify`] verifies complete release values and captured bundle bytes.
 
 #![forbid(unsafe_code)]
+
+#[cfg(test)]
+extern crate self as aos_release;
+
+#[cfg(test)]
+#[path = "../tests/support/qualification.rs"]
+mod qualification_fixture;
+
+#[cfg(test)]
+#[path = "qualification/assurance_tests.rs"]
+mod assurance_tests;
 
 pub mod artifact;
 pub mod build;
@@ -31,6 +44,9 @@ pub mod inventory;
 pub mod manifest;
 pub mod plan;
 pub mod platform;
+pub mod qualification;
+pub mod qualification_admission;
+pub mod qualification_evidence;
 pub mod receipt;
 pub mod registry;
 pub mod sbom;
@@ -43,6 +59,9 @@ pub use digest::Sha256Digest;
 
 /// Schema identifier for the first frozen release-plan contract.
 pub const RELEASE_PLAN_V1: &str = "aos.release.plan/v1";
+
+/// Schema for release plans with the shared qualification contract.
+pub const RELEASE_PLAN_V2: &str = "aos.release.plan/v2";
 
 /// Schema identifier for the first finalized release-manifest contract.
 pub const RELEASE_MANIFEST_V1: &str = "aos.release.manifest/v1";

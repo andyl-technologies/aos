@@ -50,7 +50,10 @@
   normalizeSourceValue = source: let
     path = builtins.toString source;
   in
-    if builtins.isPath source && builtins.match "^/nix/store/.*" path == null
+    # A flake source subdirectory is already under /nix/store, but is not a
+    # store root. Retain that exact subtree as its own source root, just as
+    # when evaluating the same checked-in source from a working checkout.
+    if builtins.isPath source && builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+$" path == null
     then
       builtins.path {
         path = source;
@@ -153,7 +156,8 @@
         seen = [];
         result = [];
       }
-      values).result;
+      values)
+    .result;
 
   catalog = map (entry: builtins.removeAttrs entry ["sourceValues"]) entries;
 in {

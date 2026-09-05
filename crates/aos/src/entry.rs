@@ -361,6 +361,12 @@ async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
         return commands::release::qualify_offline(args, printer).await;
     }
     if let Commands::Release {
+        command: crate::cli::ReleaseCommand::Qualification { command },
+    } = &cli.command
+    {
+        return commands::release::qualification_offline(command, printer).await;
+    }
+    if let Commands::Release {
         command: crate::cli::ReleaseCommand::QualifyRun(args),
     } = &cli.command
     {

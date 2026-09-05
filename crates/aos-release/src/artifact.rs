@@ -88,6 +88,12 @@ impl<'de> Deserialize<'de> for BundlePath {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ArtifactKind {
+    /// Signed OCI multi-platform index included in a qualified release.
+    OciIndex,
+    /// OCI manifest for one exact Linux platform.
+    OciManifest,
+    /// OCI configuration or layer blob for a platform manifest.
+    OciBlob,
     /// Frozen canonical release plan.
     ReleasePlan,
     /// Nix archive containing a package or dependency output.
