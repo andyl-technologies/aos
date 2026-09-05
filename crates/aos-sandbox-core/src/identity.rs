@@ -151,6 +151,14 @@ macro_rules! define_identity {
 }
 
 define_identity!(ProjectId, "Identifies a sandbox project authority domain.");
+define_identity!(
+    PublisherInstanceId,
+    "Identifies one execution of a domain publisher."
+);
+define_identity!(
+    PublicationReservationId,
+    "Identifies one controller-owned publication reservation."
+);
 define_identity!(SandboxId, "Identifies a durable logical sandbox.");
 define_identity!(
     IncarnationId,

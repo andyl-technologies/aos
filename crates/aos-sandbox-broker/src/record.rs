@@ -900,7 +900,7 @@ fn encode_fence(
     bytes.extend_from_slice(stable_key_id);
     bytes.extend_from_slice(&fence.ownership_authority.generation().to_be_bytes());
     bytes.extend_from_slice(fence.ownership_authority.public_key_sha256().as_bytes());
-    bytes.push(key_usage_code(fence.ownership_authority.usage()));
+    bytes.push(key_usage_code(fence.ownership_authority.usage())?);
     bytes.extend_from_slice(&lease_bytes);
     Ok(bytes)
 }
@@ -1173,14 +1173,17 @@ fn decode_verb(domain: BrokerDomain, code: u8) -> Result<BrokerVerb, Authorizati
     }
 }
 
-const fn key_usage_code(usage: KeyUsage) -> u8 {
+const fn key_usage_code(usage: KeyUsage) -> Result<u8, AuthorizationRecordError> {
     match usage {
-        KeyUsage::BrokerAuthorization => 1,
-        KeyUsage::OwnershipLease => 2,
-        KeyUsage::Policy => 3,
-        KeyUsage::Tree => 4,
-        KeyUsage::Snapshot => 5,
-        KeyUsage::Distribution => 6,
+        KeyUsage::BrokerAuthorization => Ok(1),
+        KeyUsage::OwnershipLease => Ok(2),
+        KeyUsage::Policy => Ok(3),
+        KeyUsage::Tree => Ok(4),
+        KeyUsage::Snapshot => Ok(5),
+        KeyUsage::Distribution => Ok(6),
+        // This journal is assignment-bound broker evidence, not a portable
+        // key registry. Publisher authority must not acquire a record code.
+        KeyUsage::PublisherAuthorization => Err(AuthorizationRecordError::InvalidPayload),
     }
 }
 
@@ -1259,6 +1262,32 @@ mod tests {
     use super::*;
     use aos_sandbox_core::InvalidBrokerAuthorizationPlan;
     use sha2::Digest as _;
+
+    #[test]
+    fn publisher_registration_does_not_expand_broker_journal_key_usage_codes() {
+        let usages = [
+            KeyUsage::BrokerAuthorization,
+            KeyUsage::OwnershipLease,
+            KeyUsage::Policy,
+            KeyUsage::Tree,
+            KeyUsage::Snapshot,
+            KeyUsage::Distribution,
+        ];
+        for (code, usage) in (1u8..=6).zip(usages) {
+            assert_eq!(key_usage_code(usage), Ok(code));
+            assert_eq!(decode_key_usage(code), Ok(usage));
+        }
+        assert_eq!(
+            key_usage_code(KeyUsage::PublisherAuthorization),
+            Err(AuthorizationRecordError::InvalidPayload)
+        );
+        for code in [0, 7, 255] {
+            assert_eq!(
+                decode_key_usage(code),
+                Err(AuthorizationRecordError::InvalidPayload)
+            );
+        }
+    }
 
     const LOCAL_LEASE_HEX: &str = "414f534c4c520000000101010101010101010101010101010101020202020202020202020202020202020000000000000003050505050505050505050505050505050505050505050505050505050505050506060606060606060606060606060606000000000000000750eaa2c31b835f37356d5208fd40899bbbb3b0f08bcfdbf257bab78e32b7adb60909090909090909090909090909090900000000000000c81414141414141414141414141414141408080808080808080808080808080808000000082629a1e858e97bc412c719f27e387e104300c6082338a6cf4bfac5d9adc0dcacb7a633d7";
 

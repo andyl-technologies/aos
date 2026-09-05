@@ -265,14 +265,14 @@ key-reference = [
   stable-key-id: text .size (1..255),
   generation: u64,
   public-key-sha256: digest,
-  usage: 0..5, ; policy, tree, snapshot, distribution, broker-plan, ownership-lease
+  usage: 0..6, ; policy, tree, snapshot, distribution, broker-plan, ownership-lease, publisher
 ]
 
 ; application/vnd.aos.sandbox.trust-policy.v1+cbor
 trust-policy-v1 = [
   version: 1,
   trust-scope: id,
-  purpose: 0..5,
+  purpose: 0..6,
   allowed-keys: [* key-reference],
   required-features: [* feature],
 ]
@@ -283,7 +283,7 @@ signature-statement-v1 = [
   trust-scope: id,
   signer: key-reference,
   algorithm: 1, ; Ed25519
-  purpose: 0..5,
+  purpose: 0..6,
   issued-seconds: i64,
   expires-seconds: i64 / null,
   verification-policy: descriptor,
@@ -306,7 +306,7 @@ broker-target-v1 =
   [kind: 2, previous: bytes .size 32, successor: bytes .size 32]
 
 broker-grant-v1 = [
-  verb: 1..14,
+  verb: 1..28,
   target: broker-target-v1,
   argument-commitment: digest,
   maximum-request-bytes: 1..16777216,
@@ -316,16 +316,57 @@ broker-grant-v1 = [
 ; application/vnd.aos.sandbox.broker-authorization-plan.v1+cbor
 broker-authorization-plan-v1 = [
   version: 1,
-  audience: 0..1,                    ; host, mount
-  protocol: 0..1,                    ; host-broker, mount-broker
+  audience: 0..3,                    ; host, mount, storage, network
+  protocol: 0..3,                    ; matching broker protocol; no publisher code
   protocol-major: 1,
-  protocol-minor: 0..1,
+  protocol-minor: 0..2,              ; 2 only for host; other brokers at most 1
   assignment: broker-assignment-v1,
   node: id,
   ownership-authority: key-reference,
   grants: [1*1024 broker-grant-v1],
   policy-commitment: digest,
   revocation-scope: id,
+  issued-seconds: i64,
+  expires-seconds: i64,
+  required-features: [*64 feature],
+]
+
+; Publisher plans deliberately contain no sandbox assignment or ownership lease.
+; This schema commits static request/configuration facts, not online admission
+; or a retained completion permit. Project publication is not public promotion.
+; All authority IDs, generations, channel and authority commitments are nonzero.
+; Content media type is exactly application/vnd.aos.sandbox.content.v1;
+; its encoded size must not exceed maximum-bytes. Features are strictly ordered.
+; application/vnd.aos.sandbox.publisher-domain-plan.v1+cbor
+publisher-domain-plan-v1 = [
+  version: 1,
+  publisher-protocol-version: [major: 1, minor: 0],
+  target: [
+    principal: id,
+    instance: id,
+    node: id,
+    project: id,
+    cache-domain: [kind: 1, domain: id],
+    isolation-policy: digest,
+  ],
+  request: [
+    holder: id,
+    channel: bytes .size 32,
+    operation: id,
+    reservation: id,
+    content: descriptor,
+    source-authorization: digest,
+    request-commitment: digest,
+    maximum-bytes: 0..9223372036854775807,
+  ],
+  authority: [
+    policy: digest,
+    policy-generation: positive-u64,
+    controller-generation: positive-u64,
+    revocation-scope: id,
+    revocation-generation: positive-u64,
+    root-registry-generation: positive-u64,
+  ],
   issued-seconds: i64,
   expires-seconds: i64,
   required-features: [*64 feature],

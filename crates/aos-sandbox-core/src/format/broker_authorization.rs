@@ -238,6 +238,7 @@ fn protocol_code(protocol: ProtocolId) -> u64 {
         ProtocolId::StorageBroker => 2,
         ProtocolId::NetworkBroker => 3,
         ProtocolId::PublicApi
+        | ProtocolId::PublisherAuthority
         | ProtocolId::CoordinatorNode
         | ProtocolId::OwnershipAuthority
         | ProtocolId::Guardian
@@ -283,6 +284,34 @@ mod tests {
             ObjectDigest::from_bytes([9; 32]),
             KeyUsage::OwnershipLease,
         )
+    }
+
+    #[test]
+    fn publisher_registration_does_not_expand_broker_protocol_wire_codes() {
+        let mut decoder = Decoder::new(&[4], DecodeLimits::default())
+            .unwrap_or_else(|error| panic!("test broker protocol decoder failed: {error}"));
+        assert!(matches!(
+            decode_protocol(&mut decoder),
+            Err(CanonicalCborError::UnknownRegistryValue { .. })
+        ));
+        let original = plan();
+        assert!(matches!(
+            BrokerAuthorizationPlan::new(
+                original.audience(),
+                ProtocolId::PublisherAuthority,
+                ProtocolVersion::new(1, 0),
+                original.assignment(),
+                original.node(),
+                original.ownership_authority().clone(),
+                original.grants().to_vec(),
+                original.policy_commitment(),
+                original.revocation_scope(),
+                original.issued_seconds(),
+                original.expires_seconds(),
+                original.required_features().to_vec(),
+            ),
+            Err(InvalidBrokerAuthorizationPlan::ProtocolAudienceMismatch)
+        ));
     }
 
     fn plan() -> BrokerAuthorizationPlan {

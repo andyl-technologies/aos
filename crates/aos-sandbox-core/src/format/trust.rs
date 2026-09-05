@@ -175,17 +175,19 @@ const fn purpose_code(purpose: SignaturePurpose) -> u64 {
         SignaturePurpose::Distribution => 3,
         SignaturePurpose::BrokerAuthorization => 4,
         SignaturePurpose::OwnershipLease => 5,
+        SignaturePurpose::PublisherAuthorization => 6,
     }
 }
 
 fn decode_purpose(decoder: &mut Decoder<'_>) -> Result<SignaturePurpose, CanonicalCborError> {
-    match decoder.closed("signature purpose", 5)? {
+    match decoder.closed("signature purpose", 6)? {
         0 => Ok(SignaturePurpose::Policy),
         1 => Ok(SignaturePurpose::Tree),
         2 => Ok(SignaturePurpose::Snapshot),
         3 => Ok(SignaturePurpose::Distribution),
         4 => Ok(SignaturePurpose::BrokerAuthorization),
         5 => Ok(SignaturePurpose::OwnershipLease),
+        6 => Ok(SignaturePurpose::PublisherAuthorization),
         value => Err(CanonicalCborError::UnknownRegistryValue {
             registry: "signature purpose",
             value,
@@ -202,17 +204,19 @@ const fn usage_code(usage: KeyUsage) -> u64 {
         KeyUsage::Distribution => 3,
         KeyUsage::BrokerAuthorization => 4,
         KeyUsage::OwnershipLease => 5,
+        KeyUsage::PublisherAuthorization => 6,
     }
 }
 
 fn decode_usage(decoder: &mut Decoder<'_>) -> Result<KeyUsage, CanonicalCborError> {
-    match decoder.closed("key usage", 5)? {
+    match decoder.closed("key usage", 6)? {
         0 => Ok(KeyUsage::Policy),
         1 => Ok(KeyUsage::Tree),
         2 => Ok(KeyUsage::Snapshot),
         3 => Ok(KeyUsage::Distribution),
         4 => Ok(KeyUsage::BrokerAuthorization),
         5 => Ok(KeyUsage::OwnershipLease),
+        6 => Ok(KeyUsage::PublisherAuthorization),
         value => Err(CanonicalCborError::UnknownRegistryValue {
             registry: "key usage",
             value,
@@ -263,6 +267,60 @@ mod tests {
             descriptor("application/vnd.aos.sandbox.trust-policy.v1+cbor", 0x11),
         )
         .unwrap_or_else(|error| panic!("test statement failed: {error}"))
+    }
+
+    #[test]
+    fn publisher_tags_append_without_reassigning_existing_trust_codes() {
+        let purposes = [
+            SignaturePurpose::Policy,
+            SignaturePurpose::Tree,
+            SignaturePurpose::Snapshot,
+            SignaturePurpose::Distribution,
+            SignaturePurpose::BrokerAuthorization,
+            SignaturePurpose::OwnershipLease,
+            SignaturePurpose::PublisherAuthorization,
+        ];
+        let usages = [
+            KeyUsage::Policy,
+            KeyUsage::Tree,
+            KeyUsage::Snapshot,
+            KeyUsage::Distribution,
+            KeyUsage::BrokerAuthorization,
+            KeyUsage::OwnershipLease,
+            KeyUsage::PublisherAuthorization,
+        ];
+        for (code, (purpose, usage)) in purposes.into_iter().zip(usages).enumerate() {
+            let encoded = [u8::try_from(code)
+                .unwrap_or_else(|error| panic!("test registry code exceeds one byte: {error}"))];
+            assert_eq!(purpose_code(purpose), code as u64);
+            assert_eq!(usage_code(usage), code as u64);
+            let mut decoder = Decoder::new(&encoded, DecodeLimits::default())
+                .unwrap_or_else(|error| panic!("test purpose decoder failed: {error}"));
+            assert_eq!(decode_purpose(&mut decoder), Ok(purpose));
+            decoder
+                .finish()
+                .unwrap_or_else(|error| panic!("test purpose has trailing bytes: {error}"));
+            let mut decoder = Decoder::new(&encoded, DecodeLimits::default())
+                .unwrap_or_else(|error| panic!("test usage decoder failed: {error}"));
+            assert_eq!(decode_usage(&mut decoder), Ok(usage));
+            decoder
+                .finish()
+                .unwrap_or_else(|error| panic!("test usage has trailing bytes: {error}"));
+        }
+        for encoded in [&[7][..], &[0x18, 0xff][..]] {
+            let mut decoder = Decoder::new(encoded, DecodeLimits::default())
+                .unwrap_or_else(|error| panic!("unknown-purpose decoder failed: {error}"));
+            assert!(matches!(
+                decode_purpose(&mut decoder),
+                Err(CanonicalCborError::UnknownRegistryValue { .. })
+            ));
+            let mut decoder = Decoder::new(encoded, DecodeLimits::default())
+                .unwrap_or_else(|error| panic!("unknown-usage decoder failed: {error}"));
+            assert!(matches!(
+                decode_usage(&mut decoder),
+                Err(CanonicalCborError::UnknownRegistryValue { .. })
+            ));
+        }
     }
 
     #[test]

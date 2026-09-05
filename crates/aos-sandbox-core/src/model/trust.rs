@@ -83,6 +83,8 @@ pub enum KeyUsage {
     Snapshot,
     /// Signs distribution provenance without adding authority.
     Distribution,
+    /// Signs project-scoped publisher authorization without assignment authority.
+    PublisherAuthorization,
 }
 
 /// Identifies the purpose asserted by a signature statement or trust policy.
@@ -101,11 +103,14 @@ pub enum SignaturePurpose {
     Snapshot,
     /// Authenticates distribution provenance without adding authority.
     Distribution,
+    /// Authenticates one project-scoped publisher-domain plan.
+    PublisherAuthorization,
 }
 
 impl SignaturePurpose {
     const fn required_usage(self) -> KeyUsage {
         match self {
+            Self::PublisherAuthorization => KeyUsage::PublisherAuthorization,
             Self::BrokerAuthorization => KeyUsage::BrokerAuthorization,
             Self::OwnershipLease => KeyUsage::OwnershipLease,
             Self::Policy => KeyUsage::Policy,
@@ -522,6 +527,31 @@ mod tests {
         );
 
         assert_eq!(result, Err(InvalidTrustModel::KeysNotCanonical));
+    }
+
+    #[test]
+    fn publisher_purpose_requires_its_dedicated_key_usage() {
+        for usage in [
+            KeyUsage::Policy,
+            KeyUsage::Tree,
+            KeyUsage::Snapshot,
+            KeyUsage::Distribution,
+            KeyUsage::BrokerAuthorization,
+            KeyUsage::OwnershipLease,
+            KeyUsage::PublisherAuthorization,
+        ] {
+            let result = TrustPolicy::new(
+                TrustScopeId::from_bytes([3; 16]),
+                SignaturePurpose::PublisherAuthorization,
+                vec![key("publisher", 1, usage)],
+                Vec::new(),
+            );
+            if usage == KeyUsage::PublisherAuthorization {
+                assert!(result.is_ok());
+            } else {
+                assert_eq!(result, Err(InvalidTrustModel::UsagePurposeMismatch));
+            }
+        }
     }
 
     #[test]

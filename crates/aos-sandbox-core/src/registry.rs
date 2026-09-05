@@ -93,6 +93,8 @@ pub enum PortableMediaType {
     OwnershipLease,
     /// One ownership-authority-signed claim-to-lease transaction receipt.
     OwnershipTransactionReceipt,
+    /// One controller-signed project-scoped publisher-domain plan.
+    PublisherDomainPlan,
 }
 
 impl PortableMediaType {
@@ -119,6 +121,9 @@ impl PortableMediaType {
             Self::OwnershipTransactionReceipt => {
                 "application/vnd.aos.sandbox.ownership-transaction-receipt.v1"
             }
+            Self::PublisherDomainPlan => {
+                "application/vnd.aos.sandbox.publisher-domain-plan.v1+cbor"
+            }
         }
     }
 
@@ -139,7 +144,7 @@ impl PortableMediaType {
     }
 }
 
-const ALL_MEDIA_TYPES: [PortableMediaType; 15] = [
+const ALL_MEDIA_TYPES: [PortableMediaType; 16] = [
     PortableMediaType::Content,
     PortableMediaType::Directory,
     PortableMediaType::Tree,
@@ -155,6 +160,7 @@ const ALL_MEDIA_TYPES: [PortableMediaType; 15] = [
     PortableMediaType::BrokerAuthorizationPlan,
     PortableMediaType::OwnershipLease,
     PortableMediaType::OwnershipTransactionReceipt,
+    PortableMediaType::PublisherDomainPlan,
 ];
 
 /// Identifies the semantic field in which a descriptor appears.
@@ -326,6 +332,9 @@ pub fn validate_signature_subject(
             kind,
             PortableMediaType::OwnershipLease | PortableMediaType::OwnershipTransactionReceipt
         ),
+        SignaturePurpose::PublisherAuthorization => {
+            matches!(kind, PortableMediaType::PublisherDomainPlan)
+        }
     };
     if allowed {
         Ok(kind)
@@ -391,6 +400,8 @@ pub enum ProtocolId {
     Guardian,
     /// Authenticated sandbox guest-agent channel.
     GuestAgent,
+    /// Transport-neutral controller-to-publisher domain authority.
+    PublisherAuthority,
 }
 
 /// Stores an explicit protocol semantic major/minor version.
@@ -455,6 +466,7 @@ const fn protocol_version(protocol: ProtocolId) -> ProtocolVersion {
             ProtocolVersion::new(1, 1)
         }
         ProtocolId::PublicApi
+        | ProtocolId::PublisherAuthority
         | ProtocolId::CoordinatorNode
         | ProtocolId::OwnershipAuthority
         | ProtocolId::Guardian
@@ -532,6 +544,61 @@ mod tests {
             ),
             Err(RegistryError::SignatureSubjectMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn publisher_signature_subject_is_separate_from_broker_and_provenance_authority() {
+        let publisher = descriptor(PortableMediaType::PublisherDomainPlan);
+        assert_eq!(
+            PortableMediaType::parse("application/vnd.aos.sandbox.publisher-domain-plan.v1+cbor"),
+            Ok(PortableMediaType::PublisherDomainPlan)
+        );
+        for kind in ALL_MEDIA_TYPES {
+            let result = validate_signature_subject(
+                SignaturePurpose::PublisherAuthorization,
+                &descriptor(kind),
+            );
+            if kind == PortableMediaType::PublisherDomainPlan {
+                assert_eq!(result, Ok(kind));
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(RegistryError::SignatureSubjectMismatch { .. })
+                ));
+            }
+        }
+        for purpose in [
+            SignaturePurpose::BrokerAuthorization,
+            SignaturePurpose::OwnershipLease,
+            SignaturePurpose::Policy,
+            SignaturePurpose::Tree,
+            SignaturePurpose::Snapshot,
+        ] {
+            assert!(matches!(
+                validate_signature_subject(purpose, &publisher),
+                Err(RegistryError::SignatureSubjectMismatch { .. })
+            ));
+        }
+        // Distribution may authenticate any registered object's provenance;
+        // it never substitutes for the publisher verifier's dedicated purpose.
+        assert_eq!(
+            validate_signature_subject(SignaturePurpose::Distribution, &publisher),
+            Ok(PortableMediaType::PublisherDomainPlan)
+        );
+    }
+
+    #[test]
+    fn publisher_protocol_does_not_inherit_broker_versions() {
+        assert_eq!(
+            negotiate_protocol(ProtocolId::PublisherAuthority, ProtocolVersion::new(1, 0)),
+            Ok(ProtocolVersion::new(1, 0))
+        );
+        for version in [ProtocolVersion::new(1, 1), ProtocolVersion::new(2, 0)] {
+            assert!(matches!(
+                negotiate_protocol(ProtocolId::PublisherAuthority, version),
+                Err(RegistryError::IncompatibleProtocol { .. })
+            ));
+        }
     }
 
     #[test]

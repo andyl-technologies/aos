@@ -17,6 +17,7 @@ pub mod format;
 pub mod identity;
 pub mod model;
 pub mod ownership_lease;
+pub mod publisher;
 pub mod registry;
 pub mod resources;
 pub mod selector;
@@ -46,8 +47,8 @@ pub use format::{
 pub use identity::{
     AttachmentId, AttachmentSlotId, AuditId, CacheDomainId, CapabilityId, ExecutionId, ExportId,
     GrantId, IncarnationId, IssuerId, LeaseId, NetworkEndpointId, NodeId, OperationId, PrincipalId,
-    ProjectId, ResourceId, RestoreScopeId, RevocationScopeId, SandboxId, SecretId, ServiceId,
-    SnapshotId, TrustScopeId, ViewId,
+    ProjectId, PublicationReservationId, PublisherInstanceId, ResourceId, RestoreScopeId,
+    RevocationScopeId, SandboxId, SecretId, ServiceId, SnapshotId, TrustScopeId, ViewId,
 };
 pub use ownership_lease::{
     BrokerAdmissionIntersection, CLOCK_PAIR_TOLERANCE_NANOSECONDS,
@@ -59,6 +60,12 @@ pub use ownership_lease::{
     authenticate_historical_ownership_lease, decode_local_lease_record, encode_local_lease_record,
     intersect_broker_admission, prepare_local_lease_record, verify_ownership_lease,
     verify_ownership_transaction_receipt_signature,
+};
+pub use publisher::{
+    InvalidPublisherDomainPlan, PublisherAuthorityBindings, PublisherDomainPlan,
+    PublisherDomainPlanDraft, PublisherPlanExpectation, PublisherPlanTrustAnchor,
+    PublisherPlanVerificationError, PublisherRequest, PublisherRequestCommitment, PublisherTarget,
+    VerifiedPublisherDomainPlan, verify_publisher_domain_plan,
 };
 pub use registry::{
     DescriptorRole, PortableMediaType, ProtocolId, ProtocolVersion, RegistryError,

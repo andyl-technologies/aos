@@ -69,6 +69,7 @@ application/vnd.aos.sandbox.snapshot.v1+cbor
 application/vnd.aos.sandbox.trust-policy.v1+cbor
 application/vnd.aos.sandbox.signature.v1+cbor
 application/vnd.aos.sandbox.broker-authorization-plan.v1+cbor
+application/vnd.aos.sandbox.publisher-domain-plan.v1+cbor
 application/vnd.aos.sandbox.ownership-lease.v1+cbor
 application/vnd.aos.sandbox.ownership-transaction-receipt.v1
 ```
@@ -148,15 +149,18 @@ external dependency kind 0..4: immutable-view, package-closure, secret,
   service-endpoint, network-endpoint
 consistency 0..2: crash-consistent, application-quiesced, backend-exact
 quiesce evidence kind 0..2: none, guest-acknowledged, backend-acknowledged
-signature purpose 0..5: policy, tree, snapshot, distribution,
-  broker-authorization, ownership-lease
-key usage 0..5: policy, tree, snapshot, distribution, broker-authorization,
-  ownership-lease
-broker audience/protocol 0..1: host, mount
-broker verb 1..14: host-launch, host-stop, host-freeze, host-thaw,
+signature purpose 0..6: policy, tree, snapshot, distribution,
+  broker-authorization, ownership-lease, publisher-authorization
+key usage 0..6: policy, tree, snapshot, distribution, broker-authorization,
+  ownership-lease, publisher-authorization
+broker audience/protocol 0..3: host, mount, storage, network
+broker verb 1..28: host-launch, host-stop, host-freeze, host-thaw,
   host-kill, host-observe, host-inventory, mount-create, mount-install,
   mount-replace, mount-detach, mount-release, mount-inventory-summary,
-  mount-inventory-resources
+  mount-inventory-resources, storage-create-workspace, storage-snapshot,
+  storage-hold-snapshot, storage-release-hold, storage-clone, storage-set-quota,
+  storage-destroy, storage-inventory, network-prepare, network-arm-lease,
+  network-renew-lease, network-disarm, network-destroy, network-inventory
 broker target 0..2: assignment, resource, resource-pair
 ACL tag 0..5: user-object, named-user, group-object, named-group, mask, other
 ```
@@ -190,6 +194,7 @@ matching digest bytes with the wrong media type is invalid:
 | content retention | raw content or a closed portable object reachable from the snapshot |
 | signature verification policy | trust-policy |
 | broker authorization signature subject | broker-authorization-plan |
+| publisher authorization signature subject | publisher-domain-plan |
 | ownership lease signature subject | ownership-lease |
 | ownership transaction receipt signature subject | ownership-transaction-receipt |
 | policy explanation source | a descriptor also present in policy input commitments |
@@ -472,7 +477,8 @@ policy signs policy; tree signs tree, directory, delta, view, or environment;
 snapshot signs snapshot or spec; distribution signs raw content or any
 portable CBOR object while adding no authority; broker-authorization signs
 only an audience-specific broker plan; ownership-lease signs only an
-authority-wall-clock ownership lease or ownership transaction receipt. A mismatched purpose, usage,
+authority-wall-clock ownership lease or ownership transaction receipt;
+publisher-authorization signs only a publisher-domain plan. A mismatched purpose, usage,
 fingerprint, generation, subject media type, or trust scope fails.
 
 Authorization is not inferred from a valid signature alone. The verifier
@@ -489,6 +495,32 @@ intersecting its node, assignment, authority key, boot and deadline facts with
 the plan, checking the exact request/catalog commitment, and durably admitting
 the resulting fences. Plan signature verification alone never satisfies those
 steps.
+
+The publisher-authority protocol is independently versioned at 1.0 and is not
+a privileged-broker audience. Its v1 plan binds one project cache domain and
+one raw-content publication request without inventing a sandbox assignment.
+The exact schema in `portable-v1.cddl` binds the service principal, execution
+instance and node, project and cache identities, isolation-policy revision,
+holder and authenticated channel, operation and reservation, full content
+descriptor, source-authorization commitment, materialization byte ceiling,
+policy and controller generations, revocation domain/generation, root-registry
+generation, interval, and required features.
+
+The publisher request commitment is SHA-256 over the ASCII domain
+`aos-sandbox-publisher-request-v1\0` followed by a separately encoded canonical
+request preimage that excludes its own commitment and detached signatures.
+It is not a hash of the complete publisher plan or request array. The online
+admission protocol must specify and independently reconstruct this preimage;
+the hash helper alone does not validate its schema. It is not interchangeable with a broker argument hash,
+content digest, producer signature, or online authorization decision. A
+publisher verifier checks every plan field against independently established
+expected facts, plus the pinned trust policy and key generation. The resulting
+opaque proof establishes static authenticity only. It neither proves current
+revocation state nor grants permission to create, rename, expose, or read a
+cached object. Online challenge-bound admission and controller-retained
+completion permits follow the distinct contract in
+[cache authority](06-cache-memory-and-oom.md#publisher-authority); plan expiry
+alone does not retract an already issued completion obligation.
 
 The argument commitment is SHA-256 over the ASCII domain
 `aos-sandbox-broker-arguments-v1\0` followed by the broker verb's canonical
