@@ -263,11 +263,11 @@ async fn channel_calculator_resolves_bucket() {
         body.contains("release <strong><a href=\"/demo/-/releases/1.0.0\">1.0.0</a></strong>"),
         "{body}"
     );
-    assert!(body.contains("class=\"hit\""), "{body}");
+    assert!(body.contains(" hit\" title=\"bucket 0x0A (10) → 1.0.0\""), "{body}");
     // The anti-rollback floor (recorded at index time) is shown.
     assert!(
         body.contains(
-            "Minimum allowed release <strong><a href=\"/demo/-/releases/1.0.0\">1.0.0</a></strong>"
+            "<span>Minimum allowed release</span><strong><a href=\"/demo/-/releases/1.0.0\">1.0.0</a></strong>"
         ),
         "{body}"
     );

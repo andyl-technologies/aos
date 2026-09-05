@@ -322,8 +322,15 @@ pub(crate) fn percentage(count: usize) -> String {
     }
 }
 
-/// Renders the complete channel distribution, including unassigned buckets.
-pub(crate) fn rollout_distribution(slug: &str, channel: &ChannelSummary) -> String {
+/// Number of distinct swatch colours available to a channel's releases.
+pub(crate) const ROLLOUT_PALETTE: usize = 6;
+
+/// Lists a channel's assigned releases with their bucket counts, newest first,
+/// followed by the unassigned remainder.
+///
+/// Every channel rendering derives its colour from a release's position in
+/// this list, so the rollout bar, its labels, and the bucket map agree.
+pub(crate) fn rollout_shares(channel: &ChannelSummary) -> Vec<(Option<&str>, usize)> {
     let mut counts = BTreeMap::<Option<&str>, usize>::new();
     for bucket in 0..256 {
         *counts
@@ -342,15 +349,21 @@ pub(crate) fn rollout_distribution(slug: &str, channel: &ChannelSummary) -> Stri
         (None, Some(_)) => std::cmp::Ordering::Greater,
         (None, None) => std::cmp::Ordering::Equal,
     });
+    releases
+}
+
+/// Renders the complete channel distribution, including unassigned buckets.
+pub(crate) fn rollout_distribution(slug: &str, channel: &ChannelSummary) -> String {
+    let releases = rollout_shares(channel);
     let mut body = String::from("<div class=\"rollout-distribution\"><svg class=\"rollout-bar\" viewBox=\"0 0 256 8\" preserveAspectRatio=\"none\" aria-hidden=\"true\">");
     let mut offset = 0;
     for (index, (release, count)) in releases.iter().enumerate() {
         let _ = write!(body, "<rect class=\"rollout-segment r{}{}\" x=\"{offset}\" y=\"0\" width=\"{count}\" height=\"8\"/>",
-            index % 6, if release.is_none() { " unassigned" } else { "" });
+            index % ROLLOUT_PALETTE, if release.is_none() { " unassigned" } else { "" });
         offset += count;
     }
     body.push_str("</svg><ul class=\"rollout-labels\">");
-    for (release, count) in releases {
+    for (index, (release, count)) in releases.into_iter().enumerate() {
         let label = release
             .map(|release| {
                 format!(
@@ -360,7 +373,13 @@ pub(crate) fn rollout_distribution(slug: &str, channel: &ChannelSummary) -> Stri
                 )
             })
             .unwrap_or_else(|| "Unassigned".into());
-        let _ = write!(body, "<li>{label}: <strong>{}%</strong> <span class=\"dim\">({count}/256 buckets)</span></li>", percentage(count));
+        let _ = write!(
+            body,
+            "<li><span class=\"rollout-swatch r{}{}\" aria-hidden=\"true\"></span>{label}: <strong>{}%</strong> <span class=\"dim\">({count}/256 buckets)</span></li>",
+            index % ROLLOUT_PALETTE,
+            if release.is_none() { " unassigned" } else { "" },
+            percentage(count)
+        );
     }
     body.push_str("</ul></div>");
     body
