@@ -708,6 +708,20 @@ fn publication_is_atomic_idempotent_and_byte_exact_after_reopen() {
         .unwrap_or_else(|| panic!("missing current"));
     assert_eq!(current.canonical_bytes(), prepared.canonical_bytes());
     assert_eq!(current.digest(), prepared.digest());
+    assert_eq!(current.manifest(), prepared.manifest());
+    assert_eq!(current.manifest(), &manifest());
+}
+
+#[test]
+fn preparation_and_recovery_retain_complete_manifest_and_source_draft() {
+    let (draft, prepared) = activation_fixture(1);
+    let recovered = decode_prepared(prepared.canonical_bytes(), prepared.digest())
+        .unwrap_or_else(|error| panic!("test prepared recovery failed: {error}"));
+    assert_eq!(prepared.manifest(), draft.manifest());
+    assert_eq!(recovered.manifest(), draft.manifest());
+    assert_eq!(prepared.source_draft_digest(), draft.digest());
+    assert_eq!(recovered.source_draft_digest(), draft.digest());
+    assert_eq!(recovered.canonical_bytes(), prepared.canonical_bytes());
 }
 
 #[test]

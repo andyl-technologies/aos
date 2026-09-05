@@ -32,6 +32,7 @@ pub mod publisher_policy;
 #[cfg(target_os = "linux")]
 pub mod publisher_sessions;
 pub mod reconciler;
+pub mod runtime_authority;
 #[cfg(target_os = "linux")]
 pub mod runtime_scope;
 

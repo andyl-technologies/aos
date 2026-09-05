@@ -29,9 +29,9 @@ use aos_sandbox_core::model::{
     SignatureStatement,
 };
 use aos_sandbox_core::{
-    descriptor_for_bytes, signature_signing_message, validate_descriptor_role, verify_signature,
     BrokerAuthorizationPlan, CanonicalCborError, DecodeLimits, DescriptorRole, MediaType,
     ObjectDescriptor, ObjectDigest, OwnershipLease, PortableMediaType, RegistryError, TrustScopeId,
+    descriptor_for_bytes, signature_signing_message, validate_descriptor_role, verify_signature,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -584,11 +584,7 @@ const fn bounded_policy_limits(requested: DecodeLimits) -> DecodeLimits {
 }
 
 const fn min_usize(left: usize, right: usize) -> usize {
-    if left < right {
-        left
-    } else {
-        right
-    }
+    if left < right { left } else { right }
 }
 
 #[cfg(test)]
@@ -598,10 +594,9 @@ mod tests {
     };
     use aos_sandbox_core::model::{KeyUsage, StableKeyId, TrustPolicy};
     use aos_sandbox_core::{
-        sign_statement, AssignmentEpoch, BrokerArgumentCommitment, BrokerAssignment,
-        BrokerAudience, BrokerGrant, BrokerGrantTarget, BrokerVerb, DesiredGeneration,
-        IncarnationId, LeaseAssignment, NodeId, ProtocolId, ProtocolVersion, RevocationScopeId,
-        SandboxId,
+        AssignmentEpoch, BrokerArgumentCommitment, BrokerAssignment, BrokerAudience, BrokerGrant,
+        BrokerGrantTarget, BrokerVerb, DesiredGeneration, IncarnationId, LeaseAssignment, NodeId,
+        ProtocolId, ProtocolVersion, RevocationScopeId, SandboxId, sign_statement,
     };
     use ed25519_dalek::SigningKey;
 
@@ -685,15 +680,17 @@ mod tests {
             assignment,
             node,
             lease_authority.signer().clone(),
-            vec![BrokerGrant::new(
-                BrokerVerb::MountCreate,
-                BrokerGrantTarget::Assignment,
-                BrokerArgumentCommitment::from_digest(ObjectDigest::from_bytes([7; 32]))
-                    .unwrap_or_else(|error| panic!("test argument commitment failed: {error}")),
-                4096,
-                0,
-            )
-            .unwrap_or_else(|error| panic!("test grant failed: {error}"))],
+            vec![
+                BrokerGrant::new(
+                    BrokerVerb::MountCreate,
+                    BrokerGrantTarget::Assignment,
+                    BrokerArgumentCommitment::from_digest(ObjectDigest::from_bytes([7; 32]))
+                        .unwrap_or_else(|error| panic!("test argument commitment failed: {error}")),
+                    4096,
+                    0,
+                )
+                .unwrap_or_else(|error| panic!("test grant failed: {error}")),
+            ],
             ObjectDigest::from_bytes([8; 32]),
             RevocationScopeId::from_bytes([9; 16]),
             100,

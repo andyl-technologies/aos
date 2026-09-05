@@ -1832,3 +1832,40 @@ library tests inside the Nix sandbox and all 52 selected kernel test entries
 on AOS Linux 6.18.33 x86_64, including thirteen holder-join cases and the
 poisoned-journal regression. It does not qualify current assignment authority,
 real payload endpoint delivery, source release, or publication effects.
+
+### Protected runtime holder decisions
+
+Publication preparation and recovery now retain the complete canonical
+assignment manifest and expose its lease-independent source-draft digest,
+without changing publication bytes. Round-trip assertions cover those retained
+facts. Journal namespace 10 is reserved for runtime-authority pending intents,
+immutable holder decisions, and ordered current heads; previous namespace codes
+remain unchanged.
+
+An ownership-gated operation can now admit a typed holder intent. Its V3 operation
+record independently commits the exact holder, decision kind, and expected
+revision; V1/V2 operation records and V1 ownership gates retain their encodings.
+Admission commits the pending intent with the operation and effects. Activation
+rechecks the expected revision and atomically commits the immutable holder
+decision, current head, ownership publication, and gate release. Legacy operations
+cannot silently replace a sandbox's established holder decision.
+
+Protected replay checks both directions between operations, pending intents,
+activated decisions, and publications, as well as complete monotone revision
+history. Removing an activated binding and head cannot turn the sandbox into a
+never-bound sandbox. Historical idempotent replay cannot repoint the current head.
+The publication namespace is validated once per complete runtime-authority replay,
+with direct exact-current checks for each sandbox head.
+
+The five-crate default-feature suite passes 513 unit tests, one integration test,
+and eighteen doctests, including competing intents, protected reopen, missing
+records, V3 provenance, and renewal/history regressions. Controller strict
+all-target/all-feature Clippy passes with dependency linting excluded; including
+dependencies reports existing disallowed `HashMap` use in generated protobuf
+code. Warning-denied controller rustdoc, changed-file formatting, and diff checks
+pass. This increment has not rerun kernel/VM qualification.
+
+These durable decisions are not live authorization. Fresh runtime proof and
+session issuance against the current holder mapping remain open. Revocation
+requires a typed Host Stop path and is rejected by holder admission until that
+path exists; Host Apply is not a substitute. `SBX-PUB-02` remains unchecked.

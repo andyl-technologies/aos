@@ -79,6 +79,7 @@ pub(super) fn decode_current(
             .map_err(|_| AuthorityPublicationError::CorruptCurrent)?;
     Ok(CurrentAuthorityPublicationV1 {
         prepared: PreparedAuthorityPublicationV1 {
+            manifest: recovered.manifest,
             sandbox,
             incarnation,
             epoch,
@@ -155,6 +156,7 @@ pub(super) fn decode_prepared(
         OwnershipTransactionReceiptV1::from_canonical_bytes(recovered.lease.canonical_receipt())
             .map_err(|_| AuthorityPublicationError::CorruptCurrent)?;
     Ok(PreparedAuthorityPublicationV1 {
+        manifest,
         sandbox,
         incarnation,
         epoch,
@@ -456,6 +458,7 @@ pub(super) fn validate_encoded_publication(
         return Err(AuthorityPublicationError::CorruptCurrent);
     }
     Ok(RecoveredPublicationArtifactsV1 {
+        manifest,
         lease: recovered_lease,
         templates: recovered_templates,
     })

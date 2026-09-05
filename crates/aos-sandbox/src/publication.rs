@@ -238,6 +238,7 @@ impl AuthorityPublicationDraftV1 {
         }
         let digest = publication_digest(&bytes);
         let prepared = PreparedAuthorityPublicationV1 {
+            manifest: self.manifest.clone(),
             sandbox: self.manifest.manifest().sandbox(),
             incarnation: *self.manifest.manifest().incarnation().as_bytes(),
             epoch: self.manifest.manifest().epoch().get(),
@@ -315,6 +316,7 @@ impl AuthorityPublicationProposalV1 {
             OwnershipTransactionReceiptV1::from_canonical_bytes(self.lease.canonical_receipt())
                 .map_err(|_| AuthorityPublicationError::ContextMismatch)?;
         Ok(PreparedAuthorityPublicationV1 {
+            manifest: self.manifest.clone(),
             sandbox: self.manifest.manifest().sandbox(),
             incarnation: *self.manifest.manifest().incarnation().as_bytes(),
             epoch: self.manifest.manifest().epoch().get(),
@@ -341,6 +343,7 @@ impl AuthorityPublicationProposalV1 {
 /// Carries one complete validated bundle before its atomic journal commit.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedAuthorityPublicationV1 {
+    manifest: CanonicalAssignmentManifestV1,
     sandbox: SandboxId,
     incarnation: [u8; 16],
     epoch: u64,
@@ -412,6 +415,18 @@ impl AuthorityPublicationActivationV1 {
 }
 
 impl PreparedAuthorityPublicationV1 {
+    /// Returns the complete canonical assignment bound by this publication.
+    #[must_use]
+    pub const fn manifest(&self) -> &CanonicalAssignmentManifestV1 {
+        &self.manifest
+    }
+
+    /// Returns the digest of the lease-independent source draft.
+    #[must_use]
+    pub const fn source_draft_digest(&self) -> ObjectDigest {
+        self.source_draft_digest
+    }
+
     /// Returns the content digest of the complete frozen publication.
     #[must_use]
     pub const fn digest(&self) -> ObjectDigest {
@@ -446,6 +461,14 @@ pub struct CurrentAuthorityPublicationV1 {
 }
 
 impl CurrentAuthorityPublicationV1 {
+    /// Returns the complete structurally recovered assignment manifest.
+    ///
+    /// This durable record is not proof of current runtime ownership.
+    #[must_use]
+    pub const fn manifest(&self) -> &CanonicalAssignmentManifestV1 {
+        self.prepared.manifest()
+    }
+
     /// Returns the complete publication digest.
     #[must_use]
     pub const fn digest(&self) -> ObjectDigest {
@@ -610,6 +633,7 @@ impl RecoveredBrokerDispatchTemplateV1 {
 
 #[derive(Debug)]
 struct RecoveredPublicationArtifactsV1 {
+    manifest: CanonicalAssignmentManifestV1,
     lease: RecoveredOwnershipLeaseV1,
     templates: Vec<RecoveredBrokerDispatchTemplateV1>,
 }
@@ -787,6 +811,39 @@ impl<'a> AuthorityPublicationStore<'a> {
         }
         Ok(())
     }
+}
+
+/// Checks one exact current/prepared pair after a caller's full namespace scan.
+///
+/// The caller must retain exclusive journal ownership between that scan and
+/// this lookup. This avoids rescanning every publication for each runtime head.
+pub(crate) fn current_in_validated_namespace(
+    journal: &Journal,
+    sandbox: SandboxId,
+) -> Result<Option<CurrentAuthorityPublicationV1>, AuthorityPublicationError> {
+    journal.ensure_healthy()?;
+    let current = journal
+        .get(RecordNamespace::AuthorityPublication, &current_key(sandbox))
+        .map(decode_current)
+        .transpose()?;
+    let Some(current) = current else {
+        return Ok(None);
+    };
+    if current.prepared.sandbox != sandbox {
+        return Err(AuthorityPublicationError::CorruptCurrent);
+    }
+    let prepared = journal
+        .get(
+            RecordNamespace::AuthorityPublication,
+            &prepared_key(current.digest()),
+        )
+        .map(|bytes| decode_prepared(bytes, current.digest()))
+        .transpose()?
+        .ok_or(AuthorityPublicationError::CorruptCurrent)?;
+    if prepared != current.prepared {
+        return Err(AuthorityPublicationError::CorruptCurrent);
+    }
+    Ok(Some(current))
 }
 
 pub(crate) fn validate_durable_gate_publication(
@@ -980,24 +1037,7 @@ impl<'a> AuthorityPublicationStore<'a> {
         sandbox: SandboxId,
     ) -> Result<Option<CurrentAuthorityPublicationV1>, AuthorityPublicationError> {
         self.validate_namespace()?;
-        let current = self
-            .journal
-            .get(RecordNamespace::AuthorityPublication, &current_key(sandbox))
-            .map(decode_current)
-            .transpose()?;
-        let Some(current) = current else {
-            return Ok(None);
-        };
-        if current.prepared.sandbox != sandbox {
-            return Err(AuthorityPublicationError::CorruptCurrent);
-        }
-        let prepared = self
-            .prepared(current.digest())?
-            .ok_or(AuthorityPublicationError::CorruptCurrent)?;
-        if prepared != current.prepared {
-            return Err(AuthorityPublicationError::CorruptCurrent);
-        }
-        Ok(Some(current))
+        current_in_validated_namespace(self.journal, sandbox)
     }
 
     fn validate_namespace(&self) -> Result<(), AuthorityPublicationError> {

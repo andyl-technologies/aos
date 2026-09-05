@@ -9,6 +9,17 @@
 //! executor implementation to make one effect key idempotent. Ownership-gated
 //! effects additionally retain the exact selected publication and broker
 //! packet before `Applying` becomes externally visible.
+//!
+//! Runtime-holder admission additionally commits an exact intent digest in the
+//! operation record. Activation commits its binding and current head in the
+//! same transaction as the ownership publication and gate release. The durable
+//! operation formats are closed and preserve legacy encodings:
+//!
+//! ```text
+//! V1 = version:u8 state:u8 effect_count:u32le
+//! V2 = version:u8 state:u8 flags:u8 reserved:u8 effect_count:u32le
+//! V3 = V2 header with version=3 || runtime_intent_digest:32bytes
+//! ```
 
 use aos_sandbox_core::model::{KeyReference, KeyUsage, StableKeyId};
 use aos_sandbox_core::{ObjectDigest, OperationId, SandboxId};
@@ -25,6 +36,16 @@ use crate::publication::{
 };
 
 mod effect;
+mod runtime_authority;
+
+use crate::runtime_authority::{
+    RuntimeAuthorityIntentV1, RuntimeAuthorityLimits, RuntimeAuthorityStateV1,
+    RuntimeAuthorityStore,
+};
+pub(crate) use runtime_authority::{
+    validate_runtime_authority_binding, validate_runtime_authority_operations,
+    validate_runtime_authority_pending,
+};
 
 pub use effect::{
     AuthorityBoundEffectPlanV2, AuthorityEffectAttemptTimingV1, AuthorityEffectObservationV2,
@@ -36,6 +57,7 @@ use effect::{
 
 const RECORD_VERSION: u8 = 1;
 const OPERATION_RECORD_VERSION: u8 = 2;
+const RUNTIME_OPERATION_RECORD_VERSION: u8 = 3;
 const OPERATION_FLAG_OWNERSHIP_GATED: u8 = 1;
 const OPERATION_KEY_BYTES: usize = 16;
 const EFFECT_KEY_BYTES: usize = 20;
@@ -58,6 +80,7 @@ pub struct OperationPlan {
     desired_value: Vec<u8>,
     effects: Vec<EffectPlan>,
     ownership_gate: Option<OwnershipGatePlanV1>,
+    runtime_authority: Option<RuntimeAuthorityIntentV1>,
 }
 
 impl OperationPlan {
@@ -92,6 +115,7 @@ impl OperationPlan {
             desired_value,
             effects,
             ownership_gate: None,
+            runtime_authority: None,
         })
     }
 
@@ -161,6 +185,7 @@ impl OperationPlan {
             desired_value,
             effects,
             ownership_gate: None,
+            runtime_authority: None,
         };
         plan.ownership_gate = Some(OwnershipGatePlanV1::new(
             operation_id,
@@ -176,6 +201,31 @@ impl OperationPlan {
     #[must_use]
     pub const fn operation_id(&self) -> OperationId {
         self.operation_id
+    }
+
+    /// Binds a holder intent to this ownership-gated operation's atomic admission.
+    ///
+    /// The compiler must authenticate and authorize the holder before constructing
+    /// the intent. This method does not establish live runtime authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an ungated plan, more than 4091 effects, or revocation
+    /// without a supported Host Stop effect path.
+    pub fn with_runtime_authority(
+        mut self,
+        intent: RuntimeAuthorityIntentV1,
+    ) -> Result<Self, ReconcilerError> {
+        if self.ownership_gate.is_none()
+            || self.effects.len() > MAXIMUM_GATED_EFFECTS - 1
+            || intent.state() != RuntimeAuthorityStateV1::Bound
+        {
+            return Err(ReconcilerError::InvalidPlan(
+                "runtime holder binding requires a bounded ownership-gated Host Apply plan",
+            ));
+        }
+        self.runtime_authority = Some(intent);
+        Ok(self)
     }
 
     /// Returns the digest of the normalized request admitted by this plan.
@@ -452,6 +502,9 @@ pub enum ReconcileOutcome {
 /// Reports admission, ledger, journal, or executor-contract failures.
 #[derive(Debug, thiserror::Error)]
 pub enum ReconcilerError {
+    /// Protected runtime-authority validation or mutation preparation failed.
+    #[error("runtime authority failed: {0}")]
+    RuntimeAuthority(#[from] crate::runtime_authority::RuntimeAuthorityError),
     /// Durable journal operation failed.
     #[error("sandbox journal failed: {0}")]
     Journal(#[from] JournalError),
@@ -508,6 +561,7 @@ struct OperationRecord {
     state: OperationState,
     effect_count: u32,
     ownership_gated: bool,
+    runtime_intent_digest: Option<ObjectDigest>,
 }
 
 impl OperationState {
@@ -651,6 +705,29 @@ where
             .validate_gate_successor(&prepared)
             .map_err(|_| ReconcilerError::OwnershipPublicationNotSuccessor)?;
         self.validate_gated_effects_for_activation(operation_id, operation.effect_count)?;
+        let runtime_records = if operation.runtime_intent_digest.is_some()
+            || self
+                .journal
+                .records(RecordNamespace::RuntimeAuthority)
+                .next()
+                .is_some()
+        {
+            let store =
+                RuntimeAuthorityStore::load(&mut self.journal, RuntimeAuthorityLimits::default())?;
+            if operation.runtime_intent_digest.is_none() && store.current(sandbox)?.is_some() {
+                return Err(ReconcilerError::InvalidPlan(
+                    "a current runtime holder requires an explicit successor intent",
+                ));
+            }
+            store.prepare_activation(
+                operation_id,
+                plan.request_digest,
+                plan.publication_draft(),
+                &prepared,
+            )?
+        } else {
+            Vec::new()
+        };
         let activated = OwnershipGateStatusV1::Activated {
             plan,
             publication_digest,
@@ -658,10 +735,16 @@ where
             lease_digest,
         };
         let mut records = Vec::from(publication_records);
+        records.extend(runtime_records);
         records.push(JournalRecord::put(
             RecordNamespace::Operation,
             operation_id.into_bytes().to_vec(),
-            encode_operation(OperationState::Accepted, operation.effect_count, true),
+            encode_runtime_operation(
+                OperationState::Accepted,
+                operation.effect_count,
+                true,
+                operation.runtime_intent_digest,
+            ),
         ));
         records.push(JournalRecord::put(
             RecordNamespace::OwnershipGate,
@@ -713,6 +796,14 @@ where
         {
             IdempotencyOutcome::Replay(operation_id) => {
                 self.validate_operation_gate_relation(operation_id)?;
+                if self.load_operation(operation_id)?.runtime_intent_digest
+                    != plan
+                        .runtime_authority
+                        .as_ref()
+                        .map(RuntimeAuthorityIntentV1::digest)
+                {
+                    return Err(ReconcilerError::IdempotencyConflict);
+                }
                 return Ok(AcceptOutcome::Replay(operation_id));
             }
             IdempotencyOutcome::Conflict => return Err(ReconcilerError::IdempotencyConflict),
@@ -744,7 +835,7 @@ where
         records.push(JournalRecord::put(
             RecordNamespace::Operation,
             plan.operation_id.into_bytes().to_vec(),
-            encode_operation(
+            encode_runtime_operation(
                 if plan.ownership_gate.is_some() {
                     OperationState::OwnershipPending
                 } else {
@@ -752,6 +843,9 @@ where
                 },
                 effect_count,
                 plan.ownership_gate.is_some(),
+                plan.runtime_authority
+                    .as_ref()
+                    .map(RuntimeAuthorityIntentV1::digest),
             ),
         ));
         records.push(JournalRecord::idempotency(
@@ -760,11 +854,42 @@ where
             plan.operation_id,
         ));
         if let Some(gate) = &plan.ownership_gate {
+            if plan.runtime_authority.is_none()
+                && self
+                    .journal
+                    .records(RecordNamespace::RuntimeAuthority)
+                    .next()
+                    .is_some()
+                && RuntimeAuthorityStore::load(
+                    &mut self.journal,
+                    RuntimeAuthorityLimits::default(),
+                )?
+                .current(gate.publication_draft().manifest().manifest().sandbox())?
+                .is_some()
+            {
+                return Err(ReconcilerError::InvalidPlan(
+                    "a current runtime holder requires an explicit successor intent",
+                ));
+            }
             records.push(JournalRecord::put(
                 RecordNamespace::OwnershipGate,
                 plan.operation_id.into_bytes().to_vec(),
                 encode_ownership_gate(&OwnershipGateStatusV1::Pending(gate.clone()))?,
             ));
+            if let Some(intent) = &plan.runtime_authority {
+                records.extend(
+                    RuntimeAuthorityStore::load(
+                        &mut self.journal,
+                        RuntimeAuthorityLimits::default(),
+                    )?
+                    .prepare_pending(
+                        plan.operation_id,
+                        plan.request_digest,
+                        gate.publication_draft(),
+                        intent,
+                    )?,
+                );
+            }
         }
         for (index, effect) in plan.effects.iter().enumerate() {
             let step = u32::try_from(index)
@@ -998,6 +1123,15 @@ where
                 ReconcilerError::CorruptLedger("authority publication namespace is corrupt")
             })?;
             self.validate_all_ownership_gates()?;
+            validate_runtime_authority_operations(&self.journal)?;
+            if self
+                .journal
+                .records(RecordNamespace::RuntimeAuthority)
+                .next()
+                .is_some()
+            {
+                RuntimeAuthorityStore::load(&mut self.journal, RuntimeAuthorityLimits::default())?;
+            }
             self.ledger_validated = true;
         }
         Ok(())
@@ -1463,7 +1597,12 @@ where
         let record = JournalRecord::put(
             RecordNamespace::Operation,
             operation_id.into_bytes().to_vec(),
-            encode_operation(state, effect_count, operation.ownership_gated),
+            encode_runtime_operation(
+                state,
+                effect_count,
+                operation.ownership_gated,
+                operation.runtime_intent_digest,
+            ),
         );
         self.commit_records(vec![record])
     }
@@ -1499,7 +1638,12 @@ where
             records.push(JournalRecord::put(
                 RecordNamespace::Operation,
                 operation_id.into_bytes().to_vec(),
-                encode_operation(state, effect_count, operation.ownership_gated),
+                encode_runtime_operation(
+                    state,
+                    effect_count,
+                    operation.ownership_gated,
+                    operation.runtime_intent_digest,
+                ),
             ));
         }
         self.commit_records(records)
@@ -1539,7 +1683,47 @@ fn encode_operation(state: OperationState, effect_count: u32, ownership_gated: b
     bytes
 }
 
+fn encode_runtime_operation(
+    state: OperationState,
+    effect_count: u32,
+    ownership_gated: bool,
+    runtime_intent_digest: Option<ObjectDigest>,
+) -> Vec<u8> {
+    let mut bytes = encode_operation(state, effect_count, ownership_gated);
+    if let Some(digest) = runtime_intent_digest {
+        bytes[0] = RUNTIME_OPERATION_RECORD_VERSION;
+        bytes.extend_from_slice(digest.as_bytes());
+    }
+    bytes
+}
+
 fn decode_operation(bytes: &[u8]) -> Result<OperationRecord, ReconcilerError> {
+    if bytes.first() == Some(&RUNTIME_OPERATION_RECORD_VERSION) {
+        if bytes.len() != 40 {
+            return Err(ReconcilerError::CorruptLedger(
+                "invalid runtime operation length",
+            ));
+        }
+        // V3 preserves the V2 fixed header and adds an independent commitment
+        // to the exact pending holder intent. Legacy records remain byte-exact.
+        let mut header = [0; 8];
+        header.copy_from_slice(&bytes[..8]);
+        header[0] = OPERATION_RECORD_VERSION;
+        let mut operation = decode_operation(&header)?;
+        let digest: [u8; 32] = bytes[8..]
+            .try_into()
+            .map_err(|_| ReconcilerError::CorruptLedger("invalid runtime intent digest"))?;
+        if !operation.ownership_gated
+            || digest == [0; 32]
+            || operation.effect_count as usize > MAXIMUM_GATED_EFFECTS - 1
+        {
+            return Err(ReconcilerError::CorruptLedger(
+                "invalid runtime operation provenance",
+            ));
+        }
+        operation.runtime_intent_digest = Some(ObjectDigest::from_bytes(digest));
+        return Ok(operation);
+    }
     let (state, effect_count, ownership_gated) = match bytes {
         [RECORD_VERSION, state, effect_count @ ..] if effect_count.len() == 4 => (
             OperationState::from_byte(*state)?,
@@ -1588,6 +1772,7 @@ fn decode_operation(bytes: &[u8]) -> Result<OperationRecord, ReconcilerError> {
         state,
         effect_count,
         ownership_gated,
+        runtime_intent_digest: None,
     })
 }
 
@@ -2033,6 +2218,342 @@ mod tests {
         AuthorityPublicationStore::new(reconciler.journal_mut())
             .prepare_gate_activation(draft, prepared)
             .unwrap()
+    }
+
+    fn protected_runtime_journal(directory: &TestDirectory) -> Journal {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        fs::set_permissions(&directory.0, fs::Permissions::from_mode(0o700)).unwrap();
+        Journal::open_protected_at_uid(
+            &directory.0,
+            "state.journal",
+            JournalLimits::default(),
+            fs::metadata(&directory.0).unwrap().uid(),
+        )
+        .unwrap()
+        .0
+    }
+
+    #[test]
+    fn runtime_holder_admission_activation_and_reopen_retain_exact_intent() {
+        use aos_sandbox_core::PrincipalId;
+        let directory = TestDirectory::new();
+        let journal = protected_runtime_journal(&directory);
+        let mut reconciler = Reconciler::new(journal, Executor::default());
+        let (plan, draft, prepared) = gated_operation_with_publication(1);
+        let holder = PrincipalId::from_bytes([0x91; 16]);
+        let intent = RuntimeAuthorityIntentV1::bind_holder(holder, None).unwrap();
+        let plan = plan.with_runtime_authority(intent).unwrap();
+        let sandbox = draft.manifest().manifest().sandbox();
+        reconciler.accept(&plan).unwrap();
+        assert_eq!(
+            reconciler
+                .journal
+                .records(RecordNamespace::RuntimeAuthority)
+                .count(),
+            1
+        );
+        assert_eq!(
+            reconciler
+                .load_operation(plan.operation_id())
+                .unwrap()
+                .runtime_intent_digest,
+            Some(intent.digest())
+        );
+        assert!(
+            RuntimeAuthorityStore::load(
+                reconciler.journal_mut(),
+                RuntimeAuthorityLimits::default()
+            )
+            .unwrap()
+            .current(sandbox)
+            .unwrap()
+            .is_none()
+        );
+        assert_eq!(
+            reconciler.reconcile_once(plan.operation_id()).unwrap(),
+            ReconcileOutcome::OwnershipPending
+        );
+
+        let activation = gate_activation(&mut reconciler, &draft, &prepared);
+        reconciler
+            .activate_ownership_gate(plan.operation_id(), activation)
+            .unwrap();
+        let binding = RuntimeAuthorityStore::load(
+            reconciler.journal_mut(),
+            RuntimeAuthorityLimits::default(),
+        )
+        .unwrap()
+        .current(sandbox)
+        .unwrap()
+        .unwrap();
+        assert_eq!(binding.holder(), Some(holder));
+        assert_eq!(binding.manifest(), draft.manifest());
+        assert_eq!(binding.publication_digest(), prepared.digest());
+        assert_eq!(binding.revision(), 1);
+        assert_eq!(
+            reconciler
+                .journal
+                .records(RecordNamespace::RuntimeAuthority)
+                .count(),
+            3
+        );
+        reconciler.reconcile_once(plan.operation_id()).unwrap();
+        assert_eq!(
+            reconciler
+                .load_operation(plan.operation_id())
+                .unwrap()
+                .runtime_intent_digest,
+            Some(intent.digest())
+        );
+        drop(reconciler);
+
+        let journal = protected_runtime_journal(&directory);
+        let mut reconciler = Reconciler::new(journal, Executor::default());
+        assert_eq!(
+            reconciler.accept(&plan).unwrap(),
+            AcceptOutcome::Replay(plan.operation_id())
+        );
+        let recovered = RuntimeAuthorityStore::load(
+            reconciler.journal_mut(),
+            RuntimeAuthorityLimits::default(),
+        )
+        .unwrap()
+        .current(sandbox)
+        .unwrap()
+        .unwrap();
+        assert_eq!(recovered, binding);
+    }
+
+    #[test]
+    fn runtime_intent_rejects_unprotected_admission_and_missing_pending_recovery() {
+        use aos_sandbox_core::PrincipalId;
+        let directory = TestDirectory::new();
+        let (journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+        let mut reconciler = Reconciler::new(journal, Executor::default());
+        let (plan, _, _) = gated_operation_with_publication(1);
+        let plan = plan
+            .with_runtime_authority(
+                RuntimeAuthorityIntentV1::bind_holder(PrincipalId::from_bytes([0x92; 16]), None)
+                    .unwrap(),
+            )
+            .unwrap();
+        assert!(matches!(
+            reconciler.accept(&plan),
+            Err(ReconcilerError::RuntimeAuthority(_))
+        ));
+        assert_eq!(
+            reconciler
+                .journal
+                .records(RecordNamespace::Operation)
+                .count(),
+            0
+        );
+        drop(reconciler);
+
+        let directory = TestDirectory::new();
+        let journal = protected_runtime_journal(&directory);
+        let mut reconciler = Reconciler::new(journal, Executor::default());
+        reconciler.accept(&plan).unwrap();
+        let pending_key = reconciler
+            .journal
+            .records(RecordNamespace::RuntimeAuthority)
+            .next()
+            .unwrap()
+            .0
+            .to_vec();
+        reconciler
+            .journal_mut()
+            .commit(
+                &JournalTransaction::new(
+                    [0xa1; 16],
+                    vec![JournalRecord::delete(
+                        RecordNamespace::RuntimeAuthority,
+                        pending_key,
+                    )],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(reconciler.accept(&plan).is_err());
+        assert_eq!(reconciler.executor.apply_calls, 0);
+    }
+
+    #[test]
+    fn runtime_activation_rechecks_admitted_revision_without_partial_publication() {
+        use aos_sandbox_core::PrincipalId;
+        let directory = TestDirectory::new();
+        let mut reconciler =
+            Reconciler::new(protected_runtime_journal(&directory), Executor::default());
+        let (first, draft, prepared) = gated_operation_with_publication(1);
+        let first = first
+            .with_runtime_authority(
+                RuntimeAuthorityIntentV1::bind_holder(PrincipalId::from_bytes([0x93; 16]), None)
+                    .unwrap(),
+            )
+            .unwrap();
+        let second = OperationPlan::ownership_gated(
+            OperationId::from_bytes([0x94; 16]),
+            IdempotencyKey::new(b"competing-runtime-intent".to_vec()).unwrap(),
+            [0x95; 32],
+            b"same-sandbox".to_vec(),
+            b"competing-holder".to_vec(),
+            vec![draft.bind_effect(draft.templates()[0].digest()).unwrap()],
+            activation_claim(&draft, 1),
+            draft.clone(),
+        )
+        .unwrap()
+        .with_runtime_authority(
+            RuntimeAuthorityIntentV1::bind_holder(PrincipalId::from_bytes([0x96; 16]), None)
+                .unwrap(),
+        )
+        .unwrap();
+        reconciler.accept(&first).unwrap();
+        reconciler.accept(&second).unwrap();
+        let activation = gate_activation(&mut reconciler, &draft, &prepared);
+        reconciler
+            .activate_ownership_gate(first.operation_id(), activation)
+            .unwrap();
+        let activation = gate_activation(&mut reconciler, &draft, &prepared);
+        assert!(matches!(
+            reconciler.activate_ownership_gate(second.operation_id(), activation),
+            Err(ReconcilerError::RuntimeAuthority(
+                crate::runtime_authority::RuntimeAuthorityError::CompareAndSwap
+            ))
+        ));
+        assert!(matches!(
+            reconciler.ownership_gate(second.operation_id()).unwrap(),
+            Some(OwnershipGateStatusV1::Pending(_))
+        ));
+        let current = RuntimeAuthorityStore::load(
+            reconciler.journal_mut(),
+            RuntimeAuthorityLimits::default(),
+        )
+        .unwrap()
+        .current(draft.manifest().manifest().sandbox())
+        .unwrap()
+        .unwrap();
+        assert_eq!(current.operation(), first.operation_id());
+        assert_eq!(current.revision(), 1);
+    }
+
+    #[test]
+    fn runtime_recovery_rejects_removal_of_activated_binding_and_head() {
+        use aos_sandbox_core::PrincipalId;
+        let directory = TestDirectory::new();
+        let mut reconciler =
+            Reconciler::new(protected_runtime_journal(&directory), Executor::default());
+        let (plan, draft, prepared) = gated_operation_with_publication(1);
+        let plan = plan
+            .with_runtime_authority(
+                RuntimeAuthorityIntentV1::bind_holder(PrincipalId::from_bytes([0x97; 16]), None)
+                    .unwrap(),
+            )
+            .unwrap();
+        reconciler.accept(&plan).unwrap();
+        let activation = gate_activation(&mut reconciler, &draft, &prepared);
+        reconciler
+            .activate_ownership_gate(plan.operation_id(), activation)
+            .unwrap();
+        let deletions = reconciler
+            .journal
+            .records(RecordNamespace::RuntimeAuthority)
+            .filter(|(key, _)| !key.starts_with(b"pending/"))
+            .map(|(key, _)| JournalRecord::delete(RecordNamespace::RuntimeAuthority, key.to_vec()))
+            .collect();
+        reconciler
+            .journal_mut()
+            .commit(&JournalTransaction::new([0xa2; 16], deletions).unwrap())
+            .unwrap();
+        assert!(
+            RuntimeAuthorityStore::load(
+                reconciler.journal_mut(),
+                RuntimeAuthorityLimits::default()
+            )
+            .is_err()
+        );
+        assert!(reconciler.accept(&plan).is_err());
+        assert_eq!(reconciler.executor.apply_calls, 0);
+    }
+
+    #[test]
+    fn runtime_successor_preserves_history_and_historical_replay_cannot_repoint_head() {
+        use aos_sandbox_core::PrincipalId;
+        let directory = TestDirectory::new();
+        let mut reconciler =
+            Reconciler::new(protected_runtime_journal(&directory), Executor::default());
+        let mut first = None;
+        for generation in 1..=2_u8 {
+            let (_, draft, prepared) = gated_operation_with_publication(u64::from(generation));
+            let plan = OperationPlan::ownership_gated(
+                OperationId::from_bytes([generation; 16]),
+                IdempotencyKey::new(vec![generation]).unwrap(),
+                [generation; 32],
+                b"runtime".to_vec(),
+                vec![generation],
+                vec![draft.bind_effect(draft.templates()[0].digest()).unwrap()],
+                activation_claim(&draft, u64::from(generation)),
+                draft.clone(),
+            )
+            .unwrap()
+            .with_runtime_authority(
+                RuntimeAuthorityIntentV1::bind_holder(
+                    PrincipalId::from_bytes([generation + 10; 16]),
+                    (generation > 1).then_some(u64::from(generation - 1)),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            reconciler.accept(&plan).unwrap();
+            let activation = gate_activation(&mut reconciler, &draft, &prepared);
+            reconciler
+                .activate_ownership_gate(plan.operation_id(), activation)
+                .unwrap();
+            if generation == 1 {
+                first = Some((plan, draft, prepared));
+            }
+        }
+        let (first, draft, prepared) = first.unwrap();
+        let sandbox = draft.manifest().manifest().sandbox();
+        let head = RuntimeAuthorityStore::load(
+            reconciler.journal_mut(),
+            RuntimeAuthorityLimits::default(),
+        )
+        .unwrap()
+        .current(sandbox)
+        .unwrap()
+        .unwrap();
+        assert_eq!(head.revision(), 2);
+        assert_eq!(head.holder(), Some(PrincipalId::from_bytes([12; 16])));
+        let replay = gate_activation(&mut reconciler, &draft, &prepared);
+        assert_eq!(
+            reconciler
+                .activate_ownership_gate(first.operation_id(), replay)
+                .unwrap(),
+            OwnershipGateActivationOutcome::Replay
+        );
+        assert_eq!(
+            reconciler.accept(&first).unwrap(),
+            AcceptOutcome::Replay(first.operation_id())
+        );
+        assert_eq!(
+            RuntimeAuthorityStore::load(
+                reconciler.journal_mut(),
+                RuntimeAuthorityLimits::default()
+            )
+            .unwrap()
+            .current(sandbox)
+            .unwrap()
+            .unwrap(),
+            head
+        );
+        let mut substituted = first;
+        substituted.runtime_authority = Some(
+            RuntimeAuthorityIntentV1::bind_holder(PrincipalId::from_bytes([99; 16]), None).unwrap(),
+        );
+        assert!(matches!(
+            reconciler.accept(&substituted),
+            Err(ReconcilerError::IdempotencyConflict)
+        ));
     }
 
     #[test]
@@ -2908,6 +3429,7 @@ mod tests {
                 state: OperationState::Accepted,
                 effect_count: 1,
                 ownership_gated: false,
+                runtime_intent_digest: None,
             }
         );
         let mut unknown_flags = encode_operation(OperationState::Accepted, 1, false);
@@ -2916,6 +3438,30 @@ mod tests {
             decode_operation(&unknown_flags),
             Err(ReconcilerError::CorruptLedger(_))
         ));
+    }
+
+    #[test]
+    fn runtime_operation_v3_requires_gated_bounded_nonzero_intent_provenance() {
+        let intent = ObjectDigest::from_bytes([0x81; 32]);
+        let bytes =
+            encode_runtime_operation(OperationState::OwnershipPending, 1, true, Some(intent));
+        assert_eq!(
+            decode_operation(&bytes).unwrap().runtime_intent_digest,
+            Some(intent)
+        );
+        for malformed in [
+            bytes[..39].to_vec(),
+            encode_runtime_operation(OperationState::Accepted, 1, false, Some(intent)),
+            encode_runtime_operation(
+                OperationState::Accepted,
+                1,
+                true,
+                Some(ObjectDigest::from_bytes([0; 32])),
+            ),
+            encode_runtime_operation(OperationState::Accepted, 4092, true, Some(intent)),
+        ] {
+            assert!(decode_operation(&malformed).is_err());
+        }
     }
 
     #[test]

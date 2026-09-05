@@ -57,9 +57,8 @@ impl KernelBootId {
                 }
                 continue;
             }
-            let nibble = hex_nibble(byte).ok_or_else(|| {
-                malformed("UUID contains a non-lowercase-hex byte")
-            })?;
+            let nibble = hex_nibble(byte)
+                .ok_or_else(|| malformed("UUID contains a non-lowercase-hex byte"))?;
             if let Some(high) = high_nibble.take() {
                 output[output_index] = (high << 4) | nibble;
                 output_index += 1;
@@ -106,8 +105,8 @@ mod tests {
         assert_eq!(
             parsed.into_bytes(),
             [
-                0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
-                0xcc, 0xdd, 0xee, 0xff,
+                0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
+                0xee, 0xff,
             ]
         );
     }
