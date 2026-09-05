@@ -8,7 +8,7 @@ use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::components::{HashValue, InlineError, ReviewedPlanCard, StatusBadge};
+use crate::components::{HashValue, HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::transport::ApiClient;
 
@@ -44,7 +44,7 @@ pub(super) fn PlacementPolicyPanel(
 
     view! {
         <section class="panel resource-panel">
-            <div class="section-heading"><div><p class="section-kicker">"Read selection"</p><h2>"Placement policies"</h2><p>"Immutable policy revisions select replicas by ordered failover, locality, or hash partition."</p></div></div>
+            <div class="section-heading"><div><p class="section-kicker">"Read selection"</p><h2>"Placement policies"<HelpTooltip term="Placement policies" summary="Immutable policy revisions select replicas by ordered failover, locality, or hash partition."/></h2></div></div>
             <Suspense fallback=move || view! { <p class="loading-row">"Loading placement policies…"</p> }>
                 {move || { let client = view_client.clone(); let surface = view_surface.clone(); Suspend::new(async move {
                     match policies.await.as_ref() {
@@ -539,7 +539,7 @@ pub(super) fn PlacementEquivalencePanel(
     let view_surface = surface.clone();
 
     view! {
-        <section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Migration evidence"</p><h2>"Placement equivalence"</h2><p>"Equivalence is confirmed from exact placement revisions and retained as explicit evidence for safe topology changes."</p></div></div><Suspense fallback=move || view! { <p class="loading-row">"Loading equivalence evidence…"</p> }>{move || { let client = view_client.clone(); Suspend::new(async move { match equivalences.await.as_ref() { Ok(equivalences) if equivalences.is_empty() => view! { <p class="muted">"No confirmed placement equivalences."</p> }.into_any(), Ok(equivalences) => view! { <div class="compact-list">{equivalences.iter().cloned().map(|equivalence| view! { <EquivalenceRow client=client.clone() equivalence=equivalence/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense><Suspense fallback=move || view! { <p class="loading-row">"Loading placement revisions…"</p> }>{move || { let client = client.clone(); let surface = view_surface.clone(); Suspend::new(async move { match placements.await.as_ref() { Ok(placements) => view! { <EquivalenceCreate client=client surface=surface placements=placements.clone()/> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section>
+        <section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Migration evidence"</p><h2>"Placement equivalence"<HelpTooltip term="Placement equivalence" summary="Equivalence is confirmed from exact placement revisions and retained as explicit evidence for safe topology changes."/></h2></div></div><Suspense fallback=move || view! { <p class="loading-row">"Loading equivalence evidence…"</p> }>{move || { let client = view_client.clone(); Suspend::new(async move { match equivalences.await.as_ref() { Ok(equivalences) if equivalences.is_empty() => view! { <p class="muted">"No confirmed placement equivalences."</p> }.into_any(), Ok(equivalences) => view! { <div class="compact-list">{equivalences.iter().cloned().map(|equivalence| view! { <EquivalenceRow client=client.clone() equivalence=equivalence/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense><Suspense fallback=move || view! { <p class="loading-row">"Loading placement revisions…"</p> }>{move || { let client = client.clone(); let surface = view_surface.clone(); Suspend::new(async move { match placements.await.as_ref() { Ok(placements) => view! { <EquivalenceCreate client=client surface=surface placements=placements.clone()/> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section>
     }
 }
 

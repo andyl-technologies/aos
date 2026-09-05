@@ -4,11 +4,11 @@
 //! repopulated from API responses. Domain verification operates against the
 //! exact DNS challenge revision displayed to the operator.
 
+use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
-use leptos::task::spawn_local;
 
-use crate::components::{InlineError, ReviewedPlanCard, StatusBadge};
+use crate::components::{HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::{ApiClient, TransportError};
@@ -85,6 +85,7 @@ fn IdentityProviderForm(
     current: Option<aos_proto_types::IdentityProvider>,
 ) -> impl IntoView {
     let existing = current.clone().unwrap_or_default();
+    let configured = current.is_some();
     let issuer = RwSignal::new(existing.issuer);
     let authorization_endpoint = RwSignal::new(existing.authorization_endpoint);
     let token_endpoint = RwSignal::new(existing.token_endpoint);
@@ -195,7 +196,7 @@ fn IdentityProviderForm(
     );
 
     view! {
-        {current.is_some().then(|| view! { <div class="resource-identity"><div><span>"Client secret"</span><strong>{if existing_client_secret(current.as_ref()) { "configured" } else { "not configured" }}</strong></div><div><span>"Version"</span><code>{current.as_ref().map(|value| value.resource_version.clone()).unwrap_or_default()}</code></div></div> })}
+        <section class="subworkflow"><h4>"Effective sign-in policy"</h4><div class="resource-identity"><div><span>"Provider"</span><strong>{if configured { "Configured" } else { "Not configured" }}</strong></div><div><span>"Client secret"</span><strong>{if existing_client_secret(current.as_ref()) { "Configured" } else { "Not configured" }}</strong></div><div><span>"SSO enforcement"</span><strong>{if enforce_sso.get_untracked() { "Required" } else { "Optional" }}</strong></div><div><span>"Just-in-time accounts"</span><strong>{if allow_jit.get_untracked() { "Enabled" } else { "Disabled" }}</strong></div></div>{current.is_some().then(|| view! { <details><summary>"Provider metadata"</summary><div class="resource-identity"><div><span>"Version"</span><code>{current.as_ref().map(|value| value.resource_version.clone()).unwrap_or_default()}</code></div></div></details> })}</section>
         <form class="editor-form" on:submit=on_plan>
             <label><span>"Issuer"</span><input required type="url" prop:value=move || issuer.get() on:input=move |event| issuer.set(event_target_value(&event))/></label>
             <label><span>"Authorization endpoint"</span><input required type="url" prop:value=move || authorization_endpoint.get() on:input=move |event| authorization_endpoint.set(event_target_value(&event))/></label>
@@ -204,12 +205,8 @@ fn IdentityProviderForm(
             <label><span>"Client ID"</span><input required prop:value=move || client_id.get() on:input=move |event| client_id.set(event_target_value(&event))/></label>
             <label><span>"New client secret"</span><input type="password" autocomplete="new-password" prop:value=move || client_secret.get() on:input=move |event| client_secret.set(event_target_value(&event))/></label>
             <label class="checkbox-field"><input type="checkbox" prop:checked=move || replace_client_secret.get() on:change=move |event| replace_client_secret.set(event_target_checked(&event))/><span>"Replace or clear the current client secret"</span></label>
-            <label><span>"Scopes"</span><input required prop:value=move || scopes.get() on:input=move |event| scopes.set(event_target_value(&event))/></label>
-            <label><span>"Groups claim"</span><input prop:value=move || groups_claim.get() on:input=move |event| groups_claim.set(event_target_value(&event))/></label>
-            <label><span>"Default role"</span><select prop:value=move || default_role.get() on:change=move |event| default_role.set(event_target_value(&event))><option value="owner">"Owner"</option><option value="admin">"Admin"</option><option value="maintainer">"Maintainer"</option><option value="developer">"Developer"</option><option value="viewer">"Viewer"</option></select></label>
-            <label class="checkbox-field"><input type="checkbox" prop:checked=move || allow_jit.get() on:change=move |event| allow_jit.set(event_target_checked(&event))/><span>"Allow just-in-time user creation"</span></label>
             <label class="checkbox-field"><input type="checkbox" prop:checked=move || enforce_sso.get() on:change=move |event| enforce_sso.set(event_target_checked(&event))/><span>"Enforce SSO for this organization"</span></label>
-            <label class="full-field"><span>"Group-to-role mapping (JSON object)"</span><textarea required prop:value=move || role_map_json.get() on:input=move |event| role_map_json.set(event_target_value(&event))></textarea></label>
+            <details class="advanced-controls full-field"><summary>"Advanced claims and account mapping"</summary><div class="editor-form"><label><span>"Scopes"</span><input required prop:value=move || scopes.get() on:input=move |event| scopes.set(event_target_value(&event))/></label><label><span>"Groups claim"</span><input prop:value=move || groups_claim.get() on:input=move |event| groups_claim.set(event_target_value(&event))/></label><label><span>"Default role"</span><select prop:value=move || default_role.get() on:change=move |event| default_role.set(event_target_value(&event))><option value="owner">"Owner"</option><option value="admin">"Admin"</option><option value="maintainer">"Maintainer"</option><option value="developer">"Developer"</option><option value="viewer">"Viewer"</option></select></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || allow_jit.get() on:change=move |event| allow_jit.set(event_target_checked(&event))/><span>"Allow just-in-time user creation"</span></label><label class="full-field"><span>"Group-to-role mapping (JSON object)"</span><textarea required prop:value=move || role_map_json.get() on:input=move |event| role_map_json.set(event_target_value(&event))></textarea></label></div></details>
             <div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review OIDC configuration"</button>{current.is_some().then(|| view! { <button class="danger-button" type="button" disabled=move || busy.get() on:click=on_remove>"Review removal"</button> })}</div>
         </form>
         <PlanReview pending=pending error=error busy=busy on_apply=on_apply/>
@@ -243,7 +240,7 @@ fn OrganizationDomains(client: ApiClient, organization: String) -> impl IntoView
 
     view! {
         <section class="panel resource-panel">
-            <div class="section-heading"><div><p class="section-kicker">"Identity ownership"</p><h2>"Organization email domains"</h2><p>"Verified DNS claims bind email domains to this organization's SSO and invitation policy."</p></div></div>
+            <div class="section-heading"><div><p class="section-kicker">"Identity ownership"</p><h2>"Organization email domains"<HelpTooltip term="Organization email domains" summary="Verified DNS claims bind email domains to this organization's SSO and invitation policy."/></h2></div></div>
             <Suspense fallback=move || view! { <p class="loading-row">"Loading email domains…"</p> }>
                 {move || {
                     let client = view_client.clone();
@@ -256,7 +253,7 @@ fn OrganizationDomains(client: ApiClient, organization: String) -> impl IntoView
                     })
                 }}
             </Suspense>
-            <DomainClaim client=client organization=claim_org/>
+            <details class="advanced-controls"><summary>"Claim another email domain"</summary><DomainClaim client=client organization=claim_org/></details>
         </section>
     }
 }

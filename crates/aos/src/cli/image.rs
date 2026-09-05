@@ -16,13 +16,13 @@ pub enum ImageCommand {
 
 #[derive(Debug, Clone, Args)]
 pub struct ImageSelectionArgs {
-    /// Hub API base URL.
-    #[arg(long, env = "AOS_HUB", default_value = "https://aos.andyl.org")]
-    pub hub: String,
-    /// Bearer token for private registries.
-    #[arg(long, env = "AOS_TOKEN")]
+    /// Use a Hub origin instead of a configured Git/HTTP registry.
+    #[arg(long, env = "AOS_HUB")]
+    pub hub: Option<String>,
+    /// Bearer token for private Hub registries (or AOS_TOKEN in Hub mode).
+    #[arg(long, requires = "hub")]
     pub token: Option<String>,
-    /// Registry slug or name.
+    /// Configured APM registry name, or registry slug with --hub.
     #[arg(long)]
     pub registry: String,
     /// Select a sysroot package when a registry publishes more than one.

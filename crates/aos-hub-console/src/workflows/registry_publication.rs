@@ -5,29 +5,32 @@
 //! every declared object. Failed sessions can be inspected and aborted without
 //! exposing a slug-based storage bypass.
 
+use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::{Event, SubmitEvent};
 use leptos::prelude::*;
-use leptos::task::spawn_local;
 
-use crate::components::{HashValue, InlineError, StatusBadge};
+use crate::components::{HashValue, HelpTooltip, InlineError, StatusBadge};
 use crate::transport::ApiClient;
 
 /// Renders registry publication begin, resume, upload, commit, and abort flows.
 #[component]
 pub(super) fn RegistryPublicationWorkflow(client: ApiClient, registry_id: String) -> impl IntoView {
     let publication = RwSignal::new(None::<aos_proto_types::RegistryPublication>);
+    let can_publish = client.allows("publish");
     view! {
         <div class="workflow-stack">
-            <PublicationBegin
+            <PublicationHistory
                 client=client.clone()
                 registry_id=registry_id.clone()
                 publication=publication
             />
-            <PublicationHistory
-                client=client.clone()
-                registry_id=registry_id
-                publication=publication
-            />
+            {can_publish.then(|| view! {
+                <details class="panel advanced-controls">
+                    <summary>"Advanced: begin a publication from a manifest"</summary>
+                    <p class="muted">"Publish signed releases with apr. Use this form to inspect or recover a prepared publication manifest."</p>
+                    <PublicationBegin client=client.clone() registry_id=registry_id publication=publication/>
+                </details>
+            })}
             {move || publication.get().map(|value| view! {
                 <PublicationSession client=client.clone() publication=publication value=value/>
             })}
@@ -88,12 +91,11 @@ fn PublicationBegin(
             <div class="section-heading">
                 <div>
                     <p class="section-kicker">"Frozen producer manifest"</p>
-                    <h2>"Begin publication"</h2>
-                    <p>"The JSON contract is identical to `aos hub publish begin`. The registry is bound to this page and cannot be redirected by pasted JSON."</p>
+                    <h2>"Begin publication"<HelpTooltip term="Begin publication" summary="Use the prepared signed publication manifest for this registry. The registry cannot be changed by the pasted manifest."/></h2>
                 </div>
             </div>
             <form class="editor-form" on:submit=on_submit>
-                <label>
+                <label class="full-field">
                     <span>"Publication manifest JSON"</span>
                     <textarea required rows="14" prop:value=move || manifest.get() on:input=move |event| manifest.set(event_target_value(&event))></textarea>
                 </label>
@@ -135,9 +137,8 @@ fn PublicationHistory(
         <section class="panel resource-panel">
             <div class="section-heading">
                 <div>
-                    <p class="section-kicker">"Durable transaction inventory"</p>
-                    <h2>"Publish history"</h2>
-                    <p>"Inspect or resume any exact publication without retaining an out-of-band session ID."</p>
+                    <p class="section-kicker">"Registry publishing"</p>
+                    <h2>"Publish history"<HelpTooltip term="Publish history" summary="Track publication progress, inspect failures, and resume interrupted uploads."/></h2>
                 </div>
             </div>
             <Suspense fallback=move || view! { <p class="loading-row">"Loading publication history…"</p> }>

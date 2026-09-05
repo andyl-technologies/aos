@@ -210,7 +210,7 @@ async fn javascript_homepage_is_not_a_link() {
     let fixture = fixture_with_homepage(&surface, "javascript:alert(1)");
     let (app, _db) = serve_fixture(&surface, &fixture).await;
 
-    let (status, _, body) = get(&app, "/demo/-/packages/curl").await;
+    let (status, _, body) = get(&app, "/demo/-/packages/curl?release=1.0.0").await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         !body.contains("href=\"javascript:"),
@@ -227,9 +227,9 @@ async fn health_page_shows_unreachable_cache_after_validation() {
     let fixture = common::standard_registry(&surface);
     let (app, db) = serve_fixture(&surface, &fixture).await;
 
-    // Before any validation run, the home page says so.
-    let (_, _, home) = get(&app, "/demo/").await;
-    assert!(home.contains("not yet validated"));
+    // Validation state belongs on the dedicated health page.
+    let (_, _, health) = get(&app, "/demo/-/health").await;
+    assert!(health.contains("Not yet validated"));
 
     // The fixture's committed cache (https://cache.example.com) does not
     // resolve, so presence validation records it unreachable.
@@ -242,9 +242,10 @@ async fn health_page_shows_unreachable_cache_after_validation() {
     assert!(body.contains("unreachable"), "{body}");
     assert!(body.contains("presence"), "{body}");
 
-    // The registry home's cache table reflects the same run.
+    // Overview links to Health without duplicating its cache table.
     let (_, _, home) = get(&app, "/demo/").await;
-    assert!(home.contains("unreachable"), "{home}");
+    assert!(!home.contains("unreachable"), "{home}");
+    assert!(home.contains("/demo/-/health"), "{home}");
 }
 
 #[tokio::test]
@@ -259,16 +260,14 @@ async fn channel_calculator_resolves_bucket() {
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("0x0A"), "{body}");
     assert!(
-        body.contains(
-            "release <strong><a href=\"/demo/-/releases#release-1.0.0\">1.0.0</a></strong>"
-        ),
+        body.contains("release <strong><a href=\"/demo/-/releases/1.0.0\">1.0.0</a></strong>"),
         "{body}"
     );
-    assert!(body.contains("class=\"hit\""), "{body}");
+    assert!(body.contains(" hit\" title=\"bucket 0x0A (10) → 1.0.0\""), "{body}");
     // The anti-rollback floor (recorded at index time) is shown.
     assert!(
         body.contains(
-            "floor <strong><a href=\"/demo/-/releases#release-1.0.0\">1.0.0</a></strong>"
+            "<span>Minimum allowed release</span><strong><a href=\"/demo/-/releases/1.0.0\">1.0.0</a></strong>"
         ),
         "{body}"
     );
@@ -283,25 +282,35 @@ async fn package_search_filters_by_substring() {
     let (app, _db) = serve_fixture(&surface, &fixture).await;
 
     // A bare term in the filter expression matches any field (substring).
-    let (status, _, body) = get(&app, "/demo/-/packages?filter=curl").await;
+    let (status, headers, _) = get(&app, "/demo/-/packages?filter=curl").await;
+    assert_eq!(status, StatusCode::TEMPORARY_REDIRECT);
+    let pinned = headers[header::LOCATION].to_str().unwrap();
+    assert!(pinned.contains("release=1.0.0") && pinned.contains("filter=curl"));
+    assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+
+    let (status, _, body) = get(&app, "/demo/-/packages?release=1.0.0&filter=curl").await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("1 of 1 packages matching"), "{body}");
     assert!(body.contains("/demo/-/packages/curl"), "{body}");
 
-    let (status, _, body) = get(&app, "/demo/-/packages?filter=zzz").await;
+    let (status, _, body) = get(&app, "/demo/-/packages?release=1.0.0&filter=zzz").await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("0 of 1 packages matching"), "{body}");
     assert!(!body.contains("/demo/-/packages/curl"), "{body}");
 
     // A field comparison filters by that attribute; an invalid expression is
     // surfaced as an error rather than applied.
-    let (_, _, body) = get(&app, "/demo/-/packages?filter=license+%3D%3D+zzz").await;
+    let (_, _, body) = get(
+        &app,
+        "/demo/-/packages?release=1.0.0&filter=license+%3D%3D+zzz",
+    )
+    .await;
     assert!(body.contains("0 of 1 packages matching"), "{body}");
-    let (_, _, body) = get(&app, "/demo/-/packages?filter=license+%3D%3D").await;
+    let (_, _, body) = get(&app, "/demo/-/packages?release=1.0.0&filter=license+%3D%3D").await;
     assert!(body.contains("filter error:"), "{body}");
 
     // Column sort: the descending closure header links to the ascending state.
-    let (_, _, body) = get(&app, "/demo/-/packages?sort=closure&dir=desc").await;
+    let (_, _, body) = get(&app, "/demo/-/packages?release=1.0.0&sort=closure&dir=desc").await;
     assert!(body.contains("sort=closure&amp;dir=asc"), "{body}");
 
     // The instance home searches registries the same way.
@@ -354,12 +363,12 @@ async fn anonymous_browse_is_rate_limited_on_flat_and_nested_paths() {
     // BrowseSearch budget is shared across the routes below. Exhaust it on the
     // flat packages route, then assert every browse entrypoint is 429'd.
     for _ in 0..BROWSE_SEARCH {
-        let (status, _, _) = get(&app, "/demo/-/packages").await;
+        let (status, _, _) = get(&app, "/demo/-/packages?release=1.0.0").await;
         assert_eq!(status, StatusCode::OK);
     }
 
     // Flat packages route: over budget now.
-    let (status, headers, _) = get(&app, "/demo/-/packages").await;
+    let (status, headers, _) = get(&app, "/demo/-/packages?release=1.0.0").await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     assert!(headers.contains_key(header::RETRY_AFTER), "Retry-After set");
 
@@ -409,9 +418,15 @@ async fn releases_page_shows_pack_presence() {
 
     let (status, _, body) = get(&app, "/demo/-/releases").await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("✓ pack"), "{body}");
+    assert!(body.contains("/demo/-/releases/1.0.0"), "{body}");
     assert!(body.contains("ago"), "tagged column carries a relative age");
-    assert!(body.contains("unix 1770000000"), "{body}");
+    let (status, _, detail) = get(&app, "/demo/-/releases/1.0.0").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        detail.contains("Git pack") && detail.contains("Available"),
+        "{detail}"
+    );
+    assert!(detail.contains("unix 1770000000"), "{detail}");
 }
 
 #[tokio::test]
@@ -426,7 +441,7 @@ async fn registry_home_carries_setup_snippets_and_fingerprints() {
     assert_eq!(status, StatusCode::OK);
     // All three setup snippets.
     assert!(
-        body.contains("apr add http://127.0.0.1:8420/demo/"),
+        body.contains("apm registry add http://127.0.0.1:8420/demo/"),
         "{body}"
     );
     assert!(
@@ -444,19 +459,19 @@ async fn registry_home_carries_setup_snippets_and_fingerprints() {
     // The pinned anchor appears in full and as a SHA256: fingerprint.
     assert!(body.contains(&fixture.trust_key), "{body}");
     assert!(body.contains("SHA256:"), "{body}");
-    // Frontier freshness is above the fold ("indexed Ns ago" — the index
-    // ran moments before this request).
-    assert!(body.contains("indexed "), "{body}");
-    assert!(body.contains("s ago"), "{body}");
+    // Index evidence remains in the footer; rollouts describe the live channel.
+    assert!(body.contains("indexed at unix "), "{body}");
+    assert!(body.contains("256/256 buckets"), "{body}");
 
-    let (status, _, package) = get(&app, "/demo/-/packages/curl").await;
+    let (status, _, package) = get(&app, "/demo/-/packages/curl?release=1.0.0").await;
     assert_eq!(status, StatusCode::OK);
     assert!(
-        package.contains("apr add http://127.0.0.1:8420/demo/"),
+        package.contains("apm registry add http://127.0.0.1:8420/demo/"),
         "{package}"
     );
     assert!(
-        package.contains("substituters = http://127.0.0.1:8420/demo"),
+        package.contains("--tag 1.0.0")
+            && package.contains("apm install curl --registry demo-1.0.0"),
         "{package}"
     );
 }
@@ -530,7 +545,7 @@ async fn generated_web_surface_cannot_shadow_hub_browse() {
     }
 
     // Indexed metadata is still presented by the canonical Hub renderer.
-    let (status, headers, body) = get(&app, "/demo/-/packages/curl").await;
+    let (status, headers, body) = get(&app, "/demo/-/packages/curl?release=1.0.0").await;
     assert_eq!(status, StatusCode::OK);
     assert!(headers[header::CONTENT_TYPE]
         .to_str()

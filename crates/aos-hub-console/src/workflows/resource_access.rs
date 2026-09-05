@@ -8,7 +8,7 @@
 
 use leptos::prelude::*;
 
-use crate::components::{InlineError, StatusBadge};
+use crate::components::{HelpTooltip, InlineError, StatusBadge};
 use crate::transport::ApiClient;
 
 /// One resource access surface resolved from a canonical console route.
@@ -140,8 +140,7 @@ fn AccessOverview(context: AccessContext) -> impl IntoView {
                 <div class="section-heading">
                     <div>
                         <p class="section-kicker">{context.kind}</p>
-                        <h2>"Identity & access"</h2>
-                        <p>"Resource IAM, credentials, signing trust, and client delivery policy remain explicit layers."</p>
+                        <h2>"Identity & access"<HelpTooltip term="Identity & access" summary="Manage who can use this resource and how clients verify its content."/></h2>
                     </div>
                     <StatusBadge state=context.visibility.clone() positive=public/>
                 </div>
@@ -151,23 +150,23 @@ fn AccessOverview(context: AccessContext) -> impl IntoView {
                     <div><span>"Infrastructure owner"</span><code>{context.owner_scope}</code></div>
                 </div>
                 <p class="muted">
-                    "Visibility is resource policy. Human and service-account grants are memberships. API credentials are scoped tokens. Client-facing HTTP authorization is configured on each simultaneous route."
+                    "Use organization memberships to grant access to people and service accounts. Access tokens authenticate API requests; signing keys let clients verify published content. Delivery settings control authentication at each download URL."
                 </p>
             </section>
             <section class="resource-grid">
                 {context.members_href.map(|href| view! {
                     <a class="resource-card" href=href>
-                        <div><span class="resource-kind">"IAM"</span><h3>"Memberships"</h3><p>"Grant a user or service account a role on an exact immutable scope."</p></div>
+                        <div><span class="resource-kind">"People & services"</span><h3>"Organization memberships"</h3><p>"Manage roles in the owning organization. Select this resource's authorization scope when granting access."</p></div>
                     </a>
                 })}
                 <a class="resource-card" href=context.tokens_href>
-                    <div><span class="resource-kind">"Credentials"</span><h3>"Access tokens"</h3><p>"Issue and retire scope-owned API credentials."</p></div>
+                    <div><span class="resource-kind">"Credentials"</span><h3>"Access tokens"</h3><p>"Create or revoke API credentials for this resource."</p></div>
                 </a>
                 <a class="resource-card" href=context.signing_href>
-                    <div><span class="resource-kind">"Trust"</span><h3>"Signing keys"</h3><p>"Inspect immutable generations and exact consumer usage."</p></div>
+                    <div><span class="resource-kind">"Trust"</span><h3>"Signing keys"</h3><p>"Manage public verification keys and see where each key is used."</p></div>
                 </a>
                 <a class="resource-card" href=context.overview_href>
-                    <div><span class="resource-kind">"Policy"</span><h3>"Visibility"</h3><p>"Edit the resource visibility and other identity policy."</p></div>
+                    <div><span class="resource-kind">"Policy"</span><h3>"Visibility"</h3><p>"Change public or private visibility in this resource's overview settings."</p></div>
                 </a>
             </section>
         </div>

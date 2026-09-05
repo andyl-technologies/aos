@@ -72,9 +72,13 @@ pub enum ContainerCommand {
         #[arg(long)]
         raw: bool,
         /// Override the registry HTTP(S) origin
-        #[arg(long, env = "AOS_HUB")]
+        #[arg(
+            long = "registry-origin",
+            visible_alias = "hub",
+            env = "AOS_REGISTRY_ORIGIN"
+        )]
         hub: Option<String>,
-        /// Use this Hub access token
+        /// Use this registry access token
         #[arg(long, env = "AOS_TOKEN")]
         token: Option<String>,
     },
@@ -95,9 +99,13 @@ pub enum ContainerCommand {
         #[arg(long)]
         force: bool,
         /// Override the registry HTTP(S) origin
-        #[arg(long, env = "AOS_HUB")]
+        #[arg(
+            long = "registry-origin",
+            visible_alias = "hub",
+            env = "AOS_REGISTRY_ORIGIN"
+        )]
         hub: Option<String>,
-        /// Use this Hub access token
+        /// Use this registry access token
         #[arg(long, env = "AOS_TOKEN")]
         token: Option<String>,
     },
@@ -114,9 +122,13 @@ pub enum ContainerCommand {
         #[arg(long = "mount-from")]
         mount_from: Vec<String>,
         /// Override the registry HTTP(S) origin
-        #[arg(long, env = "AOS_HUB")]
+        #[arg(
+            long = "registry-origin",
+            visible_alias = "hub",
+            env = "AOS_REGISTRY_ORIGIN"
+        )]
         hub: Option<String>,
-        /// Use this Hub access token
+        /// Use this registry access token
         #[arg(long, env = "AOS_TOKEN")]
         token: Option<String>,
     },
@@ -234,40 +246,42 @@ mod tests {
 
     #[test]
     fn parses_daemonless_transfer_auth_and_output_options() {
-        let cli = Cli::try_parse_from([
-            "aos",
-            "container",
-            "pull",
-            "registry.example/aos:latest",
-            "--hub",
-            "https://registry.example",
-            "--token",
-            "redacted",
-            "--format",
-            "oci-archive",
-            "-o",
-            "aos.tar",
-        ])
-        .expect("container pull command");
-        let Commands::Container {
-            command:
-                ContainerCommand::Pull {
-                    reference,
-                    hub,
-                    token,
-                    format,
-                    output,
-                    ..
-                },
-        } = cli.command
-        else {
-            panic!("expected container pull command");
-        };
-        assert_eq!(reference, "registry.example/aos:latest");
-        assert_eq!(hub.as_deref(), Some("https://registry.example"));
-        assert_eq!(token.as_deref(), Some("redacted"));
-        assert_eq!(format, ContainerFormat::OciArchive);
-        assert_eq!(output.as_deref(), Some(std::path::Path::new("aos.tar")));
+        for origin_flag in ["--registry-origin", "--hub"] {
+            let cli = Cli::try_parse_from([
+                "aos",
+                "container",
+                "pull",
+                "registry.example/aos:latest",
+                origin_flag,
+                "https://registry.example",
+                "--token",
+                "redacted",
+                "--format",
+                "oci-archive",
+                "-o",
+                "aos.tar",
+            ])
+            .expect("container pull command");
+            let Commands::Container {
+                command:
+                    ContainerCommand::Pull {
+                        reference,
+                        hub,
+                        token,
+                        format,
+                        output,
+                        ..
+                    },
+            } = cli.command
+            else {
+                panic!("expected container pull command");
+            };
+            assert_eq!(reference, "registry.example/aos:latest");
+            assert_eq!(hub.as_deref(), Some("https://registry.example"));
+            assert_eq!(token.as_deref(), Some("redacted"));
+            assert_eq!(format, ContainerFormat::OciArchive);
+            assert_eq!(output.as_deref(), Some(std::path::Path::new("aos.tar")));
+        }
     }
 
     #[test]

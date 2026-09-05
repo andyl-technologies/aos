@@ -88,6 +88,8 @@ pub struct ConfigFormModel {
     pub name: String,
     /// One-line description, empty when unset.
     pub description: String,
+    /// Preferred initial public-browser release, empty for semantic newest.
+    pub default_release: String,
     /// Longer README preamble, empty when unset.
     pub readme: String,
     /// Whether the registry records content addresses (`content_addressed`).
@@ -134,6 +136,7 @@ pub fn parse_model(current_toml: &str) -> Option<ConfigFormModel> {
     Some(ConfigFormModel {
         name: cfg.registry.name.clone(),
         description: cfg.registry.description.clone().unwrap_or_default(),
+        default_release: cfg.registry.default_release.clone().unwrap_or_default(),
         readme: cfg.registry.readme.clone().unwrap_or_default(),
         content_addressed: cfg.registry.content_addressed,
         // Only populate the flat editor when the stack is simple-representable;
@@ -202,6 +205,8 @@ pub struct Submission {
     pub name: String,
     /// The submitted description.
     pub description: String,
+    /// The preferred initial public-browser release.
+    pub default_release: String,
     /// The submitted readme.
     pub readme: String,
     /// Whether the content-addressed toggle was checked.
@@ -256,6 +261,7 @@ pub fn parse_submission(body: &str) -> Submission {
         name: first("name"),
         description: first("description"),
         readme: first("readme"),
+        default_release: first("default_release"),
         content_addressed: pairs.iter().any(|(k, _)| k == "content_addressed"),
         caches,
         title: first("cr_title"),
@@ -286,6 +292,7 @@ pub fn model_from_submission(sub: &Submission, error: String) -> ConfigFormModel
         name: sub.name.trim().to_string(),
         description: sub.description.clone(),
         readme: sub.readme.clone(),
+        default_release: sub.default_release.clone(),
         content_addressed: sub.content_addressed,
         caches,
         has_cache_stack: false,
@@ -337,6 +344,7 @@ pub fn build_toml(existing: &str, sub: &Submission) -> Result<String> {
     reg.insert("name".into(), toml::Value::String(name.to_string()));
     set_or_remove(reg, "description", sub.description.trim());
     set_or_remove(reg, "readme", sub.readme.trim());
+    set_or_remove(reg, "default_release", sub.default_release.trim());
     // content_addressed defaults to true; only the false case is written.
     if sub.content_addressed {
         reg.remove("content_addressed");
@@ -437,6 +445,19 @@ fn set_or_remove(table: &mut toml::map::Map<String, toml::Value>, key: &str, val
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_default_release_round_trips_without_changing_channel_policy() {
+        let source = "[registry]\nname = \"demo\"\ndefault_release = \"1.2.3\"\n";
+        let model = parse_model(source).unwrap();
+        assert_eq!(model.default_release, "1.2.3");
+        let submission =
+            parse_submission("name=demo&default_release=2.0.0-rc.1&content_addressed=1");
+        let updated = build_toml(source, &submission).unwrap();
+        assert_eq!(parse_model(&updated).unwrap().default_release, "2.0.0-rc.1");
+        assert!(!updated.contains("channel"));
+        assert!(parse_model("[registry]\nname = \"demo\"\ndefault_release = \"HEAD\"\n").is_none());
+    }
 
     #[test]
     fn empty_model_defaults_to_content_addressed() {

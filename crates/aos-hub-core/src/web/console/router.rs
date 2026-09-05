@@ -104,6 +104,9 @@ impl DeclaredRouter {
 }
 
 async fn management_app(state: SharedState, headers: HeaderMap, uri: Uri) -> Response {
+    if let Some(destination) = aos_hub_console_contract::registry_catalog_redirect(uri.path()) {
+        return axum::response::Redirect::to(&destination).into_response();
+    }
     if aos_hub_console_contract::ConsoleRoute::resolve(uri.path()).is_none() {
         return StatusCode::NOT_FOUND.into_response();
     }
@@ -310,6 +313,7 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
         )
         .route("/-/instance", management_get())
         .route("/-/instance/{page}", management_get())
+        .route("/-/instance/bindings/new", management_get())
         .route("/-/instance/domains/new", management_get())
         .route("/-/instance/network-policies/new", management_get())
         .route("/-/instance/endpoints/new", management_get())
