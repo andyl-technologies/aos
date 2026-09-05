@@ -288,12 +288,7 @@ pub(super) async fn scan(
         evaluated_at_unix: evaluated_at,
     };
     snapshot.validate()?;
-    let advisory = repology_advisory_summary(
-        envelope,
-        &snapshot.observations,
-        &mut snapshot.units,
-        &mut warnings,
-    );
+    let advisory = repology_advisory_summary(envelope, &snapshot.observations, &mut snapshot.units);
     snapshot.validate()?;
     Ok(ScanOutcome {
         snapshot,
@@ -316,7 +311,6 @@ fn repology_advisory_summary(
     envelope: &InventoryEnvelopeV1,
     observations: &BTreeMap<String, UpstreamObservationV1>,
     units: &mut [UnitDiscovery],
-    warnings: &mut Vec<String>,
 ) -> AdvisorySummary {
     let mut summary = AdvisorySummary::default();
     for unit in &envelope.inventory.units {
@@ -355,10 +349,6 @@ fn repology_advisory_summary(
                         candidate_licenses: Vec::new(),
                     },
                 );
-                warnings.push(format!(
-                    "{} {} current version {} is reported vulnerable by Repology",
-                    unit.unit_id, component_id, component.current.comparison_version
-                ));
             }
 
             let newest = observation
@@ -377,7 +367,6 @@ fn repology_advisory_summary(
                     .collect::<BTreeSet<_>>()
                     .into_iter()
                     .collect::<Vec<_>>();
-                let versions = candidate_versions.join(", ");
                 push_advisory(
                     units,
                     unit.unit_id.as_str(),
@@ -392,10 +381,6 @@ fn repology_advisory_summary(
                         candidate_licenses: Vec::new(),
                     },
                 );
-                warnings.push(format!(
-                    "{} {} has newer Repology advisory versions: {versions}",
-                    unit.unit_id, component_id
-                ));
             }
 
             let current_licenses = unanimous_licenses(&current);
@@ -424,10 +409,6 @@ fn repology_advisory_summary(
                         candidate_licenses: newest_licenses.into_iter().collect(),
                     },
                 );
-                warnings.push(format!(
-                    "{} {} has differing current/newest Repology license sets",
-                    unit.unit_id, component_id
-                ));
             }
         }
     }

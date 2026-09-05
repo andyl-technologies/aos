@@ -34,6 +34,8 @@ use serde::Serialize;
 
 use crate::cli::{Cli, ColorChoice, MaintainArgs, MaintainCommand, ProgressChoice};
 
+const MAX_SCAN_DIAGNOSTICS: usize = 128;
+
 /// Dispatches one recognized maintenance command to a typed completion.
 ///
 /// All expected operational errors become diagnostics in the returned result,
@@ -2016,17 +2018,7 @@ fn scan_completion(
             ),
         ])
         .collect();
-    let diagnostics = outcome
-        .warnings
-        .iter()
-        .map(|warning| {
-            diagnostic(
-                "maintain.advisory-unavailable",
-                DiagnosticSeverity::Warning,
-                warning,
-            )
-        })
-        .collect();
+    let diagnostics = scan_diagnostics(&outcome.warnings);
     completion(
         "scan",
         disposition,
@@ -2043,6 +2035,36 @@ fn scan_completion(
         }],
         Vec::new(),
     )
+}
+
+fn scan_diagnostics(warnings: &[String]) -> Vec<Diagnostic> {
+    let detail_limit = if warnings.len() > MAX_SCAN_DIAGNOSTICS {
+        MAX_SCAN_DIAGNOSTICS - 1
+    } else {
+        warnings.len()
+    };
+    let mut diagnostics = warnings
+        .iter()
+        .take(detail_limit)
+        .map(|warning| {
+            diagnostic(
+                "maintain.advisory-unavailable",
+                DiagnosticSeverity::Warning,
+                warning,
+            )
+        })
+        .collect::<Vec<_>>();
+    if warnings.len() > MAX_SCAN_DIAGNOSTICS {
+        diagnostics.push(diagnostic(
+            "maintain.advisory-warning-limit",
+            DiagnosticSeverity::Warning,
+            &format!(
+                "{} additional provider warnings omitted; inspect the cached snapshot for coverage",
+                warnings.len() - detail_limit
+            ),
+        ));
+    }
+    diagnostics
 }
 
 fn plan_command(
@@ -3848,6 +3870,25 @@ mod tests {
             CommandDisposition::InvalidInvocation
         );
         assert_eq!(completion.exit_code(), 2);
+    }
+
+    #[test]
+    fn scan_diagnostics_are_bounded_with_an_omission_count() {
+        let warnings = (0..200)
+            .map(|index| format!("provider warning {index}"))
+            .collect::<Vec<_>>();
+        let diagnostics = scan_diagnostics(&warnings);
+
+        assert_eq!(diagnostics.len(), MAX_SCAN_DIAGNOSTICS);
+        assert_eq!(
+            diagnostics.last().map(|item| item.code.as_str()),
+            Some("maintain.advisory-warning-limit")
+        );
+        assert!(
+            diagnostics
+                .last()
+                .is_some_and(|item| item.summary.contains("73 additional"))
+        );
     }
 }
 
