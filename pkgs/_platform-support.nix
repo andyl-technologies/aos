@@ -46,6 +46,7 @@ let
     "boost"
     "brotli"
     "bzip2"
+    "cmocka"
     "coreutils"
     "cpio"
     "diffutils"
@@ -114,6 +115,7 @@ let
   # to execute during their build.
   targetWave2 = [
     "acpica"
+    "bind"
     "boringssl"
     "cups"
     "curl"
@@ -147,6 +149,7 @@ let
     "libgpg-error"
     "libidn2"
     "liblinear"
+    "libmaxminddb"
     "libpciaccess"
     "libisoburn"
     "libisofs"
@@ -165,6 +168,7 @@ let
     "libxcrypt"
     "libxml2"
     "libxslt"
+    "lmdb"
     "lsof"
     "minisign"
     "mtools"
