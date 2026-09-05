@@ -57,6 +57,7 @@ pub(super) fn RegistryContainers(client: ApiClient, registry_id: String) -> impl
     });
     let workspace_client = client.clone();
     let workspace_registry = registry_id.clone();
+    let gc_requested = RwSignal::new(false);
 
     view! {
         <div class="workflow-stack">
@@ -98,7 +99,12 @@ pub(super) fn RegistryContainers(client: ApiClient, registry_id: String) -> impl
             </section>
             {move || selected.get().map(|repository| view! { <RepositoryWorkspace client=workspace_client.clone() registry=workspace_registry.clone() repository=repository/> })}
             <ContainerRetention client=client.clone() registry=registry_id.clone()/>
-            <ContainerGc client=client registry=registry_id/>
+            <details class="panel advanced-controls" on:toggle=move |_| gc_requested.set(true)>
+                <summary>"Garbage collection & provider reconciliation"</summary>
+                {move || gc_requested.get().then(|| view! {
+                    <ContainerGc client=client.clone() registry=registry_id.clone()/>
+                })}
+            </details>
         </div>
     }
 }
