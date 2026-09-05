@@ -14,6 +14,8 @@
 # The delayed cancellation fixture delivers one cancellation, and the moved
 # node fixture waits for loader completion before its single audit assertion.
 # Hot-fork `retry` names classify resource recovery; they never rerun a test.
+# The preemption regression module uses fixed delays as adversarial stimuli
+# and bounded process-state waits; each unmet signal/watchdog assertion fails.
 crucible-api	src/vm_lifecycle/checkpoint_store/tests	retry	1
 crucible-api	src/vm_lifecycle/quantum_loop/checkpoint_capture	retry	1
 crucible-campaign	src/campaign_service	retry	1
@@ -85,6 +87,7 @@ crucible-protocol	src/guest_introspection_doorbell	retry	1
 crucible-qemu	src/async_driver_test	retry	1
 crucible-qemu	src/block_realization_gate	thread::sleep	1
 crucible-qemu	src/supervision/bounded_scheduler_preemption	thread::sleep	1
+crucible-qemu	src/supervision/bounded_scheduler_preemption/tests	thread::sleep	1
 crucible-qemu	src/crash_detection	retry	1
 crucible-qemu	src/gdbstub_proxy	thread::sleep	1
 crucible-qemu	src/live_coverage_gate	thread::sleep	1
@@ -105,6 +108,7 @@ crucible-qemu	src/production_fault_runtime/evidence	retry	1
 crucible-qemu	src/production_fault_runtime/lifecycle_tests	retry	1
 crucible-qemu	src/production_fault_runtime/test_support	retry	1
 crucible-qemu	src/qmp	thread::sleep	1
+crucible-qemu	src/qmp/hot_fork/template/preparation	thread::sleep	1
 crucible-qemu	src/quantum/inbound_delivery	retry	1
 crucible-qemu	src/quantum/support	retry	1
 crucible-qemu	src/quantum/tests	retry	1

@@ -653,6 +653,22 @@ pub trait QemuQmpMachineControlChannel: Send {
         ))
     }
 
+    /// Acquires all retained template barriers before child-resource staging.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when bounded preparation fails or the
+    /// channel does not implement generation-bound acquisition.
+    fn prepare_hot_fork_template_barriers(
+        &mut self,
+        _block_snapshot_bindings: &[crate::QmpHotForkBlockSnapshotBinding],
+    ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "prepare_hot_fork_template_barriers",
+            "bounded hot-fork barrier acquisition is not implemented by this QMP channel",
+        ))
+    }
+
     /// Queries QEMU's retained hot-fork template transaction.
     ///
     /// # Errors

@@ -425,7 +425,6 @@ shape-line|crates/crucible-qemu/src/qmp.rs|2867
 shape-line|crates/crucible-qemu/src/qmp/hot_fork.rs|3086
 shape-line|crates/crucible-qemu/src/qmp/hot_fork/block_barrier.rs|682
 shape-line|crates/crucible-qemu/src/qmp/hot_fork/plugin.rs|819
-shape-line|crates/crucible-qemu/src/qmp/hot_fork/template.rs|895
 shape-line|crates/crucible-qemu/src/qmp/vmstate_control.rs|895
 shape-line|crates/crucible-qemu/src/quantum.rs|837
 shape-line|crates/crucible-qemu/src/realization.rs|2919

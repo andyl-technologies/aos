@@ -312,7 +312,7 @@ impl QemuHotForkTemplatePreparer for QemuNode {
         block_snapshot_bindings: &[crate::QmpHotForkBlockSnapshotBinding],
         maximum_ring_image_bytes: usize,
     ) -> Result<(), QemuVmRealizationError> {
-        self.prepare_hot_fork_template(block_snapshot_bindings)
+        self.prepare_hot_fork_template_barriers(block_snapshot_bindings)
             .map_err(|source| QemuVmRealizationError::Executor {
                 operation: "prepare retained hot-fork template",
                 message: source.to_string(),

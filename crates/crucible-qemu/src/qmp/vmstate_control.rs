@@ -428,6 +428,21 @@ where
             .map_err(QemuNodeChannelError::from)
     }
 
+    /// Acquires all retained template barriers before child-resource staging.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QMP I/O, generation validation,
+    /// or bounded barrier acquisition fails.
+    pub fn prepare_hot_fork_template_barriers(
+        &mut self,
+        block_snapshot_bindings: &[QmpHotForkBlockSnapshotBinding],
+    ) -> Result<QmpHotForkTemplateState, QemuNodeChannelError> {
+        self.client
+            .prepare_hot_fork_template_barriers(block_snapshot_bindings)
+            .map_err(QemuNodeChannelError::from)
+    }
+
     /// Queries QEMU's retained hot-fork template transaction.
     ///
     /// # Errors

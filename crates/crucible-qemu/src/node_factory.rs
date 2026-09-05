@@ -132,6 +132,14 @@ where
         self.vmstate.query_hot_fork_template()
     }
 
+    fn prepare_hot_fork_template_barriers(
+        &mut self,
+        block_snapshot_bindings: &[crate::QmpHotForkBlockSnapshotBinding],
+    ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
+        self.vmstate
+            .prepare_hot_fork_template_barriers(block_snapshot_bindings)
+    }
+
     fn abort_hot_fork_template(
         &mut self,
     ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
