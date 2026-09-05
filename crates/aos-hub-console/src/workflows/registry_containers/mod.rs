@@ -115,7 +115,7 @@ pub(super) fn RegistryContainers(client: ApiClient, registry_id: String) -> impl
             })}
             {(!gc_enabled).then(|| view! {
                 <section class="panel resource-panel">
-                    <div class="section-heading"><div><p class="section-kicker">"Unavailable rollout"</p><h2>"Garbage collection & provider reconciliation"</h2><p>"This Hub has not enabled container garbage collection. Repository inspection and retention remain available; no GC inventory or run data is requested until the server advertises this capability."</p></div></div>
+                    <div class="section-heading"><div><p class="section-kicker">"Maintenance availability"</p><h2>"Garbage collection & provider reconciliation"</h2><p>"Container garbage collection is not enabled on this Hub. You can still inspect repositories and configure retention."</p></div></div>
                 </section>
             })}
         </div>
@@ -280,15 +280,6 @@ pub(super) fn display_or(value: &str, fallback: &str) -> String {
     }
 }
 
-/// Formats a server timestamp while making an unset value explicit.
-pub(super) fn format_timestamp(seconds: i64, absent: &str) -> String {
-    if seconds <= 0 {
-        absent.to_string()
-    } else {
-        format!("Unix {seconds}")
-    }
-}
-
 pub(super) fn format_bytes(value: u64) -> String {
     const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
     const MIB: f64 = 1024.0 * 1024.0;
@@ -298,16 +289,5 @@ pub(super) fn format_bytes(value: u64) -> String {
         format!("{:.1} MiB", value as f64 / MIB)
     } else {
         format!("{value} bytes")
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::format_timestamp;
-
-    #[test]
-    fn unset_timestamps_use_the_page_specific_absence_label() {
-        assert_eq!(format_timestamp(0, "Not configured"), "Not configured");
-        assert_eq!(format_timestamp(12, "Not configured"), "Unix 12");
     }
 }

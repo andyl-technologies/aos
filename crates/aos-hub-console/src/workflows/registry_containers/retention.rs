@@ -5,11 +5,11 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use crate::app::refresh;
-use crate::components::{InlineError, ReviewedPlanCard};
+use crate::components::{format_timestamp, InlineError, ReviewedPlanCard};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::transport::ApiClient;
 
-use super::{display_or, format_timestamp};
+use super::display_or;
 
 /// Renders and reviews the registry's container retention policy.
 #[component]
