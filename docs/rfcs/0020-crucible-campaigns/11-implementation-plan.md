@@ -3002,7 +3002,9 @@ The canonical 197-patch package passes the source-set certificate, QMP readiness
 and ABI conformance. Byte-for-byte regeneration and matching complete
 corresponding-source metadata pass; the source license-boundary suite passes all
 18 cases, and the plugin patch roster and strict Clippy checks pass. The full
-197-patch series flight and focused drop-one attribution are running. The
+197-patch series flight and focused same-builder drop-one attribution also pass.
+The generic boot probe remains non-discriminating; the source-set native tests
+and targeted consumer-check negative control supply the behavioral evidence. The
 license-boundary source suite first encountered a compiler-cache connection
 reset; the explicit run without that cache completed all tests. This is not
 acceptance of the complete packaged license-boundary gate.
