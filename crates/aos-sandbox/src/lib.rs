@@ -14,6 +14,7 @@ pub mod ownership_resume;
 pub mod ownership_service;
 pub mod publication;
 pub mod publisher_authority;
+pub mod publisher_policy;
 pub mod reconciler;
 
 pub use authority::{

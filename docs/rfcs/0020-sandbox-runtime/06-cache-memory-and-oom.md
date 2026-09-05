@@ -151,6 +151,25 @@ for revocation and completion before admitting new work. Namespace-local journal
 records are an internal persistence format, not a portable protocol or a substitute
 for failover replication and rollback protection.
 
+The effective publication policy is the canonical resolved `Policy` object,
+not the signer's `TrustPolicy`. Its digest is derived from those bytes. The
+controller retains immutable project policy revisions and advances the current
+head in the same durable transaction, using an exact compare-and-swap and a
+checked, strictly increasing generation. Until a separate pruning protocol is
+defined, replay requires the complete contiguous revision chain and an exact
+head/revision link. Logical cache resources have protected immutable bindings
+to their project, cache domain, and isolation-policy commitment.
+
+Controller-authority and revocation-scope generations are separately maintained
+protected state, not numbers initialized from an admission request. Admission
+must compare the capability's policy digest with the current effective policy,
+resolve the capability's exact revocation scope, and intersect its publication
+grant with the current policy's grant for the resolved cache resource. Equal
+generation numbers from different scopes are not interchangeable. These checks
+still require the independent authenticated holder and publisher sessions and
+the current resource-accounting transaction. Neither a resource binding nor a
+policy head proves that a publication root or publisher execution exists.
+
 Version 1 uses retained controller-owned permits, not a timed completion window:
 a pre-syscall clock check cannot bound an already-entered rename or fsync.
 The controller durably records the one-shot permit before issuing it. It remains

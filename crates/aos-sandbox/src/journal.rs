@@ -94,6 +94,8 @@ pub enum RecordNamespace {
     AuthorityPublication = 6,
     /// Controller-resolved publisher capabilities and current authority records.
     PublisherAuthority = 7,
+    /// Current publisher policy, resource bindings, and controller generation heads.
+    PublisherPolicy = 8,
 }
 
 impl RecordNamespace {
@@ -106,6 +108,7 @@ impl RecordNamespace {
             5 => Ok(Self::OwnershipGate),
             6 => Ok(Self::AuthorityPublication),
             7 => Ok(Self::PublisherAuthority),
+            8 => Ok(Self::PublisherPolicy),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }
@@ -1856,13 +1859,14 @@ mod tests {
             RecordNamespace::OwnershipGate,
             RecordNamespace::AuthorityPublication,
             RecordNamespace::PublisherAuthority,
+            RecordNamespace::PublisherPolicy,
         ];
         for (index, namespace) in namespaces.into_iter().enumerate() {
             let code = u8::try_from(index + 1).unwrap();
             assert_eq!(namespace as u8, code);
             assert_eq!(RecordNamespace::from_byte(code).unwrap(), namespace);
         }
-        for code in [0, 8, 255] {
+        for code in [0, 9, 255] {
             assert!(RecordNamespace::from_byte(code).is_err());
         }
     }
@@ -1886,6 +1890,11 @@ mod tests {
                         RecordNamespace::AuthorityPublication,
                         key.clone(),
                         b"assignment-record".to_vec(),
+                    ),
+                    JournalRecord::put(
+                        RecordNamespace::PublisherPolicy,
+                        key.clone(),
+                        b"policy-record".to_vec(),
                     ),
                 ],
             ))
@@ -1915,6 +1924,12 @@ mod tests {
             vec![(key.as_slice(), b"publisher-record".as_slice())],
         );
         assert_eq!(journal.records(RecordNamespace::DesiredState).count(), 0);
+        assert_eq!(
+            journal
+                .records(RecordNamespace::PublisherPolicy)
+                .collect::<Vec<_>>(),
+            vec![(key.as_slice(), b"policy-record".as_slice())],
+        );
     }
 
     fn protected_open(directory: &Path) -> Result<(Journal, RecoveryReport), JournalError> {
@@ -2648,6 +2663,7 @@ mod tests {
     #[test]
     fn publisher_registry_rejects_unprotected_or_poisoned_journal() {
         use crate::publisher_authority::{PublisherAuthorityLimits, PublisherCapabilityRegistry};
+        use crate::publisher_policy::{PublisherPolicyLimits, PublisherPolicyStore};
 
         let directory = TestDirectory::new("publisher-poison");
         let (mut unprotected, _) =
@@ -2656,6 +2672,9 @@ mod tests {
             unprotected.ensure_protected_authority(),
             Err(JournalError::ProtectedBoundary)
         ));
+        assert!(
+            PublisherPolicyStore::load(&mut unprotected, PublisherPolicyLimits::default()).is_err()
+        );
         assert!(
             PublisherCapabilityRegistry::load(
                 &mut unprotected,
@@ -2687,12 +2706,18 @@ mod tests {
             Err(JournalError::Poisoned)
         ));
         assert!(
+            PublisherPolicyStore::load(&mut journal, PublisherPolicyLimits::default()).is_err()
+        );
+        assert!(
             PublisherCapabilityRegistry::load(&mut journal, PublisherAuthorityLimits::default(),)
                 .is_err()
         );
 
         drop(journal);
         let (mut reopened, _) = protected_open(&directory.0).unwrap();
+        assert!(
+            PublisherPolicyStore::load(&mut reopened, PublisherPolicyLimits::default()).is_ok()
+        );
         assert!(
             PublisherCapabilityRegistry::load(&mut reopened, PublisherAuthorityLimits::default(),)
                 .is_ok()
@@ -2748,6 +2773,72 @@ mod tests {
         // disk. Only protected replay, not the stale in-memory snapshot, may
         // therefore restore this still-active record.
         assert_eq!(registry.resolve_current(id).unwrap(), capability);
+    }
+
+    #[test]
+    fn failed_controller_generation_update_denies_policy_reads_until_replay() {
+        use crate::publisher_policy::{
+            PublisherControllerHeadV1, PublisherPolicyError, PublisherPolicyLimits,
+            PublisherPolicyStore,
+        };
+
+        let directory = TestDirectory::new("publisher-policy-poison");
+        let (mut journal, _) = protected_open(&directory.0).unwrap();
+        let first = PublisherControllerHeadV1 {
+            principal: aos_sandbox_core::PrincipalId::new(),
+            generation: 1,
+        };
+        PublisherPolicyStore::load(&mut journal, PublisherPolicyLimits::default())
+            .unwrap()
+            .advance_controller_from_trusted_controller([1; 16], None, first)
+            .unwrap();
+
+        journal.file = OpenOptions::new()
+            .read(true)
+            .open(directory.0.join("protected.journal"))
+            .unwrap();
+        {
+            let mut policies =
+                PublisherPolicyStore::load(&mut journal, PublisherPolicyLimits::default()).unwrap();
+            assert_eq!(policies.controller_head().unwrap(), Some(first));
+            assert!(matches!(
+                policies.advance_controller_from_trusted_controller(
+                    [2; 16],
+                    Some(1),
+                    PublisherControllerHeadV1 {
+                        generation: 2,
+                        ..first
+                    },
+                ),
+                Err(PublisherPolicyError::Journal(JournalError::Io(_))),
+            ));
+            assert!(matches!(
+                policies.controller_head(),
+                Err(PublisherPolicyError::Journal(JournalError::Poisoned)),
+            ));
+            assert!(matches!(
+                policies.current_policy(aos_sandbox_core::ProjectId::new()),
+                Err(PublisherPolicyError::Journal(JournalError::Poisoned)),
+            ));
+            assert!(matches!(
+                policies.revocation_head(aos_sandbox_core::RevocationScopeId::new()),
+                Err(PublisherPolicyError::Journal(JournalError::Poisoned)),
+            ));
+            assert!(matches!(
+                policies.resource_binding(aos_sandbox_core::ResourceId::new()),
+                Err(PublisherPolicyError::Journal(JournalError::Poisoned)),
+            ));
+        }
+        assert!(matches!(
+            PublisherPolicyStore::load(&mut journal, PublisherPolicyLimits::default()),
+            Err(PublisherPolicyError::Journal(JournalError::Poisoned)),
+        ));
+
+        drop(journal);
+        let (mut reopened, _) = protected_open(&directory.0).unwrap();
+        let policies =
+            PublisherPolicyStore::load(&mut reopened, PublisherPolicyLimits::default()).unwrap();
+        assert_eq!(policies.controller_head().unwrap(), Some(first));
     }
 
     #[test]

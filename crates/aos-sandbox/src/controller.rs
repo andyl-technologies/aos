@@ -15,6 +15,7 @@ use sha2::{Digest as _, Sha256};
 use crate::publisher_authority::{
     PublisherAuthorityError, PublisherAuthorityLimits, PublisherCapabilityRegistry,
 };
+use crate::publisher_policy::{PublisherPolicyError, PublisherPolicyLimits, PublisherPolicyStore};
 use crate::{
     AcceptOutcome, OperationPlan, OwnershipAuthoritySessionClient, OwnershipAuthorityVerifier,
     OwnershipClockObservationError, OwnershipResumeError, OwnershipResumeOutcomeV1,
@@ -226,6 +227,23 @@ where
         limits: PublisherAuthorityLimits,
     ) -> Result<PublisherCapabilityRegistry<'_>, PublisherAuthorityError> {
         PublisherCapabilityRegistry::load(self.reconciler.journal_mut(), limits)
+    }
+
+    /// Borrows current publisher policies and resource mappings for controller administration.
+    ///
+    /// The exclusive borrow serializes policy-head changes with the controller's
+    /// other journal users. It is not a network endpoint: callers must authorize
+    /// administration, and reads alone do not authorize a publication effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PublisherPolicyError`] if protected journal provenance or health
+    /// cannot be established, or bounded replay rejects the retained policy state.
+    pub fn publisher_policies(
+        &mut self,
+        limits: PublisherPolicyLimits,
+    ) -> Result<PublisherPolicyStore<'_>, PublisherPolicyError> {
+        PublisherPolicyStore::load(self.reconciler.journal_mut(), limits)
     }
 
     /// Compiles and atomically admits one canonical activated request.
@@ -512,6 +530,12 @@ mod tests {
                 crate::JournalError::ProtectedBoundary
             )),
         ));
+        assert!(matches!(
+            unprotected.publisher_policies(PublisherPolicyLimits::default()),
+            Err(PublisherPolicyError::Journal(
+                crate::JournalError::ProtectedBoundary
+            )),
+        ));
 
         fs::set_permissions(&directory.0, fs::Permissions::from_mode(0o700)).unwrap();
         let uid = fs::metadata(&directory.0).unwrap().uid();
@@ -538,6 +562,11 @@ mod tests {
             ));
         }
         assert!(protected.reconcile_quantum().unwrap().is_idle());
+        assert!(
+            protected
+                .publisher_policies(PublisherPolicyLimits::default())
+                .is_ok()
+        );
     }
 
     #[test]

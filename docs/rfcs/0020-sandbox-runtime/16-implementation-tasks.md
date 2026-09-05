@@ -1515,3 +1515,43 @@ Independent registry and existing effect-path reviews found no remaining blocker
 Warning-denied rustdoc and the locked all-target workspace compile check also
 pass on `40f419b57`. The latter uses the cached AOS environment and realized AOS
 FUSE transport pkg-config path, with unrelated existing workspace warnings.
+
+### Current publisher policy and generation state
+
+This `SBX-PUB-02` increment adds protected policy state in journal namespace
+8, isolated from capability records while sharing the same atomic journal
+transactions. Canonical resolved `Policy` bytes supply the real grants, resource
+profile, and cache domain; their exact descriptor is derived, not accepted as a
+claim. Project revisions and current heads update atomically under exact
+compare-and-swap and checked contiguous generations. Replay retains and validates
+the revision history instead of trusting a bare current-generation number.
+
+Immutable logical cache-resource bindings select project, cache domain, and
+isolation policy. Controller-authority and independent revocation-scope heads
+have their own monotonic histories. The controller principal is the capability
+audience and cannot be silently replaced during a generation update. This does
+not register a publisher execution or a publication root. Current policy and
+capability grants still need an authenticated, atomic admission evaluator;
+capability validation alone does not compare policy digest or revocation scope.
+
+Source-evidence review selected authenticated producer-output submission through
+registered export slots as the first concrete ingress path. A release decision
+must explicitly authorize submitted bytes entering the destination project
+domain. Source path, FD possession, inode identity, and byte digest are not proof
+of confidentiality or execution provenance. Source evidence must precede and
+remain outside the request commitment that later cites it. The actual slot
+registry, authenticated release-policy evaluation, durable evidence/lifetime,
+and existing-object promotion path remain unimplemented; no administrative
+source-digest installer substitutes for them.
+
+Validation passes: 155 controller and 181 core unit tests, one integration
+test, five compile-fail doctests, scoped strict all-target Clippy, warning-denied
+rustdoc, changed-file formatting, and the locked all-target workspace compile
+check. The latter uses the same cached AOS toolchain/transport and retains
+unrelated existing workspace warnings. Fixed goldens cover all seven durable
+record families, with malformed, truncated, and trailing-byte rejection. Replay
+tests cover missing/orphaned history, substituted heads, principal rebinding,
+generation exhaustion, CAS failures, and enforced input/store bounds. A real
+failed-write regression denies every policy resolver until protected replay.
+Independent implementation and source-boundary reviews found no remaining
+blocker for this persistence increment. `SBX-PUB-02` remains unchecked.
