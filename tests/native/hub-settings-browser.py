@@ -680,6 +680,63 @@ class HubSettingsSmoke:
         )
         self.check(True, "editing the delivery draft invalidates its stale review")
 
+    def exercise_saved_delivery_workflow(self):
+        """Checks and resumes a persisted blocked workflow when one is present."""
+        selector = ".delivery-workflows .workflow-card"
+        if not self.chrome.evaluate(f"document.querySelector({json.dumps(selector)}) !== null"):
+            self.skip("saved delivery progress: fixture contains no persisted workflow")
+            return
+        workflow_id = self.chrome.evaluate(
+            "document.querySelector('.workflow-card-heading code').textContent.trim()"
+        )
+        self.check(bool(workflow_id), "saved delivery workflow exposes its stable identity")
+        self.check(
+            self.chrome.evaluate(
+                "document.querySelector('.workflow-card .status-badge').textContent.trim() "
+                "=== 'blocked'"
+            ),
+            "saved unconfigured delivery workflow remains blocked",
+        )
+        self.check(
+            self.chrome.evaluate(
+                "document.querySelectorAll('.workflow-card .workflow-steps li').length > 0 && "
+                "document.querySelectorAll('.workflow-card .workflow-blockers li').length > 0"
+            ),
+            "saved delivery workflow renders steps and explicit blockers",
+        )
+        self.toggle_details(
+            ".workflow-card details.advanced-controls",
+            "saved workflow resource inspection",
+        )
+        self.screenshot_pair("registry-delivery-progress")
+
+        origin = self.chrome.evaluate("performance.timeOrigin")
+        resumed = self.chrome.evaluate("""
+            (() => {
+                const button = Array.from(document.querySelectorAll('.workflow-card button'))
+                    .find(item => item.textContent.trim() === 'Check and continue');
+                if (!button || button.disabled) return false;
+                button.click();
+                return true;
+            })()
+        """)
+        self.check(resumed, "saved delivery workflow exposes its resume action")
+        self.wait_for(
+            f"performance.timeOrigin !== {json.dumps(origin)}",
+            "delivery workflow resume reload",
+        )
+        self.assert_settings_page("resumed delivery workflow")
+        current_id = self.chrome.evaluate(
+            "document.querySelector('.workflow-card-heading code').textContent.trim()"
+        )
+        self.check(current_id == workflow_id, "resuming preserves delivery workflow identity")
+        self.check(
+            self.chrome.evaluate(
+                "document.querySelectorAll('.workflow-card .workflow-blockers li').length > 0"
+            ),
+            "resumed workflow keeps unmet provider prerequisites explicit",
+        )
+
     def review_identity_and_invalidate(self):
         self.navigate("/-/instance/identity-and-signup")
         self.assert_settings_page("instance identity settings")
@@ -779,6 +836,7 @@ class HubSettingsSmoke:
             self.chrome.evaluate("document.body.textContent.includes('Delivery destinations')"),
             "delivery destination workflow rendered",
         )
+        self.exercise_saved_delivery_workflow()
         guided_selector = "details.guided-workflow"
         if self.chrome.evaluate(f"document.querySelector({json.dumps(guided_selector)}) !== null"):
             self.check(
