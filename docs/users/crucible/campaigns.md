@@ -454,6 +454,12 @@ VM, including real guarded QEMU/image-helper launch and resource cleanup,
 without reconfiguring the build host. It does not certify a complete campaign
 or replace the recovery and operator acceptance flights.
 
+`checks.crucible.phase4.packagedCampaignVm` additionally runs public CLI
+compilation, import, creation, and production service restart with real native
+baked-genesis capture. This startup check does not start semantic attempts or
+certify hot-fork execution. Private QEMU debugger sockets are relative to each
+guarded generation directory; the gateway resolves the actual returned path.
+
 On service shutdown, the executor stops admission, signals cancellation, and
 waits up to thirty seconds for semantic-worker cleanup. A `cleanup is pending`
 error means unresolved work still owns its capacity, ledger, repository, and
