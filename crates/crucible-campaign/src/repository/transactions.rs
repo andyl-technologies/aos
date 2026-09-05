@@ -2192,6 +2192,18 @@ impl CampaignRepository {
                     ));
                 }
             }
+            if let Some(budget) = input.budget {
+                let content = self.put_envelope(ObjectEnvelope::for_record(
+                    crate::CampaignRecordKind::PlannerCandidateBudget,
+                    crate::object::content_children(budget.content_children())?,
+                    budget.canonical_bytes(),
+                )?)?;
+                if content != budget.id()?.content_id() {
+                    return Err(integrity(
+                        "planner-candidate-budget-publication-id-mismatch",
+                    ));
+                }
+            }
         }
         let request_content = self.put_planner_request(request)?;
         if request_content != request_id.content_id() {
@@ -2364,6 +2376,11 @@ impl CampaignRepository {
             let use_puct = engine
                 .capabilities()
                 .contains(crate::CANONICAL_FRONTIER_PUCT_CAPABILITY);
+            let budget = engine
+                .capabilities()
+                .contains(crate::CANONICAL_FRONTIER_BUDGET_CAPABILITY)
+                .then(|| self.parent_budget_ledger(&snapshot))
+                .transpose()?;
             let mut ready_positions = Vec::new();
             let mut candidate_cache = PlannerCandidateProjectionCache::default();
             for position in invocation.scan_page().positions() {
@@ -2374,7 +2391,7 @@ impl CampaignRepository {
                     self.read_envelope(projection.id()?.content_id())?,
                 )?;
                 if projection.state() != crate::ContinuationState::Ready
-                    || (!use_puct && !ready_positions.is_empty())
+                    || (!use_puct && budget.is_none() && !ready_positions.is_empty())
                 {
                     continue;
                 }
@@ -2418,6 +2435,18 @@ impl CampaignRepository {
                 ready_offers.push((position, offer));
             }
             for (position, offer) in ready_offers {
+                if let Some(ledger) = budget {
+                    let eligibility = self.planner_candidate_budget(&snapshot, &offer, ledger)?;
+                    push_retained_planner_input(
+                        &mut retained,
+                        &mut retained_bytes,
+                        ObjectEnvelope::for_record(
+                            crate::CampaignRecordKind::PlannerCandidateBudget,
+                            crate::object::content_children(eligibility.content_children())?,
+                            eligibility.canonical_bytes(),
+                        )?,
+                    )?;
+                }
                 push_retained_planner_input(
                     &mut retained,
                     &mut retained_bytes,
@@ -2625,29 +2654,25 @@ impl CampaignRepository {
             if invocation.scan_page().after().is_some() {
                 return Err(integrity("planner-invocation-scan-start-mismatch"));
             }
-            let descriptor = CanonicalFrontierPlanner::descriptor()?;
-            if invocation.engine() == descriptor.id()? {
+            let engine = self.require_record_kind(
+                invocation.engine().content_id(),
+                crate::CampaignRecordKind::PlannerEngine,
+            )?;
+            let engine: PlannerEngine = crate::codec::decode(engine.body())?;
+            let initial = if CanonicalFrontierPlanner::supports_descriptor(&engine)? {
+                Some(CanonicalFrontierPlanner::initial_state_for_engine(&engine)?)
+            } else if CanonicalPuctPlanner::supports_descriptor(&engine)? {
+                Some(CanonicalPuctPlanner::initial_state_for_engine(&engine)?)
+            } else {
+                None
+            };
+            if let Some(initial) = initial {
                 let state = self.require_record_kind(
                     invocation.planner_state().content_id(),
                     crate::CampaignRecordKind::PlannerState,
                 )?;
-                if crate::codec::decode::<PlannerState>(state.body())?
-                    != CanonicalFrontierPlanner::initial_state()?
-                {
+                if crate::codec::decode::<PlannerState>(state.body())? != initial {
                     return Err(integrity("builtin-planner-initial-state-mismatch"));
-                }
-            } else {
-                let descriptor = CanonicalPuctPlanner::descriptor()?;
-                if invocation.engine() == descriptor.id()? {
-                    let state = self.require_record_kind(
-                        invocation.planner_state().content_id(),
-                        crate::CampaignRecordKind::PlannerState,
-                    )?;
-                    if crate::codec::decode::<PlannerState>(state.body())?
-                        != CanonicalPuctPlanner::initial_state()?
-                    {
-                        return Err(integrity("builtin-planner-initial-state-mismatch"));
-                    }
                 }
             }
             return Ok(());

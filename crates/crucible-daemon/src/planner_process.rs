@@ -351,14 +351,12 @@ pub fn serve_canonical_planner_process_once(
             return write_frame(&mut output, REJECTION_KIND, rejection.as_bytes());
         }
     };
-    let result = if request.engine()
-        == &CanonicalFrontierPlanner::descriptor()
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?
+    let result = if CanonicalFrontierPlanner::supports_descriptor(request.engine())
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?
     {
         CanonicalFrontierPlanner.plan(&request)
-    } else if request.engine()
-        == &CanonicalPuctPlanner::descriptor()
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?
+    } else if CanonicalPuctPlanner::supports_descriptor(request.engine())
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?
     {
         CanonicalPuctPlanner.plan(&request)
     } else {
