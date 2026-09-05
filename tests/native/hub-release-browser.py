@@ -97,7 +97,7 @@ class BrowserAudit:
         status, body, _, _ = self.get("/demo/cdn/-/releases")
         text = body.decode()
         self.check(status == 200 and 'class="support-tile supported"' in text and "<strong>1.0.0</strong>" in text and "stable" in text, "release directory opens with the supported train board")
-        self.check('<span class="support-train">1.0 · LTS</span>' in text and "Supported until 2036-12-31" in text, "board reads the committed support policy for kind and end date")
+        self.check('<span class="support-train">1.0 · LTS</span>' in text and "Until 2036-12-31" in text, "board reads the committed support policy for kind and end date")
         self.check('class="release-filter"' in text and '<option value="stable"' in text and '<option value="lts">Long-term support</option>' in text, "release directory offers train, status, and LTS filters")
         status, body, _, _ = self.get("/demo/cdn/-/releases?status=lts")
         self.check(status == 200 and b'id="release-1.0.0"' in body, "the LTS filter selects releases in long-term-support trains")

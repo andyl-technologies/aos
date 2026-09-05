@@ -282,18 +282,22 @@ fn support_board(
         String::from("<section class=\"support-board\" aria-label=\"Supported releases\">");
     for summary in trains.iter().filter(|summary| summary.supported()) {
         let (major, minor) = summary.train;
+        // Only a stated end date earns a line; an open-ended train says nothing
+        // and the release page carries the full policy.
         let (class, state) = match &summary.state {
-            SupportState::EndingSoon { until } => {
-                ("supported ending", format!("Supported until {until}"))
-            }
-            SupportState::Supported { until: Some(until) } => {
-                ("supported", format!("Supported until {until}"))
-            }
-            _ => ("supported", "Supported".to_string()),
+            SupportState::EndingSoon { until } => (
+                "supported ending",
+                format!("<span class=\"support-state\">Until {until}</span>"),
+            ),
+            SupportState::Supported { until: Some(until) } => (
+                "supported",
+                format!("<span class=\"support-state\">Until {until}</span>"),
+            ),
+            _ => ("supported", String::new()),
         };
         let _ = write!(
             body,
-            "<a class=\"support-tile {class}\" href=\"{}\"><span class=\"support-train\">{major}.{minor}{}</span><strong>{}</strong><span class=\"support-state\">{state}</span>{}</a>",
+            "<a class=\"support-tile {class}\" href=\"{}\"><span class=\"support-train\">{major}.{minor}{}</span><strong>{}</strong>{state}{}</a>",
             escape(&release_href(slug, &summary.latest)),
             if summary.kind == SupportKind::Lts {
                 " · LTS"
@@ -873,7 +877,8 @@ mod tests {
         let board = support_board("org/main", &releases, &[], Some(&policy), today);
         assert!(board.contains("<span class=\"support-train\">2025.12 · LTS</span>"));
         assert!(board.contains("class=\"support-tile supported ending\""));
-        assert!(board.contains("Supported until 2026-09-30"));
+        assert!(board.contains("<span class=\"support-state\">Until 2026-09-30</span>"));
+        assert!(!board.contains(">Supported<"));
         assert!(
             !board.contains("2026.7"),
             "end-of-life trains are not listed"

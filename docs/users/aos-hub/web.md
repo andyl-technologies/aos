@@ -52,8 +52,8 @@ authorize the exact disk bytes with its session cookie.
 
 The Releases page opens with a support board: one tile per supported train,
 newest train first, showing the train's `major.minor`, its LTS marker, its
-newest release (a candidate counts for its train), the end date when the
-registry states one, and the channels targeting it. Trains that no longer
+newest release (a candidate counts for its train), "Until" and the end date
+when the registry states one, and the channels targeting it. Trains that no longer
 receive updates are not listed, and a train within ninety days of its end date
 is highlighted. The registry's committed `[support]` policy decides; without
 one, the newest two trains and any channel-targeted train count as supported.
