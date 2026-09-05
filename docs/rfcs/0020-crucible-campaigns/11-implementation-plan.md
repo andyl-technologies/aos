@@ -3038,6 +3038,16 @@ identity. The source lifecycle result explicitly reports
 `whole_world_child_handoff=false`. These checks do not replace the complete
 license-boundary gate or the remaining Phase 6 execution and acceptance flights.
 
+After synchronization with the base branch, the full 198-patch series gate and
+source-lifecycle flight pass, with matching corresponding-source metadata.
+Focused same-builder drop-one attribution passes for patch 0201. The generic
+boot probe remains non-discriminating; the native cases and two-cycle live
+source flight supply the behavioral evidence. A fresh engineering-hygiene
+evaluation reports 92 file-size findings (53 hard-limit and 39 soft-limit
+findings), with no QEMU-token or manifest-boundary findings in that evaluation.
+No size limit or debt exemption was increased, and complete packaged
+license-boundary acceptance remains open.
+
 **Exit:** either the spike satisfies the structural and minimum-speedup targets,
 its manual lab evidence is accepted, or hot fork remains rejected and the RFC is
 revised around another measured local-COW mechanism. No optimistic partial
