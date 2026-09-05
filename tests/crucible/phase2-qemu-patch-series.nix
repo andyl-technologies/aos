@@ -1392,6 +1392,13 @@
       enforces = "HFORK-4,HFORK-8,HFORK-22";
       capability = "native source ownership includes parentless named VMState roots and authenticates exact graph edges, root consumers, and regular-file inode identities; pinned reopen rejects pathname replacement before replacing the source descriptor and frozen validation checks actual read-only file access; block teardown retires the dirty-bitmap mutex before freeing its intrusive registry storage; native tests cover VMState preservation, restoration, inherited-token rejection, foreign-owner rejection, inode replacement, and 1024 balanced mutex lifetimes, while complete coordinator source-set and child graph handoff remain open";
     }
+    {
+      file = "0200-crucible-retain-complete-native-source-sets.patch";
+      catalogName = "crucible-hot-fork-complete-native-source-set";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-22";
+      capability = "a process-local source-set owner authenticates the complete explicit native root, node, backend, and consumer closure before freezing; it preserves already-read-only access, retains original writable-root provenance independently of live permissions, and owns partial-failure restoration; unknown or extra resources and inherited parent tokens fail closed; native tests cover VMState and disk preservation, read-only restoration, held barriers, closure changes, non-backend file consumers, and partial recovery; production coordinator integration and child-private graph installation remain open";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

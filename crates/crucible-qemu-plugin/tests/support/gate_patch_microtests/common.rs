@@ -213,6 +213,7 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0197-crucible-retain-read-only-block-sources.patch",
     "0198-crucible-retire-native-workers-before-hot-fork.patch",
     "0199-crucible-retain-native-vmstate-source-ownership.patch",
+    "0200-crucible-retain-complete-native-source-sets.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each

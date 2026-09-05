@@ -1740,6 +1740,10 @@ in rec {
     };
   };
   phase6 = {
+    qemuNativeSourceSet = import ./phase6-qemu-native-source-set.nix {
+      inherit pkgs;
+      taskIds = [];
+    };
     qemuNativeSourceOwnership = import ./phase6-qemu-native-source-ownership.nix {
       inherit pkgs;
       taskIds = [];

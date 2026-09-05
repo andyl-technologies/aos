@@ -3655,6 +3655,32 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   the patch does not authorize whole-world child execution.
 - **Risk:** F.
 
+### crucible-hot-fork-complete-native-source-set — own the native source closure
+
+- **Patch:** `0200-crucible-retain-complete-native-source-sets.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-22].
+- **Mechanism:** an explicit process-local root set must cover every allocated
+  native node, backend, and graph consumer. Duplicate roots, mismatched owners,
+  unknown drivers, inactive nodes, and extra resources fail closed. Preparation
+  retains references and native file pins without changing access. Freeze
+  validates closure before transitions and retains partial failures for
+  restoration. Already-read-only roots stay read-only on restore. Original
+  writable-root counts remain separate from live backend permissions.
+- **Micro-test:** a native fixture combines a writable VMState root, writable
+  disk backend, and read-only backend. It preserves VMState and disk bytes,
+  rejects omitted/duplicate roots, extra nodes/backends, and foreign file
+  consumers, and checks query/restore behavior while block barriers are held.
+  Another fixture fails midway through freeze and restores every original
+  access state. Inherited parent capabilities are rejected. The negative
+  control omitting the non-backend consumer check fails at that exact query.
+  `checks.crucible.phase6.qemuNativeSourceSet` checks both named package cases.
+- **Inertness:** the source set is an internal native capability, not a wire
+  object. Ordinary QEMU block operation does not construct it. Production
+  coordinator integration needs explicit source provenance in its versioned
+  proof; child-private VMState/disk installation also remains open. No readiness
+  bit or whole-world execution claim is added by this primitive.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.

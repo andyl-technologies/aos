@@ -33,6 +33,9 @@
   qemuNativeSourceOwnership = import ./phase6-qemu-native-source-ownership.nix {
     inherit pkgs qemuPackage;
   };
+  qemuNativeSourceSet = import ./phase6-qemu-native-source-set.nix {
+    inherit pkgs qemuPackage;
+  };
   qemuPluginFailLoud = import ./phase2-plugin-fail-loud.nix {inherit pkgs lib;};
   qemuRrQuantumIcount = import ./phase2-qemu-rr-quantum-icount.nix {inherit pkgs lib;};
   qemuDetIpi = import ./phase2-qemu-det-ipi.nix {inherit pkgs lib;};
@@ -3305,6 +3308,25 @@
           grep -Fxq 'inherited_parent_token_rejected=true' "$live_result"
           grep -Fxq 'block_mutex_lifetime_cycles=1024' "$live_result"
           grep -Fxq 'block_mutex_inventory_returns_to_baseline=true' "$live_result"
+          grep -Fxq 'whole_world_child_handoff=false' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0200-crucible-retain-complete-native-source-sets.patch";
+      check = certifyExactPatch {
+        patchName = "0200-crucible-retain-complete-native-source-sets.patch";
+        liveCheck = qemuNativeSourceSet;
+        evidenceName = "complete-native-source-closure-and-partial-restore";
+        liveEvidence = ''
+          grep -Fxq 'complete_explicit_native_source_closure=true' "$live_result"
+          grep -Fxq 'unowned_backend_node_and_consumer_rejected=true' "$live_result"
+          grep -Fxq 'original_read_only_access_preserved=true' "$live_result"
+          grep -Fxq 'original_writable_root_provenance_separate=true' "$live_result"
+          grep -Fxq 'partial_freeze_restoration_retained=true' "$live_result"
+          grep -Fxq 'inherited_parent_source_set_rejected=true' "$live_result"
+          grep -Fxq 'vmstate_and_disk_bytes_preserved=true' "$live_result"
+          grep -Fxq 'held_barrier_restoration_rejected=true' "$live_result"
           grep -Fxq 'whole_world_child_handoff=false' "$live_result"
         '';
       };

@@ -1,0 +1,663 @@
+diff --git a/block/crucible-hot-fork-source.c b/block/crucible-hot-fork-source.c
+index 686f4cbad..b80974cf8 100644
+--- a/block/crucible-hot-fork-source.c
++++ b/block/crucible-hot-fork-source.c
+@@ -41,6 +41,7 @@ struct QemuBlockBackendHotForkReadOnlySource {
+     uint64_t shared_permissions;
+     pid_t owner;
+     ReadOnlySourcePhase phase;
++    bool original_read_only;
+     char *node_name;
+     GArray *graph;
+ };
+@@ -103,6 +104,10 @@ static bool GRAPH_RDLOCK source_graph_capture(
+         error_setg(errp, "Crucible source graph exceeds hot-fork validation bounds");
+         return false;
+     }
++    if (bdrv_is_inactive(node)) {
++        error_setg(errp, "Crucible source graph contains an inactive node");
++        return false;
++    }
+     /* Only the native qcow2/raw/regular-file launch profile is implemented. */
+     if (!node->drv ||
+         (!node->drv->bdrv_crucible_hot_fork_file &&
+@@ -146,7 +151,7 @@ static bool GRAPH_RDLOCK source_graph_matches(
+     }
+     entry = &g_array_index(graph, ReadOnlySourceNode, (*index)++);
+     if (entry->node != node || entry->parent != parent ||
+-        entry->driver != node->drv) {
++        entry->driver != node->drv || bdrv_is_inactive(node)) {
+         error_setg(errp, "Crucible source graph identity changed externally");
+         return false;
+     }
+@@ -249,7 +254,8 @@ static bool source_matches(const QemuBlockBackendHotForkReadOnlySource *source,
+     }
+     if (permissions != expected_permissions ||
+         shared_permissions != expected_shared ||
+-        bdrv_is_read_only(source->root) != (source->phase == SOURCE_FROZEN)) {
++        bdrv_is_read_only(source->root) !=
++            (source->original_read_only || source->phase == SOURCE_FROZEN)) {
+         error_setg(errp, "Crucible read-only source access changed externally");
+         return false;
+     }
+@@ -294,8 +300,8 @@ static QemuBlockBackendHotForkReadOnlySource *source_new(
+     bool captured;
+ 
+     GLOBAL_STATE_CODE();
+-    if (!root || !bdrv_is_writable(root)) {
+-        error_setg(errp, "Crucible read-only source requires a writable root");
++    if (!root || (!bdrv_is_writable(root) && !bdrv_is_read_only(root))) {
++        error_setg(errp, "Crucible read-only source requires an active root");
+         return NULL;
+     }
+     /* Other graph consumers must not have their access changed by this owner. */
+@@ -305,9 +311,11 @@ static QemuBlockBackendHotForkReadOnlySource *source_new(
+     if (blk) {
+         blk_get_perm(blk, &permissions, &shared_permissions);
+     }
+-    if ((blk && (parents != 1 || !(permissions & HOT_FORK_WRITE_PERMISSIONS))) ||
++    if ((blk && (parents != 1 ||
++                 (!bdrv_is_read_only(root) &&
++                  !(permissions & HOT_FORK_WRITE_PERMISSIONS)))) ||
+         (!blk && (parents != 0 || !*bdrv_get_node_name(root)))) {
+-        error_setg(errp, "Crucible read-only source requires one writable owner");
++        error_setg(errp, "Crucible read-only source requires one exact owner");
+         return NULL;
+     }
+     graph = g_array_new(false, false, sizeof(ReadOnlySourceNode));
+@@ -327,6 +335,7 @@ static QemuBlockBackendHotForkReadOnlySource *source_new(
+         .shared_permissions = shared_permissions,
+         .owner = getpid(),
+         .phase = SOURCE_ORIGINAL,
++        .original_read_only = bdrv_is_read_only(root),
+         .node_name = g_strdup(bdrv_get_node_name(root)),
+         .graph = graph,
+     };
+@@ -372,7 +381,8 @@ bool qemu_block_backend_hot_fork_read_only_source_freeze(
+     }
+     if (source->phase == SOURCE_PERMISSIONS_REDUCED) {
+         /* Native reopen flushes caches before any child can inherit them. */
+-        if (bdrv_reopen_set_read_only(source->root, true, errp) < 0) {
++        if (!source->original_read_only &&
++            bdrv_reopen_set_read_only(source->root, true, errp) < 0) {
+             goto out;
+         }
+         source->phase = SOURCE_FROZEN;
+@@ -395,7 +405,8 @@ bool qemu_block_backend_hot_fork_read_only_source_restore(
+     }
+     bdrv_drained_begin(source->root);
+     if (source->phase == SOURCE_FROZEN) {
+-        if (bdrv_reopen_set_read_only(source->root, false, errp) < 0) {
++        if (!source->original_read_only &&
++            bdrv_reopen_set_read_only(source->root, false, errp) < 0) {
+             goto out;
+         }
+         source->phase = SOURCE_PERMISSIONS_REDUCED;
+@@ -443,3 +454,247 @@ bool qemu_block_backend_hot_fork_read_only_source_free(
+     g_free(source);
+     return true;
+ }
++
++struct QemuBlockHotForkSourceSet {
++    pid_t owner;
++    GPtrArray *sources;
++    GHashTable *nodes;
++    GHashTable *backends;
++    size_t originally_writable_roots;
++};
++
++static bool source_set_owned(const QemuBlockHotForkSourceSet *set, Error **errp)
++{
++    size_t index;
++
++    if (!set || set->owner != getpid()) {
++        error_setg(errp, "Crucible source set lost its owning process");
++        return false;
++    }
++    for (index = 0; index < set->sources->len; index++) {
++        if (!source_matches(g_ptr_array_index(set->sources, index), errp)) {
++            return false;
++        }
++    }
++    return true;
++}
++
++static bool source_set_complete(const QemuBlockHotForkSourceSet *set, Error **errp)
++{
++    g_autoptr(GHashTable) consumers =
++        g_hash_table_new(g_direct_hash, g_direct_equal);
++    BlockDriverState *node = NULL;
++    BlockBackend *backend = NULL;
++    GHashTableIter iter;
++    gpointer key;
++    size_t nodes = 0, backends = 0;
++
++    if (!source_set_owned(set, errp)) {
++        return false;
++    }
++    GRAPH_RDLOCK_GUARD_MAINLOOP();
++    g_hash_table_iter_init(&iter, set->nodes);
++    while (g_hash_table_iter_next(&iter, &key, NULL)) {
++        BdrvChild *child;
++
++        QLIST_FOREACH(child, &((BlockDriverState *)key)->children, next) {
++            g_hash_table_add(consumers, child);
++        }
++    }
++    while ((backend = blk_all_next(backend))) {
++        if (++backends > HOT_FORK_SOURCE_MAX_VISITS ||
++            !g_hash_table_contains(set->backends, backend)) {
++            error_setg(errp, "Crucible source set has an unowned block backend");
++            return false;
++        }
++        g_hash_table_add(consumers, (gpointer)blk_root(backend));
++    }
++    while ((node = bdrv_next_all_states(node))) {
++        BdrvChild *parent;
++
++        if (++nodes > HOT_FORK_SOURCE_MAX_VISITS ||
++            !g_hash_table_contains(set->nodes, node)) {
++            error_setg(errp, "Crucible source set has an unowned native node");
++            return false;
++        }
++        /* Node coverage alone misses non-backend consumers of descendants. */
++        QLIST_FOREACH(parent, &node->parents, next_parent) {
++            if (!g_hash_table_contains(consumers, parent)) {
++                error_setg(errp, "Crucible source set has an unowned graph consumer");
++                return false;
++            }
++        }
++    }
++    if (nodes != g_hash_table_size(set->nodes) ||
++        backends != g_hash_table_size(set->backends)) {
++        error_setg(errp, "Crucible source set lost a retained native resource");
++        return false;
++    }
++    return true;
++}
++
++/* Only called after all release preconditions have been checked under BQL. */
++static void source_set_destroy(QemuBlockHotForkSourceSet *set)
++{
++    size_t index;
++
++    for (index = 0; index < set->sources->len; index++) {
++        bool released = qemu_block_backend_hot_fork_read_only_source_free(
++            g_ptr_array_index(set->sources, index), &error_abort);
++
++        assert(released);
++    }
++    g_ptr_array_free(set->sources, true);
++    g_hash_table_destroy(set->nodes);
++    g_hash_table_destroy(set->backends);
++    g_free(set);
++}
++
++QemuBlockHotForkSourceSet *qemu_block_hot_fork_source_set_new(
++    const QemuBlockHotForkSourceRoot *roots, size_t count, Error **errp)
++{
++    QemuBlockHotForkSourceSet *set;
++    g_autoptr(GHashTable) seen = g_hash_table_new(g_direct_hash, g_direct_equal);
++    size_t index, visit, visits = 0;
++
++    GLOBAL_STATE_CODE();
++    if (count > HOT_FORK_SOURCE_MAX_VISITS || (count && !roots)) {
++        error_setg(errp, "Crucible source set exceeds root bounds");
++        return NULL;
++    }
++    /* Reject duplicate/mismatched owners before retaining any native graph. */
++    for (index = 0; index < count; index++) {
++        if (!roots[index].root ||
++            (roots[index].backend &&
++             blk_bs(roots[index].backend) != roots[index].root) ||
++            !g_hash_table_add(seen, roots[index].root)) {
++            error_setg(errp, "Crucible source set requires unique exact roots");
++            return NULL;
++        }
++    }
++    set = g_new0(QemuBlockHotForkSourceSet, 1);
++    set->owner = getpid();
++    set->sources = g_ptr_array_new();
++    set->nodes = g_hash_table_new(g_direct_hash, g_direct_equal);
++    set->backends = g_hash_table_new(g_direct_hash, g_direct_equal);
++    for (index = 0; index < count; index++) {
++        QemuBlockBackendHotForkReadOnlySource *source =
++            source_new(roots[index].backend, roots[index].root, errp);
++
++        if (!source) {
++            goto fail;
++        }
++        g_ptr_array_add(set->sources, source);
++        if (source->graph->len > HOT_FORK_SOURCE_MAX_VISITS - visits) {
++            error_setg(errp, "Crucible source set exceeds graph visit bounds");
++            goto fail;
++        }
++        visits += source->graph->len;
++        set->originally_writable_roots += !source->original_read_only;
++        if (source->backend) {
++            g_hash_table_add(set->backends, source->backend);
++        }
++        for (visit = 0; visit < source->graph->len; visit++) {
++            g_hash_table_add(set->nodes,
++                g_array_index(source->graph, ReadOnlySourceNode, visit).node);
++        }
++    }
++    if (!source_set_complete(set, errp)) {
++        goto fail;
++    }
++    return set;
++fail:
++    /* Construction only retains references/file pins, never changes access. */
++    source_set_destroy(set);
++    return NULL;
++}
++
++bool qemu_block_hot_fork_source_set_query(
++    const QemuBlockHotForkSourceSet *set,
++    QemuBlockHotForkSourceSetInventory *inventory, Error **errp)
++{
++    size_t index;
++
++    GLOBAL_STATE_CODE();
++    if (!inventory) {
++        error_setg(errp, "Crucible source set query requires an inventory");
++        return false;
++    }
++    memset(inventory, 0, sizeof(*inventory));
++    if (!source_set_complete(set, errp)) {
++        return false;
++    }
++    *inventory = (QemuBlockHotForkSourceSetInventory) {
++        .roots = set->sources->len,
++        .nodes = g_hash_table_size(set->nodes),
++        .originally_writable_roots = set->originally_writable_roots,
++        .frozen = true,
++    };
++    for (index = 0; index < set->sources->len; index++) {
++        inventory->frozen &=
++            qemu_block_backend_hot_fork_read_only_source_is_frozen(
++                g_ptr_array_index(set->sources, index));
++    }
++    return true;
++}
++
++bool qemu_block_hot_fork_source_set_freeze(QemuBlockHotForkSourceSet *set,
++                                         Error **errp)
++{
++    QemuBlockHotForkSourceSetInventory inventory;
++    size_t index;
++
++    GLOBAL_STATE_CODE();
++    if (!source_set_complete(set, errp)) {
++        return false;
++    }
++    for (index = 0; index < set->sources->len; index++) {
++        if (!qemu_block_backend_hot_fork_read_only_source_freeze(
++                g_ptr_array_index(set->sources, index), errp)) {
++            return false;
++        }
++    }
++    return qemu_block_hot_fork_source_set_query(set, &inventory, errp) &&
++           inventory.frozen;
++}
++
++bool qemu_block_hot_fork_source_set_restore(QemuBlockHotForkSourceSet *set,
++                                          Error **errp)
++{
++    size_t index;
++
++    GLOBAL_STATE_CODE();
++    if (!source_set_owned(set, errp)) {
++        return false;
++    }
++    /* Recover in reverse transition order; failure retains all capabilities. */
++    for (index = set->sources->len; index > 0; index--) {
++        if (!qemu_block_backend_hot_fork_read_only_source_restore(
++                g_ptr_array_index(set->sources, index - 1), errp)) {
++            return false;
++        }
++    }
++    return true;
++}
++
++bool qemu_block_hot_fork_source_set_free(QemuBlockHotForkSourceSet *set,
++                                       Error **errp)
++{
++    size_t index;
++
++    GLOBAL_STATE_CODE();
++    if (!source_set_owned(set, errp)) {
++        return false;
++    }
++    for (index = 0; index < set->sources->len; index++) {
++        QemuBlockBackendHotForkReadOnlySource *source =
++            g_ptr_array_index(set->sources, index);
++
++        if (source->phase != SOURCE_ORIGINAL) {
++            error_setg(errp, "Crucible source set must be restored before release");
++            return false;
++        }
++    }
++    source_set_destroy(set);
++    return true;
++}
+diff --git a/include/system/block-backend-global-state.h b/include/system/block-backend-global-state.h
+index eb94fc23d..69465c7eb 100644
+--- a/include/system/block-backend-global-state.h
++++ b/include/system/block-backend-global-state.h
+@@ -183,6 +183,54 @@ bool qemu_block_backend_hot_fork_read_only_source_is_frozen(
+ bool qemu_block_backend_hot_fork_read_only_source_free(
+     QemuBlockBackendHotForkReadOnlySource *source, Error **errp);
+ 
++typedef struct QemuBlockHotForkSourceSet QemuBlockHotForkSourceSet;
++
++/* Explicit process-local ownership, never a wire representation. */
++typedef struct QemuBlockHotForkSourceRoot {
++    BlockBackend *backend; /* NULL only for a named, parentless native root. */
++    BlockDriverState *root;
++} QemuBlockHotForkSourceRoot;
++
++typedef struct QemuBlockHotForkSourceSetInventory {
++    size_t roots;
++    size_t nodes;
++    size_t originally_writable_roots;
++    bool frozen;
++} QemuBlockHotForkSourceSetInventory;
++
++/*
++ * Retains an explicitly supplied, complete native source closure under BQL.
++ * The caller has stopped guest execution and owns all supplied lifecycles.
++ * Every allocated block node, backend, and graph consumer must belong to the
++ * supplied roots. Already read-only roots retain that access on restoration.
++ * Unknown drivers, missing roots, and duplicate owners fail without effects.
++ * This does not validate external snapshot content or install child graphs.
++ */
++QemuBlockHotForkSourceSet *qemu_block_hot_fork_source_set_new(
++    const QemuBlockHotForkSourceRoot *roots, size_t count, Error **errp);
++
++/*
++ * Revalidates closure before any transition and retains partial failure for
++ * explicit recovery. Freeze precedes block/AIO barriers. Original root counts
++ * are provenance, not replacements for the live backend permission inventory.
++ */
++bool qemu_block_hot_fork_source_set_freeze(QemuBlockHotForkSourceSet *set,
++                                         Error **errp);
++bool qemu_block_hot_fork_source_set_query(
++    const QemuBlockHotForkSourceSet *set,
++    QemuBlockHotForkSourceSetInventory *inventory, Error **errp);
++
++/*
++ * Restores all owned sources after barriers are released, even when an extra
++ * unowned node has invalidated closure. A changed owned graph fails closed.
++ * Both operations reject inherited parent tokens in a forked child. Release
++ * requires every source to have returned to its original access state.
++ */
++bool qemu_block_hot_fork_source_set_restore(QemuBlockHotForkSourceSet *set,
++                                          Error **errp);
++bool qemu_block_hot_fork_source_set_free(QemuBlockHotForkSourceSet *set,
++                                       Error **errp);
++
+ /*
+  * Global state (GS) API. These functions run under the BQL.
+  *
+diff --git a/tests/unit/test-block-backend.c b/tests/unit/test-block-backend.c
+index da60f8dc4..b1636b002 100644
+--- a/tests/unit/test-block-backend.c
++++ b/tests/unit/test-block-backend.c
+@@ -603,6 +603,245 @@ static int test_hot_fork_worker_request(void *opaque)
+     return 0;
+ }
+ 
++typedef struct HotForkSourceSetFixture {
++    char paths[3][64];
++    QemuBlockHotForkSourceRoot roots[3];
++} HotForkSourceSetFixture;
++
++static void test_hot_fork_source_set_setup(HotForkSourceSetFixture *fixture,
++                                          bool writable_file)
++{
++    size_t index;
++
++    memset(fixture, 0, sizeof(*fixture));
++    for (index = 0; index < G_N_ELEMENTS(fixture->paths); index++) {
++        int fd;
++        QDict *options;
++        BlockBackend *backend;
++
++        g_snprintf(fixture->paths[index], sizeof(fixture->paths[index]),
++                    "/tmp/qemu-hot-fork-source-set-%zu-XXXXXX", index);
++        fd = mkstemp(fixture->paths[index]);
++        g_assert_cmpint(fd, >=, 0);
++        close(fd);
++        if (index == 0) {
++            fixture->roots[index].root =
++                test_hot_fork_vmstate_open(fixture->paths[index]);
++            continue;
++        }
++        bdrv_img_create(fixture->paths[index], "qcow2", NULL, NULL, NULL,
++                        HOT_FORK_SNAPSHOT_SIZE, BDRV_O_RDWR, true, &error_abort);
++        options = qdict_new();
++        qdict_put_str(options, "driver", "qcow2");
++        qdict_put_str(options, "node-name",
++                       index == 1 ? "set-disk" : "set-readonly");
++        qdict_put_str(options, "file.driver", "file");
++        qdict_put_str(options, "file.filename", fixture->paths[index]);
++        if (index == 1 && writable_file) {
++            qdict_put_bool(options, "file.read-only", false);
++        }
++        backend = blk_new_open(NULL, NULL, options,
++                                index == 1 ? BDRV_O_RDWR : 0, &error_abort);
++        fixture->roots[index].backend = backend;
++        fixture->roots[index].root = blk_bs(backend);
++    }
++}
++
++static void test_hot_fork_source_set_cleanup(HotForkSourceSetFixture *fixture)
++{
++    size_t index;
++
++    bdrv_unref(fixture->roots[0].root);
++    for (index = 1; index < G_N_ELEMENTS(fixture->roots); index++) {
++        blk_unref(fixture->roots[index].backend);
++    }
++    for (index = 0; index < G_N_ELEMENTS(fixture->paths); index++) {
++        unlink(fixture->paths[index]);
++    }
++}
++
++static char *test_hot_fork_foreign_consumer_description(BdrvChild *child)
++{
++    return g_strdup("unowned test consumer");
++}
++
++static AioContext *test_hot_fork_foreign_consumer_context(BdrvChild *child)
++{
++    return qemu_get_aio_context();
++}
++
++static const BdrvChildClass test_hot_fork_foreign_consumer = {
++    .get_parent_desc = test_hot_fork_foreign_consumer_description,
++    .get_parent_aio_context = test_hot_fork_foreign_consumer_context,
++};
++
++static void test_hot_fork_source_set(void)
++{
++    HotForkSourceSetFixture fixture;
++    QemuBlockHotForkSourceSet *set;
++    QemuBlockHotForkSourceSetInventory inventory;
++    QemuBlockBackendHotForkBarrierInventory barrier;
++    BlockDriverState *extra;
++    BlockBackend *consumer;
++    uint8_t written[512], observed[512];
++
++    test_hot_fork_source_set_setup(&fixture, false);
++    memset(written, 0xa7, sizeof(written));
++    g_assert_cmpint(bdrv_save_vmstate(fixture.roots[0].root, written, 0,
++                                     sizeof(written)), ==, sizeof(written));
++    g_assert_cmpint(blk_pwrite(fixture.roots[1].backend, 0, sizeof(written),
++                               written, 0), ==, 0);
++    g_assert_null(qemu_block_hot_fork_source_set_new(fixture.roots, 2, NULL));
++    g_assert_null(qemu_block_hot_fork_source_set_new(fixture.roots + 1, 2, NULL));
++    {
++        QemuBlockHotForkSourceRoot duplicate[] = {
++            fixture.roots[0], fixture.roots[0], fixture.roots[1], fixture.roots[2],
++        };
++
++        g_assert_null(qemu_block_hot_fork_source_set_new(
++            duplicate, G_N_ELEMENTS(duplicate), NULL));
++    }
++    set = qemu_block_hot_fork_source_set_new(fixture.roots, 3, &error_abort);
++    g_assert_nonnull(set);
++    g_assert_true(qemu_block_hot_fork_source_set_query(set, &inventory,
++                                                     &error_abort));
++    g_assert_cmpuint(inventory.roots, ==, 3);
++    g_assert_cmpuint(inventory.nodes, ==, 6);
++    g_assert_cmpuint(inventory.originally_writable_roots, ==, 2);
++    g_assert_false(inventory.frozen);
++
++    /* Complete coverage includes empty backends and unowned raw BDS objects. */
++    consumer = blk_new(qemu_get_aio_context(), 0, BLK_PERM_ALL);
++    g_assert_false(qemu_block_hot_fork_source_set_freeze(set, NULL));
++    g_assert_false(bdrv_is_read_only(fixture.roots[0].root));
++    g_assert_false(bdrv_is_read_only(fixture.roots[1].root));
++    blk_unref(consumer);
++    extra = bdrv_new();
++    g_assert_false(qemu_block_hot_fork_source_set_query(set, &inventory, NULL));
++    g_assert_cmpuint(inventory.roots, ==, 0);
++    g_assert_false(qemu_block_hot_fork_source_set_freeze(set, NULL));
++    bdrv_unref(extra);
++
++    /* A second consumer of a file leaf cannot slip through root-only checks. */
++    consumer = blk_new(qemu_get_aio_context(), 0, BLK_PERM_ALL);
++    g_assert_cmpint(blk_insert_bs(consumer, fixture.roots[1].root->file->bs,
++                                  &error_abort), ==, 0);
++    g_assert_false(qemu_block_hot_fork_source_set_freeze(set, NULL));
++    blk_unref(consumer);
++    {
++        BdrvChild *foreign;
++        BlockDriverState *leaf = fixture.roots[1].root->file->bs;
++        Error *local_err = NULL;
++
++        bdrv_ref(leaf);
++        bdrv_graph_wrlock();
++        foreign = bdrv_root_attach_child(
++            leaf, "unowned", &test_hot_fork_foreign_consumer,
++            BDRV_CHILD_DATA, 0, BLK_PERM_ALL, NULL, &error_abort);
++        bdrv_graph_wrunlock();
++        g_assert_nonnull(foreign);
++        g_assert_false(qemu_block_hot_fork_source_set_query(
++            set, &inventory, &local_err));
++        g_assert_nonnull(local_err);
++        g_assert_nonnull(strstr(error_get_pretty(local_err), "unowned graph consumer"));
++        error_free(local_err);
++        g_assert_false(qemu_block_hot_fork_source_set_freeze(set, NULL));
++        bdrv_graph_wrlock();
++        bdrv_root_unref_child(foreign);
++        bdrv_graph_wrunlock();
++    }
++    g_assert_true(qemu_block_hot_fork_source_set_freeze(set, &error_abort));
++    g_assert_true(qemu_block_hot_fork_source_set_query(set, &inventory,
++                                                     &error_abort));
++    g_assert_true(inventory.frozen);
++    g_assert_cmpuint(inventory.originally_writable_roots, ==, 2);
++    g_assert_true(qemu_block_hot_fork_all_sources_read_only(&error_abort));
++    g_assert_true(test_hot_fork_file_state(fixture.roots[0].root).read_only);
++    g_assert_true(test_hot_fork_file_state(fixture.roots[1].root).read_only);
++    g_assert_true(test_hot_fork_file_state(fixture.roots[2].root).read_only);
++    g_assert_false(qemu_block_hot_fork_source_set_free(set, NULL));
++
++    g_assert_true(qemu_block_backend_hot_fork_barrier(
++        QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_HOLD, &barrier));
++    /* Live permission counts stay truthful; provenance is a separate value. */
++    g_assert_cmpuint(barrier.writable_rooted_backends, ==, 0);
++    qemu_block_backend_hot_fork_barrier_inventory_destroy(&barrier);
++    g_assert_true(qemu_block_hot_fork_source_set_query(set, &inventory,
++                                                     &error_abort));
++    g_assert_true(inventory.frozen);
++    g_assert_false(qemu_block_hot_fork_source_set_restore(set, NULL));
++    g_assert_true(qemu_block_backend_hot_fork_barrier(
++        QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_RELEASE, &barrier));
++    qemu_block_backend_hot_fork_barrier_inventory_destroy(&barrier);
++#ifdef __linux__
++    {
++        pid_t child = fork();
++        int status;
++
++        g_assert_cmpint(child, >=, 0);
++        if (child == 0) {
++            bool rejected =
++                !qemu_block_hot_fork_source_set_query(set, &inventory, NULL) &&
++                !qemu_block_hot_fork_source_set_freeze(set, NULL) &&
++                !qemu_block_hot_fork_source_set_restore(set, NULL) &&
++                !qemu_block_hot_fork_source_set_free(set, NULL);
++
++            _exit(rejected ? 0 : 1);
++        }
++        g_assert_cmpint(waitpid(child, &status, 0), ==, child);
++        g_assert_true(WIFEXITED(status));
++        g_assert_cmpint(WEXITSTATUS(status), ==, 0);
++    }
++#endif
++    g_assert_cmpint(bdrv_load_vmstate(fixture.roots[0].root, observed, 0,
++                                     sizeof(observed)), ==, sizeof(observed));
++    g_assert_cmpmem(written, sizeof(written), observed, sizeof(observed));
++    g_assert_cmpint(blk_pread(fixture.roots[1].backend, 0, sizeof(observed),
++                              observed, 0), ==, 0);
++    g_assert_cmpmem(written, sizeof(written), observed, sizeof(observed));
++
++    /* An extra node invalidates admission, but not restoration of owned roots. */
++    extra = bdrv_new();
++    g_assert_false(qemu_block_hot_fork_source_set_query(set, &inventory, NULL));
++    g_assert_true(qemu_block_hot_fork_source_set_restore(set, &error_abort));
++    g_assert_false(test_hot_fork_file_state(fixture.roots[0].root).read_only);
++    g_assert_false(test_hot_fork_file_state(fixture.roots[1].root).read_only);
++    g_assert_true(test_hot_fork_file_state(fixture.roots[2].root).read_only);
++    g_assert_true(qemu_block_hot_fork_source_set_free(set, &error_abort));
++    bdrv_unref(extra);
++    test_hot_fork_source_set_cleanup(&fixture);
++}
++
++static void test_hot_fork_source_set_partial_restore(void)
++{
++    HotForkSourceSetFixture fixture;
++    QemuBlockHotForkSourceSet *set;
++    QemuBlockHotForkSourceSetInventory inventory;
++    Error *local_err = NULL;
++
++    test_hot_fork_source_set_setup(&fixture, true);
++    set = qemu_block_hot_fork_source_set_new(fixture.roots, 3, &error_abort);
++    g_assert_false(qemu_block_hot_fork_source_set_freeze(set, &local_err));
++    g_assert_nonnull(local_err);
++    g_assert_nonnull(strstr(error_get_pretty(local_err), "writable node"));
++    error_free(local_err);
++    g_assert_true(qemu_block_hot_fork_source_set_query(set, &inventory,
++                                                     &error_abort));
++    g_assert_false(inventory.frozen);
++    g_assert_cmpuint(inventory.originally_writable_roots, ==, 2);
++    g_assert_true(test_hot_fork_file_state(fixture.roots[0].root).read_only);
++    g_assert_true(bdrv_is_read_only(fixture.roots[1].root));
++    g_assert_false(test_hot_fork_file_state(fixture.roots[1].root).read_only);
++    g_assert_false(qemu_block_hot_fork_source_set_free(set, NULL));
++    g_assert_true(qemu_block_hot_fork_source_set_restore(set, &error_abort));
++    g_assert_true(qemu_block_hot_fork_source_set_restore(set, &error_abort));
++    g_assert_false(test_hot_fork_file_state(fixture.roots[0].root).read_only);
++    g_assert_false(test_hot_fork_file_state(fixture.roots[1].root).read_only);
++    g_assert_true(test_hot_fork_file_state(fixture.roots[2].root).read_only);
++    g_assert_true(qemu_block_hot_fork_source_set_free(set, &error_abort));
++    test_hot_fork_source_set_cleanup(&fixture);
++}
++
+ static void test_hot_fork_worker_completed(void *opaque, int ret)
+ {
+     g_assert_cmpint(ret, ==, 0);
+@@ -806,6 +1045,10 @@ int main(int argc, char **argv)
+                     test_hot_fork_vmstate_source);
+     g_test_add_func("/block-backend/hot_fork_source_reopen_identity",
+                     test_hot_fork_source_reopen_identity);
++    g_test_add_func("/block-backend/hot_fork_source_set",
++                    test_hot_fork_source_set);
++    g_test_add_func("/block-backend/hot_fork_source_set_partial_restore",
++                    test_hot_fork_source_set_partial_restore);
+     g_test_add_func("/block-backend/hot_fork_pending_native_worker",
+                     test_hot_fork_pending_native_worker);
+     g_test_add_func("/block-backend/hot_fork_native_worker_retirement_rejections",
