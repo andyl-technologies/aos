@@ -447,6 +447,7 @@ async fn browse_dispatch(
                         selection.0,
                         selection.1,
                         selection.2,
+                        &q,
                     )
                     .await
                 } else if let Some(name) = other.strip_prefix("channels/").filter(|n| !n.is_empty())

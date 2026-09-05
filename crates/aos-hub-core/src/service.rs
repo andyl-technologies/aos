@@ -11552,7 +11552,11 @@ impl RpcService {
         Ok(Some((locator, document)))
     }
 
-    async fn load_package_documentation_locator(
+    /// Fetches and verifies a previously authorized indexed documentation reference.
+    ///
+    /// # Errors
+    /// Returns an error for missing objects, placement failures, or invalid document integrity.
+    pub(crate) async fn load_package_documentation_locator(
         &self,
         registry_id: i64,
         locator: &crate::db::PackageDocumentationLocator,

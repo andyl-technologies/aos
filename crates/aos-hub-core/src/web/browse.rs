@@ -399,7 +399,7 @@ pub struct BrowseQuery {
     pub repository: Option<String>,
     /// Exact OCI tag selected on a public container tag page.
     pub tag: Option<String>,
-    /// Exact OCI manifest digest selected on a public container manifest page.
+    /// Exact OCI manifest or package-documentation digest selected on a detail page.
     pub digest: Option<String>,
     /// Opaque OCI administration cursor for the next public result page.
     pub cursor: Option<String>,
@@ -1112,11 +1112,12 @@ pub async fn package(
                 .retain(|platform| snapshot_package.platforms.contains(&platform.platform));
         }
     }
-    let (closure, session, caches, external) = futures_util::future::join4(
+    let (closure, session, caches, external, documentation_result) = futures_util::future::join5(
         resolve_package_closure(svc, registry.id, name, &detail),
         session_indicator(svc, headers),
         svc.db.registry_cache_stack_entries(registry.id),
         svc.registry_consumer_url(&registry),
+        package_documentation_reference(&svc.db, registry.id, &detail, snapshot),
     )
     .await;
     let caches = resolved_cache_urls(caches.unwrap_or_default());
@@ -1126,19 +1127,11 @@ pub async fn package(
         external.ok().as_deref(),
         &caches,
     );
-    let documentation_result = svc
-        .load_package_documentation_for_registry(registry.id, name, "", "")
-        .await;
     let documentation_unavailable = documentation_result.is_err();
     let documentation = documentation_result
         .ok()
         .flatten()
-        .map(|(locator, document)| pages::PackageDocumentationPanel {
-            document,
-            store_path: locator.artifact.store_path,
-            document_sha256: locator.artifact.document_sha256,
-            nar_hash: locator.artifact.nar_hash,
-        });
+        .map(pages::PackageDocumentationReference::from);
     Rendered::Html(pages::package_page(
         &registry,
         status.as_ref(),
@@ -1151,6 +1144,47 @@ pub async fn package(
         started,
         &session,
     ))
+}
+
+/// Resolves only the signed reference for the package selection already shown.
+///
+/// Taking a database rather than a service keeps this path independent of
+/// object storage. The exact docs page remains responsible for fetching and
+/// verifying the document bytes. Never use empty selectors here: a release
+/// selection without documentation must not silently link to newer content.
+async fn package_documentation_reference(
+    db: &crate::db::Database,
+    registry_id: i64,
+    detail: &crate::db::PackageDetail,
+    release: Option<&str>,
+) -> anyhow::Result<Option<crate::db::PackageDocumentationLocator>> {
+    let Some(version) = detail.versions.first() else {
+        return Ok(None);
+    };
+    let Some(platform) = version.platforms.first() else {
+        return Ok(None);
+    };
+    match release {
+        Some(release) => {
+            db.package_documentation_locator_at_release(
+                registry_id,
+                release,
+                &detail.name,
+                &version.version,
+                &platform.platform,
+            )
+            .await
+        }
+        None => {
+            db.package_documentation_locator(
+                registry_id,
+                &detail.name,
+                &version.version,
+                &platform.platform,
+            )
+            .await
+        }
+    }
 }
 
 /// The searchable structured package-documentation index (HTML).
@@ -1213,16 +1247,28 @@ pub async fn documentation(
     package: &str,
     version: &str,
     platform: &str,
+    query: &BrowseQuery,
 ) -> Rendered {
     let started = Instant::now();
     let Some((registry, status)) = load_visible(svc, headers, slug).await else {
         return Rendered::NotFound;
     };
-    let Some((locator, document)) = svc
-        .load_package_documentation_for_registry(registry.id, package, version, platform)
+    let Some(locator) = documentation_locator_for_page(
+        &svc.db,
+        registry.id,
+        package,
+        version,
+        platform,
+        query.digest.as_deref(),
+    )
+    .await
+    .ok()
+    .flatten() else {
+        return Rendered::NotFound;
+    };
+    let Ok(document) = svc
+        .load_package_documentation_locator(registry.id, &locator)
         .await
-        .ok()
-        .flatten()
     else {
         return Rendered::NotFound;
     };
@@ -1240,6 +1286,35 @@ pub async fn documentation(
         started,
         &session,
     ))
+}
+
+/// Resolves a human documentation URL to its exact signed identity.
+///
+/// Digest links may address retained releases, but must still match every
+/// identity segment in the URL and remain inside the authorized registry.
+async fn documentation_locator_for_page(
+    db: &crate::db::Database,
+    registry_id: i64,
+    package: &str,
+    version: &str,
+    platform: &str,
+    digest: Option<&str>,
+) -> anyhow::Result<Option<crate::db::PackageDocumentationLocator>> {
+    let locator = match digest {
+        Some(digest) => {
+            db.package_documentation_locator_by_digest(registry_id, digest)
+                .await?
+        }
+        None => {
+            db.resolve_package_documentation_locator(registry_id, package, version, platform)
+                .await?
+        }
+    };
+    Ok(locator.filter(|locator| {
+        locator.package_name == package
+            && locator.package_version == version
+            && locator.platform == platform
+    }))
 }
 
 fn resolved_cache_urls(
@@ -2056,5 +2131,183 @@ pub async fn api_releases(svc: &RpcService, slug: &str) -> Rendered {
     ) {
         Some(resp) => json(&resp.releases),
         None => Rendered::NotFound,
+    }
+}
+
+#[cfg(test)]
+mod package_documentation_reference_tests {
+    use super::*;
+    use crate::db::{Database, PackageDetail, PlatformDetail, VersionDetail};
+    use crate::value::Value;
+    use std::sync::atomic::Ordering;
+
+    fn selection(version: &str, platform: &str) -> PackageDetail {
+        PackageDetail {
+            name: "package-docs".into(),
+            description: String::new(),
+            homepage: None,
+            license: String::new(),
+            maintainer: String::new(),
+            sysroot: false,
+            versions: vec![VersionDetail {
+                version: version.into(),
+                previous: None,
+                platforms: vec![PlatformDetail {
+                    platform: platform.into(),
+                    store_path: String::new(),
+                    nar_hash: String::new(),
+                    nar_size: 0,
+                    closure_size: 0,
+                    refs: Vec::new(),
+                    images: Vec::new(),
+                    source_drv: String::new(),
+                }],
+            }],
+        }
+    }
+
+    #[tokio::test]
+    async fn package_reference_pins_displayed_selection_without_object_storage() {
+        let db = Database::open_in_memory().await.unwrap();
+        let org = db.create_org("package-docs", "Package docs").await.unwrap();
+        let registry = db
+            .create_managed_registry(org, "", "main", "public", &[], false)
+            .await
+            .unwrap();
+        // There are deliberately no placements or document bytes in this fixture.
+        // Both an old release selection and current HEAD must still offer their
+        // own signed reference, without attempting to open the NAR.
+        for (version, platform) in [
+            ("1.0.0", "x86_64-linux"),
+            ("2.0.0", "aarch64-linux"),
+            ("2.0.0", "x86_64-linux"),
+        ] {
+            db.backend.execute("INSERT INTO package_documentation
+                (registry_id, indexed_commit, package_name, package_version, platform, format,
+                 store_path, nar_hash, nar_size, document_sha256, document_size, semantic_schema_sha256)
+                VALUES (?1, 'commit', 'package-docs', ?2, ?3, 'aos.package-documentation/v1+json',
+                 '/nix/store/missing-document', 'signed-nar', 1, 'signed-document', 1, 'signed-schema')",
+                &[Value::Int(registry), Value::Text(version.into()), Value::Text(platform.into())]).await.unwrap();
+        }
+        let (db, queries) = crate::db::surface_topology::tests::count_queries(db);
+        for (version, platform) in [("1.0.0", "x86_64-linux"), ("2.0.0", "aarch64-linux")] {
+            queries.store(0, Ordering::Relaxed);
+            let locator =
+                package_documentation_reference(&db, registry, &selection(version, platform), None)
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(queries.load(Ordering::Relaxed), 1);
+            assert_eq!(
+                (locator.package_version.as_str(), locator.platform.as_str()),
+                (version, platform)
+            );
+        }
+        assert!(package_documentation_reference(
+            &db,
+            registry,
+            &selection("1.0.0", "aarch64-linux"),
+            None,
+        )
+        .await
+        .unwrap()
+        .is_none());
+        assert!(package_documentation_reference(
+            &db,
+            registry,
+            &selection("0.1.0", "x86_64-linux"),
+            None,
+        )
+        .await
+        .unwrap()
+        .is_none());
+        assert!(documentation_locator_for_page(
+            &db,
+            registry,
+            "package-docs",
+            "1.0.0",
+            "x86_64-linux",
+            Some("signed-document")
+        )
+        .await
+        .unwrap()
+        .is_some());
+        assert!(documentation_locator_for_page(
+            &db,
+            registry,
+            "other-package",
+            "1.0.0",
+            "x86_64-linux",
+            Some("signed-document")
+        )
+        .await
+        .unwrap()
+        .is_none());
+        assert!(documentation_locator_for_page(
+            &db,
+            registry,
+            "package-docs",
+            "9.0.0",
+            "x86_64-linux",
+            Some("signed-document")
+        )
+        .await
+        .unwrap()
+        .is_none());
+        assert!(documentation_locator_for_page(
+            &db,
+            registry,
+            "package-docs",
+            "1.0.0",
+            "aarch64-linux",
+            Some("signed-document")
+        )
+        .await
+        .unwrap()
+        .is_none());
+        assert!(documentation_locator_for_page(
+            &db,
+            registry,
+            "package-docs",
+            "1.0.0",
+            "x86_64-linux",
+            Some("unknown-document")
+        )
+        .await
+        .unwrap()
+        .is_none());
+        // Digest navigation may resolve retained identities outside the current
+        // catalog; unpinned legacy URLs still require current package membership.
+        assert!(documentation_locator_for_page(
+            &db,
+            registry,
+            "package-docs",
+            "1.0.0",
+            "x86_64-linux",
+            None
+        )
+        .await
+        .unwrap()
+        .is_none());
+        let mut empty = selection("1.0.0", "x86_64-linux");
+        empty.versions.clear();
+        queries.store(0, Ordering::Relaxed);
+        assert!(package_documentation_reference(&db, registry, &empty, None)
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(queries.load(Ordering::Relaxed), 0);
+        db.backend
+            .execute("DROP TABLE package_documentation", &[])
+            .await
+            .unwrap();
+        assert!(package_documentation_reference(
+            &db,
+            registry,
+            &selection("1.0.0", "x86_64-linux"),
+            None,
+        )
+        .await
+        .is_err());
     }
 }
