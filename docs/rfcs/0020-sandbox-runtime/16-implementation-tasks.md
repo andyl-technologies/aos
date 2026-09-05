@@ -187,6 +187,24 @@ they gate any affected runtime backend.
   admission, transactional publication, quotas, pins, eviction, and scrubbing.
 - [ ] **SBX-CACHE-02** Prove cross-domain non-disclosure and same-domain backing
   inode/page-cache sharing (`SBX-CACHE-01`, `SBX-P0-08`).
+- [x] **SBX-PUB-01** Implement assignment-independent project publisher plans,
+  canonical codecs, dedicated signature purpose, pinned verification, and
+  compatibility/rejection vectors (`769028c30`; part of `SBX-CACHE-01`).
+- [ ] **SBX-PUB-02** Implement controller-resolved challenge-bound admission,
+  the exact request-commitment preimage, retained completion permits, and atomic
+  reservation/residency accounting; preserve outstanding obligations through
+  revocation and controller failover (`SBX-PUB-01`).
+- [ ] **SBX-PUB-03** Implement the networkless domain-publisher service,
+  authenticated local protocol, protected root registry, service identity,
+  and enforcing isolation configuration (`SBX-PUB-02`, `SBX-P0-10`).
+- [ ] **SBX-PUB-04** Integrate fresh-inode verification/sealing and no-replace
+  naming with durable publisher transactions and committed-catalog visibility;
+  gate returned backing descriptors on independent read authority
+  (`SBX-PUB-03`, `SBX-P0-08`).
+- [ ] **SBX-PUB-05** Qualify crash/restart, revocation during blocked kernel
+  effects, duplicate receipts, retained uncertain charges, old-executor fencing,
+  domain isolation, and catalog disclosure in real service/VM tests
+  (`SBX-PUB-04`).
 - [ ] **SBX-GIT-01** Implement independent repositories plus constrained Git
   protocol v2 inspection and synchronization endpoints.
 - [ ] **SBX-GIT-02** Implement sanitized immutable-pack acceleration and cheap
@@ -1383,3 +1401,35 @@ metadata fleet gate after readiness. Its independent rerun now passes:
 The installed C transport therefore has both headless and full-system x86_64
 metadata runtime evidence. This resolves the observed boot blocker, not the
 complete filesystem capability fleet gate or dual-architecture qualification.
+
+### Project publisher authorization checkpoint
+
+- `6c40f8928` merges current master through `e1eedbfcf`, retaining the
+  migration-order-independent fixture repairs. All six focused migration tests
+  pass in the cached AOS development shell.
+- `769028c30` completes `SBX-PUB-01`: project-only raw-content publication plans
+  bind distinct publisher-instance/reservation identities, the complete content
+  descriptor, source and request commitments, holder/channel, domain isolation
+  policy, controller/policy/revocation/root-registry generations, byte ceilings,
+  and validity. Canonical CBOR, fixed object/signature vectors, and an opaque
+  non-cloneable verification result authenticate these exact static bindings.
+  The new signature purpose/key usage is appended at portable code 6, while
+  the independent publisher protocol starts at 1.0. Existing broker encodings
+  and authenticated journal vectors remain unchanged; both broker formats
+  reject publisher authority rather than acquire a publisher audience/code.
+
+Validation for this checkpoint: 170 core and 19 broker unit tests, three
+compile-fail doctests, scoped all-target Clippy with warnings denied, core
+rustdoc with warnings denied, and both crates' formatting checks pass.
+`cargo check --workspace --all-targets --locked` also passes, with unrelated
+existing warnings. The cached master shell requires the realized AOS FUSE
+transport's pkg-config directory supplied explicitly for that broad check;
+no host library or substitute package was used. Independent model/schema and
+verifier reviews found no remaining blocker.
+
+This does not complete `SBX-CACHE-01`. Static verification cannot prove current
+authority or authorize any materialization, rename, catalog, or read effect.
+`SBX-PUB-02` next connects controller-resolved admission, the exact separate
+request-hash preimage, retained completion permits, and durable resource state;
+the service, protected root-registry integration, committed catalog visibility,
+and real-service crash/revocation qualification remain explicitly open.
