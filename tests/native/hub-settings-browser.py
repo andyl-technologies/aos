@@ -50,6 +50,8 @@ class ChromePipe:
         self.console_errors = []
         self.network_failures = []
         self.paused_responses = []
+        self.expected_cancellation_ids = set()
+        self.expected_cancellations = []
 
     def start(self):
         """Starts Chrome and attaches to its initial page target."""
@@ -268,7 +270,8 @@ class ChromePipe:
                 request.get("startedAtSeconds"), params.get("timestamp"))
             request["encodedBytes"] = int(params.get("encodedDataLength", 0))
         elif method == "Network.loadingFailed":
-            request = self.requests.get(params.get("requestId", ""))
+            request_id = params.get("requestId", "")
+            request = self.requests.get(request_id)
             if request is None:
                 return
             request["finishedAtSeconds"] = params.get("timestamp")
@@ -276,14 +279,15 @@ class ChromePipe:
                 request.get("startedAtSeconds"), params.get("timestamp"))
             request["error"] = params.get("errorText", "request failed")
             request["canceled"] = params.get("canceled", False)
-            if not params.get("canceled", False):
-                self.network_failures.append(dict(
-                    request,
-                    error=params.get("errorText", "request failed"),
-                ))
+            failure = dict(request, error=params.get("errorText", "request failed"))
+            if params.get("canceled", False) and request_id in self.expected_cancellation_ids:
+                self.expected_cancellations.append(failure)
+            else:
+                self.network_failures.append(failure)
         elif method == "Fetch.requestPaused" and "responseStatusCode" in params:
             self.paused_responses.append({
                 "requestId": params.get("requestId", ""),
+                "networkId": params.get("networkId", ""),
                 "path": urllib.parse.urlsplit(
                     params.get("request", {}).get("url", "")
                 ).path,
@@ -386,7 +390,19 @@ class ChromePipe:
 
     def release_response(self, response):
         """Continues a response previously paused by :meth:`hold_response`."""
-        self.call("Fetch.continueResponse", {"requestId": response["requestId"]})
+        try:
+            self.call("Fetch.continueResponse", {"requestId": response["requestId"]})
+        except DevToolsError:
+            self.drain_events()
+            network = self.requests.get(response.get("networkId", ""), {})
+            if not network.get("canceled", False):
+                raise
+
+    def expect_response_cancellation(self, response):
+        """Allows cancellation only for one deliberately intercepted response."""
+        network_id = response.get("networkId")
+        if network_id:
+            self.expected_cancellation_ids.add(network_id)
 
     def stop_holding_responses(self):
         """Disables response interception and clears its transient state."""
@@ -873,6 +889,7 @@ class HubSettingsSmoke:
                 held_response.get("status") == 200,
                 "identity plan response is held after backend completion",
             )
+            self.chrome.expect_response_cancellation(held_response)
             navigated = self.chrome.evaluate("""
                 (() => {
                     const link = document.querySelector(
@@ -1042,6 +1059,7 @@ class HubSettingsSmoke:
             "javascriptErrors": self.chrome.javascript_errors,
             "consoleErrors": self.chrome.console_errors,
             "networkFailures": self.chrome.network_failures,
+            "expectedNetworkCancellations": self.chrome.expected_cancellations,
             "requestTimings": self.chrome.request_timing_report(),
             "requestTimingSummary": self.chrome.request_timing_summary(),
             "failure": str(failure) if failure is not None else None,
