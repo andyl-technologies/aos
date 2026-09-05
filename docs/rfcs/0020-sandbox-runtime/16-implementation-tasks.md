@@ -2297,3 +2297,47 @@ implementation already clones a fresh mount tree inside each boot iteration;
 that behavior still needs repeated-boot VM evidence under the production
 capability and seccomp profile. `SBX-RT-06` and lifecycle qualification remain
 open; runtime behavior and `BackendReadiness` are unchanged by this patch.
+
+### Retained-supervisor reboot integration
+
+The next systemd patch integrates that state machine behind the explicit
+`aos-sandbox-lifecycle-v1` profile, selected by the fixed Rust launch compiler.
+The profile requires boot mode, the retained delegated unit, fixed shifted
+user namespaces, private PID/IPC/UTS/cgroup namespaces, disabled settings and
+registration, the payload seccomp profile, no-new-privileges, and no
+`CAP_SYS_BOOT`. It rejects nspawn-managed network changes. The upstream
+keep-unit exit-133 behavior remains unchanged without this profile.
+
+Shutdown notifications are authenticated against the pinned payload PID 1.
+Before reaping it, a bounded drain handles notifications that lost the event
+dispatch race to SIGCHLD. A reboot requires an actual successful process exit,
+not upstream's broader success normalization for namespace-shutdown signals.
+Host stop requests are latched across boots, prioritized in the event loop,
+and checked again before another payload starts.
+
+Before a reboot, the supervisor verifies an empty payload subtree and removes
+its cgroup root and descendants using descriptor-relative, no-follow traversal.
+The traversal bounds depth, directories, entries, name bytes, and elapsed time;
+oversized or incomplete cgroup-events input is rejected. Errors prevent another
+boot. Recreating the payload root discards guest-written limits and controller
+settings without replacing the enclosing unit or supervisor. Unit tests cover
+the empty-state parser and non-cgroup filesystem refusal without mutation.
+
+The first integrated x86_64 platform VM run passes two successive reboots with
+`CAP_SYS_BOOT` dropped and reboot syscalls denied. It retains supervisor and
+invocation identity, observes new payload PID/mount/PID/user namespace identity,
+and verifies new payload-root cgroup inodes and default `pids.max` after setting
+the old root's limit. The production compiler/worker launch-refresh-stop VM also
+passes with the lifecycle flag selected. The final hardened source, including
+the actual-exit, bounded-complete-read, and explicit namespace checks plus a
+post-reboot host stop assertion, passes both VM gates and the full
+`checks.eval` gate. Focused Host/systemd all-feature tests, strict Clippy, and
+formatting checks also pass. The earlier evaluation failure was a `rustc`
+segmentation fault compiling `aos-proto`, not a test failure; the bounded-core
+rerun completes successfully.
+
+The repeated-boot platform fixture still uses its directory pin holder, not the
+production detached-root descriptor handoff. Repeated owned-root boots, Host
+namespace-generation reconciliation and attachment replay, concurrent host-stop
+tests, enforcing MAC, and lease/publisher qualification remain required.
+`SBX-RT-06`, end-to-end readiness, and `BackendReadiness` remain open.

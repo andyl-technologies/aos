@@ -518,29 +518,35 @@ int main(int argc, char **argv) {
             !supervisor_alive(&pinned, argv[5], argv[9]) ||
             read_generation(argv[7], &generation) < 0 || generation != 1 ||
             report(argv[8], "observing", generation, NULL, &cur) < 0) goto fail;
-        if (sigwait(&signals, &received) != 0 || received != SIGUSR1) goto fail;
-        if (!supervisor_alive(&pinned, argv[5], argv[9])) goto fail;
-        if (!pidfd_alive(cur.pidfd) || syscall(SYS_pidfd_send_signal, cur.pidfd, SIGRTMIN + 5, NULL, 0U) < 0) goto fail;
-        old = cur;
-        cur = (struct observation) { .pidfd = -1, .rootfd = -1, .cgroupfd = -1, .mntfd = -1, .netfd = -1, .pidnsfd = -1, .userfd = -1 };
-        if (start_budget(&budget, DISCOVERY_SECONDS) < 0) goto fail;
-        while (before_deadline(&budget)) {
-                candidate = 0;
-                reset_scan_work(&budget);
-                result = discover(argv[4], (pid_t) supervisor, &candidate, &budget);
-                if (result < 0) goto fail;
-                if (result == 1 && candidate != old.pid &&
-                    observe(candidate, (pid_t) supervisor, argv[2], argv[3], argv[4], &cur) == 0 &&
-                    read_generation(argv[7], &generation) == 0 && generation == 2) break;
-                close_observation(&cur);
-                if (nanosleep(&interval, NULL) < 0 && errno != EINTR) goto fail;
+        for (unsigned long expected_generation = 2; expected_generation <= 3; expected_generation++) {
+                if (sigwait(&signals, &received) != 0 || received != SIGUSR1) goto fail;
+                if (!supervisor_alive(&pinned, argv[5], argv[9])) goto fail;
+                if (!pidfd_alive(cur.pidfd) || syscall(SYS_pidfd_send_signal, cur.pidfd, SIGRTMIN + 5, NULL, 0U) < 0) goto fail;
+                close_observation(&old);
+                old = cur;
+                cur = (struct observation) { .pidfd = -1, .rootfd = -1, .cgroupfd = -1, .mntfd = -1, .netfd = -1, .pidnsfd = -1, .userfd = -1 };
+                if (start_budget(&budget, DISCOVERY_SECONDS) < 0) goto fail;
+                while (before_deadline(&budget)) {
+                        candidate = 0;
+                        reset_scan_work(&budget);
+                        result = discover(argv[4], (pid_t) supervisor, &candidate, &budget);
+                        /* The old empty payload root is removed before the next boot. Only tolerate its
+                         * disappearance after the old PID 1 has exited, with the supervisor still pinned. */
+                        if (result < 0 && (errno != ENOENT || pidfd_alive(old.pidfd) ||
+                                           !supervisor_alive(&pinned, argv[5], argv[9]))) goto fail;
+                        if (result == 1 && candidate != old.pid &&
+                            observe(candidate, (pid_t) supervisor, argv[2], argv[3], argv[4], &cur) == 0 &&
+                            read_generation(argv[7], &generation) == 0 && generation == expected_generation) break;
+                        close_observation(&cur);
+                        if (nanosleep(&interval, NULL) < 0 && errno != EINTR) goto fail;
+                }
+                if (cur.pidfd < 0 || pidfd_alive(old.pidfd) || !pidfd_alive(cur.pidfd) ||
+                    !supervisor_alive(&pinned, argv[5], argv[9]) ||
+                    same_identity(old.mnt, cur.mnt) ||
+                    same_identity(old.pidns, cur.pidns) || same_identity(old.user, cur.user) ||
+                    !same_identity(old.net, cur.net) || !same_identity(old.root, cur.root) ||
+                    report(argv[8], "rebooted", generation, &old, &cur) < 0) goto fail;
         }
-        if (cur.pidfd < 0 || pidfd_alive(old.pidfd) || !pidfd_alive(cur.pidfd) ||
-            !supervisor_alive(&pinned, argv[5], argv[9]) ||
-            same_identity(old.mnt, cur.mnt) ||
-            same_identity(old.pidns, cur.pidns) || same_identity(old.user, cur.user) ||
-            !same_identity(old.net, cur.net) || !same_identity(old.root, cur.root) ||
-            report(argv[8], "rebooted", generation, &old, &cur) < 0) goto fail;
         for (;;) pause();
 fail:
         fprintf(stderr, "nspawn host observer validation or lifecycle proof failed\n");

@@ -82,6 +82,8 @@ in
     #          reopening its pathname or forwarding it to the payload.
     #   0009 — Test fail-closed shutdown-intent state for retained-supervisor
     #          reboot support. Runtime integration is a separate step.
+    #   0010 — Authenticate per-boot shutdown intent and reset the empty payload
+    #          cgroup while retaining the AOS supervisor and unit invocation.
     patches = [
       ./patches/0001-remove-usr-lib-unit-lookup-paths.patch
       ./patches/0002-add-prefix-to-conf-paths.patch
@@ -92,6 +94,7 @@ in
       ./patches/0007-nspawn-aos-payload-seccomp-profile.patch
       ./patches/0008-nspawn-owned-root-descriptor.patch
       ./patches/0009-nspawn-shutdown-intent-state.patch
+      ./patches/0010-nspawn-retained-supervisor-reboot.patch
     ];
 
     buildDeps = [
@@ -445,6 +448,24 @@ in
           ./test-nspawn-seccomp
           ./test-nspawn-root-fd
           ./test-nspawn-lifecycle
+
+          if ! "$out/bin/systemd-nspawn" --help | grep -F -q -- \
+            '--aos-lifecycle-profile=PROFILE'; then
+            echo "ERROR: systemd-nspawn lacks the AOS lifecycle option" >&2
+            exit 1
+          fi
+          if "$out/bin/systemd-nspawn" --aos-lifecycle-profile=unknown \
+            > /dev/null 2>&1; then
+            echo "ERROR: systemd-nspawn accepted an unknown lifecycle profile" >&2
+            exit 1
+          fi
+          if "$out/bin/systemd-nspawn" \
+            --aos-lifecycle-profile=aos-sandbox-lifecycle-v1 \
+            --aos-lifecycle-profile=aos-sandbox-lifecycle-v1 \
+            > /dev/null 2>&1; then
+            echo "ERROR: systemd-nspawn accepted a repeated lifecycle profile" >&2
+            exit 1
+          fi
 
           if ! "$out/bin/systemd-nspawn" --help | grep -F -q -- \
             '--aos-root-mount-fd=NAME'; then

@@ -144,7 +144,10 @@
         --private-users=655360:65536 \
         --private-users-ownership=map \
         --no-new-privileges=yes \
-        --aos-payload-seccomp-profile=aos-sandbox-payload-v1
+        --drop-capability=CAP_SYS_BOOT \
+        --system-call-filter='~@reboot' \
+        --aos-payload-seccomp-profile=aos-sandbox-payload-v1 \
+        --aos-lifecycle-profile=aos-sandbox-lifecycle-v1
     '';
   };
 
@@ -348,6 +351,9 @@ in {
     assert "--register=no" in invocation, invocation
     assert "--machine=aos-proof" in invocation, invocation
     assert "--aos-payload-seccomp-profile=aos-sandbox-payload-v1" in invocation, invocation
+    assert "--aos-lifecycle-profile=aos-sandbox-lifecycle-v1" in invocation, invocation
+    assert "--drop-capability=CAP_SYS_BOOT" in invocation, invocation
+    assert "--system-call-filter=~@reboot" in invocation, invocation
     assert "--directory=/proc/" in invocation and "/fd/3" in invocation, invocation
     assert "--network-namespace-path" not in invocation, invocation
     pin_match = re.search(r"--directory=/proc/([0-9]+)/fd/3(?: |$)", invocation)
@@ -377,6 +383,10 @@ in {
     assert int(vm.succeed("systemctl show aos-nspawn-host-observer.service -p MainPID --value").strip()) != first_observer_pid
     assert int(vm.succeed("systemctl show aos-nspawn-platform-proof.service -p MainPID --value").strip()) == supervisor_pid
 
+    # A new payload must not inherit the old payload root's controller settings.
+    old_payload_inode = vm.succeed(f"stat -c %i /sys/fs/cgroup{control_group}/payload").strip()
+    vm.succeed(f"echo 128 > /sys/fs/cgroup{control_group}/payload/pids.max")
+    vm.succeed(f"mkdir /sys/fs/cgroup{control_group}/payload/aos-stale-empty")
     vm.succeed("systemctl kill --kill-whom=main --signal=USR1 aos-nspawn-host-observer.service")
     try:
         vm.wait_until_succeeds(
@@ -389,6 +399,9 @@ in {
         raise
     second_report = json.loads(vm.succeed(f"cat {report_path}"))
     assert second_report["passed"] is True, second_report
+    assert vm.succeed(f"cat /sys/fs/cgroup{control_group}/payload/pids.max").strip() == "max"
+    assert vm.succeed(f"stat -c %i /sys/fs/cgroup{control_group}/payload").strip() != old_payload_inode
+    vm.fail(f"test -e /sys/fs/cgroup{control_group}/payload/aos-stale-empty")
     assert second_report["network_namespace_inode"] == pinned_inode, second_report
     assert int(vm.succeed("systemctl show aos-nspawn-platform-proof.service -p MainPID --value").strip()) == supervisor_pid
     second_observation = json.loads(vm.succeed("cat /run/aos-nspawn-host-observer.json"))
@@ -401,10 +414,32 @@ in {
     assert second_observation["pid_namespace"] != first_observation["pid_namespace"]
     assert second_observation["user_namespace"] != first_observation["user_namespace"]
     assert second_observation["root"] == first_observation["root"]
+
+    # Repeat within the same invocation to detect per-boot intent or mount-state leakage.
+    second_payload_inode = vm.succeed(f"stat -c %i /sys/fs/cgroup{control_group}/payload").strip()
+    vm.succeed(f"echo 128 > /sys/fs/cgroup{control_group}/payload/pids.max")
+    vm.succeed("systemctl kill --kill-whom=main --signal=USR1 aos-nspawn-host-observer.service")
+    vm.wait_until_succeeds("test $(jq -r .boot_generation /run/aos-nspawn-host-observer.json) = 3", timeout=90)
+    third_observation = json.loads(vm.succeed("cat /run/aos-nspawn-host-observer.json"))
+    third_report = json.loads(vm.succeed(f"cat {report_path}"))
+    assert third_report["passed"] is True and third_report["boot_generation"] == 3, third_report
+    assert third_observation["old_pid"] == second_observation["pid"], third_observation
+    assert third_observation["pid"] != second_observation["pid"], third_observation
+    assert third_observation["network_namespace"] == second_observation["network_namespace"]
+    assert third_observation["root"] == second_observation["root"]
+    for namespace in ("mount_namespace", "pid_namespace", "user_namespace"):
+        assert third_observation[namespace] != second_observation[namespace]
+    assert vm.succeed(f"cat /sys/fs/cgroup{control_group}/payload/pids.max").strip() == "max"
+    assert vm.succeed(f"stat -c %i /sys/fs/cgroup{control_group}/payload").strip() != second_payload_inode
+    assert int(vm.succeed("systemctl show aos-nspawn-platform-proof.service -p MainPID --value").strip()) == supervisor_pid
     vm.succeed("systemctl is-active --quiet aos-nspawn-host-observer.service")
     vm.fail("systemctl is-active --quiet systemd-machined.service")
     status, output, error = vm.execute("systemctl is-enabled systemd-machined.service")
     assert status == 1 and output.strip() == b"masked-runtime", (status, output, error)
     vm.fail("test -e /run/systemd/machines/aos-proof")
+
+    vm.succeed("systemctl stop aos-nspawn-platform-proof.service")
+    vm.fail("systemctl is-active --quiet aos-nspawn-platform-proof.service")
+    assert vm.succeed("cat /var/lib/aos-nspawn-platform-proof/root/var/lib/aos-nspawn-proof/boot-generation").strip() == "3"
   '';
 }

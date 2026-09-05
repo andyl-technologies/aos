@@ -997,6 +997,7 @@ mod tests {
                         "--drop-capability=CAP_AUDIT_CONTROL,CAP_AUDIT_READ,CAP_AUDIT_WRITE,CAP_BLOCK_SUSPEND,CAP_BPF,CAP_CHECKPOINT_RESTORE,CAP_DAC_READ_SEARCH,CAP_IPC_LOCK,CAP_IPC_OWNER,CAP_LEASE,CAP_LINUX_IMMUTABLE,CAP_MAC_ADMIN,CAP_MAC_OVERRIDE,CAP_MKNOD,CAP_NET_ADMIN,CAP_NET_BROADCAST,CAP_NET_RAW,CAP_PERFMON,CAP_SYSLOG,CAP_SYS_ADMIN,CAP_SYS_BOOT,CAP_SYS_CHROOT,CAP_SYS_MODULE,CAP_SYS_NICE,CAP_SYS_PACCT,CAP_SYS_PTRACE,CAP_SYS_RAWIO,CAP_SYS_RESOURCE,CAP_SYS_TIME,CAP_SYS_TTY_CONFIG,CAP_WAKE_ALARM",
                         "--system-call-filter=~@mount @module @raw-io @reboot bpf perf_event_open ptrace setns unshare",
                         "--aos-payload-seccomp-profile=aos-sandbox-payload-v1",
+                        "--aos-lifecycle-profile=aos-sandbox-lifecycle-v1",
                     ];
                     assert_eq!(spec.arguments(), expected_arguments);
                     assert!(spec.root_directory().starts_with(&descriptor_prefix));

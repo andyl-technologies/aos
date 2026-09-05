@@ -461,6 +461,7 @@ impl SandboxNspawnCommand {
             format!("--drop-capability={PAYLOAD_DROPPED_CAPABILITIES}"),
             format!("--system-call-filter={PAYLOAD_SYSTEM_CALL_FILTER}"),
             "--aos-payload-seccomp-profile=aos-sandbox-payload-v1".to_owned(),
+            "--aos-lifecycle-profile=aos-sandbox-lifecycle-v1".to_owned(),
         ]
     }
 }
