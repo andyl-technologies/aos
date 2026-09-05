@@ -2,7 +2,7 @@
 
 use super::*;
 
-fn permanently_failed_continuation() -> (ScenarioDefForm, ProductionVmHotForkWorldContinuation) {
+fn permanently_failed_loop() -> (ScenarioDefForm, ProductionVmLifecycleLoop) {
     let source = super::super::runtime::tests::nonterminal_signal_replay_scenario();
     let mut lifecycle = super::super::runtime::tests::production_loop_without_backends(&source);
     for vm in source.world().vm_nodes() {
@@ -15,10 +15,90 @@ fn permanently_failed_continuation() -> (ScenarioDefForm, ProductionVmHotForkWor
             ContentHash::from_bytes(vm.id.name.as_bytes()),
         );
     }
+    (source, lifecycle)
+}
+
+fn permanently_failed_continuation() -> (ScenarioDefForm, ProductionVmHotForkWorldContinuation) {
+    let (source, mut lifecycle) = permanently_failed_loop();
     let continuation = lifecycle
         .capture_hot_fork_world_continuation()
         .unwrap_or_else(|error| panic!("process-neutral continuation should capture: {error}"));
     (source, continuation)
+}
+
+#[test]
+fn committed_lifecycle_history_does_not_block_hot_fork_capture() {
+    let (_source, mut lifecycle) = permanently_failed_loop();
+    lifecycle.lifecycle_journal.phase = ProductionLifecycleJournalPhase::Committed;
+    lifecycle.lifecycle_journal.transaction = 1;
+
+    let continuation = lifecycle
+        .capture_hot_fork_world_continuation()
+        .unwrap_or_else(|error| panic!("completed lifecycle should permit capture: {error}"));
+    continuation
+        .validate_complete_internal_state()
+        .unwrap_or_else(|error| panic!("completed capture should remain valid: {error}"));
+}
+
+#[test]
+fn unfinished_lifecycle_phases_block_hot_fork_capture() {
+    for phase in [
+        ProductionLifecycleJournalPhase::Intent,
+        ProductionLifecycleJournalPhase::Prepared,
+        ProductionLifecycleJournalPhase::ExitsReaped,
+        ProductionLifecycleJournalPhase::Quarantined,
+    ] {
+        let (_source, mut lifecycle) = permanently_failed_loop();
+        lifecycle.lifecycle_journal.phase = phase;
+        lifecycle.lifecycle_journal.transaction = 1;
+
+        assert!(lifecycle.capture_hot_fork_world_continuation().is_err());
+    }
+}
+
+#[test]
+fn committed_lifecycle_with_a_staged_process_still_blocks_hot_fork_capture() {
+    let (_source, mut lifecycle) = permanently_failed_loop();
+    lifecycle.lifecycle_journal.phase = ProductionLifecycleJournalPhase::Committed;
+    lifecycle.lifecycle_journal.transaction = 1;
+    lifecycle.run_manifest.staged_processes = BTreeMap::from([(
+        String::from("staged-node"),
+        QemuProcessIdentity {
+            process_id: 123,
+            start_time_ticks: 456,
+            executable: PathBuf::from("qemu-system-test"),
+        },
+    )])
+    .into();
+
+    assert!(lifecycle.capture_hot_fork_world_continuation().is_err());
+}
+
+#[test]
+fn committed_lifecycle_with_a_live_journal_owner_still_blocks_hot_fork_capture() {
+    let (_source, mut lifecycle) = permanently_failed_loop();
+    lifecycle.lifecycle_journal.phase = ProductionLifecycleJournalPhase::Committed;
+    lifecycle.lifecycle_journal.transaction = 1;
+    lifecycle
+        .lifecycle_journal
+        .nodes
+        .push(ProductionLifecycleJournalNode {
+            node: String::from("unsettled-node"),
+            current_process: QemuProcessIdentity {
+                process_id: 123,
+                start_time_ticks: 456,
+                executable: PathBuf::from("qemu-system-test"),
+            },
+            replacement_process: None,
+            current_generation: 1,
+            next_generation: 2,
+            transition: String::from("power_off"),
+            action_sha256: String::new(),
+            evidence_sha256: String::new(),
+            expected_exit_code: None,
+        });
+
+    assert!(lifecycle.capture_hot_fork_world_continuation().is_err());
 }
 
 #[test]
@@ -171,6 +251,43 @@ fn hot_fork_adoption_inventory_rejects_missing_and_foreign_children() {
                 .to_string()
                 .contains("differs from the running-node set")
     );
+}
+
+#[test]
+fn powered_off_continuation_requires_the_retained_process_boundary() {
+    let (_source, mut continuation) = permanently_failed_continuation();
+    let boundary = &mut continuation.nodes[0];
+    let node = boundary.node.clone();
+    boundary.service_state = ProductionVmHotForkNodeServiceState::PoweredOff;
+    continuation
+        .node_service_states
+        .insert(node, ProductionNodeServiceState::PoweredOff);
+
+    assert!(continuation.validate_complete_internal_state().is_err());
+    continuation.nodes[0].physical_time = Some(VirtualTime { ticks: 41 });
+    assert!(continuation.validate_complete_internal_state().is_err());
+    continuation.nodes[0].process = Some(QemuProcessIdentity {
+        process_id: 123,
+        start_time_ticks: 456,
+        executable: PathBuf::from("qemu-system-test"),
+    });
+    continuation
+        .validate_complete_internal_state()
+        .unwrap_or_else(|error| panic!("retained powered-off boundary should validate: {error}"));
+}
+
+#[test]
+fn powered_off_capture_does_not_silently_omit_a_missing_backend() {
+    let source = super::super::runtime::tests::nonterminal_signal_replay_scenario();
+    let mut lifecycle = super::super::runtime::tests::production_loop_without_backends(&source);
+    for vm in source.world().vm_nodes() {
+        lifecycle.node_generations.insert(vm.id.clone(), 1);
+        lifecycle
+            .node_service_states
+            .insert(vm.id.clone(), ProductionNodeServiceState::PoweredOff);
+    }
+
+    assert!(lifecycle.hot_fork_node_boundaries().is_err());
 }
 
 #[test]

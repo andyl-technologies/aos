@@ -429,13 +429,23 @@ origins, and QEMU patch 0196 to tolerate the virtio-net announcement timer remov
 by exact restore. The patch does not recreate migration announcements. Canonical
 patch regeneration and the focused same-builder drop-one check pass; the generic
 drop-one boot probe is non-discriminating, so the reactivation flight supplies
-the behavioral evidence. The full packaged shared-cause check completed inactive
-restore but failed at a subsequent live-node assembly before reaching the added
-reactivation flight. Its launch diagnostic did not retain the underlying cause;
-the full check remains red and the focused proof is not a substitute for it.
+the behavioral evidence. After retaining nested launch diagnostics, the full
+packaged shared-cause check passes both the original flight and the added Boot
+flight, including fresh-process inactive restore. An earlier invocation failed
+at live-node assembly without retaining its underlying cause; the later pass
+does not establish the cause of that transient failure.
 
 These flights do not prove guest-choice branching, the full public
 checkpoint-pause recovery workflow, or hot-fork acceptance.
+The hot-fork world inventory now retains the paused process and physical clock
+of a powered-off node, and world assembly requires that source's child rather
+than omitting it as if permanently failed. Capture accepts a settled committed
+lifecycle journal while still rejecting unfinished journal owners, staged
+replacements, cleanup failures, and incomplete transaction phases. Six new API
+regressions cover those ownership distinctions; the full API suite passes 265
+tests. The reactivation flight additionally checks the real inactive world's
+source-process distinction before its exact checkpoint. This does not enable
+powered-off child adoption or supply the remaining branch-private disk handoff.
 Longer diagnostic execution also stalled waiting for a post-device control
 acknowledgement and returned cleanup-pending on shutdown; the short successful
 flight does not close that liveness investigation.
@@ -453,8 +463,12 @@ export from those lifecycle interfaces. The complete harness-lint suite passes
 retain one subprocess fixture ignored by direct execution). Strict affected-crate
 Clippy passes. A watchdog regression now establishes the real process stop before
 expiring the production watchdog wait, removing a controller-startup timing race
-without weakening the direct-resume or completion/disarm assertions. The remaining
-engineering-hygiene findings
+without weakening the direct-resume or completion/disarm assertions. Hot-checkpoint
+resource accounting, pressure plans, scoring, pool errors, and Linux fork
+reconciliation now occupy focused modules with their existing public paths and
+ownership scope retained. The refactor passes the full daemon suite, strict
+Clippy, and warning-free documentation without increasing size exemptions. The
+remaining engineering-hygiene findings
 are separate from the passing standalone source-size guard above; no complete
 packaging or release-gate closure is claimed.
 
