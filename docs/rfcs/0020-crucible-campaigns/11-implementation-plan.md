@@ -341,8 +341,20 @@ flight passed with evidence in
 It exposed and now covers independent configuration-payload/checkpoint-closure
 versions and private debugger sockets surviving guarded directory rebinding.
 The campaign head survives restart unchanged and the executor endpoint is
-removed on each orderly shutdown. This is startup composition evidence, not
-semantic attempt execution, checkpoint-pause recovery, or hot-fork acceptance.
+removed on each orderly shutdown. The extended 2026-09-04 flight also passed
+public attempt-budget grant, start, first discovery admission, authenticated
+`terminal-success` explanation, and guarded executor shutdown, with evidence in
+`/nix/store/mngc0yl2y281wj47ayglnpp7ywncj1dn-aos-vm-test-crucible-packaged-campaign-0/serial.log`.
+The coordinator now derives the unique empty-path genesis discovery for an
+otherwise empty frontier; cold validation recomputes its grant, lifecycle,
+ordinal, and exact accounting delta. The flight also exposed skipped genesis
+entrypoints: initial observation records had already moved evaluation past
+genesis. Production now fires entrypoints before those records and evaluates
+conditional events afterward. No-backend regressions cover terminal entrypoints,
+dependent events, and non-repetition. This flight uses an authored immediate
+completion, not guest-driven choice execution, checkpoint-pause recovery, or
+hot-fork acceptance. Aggregate campaign grant enforcement for subsequent planner
+issuance remains open; request-local admission budgets are a separate check.
 
 Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
 `crucible-daemon`.
