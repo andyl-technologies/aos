@@ -1435,6 +1435,105 @@ mod initial_terminal_boundary {
     use super::*;
 
     #[test]
+    fn genesis_entrypoint_pass_returns_without_advancing_a_backend()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let base = initially_violated_scenario();
+        let world = base.world();
+        let graph = crucible::EventGraph::builder()
+            .event("complete")
+            .entrypoint()
+            .action(crucible::Action::Pass)
+            .build_for_world(world)?;
+        let plan = crucible::Plan::from_event_graph_for_world(world, graph)?;
+        let source = ScenarioDefForm::from_components(
+            world,
+            &plan,
+            &crucible::Properties::empty(),
+            crucible::Seed::from_u64(42),
+        )?;
+        let mut lifecycle = production_loop_without_backends(&source);
+        let configuration = lifecycle.inner.loop_impl().configuration().clone();
+        let outcome = lifecycle.drive_quantum(QuantumRequest {
+            configuration: configuration.clone(),
+            control: Vec::new(),
+        })?;
+        assert_eq!(outcome.advanced_node, None);
+        assert!(matches!(
+            outcome.event_log_entries[0].payload(),
+            crucible::SchedulerEventLogPayload::TriggerFired(_)
+        ));
+        assert!(matches!(
+            lifecycle.terminal_verdict_for_stop(),
+            Some(QuantumTerminalVerdict::Passed)
+        ));
+        let repeated = lifecycle.drive_quantum(QuantumRequest {
+            configuration,
+            control: Vec::new(),
+        })?;
+        assert!(repeated.event_log_entries.is_empty());
+        assert_eq!(repeated.advanced_node, None);
+        Ok(())
+    }
+
+    #[test]
+    fn genesis_entrypoint_unblocks_conditional_event_after_initial_observations()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let base = initially_violated_scenario();
+        let world = base.world();
+        let graph = crucible::EventGraph::builder()
+            .event("begin")
+            .entrypoint()
+            .action(crucible::Action::Group(Vec::new()))
+            .event("complete")
+            .when(crucible::Condition::After {
+                of: crucible::EventId::from_name("begin"),
+                duration: crucible::SimDuration { nanos: 0 },
+            })
+            .action(crucible::Action::Pass)
+            .build_for_world(world)?;
+        let plan = crucible::Plan::from_event_graph_for_world(world, graph)?;
+        let source = ScenarioDefForm::from_components(
+            world,
+            &plan,
+            &crucible::Properties::empty(),
+            crucible::Seed::from_u64(42),
+        )?;
+        let mut lifecycle = production_loop_without_backends(&source);
+        let configuration = lifecycle.inner.loop_impl().configuration().clone();
+        let outcome = lifecycle.drive_quantum(QuantumRequest {
+            configuration,
+            control: Vec::new(),
+        })?;
+        assert_eq!(outcome.advanced_node, None);
+        assert!(matches!(
+            lifecycle.terminal_verdict_for_stop(),
+            Some(QuantumTerminalVerdict::Passed)
+        ));
+        let initial_state = outcome
+            .event_log_entries
+            .iter()
+            .position(|entry| {
+                matches!(
+                    entry.payload(),
+                    crucible::SchedulerEventLogPayload::Observable(_)
+                )
+            })
+            .ok_or("missing initial node-state observations")?;
+        let completion = outcome
+            .event_log_entries
+            .iter()
+            .rposition(|entry| {
+                matches!(
+                    entry.payload(),
+                    crucible::SchedulerEventLogPayload::TriggerFired(_)
+                )
+            })
+            .ok_or("missing conditional completion")?;
+        assert!(initial_state > 0 && completion > initial_state);
+        Ok(())
+    }
+
+    #[test]
     fn initial_terminal_assertion_returns_without_advancing_a_backend() {
         let source = initially_violated_scenario();
         let mut lifecycle = production_loop_without_backends(&source);
