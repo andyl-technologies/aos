@@ -2925,6 +2925,29 @@ This establishes native child I/O reconstruction for the fixture, not complete
 production source preparation, child graph installation, or whole-world
 continuation; those acceptance items remain open.
 
+The host now advances retained template preparation with bounded PREPARE
+exchanges before staging branch-private resources. Each exchange preserves the
+snapshot bindings and authenticates the same transaction generation; exhausting
+the bound leaves the transaction owned for explicit recovery. A status query
+alone cannot advance acquisition. The decoder also accepts a draining report
+with quiescent BH admission but withheld native-worker proof: BH quiescence is
+necessary, not sufficient, for that acknowledgement. Prepared status still
+requires every proof. Six regressions cover the decoder and bounded acquisition;
+the QEMU unit suite passes 621 tests with one existing ignored subprocess
+fixture, 62 QMP integration tests pass, and strict Clippy passes. Template data,
+wire validation, and acquisition now occupy separate modules, removing the
+former template size exemption.
+
+The native-worker patch's focused same-builder drop-one check passes, but its
+generic boot probe is non-discriminating; the native fork fixture above supplies
+the behavioral evidence. ABI conformance passes at the native-worker checkpoint.
+The complete license-boundary gate remains unaccepted: a controller compiler
+abort did not recur on its one explicit retry, which instead completed tests
+with engineering-hygiene and wait-classification failures. The classification
+checks now pass after recording the bounded operational waits and adversarial
+stimuli. Engineering-hygiene size and layer-boundary findings remain open, so
+neither complete controller packaging nor license-gate acceptance is claimed.
+
 **Exit:** either the spike satisfies the structural and minimum-speedup targets,
 its manual lab evidence is accepted, or hot fork remains rejected and the RFC is
 revised around another measured local-COW mechanism. No optimistic partial

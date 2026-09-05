@@ -14,6 +14,34 @@ pub enum QmpError {
     /// A hot-fork process contract contains a zero or unbounded identity field.
     #[error("invalid hot-fork child process contract identity")]
     InvalidHotForkChildProcessContract,
+    /// Template acquisition crossed into a different retained transaction.
+    #[error("hot-fork template generation changed from {expected} to {actual}")]
+    HotForkTemplateGenerationChanged {
+        /// First nonzero generation observed by this preparation operation.
+        expected: u64,
+        /// Different generation reported by QEMU.
+        actual: u64,
+    },
+    /// Template preparation terminated without retaining its source barriers.
+    #[error("hot-fork template {generation} is not retained: {outcome:?}")]
+    HotForkTemplateNotRetained {
+        /// Last generation reported by QEMU.
+        generation: u64,
+        /// Terminal coordinator outcome.
+        outcome: QmpHotForkTemplateOutcome,
+    },
+    /// The bounded acquisition wait ended with non-plugin-ring proofs missing.
+    #[error(
+        "hot-fork template {generation} still lacks proofs {missing_proofs:#x} after {polls} polls"
+    )]
+    HotForkTemplateNotQuiescent {
+        /// Exact retained transaction generation, still owned by the caller.
+        generation: u64,
+        /// Number of preparation exchanges attempted.
+        polls: usize,
+        /// Missing non-plugin-ring proof mask.
+        missing_proofs: u64,
+    },
     /// A descriptor-bearing send reported an impossible byte count.
     #[error("QMP descriptor transfer wrote {actual} bytes, expected 1..={expected_maximum}")]
     DescriptorTransferLength {
