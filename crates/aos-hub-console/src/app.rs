@@ -42,6 +42,11 @@ pub fn App() -> impl IntoView {
     });
     let popstate = window_event_listener(ev::popstate, move |_| route.set(current_route()));
     on_cleanup(move || popstate.remove());
+    let navigation_open = RwSignal::new(settings_navigation_starts_open(viewport_width()));
+    let navigation_resize = window_event_listener(ev::resize, move |_| {
+        navigation_open.set(settings_navigation_starts_open(viewport_width()));
+    });
+    on_cleanup(move || navigation_resize.remove());
     let csrf = shell_meta("aos-session-csrf").unwrap_or_default();
     let session_scope = Memo::new(move |_| {
         route
@@ -67,7 +72,12 @@ pub fn App() -> impl IntoView {
         {move || match route.get() {
             Some(route) => {
                 view! {
-                    <ManagementShell route=route session=session navigate=navigate/>
+                    <ManagementShell
+                        route=route
+                        session=session
+                        navigate=navigate
+                        navigation_open=navigation_open
+                    />
                 }.into_any()
             },
             None => view! {
@@ -86,6 +96,7 @@ fn ManagementShell(
     route: ConsoleRoute,
     session: LocalResource<Result<ApiClient, crate::transport::TransportError>>,
     navigate: Callback<String>,
+    navigation_open: RwSignal<bool>,
 ) -> impl IntoView {
     let context = scope_title(&route.scope);
     let page_label = route.page.label;
@@ -107,11 +118,6 @@ fn ManagementShell(
             .map(|href| (label, href))
     })
     .collect::<Vec<_>>();
-    let navigation_open = RwSignal::new(settings_navigation_starts_open(viewport_width()));
-    let navigation_resize = window_event_listener(ev::resize, move |_| {
-        navigation_open.set(settings_navigation_starts_open(viewport_width()));
-    });
-    on_cleanup(move || navigation_resize.remove());
     let on_console_link = move |event: ev::MouseEvent| {
         if event.default_prevented()
             || event.button() != 0
