@@ -40,6 +40,8 @@ const RETAINED_PLANNER_REQUEST_FIXED_CHILDREN: usize = 7;
 pub const CANONICAL_FRONTIER_OFFERS_CAPABILITY: &str = "canonical-frontier-offers-v1";
 /// Planner-engine capability for owner-built fixed-point candidate guidance.
 pub const CANONICAL_FRONTIER_PUCT_CAPABILITY: &str = "canonical-frontier-puct-v1";
+/// Planner-engine capability for all Ready offers and exact campaign-budget eligibility.
+pub const CANONICAL_FRONTIER_BUDGET_CAPABILITY: &str = "canonical-frontier-budget-v1";
 /// Maximum bundle-object count accepted by the initial coordinator store.
 pub const MAX_RETAINED_PLANNER_REQUEST_BUNDLE_OBJECTS: usize =
     MAX_PLANNING_BUNDLE_OBJECTS - RETAINED_PLANNER_REQUEST_FIXED_CHILDREN;
@@ -49,7 +51,9 @@ const _: () = assert!(MAX_RETAINED_PLANNER_REQUEST_BYTES < MAX_PLANNER_COMPONENT
 ///
 /// A canonical-frontier engine receives each served branch request, its exact
 /// continuation projection, and one invocation-bound proposal offer for the
-/// least Ready position on that page. Other engine capabilities may define
+/// least Ready position on that page. Budget-aware engines receive every Ready
+/// offer with an exact owner-built budget projection; blocked offers remain
+/// visible but cannot win selection. Other engine capabilities may define
 /// additional reachable interpretation records without changing this envelope
 /// container's version-1 grammar.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -62,6 +66,7 @@ pub(crate) struct PlannerCandidateInput {
     pub(crate) continuation: ContinuationProjection,
     pub(crate) offer: Option<Proposal>,
     pub(crate) guidance: Option<crate::PlannerCandidateGuidance>,
+    pub(crate) budget: Option<crate::PlannerCandidateBudget>,
 }
 
 /// One validated PUCT candidate in deterministic best-first order.
@@ -226,9 +231,14 @@ impl CampaignPlanningBundle {
             .engine
             .capabilities()
             .contains(CANONICAL_FRONTIER_PUCT_CAPABILITY);
+        let budget_aware = request
+            .engine
+            .capabilities()
+            .contains(CANONICAL_FRONTIER_BUDGET_CAPABILITY);
         let mut continuations = BTreeMap::new();
         let mut offers = BTreeMap::new();
         let mut guidance = BTreeMap::new();
+        let mut budgets = BTreeMap::new();
         for id in self.object_ids() {
             let object = self.object(id)?.ok_or(CampaignCodecError::InvalidValue {
                 reason: "planner input bundle object disappeared during validation",
@@ -268,6 +278,15 @@ impl CampaignPlanningBundle {
                         });
                     }
                 }
+                crate::CampaignRecordKind::PlannerCandidateBudget => {
+                    let projection =
+                        crate::PlannerCandidateBudget::from_canonical_bytes(object.body())?;
+                    if budgets.insert(projection.position(), projection).is_some() {
+                        return Err(CampaignCodecError::InvalidValue {
+                            reason: "planner input bundle repeats candidate budget eligibility",
+                        });
+                    }
+                }
                 _ => {}
             }
         }
@@ -277,7 +296,7 @@ impl CampaignPlanningBundle {
             .filter_map(|(position, projection)| {
                 (projection.state() == ContinuationState::Ready).then_some(*position)
             })
-            .take(if puct { usize::MAX } else { 1 })
+            .take(if puct || budget_aware { usize::MAX } else { 1 })
             .collect::<BTreeSet<_>>();
         if offers.keys().copied().collect::<BTreeSet<_>>() != expected_offers {
             return Err(CampaignCodecError::InvalidValue {
@@ -291,6 +310,13 @@ impl CampaignPlanningBundle {
                 reason: "planner candidate guidance disagrees with offered continuations",
             });
         }
+        if (budget_aware && budgets.keys().copied().collect::<BTreeSet<_>>() != expected_offers)
+            || (!budget_aware && !budgets.is_empty())
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "planner candidate budgets disagree with offered continuations",
+            });
+        }
 
         let mut inputs = BTreeMap::new();
         for position in request.invocation.scan_page().positions() {
@@ -302,6 +328,7 @@ impl CampaignPlanningBundle {
                     })?;
             let offer = offers.remove(position);
             let candidate_guidance = guidance.remove(position);
+            let candidate_budget = budgets.remove(position);
             if let Some(offer) = &offer {
                 let source = self.object(position.source().content_id())?.ok_or(
                     CampaignCodecError::InvalidValue {
@@ -325,6 +352,9 @@ impl CampaignPlanningBundle {
                         request.invocation.input_view(),
                     )?;
                 }
+                if let Some(candidate_budget) = &candidate_budget {
+                    candidate_budget.validate_for(offer)?;
+                }
             }
             inputs.insert(
                 *position,
@@ -332,10 +362,15 @@ impl CampaignPlanningBundle {
                     continuation,
                     offer,
                     guidance: candidate_guidance,
+                    budget: candidate_budget,
                 },
             );
         }
-        if !continuations.is_empty() || !offers.is_empty() || !guidance.is_empty() {
+        if !continuations.is_empty()
+            || !offers.is_empty()
+            || !guidance.is_empty()
+            || !budgets.is_empty()
+        {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "planner input bundle contains an unserved candidate projection",
             });
@@ -439,6 +474,9 @@ impl CampaignPlanningBundle {
                 }
                 if let Some(guidance) = &input.guidance {
                     pending.push(guidance.id()?.content_id());
+                }
+                if let Some(budget) = &input.budget {
+                    pending.push(budget.id()?.content_id());
                 }
             }
         }
@@ -677,7 +715,7 @@ impl PlannerRequest {
 
     /// Recomputes this request's PUCT candidates in deterministic best-first order.
     ///
-    /// The projection covers the Ready candidates served in this one bounded
+    /// The projection covers the eligible Ready candidates served in this one bounded
     /// request. A multi-page invocation can aggregate the projections by
     /// following its authenticated planner-step/request chain. Ties use the
     /// exact built-in planner rule: smaller semantic edge and then smaller scan
@@ -704,6 +742,12 @@ impl PlannerRequest {
             .input_bundle
             .candidate_inputs(self)?
             .into_values()
+            .filter(|input| {
+                input
+                    .budget
+                    .as_ref()
+                    .is_none_or(crate::PlannerCandidateBudget::can_issue)
+            })
             .filter_map(|input| input.offer.zip(input.guidance))
             .map(|(proposal, guidance)| {
                 let score = guidance.validate_for(&proposal, &self.policy, input_view)?;

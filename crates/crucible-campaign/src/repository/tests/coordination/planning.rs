@@ -2,6 +2,9 @@
 
 use super::*;
 
+mod budget;
+mod budget_scale;
+
 #[test]
 fn planner_no_work_is_owned_replayable_and_state_continuous() {
     let (repository, lineage, policy) = fixture();
@@ -594,7 +597,7 @@ fn canonical_frontier_planner_carries_the_first_ready_offer_across_pages() {
             wide_invocation.id().expect("wide invocation id"),
         )
         .expect("build complete two-source request");
-    assert_eq!(wide_request.input_bundle().len(), 5);
+    assert_eq!(wide_request.input_bundle().len(), 8);
     let wide_output = CanonicalFrontierPlanner
         .plan(&wide_request)
         .expect("plan complete two-source page");
@@ -637,7 +640,27 @@ fn canonical_frontier_planner_carries_the_first_ready_offer_across_pages() {
             first_invocation.id().expect("first invocation id"),
         )
         .expect("build first planner request");
-    assert_eq!(first_request_message.input_bundle().len(), 3);
+    assert_eq!(first_request_message.input_bundle().len(), 4);
+    let original = first_request_message
+        .input_bundle()
+        .candidate_inputs(&first_request_message)
+        .expect("candidate inputs")
+        .into_values()
+        .next()
+        .expect("first candidate")
+        .offer
+        .expect("offer");
+    let forged = Proposal::new(
+        original.branch_point(),
+        original.request(),
+        original.domain(),
+        original.value().clone(),
+        original.policy(),
+        original.planner_invocation(),
+        original.ordinal() + 1,
+        original.guidance_basis(),
+    )
+    .expect("forged offer");
     let tampered_objects = first_request_message
         .input_bundle()
         .object_ids()
@@ -647,28 +670,35 @@ fn canonical_frontier_planner_carries_the_first_ready_offer_across_pages() {
                 .object(id)
                 .expect("decode bundle object")
                 .expect("bundle object");
-            if object.record_kind() != crate::CampaignRecordKind::Proposal {
-                return object;
+            match object.record_kind() {
+                crate::CampaignRecordKind::Proposal => ObjectEnvelope::for_record(
+                    crate::CampaignRecordKind::Proposal,
+                    crate::object::content_children(forged.content_children())
+                        .expect("offer children"),
+                    forged.canonical_bytes(),
+                )
+                .expect("forged offer envelope"),
+                crate::CampaignRecordKind::PlannerCandidateBudget => {
+                    let original =
+                        crate::PlannerCandidateBudget::from_canonical_bytes(object.body())
+                            .expect("budget");
+                    let budget = crate::PlannerCandidateBudget::new(
+                        &forged,
+                        original.remaining_proposals(),
+                        original.remaining_attempts(),
+                        original.requires_new_attempt(),
+                    )
+                    .expect("rebind budget");
+                    ObjectEnvelope::for_record(
+                        crate::CampaignRecordKind::PlannerCandidateBudget,
+                        crate::object::content_children(budget.content_children())
+                            .expect("budget children"),
+                        budget.canonical_bytes(),
+                    )
+                    .expect("forged budget envelope")
+                }
+                _ => object,
             }
-            let offer = Proposal::from_canonical_bytes(object.body()).expect("candidate offer");
-            let forged = Proposal::new(
-                offer.branch_point(),
-                offer.request(),
-                offer.domain(),
-                offer.value().clone(),
-                offer.policy(),
-                offer.planner_invocation(),
-                offer.ordinal() + 1,
-                offer.guidance_basis(),
-            )
-            .expect("forged offer");
-            ObjectEnvelope::for_record(
-                crate::CampaignRecordKind::Proposal,
-                crate::object::content_children(forged.content_children())
-                    .expect("forged offer children"),
-                forged.canonical_bytes(),
-            )
-            .expect("forged offer envelope")
         })
         .collect::<Vec<_>>();
     let tampered = PlannerRequest::new(

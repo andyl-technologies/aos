@@ -68,6 +68,64 @@ impl IssueGeneratorValidation {
 }
 
 impl CampaignRepository {
+    /// Projects one offer without publishing its selection, path, or attempt.
+    pub(super) fn planner_candidate_budget(
+        &self,
+        snapshot: &LoadedSnapshot,
+        offer: &Proposal,
+        ledger: crate::CampaignBudgetLedger,
+    ) -> Result<crate::PlannerCandidateBudget, CampaignRepositoryError> {
+        let request = self.read_branch_request(offer.request().content_id())?;
+        let opportunity = self.read_opportunity(request.opportunity().content_id())?;
+        let domain = self.read_choice_domain(request.domain().content_id())?;
+        let lineage = self.read_lineage(required_child(&snapshot.envelope, "lineage")?)?;
+        let parent_path = self.planner_issue_parent_path(snapshot, &lineage, &request)?;
+        let attempt = self.derive_planner_issue_attempt(
+            &PlannerIssueAttemptBasis {
+                snapshot,
+                lineage: &lineage,
+                request: &request,
+                opportunity: &opportunity,
+                domain: &domain,
+                parent_path: &parent_path,
+            },
+            offer,
+            IssueProjectionMode::Preflight,
+        )?;
+        let attempt = attempt.id()?;
+        let accounting = snapshot.snapshot.roots().accounting;
+        let indexed_attempt = self.merkle.get(
+            accounting,
+            map_key_content("accounting.attempt", attempt.content_id()),
+        )?;
+        let indexed_basis = self.merkle.get(
+            accounting,
+            map_key_content("accounting.attempt-execution-basis", attempt.content_id()),
+        )?;
+        let new_attempt = match (indexed_attempt, indexed_basis) {
+            (None, None) => true,
+            (Some(indexed), Some(basis)) if indexed == attempt.content_id() => {
+                let admission = self.decode_attempt_admission(basis)?;
+                if admission.attempt() != attempt
+                    || !matches!(
+                        admission.role(),
+                        AttemptAdmissionRole::ExecutionBasis { .. }
+                    )
+                {
+                    return Err(integrity("planner-budget-attempt-basis-mismatch"));
+                }
+                false
+            }
+            _ => return Err(integrity("planner-budget-attempt-index-mismatch")),
+        };
+        Ok(crate::PlannerCandidateBudget::new(
+            offer,
+            ledger.remaining_proposals(),
+            ledger.remaining_attempts(),
+            new_attempt,
+        )?)
+    }
+
     pub(super) fn preflight_planner_issue(
         &self,
         snapshot: &LoadedSnapshot,

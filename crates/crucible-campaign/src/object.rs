@@ -109,11 +109,13 @@ pub enum CampaignRecordKind {
     PlannerCandidateGuidance,
     /// Exact aggregate grants and spending under the budget-ledger contract.
     BudgetLedger,
+    /// Snapshot-bound budget eligibility for one exact planner offer.
+    PlannerCandidateBudget,
 }
 
 impl CampaignRecordKind {
     /// Every campaign record schema admitted by this crate.
-    pub const ALL: [Self; 39] = [
+    pub const ALL: [Self; 40] = [
         Self::Lineage,
         Self::Policy,
         Self::Snapshot,
@@ -153,6 +155,7 @@ impl CampaignRecordKind {
         Self::Finding,
         Self::PlannerCandidateGuidance,
         Self::BudgetLedger,
+        Self::PlannerCandidateBudget,
     ];
 
     /// Returns the globally registered canonical schema name.
@@ -198,6 +201,7 @@ impl CampaignRecordKind {
             Self::Finding => "crucible.campaign.finding",
             Self::PlannerCandidateGuidance => "crucible.campaign.planner-candidate-guidance",
             Self::BudgetLedger => "crucible.campaign.budget-ledger",
+            Self::PlannerCandidateBudget => "crucible.campaign.planner-candidate-budget",
         }
     }
 
@@ -242,6 +246,7 @@ impl CampaignRecordKind {
             Self::ExpansionState
             | Self::ContinuationProjection
             | Self::PlannerCandidateGuidance
+            | Self::PlannerCandidateBudget
             | Self::CoverageProjection
             | Self::RankingExplanation => ObjectKind::Projection,
             Self::MeasurementSet
@@ -313,6 +318,7 @@ impl Canonical for CampaignRecordKind {
             Self::SurvivorSelection => 36,
             Self::PlannerCandidateGuidance => 37,
             Self::BudgetLedger => 38,
+            Self::PlannerCandidateBudget => 39,
         });
     }
 
@@ -357,6 +363,7 @@ impl Canonical for CampaignRecordKind {
             36 => Ok(Self::SurvivorSelection),
             37 => Ok(Self::PlannerCandidateGuidance),
             38 => Ok(Self::BudgetLedger),
+            39 => Ok(Self::PlannerCandidateBudget),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "campaign-record-kind",
                 tag,
@@ -646,6 +653,7 @@ impl ObjectEnvelope {
             CampaignRecordKind::Fact
                 | CampaignRecordKind::Snapshot
                 | CampaignRecordKind::BudgetLedger
+                | CampaignRecordKind::PlannerCandidateBudget
                 | CampaignRecordKind::BranchPath
                 | CampaignRecordKind::BranchRequest
                 | CampaignRecordKind::MeasurementSet
@@ -827,6 +835,10 @@ fn expected_children(
         }
         CampaignRecordKind::PlannerCandidateGuidance => {
             let value = crate::PlannerCandidateGuidance::from_canonical_bytes(body)?;
+            content_children(value.content_children())
+        }
+        CampaignRecordKind::PlannerCandidateBudget => {
+            let value = crate::PlannerCandidateBudget::from_canonical_bytes(body)?;
             content_children(value.content_children())
         }
         CampaignRecordKind::MerkleNode => Err(CampaignCodecError::InvalidValue {

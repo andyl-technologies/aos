@@ -171,6 +171,29 @@ impl<S> CampaignPlannerDriver<S> {
             .planner
             .plan(&request)
             .map_err(CampaignPlannerDriverError::Planner)?;
+        let proposal = response.submission().proposal();
+        if matches!(proposal.disposition(), PlannerProposalDisposition::NoWork)
+            && proposal.explanation().terms_micros().get("budget-blocked") == Some(&1)
+            && (CanonicalFrontierPlanner::supports_descriptor(request.engine())
+                .map_err(CampaignRepositoryError::from)?
+                || CanonicalPuctPlanner::supports_descriptor(request.engine())
+                    .map_err(CampaignRepositoryError::from)?)
+        {
+            // A complete scan may have passed blocked pages before an empty
+            // final page. The portable state retains that evidence. Recompute
+            // the built-in result before treating its explanation as a wait.
+            self.repository
+                .validate_builtin_planner_proposal(&request, proposal)?;
+            let reason = if remaining.remaining_proposals() == 0 {
+                CampaignBudgetError::ProposalAllowanceExhausted
+            } else if remaining.remaining_attempts() == 0 {
+                CampaignBudgetError::AttemptAllowanceExhausted
+            } else {
+                return Err(integrity("planner-budget-blocked-with-available-allowances").into());
+            };
+            self.budget_blocked = Some((snapshot, reason));
+            return Ok(CampaignPlannerStepOutcome::BudgetBlocked { snapshot, reason });
+        }
         let result = match self
             .repository
             .accept_planner_response(campaign, &request, &response)
