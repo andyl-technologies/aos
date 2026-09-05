@@ -148,8 +148,8 @@ in
             export NIX_CONF_DIR="$nix_conf"
             export NIX_REMOTE="$store_uri"
             ${pkgs.aos}/bin/aos --version >/dev/null
-            ${pkgs.aos}/bin/apm --help >/dev/null
-            ${pkgs.aos}/bin/apr --help >/dev/null
+            ${pkgs.aos.apm}/bin/apm --help >/dev/null
+            ${pkgs.aos.apr}/bin/apr --help >/dev/null
 
             mkdir -p "$out"
             jq -S -n \

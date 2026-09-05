@@ -349,6 +349,20 @@ impl ReleasePlanRequestV1 {
 }
 
 impl ReleasePlanV1 {
+    /// Requires the shared contract before a new public release operation.
+    ///
+    /// # Errors
+    /// Returns an error for an archival plan or invalid shared contract.
+    pub fn require_current_qualification(&self) -> Result<()> {
+        self.validate()?;
+        if self.schema_version != crate::RELEASE_PLAN_V2 || self.qualification.is_none() {
+            bail!(
+                "archival release plans are read-only; new publication requires a v2 shared qualification contract"
+            );
+        }
+        Ok(())
+    }
+
     /// Validates the complete frozen release contract.
     ///
     /// # Errors

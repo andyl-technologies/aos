@@ -43,7 +43,7 @@ in [
     "reboot-persistence"
     "bounded-generation-retention"
     "disk-and-memory-pressure"
-  ] ["checks.fleet.runtime-config-all"])
+  ] ["checks.fleet.runtime-config-all" "checks.fleet.qualification-workload"])
   (gate "image-update-recovery" "staging" "images" [
     "preceding-image-identity"
     "upgrade"
@@ -63,13 +63,12 @@ in [
     "persistent-state"
     "runtime-identity"
     "testing-or-production-profile"
-  ] ["checks.containers.all" "checks.fleet.container-runtime" "checks.fleet.hub-oci"])
+  ] ["checks.container.all" "checks.fleet.container-runtime" "checks.fleet.hub-oci"])
   (gate "staging-delivery" "staging" "release" [
     "deployment-identity"
     "anonymous-package-and-image-consumption"
     "tuf-expiry-and-renewal"
     "interrupted-publication"
-    "exact-byte-promotion"
     "immutable-source-retention"
   ] ["checks.fleet.native-hub-release-pipeline"])
   (exercise "operator-recovery" [
@@ -89,6 +88,7 @@ in [
     // {production_only = true;})
   (gate "rollout-health" "rollout" "release" [
     "production-deployment-identity"
+    "exact-byte-promotion"
     "production-public-readback"
     "clean-client-consumption"
     "no-unresolved-integrity-or-recovery-failure"

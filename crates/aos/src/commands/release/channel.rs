@@ -41,6 +41,7 @@ async fn advance(args: &ReleaseChannelAdvanceArgs, printer: &Printer) -> Result<
     )?;
     let plan: aos_release::plan::ReleasePlanV1 =
         canonical::from_slice(&captured.plan_bytes, "release plan")?;
+    plan.require_current_qualification()?;
     let bundle_digest =
         aos_release::verify::bundle_digest(&captured.manifest_bytes, &captured.files)?;
     if !plan.intended_channels.iter().any(|intent| {
@@ -110,6 +111,28 @@ async fn advance(args: &ReleaseChannelAdvanceArgs, printer: &Printer) -> Result<
         bail!("public production receipt differs from the rollout authority");
     }
 
+    let manifest: aos_release::manifest::ManifestEnvelopeV1 =
+        canonical::from_slice(&captured.manifest_bytes, "release manifest")?;
+    let qualification_digest = super::qualification_transition::verify_admission(
+        &plan,
+        &manifest.payload,
+        args.qualification.as_deref(),
+        &args.qualification_keys,
+        &manifest_keys,
+        aos_release::qualification::QualificationPhase::Rollout,
+        Some(
+            &aos_release::qualification_admission::QualificationRolloutIntent {
+                channel: args.channel.clone(),
+                prior_generation: args.prior_generation,
+                first_partition: args.first_partition,
+                last_partition: args.last_partition,
+            },
+        ),
+        &journal_bytes,
+        production_digest,
+        summary.manifest_digest,
+    )?;
+
     let token = args
         .token
         .as_deref()
@@ -164,6 +187,7 @@ async fn advance(args: &ReleaseChannelAdvanceArgs, printer: &Printer) -> Result<
     .await?;
 
     let rollout_journal = append_rolling_journal(&journal, prior_state, &receipt, channel_digest)?;
+    let rollout_journal = bind_qualification(rollout_journal, qualification_digest)?;
     persist(
         &args.output,
         &production_bytes,
@@ -205,6 +229,7 @@ async fn complete(args: &ReleaseChannelCompleteArgs, printer: &Printer) -> Resul
     )?;
     let plan: aos_release::plan::ReleasePlanV1 =
         canonical::from_slice(&captured.plan_bytes, "release plan")?;
+    plan.require_current_qualification()?;
     let bundle_digest =
         aos_release::verify::bundle_digest(&captured.manifest_bytes, &captured.files)?;
 
@@ -239,6 +264,21 @@ async fn complete(args: &ReleaseChannelCompleteArgs, printer: &Printer) -> Resul
     {
         bail!("production receipt does not bind the exact completion release");
     }
+
+    let manifest: aos_release::manifest::ManifestEnvelopeV1 =
+        canonical::from_slice(&captured.manifest_bytes, "release manifest")?;
+    let qualification_digest = super::qualification_transition::verify_admission(
+        &plan,
+        &manifest.payload,
+        args.qualification.as_deref(),
+        &args.qualification_keys,
+        &manifest_keys,
+        aos_release::qualification::QualificationPhase::Complete,
+        None,
+        &journal_bytes,
+        production_digest,
+        summary.manifest_digest,
+    )?;
 
     let channel_keys = key_map(&args.channel_receipt_keys)?;
     let mut channel_receipts = Vec::with_capacity(args.channel_receipts.len());
@@ -360,6 +400,7 @@ async fn complete(args: &ReleaseChannelCompleteArgs, printer: &Printer) -> Resul
     .await?;
 
     let complete_journal = append_complete_journal(&journal, &completion, &completion_envelopes)?;
+    let complete_journal = bind_qualification(complete_journal, qualification_digest)?;
     persist_completion(
         &args.output,
         &production_bytes,
@@ -746,4 +787,23 @@ mod tests {
         );
         Ok(())
     }
+}
+
+/// Adds admission evidence before the successor journal is persisted.
+fn bind_qualification(bytes: Vec<u8>, digest: Option<Sha256Digest>) -> Result<Vec<u8>> {
+    let Some(digest) = digest else {
+        return Ok(bytes);
+    };
+    let mut journal = parse_journal(&bytes)?;
+    let last = journal.last_mut().context("empty successor journal")?;
+    last.evidence.push(digest);
+    last.evidence.sort();
+    last.evidence.dedup();
+    aos_release::verify::verify_journal(&journal)?;
+    let mut result = Vec::new();
+    for entry in journal {
+        result.extend(canonical::to_vec(&entry)?);
+        result.push(b'\n');
+    }
+    Ok(result)
 }

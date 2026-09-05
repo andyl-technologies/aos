@@ -72,6 +72,101 @@ refer to that finished manifest and its staging receipt. Rollout and completion
 observations are later records; never mutate the original manifest to add
 evidence that did not exist when it was signed.
 
+## Collect, review, and sign
+
+Inspect the actual case population before allocating machines:
+
+```sh
+aos release qualification cases --plan release-bundle/release-plan.json \
+  --manifest release-bundle/release-manifest.json --phase staging
+```
+
+This command displays requirements; it does not verify signatures or claim a
+pass. Use `aos release verify` with independent public anchors for verification.
+
+Run `aos release qualify-run --prepare-only` with the bundle, publication
+receipt, applicable executor mappings, and `--qualified-at now` described in
+[the runbook](canonical-releases.md#run-the-native-qualification-matrix).
+Inspect the prepared report and its retained `reports/` directory. Sign an
+independent review payload with a planned `release-evidence` key:
+
+```json
+{
+  "schema_version": "aos.release.qualification-review/v1",
+  "plan_digest": "sha256:<canonical-plan-hash>",
+  "report_digest": "sha256:<exact-prepared-report-hash>",
+  "authority_id": "<planned-reviewer-key-id>",
+  "accepted": true
+}
+```
+
+Use the existing signed-receipt envelope: Ed25519 signs the SHA-256 of
+`aos.hub.release-evidence-signature/v1`, a NUL byte, then the canonical payload.
+This is `RECEIPT_SIGNATURE_DOMAIN` in `crates/aos-release/src/receipt.rs`.
+Keep review signing under the configured authority provider, outside the Nix
+store. Review thresholds are required for candidate, stable, and emergency.
+Testing may include reviews voluntarily. Human independence and custody are
+confirmed in the maintainer checklist; separate key IDs alone do not prove it.
+
+Repeat `qualify-run` with `--report-input PREPARED/qualification-report.json`
+and each `--review-receipt PATH`, omitting `--prepare-only`. The authority checks
+and signs the same report. Its output atomically retains report bodies,
+reviews, and signatures. Keep that entire directory and the separately retained
+`.aos-qualification-attempt-*` directories. `qualify` and `promote` recheck the
+original report directory, including its bodies and reviews; a copied aggregate
+JSON file alone is insufficient.
+
+For rollout use `--phase rollout --publication-receipt PRODUCTION_RECEIPT`
+(the latter aliases `--staging-receipt`), the production Hub receipt key,
+`--journal CURRENT_JOURNAL`, and `--rollout-intent NEXT_RANGE.json`:
+
+```json
+{"channel":"edge","first_partition":0,"last_partition":31,"prior_generation":0}
+```
+
+For completion use `--phase complete` with the current production receipt and
+rolling journal. No rollout intent is supplied. These authority signatures
+bind the exact report, policy, manifest, publication receipt, entire journal,
+and next range where applicable. Channel commands require `--qualification`
+and `--qualification-key`; observations and approvals at rollout must be at
+most ten minutes old. Recollect health for each new range. A completion
+approval must also be fresh, while its workload report covers the full selected
+observation window. Campaigns lasting days run outside a single bounded RPC;
+import their retained observations for review and admission.
+
+## Native executors
+
+`lib.testing.mkQualificationExecutor` (from `lib/testing`) packages a runner
+with explicit `platform`, `identity`, `scenarios`, absolute `workRoot`, and
+`timeoutSeconds`. `scenarios` maps requirement IDs to absolute executables in
+AOS-built Nix closures. Missing implementations fail; an empty adapter is never
+a passing gate. Environment-specific adapters and remote macOS transport must
+be provisioned before a campaign. All source regression groups are exposed at
+`checks.qualification.<requirement-id>` and `checks.qualification.all`.
+
+The runner reads a canonical v2 executor request on stdin. It verifies every
+anonymous HTTPS download's size and SHA-256, retains it under a hashed name,
+and writes `request.json`, `scenario-registry.json`, and `objects.json` in a
+private attempt directory. The configured scenario receives the request on
+stdin and runs in that directory with no inherited environment. `objects.json`
+maps artifact IDs to the verified local paths. Scenarios use AOS-built tools
+and the published image's normal provisioning and serial/SSH interfaces.
+
+The scenario emits `QualificationExecutorResponseV1`. Its observation must
+contain the exact case digest, acceptance checks, and predecessor. Set
+`executor_digest` to the SHA-256 of the retained scenario registry bytes;
+its store paths bind the executable closures. Include the actual non-sensitive
+environment inventory in `report.environment`, and set `environment_digest`
+to its canonical JSON SHA-256. Record real UTC times and measured workload
+counts. The runner checks this binding and retains response bytes, stdout,
+stderr, and failures. Coordinator attempts retain each request and returned
+response, including rejected results. Never overwrite a failed attempt.
+
+A fixture gate proves regression behavior only. The native Hub fleet uses
+visibly synthetic observations and timing to test admission mechanics; those
+records cannot establish release workload duration or physical reliability.
+The same acceptance conditions govern real automated and operator adapters.
+
 ## Qualification roles and public status
 
 Package roles describe consequences: `system-integrity`, `qualified-workload`,

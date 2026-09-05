@@ -136,7 +136,8 @@
       "phase": "staging",
       "production_only": false,
       "regressions": [
-        "checks.fleet.runtime-config-all"
+        "checks.fleet.runtime-config-all",
+        "checks.fleet.qualification-workload"
       ],
       "scope": "images"
     },
@@ -189,7 +190,7 @@
       "phase": "staging",
       "production_only": false,
       "regressions": [
-        "checks.containers.all",
+        "checks.container.all",
         "checks.fleet.container-runtime",
         "checks.fleet.hub-oci"
       ],
@@ -201,7 +202,6 @@
         "anonymous-package-and-image-consumption",
         "tuf-expiry-and-renewal",
         "interrupted-publication",
-        "exact-byte-promotion",
         "immutable-source-retention"
       ],
       "id": "staging-delivery",
@@ -264,6 +264,7 @@
     {
       "checks": [
         "production-deployment-identity",
+        "exact-byte-promotion",
         "production-public-readback",
         "clean-client-consumption",
         "no-unresolved-integrity-or-recovery-failure"
