@@ -1155,6 +1155,24 @@ impl<O> ConditionEvaluationPass<O> {
     {
         state.evaluate(graph, &mut self.evaluation)
     }
+
+    /// Evaluates triggers while deferring time predicates ahead of the shared frontier.
+    ///
+    /// A backend observation from one leading node may have a timestamp later
+    /// than the shared scheduler frontier. Time-conditioned events retain their
+    /// one-shot, edge, and latch state until the frontier reaches that prefix.
+    /// Pure observational triggers keep their ordinary causal evaluation points.
+    pub fn evaluate_event_graph_at_frontier(
+        &mut self,
+        graph: &EventGraph,
+        state: &mut EventGraphState,
+        frontier: VirtualTime,
+    ) -> EventFirings
+    where
+        O: ConditionLeafOracle,
+    {
+        state.evaluate_with_frontier(graph, &mut self.evaluation, Some(frontier))
+    }
 }
 
 impl<O> condition_evaluator_sealed::Sealed for ConditionEvaluation<O> where O: ConditionLeafOracle {}

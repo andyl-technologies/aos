@@ -1986,17 +1986,10 @@ fn validate_manifest_shape(manifest: &ClosureManifest) -> Result<(), String> {
             "closure manifest contains an invalid node record",
         ));
     }
-    let snapshot_count = manifest
-        .targets
-        .iter()
-        .map(|target| target.snapshot)
-        .collect::<BTreeSet<_>>()
-        .len();
-    if snapshot_count != manifest.targets.len() {
-        return Err(String::from(
-            "closure manifest aliases a node-specific QEMU snapshot",
-        ));
-    }
+    // Snapshot objects are immutable content, so distinct nodes may legitimately
+    // reference identical bytes. Node ownership is authenticated separately by
+    // each target's manifest identity, including its node, artifacts, counters,
+    // and fault continuation; snapshot-content uniqueness is not that boundary.
     for target in &manifest.targets {
         if manifest.format_version == MANIFEST_VERSION {
             if !target.overlay.sparse || target.vmstate.sparse {

@@ -778,6 +778,11 @@ pub enum ExactLocalEvent {
         /// The exact global virtual-time boundary requested by the runtime.
         virtual_time: SimInstant,
     },
+    /// The event graph requires an exact predicate-transition boundary.
+    TriggerEvaluation {
+        /// The exact global virtual-time transition requested by the graph.
+        virtual_time: SimInstant,
+    },
 }
 
 impl ExactLocalEvent {
@@ -788,7 +793,8 @@ impl ExactLocalEvent {
             Self::NoArmedTimer => None,
             Self::TimerDeadline { virtual_time }
             | Self::IoCompletion { virtual_time, .. }
-            | Self::SignalFaultEvaluation { virtual_time } => Some(*virtual_time),
+            | Self::SignalFaultEvaluation { virtual_time }
+            | Self::TriggerEvaluation { virtual_time } => Some(*virtual_time),
         }
     }
 }
@@ -1036,6 +1042,7 @@ pub(super) fn exact_local_event_rank(event: &ExactLocalEvent) -> u8 {
         ExactLocalEvent::TimerDeadline { .. } => 1,
         ExactLocalEvent::IoCompletion { .. } => 2,
         ExactLocalEvent::SignalFaultEvaluation { .. } => 3,
+        ExactLocalEvent::TriggerEvaluation { .. } => 4,
     }
 }
 
@@ -1043,7 +1050,8 @@ pub(super) fn exact_local_event_source_key(event: &ExactLocalEvent) -> &str {
     match event {
         ExactLocalEvent::NoArmedTimer
         | ExactLocalEvent::TimerDeadline { .. }
-        | ExactLocalEvent::SignalFaultEvaluation { .. } => "",
+        | ExactLocalEvent::SignalFaultEvaluation { .. }
+        | ExactLocalEvent::TriggerEvaluation { .. } => "",
         ExactLocalEvent::IoCompletion { sub_node, .. } => &sub_node.node.name,
     }
 }
@@ -1059,6 +1067,8 @@ pub enum SchedulerHorizonSource {
     ExactLocalIoCompletion,
     /// An exact signal-driven fault evaluation selected the horizon.
     SignalFaultEvaluation,
+    /// An exact event-graph predicate transition selected the horizon.
+    TriggerEvaluation,
 }
 
 /// The scheduler rendezvous frequency knob.
@@ -1467,6 +1477,7 @@ pub(super) fn exact_local_event_horizon_source(event: &ExactLocalEvent) -> Sched
         ExactLocalEvent::SignalFaultEvaluation { .. } => {
             SchedulerHorizonSource::SignalFaultEvaluation
         }
+        ExactLocalEvent::TriggerEvaluation { .. } => SchedulerHorizonSource::TriggerEvaluation,
         ExactLocalEvent::NoArmedTimer => SchedulerHorizonSource::NetworkLookahead,
     }
 }

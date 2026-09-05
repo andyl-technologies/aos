@@ -407,6 +407,10 @@ fn command(arguments: &[&str]) -> Command {
 
 fn run_json(command: &mut Command, operation: &str) -> Result<Value, Box<dyn Error>> {
     let output = command.output()?;
+    parse_json_output(output, operation)
+}
+
+fn parse_json_output(output: Output, operation: &str) -> Result<Value, Box<dyn Error>> {
     require_success(&output, operation)?;
     let stdout = String::from_utf8(output.stdout)?;
     let mut lines = stdout.lines();

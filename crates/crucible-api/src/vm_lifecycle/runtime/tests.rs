@@ -9,6 +9,9 @@ use super::*;
 #[path = "tests/durable_run_state.rs"]
 mod durable_run_state;
 
+#[path = "tests/trigger_deadlines.rs"]
+mod trigger_deadlines;
+
 fn hash(domain: &str) -> ContentHash {
     ContentHash::from_canonical_material("debug-runtime-evidence-test", domain)
 }
