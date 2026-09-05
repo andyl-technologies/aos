@@ -394,7 +394,8 @@ fn navigation_groups(route: &ConsoleRoute, client: &ApiClient) -> Vec<Navigation
 /// Mutation workflows use this path after a successful apply so the mounted
 /// application chrome and in-memory browser session survive. Dispatching a
 /// synthetic `popstate` event drives the same route refresh as browser
-/// back/forward navigation.
+/// back/forward navigation. The dispatch runs in the next browser task so the
+/// mutation callback can finish its terminal reactive updates before unmount.
 pub(crate) fn navigate(path: &str) {
     let Some(route) = ConsoleRoute::resolve(path) else {
         return;
@@ -414,14 +415,18 @@ pub(crate) fn navigate(path: &str) {
         document.set_title(&format!("{} — AOS Hub", route.page.label));
     }
     window.scroll_to_with_x_and_y(0.0, 0.0);
-    match leptos::web_sys::PopStateEvent::new("popstate") {
-        Ok(event) => {
-            let _ = window.dispatch_event(&event);
-        }
-        Err(_) => {
-            let _ = window.location().set_href(path);
-        }
-    }
+    let fallback_path = path.to_string();
+    set_timeout(
+        move || match leptos::web_sys::PopStateEvent::new("popstate") {
+            Ok(event) => {
+                let _ = window.dispatch_event(&event);
+            }
+            Err(_) => {
+                let _ = window.location().set_href(&fallback_path);
+            }
+        },
+        std::time::Duration::ZERO,
+    );
 }
 
 /// Refreshes the active workflow without unloading the management application.

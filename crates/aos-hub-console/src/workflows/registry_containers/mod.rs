@@ -11,13 +11,12 @@ mod publications;
 mod retention;
 mod tags;
 
-use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 
 use crate::app::refresh;
 use crate::components::{CopyableCommand, EmptyState, InlineError, ReviewedPlanCard, StatusBadge};
-use crate::mutation::{idempotency_key, PendingPlan};
+use crate::mutation::{idempotency_key, scoped_workflow_tasks, PendingPlan};
 use crate::transport::ApiClient;
 
 use self::gc::ContainerGc;
@@ -97,7 +96,13 @@ pub(super) fn RegistryContainers(client: ApiClient, registry_id: String) -> impl
                     })}
                 </Suspense>
             </section>
-            {move || selected.get().map(|repository| view! { <RepositoryWorkspace client=workspace_client.clone() registry=workspace_registry.clone() repository=repository/> })}
+            <For
+                each=move || selected.get().into_iter()
+                key=|repository| repository.clone()
+                children=move |repository| view! {
+                    <RepositoryWorkspace client=workspace_client.clone() registry=workspace_registry.clone() repository=repository/>
+                }
+            />
             <ContainerRetention client=client.clone() registry=registry_id.clone()/>
             <details class="panel advanced-controls" on:toggle=move |_| gc_requested.set(true)>
                 <summary>"Garbage collection & provider reconciliation"</summary>
@@ -163,6 +168,7 @@ fn RepositoryDetail(
     client: ApiClient,
     repository: aos_proto_types::ContainerRepository,
 ) -> impl IntoView {
+    let task_scope = scoped_workflow_tasks();
     let description = RwSignal::new(repository.description.clone());
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
@@ -186,7 +192,7 @@ fn RepositoryDetail(
         };
         busy.set(true);
         error.set(None);
-        spawn_local(async move {
+        task_scope.spawn(async move {
             let result = client
                 .call::<_, aos_proto_types::TopologyPlanResponse>(
                     aos_proto_types::CONTAINER_SERVICE_PLAN_UPDATE_CONTAINER_REPOSITORY_PATH,
@@ -210,7 +216,7 @@ fn RepositoryDetail(
         let client = apply_client.clone();
         busy.set(true);
         error.set(None);
-        spawn_local(async move {
+        task_scope.spawn(async move {
             match client
                 .call::<_, aos_proto_types::ContainerRepositoryResponse>(
                     aos_proto_types::CONTAINER_SERVICE_UPDATE_CONTAINER_REPOSITORY_PATH,
