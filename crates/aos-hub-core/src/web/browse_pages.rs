@@ -1243,7 +1243,7 @@ pub fn package_page(
         );
     }
     body.push_str(
-        "<nav class=\"package-section-nav\" aria-label=\"Package documentation sections\"><a href=\"#overview\">Overview</a><a href=\"#configure\">Configure</a><a href=\"#runtime\">Services</a><a href=\"#dependencies\">Dependencies</a><a href=\"#versions\">Versions</a><a href=\"#integrity\">Integrity</a></nav>",
+        "<nav class=\"package-section-nav\" aria-label=\"Package documentation sections\"><a href=\"#overview\">Overview</a><a href=\"#install\">Install</a><a href=\"#versions\">Versions</a><a href=\"#configure\">Documentation</a><a href=\"#dependencies\">Dependencies</a><a href=\"#integrity\">Integrity</a></nav>",
     );
 
     // The union of every version's platforms, as chips near the top.
@@ -1300,7 +1300,7 @@ pub fn package_page(
 
     // Install snippet: apm is the consumer CLI; the registry-add and
     // substituter lines mirror the registry home setup, package-focused.
-    body.push_str("<h2>Install</h2>\n");
+    body.push_str("<h2 id=\"install\">Install</h2>\n");
     if let Some(add_command) = setup.add_command() {
         let snippet = format!(
             "{add_command}\napm install {name}\n\n# or as a plain Nix substituter:\n{plain}",
@@ -1318,6 +1318,65 @@ pub fn package_page(
         );
     }
 
+    body.push_str("<h2 id=\"versions\">Versions</h2>\n");
+    body.push_str(
+        "<div class=\"table-scroll\" role=\"region\" aria-label=\"Package artifacts\" tabindex=\"0\">\n\
+         <table class=\"artifact-table\"><thead><tr><th>version</th><th>platform</th><th>NAR</th><th>closure</th></tr></thead>\n",
+    );
+    for version in &detail.versions {
+        for platform in &version.platforms {
+            body.push_str("<tbody class=\"artifact\">\n<tr class=\"artifact-summary\">");
+            let _ = write!(body, "<td>{}", escape(&version.version));
+            if let Some(previous) = &version.previous {
+                let _ = write!(
+                    body,
+                    "<div class=\"subline\">upgrades {}</div>",
+                    escape(previous)
+                );
+            }
+            let _ = writeln!(
+                body,
+                "</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                escape(&platform.platform),
+                human_size(platform.nar_size),
+                human_size(platform.closure_size),
+            );
+            let _ = writeln!(
+                body,
+                "<tr class=\"artifact-detail\"><th scope=\"row\">store path</th><td colspan=\"3\">{}</td></tr>",
+                store_path_link(setup, &platform.store_path),
+            );
+            let source = if platform.source_drv.is_empty() {
+                "—".to_string()
+            } else {
+                store_path_link(setup, &platform.source_drv)
+            };
+            let _ = writeln!(
+                body,
+                "<tr class=\"artifact-detail\"><th scope=\"row\">source drv</th><td colspan=\"3\">{source}</td></tr>"
+            );
+            let _ = writeln!(
+                body,
+                "<tr class=\"artifact-detail\"><th scope=\"row\">NAR hash</th><td colspan=\"3\">{}</td></tr>",
+                hash_value(&platform.nar_hash),
+            );
+            if !platform.refs.is_empty() {
+                body.push_str(
+                    "<tr class=\"artifact-detail\"><th scope=\"row\">references</th><td colspan=\"3\" class=\"artifact-references\">",
+                );
+                for (index, reference) in platform.refs.iter().enumerate() {
+                    if index > 0 {
+                        body.push(' ');
+                    }
+                    body.push_str(&narinfo_link(setup, reference));
+                }
+                body.push_str("</td></tr>\n");
+            }
+            body.push_str("</tbody>\n");
+        }
+    }
+    body.push_str("</table></div>\n");
+
     body.push_str("<section id=\"configure\" class=\"package-docs\"><div class=\"section-heading\"><div><p class=\"eyebrow\">Canonical reference</p><h2>Configuration &amp; runtime</h2></div>");
     let _ = write!(
         body,
@@ -1334,10 +1393,10 @@ pub fn package_page(
             hash_value(&documentation.document_sha256),
             hash_value(&documentation.nar_hash),
         );
-        body.push_str(&document.render_html_fragment());
+        body.push_str("<p>Read configuration options, service behavior, and examples in the versioned package documentation.</p>");
         let _ = write!(
             body,
-            "<p><a href=\"/{}/-/docs/{}/{}/{}\">Open a permanent version/platform reference</a> · <a href=\"/{}/-/api/docs/{}/{}/{}\">canonical JSON</a></p>",
+            "<p><a href=\"/{}/-/docs/{}/{}/{}\">Read configuration &amp; service documentation</a> · <a href=\"/{}/-/api/docs/{}/{}/{}\">canonical JSON</a></p>",
             escape(slug),
             escape(&document.package.name),
             escape(&document.package.version),
@@ -1421,65 +1480,6 @@ pub fn package_page(
             );
         }
     }
-
-    body.push_str("<h2 id=\"versions\">Versions</h2>\n");
-    body.push_str(
-        "<div class=\"table-scroll\" role=\"region\" aria-label=\"Package artifacts\" tabindex=\"0\">\n\
-         <table class=\"artifact-table\"><thead><tr><th>version</th><th>platform</th><th>NAR</th><th>closure</th></tr></thead>\n",
-    );
-    for version in &detail.versions {
-        for platform in &version.platforms {
-            body.push_str("<tbody class=\"artifact\">\n<tr class=\"artifact-summary\">");
-            let _ = write!(body, "<td>{}", escape(&version.version));
-            if let Some(previous) = &version.previous {
-                let _ = write!(
-                    body,
-                    "<div class=\"subline\">upgrades {}</div>",
-                    escape(previous)
-                );
-            }
-            let _ = writeln!(
-                body,
-                "</td><td>{}</td><td>{}</td><td>{}</td></tr>",
-                escape(&platform.platform),
-                human_size(platform.nar_size),
-                human_size(platform.closure_size),
-            );
-            let _ = writeln!(
-                body,
-                "<tr class=\"artifact-detail\"><th scope=\"row\">store path</th><td colspan=\"3\">{}</td></tr>",
-                store_path_link(setup, &platform.store_path),
-            );
-            let source = if platform.source_drv.is_empty() {
-                "—".to_string()
-            } else {
-                store_path_link(setup, &platform.source_drv)
-            };
-            let _ = writeln!(
-                body,
-                "<tr class=\"artifact-detail\"><th scope=\"row\">source drv</th><td colspan=\"3\">{source}</td></tr>"
-            );
-            let _ = writeln!(
-                body,
-                "<tr class=\"artifact-detail\"><th scope=\"row\">NAR hash</th><td colspan=\"3\">{}</td></tr>",
-                hash_value(&platform.nar_hash),
-            );
-            if !platform.refs.is_empty() {
-                body.push_str(
-                    "<tr class=\"artifact-detail\"><th scope=\"row\">references</th><td colspan=\"3\" class=\"artifact-references\">",
-                );
-                for (index, reference) in platform.refs.iter().enumerate() {
-                    if index > 0 {
-                        body.push(' ');
-                    }
-                    body.push_str(&narinfo_link(setup, reference));
-                }
-                body.push_str("</td></tr>\n");
-            }
-            body.push_str("</tbody>\n");
-        }
-    }
-    body.push_str("</table></div>\n");
 
     for version in &detail.versions {
         let image_rows: Vec<Vec<String>> = version
@@ -3862,7 +3862,12 @@ mod tests {
         assert!(package_html.contains("Configuration &amp; runtime"));
         assert!(package_html.contains("aria-label=\"Package documentation sections\""));
         assert!(package_html.contains("href=\"#integrity\""));
-        assert!(package_html.contains("HTTP &lt;proxy&gt; service"));
+        assert!(!package_html.contains("HTTP &lt;proxy&gt; service"));
+        assert!(package_html.contains("Read configuration &amp; service documentation"));
+        assert!(
+            package_html.find("id=\"versions\"").unwrap()
+                < package_html.find("id=\"configure\"").unwrap()
+        );
         assert!(!package_html.contains("HTTP <proxy> service"));
         assert!(package_html.contains("/-/api/docs/nginx/1.30.4/x86_64-linux"));
 

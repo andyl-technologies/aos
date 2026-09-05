@@ -4,9 +4,9 @@
 //! Issuance returns the secret once after an explicit reviewed apply; the
 //! browser holds it only in component memory until the operator reloads.
 
+use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
-use leptos::task::spawn_local;
 
 use crate::components::{EmptyState, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
@@ -126,6 +126,7 @@ fn AccessTokenSettings(client: ApiClient, scope: String) -> impl IntoView {
         .map(|principal| format!("user:{}", principal.email))
         .unwrap_or_default();
     let inventory_client = client.clone();
+    let can_issue = client.allows("tokens.self") || client.allows("tokens.manage");
     let issue_client = client;
 
     view! {
@@ -171,11 +172,12 @@ fn AccessTokenSettings(client: ApiClient, scope: String) -> impl IntoView {
                         })
                     }}
                 </Suspense>
-                <IssueAccessToken
-                    client=issue_client
-                    scope=scope
-                    default_owner=default_owner
-                />
+                {can_issue.then(|| view! {
+                    <details class="advanced-controls">
+                        <summary>"Issue an access token"</summary>
+                        <IssueAccessToken client=issue_client scope=scope default_owner=default_owner/>
+                    </details>
+                })}
             </section>
         </div>
     }
@@ -224,7 +226,7 @@ fn AccessTokenCard(client: ApiClient, token: aos_proto_types::TokenInfo) -> impl
             </div>
             <div class="resource-identity">
                 <div><span>"Owner"</span><code>{token.owner}</code></div>
-                <div><span>"Created"</span><strong>{token.created_at}</strong></div>
+                <div><span>"Created"</span><strong>{display_timestamp(token.created_at, "Not recorded")}</strong></div>
                 <div><span>"Expires"</span><strong>{display_timestamp(token.expires_at, "never")}</strong></div>
                 <div><span>"Last used"</span><strong>{display_timestamp(token.last_used_at, "never")}</strong></div>
             </div>
@@ -248,6 +250,7 @@ fn AccessTokenCard(client: ApiClient, token: aos_proto_types::TokenInfo) -> impl
 
 #[component]
 fn IssueAccessToken(client: ApiClient, scope: String, default_owner: String) -> impl IntoView {
+    let can_choose_owner = client.allows("tokens.manage");
     let owner = RwSignal::new(default_owner);
     let permissions = RwSignal::new("read".to_string());
     let ttl_seconds = RwSignal::new("3600".to_string());
@@ -346,19 +349,21 @@ fn IssueAccessToken(client: ApiClient, scope: String, default_owner: String) -> 
                     <input
                         required
                         prop:value=move || owner.get()
+                        readonly=!can_choose_owner
                         on:input=move |event| owner.set(event_target_value(&event))
                     />
                 </label>
                 <label>
-                    <span>"Permission verbs (comma or whitespace separated)"</span>
+                    <span>"Permissions"</span>
                     <textarea
                         required
                         prop:value=move || permissions.get()
                         on:input=move |event| permissions.set(event_target_value(&event))
                     ></textarea>
+                    <small>"Separate permissions with commas or spaces. The token cannot exceed your current permissions."</small>
                 </label>
                 <label>
-                    <span>"Lifetime in seconds (0 uses the Hub default)"</span>
+                    <span>"Lifetime (seconds)"</span>
                     <input
                         required
                         type="number"
@@ -366,6 +371,7 @@ fn IssueAccessToken(client: ApiClient, scope: String, default_owner: String) -> 
                         prop:value=move || ttl_seconds.get()
                         on:input=move |event| ttl_seconds.set(event_target_value(&event))
                     />
+                    <small>"3600 = one hour; 86400 = one day. Use 0 for the Hub default."</small>
                 </label>
                 <label>
                     <span>"Purpose (non-secret)"</span>
@@ -512,11 +518,7 @@ fn display_or(value: &str, fallback: &str) -> String {
 }
 
 fn display_timestamp(value: i64, fallback: &str) -> String {
-    if value == 0 {
-        fallback.to_string()
-    } else {
-        value.to_string()
-    }
+    crate::components::format_timestamp(value, fallback)
 }
 
 fn reload() {

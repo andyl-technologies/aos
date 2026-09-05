@@ -4,9 +4,9 @@
 //! read-only audit views. Draft Git change requests remain separate because
 //! promotion is performed by the signed `apr change merge` workflow.
 
+use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
-use leptos::task::spawn_local;
 
 use crate::components::{HashValue, InlineError, StatusBadge};
 use crate::transport::ApiClient;
@@ -36,7 +36,9 @@ fn ConfigurationHistory(client: ApiClient, registry_id: String) -> impl IntoView
     view! {
         <div class="workflow-stack">
             <GitHistory client=client.clone() registry_id=registry_id.clone()/>
-            <GitDiffInspector client=client.clone() registry_id=registry_id.clone()/>
+            <details class="panel advanced-controls"><summary>"Compare two commits"</summary>
+                <GitDiffInspector client=client.clone() registry_id=registry_id.clone()/>
+            </details>
             <Changesets client=client registry_id=registry_id/>
         </div>
     }

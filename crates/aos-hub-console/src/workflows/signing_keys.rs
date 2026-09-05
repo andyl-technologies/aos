@@ -8,9 +8,9 @@
 
 use std::collections::BTreeMap;
 
+use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
-use leptos::task::spawn_local;
 
 use crate::components::{EmptyState, HashValue, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
@@ -185,11 +185,14 @@ fn SigningSettings(client: ApiClient, context: SigningContext) -> impl IntoView 
                             match keys.await.as_ref() {
                                 Ok(keys) => view! {
                                     <SigningKeyInventory keys=keys.clone()/>
-                                    <EnrollKey client=client.clone() context=context.clone()/>
-                                    <KeyLifecycle
-                                        client=client.clone()
-                                        keys=keys.clone()
-                                    />
+                                    {client.allows("keys.manage").then(|| view! {
+                                        <details class="advanced-controls"><summary>"Enroll a public signing key"</summary>
+                                            <EnrollKey client=client.clone() context=context.clone()/>
+                                        </details>
+                                        <details class="advanced-controls"><summary>"Rotate or retire a key"</summary>
+                                            <KeyLifecycle client=client.clone() keys=keys.clone()/>
+                                        </details>
+                                    })}
                                     {context.consumer.clone().map(|consumer| view! {
                                         <SigningUsage
                                             client=client
@@ -414,6 +417,7 @@ fn EnrollKey(client: ApiClient, context: SigningContext) -> impl IntoView {
 
 #[component]
 fn KeyLifecycle(client: ApiClient, keys: Vec<aos_proto_types::SigningKey>) -> impl IntoView {
+    let can_manage = client.allows("keys.manage");
     let active = keys
         .into_iter()
         .filter(|key| {
@@ -631,6 +635,7 @@ fn SigningUsageEditor(
     keys: Vec<aos_proto_types::SigningKey>,
     current: Option<aos_proto_types::SigningKeyUsage>,
 ) -> impl IntoView {
+    let can_manage = client.allows("keys.manage");
     let active = keys
         .into_iter()
         .filter(|key| {
@@ -716,7 +721,7 @@ fn SigningUsageEditor(
                 "Enroll an active compatible signing key before attaching this usage."
             </p>
         })}
-        {(!active.is_empty()).then(|| view! {
+        {(can_manage && !active.is_empty()).then(|| view! {
             <form class="editor-form" on:submit=on_plan>
                 <label>
                     <span>"Signing-key generation"</span>

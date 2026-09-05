@@ -59,6 +59,13 @@
   margin: 0 0 1.8rem;
 }
 
+/* A stack owns spacing between its children; panels must not add it twice. */
+.workflow-stack > .panel,
+.subworkflow-stack > .panel,
+.binding-list > .panel {
+  margin-bottom: 0;
+}
+
 .panel button,
 .panel .button {
   max-width: 100%;
@@ -81,9 +88,10 @@
 .review-actions,
 .compact-heading {
   display: flex;
-  align-items: baseline;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 1rem;
+  flex-wrap: wrap;
 }
 
 .section-heading {
@@ -100,7 +108,7 @@
 }
 
 .section-heading p {
-  margin: 0;
+  margin: 0.3rem 0 0;
   color: var(--dim);
   font-size: 0.85rem;
 }
@@ -485,8 +493,8 @@
 .stacked-form,
 .compact-form {
   display: grid;
-  gap: 0.5rem;
-  margin: 0.9rem 0 1.8rem;
+  gap: 0.9rem;
+  margin: 1rem 0 1.4rem;
 }
 
 .editor-form label,
@@ -494,7 +502,7 @@
 .compact-form label {
   display: grid;
   grid-template-columns: var(--form-label-col) minmax(0, 1fr);
-  align-items: baseline;
+  align-items: start;
   column-gap: var(--form-col-gap);
   row-gap: 0.2rem;
   max-width: 42rem;
@@ -511,9 +519,66 @@
   min-width: 0;
 }
 
-.editor-form small {
+.editor-form small,
+.stacked-form small,
+.compact-form small {
   grid-column: 2;
   color: var(--dim);
+}
+
+/* Full-width payloads and help copy share the same grid in every workflow. */
+.editor-form .full-field,
+.stacked-form .full-field,
+.compact-form .full-field {
+  grid-template-columns: minmax(0, 1fr);
+  max-width: none;
+  width: 100%;
+}
+
+.editor-form .full-field small,
+.stacked-form .full-field small,
+.compact-form .full-field small {
+  grid-column: 1;
+}
+
+.editor-form label > span:first-child,
+.stacked-form label > span:first-child,
+.compact-form label > span:first-child {
+  padding-top: 0.45rem;
+}
+
+.editor-form > button,
+.stacked-form > button,
+.compact-form > button {
+  justify-self: start;
+  margin: 0.4rem 0 0 calc(var(--form-label-col) + var(--form-col-gap));
+}
+
+.editor-form > p,
+.stacked-form > p,
+.compact-form > p {
+  max-width: 65ch;
+  margin: 0.2rem 0;
+}
+
+.section-heading > label {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 10rem;
+  margin: 0;
+}
+
+.section-heading > div {
+  min-width: 0;
+  flex: 1 1 16rem;
+}
+
+.advanced-controls[open] > summary {
+  margin-bottom: 1rem;
+}
+
+.advanced-controls > .panel {
+  margin: 1rem 0 0;
 }
 
 .choice-field {
@@ -765,11 +830,16 @@
     grid-template-columns: 1fr;
   }
 
-  .editor-form small {
+  .editor-form small,
+  .stacked-form small,
+  .compact-form small {
     grid-column: 1;
   }
 
-  .form-actions {
+  .form-actions,
+  .editor-form > button,
+  .stacked-form > button,
+  .compact-form > button {
     margin-left: 0;
   }
 
@@ -778,3 +848,11 @@
     overflow-x: auto;
   }
 }
+
+.operation-failure {
+  padding: 0.8rem 1rem;
+  border-left: 3px solid var(--warn);
+  overflow-wrap: anywhere;
+}
+
+.operation-failure p { margin: 0.35rem 0 0; }

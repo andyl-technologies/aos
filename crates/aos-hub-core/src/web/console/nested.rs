@@ -8,7 +8,7 @@
 
 use axum::body::Bytes;
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri};
-use axum::response::{IntoResponse, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 
 use crate::web::console::handlers;
 use crate::web::console::manifest::ConsoleRouteMatched;
@@ -30,6 +30,19 @@ pub async fn dispatch_nested(
     let path = uri.path();
     if !path.contains("/-/settings") {
         return None;
+    }
+    if let Some(destination) = aos_hub_console_contract::registry_catalog_redirect(path) {
+        let mut response = if method == Method::GET {
+            Redirect::to(&destination).into_response()
+        } else {
+            let mut response = StatusCode::METHOD_NOT_ALLOWED.into_response();
+            response
+                .headers_mut()
+                .insert(header::ALLOW, HeaderValue::from_static("GET"));
+            response
+        };
+        response.extensions_mut().insert(ConsoleRouteMatched);
+        return Some(response);
     }
     let route = aos_hub_console_contract::ConsoleRoute::resolve(path)?;
     if !matches!(
