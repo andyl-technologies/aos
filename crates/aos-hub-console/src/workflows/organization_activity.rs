@@ -11,7 +11,9 @@ use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 
-use crate::components::{EmptyState, HashValue, InlineError, ReviewedPlanCard, StatusBadge};
+use crate::components::{
+    format_timestamp, EmptyState, HashValue, InlineError, ReviewedPlanCard, StatusBadge,
+};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::transport::ApiClient;
 
@@ -320,7 +322,7 @@ fn CreateWebhook(
                             let checked_event = event_type.clone();
                             let changed_event = event_type.clone();
                             view! {
-                                <label class="checkbox-field">
+                                <label class="checkbox-field compact-list-row">
                                     <input
                                         type="checkbox"
                                         prop:checked=move || selected.get().contains(&checked_event)
@@ -446,7 +448,7 @@ fn AuditCard(entry: aos_proto_types::AuditEntry) -> impl IntoView {
         <article class="revision-card">
             <div class="compact-list-row">
                 <div><strong>{entry.action}</strong><code>{entry.change_id}</code></div>
-                <span>{entry.created_at}</span>
+                <span>{format_timestamp(entry.created_at, "Time unavailable")}</span>
             </div>
             <div class="resource-identity">
                 <div><span>"Actor"</span><strong>{entry.actor_label}</strong></div>
@@ -455,7 +457,7 @@ fn AuditCard(entry: aos_proto_types::AuditEntry) -> impl IntoView {
                 <div><span>"Result tag"</span><code>{display_or(&entry.result_tag, "none")}</code></div>
             </div>
             {(!entry.detail.is_empty()).then(|| view! {
-                <details><summary>"Detail"</summary><pre>{entry.detail}</pre></details>
+                <details><summary>"Detail"</summary><pre class="json-view">{entry.detail}</pre></details>
             })}
         </article>
     }

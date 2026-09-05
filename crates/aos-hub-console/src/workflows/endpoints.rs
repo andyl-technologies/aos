@@ -957,21 +957,24 @@ fn ingress_name(value: i32) -> &'static str {
     }
 }
 fn endpoint_identity(endpoint: &aos_proto_types::Endpoint) -> String {
-    let host = endpoint
-        .host
-        .as_ref()
-        .and_then(|value| value.host.as_ref())
-        .map(|host| match host {
-            aos_proto_types::endpoint_host::Host::DomainId(value) => value.clone(),
-            aos_proto_types::endpoint_host::Host::Ipv4(bytes) => bytes
+    let Some(host) = endpoint.host.as_ref().and_then(|value| value.host.as_ref()) else {
+        return "Unknown endpoint host".to_string();
+    };
+
+    match host {
+        aos_proto_types::endpoint_host::Host::DomainId(value) => {
+            format!("Managed domain {value}")
+        }
+        aos_proto_types::endpoint_host::Host::Ipv4(bytes) => {
+            let host = bytes
                 .iter()
                 .map(u8::to_string)
                 .collect::<Vec<_>>()
-                .join("."),
-            aos_proto_types::endpoint_host::Host::Ipv6(_) => "IPv6 endpoint".to_string(),
-        })
-        .unwrap_or_else(|| "unknown host".to_string());
-    format!("{}://{}:{}", endpoint.scheme, host, endpoint.effective_port)
+                .join(".");
+            format!("{}://{}:{}", endpoint.scheme, host, endpoint.effective_port)
+        }
+        aos_proto_types::endpoint_host::Host::Ipv6(_) => "IPv6 endpoint".to_string(),
+    }
 }
 fn grant_request(
     endpoint_id: &str,
@@ -1046,5 +1049,21 @@ mod tests {
             domain_tls_defaults(&domain),
             ("external".to_string(), "secret:cdn-cert".to_string())
         );
+    }
+
+    #[test]
+    fn managed_domain_identity_is_not_rendered_as_a_hostname() {
+        let endpoint = aos_proto_types::Endpoint {
+            scheme: "https".to_string(),
+            effective_port: 443,
+            host: Some(aos_proto_types::EndpointHost {
+                host: Some(aos_proto_types::endpoint_host::Host::DomainId(
+                    "domain:cdn".to_string(),
+                )),
+            }),
+            ..Default::default()
+        };
+
+        assert_eq!(endpoint_identity(&endpoint), "Managed domain domain:cdn");
     }
 }
