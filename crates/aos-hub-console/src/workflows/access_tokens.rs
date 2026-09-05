@@ -100,12 +100,16 @@ async fn resolve_token_scope(
 
 #[component]
 fn AccessTokenSettings(client: ApiClient, scope: String) -> impl IntoView {
+    let can_list = client.allows("tokens.manage");
     let list_client = client.clone();
     let list_scope = scope.clone();
     let tokens = LocalResource::new(move || {
         let client = list_client.clone();
         let scope = list_scope.clone();
         async move {
+            if !can_list {
+                return Ok(Vec::new());
+            }
             client
                 .collect_pages::<_, aos_proto_types::ListAccessTokensResponse, _, _, _>(
                     aos_proto_types::IDENTITY_SERVICE_LIST_ACCESS_TOKENS_PATH,
@@ -149,6 +153,9 @@ fn AccessTokenSettings(client: ApiClient, scope: String) -> impl IntoView {
                         let client = inventory_client.clone();
                         Suspend::new(async move {
                             match tokens.await.as_ref() {
+                                Ok(_) if !can_list => view! {
+                                    <p class="muted">"You can create a token for yourself below. Listing all tokens for this resource requires token-management permission."</p>
+                                }.into_any(),
                                 Ok(tokens) if tokens.is_empty() => view! {
                                     <EmptyState
                                         title="No access tokens".to_string()

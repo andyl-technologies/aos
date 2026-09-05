@@ -154,6 +154,8 @@
   border: 1px solid var(--rule);
   color: var(--ink);
   text-decoration: none;
+  text-align: left;
+  font: inherit;
 }
 
 .resource-card:hover {
