@@ -348,6 +348,9 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
             self.reconcile_indeterminate_debug_ownership()?;
             let signal_fault_frontier_start = self.inner.loop_impl().search_frontiers().len();
             let mut pre_quantum_appends = Vec::new();
+            if let Some(append) = self.settle_genesis_entrypoints()? {
+                pre_quantum_appends.push(append);
+            }
             let fault_append = self.evaluate_signal_fault_boundary()?;
             if !fault_append.entries.is_empty() {
                 pre_quantum_appends.push(fault_append);
