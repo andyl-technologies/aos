@@ -2370,7 +2370,7 @@ mod root_config_tests {
     #[test]
     fn support_policy_parses_and_fails_closed() {
         let src = format!(
-            "{META}\n[support.default]\nkind = \"standard\"\nsuperseded_after_trains = 3\n\n[[support.trains]]\ntrain = \"2026.9\"\nkind = \"lts\"\nsupported_until = \"2028-09-30\"\n"
+            "{META}\n[support.default]\nkind = \"standard\"\nsuperseded_after_trains = 3\n\n[support.trains.\"2026.9\"]\nkind = \"lts\"\nsupported_until = \"2028-09-30\"\n"
         );
         let cfg: RegistryRootConfig = toml::from_str(&src).unwrap();
         let policy = cfg.support.unwrap();
@@ -2380,7 +2380,7 @@ mod root_config_tests {
         let absent: RegistryRootConfig = toml::from_str(META).unwrap();
         assert!(absent.support.is_none());
         // An LTS train without an end date is a schema error, not a warning.
-        let broken = format!("{META}\n[[support.trains]]\ntrain = \"2026.9\"\nkind = \"lts\"\n");
+        let broken = format!("{META}\n[support.trains.\"2026.9\"]\nkind = \"lts\"\n");
         assert!(toml::from_str::<RegistryRootConfig>(&broken).is_err());
     }
 

@@ -520,11 +520,15 @@ LTS trains without an end date, and a rolling count of zero, and the exported
 contract carries the policy under `support`. Current contracts must state it;
 the Rust contract type validates the same rules.
 
-Copy the export verbatim into the registry's `registry.toml` as the `[support]`
-table (see [`repo-layout.md`](../registry/repo-layout.md)). The Hub indexes that
-table with the registry metadata and renders it on the Releases page, so
-changing the promise is a reviewed contract change followed by a registry
-commit, never a Hub setting.
+Each source line states only what it owns. The `train/YYYY.M` branch that
+maintains a train declares `trains."YYYY.M"` for that train alone; `master`
+declares `default`. Registry finalization copies the release's own train entry
+into the signed registry's `[support]` table and refuses a contract that names
+another train, so a backport on an old train can extend that train's support
+without touching newer ones, and no branch can rewrite the roadmap of another.
+The Hub indexes the table with the registry metadata and renders it on the
+Releases page, so changing the promise is a reviewed contract change on the
+owning branch followed by that branch's next release, never a Hub setting.
 
 ## Policy changes and standards
 

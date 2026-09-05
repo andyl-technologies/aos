@@ -498,7 +498,7 @@
       "kind": "standard",
       "superseded_after_trains": 2
     },
-    "trains": []
+    "trains": {}
   },
   "targets": [
     {
