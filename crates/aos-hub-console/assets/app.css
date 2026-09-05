@@ -850,6 +850,15 @@
 }
 
 @media (max-width: 48rem) {
+  .workflow-step {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workflow-step code,
+  .workflow-operation {
+    grid-column: 1;
+  }
+
   .scope-header {
     flex-direction: column;
     align-items: flex-start;
