@@ -2341,3 +2341,21 @@ production detached-root descriptor handoff. Repeated owned-root boots, Host
 namespace-generation reconciliation and attachment replay, concurrent host-stop
 tests, enforcing MAC, and lease/publisher qualification remain required.
 `SBX-RT-06`, end-to-end readiness, and `BackendReadiness` remain open.
+
+### Repeated production owned-root boots
+
+The production compiler/worker VM now also passes two guest-triggered internal
+reboots through the owned detached-root descriptor handoff. Every boot reruns
+the first-exec descriptor/environment scrubbing and read-only Nix-store checks.
+The test retains the supervisor and invocation, rejects each old payload proof,
+and reconciles the new payload through the existing launch path using freshly
+resolved executable, root, and network pins. Each new payload has a different
+cgroup and mount/PID/user namespace identity while the network remains pinned.
+Reconciliation does not start another unit or consume a forward-effect guard;
+the final stop still terminates the retained supervisor and latest payload.
+
+The guest marker only schedules this fixture; production kernel verification
+establishes identity. Focused Rust tests, strict Clippy, formatting, and the
+`checks.fleet.sandbox-host-worker` VM gate pass. This closes the repeated
+owned-root boot proof noted above, not controller namespace-generation
+reconciliation, attachment replay, enforcing MAC, or lease/publisher delivery.

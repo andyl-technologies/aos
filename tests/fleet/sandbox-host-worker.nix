@@ -82,6 +82,33 @@
       After=qualification.service
     '';
   };
+  payloadProcess = pkgs.writeTextFile {
+    name = "aos-host-worker-payload-process";
+    destination = "/bin/qualification-payload";
+    executable = true;
+    text = ''
+      #!${pkgs.bash}/bin/bash
+      set -euo pipefail
+      generation=0
+      if [ -f /var/qualification-generation ]; then
+        read -r generation < /var/qualification-generation
+      fi
+      case "$generation" in
+        0|1|2) ;;
+        *) exit 1 ;;
+      esac
+      generation=$((generation + 1))
+      printf '%s\n' "$generation" > /var/qualification-generation.tmp
+      ${pkgs.coreutils}/bin/mv /var/qualification-generation.tmp /var/qualification-generation
+      while :; do
+        if [ -f /var/qualification-reboot ]; then
+          ${pkgs.coreutils}/bin/rm /var/qualification-reboot
+          exec ${pkgs.systemd}/bin/systemctl --no-block reboot
+        fi
+        ${pkgs.coreutils}/bin/sleep 0.05
+      done
+    '';
+  };
   payloadService = pkgs.writeTextFile {
     name = "aos-host-worker-payload-service";
     destination = "/qualification.service";
@@ -92,7 +119,7 @@
 
       [Service]
       Type=simple
-      ExecStart=${pkgs.coreutils}/bin/sleep infinity
+      ExecStart=${payloadProcess}/bin/qualification-payload
     '';
   };
   root = pkgs.runCommand "aos-host-worker-payload-root" {} ''

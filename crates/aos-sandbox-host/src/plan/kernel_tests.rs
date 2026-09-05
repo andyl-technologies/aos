@@ -120,6 +120,30 @@ fn launch_request(now: u64) -> Vec<u8> {
     request.encode_to_vec()
 }
 
+/// Waits for the fixture service, not an authority-bearing guest declaration.
+/// The worker must independently prove the payload's kernel identity afterward.
+async fn wait_for_payload_generation(expected: u64) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        match std::fs::read_to_string(format!("{WORKSPACE}/var/qualification-generation")) {
+            Ok(value) => {
+                let generation: u64 = value.trim().parse().unwrap();
+                assert!(generation <= expected, "unexpected extra payload boot");
+                if generation == expected {
+                    return;
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("cannot read fixture boot generation: {error}"),
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "payload did not boot"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 #[tokio::test]
 #[ignore = "requires the sandbox-host-worker fleet VM and its explicit prepared objects"]
 async fn production_compiler_worker_launch_refresh_and_stop() {
@@ -243,6 +267,74 @@ async fn production_compiler_worker_launch_refresh_and_stop() {
         .await
         .unwrap();
     assert_eq!(thawed.state, ObservedRuntimeState::Ready);
+
+    // Guest-triggered reboot must reuse the supervisor's owned root mount.
+    // Reconciliation uses fresh prepared pins and the production verifier;
+    // neither the fixture marker nor a stale payload proof can authorize it.
+    wait_for_payload_generation(1).await;
+    let mut current = refreshed;
+    for generation in 2..=3 {
+        let old_payload = current.payload.as_ref().unwrap();
+        let old_namespaces = [
+            NamespaceKind::Mount,
+            NamespaceKind::Pid,
+            NamespaceKind::User,
+        ]
+        .map(|kind| old_payload.pidfd().namespace(kind).unwrap());
+        let old_network = old_payload
+            .pidfd()
+            .namespace(NamespaceKind::Network)
+            .unwrap();
+        std::fs::write(format!("{WORKSPACE}/var/qualification-reboot"), b"reboot\n").unwrap();
+        wait_for_payload_generation(generation).await;
+        assert!(!old_payload.pidfd().is_alive().unwrap());
+        assert!(supervisor.pidfd().is_alive().unwrap());
+        assert!(old_payload.recheck_kernel(supervisor).is_err());
+        assert!(
+            worker
+                .refresh_payload_scope(&identity, invocation, supervisor, old_payload)
+                .await
+                .is_err()
+        );
+
+        let prepared = config
+            .compile_resolved(request.fence(), request.launch_plan().unwrap(), resources())
+            .unwrap();
+        let (spec, pins) = prepared.into_parts();
+        let reconciled = worker
+            .execute(
+                request.fence(),
+                WorkerOperation::Launch {
+                    spec: Box::new(spec),
+                    pins,
+                },
+                &mut before_effect,
+            )
+            .await
+            .unwrap();
+        assert_eq!(reconciled.invocation_id, Some(invocation));
+        assert_eq!(
+            reconciled.leader.as_ref().unwrap().handle(),
+            supervisor.handle()
+        );
+        let new_payload = reconciled.payload.as_ref().unwrap();
+        new_payload.recheck_kernel(supervisor).unwrap();
+        assert!(!old_payload.has_same_cgroup(new_payload));
+        for old_namespace in old_namespaces {
+            let current_namespace = new_payload.pidfd().namespace(old_namespace.kind()).unwrap();
+            assert_ne!(old_namespace.identity(), current_namespace.identity());
+        }
+        assert_eq!(
+            old_network.identity(),
+            new_payload
+                .pidfd()
+                .namespace(NamespaceKind::Network)
+                .unwrap()
+                .identity()
+        );
+        current = reconciled;
+    }
+    let payload = current.payload.as_ref().unwrap();
     let stopped = worker
         .execute(request.fence(), WorkerOperation::Stop, &mut before_effect)
         .await
