@@ -60,7 +60,9 @@ The coordinator expands requirements into exact cases:
 - OCI gates cover the multi-platform index and exact platform artifacts; and
 - update cases additionally bind the frozen preceding release.
 
-The case digest binds these choices. An observation records each acceptance
+The case digest binds these choices, the frozen plan, and the complete artifact
+records (including byte digests and sizes). Reusing logical artifact names
+cannot reuse an observation for changed bytes. An observation records each acceptance
 condition, immutable executor identity, actual environment identity, execution
 times, operation counts, and the predecessor exercised. Missing, failed,
 unknown, duplicated, future-dated, expired, or incorrectly scoped evidence

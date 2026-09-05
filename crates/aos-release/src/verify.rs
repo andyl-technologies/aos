@@ -1046,6 +1046,43 @@ mod tests {
     }
 
     #[test]
+    fn observations_cannot_be_replayed_for_changed_bytes_with_the_same_artifact_ids()
+    -> anyhow::Result<()> {
+        use crate::qualification::QualificationPhase;
+        let (plan, mut manifest) = qualification_fixture()?;
+        let evidence = observations(&plan, &manifest, QualificationPhase::Staging)?;
+        let artifact = manifest
+            .artifacts
+            .iter_mut()
+            .find(|artifact| artifact.kind == ArtifactKind::PackageNar)
+            .unwrap();
+        artifact.sha256 = digest("changed package bytes, unchanged logical artifact id");
+        assert!(
+            crate::qualification_evidence::validate_observations(
+                &plan,
+                &manifest,
+                QualificationPhase::Staging,
+                &evidence,
+                "2026-09-01T00:00:02Z",
+            )
+            .is_err()
+        );
+        let (mut another_plan, manifest) = qualification_fixture()?;
+        another_plan.release_id = "another-release-with-the-same-artifacts".into();
+        assert!(
+            crate::qualification_evidence::validate_observations(
+                &another_plan,
+                &manifest,
+                QualificationPhase::Staging,
+                &evidence,
+                "2026-09-01T00:00:02Z",
+            )
+            .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
     fn archival_plans_are_readable_but_cannot_authorize_new_publication() -> anyhow::Result<()> {
         let fixture = release_fixture()?;
         let legacy: ReleasePlanV1 = canonical::from_slice(&fixture.plan, "archival plan")?;

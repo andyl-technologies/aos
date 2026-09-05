@@ -251,7 +251,7 @@ fn prepare(arguments: &[String]) -> Result<()> {
             gate_report_digest,
             "fleet-preflight-authority",
             None,
-            TIME,
+            &humantime::format_rfc3339(std::time::SystemTime::now()).to_string(),
         )
     })
     .collect::<Result<Vec<_>>>()?;

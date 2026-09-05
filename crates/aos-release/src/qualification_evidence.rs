@@ -47,6 +47,10 @@ pub struct QualificationCase {
     pub requirement_id: String,
     /// Exact class-bound requirement policy digest.
     pub policy_digest: Sha256Digest,
+    /// Canonical frozen-plan identity, including release and trust domain.
+    pub plan_digest: Sha256Digest,
+    /// Canonical identity of the full artifact records for the selected subjects.
+    pub subjects_digest: Sha256Digest,
     /// Release transition authorized by the observation.
     pub phase: QualificationPhase,
     /// Exact target platform, or none for release-wide evidence.
@@ -166,10 +170,28 @@ pub fn cases(
             } else {
                 None
             };
+            let artifacts = subjects
+                .iter()
+                .map(|id| {
+                    manifest
+                        .artifacts
+                        .iter()
+                        .find(|artifact| artifact.id == *id)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "qualification subject {id} has no final artifact record"
+                            )
+                        })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let subjects_digest =
+                Sha256Digest::of_canonical("aos.release.qualification-subjects/v1", &artifacts)?;
             result.push(QualificationCase {
                 id: format!("{}/{suffix}", requirement.id),
                 requirement_id: requirement.id.clone(),
                 policy_digest: gate.policy_digest,
+                plan_digest: Sha256Digest::of_bytes(crate::canonical::to_vec(plan)?),
+                subjects_digest,
                 phase,
                 platform,
                 package_role,
