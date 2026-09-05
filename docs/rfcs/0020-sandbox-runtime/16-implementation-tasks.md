@@ -1433,3 +1433,40 @@ authority or authorize any materialization, rename, catalog, or read effect.
 request-hash preimage, retained completion permits, and durable resource state;
 the service, protected root-registry integration, committed catalog visibility,
 and real-service crash/revocation qualification remain explicitly open.
+
+### Challenge-bound admission and protected-signing checkpoint
+
+`d328e02db` advances `SBX-PUB-02` with the exact canonical admission preimage,
+not an online authority service. The 11-field protocol request includes the
+capability handle, logical cache resource, 32-byte publisher challenge, and all
+proposed plan fields except the derived commitment. Construction and decoding
+recompute that commitment; no self-referential hash or supplied commitment is
+accepted. The decoder applies a fixed 32 KiB ceiling before allocation even
+with permissive generic CBOR limits. Golden, truncation, bounds, and exhaustive
+admissible-field mutation tests cover the exact preimage and resulting plan.
+
+The controller's publisher signing preparation reuses its existing immutable
+artifact, protected-signing-message, and returned-signature verification code.
+The signed result remains opaque and non-cloneable and grants no effect
+authority. A public-model integration path proves request → plan → protected
+signing preparation → signature completion → core authentication → exact
+request binding, including rejection when only capability, cache resource, or
+challenge changes. Existing broker/lease preparation is unchanged.
+
+This checkpoint passes 181 core and 136 controller unit tests, one controller
+integration test, five compile-fail doctests, scoped strict all-target Clippy,
+warning-denied rustdoc for both crates, changed-file formatting checks, and the
+locked all-target workspace compile check. The latter retains unrelated
+existing warnings and uses only the cached AOS environment/transport described
+above. Independent request/codec/signing reviews found no remaining blocker.
+
+`SBX-PUB-02` remains open. Inspection found no production capability lookup,
+project-policy/revocation/source-authority store, publisher-instance registry,
+or reservation ledger to attach to the existing injected controller compiler.
+The next implementation must add those protected durable records and typed
+admission methods around the controller's sole journal writer. The first
+service flow authenticates publisher challenge registration separately from
+the holder's request; forwarded channel hashes and publisher peer credentials
+cannot substitute for holder possession. Challenge consumption, signed-decision
+persistence, current-state rechecks, retained permits, reservation/residency
+accounting, and authoritative completion/recovery evidence are still required.
