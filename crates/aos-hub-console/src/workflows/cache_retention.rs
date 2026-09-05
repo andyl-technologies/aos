@@ -185,11 +185,19 @@ pub(super) fn CacheRetentionWorkflow(client: ApiClient, cache_id: String) -> imp
                 </Suspense>
             </section>
             {can_manage.then(|| view! {
-                <RetentionEditor client=manage_client.clone() cache_id=manage_cache.clone()/>
-                <RefreshAllRetention client=manage_client.clone() cache_id=manage_cache.clone()/>
-                <ManualRetentionRoots client=manage_client cache_id=manage_cache/>
+                <details class="panel advanced-controls"><summary>"Add a retention subscription"</summary>
+                    <RetentionEditor client=manage_client.clone() cache_id=manage_cache.clone()/>
+                </details>
+                <details class="panel advanced-controls"><summary>"Refresh all subscriptions"</summary>
+                    <RefreshAllRetention client=manage_client.clone() cache_id=manage_cache.clone()/>
+                </details>
+                <details class="panel advanced-controls"><summary>"Manual roots and leases"</summary>
+                    <ManualRetentionRoots client=manage_client cache_id=manage_cache/>
+                </details>
             })}
-            <RetentionReasons client=client cache_id=cache_id/>
+            <details class="panel advanced-controls"><summary>"Inspect why an object is retained"</summary>
+                <RetentionReasons client=client cache_id=cache_id/>
+            </details>
         </div>
     }
 }
@@ -395,6 +403,27 @@ fn RetentionEditor(
     #[prop(optional)] initial: Option<aos_proto_types::RetentionSubscription>,
 ) -> impl IntoView {
     let editing = initial.is_some();
+    let registry_client = client.clone();
+    let registries = LocalResource::new(move || {
+        let client = registry_client.clone();
+        async move {
+            // Existing subscriptions retain their exact registry; only creation
+            // needs the selectable inventory.
+            if editing {
+                return Ok(Vec::new());
+            }
+            client
+                .collect_pages::<_, aos_proto_types::ListRegistriesResponse, _, _, _>(
+                    aos_proto_types::REGISTRY_SERVICE_LIST_REGISTRIES_PATH,
+                    |page_token| aos_proto_types::ListRegistriesRequest {
+                        page_size: 100,
+                        page_token,
+                    },
+                    |response| (response.registries, response.next_page_token),
+                )
+                .await
+        }
+    });
     let fields = initial
         .as_ref()
         .map(RetentionFields::from_subscription)
@@ -435,7 +464,7 @@ fn RetentionEditor(
         };
         let registry_id = fields.registry_id.get_untracked().trim().to_string();
         if registry_id.is_empty() {
-            error.set(Some("Registry stable ID is required".to_string()));
+            error.set(Some("Choose a registry".to_string()));
             return;
         }
         let key = idempotency_key("retention-set");
@@ -497,8 +526,26 @@ fn RetentionEditor(
                 <div><p class="section-kicker">"Signed release selectors"</p><h2>{if editing { "Edit subscription" } else { "Create subscription" }}</h2></div>
             </div>
             <form class="editor-form" on:submit=on_submit>
-                <label><span>"Registry stable ID"</span><input required prop:value=move || fields.registry_id.get() on:input=move |event| fields.registry_id.set(event_target_value(&event))/></label>
-                <label><span>"Expected version (empty when creating)"</span><input prop:value=move || fields.expected_version.get() on:input=move |event| fields.expected_version.set(event_target_value(&event))/></label>
+                <Suspense fallback=move || view! { <p class="loading-row">"Loading accessible registries…"</p> }>
+                    {move || Suspend::new(async move {
+                        match registries.await.as_ref() {
+                            Ok(registries) => {
+                                let selected = fields.registry_id.get_untracked();
+                                let missing = editing && !registries.iter().any(|registry| registry.stable_id == selected);
+                                view! { <label><span>"Registry"</span>
+                                    <select required disabled=editing prop:value=move || fields.registry_id.get() on:change=move |event| fields.registry_id.set(event_target_value(&event))>
+                                        <option value="">"Choose a registry…"</option>
+                                        {missing.then(|| view! { <option value=selected.clone()>{selected.clone()}</option> })}
+                                        {registries.iter().map(|registry| view! { <option value=registry.stable_id.clone()>{registry.slug.clone()}</option> }).collect_view()}
+                                    </select>
+                                    <small>"Retention uses this registry's signed release metadata. Client cache ordering stays unchanged."</small>
+                                </label> }.into_any()
+                            }
+                            Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any(),
+                        }
+                    })}
+                </Suspense>
+                {editing.then(|| view! { <div class="compact-list-row"><span>"Subscription version"</span><code>{move || fields.expected_version.get()}</code></div> })}
                 <label class="checkbox-row">
                     <input
                         type="checkbox"
