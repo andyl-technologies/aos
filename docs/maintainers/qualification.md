@@ -5,9 +5,156 @@ authoritative inputs are [`qualification/`](../../qualification/default.nix).
 The release class selects obligations in that contract; operators cannot
 remove individual mandatory gates from a release request.
 
-Use the [release checklist](release-checklist.md) to operate a release and the
-[canonical runbook](canonical-releases.md) for command details. Physical and
-operational work is specified in [qualification exercises](qualification-exercises.md).
+Start with the [release checklist](release-checklist.md), which includes the
+manual recovery checks and when to perform them. This page specifies the
+contract and evidence formats; the [command reference](canonical-releases.md)
+documents command arguments.
+
+## Support levels and target checks
+
+Support scope answers where an artifact must work. Release class answers how
+long it is observed and who approves it. Testing releases still need working
+install, update, recovery, and workload behavior on the required runtimes.
+
+| Runtime or hardware category | Architecture | Priority and required coverage |
+| --- | --- | --- |
+| QEMU VM, `q35`, UEFI, virtio disk/network, persistent TPM 2.0 | x86_64 | Required now; KVM boot, lifecycle, update/recovery, workload and soak checks |
+| QEMU VM, `virt`, UEFI, virtio disk/network, persistent TPM 2.0 | aarch64 | Required now; same functional checks under TCG; native KVM support needs its own evidence |
+| OCI containers using containerd/runc on native Linux | x86_64 | Required now; signed OCI selection, pull, lifecycle, network, volumes and soak checks |
+| OCI containers using containerd/runc on native Linux | aarch64 | Required now; same container checks on a native aarch64 host |
+| Physical servers and workstations | x86_64 | Next; general hardware support using representative equipment and the physical checks below |
+| Cloud VMs | x86_64 and aarch64 | After physical hardware; image lifecycle plus cloud provisioning, storage and recovery checks below |
+
+These are requirements and rollout priorities, not claims of completed testing.
+The current machine-readable contract requires the four QEMU/container rows.
+Physical and cloud rows are planned. Before advertising either as supported,
+add required configurations to `qualification/targets.nix`, implement their
+scenarios, and pass them in the frozen release. The recorded configurations
+describe the coverage used to justify a category; they are not a model allowlist.
+The target schema supports additional configurations, but those scenarios and
+their capability coverage still need implementation.
+
+For each row and package/platform cell, record one of these levels:
+
+| Level | Required evidence | Release decision |
+| --- | --- | --- |
+| Planned | Scope, missing work and owner recorded | No support claim; does not block until made required |
+| Preview | Authentic published artifacts, meaningful basic functional checks, explicit unqualified behaviors | Allowed only outside the required baseline; cannot hide failure of an advertised basic function |
+| Supported for this release class | All applicable checks below, class observation window and required review passed | Failure or missing evidence blocks release for a required/supported row |
+| Blocked | Failure or missing prerequisite recorded with affected artifacts | Do not publish the affected artifact as usable; stable/emergency permit no blocked package/platform cells |
+| Not applicable | Recorded architectural or product-scope reason | Cannot be used for an unavailable runner, failed build or one of the four required runtimes |
+
+Maintain this table in the release record before generating the plan. The
+planned/preview labels are planning and communication states; they do not waive
+the plan's required cases or create a separate CLI support-status control.
+Passing on one architecture, runtime, release, or package cannot check off another.
+Record exact QEMU/containerd/runc versions, host kernel, firmware, CPU, device inventory,
+image/index digests and test-program identity. Emulation can establish the stated
+TCG functional result; it does not establish native acceleration or performance.
+Docker Engine is not a separate qualification prerequisite. Record any untested
+frontend or host-specific behavior instead of extending the runtime results to it.
+
+### QEMU and disk-image acceptance
+
+Apply these checks to each published image variant on each required configuration.
+Use its public signed bytes and supported provisioning path. The current VM
+baseline is 2 vCPUs, 8 GiB RAM and a 32 GiB disk; that is a tested configuration,
+not a demonstrated minimum system requirement.
+
+| Test | Pass condition |
+| --- | --- |
+| Download and install | Anonymous download resumes after interruption; signatures, size and digest verify; every advertised disk format reconstructs the same raw image; a clean disk provisions successfully without fixture keys |
+| Boot | 10 consecutive clean reboots and 3 full VM stop/start cycles succeed without repair; persistent firmware and TPM state survive; each boot reports the intended image identity and required services healthy |
+| Host configuration | Create a user and SSH key, set hostname, DNS and time source, and exercise DHCP and static addressing; authenticate over SSH and verify resolution/time synchronization after reboot; activate and roll back a configuration with the expected identity |
+| Boot and storage integrity | Valid boot and encrypted-state unlock succeed; modified boot/root data and unauthorized keys are rejected; the documented recovery path works without bypassing the release trust policy |
+| Update and rollback | Complete 3 predecessor-to-candidate update/rollback cycles; verify boot blessing, selected image, configuration binding and retained generations at each transition |
+| Interrupted update and recovery | Interrupt at each updater commit boundary exposed by the scenario, including before/after boot selection; every attempt boots the committed image or documented fallback; explicit rollback and offline recovery work, followed by another successful update |
+| Persistent workload | Serve a known response with nginx over HTTP and TLS; reject an invalid certificate from the client; append numbered durable records and verify their hashes after reboot, update, rollback and recovery |
+| Resource exhaustion | Exercise full state/update storage and memory pressure in the isolated test; mutation fails with a useful error, committed state remains readable, and operation succeeds after resources are restored |
+| Observation | Run mixed network, package and persistent-data operations for the release-class window; retain attempts, successes, failures, reboot/recovery counts and monitoring records; no unexplained crash, integrity mismatch, data loss or unresolved required-function failure |
+
+The cycle minima are encoded in target configuration and bound into each case.
+They are engineering acceptance thresholds, not reliability probabilities.
+Scenario reports must show the counts and comparisons, not just a success flag.
+
+### OCI-container acceptance
+
+Run these checks with AOS-built containerd/runc on both native Linux architectures.
+Record the runtime versions and host configuration in the environment inventory.
+Existing fleet tests provide regression coverage; the same checks against the
+exact published artifacts are required before a public release can pass this gate.
+
+| Test | Pass condition |
+| --- | --- |
+| Pull and platform selection | A clean client anonymously pulls by the release's immutable digest; the signed index selects the correct architecture; selected manifest/config/layer digests match the release; no emulation is needed |
+| Documented launch | The published run command starts the declared workload with only its documented user, mounts, capabilities and privileges; readiness and HTTP/TLS checks pass; no undeclared privileged mode or host access is added to make the test pass |
+| Network | Published ports and container DNS work; restart/recreation does not leave stale connectivity; traffic reaches the intended container |
+| Lifecycle and state | Complete 10 stop/start/recreate cycles using a named volume; each graceful stop respects the documented timeout and exit behavior; numbered committed records and hashes survive removal/recreation; an abrupt kill preserves records already acknowledged as durable |
+| Limits and signals | Runtime CPU/memory limits are applied and observed; the workload handles its documented termination signal; memory exhaustion has the documented failure/restart behavior without corrupting committed volume data |
+| Image replacement | Recreate with the candidate digest using the existing volume, then exercise the documented recovery/rollback path; verify data compatibility rather than assuming image rollback reverses data migrations |
+| Profile and observation | Verify the testing/production registry and trust identities, run the persistent network workload for the class window, and retain operation counts and failures with no unresolved required-function or integrity failure |
+
+### Physical-hardware acceptance
+
+The intended support category is **x86_64 servers and workstations**, not a list
+of approved models. Initially the image's boot/security contract requires UEFI,
+Secure Boot, persistent TPM 2.0, supported storage/network drivers, and a working
+console/recovery path. State capability requirements and known exclusions in the
+support record; a machine's marketing category alone does not establish those
+capabilities. Workstation hardware runs the same headless server contract here;
+graphical desktop, GPU acceleration and suspend are additional feature claims.
+
+Before promoting this category, run the disk-image checks on representative
+server and workstation equipment. Cover both Intel and AMD CPUs, onboard and
+discrete NICs, SATA and NVMe storage, and different UEFI implementations across
+the sample. Record models and firmware for reproducibility, without restricting
+support to those models. Any uncovered capability must be added to the test
+campaign or explicitly excluded from the initial supported scope.
+
+In addition, verify installer media boots, disks/NICs enumerate correctly,
+storage read/write checksums agree under load, link loss/reconnection recovers,
+and shutdown powers off. Perform the 3 cold boots by removing/restoring power;
+exercise interrupted writes only on expendable test storage. Monitor machine
+checks, storage errors and thermal behavior during the class soak; unexplained
+hardware/driver faults block promotion pending diagnosis. Requalify affected
+coverage after kernel, driver, firmware or boot/security changes.
+
+### Cloud-VM acceptance
+
+Promote x86_64 and aarch64 cloud support separately. For each advertised cloud
+environment, record image import format, boot/security capabilities, virtual
+storage/NIC drivers and provisioning interface. Test representative instance
+families covering those capabilities; individual VM identities are evidence,
+not a permanent list of supported instances. Unsupported boot/security features
+need an explicit reviewed contract change, not an unrecorded test exception.
+
+Pass the disk-image checks plus image import, clean instance creation, metadata
+and SSH-key provisioning, DNS and time synchronization, persistent-volume
+reattachment, stop/start, and replacement from the retained image. Verify data
+hashes after volume recovery, reject access to another tenant's credentials or
+state, and demonstrate the provider-console recovery path. Record ephemeral
+disk behavior explicitly. A local QEMU pass does not check off these operations.
+
+### Software-package acceptance
+
+Every published package/platform cell needs an anonymous install from the
+release, closure/signature verification and a functional test. Run it on the
+target architecture. A successful build, import or `--version` alone is insufficient.
+
+| Package role | Concrete checks |
+| --- | --- |
+| All packages | Exercise a documented primary operation with a known expected result; cover a bad input/error path; install/change/remove through the supported package workflow and recover its generation; verify declared dependencies, permissions and absence of undeclared host tools |
+| Libraries | Compile/link and run a small public-API consumer with checked output; for header-only/static libraries compile the consumer; test a dependent application where the library has a runtime role |
+| Build tools | Compile or transform a representative input and execute/inspect the result; verify reproducibility where promised, not merely that the tool starts |
+| System integrity | In addition to the package test, pass dependent boot, authentication, signature rejection, configuration, update and recovery cases; shell/coreutils run scripts, OpenSSH authenticates and rejects unauthorized keys, OpenSSL verifies valid and rejects invalid chains, chrony synchronizes, filesystem/cryptographic tools preserve and recover test data |
+| Qualified workloads | nginx serves known HTTP/TLS responses and persists workload state; containerd/runc start, network, stop and recover their declared workloads; exercise limits and error paths as well as the happy path |
+| General catalog | Record package-specific input, command/API, expected output and observed result; declaring the role is not a functional-test exemption |
+
+Dependencies inherit the obligations of the integrity/workload roots using
+them. Record package-specific feature exclusions before the plan is frozen;
+do not disable features to simplify the build or label a broken basic operation
+as preview. Existing non-Linux package eligibility remains separate from Linux
+OS/runtime support and still requires its own native package tests.
 
 ## Inspect and freeze the contract
 

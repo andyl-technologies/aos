@@ -16,6 +16,9 @@ let
       memory_mib = "8192";
       disk_mib = "32768";
       security = "external-secureboot-measuredboot-verity-encrypted-state-recovery";
+      reboot_cycles = "10";
+      cold_boot_cycles = "3";
+      update_rollback_cycles = "3";
     };
   };
   container = platform: {
@@ -25,6 +28,8 @@ let
     required = true;
     configuration = {
       runtime = "aos-containerd-runc";
+      host = "native-linux-matching-image-architecture";
+      lifecycle_cycles = "10";
       workload = "persistent-network-service";
     };
   };

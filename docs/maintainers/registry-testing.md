@@ -144,26 +144,8 @@ use that exact version and contain:
 - the staging and production deployment identities already verified above;
 - complete package and image decisions and all required signer roles.
 
-Run the complete workflow in [`canonical-releases.md`](canonical-releases.md):
-
-```text
-aos release plan
-aos release build
-aos release finalize-image
-aos release finalize-registry
-aos release finalize-cache
-aos release finalize
-aos release tuf
-aos release timestamp refresh
-aos release compose-surface
-aos release timestamp publish
-aos release stage
-aos release qualify-run
-aos release qualify
-aos release promote
-aos release channel advance
-aos release channel complete
-```
+Follow the [release checklist](release-checklist.md), using
+[`canonical-releases.md`](canonical-releases.md) for command arguments.
 
 For the testing OCI artifact, externally finalize the exact Nix publication
 inputs before `finalize-registry`. The signing key must be the active testing

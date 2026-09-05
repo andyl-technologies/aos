@@ -93,6 +93,7 @@
         "anonymous-download-and-resume",
         "disk-format-equivalence",
         "uefi-boot",
+        "repeated-warm-and-cold-boot",
         "provisioning",
         "host-configuration",
         "ssh-dns-time-network",
@@ -150,6 +151,7 @@
         "interrupted-writes-and-reboots",
         "automatic-fallback",
         "explicit-rollback",
+        "repeated-update-and-rollback",
         "committed-data-preserved",
         "offline-recovery",
         "update-after-recovery"
@@ -174,8 +176,12 @@
       "checks": [
         "signed-index-and-platform-selection",
         "anonymous-pull",
+        "native-platform-execution",
         "start-stop-network",
+        "repeated-stop-start-and-recreate",
         "persistent-state",
+        "resource-limits-and-signals",
+        "declared-privileges-only",
         "runtime-identity",
         "testing-or-production-profile"
       ],
@@ -309,15 +315,18 @@
     {
       "configuration": {
         "acceleration": "kvm",
+        "cold_boot_cycles": "3",
         "disk_mib": "32768",
         "firmware": "aos-edk2-uefi",
         "firmware_state": "persistent",
         "machine": "q35",
         "memory_mib": "8192",
         "network": "virtio-single-nic",
+        "reboot_cycles": "10",
         "security": "external-secureboot-measuredboot-verity-encrypted-state-recovery",
         "storage": "virtio-single-disk",
         "tpm": "2.0-persistent",
+        "update_rollback_cycles": "3",
         "vcpus": "2"
       },
       "id": "disk-x86_64-linux",
@@ -328,15 +337,18 @@
     {
       "configuration": {
         "acceleration": "tcg-functional-only",
+        "cold_boot_cycles": "3",
         "disk_mib": "32768",
         "firmware": "aos-edk2-uefi",
         "firmware_state": "persistent",
         "machine": "virt",
         "memory_mib": "8192",
         "network": "virtio-single-nic",
+        "reboot_cycles": "10",
         "security": "external-secureboot-measuredboot-verity-encrypted-state-recovery",
         "storage": "virtio-single-disk",
         "tpm": "2.0-persistent",
+        "update_rollback_cycles": "3",
         "vcpus": "2"
       },
       "id": "disk-aarch64-linux",
@@ -346,6 +358,8 @@
     },
     {
       "configuration": {
+        "host": "native-linux-matching-image-architecture",
+        "lifecycle_cycles": "10",
         "runtime": "aos-containerd-runc",
         "workload": "persistent-network-service"
       },
@@ -356,6 +370,8 @@
     },
     {
       "configuration": {
+        "host": "native-linux-matching-image-architecture",
+        "lifecycle_cycles": "10",
         "runtime": "aos-containerd-runc",
         "workload": "persistent-network-service"
       },

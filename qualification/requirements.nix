@@ -29,6 +29,7 @@ in [
     "anonymous-download-and-resume"
     "disk-format-equivalence"
     "uefi-boot"
+    "repeated-warm-and-cold-boot"
     "provisioning"
     "host-configuration"
     "ssh-dns-time-network"
@@ -52,6 +53,7 @@ in [
     "interrupted-writes-and-reboots"
     "automatic-fallback"
     "explicit-rollback"
+    "repeated-update-and-rollback"
     "committed-data-preserved"
     "offline-recovery"
     "update-after-recovery"
@@ -59,8 +61,12 @@ in [
   (gate "container-lifecycle" "staging" "containers" [
     "signed-index-and-platform-selection"
     "anonymous-pull"
+    "native-platform-execution"
     "start-stop-network"
+    "repeated-stop-start-and-recreate"
     "persistent-state"
+    "resource-limits-and-signals"
+    "declared-privileges-only"
     "runtime-identity"
     "testing-or-production-profile"
   ] ["checks.container.all" "checks.fleet.container-runtime" "checks.fleet.hub-oci"])
