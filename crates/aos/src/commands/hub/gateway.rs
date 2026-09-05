@@ -23,6 +23,8 @@ pub(super) async fn gateway(printer: &Printer, command: &HubGatewayCmd) -> Resul
         HubGatewayCmd::List {
             access,
             binding,
+            scope,
+            include_granted,
             pagination,
         } => {
             let client = hub_client(&access.hub, access.token.as_deref())?;
@@ -32,6 +34,8 @@ pub(super) async fn gateway(printer: &Printer, command: &HubGatewayCmd) -> Resul
                 HubTopologyMethod::ListGateways,
                 &hub_types::ListGatewaysRequest {
                     binding: binding.as_deref().map(parse_binding_ref).transpose()?,
+                    owner_scope_key: scope.clone().unwrap_or_default(),
+                    include_granted: *include_granted,
                     page_size: pagination.page_size.unwrap_or_default(),
                     page_token: pagination.page_token.clone().unwrap_or_default(),
                 },

@@ -125,6 +125,7 @@ pub const CONSOLE_ROUTES: &[RouteSpec] = &[
     route("/activate", RouteMethods::GetAndPost),
     route("/-/instance", RouteMethods::Get),
     route("/-/instance/{page}", RouteMethods::Get),
+    route("/-/instance/bindings/new", RouteMethods::Get),
     route("/-/instance/domains/new", RouteMethods::Get),
     route("/-/instance/network-policies/new", RouteMethods::Get),
     route("/-/instance/endpoints/new", RouteMethods::Get),
@@ -168,7 +169,9 @@ pub fn declared_route(template: &str) -> Option<&'static RouteSpec> {
 /// Resolves the declared methods for one concrete request path.
 #[must_use]
 pub fn route_methods_for_path(path: &str) -> Option<RouteMethods> {
-    if aos_hub_console_contract::ConsoleRoute::resolve(path).is_some() {
+    if aos_hub_console_contract::ConsoleRoute::resolve(path).is_some()
+        || aos_hub_console_contract::registry_catalog_redirect(path).is_some()
+    {
         return Some(RouteMethods::Get);
     }
     let path = path.trim_start_matches('/');
@@ -184,6 +187,7 @@ fn is_management_shell_template(path: &str) -> bool {
         path,
         "/-/instance"
             | "/-/instance/{page}"
+            | "/-/instance/bindings/new"
             | "/-/instance/domains/new"
             | "/-/instance/network-policies/new"
             | "/-/instance/endpoints/new"
@@ -252,7 +256,13 @@ mod tests {
     #[test]
     fn only_canonical_registry_pages_are_nested_console_routes() {
         assert_eq!(
-            nested_route_methods("settings/images"),
+            nested_route_methods("settings/placements"),
+            Some(RouteMethods::Get)
+        );
+        assert_eq!(nested_route_methods("settings/images"), None);
+        // Legacy catalogs are redirects, not canonical management pages.
+        assert_eq!(
+            route_methods_for_path("/acme/main/-/settings/images"),
             Some(RouteMethods::Get)
         );
         assert_eq!(nested_route_methods("settings/signing-key"), None);
@@ -288,5 +298,13 @@ mod tests {
             assert_eq!(route_methods_for_path(&path), Some(route.methods), "{path}");
             assert_eq!(declared_route(route.path), Some(route));
         }
+    }
+
+    #[test]
+    fn instance_binding_creation_is_a_declared_management_route() {
+        let route = declared_route("/-/instance/bindings/new")
+            .expect("instance binding creation route must be mounted");
+        assert_eq!(route.path, "/-/instance/bindings/new");
+        assert_eq!(route.methods, RouteMethods::Get);
     }
 }

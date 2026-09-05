@@ -7,7 +7,7 @@ use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::components::{HashValue, InlineError, ReviewedPlanCard, StatusBadge};
+use crate::components::{HashValue, HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::transport::ApiClient;
 
@@ -41,10 +41,7 @@ pub(super) fn ManualRetentionRoots(client: ApiClient, cache_id: String) -> impl 
             <div class="section-heading">
                 <div>
                     <p class="section-kicker">"Operator exceptions"</p>
-                    <h2>"Manual roots and leases"</h2>
-                    <p>
-                        "Protect an exact store object permanently or until a Unix timestamp. GC records the operator reason with the root."
-                    </p>
+                    <h2>"Manual roots and leases"<HelpTooltip term="Manual roots and leases" summary="Protect an exact store object permanently or until a Unix timestamp. These are local exceptions: registry-derived subscription roots continue to apply alongside them, and GC records the operator reason with the root."/></h2>
                 </div>
             </div>
             <Suspense fallback=move || view! { <p class="loading-row">"Loading manual roots…"</p> }>
@@ -54,7 +51,7 @@ pub(super) fn ManualRetentionRoots(client: ApiClient, cache_id: String) -> impl 
                     Suspend::new(async move {
                     match roots.await.as_ref() {
                         Ok(roots) if roots.is_empty() => view! {
-                            <p class="muted">"No manual retention roots."</p>
+                            <div class="empty-state"><h3>"No manual retention roots"</h3><p>"Registry subscriptions still protect their selected releases. Add a manual root only for a local recovery or incident exception."</p></div>
                         }
                         .into_any(),
                         Ok(roots) => view! {
@@ -396,7 +393,7 @@ fn ManualRootCreate(client: ApiClient, cache_id: String) -> impl IntoView {
                     <span>"Lease expiry as Unix timestamp (optional)"</span>
                     <input type="number" min="1" prop:value=move || lease_until.get() on:input=move |event| lease_until.set(event_target_value(&event))/>
                 </label>
-                <button class="secondary-button" type="submit" disabled=move || busy.get()>"Review manual root"</button>
+                <div class="form-actions"><button class="secondary-button" type="submit" disabled=move || busy.get()>"Review manual root"</button></div>
             </form>
             {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
             {move || pending.get().map(|reviewed| view! {

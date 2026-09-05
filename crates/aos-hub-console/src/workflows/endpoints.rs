@@ -6,9 +6,9 @@
 use std::net::IpAddr;
 use std::str::FromStr;
 
+use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
-use leptos::task::spawn_local;
 
 use crate::components::{HashValue, HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
@@ -112,7 +112,11 @@ fn Endpoints(
     });
     let view_client = client.clone();
     let card_scope = owner_scope_key.clone();
-    view! { <div class="workflow-stack">{(!creation_only).then(|| view! { <section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Client ingress"</p><div class="section-title"><h2>"Endpoints"</h2><HelpTooltip term="Endpoints" summary="Endpoints bind one stable host identity to exact network-boundary and listener or TLS generations."/></div></div>{create_href.map(|href| view! { <a class="button" href=href>"Create endpoint"</a> })}</div><Suspense fallback=move || view! { <p class="loading-row">"Loading endpoints…"</p> }>{move || { let client = view_client.clone(); let consumer_scope_key = card_scope.clone(); Suspend::new(async move { match inventory.await.as_ref() { Ok(endpoints) if endpoints.is_empty() => view! { <p class="muted">"No endpoints in this scope."</p> }.into_any(), Ok(endpoints) => view! { <div class="binding-list">{endpoints.iter().cloned().map(|endpoint| view! { <EndpointCard client=client.clone() endpoint=endpoint consumer_scope_key=consumer_scope_key.clone()/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section> })}{creation_only.then(|| view! { <EndpointCreate client=client owner_scope_key=owner_scope_key/> })}</div> }
+    let inventory_path = organization.as_ref().map_or_else(
+        || "/-/instance/endpoints".to_string(),
+        |slug| format!("/-/org/{slug}/endpoints"),
+    );
+    view! { <div class="workflow-stack">{(!creation_only).then(|| view! { <section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Client ingress"</p><div class="section-title"><h2>"Endpoints"</h2><HelpTooltip term="Endpoints" summary="Endpoints bind one stable host identity to exact network-boundary and listener or TLS generations."/></div></div>{create_href.map(|href| view! { <a class="button" href=href>"Create endpoint"</a> })}</div><Suspense fallback=move || view! { <p class="loading-row">"Loading endpoints…"</p> }>{move || { let client = view_client.clone(); let consumer_scope_key = card_scope.clone(); Suspend::new(async move { match inventory.await.as_ref() { Ok(endpoints) if endpoints.is_empty() => view! { <p class="muted">"No endpoints in this scope."</p> }.into_any(), Ok(endpoints) => view! { <div class="binding-list">{endpoints.iter().cloned().map(|endpoint| view! { <EndpointCard client=client.clone() endpoint=endpoint consumer_scope_key=consumer_scope_key.clone()/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section> })}{creation_only.then(|| view! { <EndpointCreate client=client owner_scope_key=owner_scope_key return_path=inventory_path/> })}</div> }
 }
 
 #[derive(Clone, Debug)]
@@ -131,7 +135,11 @@ struct EndpointCreateChoices {
 }
 
 #[component]
-fn EndpointCreate(client: ApiClient, owner_scope_key: String) -> impl IntoView {
+fn EndpointCreate(
+    client: ApiClient,
+    owner_scope_key: String,
+    return_path: String,
+) -> impl IntoView {
     let choices_client = client.clone();
     let choices_scope = owner_scope_key.clone();
     let choices = LocalResource::new(move || {
@@ -145,6 +153,7 @@ fn EndpointCreate(client: ApiClient, owner_scope_key: String) -> impl IntoView {
             {move || {
                 let client = client.clone();
                 let owner_scope_key = owner_scope_key.clone();
+                let return_path = return_path.clone();
                 Suspend::new(async move {
                     match choices.await.as_ref() {
                         Ok(choices) => view! {
@@ -152,6 +161,7 @@ fn EndpointCreate(client: ApiClient, owner_scope_key: String) -> impl IntoView {
                                 client=client
                                 owner_scope_key=owner_scope_key
                                 choices=choices.clone()
+                                return_path=return_path
                             />
                         }.into_any(),
                         Err(detail) => view! { <section class="panel editor-panel"><InlineError detail=detail.clone()/></section> }.into_any(),
@@ -204,6 +214,7 @@ fn EndpointCreateForm(
     client: ApiClient,
     owner_scope_key: String,
     choices: EndpointCreateChoices,
+    return_path: String,
 ) -> impl IntoView {
     let stable_id = RwSignal::new(String::new());
     let scheme = RwSignal::new("https".to_string());
@@ -382,7 +393,7 @@ fn EndpointCreateForm(
     });
     view! {
         <section class="panel editor-panel">
-            <div class="section-heading"><div><p class="section-kicker">"Guided setup"</p><h2>"Create endpoint"</h2><p>"Choose resources by name. The endpoint pins their immutable identifiers and current generations for you."</p></div></div>
+            <div class="section-heading"><div><p class="section-kicker">"Guided setup"</p><h2>"Create endpoint"<HelpTooltip term="Create endpoint" summary="Choose resources by name. The endpoint pins their immutable identifiers and current generations for you."/></h2></div></div>
             <form class="editor-form" on:submit=on_plan>
                 <label><span>"Endpoint name"</span><input required prop:value=move || stable_id.get() on:input=move |event| stable_id.set(event_target_value(&event))/></label>
                 <label><span>"Scheme"</span><select prop:value=move || scheme.get() on:change=on_scheme_change><option value="https">"HTTPS"</option><option value="http">"HTTP"</option></select></label>
@@ -409,8 +420,8 @@ fn EndpointCreateForm(
                     })}
                     <label class="checkbox-field"><input type="checkbox" prop:checked=move || require_client_certificate.get() on:change=move |event| require_client_certificate.set(event_target_checked(&event))/><span>"Require client certificate"</span></label>
                 })}
-                <label class="full-field"><span>"Provider probe"</span><input prop:value=move || probe_ref.get() on:input=move |event| probe_ref.set(event_target_value(&event))/><small>"Optional opaque probe configuration handle; this is not a Hub resource ID."</small></label>
-                <div class="form-actions"><button class="button" type="submit" disabled=move || busy.get() || host.get().is_empty() || boundary_id.get().is_empty()>"Create endpoint"</button></div>
+                <label class="full-field"><span>"Provider probe"</span><textarea rows="4" prop:value=move || probe_ref.get() on:input=move |event| probe_ref.set(event_target_value(&event))></textarea><small>"Optional opaque probe configuration handle; this is not a Hub resource ID."</small></label>
+                <div class="form-actions"><a class="secondary-button" href=return_path>"Cancel"</a><button class="button" type="submit" disabled=move || busy.get() || host.get().is_empty() || boundary_id.get().is_empty()>"Review creation"</button></div>
             </form>
             {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
             {move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}
@@ -451,7 +462,7 @@ fn EndpointRevisionFields(
     probe_ref: RwSignal<String>,
     #[prop(default = true)] show_boundary: bool,
 ) -> impl IntoView {
-    view! { {show_boundary.then(|| view! { <label><span>"Boundary revision"</span><input required type="number" min="1" prop:value=move || boundary_revision.get() on:input=move |event| boundary_revision.set(event_target_value(&event))/></label> })}<label><span>"Ingress kind"</span><select prop:value=move || ingress.get() on:change=move |event| ingress.set(event_target_value(&event))><option value="hub">"AOS Hub"</option><option value="external">"External ingress"</option><option value="layer7">"Layer 7 provider"</option></select></label>{if managed_domain { view! { <p class="field-note full-field">"Listener and certificate configuration come from this endpoint's managed domain."</p> }.into_any() } else { view! { <label><span>"Provider listener"</span><input required prop:value=move || listener_ref.get() on:input=move |event| listener_ref.set(event_target_value(&event))/><small>"Opaque listener handle supplied by the selected ingress provider."</small></label>{is_https.then(|| view! { <label><span>"TLS provider"</span><input required prop:value=move || tls_provider.get() on:input=move |event| tls_provider.set(event_target_value(&event))/></label><label><span>"Provider certificate"</span><input required prop:value=move || certificate_ref.get() on:input=move |event| certificate_ref.set(event_target_value(&event))/><small>"Opaque certificate or secret handle supplied by the TLS provider."</small></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || require_client_certificate.get() on:change=move |event| require_client_certificate.set(event_target_checked(&event))/><span>"Require client certificate"</span></label> })} }.into_any() }}<label class="full-field"><span>"Provider probe"</span><input prop:value=move || probe_ref.get() on:input=move |event| probe_ref.set(event_target_value(&event))/><small>"Optional opaque probe configuration handle; this is not a Hub resource ID."</small></label> }
+    view! { {show_boundary.then(|| view! { <label><span>"Boundary revision"</span><input required type="number" min="1" prop:value=move || boundary_revision.get() on:input=move |event| boundary_revision.set(event_target_value(&event))/></label> })}<label><span>"Ingress kind"</span><select prop:value=move || ingress.get() on:change=move |event| ingress.set(event_target_value(&event))><option value="hub">"AOS Hub"</option><option value="external">"External ingress"</option><option value="layer7">"Layer 7 provider"</option></select></label>{if managed_domain { view! { <p class="field-note full-field">"Listener and certificate configuration come from this endpoint's managed domain."</p> }.into_any() } else { view! { <label><span>"Provider listener"</span><input required prop:value=move || listener_ref.get() on:input=move |event| listener_ref.set(event_target_value(&event))/><small>"Opaque listener handle supplied by the selected ingress provider."</small></label>{is_https.then(|| view! { <label><span>"TLS provider"</span><input required prop:value=move || tls_provider.get() on:input=move |event| tls_provider.set(event_target_value(&event))/></label><label><span>"Provider certificate"</span><input required prop:value=move || certificate_ref.get() on:input=move |event| certificate_ref.set(event_target_value(&event))/><small>"Opaque certificate or secret handle supplied by the TLS provider."</small></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || require_client_certificate.get() on:change=move |event| require_client_certificate.set(event_target_checked(&event))/><span>"Require client certificate"</span></label> })} }.into_any() }}<label class="full-field"><span>"Provider probe"</span><textarea rows="4" prop:value=move || probe_ref.get() on:input=move |event| probe_ref.set(event_target_value(&event))></textarea><small>"Optional opaque probe configuration handle; this is not a Hub resource ID."</small></label> }
 }
 
 #[component]
@@ -464,11 +475,18 @@ fn EndpointCard(
     let identity = endpoint_identity(&endpoint);
     let positive = observed.state == "ready" && observed.listener_observed && observed.tls_observed;
     let owned = endpoint.owner_scope_key == consumer_scope_key;
-    view! { <details class="binding-card"><summary><div><span class="resource-kind">{if owned { endpoint.scheme.clone() } else { "granted".to_string() }}</span><h3>{identity}</h3><code>{endpoint.stable_id.clone()}</code></div><div class="binding-summary-state"><StatusBadge state=if observed.state.is_empty() { "unknown".to_string() } else { observed.state.clone() } positive=positive/></div></summary><div class="binding-details"><div class="resource-identity"><div><span>"Owner"</span><code>{endpoint.owner_scope_key.clone()}</code></div><div><span>"Boundary"</span><code>{format!("{}@{}", endpoint.network_policy_id, endpoint.desired.as_ref().map(|value| value.boundary_revision).unwrap_or_default())}</code></div><div><span>"Desired generation"</span><strong>{endpoint.desired_generation}</strong></div><div><span>"Observed generation"</span><strong>{observed.observed_generation}</strong></div><div><span>"Version"</span><code>{endpoint.resource_version.clone()}</code></div></div>{(!observed.error.is_empty()).then(|| view! { <InlineError detail=observed.error/> })}{owned.then(|| view! { <EndpointGenerations client=client.clone() endpoint=endpoint.clone()/><div class="subworkflow-grid"><EndpointStage client=client.clone() endpoint=endpoint.clone()/><EndpointGrants client=client.clone() endpoint=endpoint.clone()/></div><EndpointDelete client=client endpoint=endpoint/> })}</div></details> }
+    let can_manage = owned && client.allows("endpoint.manage");
+    let can_grant = owned && client.allows("endpoint.grant");
+    let controls_requested = RwSignal::new(false);
+    view! { <details class="binding-card" on:toggle=move |_| controls_requested.set(true)><summary><div><span class="resource-kind">{if owned { endpoint.scheme.clone() } else { "granted".to_string() }}</span><h3>{identity}</h3><code>{endpoint.stable_id.clone()}</code></div><div class="binding-summary-state"><StatusBadge state=if observed.state.is_empty() { "unknown".to_string() } else { observed.state.clone() } positive=positive/></div></summary><div class="binding-details"><div class="resource-identity"><div><span>"Owner"</span><code>{endpoint.owner_scope_key.clone()}</code></div><div><span>"Boundary"</span><code>{format!("{}@{}", endpoint.network_policy_id, endpoint.desired.as_ref().map(|value| value.boundary_revision).unwrap_or_default())}</code></div><div><span>"Desired generation"</span><strong>{endpoint.desired_generation}</strong></div><div><span>"Observed generation"</span><strong>{observed.observed_generation}</strong></div><div><span>"Version"</span><code>{endpoint.resource_version.clone()}</code></div></div>{(!observed.error.is_empty()).then(|| view! { <InlineError detail=observed.error/> })}{move || controls_requested.get().then(|| view! { <EndpointGenerations client=client.clone() endpoint=endpoint.clone() can_manage=can_manage/>{can_manage.then(|| view! { <EndpointStage client=client.clone() endpoint=endpoint.clone()/> })}{owned.then(|| view! { <EndpointGrants client=client.clone() endpoint=endpoint.clone() can_grant=can_grant/> })}{can_manage.then(|| view! { <EndpointDelete client=client.clone() endpoint=endpoint.clone()/> })}{(owned && !can_manage && !can_grant).then(|| view! { <p class="muted">"You have read-only access to this endpoint."</p> })} })}</div></details> }
 }
 
 #[component]
-fn EndpointGenerations(client: ApiClient, endpoint: aos_proto_types::Endpoint) -> impl IntoView {
+fn EndpointGenerations(
+    client: ApiClient,
+    endpoint: aos_proto_types::Endpoint,
+    can_manage: bool,
+) -> impl IntoView {
     let endpoint_id = endpoint.stable_id;
     let endpoint_version = endpoint.resource_version;
     let read_client = client.clone();
@@ -489,7 +507,7 @@ fn EndpointGenerations(client: ApiClient, endpoint: aos_proto_types::Endpoint) -
                 .await
         }
     });
-    view! { <section class="subworkflow"><h4>"Endpoint generations"</h4><Suspense fallback=move || view! { <p class="loading-row">"Loading generations…"</p> }>{move || { let client = client.clone(); let endpoint_version = endpoint_version.clone(); Suspend::new(async move { match generations.await.as_ref() { Ok(generations) => view! { <div class="compact-list">{generations.iter().cloned().map(|generation| view! { <EndpointGenerationRow client=client.clone() generation=generation endpoint_version=endpoint_version.clone()/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section> }
+    view! { <section class="subworkflow"><h4>"Endpoint generations"</h4><Suspense fallback=move || view! { <p class="loading-row">"Loading generations…"</p> }>{move || { let client = client.clone(); let endpoint_version = endpoint_version.clone(); Suspend::new(async move { match generations.await.as_ref() { Ok(generations) => view! { <div class="compact-list">{generations.iter().cloned().map(|generation| view! { <EndpointGenerationRow client=client.clone() generation=generation endpoint_version=endpoint_version.clone() can_manage=can_manage/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section> }
 }
 
 #[component]
@@ -497,6 +515,7 @@ fn EndpointGenerationRow(
     client: ApiClient,
     generation: aos_proto_types::EndpointGeneration,
     endpoint_version: String,
+    can_manage: bool,
 ) -> impl IntoView {
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
@@ -551,7 +570,7 @@ fn EndpointGenerationRow(
             busy.set(false);
         });
     });
-    view! { <div class="revision-card"><div class="compact-list-row"><div><strong>{format!("Generation {}", generation.generation)}</strong><span>{format!("boundary revision {}", generation.desired.as_ref().map(|value| value.boundary_revision).unwrap_or_default())}</span><HashValue value=generation.content_digest/></div>{if generation.selected { view! { <StatusBadge state="selected".to_string() positive=true/> }.into_any() } else { view! { <button class="secondary-button" type="button" disabled=move || busy.get() on:click=on_plan>"Activate"</button> }.into_any() }}</div>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</div> }
+    view! { <div class="revision-card"><div class="compact-list-row"><div><strong>{format!("Generation {}", generation.generation)}</strong><span>{format!("boundary revision {}", generation.desired.as_ref().map(|value| value.boundary_revision).unwrap_or_default())}</span><HashValue value=generation.content_digest/></div>{if generation.selected { view! { <StatusBadge state="selected".to_string() positive=true/> }.into_any() } else if can_manage { view! { <button class="secondary-button" type="button" disabled=move || busy.get() on:click=on_plan>"Review activation"</button> }.into_any() } else { ().into_any() }}</div>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</div> }
 }
 
 #[component]
@@ -666,7 +685,11 @@ fn EndpointStage(client: ApiClient, endpoint: aos_proto_types::Endpoint) -> impl
 }
 
 #[component]
-fn EndpointGrants(client: ApiClient, endpoint: aos_proto_types::Endpoint) -> impl IntoView {
+fn EndpointGrants(
+    client: ApiClient,
+    endpoint: aos_proto_types::Endpoint,
+    can_grant: bool,
+) -> impl IntoView {
     let scope = RwSignal::new(String::new());
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
@@ -725,13 +748,14 @@ fn EndpointGrants(client: ApiClient, endpoint: aos_proto_types::Endpoint) -> imp
             busy.set(false);
         });
     });
-    view! { <section class="subworkflow"><h4>"Consumer scopes"</h4><div class="compact-list">{endpoint.grants.into_iter().filter(|grant| grant.state == "active").map(|grant| view! { <EndpointGrantRow client=row_client.clone() grant=grant/> }).collect_view()}</div><form class="stacked-form" on:submit=on_plan><label><span>"Consumer scope key"</span><input required prop:value=move || scope.get() on:input=move |event| scope.set(event_target_value(&event))/></label><button class="secondary-button" type="submit" disabled=move || busy.get()>"Grant"</button></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
+    view! { <section class="subworkflow"><h4>"Consumer scopes"</h4><div class="compact-list">{endpoint.grants.into_iter().filter(|grant| grant.state == "active").map(|grant| view! { <EndpointGrantRow client=row_client.clone() grant=grant can_grant=can_grant/> }).collect_view()}</div>{can_grant.then(|| view! { <form class="stacked-form" on:submit=on_plan><label><span>"Consumer scope key"</span><input required prop:value=move || scope.get() on:input=move |event| scope.set(event_target_value(&event))/></label><button class="secondary-button" type="submit" disabled=move || busy.get()>"Review grant"</button></form> })}{can_grant.then(|| view! { {move || error.get().map(|detail| view! { <InlineError detail=detail/> })} {move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })} })}</section> }
 }
 
 #[component]
 fn EndpointGrantRow(
     client: ApiClient,
     grant: aos_proto_types::ConsumerScopeGrant,
+    can_grant: bool,
 ) -> impl IntoView {
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
@@ -786,7 +810,7 @@ fn EndpointGrantRow(
             busy.set(false);
         });
     });
-    view! { <div class="compact-list-row"><div><code>{grant.consumer_scope_key}</code><span>{format!("generation {} · {} live pins", grant.resource_generation, grant.live_pin_count)}</span></div><button class="table-action" type="button" disabled=move || busy.get() on:click=on_plan>"Revoke"</button></div>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })} }
+    view! { <div class="compact-list-row"><div><code>{grant.consumer_scope_key}</code><span>{format!("generation {} · {} live pins", grant.resource_generation, grant.live_pin_count)}</span></div>{can_grant.then(|| view! { <button class="table-action" type="button" disabled=move || busy.get() on:click=on_plan>"Review revoke"</button> })}</div>{can_grant.then(|| view! { {move || error.get().map(|detail| view! { <InlineError detail=detail/> })} {move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })} })} }
 }
 
 #[component]
@@ -932,22 +956,36 @@ fn ingress_name(value: i32) -> &'static str {
         aos_proto_types::EndpointIngressKind::Unspecified => "hub",
     }
 }
-fn endpoint_identity(endpoint: &aos_proto_types::Endpoint) -> String {
-    let host = endpoint
-        .host
-        .as_ref()
-        .and_then(|value| value.host.as_ref())
-        .map(|host| match host {
-            aos_proto_types::endpoint_host::Host::DomainId(value) => value.clone(),
-            aos_proto_types::endpoint_host::Host::Ipv4(bytes) => bytes
+/// Formats the actual IP origin or a managed-domain reference without inventing a hostname.
+pub(super) fn endpoint_identity(endpoint: &aos_proto_types::Endpoint) -> String {
+    let Some(host) = endpoint.host.as_ref().and_then(|value| value.host.as_ref()) else {
+        return "Unknown endpoint host".to_string();
+    };
+
+    match host {
+        aos_proto_types::endpoint_host::Host::DomainId(value) => {
+            format!("Managed domain {value}")
+        }
+        aos_proto_types::endpoint_host::Host::Ipv4(bytes) => {
+            let host = bytes
                 .iter()
                 .map(u8::to_string)
                 .collect::<Vec<_>>()
-                .join("."),
-            aos_proto_types::endpoint_host::Host::Ipv6(_) => "IPv6 endpoint".to_string(),
-        })
-        .unwrap_or_else(|| "unknown host".to_string());
-    format!("{}://{}:{}", endpoint.scheme, host, endpoint.effective_port)
+                .join(".");
+            format!("{}://{}:{}", endpoint.scheme, host, endpoint.effective_port)
+        }
+        aos_proto_types::endpoint_host::Host::Ipv6(bytes) => {
+            match <[u8; 16]>::try_from(bytes.as_slice()) {
+                Ok(bytes) => format!(
+                    "{}://[{}]:{}",
+                    endpoint.scheme,
+                    std::net::Ipv6Addr::from(bytes),
+                    endpoint.effective_port
+                ),
+                Err(_) => "Invalid IPv6 endpoint".to_string(),
+            }
+        }
+    }
 }
 fn grant_request(
     endpoint_id: &str,
@@ -1022,5 +1060,21 @@ mod tests {
             domain_tls_defaults(&domain),
             ("external".to_string(), "secret:cdn-cert".to_string())
         );
+    }
+
+    #[test]
+    fn managed_domain_identity_is_not_rendered_as_a_hostname() {
+        let endpoint = aos_proto_types::Endpoint {
+            scheme: "https".to_string(),
+            effective_port: 443,
+            host: Some(aos_proto_types::EndpointHost {
+                host: Some(aos_proto_types::endpoint_host::Host::DomainId(
+                    "domain:cdn".to_string(),
+                )),
+            }),
+            ..Default::default()
+        };
+
+        assert_eq!(endpoint_identity(&endpoint), "Managed domain domain:cdn");
     }
 }

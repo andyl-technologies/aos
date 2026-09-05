@@ -9,6 +9,22 @@ use leptos::prelude::*;
 
 use aos_hub_console_contract::HashPresentation;
 
+/// Formats a Unix timestamp in seconds as an explicit UTC date and time.
+///
+/// Missing or invalid timestamps use the supplied empty-state label.
+pub fn format_timestamp(value: i64, missing: &str) -> String {
+    if value <= 0 {
+        return missing.to_string();
+    }
+    let date = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(value as f64 * 1000.0));
+    if !date.get_time().is_finite() {
+        return missing.to_string();
+    }
+    date.to_utc_string()
+        .as_string()
+        .unwrap_or_else(|| missing.to_string())
+}
+
 /// Renders a compact hash with the shared full-value tooltip and copy action.
 #[component]
 pub fn HashValue(

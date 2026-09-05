@@ -71,7 +71,7 @@
     "AR_${nativeRustCcPrefix}" = "${nativeRustToolchain}/bin/ar";
     "RANLIB_${nativeRustCcPrefix}" = "${nativeRustToolchain}/bin/ranlib";
   };
-  mkHubDerivation = args: mkDerivation (args // nativeRustToolchainEnv);
+  mkHubDerivation = args: mkDerivation (args // nativeRustToolchainEnv // consoleReleaseEnv);
   src = builtins.path {
     path = repoRoot;
     name = "aos-hub-console-workspace-src";
@@ -97,7 +97,15 @@
     sourceRoot = "source/crates";
     hash = "sha256-yf/Gu30exf9weCOK6RRrjusN+bXZ6rj1r+tZbEJMy4g=";
   };
-  cargoEnv = {PROTOC = "${buildProtobuf}/bin/protoc";};
+  # Optimize the browser download without changing native Hub or CLI profiles.
+  # Keep dependency artifacts and the final application on the same profile.
+  consoleReleaseEnv = {
+    CARGO_PROFILE_RELEASE_OPT_LEVEL = "s";
+    CARGO_PROFILE_RELEASE_LTO = "thin";
+    CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "1";
+    CARGO_PROFILE_RELEASE_STRIP = "debuginfo";
+  };
+  cargoEnv = {PROTOC = "${buildProtobuf}/bin/protoc";} // consoleReleaseEnv;
   cargoArtifacts = mkCargoArtifacts {
     pname = "aos-hub-console-wasm-artifacts";
     inherit version cargoDeps cargoEnv;
@@ -110,6 +118,7 @@
     cargoFlags = "-p aos-hub-console --target wasm32-unknown-unknown";
     cargoArtifactContract = {
       family = "aos-hub-console-wasm-release";
+      releaseProfile = consoleReleaseEnv;
       target = "wasm32-unknown-unknown";
       nativeInputs = map toString [buildProtobuf buildCc];
     };

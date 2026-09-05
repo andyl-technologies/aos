@@ -33,14 +33,23 @@ fn main() -> io::Result<()> {
 }
 
 fn stage(variable: &str, destination: &Path, fallback: &[u8]) -> io::Result<()> {
-    match env::var_os(variable) {
+    let contents = match env::var_os(variable) {
         Some(source) => {
             println!(
                 "cargo:rerun-if-changed={}",
                 PathBuf::from(&source).display()
             );
-            fs::copy(source, destination).map(|_| ())
+            fs::read(source)?
         }
-        None => fs::write(destination, fallback),
+        None => fallback.to_vec(),
+    };
+    // Store artifacts are read-only. Copying their permissions into OUT_DIR
+    // makes the next incremental build unable to replace the staged assets.
+    // Replace any older copied output and create a normal writable build file.
+    match fs::remove_file(destination) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
     }
+    fs::write(destination, contents)
 }

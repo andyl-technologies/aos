@@ -6,7 +6,7 @@
 
 use leptos::prelude::*;
 
-use crate::components::{InlineError, StatusBadge};
+use crate::components::{HelpTooltip, InlineError, StatusBadge};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
 
@@ -19,10 +19,8 @@ use super::cache_retention::CacheRetentionWorkflow;
 use super::cache_stack::RegistryCacheStack;
 use super::operations::{OperationSurface, OperationsWorkflow};
 use super::organization_activity::OrganizationActivity;
-use super::registry_catalog::RegistryCatalog;
 use super::registry_configuration::RegistryConfiguration;
 use super::registry_containers::RegistryContainers;
-use super::registry_images::RegistryImages;
 use super::registry_mirror::RegistryMirrorWorkflow;
 use super::registry_publication::RegistryPublicationWorkflow;
 use super::resource_access::{ResourceAccessSurface, ResourceAccessWorkflow};
@@ -90,16 +88,8 @@ pub(super) fn CacheIntegrationWorkflow(route: ConsoleRoute, client: ApiClient) -
             <RegistryPublicationWorkflow client=client registry_id=path.clone()/>
         }
         .into_any(),
-        (ConsoleScope::Registry { path }, "images") => view! {
-            <RegistryImages client=client registry_id=path.clone()/>
-        }
-        .into_any(),
         (ConsoleScope::Registry { path }, "containers") => view! {
             <RegistryContainers client=client registry_id=path.clone()/>
-        }
-        .into_any(),
-        (ConsoleScope::Registry { path }, page @ ("packages" | "docs" | "channels")) => view! {
-            <RegistryCatalog client=client registry_id=path.clone() page=page/>
         }
         .into_any(),
         (ConsoleScope::Registry { path }, page @ ("configuration" | "changes")) => view! {
@@ -178,6 +168,7 @@ pub(super) fn CacheIntegrationWorkflow(route: ConsoleRoute, client: ApiClient) -
 
 #[component]
 fn CacheIntegrations(client: ApiClient, cache_id: String) -> impl IntoView {
+    let task = RwSignal::new("overview".to_string());
     let read_client = client.clone();
     let read_cache_id = cache_id.clone();
     let integrations = LocalResource::new(move || {
@@ -197,24 +188,44 @@ fn CacheIntegrations(client: ApiClient, cache_id: String) -> impl IntoView {
                 .await
         }
     });
+    let task_client = client.clone();
+    let task_cache_id = cache_id.clone();
+    let retention_href = cache_settings_href(&cache_id, "retention");
 
     view! {
         <div class="workflow-stack">
         <section class="panel resource-panel">
+            <div class="section-heading"><div><p class="section-kicker">"Choose an outcome"</p><h2>"Connect this cache"<HelpTooltip term="Connect this cache" summary="Client use, proactive population, and retention are separate settings. This page only shows relationships owned by this cache; registry cache ordering and signing stay with the registry."/></h2></div></div>
+            <div class="resource-grid">
+                <article class="resource-card"><div><span class="resource-kind">"Client configuration"</span><h3>"Use this cache for installs"</h3><p>"Add it to a registry's signed, ordered consumer cache stack. The registry owns that setting."</p></div></article>
+                <button class="resource-card" type="button" on:click=move |_| task.set("populate".to_string())><div><span class="resource-kind">"Availability"</span><h3>"Populate this cache"</h3><p>"Copy and verify a registry's objects here without changing client configuration or retention."</p></div><span class="card-arrow">"→"</span></button>
+                <a class="resource-card" href=retention_href><div><span class="resource-kind">"Garbage collection"</span><h3>"Keep registry objects"</h3><p>"Create retention roots from signed catalogs, channels, or releases."</p></div><span class="card-arrow">"→"</span></a>
+            </div>
+            <div class="compact-form">
+                <label><span>"Task"</span><select prop:value=move || task.get() on:change=move |event| task.set(event_target_value(&event))><option value="overview">"View current relationships"</option><option value="populate">"Configure population and coverage"</option><option value="preview">"Advanced cross-resource preview"</option></select></label>
+            </div>
+        </section>
+        {move || {
+            let client = task_client.clone();
+            let cache_id = task_cache_id.clone();
+            match task.get().as_str() {
+                "populate" => view! { <CachePopulation client=client cache_id=cache_id/> }.into_any(),
+                "preview" => view! { <CacheIntegrationPreview client=client cache_id=cache_id/> }.into_any(),
+                _ => ().into_any(),
+            }
+        }}
+        <section class="panel resource-panel">
             <div class="section-heading">
                 <div>
                     <p class="section-kicker">"Reverse topology"</p>
-                    <h2>"Registry integrations"</h2>
-                    <p>
-                        "One cache may serve many registries. Publication, retention, and population are independent relationships."
-                    </p>
+                    <h2>"Registry integrations"<HelpTooltip term="Registry integrations" summary="One cache may serve many registries. Publication, retention, and population are independent relationships."/></h2>
                 </div>
             </div>
             <Suspense fallback=move || view! { <p class="loading-row">"Loading integrations…"</p> }>
                 {move || Suspend::new(async move {
                     match integrations.await.as_ref() {
                         Ok(integrations) if integrations.is_empty() => view! {
-                            <p class="muted">"This cache has no registry integrations."</p>
+                            <div class="empty-state"><h3>"No registry relationships"</h3><p>"Connect a registry only when it needs client publication, population, or retention roots from this cache."</p></div>
                         }
                         .into_any(),
                         Ok(integrations) => view! {
@@ -237,8 +248,6 @@ fn CacheIntegrations(client: ApiClient, cache_id: String) -> impl IntoView {
                 })}
             </Suspense>
         </section>
-        <CacheIntegrationPreview client=client.clone() cache_id=cache_id.clone()/>
-        <CachePopulation client=client cache_id=cache_id/>
         </div>
     }
 }
@@ -248,12 +257,13 @@ fn IntegrationCard(integration: aos_proto_types::CacheIntegration) -> impl IntoV
     let published = !integration.publications.is_empty();
     let retained = integration.retention.is_some();
     let populated = integration.population.is_some();
+    let registry_href = format!("/{}/-/settings/caches", integration.registry_id);
 
     view! {
         <article class="revision-card">
             <div class="compact-list-row">
                 <div>
-                    <strong>{integration.registry_id}</strong>
+                    <a href=registry_href><strong>{integration.registry_id}</strong></a>
                     <span>{integration.cache_id}</span>
                 </div>
                 <StatusBadge
@@ -263,7 +273,7 @@ fn IntegrationCard(integration: aos_proto_types::CacheIntegration) -> impl IntoV
             </div>
             <div class="resource-identity">
                 <div>
-                    <span>"Consumer entries"</span>
+                    <span>"Client stack entries"</span>
                     <strong>{integration.publications.len()}</strong>
                 </div>
                 <div>
@@ -276,5 +286,12 @@ fn IntegrationCard(integration: aos_proto_types::CacheIntegration) -> impl IntoV
                 </div>
             </div>
         </article>
+    }
+}
+
+fn cache_settings_href(cache_id: &str, page: &str) -> String {
+    match cache_id.split_once('/') {
+        Some((organization, cache)) => format!("/-/org/{organization}/caches/{cache}/{page}"),
+        None => format!("/-/caches/{cache_id}/{page}"),
     }
 }
