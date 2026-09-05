@@ -351,10 +351,23 @@ ordinal, and exact accounting delta. The flight also exposed skipped genesis
 entrypoints: initial observation records had already moved evaluation past
 genesis. Production now fires entrypoints before those records and evaluates
 conditional events afterward. No-backend regressions cover terminal entrypoints,
-dependent events, and non-repetition. This flight uses an authored immediate
-completion, not guest-driven choice execution, checkpoint-pause recovery, or
-hot-fork acceptance. Aggregate campaign grant enforcement for subsequent planner
-issuance remains open; request-local admission budgets are a separate check.
+dependent events, and non-repetition.
+
+The subsequent 2026-09-04 flight also passes delayed completion after real guest
+execution, with all three cases retained in
+`/nix/store/h013qvhbzv2y53c5yxnk79729qm2xdav-aos-vm-test-crucible-packaged-campaign-0/serial.log`.
+Packaged CLI execution now defaults to a 1,000,000-instruction rendezvous,
+preserving explicit interval overrides and the existing non-packaged default.
+The delayed scenario completes at the first rendezvous after baked genesis;
+the public explanation authenticates its terminal result and unchanged
+decision-free configuration. The cases pass in 2.26, 2.04, and 4.72 seconds.
+These flights do not prove guest-choice branching, arbitrary exact-time trigger
+deadlines between rendezvous, checkpoint-pause recovery, or hot-fork acceptance.
+Longer diagnostic execution also stalled waiting for a post-device control
+acknowledgement and returned cleanup-pending on shutdown; the short successful
+flight does not close that liveness investigation. Aggregate campaign grant
+enforcement for subsequent planner issuance remains open; request-local
+admission budgets are a separate check.
 
 Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
 `crucible-daemon`.

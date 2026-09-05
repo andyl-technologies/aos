@@ -6,23 +6,37 @@
 
 use super::*;
 use crucible_session::engine::{
-    Action, ContentAddressedBlobRef, ContentHash, EventGraph, Icount, NodeId, Plan, Properties,
-    ReadyPoint, ScenarioDefForm, Seed, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
+    Action, ContentAddressedBlobRef, ContentHash, EventGraph, EventId, Icount, NodeId, Plan,
+    Predicate, Properties, ReadyPoint, ScenarioDefForm, Seed, SimDuration, VmArchitecture,
+    WhiteBoxPolicy, World, WorldNode,
 };
 
 #[test]
 #[ignore = "requires dedicated cgroup-v2 and ext4 project-quota roots inside the VM check"]
 fn public_packaged_executor_captures_genesis_and_restarts() -> Result<(), Box<dyn Error>> {
-    packaged_campaign_flight(false)
+    packaged_campaign_flight(PackagedFlight::Restart)
 }
 
 #[test]
 #[ignore = "requires dedicated cgroup-v2 and ext4 project-quota roots inside the VM check"]
 fn public_packaged_executor_completes_initial_discovery() -> Result<(), Box<dyn Error>> {
-    packaged_campaign_flight(true)
+    packaged_campaign_flight(PackagedFlight::Discovery)
 }
 
-fn packaged_campaign_flight(execute: bool) -> Result<(), Box<dyn Error>> {
+#[test]
+#[ignore = "requires dedicated cgroup-v2 and ext4 project-quota roots inside the VM check"]
+fn public_packaged_executor_completes_guest_quantum() -> Result<(), Box<dyn Error>> {
+    packaged_campaign_flight(PackagedFlight::GuestQuantum)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PackagedFlight {
+    Restart,
+    Discovery,
+    GuestQuantum,
+}
+
+fn packaged_campaign_flight(mode: PackagedFlight) -> Result<(), Box<dyn Error>> {
     let fixture = FlightFixture::new()?;
     let root = fixture._temporary.path();
     let kernel = required_path("CRUCIBLE_KERNEL")?;
@@ -51,16 +65,29 @@ fn packaged_campaign_flight(execute: bool) -> Result<(), Box<dyn Error>> {
         }],
         vec![],
     )?;
-    // An empty plan does not terminate a running machine. Give the execution
-    // flight an explicit modeled completion at its first event boundary.
-    let plan = Plan::from_event_graph_for_world(
-        &world,
+    // The launcher primes the guest to 1,000,000 instructions. At shift zero,
+    // 2,000,000 ns is the first packaged rendezvous beyond that baked boundary;
+    // `After` is an exact-time predicate, not a lower-bound comparison.
+    let graph = if mode == PackagedFlight::GuestQuantum {
+        EventGraph::builder()
+            .event("begin-flight")
+            .entrypoint()
+            .action(Action::Group(Vec::new()))
+            .event("complete-flight")
+            .when(Predicate::After {
+                of: EventId::from_name("begin-flight"),
+                duration: SimDuration { nanos: 2_000_000 },
+            })
+            .action(Action::Pass)
+            .build_for_world(&world)?
+    } else {
         EventGraph::builder()
             .event("complete-flight")
             .entrypoint()
             .action(Action::Pass)
-            .build_for_world(&world)?,
-    )?;
+            .build_for_world(&world)?
+    };
+    let plan = Plan::from_event_graph_for_world(&world, graph)?;
     let scenario =
         ScenarioDefForm::from_components(&world, &plan, &Properties::empty(), Seed::from_u64(42))?;
     let scenario_path = root.join("scenario.toml");
@@ -146,7 +173,11 @@ exact_user_pins = true
     fs::set_permissions(&authority, fs::Permissions::from_mode(0o600))?;
     let deployment = required_path("CRUCIBLE_FLIGHT_DEPLOYMENT")?;
     let executor_socket = root.join("executor.sock");
-    for _ in 0..if execute { 1 } else { 2 } {
+    for _ in 0..if mode == PackagedFlight::Restart {
+        2
+    } else {
+        1
+    } {
         let mut invocation = fixture.service_command(None);
         invocation
             .arg("--qemu")
@@ -169,7 +200,7 @@ exact_user_pins = true
         let head = campaign_status(&fixture)?;
         assert_eq!(head["state"], original["state"]);
         assert_eq!(head["snapshot"], original["snapshot"]);
-        if execute
+        if mode != PackagedFlight::Restart
             && let Err(error) = execute_initial_discovery(
                 &fixture,
                 &head,
@@ -182,10 +213,10 @@ exact_user_pins = true
         packaged.stop()?;
         assert!(!executor_socket.exists());
     }
-    if execute {
-        println!("public_packaged_initial_discovery=true");
-    } else {
-        println!("public_packaged_genesis_restart=true");
+    match mode {
+        PackagedFlight::Restart => println!("public_packaged_genesis_restart=true"),
+        PackagedFlight::Discovery => println!("public_packaged_initial_discovery=true"),
+        PackagedFlight::GuestQuantum => println!("public_packaged_guest_quantum=true"),
     }
     Ok(())
 }
@@ -254,6 +285,15 @@ fn execute_initial_discovery(
             assert_eq!(explanation["attempt"]["id"], attempt);
             assert_eq!(explanation["admission"]["admission_ordinal"], 1);
             assert_eq!(explanation["observation"]["stop"], "terminal-success");
+            // These scenarios add no decisions, so their configuration stays
+            // at genesis even after guest execution. In the delayed fixture,
+            // only the exact-time event can produce this terminal result; the
+            // backend loop verifies reaching its selected RUN ceiling first.
+            assert_eq!(explanation["observation"]["child_artifact"], genesis);
+            assert_eq!(
+                explanation["observation"]["discovered_choices"],
+                serde_json::json!([])
+            );
             return Ok(());
         }
         if Instant::now() >= deadline {
