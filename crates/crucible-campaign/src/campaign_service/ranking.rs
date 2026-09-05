@@ -312,7 +312,7 @@ mod tests {
             CampaignName::new("campaign/ranking").expect("campaign"),
             CampaignSnapshotId::from_content_id(ContentId::for_bytes(
                 crate::CampaignRecordKind::Snapshot.object_kind(),
-                crate::CampaignRecordKind::Snapshot.schema_version(),
+                2, // This frozen request intentionally retains its version-2 snapshot ID.
                 b"planner ranking request snapshot",
             ))
             .expect("snapshot ID"),

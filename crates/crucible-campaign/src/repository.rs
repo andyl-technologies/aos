@@ -738,6 +738,9 @@ impl ResolvedSelection {
 /// Failure while resolving or transactionally advancing a campaign.
 #[derive(Debug, Error)]
 pub enum CampaignRepositoryError {
+    /// An aggregate grant or spending transition exceeds its allowance or counter.
+    #[error(transparent)]
+    Budget(#[from] crate::CampaignBudgetError),
     /// An immutable or mutable store operation failed.
     #[error(transparent)]
     Store(#[from] StoreError),
@@ -807,7 +810,8 @@ impl CampaignRepositoryError {
                 store_executor_rejection(error)
             }
             Self::NotFound | Self::Poisoned => ExecutorRejection::UnavailableInput,
-            Self::Codec(_)
+            Self::Budget(_)
+            | Self::Codec(_)
             | Self::Merkle(_)
             | Self::AlreadyExists
             | Self::Stale { .. }

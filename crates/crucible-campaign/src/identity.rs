@@ -392,6 +392,12 @@ content_object_id!(
     "Identifies one campaign compatibility lineage."
 );
 content_object_id!(
+    CampaignBudgetLedgerId,
+    ObjectKind::CampaignFact,
+    "crucible.campaign.budget-ledger",
+    "Identifies one exact aggregate campaign budget ledger."
+);
+content_object_id!(
     CampaignPolicyId,
     ObjectKind::Policy,
     "crucible.campaign.policy",
@@ -400,7 +406,7 @@ content_object_id!(
 content_object_id!(
     CampaignSnapshotId,
     ObjectKind::CampaignSnapshot,
-    2,
+    [2, 3],
     "crucible.campaign.snapshot",
     "Identifies one immutable campaign snapshot."
 );

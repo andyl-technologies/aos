@@ -1964,6 +1964,22 @@ fn campaign_attempt_fixture(
     let created = repository
         .create(name, &lineage, &policy, &BTreeMap::new())
         .expect("create campaign");
+    repository
+        .apply_control(
+            name,
+            &crucible_campaign::ControlRequest {
+                command: CampaignCommandId::from_hash(CampaignHash::derive(
+                    "crucible.test.executor-flight.budget.v1",
+                    name.as_bytes(),
+                )),
+                expected_snapshot: created.snapshot_id(),
+                action: CampaignControlAction::GrantBudget(
+                    crucible_campaign::BudgetGrant::new(2, 2).expect("campaign allowance"),
+                ),
+            },
+        )
+        .expect("fund campaign");
+    let created = repository.head(name).expect("funded head");
 
     let domain = ChoiceDomain::Boolean(BooleanDomain::new(1).expect("boolean domain"));
     let declaration = SelectableDeclaration::new(

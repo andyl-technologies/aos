@@ -67,6 +67,11 @@ impl CampaignRepository {
             _ => parent_checkpoint.derived_branch,
         };
         let parent_snapshot = self.read_snapshot(parent)?;
+        self.validate_budget_successor(
+            &parent_snapshot,
+            &loaded,
+            &self.read_fact(transition_content)?,
+        )?;
         let ancestry_depth = parent_checkpoint
             .ancestry_depth
             .checked_add(1)
@@ -87,6 +92,8 @@ impl CampaignRepository {
         let linked_objects = self.verify_campaign_closure_anchored(transition_content, &anchors)?;
         let closure_growth_upper = closure_growth_upper
             .checked_add(linked_objects)
+            // The snapshot-owned ledger is childless and may be newly written.
+            .and_then(|growth| growth.checked_add(1))
             .ok_or_else(|| integrity("campaign-closure-object-limit"))?;
         let closure_objects = parent_checkpoint
             .closure_objects
@@ -214,6 +221,7 @@ impl CampaignRepository {
                 (Some(parent), Some(transition)) => {
                     let transition_fact = self.read_fact(transition.content_id())?;
                     let parent_snapshot = self.read_snapshot(parent.content_id())?;
+                    let budget_fact = transition_fact.clone();
                     match transition_fact {
                         CampaignFact::CampaignDerived(derivation) => {
                             self.validate_derivation_successor(
@@ -348,6 +356,7 @@ impl CampaignRepository {
                             return Err(integrity("snapshot-transition-type-is-not-implemented"));
                         }
                     }
+                    self.validate_budget_successor(&parent_snapshot, &loaded, &budget_fact)?;
                     content_id = parent.content_id();
                 }
                 _ => return Err(integrity("snapshot-parent-transition-shape")),
@@ -360,6 +369,7 @@ impl CampaignRepository {
         &self,
         loaded: &LoadedSnapshot,
     ) -> Result<(), CampaignRepositoryError> {
+        self.validate_genesis_budget(&loaded.snapshot)?;
         let lineage = self.read_lineage(required_child(&loaded.envelope, "lineage")?)?;
         let roots = loaded.snapshot.roots();
         let expected_genesis = lineage.genesis_content().content_id();

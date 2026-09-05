@@ -38,6 +38,8 @@ mod planner_service;
 mod policy;
 mod repository;
 
+pub use model::{CampaignBudgetError, CampaignBudgetLedger};
+
 pub use artifact::{ConfigurationArtifact, ScenarioArtifact};
 pub use authority::{
     DebuggerAuthorityKey, DebuggerSubmission, PlannerAuthorityKey, PlannerSubmission,
@@ -120,16 +122,17 @@ pub use finding::{
 };
 pub use identity::{
     AlternativeId, AttemptAdmissionId, AttemptId, BranchEdgeId, BranchPathId, BranchPointId,
-    BranchRequestId, CampaignCommandId, CampaignFactId, CampaignHash, CampaignLineageId,
-    CampaignPolicyId, CampaignSnapshotId, CampaignViewId, CandidateGeneratorSpecId, ChoiceClassId,
-    ChoiceDomainId, ChoiceDomainSemanticId, ChoiceGroupId, ChoiceOpportunityId,
-    ChoiceOpportunitySemanticId, ChoiceRngStreamId, ConfigurationArtifactId, ConfigurationId,
-    ContinuationProjectionId, CoverageProjectionId, CreditId, DebugSessionId, ExactCheckpointId,
-    ExpansionStateId, FindingId, MeasurementSetId, ObjectiveEvaluationId, ObservationId,
-    PlannerCandidateGuidanceId, PlannerEngineId, PlannerInvocationId, PlannerStateId,
-    PlannerStepId, PolicyArtifactId, ProbabilityModelId, PropertyVerdictSetId, ProposalId,
-    RankingExplanationId, ReproductionArtifactId, RetainedPlannerRequestId, ScenarioArtifactId,
-    ScenarioDefId, SelectableId, SelectableSemanticId, SelectionId, SurvivorSelectionId,
+    BranchRequestId, CampaignBudgetLedgerId, CampaignCommandId, CampaignFactId, CampaignHash,
+    CampaignLineageId, CampaignPolicyId, CampaignSnapshotId, CampaignViewId,
+    CandidateGeneratorSpecId, ChoiceClassId, ChoiceDomainId, ChoiceDomainSemanticId, ChoiceGroupId,
+    ChoiceOpportunityId, ChoiceOpportunitySemanticId, ChoiceRngStreamId, ConfigurationArtifactId,
+    ConfigurationId, ContinuationProjectionId, CoverageProjectionId, CreditId, DebugSessionId,
+    ExactCheckpointId, ExpansionStateId, FindingId, MeasurementSetId, ObjectiveEvaluationId,
+    ObservationId, PlannerCandidateGuidanceId, PlannerEngineId, PlannerInvocationId,
+    PlannerStateId, PlannerStepId, PolicyArtifactId, ProbabilityModelId, PropertyVerdictSetId,
+    ProposalId, RankingExplanationId, ReproductionArtifactId, RetainedPlannerRequestId,
+    ScenarioArtifactId, ScenarioDefId, SelectableId, SelectableSemanticId, SelectionId,
+    SurvivorSelectionId,
 };
 pub use merkle::{
     CampaignStoreError, MAX_PROVEN_PAGE_ITEMS, MerkleMap, MerkleMapLookupProof, MerkleMapPage,

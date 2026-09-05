@@ -1551,7 +1551,8 @@ fn authority_adapters_bind_canonical_messages_without_prevalidation_writes() {
             &debugger_bytes,
         )
         .to_hex(),
-        "9e18172533f107e06e2e81b5379e23a70c021f92188b8e1efc6467a440df95a3",
+        // Version-3 snapshots authenticate the aggregate budget ledger.
+        "ff56dbf506193292e161684db60ddcf38ad7883ea8f7b21e3d23321356d4f602",
     );
     let decoded_debugger =
         DebuggerSubmission::from_canonical_bytes(&debugger_bytes).expect("decode debugger");
@@ -1663,7 +1664,8 @@ fn authority_adapters_bind_canonical_messages_without_prevalidation_writes() {
     assert_eq!(
         CampaignHash::derive("crucible.test.planner-submission-vector.v1", &planner_bytes,)
             .to_hex(),
-        "7ef3e193d9b56bc42612cabb9a788900349830e49e2cca58b25602ea9539d7a5",
+        // Version-3 snapshots authenticate the aggregate budget ledger.
+        "5d2c533e0a67e19ddc66637e1f31233a4a1c8ff590921cef505e5e67716b3dd4",
     );
     let decoded_planner =
         PlannerSubmission::from_canonical_bytes(&planner_bytes).expect("decode planner");
@@ -2411,7 +2413,7 @@ fn conflicted_successors_are_never_promoted_as_validated_heads() {
 fn finite_proposal_is_an_exact_indexed_delta_and_replays_before_staleness() {
     let (repository, lineage, policy) = fixture();
     let genesis = repository
-        .create("finite-proposal", &lineage, &policy, &BTreeMap::new())
+        .create_funded("finite-proposal", &lineage, &policy, &BTreeMap::new())
         .expect("create");
     let request = branch_request(
         &repository,

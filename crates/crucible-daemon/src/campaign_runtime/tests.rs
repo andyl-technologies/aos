@@ -13,6 +13,28 @@ use super::*;
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(10);
 
+#[test]
+fn exhausted_planner_allowance_waits_instead_of_stopping_the_runtime() {
+    let content = crucible_cas::content_store::ContentId::for_bytes(
+        crucible_cas::content_store::ObjectKind::CampaignSnapshot,
+        3,
+        b"runtime-budget-snapshot",
+    );
+    let snapshot = crucible_campaign::CampaignSnapshotId::parse(&format!(
+        "crucible.campaign.snapshot@{content}"
+    ))
+    .expect("typed snapshot identity");
+    let outcome =
+        CampaignSupervisorStepOutcome::Planner(CampaignPlannerStepOutcome::BudgetBlocked {
+            snapshot,
+            reason: crucible_campaign::CampaignBudgetError::AttemptAllowanceExhausted,
+        });
+    assert_eq!(
+        supervisor_step_disposition(&outcome),
+        CampaignRuntimeStepDisposition::Wait
+    );
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FakeError {
     Failed,

@@ -107,11 +107,13 @@ pub enum CampaignRecordKind {
     Finding,
     /// Snapshot-bound fixed-point guidance for one planner candidate.
     PlannerCandidateGuidance,
+    /// Exact aggregate grants and spending under the budget-ledger contract.
+    BudgetLedger,
 }
 
 impl CampaignRecordKind {
     /// Every campaign record schema admitted by this crate.
-    pub const ALL: [Self; 38] = [
+    pub const ALL: [Self; 39] = [
         Self::Lineage,
         Self::Policy,
         Self::Snapshot,
@@ -150,6 +152,7 @@ impl CampaignRecordKind {
         Self::ReproductionArtifact,
         Self::Finding,
         Self::PlannerCandidateGuidance,
+        Self::BudgetLedger,
     ];
 
     /// Returns the globally registered canonical schema name.
@@ -194,6 +197,7 @@ impl CampaignRecordKind {
             Self::ReproductionArtifact => "crucible.campaign.reproduction-artifact",
             Self::Finding => "crucible.campaign.finding",
             Self::PlannerCandidateGuidance => "crucible.campaign.planner-candidate-guidance",
+            Self::BudgetLedger => "crucible.campaign.budget-ledger",
         }
     }
 
@@ -201,7 +205,7 @@ impl CampaignRecordKind {
     #[must_use]
     pub const fn schema_version(self) -> u32 {
         match self {
-            Self::Snapshot => 2,
+            Self::Snapshot => 3,
             Self::Fact => 6,
             Self::PlannerInvocation => 2,
             Self::PlannerStep => 4,
@@ -246,6 +250,7 @@ impl CampaignRecordKind {
             | Self::ObjectiveEvaluation => ObjectKind::Observation,
             Self::ReproductionArtifact | Self::Finding => ObjectKind::Finding,
             Self::Lineage
+            | Self::BudgetLedger
             | Self::Fact
             | Self::PlanningView
             | Self::ChoiceDomain
@@ -307,6 +312,7 @@ impl Canonical for CampaignRecordKind {
             Self::RankingExplanation => 35,
             Self::SurvivorSelection => 36,
             Self::PlannerCandidateGuidance => 37,
+            Self::BudgetLedger => 38,
         });
     }
 
@@ -350,6 +356,7 @@ impl Canonical for CampaignRecordKind {
             35 => Ok(Self::RankingExplanation),
             36 => Ok(Self::SurvivorSelection),
             37 => Ok(Self::PlannerCandidateGuidance),
+            38 => Ok(Self::BudgetLedger),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "campaign-record-kind",
                 tag,
@@ -366,6 +373,21 @@ pub struct ObjectEnvelope {
 }
 
 impl ObjectEnvelope {
+    /// Builds the fixed-width aggregate-budget envelope without hidden children.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] if canonical envelope construction fails.
+    pub fn for_budget_ledger(
+        value: &crate::CampaignBudgetLedger,
+    ) -> Result<Self, CampaignCodecError> {
+        Self::new(
+            CampaignRecordKind::BudgetLedger,
+            BTreeSet::new(),
+            value.canonical_bytes(),
+        )
+    }
+
     /// Builds a lineage envelope with its exact empty child table.
     ///
     /// # Errors
@@ -398,8 +420,9 @@ impl ObjectEnvelope {
     ///
     /// Returns [`CampaignCodecError`] if a generated role or envelope is invalid.
     pub fn for_snapshot(value: &CampaignSnapshot) -> Result<Self, CampaignCodecError> {
-        Self::new(
+        Self::new_versioned(
             CampaignRecordKind::Snapshot,
+            value.schema_version(),
             snapshot_children(value)?,
             value.canonical_bytes(),
         )
@@ -593,6 +616,7 @@ impl ObjectEnvelope {
             },
         )?;
         let version_supported = envelope.schema_version() == record_kind.schema_version()
+            || record_kind == CampaignRecordKind::Snapshot && envelope.schema_version() == 2
             || record_kind == CampaignRecordKind::Fact
                 && matches!(envelope.schema_version(), 2..=5)
             || record_kind == CampaignRecordKind::BranchPath && envelope.schema_version() == 1
@@ -620,6 +644,8 @@ impl ObjectEnvelope {
         if matches!(
             self.record_kind,
             CampaignRecordKind::Fact
+                | CampaignRecordKind::Snapshot
+                | CampaignRecordKind::BudgetLedger
                 | CampaignRecordKind::BranchPath
                 | CampaignRecordKind::BranchRequest
                 | CampaignRecordKind::MeasurementSet
@@ -655,6 +681,10 @@ fn expected_children(
     body: &[u8],
 ) -> Result<BTreeSet<ContentChild>, CampaignCodecError> {
     match kind {
+        CampaignRecordKind::BudgetLedger => {
+            crate::CampaignBudgetLedger::from_canonical_bytes(body)?;
+            Ok(BTreeSet::new())
+        }
         CampaignRecordKind::Lineage => {
             let value = CampaignLineage::from_canonical_bytes(body)?;
             content_children(value.content_children())
@@ -827,6 +857,9 @@ fn snapshot_children(
     }
     if let Some(transition) = snapshot.transition() {
         children.push(("transition", transition.content_id()));
+    }
+    if let Some(ledger) = snapshot.budget_ledger() {
+        children.push(("budget-ledger", ledger.content_id()));
     }
     content_children(children)
 }

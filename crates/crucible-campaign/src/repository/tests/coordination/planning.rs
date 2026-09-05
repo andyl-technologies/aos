@@ -260,7 +260,7 @@ fn planner_no_work_is_owned_replayable_and_state_continuous() {
 fn planner_scan_results_are_bound_to_exact_served_pages() {
     let (repository, lineage, policy) = fixture();
     let genesis = repository
-        .create("planner-pages", &lineage, &policy, &BTreeMap::new())
+        .create_funded("planner-pages", &lineage, &policy, &BTreeMap::new())
         .expect("create");
     let first_request = branch_request(
         &repository,
@@ -536,7 +536,7 @@ fn planner_scan_results_are_bound_to_exact_served_pages() {
 fn canonical_frontier_planner_carries_the_first_ready_offer_across_pages() {
     let (repository, lineage, policy, blobs) = counted_fixture();
     let genesis = repository
-        .create("canonical-planner", &lineage, &policy, &BTreeMap::new())
+        .create_funded("canonical-planner", &lineage, &policy, &BTreeMap::new())
         .expect("create canonical-planner campaign");
     let first_request = branch_request(
         &repository,
@@ -804,7 +804,7 @@ fn canonical_frontier_planner_carries_the_first_ready_offer_across_pages() {
 fn canonical_puct_planner_ranks_every_ready_offer_and_replays_owner_guidance() {
     let (repository, lineage, policy, blobs) = counted_fixture();
     let genesis = repository
-        .create("canonical-puct", &lineage, &policy, &BTreeMap::new())
+        .create_funded("canonical-puct", &lineage, &policy, &BTreeMap::new())
         .expect("create canonical PUCT campaign");
     let request_a = branch_request(
         &repository,
@@ -1555,7 +1555,7 @@ fn planner_driver_resumes_an_authenticated_page_cursor_after_restart() {
         authorized_fixture();
     let repository = Arc::new(repository);
     let genesis = repository
-        .create(
+        .create_funded(
             "planner-driver-restart",
             &lineage,
             &policy,
@@ -1680,7 +1680,7 @@ fn planner_driver_does_not_reinvoke_a_terminal_current_view() {
     let (repository, lineage, policy, _, planner_authority, _) = authorized_fixture();
     let repository = Arc::new(repository);
     let created = repository
-        .create(
+        .create_funded(
             "planner-driver-settled",
             &lineage,
             &policy,
@@ -1746,6 +1746,117 @@ fn planner_driver_does_not_reinvoke_a_terminal_current_view() {
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
+#[test]
+fn planner_driver_waits_for_each_allowance_and_resumes_after_a_grant() {
+    use crate::CampaignBudgetError;
+
+    let (repository, lineage, policy, _, authority, _) = authorized_fixture();
+    let repository = Arc::new(repository);
+    let created = repository
+        .create("planner-budget", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "budget-branch",
+    );
+    let requested = repository
+        .submit_known_branch_request("planner-budget", created.snapshot_id(), &request)
+        .expect("request");
+    repository
+        .apply_control(
+            "planner-budget",
+            &command(
+                "resume",
+                requested.new_snapshot,
+                CampaignControlAction::Resume,
+            ),
+        )
+        .expect("resume");
+    let (engine, artifact, state, budget) = canonical_planner_driver_basis(&repository);
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut driver = CampaignPlannerDriver::new(
+        Arc::clone(&repository),
+        canonical_planner_client(&authority, Arc::clone(&calls)),
+        engine,
+        artifact,
+        state,
+        16,
+        budget,
+    )
+    .expect("driver");
+
+    for (reason, proposals, attempts, command_name) in [
+        (
+            CampaignBudgetError::ProposalAllowanceExhausted,
+            1,
+            0,
+            "fund-proposals",
+        ),
+        (
+            CampaignBudgetError::AttemptAllowanceExhausted,
+            0,
+            1,
+            "fund-attempts",
+        ),
+    ] {
+        let head = repository.head("planner-budget").expect("head");
+        let before = repository
+            .budget_projection("planner-budget")
+            .expect("budget");
+        let expected = CampaignPlannerStepOutcome::BudgetBlocked {
+            snapshot: head.snapshot_id(),
+            reason,
+        };
+        assert_eq!(
+            driver.step("planner-budget").expect("wait for budget"),
+            expected
+        );
+        let after_call = calls.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            driver
+                .step("planner-budget")
+                .expect("wait without invoking"),
+            expected
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), after_call);
+        assert_eq!(
+            repository
+                .budget_projection("planner-budget")
+                .expect("unchanged budget"),
+            before
+        );
+        repository
+            .apply_control(
+                "planner-budget",
+                &command(
+                    command_name,
+                    head.snapshot_id(),
+                    CampaignControlAction::GrantBudget(
+                        BudgetGrant::new(proposals, attempts).expect("grant"),
+                    ),
+                ),
+            )
+            .expect("fund campaign");
+    }
+
+    assert!(matches!(
+        driver.step("planner-budget").expect("funded work resumes"),
+        CampaignPlannerStepOutcome::Advanced {
+            disposition: PlannerDisposition::Issue { .. },
+            ..
+        }
+    ));
+    let budget = repository
+        .budget_projection("planner-budget")
+        .expect("spent budget");
+    assert_eq!((budget.granted_proposals, budget.granted_attempts), (1, 1));
+    assert_eq!((budget.spent_proposals, budget.spent_attempts), (1, 1));
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+}
+
 struct BlockingPlannerService<S> {
     started: std::sync::mpsc::Sender<()>,
     release: std::sync::mpsc::Receiver<()>,
@@ -1767,7 +1878,7 @@ fn planner_driver_releases_repository_mutation_ownership_during_component_work()
     let (repository, lineage, policy, _, planner_authority, _) = authorized_fixture();
     let repository = Arc::new(repository);
     let genesis = repository
-        .create(
+        .create_funded(
             "planner-driver-concurrency",
             &lineage,
             &policy,
@@ -1861,7 +1972,7 @@ fn planner_driver_releases_repository_mutation_ownership_during_component_work()
 fn planner_issue_atomically_admits_attempts_and_deduplicates_replay() {
     let (repository, lineage, policy, blobs) = counted_fixture();
     let genesis = repository
-        .create("planner-issue", &lineage, &policy, &BTreeMap::new())
+        .create_funded("planner-issue", &lineage, &policy, &BTreeMap::new())
         .expect("create");
     let source_request = branch_request(
         &repository,
@@ -2468,7 +2579,7 @@ fn planner_issue_uses_the_canonical_authenticated_path_after_convergence() {
 fn planner_issue_rejects_a_legacy_parent_path_before_publication() {
     let (repository, lineage, policy, blobs) = counted_fixture();
     let genesis = repository
-        .create("planner-legacy-path", &lineage, &policy, &BTreeMap::new())
+        .create_funded("planner-legacy-path", &lineage, &policy, &BTreeMap::new())
         .expect("create legacy-path campaign");
     let source_request = branch_request(
         &repository,
@@ -2677,7 +2788,7 @@ fn planner_issue_rejects_a_legacy_parent_path_before_publication() {
 fn planner_cursor_and_imported_root_fail_closed() {
     let (repository, lineage, policy) = fixture();
     let genesis = repository
-        .create("planner-forgery", &lineage, &policy, &BTreeMap::new())
+        .create_funded("planner-forgery", &lineage, &policy, &BTreeMap::new())
         .expect("create");
     let engine = PlannerEngine::new("closed-rust", 1, 1, BTreeSet::new()).expect("planner engine");
     let initial_state = PlannerState::new(
