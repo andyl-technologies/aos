@@ -6,24 +6,27 @@
 //! matches the complete semantic tuple, then opens every object with `openat2`
 //! below its pre-opened root. Callers never supply a host path or descriptor.
 
+use std::collections::BTreeMap;
 use std::os::fd::OwnedFd;
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::Path;
 use std::path::PathBuf;
 
-use aos_sandbox_core::ObjectDescriptor;
+use aos_sandbox_core::{ObjectDescriptor, ObjectDigest};
 use aos_sandbox_linux::path::{BeneathRoot, FileIdentity, ResolveOptions, ResolvedPath};
 use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceIdentity, NamespaceKind};
 use aos_sandbox_protocol::{ValidatedAssignmentFence, ValidatedMountRequest};
 use serde::{Deserialize, Serialize};
 
 use crate::authorization::semantics_v1::MountCatalogCommitmentV1;
+use crate::host_scope::ObservedMountScope;
 use crate::{MountError, Result};
 
 const CATALOG_FILE: &str = "catalog.json";
 const MAXIMUM_CATALOG_BYTES: usize = 16 * 1024 * 1024;
 const MAXIMUM_ENTRIES: usize = 16_384;
 const MAXIMUM_RELATIVE_PATH_BYTES: usize = 4096;
+const MAXIMUM_PREPARED_NAMESPACES: usize = 1_024;
 
 /// Contains the descriptors pinned for one exact mount operation generation.
 #[derive(Debug)]
@@ -53,6 +56,49 @@ pub trait MountCatalog {
     /// Returns an error for unknown, stale, mismatched, replaced, incorrectly
     /// typed, or path-unsafe catalog resources.
     fn resolve(&self, request: &ValidatedMountRequest) -> Result<ResolvedMountResources>;
+
+    /// Retains one authenticated Host scope and resolves its catalog commitment.
+    ///
+    /// The default rejects preparation for catalogs that deliberately use only
+    /// static test or recovery pins.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unsupported preparation or an invalid, conflicting,
+    /// expired, or unresolvable Host scope.
+    fn prepare(
+        &mut self,
+        _request: &ValidatedMountRequest,
+        _scope: ObservedMountScope,
+    ) -> Result<ObjectDigest> {
+        Err(MountError::Worker(
+            "mount catalog does not accept Host scope preparation".to_owned(),
+        ))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct PreparedNamespaceKey {
+    sandbox_id: [u8; 16],
+    incarnation_id: [u8; 16],
+    assignment_epoch: u64,
+    desired_generation: u64,
+    assignment_digest: [u8; 32],
+    namespace_generation: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PreparedScopeBinding {
+    runtime_handle: [u8; 32],
+    payload_scope_handle: [u8; 32],
+    root: FileIdentity,
+    mount_namespace: NamespaceIdentity,
+    user_namespace: NamespaceIdentity,
+}
+
+struct PreparedNamespace {
+    binding: PreparedScopeBinding,
+    scope: ObservedMountScope,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -114,6 +160,27 @@ pub struct FileMountCatalog {
     root: BeneathRoot,
 }
 
+/// Combines the protected file catalog with short-lived Host scope custody.
+///
+/// One namespace generation can be refreshed only with the same exact Host
+/// binding. A changed root, namespace, runtime, or payload-scope handle requires
+/// a new signed namespace generation rather than silently replacing authority.
+pub struct PreparedMountCatalog {
+    catalog: FileMountCatalog,
+    prepared: BTreeMap<PreparedNamespaceKey, PreparedNamespace>,
+}
+
+impl PreparedMountCatalog {
+    /// Constructs an empty bounded preparation registry over a protected catalog.
+    #[must_use]
+    pub fn new(catalog: FileMountCatalog) -> Self {
+        Self {
+            catalog,
+            prepared: BTreeMap::new(),
+        }
+    }
+}
+
 impl FileMountCatalog {
     /// Opens a root-owned catalog directory without following its final link.
     ///
@@ -163,12 +230,81 @@ impl FileMountCatalog {
 
 impl MountCatalog for FileMountCatalog {
     fn resolve(&self, request: &ValidatedMountRequest) -> Result<ResolvedMountResources> {
+        self.resolve_static(request)
+    }
+}
+
+impl MountCatalog for PreparedMountCatalog {
+    fn resolve(&self, request: &ValidatedMountRequest) -> Result<ResolvedMountResources> {
+        let prepared = self
+            .prepared
+            .get(&prepared_namespace_key(request))
+            .ok_or_else(|| {
+                MountError::Worker("mount namespace scope is not prepared".to_owned())
+            })?;
+        if prepared.scope.valid_until_boottime_nanoseconds() <= boottime_nanoseconds()? {
+            return Err(MountError::Worker(
+                "prepared mount namespace scope expired".to_owned(),
+            ));
+        }
+        self.catalog
+            .resolve_prepared(request, &prepared.scope, prepared.binding)
+    }
+
+    fn prepare(
+        &mut self,
+        request: &ValidatedMountRequest,
+        scope: ObservedMountScope,
+    ) -> Result<ObjectDigest> {
+        scope
+            .recheck()
+            .map_err(|error| MountError::Worker(error.to_string()))?;
+        if scope.metadata().fence() != request.fence() {
+            return Err(MountError::Fence(
+                "Host scope assignment differs from Mount preparation",
+            ));
+        }
+
+        let now = boottime_nanoseconds()?;
+        self.prepared
+            .retain(|_, prepared| prepared.scope.valid_until_boottime_nanoseconds() > now);
+        let key = prepared_namespace_key(request);
+        let binding = prepared_scope_binding(&scope);
+        if let Some(current) = self.prepared.get(&key)
+            && current.binding != binding
+        {
+            return Err(MountError::Fence(
+                "namespace generation cannot replace its prepared Host scope",
+            ));
+        }
+        if !self.prepared.contains_key(&key) && self.prepared.len() >= MAXIMUM_PREPARED_NAMESPACES {
+            return Err(MountError::Worker(
+                "prepared mount namespace registry is full".to_owned(),
+            ));
+        }
+
+        let resources = self.catalog.resolve_prepared(request, &scope, binding)?;
+        let commitment = resources.authorization_commitment.digest();
+        self.prepared
+            .insert(key, PreparedNamespace { binding, scope });
+        Ok(commitment)
+    }
+}
+
+impl FileMountCatalog {
+    fn matching_entry(&self, request: &ValidatedMountRequest) -> Result<(u64, MountCatalogEntry)> {
         let snapshot = self.snapshot()?;
         let entry = snapshot
             .entries
             .iter()
             .find(|entry| entry.matches(request))
+            .cloned()
             .ok_or_else(|| MountError::Worker("mount catalog tuple is unavailable".to_owned()))?;
+        Ok((snapshot.generation, entry))
+    }
+
+    fn resolve_static(&self, request: &ValidatedMountRequest) -> Result<ResolvedMountResources> {
+        let (generation, entry) = self.matching_entry(request)?;
 
         let source = resolve_directory(&self.root, &entry.source_path)?;
         verify_file(source.identity(), entry.source_identity, "source")?;
@@ -203,8 +339,8 @@ impl MountCatalog for FileMountCatalog {
             "target slot",
         )?;
         let authorization_commitment = catalog_authorization_commitment(
-            snapshot.generation,
-            entry,
+            generation,
+            &entry,
             source.identity(),
             mount_namespace.identity(),
             user_namespace.identity(),
@@ -212,6 +348,80 @@ impl MountCatalog for FileMountCatalog {
             target_slot.identity(),
         )?;
 
+        Ok(ResolvedMountResources {
+            source,
+            mount_namespace,
+            user_namespace,
+            target_root,
+            target_slot,
+            target_relative_path: PathBuf::from(&entry.target_relative_path),
+            authorization_commitment,
+        })
+    }
+
+    fn resolve_prepared(
+        &self,
+        request: &ValidatedMountRequest,
+        scope: &ObservedMountScope,
+        binding: PreparedScopeBinding,
+    ) -> Result<ResolvedMountResources> {
+        let (generation, entry) = self.matching_entry(request)?;
+        let source = resolve_directory(&self.root, &entry.source_path)?;
+        verify_file(source.identity(), entry.source_identity, "source")?;
+
+        let (target_root, mount_namespace, user_namespace) = scope
+            .duplicate_resources()
+            .map_err(|error| MountError::Worker(error.to_string()))?;
+        verify_file(
+            target_root.identity(),
+            entry.target_root_identity,
+            "target root",
+        )?;
+        verify_namespace(
+            mount_namespace.identity(),
+            entry.mount_namespace_identity,
+            "mount namespace",
+        )?;
+        verify_namespace(
+            user_namespace.identity(),
+            entry.user_namespace_identity,
+            "user namespace",
+        )?;
+
+        let pinned_target_slot = resolve_directory(&self.root, &entry.target_slot_path)?;
+        verify_file(
+            pinned_target_slot.identity(),
+            entry.target_slot_identity,
+            "target slot pin",
+        )?;
+        let target_slot = scope
+            .root()
+            .resolve(
+                Path::new(&entry.target_relative_path),
+                ResolveOptions {
+                    no_mount_crossing: false,
+                    require_directory: true,
+                },
+            )
+            .map_err(|error| MountError::Worker(error.to_string()))?;
+        verify_file(
+            target_slot.identity(),
+            entry.target_slot_identity,
+            "target slot",
+        )?;
+        if target_slot.identity() != pinned_target_slot.identity() {
+            return Err(MountError::Worker(
+                "Host-root target slot differs from its protected catalog pin".to_owned(),
+            ));
+        }
+
+        let authorization_commitment = prepared_catalog_authorization_commitment(
+            generation,
+            &entry,
+            binding,
+            source.identity(),
+            target_slot.identity(),
+        )?;
         Ok(ResolvedMountResources {
             source,
             mount_namespace,
@@ -234,6 +444,61 @@ fn catalog_authorization_commitment(
     target_root: FileIdentity,
     target_slot: FileIdentity,
 ) -> Result<MountCatalogCommitmentV1> {
+    let bytes = catalog_authorization_bytes(
+        b"AOSMCAT1",
+        1,
+        generation,
+        entry,
+        &[],
+        source,
+        mount_namespace,
+        user_namespace,
+        target_root,
+        target_slot,
+    )?;
+    MountCatalogCommitmentV1::for_verified_canonical_bytes(&bytes)
+        .map_err(|error| MountError::State(error.to_string()))
+}
+
+fn prepared_catalog_authorization_commitment(
+    generation: u64,
+    entry: &MountCatalogEntry,
+    binding: PreparedScopeBinding,
+    source: FileIdentity,
+    target_slot: FileIdentity,
+) -> Result<MountCatalogCommitmentV1> {
+    let mut host_binding = Vec::with_capacity(64);
+    host_binding.extend_from_slice(&binding.runtime_handle);
+    host_binding.extend_from_slice(&binding.payload_scope_handle);
+    let bytes = catalog_authorization_bytes(
+        b"AOSMCAT2",
+        2,
+        generation,
+        entry,
+        &host_binding,
+        source,
+        binding.mount_namespace,
+        binding.user_namespace,
+        binding.root,
+        target_slot,
+    )?;
+    MountCatalogCommitmentV1::for_verified_canonical_bytes(&bytes)
+        .map_err(|error| MountError::State(error.to_string()))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn catalog_authorization_bytes(
+    magic: &[u8; 8],
+    version: u16,
+    generation: u64,
+    entry: &MountCatalogEntry,
+    extra_binding: &[u8],
+    source: FileIdentity,
+    mount_namespace: NamespaceIdentity,
+    user_namespace: NamespaceIdentity,
+    target_root: FileIdentity,
+    target_slot: FileIdentity,
+) -> Result<Vec<u8>> {
     let media_type = entry.view_revision.media_type().as_str().as_bytes();
     let relative_path = entry.target_relative_path.as_bytes();
     let media_length = u16::try_from(media_type.len())
@@ -241,8 +506,8 @@ fn catalog_authorization_commitment(
     let path_length = u32::try_from(relative_path.len())
         .map_err(|_| MountError::State("catalog relative path exceeds u32".to_owned()))?;
     let mut bytes = Vec::with_capacity(320 + media_type.len() + relative_path.len());
-    bytes.extend_from_slice(b"AOSMCAT1");
-    bytes.extend_from_slice(&1_u16.to_be_bytes());
+    bytes.extend_from_slice(magic);
+    bytes.extend_from_slice(&version.to_be_bytes());
     bytes.extend_from_slice(&generation.to_be_bytes());
     bytes.extend_from_slice(&entry.assignment.sandbox_id);
     bytes.extend_from_slice(&entry.assignment.incarnation_id);
@@ -259,6 +524,7 @@ fn catalog_authorization_commitment(
     bytes.extend_from_slice(&entry.view_revision.encoded_size().to_be_bytes());
     bytes.extend_from_slice(&path_length.to_be_bytes());
     bytes.extend_from_slice(relative_path);
+    bytes.extend_from_slice(extra_binding);
     for (device, inode) in [
         (source.device, source.inode),
         (mount_namespace.device, mount_namespace.inode),
@@ -269,8 +535,41 @@ fn catalog_authorization_commitment(
         bytes.extend_from_slice(&device.to_be_bytes());
         bytes.extend_from_slice(&inode.to_be_bytes());
     }
-    MountCatalogCommitmentV1::for_verified_canonical_bytes(&bytes)
-        .map_err(|error| MountError::State(error.to_string()))
+    Ok(bytes)
+}
+
+fn prepared_namespace_key(request: &ValidatedMountRequest) -> PreparedNamespaceKey {
+    PreparedNamespaceKey {
+        sandbox_id: *request.fence().sandbox_id(),
+        incarnation_id: *request.fence().incarnation_id(),
+        assignment_epoch: request.fence().assignment_epoch(),
+        desired_generation: request.fence().desired_generation(),
+        assignment_digest: *request.fence().assignment_digest(),
+        namespace_generation: request.namespace_generation(),
+    }
+}
+
+fn prepared_scope_binding(scope: &ObservedMountScope) -> PreparedScopeBinding {
+    PreparedScopeBinding {
+        runtime_handle: *scope.metadata().runtime_handle(),
+        payload_scope_handle: *scope.metadata().payload_scope_handle(),
+        root: scope.root().identity(),
+        mount_namespace: scope.mount_namespace().identity(),
+        user_namespace: scope.user_namespace().identity(),
+    }
+}
+
+fn boottime_nanoseconds() -> Result<u64> {
+    let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
+    let seconds = u64::try_from(now.tv_sec)
+        .map_err(|_| MountError::State("CLOCK_BOOTTIME returned negative seconds".to_owned()))?;
+    let nanoseconds = u64::try_from(now.tv_nsec).map_err(|_| {
+        MountError::State("CLOCK_BOOTTIME returned negative nanoseconds".to_owned())
+    })?;
+    seconds
+        .checked_mul(1_000_000_000)
+        .and_then(|value| value.checked_add(nanoseconds))
+        .ok_or_else(|| MountError::State("CLOCK_BOOTTIME overflowed u64".to_owned()))
 }
 
 impl MountCatalogSnapshot {

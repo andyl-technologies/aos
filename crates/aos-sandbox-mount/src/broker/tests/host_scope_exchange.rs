@@ -8,6 +8,7 @@
 use std::io::IoSlice;
 use std::mem::MaybeUninit;
 use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
+use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::Path;
 
 use aos_proto::aos::sandbox::local::v1::{
@@ -17,12 +18,15 @@ use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_protocol::mount_scope::MOUNT_SCOPE_DESCRIPTOR_ROLES;
 use aos_sandbox_protocol::semantics::host::runtime_handle_v1;
+use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use aos_sandbox_protocol::{
-    AuthorizationArtifactBytes, encode_success_response_envelope, negotiate_client_hello,
+    AuthorizationArtifactBytes, decode_mount_request, encode_success_response_envelope,
+    negotiate_client_hello,
 };
 use rustix::net::{SendAncillaryBuffer, SendAncillaryMessage, SendFlags, sendmsg};
 
 use super::*;
+use crate::catalog::{FileMountCatalog, MountCatalog, PreparedMountCatalog};
 use crate::host_scope::HostMountScopeClient;
 
 #[derive(Clone, Copy, Debug)]
@@ -57,21 +61,10 @@ fn root_mount_client_accepts_exact_kernel_scope_and_rejects_response_substitutio
         ResponseCase::IncompleteRights,
         ResponseCase::ReorderedRoles,
     ] {
-        let (client_fd, server_fd) = rustix::net::socketpair(
-            rustix::net::AddressFamily::UNIX,
-            rustix::net::SocketType::SEQPACKET,
-            rustix::net::SocketFlags::CLOEXEC,
-            None,
-        )
-        .unwrap();
-        let client = HostMountScopeClient::from_connected(client_fd, current_cgroup()).unwrap();
-        let server_socket = DescriptorSubjectSocket::from_owned(server_fd).unwrap();
-        let server = std::thread::spawn(move || respond(server_socket, case));
-
         let template = ApplyMountRequest::decode_from_slice(&launch_template).unwrap();
         let mut query = ObserveMountScopeRequest {
-            header: template.header,
-            fence: template.fence,
+            header: template.header.clone(),
+            fence: template.fence.clone(),
             runtime_handle: runtime_handle_v1(&[2; 16], 1, &[6; 32]).to_vec(),
             payload_scope_handle: vec![72; 32],
             ..Default::default()
@@ -82,16 +75,7 @@ fn root_mount_client_accepts_exact_kernel_scope_and_rejects_response_substitutio
         header.deadline_boottime_nanoseconds = boottime() + 10_000_000_000;
         header.maximum_response_bytes = 16 * 1024;
 
-        let observed = client.observe(
-            &query.encode_to_vec(),
-            AuthorizationArtifactBytes {
-                broker_plan: artifacts.broker_plan(),
-                broker_plan_signature: artifacts.broker_plan_signature(),
-                ownership_lease: artifacts.ownership_lease(),
-                ownership_lease_signature: artifacts.ownership_lease_signature(),
-            },
-        );
-        server.join().unwrap();
+        let observed = observe_scope(&query, &artifacts, case);
 
         if matches!(case, ResponseCase::Valid) {
             let observed = observed.unwrap();
@@ -103,10 +87,140 @@ fn root_mount_client_accepts_exact_kernel_scope_and_rejects_response_substitutio
                     .unwrap()
                     .identity()
             );
+            assert_prepared_catalog(template, observed, &query, &artifacts);
         } else {
             assert!(observed.is_err(), "accepted substituted response: {case:?}");
         }
     }
+}
+
+fn assert_prepared_catalog(
+    mut mount_wire: ApplyMountRequest,
+    observed: crate::host_scope::ObservedMountScope,
+    host_request: &ObserveMountScopeRequest,
+    artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+) {
+    let header = mount_wire.header.get_or_insert_default();
+    header.protocol_minor = 2;
+    header.deadline_boottime_nanoseconds = observed.valid_until_boottime_nanoseconds();
+    let mount = decode_mount_request(
+        &mount_wire.encode_to_vec(),
+        PeerCredentials {
+            uid: 0,
+            gid: 0,
+            pid: Some(std::process::id()),
+        },
+        PeerPolicy {
+            uid: 0,
+            gid: Some(0),
+            audience: Audience::AUDIENCE_NODE_CONTROLLER,
+        },
+        boottime(),
+    )
+    .unwrap();
+
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let source_path = directory.path().join("source");
+    let slot_path = directory.path().join("slot");
+    std::fs::create_dir(&source_path).unwrap();
+    std::fs::create_dir(&slot_path).unwrap();
+    let relative_slot = slot_path.strip_prefix("/").unwrap().to_str().unwrap();
+    let source = std::fs::metadata(&source_path).unwrap();
+    let slot = std::fs::metadata(&slot_path).unwrap();
+    let root = observed.root().identity();
+    let mount_namespace = observed.mount_namespace().identity();
+    let user_namespace = observed.user_namespace().identity();
+    let view = mount.view_revision().unwrap();
+    let snapshot = serde_json::json!({
+        "generation": 1,
+        "entries": [{
+            "assignment": {
+                "sandbox_id": mount.fence().sandbox_id(),
+                "incarnation_id": mount.fence().incarnation_id(),
+                "assignment_epoch": mount.fence().assignment_epoch(),
+                "desired_generation": mount.fence().desired_generation(),
+                "assignment_digest": mount.fence().assignment_digest(),
+            },
+            "attachment_id": mount.attachment_id(),
+            "destination_slot_id": mount.destination_slot_id(),
+            "view_revision": view,
+            "source_generation": mount.source_generation(),
+            "namespace_generation": mount.namespace_generation(),
+            "source_path": "source",
+            "mount_namespace_path": "unused/mount",
+            "user_namespace_path": "unused/user",
+            "target_root_path": "unused/root",
+            "target_slot_path": "slot",
+            "target_relative_path": relative_slot,
+            "source_identity": { "device": source.dev(), "inode": source.ino() },
+            "mount_namespace_identity": {
+                "device": mount_namespace.device,
+                "inode": mount_namespace.inode,
+            },
+            "user_namespace_identity": {
+                "device": user_namespace.device,
+                "inode": user_namespace.inode,
+            },
+            "target_root_identity": { "device": root.device, "inode": root.inode },
+            "target_slot_identity": { "device": slot.dev(), "inode": slot.ino() },
+        }],
+    });
+    std::fs::write(
+        directory.path().join("catalog.json"),
+        serde_json::to_vec(&snapshot).unwrap(),
+    )
+    .unwrap();
+
+    let mut catalog =
+        PreparedMountCatalog::new(FileMountCatalog::open_root_owned(directory.path()).unwrap());
+    let commitment = catalog.prepare(&mount, observed).unwrap();
+    let resources = catalog.resolve(&mount).unwrap();
+    assert_eq!(resources.authorization_commitment.digest(), commitment);
+    assert_eq!(resources.target_root.identity(), root);
+    assert_eq!(resources.target_slot.identity().device, slot.dev());
+    assert_eq!(resources.target_slot.identity().inode, slot.ino());
+    assert_eq!(resources.mount_namespace.identity(), mount_namespace);
+    assert_eq!(resources.user_namespace.identity(), user_namespace);
+
+    let refresh = observe_scope(host_request, artifacts, ResponseCase::Valid).unwrap();
+    assert_eq!(catalog.prepare(&mount, refresh).unwrap(), commitment);
+
+    let mut replacement_request = host_request.clone();
+    replacement_request.payload_scope_handle[0] ^= 1;
+    let replacement = observe_scope(&replacement_request, artifacts, ResponseCase::Valid).unwrap();
+    assert!(matches!(
+        catalog.prepare(&mount, replacement),
+        Err(MountError::Fence(_))
+    ));
+}
+
+fn observe_scope(
+    query: &ObserveMountScopeRequest,
+    artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+    case: ResponseCase,
+) -> std::result::Result<crate::host_scope::ObservedMountScope, crate::host_scope::HostScopeError> {
+    let (client_fd, server_fd) = rustix::net::socketpair(
+        rustix::net::AddressFamily::UNIX,
+        rustix::net::SocketType::SEQPACKET,
+        rustix::net::SocketFlags::CLOEXEC,
+        None,
+    )
+    .unwrap();
+    let client = HostMountScopeClient::from_connected(client_fd, current_cgroup()).unwrap();
+    let server_socket = DescriptorSubjectSocket::from_owned(server_fd).unwrap();
+    let server = std::thread::spawn(move || respond(server_socket, case));
+    let observed = client.observe(
+        &query.encode_to_vec(),
+        AuthorizationArtifactBytes {
+            broker_plan: artifacts.broker_plan(),
+            broker_plan_signature: artifacts.broker_plan_signature(),
+            ownership_lease: artifacts.ownership_lease(),
+            ownership_lease_signature: artifacts.ownership_lease_signature(),
+        },
+    );
+    server.join().unwrap();
+    observed
 }
 
 fn respond(mut socket: DescriptorSubjectSocket, case: ResponseCase) {

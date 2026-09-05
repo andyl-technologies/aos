@@ -616,6 +616,34 @@ authorize a mount effect or continuously prove the payload's root/namespace
 selection: Mount admission and the worker's exact-resource checks remain
 mandatory before use.
 
+Mount-broker protocol 1.2 adds `PrepareMountCatalog`. The authenticated node
+controller sends no descriptors and no outer Mount authorization. Its bounded
+body contains a complete prospective `ApplyMountRequest` plus a complete
+authorized Host 1.3 `ObserveMountScope` envelope. The outer request, prospective
+Apply, and Host query must use the same request ID, deadline, and assignment
+fence; the Host query remains separately bound to the RootMount audience,
+runtime handle, and opaque payload-scope handle. A release action cannot be
+prepared because it requires no catalog resolution.
+
+Mount performs the Host exchange itself and retains the returned scope in a
+bounded, memory-only registry. For the exact assignment and namespace
+generation, refresh may replace an observation only when its runtime, scope
+handle, root, mount namespace, and user namespace are unchanged. A different
+scope requires a new namespace generation. Restart loses this registry, so
+reconciliation repeats preparation before replay rather than reconstructing
+descriptor authority from journal metadata.
+
+The protected file catalog still selects the immutable source and destination
+slot. Mount resolves the destination beneath the Host-supplied root and requires
+its device/inode identity to equal the separately pinned root-owned catalog
+slot. The resulting commitment binds the catalog generation, complete Mount
+tuple, Host runtime and scope handles, kernel identities, and relative slot.
+The response returns only that nonzero digest and the exclusive Host-query
+BOOTTIME deadline. Preparation writes no durable fence, allocates no mount
+resource, invokes no helper, and performs no namespace mutation. The controller
+must place the returned digest in a separately signed Mount Apply grant, and
+Apply resolves and rechecks the same live scope and catalog facts before effect.
+
 Caller role derives from peer credentials, socket activation, and the expected
 service-unit identity; a serialized role is descriptive only. Unknown
 operations, features, or FD roles fail before effects. An exact request replay

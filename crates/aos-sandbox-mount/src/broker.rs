@@ -15,6 +15,9 @@ use aos_sandbox::journal::{
 use aos_sandbox_core::{ObjectDigest, OperationId, ProtocolVersion, RawPairedClockSample};
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::inventory::MountId;
+use aos_sandbox_protocol::mount_catalog::{
+    ValidatedMountCatalogPreparation, encode_mount_catalog_preparation_response,
+};
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use aos_sandbox_protocol::{
     PeerCredentials, PeerPolicy, ValidatedMountAttributes, ValidatedMountRequest,
@@ -25,6 +28,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::authorization::semantics_v1::MountCatalogCommitmentV1;
 use crate::authorization::{MountAuthorityV1, VerifiedMountAdmissionV1};
+use crate::host_scope::ObservedMountScope;
 use crate::state::authorization_v1::{MountEffectIntentV2, MountEffectStatusV2};
 use crate::state::mount_resource_v1::{
     AssignmentBindingV1, DetachedMountIdentityV1, InstalledMountObservationV1, MountFaultPhaseV1,
@@ -96,6 +100,40 @@ impl<W: MountWorker> MountBroker<W> {
             ..Default::default()
         };
         response.encode_to_vec()
+    }
+
+    /// Retains a Host-attested namespace scope and returns its catalog commitment.
+    ///
+    /// This read-only operation does not admit or refresh a Mount authority
+    /// fence, write the journal, allocate a mount handle, or invoke the helper.
+    /// The returned commitment becomes useful only inside a separately signed
+    /// Mount Apply grant.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the Host response differs from the validated request
+    /// or the protected catalog cannot resolve the complete resource tuple.
+    pub fn prepare_catalog(
+        &mut self,
+        request: &ValidatedMountCatalogPreparation,
+        scope: ObservedMountScope,
+    ) -> Result<Vec<u8>> {
+        if scope.metadata().fence() != request.mount_request().fence()
+            || scope.metadata().runtime_handle() != request.host_request().runtime_handle()
+            || scope.metadata().payload_scope_handle()
+                != request.host_request().payload_scope_handle()
+        {
+            return Err(MountError::Fence(
+                "Host scope differs from the Mount preparation request",
+            ));
+        }
+
+        let valid_until = scope.valid_until_boottime_nanoseconds();
+        let commitment = self
+            .worker
+            .prepare_catalog(request.mount_request(), scope)?;
+        encode_mount_catalog_preparation_response(request, commitment, valid_until)
+            .map_err(Into::into)
     }
 
     /// Validates, fences, applies, and durably completes one mount request.
@@ -1728,7 +1766,8 @@ mod tests {
 
     use aos_proto::aos::sandbox::local::v1::{
         ApplyMountRequest, AssignmentFence, Audience, BrokerAuthorizationArtifactsV1, BrokerMethod,
-        BrokerRequestEnvelope, Descriptor, MountAttributes, RequestHeader,
+        BrokerRequestEnvelope, Descriptor, MountAttributes, ObserveMountScopeRequest,
+        PrepareMountCatalogRequest, RequestHeader,
     };
     use aos_sandbox::journal::JournalLimits;
     use aos_sandbox_core::format::{
@@ -1747,7 +1786,13 @@ mod tests {
     };
     use aos_sandbox_linux::inventory::MountObservation;
     use aos_sandbox_linux::pidfd::NamespaceIdentity;
+    use aos_sandbox_protocol::mount_catalog::{
+        decode_mount_catalog_preparation, decode_mount_catalog_preparation_response,
+        encode_mount_catalog_preparation_response,
+    };
+    use aos_sandbox_protocol::semantics::host::runtime_handle_v1;
     use aos_sandbox_protocol::session::decode_request_envelope;
+    use aos_sandbox_protocol::{AuthorizationArtifactBytes, encode_authorized_request_envelope};
     use ed25519_dalek::SigningKey;
     use std::os::unix::ffi::OsStringExt as _;
 
@@ -2365,6 +2410,111 @@ mod tests {
             ..Default::default()
         }
         .encode_to_vec()
+    }
+
+    #[test]
+    fn catalog_preparation_binds_mount_intent_host_scope_and_response() {
+        let mut mount = ApplyMountRequest::decode_from_slice(&request(91)).unwrap();
+        let mount_header = mount.header.get_or_insert_default();
+        mount_header.protocol_minor = 2;
+        mount_header.deadline_boottime_nanoseconds = 1_000;
+        let mount_bytes = mount.encode_to_vec();
+        let fixture = AuthorityFixture::new();
+        let artifacts = fixture.artifacts(
+            &mount_bytes,
+            Some(ObjectDigest::from_bytes([77; 32])),
+            1,
+            &[&mount_bytes],
+        );
+
+        let mut host_header = mount.header.as_option().unwrap().clone();
+        host_header.protocol_minor = 3;
+        host_header.audience = Audience::AUDIENCE_ROOT_MOUNT.into();
+        host_header.maximum_response_bytes = 16 * 1024;
+        let host = ObserveMountScopeRequest {
+            header: Some(host_header).into(),
+            fence: mount.fence.clone(),
+            runtime_handle: runtime_handle_v1(&[2; 16], 1, &[6; 32]).to_vec(),
+            payload_scope_handle: vec![72; 32],
+            ..Default::default()
+        };
+        let host_packet = encode_authorized_request_envelope(
+            ProtocolId::HostBroker,
+            BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE,
+            &host.encode_to_vec(),
+            &[],
+            AuthorizationArtifactBytes {
+                broker_plan: artifacts.broker_plan(),
+                broker_plan_signature: artifacts.broker_plan_signature(),
+                ownership_lease: artifacts.ownership_lease(),
+                ownership_lease_signature: artifacts.ownership_lease_signature(),
+            },
+        )
+        .unwrap();
+        let preparation = PrepareMountCatalogRequest {
+            header: mount.header.clone(),
+            mount_request: Some(mount.clone()).into(),
+            host_request_packet: host_packet,
+            ..Default::default()
+        };
+        let validated = decode_mount_catalog_preparation(
+            &preparation.encode_to_vec(),
+            peer(),
+            policy(),
+            TEST_BOOTTIME_NANOSECONDS,
+        )
+        .unwrap();
+        assert_eq!(
+            validated.mount_request().fence(),
+            validated.host_request().fence()
+        );
+        assert_eq!(validated.host_request().payload_scope_handle(), &[72; 32]);
+
+        let response = encode_mount_catalog_preparation_response(
+            &validated,
+            ObjectDigest::from_bytes([88; 32]),
+            1_000,
+        )
+        .unwrap();
+        let response = decode_mount_catalog_preparation_response(&response, &validated).unwrap();
+        assert_eq!(
+            response.catalog_commitment(),
+            ObjectDigest::from_bytes([88; 32])
+        );
+        assert_eq!(response.valid_until_boottime_nanoseconds(), 1_000);
+
+        let mut substituted_mount = preparation.clone();
+        substituted_mount
+            .mount_request
+            .get_or_insert_default()
+            .header
+            .get_or_insert_default()
+            .request_id[0] ^= 1;
+        assert!(
+            decode_mount_catalog_preparation(
+                &substituted_mount.encode_to_vec(),
+                peer(),
+                policy(),
+                TEST_BOOTTIME_NANOSECONDS,
+            )
+            .is_err()
+        );
+
+        let mut missing_host_authority = preparation;
+        let mut host_envelope =
+            BrokerRequestEnvelope::decode_from_slice(&missing_host_authority.host_request_packet)
+                .unwrap();
+        host_envelope.authorization = None.into();
+        missing_host_authority.host_request_packet = host_envelope.encode_to_vec();
+        assert!(
+            decode_mount_catalog_preparation(
+                &missing_host_authority.encode_to_vec(),
+                peer(),
+                policy(),
+                TEST_BOOTTIME_NANOSECONDS,
+            )
+            .is_err()
+        );
     }
 
     fn action_request(

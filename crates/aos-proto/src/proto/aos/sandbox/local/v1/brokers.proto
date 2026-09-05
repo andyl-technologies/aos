@@ -72,6 +72,7 @@ enum BrokerMethod {
   BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT = 11;
   BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE = 12;
   BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE = 13;
+  BROKER_METHOD_MOUNT_PREPARE_CATALOG = 14;
 }
 
 // Semantic roles for SCM_RIGHTS descriptors carried beside one packet.
@@ -370,6 +371,21 @@ message ApplyMountRequest {
   uint64 source_generation = 10; // Nonzero for every action.
   // Exact payload mount-namespace generation; changes across internal reboot.
   uint64 namespace_generation = 11; // Nonzero for every action.
+}
+
+// Mount 1.2 read-only preparation. The nested Mount request selects the exact
+// catalog behavior later committed by a signed Apply grant. host_request_packet
+// is a complete authorized Host 1.3 ObserveMountScope envelope; the controller
+// cannot receive or nominate any of the returned descriptors.
+message PrepareMountCatalogRequest {
+  RequestHeader header = 1;
+  ApplyMountRequest mount_request = 2;
+  bytes host_request_packet = 3;
+}
+
+message PrepareMountCatalogResponse {
+  bytes catalog_commitment = 1; // Exact nonzero SHA-256 digest.
+  uint64 valid_until_boottime_nanoseconds = 2;
 }
 
 message MountResult {

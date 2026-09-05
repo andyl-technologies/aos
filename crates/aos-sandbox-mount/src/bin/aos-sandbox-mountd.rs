@@ -14,7 +14,7 @@ use aos_sandbox::journal::{Journal, JournalLimits};
 use aos_sandbox_linux::cgroup::CgroupV2Root;
 use aos_sandbox_mount::authorization::MountAuthorityV1;
 use aos_sandbox_mount::broker::MountBroker;
-use aos_sandbox_mount::catalog::FileMountCatalog;
+use aos_sandbox_mount::catalog::{FileMountCatalog, PreparedMountCatalog};
 use aos_sandbox_mount::helper::PosixSpawnNamespaceHelper;
 use aos_sandbox_mount::keeper::SystemdFdStore;
 use aos_sandbox_mount::peer::ControllerPeerVerifier;
@@ -57,7 +57,7 @@ fn run() -> Result<()> {
         Path::new(STATE_ROOT).join("mount.journal"),
         JournalLimits::default(),
     )?;
-    let catalog = FileMountCatalog::open_root_owned(CATALOG_ROOT)?;
+    let catalog = PreparedMountCatalog::new(FileMountCatalog::open_root_owned(CATALOG_ROOT)?);
     let helper = PosixSpawnNamespaceHelper::new(helper_executable)?;
     let worker = DescriptorMountWorker::new(catalog, helper, keeper, activation.mounts)?;
     let credential_directory = env::var_os("CREDENTIALS_DIRECTORY").ok_or_else(|| {
@@ -67,7 +67,7 @@ fn run() -> Result<()> {
         .map_err(|error| MountError::State(error.to_string()))?;
     let broker = MountBroker::new(journal, worker, authority)?;
     let verifier = ControllerPeerVerifier::new(open_cgroup_root()?);
-    let mut service = MountService::new(broker, verifier, controller_identity);
+    let mut service = MountService::new(broker, verifier, open_cgroup_root()?, controller_identity);
     loop {
         service.serve_once(&listener)?;
     }

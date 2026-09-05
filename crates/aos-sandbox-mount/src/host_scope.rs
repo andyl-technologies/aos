@@ -12,7 +12,7 @@ use std::path::Path;
 use aos_proto::aos::sandbox::local::v1::{Audience, BrokerClientHello, BrokerMethod, Feature};
 use aos_sandbox_core::{FeatureRef, ProtocolId, ProtocolVersion};
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
-use aos_sandbox_linux::path::BeneathRoot;
+use aos_sandbox_linux::path::{BeneathRoot, ResolvedPath};
 use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceKind, PidFd, PidFdInfo};
 use aos_sandbox_linux::seqpacket::SeqpacketError;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
@@ -289,6 +289,30 @@ impl ObservedMountScope {
     #[must_use]
     pub const fn user_namespace(&self) -> &NamespaceFd {
         &self.user
+    }
+
+    /// Returns the exclusive BOOTTIME deadline of the signed Host query.
+    #[must_use]
+    pub const fn valid_until_boottime_nanoseconds(&self) -> u64 {
+        self.deadline
+    }
+
+    pub(crate) fn duplicate_resources(&self) -> Result<(ResolvedPath, NamespaceFd, NamespaceFd)> {
+        self.recheck()?;
+
+        let root =
+            ResolvedPath::from_inherited(rustix::io::fcntl_dupfd_cloexec(self.root.as_fd(), 0)?)?;
+        let mount = NamespaceFd::from_owned(
+            rustix::io::fcntl_dupfd_cloexec(self.mount.as_fd(), 0)?,
+            NamespaceKind::Mount,
+        )?;
+        let user = NamespaceFd::from_owned(
+            rustix::io::fcntl_dupfd_cloexec(self.user.as_fd(), 0)?,
+            NamespaceKind::User,
+        )?;
+
+        self.recheck()?;
+        Ok((root, mount, user))
     }
 
     /// Rechecks the original Host/payload executions and the query deadline.

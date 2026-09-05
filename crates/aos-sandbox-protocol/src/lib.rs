@@ -11,6 +11,7 @@
 
 pub mod fencing;
 pub mod inventory;
+pub mod mount_catalog;
 pub mod mount_scope;
 pub mod payload_scope;
 pub mod semantics;

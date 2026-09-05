@@ -105,9 +105,12 @@ fn stale_accepted_peer_is_nonfatal_and_next_connection_is_handled() {
         open(&directory.path().join("journal")),
         ScriptedWorker::default(),
     );
-    let root: OwnedFd = std::fs::File::open("/sys/fs/cgroup").unwrap().into();
-    let verifier = ControllerPeerVerifier::new(CgroupV2Root::from_owned(root).unwrap());
-    let mut service = MountService::new(broker, verifier, (0, 0));
+    let cgroup_root = || {
+        let root: OwnedFd = std::fs::File::open("/sys/fs/cgroup").unwrap().into();
+        CgroupV2Root::from_owned(root).unwrap()
+    };
+    let verifier = ControllerPeerVerifier::new(cgroup_root());
+    let mut service = MountService::new(broker, verifier, cgroup_root(), (0, 0));
 
     assert_eq!(
         service.serve_once(&listener).unwrap(),

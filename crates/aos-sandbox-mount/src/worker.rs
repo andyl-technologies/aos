@@ -10,6 +10,7 @@ use aos_sandbox_linux::pidfd::NamespaceIdentity;
 use aos_sandbox_protocol::ValidatedMountRequest;
 
 use crate::catalog::{MountCatalog, ResolvedMountResources};
+use crate::host_scope::ObservedMountScope;
 use crate::keeper::{KernelMountName, KernelMountStore};
 use crate::{MountError, Result};
 
@@ -116,6 +117,25 @@ fn validate_catalog_commitment(
 
 /// Applies one idempotent, descriptor-only mount transaction.
 pub trait MountWorker {
+    /// Retains one authenticated Host scope and returns its catalog commitment.
+    ///
+    /// This read-only step neither admits a Mount fence nor performs a mount
+    /// mutation. Implementations without a live Host-backed catalog reject it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unsupported preparation or an invalid, conflicting,
+    /// expired, or unresolvable scope.
+    fn prepare_catalog(
+        &mut self,
+        _request: &ValidatedMountRequest,
+        _scope: ObservedMountScope,
+    ) -> Result<ObjectDigest> {
+        Err(MountError::Worker(
+            "mount worker does not accept Host scope preparation".to_owned(),
+        ))
+    }
+
     /// Resolves the exact catalog behavior commitment used for authorization.
     ///
     /// Release is the sole action that returns no catalog commitment. Every
@@ -346,6 +366,14 @@ impl<C: MountCatalog, H: NamespaceHelper, K: KernelMountStore> DescriptorMountWo
 impl<C: MountCatalog, H: NamespaceHelper, K: KernelMountStore> MountWorker
     for DescriptorMountWorker<C, H, K>
 {
+    fn prepare_catalog(
+        &mut self,
+        request: &ValidatedMountRequest,
+        scope: ObservedMountScope,
+    ) -> Result<ObjectDigest> {
+        self.catalog.prepare(request, scope)
+    }
+
     fn catalog_commitment(&self, request: &ValidatedMountRequest) -> Result<Option<ObjectDigest>> {
         if request.action() == MountAction::MOUNT_ACTION_RELEASE {
             return Ok(None);

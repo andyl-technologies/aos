@@ -2515,26 +2515,32 @@ qualification is claimed for this protocol/publication increment.
 The Host broker can now export a launched payload's root and namespaces
 directly to the privileged Mount broker, without sending those descriptors
 through the node controller. Host protocol 1.3 adds a RootMount-only query
-with an exact retained-scope grant. The Mount client checks the actual Host
-response writer, assignment/scope binding, descriptor roles and types, live
-payload membership, and deadlines. Existing controller observations retain
-their two-descriptor protocol.
+with an exact retained-scope grant. Mount protocol 1.2 adds a read-only catalog
+preparation request: the controller supplies a prospective Mount operation and
+the complete authorized Host query, Mount performs the Host exchange, and the
+controller receives only the resulting opaque catalog commitment. Existing
+controller Host observations retain their two-descriptor protocol.
 
 The deployed Host socket gives the root group access without adding a
 DAC-override capability to Mount. Host service-cgroup verification still
 separates the RootMount and controller method sets. A query for a replaced
-scope fails rather than acquiring the replacement under old authority.
+scope fails rather than acquiring the replacement under old authority. Mount
+keeps successful observations only in a bounded memory registry. It derives
+the destination beneath the Host root, matches it to the protected catalog
+pin, and rejects a changed scope under the same assignment and namespace
+generation. Restart requires preparation again before replay.
 
 This advances `SBX-HOST-01` and the live resource handoff needed by
-`SBX-VIEW-03`. The Mount daemon still needs preparation/catalog integration,
-and the controller still needs to sign observed namespace targets and drive
-attachment replay. The client API alone does not enable those workflows.
+`SBX-VIEW-03`. The controller still needs to call preparation while compiling
+plans, sign the returned catalog commitment, and drive attachment replay. The
+root-owned catalog publisher also remains a prerequisite; the current file
+format consumes its already pinned sources and slots but does not create them.
 
 Validation passes the Host, Mount, Linux transport, protocol, and core crate
-test suites, strict Clippy for the changed crates, Rust formatting, diff
-checks, and the local-identity VM fixture. The fixture exercises complete
-client exchanges with real descriptors and rejects substituted scopes, roles,
-and namespace types. The full `checks.eval` rerun reached an unrelated,
-pre-existing timeout in the Hub OCI cancellation test, so this increment does
-not have a green full-workspace gate. The synthetic responder does not qualify
-Host launch attestation or end-to-end attachment replay.
+suites, strict Clippy, formatting, diff checks, and the local-identity VM
+fixture. Preparation regressions cover 1.2-only negotiation, nested request
+and authority binding, live descriptor-backed resolution, exact refresh, and
+changed-scope rejection. The root-only VM exercises the complete five-FD Host
+exchange and prepared catalog with kernel descriptor identities. The synthetic
+responder does not qualify Host launch attestation, production catalog
+publication, controller plan signing, or end-to-end attachment replay.

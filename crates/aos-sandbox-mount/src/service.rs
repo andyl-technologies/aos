@@ -3,9 +3,11 @@
 use aos_proto::aos::sandbox::local::v1::{Audience, BrokerErrorCode, BrokerMethod};
 use aos_sandbox_core::{FeatureRef, ProtocolId, RawClockProvenance, RawPairedClockSample};
 use aos_sandbox_linux::boot::KernelBootId;
+use aos_sandbox_linux::cgroup::CgroupV2Root;
+use aos_sandbox_protocol::mount_catalog::decode_mount_catalog_preparation;
 use aos_sandbox_protocol::session::SIGNED_PLAN_LEASE_FEATURE_NAMESPACE;
 use aos_sandbox_protocol::{
-    MAXIMUM_HANDSHAKE_BYTES, MAXIMUM_REQUEST_BYTES, PeerPolicy, ProtocolValidationError,
+    AuthorizationArtifactBytes, MAXIMUM_HANDSHAKE_BYTES, PeerPolicy, ProtocolValidationError,
     ValidatedBrokerRequestEnvelope, decode_mount_inventory_request, decode_mount_request,
     encode_error_response_envelope, encode_success_response_envelope, failed_server_hello,
     negotiate_client_hello, validate_request_descriptor_roles,
@@ -14,6 +16,7 @@ use buffa::Message as _;
 use rustix::time::{ClockId, clock_gettime};
 
 use crate::broker::MountBroker;
+use crate::host_scope::HostMountScopeClient;
 use crate::peer::ControllerPeerVerifier;
 use crate::transport::ActivatedSeqpacketListener;
 use crate::worker::MountWorker;
@@ -36,6 +39,7 @@ pub enum ConnectionOutcome {
 pub struct MountService<W> {
     broker: MountBroker<W>,
     verifier: ControllerPeerVerifier,
+    host_cgroup_root: CgroupV2Root,
     peer_policy: PeerPolicy,
 }
 
@@ -45,11 +49,13 @@ impl<W: MountWorker> MountService<W> {
     pub const fn new(
         broker: MountBroker<W>,
         verifier: ControllerPeerVerifier,
+        host_cgroup_root: CgroupV2Root,
         controller_identity: (u32, u32),
     ) -> Self {
         Self {
             broker,
             verifier,
+            host_cgroup_root,
             peer_policy: PeerPolicy {
                 uid: controller_identity.0,
                 gid: Some(controller_identity.1),
@@ -96,6 +102,7 @@ impl<W: MountWorker> MountService<W> {
             &[
                 BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
                 BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES,
+                BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG,
             ],
         ) {
             Ok(session) => session,
@@ -109,7 +116,7 @@ impl<W: MountWorker> MountService<W> {
         {
             return Ok(ConnectionOutcome::TransportRejected);
         }
-        let Ok(packet) = connection.receive(MAXIMUM_REQUEST_BYTES) else {
+        let Ok(packet) = connection.receive(session.maximum_request_bytes()) else {
             return Ok(ConnectionOutcome::TransportRejected);
         };
         let Ok(envelope) = session.decode_request(&packet.bytes, packet.descriptors.len()) else {
@@ -166,6 +173,42 @@ impl<W: MountWorker> MountService<W> {
                     *header.request_id(),
                     ceiling,
                     Ok(self.broker.inventory_resources()),
+                )
+            }
+            BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG => {
+                let Ok(preparation) = decode_mount_catalog_preparation(
+                    envelope.body(),
+                    peer.credentials(),
+                    self.peer_policy,
+                    now,
+                ) else {
+                    return Ok(ConnectionOutcome::RequestRejected);
+                };
+                if session.validate_header(preparation.header()).is_err() {
+                    return Ok(ConnectionOutcome::RequestRejected);
+                }
+                let artifacts = preparation.host_authorization();
+                let scope = HostMountScopeClient::connect(&self.host_cgroup_root)
+                    .and_then(|client| {
+                        client.observe(
+                            preparation.host_request_body(),
+                            AuthorizationArtifactBytes {
+                                broker_plan: artifacts.broker_plan(),
+                                broker_plan_signature: artifacts.broker_plan_signature(),
+                                ownership_lease: artifacts.ownership_lease(),
+                                ownership_lease_signature: artifacts.ownership_lease_signature(),
+                            },
+                        )
+                    })
+                    .map_err(|error| {
+                        MountError::Worker(format!("Host scope acquisition failed: {error}"))
+                    });
+                let result =
+                    scope.and_then(|scope| self.broker.prepare_catalog(&preparation, scope));
+                (
+                    *preparation.header().request_id(),
+                    preparation.header().maximum_response_bytes(),
+                    result,
                 )
             }
             _ => return Ok(ConnectionOutcome::RequestRejected),

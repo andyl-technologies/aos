@@ -28,6 +28,7 @@ use aos_sandbox_core::{
 };
 use buffa::Message as _;
 
+use crate::mount_catalog::MAXIMUM_MOUNT_CATALOG_PREPARATION_PACKET_BYTES;
 use crate::{
     MAXIMUM_REQUEST_BYTES, MAXIMUM_RESPONSE_BYTES, MINIMUM_RESPONSE_BYTES, PeerCredentials,
     PeerPolicy, ProtocolValidationError, ValidatedHeader, exact_nonzero, validate_feature_set,
@@ -565,7 +566,7 @@ pub fn decode_request_envelope(
     protocol: ProtocolId,
     ancillary_descriptor_count: usize,
 ) -> Result<ValidatedBrokerRequestEnvelope, ProtocolValidationError> {
-    if bytes.len() > MAXIMUM_HOST_QUERY_PACKET_BYTES {
+    if bytes.len() > MAXIMUM_MOUNT_CATALOG_PREPARATION_PACKET_BYTES {
         return Err(ProtocolValidationError::RequestTooLarge);
     }
     let envelope = BrokerRequestEnvelope::decode_from_slice(bytes)
@@ -574,9 +575,14 @@ pub fn decode_request_envelope(
         return Err(ProtocolValidationError::UnknownFields);
     }
     let method = validate_method(envelope.method.as_known(), protocol)?;
-    if bytes.len() > MAXIMUM_REQUEST_BYTES
-        && method != BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
-    {
+    let maximum = match method {
+        BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT => MAXIMUM_HOST_QUERY_PACKET_BYTES,
+        BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG => {
+            MAXIMUM_MOUNT_CATALOG_PREPARATION_PACKET_BYTES
+        }
+        _ => MAXIMUM_REQUEST_BYTES,
+    };
+    if bytes.len() > maximum {
         return Err(ProtocolValidationError::RequestTooLarge);
     }
     if envelope.body.is_empty() {
@@ -1025,6 +1031,7 @@ fn validate_outbound_carriers(
         | BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME
         | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY
         | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES
+        | BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG
         | BrokerMethod::BROKER_METHOD_STORAGE_APPLY
         | BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY
         | BrokerMethod::BROKER_METHOD_NETWORK_APPLY
@@ -1410,6 +1417,7 @@ fn validate_method(
             BrokerMethod::BROKER_METHOD_MOUNT_APPLY
                 | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY
                 | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES
+                | BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG
         ) | (
             ProtocolId::StorageBroker,
             BrokerMethod::BROKER_METHOD_STORAGE_APPLY
@@ -1430,6 +1438,9 @@ fn method_available_in_version(method: BrokerMethod, version: ProtocolVersion) -
     if method == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE {
         return version.minor() >= 3;
     }
+    if method == BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG {
+        return version.minor() >= 2;
+    }
     !matches!(
         method,
         BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
@@ -1440,6 +1451,8 @@ fn method_available_in_version(method: BrokerMethod, version: ProtocolVersion) -
 const fn maximum_request_bytes(protocol: ProtocolId, version: ProtocolVersion) -> usize {
     if matches!(protocol, ProtocolId::HostBroker) && version.minor() >= 2 {
         MAXIMUM_HOST_QUERY_PACKET_BYTES
+    } else if matches!(protocol, ProtocolId::MountBroker) && version.minor() >= 2 {
+        MAXIMUM_MOUNT_CATALOG_PREPARATION_PACKET_BYTES
     } else {
         MAXIMUM_REQUEST_BYTES
     }
@@ -3102,6 +3115,69 @@ mod tests {
                 8192,
             ),
             Err(ProtocolValidationError::InvalidResponseBound)
+        );
+    }
+
+    #[test]
+    fn mount_catalog_preparation_is_read_only_and_available_only_in_1_2() {
+        let method = BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG;
+        let methods = [
+            BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
+            BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES,
+            method,
+        ];
+        let hello = BrokerClientHello {
+            protocol_major: 1,
+            protocol_minor: 2,
+            audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+            maximum_response_bytes: 8192,
+            required_methods: vec![method.into()],
+            ..Default::default()
+        };
+        let session = negotiate_client_hello(
+            &hello.encode_to_vec(),
+            peer(),
+            policy(),
+            ProtocolId::MountBroker,
+            &client_features(),
+            &methods,
+        )
+        .unwrap_or_else(|error| panic!("valid Mount 1.2 preparation hello failed: {error}"));
+        assert_eq!(session.version(), ProtocolVersion::new(1, 2));
+        assert_eq!(
+            session.maximum_request_bytes(),
+            MAXIMUM_MOUNT_CATALOG_PREPARATION_PACKET_BYTES
+        );
+
+        let request = BrokerRequestEnvelope {
+            method: method.into(),
+            body: vec![1],
+            ..Default::default()
+        };
+        assert!(session.decode_request(&request.encode_to_vec(), 0).is_ok());
+        let authorized = BrokerRequestEnvelope {
+            authorization: Some(authorization_artifacts()).into(),
+            ..request
+        };
+        assert!(matches!(
+            session.decode_request(&authorized.encode_to_vec(), 0),
+            Err(ProtocolValidationError::InvalidField(
+                "envelope.authorization profile"
+            ))
+        ));
+
+        let mut legacy = hello;
+        legacy.protocol_minor = 1;
+        assert_eq!(
+            negotiate_client_hello(
+                &legacy.encode_to_vec(),
+                peer(),
+                policy(),
+                ProtocolId::MountBroker,
+                &client_features(),
+                &methods,
+            ),
+            Err(ProtocolValidationError::MethodMismatch)
         );
     }
 
