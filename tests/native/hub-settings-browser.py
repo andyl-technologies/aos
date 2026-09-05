@@ -727,35 +727,39 @@ class HubSettingsSmoke:
         self.screenshot_pair("registry-delivery-progress")
 
         resume_path = "/aos.hub.v1.DeliveryService/ResumeDeliveryDestination"
-        resume_count = sum(
-            request.get("path") == resume_path and "durationMs" in request
-            for request in self.chrome.request_timing_report()
-        )
-        resumed = self.chrome.evaluate("""
-            (() => {
-                const button = Array.from(document.querySelectorAll('.workflow-card button'))
-                    .find(item => item.textContent.trim() === 'Check and continue');
-                if (!button || button.disabled) return false;
-                button.click();
-                return true;
-            })()
-        """)
-        self.check(resumed, "saved delivery workflow exposes its resume action")
-        self.wait_for_request(
-            resume_path,
-            resume_count,
-            "delivery workflow resume request succeeds",
-        )
-        self.wait_for(
-            "document.querySelector('.loading-row') === null && "
-            "document.querySelector('.workflow-card button:not([disabled])') !== null",
-            "delivery workflow SPA refresh",
-        )
-        self.assert_settings_page("resumed delivery workflow")
-        current_id = self.chrome.evaluate(
-            "document.querySelector('.workflow-card-heading code').textContent.trim()"
-        )
-        self.check(current_id == workflow_id, "resuming preserves delivery workflow identity")
+        for attempt in (1, 2):
+            resume_count = sum(
+                request.get("path") == resume_path and "durationMs" in request
+                for request in self.chrome.request_timing_report()
+            )
+            resumed = self.chrome.evaluate("""
+                (() => {
+                    const button = Array.from(document.querySelectorAll('.workflow-card button'))
+                        .find(item => item.textContent.trim() === 'Check and continue');
+                    if (!button || button.disabled) return false;
+                    button.click();
+                    return true;
+                })()
+            """)
+            self.check(resumed, f"saved delivery workflow exposes resume action {attempt}")
+            self.wait_for_request(
+                resume_path,
+                resume_count,
+                f"delivery workflow resume request {attempt} succeeds",
+            )
+            self.wait_for(
+                "document.querySelector('.loading-row') === null && "
+                "document.querySelector('.workflow-card button:not([disabled])') !== null",
+                f"delivery workflow SPA refresh {attempt}",
+            )
+            self.assert_settings_page(f"resumed delivery workflow {attempt}")
+            current_id = self.chrome.evaluate(
+                "document.querySelector('.workflow-card-heading code').textContent.trim()"
+            )
+            self.check(
+                current_id == workflow_id,
+                f"resume {attempt} preserves delivery workflow identity",
+            )
         self.check(
             self.chrome.evaluate(
                 "document.querySelectorAll('.workflow-card .workflow-blockers li').length > 0"
@@ -844,12 +848,34 @@ class HubSettingsSmoke:
         )
         self.toggle_details("details.advanced-controls", "registry advanced settings")
 
-        self.navigate(registry_path + "/containers")
+        containers_path = registry_path + "/containers"
+        clicked = self.chrome.evaluate(f"""
+            (() => {{
+                const link = Array.from(document.querySelectorAll('.overview-actions a'))
+                    .find(item => new URL(item.href).pathname === {json.dumps(containers_path)});
+                if (!link) return false;
+                link.click();
+                return true;
+            }})()
+        """)
+        self.check(clicked, "registry containers overview action is interactive")
+        self.wait_for(
+            f"location.pathname === {json.dumps(containers_path)}",
+            "registry containers SPA navigation",
+        )
+        self.visited.append(self.chrome.evaluate("location.href"))
         self.assert_settings_page("registry containers settings")
         self.check(
             self.chrome.evaluate("document.body.textContent.includes('Containers')"),
             "registry containers workspace renders",
         )
+        self.chrome.evaluate("history.back()")
+        self.wait_for(
+            f"location.pathname === {json.dumps(registry_path)}",
+            "registry overview browser history navigation",
+        )
+        self.assert_settings_page("registry overview after browser Back")
+        self.check(True, "browser Back preserves SPA settings navigation")
 
         delivery_path = registry_path + "/delivery"
         self.navigate(delivery_path)
