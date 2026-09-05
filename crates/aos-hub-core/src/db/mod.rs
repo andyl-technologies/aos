@@ -554,6 +554,7 @@ pub use oci_admin::*;
 mod oci_gc;
 pub use oci_gc::*;
 mod placement_policy;
+mod package_documentation_reads;
 mod publication_admission;
 mod registry_delete;
 mod registry_index_build;

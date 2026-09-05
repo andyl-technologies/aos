@@ -1190,6 +1190,36 @@ pub struct PackageDocumentationPanel {
     pub nar_hash: String,
 }
 
+/// Signed indexed documentation reference, without loading the document bytes.
+#[derive(Debug, Clone)]
+pub struct PackageDocumentationReference {
+    /// Exact package identity.
+    pub package: String,
+    /// Displayed package version.
+    pub version: String,
+    /// Displayed platform.
+    pub platform: String,
+    /// Referenced Nix store object.
+    pub store_path: String,
+    /// Signed canonical document digest.
+    pub document_sha256: String,
+    /// Signed NAR identity of the referenced object.
+    pub nar_hash: String,
+}
+
+impl From<crate::db::PackageDocumentationLocator> for PackageDocumentationReference {
+    fn from(locator: crate::db::PackageDocumentationLocator) -> Self {
+        Self {
+            package: locator.package_name,
+            version: locator.package_version,
+            platform: locator.platform,
+            store_path: locator.artifact.store_path,
+            document_sha256: locator.artifact.document_sha256,
+            nar_hash: locator.artifact.nar_hash,
+        }
+    }
+}
+
 /// One package's detail page — the data-rich closure browser.
 ///
 /// Renders, in order: a header with name + latest version + the prominent
@@ -1211,7 +1241,7 @@ pub fn package_page(
     closure: &PackageClosure,
     setup: &RegistrySetup,
     snapshot: Option<&str>,
-    documentation: Option<&PackageDocumentationPanel>,
+    documentation: Option<&PackageDocumentationReference>,
     documentation_unavailable: bool,
     started: Instant,
     session: &SessionIndicator,
@@ -1385,10 +1415,9 @@ pub fn package_page(
         escape(&detail.name),
     );
     if let Some(documentation) = documentation {
-        let document = &documentation.document;
         let _ = write!(
             body,
-            "<p id=\"integrity\" class=\"dim docs-provenance\">Verified from <code>{}</code> · document {} · NAR {}</p>",
+            "<p id=\"integrity\" class=\"dim docs-provenance\">Signed reference to <code>{}</code> · document {} · NAR {}</p>",
             escape(&documentation.store_path),
             hash_value(&documentation.document_sha256),
             hash_value(&documentation.nar_hash),
@@ -1396,20 +1425,19 @@ pub fn package_page(
         body.push_str("<p>Read configuration options, service behavior, and examples in the versioned package documentation.</p>");
         let _ = write!(
             body,
-            "<p><a href=\"/{}/-/docs/{}/{}/{}\">Read configuration &amp; service documentation</a> · <a href=\"/{}/-/api/docs/{}/{}/{}\">canonical JSON</a></p>",
+            "<p><a href=\"/{}/-/docs/{}/{}/{}?digest={}\">Read configuration &amp; service documentation</a> · <a href=\"/{}/-/api/v1/documentation/{}\">canonical JSON</a></p>",
             escape(slug),
-            escape(&document.package.name),
-            escape(&document.package.version),
-            escape(&document.package.platform),
+            escape(&documentation.package),
+            escape(&documentation.version),
+            escape(&documentation.platform),
+            urlencode(&documentation.document_sha256),
             escape(slug),
-            escape(&document.package.name),
-            escape(&document.package.version),
-            escape(&document.package.platform),
+            escape(&documentation.document_sha256),
         );
     } else if documentation_unavailable {
-        body.push_str("<aside class=\"notice warning\"><strong>Documentation temporarily unavailable.</strong> The signed locator exists, but its Nix object could not be reverified. Runtime package metadata is still shown below.</aside>");
+        body.push_str("<aside class=\"notice warning\"><strong>Documentation temporarily unavailable.</strong> The indexed documentation reference could not be read. Package versions and runtime metadata remain available.</aside>");
     } else {
-        body.push_str("<p class=\"dim\">This package version predates canonical structured documentation.</p>");
+        body.push_str("<p class=\"dim\">No structured documentation reference is indexed for this package version and platform.</p>");
     }
     body.push_str("</section>");
 
@@ -1673,12 +1701,10 @@ pub fn documentation_page(
     body.push_str("<div class=\"docs-detail-toolbar\">");
     let _ = write!(
         body,
-        "<a href=\"/{}/-/docs\">← Search documentation</a><span><a href=\"/{}/-/api/docs/{}/{}/{}\">Canonical JSON</a> · <a href=\"/{}/-/api/docs/schema\">JSON Schema</a></span>",
+        "<a href=\"/{}/-/docs\">← Search documentation</a><span><a href=\"/{}/-/api/v1/documentation/{}\">Canonical JSON</a> · <a href=\"/{}/-/api/docs/schema\">JSON Schema</a></span>",
         escape(slug),
         escape(slug),
-        escape(&document.package.name),
-        escape(&document.package.version),
-        escape(&document.package.platform),
+        escape(&documentation.document_sha256),
         escape(slug),
     );
     body.push_str("</div>");
@@ -3847,6 +3873,14 @@ mod tests {
             versions: Vec::new(),
         };
         let setup = setup(&registry, "https://hub.example/demo", &[]);
+        let reference = PackageDocumentationReference {
+            package: panel.document.package.name.clone(),
+            version: panel.document.package.version.clone(),
+            platform: panel.document.package.platform.clone(),
+            store_path: panel.store_path.clone(),
+            document_sha256: panel.document_sha256.clone(),
+            nar_hash: panel.nar_hash.clone(),
+        };
         let package_html = package_page(
             &registry,
             None,
@@ -3854,12 +3888,14 @@ mod tests {
             &PackageClosure::default(),
             &setup,
             None,
-            Some(&panel),
+            Some(&reference),
             false,
             Instant::now(),
             &anon(),
         );
         assert!(package_html.contains("Configuration &amp; runtime"));
+        assert!(package_html.contains("Signed reference to"));
+        assert!(!package_html.contains("Verified from"));
         assert!(package_html.contains("aria-label=\"Package documentation sections\""));
         assert!(package_html.contains("href=\"#integrity\""));
         assert!(!package_html.contains("HTTP &lt;proxy&gt; service"));
@@ -3869,7 +3905,8 @@ mod tests {
                 < package_html.find("id=\"configure\"").unwrap()
         );
         assert!(!package_html.contains("HTTP <proxy> service"));
-        assert!(package_html.contains("/-/api/docs/nginx/1.30.4/x86_64-linux"));
+        assert!(package_html.contains("/-/docs/nginx/1.30.4/x86_64-linux?digest=sha256%3A"));
+        assert!(package_html.contains("/-/api/v1/documentation/sha256:"));
 
         let detail_html = documentation_page(&registry, None, &panel, Instant::now(), &anon());
         assert!(
