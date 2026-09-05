@@ -4,9 +4,9 @@
 //! They record and validate availability intent; publication does not currently
 //! consume the required bit as a release-visibility gate.
 
+use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
-use leptos::task::spawn_local_scoped_with_cancellation as spawn_local;
 
 use crate::components::{HashValue, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, watch_draft, PendingPlan};

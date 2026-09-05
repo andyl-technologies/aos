@@ -4,9 +4,9 @@
 //! values for future placement and delivery plans; they never move existing
 //! objects or rewrite live routes.
 
+use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
-use leptos::task::spawn_local_scoped_with_cancellation as spawn_local;
 
 use crate::components::{HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};

@@ -4,9 +4,9 @@
 //! redirect routes own an access policy; direct routes inherit access and path
 //! from their exact storage-gateway generation.
 
+use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
-use leptos::task::spawn_local_scoped_with_cancellation as spawn_local;
 
 use crate::components::{HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, watch_draft, PendingPlan};

@@ -5,10 +5,93 @@
 //! plan or combine confirmation material from two requests.
 
 #[cfg(target_arch = "wasm32")]
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::{
+    cell::RefCell,
+    future::Future,
+    sync::atomic::{AtomicU32, Ordering},
+};
 
 #[cfg(target_arch = "wasm32")]
+use futures::future::{AbortHandle, Abortable};
+#[cfg(target_arch = "wasm32")]
 use leptos::prelude::*;
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Copy, PartialEq)]
+struct WorkflowTaskScope {
+    handles: StoredValue<Vec<(u32, AbortHandle)>>,
+}
+
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    static ACTIVE_WORKFLOW_TASK_SCOPE: RefCell<Option<WorkflowTaskScope>> = const {
+        RefCell::new(None)
+    };
+}
+
+#[cfg(target_arch = "wasm32")]
+static WORKFLOW_TASK_SEQUENCE: AtomicU32 = AtomicU32::new(0);
+
+#[cfg(target_arch = "wasm32")]
+impl WorkflowTaskScope {
+    fn new() -> Self {
+        let handles = StoredValue::new(Vec::<(u32, AbortHandle)>::new());
+        on_cleanup(move || {
+            let _ = handles.try_update_value(|handles| {
+                for (_, handle) in handles.drain(..) {
+                    handle.abort();
+                }
+            });
+        });
+        Self { handles }
+    }
+
+    fn spawn(self, task: impl Future<Output = ()> + 'static) {
+        let task_id = WORKFLOW_TASK_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let (handle, registration) = AbortHandle::new_pair();
+        if self
+            .handles
+            .try_update_value(|handles| handles.push((task_id, handle)))
+            .is_none()
+        {
+            return;
+        }
+
+        leptos::task::spawn_local(async move {
+            let _ = Abortable::new(task, registration).await;
+            let _ = self.handles.try_update_value(|handles| {
+                handles.retain(|(id, _)| *id != task_id);
+            });
+        });
+    }
+}
+
+/// Installs the async task scope owned by one mounted resource workflow.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn install_workflow_task_scope() {
+    let scope = WorkflowTaskScope::new();
+    ACTIVE_WORKFLOW_TASK_SCOPE.with(|active| {
+        *active.borrow_mut() = Some(scope);
+    });
+    on_cleanup(move || {
+        ACTIVE_WORKFLOW_TASK_SCOPE.with(|active| {
+            let mut active = active.borrow_mut();
+            if *active == Some(scope) {
+                *active = None;
+            }
+        });
+    });
+}
+
+/// Spawns a task that is canceled when its resource workflow is unmounted.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn spawn_workflow_task(task: impl Future<Output = ()> + 'static) {
+    ACTIVE_WORKFLOW_TASK_SCOPE.with(|active| {
+        if let Some(scope) = *active.borrow() {
+            scope.spawn(task);
+        }
+    });
+}
 
 /// One exact reviewed mutation awaiting confirmation.
 #[derive(Clone, Debug, PartialEq)]

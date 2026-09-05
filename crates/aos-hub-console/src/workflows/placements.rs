@@ -4,9 +4,9 @@
 //! authority remain visually distinct. Every mutation is scoped by an exact
 //! typed surface reference and reviewed against the placement revision.
 
+use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
-use leptos::task::spawn_local_scoped_with_cancellation as spawn_local;
 
 use crate::components::{HashValue, HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, watch_draft, PendingPlan};
