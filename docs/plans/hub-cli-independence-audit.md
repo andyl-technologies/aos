@@ -87,7 +87,7 @@ stage operation makes no control calls
 (`crates/aos/tests/container_cli_transfer.rs:321`). Final mutable-tag commit
 still requires Hub authorization and compare-and-swap state.
 
-## Findings and recommended changes
+## Findings and outcomes
 
 ### 1. Portable system-image consumption implemented
 
@@ -103,8 +103,7 @@ The image cache has per-registry roster continuity, rollout partition, and
 channel floor state. It also checks the configured APM consumer's continuity
 anchors and immutable release identity before extracted metadata or rotated
 keys can be published. Moving selectors share their accepted TUF root anchor
-without sharing selected-commit ancestry. Selection
-keys use full commit identities and do not include architecture/format filters.
+without sharing selected-commit ancestry. Selection keys use full commit identities and do not include architecture/format filters.
 An exact archival release retains its own immutable TUF counters under the
 current verified roster; it cannot lower moving-channel counters, reset a
 channel floor, renew channel freshness, or change package tracking. APM and
@@ -124,37 +123,17 @@ unchanged registry configuration, explicit Hub authorization failure without
 fallback, a new channel after established TUF floors, configured APM TUF
 continuity in a fresh image consumer, channel rollback after selector/archive
 changes, corrupt NAR refusal, roster downgrade refusal, and signed retag
-rejection without changes to extracted metadata, keys, or state. Focused shared parser, extraction, and state
-regressions cover the reused implementation.
+rejection without changes to extracted metadata, keys, or state. Focused shared
+parser, extraction, and state regressions cover the reused implementation.
 
 User-facing usage is documented in [CLI commands](../users/aos/cli.md) and
 [image installation](../users/aos/installation.md). Direct URL consumption uses
 `apm registry add` to establish the registry name and trusted signing key first.
 
-### 2. Make documentation modes strict
+### 2. Strict documentation modes implemented
 
-The `aos doc` wrapper treats the positional words `package` and `hub` as modes,
-but they remain unvalidated strings. `aos doc hub QUERY` constructs a search
-with an optional Hub URL (`crates/aos/src/entry.rs:249`). When `--hub` is
-absent, the documentation implementation silently searches installed local
-documents (`crates/aos-package/src/documentation.rs:62`).
-
-The wrapper also accepted remote selectors in local modes and exact-document
-selectors in searches, where those values were ignored. The corresponding
-`apm docs` arguments already require `--hub` for registry/token selectors.
-Version and platform are valid filters for exact installed documentation;
-they must remain available for installed package lookup.
-
-Represent the wrapper source as an explicit mode and validate its flags:
-
-- package mode reads an installed user or system profile;
-- Hub mode requires a resolved Hub origin and registry;
-- repository mode continues to use the repository documentation index; and
-- remote-only selectors are rejected when the selected mode cannot use them.
-
-Add process tests proving that package mode works with an empty environment and
-no repository, that Hub mode cannot silently become local mode, and that
-remote-only flags produce an actionable error in local modes.
+The wrapper previously allowed Hub search to silently become installed-document
+search and accepted selectors that a selected mode could not use.
 
 The wrapper now resolves repository, installed-package, and Hub modes before
 constructing a Nix runner. Hub search requires an HTTP(S) origin and registry
@@ -168,9 +147,10 @@ document validation to the existing APM documentation commands.
 Process regressions in `crates/aos/tests/documentation_cli.rs` cover offline
 installed search, exact installed lookup, invalid mode combinations, malformed
 remote selectors, and an explicit Hub authorization failure without local
-fallback. Configured-registry documentation reads remain a separate task.
+fallback. Installed documentation remains available after ordinary bare-registry
+package installation.
 
-### 3. Add configured-registry documentation reads
+### 3. Optional extension: uninstalled registry documentation
 
 Remote documentation and option search currently use Hub RPCs, while local
 commands only inspect documentation retained by installed packages. Signed
@@ -178,33 +158,37 @@ package metadata already identifies the canonical documentation artifact, so a
 configured registry can provide an uninstalled document through the same cache
 and verification path as other package artifacts.
 
-Add a configured-registry source after the mode validation is fixed. Exact
-document lookup should precede broad search. Search can build a bounded local
-index from synchronized registry metadata and fetched documentation objects.
+A future configured-registry source could read documentation before package
+installation. Exact lookup should precede broad search, which could build a
+bounded local index from synchronized metadata and verified documentation
+objects. This extends remote search; installed documentation already works
+without Hub.
 `options compare` benefits from a Hub index, but it can also compare two exact
 signed versions when both are present in configured registry state.
 
-### 4. Separate OCI origin names from Hub names
+### 4. Independent OCI origins and deferred profile credentials implemented
 
-The direct OCI commands describe `--hub` as an override for the registry HTTP
-origin and bind it to `AOS_HUB` (`crates/aos/src/cli/container.rs:64`). The
-implementation passes that value to `RegistryClient`; it is not inherently a
-Hub API endpoint.
+Direct `aos container inspect`, `pull`, and `push` use `--registry-origin` and
+`AOS_REGISTRY_ORIGIN`; an omitted override derives the Distribution origin from
+the reference. The explicit `--hub` flag remains an alias. Unrelated `AOS_HUB`
+configuration no longer selects the content origin. Existing `AOS_TOKEN` values
+remain explicit registry credentials.
 
-Rename the content-plane option to `--registry-origin` and use
-`AOS_REGISTRY_ORIGIN`, matching the publication command. If compatibility is
-needed, retain `--hub` only as a deprecated alias for these three commands.
+Without an explicit token, the client first attempts anonymous Distribution
+access and anonymous bearer exchange. A generic deferred credential provider
+consults a matching profile only when authentication is needed at a same-origin
+realm. Successful credential resolution is cached for that client. A reduced-
+scope anonymous token can trigger one authenticated exchange and retry of the
+denied request; the client never replays an entire push. Explicit-token failures,
+profile refresh errors, cancellation, and cross-origin credential boundaries
+remain visible and enforced. The OCI library has no Hub dependency.
 
-Credential lookup should also be lazy. A matching expired Hub profile is
-currently refreshed before a public registry request, so refresh failure can
-block otherwise anonymous content. Attempt anonymous registry access first, or
-consult matching stored credentials after an authentication challenge. Keep
-explicit token and explicit profile failures visible.
-
-Existing process coverage only proves that an unrelated expired profile does
-not block a pull, and it still supplies `--hub`
-(`crates/aos/tests/container_cli.rs:57`). Add cases with no origin override or
-profile and with a matching expired profile against a public test registry.
+The 29 OCI protocol tests and six container process tests passed before final
+combined integration. Coverage includes public inspect/pull/push with a matching
+expired profile and no refresh or profile writes, anonymous bearer success,
+private refresh failures, explicit-token bypass, insufficient anonymous scope,
+and rejection of an external credential realm. Final combined results are in
+`hub-experience-audit.md`.
 
 ### 5. Keep authoritative release mutations on Hub
 
@@ -220,12 +204,10 @@ Keep the command families distinct in help and documentation:
 - use `aos release channel` to advance the managed production authority and
   retain release evidence.
 
-## Implementation order
+## Completion record
 
-1. Completed: shared portable image resolver and no-Hub image process test.
-2. Completed: explicit `aos doc` modes and flag combinations with process tests.
-3. Rename the OCI content origin option and defer stored-profile credential
-   resolution until needed.
-4. Add configured-registry reads for uninstalled documentation and exact
-   option comparisons.
-
+Portable image consumption, strict documentation modes, and independent OCI
+origin/credential handling are implemented and covered by real process tests.
+Managed release mutations retain their required authority boundary. Uninstalled
+registry-wide documentation search is an optional extension described above;
+it is not used as a fallback after a failed explicit Hub request.
