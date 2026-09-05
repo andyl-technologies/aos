@@ -80,6 +80,8 @@ in
     #          it after container setup, immediately before payload execution.
     #   0008 — Consume a named supervisor-only root descriptor without
     #          reopening its pathname or forwarding it to the payload.
+    #   0009 — Test fail-closed shutdown-intent state for retained-supervisor
+    #          reboot support. Runtime integration is a separate step.
     patches = [
       ./patches/0001-remove-usr-lib-unit-lookup-paths.patch
       ./patches/0002-add-prefix-to-conf-paths.patch
@@ -89,6 +91,7 @@ in
       ./patches/0006-ignore-external-cmdline-for-embedded-uki.patch
       ./patches/0007-nspawn-aos-payload-seccomp-profile.patch
       ./patches/0008-nspawn-owned-root-descriptor.patch
+      ./patches/0009-nspawn-shutdown-intent-state.patch
     ];
 
     buildDeps = [
@@ -441,6 +444,7 @@ in
 
           ./test-nspawn-seccomp
           ./test-nspawn-root-fd
+          ./test-nspawn-lifecycle
 
           if ! "$out/bin/systemd-nspawn" --help | grep -F -q -- \
             '--aos-root-mount-fd=NAME'; then

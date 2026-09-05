@@ -2274,3 +2274,26 @@ guardian. It does not qualify the deployed capability-less Host, enforcing
 MAC, publisher delivery, lease expiry, internal reboot, aarch64, or complete
 controller-to-guest execution. `BackendReadiness` remains unavailable and all
 tasks depending on those proofs remain open.
+
+### Retained-supervisor shutdown-intent foundation
+
+The systemd patch series now builds and runs a focused shutdown-intent state
+machine test. Only an exact `X_SYSTEMD_SHUTDOWN=reboot` and `EXIT_STATUS=0`
+pair can request a reboot. Missing, duplicate, malformed, nonzero, or
+conflicting shutdown fields latch inhibition for that boot. Repeating a valid
+notification is idempotent; unrelated readiness/status notifications do not
+change intent. The decision additionally requires a clean actual exit and no
+host stop request. Tests cover all of these cases and independent per-boot
+state. The helper's caller contract requires authentication against the pinned
+payload PID 1; these pure tests do not prove that transport binding.
+
+This is preparation, not runtime reboot support. Event-loop integration must
+authenticate notifications, drain pending shutdown records before reaping
+PID 1, give host stop precedence, and reset the empty payload cgroup with
+bounded descriptor-relative cleanup before another boot. Removing the old
+payload root is necessary to discard guest-written cgroup limits/controllers
+while retaining the supervisor and unit. The existing owned-root descriptor
+implementation already clones a fresh mount tree inside each boot iteration;
+that behavior still needs repeated-boot VM evidence under the production
+capability and seccomp profile. `SBX-RT-06` and lifecycle qualification remain
+open; runtime behavior and `BackendReadiness` are unchanged by this patch.

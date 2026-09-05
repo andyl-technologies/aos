@@ -1,0 +1,174 @@
+diff --git a/src/nspawn/meson.build b/src/nspawn/meson.build
+index cd19ff9..0def05c 100644
+--- a/src/nspawn/meson.build
++++ b/src/nspawn/meson.build
+@@ -8,6 +8,7 @@ nspawn_sources = files(
+         'nspawn.c',
+         'nspawn-bind-user.c',
+         'nspawn-cgroup.c',
++        'nspawn-lifecycle.c',
+         'nspawn-register.c',
+         'nspawn-root-fd.c',
+         'nspawn-seccomp.c',
+@@ -56,6 +57,9 @@ executables += [
+         nspawn_test_template + {
+                 'sources' : files('test-nspawn-tables.c'),
+         },
++        nspawn_test_template + {
++                'sources' : files('test-nspawn-lifecycle.c', 'nspawn-lifecycle.c'),
++        },
+         nspawn_test_template + {
+                 'sources' : files('test-nspawn-root-fd.c', 'nspawn-root-fd.c'),
+         },
+diff --git a/src/nspawn/nspawn-lifecycle.c b/src/nspawn/nspawn-lifecycle.c
+new file mode 100644
+index 0000000..3050d53
+--- /dev/null
++++ b/src/nspawn/nspawn-lifecycle.c
+@@ -0,0 +1,43 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++
++#include "nspawn-lifecycle.h"
++#include "string-util.h"
++#include "strv.h"
++
++void aos_shutdown_intent_observe(AosShutdownIntent *intent, char * const *tags) {
++        bool shutdown_seen = false, exit_seen = false, invalid = false;
++
++        assert(intent);
++
++        /* Absence of metadata is not a reboot request. A non-reboot or ambiguous shutdown latches an
++         * inhibition for this boot: later messages must not turn a failed shutdown into a new payload. */
++        STRV_FOREACH(tag, tags) {
++                const char *value;
++
++                value = startswith(*tag, "X_SYSTEMD_SHUTDOWN=");
++                if (value) {
++                        invalid |= shutdown_seen || !streq(value, "reboot");
++                        shutdown_seen = true;
++                } else if (streq(*tag, "X_SYSTEMD_SHUTDOWN"))
++                        invalid = true;
++
++                value = startswith(*tag, "EXIT_STATUS=");
++                if (value) {
++                        invalid |= exit_seen || !streq(value, "0");
++                        exit_seen = true;
++                } else if (streq(*tag, "EXIT_STATUS"))
++                        invalid = true;
++        }
++
++        if (!shutdown_seen && !exit_seen && !invalid)
++                return;
++
++        if (invalid || !shutdown_seen || !exit_seen)
++                *intent = AOS_SHUTDOWN_INHIBITED;
++        else if (*intent == AOS_SHUTDOWN_NONE)
++                *intent = AOS_SHUTDOWN_REBOOT;
++}
++
++bool aos_shutdown_intent_allows_reboot(AosShutdownIntent intent, bool clean_exit, bool stop_requested) {
++        return intent == AOS_SHUTDOWN_REBOOT && clean_exit && !stop_requested;
++}
+diff --git a/src/nspawn/nspawn-lifecycle.h b/src/nspawn/nspawn-lifecycle.h
+new file mode 100644
+index 0000000..6e838b8
+--- /dev/null
++++ b/src/nspawn/nspawn-lifecycle.h
+@@ -0,0 +1,15 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#pragma once
++
++#include <stdbool.h>
++
++/* A fresh instance belongs to exactly one payload PID 1. Never carry this state across boots. */
++typedef enum AosShutdownIntent {
++        AOS_SHUTDOWN_NONE,
++        AOS_SHUTDOWN_REBOOT,
++        AOS_SHUTDOWN_INHIBITED,
++} AosShutdownIntent;
++
++/* The caller must authenticate the sender against the pinned payload PID 1 before calling this. */
++void aos_shutdown_intent_observe(AosShutdownIntent *intent, char * const *tags);
++bool aos_shutdown_intent_allows_reboot(AosShutdownIntent intent, bool clean_exit, bool stop_requested);
+diff --git a/src/nspawn/test-nspawn-lifecycle.c b/src/nspawn/test-nspawn-lifecycle.c
+new file mode 100644
+index 0000000..00e6034
+--- /dev/null
++++ b/src/nspawn/test-nspawn-lifecycle.c
+@@ -0,0 +1,76 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++
++#include "nspawn-lifecycle.h"
++#include "strv.h"
++#include "tests.h"
++
++TEST(shutdown_metadata) {
++        static const struct {
++                const char *tags[5];
++                AosShutdownIntent expected;
++        } cases[] = {
++                { { NULL }, AOS_SHUTDOWN_NONE },
++                { { "READY=1", "STATUS=reboot", NULL }, AOS_SHUTDOWN_NONE },
++                { { "X_SYSTEMD_REBOOT_PARAMETER=ignored", NULL }, AOS_SHUTDOWN_NONE },
++                { { "X_SYSTEMD_SHUTDOWN=reboot", "EXIT_STATUS=0", NULL }, AOS_SHUTDOWN_REBOOT },
++                { { "EXIT_STATUS=0", "X_SYSTEMD_SHUTDOWN=reboot", "X_SYSTEMD_REBOOT_PARAMETER=x", NULL }, AOS_SHUTDOWN_REBOOT },
++                { { "X_SYSTEMD_SHUTDOWN=reboot", NULL }, AOS_SHUTDOWN_INHIBITED },
++                { { "EXIT_STATUS=0", NULL }, AOS_SHUTDOWN_INHIBITED },
++                { { "X_SYSTEMD_SHUTDOWN=poweroff", "EXIT_STATUS=0", NULL }, AOS_SHUTDOWN_INHIBITED },
++                { { "X_SYSTEMD_SHUTDOWN=halt", "EXIT_STATUS=0", NULL }, AOS_SHUTDOWN_INHIBITED },
++                { { "X_SYSTEMD_SHUTDOWN=kexec", "EXIT_STATUS=0", NULL }, AOS_SHUTDOWN_INHIBITED },
++                { { "X_SYSTEMD_SHUTDOWN=soft-reboot", "EXIT_STATUS=0", NULL }, AOS_SHUTDOWN_INHIBITED },
++                { { "X_SYSTEMD_SHUTDOWN=reboot", "EXIT_STATUS=1", NULL }, AOS_SHUTDOWN_INHIBITED },
++                { { "X_SYSTEMD_SHUTDOWN=reboot", "EXIT_STATUS=00", NULL }, AOS_SHUTDOWN_INHIBITED },
++                { { "X_SYSTEMD_SHUTDOWN=reboot", "EXIT_STATUS=-0", NULL }, AOS_SHUTDOWN_INHIBITED },
++                { { "X_SYSTEMD_SHUTDOWN=reboot", "EXIT_STATUS=0 ", NULL }, AOS_SHUTDOWN_INHIBITED },
++                { { "X_SYSTEMD_SHUTDOWN=", "EXIT_STATUS=0", NULL }, AOS_SHUTDOWN_INHIBITED },
++                { { "X_SYSTEMD_SHUTDOWN", "EXIT_STATUS=0", NULL }, AOS_SHUTDOWN_INHIBITED },
++                { { "X_SYSTEMD_SHUTDOWN=reboot", "EXIT_STATUS", NULL }, AOS_SHUTDOWN_INHIBITED },
++                { { "X_SYSTEMD_SHUTDOWN=reboot", "EXIT_STATUS=", NULL }, AOS_SHUTDOWN_INHIBITED },
++                { { "X_SYSTEMD_SHUTDOWN=reboot", "EXIT_STATUS=0", "EXIT_STATUS=0", NULL }, AOS_SHUTDOWN_INHIBITED },
++                { { "X_SYSTEMD_SHUTDOWN=reboot", "EXIT_STATUS=0", "EXIT_STATUS=1", NULL }, AOS_SHUTDOWN_INHIBITED },
++                { { "X_SYSTEMD_SHUTDOWN=reboot", "X_SYSTEMD_SHUTDOWN=reboot", "EXIT_STATUS=0", NULL }, AOS_SHUTDOWN_INHIBITED },
++                { { "X_SYSTEMD_SHUTDOWN=reboot", "X_SYSTEMD_SHUTDOWN=poweroff", "EXIT_STATUS=0", NULL }, AOS_SHUTDOWN_INHIBITED },
++        };
++
++        FOREACH_ELEMENT(c, cases) {
++                _cleanup_strv_free_ char **tags = NULL;
++                AosShutdownIntent intent = AOS_SHUTDOWN_NONE;
++
++                ASSERT_NOT_NULL(tags = strv_copy((char**) c->tags));
++                aos_shutdown_intent_observe(&intent, tags);
++                ASSERT_EQ(intent, c->expected);
++        }
++}
++
++TEST(inhibition_is_latched_and_duplicates_are_idempotent) {
++        AosShutdownIntent intent = AOS_SHUTDOWN_NONE;
++        char **reboot = STRV_MAKE("X_SYSTEMD_SHUTDOWN=reboot", "EXIT_STATUS=0");
++
++        aos_shutdown_intent_observe(&intent, reboot);
++        ASSERT_TRUE(intent == AOS_SHUTDOWN_REBOOT);
++        aos_shutdown_intent_observe(&intent, STRV_MAKE("READY=1"));
++        aos_shutdown_intent_observe(&intent, reboot);
++        ASSERT_TRUE(intent == AOS_SHUTDOWN_REBOOT);
++
++        aos_shutdown_intent_observe(&intent, STRV_MAKE("X_SYSTEMD_SHUTDOWN=poweroff", "EXIT_STATUS=0"));
++        aos_shutdown_intent_observe(&intent, reboot);
++        ASSERT_TRUE(intent == AOS_SHUTDOWN_INHIBITED);
++}
++
++TEST(intent_cannot_replace_exit_status_or_override_host_stop) {
++        for (AosShutdownIntent intent = AOS_SHUTDOWN_NONE; intent <= AOS_SHUTDOWN_INHIBITED; intent++) {
++                ASSERT_FALSE(aos_shutdown_intent_allows_reboot(intent, false, false));
++                ASSERT_FALSE(aos_shutdown_intent_allows_reboot(intent, false, true));
++                ASSERT_FALSE(aos_shutdown_intent_allows_reboot(intent, true, true));
++                ASSERT_EQ(aos_shutdown_intent_allows_reboot(intent, true, false), intent == AOS_SHUTDOWN_REBOOT);
++        }
++
++        AosShutdownIntent first = AOS_SHUTDOWN_NONE, second = AOS_SHUTDOWN_NONE;
++        aos_shutdown_intent_observe(&first, STRV_MAKE("X_SYSTEMD_SHUTDOWN=reboot", "EXIT_STATUS=0"));
++        ASSERT_TRUE(aos_shutdown_intent_allows_reboot(first, true, false));
++        ASSERT_FALSE(aos_shutdown_intent_allows_reboot(second, true, false));
++}
++
++DEFINE_TEST_MAIN(LOG_DEBUG);
