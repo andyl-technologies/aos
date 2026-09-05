@@ -2972,9 +2972,40 @@ The canonical package passes the native source-ownership certificate and QMP
 readiness checks. Byte-for-byte regeneration passes for all 196 carried patches,
 ABI conformance passes, and the corresponding-source artifact carries the
 matching patch-series, bundle, and QEMU build identities. The full 196-patch
-series flight and focused drop-one attribution are still pending at this
-checkpoint. The complete license-boundary gate remains subject to the controller
+series flight also passes, including live native block I/O, guest network
+acknowledgement, and two-VM exact-restore network continuation. Focused same-builder
+drop-one attribution passes; its generic boot probe is non-discriminating, so the
+native ownership and mutex-lifetime cases remain the behavioral evidence.
+The complete license-boundary gate remains subject to the controller
 engineering-hygiene findings above.
+
+A complete native source-set primitive now retains an explicit closure of
+roots, nodes, backends, and graph consumers. It rejects missing or duplicate
+owners, extra native resources, and non-backend consumers attached to file
+leaves before changing access. Already-read-only roots stay read-only on
+restoration; original writable-root provenance remains separate from the live
+backend permission inventory. A partial freeze retains every capability for
+explicit reverse-order restoration, including when an extra unowned node has
+invalidated admission. Inherited parent tokens remain unusable in fork children.
+
+Both source-set native cases pass within the 15-case native suite. They combine
+VMState, writable disk, and read-only roots, preserve stored bytes, reject
+restoration behind a held barrier, and restore after a deliberately partial
+freeze. Disabling only the non-backend consumer check makes the negative control
+fail at the corresponding query. This establishes the complete native ownership
+primitive, not its production use: versioned coordinator source provenance,
+source-set preparation, child-private VMState/disk graph installation, and atomic
+whole-world continuation remain open. No acceptance checkbox is closed by this
+increment.
+
+The canonical 197-patch package passes the source-set certificate, QMP readiness,
+and ABI conformance. Byte-for-byte regeneration and matching complete
+corresponding-source metadata pass; the source license-boundary suite passes all
+18 cases, and the plugin patch roster and strict Clippy checks pass. The full
+197-patch series flight and focused drop-one attribution are running. The
+license-boundary source suite first encountered a compiler-cache connection
+reset; the explicit run without that cache completed all tests. This is not
+acceptance of the complete packaged license-boundary gate.
 
 **Exit:** either the spike satisfies the structural and minimum-speedup targets,
 its manual lab evidence is accepted, or hot fork remains rejected and the RFC is

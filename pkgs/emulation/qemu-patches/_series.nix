@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "7fe08145fe5ee1490b7bda7f2ee18cd0f3f8fb742f91f6d540047f4f396f45dd";
+  patchBranchBundleSha256 = "ea6d8a43e52f35835d8cb78f2fd1098f93c0053cd53e727495b46316a212ea00";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "a38fa361a5285b414c41037df265667cd4e4e465";
+  patchBranchHeadCommit = "edb6d9dad1581b8184c1c3e7ee3dcc102fbcfbfa";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1925,6 +1925,16 @@ let
       class = "F";
       enforces = "HFORK-4,HFORK-8,HFORK-22";
       capability = "native source ownership includes parentless named VMState roots and authenticates exact graph edges, root consumers, and regular-file inode identities; pinned reopen rejects pathname replacement before replacing the source descriptor and frozen validation checks actual read-only file access; block teardown retires the dirty-bitmap mutex before freeing its intrusive registry storage; native tests cover VMState preservation, restoration, inherited-token rejection, foreign-owner rejection, inode replacement, and 1024 balanced mutex lifetimes, while complete coordinator source-set and child graph handoff remain open";
+    }
+    {
+      file = "0200-crucible-retain-complete-native-source-sets.patch";
+      branchSubject = "crucible: retain complete native source sets";
+      branchCommit = "edb6d9dad1581b8184c1c3e7ee3dcc102fbcfbfa";
+      branchTree = "19914b151e6456d2de95da6db805035f114898ae";
+      catalogName = "crucible-hot-fork-complete-native-source-set";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-22";
+      capability = "a process-local source-set owner authenticates the complete explicit native root, node, backend, and consumer closure before freezing; it preserves already-read-only access, retains original writable-root provenance independently of live permissions, and owns partial-failure restoration; unknown or extra resources and inherited parent tokens fail closed; native tests cover VMState and disk preservation, read-only restoration, held barriers, closure changes, non-backend file consumers, and partial recovery; production coordinator integration and child-private graph installation remain open";
     }
   ];
   catalogOnlyCapabilities = [
