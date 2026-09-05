@@ -89,36 +89,47 @@ still requires Hub authorization and compare-and-swap state.
 
 ## Findings and recommended changes
 
-### 1. Make system-image consumption portable
+### 1. Portable system-image consumption implemented
 
-`aos image` currently assigns `--hub` a production default
-(`crates/aos/src/cli/image.rs:17`) and resolves list, show, and download through
-the Hub `ListImages` and `ResolveImage` RPCs
-(`crates/aos/src/commands/image.rs:48`,
-`crates/aos/src/commands/image.rs:105`). This makes Hub mandatory for an
-immutable content operation.
+`aos image list`, `show`, and `download` now default to a named configured APM
+registry. The shared resolver in `crates/aos-package/src/images.rs` uses the
+existing Git/static-HTTP synchronizer, signature and TUF verification, validated
+package parser, and the selected registry's committed/client cache chain.
+`--hub` or `AOS_HUB` explicitly selects Hub discovery, where `--registry` is an
+organization/registry slug. A failed Hub operation never falls back to the
+configured registry. Ambient `AOS_TOKEN` is consulted only in Hub mode.
 
-The package manager already implements the portable equivalent. `apm install
---image` selects signed sysroot image metadata from configured registry state,
-resolves its cache chain, downloads the NAR, and verifies it against the
-registry-rooted identity (`crates/aos-package/src/sysroot.rs:3153`).
+The image cache has per-registry roster continuity, rollout partition, and
+channel floor state. It also checks the configured APM consumer's continuity
+anchors and immutable release identity before extracted metadata or rotated
+keys can be published. Moving selectors share their accepted TUF root anchor
+without sharing selected-commit ancestry. Selection
+keys use full commit identities and do not include architecture/format filters.
+An exact archival release retains its own immutable TUF counters under the
+current verified roster; it cannot lower moving-channel counters, reset a
+channel floor, renew channel freshness, or change package tracking. APM and
+image consumers retain the first freshness observation of an unchanged floor.
 
-Introduce a shared signed-image resolver over `ApmConfig`. With no `--hub`,
-`aos image` should use a configured registry and its Git/HTTP and cache state.
-An explicit registry URL can be supported through the same trust inputs and
-sync logic as `apm registry add`, either ephemerally or after a clearly
-explained configuration step. Keep `--hub` as an explicit managed discovery
-source for private registries and topology-derived delivery routes.
+The existing secure download path now decodes the declared `none` or `zstd`
+NAR transport. It checks the cache narinfo against the signed store identity,
+verifies the transport and NAR hashes, extracts only a canonical regular-file
+NAR, and checks signed disk size/hash before publishing the final output.
+Portable cache URLs retain APM's HTTP/file transport behavior.
 
-Do not retry an explicitly selected Hub operation against another source after
-an authentication, authorization, or integrity failure. Automatic selection
-can fall back only when Hub discovery was not requested and the signed
-portable source is independently configured.
+`crates/aos/tests/image_registry_cli.rs` exercises a real signed SHA-256 Git
+origin and binary cache served by static HTTP. Consumer processes clear their
+environment and PATH and run outside a source checkout. Coverage includes
+list/show/download, ambiguity and image filters, historical TUF releases,
+unchanged registry configuration, explicit Hub authorization failure without
+fallback, a new channel after established TUF floors, configured APM TUF
+continuity in a fresh image consumer, channel rollback after selector/archive
+changes, corrupt NAR refusal, roster downgrade refusal, and signed retag
+rejection without changes to extracted metadata, keys, or state. Focused shared parser, extraction, and state
+regressions cover the reused implementation.
 
-Add an end-to-end test that publishes a signed sysroot image to a static Git
-origin and cache, then exercises `aos image list`, `show`, and `download` with
-no Hub process or Hub environment variables. Current image tests cover local
-download mechanics and validation but not a portable process-level source.
+User-facing usage is documented in [CLI commands](../users/aos/cli.md) and
+[image installation](../users/aos/installation.md). Direct URL consumption uses
+`apm registry add` to establish the registry name and trusted signing key first.
 
 ### 2. Make documentation modes strict
 
@@ -211,8 +222,8 @@ Keep the command families distinct in help and documentation:
 
 ## Implementation order
 
-1. Add the shared portable image resolver and no-Hub image end-to-end test.
-2. Make `aos doc` modes and flag combinations explicit and add process tests.
+1. Completed: shared portable image resolver and no-Hub image process test.
+2. Completed: explicit `aos doc` modes and flag combinations with process tests.
 3. Rename the OCI content origin option and defer stored-profile credential
    resolution until needed.
 4. Add configured-registry reads for uninstalled documentation and exact
