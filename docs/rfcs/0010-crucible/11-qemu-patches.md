@@ -3588,6 +3588,25 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   this guard neither creates a timer nor schedules migration traffic.
 - **Risk:** D.
 
+### crucible-hot-fork-read-only-block-source — retain native immutable sources
+
+- **Patch:** `0197-crucible-retain-read-only-block-sources.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-22].
+- **Mechanism:** a process-local owner retains the exact backend/root pair and
+  original permissions. Before fork barriers, native drain and reopen freeze
+  the root; bounded validation requires every reachable backing and file node
+  to be read-only. Partial failure retains restoration authority. Only the
+  creating process can restore original access or release the token.
+- **Micro-test:** native QCOW2 fixtures write data, freeze, read it unchanged,
+  reject inherited-token restoration in a fork child, restore exact permissions,
+  and write again. An explicitly writable file descendant rejects the freeze
+  but still permits restoration. The package retains the actual TAP transcript;
+  `checks.crucible.phase6.qemuReadOnlyBlockSource` checks both named cases.
+- **Inertness:** no existing QMP or template operation calls this primitive.
+  Coordinator integration, private child overlays, and child-I/O reconstruction
+  remain open; no hot-fork readiness bit is acknowledged by this patch.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.

@@ -859,6 +859,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0197-crucible-retain-read-only-block-sources.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

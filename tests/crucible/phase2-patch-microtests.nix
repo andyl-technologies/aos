@@ -24,6 +24,9 @@
     attrPath = "checks.crucible.phase6.qemuHotForkReadiness";
   };
   qemuSignalSharedCause = import ./phase7-signal-shared-cause.nix {inherit pkgs lib;};
+  qemuReadOnlyBlockSource = import ./phase6-qemu-read-only-block-source.nix {
+    inherit pkgs qemuPackage;
+  };
   qemuPluginFailLoud = import ./phase2-plugin-fail-loud.nix {inherit pkgs lib;};
   qemuRrQuantumIcount = import ./phase2-qemu-rr-quantum-icount.nix {inherit pkgs lib;};
   qemuDetIpi = import ./phase2-qemu-det-ipi.nix {inherit pkgs lib;};
@@ -3247,6 +3250,20 @@
           grep -Fxq 'inactive_world_boot_reactivation=true' "$live_result"
           grep -Fxq 'reactivated_guest_progress=true' "$live_result"
           grep -Fxq 'reactivation_checkpoint_evidence_match=true' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0197-crucible-retain-read-only-block-sources.patch";
+      check = certifyExactPatch {
+        patchName = "0197-crucible-retain-read-only-block-sources.patch";
+        liveCheck = qemuReadOnlyBlockSource;
+        evidenceName = "native-qcow2-source-freeze-restore";
+        liveEvidence = ''
+          grep -Fxq 'native_source_freeze_restore=true' "$live_result"
+          grep -Fxq 'writable_descendant_rejected_and_restored=true' "$live_result"
+          grep -Fxq 'inherited_parent_token_rejected=true' "$live_result"
+          grep -Fxq 'whole_world_child_handoff=false' "$live_result"
         '';
       };
     }
