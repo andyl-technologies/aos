@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "30838bb812990a6576e81ffed7128b0268f61aa2e5f94519771dec561cffcbc9";
+  patchBranchBundleSha256 = "aa9a7709bbf6230454ff8b4247e909cef49633fcb309e62e5dcbab13844e3324";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "210cfd9504e90caddf3240fb6aba4071c86f5558";
+  patchBranchHeadCommit = "08bf61dc667ce255e379ec7dbd8eca2050bdf4f4";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1955,6 +1955,16 @@ let
       class = "F";
       enforces = "HFORK-9,HFORK-22";
       capability = "a frozen source set prepares one bounded child file plan in the parent: every originally writable native leaf receives an exact private copy in a caller-supplied empty destination (reflink when available, sparse copy otherwise) and every read-only leaf an independent read-only descriptor, with aliasing, byte-budget, and identity checks; the immediate child adopts the plan outside block barriers after native worker retirement, rebinds file locks on independent open descriptions, restores original access against the private files, never reopens parent launch pathnames, and consumes its inherited source capability; native tests cover rejection before freeze, budget, aliasing, foreign nodes, parent-side installation refusal, child adoption, private writes invisible to the parent, and reopen through the private inode; coordinator binding and whole-world execution remain open";
+    }
+    {
+      file = "0203-crucible-bind-child-private-files-to-fork.patch";
+      branchSubject = "crucible: bind child-private files to the fork transaction";
+      branchCommit = "08bf61dc667ce255e379ec7dbd8eca2050bdf4f4";
+      branchTree = "29023e614aabc67ea6e9d132ddeffd51df59ba46";
+      catalogName = "crucible-hot-fork-child-files";
+      class = "F";
+      enforces = "HFORK-9,HFORK-22";
+      capability = "a versioned out-of-band QMP command stages, queries, and releases one one-shot child-private file plan bound to the retained template: every destination is duplicated from standard getfd, must be an empty writable regular file with the expected identity, and must name a distinct root by backend or node name; the fork transaction requires the exact plan generation, resolves each frozen root to its unique originally writable leaf on the main loop, copies the frozen bytes, excludes the pinned and prepared descriptors from child descriptor disposition, installs the plan in the immediate child after block release, frees it in the parent, and consumes the plan generation; nonempty native graphs without a plan and plans without native roots fail before process creation; the readiness gate covers stock rejection, exact absent state, stage without a template, and release without a plan";
     }
   ];
   catalogOnlyCapabilities = [

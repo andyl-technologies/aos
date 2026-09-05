@@ -42,19 +42,19 @@ mod unix_socket;
 mod vmstate_control;
 
 use hot_fork::{
-    HotForkChildProcessAction, HotForkChildProcessContractAction,
+    HotForkChildFilesAction, HotForkChildProcessAction, HotForkChildProcessContractAction,
     parse_hot_fork_aio_handler_inventory, parse_hot_fork_aio_inventory,
     parse_hot_fork_bh_timer_barrier_state, parse_hot_fork_block_backend_inventory,
     parse_hot_fork_block_barrier_state, parse_hot_fork_bottom_half_inventory,
     parse_hot_fork_child_console_state, parse_hot_fork_child_diagnostic_state,
-    parse_hot_fork_child_process_contract_state, parse_hot_fork_child_process_state,
-    parse_hot_fork_child_qmp_state, parse_hot_fork_child_runtime_state,
-    parse_hot_fork_monitor_inventory, parse_hot_fork_mutex_inventory,
-    parse_hot_fork_plugin_barrier_state, parse_hot_fork_plugin_endpoint_state,
-    parse_hot_fork_plugin_resource_inventory, parse_hot_fork_private_ring_state,
-    parse_hot_fork_rcu_barrier_state, parse_hot_fork_rcu_inventory, parse_hot_fork_readiness,
-    parse_hot_fork_state, parse_hot_fork_template_state, parse_hot_fork_thread_inventory,
-    parse_hot_fork_timer_inventory,
+    parse_hot_fork_child_files_state, parse_hot_fork_child_process_contract_state,
+    parse_hot_fork_child_process_state, parse_hot_fork_child_qmp_state,
+    parse_hot_fork_child_runtime_state, parse_hot_fork_monitor_inventory,
+    parse_hot_fork_mutex_inventory, parse_hot_fork_plugin_barrier_state,
+    parse_hot_fork_plugin_endpoint_state, parse_hot_fork_plugin_resource_inventory,
+    parse_hot_fork_private_ring_state, parse_hot_fork_rcu_barrier_state,
+    parse_hot_fork_rcu_inventory, parse_hot_fork_readiness, parse_hot_fork_state,
+    parse_hot_fork_template_state, parse_hot_fork_thread_inventory, parse_hot_fork_timer_inventory,
 };
 pub use hot_fork::{
     QMP_HOT_FORK_AIO_HANDLER_INVENTORY_MAX, QMP_HOT_FORK_AIO_HANDLER_INVENTORY_SCHEMA_VERSION,
@@ -67,8 +67,9 @@ pub use hot_fork::{
     QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_BOTTOM_HALF_NAME_MAX_BYTES,
     QMP_HOT_FORK_CHILD_CONSOLE_COMMAND, QMP_HOT_FORK_CHILD_CONSOLE_SCHEMA_VERSION,
     QMP_HOT_FORK_CHILD_DIAGNOSTICS_COMMAND, QMP_HOT_FORK_CHILD_DIAGNOSTICS_SCHEMA_VERSION,
-    QMP_HOT_FORK_CHILD_DIAGNOSTICS_TARGET_FD, QMP_HOT_FORK_CHILD_PROCESS_COMMAND,
-    QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_COMMAND,
+    QMP_HOT_FORK_CHILD_DIAGNOSTICS_TARGET_FD, QMP_HOT_FORK_CHILD_FILES_COMMAND,
+    QMP_HOT_FORK_CHILD_FILES_MAX, QMP_HOT_FORK_CHILD_FILES_SCHEMA_VERSION,
+    QMP_HOT_FORK_CHILD_PROCESS_COMMAND, QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_COMMAND,
     QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_SCHEMA_VERSION, QMP_HOT_FORK_CHILD_PROCESS_SCHEMA_VERSION,
     QMP_HOT_FORK_CHILD_QMP_COMMAND, QMP_HOT_FORK_CHILD_QMP_SCHEMA_VERSION,
     QMP_HOT_FORK_CHILD_RUNTIME_SCHEMA_VERSION, QMP_HOT_FORK_COMMAND,
@@ -96,6 +97,7 @@ pub use hot_fork::{
     QmpHotForkBlockSnapshotBinding, QmpHotForkBlockSnapshotBindingError,
     QmpHotForkBlockSnapshotRoot, QmpHotForkBlockSourceProof, QmpHotForkBottomHalf,
     QmpHotForkBottomHalfInventory, QmpHotForkChildConsoleState, QmpHotForkChildDiagnosticState,
+    QmpHotForkChildFile, QmpHotForkChildFileRoot, QmpHotForkChildFilesState,
     QmpHotForkChildProcessContractIdentity, QmpHotForkChildProcessContractState,
     QmpHotForkChildProcessPhase, QmpHotForkChildProcessState, QmpHotForkChildQmpState,
     QmpHotForkChildRuntimePhase, QmpHotForkChildRuntimeState, QmpHotForkMonitorInventory,
@@ -1631,6 +1633,94 @@ where
         Ok(state)
     }
 
+    /// Stages the one-shot child-private native file plan for a future hot fork.
+    ///
+    /// Every destination descriptor must already be imported with
+    /// [`Self::install_descriptor`] under its file's name. QEMU independently
+    /// authenticates each destination before retaining duplicates.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the list or budget is unbounded, QEMU rejects
+    /// the plan, the exchange fails, or the returned state does not echo the
+    /// exact staged list.
+    pub fn stage_hot_fork_child_files(
+        &mut self,
+        files: &[QmpHotForkChildFile],
+        maximum_bytes: u64,
+    ) -> Result<QmpHotForkChildFilesState, QmpError> {
+        if files.is_empty()
+            || files.len() > QMP_HOT_FORK_CHILD_FILES_MAX
+            || maximum_bytes == 0
+            || maximum_bytes == u64::MAX
+        {
+            return Err(QmpError::InvalidHotForkChildFiles);
+        }
+        let response = self.send_command_return(QmpCommand::HotForkChildFiles {
+            action: HotForkChildFilesAction::Stage,
+            files: Some(files),
+            maximum_bytes: Some(maximum_bytes),
+            expected_generation: None,
+        })?;
+        let state = parse_hot_fork_child_files_state(&response.value)?;
+        if !state.staged()
+            || state.consumed()
+            || state.maximum_bytes() != maximum_bytes
+            || state.files() != files
+        {
+            return Err(QmpError::MalformedTypedResponse {
+                command: QmpCommandKind::HotForkChildFiles,
+                response: response.value.to_string(),
+            });
+        }
+        Ok(state)
+    }
+
+    /// Observes the staged one-shot child-private file plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the exchange fails or QEMU returns a malformed
+    /// plan state.
+    pub fn query_hot_fork_child_files(&mut self) -> Result<QmpHotForkChildFilesState, QmpError> {
+        let response = self.send_command_return(QmpCommand::HotForkChildFiles {
+            action: HotForkChildFilesAction::Query,
+            files: None,
+            maximum_bytes: None,
+            expected_generation: None,
+        })?;
+        parse_hot_fork_child_files_state(&response.value)
+    }
+
+    /// Releases the exact retained child-private file plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the generation differs, a fork is active, the
+    /// exchange fails, or the released-state postcondition is malformed.
+    pub fn release_hot_fork_child_files(
+        &mut self,
+        generation: u64,
+    ) -> Result<QmpHotForkChildFilesState, QmpError> {
+        if generation == 0 {
+            return Err(QmpError::InvalidHotForkChildFiles);
+        }
+        let response = self.send_command_return(QmpCommand::HotForkChildFiles {
+            action: HotForkChildFilesAction::Release,
+            files: None,
+            maximum_bytes: None,
+            expected_generation: Some(generation),
+        })?;
+        let state = parse_hot_fork_child_files_state(&response.value)?;
+        if state.staged() || state.consumed() || state.generation() != generation {
+            return Err(QmpError::MalformedTypedResponse {
+                command: QmpCommandKind::HotForkChildFiles,
+                response: response.value.to_string(),
+            });
+        }
+        Ok(state)
+    }
+
     fn hot_fork_child_process(
         &mut self,
         action: HotForkChildProcessAction,
@@ -2485,6 +2575,8 @@ pub enum QmpCommandKind {
     HotForkChildProcess,
     /// One-shot target cgroup and cancellation contract operation.
     HotForkChildProcessContract,
+    /// One-shot child-private native file plan operation.
+    HotForkChildFiles,
     /// QEMU-owned branch-private ring descriptor retention operation.
     HotForkPrivateRings,
     /// QEMU-owned branch-private plugin endpoint retention operation.
@@ -2547,6 +2639,7 @@ impl QmpCommandKind {
             Self::HotFork => QMP_HOT_FORK_COMMAND,
             Self::HotForkChildProcess => QMP_HOT_FORK_CHILD_PROCESS_COMMAND,
             Self::HotForkChildProcessContract => QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_COMMAND,
+            Self::HotForkChildFiles => QMP_HOT_FORK_CHILD_FILES_COMMAND,
             Self::HotForkPrivateRings => QMP_HOT_FORK_PRIVATE_RINGS_COMMAND,
             Self::HotForkPluginEndpoints => QMP_HOT_FORK_PLUGIN_ENDPOINTS_COMMAND,
             Self::HotForkChildDiagnostics => QMP_HOT_FORK_CHILD_DIAGNOSTICS_COMMAND,
@@ -2659,13 +2752,13 @@ mod tests {
     }
 
     fn hot_fork_request() -> QmpHotForkRequest {
-        QmpHotForkRequest::for_test(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14)
+        QmpHotForkRequest::for_test(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)
     }
 
     fn hot_fork_response(qmp_generation: u64) -> String {
         json!({
             "return": {
-                "schema-version": 2,
+                "schema-version": 3,
                 "outcome": "forked",
                 "parent-status": 0,
                 "child-pid": 321,
@@ -2683,6 +2776,7 @@ mod tests {
                 "parent-process-generation": 12,
                 "child-process-generation": 13,
                 "child-process-contract-generation": 14,
+                "child-files-generation": 15,
             }
         })
         .to_string()
@@ -2735,7 +2829,52 @@ mod tests {
                     "parent-process-generation": 12,
                     "child-process-generation": 13,
                     "child-process-contract-generation": 14,
+                    "child-files-generation": 15,
                 },
+            })
+        );
+        let vmstate_root = QmpHotForkChildFileRoot::node_name("vmstate").expect("bounded root");
+        let vmstate_file = QmpHotForkChildFile::new(
+            vmstate_root,
+            QmpDescriptorName::new("crucible-hfork-file-v1-0000-000000000000002a")
+                .expect("valid destination name"),
+            21,
+            42,
+        )
+        .expect("nonzero destination identity");
+        assert_eq!(
+            QmpCommand::HotForkChildFiles {
+                action: HotForkChildFilesAction::Stage,
+                files: Some(std::slice::from_ref(&vmstate_file)),
+                maximum_bytes: Some(1 << 30),
+                expected_generation: None,
+            }
+            .request(),
+            json!({
+                "exec-oob": "crucible-hot-fork-child-files",
+                "arguments": {
+                    "action": "stage",
+                    "files": [{
+                        "node-name": "vmstate",
+                        "fdname": "crucible-hfork-file-v1-0000-000000000000002a",
+                        "expected-device": 21,
+                        "expected-inode": 42,
+                    }],
+                    "maximum-bytes": 1_073_741_824_u64,
+                },
+            })
+        );
+        assert_eq!(
+            QmpCommand::HotForkChildFiles {
+                action: HotForkChildFilesAction::Release,
+                files: None,
+                maximum_bytes: None,
+                expected_generation: Some(7),
+            }
+            .request(),
+            json!({
+                "exec-oob": "crucible-hot-fork-child-files",
+                "arguments": { "action": "release", "expected-generation": 7 },
             })
         );
         assert_eq!(

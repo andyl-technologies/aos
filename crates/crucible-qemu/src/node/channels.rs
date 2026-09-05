@@ -810,6 +810,58 @@ pub trait QemuQmpMachineControlChannel: Send {
         ))
     }
 
+    /// Imports every child-private destination and stages the one-shot plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when descriptor transfer fails, QEMU
+    /// rejects a destination or root, or the template generation differs.
+    #[cfg(target_os = "linux")]
+    fn install_hot_fork_child_files(
+        &mut self,
+        _files: &[crate::QmpHotForkChildFile],
+        _descriptors: &[BorrowedFd<'_>],
+        _maximum_bytes: u64,
+        _template_generation: u64,
+    ) -> Result<crate::QmpHotForkChildFilesState, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "install hot-fork child files",
+            "hot-fork child file transfer is not implemented by this QMP channel",
+        ))
+    }
+
+    /// Releases one exact QEMU-owned child-private file plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the generation differs or the
+    /// source QEMU cannot release the plan.
+    #[cfg(target_os = "linux")]
+    fn release_hot_fork_child_files(
+        &mut self,
+        _generation: u64,
+    ) -> Result<crate::QmpHotForkChildFilesState, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "release hot-fork child files",
+            "hot-fork child file release is not implemented by this QMP channel",
+        ))
+    }
+
+    /// Queries QEMU's retained child-private file plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QMP I/O or strict response
+    /// validation fails.
+    fn query_hot_fork_child_files(
+        &mut self,
+    ) -> Result<crate::QmpHotForkChildFilesState, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "query hot-fork child files",
+            "hot-fork child file query is not implemented by this QMP channel",
+        ))
+    }
+
     /// Imports one held branch-private ring descriptor into the QEMU template.
     ///
     /// # Errors

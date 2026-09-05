@@ -4,15 +4,15 @@ use serde_json::Value;
 use thiserror::Error;
 
 use super::{
-    QmpHotForkChildConsoleState, QmpHotForkChildProcessContractState, QmpHotForkChildQmpState,
-    QmpHotForkTemplateOutcome, QmpHotForkTemplateState,
+    QmpHotForkChildConsoleState, QmpHotForkChildFilesState, QmpHotForkChildProcessContractState,
+    QmpHotForkChildQmpState, QmpHotForkTemplateOutcome, QmpHotForkTemplateState,
 };
 use crate::qmp::{QmpCommandKind, QmpError};
 
 /// QMP command that forks one exact retained template.
 pub const QMP_HOT_FORK_COMMAND: &str = "crucible-hot-fork";
 /// Version of the exact retained-template fork result.
-pub const QMP_HOT_FORK_SCHEMA_VERSION: u32 = 2;
+pub const QMP_HOT_FORK_SCHEMA_VERSION: u32 = 3;
 
 /// Failure to derive a fork request from one exact prepared template basis.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
@@ -29,6 +29,9 @@ pub enum QmpHotForkRequestError {
     /// The process contract is absent, consumed, or belongs to another template.
     #[error("hot-fork child process contract does not match the prepared template")]
     ChildProcessContractBasisMismatch,
+    /// A staged child file plan is consumed or belongs to another template.
+    #[error("hot-fork child file plan does not match the prepared template")]
+    ChildFilesBasisMismatch,
 }
 
 /// Exact generation preconditions consumed by one retained-template fork.
@@ -48,6 +51,7 @@ pub struct QmpHotForkRequest {
     parent_process_generation: u64,
     child_process_generation: u64,
     child_process_contract_generation: u64,
+    child_files_generation: u64,
 }
 
 impl QmpHotForkRequest {
@@ -60,12 +64,16 @@ impl QmpHotForkRequest {
     /// # Errors
     ///
     /// Returns [`QmpHotForkRequestError`] unless both reports describe the
-    /// same complete, still-retained preparation transaction.
+    /// same complete, still-retained preparation transaction. A staged child
+    /// file plan must be unconsumed and bound to this template; an unstaged
+    /// plan contributes only its current generation, and QEMU decides whether
+    /// the frozen native graph requires one.
     pub fn from_prepared_template(
         template: &QmpHotForkTemplateState,
         child_qmp: &QmpHotForkChildQmpState,
         child_console: &QmpHotForkChildConsoleState,
         child_process_contract: &QmpHotForkChildProcessContractState,
+        child_files: &QmpHotForkChildFilesState,
     ) -> Result<Self, QmpHotForkRequestError> {
         let stage = template.resource_stage();
         let prepared = template.outcome() == QmpHotForkTemplateOutcome::Prepared
@@ -111,6 +119,12 @@ impl QmpHotForkRequest {
         if !process_contract_matches {
             return Err(QmpHotForkRequestError::ChildProcessContractBasisMismatch);
         }
+        let child_files_match = !child_files.staged()
+            || (!child_files.consumed()
+                && child_files.template_generation() == template.generation());
+        if !child_files_match {
+            return Err(QmpHotForkRequestError::ChildFilesBasisMismatch);
+        }
 
         Ok(Self {
             template_generation: template.generation(),
@@ -127,6 +141,7 @@ impl QmpHotForkRequest {
             parent_process_generation: stage.parent_process_generation(),
             child_process_generation: stage.child_process_generation(),
             child_process_contract_generation: child_process_contract.generation(),
+            child_files_generation: child_files.generation(),
         })
     }
 
@@ -148,6 +163,7 @@ impl QmpHotForkRequest {
         parent_process_generation: u64,
         child_process_generation: u64,
         child_process_contract_generation: u64,
+        child_files_generation: u64,
     ) -> Self {
         Self {
             template_generation,
@@ -164,6 +180,7 @@ impl QmpHotForkRequest {
             parent_process_generation,
             child_process_generation,
             child_process_contract_generation,
+            child_files_generation,
         }
     }
 
@@ -251,6 +268,12 @@ impl QmpHotForkRequest {
         self.child_process_contract_generation
     }
 
+    /// Returns the exact staged child-private file plan generation.
+    #[must_use]
+    pub const fn child_files_generation(self) -> u64 {
+        self.child_files_generation
+    }
+
     pub(crate) fn wire_value(self) -> Value {
         serde_json::json!({
             "template-generation": self.template_generation,
@@ -267,6 +290,7 @@ impl QmpHotForkRequest {
             "parent-process-generation": self.parent_process_generation,
             "child-process-generation": self.child_process_generation,
             "child-process-contract-generation": self.child_process_contract_generation,
+            "child-files-generation": self.child_files_generation,
         })
     }
 }
@@ -361,6 +385,7 @@ pub(crate) fn parse_hot_fork_state(
         "parent-process-generation",
         "child-process-generation",
         "child-process-contract-generation",
+        "child-files-generation",
     ];
     if object.len() != fields.len() || !fields.iter().all(|field| object.contains_key(*field)) {
         return Err(malformed());
@@ -400,6 +425,7 @@ pub(crate) fn parse_hot_fork_state(
         parent_process_generation: unsigned("parent-process-generation")?,
         child_process_generation: unsigned("child-process-generation")?,
         child_process_contract_generation: unsigned("child-process-contract-generation")?,
+        child_files_generation: unsigned("child-files-generation")?,
     };
     let outcome_valid = match outcome {
         QmpHotForkOutcome::Forked => parent_status == 0,
@@ -429,13 +455,13 @@ mod tests {
     use super::*;
 
     fn request() -> QmpHotForkRequest {
-        QmpHotForkRequest::for_test(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14)
+        QmpHotForkRequest::for_test(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)
     }
 
     #[test]
     fn response_requires_exact_echo_and_outcome_status() {
         let response = json!({
-            "schema-version": 2,
+            "schema-version": 3,
             "outcome": "forked",
             "parent-status": 0,
             "child-pid": 321,
@@ -453,6 +479,7 @@ mod tests {
             "parent-process-generation": 12,
             "child-process-generation": 13,
             "child-process-contract-generation": 14,
+            "child-files-generation": 15,
         });
         let Ok(state) = parse_hot_fork_state(&response, request()) else {
             panic!("exact hot-fork response should parse");

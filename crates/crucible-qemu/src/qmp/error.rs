@@ -14,6 +14,9 @@ pub enum QmpError {
     /// A hot-fork process contract contains a zero or unbounded identity field.
     #[error("invalid hot-fork child process contract identity")]
     InvalidHotForkChildProcessContract,
+    /// A hot-fork child file plan names an unbounded root, identity, or budget.
+    #[error("invalid hot-fork child file plan")]
+    InvalidHotForkChildFiles,
     /// Template acquisition crossed into a different retained transaction.
     #[error("hot-fork template generation changed from {expected} to {actual}")]
     HotForkTemplateGenerationChanged {

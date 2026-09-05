@@ -612,6 +612,83 @@ where
             .map_err(QemuNodeChannelError::from)
     }
 
+    /// Imports every child-private destination and stages the one-shot plan.
+    ///
+    /// Standard-QMP names are closed after QEMU has retained authenticated
+    /// duplicates; the plan remains until the fork consumes it or the caller
+    /// releases it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when any transfer, the stage, or a
+    /// monitor descriptor close fails, or the template generation differs.
+    #[cfg(target_os = "linux")]
+    pub fn install_hot_fork_child_files(
+        &mut self,
+        files: &[crate::QmpHotForkChildFile],
+        descriptors: &[BorrowedFd<'_>],
+        maximum_bytes: u64,
+        template_generation: u64,
+    ) -> Result<crate::QmpHotForkChildFilesState, QemuNodeChannelError> {
+        if files.len() != descriptors.len() {
+            return Err(QemuNodeChannelError::new(
+                "install hot-fork child files",
+                "every child file needs exactly one destination descriptor",
+            ));
+        }
+        for (file, descriptor) in files.iter().zip(descriptors) {
+            self.client
+                .install_descriptor(file.name(), *descriptor)
+                .map_err(QemuNodeChannelError::from)?;
+        }
+        let state = self
+            .client
+            .stage_hot_fork_child_files(files, maximum_bytes)
+            .map_err(QemuNodeChannelError::from)?;
+        if state.template_generation() != template_generation {
+            return Err(QemuNodeChannelError::new(
+                "install hot-fork child files",
+                "QEMU retained the child file plan for another template",
+            ));
+        }
+        for file in files.iter().rev() {
+            self.client
+                .close_descriptor(file.name())
+                .map_err(QemuNodeChannelError::from)?;
+        }
+        Ok(state)
+    }
+
+    /// Releases QEMU's exact retained child-private file plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the generation differs, a fork is
+    /// active, or the QMP exchange fails.
+    #[cfg(target_os = "linux")]
+    pub fn release_hot_fork_child_files(
+        &mut self,
+        generation: u64,
+    ) -> Result<crate::QmpHotForkChildFilesState, QemuNodeChannelError> {
+        self.client
+            .release_hot_fork_child_files(generation)
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    /// Queries QEMU's child-private file plan stage.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QMP I/O or strict response
+    /// validation fails.
+    pub fn query_hot_fork_child_files(
+        &mut self,
+    ) -> Result<crate::QmpHotForkChildFilesState, QemuNodeChannelError> {
+        self.client
+            .query_hot_fork_child_files()
+            .map_err(QemuNodeChannelError::from)
+    }
+
     /// Imports one held branch-private ring descriptor into the QEMU template.
     ///
     /// The caller retains its descriptor and mapping. This first imports a
