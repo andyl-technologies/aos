@@ -45,6 +45,7 @@ class ChromePipe:
         self.next_id = 1
         self.session_id = None
         self.requests = {}
+        self.request_order = []
         self.javascript_errors = []
         self.console_errors = []
         self.network_failures = []
@@ -233,20 +234,48 @@ class ChromePipe:
             })
         elif method == "Network.requestWillBeSent":
             request = params.get("request", {})
-            self.requests[params.get("requestId", "")] = {
-                "url": request.get("url", ""),
+            url = request.get("url", "")
+            if not self._tracks_request(url):
+                return
+            request_id = params.get("requestId", "")
+            self.requests[request_id] = {
+                "path": urllib.parse.urlsplit(url).path,
                 "method": request.get("method", ""),
                 "type": params.get("type", ""),
+                "startedAtSeconds": params.get("timestamp"),
+                "wallStartedAtSeconds": params.get("wallTime"),
             }
+            self.request_order.append(request_id)
         elif method == "Network.responseReceived":
             response = params.get("response", {})
             status = int(response.get("status", 0))
-            request = self.requests.get(params.get("requestId", ""), {})
-            if status >= 400 and self._tracks_request(request.get("url", "")):
+            request = self.requests.get(params.get("requestId", ""))
+            if request is None:
+                return
+            request["status"] = status
+            request["responseAtSeconds"] = params.get("timestamp")
+            request["headersDurationMs"] = self._duration_ms(
+                request.get("startedAtSeconds"), params.get("timestamp"))
+            if status >= 400:
                 self.network_failures.append(dict(request, status=status))
+        elif method == "Network.loadingFinished":
+            request = self.requests.get(params.get("requestId", ""))
+            if request is None:
+                return
+            request["finishedAtSeconds"] = params.get("timestamp")
+            request["durationMs"] = self._duration_ms(
+                request.get("startedAtSeconds"), params.get("timestamp"))
+            request["encodedBytes"] = int(params.get("encodedDataLength", 0))
         elif method == "Network.loadingFailed":
-            request = self.requests.get(params.get("requestId", ""), {})
-            if not params.get("canceled", False) and self._tracks_request(request.get("url", "")):
+            request = self.requests.get(params.get("requestId", ""))
+            if request is None:
+                return
+            request["finishedAtSeconds"] = params.get("timestamp")
+            request["durationMs"] = self._duration_ms(
+                request.get("startedAtSeconds"), params.get("timestamp"))
+            request["error"] = params.get("errorText", "request failed")
+            request["canceled"] = params.get("canceled", False)
+            if not params.get("canceled", False):
                 self.network_failures.append(dict(
                     request,
                     error=params.get("errorText", "request failed"),
@@ -266,6 +295,64 @@ class ChromePipe:
             "/aos.hub.v1.",
             "/-/auth/session-token",
         ))
+
+    @staticmethod
+    def _duration_ms(start, end):
+        if not isinstance(start, (int, float)) or not isinstance(end, (int, float)):
+            return None
+        return round((end - start) * 1000, 3)
+
+    def request_timing_report(self):
+        """Returns nonsecret asset and RPC timing records in request order."""
+        fields = (
+            "path",
+            "method",
+            "type",
+            "status",
+            "startedAtSeconds",
+            "wallStartedAtSeconds",
+            "responseAtSeconds",
+            "finishedAtSeconds",
+            "headersDurationMs",
+            "durationMs",
+            "encodedBytes",
+            "error",
+            "canceled",
+        )
+        return [
+            {field: request[field] for field in fields if field in request}
+            for request_id in self.request_order
+            if (request := self.requests.get(request_id)) is not None
+        ]
+
+    def request_timing_summary(self):
+        """Aggregates request counts, transfer sizes, and durations by path."""
+        groups = {}
+        for request in self.request_timing_report():
+            key = (request.get("method", ""), request.get("path", ""))
+            group = groups.setdefault(key, {
+                "method": key[0],
+                "path": key[1],
+                "count": 0,
+                "completed": 0,
+                "encodedBytes": 0,
+                "durations": [],
+            })
+            group["count"] += 1
+            group["encodedBytes"] += request.get("encodedBytes", 0)
+            duration = request.get("durationMs")
+            if duration is not None and not request.get("canceled", False):
+                group["completed"] += 1
+                group["durations"].append(duration)
+        result = []
+        for group in groups.values():
+            durations = group.pop("durations")
+            if durations:
+                group["totalDurationMs"] = round(sum(durations), 3)
+                group["meanDurationMs"] = round(sum(durations) / len(durations), 3)
+                group["maxDurationMs"] = round(max(durations), 3)
+            result.append(group)
+        return result
 
     def evaluate(self, expression):
         """Evaluates JavaScript in the page and returns a JSON-compatible value."""
@@ -320,6 +407,7 @@ class HubSettingsSmoke:
         self.visited = []
         self.screenshots = []
         self.screenshot_number = 0
+        self.mobile_navigation_checked = False
 
     def check(self, condition, description):
         if not condition:
@@ -428,6 +516,21 @@ class HubSettingsSmoke:
                 "deviceScaleFactor": scale,
                 "mobile": suffix == "narrow",
             })
+            if suffix == "narrow" and not self.mobile_navigation_checked:
+                self.wait_for(
+                    "!document.querySelector('.settings-nav-disclosure').open",
+                    "narrow settings navigation to collapse",
+                )
+                self.check(True, "narrow settings navigation starts collapsed")
+                self.check(
+                    self.click_details(".settings-nav-disclosure", True),
+                    "narrow settings navigation opens from its summary",
+                )
+                self.check(
+                    self.click_details(".settings-nav-disclosure", False),
+                    "narrow settings navigation closes from its summary",
+                )
+                self.mobile_navigation_checked = True
             time.sleep(0.1)
             capture = self.chrome.call("Page.captureScreenshot", {
                 "format": "png",
@@ -443,6 +546,38 @@ class HubSettingsSmoke:
             "deviceScaleFactor": 1,
             "mobile": False,
         })
+        self.wait_for(
+            "document.querySelector('.settings-nav-disclosure').open",
+            "desktop settings navigation to expand",
+        )
+
+    def click_details(self, selector, opened):
+        """Clicks a details summary when needed and waits for native state."""
+        selector_literal = json.dumps(selector)
+        details = self.chrome.evaluate(f"document.querySelector({selector_literal}) !== null")
+        if not details:
+            return False
+        current = self.chrome.evaluate(f"document.querySelector({selector_literal}).open")
+        if current != opened:
+            clicked = self.chrome.evaluate(f"""
+                (() => {{
+                    const summary = document.querySelector({selector_literal})
+                        .querySelector(':scope > summary');
+                    if (!summary) return false;
+                    summary.click();
+                    return true;
+                }})()
+            """)
+            if not clicked:
+                return False
+            expected = str(opened).lower()
+            self.wait_for(
+                f"document.querySelector({selector_literal}).open === {expected}",
+                f"{selector} state",
+            )
+        return self.chrome.evaluate(
+            f"document.querySelector({selector_literal}).open === {str(opened).lower()}"
+        )
 
     def toggle_details(self, selector, description):
         selector_literal = json.dumps(selector)
@@ -450,43 +585,15 @@ class HubSettingsSmoke:
         if not exists:
             self.skip(f"{description}: no matching control in this fixture")
             return False
-        self.chrome.evaluate(f"""
-            (() => {{
-                const details = document.querySelector({selector_literal});
-                details.open = true;
-                details.dispatchEvent(new Event('toggle'));
-                return details.open;
-            }})()
-        """)
         self.check(
-            self.chrome.evaluate(f"document.querySelector({selector_literal}).open"),
+            self.click_details(selector, True),
             f"{description} opens",
         )
-        self.chrome.evaluate(f"""
-            (() => {{
-                const details = document.querySelector({selector_literal});
-                details.open = false;
-                details.dispatchEvent(new Event('toggle'));
-            }})()
-        """)
         self.check(
-            not self.chrome.evaluate(f"document.querySelector({selector_literal}).open"),
+            self.click_details(selector, False),
             f"{description} closes",
         )
         return True
-
-    def set_details_open(self, selector, opened):
-        """Sets one details control's state and dispatches its lazy-load event."""
-        selector_literal = json.dumps(selector)
-        return self.chrome.evaluate(f"""
-            (() => {{
-                const details = document.querySelector({selector_literal});
-                if (!details) return false;
-                details.open = {str(opened).lower()};
-                details.dispatchEvent(new Event('toggle'));
-                return details.open === {str(opened).lower()};
-            }})()
-        """)
 
     def set_labeled_value(self, label, value):
         """Updates the form control whose visible label has the given text."""
@@ -645,7 +752,21 @@ class HubSettingsSmoke:
         self.check(registry_path is not None, "registry fixture is discoverable")
         self.navigate(registry_path)
         self.assert_settings_page("registry overview")
+        self.check(
+            self.chrome.evaluate(
+                "Array.from(document.querySelectorAll('.overview-actions a'))"
+                ".some(link => link.textContent.trim() === 'View containers')"
+            ),
+            "registry overview exposes the containers workspace",
+        )
         self.toggle_details("details.advanced-controls", "registry advanced settings")
+
+        self.navigate(registry_path + "/containers")
+        self.assert_settings_page("registry containers settings")
+        self.check(
+            self.chrome.evaluate("document.body.textContent.includes('Containers')"),
+            "registry containers workspace renders",
+        )
 
         delivery_path = registry_path + "/delivery"
         self.navigate(delivery_path)
@@ -661,7 +782,7 @@ class HubSettingsSmoke:
         guided_selector = "details.guided-workflow"
         if self.chrome.evaluate(f"document.querySelector({json.dumps(guided_selector)}) !== null"):
             self.check(
-                self.set_details_open(guided_selector, True),
+                self.click_details(guided_selector, True),
                 "guided delivery workflow opens",
             )
             self.wait_for(
@@ -673,7 +794,7 @@ class HubSettingsSmoke:
             self.review_delivery_destination()
             self.screenshot_pair("registry-delivery")
             self.check(
-                self.set_details_open(guided_selector, False),
+                self.click_details(guided_selector, False),
                 "guided delivery workflow closes",
             )
         else:
@@ -713,6 +834,8 @@ class HubSettingsSmoke:
             "javascriptErrors": self.chrome.javascript_errors,
             "consoleErrors": self.chrome.console_errors,
             "networkFailures": self.chrome.network_failures,
+            "requestTimings": self.chrome.request_timing_report(),
+            "requestTimingSummary": self.chrome.request_timing_summary(),
             "failure": str(failure) if failure is not None else None,
         }
 
