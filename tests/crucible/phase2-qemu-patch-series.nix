@@ -1385,6 +1385,13 @@
       enforces = "HFORK-4,HFORK-8,HFORK-22";
       capability = "the main-loop coordinator retires drained default-context native block workers before AIO barriers and rechecks pool absence at acknowledgement and fork; pending work, foreign-context pools, held barriers, and writable native block nodes fail closed; an actual fork fixture proves child source reads, private QCOW2 writes, and parent-source preservation after retirement, while complete source-set preparation and production child graph handoff remain open";
     }
+    {
+      file = "0199-crucible-retain-native-vmstate-source-ownership.patch";
+      catalogName = "crucible-hot-fork-native-source-ownership";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-22";
+      capability = "native source ownership includes parentless named VMState roots and authenticates exact graph edges, root consumers, and regular-file inode identities; pinned reopen rejects pathname replacement before replacing the source descriptor and frozen validation checks actual read-only file access; block teardown retires the dirty-bitmap mutex before freeing its intrusive registry storage; native tests cover VMState preservation, restoration, inherited-token rejection, foreign-owner rejection, inode replacement, and 1024 balanced mutex lifetimes, while complete coordinator source-set and child graph handoff remain open";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

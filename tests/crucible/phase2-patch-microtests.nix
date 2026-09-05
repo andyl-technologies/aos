@@ -30,6 +30,9 @@
   qemuNativeWorkerRetirement = import ./phase6-qemu-native-worker-retirement.nix {
     inherit pkgs qemuPackage;
   };
+  qemuNativeSourceOwnership = import ./phase6-qemu-native-source-ownership.nix {
+    inherit pkgs qemuPackage;
+  };
   qemuPluginFailLoud = import ./phase2-plugin-fail-loud.nix {inherit pkgs lib;};
   qemuRrQuantumIcount = import ./phase2-qemu-rr-quantum-icount.nix {inherit pkgs lib;};
   qemuDetIpi = import ./phase2-qemu-det-ipi.nix {inherit pkgs lib;};
@@ -3284,6 +3287,24 @@
           grep -Fxq 'pending_work_and_foreign_contexts_rejected=true' "$live_result"
           grep -Fxq 'held_barrier_rejected_without_wait=true' "$live_result"
           grep -Fxq 'unowned_writable_nodes_rejected=true' "$live_result"
+          grep -Fxq 'whole_world_child_handoff=false' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0199-crucible-retain-native-vmstate-source-ownership.patch";
+      check = certifyExactPatch {
+        patchName = "0199-crucible-retain-native-vmstate-source-ownership.patch";
+        liveCheck = qemuNativeSourceOwnership;
+        evidenceName = "native-vmstate-file-identity-and-mutex-lifetime";
+        liveEvidence = ''
+          grep -Fxq 'native_vmstate_freeze_restore=true' "$live_result"
+          grep -Fxq 'exact_read_only_file_identity=true' "$live_result"
+          grep -Fxq 'changed_inode_rejected_before_replacement=true' "$live_result"
+          grep -Fxq 'unexpected_root_consumer_rejected=true' "$live_result"
+          grep -Fxq 'inherited_parent_token_rejected=true' "$live_result"
+          grep -Fxq 'block_mutex_lifetime_cycles=1024' "$live_result"
+          grep -Fxq 'block_mutex_inventory_returns_to_baseline=true' "$live_result"
           grep -Fxq 'whole_world_child_handoff=false' "$live_result"
         '';
       };
