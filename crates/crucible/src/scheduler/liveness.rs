@@ -83,6 +83,7 @@ pub fn check_scheduler_liveness(
             configuration: scheduler.configuration().clone(),
             control: Vec::new(),
         };
+        let previous_frontier = scheduler.frontier();
         let outcome = scheduler.drive_quantum(request)?;
 
         match &scheduler.last_advance {
@@ -103,6 +104,7 @@ pub fn check_scheduler_liveness(
                 yielded_between_quanta &= advance.yielded_before_advance;
                 advanced_nodes.push(advance.node.clone());
             }
+            None if scheduler.frontier() > previous_frontier => {}
             None => {
                 if scheduler.last_topology_recompute {
                     continue;
@@ -377,22 +379,43 @@ impl Drop for SchedulerCriticalSection<'_> {
 pub(super) fn frontier_for(
     nodes: &[RuntimeSchedulerNode],
     shift: Shift,
+    previous_frontier: Option<VirtualTime>,
 ) -> Result<VirtualTime, SchedulerError> {
     let mut frontier = None;
+    let mut initial_inactive = None;
     for node in nodes {
+        let inactive = matches!(
+            node.activity,
+            SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done
+        );
+        if inactive && previous_frontier.is_some() {
+            continue;
+        }
         let virtual_time = if node.id.kind == SchedulingNodeKind::Vm {
             node.time_mapping.logical_time(node.counter, shift)?
         } else {
             node.counter.to_virtual(shift)?
         };
-        frontier = Some(match frontier {
+        let minimum = if inactive {
+            &mut initial_inactive
+        } else {
+            &mut frontier
+        };
+        *minimum = Some(match *minimum {
             Some(current) => min_instant(current, virtual_time),
             None => virtual_time,
         });
     }
 
     Ok(VirtualTime {
-        ticks: frontier.unwrap_or(SimInstant::EPOCH).nanos,
+        // Once a world has a committed frontier, an all-inactive transition
+        // retains it. At construction only, preserve the supplied inactive
+        // clocks' initial minimum when no live participant defines an epoch.
+        ticks: frontier
+            .map(|at| at.nanos)
+            .or(previous_frontier.map(|at| at.ticks))
+            .or(initial_inactive.map(|at| at.nanos))
+            .unwrap_or(0),
     })
 }
 

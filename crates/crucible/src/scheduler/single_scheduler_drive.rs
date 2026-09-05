@@ -465,6 +465,9 @@ impl SingleScheduler {
     }
 
     pub(super) fn reached_time_limit(&self) -> Result<bool, SchedulerError> {
+        if self.frontier.ticks >= self.time_limit.nanos {
+            return Ok(true);
+        }
         let mut saw_time_limited_state = false;
 
         for node in &self.nodes {
@@ -1195,6 +1198,9 @@ impl SingleScheduler {
         &self,
         activation_time: SimInstant,
     ) -> Result<bool, SchedulerError> {
+        if self.frontier.ticks < activation_time.nanos {
+            return Ok(false);
+        }
         for node in &self.nodes {
             if matches!(
                 node.activity,
@@ -1299,11 +1305,14 @@ impl SingleScheduler {
             .collect::<Vec<_>>();
 
         if selected_candidates.is_empty() {
+            let clock_advanced = boundary_resolved_events.is_empty()
+                && !topology_recomputed
+                && self.advance_inactive_clock();
             let at = SimInstant {
                 nanos: self.frontier.ticks,
             };
             let decisions = self.emit_quantum_decisions(&boundary_resolved_events, &[], &[], at)?;
-            let emit_boundary = !decisions.is_empty() || topology_recomputed;
+            let emit_boundary = !decisions.is_empty() || topology_recomputed || clock_advanced;
             let event_log = self.emit_quantum_event_log(
                 &boundary_resolved_events,
                 &decisions,
@@ -1316,7 +1325,7 @@ impl SingleScheduler {
                 self.configuration = configuration.clone();
                 self.quanta = self.quanta.saturating_add(1);
                 self.yield_to_control_inbox();
-            } else if topology_recomputed {
+            } else if topology_recomputed || clock_advanced {
                 self.quanta = self.quanta.saturating_add(1);
                 self.yield_to_control_inbox();
             }
@@ -1424,7 +1433,7 @@ impl SingleScheduler {
                 true,
             )?;
             let configuration = self.step_quantum(&decisions);
-            let frontier = frontier_for(&self.nodes, self.timeline.shift())?;
+            let frontier = frontier_for(&self.nodes, self.timeline.shift(), Some(self.frontier))?;
 
             self.configuration = configuration.clone();
             self.frontier = frontier;
@@ -1495,6 +1504,9 @@ impl SingleScheduler {
             Some(candidate) => candidate,
             None => {
                 // Control-only EMIT/STEP: no node RUN occurs.
+                let clock_advanced = resolved_events.is_empty()
+                    && !topology_recomputed
+                    && self.advance_inactive_clock();
                 let decisions = self.emit_quantum_decisions(
                     &resolved_events,
                     &[],
@@ -1503,7 +1515,7 @@ impl SingleScheduler {
                         nanos: self.frontier.ticks,
                     },
                 )?;
-                let emit_boundary = !decisions.is_empty() || topology_recomputed;
+                let emit_boundary = !decisions.is_empty() || topology_recomputed || clock_advanced;
                 let event_log = self.emit_quantum_event_log(
                     &resolved_events,
                     &decisions,
@@ -1519,7 +1531,7 @@ impl SingleScheduler {
                     self.quanta = self.quanta.saturating_add(1);
                     // STEP yield phase: expose the control inbox before the next PICK.
                     self.yield_to_control_inbox();
-                } else if topology_recomputed {
+                } else if topology_recomputed || clock_advanced {
                     self.quanta = self.quanta.saturating_add(1);
                     self.yield_to_control_inbox();
                 }
@@ -1587,7 +1599,7 @@ impl SingleScheduler {
         )?;
         // STEP phase: apply the emitted decisions to the frontier configuration.
         let configuration = self.step_quantum(&decisions);
-        let frontier = frontier_for(&self.nodes, self.timeline.shift())?;
+        let frontier = frontier_for(&self.nodes, self.timeline.shift(), Some(self.frontier))?;
 
         self.configuration = configuration.clone();
         self.frontier = frontier;

@@ -101,24 +101,26 @@ impl SingleScheduler {
     /// `Halted` models a powered-off VM that may later return to `Runnable`;
     /// `Done` models permanent failure. The node counter is preserved so a
     /// replacement QEMU process generation can resume the same logical timeline.
+    /// Reactivating an inactive node joins the current shared frontier without
+    /// retiring instructions; native timer deadlines retain their remaining
+    /// durations. Global deadlines and queued inputs retain their coordinates.
     ///
     /// # Errors
     ///
     /// Returns [`SchedulerError::BoundaryViolation`] when `node` does not name
-    /// exactly one VM scheduler node.
+    /// exactly one VM scheduler node or resuming a native timer would overflow.
+    /// Returns [`SchedulerError::TimeConversion`] if a node clock cannot be projected.
     pub fn set_vm_node_activity(
         &mut self,
         node: &NodeId,
         activity: SchedulerNodeActivity,
     ) -> Result<(), SchedulerError> {
         let index = self.vm_node_index(node)?;
-        self.nodes[index].activity = activity;
-        if matches!(
-            activity,
-            SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done
-        ) {
-            self.device_horizons.remove(node);
-        }
+        let delta = self.resume_time_delta(index, activity)?;
+        let frontier = self
+            .frontier_after_activity_change(|candidate| (candidate == node).then_some(activity))?;
+        self.commit_node_activity(index, activity, delta);
+        self.frontier = frontier;
         Ok(())
     }
 
@@ -130,25 +132,37 @@ impl SingleScheduler {
     ///
     /// # Errors
     ///
-    /// Returns [`SchedulerError`] when any identity is absent or is not a VM.
+    /// Returns [`SchedulerError`] when any identity is absent, repeated, or not a VM,
+    /// a node clock cannot be projected, or resuming a native timer would overflow.
     /// The scheduler is unchanged on error.
     pub fn set_vm_node_activities(
         &mut self,
         activities: &[(NodeId, SchedulerNodeActivity)],
     ) -> Result<(), SchedulerError> {
-        for (node, _) in activities {
-            let _index = self.vm_node_index(node)?;
+        for (position, (node, activity)) in activities.iter().enumerate() {
+            if activities[..position]
+                .iter()
+                .any(|(earlier, _)| earlier == node)
+            {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!("activity batch repeats node `{}`", node.name),
+                });
+            }
+            let index = self.vm_node_index(node)?;
+            self.resume_time_delta(index, *activity)?;
         }
+        let frontier = self.frontier_after_activity_change(|node| {
+            activities
+                .iter()
+                .find(|(candidate, _)| candidate == node)
+                .map(|(_, activity)| *activity)
+        })?;
         for (node, activity) in activities {
             let index = self.vm_node_index(node)?;
-            self.nodes[index].activity = *activity;
-            if matches!(
-                activity,
-                SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done
-            ) {
-                self.device_horizons.remove(node);
-            }
+            let delta = self.resume_time_delta(index, *activity)?;
+            self.commit_node_activity(index, *activity, delta);
         }
+        self.frontier = frontier;
         Ok(())
     }
 
@@ -156,25 +170,30 @@ impl SingleScheduler {
     ///
     /// # Errors
     ///
-    /// Returns [`SchedulerError`] when any identity is absent or is not a VM.
+    /// Returns [`SchedulerError`] when any identity is absent, repeated, or not a VM,
+    /// a node clock cannot be projected, or resuming a native timer would overflow.
     pub fn set_vm_nodes_activity(
         &mut self,
         nodes: &[NodeId],
         activity: SchedulerNodeActivity,
     ) -> Result<(), SchedulerError> {
-        for node in nodes {
-            let _index = self.vm_node_index(node)?;
+        for (position, node) in nodes.iter().enumerate() {
+            if nodes[..position].contains(node) {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!("activity batch repeats node `{}`", node.name),
+                });
+            }
+            let index = self.vm_node_index(node)?;
+            self.resume_time_delta(index, activity)?;
         }
+        let frontier =
+            self.frontier_after_activity_change(|node| nodes.contains(node).then_some(activity))?;
         for node in nodes {
             let index = self.vm_node_index(node)?;
-            self.nodes[index].activity = activity;
-            if matches!(
-                activity,
-                SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done
-            ) {
-                self.device_horizons.remove(node);
-            }
+            let delta = self.resume_time_delta(index, activity)?;
+            self.commit_node_activity(index, activity, delta);
         }
+        self.frontier = frontier;
         Ok(())
     }
 
