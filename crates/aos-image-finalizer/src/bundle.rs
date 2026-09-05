@@ -46,6 +46,8 @@ pub struct SealedImageArtifactsV1 {
 #[derive(Serialize)]
 #[serde(deny_unknown_fields)]
 struct ImageMetadata<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    capabilities: Option<aos_release::qualification::capabilities::ImageCapabilities>,
     schema_version: &'static str,
     assembly_digest: Sha256Digest,
     release_id: &'a str,
@@ -355,8 +357,13 @@ fn image_metadata<'a>(
     secure_boot_certificate: &Path,
 ) -> Result<ImageMetadata<'a>> {
     Ok(ImageMetadata {
-        schema_version: "aos.image.metadata/v1",
-        assembly_digest: Sha256Digest::of_canonical("aos.image.unsigned-assembly/v1", assembly)?,
+        schema_version: if prepared.capabilities.is_some() {
+            "aos.image.metadata/v2"
+        } else {
+            "aos.image.metadata/v1"
+        },
+        capabilities: prepared.capabilities.clone(),
+        assembly_digest: Sha256Digest::of_canonical(&assembly.schema_version, assembly)?,
         release_id: &assembly.release_id,
         version: &assembly.version,
         platform: assembly.platform,
