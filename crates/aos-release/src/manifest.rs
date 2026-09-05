@@ -160,7 +160,14 @@ impl ReleaseManifestV1 {
             .gates
             .iter()
             .filter(|gate| {
-                gate.required_for_stable || !plan.release_class.requires_complete_matrix()
+                if let Some(contract) = &plan.qualification {
+                    contract.requirements.iter().any(|requirement| {
+                        requirement.id == gate.policy_id
+                            && requirement.phase == crate::qualification::QualificationPhase::Build
+                    })
+                } else {
+                    gate.required_for_stable || !plan.release_class.requires_complete_matrix()
+                }
             })
             .map(|gate| (&gate.policy_id, gate.policy_digest))
             .collect();
@@ -188,6 +195,28 @@ impl ReleaseManifestV1 {
         }
         if !required_gates.is_subset(&passed_gates) {
             bail!("manifest lacks passing evidence for every selected required gate");
+        }
+        if plan.qualification.is_some() {
+            let admitted_at = self
+                .evidence
+                .iter()
+                .map(|record| record.finished_at.as_str())
+                .max()
+                .ok_or_else(|| anyhow::anyhow!("missing build evidence"))?;
+            crate::qualification_evidence::validate_observations(
+                plan,
+                self,
+                crate::qualification::QualificationPhase::Build,
+                &self.evidence,
+                admitted_at,
+            )?;
+            // Expanding staging cases also rejects absent required image/OCI
+            // subjects before signing, without demanding future staging results.
+            crate::qualification_evidence::cases(
+                plan,
+                self,
+                crate::qualification::QualificationPhase::Staging,
+            )?;
         }
         if plan.release_class.requires_complete_matrix() {
             validate_production_supply_chain(self, &artifacts)?;

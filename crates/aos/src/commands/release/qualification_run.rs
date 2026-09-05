@@ -85,50 +85,104 @@ pub(super) async fn run(args: &ReleaseQualifyRunArgs, printer: &Printer) -> Resu
     let timeout = bounded_timeout(args.executor_timeout_seconds, "executor")?;
     let platform_subjects = artifact_platform_subjects(&manifest);
 
-    let mut evidence = Vec::new();
-    let mut reports = BTreeMap::new();
-    for gate in &plan.gates {
-        for (platform, subjects) in &platform_subjects {
-            let request = QualificationExecutorRequestV1 {
-                schema_version: QUALIFICATION_EXECUTOR_REQUEST_V1.to_owned(),
+    let cases = if plan.qualification.is_some() {
+        aos_release::qualification_evidence::cases(
+            &plan,
+            &manifest.payload,
+            aos_release::qualification::QualificationPhase::Staging,
+        )?
+        .into_iter()
+        .map(Some)
+        .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let mut requests = Vec::new();
+    if plan.qualification.is_some() {
+        for case in cases.into_iter().flatten() {
+            let platform = case.platform.unwrap_or(Platform::X86_64Linux);
+            requests.push(QualificationExecutorRequestV1 {
+                schema_version: "aos.release.qualification-executor-request/v2".to_owned(),
                 registry: plan.registry.clone(),
                 release_id: plan.release_id.clone(),
                 staging_receipt_digest: staging_digest,
                 manifest_digest: summary.manifest_digest,
-                policy_id: gate.policy_id.clone(),
-                policy_digest: gate.policy_digest,
-                platform: *platform,
-                subjects: subjects.clone(),
+                policy_id: case.requirement_id.clone(),
+                policy_digest: case.policy_digest,
+                platform,
+                subjects: case.subjects.clone(),
                 objects: public_objects(
                     &plan.registry,
                     &manifest,
                     &captured.manifest_bytes,
-                    subjects,
+                    &case.subjects,
                 )?,
-                nonce: executor_nonce(&args.executor_nonce, &gate.policy_id, *platform),
-            };
-            request.validate()?;
-            let executable = executors
-                .get(platform)
-                .context("missing qualification executor")?;
-            let identity = identities
-                .get(platform)
-                .context("missing qualification executor identity")?;
-            let response = invoke_executor(executable, timeout, &request).await?;
-            verify_executor_response(&request, identity, &response)?;
-            let report_bytes = canonical::canonical_json(&response.report)?;
-            if reports
-                .insert(response.evidence.id.clone(), report_bytes)
-                .is_some()
-            {
-                bail!("qualification executor returned a duplicate evidence id");
-            }
-            evidence.push(response.evidence);
+                nonce: executor_nonce(&args.executor_nonce, &case.id, platform),
+                qualification_case: Some(case),
+            });
         }
+    } else {
+        for gate in &plan.gates {
+            for (platform, subjects) in &platform_subjects {
+                requests.push(QualificationExecutorRequestV1 {
+                    schema_version: QUALIFICATION_EXECUTOR_REQUEST_V1.to_owned(),
+                    qualification_case: None,
+                    registry: plan.registry.clone(),
+                    release_id: plan.release_id.clone(),
+                    staging_receipt_digest: staging_digest,
+                    manifest_digest: summary.manifest_digest,
+                    policy_id: gate.policy_id.clone(),
+                    policy_digest: gate.policy_digest,
+                    platform: *platform,
+                    subjects: subjects.clone(),
+                    objects: public_objects(
+                        &plan.registry,
+                        &manifest,
+                        &captured.manifest_bytes,
+                        subjects,
+                    )?,
+                    nonce: executor_nonce(&args.executor_nonce, &gate.policy_id, *platform),
+                });
+            }
+        }
+    }
+    let mut evidence = Vec::new();
+    let mut reports = BTreeMap::new();
+    for request in requests {
+        request.validate()?;
+        let executable = executors
+            .get(&request.platform)
+            .context("missing applicable qualification executor")?;
+        let identity = identities
+            .get(&request.platform)
+            .context("missing applicable executor identity")?;
+        let response = invoke_executor(executable, timeout, &request).await?;
+        verify_executor_response(&request, identity, &response)?;
+        let report_bytes = canonical::canonical_json(&response.report)?;
+        if reports
+            .insert(response.evidence.id.clone(), report_bytes)
+            .is_some()
+        {
+            bail!("qualification executor returned a duplicate evidence id");
+        }
+        evidence.push(response.evidence);
     }
     evidence.sort_by(|left, right| left.id.cmp(&right.id));
     let report = QualificationReportV1 {
-        schema_version: QUALIFICATION_REPORT_V1.to_owned(),
+        phase: plan
+            .qualification
+            .as_ref()
+            .map(|_| aos_release::qualification::QualificationPhase::Staging),
+        admitted_at: plan
+            .qualification
+            .as_ref()
+            .map(|_| args.qualified_at.clone()),
+        schema_version: if plan.qualification.is_some() {
+            "aos.release.qualification-report/v2"
+        } else {
+            QUALIFICATION_REPORT_V1
+        }
+        .to_owned(),
         staging_receipt_digest: staging_digest,
         manifest_digest: summary.manifest_digest,
         evidence,
@@ -265,11 +319,31 @@ fn verify_executor_response(
         bail!("qualification executor response does not bind its exact request");
     }
     response.evidence.validate()?;
-    let expected_id = format!("qualification/{}/{}", request.policy_id, request.platform);
+    let expected_id = request.qualification_case.as_ref().map_or_else(
+        || format!("qualification/{}/{}", request.policy_id, request.platform),
+        |case| format!("qualification/{}", case.id),
+    );
+    let expected_platform = request
+        .qualification_case
+        .as_ref()
+        .map_or(Some(request.platform), |case| case.platform);
+    if let Some(case) = &request.qualification_case {
+        if !response
+            .evidence
+            .qualification
+            .as_ref()
+            .is_some_and(|observation| {
+                case.digest()
+                    .is_ok_and(|digest| observation.case_digest == digest)
+            })
+        {
+            bail!("qualification response lacks its exact case observation");
+        }
+    }
     if response.evidence.id != expected_id
         || response.evidence.policy_id != request.policy_id
         || response.evidence.policy_digest != request.policy_digest
-        || response.evidence.platform != Some(request.platform)
+        || response.evidence.platform != expected_platform
         || response.evidence.subjects != request.subjects
         || response.evidence.result != GateResult::Passed
         || response.evidence.authority_id != identity
@@ -451,9 +525,6 @@ fn platform_map<T>(
         if result.insert(platform, parse(value)?).is_some() {
             bail!("duplicate {label} for {platform}");
         }
-    }
-    if result.keys().copied().collect::<BTreeSet<_>>() != Platform::ALL.into_iter().collect() {
-        bail!("{label} mappings must name all four canonical platforms exactly once");
     }
     Ok(result)
 }

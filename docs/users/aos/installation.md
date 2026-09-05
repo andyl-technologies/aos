@@ -1,5 +1,7 @@
 # Install an AOS image
 
+Consult the [release contract](release-contract.md) for qualified configurations. Disk-format compatibility alone does not establish hypervisor or hardware qualification.
+
 AOS is installed from a signed UEFI disk image published by an AOS Hub
 registry. There is no `aos install` command that writes a disk: installation
 means downloading a verified image, importing it into a hypervisor, or writing

@@ -4,6 +4,10 @@ This runbook owns every routine operation for the experimental hosted registry.
 The registry is public but unsupported, follows only `edge`, and may be rebuilt
 from scratch. Its signing material remains separate from `andyl/main`.
 
+Use the shared [qualification contract](qualification.md) and
+[release checklist](release-checklist.md). This runbook owns registry-specific
+identity and lifecycle operations, not a separate testing qualification process.
+
 ## Preconditions
 
 1. Use the designated maintainer machine and a clean checkout of the current

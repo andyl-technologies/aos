@@ -37,6 +37,19 @@ pub(super) fn run(args: &ReleasePlanArgs, nix: &NixRunner, printer: &Printer) ->
     let inventory: PackageInventoryV1 = serde_json::from_value(inventory_value)
         .context("decoding Nix release package inventory")?;
     inventory.validate()?;
+    let qualification: aos_release::qualification::QualificationContractV1 =
+        serde_json::from_value(nix.eval_json("releaseQualification")?)
+            .context("decoding the shared Nix qualification contract")?;
+    qualification.validate()?;
+    let expected_policy =
+        Sha256Digest::of_canonical(aos_release::qualification::CONTRACT_V1, &qualification)?;
+    if request.public_evidence_policy_digest != expected_policy
+        || request.gates != qualification.gates(request.release_class)?
+    {
+        bail!(
+            "reviewed request must select the complete shared qualification policy; inspect aos release contract"
+        );
+    }
     let mut derivations = Vec::with_capacity(Platform::ALL.len());
     for platform in Platform::ALL {
         let value =
@@ -55,7 +68,10 @@ pub(super) fn run(args: &ReleasePlanArgs, nix: &NixRunner, printer: &Printer) ->
         &request.source,
         authorization_digest,
     )?;
-    let plan = request.materialize(&inventory, &derivations, source)?;
+    let mut plan = request.materialize(&inventory, &derivations, source)?;
+    plan.schema_version = aos_release::RELEASE_PLAN_V2.to_owned();
+    plan.qualification = Some(qualification);
+    plan.validate()?;
     let bytes = canonical::to_vec(&plan)?;
     write_new_file(&args.output, &bytes)?;
 

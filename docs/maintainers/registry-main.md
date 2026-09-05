@@ -1,5 +1,7 @@
 # `andyl/main` registry runbook
 
+Use the shared [qualification contract](qualification.md) and [release checklist](release-checklist.md). Production selects stronger obligations in the same contract.
+
 `andyl/main` is the supported registry. It is a separate trust and lifecycle
 domain from `andyl/testing`; testing releases and testing roots never promote
 into it.

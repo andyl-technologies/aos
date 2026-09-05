@@ -426,6 +426,8 @@ mod tests {
             .collect();
         let plan = ReleasePlanV1 {
             schema_version: crate::RELEASE_PLAN_V1.to_owned(),
+            qualification: None,
+            qualification_predecessor: None,
             release_id: "release-2026.9.0".to_owned(),
             version: "2026.9.0".to_owned(),
             release_class: ReleaseClass::Stable,
@@ -598,6 +600,7 @@ mod tests {
             }],
             artifacts,
             evidence: vec![EvidenceRecord {
+                qualification: None,
                 id: "full-matrix-qualification".to_owned(),
                 policy_id: "full-matrix-qualification-v1".to_owned(),
                 policy_digest: digest("full-matrix-qualification-policy"),

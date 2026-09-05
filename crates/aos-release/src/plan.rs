@@ -213,6 +213,12 @@ pub struct RetentionPolicy {
 pub struct ReleasePlanV1 {
     /// Exact plan schema identifier.
     pub schema_version: String,
+    /// Shared qualification contract; required by v2, absent in archival v1 plans.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qualification: Option<crate::qualification::QualificationContractV1>,
+    /// Frozen preceding snapshot for the required update/recovery cycle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qualification_predecessor: Option<crate::qualification_evidence::QualificationPredecessor>,
     /// Immutable release identity.
     pub release_id: String,
     /// SemVer-compatible calendar release version.
@@ -255,6 +261,9 @@ pub struct ReleasePlanV1 {
 pub struct ReleasePlanRequestV1 {
     /// Exact planner-input schema identifier.
     pub schema_version: String,
+    /// Same-registry preceding snapshot, required for shared server qualification.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qualification_predecessor: Option<crate::qualification_evidence::QualificationPredecessor>,
     /// Immutable release identity.
     pub release_id: String,
     /// SemVer-compatible calendar release version.
@@ -314,6 +323,8 @@ impl ReleasePlanRequestV1 {
         }
         let plan = ReleasePlanV1 {
             schema_version: RELEASE_PLAN_V1.to_owned(),
+            qualification: None,
+            qualification_predecessor: self.qualification_predecessor,
             release_id: self.release_id,
             version: self.version,
             release_class: self.release_class,
@@ -347,8 +358,13 @@ impl ReleasePlanV1 {
     /// stable blockers, malformed gates/signers/channels, or absent mandatory
     /// signer roles.
     pub fn validate(&self) -> Result<()> {
-        if self.schema_version != RELEASE_PLAN_V1 {
+        if self.schema_version != RELEASE_PLAN_V1 && self.schema_version != crate::RELEASE_PLAN_V2 {
             bail!("unsupported release plan schema: {}", self.schema_version);
+        }
+        match (&self.qualification, self.schema_version.as_str()) {
+            (Some(contract), crate::RELEASE_PLAN_V2) => contract.validate_plan(self)?,
+            (None, RELEASE_PLAN_V1) => {}
+            _ => bail!("release plan version and qualification contract disagree"),
         }
         let registry_policy = registry_policy(&self.registry)?;
         require_identifier(&self.release_id, "release id")?;
