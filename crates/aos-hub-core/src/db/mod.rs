@@ -27827,7 +27827,11 @@ source_nar_hash = ""
     fn oci_phase5_v23_migration_upgrades_v22_and_backfills_contextual_media() {
         const OCI_UPLOAD_PUBLICATION_INDEX: usize = 26;
 
-        assert_eq!(MIGRATIONS.len(), 30, "reviewed schema version changed");
+        assert_eq!(
+            MIGRATIONS[OCI_UPLOAD_PUBLICATION_INDEX],
+            include_str!("oci_upload_publication.sql"),
+            "the fixture must stop immediately before the reviewed OCI migration"
+        );
         let connection = Connection::open_in_memory().unwrap();
         for migration in &MIGRATIONS[..OCI_UPLOAD_PUBLICATION_INDEX] {
             connection.execute_batch(migration).unwrap();
@@ -28156,7 +28160,20 @@ source_nar_hash = ""
             .unwrap()
             .get(0)
             .unwrap();
-        assert_eq!(version, 30);
+        assert_eq!(version, MIGRATIONS.len() as i64);
+        let workflow_tables: i64 = reopened
+            .backend
+            .query_opt(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'
+                   AND name IN ('delivery_workflows', 'delivery_workflow_resumptions')",
+                &[],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(workflow_tables, 2, "the latest migration must also be applied");
     }
 
     #[test]
