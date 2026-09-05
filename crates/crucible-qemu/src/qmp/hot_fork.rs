@@ -12,6 +12,7 @@ use super::{QmpCommandKind, QmpError};
 mod bh_timer_barrier;
 mod block_barrier;
 mod child_console;
+mod child_files;
 mod child_process;
 mod child_process_contract;
 mod child_qmp;
@@ -45,6 +46,12 @@ pub(crate) use child_console::parse_hot_fork_child_console_state;
 pub use child_console::{
     QMP_HOT_FORK_CHILD_CONSOLE_COMMAND, QMP_HOT_FORK_CHILD_CONSOLE_SCHEMA_VERSION,
     QmpHotForkChildConsoleState,
+};
+pub(crate) use child_files::{HotForkChildFilesAction, parse_hot_fork_child_files_state};
+pub use child_files::{
+    QMP_HOT_FORK_CHILD_FILES_COMMAND, QMP_HOT_FORK_CHILD_FILES_MAX,
+    QMP_HOT_FORK_CHILD_FILES_SCHEMA_VERSION, QmpHotForkChildFile, QmpHotForkChildFileRoot,
+    QmpHotForkChildFilesState,
 };
 pub(crate) use child_process::{HotForkChildProcessAction, parse_hot_fork_child_process_state};
 pub use child_process::{

@@ -215,6 +215,36 @@ where
     }
 
     #[cfg(target_os = "linux")]
+    fn install_hot_fork_child_files(
+        &mut self,
+        files: &[crate::QmpHotForkChildFile],
+        descriptors: &[std::os::fd::BorrowedFd<'_>],
+        maximum_bytes: u64,
+        template_generation: u64,
+    ) -> Result<crate::QmpHotForkChildFilesState, crate::QemuNodeChannelError> {
+        self.vmstate.install_hot_fork_child_files(
+            files,
+            descriptors,
+            maximum_bytes,
+            template_generation,
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    fn release_hot_fork_child_files(
+        &mut self,
+        generation: u64,
+    ) -> Result<crate::QmpHotForkChildFilesState, crate::QemuNodeChannelError> {
+        self.vmstate.release_hot_fork_child_files(generation)
+    }
+
+    fn query_hot_fork_child_files(
+        &mut self,
+    ) -> Result<crate::QmpHotForkChildFilesState, crate::QemuNodeChannelError> {
+        self.vmstate.query_hot_fork_child_files()
+    }
+
+    #[cfg(target_os = "linux")]
     fn install_hot_fork_private_ring_descriptor(
         &mut self,
         name: &crate::QmpDescriptorName,

@@ -630,6 +630,21 @@ rebinds the raw driver to the private file, restores the original access mode,
 and consumes the inherited source capability. Child raw nodes reopen through
 their descriptor, never through the parent's launch pathname.
 
+The coordinator binds that primitive through `crucible-hot-fork-child-files`,
+an out-of-band one-shot stage/query/release command shaped like the process
+contract. The host opens one empty destination per originally writable native
+root, transfers each through standard `getfd`, and stages the list with the
+root's backend name or parentless node name, the expected destination identity,
+and an aggregate byte budget. QEMU duplicates and authenticates every
+destination and binds the plan to the retained template generation.
+`crucible-hot-fork` carries the exact plan generation. Inside the main-loop
+fork transaction a nonempty frozen native graph MUST resolve every root to its
+unique originally writable leaf and prepare the plan; the pinned and prepared
+descriptors are excluded from child descriptor disposition; the immediate child
+installs the plan after block release; the parent frees its copy and marks the
+plan consumed. A plan without native roots or native roots without a plan fail
+before process creation.
+
 An active transaction acknowledges proof bit 5 exactly while the complete
 immutable-root binding and frozen-source proof are retained. The binding does not create the
 snapshot bytes, rotate a preexisting writable root, reconstruct a child block

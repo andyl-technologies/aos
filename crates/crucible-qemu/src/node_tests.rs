@@ -44,6 +44,7 @@ type SharedLog = Arc<Mutex<Vec<ChannelCall>>>;
 type SharedFaultCommands = Arc<Mutex<Vec<(FaultCommandHeaderV1, Vec<u8>)>>>;
 type SharedFaultEvents = Arc<Mutex<VecDeque<DequeuedFaultEvent>>>;
 type SharedRetainedStreamState = Arc<Mutex<Option<(crate::QmpDescriptorName, u64, u64, bool)>>>;
+type SharedChildFilesState = Arc<Mutex<Option<(Vec<crate::QmpHotForkChildFile>, u64, u64, u64)>>>;
 type SharedProcessContractState = Arc<
     Mutex<
         Option<(
@@ -145,6 +146,9 @@ enum ChannelCall {
     QmpHotForkInstallProcessContract,
     QmpHotForkReleaseProcessContract,
     QmpHotForkChildProcessContract,
+    QmpHotForkInstallChildFiles,
+    QmpHotForkReleaseChildFiles,
+    QmpHotForkChildFiles,
     HostHotForkContinuationClone,
     QmpHotFork,
     QmpTerminalLifecycle {
@@ -216,6 +220,7 @@ struct ScriptedQmpMachineControl {
     child_qmp_state: SharedRetainedStreamState,
     child_console_state: SharedRetainedStreamState,
     process_contract_state: SharedProcessContractState,
+    child_files_state: SharedChildFilesState,
     fail_descriptor_install: bool,
     fail_descriptor_close: bool,
     fail_endpoint_install: bool,
@@ -1286,7 +1291,7 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
         let mut template_query_count = self.template_query_count.lock().unwrap();
         *template_query_count += 1;
         let request = if self.mismatch_request_basis && *template_query_count > 2 {
-            crate::QmpHotForkRequest::for_test(1, 2, 1, 1, 1, 7, 1, 15, 8, 9, 10, 11, 12, 13)
+            crate::QmpHotForkRequest::for_test(1, 2, 1, 1, 1, 7, 1, 15, 8, 9, 10, 11, 12, 13, 0)
         } else {
             exact_hot_fork_request()
         };
@@ -1401,6 +1406,82 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
         Ok(crate::QmpHotForkChildProcessContractState::one_released(
             generation,
         ))
+    }
+
+    fn query_hot_fork_child_files(
+        &mut self,
+    ) -> Result<crate::QmpHotForkChildFilesState, QemuNodeChannelError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(ChannelCall::QmpHotForkChildFiles);
+        if let Some((files, maximum_bytes, generation, template_generation)) =
+            self.child_files_state.lock().unwrap().as_ref()
+        {
+            return Ok(crate::QmpHotForkChildFilesState::one_template_staged(
+                *generation,
+                *template_generation,
+                *maximum_bytes,
+                files.clone(),
+            ));
+        }
+        Ok(crate::QmpHotForkChildFilesState::one_released(0))
+    }
+
+    fn install_hot_fork_child_files(
+        &mut self,
+        files: &[crate::QmpHotForkChildFile],
+        descriptors: &[std::os::fd::BorrowedFd<'_>],
+        maximum_bytes: u64,
+        template_generation: u64,
+    ) -> Result<crate::QmpHotForkChildFilesState, QemuNodeChannelError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(ChannelCall::QmpHotForkInstallChildFiles);
+        if files.len() != descriptors.len() {
+            return Err(QemuNodeChannelError::new(
+                "install hot-fork child files",
+                "scripted child file plan received mismatched descriptors",
+            ));
+        }
+        let generation = 17;
+        *self.child_files_state.lock().unwrap() = Some((
+            files.to_vec(),
+            maximum_bytes,
+            generation,
+            template_generation,
+        ));
+        Ok(crate::QmpHotForkChildFilesState::one_template_staged(
+            generation,
+            template_generation,
+            maximum_bytes,
+            files.to_vec(),
+        ))
+    }
+
+    fn release_hot_fork_child_files(
+        &mut self,
+        generation: u64,
+    ) -> Result<crate::QmpHotForkChildFilesState, QemuNodeChannelError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(ChannelCall::QmpHotForkReleaseChildFiles);
+        let retained = self.child_files_state.lock().unwrap().take();
+        let Some((_files, _maximum_bytes, retained_generation, _template)) = retained else {
+            return Err(QemuNodeChannelError::new(
+                "release hot-fork child files",
+                "scripted child file plan is absent",
+            ));
+        };
+        if retained_generation != generation {
+            return Err(QemuNodeChannelError::new(
+                "release hot-fork child files",
+                "scripted child file plan generation changed",
+            ));
+        }
+        Ok(crate::QmpHotForkChildFilesState::one_released(generation))
     }
 
     fn hot_fork(
@@ -2216,7 +2297,7 @@ fn prepared_hot_fork_node_with_log(
 
 #[cfg(target_os = "linux")]
 fn exact_hot_fork_request() -> crate::QmpHotForkRequest {
-    crate::QmpHotForkRequest::for_test(1, 1, 1, 1, 1, 7, 1, 15, 8, 9, 10, 11, 12, 13)
+    crate::QmpHotForkRequest::for_test(1, 1, 1, 1, 1, 7, 1, 15, 8, 9, 10, 11, 12, 13, 0)
 }
 
 #[cfg(target_os = "linux")]
@@ -2488,6 +2569,7 @@ fn scripted_hot_fork_capture_node(
             child_qmp_state: Arc::new(Mutex::new(None)),
             child_console_state: Arc::new(Mutex::new(None)),
             process_contract_state: Arc::new(Mutex::new(None)),
+            child_files_state: Arc::new(Mutex::new(None)),
             fail_descriptor_install: matches!(descriptor_script, DescriptorScript::InstallFailure),
             fail_descriptor_close: matches!(descriptor_script, DescriptorScript::CloseFailure),
             fail_endpoint_install: matches!(
@@ -2645,6 +2727,7 @@ fn scripted_node_with_fault_events(
             child_qmp_state: Arc::new(Mutex::new(None)),
             child_console_state: Arc::new(Mutex::new(None)),
             process_contract_state: Arc::new(Mutex::new(None)),
+            child_files_state: Arc::new(Mutex::new(None)),
             fail_descriptor_install: false,
             fail_descriptor_close: false,
             fail_endpoint_install: false,
@@ -2748,6 +2831,7 @@ fn scripted_node_with_coverage(
             child_qmp_state: Arc::new(Mutex::new(None)),
             child_console_state: Arc::new(Mutex::new(None)),
             process_contract_state: Arc::new(Mutex::new(None)),
+            child_files_state: Arc::new(Mutex::new(None)),
             fail_descriptor_install: false,
             fail_descriptor_close: false,
             fail_endpoint_install: false,

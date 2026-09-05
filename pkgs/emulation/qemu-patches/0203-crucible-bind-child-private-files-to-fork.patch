@@ -1,0 +1,850 @@
+diff --git a/block/crucible-hot-fork-source.c b/block/crucible-hot-fork-source.c
+index 3bc5e5997..1e6b50906 100644
+--- a/block/crucible-hot-fork-source.c
++++ b/block/crucible-hot-fork-source.c
+@@ -1047,6 +1047,79 @@ out:
+     return prepared;
+ }
+ 
++bool qemu_block_hot_fork_source_set_writable_leaf(
++    const QemuBlockHotForkSourceSet *set, BlockDriverState *root,
++    BlockDriverState **leaf, Error **errp)
++{
++    QemuBlockBackendHotForkReadOnlySource *source = NULL;
++    size_t index, visit, found = 0;
++
++    GLOBAL_STATE_CODE();
++    if (!leaf) {
++        error_setg(errp, "Crucible writable leaf lookup requires a result");
++        return false;
++    }
++    *leaf = NULL;
++    if (!set || set->owner != getpid() || !root) {
++        error_setg(errp, "Crucible source set does not own the requested root");
++        return false;
++    }
++    for (index = 0; index < set->sources->len; index++) {
++        QemuBlockBackendHotForkReadOnlySource *candidate =
++            g_ptr_array_index(set->sources, index);
++
++        if (candidate->root == root) {
++            source = candidate;
++            break;
++        }
++    }
++    if (!source) {
++        error_setg(errp, "Crucible source set does not own the requested root");
++        return false;
++    }
++    if (!source_matches(source, errp)) {
++        return false;
++    }
++    for (visit = 0; visit < source->graph->len; visit++) {
++        ReadOnlySourceNode *node =
++            &g_array_index(source->graph, ReadOnlySourceNode, visit);
++
++        if (node->file_pinned && !node->file.read_only) {
++            *leaf = node->node;
++            found++;
++        }
++    }
++    if (found != 1) {
++        *leaf = NULL;
++        error_setg(errp, "Crucible source root does not own exactly one "
++                   "originally writable native leaf");
++        return false;
++    }
++    return true;
++}
++
++ssize_t qemu_block_hot_fork_child_files_descriptors(
++    const QemuBlockHotForkChildFiles *plan, int *descriptors, size_t maximum)
++{
++    size_t index, count = 0;
++
++    GLOBAL_STATE_CODE();
++    if (!plan || plan->owner != getpid() || plan->consumed || !descriptors) {
++        return -1;
++    }
++    for (index = 0; index < plan->files->len; index++) {
++        const HotForkChildFileEntry *entry =
++            &g_array_index(plan->files, HotForkChildFileEntry, index);
++
++        if (maximum - count < 2) {
++            return -1;
++        }
++        descriptors[count++] = entry->source.descriptor;
++        descriptors[count++] = entry->prepared_fd;
++    }
++    return count;
++}
++
+ QemuBlockHotForkChildFiles *qemu_block_hot_fork_child_files_prepare(
+     QemuBlockHotForkSourceSet *set, const QemuBlockHotForkChildFile *files,
+     size_t count, uint64_t maximum_bytes, Error **errp)
+diff --git a/include/system/block-backend-global-state.h b/include/system/block-backend-global-state.h
+index 072b2318b..a7d01b8ed 100644
+--- a/include/system/block-backend-global-state.h
++++ b/include/system/block-backend-global-state.h
+@@ -232,6 +232,24 @@ bool qemu_block_hot_fork_child_files_free(QemuBlockHotForkChildFiles *plan,
+ bool qemu_block_hot_fork_child_files_install(QemuBlockHotForkChildFiles *plan,
+                                             Error **errp);
+ 
++/*
++ * Resolves the unique originally writable native leaf beneath one retained
++ * root of a frozen source set. Roots with no or several such leaves and nodes
++ * that are not retained roots fail closed without effects.
++ */
++bool qemu_block_hot_fork_source_set_writable_leaf(
++    const QemuBlockHotForkSourceSet *set, BlockDriverState *root,
++    BlockDriverState **leaf, Error **errp);
++
++/*
++ * Lists every descriptor the immediate child must inherit for one prepared
++ * plan: the pinned source descriptors the inherited graph still references and
++ * the prepared replacements. Returns the count, or -1 when the plan is not
++ * this process's unconsumed plan or maximum is too small.
++ */
++ssize_t qemu_block_hot_fork_child_files_descriptors(
++    const QemuBlockHotForkChildFiles *plan, int *descriptors, size_t maximum);
++
+ /* Explicit process-local ownership, never a wire representation. */
+ typedef struct QemuBlockHotForkSourceRoot {
+     BlockBackend *backend; /* NULL only for a named, parentless native root. */
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index aeaf925a6..59baa216a 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -52,6 +52,7 @@
+ #include "qapi/qapi-commands-misc.h"
+ #include "qapi/qmp/qerror.h"
+ #include "qapi/type-helpers.h"
++#include "qapi/util.h"
+ #include "hw/mem/memory-device.h"
+ #include "hw/intc/intc.h"
+ #include "migration/misc.h"
+@@ -479,6 +480,31 @@ typedef struct CrucibleHotForkChildProcessContractStage {
+ 
+ static CrucibleHotForkChildProcessContractStage
+     crucible_hot_fork_child_process_contract_stage;
++
++/* One staged destination for the writable native leaf beneath one root. */
++typedef struct CrucibleHotForkChildFileStage {
++    char *device;
++    char *node_name;
++    char *fdname;
++    int fd;
++    uint64_t expected_device;
++    uint64_t expected_inode;
++} CrucibleHotForkChildFileStage;
++
++typedef struct CrucibleHotForkChildFilesStage {
++    bool staged;
++    bool consumed;
++    uint64_t maximum_bytes;
++    uint64_t template_generation;
++    uint64_t generation;
++    GArray *files;
++} CrucibleHotForkChildFilesStage;
++
++#define CRUCIBLE_HOT_FORK_CHILD_FILES_MAX 4096
++
++static CrucibleHotForkChildFilesStage crucible_hot_fork_child_files_stage;
++/* Prepared by the parent's fork transaction; adopted only by its child. */
++static QemuBlockHotForkChildFiles *crucible_hot_fork_child_files_plan;
+ static MonitorHotForkChildBasis crucible_hot_fork_qmp_child_basis;
+ static QemuCrucibleHotForkPluginChildReinitializer
+     crucible_hot_fork_plugin_child_reinitializer;
+@@ -515,9 +541,11 @@ typedef struct CrucibleHotForkOperation {
+     uint64_t parent_process_generation;
+     uint64_t child_process_generation;
+     uint64_t child_process_contract_generation;
++    uint64_t child_files_generation;
+     int child_process_cgroup_fd;
+     int child_process_cancellation_fd;
+     uint64_t maximum_file_bytes;
++    QemuBlockHotForkChildFiles *child_files;
+     QemuCrucibleHotForkParentIdentity parent_identity;
+     QemuCrucibleHotForkRuntimeTransaction runtime;
+     QemuCrucibleHotForkPluginChildResourcePlan plugin_resources;
+@@ -3893,6 +3921,128 @@ static int crucible_hot_fork_operation_add_excluded_fd(
+     return 0;
+ }
+ 
++static bool crucible_hot_fork_child_files_bound(void)
++{
++    CrucibleHotForkChildFilesStage *stage =
++        &crucible_hot_fork_child_files_stage;
++
++    return stage->staged && !stage->consumed &&
++        stage->template_generation == crucible_hot_fork_template_generation &&
++        stage->files && stage->files->len != 0 &&
++        stage->maximum_bytes != 0;
++}
++
++/* Drops the retained stage; close_descriptors is false only in a fork child. */
++static void crucible_hot_fork_child_files_stage_clear(bool close_descriptors)
++{
++    CrucibleHotForkChildFilesStage *stage =
++        &crucible_hot_fork_child_files_stage;
++    size_t index;
++
++    if (stage->files) {
++        for (index = 0; index < stage->files->len; index++) {
++            CrucibleHotForkChildFileStage *file = &g_array_index(
++                stage->files, CrucibleHotForkChildFileStage, index);
++
++            if (close_descriptors && file->fd >= 0) {
++                close(file->fd);
++            }
++            g_free(file->device);
++            g_free(file->node_name);
++            g_free(file->fdname);
++        }
++        g_array_free(stage->files, true);
++        stage->files = NULL;
++    }
++    stage->staged = false;
++    stage->consumed = false;
++    stage->maximum_bytes = 0;
++    stage->template_generation = 0;
++}
++
++/* Releases a plan the parent prepared but will not hand to a child. */
++static void crucible_hot_fork_discard_child_files(
++    CrucibleHotForkOperation *operation)
++{
++    Error *local_err = NULL;
++
++    if (operation->child_files &&
++        !qemu_block_hot_fork_child_files_free(operation->child_files,
++                                              &local_err)) {
++        /* A retained plan keeps source restoration fail-closed. */
++        error_free(local_err);
++    }
++    operation->child_files = NULL;
++    crucible_hot_fork_child_files_plan = NULL;
++}
++
++/*
++ * Runs on the source main loop inside the fork transaction, after every
++ * generation precondition held. Every frozen native root must resolve to one
++ * staged destination; the prepared plan's descriptors are excluded from the
++ * child's descriptor disposition so adoption can rebind them.
++ */
++static int crucible_hot_fork_prepare_child_files(
++    CrucibleHotForkOperation *operation)
++{
++    CrucibleHotForkChildFilesStage *stage =
++        &crucible_hot_fork_child_files_stage;
++    g_autofree QemuBlockHotForkChildFile *files = NULL;
++    g_autofree int *descriptors = NULL;
++    QemuBlockHotForkChildFiles *plan;
++    Error *local_err = NULL;
++    ssize_t count;
++    size_t index;
++
++    if (!crucible_hot_fork_child_files_bound() ||
++        operation->child_files_generation != stage->generation) {
++        return -ENOTSUP;
++    }
++    files = g_new0(QemuBlockHotForkChildFile, stage->files->len);
++    for (index = 0; index < stage->files->len; index++) {
++        CrucibleHotForkChildFileStage *file = &g_array_index(
++            stage->files, CrucibleHotForkChildFileStage, index);
++        BlockDriverState *root =
++            bdrv_lookup_bs(file->device, file->node_name, NULL);
++        struct stat status;
++
++        if (!root ||
++            !qemu_block_hot_fork_source_set_writable_leaf(
++                crucible_hot_fork_template_sources, root,
++                &files[index].node, NULL) ||
++            fstat(file->fd, &status) < 0 ||
++            (uint64_t)status.st_dev != file->expected_device ||
++            (uint64_t)status.st_ino != file->expected_inode) {
++            return -ENOENT;
++        }
++        files[index].descriptor = file->fd;
++    }
++    plan = qemu_block_hot_fork_child_files_prepare(
++        crucible_hot_fork_template_sources, files, stage->files->len,
++        stage->maximum_bytes, NULL);
++    if (!plan) {
++        return -EIO;
++    }
++    descriptors = g_new0(int, QEMU_CRUCIBLE_HOT_FORK_MAX_RETAINED_DESCRIPTORS);
++    count = qemu_block_hot_fork_child_files_descriptors(
++        plan, descriptors, QEMU_CRUCIBLE_HOT_FORK_MAX_RETAINED_DESCRIPTORS);
++    for (index = 0; count >= 0 && index < (size_t)count; index++) {
++        if (crucible_hot_fork_operation_add_excluded_fd(
++                operation, descriptors[index]) != 0) {
++            count = -1;
++        }
++    }
++    if (count < 0) {
++        if (!qemu_block_hot_fork_child_files_free(plan, &local_err)) {
++            error_free(local_err);
++        }
++        return -E2BIG;
++    }
++    operation->child_files = plan;
++    crucible_hot_fork_child_files_plan = plan;
++    return 0;
++}
++
+ static int crucible_hot_fork_prepare_operation(void *opaque)
+ {
+     CrucibleHotForkOperation *operation = opaque;
+@@ -3953,6 +4103,8 @@ static int crucible_hot_fork_prepare_operation(void *opaque)
+             child_plan.child_process_generation ||
+         operation->child_process_contract_generation !=
+             crucible_hot_fork_child_process_contract_stage.generation ||
++        operation->child_files_generation !=
++            crucible_hot_fork_child_files_stage.generation ||
+         !crucible_hot_fork_child_process_contract_bound() ||
+         !crucible_hot_fork_plugin_child_resource_plan_bound(plugin_barrier) ||
+         !crucible_hot_fork_diagnostic_resource_plan_bound() ||
+@@ -4047,8 +4199,17 @@ unlock:
+ 
+         if (!qemu_block_hot_fork_source_set_query(
+                 crucible_hot_fork_template_sources, &sources, NULL) ||
+-            !sources.frozen || sources.roots != 0) {
+-            /* Freezing a source does not install its child-private successor. */
++            !sources.frozen) {
++            return -ENOTSUP;
++        }
++        if (sources.roots != 0) {
++            /* Every frozen native root needs its child-private successor. */
++            result = crucible_hot_fork_prepare_child_files(operation);
++            if (result != 0) {
++                return result;
++            }
++        } else if (crucible_hot_fork_child_files_stage.staged) {
++            /* A file plan without native roots replaces nothing. */
+             return -ENOTSUP;
+         }
+     }
+@@ -4056,6 +4217,7 @@ unlock:
+     result = qemu_crucible_hot_fork_capture_parent_identity(
+         &operation->parent_identity);
+     if (result != 0) {
++        crucible_hot_fork_discard_child_files(operation);
+         return result;
+     }
+     result = qemu_crucible_hot_fork_begin_retained_runtime_transaction(
+@@ -4064,6 +4226,7 @@ unlock:
+     if (result != 0) {
+         qemu_crucible_hot_fork_release_parent_identity(
+             &operation->parent_identity);
++        crucible_hot_fork_discard_child_files(operation);
+         return result;
+     }
+     operation->prepared = true;
+@@ -4076,16 +4239,28 @@ static int crucible_hot_fork_finish_parent_operation(
+     CrucibleHotForkOperation *operation = opaque;
+     int result;
+ 
++    Error *local_err = NULL;
++    int files_result = 0;
++
+     (void)child_pid;
+     if (!operation || !operation->prepared) {
+         return -EINVAL;
+     }
++    /* The plan belongs to exactly one fork; the parent never reuses it. */
++    if (operation->child_files &&
++        !qemu_block_hot_fork_child_files_free(operation->child_files,
++                                              &local_err)) {
++        error_free(local_err);
++        files_result = -EIO;
++    }
++    operation->child_files = NULL;
++    crucible_hot_fork_child_files_plan = NULL;
+     result = qemu_crucible_hot_fork_release_parent_runtime_transaction(
+         &operation->runtime);
+     qemu_crucible_hot_fork_release_parent_identity(
+         &operation->parent_identity);
+     operation->prepared = false;
+-    return result;
++    return result != 0 ? result : files_result;
+ }
+ 
+ static int crucible_hot_fork_apply_child_process_contract(
+@@ -4189,11 +4364,21 @@ static int crucible_hot_fork_finish_child_operation(void *opaque)
+     if (result != 0) {
+         return result;
+     }
+-    if (!qemu_block_hot_fork_source_set_release_empty_child(
+-            crucible_hot_fork_template_sources, NULL)) {
++    if (crucible_hot_fork_child_files_plan) {
++        /* Adoption consumes both the inherited plan and the source set. */
++        if (!qemu_block_hot_fork_child_files_install(
++                crucible_hot_fork_child_files_plan, NULL)) {
++            return -EIO;
++        }
++        crucible_hot_fork_child_files_plan = NULL;
++        operation->child_files = NULL;
++    } else if (!qemu_block_hot_fork_source_set_release_empty_child(
++                   crucible_hot_fork_template_sources, NULL)) {
+         return -ENOTSUP;
+     }
+     crucible_hot_fork_template_sources = NULL;
++    /* Inherited destination duplicates were closed by descriptor disposition. */
++    crucible_hot_fork_child_files_stage_clear(false);
+ 
+     crucible_hot_fork_child_resource_plan = resources;
+     crucible_hot_fork_plugin_child_reinitializer =
+@@ -4233,6 +4418,7 @@ CrucibleHotForkState *qmp_crucible_hot_fork(
+     uint64_t block_barrier_generation,
+     uint64_t parent_process_generation, uint64_t child_process_generation,
+     uint64_t child_process_contract_generation,
++    uint64_t child_files_generation,
+     Error **errp)
+ {
+     CrucibleHotForkOperation operation = {
+@@ -4251,6 +4437,7 @@ CrucibleHotForkState *qmp_crucible_hot_fork(
+         .child_process_generation = child_process_generation,
+         .child_process_contract_generation =
+             child_process_contract_generation,
++        .child_files_generation = child_files_generation,
+         .child_process_cgroup_fd = -1,
+         .child_process_cancellation_fd = -1,
+         .parent_identity = { .parent_pid = -1, .parent_pidfd = -1 },
+@@ -4292,6 +4479,9 @@ CrucibleHotForkState *qmp_crucible_hot_fork(
+     g_mutex_lock(&crucible_hot_fork_template_lock);
+     if (child_pid > 0) {
+         crucible_hot_fork_child_process_contract_stage.consumed = true;
++        if (crucible_hot_fork_child_files_stage.staged) {
++            crucible_hot_fork_child_files_stage.consumed = true;
++        }
+     }
+     crucible_hot_fork_operation_active = false;
+     g_mutex_unlock(&crucible_hot_fork_template_lock);
+@@ -4302,7 +4492,7 @@ CrucibleHotForkState *qmp_crucible_hot_fork(
+     }
+ 
+     report = g_new0(CrucibleHotForkState, 1);
+-    report->schema_version = 2;
++    report->schema_version = 3;
+     report->outcome = result == 0 ?
+         CRUCIBLE_HOT_FORK_OUTCOME_FORKED :
+         CRUCIBLE_HOT_FORK_OUTCOME_PARENT_DISPOSITION_FAILED;
+@@ -4323,6 +4513,7 @@ CrucibleHotForkState *qmp_crucible_hot_fork(
+     report->child_process_generation = child_process_generation;
+     report->child_process_contract_generation =
+         child_process_contract_generation;
++    report->child_files_generation = child_files_generation;
+     return report;
+ }
+ 
+@@ -4540,6 +4731,221 @@ out:
+     return report;
+ }
+ 
++static CrucibleHotForkChildFilesState *
++crucible_hot_fork_child_files_report(void)
++{
++    CrucibleHotForkChildFilesStage *stage =
++        &crucible_hot_fork_child_files_stage;
++    CrucibleHotForkChildFilesState *report =
++        g_new0(CrucibleHotForkChildFilesState, 1);
++    CrucibleHotForkChildFileList **tail = &report->files;
++    size_t index;
++
++    report->schema_version = 1;
++    report->generation = stage->generation;
++    report->template_generation = stage->template_generation;
++    report->staged = stage->staged;
++    report->consumed = stage->consumed;
++    report->maximum_bytes = stage->maximum_bytes;
++    for (index = 0; stage->files && index < stage->files->len; index++) {
++        CrucibleHotForkChildFileStage *file = &g_array_index(
++            stage->files, CrucibleHotForkChildFileStage, index);
++        CrucibleHotForkChildFile *entry = g_new0(CrucibleHotForkChildFile, 1);
++
++        entry->device = g_strdup(file->device);
++        entry->node_name = g_strdup(file->node_name);
++        entry->fdname = g_strdup(file->fdname);
++        entry->expected_device = file->expected_device;
++        entry->expected_inode = file->expected_inode;
++        QAPI_LIST_APPEND(tail, entry);
++    }
++    return report;
++}
++
++static void crucible_hot_fork_child_file_candidates_destroy(GArray *candidates)
++{
++    size_t index;
++
++    if (!candidates) {
++        return;
++    }
++    for (index = 0; index < candidates->len; index++) {
++        CrucibleHotForkChildFileStage *file =
++            &g_array_index(candidates, CrucibleHotForkChildFileStage, index);
++
++        if (file->fd >= 0) {
++            close(file->fd);
++        }
++        g_free(file->device);
++        g_free(file->node_name);
++        g_free(file->fdname);
++    }
++    g_array_free(candidates, true);
++}
++
++static bool crucible_hot_fork_child_file_conflicts(
++    const GArray *candidates, const CrucibleHotForkChildFile *file)
++{
++    size_t index;
++
++    for (index = 0; index < candidates->len; index++) {
++        const CrucibleHotForkChildFileStage *prior =
++            &g_array_index(candidates, CrucibleHotForkChildFileStage, index);
++
++        if (strcmp(prior->fdname, file->fdname) == 0 ||
++            (prior->expected_device == file->expected_device &&
++             prior->expected_inode == file->expected_inode) ||
++            (file->device && prior->device &&
++             strcmp(prior->device, file->device) == 0) ||
++            (file->node_name && prior->node_name &&
++             strcmp(prior->node_name, file->node_name) == 0)) {
++            return true;
++        }
++    }
++    return false;
++}
++
++CrucibleHotForkChildFilesState *qmp_crucible_hot_fork_child_files(
++    CrucibleHotForkChildFilesAction action,
++    bool has_files, CrucibleHotForkChildFileList *files,
++    bool has_maximum_bytes, uint64_t maximum_bytes,
++    bool has_expected_generation, uint64_t expected_generation,
++    Error **errp)
++{
++    CrucibleHotForkChildFilesStage *stage =
++        &crucible_hot_fork_child_files_stage;
++    CrucibleHotForkChildFilesState *report = NULL;
++    CrucibleHotForkPluginBarrierState *plugin_barrier = NULL;
++    CrucibleHotForkChildFileList *entry;
++    GArray *candidates = NULL;
++    size_t count = 0;
++
++    g_mutex_lock(&crucible_hot_fork_template_lock);
++    switch (action) {
++    case CRUCIBLE_HOT_FORK_CHILD_FILES_ACTION_STAGE:
++        for (entry = has_files ? files : NULL; entry; entry = entry->next) {
++            count++;
++        }
++        if (count == 0 || count > CRUCIBLE_HOT_FORK_CHILD_FILES_MAX ||
++            !has_maximum_bytes || maximum_bytes == 0 ||
++            maximum_bytes == UINT64_MAX || has_expected_generation) {
++            error_setg(errp, "Crucible hot-fork child files require one "
++                       "bounded destination list and byte budget");
++            goto out;
++        }
++        if (!crucible_hot_fork_template_active) {
++            error_setg(errp, "Crucible hot-fork child files require an "
++                       "active retained template");
++            goto out;
++        }
++        if (crucible_hot_fork_child_active) {
++            error_setg(errp, "A Crucible hot-fork child stages no child "
++                       "file plan");
++            goto out;
++        }
++        if (!crucible_hot_fork_resource_stage_allowed(
++                &plugin_barrier, errp)) {
++            goto out;
++        }
++        if (stage->staged) {
++            error_setg(errp, "A Crucible hot-fork child file plan is "
++                       "already staged");
++            goto out;
++        }
++        if (stage->generation == UINT64_MAX) {
++            error_setg(errp, "Crucible hot-fork child file plan generation "
++                       "is exhausted");
++            goto out;
++        }
++        candidates = g_array_new(false, true,
++                                 sizeof(CrucibleHotForkChildFileStage));
++        for (entry = files; entry; entry = entry->next) {
++            CrucibleHotForkChildFile *file = entry->value;
++            CrucibleHotForkChildFileStage candidate = { .fd = -1 };
++            struct stat status;
++            int flags;
++
++            if (!file->device == !file->node_name ||
++                (file->device && !*file->device) ||
++                (file->node_name && !*file->node_name) ||
++                !crucible_hot_fork_private_ring_fd_name_valid(file->fdname) ||
++                file->expected_device == 0 || file->expected_inode == 0) {
++                error_setg(errp, "Crucible hot-fork child file requires one "
++                           "root selector, a valid descriptor name, and a "
++                           "nonzero destination identity");
++                goto out;
++            }
++            if (crucible_hot_fork_child_file_conflicts(candidates, file)) {
++                error_setg(errp, "Crucible hot-fork child files must name "
++                           "distinct roots, descriptors, and destinations");
++                goto out;
++            }
++            candidate.fd = monitor_dup_fd(monitor_cur(), file->fdname, errp);
++            if (candidate.fd < 0) {
++                goto out;
++            }
++            flags = fcntl(candidate.fd, F_GETFL);
++            if (flags < 0 || fstat(candidate.fd, &status) < 0 ||
++                !S_ISREG(status.st_mode) || status.st_nlink != 1 ||
++                status.st_size != 0 || (flags & O_ACCMODE) != O_RDWR ||
++                (flags & O_APPEND) ||
++                (uint64_t)status.st_dev != file->expected_device ||
++                (uint64_t)status.st_ino != file->expected_inode) {
++                close(candidate.fd);
++                error_setg(errp, "Crucible hot-fork child file destination "
++                           "must be an empty writable regular file with the "
++                           "expected identity");
++                goto out;
++            }
++            candidate.device = g_strdup(file->device);
++            candidate.node_name = g_strdup(file->node_name);
++            candidate.fdname = g_strdup(file->fdname);
++            candidate.expected_device = file->expected_device;
++            candidate.expected_inode = file->expected_inode;
++            g_array_append_val(candidates, candidate);
++        }
++        stage->files = candidates;
++        candidates = NULL;
++        stage->staged = true;
++        stage->consumed = false;
++        stage->maximum_bytes = maximum_bytes;
++        stage->template_generation = crucible_hot_fork_template_generation;
++        stage->generation++;
++        report = crucible_hot_fork_child_files_report();
++        break;
++    case CRUCIBLE_HOT_FORK_CHILD_FILES_ACTION_QUERY:
++        if (has_files || has_maximum_bytes || has_expected_generation) {
++            error_setg(errp, "Crucible hot-fork child files query accepts "
++                       "no plan basis");
++            goto out;
++        }
++        report = crucible_hot_fork_child_files_report();
++        break;
++    case CRUCIBLE_HOT_FORK_CHILD_FILES_ACTION_RELEASE:
++        if (has_files || has_maximum_bytes || !has_expected_generation ||
++            !stage->staged || expected_generation != stage->generation) {
++            error_setg(errp, "Crucible hot-fork child files release requires "
++                       "the exact retained plan generation");
++            goto out;
++        }
++        if (crucible_hot_fork_operation_active) {
++            error_setg(errp, "Cannot release child files during a hot-fork "
++                       "operation");
++            goto out;
++        }
++        crucible_hot_fork_child_files_stage_clear(true);
++        report = crucible_hot_fork_child_files_report();
++        break;
++    default:
++        g_assert_not_reached();
++    }
++out:
++    crucible_hot_fork_child_file_candidates_destroy(candidates);
++    g_free(plugin_barrier);
++    g_mutex_unlock(&crucible_hot_fork_template_lock);
++    return report;
++}
++
+ CrucibleHotForkChildProcessState *qmp_crucible_hot_fork_child_process(
+     CrucibleHotForkChildProcessAction action, uint64_t generation,
+     Error **errp)
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index 481811f5c..912d3fe33 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -1809,6 +1809,9 @@
+ # @child-process-contract-generation: exact one-shot target cgroup and
+ #     cancellation contract generation
+ #
++# @child-files-generation: exact one-shot child-private native file plan
++#     generation
++#
+ # Since: 10.0 (Crucible downstream extension)
+ ##
+ { 'struct': 'CrucibleHotForkState',
+@@ -1829,7 +1832,8 @@
+             'block-barrier-generation': 'uint64',
+             'parent-process-generation': 'uint64',
+             'child-process-generation': 'uint64',
+-            'child-process-contract-generation': 'uint64' } }
++            'child-process-contract-generation': 'uint64',
++            'child-files-generation': 'uint64' } }
+ 
+ ##
+ # @crucible-hot-fork:
+@@ -1870,6 +1874,9 @@
+ # @child-process-contract-generation: expected staged one-shot target process
+ #     contract generation
+ #
++# @child-files-generation: expected staged child-private native file plan
++#     generation; zero while no plan was ever staged
++#
+ # Returns: @CrucibleHotForkState after a child exists. A pre-fork failure is a
+ #     QMP error and creates no child.
+ #
+@@ -1889,7 +1896,8 @@
+             'block-barrier-generation': 'uint64',
+             'parent-process-generation': 'uint64',
+             'child-process-generation': 'uint64',
+-            'child-process-contract-generation': 'uint64' },
++            'child-process-contract-generation': 'uint64',
++            'child-files-generation': 'uint64' },
+   'returns': 'CrucibleHotForkState',
+   'allow-oob': true }
+ 
+@@ -2077,6 +2085,114 @@
+   'returns': 'CrucibleHotForkChildProcessContractState',
+   'allow-oob': true }
+ 
++##
++# @CrucibleHotForkChildFile:
++#
++# One caller-owned empty destination for the unique originally writable
++# native leaf beneath a retained source root. Exactly one of @device and
++# @node-name selects the root.
++#
++# @device: name of the retained BlockBackend whose root owns the leaf
++#
++# @node-name: node name of a parentless retained native root
++#
++# @fdname: standard-QMP name of the empty, writable, regular destination file
++#
++# @expected-device: expected destination st_dev identity
++#
++# @expected-inode: expected destination st_ino identity
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkChildFile',
++  'data': { '*device': 'str',
++            '*node-name': 'str',
++            'fdname': 'str',
++            'expected-device': 'uint64',
++            'expected-inode': 'uint64' } }
++
++##
++# @CrucibleHotForkChildFilesAction:
++#
++# @stage: duplicate and authenticate every destination for one future child
++#
++# @query: observe the retained child-private file plan
++#
++# @release: close the retained duplicates after the fork outcome is known
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'enum': 'CrucibleHotForkChildFilesAction',
++  'data': [ 'stage', 'query', 'release' ] }
++
++##
++# @CrucibleHotForkChildFilesState:
++#
++# Exact one-shot child-private native file plan for a future hot-fork child.
++# Fork preparation copies every originally writable native leaf into its
++# staged destination while the sources stay frozen; the immediate child
++# adopts those copies and independent read-only descriptors before it can
++# resume.
++#
++# @schema-version: child file plan status version, currently 1
++#
++# @generation: monotonically increasing source-QEMU plan generation
++#
++# @template-generation: exact retained template generation
++#
++# @staged: whether every destination duplicate is retained
++#
++# @consumed: whether a child was created from this one-shot plan
++#
++# @maximum-bytes: aggregate logical source-byte budget for private copies
++#
++# @files: the staged destinations in stage order
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkChildFilesState',
++  'data': { 'schema-version': 'uint32',
++            'generation': 'uint64',
++            'template-generation': 'uint64',
++            'staged': 'bool',
++            'consumed': 'bool',
++            'maximum-bytes': 'uint64',
++            'files': [ 'CrucibleHotForkChildFile' ] } }
++
++##
++# @crucible-hot-fork-child-files:
++#
++# Stages, observes, or releases the one-shot child-private native file plan.
++# Stage duplicates every destination through standard QMP `getfd`, requires
++# each to be an empty writable regular file with the expected identity, and
++# binds the plan to the retained template. Fork preparation resolves each
++# root to its unique originally writable native leaf, copies the frozen bytes,
++# and rejects a nonempty native graph without a staged plan or a staged plan
++# without native roots. Release requires the exact retained generation and is
++# rejected during a fork operation.
++#
++# @action: stage, query, or release the child file plan
++#
++# @files: complete destination list supplied only with @stage
++#
++# @maximum-bytes: nonzero aggregate source-byte budget supplied only with
++#     @stage
++#
++# @expected-generation: exact retained plan generation supplied only with
++#     @release
++#
++# Returns: @CrucibleHotForkChildFilesState
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'command': 'crucible-hot-fork-child-files',
++  'data': { 'action': 'CrucibleHotForkChildFilesAction',
++            '*files': [ 'CrucibleHotForkChildFile' ],
++            '*maximum-bytes': 'uint64',
++            '*expected-generation': 'uint64' },
++  'returns': 'CrucibleHotForkChildFilesState',
++  'allow-oob': true }
++
+ ##
+ # @CrucibleHotForkPrivateRingAction:
+ #
+diff --git a/tests/unit/test-block-backend.c b/tests/unit/test-block-backend.c
+index c045515b0..d8561eef5 100644
+--- a/tests/unit/test-block-backend.c
++++ b/tests/unit/test-block-backend.c
+@@ -1167,6 +1167,24 @@ static void test_hot_fork_child_native_files(void)
+         sources, files, G_N_ELEMENTS(files), 16 * HOT_FORK_SNAPSHOT_SIZE,
+         &error_abort);
+     g_assert_nonnull(plan);
++    {
++        BlockDriverState *leaf = NULL;
++        int descriptors[8];
++
++        /* Coordinator lookups: one writable leaf per originally writable root. */
++        g_assert_true(qemu_block_hot_fork_source_set_writable_leaf(
++            sources, fixture.roots[0].root, &leaf, &error_abort));
++        g_assert_true(leaf == fixture.roots[0].root->file->bs);
++        g_assert_false(qemu_block_hot_fork_source_set_writable_leaf(
++            sources, fixture.roots[2].root, &leaf, NULL));
++        g_assert_null(leaf);
++        g_assert_false(qemu_block_hot_fork_source_set_writable_leaf(
++            sources, fixture.roots[1].root->file->bs, &leaf, NULL));
++        g_assert_cmpint(qemu_block_hot_fork_child_files_descriptors(
++            plan, descriptors, G_N_ELEMENTS(descriptors)), ==, 6);
++        g_assert_cmpint(qemu_block_hot_fork_child_files_descriptors(
++            plan, descriptors, 5), ==, -1);
++    }
+     g_assert_false(qemu_block_hot_fork_child_files_install(plan, NULL));
+     g_assert_false(qemu_block_hot_fork_source_set_restore(sources, NULL));
+     g_assert_false(qemu_block_hot_fork_source_set_free(sources, NULL));

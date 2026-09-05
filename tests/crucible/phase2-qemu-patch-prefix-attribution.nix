@@ -883,6 +883,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0203-crucible-bind-child-private-files-to-fork.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

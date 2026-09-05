@@ -115,6 +115,7 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
                 child_qmp_state: Arc::new(Mutex::new(None)),
                 child_console_state: Arc::new(Mutex::new(None)),
                 process_contract_state: Arc::new(Mutex::new(None)),
+                child_files_state: Arc::new(Mutex::new(None)),
                 fail_descriptor_install: false,
                 fail_descriptor_close: false,
                 fail_endpoint_install: false,

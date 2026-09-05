@@ -217,7 +217,7 @@ fn hot_fork_rejects_a_foreign_private_ring_before_consuming_host_continuation()
     let mut node = sealed_hot_fork_node(DescriptorScript::Success)?;
     let mut process_owner = ScriptedHotForkChildOwner::default();
     let foreign_ring =
-        crate::QmpHotForkRequest::for_test(1, 2, 3, 4, 1, 5, 6, 7, 8, 9, 10, 11, 12, 13);
+        crate::QmpHotForkRequest::for_test(1, 2, 3, 4, 1, 5, 6, 7, 8, 9, 10, 11, 12, 13, 0);
 
     let error = node
         .fork_hot_fork_template(foreign_ring, &mut process_owner)
@@ -230,7 +230,7 @@ fn hot_fork_rejects_a_foreign_private_ring_before_consuming_host_continuation()
     assert_eq!(node.lifecycle_state(), QemuNodeLifecycleState::Running);
 
     let foreign_console =
-        crate::QmpHotForkRequest::for_test(1, 1, 3, 4, 2, 5, 6, 7, 8, 9, 10, 11, 12, 13);
+        crate::QmpHotForkRequest::for_test(1, 1, 3, 4, 2, 5, 6, 7, 8, 9, 10, 11, 12, 13, 0);
     let error = node
         .fork_hot_fork_template(foreign_console, &mut process_owner)
         .expect_err("a foreign child console must fail before the fork command");
@@ -702,6 +702,140 @@ fn hot_fork_audit_brackets_plugin_inventory_around_one_exact_child_process()
         ]
     );
 
+    node.shutdown_child()?;
+    Ok(())
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn hot_fork_child_files_stage_requires_empty_regular_destinations() -> Result<(), Box<dyn Error>> {
+    use std::io::Write as _;
+    use std::os::fd::AsFd as _;
+
+    let (mut node, log) = prepared_hot_fork_node_with_log(DescriptorScript::Success)?;
+    let directory = tempfile::tempdir()?;
+    let vmstate = std::fs::File::create(directory.path().join("vmstate.qcow2"))?;
+    let overlay = std::fs::File::create(directory.path().join("overlay.qcow2"))?;
+    let vmstate_root = crate::QmpHotForkChildFileRoot::node_name("vmstate")?;
+    let overlay_root = crate::QmpHotForkChildFileRoot::device("crucible-root0")?;
+    let destinations = [
+        crate::QemuHotForkChildFileDestination::new(&vmstate_root, vmstate.as_fd()),
+        crate::QemuHotForkChildFileDestination::new(&overlay_root, overlay.as_fd()),
+    ];
+
+    // Unbounded budgets, zero template generations, and duplicate roots are
+    // rejected before any descriptor reaches QEMU.
+    assert!(
+        node.stage_hot_fork_child_files(&destinations, 0, 1)
+            .is_err()
+    );
+    assert!(
+        node.stage_hot_fork_child_files(&destinations, 1 << 20, 0)
+            .is_err()
+    );
+    let duplicate_root = [
+        destinations[0],
+        crate::QemuHotForkChildFileDestination::new(&vmstate_root, overlay.as_fd()),
+    ];
+    assert!(
+        node.stage_hot_fork_child_files(&duplicate_root, 1 << 20, 1)
+            .is_err()
+    );
+    assert!(node.hot_fork_child_files_stage().is_none());
+    assert_eq!(node.lifecycle_state(), QemuNodeLifecycleState::Running);
+
+    let proof = node.stage_hot_fork_child_files(&destinations, 1 << 20, 1)?;
+    assert_eq!(proof.generation(), 17);
+    assert_eq!(proof.template_generation(), 1);
+    assert_eq!(proof.maximum_bytes(), 1 << 20);
+    assert_eq!(proof.file_count(), 2);
+    assert!(!proof.consumed());
+    assert!(
+        node.stage_hot_fork_child_files(&destinations, 1 << 20, 1)
+            .is_err()
+    );
+
+    let released = node.release_hot_fork_child_files()?;
+    assert!(!released.staged());
+    assert_eq!(released.generation(), 17);
+    assert!(node.hot_fork_child_files_stage().is_none());
+    assert!(node.release_hot_fork_child_files().is_err());
+
+    let mut nonempty = std::fs::File::create(directory.path().join("nonempty.qcow2"))?;
+    nonempty.write_all(b"x")?;
+    let nonempty_destinations = [crate::QemuHotForkChildFileDestination::new(
+        &vmstate_root,
+        nonempty.as_fd(),
+    )];
+    assert!(
+        node.stage_hot_fork_child_files(&nonempty_destinations, 1 << 20, 1)
+            .is_err()
+    );
+    assert_eq!(node.lifecycle_state(), QemuNodeLifecycleState::Running);
+
+    let calls = recorded(&log);
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| matches!(call, ChannelCall::QmpHotForkInstallChildFiles))
+            .count(),
+        1
+    );
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| matches!(call, ChannelCall::QmpHotForkReleaseChildFiles))
+            .count(),
+        1
+    );
+    node.shutdown_child()?;
+    Ok(())
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn hot_fork_consumes_the_staged_child_file_plan() -> Result<(), Box<dyn Error>> {
+    use std::os::fd::AsFd as _;
+
+    let (mut node, log) = sealed_hot_fork_node_with_log(DescriptorScript::Success)?;
+    let directory = tempfile::tempdir()?;
+    let vmstate = std::fs::File::create(directory.path().join("vmstate.qcow2"))?;
+    let vmstate_root = crate::QmpHotForkChildFileRoot::node_name("vmstate")?;
+    let destinations = [crate::QemuHotForkChildFileDestination::new(
+        &vmstate_root,
+        vmstate.as_fd(),
+    )];
+    let proof = node.stage_hot_fork_child_files(&destinations, 1 << 20, 1)?;
+    let mut process_owner = ScriptedHotForkChildOwner::default();
+
+    let launch = node.fork_prepared_hot_fork_template(&mut process_owner)?;
+
+    // The derived request carries QEMU's exact plan generation, and a
+    // successful fork consumes the node-owned stage exactly once.
+    assert_eq!(
+        launch.parent_state().request().child_files_generation(),
+        proof.generation()
+    );
+    assert!(
+        node.hot_fork_child_files_stage()
+            .is_some_and(|stage| stage.consumed())
+    );
+    let calls = recorded(&log);
+    let stage = calls
+        .iter()
+        .position(|call| matches!(call, ChannelCall::QmpHotForkInstallChildFiles))
+        .ok_or("child file stage was not recorded")?;
+    let query = calls
+        .iter()
+        .position(|call| matches!(call, ChannelCall::QmpHotForkChildFiles))
+        .ok_or("child file query was not recorded")?;
+    let fork = calls
+        .iter()
+        .position(|call| matches!(call, ChannelCall::QmpHotFork))
+        .ok_or("hot fork was not recorded")?;
+    assert!(stage < query && query < fork);
+
+    drop(launch);
     node.shutdown_child()?;
     Ok(())
 }

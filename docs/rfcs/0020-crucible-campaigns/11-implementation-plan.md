@@ -3070,6 +3070,31 @@ the parent never observes, and parent restoration afterwards. The canonical
 prepares or installs a plan yet, so physical fork still rejects nonempty native
 graphs and T-CAM-6.3 remains open.
 
+Patch 0203 binds that primitive to the fork transaction through
+`crucible-hot-fork-child-files`, an out-of-band one-shot stage/query/release
+command shaped like the process contract. Stage duplicates every destination
+from standard `getfd`, requires an empty, link-count-one, writable regular file
+with the expected identity, requires each entry to select a distinct retained
+root by backend or parentless node name, and binds the plan to the template
+generation. `crucible-hot-fork` carries `child-files-generation` (state schema
+3). Inside the main-loop fork transaction a nonempty frozen native graph
+requires the bound plan: each root resolves to its unique originally writable
+leaf, the frozen bytes are copied, the pinned and prepared descriptors are
+excluded from child descriptor disposition, the immediate child installs the
+plan after block release, and the parent frees its copy and marks the plan
+consumed. A plan without native roots or roots without a plan fail before
+process creation. The typed Rust client stages destinations by descriptor,
+derives the plan generation into the fork request, refuses a fork whose
+node-owned plan differs from QEMU's, marks the stage consumed after a
+successful fork, and folds the plan generation into the version-3 host I/O
+continuation binding. The readiness gate proves stock rejection, the exact
+absent state, staging refusal without a template, release refusal without a
+plan, and the zero-generation fork rejection; the 203-patch package builds,
+regeneration and the source-set lifecycle flight pass, and the crucible-qemu
+suite covers destination validation, plan release, and plan consumption
+through the scripted fork. No live child has yet been forked through the
+plan, so T-CAM-6.3 remains open until the VM-hosted flight proves adoption.
+
 **Exit:** either the spike satisfies the structural and minimum-speedup targets,
 its manual lab evidence is accepted, or hot fork remains rejected and the RFC is
 revised around another measured local-COW mechanism. No optimistic partial

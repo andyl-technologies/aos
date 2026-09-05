@@ -3368,6 +3368,23 @@
         '';
       };
     }
+    {
+      patch = "0203-crucible-bind-child-private-files-to-fork.patch";
+      check = certifyExactPatch {
+        patchName = "0203-crucible-bind-child-private-files-to-fork.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "coordinator-child-file-plan-binding";
+        liveEvidence = ''
+          grep -Fxq 'patch=0203-crucible-bind-child-private-files-to-fork.patch' "$live_result"
+          grep -Fxq 'child_files_initially_absent=true' "$live_result"
+          grep -Fxq 'child_files_stage_rejects_without_template=true' "$live_result"
+          grep -Fxq 'child_files_release_rejects_unstaged=true' "$live_result"
+          grep -Fxq 'retained_template_fork_rejects_unprepared=true' "$live_result"
+          grep -Eq '^ok [0-9]+ /block-backend/hot_fork_child_native_files$' \
+            ${qemuSourceSetLifecycle}/block-backend-tests.tap
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =

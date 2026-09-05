@@ -270,6 +270,8 @@ impl QemuHotForkSchedulerNodeContinuation {
             hot_fork_child_qmp_stage: None,
             hot_fork_child_console_stage: None,
             hot_fork_child_process_contract_stage: None,
+            #[cfg(target_os = "linux")]
+            hot_fork_child_files_stage: None,
             hot_fork_plugin_endpoint_stage: None,
             _hot_fork_scheduler_authority: Some(authority),
             lifecycle_state: QemuNodeLifecycleState::Running,

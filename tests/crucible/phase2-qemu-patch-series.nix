@@ -1413,6 +1413,13 @@
       enforces = "HFORK-9,HFORK-22";
       capability = "a frozen source set prepares one bounded child file plan in the parent: every originally writable native leaf receives an exact private copy in a caller-supplied empty destination (reflink when available, sparse copy otherwise) and every read-only leaf an independent read-only descriptor, with aliasing, byte-budget, and identity checks; the immediate child adopts the plan outside block barriers after native worker retirement, rebinds file locks on independent open descriptions, restores original access against the private files, never reopens parent launch pathnames, and consumes its inherited source capability; native tests cover rejection before freeze, budget, aliasing, foreign nodes, parent-side installation refusal, child adoption, private writes invisible to the parent, and reopen through the private inode; coordinator binding and whole-world execution remain open";
     }
+    {
+      file = "0203-crucible-bind-child-private-files-to-fork.patch";
+      catalogName = "crucible-hot-fork-child-files";
+      class = "F";
+      enforces = "HFORK-9,HFORK-22";
+      capability = "a versioned out-of-band QMP command stages, queries, and releases one one-shot child-private file plan bound to the retained template: every destination is duplicated from standard getfd, must be an empty writable regular file with the expected identity, and must name a distinct root by backend or node name; the fork transaction requires the exact plan generation, resolves each frozen root to its unique originally writable leaf on the main loop, copies the frozen bytes, excludes the pinned and prepared descriptors from child descriptor disposition, installs the plan in the immediate child after block release, frees it in the parent, and consumes the plan generation; nonempty native graphs without a plan and plans without native roots fail before process creation; the readiness gate covers stock rejection, exact absent state, stage without a template, and release without a plan";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

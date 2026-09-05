@@ -60,6 +60,9 @@ mod fault_events;
 #[path = "node/hot_fork_child_console.rs"]
 mod hot_fork_child_console;
 #[cfg(target_os = "linux")]
+#[path = "node/hot_fork_child_files.rs"]
+mod hot_fork_child_files;
+#[cfg(target_os = "linux")]
 #[path = "node/hot_fork_child_qmp.rs"]
 mod hot_fork_child_qmp;
 #[cfg(target_os = "linux")]
@@ -95,6 +98,10 @@ pub use hot_fork_child_console::{
     QemuHotForkChildConsoleObservation, QemuHotForkChildConsoleStageError,
     QemuHotForkChildConsoleStageProof, QemuHotForkChildConsoleStageState,
 };
+#[cfg(target_os = "linux")]
+use hot_fork_child_files::QemuHotForkChildFilesStage;
+#[cfg(target_os = "linux")]
+pub use hot_fork_child_files::{QemuHotForkChildFileDestination, QemuHotForkChildFilesStageProof};
 #[cfg(target_os = "linux")]
 use hot_fork_child_qmp::QemuHotForkChildQmpStage;
 #[cfg(target_os = "linux")]
@@ -489,6 +496,8 @@ pub struct QemuNode {
     #[cfg(target_os = "linux")]
     hot_fork_child_process_contract_stage: Option<QemuHotForkChildProcessContractStage>,
     #[cfg(target_os = "linux")]
+    hot_fork_child_files_stage: Option<QemuHotForkChildFilesStage>,
+    #[cfg(target_os = "linux")]
     hot_fork_plugin_endpoint_stage: Option<QemuHotForkPluginEndpointStage>,
     #[cfg(target_os = "linux")]
     _hot_fork_scheduler_authority: Option<QemuHotForkInstalledNodeAuthority>,
@@ -690,6 +699,8 @@ impl QemuNode {
             hot_fork_child_console_stage: None,
             #[cfg(target_os = "linux")]
             hot_fork_child_process_contract_stage: None,
+            #[cfg(target_os = "linux")]
+            hot_fork_child_files_stage: None,
             #[cfg(target_os = "linux")]
             hot_fork_plugin_endpoint_stage: None,
             #[cfg(target_os = "linux")]

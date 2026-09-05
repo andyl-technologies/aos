@@ -3742,6 +3742,37 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   QEMU-private; nothing crosses QMP or the shared-memory protocol.
 - **Risk:** F.
 
+### crucible-hot-fork-child-files — bind child-private files to the fork transaction
+
+- **Patch:** `0203-crucible-bind-child-private-files-to-fork.patch`.
+- **Enforces:** [HFORK-9], [HFORK-22].
+- **Mechanism:** `crucible-hot-fork-child-files` is an out-of-band,
+  action-driven command like the process contract. Stage duplicates every
+  destination from standard `getfd`, requires an empty, link-count-one,
+  writable regular file with the expected device/inode, requires each entry to
+  select a distinct retained root by backend name or parentless node name, and
+  binds the plan to the current template generation. Query reports the exact
+  plan; release requires the exact generation and is rejected during a fork
+  operation. `crucible-hot-fork` gains `child-files-generation` (state schema
+  3). Inside the main-loop fork transaction, after every generation and
+  quiescence precondition holds, a nonempty frozen native graph requires the
+  bound plan: each root resolves to its unique originally writable native
+  leaf, the frozen bytes are copied into the staged destinations, and the
+  pinned source and prepared descriptors are excluded from child descriptor
+  disposition. The immediate child installs the plan after block release and
+  before QMP activation; the parent frees its copy and marks the plan
+  consumed. A staged plan with no native roots, and native roots without a
+  plan, fail before process creation.
+- **Micro-test:** the readiness gate proves stock QEMU rejects the command,
+  the patched initial state is exactly absent, staging fails without a
+  retained template, release fails without a plan, and the zero-generation
+  fork still fails closed. The block-backend case covers the leaf lookup and
+  descriptor listing that the coordinator consumes.
+- **Inertness:** the command is rejected outside a retained template; an
+  absent plan leaves the existing empty-graph fork path unchanged except for
+  the additional required generation argument.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.

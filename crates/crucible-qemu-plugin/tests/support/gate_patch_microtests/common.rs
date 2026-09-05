@@ -216,6 +216,7 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0200-crucible-retain-complete-native-source-sets.patch",
     "0201-crucible-freeze-retained-template-native-sources.patch",
     "0202-crucible-adopt-child-private-native-files.patch",
+    "0203-crucible-bind-child-private-files-to-fork.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each
