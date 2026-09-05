@@ -646,9 +646,15 @@ pub async fn packages(
         return Rendered::NotFound;
     };
     let session = session_indicator(svc, headers).await;
-    Rendered::Html(
-        package_index_html(svc, &registry, status.as_ref(), query, started, &session).await,
+    package_index_html(
+        &svc.db,
+        &registry,
+        status.as_ref(),
+        query,
+        started,
+        &session,
     )
+    .await
 }
 
 /// The signed system-image catalog and direct-download page.
@@ -952,13 +958,13 @@ pub async fn container_manifest(
 
 /// Render the package index for one registry from the parsed query.
 async fn package_index_html(
-    svc: &RpcService,
+    db: &crate::db::Database,
     registry: &RegistryRecord,
     status: Option<&IndexStatus>,
     query: &BrowseQuery,
     started: Instant,
     session: &SessionIndicator,
-) -> String {
+) -> Rendered {
     use crate::db::PackageRow;
     use crate::filter::{version_key, Filter};
 
@@ -967,24 +973,32 @@ async fn package_index_html(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    let releases = svc.db.list_releases(registry.id).await.unwrap_or_default();
-    let snapshots = releases
-        .iter()
-        .map(|release| (release.semver.clone(), release.commit_oid.clone()))
-        .collect::<Vec<_>>();
-    let (all, truncated) = if let Some(snapshot) = snapshot {
-        (
-            svc.db
-                .list_packages_at_release(registry.id, snapshot)
-                .await
-                .unwrap_or_default(),
-            false,
-        )
-    } else {
-        svc.db
-            .list_packages_capped(registry.id, MAX_BROWSE_PACKAGES)
+    let Ok(snapshots) = db.list_complete_package_snapshots(registry.id).await else {
+        return Rendered::ServiceUnavailable;
+    };
+    if snapshot.is_some_and(|selection| {
+        !snapshots
+            .iter()
+            .any(|(tag, commit)| selection == tag || selection == commit)
+    }) {
+        return Rendered::Html(pages::package_snapshot_unavailable(
+            registry,
+            status,
+            snapshot.unwrap_or_default(),
+            started,
+            session,
+        ));
+    }
+    let result = if let Some(snapshot) = snapshot {
+        db.list_packages_at_release(registry.id, snapshot)
             .await
-            .unwrap_or_else(|_| (Vec::new(), false))
+            .map(|rows| (rows, false))
+    } else {
+        db.list_packages_capped(registry.id, MAX_BROWSE_PACKAGES)
+            .await
+    };
+    let Ok((all, truncated)) = result else {
+        return Rendered::ServiceUnavailable;
     };
     let total_all = all.len();
     let filter_text = query.filter();
@@ -1056,14 +1070,14 @@ async fn package_index_html(
         licenses: &licenses,
         platforms: &platforms,
     };
-    pages::package_index(
+    Rendered::Html(pages::package_index(
         registry,
         status,
         &filtered[start..end],
         &browse,
         started,
         session,
-    )
+    ))
 }
 
 /// One package's detail page (HTML), with its resolved forward/reverse closure.
@@ -2310,5 +2324,44 @@ mod package_documentation_reference_tests {
         )
         .await
         .is_err());
+    }
+}
+
+#[cfg(test)]
+mod package_index_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn unknown_snapshot_and_database_failure_are_not_empty_catalogs() {
+        let db = crate::db::Database::open_in_memory().await.unwrap();
+        db.register_registry("catalog", &[], false).await.unwrap();
+        let registry = db.registry_by_slug("catalog").await.unwrap().unwrap();
+        let session = SessionIndicator::default();
+        let query = BrowseQuery::default();
+        let Rendered::Html(empty) =
+            package_index_html(&db, &registry, None, &query, Instant::now(), &session).await
+        else {
+            panic!("empty catalog must render");
+        };
+        assert!(empty.contains("No packages have been published"));
+        let query = BrowseQuery {
+            release: Some("unknown".into()),
+            ..query
+        };
+        let Rendered::Html(missing) =
+            package_index_html(&db, &registry, None, &query, Instant::now(), &session).await
+        else {
+            panic!("missing snapshot must explain selection");
+        };
+        assert!(missing.contains("Package snapshot unavailable"));
+        assert!(!missing.contains("No packages have been published"));
+        db.backend
+            .execute("DROP TABLE release_artifact_snapshot_heads", &[])
+            .await
+            .unwrap();
+        assert!(matches!(
+            package_index_html(&db, &registry, None, &query, Instant::now(), &session).await,
+            Rendered::ServiceUnavailable
+        ));
     }
 }

@@ -553,8 +553,8 @@ mod oci_admin;
 pub use oci_admin::*;
 mod oci_gc;
 pub use oci_gc::*;
-mod placement_policy;
 mod package_documentation_reads;
+mod placement_policy;
 mod publication_admission;
 mod registry_delete;
 mod registry_index_build;
@@ -13883,6 +13883,36 @@ impl Database {
             }
         }
         Ok(packages)
+    }
+
+    /// Lists release tags and commits with a complete authenticated artifact snapshot.
+    ///
+    /// Empty snapshots remain selectable; incomplete snapshots never masquerade as
+    /// empty catalogs. Reads are scoped to the registry and current signed tag.
+    ///
+    /// # Errors
+    /// Returns an error on database failure or invalid retained row values.
+    pub async fn list_complete_package_snapshots(
+        &self,
+        registry_id: i64,
+    ) -> Result<Vec<(String, String)>> {
+        self.backend
+            .query(
+                "SELECT rel.semver, rel.commit_oid FROM releases rel
+             JOIN release_artifact_snapshot_heads head
+               ON head.release_id = rel.id AND head.registry_id = rel.registry_id
+             JOIN release_artifact_snapshots snapshot
+               ON snapshot.snapshot_id = head.complete_artifact_snapshot_id
+              AND snapshot.release_id = rel.id AND snapshot.registry_id = rel.registry_id
+              AND snapshot.state = 'complete' AND snapshot.source_commit = rel.commit_oid
+              AND snapshot.verified_tag_oid = rel.tag_oid
+             WHERE rel.registry_id = ?1 ORDER BY rel.semver",
+                &vals![registry_id],
+            )
+            .await?
+            .iter()
+            .map(|row| Ok((row.get(0)?, row.get(1)?)))
+            .collect()
     }
 
     /// Counts distinct packages in every complete verified release snapshot.
@@ -28107,7 +28137,10 @@ source_nar_hash = ""
             .unwrap()
             .get(0)
             .unwrap();
-        assert_eq!(workflow_tables, 2, "the latest migration must also be applied");
+        assert_eq!(
+            workflow_tables, 2,
+            "the latest migration must also be applied"
+        );
     }
 
     #[test]
@@ -28995,6 +29028,35 @@ source_nar_hash = ""
             .artifacts
             .iter()
             .any(|artifact| artifact.artifact_kind == "output" && artifact.store_hash == "abc"));
+        assert_eq!(
+            db.list_complete_package_snapshots(id).await.unwrap(),
+            [("1.0.0".to_string(), "c".repeat(64))]
+        );
+        assert!(db
+            .list_complete_package_snapshots(id + 1000)
+            .await
+            .unwrap()
+            .is_empty());
+        // A moved tag must not select a stale, formerly complete snapshot.
+        db.backend
+            .execute(
+                "UPDATE releases SET commit_oid = ?1 WHERE registry_id = ?2",
+                &vals!["d".repeat(64), id],
+            )
+            .await
+            .unwrap();
+        assert!(db
+            .list_complete_package_snapshots(id)
+            .await
+            .unwrap()
+            .is_empty());
+        db.backend
+            .execute(
+                "UPDATE releases SET commit_oid = ?1 WHERE registry_id = ?2",
+                &vals!["c".repeat(64), id],
+            )
+            .await
+            .unwrap();
         let release_packages = db.list_packages_at_release(id, "1.0.0").await.unwrap();
         assert_eq!(release_packages.len(), 1);
         assert_eq!(release_packages[0].name, "curl");
