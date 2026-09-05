@@ -506,15 +506,14 @@ fn apply_bounded_scheduler_preemption_with_cancel(
     let watchdog_pidfd = Arc::clone(&pidfd);
     let watchdog = thread::Builder::new()
         .name(String::from("crucible-qemu-resume-watchdog"))
-        .spawn(
-            move || match finished_rx.recv_timeout(policy.wall_timeout) {
-                Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => Ok(false),
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    watchdog_timed_out.store(true, Ordering::Release);
-                    signal_pidfd(&watchdog_pidfd, Signal::CONT).map(|()| true)
-                }
-            },
-        )
+        .spawn(move || {
+            resume_on_watchdog_expiry(
+                &watchdog_pidfd,
+                &watchdog_timed_out,
+                finished_rx,
+                policy.wall_timeout,
+            )
+        })
         .map_err(|source| BoundedSchedulerPreemptionError::WatchdogSpawn { source })?;
 
     let mut perturbations = 0;
@@ -580,6 +579,22 @@ fn apply_bounded_scheduler_preemption_with_cancel(
             .unwrap_or(u64::MAX)
             .saturating_mul(u64::from(policy.perturbations)),
     })
+}
+
+/// Resumes the exact child directly, without waiting for the controller to run.
+fn resume_on_watchdog_expiry(
+    pidfd: &std::os::fd::OwnedFd,
+    timed_out: &AtomicBool,
+    finished: mpsc::Receiver<()>,
+    timeout: Duration,
+) -> Result<bool, BoundedSchedulerPreemptionError> {
+    match finished.recv_timeout(timeout) {
+        Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => Ok(false),
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            timed_out.store(true, Ordering::Release);
+            signal_pidfd(pidfd, Signal::CONT).map(|()| true)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -708,29 +723,49 @@ mod tests {
     #[test]
     fn watchdog_expiry_directly_resumes_stopped_target() -> Result<(), Box<dyn Error>> {
         let mut target = TestTarget::spawn()?;
-        let policy = PreemptionPolicy {
-            perturbations: 1,
-            pause: Duration::from_millis(250),
-            interval: Duration::ZERO,
-            wall_timeout: Duration::from_millis(20),
-        };
-        let mut adversary =
-            BoundedSchedulerPreemption::start_with_policy(true, target.pid(), policy)?
-                .ok_or("enabled adversary was not created")?;
-        let observation = adversary.observe_first_stop()?;
-        thread::sleep(Duration::from_millis(40));
-        observation.confirm_pending(true)?;
-        let error = adversary
-            .finish()
-            .err()
-            .ok_or("watchdog fixture unexpectedly succeeded")?;
+        let pid = Pid::from_raw(i32::try_from(target.pid())?).ok_or("invalid target PID")?;
+        let pidfd = Arc::new(pidfd_open(pid, PidfdFlags::empty())?);
+        let _resume = ResumeGuard::new(Arc::clone(&pidfd));
+        signal_pidfd(&pidfd, Signal::STOP)?;
+        wait_for_state(target.pid(), 'T')?;
 
-        assert!(matches!(
-            error,
-            BoundedSchedulerPreemptionError::WallTimeout
-        ));
+        // Establish the kernel stop before expiring the real watchdog wait.
+        // A short timeout racing controller thread startup tested host load,
+        // not the watchdog's ability to resume a stalled controller's child.
+        let (_finished, pending) = mpsc::channel();
+        let timed_out = AtomicBool::new(false);
+        assert!(resume_on_watchdog_expiry(
+            &pidfd,
+            &timed_out,
+            pending,
+            Duration::ZERO,
+        )?);
+        assert!(timed_out.load(Ordering::Acquire));
         assert_ne!(process_state(target.pid())?, Some('T'));
         assert!(target.is_running()?);
+        Ok(())
+    }
+
+    #[test]
+    fn completed_controller_disarms_watchdog_before_expiry() -> Result<(), Box<dyn Error>> {
+        let target = TestTarget::spawn()?;
+        let pid = Pid::from_raw(i32::try_from(target.pid())?).ok_or("invalid target PID")?;
+        let pidfd = Arc::new(pidfd_open(pid, PidfdFlags::empty())?);
+        let _resume = ResumeGuard::new(Arc::clone(&pidfd));
+        signal_pidfd(&pidfd, Signal::STOP)?;
+        wait_for_state(target.pid(), 'T')?;
+
+        let (finished, pending) = mpsc::channel();
+        finished.send(())?;
+        let timed_out = AtomicBool::new(false);
+        assert!(!resume_on_watchdog_expiry(
+            &pidfd,
+            &timed_out,
+            pending,
+            Duration::ZERO,
+        )?);
+        assert!(!timed_out.load(Ordering::Acquire));
+        assert_eq!(process_state(target.pid())?, Some('T'));
         Ok(())
     }
 

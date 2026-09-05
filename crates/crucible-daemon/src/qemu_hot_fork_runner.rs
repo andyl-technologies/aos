@@ -446,7 +446,7 @@ fn classify_reconciliation_failure(
             | QemuHotForkAttemptReconciliationError::ChildBasisMismatch
             | QemuHotForkAttemptReconciliationError::ModeledResultWithoutAdmission
             | QemuHotForkAttemptReconciliationError::PublicationDispositionMismatch
-            | QemuHotForkAttemptReconciliationError::Backend {
+            | QemuHotForkAttemptReconciliationError::Operation {
                 operation: "drain branch-private child diagnostics"
                     | "release target process owner",
                 ..

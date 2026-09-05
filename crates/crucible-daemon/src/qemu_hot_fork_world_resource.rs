@@ -11,6 +11,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
+// crucible-lint: allow host-nondeterminism-state -- exact node generations index operational resource ownership, not scheduler decisions or guest time.
 use crucible_api::ProductionVmNodeGeneration;
 use crucible_campaign::AttemptResourceLimits;
 use crucible_qemu::QemuVmRealizationError;
