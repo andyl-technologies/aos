@@ -49,6 +49,7 @@ class ChromePipe:
         self.javascript_errors = []
         self.console_errors = []
         self.network_failures = []
+        self.paused_responses = []
 
     def start(self):
         """Starts Chrome and attaches to its initial page target."""
@@ -280,6 +281,14 @@ class ChromePipe:
                     request,
                     error=params.get("errorText", "request failed"),
                 ))
+        elif method == "Fetch.requestPaused" and "responseStatusCode" in params:
+            self.paused_responses.append({
+                "requestId": params.get("requestId", ""),
+                "path": urllib.parse.urlsplit(
+                    params.get("request", {}).get("url", "")
+                ).path,
+                "status": params.get("responseStatusCode"),
+            })
 
     @staticmethod
     def _remote_text(value):
@@ -353,6 +362,36 @@ class ChromePipe:
                 group["maxDurationMs"] = round(max(durations), 3)
             result.append(group)
         return result
+
+    def hold_response(self, path):
+        """Pauses matching responses so a test can control async completion."""
+        self.paused_responses.clear()
+        self.call("Fetch.enable", {
+            "patterns": [{
+                "urlPattern": f"*{path}",
+                "requestStage": "Response",
+            }],
+        })
+
+    def wait_for_held_response(self, path):
+        """Waits for and returns one paused response for ``path``."""
+        deadline = time.monotonic() + self.timeout
+        while time.monotonic() < deadline:
+            self.drain_events(0.05)
+            for response in self.paused_responses:
+                if response["path"] == path:
+                    return response
+            time.sleep(0.05)
+        raise AssertionError(f"timed out waiting to hold response for {path}")
+
+    def release_response(self, response):
+        """Continues a response previously paused by :meth:`hold_response`."""
+        self.call("Fetch.continueResponse", {"requestId": response["requestId"]})
+
+    def stop_holding_responses(self):
+        """Disables response interception and clears its transient state."""
+        self.call("Fetch.disable")
+        self.paused_responses.clear()
 
     def evaluate(self, expression):
         """Evaluates JavaScript in the page and returns a JSON-compatible value."""
@@ -810,6 +849,60 @@ class HubSettingsSmoke:
         )
         self.check(True, "editing the identity draft invalidates its stale review")
 
+    def exercise_inflight_plan_navigation(self):
+        """Navigates away while a settings plan response remains in flight."""
+        self.navigate("/-/instance/identity-and-signup")
+        self.assert_settings_page("instance identity cancellation fixture")
+        plan_path = "/aos.hub.v1.InstanceService/PlanSetInstanceSettings"
+        errors_before = len(self.chrome.javascript_errors)
+        held_response = None
+        self.chrome.hold_response(plan_path)
+        try:
+            clicked = self.chrome.evaluate("""
+                (() => {
+                    const button = Array.from(document.querySelectorAll('button'))
+                        .find(item => item.textContent.trim() === 'Review identity settings');
+                    if (!button || button.disabled) return false;
+                    button.click();
+                    return true;
+                })()
+            """)
+            self.check(clicked, "identity plan starts before SPA navigation")
+            held_response = self.chrome.wait_for_held_response(plan_path)
+            self.check(
+                held_response.get("status") == 200,
+                "identity plan response is held after backend completion",
+            )
+            navigated = self.chrome.evaluate("""
+                (() => {
+                    const link = document.querySelector(
+                        '.scope-header a[href="/-/instance"]'
+                    );
+                    if (!link) return false;
+                    link.click();
+                    return true;
+                })()
+            """)
+            self.check(navigated, "scope overview link works while plan response is held")
+            self.wait_for(
+                "location.pathname === '/-/instance' && "
+                "document.querySelector('.workflow-stack') !== null && "
+                "document.querySelector('.loading-row') === null",
+                "instance overview after in-flight plan navigation",
+            )
+            self.chrome.release_response(held_response)
+            held_response = None
+        finally:
+            if held_response is not None:
+                self.chrome.release_response(held_response)
+            self.chrome.stop_holding_responses()
+        self.chrome.drain_events(0.25)
+        self.check(
+            len(self.chrome.javascript_errors) == errors_before,
+            "completed plan does not update its disposed workflow",
+        )
+        self.assert_settings_page("instance overview after canceled plan continuation")
+
     def discover_path(self, pattern):
         compiled = re.compile(pattern)
         for link in self.links():
@@ -825,6 +918,7 @@ class HubSettingsSmoke:
             "persistent instance scope header rendered",
         )
         self.screenshot_pair("instance-overview")
+        self.exercise_inflight_plan_navigation()
         self.review_identity_and_invalidate()
 
         self.navigate("/-/orgs")
