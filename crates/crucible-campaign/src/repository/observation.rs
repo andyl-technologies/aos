@@ -282,7 +282,7 @@ impl CampaignRepository {
 
         let fact = CampaignFact::ObservationCredited(observation_id);
         let transition_content = self.put_fact(&fact)?;
-        let next = CampaignSnapshot::successor(
+        let next = self.budgeted_successor(
             current_id,
             current.snapshot.lineage(),
             current.snapshot.active_policy(),

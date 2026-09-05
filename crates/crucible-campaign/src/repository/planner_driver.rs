@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use super::*;
-use crate::{PlannerClient, PlannerClientError, PlannerService};
+use crate::{CampaignBudgetError, PlannerClient, PlannerClientError, PlannerService};
 
 /// Coordinator-owned driver for one configured planner component.
 pub struct CampaignPlannerDriver<S> {
@@ -19,6 +19,7 @@ pub struct CampaignPlannerDriver<S> {
     initial_state: PlannerState,
     scan_limit: u32,
     budget: PlanningBudget,
+    budget_blocked: Option<(CampaignSnapshotId, CampaignBudgetError)>,
 }
 
 impl<S> CampaignPlannerDriver<S> {
@@ -69,6 +70,7 @@ impl<S> CampaignPlannerDriver<S> {
             initial_state,
             scan_limit,
             budget,
+            budget_blocked: None,
         })
     }
 
@@ -78,6 +80,8 @@ impl<S> CampaignPlannerDriver<S> {
     /// process restart. A prior terminal result is returned without calling
     /// the component while its exact planning view remains current. Any
     /// semantic-root change starts a fresh scan from the prior portable state.
+    /// Exhausted campaign allowance returns `BudgetBlocked` and suppresses
+    /// repeated component calls until the authenticated head changes.
     ///
     /// Repository locks are not held across [`PlannerService::plan`]. A head
     /// change during that call therefore fails at ordinary snapshot acceptance
@@ -124,6 +128,31 @@ impl<S> CampaignPlannerDriver<S> {
             }
         };
 
+        if let Some((blocked_snapshot, reason)) = self.budget_blocked
+            && blocked_snapshot == snapshot
+        {
+            return Ok(CampaignPlannerStepOutcome::BudgetBlocked { snapshot, reason });
+        }
+        self.budget_blocked = None;
+
+        let loaded = self.repository.read_snapshot(snapshot.content_id())?;
+        let remaining = self.repository.project_campaign_budget(&loaded)?;
+        // Bound each batch by available funding. Keep a one-proposal probe when
+        // an allowance is empty: the planner may report NoWork, or converge on
+        // an existing attempt without spending another attempt. Acceptance is
+        // the authority for the exact unique-attempt delta.
+        let proposal_limit = u128::from(self.budget.proposals())
+            .min(remaining.remaining_proposals().max(1))
+            .min(remaining.remaining_attempts().max(1));
+        let budget = PlanningBudget::new(
+            self.budget.branch_requests(),
+            u32::try_from(proposal_limit)
+                .map_err(|_| integrity("planner-budget-proposal-limit-overflow"))?,
+            self.budget.input_objects(),
+            self.budget.input_bytes(),
+            self.budget.fuel(),
+        )
+        .map_err(CampaignRepositoryError::from)?;
         let invocation = self.repository.prepare_planner_invocation(
             campaign,
             snapshot,
@@ -132,7 +161,7 @@ impl<S> CampaignPlannerDriver<S> {
             &state,
             after,
             self.scan_limit,
-            self.budget,
+            budget,
         )?;
         let invocation_id = invocation.id().map_err(CampaignRepositoryError::from)?;
         let request = self
@@ -142,9 +171,20 @@ impl<S> CampaignPlannerDriver<S> {
             .planner
             .plan(&request)
             .map_err(CampaignPlannerDriverError::Planner)?;
-        let result = self
+        let result = match self
             .repository
-            .accept_planner_response(campaign, &request, &response)?;
+            .accept_planner_response(campaign, &request, &response)
+        {
+            Ok(result) => result,
+            Err(CampaignRepositoryError::Budget(
+                reason @ (CampaignBudgetError::ProposalAllowanceExhausted
+                | CampaignBudgetError::AttemptAllowanceExhausted),
+            )) => {
+                self.budget_blocked = Some((snapshot, reason));
+                return Ok(CampaignPlannerStepOutcome::BudgetBlocked { snapshot, reason });
+            }
+            Err(error) => return Err(error.into()),
+        };
         let accepted = self
             .repository
             .load_planner_step_at(result.new_snapshot, result.step)?;
@@ -253,6 +293,13 @@ enum PlannerResume {
 /// Result of one bounded coordinator planner step.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CampaignPlannerStepOutcome {
+    /// Proposed work needs additional campaign funding before it can advance.
+    BudgetBlocked {
+        /// Exact authenticated snapshot whose allowance is exhausted.
+        snapshot: CampaignSnapshotId,
+        /// Resource dimension that prevents acceptance.
+        reason: CampaignBudgetError,
+    },
     /// The campaign is not running, so no planner component was invoked.
     Inactive {
         /// Exact lifecycle snapshot observed by the driver.

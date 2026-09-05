@@ -116,7 +116,7 @@ impl CampaignRepository {
         roots.accounting = accounting;
         roots.coordination = self.coordination_with_parent_result(current_content, &current)?;
 
-        let next = CampaignSnapshot::successor(
+        let next = self.budgeted_successor(
             current_id,
             current.snapshot.lineage(),
             current.snapshot.active_policy(),

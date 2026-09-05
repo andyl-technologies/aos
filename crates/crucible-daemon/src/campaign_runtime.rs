@@ -463,6 +463,7 @@ fn supervisor_step_disposition(
         CampaignSupervisorStepOutcome::Inactive { .. }
         | CampaignSupervisorStepOutcome::Planner(
             CampaignPlannerStepOutcome::Inactive { .. }
+            | CampaignPlannerStepOutcome::BudgetBlocked { .. }
             | CampaignPlannerStepOutcome::Settled { .. },
         )
         | CampaignSupervisorStepOutcome::Executor {

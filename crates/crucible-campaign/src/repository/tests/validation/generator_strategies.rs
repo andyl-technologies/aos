@@ -23,7 +23,7 @@ fn corpus_mutation_generator_tracks_retained_values_by_portable_proposal_set() {
         .publish_policy(&policy)
         .expect("publish fast corpus-mutation policy");
     let genesis = repository
-        .create(
+        .create_funded(
             "generated-corpus-mutation",
             &lineage,
             &policy,
@@ -300,7 +300,7 @@ fn corpus_mutation_generator_tracks_retained_values_by_portable_proposal_set() {
 fn corpus_mutation_generator_enforces_exact_owner_bounds_before_writes() {
     let (repository, lineage, policy, blobs) = counted_fixture();
     let genesis = repository
-        .create(
+        .create_funded(
             "corpus-mutation-bounds",
             &lineage,
             &policy,
@@ -573,7 +573,7 @@ fn corpus_mutation_generator_enforces_exact_owner_bounds_before_writes() {
 fn progressive_integer_generator_enforces_exact_owner_bounds_before_writes() {
     let (repository, lineage, policy, blobs) = counted_fixture();
     let genesis = repository
-        .create("progressive-bounds", &lineage, &policy, &BTreeMap::new())
+        .create_funded("progressive-bounds", &lineage, &policy, &BTreeMap::new())
         .expect("create progressive bounds campaign");
     let domain = ChoiceDomain::Integer(
         IntegerDomain::new(
@@ -818,7 +818,7 @@ fn progressive_integer_generator_enforces_exact_owner_bounds_before_writes() {
 fn boundary_integer_generator_uses_exact_static_order() {
     let (repository, lineage, policy) = fixture();
     let genesis = repository
-        .create("generated-boundary", &lineage, &policy, &BTreeMap::new())
+        .create_funded("generated-boundary", &lineage, &policy, &BTreeMap::new())
         .expect("create");
     let domain = ChoiceDomain::Integer(
         IntegerDomain::new(
@@ -1087,7 +1087,7 @@ fn boundary_integer_generator_uses_exact_static_order() {
 fn stratified_integer_generator_uses_exact_static_offsets() {
     let (repository, lineage, policy) = fixture();
     let genesis = repository
-        .create("generated-stratified", &lineage, &policy, &BTreeMap::new())
+        .create_funded("generated-stratified", &lineage, &policy, &BTreeMap::new())
         .expect("create");
 
     let generator = CandidateGeneratorSpec::new(
@@ -1380,7 +1380,7 @@ fn stratified_integer_generator_uses_exact_static_offsets() {
 fn log_integer_generator_uses_exact_rounded_powers() {
     let (repository, lineage, policy) = fixture();
     let genesis = repository
-        .create("generated-log", &lineage, &policy, &BTreeMap::new())
+        .create_funded("generated-log", &lineage, &policy, &BTreeMap::new())
         .expect("create");
     let generator = CandidateGeneratorSpec::new(
         crate::LOG_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
@@ -1646,7 +1646,7 @@ fn log_integer_generator_uses_exact_rounded_powers() {
 fn permuted_integer_generator_is_keyed_bijective_and_restart_stable() {
     let (repository, lineage, policy) = fixture();
     let genesis = repository
-        .create("generated-permuted", &lineage, &policy, &BTreeMap::new())
+        .create_funded("generated-permuted", &lineage, &policy, &BTreeMap::new())
         .expect("create");
     let generator = CandidateGeneratorSpec::new(
         crate::PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
@@ -1933,7 +1933,7 @@ fn permuted_integer_generator_is_keyed_bijective_and_restart_stable() {
 fn modeled_uniform_integer_generator_bounds_full_width_and_restarts() {
     let (repository, lineage, policy, blobs) = counted_fixture();
     let genesis = repository
-        .create("modeled-uniform", &lineage, &policy, &BTreeMap::new())
+        .create_funded("modeled-uniform", &lineage, &policy, &BTreeMap::new())
         .expect("create");
     let domain = ChoiceDomain::Integer(
         IntegerDomain::new(
