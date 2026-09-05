@@ -17,7 +17,9 @@ use std::os::fd::BorrowedFd;
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use crate::supervision::HostSupervisionDeadline;
 
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -2157,31 +2159,25 @@ impl QmpDescriptorName {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
 struct QmpOperationDeadline {
-    started_at: Instant,
+    supervision: HostSupervisionDeadline,
     timeout: Duration,
 }
 
 impl QmpOperationDeadline {
-    // crucible-lint: allow clippy-disallowed-method -- QMP host deadlines bound child I/O only.
-    #[allow(clippy::disallowed_methods)]
     fn new(timeout: Duration) -> Self {
         // QMP lifecycle I/O uses host realtime only to bound child liveness; the
         // resulting timestamp is never folded into virtual-time ordering state.
         Self {
-            started_at: Instant::now(),
+            supervision: HostSupervisionDeadline::start(timeout),
             timeout,
         }
     }
 
-    // crucible-lint: allow clippy-disallowed-method -- elapsed host time only gates QMP timeout reporting.
-    #[allow(clippy::disallowed_methods)]
     fn remaining(&self, operation: &'static str) -> Result<Duration, QmpError> {
         // See `new`: this deadline gates a host control-plane wait, not guest
         // ordering or replay-visible state.
-        let elapsed = self.started_at.elapsed();
-        let Some(remaining) = self.timeout.checked_sub(elapsed) else {
+        let Some(remaining) = self.supervision.remaining() else {
             return Err(QmpError::Timeout {
                 operation,
                 timeout: self.timeout,

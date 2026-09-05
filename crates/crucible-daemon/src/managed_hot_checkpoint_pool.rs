@@ -7,7 +7,7 @@
 //! child starts consume the manager's process-wide fork-rate budget before the
 //! source factory can launch.
 
-use std::time::Instant;
+use crate::supervision::ForkRateClock;
 
 use crate::{
     AttemptExecutionContext, AttemptExecutionRuntimeBasis, AttemptWorkerFailure,
@@ -111,7 +111,7 @@ where
     manager: HotCheckpointManager,
     pool: QemuHotForkTemplatePool<F, Q>,
     demotions: D,
-    clock_origin: Instant,
+    fork_rate_clock: ForkRateClock,
 }
 
 impl<F, Q, D> ManagedQemuHotForkTemplatePool<F, Q, D>
@@ -137,7 +137,7 @@ where
             manager: HotCheckpointManager::new(limits),
             pool,
             demotions,
-            clock_origin: hot_checkpoint_now(),
+            fork_rate_clock: ForkRateClock::new(),
         })
     }
 
@@ -397,8 +397,7 @@ where
     }
 
     fn monotonic_nanos(&self) -> u64 {
-        let elapsed = hot_checkpoint_now().saturating_duration_since(self.clock_origin);
-        u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX)
+        self.fork_rate_clock.elapsed_nanos()
     }
 }
 
@@ -618,14 +617,6 @@ impl<F, E> ManagedHotCheckpointAdmissionFailure<F, E> {
             *self.error,
         )
     }
-}
-
-// Monotonic host time bounds only operational fork admission and never enters
-// campaign content, modeled execution, or deterministic scheduling state.
-// crucible-lint: allow clippy-disallowed-method -- the bounded host operation is operational only and cannot enter modeled state.
-#[allow(clippy::disallowed_methods)]
-fn hot_checkpoint_now() -> Instant {
-    Instant::now()
 }
 
 impl<F, E> std::fmt::Debug for ManagedHotCheckpointAdmissionFailure<F, E>

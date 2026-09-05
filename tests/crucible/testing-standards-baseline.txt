@@ -50,13 +50,12 @@ crucible-daemon	src/executor_supervisor/tests	retry	1
 crucible-daemon	src/executor_worker	retry	1
 crucible-daemon	src/lib	retry	1
 crucible-daemon	src/planner_process/owner	retry	1
-crucible-daemon	src/planner_process/pipes	thread::sleep	1
 crucible-daemon	src/planner_process/pipes/tests	thread::sleep	1
 crucible-daemon	src/qemu_hot_fork_factory/tests	retry	1
 crucible-daemon	src/qemu_hot_fork_pool/tests	retry	1
 crucible-daemon	src/qemu_hot_fork_reconciliation	retry	1
-crucible-daemon	src/qemu_hot_fork_reconciliation	std::thread::sleep	1
-crucible-daemon	src/qemu_hot_fork_reconciliation	thread::sleep	1
+crucible-daemon	src/supervision	std::thread::sleep	1
+crucible-daemon	src/supervision	thread::sleep	1
 crucible-daemon	src/qemu_hot_fork_runner	thread::sleep	1
 crucible-daemon	src/qemu_campaign_lifecycle/tests	retry	1
 crucible-daemon	src/qemu_resource_guard/tests	retry	1

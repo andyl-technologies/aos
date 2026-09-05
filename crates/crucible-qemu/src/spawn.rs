@@ -17,7 +17,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use crate::supervision::HostSupervisionDeadline;
 
 use rustix::fs::{FileType, Mode, OFlags, fstat, fstatfs, fsync, open, openat};
 use thiserror::Error;
@@ -1527,7 +1529,7 @@ fn run_guarded_image_tool(
             child: None,
         })?;
     let mut child = QemuNodeChild::new(child);
-    let started = guarded_image_tool_started();
+    let deadline = HostSupervisionDeadline::start(GUARDED_IMAGE_TOOL_TIMEOUT);
     loop {
         match child.try_wait_natural_exit() {
             Ok(Some(status)) if status.success() => return Ok(()),
@@ -1540,7 +1542,7 @@ fn run_guarded_image_tool(
                     child: None,
                 });
             }
-            Ok(None) if guarded_image_tool_elapsed(started) < GUARDED_IMAGE_TOOL_TIMEOUT => {
+            Ok(None) if deadline.has_time_remaining() => {
                 thread::sleep(GUARDED_IMAGE_TOOL_POLL_INTERVAL)
             }
             Ok(None) => {
@@ -1560,20 +1562,6 @@ fn run_guarded_image_tool(
             }
         }
     }
-}
-
-/// Starts a host-only image-helper deadline outside canonical state.
-// crucible-lint: allow clippy-disallowed-method -- host time only bounds an operational helper and never enters modeled state.
-#[allow(clippy::disallowed_methods)]
-fn guarded_image_tool_started() -> Instant {
-    Instant::now()
-}
-
-/// Measures a host-only image-helper deadline outside canonical state.
-// crucible-lint: allow clippy-disallowed-method -- host time only bounds an operational helper and never enters modeled state.
-#[allow(clippy::disallowed_methods)]
-fn guarded_image_tool_elapsed(started: Instant) -> Duration {
-    started.elapsed()
 }
 
 fn cleanup_failed_image_tool(

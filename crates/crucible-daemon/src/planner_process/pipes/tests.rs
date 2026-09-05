@@ -55,7 +55,7 @@ fn unread_request_pipe_obeys_the_exchange_deadline() {
         exchange(
             child,
             &vec![0; 1024 * 1024],
-            process_now() + Duration::from_millis(100),
+            ProcessDeadline::after(Duration::from_millis(100)).expect("finite pipe deadline"),
             &AtomicBool::new(false),
         )
     });
@@ -73,7 +73,7 @@ fn inherited_output_pipe_does_not_outlive_deadline_or_block_next_evaluation() {
         exchange(
             child,
             b"request",
-            process_now() + Duration::from_secs(1),
+            ProcessDeadline::after(Duration::from_secs(1)).expect("finite pipe deadline"),
             &AtomicBool::new(false),
         )
     });
@@ -88,7 +88,7 @@ fn inherited_output_pipe_does_not_outlive_deadline_or_block_next_evaluation() {
             exchange(
                 child,
                 b"next",
-                process_now() + Duration::from_secs(5),
+                ProcessDeadline::after(Duration::from_secs(5)).expect("finite pipe deadline"),
                 &AtomicBool::new(false),
             )
         })
@@ -110,7 +110,7 @@ fn cancellation_interrupts_blocked_pipe_io() {
         exchange(
             child,
             b"request",
-            process_now() + Duration::from_secs(5),
+            ProcessDeadline::after(Duration::from_secs(5)).expect("finite pipe deadline"),
             &canceled,
         )
     });

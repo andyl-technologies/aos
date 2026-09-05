@@ -19,9 +19,10 @@ use std::os::unix::process::ExitStatusExt;
 use std::process::ExitStatus;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crucible::{ContentHash, EventLog, EventLogOffset, NodeId};
+// crucible-lint: allow host-nondeterminism-state -- node generations authenticate exact process ownership and carry no host timing into execution.
 use crucible_api::ProductionVmNodeGeneration;
 use crucible_campaign::{ExactCheckpointId, ObservationId};
 use crucible_qemu::{
@@ -41,6 +42,7 @@ use crate::qemu_hot_fork_world::QemuHotForkWorldAssemblyToken;
 use crate::qemu_hot_fork_world_resource::{
     QemuHotForkWorldNodeTarget, QemuHotForkWorldResourceOwner,
 };
+use crate::supervision::ProcessDeadline;
 
 /// Exact supervisor reservation owning one hot-fork realization.
 pub type QemuHotForkAttemptBasis = crate::AttemptExecutionRuntimeBasis;
@@ -374,7 +376,7 @@ where
     PublicationDispositionMismatch,
     /// One backend operation failed while retaining reconciliation authority.
     #[error("hot-fork backend operation {operation} failed: {source}")]
-    Backend {
+    Operation {
         /// Stable operation name.
         operation: &'static str,
         /// Typed backend failure.
@@ -476,7 +478,7 @@ where
                 backend.quarantine();
             }
             self.phase = QemuHotForkReconciliationPhase::Quarantined;
-            return Err(QemuHotForkAttemptReconciliationError::Backend {
+            return Err(QemuHotForkAttemptReconciliationError::Operation {
                 operation: "drain child diagnostics before admission",
                 source,
             });
@@ -487,7 +489,7 @@ where
                 backend.quarantine();
             }
             self.phase = QemuHotForkReconciliationPhase::Quarantined;
-            return Err(QemuHotForkAttemptReconciliationError::Backend {
+            return Err(QemuHotForkAttemptReconciliationError::Operation {
                 operation: "admit private child channel",
                 source,
             });
@@ -521,7 +523,7 @@ where
         self.phase = QemuHotForkReconciliationPhase::TerminationRequested;
         self.diagnostics_drained = false;
         self.backend_mut()?.terminate_child().map_err(|source| {
-            QemuHotForkAttemptReconciliationError::Backend {
+            QemuHotForkAttemptReconciliationError::Operation {
                 operation: "request child termination",
                 source,
             }
@@ -635,7 +637,7 @@ where
                             backend.quarantine();
                         }
                         self.phase = QemuHotForkReconciliationPhase::Quarantined;
-                        return Err(QemuHotForkAttemptReconciliationError::Backend {
+                        return Err(QemuHotForkAttemptReconciliationError::Operation {
                             operation: "drain branch-private child diagnostics",
                             source,
                         });
@@ -645,7 +647,7 @@ where
                 }
                 self.diagnostics_drained = false;
                 let observed = self.backend_mut()?.observe_child().map_err(|source| {
-                    QemuHotForkAttemptReconciliationError::Backend {
+                    QemuHotForkAttemptReconciliationError::Operation {
                         operation: "query source-owned child status",
                         source,
                     }
@@ -667,7 +669,7 @@ where
                 let complete =
                     self.backend_mut()?
                         .release_next_child_resource()
-                        .map_err(|source| QemuHotForkAttemptReconciliationError::Backend {
+                        .map_err(|source| QemuHotForkAttemptReconciliationError::Operation {
                             operation: "release branch-private child resources",
                             source,
                         })?;
@@ -678,7 +680,7 @@ where
             }
             QemuHotForkReconciliationPhase::ChildResourcesReleased => {
                 self.backend_mut()?.release_target().map_err(|source| {
-                    QemuHotForkAttemptReconciliationError::Backend {
+                    QemuHotForkAttemptReconciliationError::Operation {
                         operation: "release target process owner",
                         source,
                     }
@@ -699,7 +701,7 @@ where
                     .ok_or(QemuHotForkAttemptReconciliationError::ChildBasisMismatch)?;
                 self.backend_mut()?
                     .release_source_status(terminal)
-                    .map_err(|source| QemuHotForkAttemptReconciliationError::Backend {
+                    .map_err(|source| QemuHotForkAttemptReconciliationError::Operation {
                         operation: "release source-owned child status",
                         source,
                     })?;
@@ -709,7 +711,7 @@ where
             QemuHotForkReconciliationPhase::SourceStatusReleased => {
                 self.backend_mut()?
                     .release_process_contract()
-                    .map_err(|source| QemuHotForkAttemptReconciliationError::Backend {
+                    .map_err(|source| QemuHotForkAttemptReconciliationError::Operation {
                         operation: "release child process contract",
                         source,
                     })?;
@@ -914,25 +916,20 @@ impl LinuxQemuHotForkNodeProcessControl {
     }
 
     fn wait_until(&self, timeout: Duration) -> Result<bool, QemuShutdownTargetError> {
-        let deadline = hot_fork_process_wait_now()
-            .checked_add(timeout)
-            .ok_or_else(|| {
-                QemuShutdownTargetError::new(
-                    "wait for source-owned hot-fork child",
-                    "child wait deadline overflowed",
-                )
-            })?;
+        let deadline = ProcessDeadline::after(timeout).ok_or_else(|| {
+            QemuShutdownTargetError::new(
+                "wait for source-owned hot-fork child",
+                "child wait deadline overflowed",
+            )
+        })?;
         loop {
             if self.observe_exit()?.is_some() {
                 return Ok(true);
             }
-            let now = hot_fork_process_wait_now();
-            if now >= deadline {
+            if deadline.expired() {
                 return Ok(false);
             }
-            std::thread::sleep(
-                Duration::from_millis(1).min(deadline.saturating_duration_since(now)),
-            );
+            deadline.pause(Duration::from_millis(1));
         }
     }
 }
@@ -1418,14 +1415,6 @@ where
     }
 }
 
-// Monotonic host time bounds only operational child-status waiting and never
-// enters campaign content, modeled execution, or deterministic scheduling.
-// crucible-lint: allow clippy-disallowed-method -- the bounded host operation is operational only and cannot enter modeled state.
-#[allow(clippy::disallowed_methods)]
-fn hot_fork_process_wait_now() -> Instant {
-    Instant::now()
-}
-
 fn qmp_child_observation(
     state: QmpHotForkChildProcessState,
 ) -> Result<QemuHotForkChildObservation, LinuxQemuHotForkReconciliationError> {
@@ -1792,7 +1781,7 @@ where
             .map_err(Box::new)?
             .install_scheduler_node(node, shutdown_policy, async_policy, crash_detector)
             .map_err(|source| {
-                Box::new(QemuHotForkAttemptReconciliationError::Backend {
+                Box::new(QemuHotForkAttemptReconciliationError::Operation {
                     operation: "install hot-fork scheduler node",
                     source,
                 })
@@ -1840,7 +1829,7 @@ where
             ));
         }
         backend.world_child_source_basis().map_err(|source| {
-            Box::new(QemuHotForkAttemptReconciliationError::Backend {
+            Box::new(QemuHotForkAttemptReconciliationError::Operation {
                 operation: "authenticate hot-fork source basis",
                 source,
             })
@@ -2175,7 +2164,7 @@ mod tests {
 
         assert!(matches!(
             owner.reconcile_step(),
-            Err(QemuHotForkAttemptReconciliationError::Backend {
+            Err(QemuHotForkAttemptReconciliationError::Operation {
                 operation: "drain branch-private child diagnostics",
                 ..
             })
@@ -2205,7 +2194,7 @@ mod tests {
 
         assert!(matches!(
             owner.admit_child(),
-            Err(QemuHotForkAttemptReconciliationError::Backend {
+            Err(QemuHotForkAttemptReconciliationError::Operation {
                 operation: "drain child diagnostics before admission",
                 ..
             })

@@ -12,7 +12,7 @@ use super::*;
 pub(super) fn exchange(
     child: &mut Child,
     request: &[u8],
-    deadline: Instant,
+    deadline: ProcessDeadline,
     canceled: &AtomicBool,
 ) -> Result<(ExitStatus, CapturedOutput, CapturedOutput), CanonicalPlannerProcessError> {
     let (Some(stdin), Some(mut stdout), Some(mut stderr)) =
@@ -77,9 +77,7 @@ pub(super) fn exchange(
             return Ok((status, output.output, diagnostic.output));
         }
         if !progressed {
-            thread::sleep(
-                CHILD_POLL_INTERVAL.min(deadline.saturating_duration_since(process_now())),
-            );
+            deadline.pause(CHILD_POLL_INTERVAL);
         }
     }
 }
@@ -91,13 +89,13 @@ fn nonblocking(fd: &impl AsFd) -> Result<(), CanonicalPlannerProcessError> {
 }
 
 fn check_boundary(
-    deadline: Instant,
+    deadline: ProcessDeadline,
     canceled: &AtomicBool,
 ) -> Result<(), CanonicalPlannerProcessError> {
     if canceled.load(Ordering::Acquire) {
         return Err(CanonicalPlannerProcessError::Canceled);
     }
-    if process_now() >= deadline {
+    if deadline.expired() {
         return Err(CanonicalPlannerProcessError::TimedOut);
     }
     Ok(())

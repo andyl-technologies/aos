@@ -29,7 +29,9 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use crate::supervision::ProcessDeadline;
 
 use crucible_campaign::{
     CampaignCodecError, CanonicalFrontierPlanner, CanonicalPuctPlanner,
@@ -178,11 +180,11 @@ impl CanonicalPlannerProcessSupervisor {
                 "canonical planner request exceeds 64 MiB",
             ));
         }
-        let deadline = process_now()
-            .checked_add(self.config.execution_timeout)
-            .ok_or(CanonicalPlannerProcessError::InvalidConfiguration(
+        let deadline = ProcessDeadline::after(self.config.execution_timeout).ok_or(
+            CanonicalPlannerProcessError::InvalidConfiguration(
                 "canonical planner deadline overflow",
-            ))?;
+            ),
+        )?;
 
         if self.process_owner.is_none() {
             self.process_owner = Some(owner::ProcessOwner::new()?);
@@ -506,14 +508,6 @@ fn worker_failed(status: ExitStatus, stderr: CapturedOutput) -> CanonicalPlanner
 
 fn process_io(operation: &'static str, source: io::Error) -> CanonicalPlannerProcessError {
     CanonicalPlannerProcessError::Io { operation, source }
-}
-
-// Monotonic process time bounds only operational worker lifetime. It never
-// enters planner input, output, content identity, or deterministic fuel.
-// crucible-lint: allow clippy-disallowed-method -- the bounded host operation is operational only and cannot enter modeled state.
-#[allow(clippy::disallowed_methods)]
-fn process_now() -> Instant {
-    Instant::now()
 }
 
 #[cfg(test)]
