@@ -88,19 +88,18 @@ Complete this section before starting builds or requesting signatures.
 
 - [ ] **Record the support matrix and acceptance criteria.** Use the
   [target support matrix](qualification.md#target-support-matrix).
-  List both architectures for QEMU images and OCI containers, every published
-  package/platform cell, and any physical-hardware or cloud support being added.
-  Record the assigned tier, promised artifacts, test environment and evidence
-  location for each row. Use the concrete acceptance checks as the test
-  program's acceptance criteria.
+  List the required QEMU and OCI configurations, every published package/platform
+  cell, and additional physical, cloud or device claims. For each claim, record
+  its compatibility scope, required assurance, release-blocking status, assigned
+  configurations and evidence location. Record QEMU acceleration separately;
+  identify CPU/device combinations and cloud provider/SKUs explicitly. Use the
+  acceptance checks to define each test program's expected results.
 
-  **Check when:** all four Tier 1 runtime combinations have environments and assigned
-  tests; package roles and representative hardware coverage have been reviewed;
-  and every tier's artifact and testing obligations are accounted for. Tier 2
-  physical targets require the promised generic images; Tier 3 cloud targets
-  add no release gate. Any promotion to Tier 1 must have a reviewed policy change
-  and required cases before the plan is frozen. A passing QEMU result alone
-  cannot check off physical hardware or cloud qualification.
+  **Check when:** all four mandatory reference configurations have assigned A3
+  tests, additional claims have explicit assurance obligations, and CPU, firmware,
+  device and enabled-driver coverage has been reviewed. Broad compatibility
+  assessments and directly tested configurations must be recorded separately.
+  Additional A3 image/container claims need target cases before the plan is frozen.
 
 - [ ] **Export the requirements and prepare the request.** From the clean source
   checkout, run this with the selected class:
@@ -233,9 +232,9 @@ every output under `AOS_RELEASE_WORK`, using a new path for each command.
   **Check when:** every listed case has an assigned program/environment or
   operator. The output says `not-evaluated`: this box means the work is assigned,
   not that it passed. An unavailable environment does not make a case optional.
-  Compare the cases with the recorded support matrix: every Tier 1 combination
-  must be covered, with the cycle counts and package checks from the acceptance
-  criteria. Verify Tier 2 artifact obligations in the build report.
+  Compare the cases with the support matrix: every mandatory configuration and
+  additional A3 claim must be covered, with the required cycle counts and package
+  checks. Assign assessments and focused tests for A1/A2 claims separately.
 
 ### Manual checks before collecting the staging report
 
@@ -307,18 +306,18 @@ a required manual result, stop and fix that tooling.
   with no secret material in the messages. Record those acknowledgments. A log
   entry without delivered notification is a failure.
 
-- [ ] **Test any physical-hardware qualification claims.** If physical targets
-  remain Tier 2 and no additional tested feature is advertised, record that scope
-  and mark this item inapplicable. For Tier 1 promotion or a tested feature claim,
-  install the exact candidate on each representative configuration and record
-  model, firmware, controller, storage durability
-  settings, and TPM state. On disposable data, interrupt power during update
-  and persistence, recover, verify acknowledged data, and update again.
+- [ ] **Test physical-hardware claims.** If no A2/A3 physical or device claim is
+  made, record that scope and mark this item inapplicable. Otherwise execute the
+  claimed functions on the exact candidate and retain CPU SKU, chipset/SoC,
+  firmware, device IDs, bound drivers, storage durability settings and TPM state.
+  For A3 image-lifecycle claims, use disposable data to interrupt power during
+  update and persistence, recover, verify acknowledged data, and update again.
   Redundant-storage claims also need disk replacement, boot from each ESP,
   rebuild, and unlock tests; other device claims need their own workload tests.
 
-  **Check when:** every claimed configuration passes its boot, recovery,
-  data-preservation, and workload checks with recorded equipment identities.
+  **Check when:** every directly tested configuration passes the checks for its
+  claimed assurance and functions. A3 lifecycle claims require boot, recovery,
+  data-preservation and workload results. Record untested combinations separately.
   Do not interrupt power or restore data on a live production system.
 
 ### Collect and approve the staging result
@@ -335,7 +334,9 @@ a required manual result, stop and fix that tooling.
   configuration, HTTP/TLS, containers, reboot persistence, upgrade, interrupted
   update, fallback, rollback, offline recovery, and another successful update,
   as required by each case. Inspect committed-data checks and failed attempts
-  too; missing or failed results leave this box unchecked.
+  too; missing or failed results leave this box unchecked. Update achieved
+  assurance in the matrix from those results and reconcile each claim's inventory
+  with its reports. Any unmet release-blocking assurance obligation stops release.
 
 - [ ] **Review and sign the exact report.** Obtain the class's required
   independent review using

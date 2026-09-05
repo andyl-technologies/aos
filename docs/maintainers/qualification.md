@@ -12,84 +12,135 @@ documents command arguments.
 
 ## Target support matrix
 
-A target is an architecture and execution environment, such as x86_64 on QEMU
-or x86_64 on physical hardware. Its tier defines the release guarantees for
-that environment. The release class separately sets observation time and review
-requirements; tier assignments apply across all release classes.
+The support matrix records compatibility claims and the evidence supporting them.
+Each claim identifies an artifact, a function, an environment scope, and an
+assurance level. Release policy specifies the minimum assurance required for
+selected claims. The release class sets observation duration and review obligations.
 
-### Tier guarantees
+### Assurance levels
 
-| Guarantee | Tier 1: qualified | Tier 2: builds provided | Tier 3: experimental |
-| --- | --- | --- | --- |
-| Official artifacts | Required for every release | Required; may use the same generic image as a Tier 1 target | No target-specific artifact commitment |
-| Hermetic build, signatures, complete closure and source | Required | Required | Required for any artifact actually published |
-| Installation and basic operation | Tested on the target for every release | Generic image is tested on its Tier 1 reference; operation on this hardware is not guaranteed | No release qualification guarantee |
-| Configuration, packages, networking and workload | All applicable target checks must pass | Target-specific testing is best effort; publish known limitations | Development testing only |
-| Update, rollback, recovery and data preservation | Tested on the target with the exact predecessor/candidate pair | No target-specific guarantee | No target-specific guarantee |
-| Workload observation | Full release-class window on the target | No target-specific observation requirement | No observation requirement |
-| Maintenance | Assigned owner and maintained regression scenarios | Assigned owner for artifact builds and compatibility reports | Contributions accepted; no release-maintenance commitment |
-| What blocks release | Missing artifacts, failed or missing qualification, or unresolved required-function/integrity failure | Missing or invalid promised artifacts; a hardware-only failure is documented and does not block unrelated Tier 1 targets | No target-specific blocker; shared defects still block affected higher-tier targets |
+| Level | Evidence required | Permitted claim |
+| --- | --- | --- |
+| A0: unassessed | No accepted compatibility assessment or applicable execution evidence | Compatibility is unknown |
+| A1: assessed | Reviewed CPU/ABI requirements, firmware and device interfaces, enabled kernel drivers, required firmware, and known exclusions | Expected to work within the documented compatibility scope; no direct execution claim |
+| A2: exercised | A1 assessment plus direct tests of the exact artifact and stated functions on recorded configurations, with expected and observed results | The listed functions passed on the tested configurations |
+| A3: qualified | A2 evidence plus all applicable acceptance checks, update/recovery transitions, release-class observation and required review | The complete stated contract passed qualification on the tested configurations |
 
-All published bytes retain the same integrity requirements at every tier. Known
-defects in shared boot, storage, trust or update code must be evaluated against
-every affected target.
+Levels express evidence strength, not statistical reliability or certification.
+Successful artifact builds establish availability, but do not establish A1
+hardware compatibility by themselves. Failed checks, expired evidence and known
+incompatibilities are recorded separately from assurance; none may be hidden by
+assigning a lower level. Published artifacts always require signatures, complete
+closures and corresponding source, regardless of hardware assurance.
+Mark a known failing scope incompatible even if historical evidence reached A3.
 
-### Architecture and environment assignments
+A2 and A3 apply to the recorded configuration set. A broader compatibility claim
+requires its own A1 assessment. For example, a reviewed CPU-family claim may be
+A1 while a subset of specific CPU SKUs and platform configurations is A3. The
+family retains A1 outside that tested subset. A CPU result alone does not qualify
+a motherboard, NIC, storage controller or their combined installation.
 
-| Target | x86_64 | aarch64 | Artifact | Scope |
+### Qualification axes
+
+Use one row for each distinct claim and scope. Multiple rows may cover the same
+architecture at different assurance levels.
+
+| Axis | Required scope and evidence fields |
+| --- | --- |
+| Artifact and function | Release/manifest and image or package digest, variant, kernel build and configuration digest, claimed functions, exclusions, predecessor for update claims |
+| Architecture and CPU | x86_64 or aarch64; ISA baseline and required features; vendor, family/model/stepping or implementer/part/revision; exact CPU SKU and microcode/firmware revision when observable |
+| Physical platform | Board/system and chipset or SoC, firmware version, boot mode, Secure Boot and TPM configuration, memory topology, relevant buses and controllers |
+| Devices and drivers | Device vendor/product/revision IDs, controller and device firmware, bound Linux driver, relevant kernel configuration, module/built-in status, required firmware availability and boot-stage availability |
+| QEMU | QEMU version, machine type and version, guest CPU model/features, virtual devices and firmware; accelerator recorded separately as TCG or KVM; for KVM, host CPU, kernel and KVM configuration |
+| Cloud | Provider, service, region/zone, instance family and exact SKU, architecture and exposed CPU features, image import format, boot/security options, storage and NIC types, metadata/provisioning interface |
+| Container | Host architecture/CPU and kernel configuration, containerd/runc versions, cgroup mode, security settings, network and volume implementation, resource limits |
+
+Record unavailable provider-managed details as unknown, with the provider's
+exposed interface or compatibility guarantee as the scope boundary. Unknown
+values are not wildcards. Replacing TCG with KVM, changing a cloud SKU, or using
+a different NIC creates a distinct configuration even when the architecture
+and image are unchanged.
+
+### Required release coverage
+
+The following matrix specifies minimum assurance, not achieved results. Retain
+the actual tested configurations and evidence separately for each release.
+
+| Environment | Architecture | Accelerator/runtime | Minimum assurance | Required configuration |
 | --- | --- | --- | --- | --- |
-| QEMU virtual machine | Tier 1 | Tier 1 | Disk image | UEFI, persistent TPM 2.0, virtio disk/network; x86_64 `q35` with KVM, aarch64 `virt` with TCG functional coverage |
-| OCI container on native Linux | Tier 1 | Tier 1 | OCI image and multi-platform index | AOS-built containerd/runc; matching host/image architecture; persistent volumes and network workload |
-| Physical server | Tier 2 | Unassigned | Generic disk image | x86_64 server hardware meeting the boot/storage requirements below |
-| Physical workstation | Tier 2 | Unassigned | Generic disk image | x86_64 workstation hardware; headless OS operation |
-| Cloud virtual machine | Tier 3 | Tier 3 | Generic disk image where importable | Provider image import, firmware, virtual devices and metadata compatibility require environment-specific validation |
+| QEMU | x86_64 | KVM | A3 | `disk-x86_64-linux`: `q35`, persistent UEFI/TPM, virtio disk/NIC; record host and guest CPU identities |
+| QEMU | aarch64 | TCG | A3, functional contract | `disk-aarch64-linux`: `virt`, persistent UEFI/TPM, virtio disk/NIC; record emulated CPU model/features |
+| OCI container | x86_64 | containerd/runc, native host | A3 | `container-x86_64-linux`: persistent network workload and recorded host configuration |
+| OCI container | aarch64 | containerd/runc, native host | A3 | `container-aarch64-linux`: persistent network workload and recorded host configuration |
+| QEMU | x86_64 / aarch64 | Other architecture/accelerator combinations | Set per additional claim | Separate machine/CPU/device configuration and evidence |
+| Physical hardware | x86_64 / aarch64 | Native | Set per claim | CPU SKU set, chipset/SoC, firmware, device/driver combinations |
+| Cloud VM | x86_64 / aarch64 | Provider virtualization | Set per claim | Provider/service, exact instance SKU, region and virtual device profile |
 
-Unassigned targets carry no support commitment. Hardware and cloud requirements
-are expressed in terms of boot, storage, network and provisioning capabilities.
-Qualification reports retain equipment inventories and firmware versions so
-coverage can be reproduced and reviewed.
+`qualification/targets.nix` defines the four mandatory reference configurations.
+Their required checks cannot be waived by lowering assurance. Additional claims
+must state their required level and release-blocking status before the plan is
+frozen. Additional A3 image/container claims require corresponding target cases
+and scenarios. Physical or cloud categories receive no blanket assurance from
+the reference VM results.
 
-Release approval requires evidence satisfying the assigned tiers and resolution
-of the [current release blockers](release-checklist.md). An unavailable Tier 1
-runner or scenario blocks qualification; it does not change the target's tier.
+### Release evidence matrix
 
-`qualification/targets.nix` encodes those four Tier 1 configurations as required
-cases. Tier 2 physical targets consume the same frozen generic images; the build
-and artifact checks apply, but physical qualification is not presently a required
-case. Tier 3 has no additional required target case.
+Retain this matrix with the release records and include the approved claims in
+release support information. Every row must contain:
 
-### Changing a target's tier
+| Field | Required value |
+| --- | --- |
+| Claim | Stable identifier and specific function or contract, such as installation, network operation, or complete image lifecycle |
+| Compatibility scope | Explicit architecture, CPU/features, platform and device predicates; runtime/accelerator or provider/SKU where applicable |
+| Tested configurations | Inventory IDs for the exact combinations exercised; an empty set for assessment-only claims |
+| Required assurance | A1, A2 or A3, plus whether failing this obligation blocks release |
+| Achieved assurance and result | Highest currently supported level; pass, fail, missing or stale evidence; known incompatibilities |
+| Evidence | Artifact/plan/case digests, assessment references, test reports, dates, operation counts, observation window and reviewer |
+| Maintenance | Owner, evidence expiry and changes that invalidate the claim |
 
-A tier change requires a reviewed policy change before freezing a release.
-To enter Tier 2, identify an owner, the exact official artifact and its automated
-build/integrity checks, and document hardware requirements and known limitations.
-To enter Tier 1, also add required target configurations and maintained scenarios,
-pass every applicable acceptance check below, and complete the class observation
-window on representative equipment. Record that evidence with the release that
-first carries the stronger guarantee. Downgrading a target requires an explicit
-support notice; it cannot be an operator workaround for a failed required case.
+The matrix is a reviewed release record. Required executor cases and signed
+reports remain the admission mechanism; matrix entries cannot replace missing
+observations or change a frozen gate. Before approval, reconcile every mandatory
+case with its matrix row and inspect the retained environment inventories.
 
-Record exact runtime versions, host kernel, firmware, CPU, devices, image digests
-and test-program identity in qualification evidence. TCG qualification covers
-functional behavior; native KVM and performance claims need separate evidence.
+### Coverage and generalization
+
+Select test configurations by meaningful variation: CPU generation and features,
+chipset/SoC, firmware implementation, storage/NIC controller and driver, runtime
+backend, and cloud device profile. Document which dimensions each configuration
+covers. Separate component passes do not establish the Cartesian product of all
+CPU, board and device combinations; retain complete tested configurations and
+review the remaining combinations as A1 compatibility claims.
+
+A driver present in Linux source is insufficient for an A1 claim. Verify that the
+released kernel enables the driver, supports the device ID, contains required
+firmware, and makes the driver available at the stage that needs it. A2 requires
+observing driver binding and exercising the device. A3 requires its applicable
+load, interruption and recovery checks as part of the claimed system contract.
+
+Reassess claims after changes to artifacts, kernel configuration, CPU feature
+baseline, firmware, drivers, QEMU machine/CPU model, accelerator, runtime or cloud
+profile. Preserve historical results, mark invalidated evidence stale, and obtain
+fresh evidence before retaining the affected assurance claim. A shared defect
+blocks every release obligation whose scope includes it.
 
 ### Images, packages and optional hardware features
 
-The target tier covers the base OS or container contract and its required
-workloads. Each advertised disk format must pass artifact-equivalence checks.
-Cloud-provider compatibility requires separate environment qualification.
-Each published package/platform cell needs the functional checks below;
-package roles add obligations according to their effect on the system.
+Image lifecycle, individual devices, optional features and package/platform cells
+may carry separate claims. Each advertised disk format requires equivalence
+verification; provider import is a separate cloud claim. Every published package
+needs the functional checks below, with additional obligations inherited from its
+system-integrity or workload role.
 
-Record optional features such as redundant storage, GPU acceleration, hardware
-watchdogs and server management separately, with their tested capability scope
-and limitations. Missing package or feature evidence blocks its qualification.
-Stable and emergency releases prohibit blocked package/platform cells under
-the shared contract.
+Record optional features such as redundant storage, GPU acceleration, watchdogs
+and server management with their own functions, configuration scope and evidence.
+An A3 base-image result covers only the features included in that contract.
+Stable and emergency releases prohibit blocked package/platform cells under the
+shared contract.
 
 ### QEMU and disk-image acceptance
 
-Apply these checks to each published image variant on each required configuration.
+Apply these checks to each A3 image-lifecycle claim and required configuration.
 Use its public signed bytes and supported provisioning path. The current VM
 test configuration is 2 vCPUs, 8 GiB RAM and a 32 GiB disk. Minimum system
 requirements require a separate resource-sizing campaign.
@@ -129,32 +180,34 @@ exact published artifacts are required before a public release can pass this gat
 
 ### Physical-hardware acceptance
 
-Physical targets require UEFI, Secure Boot, persistent TPM 2.0, supported
-storage/network drivers, and a console/recovery path. Record capability
+Physical image-lifecycle claims require UEFI, Secure Boot, persistent TPM 2.0,
+supported storage/network drivers, and a console/recovery path. Record capability
 requirements and known exclusions in the support record. The base contract
 covers headless operation; graphical desktop, GPU acceleration and suspend
 require separate feature qualification.
 
-Tier 1 qualification requires disk-image checks on representative server and
-workstation equipment covering Intel and AMD CPUs, onboard and discrete NICs,
-SATA and NVMe storage, and different UEFI implementations. Retain models and
-firmware versions in the test inventory. Add uncovered capabilities to the
-campaign or exclude them explicitly from the qualified scope.
+A3 physical-image qualification requires the disk-image checks on each selected
+configuration. Choose CPU SKU, chipset/SoC, firmware and device combinations to
+cover the claim's scope. Record CPU identities, board revisions, PCI/USB device
+IDs, bound drivers and firmware versions. Verify storage and network drivers are
+enabled in the released kernel and available during installation and recovery.
+Untested combinations remain subject to their separate compatibility assessment.
 
 In addition, verify installer media boots, disks/NICs enumerate correctly,
 storage read/write checksums agree under load, link loss/reconnection recovers,
 and shutdown powers off. Perform the 3 cold boots by removing/restoring power;
 exercise interrupted writes only on expendable test storage. Monitor machine
 checks, storage errors and thermal behavior during the class soak; unexplained
-hardware/driver faults block promotion pending diagnosis. Requalify affected
-coverage after kernel, driver, firmware or boot/security changes.
+hardware/driver faults block the affected qualification pending diagnosis.
+Requalify affected coverage after kernel, driver, firmware or boot/security changes.
 
 ### Cloud-VM acceptance
 
-Promote x86_64 and aarch64 cloud support separately. For each advertised cloud
-environment, record image import format, boot/security capabilities, virtual
-storage/NIC drivers and provisioning interface. Test representative instance
-families covering those capabilities and retain the environment inventory.
+Qualify each cloud claim against its provider, service, exact instance SKU,
+architecture, region and device profile. Record image import format,
+boot/security capabilities, exposed CPU features, storage/NIC drivers and
+provisioning interface. Retain each tested configuration in the environment
+inventory; family-wide compatibility requires a separate assessment.
 Unsupported boot/security features require a reviewed contract change.
 
 Pass the disk-image checks plus image import, clean instance creation, metadata
