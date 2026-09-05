@@ -120,7 +120,9 @@ fn GlobalCacheInventory(client: ApiClient) -> impl IntoView {
                         <h2>"Caches"</h2>
                         <HelpTooltip term="Caches" summary="Binary caches visible across your organizations and public Hub resources."/>
                     </div>
+                    <p>"Manage reusable binary caches here. Each registry chooses which caches its clients use."</p>
                 </div>
+                <a class="secondary-button" href="/-/orgs">"Choose an organization to create a cache"</a>
             </div>
             <Suspense fallback=move || view! { <p class="loading-row">"Loading caches…"</p> }>
                 {move || Suspend::new(async move {
@@ -131,7 +133,7 @@ fn GlobalCacheInventory(client: ApiClient) -> impl IntoView {
                         Ok((caches, registry_stacks)) => view! {
                             <div class="workflow-stack">
                                 {(!caches.is_empty()).then(|| view! {
-                                    <div><h3>"Standalone binary caches"</h3><div class="resource-grid">
+                                    <div><h3>"Binary caches"</h3><div class="resource-grid">
                                 {caches.iter().cloned().map(|cache| {
                                     let href = cache_path(&cache.slug);
                                     view! {
@@ -620,6 +622,7 @@ fn OrganizationEditor(
 
 #[component]
 fn ProjectInventory(client: ApiClient, organization: String, creation_only: bool) -> impl IntoView {
+    let cancel_path = format!("/-/org/{organization}/projects");
     let can_create = client.allows("registry.configure");
     let inventory_org = organization.clone();
     let inventory_client = client.clone();
@@ -725,9 +728,9 @@ fn ProjectInventory(client: ApiClient, organization: String, creation_only: bool
             {creation_only.then(|| view! { <section class="panel editor-panel">
                 <h2>"Create project"</h2>
                 <form class="editor-form compact-form" on:submit=on_plan>
-                    <label><span>"Materialized path"</span><input required placeholder="platform/runtime" prop:value=move || path.get() on:input=move |event| path.set(event_target_value(&event))/></label>
+                    <label><span>"Project path"</span><input required placeholder="platform/runtime" prop:value=move || path.get() on:input=move |event| path.set(event_target_value(&event))/></label>
                     <label><span>"Display name"</span><input required prop:value=move || name.get() on:input=move |event| name.set(event_target_value(&event))/></label>
-                    <div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review creation"</button></div>
+                    <div class="form-actions"><a class="secondary-button" href=cancel_path>"Cancel"</a><button class="button" type="submit" disabled=move || busy.get()>"Review creation"</button></div>
                 </form>
                 {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
                 {move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}
@@ -820,6 +823,7 @@ fn RegistryInventory(
     organization: String,
     creation_only: bool,
 ) -> impl IntoView {
+    let cancel_path = format!("/-/org/{organization}/registries");
     let can_create = client.allows("registry.configure");
     let inventory_client = client.clone();
     let prefix = format!("{organization}/");
@@ -918,7 +922,7 @@ fn RegistryInventory(
                 <label><span>"Project path"</span><input placeholder="Optional; for example platform/runtime" prop:value=move || project_path.get() on:input=move |event| project_path.set(event_target_value(&event))/></label>
                 <label><span>"Registry name"</span><input required prop:value=move || name.get() on:input=move |event| name.set(event_target_value(&event))/></label>
                 <label><span>"Visibility"</span><select prop:value=move || visibility.get() on:change=move |event| visibility.set(event_target_value(&event))><VisibilityOptions value=visibility/></select></label>
-                <div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review creation"</button></div>
+                <div class="form-actions"><a class="secondary-button" href=cancel_path>"Cancel"</a><button class="button" type="submit" disabled=move || busy.get()>"Review creation"</button></div>
             </form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> })}
         </div>
     }
@@ -964,6 +968,7 @@ fn CacheInventory(
     owner_scope_key: String,
     creation_only: bool,
 ) -> impl IntoView {
+    let cancel_path = format!("/-/org/{organization}/caches");
     let can_create = client.allows("registry.configure");
     let inventory_client = client.clone();
     let list_scope = owner_scope_key.clone();
@@ -1064,7 +1069,7 @@ fn CacheInventory(
         });
     });
     view! { <div class="workflow-stack">{(!creation_only).then(|| view! { <section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Reusable object stores"</p><div class="section-title"><h2>"Binary caches"</h2><HelpTooltip term="Binary caches" summary="Caches may stand alone or be shared by several registry consumer stacks and retention subscriptions."/></div></div>{can_create.then(|| view! { <a class="button" href=format!("/-/org/{organization}/caches/new")>"Create binary cache"</a> })}</div><Suspense fallback=move || view! { <p class="loading-row">"Loading caches…"</p> }>{move || { let organization = organization.clone(); Suspend::new(async move { match inventory.await.as_ref() { Ok(caches) if caches.is_empty() => view! { <p class="muted">"No binary caches in this organization."</p> }.into_any(), Ok(caches) => view! { <div class="resource-grid">{caches.iter().cloned().map(|cache| { let href = format!("/-/org/{}/caches/{}", organization, cache.slug.rsplit('/').next().unwrap_or(&cache.slug)); view! { <a class="resource-card" href=href><div><span class="resource-kind">{cache.visibility}</span><h3>{cache.name}</h3><code>{cache.slug}</code><p class="resource-metric">{format!("{} objects · {} placements", cache.object_count, cache.placement_count)}</p></div><span class="card-arrow">"→"</span></a> } }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section> })}
-    {creation_only.then(|| view! { <section class="panel editor-panel"><h2>"Create binary cache"</h2><form class="editor-form compact-form" on:submit=on_plan><label><span>"Cache slug"</span><input required placeholder="build" prop:value=move || cache_name.get() on:input=move |event| cache_name.set(event_target_value(&event))/></label><label><span>"Display name"</span><input required prop:value=move || display_name.get() on:input=move |event| display_name.set(event_target_value(&event))/></label><label><span>"Visibility"</span><select prop:value=move || visibility.get() on:change=move |event| visibility.set(event_target_value(&event))><VisibilityOptions value=visibility/></select></label><label><span>"Compression"</span><select prop:value=move || compression.get() on:change=move |event| compression.set(event_target_value(&event))><option value="zstd">"Zstandard"</option><option value="xz">"XZ"</option><option value="none">"None"</option></select></label><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review creation"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> })}</div> }
+    {creation_only.then(|| view! { <section class="panel editor-panel"><h2>"Create binary cache"</h2><form class="editor-form compact-form" on:submit=on_plan><label><span>"Cache slug"</span><input required placeholder="build" prop:value=move || cache_name.get() on:input=move |event| cache_name.set(event_target_value(&event))/></label><label><span>"Display name"</span><input required prop:value=move || display_name.get() on:input=move |event| display_name.set(event_target_value(&event))/></label><label><span>"Visibility"</span><select prop:value=move || visibility.get() on:change=move |event| visibility.set(event_target_value(&event))><VisibilityOptions value=visibility/></select></label><label><span>"Compression"</span><select prop:value=move || compression.get() on:change=move |event| compression.set(event_target_value(&event))><option value="zstd">"Zstandard"</option><option value="xz">"XZ"</option><option value="none">"None"</option></select></label><div class="form-actions"><a class="secondary-button" href=cancel_path>"Cancel"</a><button class="button" type="submit" disabled=move || busy.get()>"Review creation"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> })}</div> }
 }
 
 #[component]
@@ -1483,7 +1488,7 @@ fn OrganizationDelete(
             busy.set(false);
         });
     });
-    view! { <section class="panel danger-panel"><p class="section-kicker">"Destructive operation"</p><h2>"Delete organization"</h2><p>"The plan will fail closed while owned projects, registries, caches, grants, or other resources remain."</p><form class="editor-form" on:submit=on_plan><label><span>{format!("Type `{slug}` to continue")}</span><input autocomplete="off" prop:value=move || confirmation.get() on:input=move |event| confirmation.set(event_target_value(&event))/></label><div class="form-actions"><button class="danger-button" type="submit" disabled=move || busy.get() || confirmation.get() != confirmation_target>"Review deletion"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
+    view! { <section class="panel danger-panel"><p class="section-kicker">"Destructive operation"</p><h2>"Delete organization"</h2><p>"The plan will fail closed while owned projects, registries, caches, grants, or other resources remain."</p><form class="editor-form" on:submit=on_plan><label class="full-field"><span>"Type "<code>{slug}</code>" to continue"</span><input autocomplete="off" prop:value=move || confirmation.get() on:input=move |event| confirmation.set(event_target_value(&event))/></label><div class="form-actions"><button class="danger-button" type="submit" disabled=move || busy.get() || confirmation.get() != confirmation_target>"Review deletion"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
 }
 
 #[component]
@@ -1592,7 +1597,7 @@ fn TopologyDelete(
             busy.set(false);
         });
     });
-    view! { <section class="panel danger-panel"><p class="section-kicker">"Destructive operation"</p><h2>{format!("Delete {kind}")}</h2><p>"The server plan enumerates dependent placements, routes, grants, integrations, and retention roots. No dependent resource is silently removed."</p><form class="editor-form" on:submit=on_plan><label><span>{format!("Type `{stable_id}` to continue")}</span><input autocomplete="off" prop:value=move || confirmation.get() on:input=move |event| confirmation.set(event_target_value(&event))/></label><div class="form-actions"><button class="danger-button" type="submit" disabled=move || busy.get() || confirmation.get() != confirmation_target>"Review deletion"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
+    view! { <section class="panel danger-panel"><p class="section-kicker">"Destructive operation"</p><h2>{format!("Delete {kind}")}</h2><p>"The server plan enumerates dependent placements, routes, grants, integrations, and retention roots. No dependent resource is silently removed."</p><form class="editor-form" on:submit=on_plan><label class="full-field"><span>"Type "<code>{stable_id}</code>" to continue"</span><input autocomplete="off" prop:value=move || confirmation.get() on:input=move |event| confirmation.set(event_target_value(&event))/></label><div class="form-actions"><button class="danger-button" type="submit" disabled=move || busy.get() || confirmation.get() != confirmation_target>"Review deletion"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
 }
 
 fn cache_path(slug: &str) -> String {
