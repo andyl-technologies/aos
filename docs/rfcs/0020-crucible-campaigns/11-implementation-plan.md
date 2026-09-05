@@ -363,6 +363,17 @@ flight does not close that liveness investigation. Aggregate campaign grant
 enforcement for subsequent planner issuance remains open; request-local
 admission budgets are a separate check.
 
+`CampaignRepository::budget_projection` now reports snapshot-bound aggregate
+grants and spending without changing historical validity. It counts grants only
+at canonical command keys, proposals only at canonical proposal keys, and unique
+attempts from the authenticated dense admission sequence. Repeated auxiliary
+indexes and command retries do not inflate totals. Additive `u64` grants sum
+exactly in `u128`; historical overspending remains visible with zero remaining
+allowance. Regressions cover paged grants, retries, cold reconstruction, large
+totals, initial discovery spending, and a real historical unbudgeted admission.
+This read-only query fails closed beyond 65,536 entries per scanned index; it is
+not yet admission enforcement or the final large-campaign indexed projection.
+
 Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
 `crucible-daemon`.
 

@@ -782,6 +782,7 @@ fn test_planner_request_digest(invocation: PlannerInvocationId) -> CampaignHash 
     )
 }
 
+mod budget;
 mod coordination;
 mod discovery;
 mod execution;

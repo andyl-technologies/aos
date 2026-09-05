@@ -864,6 +864,7 @@ struct RepositoryMutationGuard<'a> {
 
 mod ancestry;
 mod attempt_closure;
+mod budget;
 mod closure;
 mod discovery;
 mod execution;
@@ -879,6 +880,8 @@ mod records;
 mod retention;
 mod supervisor;
 mod transactions;
+
+pub use budget::CampaignBudgetProjection;
 
 use attempt_closure::non_modeled_attempt_key;
 use finding::finding_occurrence_key;

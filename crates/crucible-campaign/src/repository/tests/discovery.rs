@@ -203,6 +203,11 @@ fn initial_discovery_requires_running_state_and_attempt_budget() {
             .is_empty()
     );
     let after = repository.head("discovery").expect("after admission");
+    let budget = repository.budget_projection("discovery").expect("budget");
+    assert_eq!(budget.granted_attempts, 1);
+    assert_eq!(budget.spent_attempts, 1);
+    assert_eq!(budget.remaining_attempts(), 0);
+    assert_eq!(budget.spent_proposals, 0);
     let mut unchanged = before.snapshot().roots();
     unchanged.accounting = after.snapshot().roots().accounting;
     unchanged.coordination = after.snapshot().roots().coordination;
