@@ -87,19 +87,20 @@ Complete this section before starting builds or requesting signatures.
 ## 2. Freeze what will be released
 
 - [ ] **Record the support matrix and acceptance criteria.** Use the
-  [support levels and target checks](qualification.md#support-levels-and-target-checks).
+  [target support matrix](qualification.md#target-support-matrix).
   List both architectures for QEMU images and OCI containers, every published
   package/platform cell, and any physical-hardware or cloud support being added.
-  Record the test environment, current support level, intended level, and evidence
-  location for each row. Use the concrete checks below that table as the test
+  Record the assigned tier, promised artifacts, test environment and evidence
+  location for each row. Use the concrete acceptance checks as the test
   program's acceptance criteria.
 
-  **Check when:** all four required runtime rows have environments and assigned
+  **Check when:** all four Tier 1 runtime combinations have environments and assigned
   tests; package roles and representative hardware coverage have been reviewed;
-  and every intended support claim has explicit pass conditions. Future physical
-  and cloud support may remain planned without blocking this release. Once
-  advertised as supported, its required checks block release too. A passing QEMU
-  result alone cannot check off physical hardware or cloud support.
+  and every tier's artifact and testing obligations are accounted for. Tier 2
+  physical targets require the promised generic images; Tier 3 cloud targets
+  add no release gate. Any promotion to Tier 1 must have a reviewed policy change
+  and required cases before the plan is frozen. A passing QEMU result alone
+  cannot check off physical hardware or cloud qualification.
 
 - [ ] **Export the requirements and prepare the request.** From the clean source
   checkout, run this with the selected class:
@@ -232,8 +233,9 @@ every output under `AOS_RELEASE_WORK`, using a new path for each command.
   **Check when:** every listed case has an assigned program/environment or
   operator. The output says `not-evaluated`: this box means the work is assigned,
   not that it passed. An unavailable environment does not make a case optional.
-  Compare the cases with the recorded support matrix: every supported row must
-  be covered, with the cycle counts and package checks from the acceptance criteria.
+  Compare the cases with the recorded support matrix: every Tier 1 combination
+  must be covered, with the cycle counts and package checks from the acceptance
+  criteria. Verify Tier 2 artifact obligations in the build report.
 
 ### Manual checks before collecting the staging report
 
@@ -305,10 +307,11 @@ a required manual result, stop and fix that tooling.
   with no secret material in the messages. Record those acknowledgments. A log
   entry without delivered notification is a failure.
 
-- [ ] **Test any additional physical-hardware claims.** If the release claims
-  only reference VMs and container runtimes, record that scope and mark this
-  item inapplicable. Otherwise install the exact candidate on each claimed
-  configuration and record model, firmware, controller, storage durability
+- [ ] **Test any physical-hardware qualification claims.** If physical targets
+  remain Tier 2 and no additional tested feature is advertised, record that scope
+  and mark this item inapplicable. For Tier 1 promotion or a tested feature claim,
+  install the exact candidate on each representative configuration and record
+  model, firmware, controller, storage durability
   settings, and TPM state. On disposable data, interrupt power during update
   and persistence, recover, verify acknowledged data, and update again.
   Redundant-storage claims also need disk replacement, boot from each ESP,
