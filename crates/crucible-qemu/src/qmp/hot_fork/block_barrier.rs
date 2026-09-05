@@ -1,5 +1,11 @@
 //! Retained QEMU-owned block-graph writer and all-block drain barrier.
 
+mod source_proof;
+
+pub use source_proof::{
+    QMP_HOT_FORK_BLOCK_SOURCE_PROOF_SCHEMA_VERSION, QmpHotForkBlockSourceProof,
+};
+
 use blake3::Hash;
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -10,7 +16,7 @@ use crate::qmp::{QmpCommandKind, QmpError};
 /// QMP command name used for QEMU's reversible graph and block-drain barrier.
 pub const QMP_HOT_FORK_BLOCK_BARRIER_COMMAND: &str = "crucible-hot-fork-block-barrier";
 /// Version of the QEMU-owned graph-writer and block-drain barrier contract.
-pub const QMP_HOT_FORK_BLOCK_BARRIER_SCHEMA_VERSION: u32 = 3;
+pub const QMP_HOT_FORK_BLOCK_BARRIER_SCHEMA_VERSION: u32 = 4;
 /// Maximum UTF-8 byte length of a QEMU block-graph node name.
 pub const QMP_HOT_FORK_BLOCK_NODE_NAME_MAX_BYTES: usize = 31;
 
@@ -164,6 +170,7 @@ pub struct QmpHotForkBlockBarrierState {
     snapshot_bound: bool,
     snapshot_complete: bool,
     snapshot_roots: Vec<QmpHotForkBlockSnapshotRoot>,
+    snapshot_sources: QmpHotForkBlockSourceProof,
     complete: bool,
     backend_count: u64,
     rooted_backends: u64,
@@ -196,6 +203,7 @@ impl QmpHotForkBlockBarrierState {
             snapshot_bound: true,
             snapshot_complete: true,
             snapshot_roots: Vec::new(),
+            snapshot_sources: QmpHotForkBlockSourceProof::empty_frozen(),
             complete: true,
             backend_count: 0,
             rooted_backends: 0,
@@ -315,6 +323,12 @@ impl QmpHotForkBlockBarrierState {
         &self.snapshot_roots
     }
 
+    /// Returns the native source provenance authenticated by snapshot binding.
+    #[must_use]
+    pub const fn snapshot_sources(&self) -> &QmpHotForkBlockSourceProof {
+        &self.snapshot_sources
+    }
+
     /// Returns whether QEMU observed the complete bounded backend registry.
     #[must_use]
     pub const fn complete(&self) -> bool {
@@ -420,6 +434,7 @@ pub(crate) fn parse_hot_fork_block_barrier_state_for(
         "snapshot-bound",
         "snapshot-complete",
         "snapshot-roots",
+        "snapshot-sources",
         "complete",
         "backend-count",
         "rooted-backends",
@@ -506,6 +521,10 @@ pub(crate) fn parse_hot_fork_block_barrier_state_for(
         .get("snapshot-complete")
         .and_then(Value::as_bool)
         .ok_or_else(&malformed)?;
+    let snapshot_sources = QmpHotForkBlockSourceProof::parse(
+        command,
+        object.get("snapshot-sources").ok_or_else(&malformed)?,
+    )?;
     let snapshot_root_values = object
         .get("snapshot-roots")
         .and_then(Value::as_array)
@@ -630,7 +649,13 @@ pub(crate) fn parse_hot_fork_block_barrier_state_for(
         && snapshot_owner_thread_id == owner_thread_id
         && snapshot_backend_generation != 0
         && snapshot_graph_mutation_generation == held_graph_mutation_generation
-        && snapshot_roots.len() as u64 == writable_rooted_backends;
+        && if snapshot_sources.frozen() {
+            writable_backends == 0
+                && snapshot_roots.len() as u64
+                    == snapshot_sources.originally_writable_backend_count()
+        } else {
+            snapshot_roots.len() as u64 == writable_rooted_backends
+        };
     let expected_quiescent = held
         && graph_stable
         && complete
@@ -643,6 +668,11 @@ pub(crate) fn parse_hot_fork_block_barrier_state_for(
         && writable_rooted_backends <= writable_backends
         && writable_rooted_backends <= rooted_backends
         && quiesced_rooted_backends <= rooted_backends
+        && (!snapshot_sources.frozen()
+            || (snapshot_bound
+                && rooted_backends == backend_count
+                && rooted_backends <= snapshot_sources.root_count()
+                && snapshot_sources.originally_writable_backend_count() <= rooted_backends))
         && graph_stable == expected_graph_stable
         && snapshot_complete == expected_snapshot_complete
         && quiescent == expected_quiescent
@@ -702,6 +732,7 @@ pub(crate) fn parse_hot_fork_block_barrier_state_for(
         snapshot_bound,
         snapshot_complete,
         snapshot_roots,
+        snapshot_sources,
         complete,
         backend_count,
         rooted_backends,

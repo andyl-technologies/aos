@@ -148,7 +148,9 @@ pub(crate) fn parse_hot_fork_template_state(
     let aio_proof_valid = acknowledged_proofs & QMP_HOT_FORK_AIO_PROOF == 0
         || (transaction_active && bh_timer_barrier.quiescent());
     let block_proof_valid = (acknowledged_proofs & QMP_HOT_FORK_BLOCK_PROOF != 0)
-        == (transaction_active && block_barrier.snapshot_complete());
+        == (transaction_active
+            && block_barrier.snapshot_complete()
+            && block_barrier.snapshot_sources().frozen());
     let plugin_ring_proof_valid =
         plugin_ring_proof_shape_valid(acknowledged_proofs, resource_stage);
     let ordinary_barriers_unheld =

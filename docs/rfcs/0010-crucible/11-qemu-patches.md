@@ -3681,6 +3681,32 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   bit or whole-world execution claim is added by this primitive.
 - **Risk:** F.
 
+### crucible-hot-fork-template-native-sources — freeze and restore retained sources
+
+- **Patch:** `0201-crucible-freeze-retained-template-native-sources.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-22].
+- **Mechanism:** after validating the original immutable-root boundary, the
+  coordinator retains the complete native source set, releases block barriers,
+  freezes the sources, reacquires the barriers, and rebinds exact roots using
+  original backend write permissions. Block schema 4 carries source-proof
+  schema 1; template schema 25 requires that proof for bit 5. Current write
+  counts remain truthful. Abort releases barriers before native restoration and
+  retains failed restoration for explicit retry. Physical fork revalidates the
+  native set and rejects nonempty graphs until child-private handoff exists.
+- **Micro-test:** native tests reject unfrozen, absent, incomplete, and
+  mismatched bindings, validate original permission provenance after freeze,
+  and clear proof on release. An empty inherited capability can discard only
+  its child-local containers; nonempty inherited owners remain rejected.
+  `checks.crucible.phase6.qemuSourceSetLifecycle` runs two live VMState
+  prepare/abort transactions, then resumes and saves new VMState after each
+  restoration. The live flight exposed and now covers legal asynchronous abort
+  replies that the host previously rejected as malformed.
+- **Inertness:** ordinary snapshot binding keeps its current-permission
+  semantics. Native capabilities remain QEMU-private; only versioned scalar
+  provenance crosses QMP. No child-private graph or whole-world execution
+  acceptance is claimed by this increment.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.

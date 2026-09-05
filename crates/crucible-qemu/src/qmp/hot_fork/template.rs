@@ -5,6 +5,8 @@ mod native_worker_tests;
 mod preparation;
 #[cfg(test)]
 mod preparation_tests;
+#[cfg(test)]
+mod source_proof_tests;
 
 mod parse;
 pub(crate) use parse::parse_hot_fork_template_state;
@@ -18,7 +20,7 @@ use super::{
 /// QMP command name used for QEMU's retained template-preparation coordinator.
 pub const QMP_HOT_FORK_TEMPLATE_COMMAND: &str = "crucible-hot-fork-template";
 /// Version of the QEMU-owned template-preparation transaction contract.
-pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 24;
+pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 25;
 
 const QMP_HOT_FORK_AIO_PROOF: u64 = 1_u64 << 3;
 const QMP_HOT_FORK_RCU_PROOF: u64 = 1_u64 << 4;

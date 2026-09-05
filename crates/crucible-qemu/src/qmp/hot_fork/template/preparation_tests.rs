@@ -104,6 +104,133 @@ fn barriers_report() -> Value {
     report
 }
 
+#[test]
+fn abort_retains_pending_block_release_and_source_restoration()
+-> Result<(), Box<dyn std::error::Error>> {
+    let pending = abort_pending_report();
+    let completed = completed_report("aborted");
+    let mut restoring = completed.clone();
+    restoring["outcome"] = json!("draining");
+    restoring["transaction-active"] = json!(true);
+    restoring["rollback-complete"] = json!(false);
+    let mut client = client([pending, restoring, completed], 3)?;
+
+    let releasing = client.abort_hot_fork_template()?;
+    assert!(releasing.transaction_active());
+    assert!(releasing.block_barrier().held());
+    assert!(releasing.block_barrier().snapshot_sources().frozen());
+    assert!(!releasing.rollback_complete());
+    let restoring = client.abort_hot_fork_template()?;
+    assert_eq!(restoring.generation(), releasing.generation());
+    assert!(restoring.transaction_active());
+    assert!(!restoring.block_barrier().held());
+    assert!(!restoring.rollback_complete());
+    let released = client.abort_hot_fork_template()?;
+    assert_eq!(released.generation(), releasing.generation());
+    assert!(released.rollback_complete());
+    assert!(!released.block_barrier().snapshot_sources().frozen());
+    assert!(
+        requests(&client)?[1..]
+            .iter()
+            .all(|request| request["arguments"]["action"] == "abort")
+    );
+    Ok(())
+}
+
+#[test]
+fn pending_completion_is_delivered_before_the_next_template_action()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut client = client(
+        [
+            completed_report("blocked"),
+            completed_report("aborted"),
+            completed_report("aborted"),
+            completed_report("blocked"),
+        ],
+        4,
+    )?;
+    assert!(client.query_hot_fork_template()?.rollback_complete());
+    assert!(client.query_hot_fork_template()?.rollback_complete());
+    assert!(client.prepare_hot_fork_template(&[])?.rollback_complete());
+    assert!(client.abort_hot_fork_template()?.rollback_complete());
+    Ok(())
+}
+
+#[test]
+fn abort_rejects_a_prepared_response() -> Result<(), Box<dyn std::error::Error>> {
+    let mut client = client([prepared_report()], 1)?;
+    assert!(matches!(
+        client.abort_hot_fork_template(),
+        Err(QmpError::MalformedTypedResponse { .. })
+    ));
+    Ok(())
+}
+
+#[test]
+fn abort_draining_response_must_release_ordinary_barriers() -> Result<(), Box<dyn std::error::Error>>
+{
+    let mut client = client([barriers_report()], 1)?;
+    assert!(matches!(
+        client.abort_hot_fork_template(),
+        Err(QmpError::MalformedTypedResponse { .. })
+    ));
+    Ok(())
+}
+
+fn abort_pending_report() -> Value {
+    let mut report = barriers_report();
+    report["acknowledged-proofs"] = json!(39);
+    report["missing-proofs"] = json!(88);
+    for barrier in ["plugin-barrier", "rcu-barrier", "bh-timer-barrier"] {
+        report[barrier]["held"] = json!(false);
+        report[barrier]["quiescent"] = json!(false);
+    }
+    report["plugin-barrier"]["mapping-dontfork"] = json!(false);
+    report["plugin-barrier"]["rings-held"] = json!(0);
+    report["rcu-barrier"]["owner-thread-id"] = json!(0);
+    report["bh-timer-barrier"]["owner-thread-id"] = json!(0);
+    report
+}
+
+fn completed_report(outcome: &str) -> Value {
+    let mut report = abort_pending_report();
+    report["outcome"] = json!(outcome);
+    report["transaction-active"] = json!(false);
+    report["rollback-complete"] = json!(true);
+    report["acknowledged-proofs"] = json!(7);
+    report["missing-proofs"] = json!(120);
+    let block = &mut report["block-barrier"];
+    for field in [
+        "held",
+        "graph-held",
+        "graph-stable",
+        "snapshot-bound",
+        "snapshot-complete",
+        "quiescent",
+    ] {
+        block[field] = json!(false);
+    }
+    for field in [
+        "owner-thread-id",
+        "graph-owner-thread-id",
+        "held-graph-mutation-generation",
+        "snapshot-backend-generation",
+        "snapshot-graph-mutation-generation",
+        "snapshot-owner-thread-id",
+        "quiesced-rooted-backends",
+    ] {
+        block[field] = json!(0);
+    }
+    block["writable-backends"] = json!(1);
+    block["writable-rooted-backends"] = json!(1);
+    block["snapshot-roots"] = json!([]);
+    block["snapshot-sources"] = json!({
+        "schema-version": 1, "frozen": false, "root-count": 0, "node-count": 0,
+        "originally-writable-root-count": 0, "originally-writable-backend-count": 0
+    });
+    report
+}
+
 fn client<const N: usize>(
     reports: [Value; N],
     maximum_polls: usize,

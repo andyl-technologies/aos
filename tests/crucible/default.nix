@@ -1740,6 +1740,9 @@ in rec {
     };
   };
   phase6 = {
+    qemuSourceSetLifecycle = import ./phase6-qemu-source-set-lifecycle.nix {
+      inherit pkgs lib;
+    };
     qemuNativeSourceSet = import ./phase6-qemu-native-source-set.nix {
       inherit pkgs;
       taskIds = [];
