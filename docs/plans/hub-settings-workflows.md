@@ -161,5 +161,26 @@ existing staging credentials were rejected, so no authenticated latency claim is
 The schema additions use the existing migration ledger and require no reset.
 The route-list continuation token is now a stable route-ID cursor; callers
 must start a fresh listing after the cutover. Provider accounts and CDN
-attachments remain external prerequisites, and no live deployment or database
-reset was performed.
+attachments remain external prerequisites. Local verification did not exercise
+successful external CDN activation; staging deployment evidence follows.
+
+Staging deployment verification (2026-09-05 UTC):
+
+- Deployed source `f1a411c1d915163fca10d6eb41fffe3d5c101412` using immutable
+  installer `/nix/store/ii0bqqhh53pa9drwzkif58mnczyc32gd-aos-hub-cloudflare-0.1.0`.
+  The hosted deployment identity matches `staging-` plus that full commit.
+- Cloudflare OAuth identified the ANDYL account. Live provider settings showed
+  database instance `hub`, contrary to the earlier runbook's `hub-v2`. The old
+  deployed source already used schema identity `aos-hub/topology-hard-cutover/2`;
+  the update retained `hub`, existing domains, storage bindings, and secrets.
+- Public registry and registry health return HTTP 200. Containers now redirects
+  anonymous users to login instead of returning 404; Delivery also reaches login.
+  Served console JavaScript, WebAssembly, and CSS match the packaged bytes.
+- The old recovery endpoint returned 404, so no predeployment bookmark was
+  captured. The new endpoint successfully captured a postdeployment bookmark
+  for database `hub` and the verified deployment identity. No database reset or
+  secret rotation was performed.
+- Authenticated hosted workflow checks and Delivery latency remain pending:
+  the separate Hub profile refresh still returns `invalid_grant`. Cloudflare
+  authentication does not renew a Hub session. Local native/VM/browser evidence
+  above remains the completed workflow verification.
