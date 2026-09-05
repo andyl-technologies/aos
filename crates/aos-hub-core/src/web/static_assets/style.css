@@ -1707,7 +1707,11 @@ label.inline {
 .doc-count { display: block; margin-left: 1.8rem; font-size: .7rem; }
 .doc-more { display: inline-block; margin: .8rem 0; }
 .doc-reader { min-width: 0; }
-.doc-reader h2 { overflow-wrap: anywhere; margin-top: .8rem; }
+/* Option paths and folder titles are identifiers: keep their case and spacing. */
+.doc-reader h2 { overflow-wrap: anywhere; margin-top: .8rem; text-transform: none; letter-spacing: normal; }
+.doc-reader ul, .doc-reader ol { margin: .4rem 0 .8rem 1.4rem; padding: 0; }
+.doc-reader li { margin: .2rem 0; }
+.doc-reader p { margin: .5rem 0; }
 .doc-reader h3 { font-size: .95rem; }
 .doc-reader pre { max-width: 100%; overflow: auto; }
 .doc-context { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .7rem; font-size: .8rem; color: var(--dim); }
