@@ -105,15 +105,14 @@ in
     kind = "standard";
     superseded_after_trains = 2;
   };
-  assert contract.support.trains == [];
-  assert (composed.config.qualification.export.support.trains)
-  == [
-    {
-      train = "2026.9";
+  assert contract.support.trains == {};
+  assert composed.config.qualification.export.support.trains
+  == {
+    "2026.9" = {
       kind = "lts";
       supported_until = "2028-09-30";
-    }
-  ];
+    };
+  };
   assert rejects {qualification.support.trains."2026.09" = {};};
   assert rejects {qualification.support.trains."2026.9".supported_until = "2028-13-01";};
   assert rejects {qualification.support.trains."2026.9".kind = "lts";};

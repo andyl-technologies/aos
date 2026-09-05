@@ -17,17 +17,21 @@
 //! kind = "standard"
 //! superseded_after_trains = 2
 //!
-//! [[support.trains]]
-//! train = "2026.9"
+//! [support.trains."2026.9"]
 //! kind = "lts"
 //! supported_until = "2028-09-30"
 //! ```
+//!
+//! Each train is its own table so the source branch that maintains that train
+//! can publish its own entry: a release from train `T` may write only
+//! `support.trains."T"`, and only the newest train may write `default`.
 //!
 //! Everything here is pure and `wasm`-clean: dates are validated and compared
 //! with civil-calendar arithmetic rather than a clock crate, and callers pass
 //! "today" in explicitly.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fmt;
 
 /// Number of days before `supported_until` at which a train is "ending soon".
@@ -88,8 +92,6 @@ impl Default for SupportDefault {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SupportTrain {
-    /// The train as `major.minor` without leading zeros.
-    pub train: String,
     /// Support class.
     #[serde(default = "default_kind")]
     pub kind: SupportKind,
@@ -106,9 +108,9 @@ pub struct SupportPolicy {
     /// Rule for trains without an explicit entry.
     #[serde(default)]
     pub default: SupportDefault,
-    /// Explicit per-train statements.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub trains: Vec<SupportTrain>,
+    /// Explicit per-train statements keyed by `major.minor`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub trains: BTreeMap<String, SupportTrain>,
 }
 
 /// A policy violation, safe to show to the reader.
@@ -155,41 +157,29 @@ impl SupportPolicy {
     /// Checks train keys, dates, and the LTS end-date rule.
     ///
     /// # Errors
-    /// Returns the first violated rule: a malformed train key, a duplicate
-    /// train, an invalid date, an LTS train without an end date, or a
-    /// rolling count of zero.
+    /// Returns the first violated rule: a malformed train key, an invalid
+    /// date, an LTS train without an end date, or a rolling count of zero.
     pub fn validate(&self) -> Result<(), SupportPolicyError> {
         if self.default.superseded_after_trains == 0 {
             return Err(SupportPolicyError(
                 "support.default.superseded_after_trains must be at least one".into(),
             ));
         }
-        let mut seen = Vec::with_capacity(self.trains.len());
-        for entry in &self.trains {
-            let Some(train) = parse_train(&entry.train) else {
+        for (key, entry) in &self.trains {
+            if parse_train(key).is_none() {
                 return Err(SupportPolicyError(format!(
-                    "support train {:?} is not major.minor without leading zeros",
-                    entry.train
-                )));
-            };
-            if seen.contains(&train) {
-                return Err(SupportPolicyError(format!(
-                    "support train {} is listed twice",
-                    entry.train
+                    "support train {key:?} is not major.minor without leading zeros"
                 )));
             }
-            seen.push(train);
             if let Some(date) = &entry.supported_until {
                 if Date::parse(date).is_none() {
                     return Err(SupportPolicyError(format!(
-                        "support train {} has an invalid supported_until date {date:?}",
-                        entry.train
+                        "support train {key} has an invalid supported_until date {date:?}"
                     )));
                 }
             } else if entry.kind == SupportKind::Lts {
                 return Err(SupportPolicyError(format!(
-                    "long-term-support train {} must state supported_until",
-                    entry.train
+                    "long-term-support train {key} must state supported_until"
                 )));
             }
         }
@@ -201,7 +191,16 @@ impl SupportPolicy {
     pub fn entry(&self, train: (u64, u64)) -> Option<&SupportTrain> {
         self.trains
             .iter()
-            .find(|entry| parse_train(&entry.train) == Some(train))
+            .find(|(key, _)| parse_train(key) == Some(train))
+            .map(|(_, entry)| entry)
+    }
+
+    /// Whether any train is marked long-term support.
+    #[must_use]
+    pub fn has_lts(&self) -> bool {
+        self.trains
+            .values()
+            .any(|entry| entry.kind == SupportKind::Lts)
     }
 
     /// Returns the support class of a train.
@@ -244,6 +243,12 @@ impl SupportPolicy {
             }
         }
     }
+}
+
+/// Formats a train as its `major.minor` key.
+#[must_use]
+pub fn train_key(train: (u64, u64)) -> String {
+    format!("{}.{}", train.0, train.1)
 }
 
 /// Parses `major.minor` without leading zeros.
@@ -366,18 +371,22 @@ mod tests {
     fn policy() -> SupportPolicy {
         SupportPolicy {
             default: SupportDefault::default(),
-            trains: vec![
-                SupportTrain {
-                    train: "2026.9".into(),
-                    kind: SupportKind::Lts,
-                    supported_until: Some("2028-09-30".into()),
-                },
-                SupportTrain {
-                    train: "2026.3".into(),
-                    kind: SupportKind::Standard,
-                    supported_until: Some("2026-06-30".into()),
-                },
-            ],
+            trains: BTreeMap::from([
+                (
+                    "2026.9".to_string(),
+                    SupportTrain {
+                        kind: SupportKind::Lts,
+                        supported_until: Some("2028-09-30".into()),
+                    },
+                ),
+                (
+                    "2026.3".to_string(),
+                    SupportTrain {
+                        kind: SupportKind::Standard,
+                        supported_until: Some("2026-06-30".into()),
+                    },
+                ),
+            ]),
         }
     }
 
@@ -420,21 +429,19 @@ mod tests {
     fn validation_enforces_keys_dates_and_lts_end_dates() {
         policy().validate().unwrap();
         let mut broken = policy();
-        broken.trains[0].supported_until = None;
+        broken.trains.get_mut("2026.9").unwrap().supported_until = None;
         assert!(broken
             .validate()
             .unwrap_err()
             .to_string()
             .contains("must state"));
         let mut broken = policy();
-        broken.trains[1].train = "2026.03".into();
+        let entry = broken.trains.remove("2026.3").unwrap();
+        broken.trains.insert("2026.03".into(), entry);
         assert!(broken.validate().is_err());
         let mut broken = policy();
-        broken.trains[1].supported_until = Some("2026-06-31".into());
+        broken.trains.get_mut("2026.3").unwrap().supported_until = Some("2026-06-31".into());
         assert!(broken.validate().is_err());
-        let mut broken = policy();
-        broken.trains.push(broken.trains[0].clone());
-        assert!(broken.validate().unwrap_err().to_string().contains("twice"));
         let mut broken = policy();
         broken.default.superseded_after_trains = 0;
         assert!(broken.validate().is_err());
@@ -451,6 +458,8 @@ mod tests {
             }
         );
         assert_eq!(policy.kind((2026, 9)), SupportKind::Lts);
+        assert!(policy.has_lts());
+        assert_eq!(train_key((2026, 9)), "2026.9");
         assert_eq!(
             policy.classify((2026, 3), 3, today),
             SupportState::EndOfLife {
@@ -481,13 +490,11 @@ mod tests {
 kind = "standard"
 superseded_after_trains = 2
 
-[[trains]]
-train = "2026.9"
+[trains."2026.9"]
 kind = "lts"
 supported_until = "2028-09-30"
 
-[[trains]]
-train = "2026.3"
+[trains."2026.3"]
 supported_until = "2026-06-30"
 "#;
         let from_toml: SupportPolicy = toml::from_str(toml_text).unwrap();
@@ -495,7 +502,7 @@ supported_until = "2026-06-30"
         let json = serde_json::to_string(&from_toml).unwrap();
         assert_eq!(
             json,
-            r#"{"default":{"kind":"standard","superseded_after_trains":2},"trains":[{"train":"2026.9","kind":"lts","supported_until":"2028-09-30"},{"train":"2026.3","kind":"standard","supported_until":"2026-06-30"}]}"#
+            r#"{"default":{"kind":"standard","superseded_after_trains":2},"trains":{"2026.3":{"kind":"standard","supported_until":"2026-06-30"},"2026.9":{"kind":"lts","supported_until":"2028-09-30"}}}"#
         );
         let empty: SupportPolicy = serde_json::from_str("{}").unwrap();
         assert_eq!(empty, SupportPolicy::default());

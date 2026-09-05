@@ -431,12 +431,7 @@ fn filter_form(
         );
     }
     let lts_selected = query.status.as_deref() == Some(ReleaseStatus::LTS_TOKEN);
-    let has_lts = policy.is_some_and(|policy| {
-        policy
-            .trains
-            .iter()
-            .any(|train| train.kind == SupportKind::Lts)
-    });
+    let has_lts = policy.is_some_and(SupportPolicy::has_lts);
     if has_lts || lts_selected {
         let _ = write!(
             body,
@@ -894,8 +889,8 @@ mod tests {
             .collect::<Vec<_>>();
         let policy: SupportPolicy = serde_json::from_str(
             r#"{"default":{"kind":"standard","superseded_after_trains":1},
-                "trains":[{"train":"2025.12","kind":"lts","supported_until":"2027-12-31"},
-                          {"train":"2026.8","supported_until":"2026-09-30"}]}"#,
+                "trains":{"2025.12":{"kind":"lts","supported_until":"2027-12-31"},
+                          "2026.8":{"supported_until":"2026-09-30"}}}"#,
         )
         .unwrap();
         let today = Date::parse("2026-09-05").unwrap();

@@ -37,6 +37,7 @@ pub mod sb_certs;
 pub mod state;
 pub mod static_upload;
 pub mod store;
+pub mod support;
 pub(crate) mod thinpack;
 pub mod tuf;
 pub mod verify;

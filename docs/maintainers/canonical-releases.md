@@ -286,6 +286,14 @@ aos release finalize-registry \
   --git-offset-minutes 0
 ```
 
+The transaction's optional `support` object states the `[support]` tables this
+release writes into `registry.toml`: its own train's entry and, only from the
+newest train, the rolling `default`. Finalization derives the same object from
+the plan's frozen contract and refuses a transaction that differs, and the
+policy digest describes `registry.toml` after those tables are applied. A
+contract that names another train's entry is rejected, so a backport release
+can only extend its own train.
+
 Omit both container arguments for a release with no OCI artifact; finalization
 removes any prior release's fixed-path sidecar from the new signed tree.
 Supplying only one is invalid. The sidecar definition must be either the

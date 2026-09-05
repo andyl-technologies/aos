@@ -61,15 +61,15 @@ require_signed_ukis = true
 # Omitting it selects the highest verified non-prerelease semantic version.
 default_release = "1.2.0"
 
-# Optional release-train support promise, copied verbatim from the
-# qualification contract's `support` export. Trains without an entry follow
-# the rolling default; LTS trains must state their end date.
+# Optional release-train support promise, written by release publications
+# from the qualification contract's `support` export. `default` belongs to
+# the newest train; each `trains."major.minor"` table belongs to the source
+# branch that maintains that train.
 [support.default]
 kind = "standard"
 superseded_after_trains = 2
 
-[[support.trains]]
-train = "2026.9"
+[support.trains."2026.9"]
 kind = "lts"
 supported_until = "2028-09-30"
 
@@ -317,17 +317,24 @@ A selected version remains in page URLs, filters, searches, and installation
 instructions. An unavailable release does not fall back to another catalog.
 
 `[support]` states how long each stable train (`major.minor`) receives updates.
-It is the qualification contract's `support` export, committed so consumers and
-Hubs read the reviewed promise from the signed registry. `default.kind` and
+It is the qualification contract's `support` export, so consumers and Hubs read
+the reviewed promise from the signed registry. `default.kind` and
 `default.superseded_after_trains` govern trains without an explicit entry: such
 a train is supported until that many newer stable trains exist. Each
-`[[support.trains]]` entry names a train, its `kind` (`standard` or `lts`), and
-an optional `supported_until` ISO-8601 date; an `lts` train must state one.
-Train keys have no leading zeros, and an invalid table is a schema error that
-fails indexing rather than a warning. The public Releases page shows one tile
-per supported train with its newest release, marks trains within ninety days of
-their end date, and lists older trains as end of life. Without the table, the
-browser applies the default rule alone.
+`[support.trains."major.minor"]` table gives that train's `kind` (`standard` or
+`lts`) and an optional `supported_until` ISO-8601 date; an `lts` train must
+state one. Train keys have no leading zeros, and an invalid table is a schema
+error that fails indexing rather than a warning.
+
+Publications own sections rather than the file. A release from train `T` writes
+only `support.trains."T"`, taken from its own contract, and the publisher
+refuses a contract that names any other train. `support.default` is written
+only by a release whose train is the newest in the registry. Everything else in
+`registry.toml` stays operator-owned and byte-identical across publications.
+The public Releases page shows one tile per supported train with its newest
+release, marks trains within ninety days of their end date, and lists older
+trains as end of life. Without the table, the browser applies the default rule
+alone.
 
 Docs combines the release's configuration paths into one tree. Any path may be
 opened as a subtree. Child lists, variant lists, and indexed search results use
