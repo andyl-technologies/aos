@@ -1,19 +1,5 @@
-From f34ad65aaa77873cbf998ff35d8064e328a8d67d Mon Sep 17 00:00:00 2001
-From: Dylan Plecki <dylan@andyl.com>
-Date: Mon, 1 Jan 2001 00:00:01 +0000
-Subject: [PATCH] crucible: replace fork child console endpoint
-
-Signed-off-by: Dylan Plecki <dylan@andyl.com>
----
- .../system/crucible-hot-fork-plugin-child.h   | 190 +++++++-
- monitor/qmp-cmds.c                            | 437 +++++++++++++++++-
- qapi/run-state.json                           | 128 ++++-
- system/crucible-hot-fork-plugin-child.c       | 263 ++++++++++-
- tests/unit/test-crucible-hot-fork-child.c     | 170 ++++++-
- 5 files changed, 1147 insertions(+), 41 deletions(-)
-
 diff --git a/include/system/crucible-hot-fork-plugin-child.h b/include/system/crucible-hot-fork-plugin-child.h
-index 5c491c5..345baf0 100644
+index 5c491c596..345baf081 100644
 --- a/include/system/crucible-hot-fork-plugin-child.h
 +++ b/include/system/crucible-hot-fork-plugin-child.h
 @@ -15,6 +15,7 @@
@@ -290,7 +276,7 @@ index 5c491c5..345baf0 100644
  /**
   * qemu_crucible_hot_fork_activate_plugin_child() - release held callbacks
 diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
-index b7ba728..6e6297a 100644
+index b7ba72830..6e6297a21 100644
 --- a/monitor/qmp-cmds.c
 +++ b/monitor/qmp-cmds.c
 @@ -27,6 +27,8 @@
@@ -975,7 +961,7 @@ index b7ba728..6e6297a 100644
      report->plugin_endpoint_generation = plugin_endpoint_generation;
      report->plugin_barrier_generation = plugin_barrier_generation;
 diff --git a/qapi/run-state.json b/qapi/run-state.json
-index d634895..ffb795b 100644
+index d634895b9..ffb795bc9 100644
 --- a/qapi/run-state.json
 +++ b/qapi/run-state.json
 @@ -1482,9 +1482,11 @@
@@ -1187,7 +1173,7 @@ index d634895..ffb795b 100644
  # @CrucibleHotForkMutex:
  #
 diff --git a/system/crucible-hot-fork-plugin-child.c b/system/crucible-hot-fork-plugin-child.c
-index fe3ad5e..a281241 100644
+index fe3ad5e7e..a2812419f 100644
 --- a/system/crucible-hot-fork-plugin-child.c
 +++ b/system/crucible-hot-fork-plugin-child.c
 @@ -315,6 +315,51 @@ void qemu_crucible_hot_fork_reset_qmp_child_resources(
@@ -1557,7 +1543,7 @@ index fe3ad5e..a281241 100644
  
  void qemu_crucible_hot_fork_reset_plugin_child_reinitializer(
 diff --git a/tests/unit/test-crucible-hot-fork-child.c b/tests/unit/test-crucible-hot-fork-child.c
-index 6adc1db..0493cd7 100644
+index 6adc1dba2..0493cd793 100644
 --- a/tests/unit/test-crucible-hot-fork-child.c
 +++ b/tests/unit/test-crucible-hot-fork-child.c
 @@ -60,6 +60,36 @@ typedef struct FakeQmpChildRuntime {
@@ -1935,6 +1921,3 @@ index 6adc1db..0493cd7 100644
      g_test_add_func("/crucible/hot-fork-child/plugin-resource-plan",
                      test_plugin_child_resource_plan_is_exact);
      g_test_add_func("/crucible/hot-fork-child/resource-plan-composition",
--- 
-2.48.1
-

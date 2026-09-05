@@ -4,6 +4,71 @@ use super::*;
 use crucible::SchedulerOperationalFailureClass;
 
 #[test]
+fn lifecycle_checkpoint_retains_failed_node_counter_origins_without_backends()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = crucible::crash_restart_scenario()?.scenario;
+    let mut lifecycle =
+        crate::vm_lifecycle::runtime::tests::production_loop_without_backends(&source);
+    let mut expected = BTreeMap::new();
+    for (index, vm) in source.world().vm_nodes().iter().enumerate() {
+        let retired = 100 + u64::try_from(index)?;
+        lifecycle
+            .inner
+            .loop_impl_mut()
+            .rebase_restarted_backend_counter(&vm.id, crucible::NodeCounter { ticks: retired })?;
+        lifecycle
+            .inner
+            .loop_impl_mut()
+            .set_vm_node_activity(&vm.id, SchedulerNodeActivity::Done)?;
+        lifecycle
+            .node_service_states
+            .insert(vm.id.clone(), ProductionNodeServiceState::PermanentlyFailed);
+        assert_eq!(
+            lifecycle
+                .inner
+                .loop_impl()
+                .scheduler_time_for_node(&vm.id)?
+                .ticks,
+            0
+        );
+        expected.insert(vm.id.clone(), Icount { retired });
+    }
+
+    let checkpoint = lifecycle.terminal_lifecycle_checkpoint()?;
+    assert_eq!(checkpoint.node_icounts, expected);
+    Ok(())
+}
+
+#[test]
+fn checkpoint_counter_rejects_unknown_service_state_and_missing_live_backends()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = crucible::crash_restart_scenario()?.scenario;
+    let mut lifecycle =
+        crate::vm_lifecycle::runtime::tests::production_loop_without_backends(&source);
+    let node = &source
+        .world()
+        .vm_nodes()
+        .first()
+        .ok_or("test world has no VM")?
+        .id;
+    assert!(matches!(
+        lifecycle.checkpoint_node_icount(node),
+        Err(SchedulerError::BoundaryViolation { .. })
+    ));
+    for state in [
+        ProductionNodeServiceState::Running,
+        ProductionNodeServiceState::PoweredOff,
+    ] {
+        lifecycle.node_service_states.insert(node.clone(), state);
+        assert!(matches!(
+            lifecycle.checkpoint_node_icount(node),
+            Err(SchedulerError::Backend(_))
+        ));
+    }
+    Ok(())
+}
+
+#[test]
 fn stopped_checkpoint_artifact_keeps_the_pinned_source_without_copying() {
     let directory = tempfile::tempdir()
         .unwrap_or_else(|error| panic!("create checkpoint artifact directory: {error}"));

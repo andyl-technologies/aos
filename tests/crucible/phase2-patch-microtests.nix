@@ -23,6 +23,7 @@
     inherit pkgs lib qemuPackage;
     attrPath = "checks.crucible.phase6.qemuHotForkReadiness";
   };
+  qemuSignalSharedCause = import ./phase7-signal-shared-cause.nix {inherit pkgs lib;};
   qemuPluginFailLoud = import ./phase2-plugin-fail-loud.nix {inherit pkgs lib;};
   qemuRrQuantumIcount = import ./phase2-qemu-rr-quantum-icount.nix {inherit pkgs lib;};
   qemuDetIpi = import ./phase2-qemu-det-ipi.nix {inherit pkgs lib;};
@@ -3232,6 +3233,20 @@
             ${patchDir}/0195-crucible-replace-fork-child-console-endpoint.patch
           grep -Fq "'command': 'crucible-hot-fork-child-console'" \
             ${patchDir}/0195-crucible-replace-fork-child-console-endpoint.patch
+        '';
+      };
+    }
+    {
+      patch = "0196-crucible-reset-virtio-net-after-exact-restore.patch";
+      check = certifyExactPatch {
+        patchName = "0196-crucible-reset-virtio-net-after-exact-restore.patch";
+        liveCheck = qemuSignalSharedCause;
+        liveResult = "reactivation-result";
+        evidenceName = "virtio-net-exact-restore-boot";
+        liveEvidence = ''
+          grep -Fxq 'inactive_world_boot_reactivation=true' "$live_result"
+          grep -Fxq 'reactivated_guest_progress=true' "$live_result"
+          grep -Fxq 'reactivation_checkpoint_evidence_match=true' "$live_result"
         '';
       };
     }

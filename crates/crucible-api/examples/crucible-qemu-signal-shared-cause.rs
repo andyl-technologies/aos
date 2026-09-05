@@ -6,6 +6,8 @@
 //! forwarder, loses that cache entry, and crashes/restarts the owning QEMU
 //! process. The executable also proves exact checkpoint continuation and
 //! locked-effect replay from fresh processes.
+//! The optional `--reactivation` flight boots the powered-off node after
+//! host-only time advancement and compares its cold checkpoint continuation.
 
 use std::error::Error;
 use std::sync::Arc;
@@ -48,6 +50,8 @@ use evidence::{exact_shared_event_effects, exact_terminal_matrix, reached_restar
 #[path = "crucible_qemu_signal_shared_cause/terminal_matrix.rs"]
 mod terminal_matrix;
 use terminal_matrix::*;
+#[path = "crucible_qemu_signal_shared_cause/reactivation.rs"]
+mod reactivation;
 
 const EVENT_NANOS: u64 = 8_000_000_000;
 const DEVICE_BYTES: u64 = 1_048_576;
@@ -149,54 +153,61 @@ fn persistent_queue_binding(
     )?)
 }
 
-fn shared_cause_plan(device: ContentHash) -> Result<FaultSignalPlan, Box<dyn Error>> {
+fn shared_cause_plan(
+    device: ContentHash,
+    reactivate: bool,
+) -> Result<FaultSignalPlan, Box<dyn Error>> {
     let event = signal_id("rack-power-loss")?;
     let (terminal_matrix_event, terminal_matrix_node) = terminal_matrix_signal()?;
     let queue_enabled = signal_id("queue-enabled")?;
     let schema = signal_id("rack-power-event-v1")?;
-    let program = crucible::model::SignalProgram::new(
-        vec![
-            SignalNode {
-                id: event.clone(),
-                domain: SignalDomain::Event,
-                output: SignalShape::new(
-                    SignalValueType::Event(schema.clone()),
-                    SignalUnit::Dimensionless,
-                    0,
-                )?,
-                inputs: Vec::new(),
-                kind: SignalNodeKind::Source(SignalSourceSpecification::EventSequence {
-                    events: vec![SignalPoint {
-                        coordinate: SignalCoordinate::Event {
-                            parent: Box::new(SignalCoordinate::VirtualTime { nanos: EVENT_NANOS }),
-                            sequence: 0,
-                        },
+    let mut nodes = vec![
+        SignalNode {
+            id: event.clone(),
+            domain: SignalDomain::Event,
+            output: SignalShape::new(
+                SignalValueType::Event(schema.clone()),
+                SignalUnit::Dimensionless,
+                0,
+            )?,
+            inputs: Vec::new(),
+            kind: SignalNodeKind::Source(SignalSourceSpecification::EventSequence {
+                events: vec![SignalPoint {
+                    coordinate: SignalCoordinate::Event {
+                        parent: Box::new(SignalCoordinate::VirtualTime { nanos: EVENT_NANOS }),
                         sequence: 0,
-                        value: SignalValue::Event {
-                            schema,
-                            payload: b"rack-power-loss".to_vec(),
-                        },
-                    }],
-                }),
+                    },
+                    sequence: 0,
+                    value: SignalValue::Event {
+                        schema,
+                        payload: b"rack-power-loss".to_vec(),
+                    },
+                }],
+            }),
+        },
+        terminal_matrix_node,
+        SignalNode {
+            id: queue_enabled.clone(),
+            domain: SignalDomain::VirtualTime,
+            output: SignalShape::new(SignalValueType::Bool, SignalUnit::Dimensionless, 0)?,
+            inputs: Vec::new(),
+            kind: SignalNodeKind::Constant {
+                value: SignalValue::Bool(true),
             },
-            terminal_matrix_node,
-            SignalNode {
-                id: queue_enabled.clone(),
-                domain: SignalDomain::VirtualTime,
-                output: SignalShape::new(SignalValueType::Bool, SignalUnit::Dimensionless, 0)?,
-                inputs: Vec::new(),
-                kind: SignalNodeKind::Constant {
-                    value: SignalValue::Bool(true),
-                },
-            },
-        ],
-        vec![
-            event.clone(),
-            terminal_matrix_event.clone(),
-            queue_enabled.clone(),
-        ],
-        SignalResourceLimits::default(),
-    )?;
+        },
+    ];
+    let mut outputs = vec![
+        event.clone(),
+        terminal_matrix_event.clone(),
+        queue_enabled.clone(),
+    ];
+    if reactivate {
+        let (event, node) = reactivation::boot_signal()?;
+        nodes.push(node);
+        outputs.push(event);
+    }
+    let program =
+        crucible::model::SignalProgram::new(nodes, outputs, SignalResourceLimits::default())?;
     let mut bindings = vec![
         persistent_queue_binding(&queue_enabled, &program)?,
         event_binding(
@@ -240,6 +251,9 @@ fn shared_cause_plan(device: ContentHash) -> Result<FaultSignalPlan, Box<dyn Err
         )?,
     ];
     bindings.extend(terminal_matrix_bindings(&terminal_matrix_event, &program)?);
+    if reactivate {
+        bindings.push(reactivation::boot_binding(&program)?);
+    }
     Ok(FaultSignalPlan::new(
         vec![program],
         bindings,
@@ -391,7 +405,9 @@ fn topology() -> Result<crucible::model::WorldFaultTopology, Box<dyn Error>> {
     })
 }
 
-fn build_source() -> Result<(ScenarioDefForm, Arc<MemoryDagStore>), Box<dyn Error>> {
+fn build_source(
+    reactivate: bool,
+) -> Result<(ScenarioDefForm, Arc<MemoryDagStore>), Box<dyn Error>> {
     let artifacts = Arc::new(MemoryDagStore::new());
     let base = vec![0_u8; DEVICE_BYTES as usize];
     let base_hash = artifacts.put(&base)?;
@@ -426,7 +442,7 @@ fn build_source() -> Result<(ScenarioDefForm, Arc<MemoryDagStore>), Box<dyn Erro
         vec![link],
     )?
     .with_fault_topology(topology()?)?;
-    let faults = shared_cause_plan(block.fault_target_hash())?;
+    let faults = shared_cause_plan(block.fault_target_hash(), reactivate)?;
     let completion_timer = crucible::TimerId {
         name: String::from("inactive-world-completion"),
     };
@@ -448,8 +464,36 @@ fn build_source() -> Result<(ScenarioDefForm, Arc<MemoryDagStore>), Box<dyn Erro
                 crucible::Condition::timer(completion_timer),
             ],
         })
-        .action(crucible::Action::Pass)
-        .build_for_world(&world)?;
+        .action(if reactivate {
+            crucible::Action::arm_timer(
+                crucible::TimerId {
+                    name: String::from("reactivation-completion"),
+                },
+                SimDuration {
+                    nanos: reactivation::COMPLETION_NANOS - INACTIVE_COMPLETION_NANOS,
+                },
+            )
+        } else {
+            crucible::Action::Pass
+        });
+    let graph = if reactivate {
+        graph
+            .event("reactivated-world-complete")
+            .when(crucible::Condition::AllOf {
+                predicates: vec![
+                    crucible::Condition::at(crucible::VirtualTime {
+                        ticks: reactivation::COMPLETION_NANOS,
+                    }),
+                    crucible::Condition::timer(crucible::TimerId {
+                        name: String::from("reactivation-completion"),
+                    }),
+                ],
+            })
+            .action(crucible::Action::Pass)
+            .build_for_world(&world)?
+    } else {
+        graph.build_for_world(&world)?
+    };
     let plan = Plan::from_event_graph_for_world(&world, graph)?
         .with_fault_signals_for_world(&world, faults)?;
     let source = ScenarioDefForm::from_components(
@@ -463,10 +507,14 @@ fn build_source() -> Result<(ScenarioDefForm, Arc<MemoryDagStore>), Box<dyn Erro
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
-    let [qemu, plugin, kernel, root_image, initrd, run_state_root] = args.as_slice() else {
-        return Err("usage: crucible-qemu-signal-shared-cause QEMU PLUGIN KERNEL ROOT INITRD RUN_STATE_ROOT".into());
+    let (args, reactivate) = match args.as_slice() {
+        [.., mode] if mode == "--reactivation" => (&args[..args.len() - 1], true),
+        _ => (args.as_slice(), false),
     };
-    let (source, artifacts) = build_source()?;
+    let [qemu, plugin, kernel, root_image, initrd, run_state_root] = args else {
+        return Err("usage: crucible-qemu-signal-shared-cause QEMU PLUGIN KERNEL ROOT INITRD RUN_STATE_ROOT [--reactivation]".into());
+    };
+    let (source, artifacts) = build_source(reactivate)?;
     let scenario = source.scenario_def();
     let config = ProductionVmLifecycleConfig::new(qemu, plugin, kernel, root_image, run_state_root)
         .with_root_image_format(ProductionRootImageFormat::Raw)
@@ -477,6 +525,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         .with_run_ceiling_icount(96_000_000_000)
         .with_quantum_budget(1_000_000_000)
         .with_completion_timeout(Duration::from_secs(180));
+    if reactivate {
+        return reactivation::run(&source, &config);
+    }
     let mut lifecycle = build_production_vm_lifecycle_loop(&scenario, &source, &config)?;
     let mut configuration = Configuration::genesis(scenario.clone());
     let mut before = None;

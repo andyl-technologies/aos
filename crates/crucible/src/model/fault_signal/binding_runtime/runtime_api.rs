@@ -42,7 +42,19 @@ impl<'a> FaultBindingRuntime<'a> {
                 return Err(BindingRuntimeError::WakeupOverflow);
             }
         }
-        for signal in self.referenced_event_signals()? {
+        // Event bindings need their own rendezvous even when no VM is running.
+        // Storage recovery references alone do not include the input that can
+        // boot a powered-off node or otherwise change host-owned state.
+        let mut event_signals = self.referenced_event_signals()?;
+        for binding in &self.bindings {
+            if matches!(
+                binding.sampling(),
+                BindingSampling::AtEvent(BindingEventParent::VirtualTime)
+            ) {
+                event_signals.extend(binding.signals().iter().cloned());
+            }
+        }
+        for signal in event_signals {
             let mut pending = vec![signal];
             let mut visited = BTreeSet::new();
             while let Some(node_id) = pending.pop() {
