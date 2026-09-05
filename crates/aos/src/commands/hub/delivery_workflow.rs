@@ -9,7 +9,9 @@ use aos_remote::{hub_rpc, hub_types as pb};
 
 use crate::cli::{HubDeliveryActivationCmd, HubDeliveryCmd, HubReviewedApplyArgs};
 
-use super::{confirm_destructive, hub_client, surface_message, topology_read};
+use super::client::hub_client;
+use super::mutation::{confirm_destructive, topology_read};
+use super::route::surface_message;
 
 enum ReviewedStage {
     Setup,
