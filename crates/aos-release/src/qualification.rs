@@ -184,6 +184,10 @@ pub struct QualificationContract {
     /// Scoped assurance obligations; absent only in archival v1 contracts.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub claims: Vec<claims::QualificationClaim>,
+    /// Release-train support promise, copied verbatim into the signed
+    /// registry's `[support]` table; absent only in archival v1 contracts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub support: Option<aos_registry_surface::support::SupportPolicy>,
 }
 
 impl QualificationContract {
@@ -206,12 +210,22 @@ impl QualificationContract {
         }
         if !current
             && (!self.claims.is_empty()
+                || self.support.is_some()
                 || self
                     .requirements
                     .iter()
                     .any(|gate| !gate.measurements.is_empty()))
         {
             bail!("archival contracts cannot carry current assurance semantics");
+        }
+        if current {
+            let support = self
+                .support
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("current contracts must state a support policy"))?;
+            support
+                .validate()
+                .map_err(|error| anyhow::anyhow!("invalid support policy: {error}"))?;
         }
         nonempty_strings(&self.promises, "contract promises")?;
         nonempty_strings(&self.exclusions, "contract exclusions")?;

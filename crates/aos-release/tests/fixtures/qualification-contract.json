@@ -493,6 +493,13 @@
     }
   ],
   "schema_version": "aos.release.qualification-contract/v2",
+  "support": {
+    "default": {
+      "kind": "standard",
+      "superseded_after_trains": 2
+    },
+    "trains": []
+  },
   "targets": [
     {
       "environment": {
