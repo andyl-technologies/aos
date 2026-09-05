@@ -98,8 +98,29 @@ in
           test "$(sort -u terminal-rows | wc -l)" -eq 2
           grep -Fxq 'terminal_row=node-a|transition=power_off|generation_delta=1|service_state=powered_off|scheduler_activity=halted|process_ownership=exact' terminal-rows
           grep -Fxq 'terminal_row=node-b|transition=permanent_failure|generation_delta=0|service_state=permanently_failed|scheduler_activity=done|process_ownership=absent' terminal-rows
+
+          # Keep the inactive terminal flight above independent of this explicit
+          # Boot flight, which must resume guest work after host-only time.
+          reactivation_dir=/tmp/b
+          mkdir -p "$reactivation_dir"
+          timeout -k 15 900 \
+            "$target/debug/examples/crucible-qemu-signal-shared-cause" \
+            ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
+            ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
+            "$vmlinuz" \
+            "$root_image" \
+            "$GUEST_INITRD" \
+            "$reactivation_dir" \
+            --reactivation \
+            > reactivation-result
+          cat reactivation-result
+          grep -Fxq PASS reactivation-result
+          grep -Fxq 'inactive_world_boot_reactivation=true' reactivation-result
+          grep -Fxq 'reactivated_guest_progress=true' reactivation-result
+          grep -Fxq 'reactivation_checkpoint_evidence_match=true' reactivation-result
           mkdir -p "$out"
           cp result "$out/result"
+          cp reactivation-result "$out/reactivation-result"
           printf 'attr_path=%s\n' "$ATTR_PATH" >> "$out/result"
         '';
       }

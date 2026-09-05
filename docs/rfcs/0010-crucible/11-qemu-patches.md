@@ -3575,6 +3575,19 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   Modeled guest admission and the full production flight remain open.
 - **Risk:** F.
 
+### crucible-virtio-net-exact-restore-reset — reset after announcement suppression
+
+- **Patch:** `0196-crucible-reset-virtio-net-after-exact-restore.patch`.
+- **Enforces:** [QFP-REG-1], [QFP-STATE-2].
+- **Mechanism:** exact restore removes the migration announcement timer to
+  preserve the modeled network. Virtio-net reset checks whether that timer
+  remains allocated before canceling it; it still clears announcement state.
+- **Regression:** the production shared-cause reactivation flight exercises
+  Boot of an exact-restored powered-off VM with a virtio-net device.
+- **Inertness:** allocated announcement timers retain upstream reset behavior;
+  this guard neither creates a timer nor schedules migration traffic.
+- **Risk:** D.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.

@@ -414,6 +414,21 @@ impl SingleScheduler {
         })
     }
 
+    /// Returns the scheduler-owned counter for one VM node.
+    ///
+    /// The counter survives backend retirement and retains its generation's
+    /// origin. It is not interchangeable with logical time or a live backend's
+    /// observed counter: the scheduler may have authorized a later ceiling.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when `node` is not a VM
+    /// scheduler node.
+    pub fn scheduler_counter_for_node(&self, node: &NodeId) -> Result<NodeCounter, SchedulerError> {
+        let index = self.vm_node_index(node)?;
+        Ok(self.nodes[index].counter)
+    }
+
     /// Sets the scheduler-time boundary used to terminate replay.
     ///
     /// Production thin replay uses the recorded logical checkpoint time rather

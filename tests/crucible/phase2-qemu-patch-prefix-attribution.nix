@@ -855,6 +855,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0196-crucible-reset-virtio-net-after-exact-restore.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

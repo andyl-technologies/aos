@@ -1364,6 +1364,13 @@
       enforces = "HFORK-3,HFORK-4,HFORK-8,HFORK-11,HFORK-22";
       capability = "one exact branch-private nonblocking Unix stream is generation-bound to the retained template and source console chardev; the complete child resource transaction closes the inherited console connection and listener, attaches only the replacement endpoint, releases input after reconstruction, and preserves the source console unchanged; Rust stages the exact generation, moves a one-shot reader and spool into the successful child continuation, and rejects cross-generation or reused endpoints, while modeled guest admission and the full production flight remain open";
     }
+    {
+      file = "0196-crucible-reset-virtio-net-after-exact-restore.patch";
+      catalogName = "crucible-virtio-net-exact-restore-reset";
+      class = "D";
+      enforces = "QFP-REG-1,QFP-STATE-2";
+      capability = "virtio-net reset tolerates the announcement timer removed by exact restore, preserving suppressed migration traffic while allowing Boot and reset without a null timer dereference";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

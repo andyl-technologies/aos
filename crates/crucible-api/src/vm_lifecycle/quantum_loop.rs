@@ -1144,6 +1144,30 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
 }
 
 impl ProductionVmLifecycleLoop {
+    /// Retains failed-node counter origins without querying a retired process.
+    fn checkpoint_node_icount(&self, node: &NodeId) -> Result<Icount, SchedulerError> {
+        let retired = match self.node_service_states.get(node) {
+            Some(ProductionNodeServiceState::PermanentlyFailed) => {
+                // A failed node has no executable backend state. Its scheduler
+                // counter remains metadata for the exact world continuation;
+                // shifting logical time would lose a rebased counter origin.
+                self.inner
+                    .loop_impl()
+                    .scheduler_counter_for_node(node)?
+                    .ticks
+            }
+            Some(ProductionNodeServiceState::Running | ProductionNodeServiceState::PoweredOff) => {
+                self.inner.backend().node_now(node)?.ticks
+            }
+            None => {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!("checkpoint has no service state for `{}`", node.name),
+                });
+            }
+        };
+        Ok(Icount { retired })
+    }
+
     fn terminal_lifecycle_checkpoint(&mut self) -> Result<Checkpoint, SchedulerError> {
         let configuration = self.inner.loop_impl().configuration().clone();
         let parent = if configuration.schedule.is_empty() {
@@ -1164,13 +1188,7 @@ impl ProductionVmLifecycleLoop {
         };
         let mut node_icounts = BTreeMap::new();
         for vm in self.source.world().vm_nodes() {
-            let physical = self.inner.backend().node_now(&vm.id)?;
-            node_icounts.insert(
-                vm.id.clone(),
-                Icount {
-                    retired: physical.ticks,
-                },
-            );
+            node_icounts.insert(vm.id.clone(), self.checkpoint_node_icount(&vm.id)?);
         }
         Checkpoint::from_recorded_configuration(
             &configuration,
@@ -1915,12 +1933,7 @@ impl ProductionVmLifecycleLoop {
             if self.node_service_states.get(&vm.id)
                 == Some(&ProductionNodeServiceState::PermanentlyFailed)
             {
-                node_icounts.insert(
-                    vm.id.clone(),
-                    crucible::Icount {
-                        retired: scheduler_time.ticks >> u32::from(self.icount_shift),
-                    },
-                );
+                node_icounts.insert(vm.id.clone(), self.checkpoint_node_icount(&vm.id)?);
                 continue;
             }
             let physical = self

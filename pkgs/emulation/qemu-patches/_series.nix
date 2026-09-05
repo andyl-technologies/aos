@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "2040cbe2980db258291192ba59153345e064d014627da651f9293fd039dee348";
+  patchBranchBundleSha256 = "7dc8fc040c60b9a2b26ce487c36a3f635cc7bd6d20d1fd6e3faba88aa0ba8cf1";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "f34ad65aaa77873cbf998ff35d8064e328a8d67d";
+  patchBranchHeadCommit = "8cc6f71253ad60ab8e835f9d71b09c8b179e7c4d";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1885,6 +1885,16 @@ let
       class = "F";
       enforces = "HFORK-3,HFORK-4,HFORK-8,HFORK-11,HFORK-22";
       capability = "one exact branch-private nonblocking Unix stream is generation-bound to the retained template and source console chardev; the complete child resource transaction closes the inherited console connection and listener, attaches only the replacement endpoint, releases input after reconstruction, and preserves the source console unchanged; Rust stages the exact generation, moves a one-shot reader and spool into the successful child continuation, and rejects cross-generation or reused endpoints, while modeled guest admission and the full production flight remain open";
+    }
+    {
+      file = "0196-crucible-reset-virtio-net-after-exact-restore.patch";
+      branchSubject = "crucible: reset virtio net after exact restore";
+      branchCommit = "8cc6f71253ad60ab8e835f9d71b09c8b179e7c4d";
+      branchTree = "d60e2dbf61b0dc38a72d413c56739e6e87ba1d90";
+      catalogName = "crucible-virtio-net-exact-restore-reset";
+      class = "D";
+      enforces = "QFP-REG-1,QFP-STATE-2";
+      capability = "virtio-net reset tolerates the announcement timer removed by exact restore, preserving suppressed migration traffic while allowing Boot and reset without a null timer dereference";
     }
   ];
   catalogOnlyCapabilities = [
