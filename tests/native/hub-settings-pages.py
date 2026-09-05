@@ -194,7 +194,7 @@ class Audit:
         advanced = self.page_state()
         self.record_errors(path, "advanced", advanced["errors"])
         state["advanced"] = advanced
-        state["advancedViewport"] = self.viewport_metrics(path, "advanced", screenshots=False)
+        state["advancedViewport"] = self.viewport_metrics(path, "advanced", screenshots=True)
         self.pages.append(state)
 
     def exercise(self):

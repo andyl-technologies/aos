@@ -21,12 +21,8 @@ pub(super) fn CacheObjects(client: ApiClient, cache_id: String) -> impl IntoView
             <ObjectInspector client=client.clone() cache_id=cache_id.clone()/>
             {can_upload.then(|| view! {
                 <details class="panel editor-panel">
-                    <summary>
-                        <div>
-                            <span class="resource-kind">"Advanced producer operation"</span>
-                            <strong>"Upload a cache object"</strong>
-                        </div>
-                    </summary>
+                    <summary>"Upload a cache object"</summary>
+                    <p class="section-kicker">"Advanced producer operation"</p>
                     <p>
                         "Use this only when producing an exact cache path. Search and inspect objects above before writing new content."
                     </p>
