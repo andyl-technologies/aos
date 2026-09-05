@@ -1992,10 +1992,9 @@ They deliberately use audit fixtures rather than fabricated live runtime
 proofs. Actual Host-backed acquisition, issuance, delivery, and failure-path
 kernel/VM qualification remain required.
 
-A channel can outlive its original issuance observation. Fresh admission-time
-Host observation, renewal continuity without revoke/rebind ABA, and the
-remaining publisher admission checks are still open; retaining execution pins
-does not renew authority. `SBX-PUB-02` remains unchecked.
+A channel can outlive its original issuance observation. The fresh runtime join
+described below does not renew that observation or complete publisher admission.
+`SBX-PUB-02` remains unchecked.
 
 The four-crate default-feature suites pass 457 unit tests, one integration
 test, and thirteen doctests. Historical runtime replay has an independently
@@ -2003,3 +2002,38 @@ configurable bound, with an exhaustion regression. Strict controller
 all-target/all-feature Clippy (`--no-deps`), warning-denied rustdoc, changed-file
 formatting, and diff checks pass. Workspace all-target checking passes with
 warnings in unrelated crates. Kernel/VM tests have not been rerun.
+
+### Fresh runtime evidence for publisher request joins
+
+`JoinedPublisherRequest::bind_current_runtime` now performs an actual Host
+exchange selected from the authenticated session's holder and sandbox. It
+returns a distinct `RuntimeJoinedPublisherRequest`, retaining the fresh scope,
+original holder record, live publisher connection, and exclusive journal borrow.
+Administrative session origins cannot be promoted through this path.
+
+Complete bounded protected history must connect the exact original binding to
+the exact current head through only bound decisions for the same holder and
+full assignment manifest. Lease/publication renewal can preserve that chain;
+revocation, holder replacement, and assignment changes cannot. Endpoint equality
+alone is insufficient, including same-holder revoke/rebind ABA. Both retained
+observations must still name the same live Host and payload processes, runtime
+and scope handles, assignment fence, and pinned cgroup. Boot, clock provenance,
+observation ordering, and local publisher node must also agree.
+
+Rechecks retain the fresh scope's fixed deadline and exact revision. A failure
+poisons the joined context and closes holder ingress. The old observation's
+deadline is neither renewed nor substituted for capability lifetime. No source
+release, root authority, operation authorization, reservation, challenge
+consumption, signing, or completion permission follows from this join.
+
+Protected-history regressions cover renewal, stale/reversed endpoints,
+revocation/rebind ABA, holder-replacement ABA, compaction, and reopen. These
+tests validate structural continuity, not real Host acquisition or live session
+promotion. End-to-end Host/worker/kernel/VM qualification remains open.
+
+Validation: the four-crate default suites pass 460 unit tests, one integration
+test, and fourteen doctests, including a compile-fail barrier against promotion
+without acquisition. Warning-denied all-feature controller rustdoc and workspace
+all-target checking pass; the latter retains unrelated workspace warnings.
+Strict all-target/all-feature controller Clippy (`--no-deps`), changed-file
+formatting, and diff checks also pass.

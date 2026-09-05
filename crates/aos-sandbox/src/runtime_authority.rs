@@ -80,6 +80,9 @@ pub enum RuntimeAuthorityError {
     /// The protected current revision differs from the admitted expectation.
     #[error("runtime-authority current revision changed")]
     CompareAndSwap,
+    /// An origin-to-current history contains a revocation or assignment/holder change.
+    #[error("runtime-authority holder continuity was broken")]
+    Continuity,
     /// The operation identity already names another pending intent.
     #[error("runtime-authority pending operation already exists")]
     PendingAlreadyExists,
@@ -144,6 +147,35 @@ impl<'journal> RuntimeAuthorityStore<'journal> {
     ) -> Result<Option<RuntimeAuthorityBindingV1>, RuntimeAuthorityError> {
         self.journal.ensure_protected_authority()?;
         current_from_journal(self.journal, sandbox)
+    }
+
+    /// Checks an uninterrupted holder/assignment chain, not live execution authority.
+    ///
+    /// Both endpoints must match protected records and the latter must be the
+    /// current head. Comparing only endpoints would accept revoke/rebind ABA.
+    /// Loading the store already bounded and validated every historical row.
+    pub(crate) fn validate_continuity(
+        &self,
+        origin: &RuntimeAuthorityBindingV1,
+        current: &RuntimeAuthorityBindingV1,
+    ) -> Result<(), RuntimeAuthorityError> {
+        if origin.revision() > current.revision()
+            || self.current(origin.sandbox())?.as_ref() != Some(current)
+            || binding_in_validated_namespace(self.journal, origin.sandbox(), origin.revision())?
+                != *origin
+        {
+            return Err(RuntimeAuthorityError::Continuity);
+        }
+        for revision in origin.revision()..=current.revision() {
+            let binding = binding_in_validated_namespace(self.journal, origin.sandbox(), revision)?;
+            if binding.state() != RuntimeAuthorityStateV1::Bound
+                || binding.holder() != origin.holder()
+                || binding.manifest() != origin.manifest()
+            {
+                return Err(RuntimeAuthorityError::Continuity);
+            }
+        }
+        Ok(())
     }
 
     /// Freezes one operation-indexed pending record without committing it.

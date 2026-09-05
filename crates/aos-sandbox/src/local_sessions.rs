@@ -537,6 +537,10 @@ pub struct AuthenticatedLocalRecord<'a> {
 }
 
 impl AuthenticatedLocalRecord<'_> {
+    pub(crate) fn runtime_origin(&self) -> Option<&crate::runtime_scope::CurrentRuntimeScope> {
+        self.session.execution.runtime()
+    }
+
     pub(crate) fn runtime_issuance(
         &self,
     ) -> Option<crate::publisher_authority::RuntimeIssuanceEvidenceV1> {

@@ -19,6 +19,9 @@ use crate::publisher_authority::{
 use crate::publisher_ingress::PublisherChallengeRegistrationV1;
 use crate::publisher_sessions::LivePublisherExecution;
 
+mod runtime;
+pub use runtime::RuntimeJoinedPublisherRequest;
+
 /// Configures protected replay and clock bounds for holder-request joining.
 #[derive(Clone, Copy, Debug)]
 pub struct PublisherJoinPolicy {
@@ -43,6 +46,9 @@ pub enum PublisherJoinError {
     /// A previous failed check permanently invalidated this borrowed join.
     #[error("publisher request join is invalidated")]
     Invalidated,
+    /// Fresh runtime acquisition or origin-to-current continuity failed.
+    #[error(transparent)]
+    Runtime(#[from] crate::runtime_scope::CurrentRuntimeScopeError),
     /// The actual holder record or retained scope failed validation.
     #[error(transparent)]
     Holder(#[from] LocalSessionError),
@@ -66,6 +72,8 @@ pub enum PublisherJoinError {
 /// cannot substitute for that origin. Source release, root registry, reservation state,
 /// challenge consumption, signing, and completion remain unverified here.
 /// No live proof can be reconstructed from the owned request or an audit receipt.
+/// [`Self::bind_current_runtime`] performs a separate fresh Host exchange and
+/// origin-continuity check, returning a distinct non-authorizing context.
 ///
 /// A failed recheck permanently poisons the join and closes holder ingress.
 /// The closed holder slot can then be removed with `LocalSessionRegistry::invalidate`;

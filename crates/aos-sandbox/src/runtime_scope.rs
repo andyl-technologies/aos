@@ -363,6 +363,24 @@ pub struct ObservedPayloadScope {
 }
 
 impl ObservedPayloadScope {
+    /// Compares two simultaneously retained live executions, never persisted PIDs.
+    pub(crate) fn check_continuity(&self, fresh: &Self) -> Result<(), RuntimeScopeError> {
+        let original = self.recheck()?;
+        let current = fresh.recheck()?;
+        let after = self.recheck()?;
+        if !same_process(original, current)
+            || !same_process(after, current)
+            || self.runtime_handle() != fresh.runtime_handle()
+            || self.payload_scope_handle() != fresh.payload_scope_handle()
+            || self.fence() != fresh.fence()
+            || self.anchor.kernel_id() != fresh.anchor.kernel_id()
+            || !same_process(self.host.recheck()?, fresh.host.recheck()?)
+        {
+            return Err(RuntimeScopeError::PayloadIdentity);
+        }
+        Ok(())
+    }
+
     /// Borrows the exact authorization quartet sent in the authenticated exchange.
     ///
     /// The host accepted these bytes for this observation. They remain untrusted

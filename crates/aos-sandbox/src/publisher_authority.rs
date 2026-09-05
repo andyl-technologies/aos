@@ -75,6 +75,10 @@ pub struct PublisherAuthorityLimits {
 }
 
 impl PublisherAuthorityLimits {
+    pub(crate) const fn runtime_limits(&self) -> crate::runtime_authority::RuntimeAuthorityLimits {
+        self.runtime_limits
+    }
+
     /// Constructs limits within the fixed implementation ceilings.
     ///
     /// # Errors

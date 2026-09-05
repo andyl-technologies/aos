@@ -11,7 +11,9 @@ pub use challenge::PendingPublisherChallengeReceipt;
 pub(crate) use challenge::register_challenge;
 mod join;
 pub(crate) use join::join_holder_request;
-pub use join::{JoinedPublisherRequest, PublisherJoinError, PublisherJoinPolicy};
+pub use join::{
+    JoinedPublisherRequest, PublisherJoinError, PublisherJoinPolicy, RuntimeJoinedPublisherRequest,
+};
 
 use aos_sandbox_core::ownership_lease::RawPairedClockSample;
 use aos_sandbox_core::{Operation, PublisherInstanceId, ResourceKind, Selector};

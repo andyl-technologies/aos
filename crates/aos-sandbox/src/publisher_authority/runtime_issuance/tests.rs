@@ -68,6 +68,20 @@ fn activate(
     generation: u8,
     revoked: bool,
 ) -> RuntimeAuthorityBindingV1 {
+    activate_holder(
+        reconciler,
+        generation,
+        revoked,
+        PrincipalId::from_bytes([0x91; 16]),
+    )
+}
+
+fn activate_holder(
+    reconciler: &mut Reconciler<NoEffects>,
+    generation: u8,
+    revoked: bool,
+    holder: PrincipalId,
+) -> RuntimeAuthorityBindingV1 {
     let (draft, prepared) = runtime_scope_activation_fixture(u64::from(generation));
     let sandbox = draft.manifest().manifest().sandbox();
     let effect = draft.bind_effect(draft.templates()[0].digest()).unwrap();
@@ -75,8 +89,7 @@ fn activate(
     let intent = if revoked {
         RuntimeAuthorityIntentV1::revoke(revision).unwrap()
     } else {
-        RuntimeAuthorityIntentV1::bind_holder(PrincipalId::from_bytes([0x91; 16]), revision)
-            .unwrap()
+        RuntimeAuthorityIntentV1::bind_holder(holder, revision).unwrap()
     };
     let operation = OperationId::from_bytes([generation; 16]);
     let plan = OperationPlan::ownership_gated(
@@ -104,6 +117,74 @@ fn activate(
         .current(sandbox)
         .unwrap()
         .unwrap()
+}
+
+#[test]
+fn protected_continuity_accepts_renewal_but_rejects_stale_or_reversed_endpoints() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut reconciler = Reconciler::new(open(directory.path()), NoEffects);
+    let origin = activate(&mut reconciler, 1, false);
+    let current = activate(&mut reconciler, 2, false);
+    let store =
+        RuntimeAuthorityStore::load(reconciler.journal_mut(), RuntimeAuthorityLimits::default())
+            .unwrap();
+    store.validate_continuity(&origin, &current).unwrap();
+    store.validate_continuity(&current, &current).unwrap();
+    assert!(store.validate_continuity(&origin, &origin).is_err());
+    assert!(store.validate_continuity(&current, &origin).is_err());
+
+    reconciler.journal_mut().compact().unwrap();
+    drop(reconciler);
+    let mut journal = open(directory.path());
+    RuntimeAuthorityStore::load(&mut journal, RuntimeAuthorityLimits::default())
+        .unwrap()
+        .validate_continuity(&origin, &current)
+        .unwrap();
+}
+
+#[test]
+fn protected_continuity_rejects_revocation_and_same_holder_rebind_aba() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut reconciler = Reconciler::new(open(directory.path()), NoEffects);
+    let origin = activate(&mut reconciler, 1, false);
+    let revoked = activate(&mut reconciler, 2, true);
+    let store =
+        RuntimeAuthorityStore::load(reconciler.journal_mut(), RuntimeAuthorityLimits::default())
+            .unwrap();
+    assert!(store.validate_continuity(&origin, &revoked).is_err());
+    assert!(store.validate_continuity(&revoked, &revoked).is_err());
+    let rebound = activate(&mut reconciler, 3, false);
+    let store =
+        RuntimeAuthorityStore::load(reconciler.journal_mut(), RuntimeAuthorityLimits::default())
+            .unwrap();
+    assert_eq!(origin.holder(), rebound.holder());
+    assert_eq!(origin.manifest(), rebound.manifest());
+    assert!(store.validate_continuity(&origin, &rebound).is_err());
+    // New channels may use the new origin; the old channel remains retired.
+    store.validate_continuity(&rebound, &rebound).unwrap();
+}
+
+#[test]
+fn protected_continuity_rejects_intervening_holder_replacement_aba() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut reconciler = Reconciler::new(open(directory.path()), NoEffects);
+    let origin = activate(&mut reconciler, 1, false);
+    let replacement = activate_holder(
+        &mut reconciler,
+        2,
+        false,
+        PrincipalId::from_bytes([0x92; 16]),
+    );
+    let store =
+        RuntimeAuthorityStore::load(reconciler.journal_mut(), RuntimeAuthorityLimits::default())
+            .unwrap();
+    assert!(store.validate_continuity(&origin, &replacement).is_err());
+    let restored = activate(&mut reconciler, 3, false);
+    let store =
+        RuntimeAuthorityStore::load(reconciler.journal_mut(), RuntimeAuthorityLimits::default())
+            .unwrap();
+    assert_eq!(origin.holder(), restored.holder());
+    assert!(store.validate_continuity(&origin, &restored).is_err());
 }
 
 fn evidence(
