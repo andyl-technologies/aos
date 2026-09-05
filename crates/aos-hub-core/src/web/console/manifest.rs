@@ -125,6 +125,7 @@ pub const CONSOLE_ROUTES: &[RouteSpec] = &[
     route("/activate", RouteMethods::GetAndPost),
     route("/-/instance", RouteMethods::Get),
     route("/-/instance/{page}", RouteMethods::Get),
+    route("/-/instance/bindings/new", RouteMethods::Get),
     route("/-/instance/domains/new", RouteMethods::Get),
     route("/-/instance/network-policies/new", RouteMethods::Get),
     route("/-/instance/endpoints/new", RouteMethods::Get),
@@ -186,6 +187,7 @@ fn is_management_shell_template(path: &str) -> bool {
         path,
         "/-/instance"
             | "/-/instance/{page}"
+            | "/-/instance/bindings/new"
             | "/-/instance/domains/new"
             | "/-/instance/network-policies/new"
             | "/-/instance/endpoints/new"
@@ -290,5 +292,13 @@ mod tests {
             assert_eq!(route_methods_for_path(&path), Some(route.methods), "{path}");
             assert_eq!(declared_route(route.path), Some(route));
         }
+    }
+
+    #[test]
+    fn instance_binding_creation_is_a_declared_management_route() {
+        let route = declared_route("/-/instance/bindings/new")
+            .expect("instance binding creation route must be mounted");
+        assert_eq!(route.path, "/-/instance/bindings/new");
+        assert_eq!(route.methods, RouteMethods::Get);
     }
 }

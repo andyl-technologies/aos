@@ -313,6 +313,7 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
         )
         .route("/-/instance", management_get())
         .route("/-/instance/{page}", management_get())
+        .route("/-/instance/bindings/new", management_get())
         .route("/-/instance/domains/new", management_get())
         .route("/-/instance/network-policies/new", management_get())
         .route("/-/instance/endpoints/new", management_get())
