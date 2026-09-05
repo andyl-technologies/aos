@@ -331,6 +331,9 @@ def main():
     print(f"Native Hub test artifacts: {hub.root}", flush=True)
     try:
         exercise(hub, args.require_assets, args.serve_only)
+        # Preserve completed checks even if the interactive browser fixture is
+        # later terminated together with its process group.
+        (hub.root / "checks.json").write_text(json.dumps(hub.checks, indent=2))
         if args.keep_running or args.serve_only:
             password = hub.root / "browser-password"
             password.write_text("local-settings-password")
