@@ -1649,11 +1649,12 @@ pub fn documentation_index_page(
         for result in results {
             let _ = write!(
                 body,
-                "<li><a href=\"/{}/-/docs/{}/{}/{}\"><span class=\"doc-kind\">{}</span><strong>{}</strong><span>{}</span><code>{} {} · {}</code></a></li>",
+                "<li><a href=\"/{}/-/docs/{}/{}/{}#{}\"><span class=\"doc-kind\">{}</span><strong>{}</strong><span>{}</span><code>{} {} · {}</code></a></li>",
                 escape(slug),
                 escape(&result.package_name),
                 escape(&result.package_version),
                 escape(&result.platform),
+                aos_doc_model::documentation_anchor(&result.kind, &result.key),
                 escape(&result.kind),
                 escape(&result.title),
                 escape(&result.summary),
@@ -2174,10 +2175,23 @@ pub fn channel_page(
         channel.partitions.iter().flatten().count(),
     );
 
+    if channel.partitions.iter().all(Option::is_none) {
+        let _ = write!(
+            body,
+            "<p>No release is assigned to this channel yet. <a href=\"/{}/-/releases\">Browse signed releases</a> or <a href=\"/{}/-/images\">available images</a>.</p>",
+            escape(slug), escape(slug),
+        );
+    }
+    body.push_str(
+        "<p>The frontier is the newest rollout target; your host's assigned release depends on its bucket. \
+         Find <code>[registry.state] bucket</code> in your configured <code>registries.d</code> entry, \
+         then enter that number below (decimal 0–255 or hexadecimal 0x00–0xFF).</p>",
+    );
+
     let _ = writeln!(
         body,
-        "<form method=\"get\"><label>which version will my host get? bucket \
-         <input name=\"bucket\" value=\"{}\" size=\"6\"></label> <button>resolve</button></form>",
+        "<form method=\"get\"><label>Find my assigned release: bucket \
+         <input name=\"bucket\" value=\"{}\" size=\"6\"></label> <button>Look up release</button></form>",
         escape(bucket_query.unwrap_or("")),
     );
     if let Some(raw) = bucket_query {
@@ -2239,11 +2253,6 @@ pub fn channel_page(
         })
         .collect();
     body.push_str(&table(&["glyph", "release", "coverage"], &legend_rows));
-    body.push_str(
-        "<p class=\"dim\">Your bucket is the low byte of sha256(registry‑name \\0 salt) — see \
-         <code>[registry.state] bucket</code> in your registries.d entry, or resolve it with the \
-         form above (row = bucket / 16, column = bucket % 16).</p>\n",
-    );
 
     page_with_session(
         &format!("{} channel", channel.name),
@@ -2299,7 +2308,16 @@ pub fn channels_index(
         .collect();
     let mut body = registry_nav(slug, "channels");
     body.push_str("<h1>Channels</h1>\n");
-    body.push_str(&table(&["channel", "frontier", "assigned"], &rows));
+    body.push_str("<p>Channels assign signed releases to host buckets for gradual updates. Open a channel to look up your host's assigned release.</p>");
+    if channels.is_empty() {
+        let _ = write!(
+            body,
+            "<p>No channels are published yet. <a href=\"/{}/-/releases\">Browse signed releases</a> for an immutable version, or <a href=\"/{}/-/images\">view available images</a>.</p>",
+            escape(slug), escape(slug),
+        );
+    } else {
+        body.push_str(&table(&["channel", "frontier", "assigned"], &rows));
+    }
     body.push_str(&pager.nav(&format!("/{slug}/-/channels"), ""));
     page_with_session(
         &format!("{slug} channels"),
@@ -2411,6 +2429,59 @@ fn image_select(
     html
 }
 
+// Quote metadata as one shell argument before escaping the command for HTML.
+fn shell_argument(value: &str) -> String {
+    if !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"/_-.:@".contains(&byte))
+    {
+        value.to_string()
+    } else {
+        format!("'{}'", value.replace('\'', "'\"'\"'"))
+    }
+}
+
+fn copy_command(label: &str, command: &str) -> String {
+    format!(
+        "<div class=\"copy-row\"><code class=\"merge-cmd\">{}</code><button type=\"button\" class=\"hash-copy copy-btn\" data-copy-value=\"{}\" aria-label=\"Copy {} command\">copy</button></div>",
+        escape(command), escape(command), escape(label),
+    )
+}
+
+fn image_download_commands(
+    image: &IndexedSystemImage,
+    registry: &RegistryRecord,
+    setup: &RegistrySetup,
+    hub_url: &str,
+) -> String {
+    let apm_command = format!(
+        "apm install --registry={} --image={} -- {}",
+        shell_argument(&setup.client_name),
+        shell_argument(&image.format),
+        shell_argument(&image.package),
+    );
+    let mut hub_command = String::from("aos image download");
+    for (flag, value) in [
+        ("hub", hub_url),
+        ("registry", registry.slug.as_str()),
+        ("package", image.package.as_str()),
+        ("release", image.release.as_str()),
+        ("architecture", image.delivery.architecture.as_str()),
+        ("format", image.format.as_str()),
+    ] {
+        let _ = write!(hub_command, " --{flag}={}", shell_argument(value));
+    }
+    format!(
+        "<details><summary>Download commands</summary>\
+         <h3>Signed registry download</h3><p>After <a href=\"/{}/\">configuring this registry</a>, APM selects its configured signed release and your host platform. Use a host matching <code>{}</code>; this command does not select the historical release shown in this row.</p>{}\
+         <h3>Optional Hub discovery</h3><p>Selects this row's release, architecture and format, then downloads and verifies the image bytes.</p>{}</details>",
+        escape(&registry.slug), escape(&image.platform),
+        copy_command("APM image download", &apm_command),
+        copy_command("Hub image download", &hub_command),
+    )
+}
+
 /// The signed system-image catalog with end-user disk download actions.
 pub fn images_page(
     registry: &RegistryRecord,
@@ -2418,6 +2489,7 @@ pub fn images_page(
     images: &[IndexedSystemImage],
     channels: &[ChannelSummary],
     download_base: Option<&str>,
+    hub_url: &str,
     browse: &ImageBrowse<'_>,
     started: Instant,
     session: &SessionIndicator,
@@ -2433,6 +2505,7 @@ pub fn images_page(
     let architecture = normalize(browse.architecture);
     let format = normalize(browse.format);
     let target = normalize(browse.target);
+    let setup = RegistrySetup::new(registry, status, download_base, &[]);
 
     let mut release_values = images
         .iter()
@@ -2547,7 +2620,7 @@ pub fn images_page(
                 },
             )
         } else {
-            "<span class=\"ok\" title=\"Delivered from the registry cache with aos image download\">CDN / CLI</span>".to_string()
+            image_download_commands(image, registry, &setup, hub_url)
         };
         let (store_path, nar_identity) = if image.store_path.is_empty() {
             (
@@ -3356,6 +3429,7 @@ mod tests {
             &images,
             &channels,
             Some("https://download.example/demo"),
+            "https://hub.example",
             &ImageBrowse::default(),
             Instant::now(),
             &anon(),
@@ -3385,6 +3459,7 @@ mod tests {
             &images,
             &channels,
             Some("https://download.example/demo"),
+            "https://hub.example",
             &ImageBrowse {
                 page_number: 1,
                 release: Some("2026.08"),
@@ -3410,6 +3485,7 @@ mod tests {
             &[unsigned],
             &[],
             Some("https://download.example/demo"),
+            "https://hub.example",
             &ImageBrowse::default(),
             Instant::now(),
             &anon(),
@@ -3430,6 +3506,7 @@ mod tests {
             &images,
             &image_channels(),
             Some("https://download.example/demo"),
+            "https://hub.example",
             &ImageBrowse {
                 page_number: 2,
                 query: Some("aos-system"),
@@ -3455,6 +3532,7 @@ mod tests {
             std::slice::from_ref(&image),
             &image_channels(),
             Some("https://download.example/demo"),
+            "https://hub.example",
             &ImageBrowse {
                 target: Some("qemu-kvm"),
                 ..ImageBrowse::default()
@@ -3472,14 +3550,58 @@ mod tests {
             &[image],
             &image_channels(),
             Some("https://download.example/demo"),
+            "https://hub.example",
             &ImageBrowse::default(),
             Instant::now(),
             &anon(),
         );
-        assert!(html.contains("CDN / CLI"));
+        assert!(html.contains("Signed registry download"));
+        assert!(html.contains("apm install --registry=demo --image=raw -- aos-system"));
+        assert!(html.contains("does not select the historical release shown in this row"));
+        assert!(html.contains("Optional Hub discovery"));
+        assert!(html.contains("aos image download --hub=https://hub.example --registry=demo --package=aos-system --release=2026.08 --architecture=x86_64 --format=raw"));
         assert!(!html.contains("href=\"https://download.example/demo/images/sha256/"));
         assert!(!html.contains("access_token="));
         assert!(!html.contains("Authorization="));
+    }
+
+    #[test]
+    fn image_commands_quote_metadata_before_html_escaping() {
+        let mut image = indexed_image("raw", "release'$(touch unsafe)");
+        image.package = "system<&>".into();
+        let registry = registry();
+        let setup = setup(&registry, "https://download.example/demo", &[]);
+        let html = image_download_commands(&image, &registry, &setup, "https://hub.example");
+        assert!(html.contains(&escape("--release='release'\"'\"'$(touch unsafe)'")));
+        assert!(html.contains(&escape("--package='system<&>'")));
+        assert!(!html.contains("system<&>"));
+    }
+
+    #[test]
+    fn empty_channels_offer_release_and_image_actions() {
+        let index = channels_index(&registry(), None, &[], 1, Instant::now(), &anon());
+        assert!(index.contains("No channels are published yet"));
+        assert!(index.contains("href=\"/demo/-/releases\""));
+        assert!(index.contains("href=\"/demo/-/images\""));
+        let channel = ChannelSummary {
+            name: "stable".into(),
+            frontier: None,
+            partitions: vec![None; 256],
+        };
+        let html = channel_page(
+            &registry(),
+            None,
+            &channel,
+            None,
+            None,
+            Instant::now(),
+            &anon(),
+        );
+        assert!(html.contains("No release is assigned to this channel yet"));
+        assert!(
+            html.find("[registry.state] bucket").unwrap() < html.find("name=\"bucket\"").unwrap()
+        );
+        assert!(html.contains("Look up release"));
     }
 
     #[tokio::test]
@@ -3938,6 +4060,10 @@ mod tests {
         assert!(!search_html.contains("<script>option</script>"));
         assert!(search_html.contains("&lt;script&gt;option&lt;/script&gt;"));
         assert!(search_html.contains("Enable &amp; start"));
+        assert!(search_html.contains(&format!(
+            "href=\"/demo/-/docs/nginx/1.30.4/x86_64-linux#{}\"",
+            aos_doc_model::documentation_anchor("option", "nginx.enable"),
+        )));
         assert!(!search_html.contains("Exact installable reference"));
         assert!(!search_html.contains("<h1>Package documentation</h1>"));
 

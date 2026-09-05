@@ -678,6 +678,7 @@ pub async fn images(
         &images.unwrap_or_default(),
         &channels.unwrap_or_default(),
         download_base.as_deref(),
+        &svc.external_url,
         &pages::ImageBrowse {
             page_number: query.page_number(),
             query: query.q.as_deref(),
