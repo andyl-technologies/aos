@@ -29,7 +29,7 @@
       };
       discovery = {
         primary = {
-          provider = "github-tags";
+          provider = "github-releases";
           repository = "madler/zlib";
           tagPrefix = "v";
         };
