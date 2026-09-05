@@ -19,76 +19,76 @@ A page is complete only after its final behavior is verified, not just edited.
 
 | Scope | Page | Path suffix | Review / verification |
 | --- | --- | --- | --- |
-| Instance | Overview | `(root)` | Review in progress |
-| Instance | Bindings | `bindings` | Review in progress |
-| Instance | Create binding | `bindings/new` | Review in progress |
-| Instance | Domains | `domains` | Review in progress |
-| Instance | Add domain | `domains/new` | Review in progress |
-| Instance | Network policies | `network-policies` | Review in progress |
-| Instance | Create network policy | `network-policies/new` | Review in progress |
-| Instance | Endpoints | `endpoints` | Review in progress |
-| Instance | Create endpoint | `endpoints/new` | Review in progress |
-| Instance | Gateways | `gateways` | Review in progress |
-| Instance | Create gateway | `gateways/new` | Review in progress |
-| Instance | Topology defaults | `topology-defaults` | Review in progress |
-| Instance | Identity & signup | `identity-and-signup` | Review in progress |
-| Instance | Access tokens | `tokens` | Review in progress |
-| Instance | Resource defaults | `resource-defaults` | Review in progress |
-| Instance | Branding | `branding` | Review in progress |
-| Instance | Operations | `operations` | Review in progress |
-| Organization | Overview | `(root)` | Review in progress |
-| Organization | Projects | `projects` | Review in progress |
-| Organization | Create project | `projects/new` | Review in progress |
-| Organization | Registries | `registries` | Review in progress |
-| Organization | Create registry | `registries/new` | Review in progress |
-| Organization | Binary caches | `caches` | Review in progress |
-| Organization | Create binary cache | `caches/new` | Review in progress |
-| Organization | Bindings | `bindings` | Review in progress |
-| Organization | Create binding | `bindings/new` | Review in progress |
-| Organization | Domains | `domains` | Review in progress |
-| Organization | Add domain | `domains/new` | Review in progress |
-| Organization | Network policies | `network-policies` | Review in progress |
-| Organization | Create network policy | `network-policies/new` | Review in progress |
-| Organization | Endpoints | `endpoints` | Review in progress |
-| Organization | Create endpoint | `endpoints/new` | Review in progress |
-| Organization | Gateways | `gateways` | Review in progress |
-| Organization | Create gateway | `gateways/new` | Review in progress |
-| Organization | Topology defaults | `topology-defaults` | Review in progress |
-| Organization | Identity & access | `identity-and-access` | Review in progress |
-| Organization | Members | `members` | Review in progress |
-| Organization | SSO | `sso` | Review in progress |
-| Organization | Signing keys | `signing-keys` | Review in progress |
-| Organization | Access tokens | `tokens` | Review in progress |
-| Organization | Webhooks | `webhooks` | Review in progress |
-| Organization | Operations | `operations` | Review in progress |
-| Organization | Audit log | `audit-log` | Review in progress |
-| Organization | Danger zone | `danger` | Review in progress |
-| Registry | Overview | `(root)` | Reviewed desktop/narrow; clearer public links and action spacing; final rerun pending |
-| Registry | Storage & replicas | `placements` | Reviewed desktop/narrow; fixed task selector alignment and summary wrapping; final rerun pending |
-| Registry | Delivery | `delivery` | Reviewed desktop and automated narrow metrics; final expanded visual review pending |
-| Registry | Binary caches | `caches` | Reviewed desktop/narrow; real cache links, corrected help column and action spacing; final rerun pending |
-| Registry | Identity & access | `access` | Reviewed desktop/narrow; clearer roles, tokens, signing and ownership guidance; final rerun pending |
-| Registry | Signing keys | `signing-keys` | Reviewed desktop/narrow; read-first inventory and gated editors; final expanded rerun pending |
-| Registry | Access tokens | `tokens` | Reviewed desktop/narrow; read-first inventory and gated issuance; final expanded rerun pending |
-| Registry | Containers | `containers` | Reviewed desktop/narrow; disabled GC caused503 and overflow; capability gate fixed, final rerun pending |
-| Registry | Upstream mirror | `mirror` | Reviewed desktop/narrow; added status/empty state, gated editor and useful timestamp; final rerun pending |
-| Registry | Configuration history | `configuration` | Reviewed desktop/narrow; moved ID inspector into disclosure and clarified history types; final rerun pending |
-| Registry | Change requests | `change-requests` | Reviewed desktop/narrow; clearer merge guidance; corrected audit URL; final rerun pending |
-| Registry | Publications | `publish-history` | Reviewed desktop/narrow; history first, advanced manifest editor and clearer purpose; final rerun pending |
-| Registry | Operations & health | `operations` | Reviewed desktop/narrow; readable timestamps and failure presentation; final rerun pending |
-| Registry | Danger zone | `danger` | Reviewed desktop/narrow; confirmation overlapped input; full-width confirmation fixed, final rerun pending |
-| Cache | Overview | `(root)` | Review in progress |
-| Cache | Storage & replicas | `placements` | Review in progress |
-| Cache | Delivery | `delivery` | Review in progress |
-| Cache | Objects & closures | `objects` | Review in progress |
-| Cache | Integrations | `integrations` | Review in progress |
-| Cache | Identity & access | `access` | Review in progress |
-| Cache | Signing keys | `signing-keys` | Review in progress |
-| Cache | Access tokens | `tokens` | Review in progress |
-| Cache | Retention | `retention` | Review in progress |
-| Cache | Garbage collection | `garbage-collection` | Review in progress |
-| Cache | Operations & health | `operations` | Review in progress |
-| Cache | Danger zone | `danger` | Review in progress |
+| Instance | Overview | `(root)` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Instance | Bindings | `bindings` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Instance | Create binding | `bindings/new` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Instance | Domains | `domains` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Instance | Add domain | `domains/new` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Instance | Network policies | `network-policies` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Instance | Create network policy | `network-policies/new` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Instance | Endpoints | `endpoints` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Instance | Create endpoint | `endpoints/new` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Instance | Gateways | `gateways` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Instance | Create gateway | `gateways/new` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Instance | Topology defaults | `topology-defaults` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Instance | Identity & signup | `identity-and-signup` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Instance | Access tokens | `tokens` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Instance | Resource defaults | `resource-defaults` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Instance | Branding | `branding` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Instance | Operations | `operations` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Organization | Overview | `(root)` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Organization | Projects | `projects` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Organization | Create project | `projects/new` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Organization | Registries | `registries` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Organization | Create registry | `registries/new` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Organization | Binary caches | `caches` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Organization | Create binary cache | `caches/new` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Organization | Bindings | `bindings` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Organization | Create binding | `bindings/new` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Organization | Domains | `domains` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Organization | Add domain | `domains/new` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Organization | Network policies | `network-policies` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Organization | Create network policy | `network-policies/new` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Organization | Endpoints | `endpoints` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Organization | Create endpoint | `endpoints/new` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Organization | Gateways | `gateways` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Organization | Create gateway | `gateways/new` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Organization | Topology defaults | `topology-defaults` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Organization | Identity & access | `identity-and-access` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Organization | Members | `members` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Organization | SSO | `sso` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Organization | Signing keys | `signing-keys` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Organization | Access tokens | `tokens` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Organization | Webhooks | `webhooks` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Organization | Operations | `operations` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Organization | Audit log | `audit-log` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Organization | Danger zone | `danger` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Registry | Overview | `(root)` | Reviewed desktop/narrow; clearer public links and action spacing; final page sweep passed |
+| Registry | Storage & replicas | `placements` | Reviewed desktop/narrow; fixed task selector alignment and summary wrapping; final page sweep passed |
+| Registry | Delivery | `delivery` | Reviewed desktop/narrow; final expanded page sweep passed |
+| Registry | Binary caches | `caches` | Reviewed desktop/narrow; real cache links, corrected help column and action spacing; final page sweep passed |
+| Registry | Identity & access | `access` | Reviewed desktop/narrow; clearer roles, tokens, signing and ownership guidance; final page sweep passed |
+| Registry | Signing keys | `signing-keys` | Reviewed desktop/narrow; read-first inventory and gated editors; final expanded page sweep passed |
+| Registry | Access tokens | `tokens` | Reviewed desktop/narrow; read-first inventory and gated issuance; final expanded page sweep passed |
+| Registry | Containers | `containers` | Reviewed desktop/narrow; disabled GC caused503 and overflow; capability gate fixed, final page sweep passed |
+| Registry | Upstream mirror | `mirror` | Reviewed desktop/narrow; added status/empty state, gated editor and useful timestamp; final page sweep passed |
+| Registry | Configuration history | `configuration` | Reviewed desktop/narrow; moved ID inspector into disclosure and clarified history types; final page sweep passed |
+| Registry | Change requests | `change-requests` | Reviewed desktop/narrow; clearer merge guidance; corrected audit URL; final page sweep passed |
+| Registry | Publications | `publish-history` | Reviewed desktop/narrow; history first, advanced manifest editor and clearer purpose; final page sweep passed |
+| Registry | Operations & health | `operations` | Reviewed desktop/narrow; readable timestamps and failure presentation; final page sweep passed |
+| Registry | Danger zone | `danger` | Reviewed desktop/narrow; confirmation overlapped input; full-width confirmation fixed, final page sweep passed |
+| Cache | Overview | `(root)` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Cache | Storage & replicas | `placements` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Cache | Delivery | `delivery` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Cache | Objects & closures | `objects` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Cache | Integrations | `integrations` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Cache | Identity & access | `access` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Cache | Signing keys | `signing-keys` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Cache | Access tokens | `tokens` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Cache | Retention | `retention` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Cache | Garbage collection | `garbage-collection` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Cache | Operations & health | `operations` | Reviewed desktop/narrow; final 519-check sweep passed |
+| Cache | Danger zone | `danger` | Reviewed desktop/narrow; final 519-check sweep passed |
 
 Read-only Packages, Documentation, Images, and Channels catalogs are leaving
 settings navigation. Their old settings URLs redirect to canonical registry
@@ -120,8 +120,7 @@ console assets. The initial full page sweep found a missing instance binding
 creation route and stopped at that defect. Separate scope sweeps continued
 the review while the route was fixed. Registry advanced container maintenance
 exposed disabled-rollout 503s; the shell now reports availability before the
-console loads these controls. These findings are fixes awaiting final browser
-verification, not waived test failures.
+console loads these controls. The final browser sweep below verifies both fixes; neither failure was waived.
 
 Registry evidence: `/tmp/aos-hub-settings-registry-review-9a4fd29e6/`,
 `/tmp/aos-hub-settings-registry-rest-9a4fd29e6/`, and
@@ -129,3 +128,64 @@ Registry evidence: `/tmp/aos-hub-settings-registry-review-9a4fd29e6/`,
 Cache evidence: `/tmp/aos-hub-settings-final-cache-9a4fd29e6/`.
 The final audit captures closed and expanded views at desktop and narrow widths
 for every canonical page; the four former catalog routes are checked separately.
+
+
+### Final settings integration at `fb0e89eae`
+
+The fresh native Hub fixture passed 29 integration checks. Chrome passed 99
+functional checks, with no skips, including real retention registry selection,
+GC policy review, and invalidation of a stale review after editing. The full
+route sweep passed 519 checks across 73 canonical settings pages and four
+legacy catalog redirects, producing 292 closed/expanded desktop/narrow
+screenshots. It recorded no page failures, JavaScript exceptions, console errors,
+or unexpected failed requests. Four narrowly identified optional-resource 404s
+represent absent identity-provider, signing-usage, and mirror configuration.
+They are not a general error suppression rule.
+
+Evidence: `/tmp/aos-hub-settings-functional-fb0e89eae/report.json` and
+`/tmp/aos-hub-settings-verified-fb0e89eae/report.json`. The instance/organization
+visual findings are detailed in `hub-settings-instance-org-review.md`.
+
+The sweep uses an instance owner. Navigation permissions additionally have 30
+passing contract checks; a restricted-user browser session was not exercised.
+One final presentation correction stacks the GC generation status on narrow
+screens (`50e96fb7b`); rebuilt-asset verification of that correction is pending.
+
+Public pages now prioritize setup, preserve package filters/sort/snapshot
+selection, distinguish unavailable snapshots, use stable documentation anchors,
+load documentation only when requested, pin container pull examples to a digest,
+and show an independent APM image command. Public browse tests (26), documentation
+model tests (14), exact documentation lookup tests (7), and the signed-snapshot
+listing regression passed. Public browser review and hosted verification remain
+in progress.
+
+The explicit `aos doc hub` mode requires a valid Hub origin and registry;
+installed and package documentation remain independent. Five real-process tests
+passed, including offline installed documentation and no silent authentication
+fallback. Portable image resolution and its trust-continuity tests remain in
+progress.
+
+
+### Hosted verification at `fb0e89eae`
+
+Deployed `/nix/store/7h658njln1vjps354grl0rnz99qp9dwb-aos-hub-cloudflare-0.1.0`
+to the existing staging Worker. `/.well-known/aos-deployment` returns
+`staging-fb0e89eaed29ca003d7c53310baa3c89707ae1f2`. Database `hub`, domains,
+bindings, secrets, and the OCI pull rollout setting were preserved. Both pre-
+and postdeployment recovery bookmarks were captured without resetting data.
+
+Authenticated topology returned the same two placements, two routes, three
+advertisements, and one canonical endpoint in all three requests. SQL calls
+fell from 38 to 23 (39.5%). Request times were 1.875, 1.081, and 1.540 seconds,
+compared with the earlier 2.06-2.47 seconds. These are small sequential samples,
+not a load test. Workflow inventory returned 200 in 1.706, 0.638, and 0.694
+seconds (10 SQL calls each); container inventory returned 200 in 0.535, 0.430,
+and 0.902 seconds (9 calls each). Those two inventories remain empty.
+Evidence: `/tmp/aos-staging-authenticated-settings-fb0e89eae/report.json`.
+
+The public `aos-hub` package page returns 200 and now links to documentation
+instead of embedding its entire fetched document. The recorded response fell
+from 11,598 to 8,216 bytes; the postdeployment request took 0.436 seconds.
+Documentation remains available through its dedicated page and exact digest link.
+Signed-in browser evidence remains the native fixture; CLI OAuth verification
+is not a browser login.
