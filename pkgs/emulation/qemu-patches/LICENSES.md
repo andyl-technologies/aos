@@ -13,6 +13,7 @@ The series currently creates these QEMU source files:
 | `accel/tcg/tcg-accel-ops-sim.c` | GPL-2.0-or-later | QEMU default |
 | `include/system/crucible-plugin-wake.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `block/crucible-shmem.c` | GPL-2.0-or-later | Explicit file notice |
+| `block/crucible-hot-fork-source.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `accel/tcg/tcg-accel-ops-sim-shmem.c` | GPL-2.0-or-later | QEMU default |
 | `accel/tcg/tcg-accel-ops-sim-shmem.h` | GPL-2.0-or-later | QEMU default |
 | `include/system/crucible-sim-ipi.h` | GPL-2.0-or-later | QEMU default |

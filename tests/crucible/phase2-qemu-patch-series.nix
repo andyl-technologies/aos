@@ -1371,6 +1371,13 @@
       enforces = "QFP-REG-1,QFP-STATE-2";
       capability = "virtio-net reset tolerates the announcement timer removed by exact restore, preserving suppressed migration traffic while allowing Boot and reset without a null timer dereference";
     }
+    {
+      file = "0197-crucible-retain-read-only-block-sources.patch";
+      catalogName = "crucible-hot-fork-read-only-block-source";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-22";
+      capability = "a process-local owner retains the exact writable backend and root, drains and reopens the complete reachable source graph read-only before fork barriers, rejects explicit writable descendants, and restores original native access after a partial failure; inherited children cannot restore or free the parent token; coordinator integration and branch-private child graph handoff remain open";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;
