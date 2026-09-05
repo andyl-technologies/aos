@@ -47,5 +47,6 @@ pub mod refs;
 pub mod sshsig;
 pub mod stack;
 pub mod store;
+pub mod support;
 pub mod tag;
 pub mod tagobject;

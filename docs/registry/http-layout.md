@@ -310,7 +310,12 @@ SSH-Ed25519-signed git tag object whose **tag-name field equals the channel name
   (§6). Partition freshness comes from that low CDN TTL combined with the
   consumer's own max-staleness policy and the monotonic anti-rollback floor.
   Moving-ref release metadata freshness is separately required and signed in
-  `tuf/timestamp.json`.
+  `tuf/timestamp.json`. A qualified release may also serve
+  `releases/<class>/<version>/release-record.json` beside its manifest: the
+  public release record (`aos.release-record/v1`) authorized by the same
+  delegated role, carrying the qualification outcome, per-claim assurance,
+  the train's support statement, provenance digests, and the signed
+  qualification envelope.
 
 A single partition file is just the raw bytes of a git tag object; a client fetches
 `/channels/stable/<bucket>`, verifies the signature and the name binding, follows the

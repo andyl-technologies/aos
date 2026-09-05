@@ -48,6 +48,7 @@ pub mod qualification;
 pub mod qualification_admission;
 pub mod qualification_evidence;
 pub mod receipt;
+pub mod record;
 pub mod registry;
 pub mod sbom;
 pub mod signing;
