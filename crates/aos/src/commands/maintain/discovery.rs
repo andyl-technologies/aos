@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result, bail};
 use aos_contract::{Sha256Digest, canonical};
@@ -25,6 +25,8 @@ const OBSERVATION_MAX_AGE_SECONDS: u64 = 24 * 60 * 60;
 const MAX_GITHUB_PAGES: u32 = 10;
 const MAX_REPOLOGY_FALLBACK_REQUESTS: usize = 1_000;
 const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const UPSTREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
 const USER_AGENT_VALUE: &str =
     "aos-maintain/0.1 (+https://github.com/andyl-technologies/aos/issues)";
 const DEFAULT_GITHUB_API_URL: &str = "https://api.github.com";
@@ -82,6 +84,8 @@ pub(super) async fn scan(
     let mut last_repology_request = None;
     let mut fallback_limit_reported = false;
     let client = reqwest::Client::builder()
+        .connect_timeout(UPSTREAM_CONNECT_TIMEOUT)
+        .timeout(UPSTREAM_REQUEST_TIMEOUT)
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
             let same_origin = attempt.previous().first().is_none_or(|initial| {
                 initial.scheme() == attempt.url().scheme()
@@ -804,7 +808,17 @@ async fn repology(
     let entries = value
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("Repology response is not an array"))?;
-    let mut candidates = Vec::new();
+    struct ParsedCandidate {
+        raw_id: String,
+        raw_version: String,
+        first_key: String,
+        yanked: bool,
+        status: Option<String>,
+        vulnerable: Option<bool>,
+        licenses: Vec<String>,
+    }
+
+    let mut parsed = Vec::new();
     for (index, entry) in entries.iter().enumerate() {
         let Some(version) = entry.get("version").and_then(Value::as_str) else {
             continue;
@@ -824,7 +838,6 @@ async fn repology(
             repository.len(),
             original_version.len()
         );
-        let first_observed = store.record_first_observed(&first_key, retrieved_at)?;
         let mut licenses = entry
             .get("licenses")
             .and_then(Value::as_array)
@@ -835,17 +848,14 @@ async fn repology(
             .collect::<Vec<_>>();
         licenses.sort();
         licenses.dedup();
-        candidates.push(ObservationCandidate {
+        parsed.push(ParsedCandidate {
             raw_id,
             raw_version: version.to_string(),
-            published_at_unix: None,
-            first_observed_at_unix: first_observed,
-            prerelease: false,
+            first_key,
             yanked: matches!(
                 entry.get("status").and_then(Value::as_str),
                 Some("ignored" | "incorrect" | "untrusted")
             ),
-            release_url: None,
             status: entry
                 .get("status")
                 .and_then(Value::as_str)
@@ -854,6 +864,34 @@ async fn repology(
             licenses,
         });
     }
+    let first_keys = parsed
+        .iter()
+        .map(|candidate| candidate.first_key.clone())
+        .collect::<Vec<_>>();
+    let first_observed = store.record_first_observed_batch(&first_keys, retrieved_at)?;
+    let mut candidates = parsed
+        .into_iter()
+        .map(|candidate| {
+            let observed_at = first_observed
+                .get(&candidate.first_key)
+                .copied()
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Repology candidate observation was not recorded")
+                })?;
+            Ok(ObservationCandidate {
+                raw_id: candidate.raw_id,
+                raw_version: candidate.raw_version,
+                published_at_unix: None,
+                first_observed_at_unix: observed_at,
+                prerelease: false,
+                yanked: candidate.yanked,
+                release_url: None,
+                status: candidate.status,
+                vulnerable: candidate.vulnerable,
+                licenses: candidate.licenses,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
     candidates.sort_by(|left, right| left.raw_id.cmp(&right.raw_id));
     let observation = UpstreamObservationV1 {
         schema: aos_maintain::UPSTREAM_OBSERVATION_V1.to_string(),
