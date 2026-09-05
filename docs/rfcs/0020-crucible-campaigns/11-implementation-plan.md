@@ -373,17 +373,50 @@ share identical snapshot bytes; their separate target manifests authenticate
 node ownership, artifacts, counters, and fault continuation. The content
 uniqueness check is removed, while duplicate node identities and foreign-node
 target authentication remain rejected and covered by regressions.
-All five packaged VM flights now pass, including the compound exact-time
+The first five packaged VM flights pass, including the compound exact-time
 completion across two VMs. The flight's explanation read refreshes only an
 explicit stale-head response under its original deadline, because completion
 feedback may advance the campaign between status and snapshot-bound query.
-Other query or execution errors remain failures. The accompanying API suite
-passes 254 unit tests; the core suite passes 383 unit tests plus 31 focused
-scheduler/trigger integrations, and affected-crate Clippy remains clean.
+Other query or execution errors remain failures.
 
-These flights do not prove guest-choice branching, checkpoint-pause recovery,
-or hot-fork acceptance. Exact-time scheduling still needs coverage of deadlines
-before baked-genesis readiness and worlds with no active VM clock driver.
+The sixth packaged flight passes `At(0)` and `After(0)` followed by a timer at
+logical time 3. Baked-ready physical counters already map to logical time zero;
+the new flight exercises that existing origin through real packaged execution.
+
+Inactive scheduler nodes no longer constrain the live frontier or contribute
+stale vCPU quiescence blockers. Removing a lagging node publishes the frontier
+its peers have already reached. With no active node, the host clock can advance
+to its next trigger, signal-fault, or topology evaluation without issuing a
+backend RUN, still respecting branch and terminal time caps. Reactivation
+preserves physical counters and remaining native timer durations while joining
+the current frontier. Overflow and duplicate identities reject an activity
+batch before publication. Regressions cover serial/concurrent/checkpoint
+equivalence, nonzero initial inactive clocks, and future topology activation.
+
+The full affected test sweep now passes. The standalone core sweep passes 967
+tests, including the source-size guard.
+Focused module splits separate lifecycle construction, repository dispatch,
+channel contracts, QMP command encoding, thread-inventory decoding, and
+hot-fork ownership tests. All six formerly oversized files now fit the default
+source limits, and three obsolete debt exceptions are removed; no limit was
+increased or test skipped. The production API suite passes 255 unit tests,
+including restored trigger settlement with no active node; the QEMU suite
+passes 611 unit tests with one existing ignored test. Affected integrations
+and strict Clippy checks also pass.
+
+The production-QEMU `checks.crucible.phase7.signalSharedCause` flight also
+passes with inactive-world continuation enabled. After PowerOff on one node
+and PermanentFailure on its peer at virtual time 12,000,000,000, a host trigger
+arms a timer at 12,000,001,024 without a guest RUN. An exact checkpoint retains
+that inactive world and timer; both the original and a freshly restored world
+pass at 12,000,002,048 with identical authenticated event-log segments and
+unchanged node ownership evidence. The flight still requires its original
+queued-network, volatile-storage, shared-cause crash/restart, terminal ownership,
+pre-event exact-restore, and locked-effect replay assertions.
+
+These flights do not prove guest-choice branching, the full public
+checkpoint-pause recovery workflow, powered-off-node reactivation through QEMU,
+or hot-fork acceptance.
 Longer diagnostic execution also stalled waiting for a post-device control
 acknowledgement and returned cleanup-pending on shutdown; the short successful
 flight does not close that liveness investigation.

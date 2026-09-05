@@ -258,6 +258,15 @@ when the complete condition is certainly false; possible future activations
 still block quiescence. The scheduler rejects an unrepresentable exact cap or a
 cap behind an already advanced live node, without rounding or rewinding it.
 
+Powered-off and permanently failed scheduler nodes retain their counters but
+do not constrain the live frontier or contribute stale vCPU activity to
+quiescence. If every node is inactive, the next host-side trigger, signal-fault,
+or topology boundary can advance global time through a control-only quantum;
+no backend RUN is issued. Branch and terminal time caps still apply. Resuming
+a node anchors its retained physical counter at the current logical frontier
+and preserves remaining native timer durations. Checkpoints retain both the
+global frontier and the per-node counter mappings.
+
 ### 17a.2.2 `NetworkMatch` — a matching frame is delivered
 
 `NetworkMatch { link, predicate }` becomes true when a frame matching

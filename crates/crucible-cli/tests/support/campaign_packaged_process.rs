@@ -41,6 +41,13 @@ fn public_packaged_executor_synchronizes_exact_time_across_vms() -> Result<(), B
     packaged_campaign_flight(PackagedFlight::ExactTimeMultiVm)
 }
 
+#[test]
+#[ignore = "requires dedicated cgroup-v2 and ext4 project-quota roots inside the VM check"]
+fn public_packaged_executor_observes_zero_and_early_logical_deadlines() -> Result<(), Box<dyn Error>>
+{
+    packaged_campaign_flight(PackagedFlight::EarlyExactTime)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PackagedFlight {
     Restart,
@@ -48,6 +55,7 @@ enum PackagedFlight {
     GuestQuantum,
     ExactTime,
     ExactTimeMultiVm,
+    EarlyExactTime,
 }
 
 fn packaged_campaign_flight(mode: PackagedFlight) -> Result<(), Box<dyn Error>> {
@@ -90,10 +98,17 @@ fn packaged_campaign_flight(mode: PackagedFlight) -> Result<(), Box<dyn Error>> 
     // `After` is an exact-time predicate, not a lower-bound comparison.
     let graph = if matches!(
         mode,
-        PackagedFlight::ExactTime | PackagedFlight::ExactTimeMultiVm
+        PackagedFlight::ExactTime
+            | PackagedFlight::ExactTimeMultiVm
+            | PackagedFlight::EarlyExactTime
     ) {
         let timer = TimerId {
             name: "finish-timer".into(),
+        };
+        let (arm_at, delay) = if mode == PackagedFlight::EarlyExactTime {
+            (0, 3)
+        } else {
+            (1_250_003, 33)
         };
         // Both boundaries lie strictly between packaged rendezvous. Terminal
         // success requires all three exact time predicate forms to agree.
@@ -102,16 +117,29 @@ fn packaged_campaign_flight(mode: PackagedFlight) -> Result<(), Box<dyn Error>> 
             .entrypoint()
             .action(Action::Group(Vec::new()))
             .event("arm-flight")
-            .when(Predicate::After {
-                of: EventId::from_name("begin-flight"),
-                duration: SimDuration { nanos: 1_250_003 },
+            .when(Predicate::AllOf {
+                predicates: vec![
+                    Predicate::at(VirtualTime { ticks: arm_at }),
+                    Predicate::after(
+                        SimDuration { nanos: arm_at },
+                        EventId::from_name("begin-flight"),
+                    ),
+                ],
             })
-            .action(Action::arm_timer(timer.clone(), SimDuration { nanos: 33 }))
+            .action(Action::arm_timer(
+                timer.clone(),
+                SimDuration { nanos: delay },
+            ))
             .event("complete-flight")
             .when(Predicate::AllOf {
                 predicates: vec![
-                    Predicate::at(VirtualTime { ticks: 1_250_036 }),
-                    Predicate::after(SimDuration { nanos: 33 }, EventId::from_name("arm-flight")),
+                    Predicate::at(VirtualTime {
+                        ticks: arm_at + delay,
+                    }),
+                    Predicate::after(
+                        SimDuration { nanos: delay },
+                        EventId::from_name("arm-flight"),
+                    ),
                     Predicate::timer(timer),
                 ],
             })
@@ -269,6 +297,9 @@ exact_user_pins = true
         PackagedFlight::ExactTime => println!("public_packaged_exact_trigger_deadlines=true"),
         PackagedFlight::ExactTimeMultiVm => {
             println!("public_packaged_multi_vm_exact_trigger_deadlines=true")
+        }
+        PackagedFlight::EarlyExactTime => {
+            println!("public_packaged_early_exact_trigger_deadlines=true")
         }
     }
     Ok(())

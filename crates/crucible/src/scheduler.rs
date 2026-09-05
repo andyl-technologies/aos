@@ -108,6 +108,7 @@ mod checkpoint;
 mod control_state;
 mod event_codec;
 mod event_log;
+mod inactive_time;
 mod liveness;
 mod runtime_state;
 mod scenario;

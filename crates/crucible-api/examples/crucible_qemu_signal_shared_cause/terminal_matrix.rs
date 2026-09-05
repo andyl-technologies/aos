@@ -3,6 +3,8 @@
 use super::*;
 
 pub(super) const TERMINAL_MATRIX_EVENT_NANOS: u64 = 12_000_000_000;
+pub(super) const INACTIVE_CHECKPOINT_NANOS: u64 = TERMINAL_MATRIX_EVENT_NANOS + 1024;
+pub(super) const INACTIVE_COMPLETION_NANOS: u64 = INACTIVE_CHECKPOINT_NANOS + 1024;
 
 pub(super) fn terminal_matrix_signal() -> Result<(SignalId, SignalNode), Box<dyn Error>> {
     let event = signal_id("terminal-matrix-event")?;
@@ -106,7 +108,7 @@ pub(super) fn drive_to_terminal_matrix(
     lifecycle: &mut ProductionVmLifecycleLoop,
     mut configuration: Configuration,
     before: &ProductionFaultEvidenceSnapshot,
-) -> Result<ProductionFaultEvidenceSnapshot, Box<dyn Error>> {
+) -> Result<(ProductionFaultEvidenceSnapshot, Configuration), Box<dyn Error>> {
     for quantum in 0..16 {
         eprintln!("shared-cause phase=terminal-matrix quantum={quantum} begin");
         let outcome = lifecycle.drive_quantum(QuantumRequest {
@@ -115,9 +117,63 @@ pub(super) fn drive_to_terminal_matrix(
         })?;
         configuration = outcome.configuration;
         let evidence = lifecycle.fault_evidence_snapshot()?;
-        if exact_terminal_matrix(before, &evidence) {
-            return Ok(evidence);
+        let checkpoint_fired = outcome.event_log_entries.iter().any(|entry| {
+            matches!(entry.payload(), crucible::SchedulerEventLogPayload::TriggerFired(firing)
+                if firing.event() == &crucible::EventId::from_name("inactive-world-checkpoint")
+                    && firing.at().ticks == INACTIVE_CHECKPOINT_NANOS)
+        });
+        if exact_terminal_matrix(before, &evidence)
+            && evidence.frontier.ticks == INACTIVE_CHECKPOINT_NANOS
+            && checkpoint_fired
+            && outcome.advanced_node.is_none()
+            && lifecycle.terminal_verdict_for_stop().is_none()
+        {
+            return Ok((evidence, configuration));
         }
     }
     Err("PowerOff/PermanentFailure production matrix did not settle within 16 quanta".into())
+}
+
+/// Requires a real powered-off world to complete without another backend RUN.
+pub(super) fn complete_inactive_world(
+    lifecycle: &mut ProductionVmLifecycleLoop,
+    configuration: Configuration,
+    before: &ProductionFaultEvidenceSnapshot,
+) -> Result<ContentHash, Box<dyn Error>> {
+    let outcome = lifecycle.drive_quantum(QuantumRequest {
+        configuration,
+        control: Vec::new(),
+    })?;
+    let fired = outcome.event_log_entries.iter().any(|entry| {
+        matches!(entry.payload(), crucible::SchedulerEventLogPayload::TriggerFired(firing)
+            if firing.event() == &crucible::EventId::from_name("inactive-world-complete")
+                && firing.at().ticks == INACTIVE_COMPLETION_NANOS)
+    });
+    if outcome.advanced_node.is_some()
+        || outcome.frontier.ticks != INACTIVE_COMPLETION_NANOS
+        || !fired
+        || !matches!(
+            lifecycle.terminal_verdict_for_stop(),
+            Some(crucible::QuantumTerminalVerdict::Passed)
+        )
+        || lifecycle.fault_evidence_snapshot()?.nodes != before.nodes
+    {
+        return Err("inactive-world completion changed node ownership, ran a backend, or missed its exact trigger".into());
+    }
+    outcome.event_log_segment_hash.ok_or_else(|| {
+        "inactive-world completion emitted no authenticated event-log segment".into()
+    })
+}
+
+pub(super) fn checkpoint_reference(
+    configuration: &Configuration,
+    frontier: crucible::VirtualTime,
+    closure: ContentHash,
+) -> Checkpoint {
+    let mut checkpoint =
+        Checkpoint::new(configuration.id(), configuration.id(), CheckpointKind::Fat);
+    checkpoint.scenario_ref = configuration.def.id();
+    checkpoint.virtual_time = frontier;
+    checkpoint.execution_closure = Some(closure);
+    checkpoint
 }

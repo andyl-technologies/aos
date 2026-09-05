@@ -117,6 +117,9 @@ in
       ${pkgs.coreutils}/bin/timeout -k 5 300 \
         ${flight}/bin/campaign-process-flight --ignored --exact \
         packaged::public_packaged_executor_synchronizes_exact_time_across_vms --nocapture
+      ${pkgs.coreutils}/bin/timeout -k 5 300 \
+        ${flight}/bin/campaign-process-flight --ignored --exact \
+        packaged::public_packaged_executor_observes_zero_and_early_logical_deadlines --nocapture
       ${pkgs.util-linux}/bin/umount /tmp/attempts
     '';
   }

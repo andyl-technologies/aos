@@ -257,7 +257,7 @@ impl SingleScheduler {
             &run_subdivision_policies,
         )?;
 
-        let frontier = frontier_for(&nodes, scenario.shift)?;
+        let frontier = frontier_for(&nodes, scenario.shift, None)?;
         let trigger_actions = TriggerActionState::default();
 
         let world_scheduling_nodes = scenario
@@ -1649,8 +1649,6 @@ impl SingleScheduler {
         );
 
         for node in &self.nodes {
-            blockers.extend(self.vcpu_quiescence_blockers(node));
-
             match self.effective_node_activity(node) {
                 SchedulerNodeActivity::Runnable => {
                     blockers.push(SchedulerQuiescenceBlocker::RunnableNode {
@@ -1660,6 +1658,7 @@ impl SingleScheduler {
                 SchedulerNodeActivity::Idle => {}
                 SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done => continue,
             }
+            blockers.extend(self.vcpu_quiescence_blockers(node));
 
             let exact_local_event =
                 self.effective_exact_local_event_with_trigger(node, self.trigger_activation)?;
@@ -1668,6 +1667,17 @@ impl SingleScheduler {
                     node: node.id.clone(),
                     event: exact_local_event,
                 });
+            }
+        }
+
+        if self.all_nodes_inactive() {
+            for at in [self.trigger_activation, self.signal_fault_wakeup]
+                .into_iter()
+                .flatten()
+            {
+                if at.nanos > self.frontier.ticks {
+                    blockers.push(SchedulerQuiescenceBlocker::PendingGlobalEvaluation { at });
+                }
             }
         }
 

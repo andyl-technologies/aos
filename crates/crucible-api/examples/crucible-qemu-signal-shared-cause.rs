@@ -427,7 +427,31 @@ fn build_source() -> Result<(ScenarioDefForm, Arc<MemoryDagStore>), Box<dyn Erro
     )?
     .with_fault_topology(topology()?)?;
     let faults = shared_cause_plan(block.fault_target_hash())?;
-    let plan = Plan::empty().with_fault_signals_for_world(&world, faults)?;
+    let completion_timer = crucible::TimerId {
+        name: String::from("inactive-world-completion"),
+    };
+    let graph = crucible::EventGraph::builder()
+        .event("inactive-world-checkpoint")
+        .when(crucible::Condition::at(crucible::VirtualTime {
+            ticks: INACTIVE_CHECKPOINT_NANOS,
+        }))
+        .action(crucible::Action::arm_timer(
+            completion_timer.clone(),
+            SimDuration { nanos: 1024 },
+        ))
+        .event("inactive-world-complete")
+        .when(crucible::Condition::AllOf {
+            predicates: vec![
+                crucible::Condition::at(crucible::VirtualTime {
+                    ticks: INACTIVE_COMPLETION_NANOS,
+                }),
+                crucible::Condition::timer(completion_timer),
+            ],
+        })
+        .action(crucible::Action::Pass)
+        .build_for_world(&world)?;
+    let plan = Plan::from_event_graph_for_world(&world, graph)?
+        .with_fault_signals_for_world(&world, faults)?;
     let source = ScenarioDefForm::from_components(
         &world,
         &plan,
@@ -548,20 +572,49 @@ fn main() -> Result<(), Box<dyn Error>> {
         .locked_effect_trace
         .clone()
         .ok_or("locked replay trace absent")?;
-    let terminal_matrix = drive_to_terminal_matrix(&mut lifecycle, after_configuration, &after)?;
+    let (terminal_matrix, inactive_configuration) =
+        drive_to_terminal_matrix(&mut lifecycle, after_configuration, &after)?;
     if lifecycle.live_node_count() != 1 || !exact_terminal_matrix(&after, &terminal_matrix) {
         return Err("production terminal lifecycle ownership matrix is not exact".into());
     }
+    eprintln!("shared-cause phase=inactive-capture begin");
+    let inactive_closure = lifecycle
+        .capture_checkpoint(&inactive_configuration)?
+        .ok_or("inactive world did not return an exact execution closure")?;
+    eprintln!("shared-cause phase=inactive-completion begin");
+    let inactive_log = complete_inactive_world(
+        &mut lifecycle,
+        inactive_configuration.clone(),
+        &terminal_matrix,
+    )?;
     lifecycle.shutdown()?;
 
-    let mut checkpoint = Checkpoint::new(
-        checkpoint_configuration.id(),
-        checkpoint_configuration.id(),
-        CheckpointKind::Fat,
+    eprintln!("shared-cause phase=inactive-restore begin");
+    let inactive_checkpoint = checkpoint_reference(
+        &inactive_configuration,
+        terminal_matrix.frontier,
+        inactive_closure,
     );
-    checkpoint.scenario_ref = scenario.id();
-    checkpoint.virtual_time = checkpoint_frontier;
-    checkpoint.execution_closure = Some(closure);
+    let mut inactive_restored = build_production_vm_lifecycle_loop_from_checkpoint(
+        &scenario,
+        &source,
+        &config,
+        &inactive_checkpoint,
+    )?;
+    let restored_inactive_log = complete_inactive_world(
+        &mut inactive_restored,
+        inactive_configuration,
+        &terminal_matrix,
+    )?;
+    inactive_restored.shutdown()?;
+    eprintln!("shared-cause phase=inactive-restore complete");
+    if inactive_log != restored_inactive_log {
+        return Err(
+            "inactive-world checkpoint changed the exact completion event-log segment".into(),
+        );
+    }
+
+    let checkpoint = checkpoint_reference(&checkpoint_configuration, checkpoint_frontier, closure);
     let mut restored = build_production_vm_lifecycle_loop_from_checkpoint(
         &scenario,
         &source,
@@ -594,6 +647,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("node_effective_icount_authenticated=true");
     println!("exact_checkpoint_evidence_match=true");
     println!("locked_effect_replay_evidence_match=true");
+    println!("inactive_world_exact_trigger_without_run=true");
+    println!("inactive_world_checkpoint_event_log_match=true");
     println!(
         "terminal_row=node-a|transition=power_off|generation_delta=1|service_state=powered_off|scheduler_activity=halted|process_ownership=exact"
     );

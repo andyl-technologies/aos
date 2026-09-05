@@ -129,6 +129,11 @@ impl SchedulerQuiescence {
 /// One scheduler-owned state component that prevents quiescence.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum SchedulerQuiescenceBlocker {
+    /// A host-side evaluation remains scheduled even though no node can RUN.
+    PendingGlobalEvaluation {
+        /// Future logical time at which trigger or fault state must be evaluated.
+        at: SimInstant,
+    },
     /// A node is still runnable and may be selected by PICK.
     RunnableNode {
         /// The runnable scheduler graph node.
