@@ -116,6 +116,27 @@ Earlier settings, CLI, and VM evidence remains separately dated in
 
 ## Staging validation
 
+On 2026-09-05, staging was redeployed as
+`staging-1e023fce89353a1b8047487a5ac877c4c4d50e57` from the hermetic installer
+`/nix/store/vabjdv9jjfzvf37cxhpvw8mrqh0yv5nh-aos-hub-cloudflare-0.1.0` with the
+folder view and release picker. The existing database instance, bindings,
+custom domains, and OCI pull setting were preserved; recovery bookmarks were
+retained locally before and after deployment, and the post-deployment bookmark
+carries the new deployment identity. No reindex was required.
+
+Live checks over HTTP and in Chrome: the Docs page pinned `0.1.1-rc.220.9` and
+listed its 27 root children as a folder; `?release=stable` redirected (307) to
+that exact version and an unknown alias returned 404; the selector rendered the
+`stable` pill, Channels and Recent groups with eleven options, and the jump
+field with its index; choosing `aos` from the tree issued one page fetch,
+swapped the reader to 22 children, and marked and expanded the branch; the
+flattened view of that subtree returned 50 options with types and a
+continuation; the typeahead suggested `stable`; the mobile viewport fit; and
+Chrome reported no JavaScript or content-security errors. Packages rendered the
+same selector.
+
+### Earlier release-browser deployment
+
 On 2026-09-05, staging was deployed as
 `staging-28cd153e93103d739d2854dce1caa86079ae54a5` from the hermetic installer
 `/nix/store/ycj550lii6v6a3riyz7hrkcqjqlwrd75-aos-hub-cloudflare-0.1.0`.
