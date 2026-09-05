@@ -19,13 +19,15 @@ const VERIFICATION_SIGNER_ID: &str = "key/verification/example";
 #[test]
 fn topology_api_has_no_legacy_endpoint_update_surface() -> Result<()> {
     let root = workspace_root();
-    let sources = [
+    let mut sources = vec![
         root.join("crates/aos-proto/src/proto/aos/hub/v1/hub.proto"),
         root.join("crates/aos-hub-core/src/connect.rs"),
         root.join("crates/aos-remote/src/hub.rs"),
-        root.join("crates/aos/src/commands/hub.rs"),
         root.join("docs/rfcs/0012-hub-surface-topology/hub-api-manifest-v1.json"),
     ];
+    sources.extend(hub_command_sources(
+        &root.join("crates/aos/src/commands/hub"),
+    )?);
     for path in sources {
         let source = fs::read_to_string(&path)?;
         assert!(
@@ -49,6 +51,24 @@ fn topology_api_has_no_legacy_endpoint_update_surface() -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Collects every Rust source beneath the hub command directory, including nested families.
+fn hub_command_sources(directory: &Path) -> Result<Vec<PathBuf>> {
+    let mut sources = Vec::new();
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            sources.extend(hub_command_sources(&path)?);
+        } else if file_type.is_file() && path.extension().is_some_and(|extension| extension == "rs")
+        {
+            sources.push(path);
+        }
+    }
+    sources.sort();
+    Ok(sources)
 }
 
 #[test]
