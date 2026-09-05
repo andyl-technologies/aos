@@ -1668,6 +1668,19 @@ label.inline {
 .release-suggest .release-suggest-channel { font-weight: 600; }
 .release-directory-link { font-size: .85rem; }
 .registry-utility { margin-left: auto; }
+.support-board { display: flex; flex-wrap: wrap; gap: .7rem; margin: .4rem 0 1.2rem; }
+.support-tile { display: flex; flex-direction: column; gap: .15rem; min-width: 11rem; padding: .7rem .9rem; border: 1px solid var(--rule); border-top: 3px solid var(--rule); text-decoration: none; color: var(--ink); }
+.support-tile:hover { border-color: var(--ink); text-decoration: none; }
+.support-tile.supported { border-top-color: var(--ok); }
+.support-tile.candidate { border-top-color: var(--warn); }
+.support-tile.edge { border-top-color: var(--link); }
+.support-tile.eol { border-top-color: var(--rule-strong); color: var(--dim); }
+.support-train { font-size: .75rem; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); }
+.support-tile strong { font-size: 1.1rem; }
+.support-state, .support-channels { font-size: .8rem; color: var(--dim); }
+.support-tile.supported .support-state { color: var(--ok); }
+.release-filter { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; margin: 0 0 .6rem; }
+.release-filter label { display: flex; align-items: center; gap: .4rem; }
 .release-directory .table-scroll table { width: 100%; min-width: 0; }
 .release-directory td { white-space: normal; overflow-wrap: anywhere; }
 .release-directory td:first-child { white-space: nowrap; }
