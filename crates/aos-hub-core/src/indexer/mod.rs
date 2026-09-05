@@ -442,7 +442,8 @@ async fn index_registry_inner(
         || db.has_container_release_catalog(registry.id).await?;
     let release_documentation_complete = db
         .release_documentation_projection_complete(registry.id)
-        .await?;
+        .await?
+        && db.release_browse_projection_complete(registry.id).await?;
     if incremental_preconditions(
         status.as_ref().map(|status| status.state.as_str()),
         status
@@ -720,6 +721,23 @@ async fn index_registry_inner(
                 }
 
                 let artifacts = release_snapshot_artifacts(&release_tree.packages);
+                let search = verify_package_documentation(fetch, &release_tree.packages).await?;
+                db.retain_release_browse_catalog(
+                    registry.id,
+                    &source_commit,
+                    &release_tree.packages,
+                    release_tree.root.registry.default_release.as_deref(),
+                    &search,
+                )
+                .await?;
+                let signed_text = std::str::from_utf8(&signed.signed_payload)
+                    .context("release tag message is not UTF-8")?;
+                let notes = signed_text
+                    .split_once("\n\n")
+                    .map(|(_, message)| message.trim())
+                    .unwrap_or_default();
+                db.retain_release_notes(registry.id, &tag_oid.to_hex(), notes)
+                    .await?;
                 let documentation = release_snapshot_documentation(&release_tree.packages);
                 let manifest_digest = hex::encode(Sha256::digest(serde_json::to_vec(&artifacts)?));
                 let artifact_snapshot = ReleaseArtifactSnapshot {
@@ -823,6 +841,14 @@ async fn index_registry_inner(
     let image_presence = deduplicated_presence;
 
     let package_documentation = verify_package_documentation(fetch, &tree.packages).await?;
+    db.retain_release_browse_catalog(
+        registry.id,
+        &commit_oid.to_hex(),
+        &tree.packages,
+        tree.root.registry.default_release.as_deref(),
+        &package_documentation,
+    )
+    .await?;
     let snapshot = IndexSnapshot {
         commit: commit_oid.to_hex(),
         name: tree.root.registry.name.clone(),
@@ -2000,6 +2026,7 @@ async fn reusable_release_snapshots(
     if !db
         .release_documentation_projection_complete(registry_id)
         .await?
+        || !db.release_browse_projection_complete(registry_id).await?
     {
         return Ok(BTreeMap::new());
     }
@@ -2528,6 +2555,15 @@ async fn verify_package_documentation(
                     platform: platform.clone(),
                     artifact: artifact.clone(),
                     search: document.search_documents(),
+                    options: document
+                        .options
+                        .iter()
+                        .map(|option| crate::db::IndexedDocumentationOption {
+                            key: option.display_path.clone(),
+                            path: option.path.clone(),
+                            type_signature: option.type_signature.clone(),
+                        })
+                        .collect(),
                 });
             }
         }
@@ -3599,6 +3635,22 @@ mod tests {
         )
         .await
         .unwrap();
+
+        assert!(
+            reusable_release_snapshots(&db, registry_id)
+                .await
+                .unwrap()
+                .is_empty(),
+            "upgraded indexes must rebuild missing browse projections"
+        );
+        for commit in [&release.commit_oid, &"c".repeat(64)] {
+            db.retain_release_browse_catalog(registry_id, commit, &[], None, &[])
+                .await
+                .unwrap();
+        }
+        db.retain_release_notes(registry_id, &release.tag_oid, "Release notes")
+            .await
+            .unwrap();
 
         let reusable = reusable_release_snapshots(&db, registry_id).await.unwrap();
         let snapshot = reusable.get("1.0.0").unwrap();

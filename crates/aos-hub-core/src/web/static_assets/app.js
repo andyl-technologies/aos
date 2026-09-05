@@ -681,3 +681,125 @@
   initHelp();
   initHashControls();
 })();
+
+// Configuration folders fetch only one page on explicit expansion. No subtree
+// is prefetched, and ordinary links remain the navigation and no-JS fallback.
+(function () {
+  "use strict";
+  var browser = document.querySelector("[data-doc-browser]");
+  if (!browser || !window.fetch) return;
+  var base = browser.getAttribute("data-doc-base");
+  var release = browser.getAttribute("data-doc-release");
+  function nodeUrl(key, children, cursor) {
+    var url = new URL(base + (children ? "/children" : ""), location.origin);
+    url.searchParams.set("release", release);
+    url.searchParams.set("root", key);
+    if (cursor) url.searchParams.set("cursor", cursor);
+    return url;
+  }
+  function expansion(node) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "doc-expand";
+    button.textContent = "+";
+    button.setAttribute("aria-expanded", "false");
+    button.setAttribute("aria-label", "Expand " + node.label);
+    button.setAttribute("data-doc-expand", node.key);
+    return button;
+  }
+  function appendPage(container, data, key) {
+    if (!Array.isArray(data.items) || data.items.length > 50) throw new Error("Invalid child page");
+    var list = document.createElement("ul");
+    list.className = "doc-tree-list";
+    data.items.forEach(function (node) {
+      var row = document.createElement("li");
+      row.setAttribute("data-node", node.key);
+      if (node.child_count > 0) row.appendChild(expansion(node));
+      else {
+        var spacer = document.createElement("span");
+        spacer.className = "doc-tree-spacer";
+        row.appendChild(spacer);
+      }
+      var link = document.createElement("a");
+      link.href = nodeUrl(node.key, false);
+      link.textContent = node.label;
+      row.appendChild(link);
+      list.appendChild(row);
+    });
+    container.appendChild(list);
+    if (data.next_cursor) {
+      var more = document.createElement("button");
+      more.type = "button";
+      more.className = "doc-more";
+      more.textContent = "Load more children";
+      more.addEventListener("click", function () {
+        load(container, key, data.next_cursor, more).then(function (ok) { if (ok) more.remove(); });
+      });
+      container.appendChild(more);
+    }
+  }
+  function load(container, key, cursor, button) {
+    button.disabled = true;
+    container.setAttribute("aria-busy", "true");
+    return fetch(nodeUrl(key, true, cursor), {credentials: "same-origin", headers: {Accept: "application/json"}})
+      .then(function (response) {
+        if (!response.ok) throw new Error("Could not load children");
+        return response.json();
+      })
+      .then(function (data) { appendPage(container, data, key); return true; })
+      .catch(function () {
+        var error = document.createElement("p");
+        error.setAttribute("role", "status");
+        error.textContent = "Could not load children. Open the subtree link or try again.";
+        container.appendChild(error);
+        return false;
+      })
+      .finally(function () { button.disabled = false; container.removeAttribute("aria-busy"); });
+  }
+  browser.querySelectorAll("[data-doc-expand]").forEach(function (button) { button.hidden = false; });
+  browser.addEventListener("click", function (event) {
+    var button = event.target.closest("[data-doc-expand]");
+    if (!button) return;
+    var row = button.parentElement;
+    var subtree = Array.from(row.children).find(function (child) { return child.classList.contains("doc-subtree"); });
+    var expanded = button.getAttribute("aria-expanded") === "true";
+    button.setAttribute("aria-expanded", expanded ? "false" : "true");
+    button.textContent = expanded ? "+" : "−";
+    if (subtree) { subtree.hidden = expanded; return; }
+    subtree = document.createElement("div");
+    subtree.className = "doc-subtree";
+    row.appendChild(subtree);
+    load(subtree, button.getAttribute("data-doc-expand"), null, button).then(function (ok) {
+      if (!ok) {
+        button.setAttribute("aria-expanded", "false");
+        button.textContent = "+";
+        subtree.classList.remove("doc-subtree");
+      }
+    });
+  });
+})();
+
+// Historical doc:kind:key fragments select one panel, with no full anchor map.
+(function () {
+  "use strict";
+  if (!document.querySelector("[data-doc-legacy]")) return;
+  function selectAnchor() {
+    var match = /^#doc:([0-9a-f]+):([0-9a-f]+)$/.exec(location.hash);
+    if (!match || match[0].length > 8192) return;
+    function decode(hex) {
+      if (hex.length % 2) throw new Error("Invalid anchor");
+      return new TextDecoder("utf-8", {fatal: true}).decode(Uint8Array.from(hex.match(/../g), function (byte) { return parseInt(byte, 16); }));
+    }
+    try {
+      var url = new URL(location.href);
+      var kind = decode(match[1]);
+      var key = decode(match[2]);
+      if (url.searchParams.get("kind") === kind && url.searchParams.get("doc_key") === key) return;
+      url.searchParams.set("kind", kind);
+      url.searchParams.set("doc_key", key);
+      location.replace(url);
+    } catch (_) { /* An invalid old anchor leaves the package guide available. */ }
+  }
+  window.addEventListener("hashchange", selectAnchor);
+  selectAnchor();
+})();

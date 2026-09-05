@@ -558,7 +558,11 @@ mod placement_policy;
 mod publication_admission;
 mod registry_delete;
 mod registry_index_build;
+mod release_browse;
 mod release_publication;
+pub use release_browse::*;
+mod documentation_tree;
+pub use documentation_tree::*;
 mod settings_reads;
 pub(crate) mod surface_topology;
 pub(crate) use surface_topology::*;
@@ -639,6 +643,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("oci_gc.sql"),
     include_str!("oci_gc_remediation.sql"),
     include_str!("delivery_workflow.sql"),
+    include_str!("release_browse.sql"),
 ];
 
 /// Identity stamped into databases created by the topology hard-cutover
@@ -1804,6 +1809,19 @@ pub struct IndexedPackageDocumentation {
     pub artifact: aos_registry_surface::manifest::DocumentationArtifactMeta,
     /// Disposable search rows derived from the canonical document.
     pub search: Vec<aos_doc_model::SearchDocument>,
+    /// Structural option paths and compact types for the release-wide tree.
+    pub options: Vec<IndexedDocumentationOption>,
+}
+
+/// One option's structural navigation metadata, derived from verified bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexedDocumentationOption {
+    /// Stable display path used as the document's option key.
+    pub key: String,
+    /// Exact literal and wildcard path segments; dots inside a literal remain literal.
+    pub path: Vec<aos_doc_model::PathSegment>,
+    /// Human-readable type for option summaries.
+    pub type_signature: String,
 }
 
 /// One searchable package-documentation result returned by the database.
@@ -4851,9 +4869,12 @@ impl Database {
             }
             let expected_count = i64::try_from(release_snapshot.artifacts.len())
                 .context("release artifact snapshot is too large")?;
-            let snapshot_id = hex::encode(sha2::Sha256::digest(
+            // Snapshot rows own registry-local release membership, even when
+            // two registries publish byte-identical signed releases.
+            let mut snapshot_id = hex::encode(sha2::Sha256::digest(
                 format!(
-                    "{}\0{}\0{}",
+                    "{registry_id}\0{}\0{}\0{}\0{}",
+                    release_snapshot.release_tag,
                     release_snapshot.verified_tag_oid,
                     release_snapshot.source_commit,
                     release_snapshot.manifest_digest
@@ -4878,7 +4899,6 @@ impl Database {
                 .await?
             {
                 let existing_identity = (
-                    existing.get::<String>(0)?,
                     existing.get::<String>(1)?,
                     existing.get::<String>(2)?,
                     existing.get::<String>(3)?,
@@ -4887,7 +4907,6 @@ impl Database {
                 );
                 if existing_identity
                     != (
-                        snapshot_id.clone(),
                         release_snapshot.source_commit.clone(),
                         release_snapshot.verified_tag_oid.clone(),
                         release_snapshot.manifest_digest.clone(),
@@ -4900,6 +4919,10 @@ impl Database {
                         release_snapshot.release_tag
                     );
                 }
+                // Retain preexisting IDs after validating their full content
+                // identity and registry ownership. This also preserves rows
+                // created before IDs included the owning registry.
+                snapshot_id = existing.get(0)?;
             }
             let snapshot_started_at = unix_now();
             stmts.push(Statement::new(
@@ -28821,6 +28844,7 @@ source_nar_hash = ""
             serde_json::to_vec(&release_snapshot_artifacts).unwrap(),
         ));
         let mut documentation = IndexedPackageDocumentation {
+            options: Vec::new(),
             package_name: "curl".into(),
             package_version: "8.5.0".into(),
             platform: "x86_64-linux".into(),

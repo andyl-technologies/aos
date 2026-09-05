@@ -18,6 +18,7 @@
 //! ([`current_session_indicator`](crate::ui::render::current_session_indicator)),
 //! so every `crate::ui::pages::…` call site in the hub compiles unchanged.
 
+use aos_hub_core::web::release_browse::ReleaseContext;
 use std::time::Instant;
 
 pub use aos_hub_core::web::browse_pages::{
@@ -64,10 +65,9 @@ pub fn registry_home(
     registry: &RegistryRecord,
     status: Option<&IndexStatus>,
     channels: &[ChannelSummary],
-    packages: &[PackageRow],
     caches: &[(String, u32)],
     roster: &[(String, String, String)],
-    validations: &[ValidationRunRow],
+    context: &ReleaseContext,
     external_url: &str,
     manage_link: bool,
     started: Instant,
@@ -77,11 +77,9 @@ pub fn registry_home(
         registry,
         status,
         channels,
-        packages.len(),
-        caches,
         roster,
-        validations,
         &setup,
+        context,
         manage_link,
         started,
         &current_session_indicator(),
@@ -122,6 +120,7 @@ pub fn package_page(
     closure: &PackageClosure,
     caches: &[(String, u32)],
     external_url: &str,
+    context: &ReleaseContext,
     started: Instant,
 ) -> String {
     let setup = RegistrySetup::new(registry, status, Some(external_url), caches);
@@ -131,7 +130,7 @@ pub fn package_page(
         detail,
         closure,
         &setup,
-        None,
+        context,
         None,
         false,
         started,
@@ -195,6 +194,7 @@ pub fn images_page(
     download_base: Option<&str>,
     hub_url: &str,
     browse: &ImageBrowse<'_>,
+    context: &ReleaseContext,
     started: Instant,
 ) -> String {
     aos_hub_core::web::browse_pages::images_page(
@@ -205,6 +205,7 @@ pub fn images_page(
         download_base,
         hub_url,
         browse,
+        context,
         started,
         &current_session_indicator(),
     )

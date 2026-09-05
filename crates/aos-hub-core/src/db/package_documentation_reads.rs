@@ -163,6 +163,7 @@ mod tests {
             roster: Vec::new(),
             packages: Vec::new(),
             package_documentation: vec![IndexedPackageDocumentation {
+                options: Vec::new(),
                 package_name: documentation.package_name.clone(),
                 package_version: documentation.package_version.clone(),
                 platform: documentation.platform.clone(),
@@ -199,6 +200,22 @@ mod tests {
         snapshot.commit = "e".repeat(64);
         snapshot.package_documentation[0].artifact.document_sha256 = "f".repeat(64);
         db.apply_snapshot(registry, &snapshot).await.unwrap();
+        assert_eq!(
+            db.documentation_releases_for_package(
+                registry,
+                "package-docs",
+                "1.0.0",
+                "x86_64-linux"
+            )
+            .await
+            .unwrap(),
+            vec!["1.0.0"]
+        );
+        assert!(db
+            .documentation_releases_for_package(registry, "package-docs", "1.0.0", "aarch64-linux")
+            .await
+            .unwrap()
+            .is_empty());
         let current = db
             .package_documentation_locator(registry, "package-docs", "1.0.0", "x86_64-linux")
             .await
