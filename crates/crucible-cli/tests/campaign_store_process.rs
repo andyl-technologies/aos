@@ -30,6 +30,9 @@ const CAMPAIGN: &str = "worked-network";
 const PRINCIPAL: &str = "operator";
 const START_COMMAND: &str = "4242424242424242424242424242424242424242424242424242424242424242";
 
+#[path = "support/campaign_packaged_process.rs"]
+mod packaged;
+
 #[test]
 fn public_campaign_store_flight_survives_gc_and_service_restart() -> Result<(), Box<dyn Error>> {
     let fixture = FlightFixture::new()?;
@@ -247,6 +250,10 @@ root = {objects:?}
     }
 
     fn start_service(&self, import: Option<&Path>) -> Result<CampaignServiceChild, Box<dyn Error>> {
+        self.start_service_command(self.service_command(import), Duration::from_secs(15))
+    }
+
+    fn service_command(&self, import: Option<&Path>) -> Command {
         let mut command = command(&[
             "serve",
             "--listen",
@@ -265,6 +272,14 @@ root = {objects:?}
         if let Some(import) = import {
             command.arg("--campaign-import-manifest").arg(import);
         }
+        command
+    }
+
+    fn start_service_command(
+        &self,
+        mut command: Command,
+        timeout: Duration,
+    ) -> Result<CampaignServiceChild, Box<dyn Error>> {
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
         let child = command.spawn()?;
         let mut child = CampaignServiceChild {
@@ -276,7 +291,18 @@ root = {objects:?}
             .stdout
             .take()
             .ok_or("campaign service stdout was not piped")?;
-        let announcement = read_first_line(stdout, Duration::from_secs(15))?;
+        let announcement = match read_first_line(stdout, timeout) {
+            Ok(line) => line,
+            Err(error) => {
+                let _ = child.child.kill();
+                let _ = child.child.wait();
+                let mut stderr = String::new();
+                if let Some(mut stream) = child.child.stderr.take() {
+                    stream.read_to_string(&mut stderr)?;
+                }
+                return Err(format!("{error}; stderr={stderr}").into());
+            }
+        };
         if !announcement.contains("http://") {
             return Err(format!("invalid service announcement: {announcement}").into());
         }
@@ -355,7 +381,11 @@ fn campaign_status(fixture: &FlightFixture) -> Result<Value, Box<dyn Error>> {
 }
 
 fn command(arguments: &[&str]) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_crucible"));
+    // The hermetic VM copies both built executables into its store closure;
+    // the build-time Cargo target path itself is not available in the guest.
+    let binary = std::env::var_os("CRUCIBLE_PROCESS_FLIGHT_BINARY")
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_crucible").into());
+    let mut command = Command::new(binary);
     command.args(arguments);
     command
 }
@@ -430,6 +460,10 @@ fn read_first_line(
         let mut line = String::new();
         let result = stdout.read_line(&mut line).map(|_| line);
         let _ = sender.send(result);
+        // Keep the pipe open for subsequent listener announcements and logs.
+        // A first-line-only reader can otherwise make a healthy daemon fail
+        // its next stdout write with EPIPE.
+        let _ = std::io::copy(&mut stdout, &mut std::io::sink());
     });
     match receiver.recv_timeout(timeout) {
         Ok(Ok(line)) if !line.is_empty() => Ok(line),
