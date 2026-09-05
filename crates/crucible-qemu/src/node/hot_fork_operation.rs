@@ -339,7 +339,7 @@ fn hot_fork_host_io_binding(
     ring: crucible_shmem::SetupRegionBackingIdentity,
 ) -> crucible::model::ContentHash {
     let material = format!(
-        "template={};private-ring={};diagnostic={};qmp={};console={};monitor={};plugin-endpoint={};plugin-barrier={};rcu-barrier={};bh-timer-barrier={};block-barrier={};parent-process={};child-process={};child-contract={};ring-device={};ring-inode={};ring-length={}",
+        "template={};private-ring={};diagnostic={};qmp={};console={};monitor={};plugin-endpoint={};plugin-barrier={};rcu-barrier={};bh-timer-barrier={};block-barrier={};parent-process={};child-process={};child-contract={};child-files={};ring-device={};ring-inode={};ring-length={}",
         request.template_generation(),
         request.private_ring_generation(),
         request.diagnostic_generation(),
@@ -354,12 +354,13 @@ fn hot_fork_host_io_binding(
         request.parent_process_generation(),
         request.child_process_generation(),
         request.child_process_contract_generation(),
+        request.child_files_generation(),
         ring.device(),
         ring.inode(),
         ring.length(),
     );
     crucible::model::ContentHash::from_canonical_material(
-        "crucible.qemu.hot-fork-host-io-continuation.v2",
+        "crucible.qemu.hot-fork-host-io-continuation.v3",
         &material,
     )
 }
@@ -371,6 +372,7 @@ struct QemuHotForkRetainedState {
     child_qmp: crate::QmpHotForkChildQmpState,
     child_console: crate::QmpHotForkChildConsoleState,
     process_contract: crate::QmpHotForkChildProcessContractState,
+    child_files: crate::QmpHotForkChildFilesState,
 }
 
 fn hot_fork_request_basis_mismatch(message: impl Into<String>) -> QemuNodeChannelError {
@@ -412,6 +414,10 @@ impl QemuNode {
                 .channels
                 .qmp_machine_control
                 .query_hot_fork_child_process_contract()?,
+            child_files: self
+                .channels
+                .qmp_machine_control
+                .query_hot_fork_child_files()?,
         };
         let confirmed_template = self
             .channels
@@ -428,6 +434,7 @@ impl QemuNode {
             &retained.child_qmp,
             &retained.child_console,
             &retained.process_contract,
+            &retained.child_files,
         )
         .map_err(|source| hot_fork_request_basis_mismatch(source.to_string()))?;
         self.validate_hot_fork_request_basis(request, &retained)?;
@@ -443,6 +450,20 @@ impl QemuNode {
         let ring = self.hot_fork_private_ring_stage().ok_or_else(|| {
             hot_fork_request_basis_mismatch("source node retains no private-ring authority")
         })?;
+        // A node-owned plan must be the exact plan QEMU retains; an absent
+        // node plan defers to QEMU, which rejects a nonempty native graph.
+        let child_files_match = match self.hot_fork_child_files_stage.as_ref() {
+            Some(stage) => {
+                stage.matches_state(&retained.child_files)
+                    && stage.generation() == request.child_files_generation()
+            }
+            None => !retained.child_files.staged(),
+        };
+        if !child_files_match {
+            return Err(hot_fork_request_basis_mismatch(
+                "QEMU child file plan does not match the node-owned destinations",
+            ));
+        }
         let ring_identity = ring.backing_identity();
         let ring_matches = ring.state() == QemuHotForkPrivateRingStageState::Installed
             && retained.private_ring.staged()
@@ -710,6 +731,18 @@ impl QemuNode {
                 ),
             });
         }
+        if let Some(child_files) = self.hot_fork_child_files_stage()
+            && (child_files.consumed()
+                || child_files.generation() != request.child_files_generation()
+                || child_files.template_generation() != request.template_generation())
+        {
+            return Err(QemuHotForkLaunchError::Rejected {
+                source: QemuNodeChannelError::new(
+                    "fork retained hot-fork template",
+                    "child file plan does not match the fork request",
+                ),
+            });
+        }
 
         let ring =
             self.hot_fork_private_ring_stage()
@@ -831,6 +864,9 @@ impl QemuNode {
         };
         if let Some(process_contract) = self.hot_fork_child_process_contract_stage.as_mut() {
             process_contract.mark_consumed();
+        }
+        if let Some(child_files) = self.hot_fork_child_files_stage.as_mut() {
+            child_files.mark_consumed();
         }
         if parent_state.outcome() == crate::QmpHotForkOutcome::ParentDispositionFailed {
             self.lifecycle_state = QemuNodeLifecycleState::Quarantined;

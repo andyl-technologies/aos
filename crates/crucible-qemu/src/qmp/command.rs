@@ -243,6 +243,12 @@ pub(super) enum QmpCommand<'a> {
         cancellation_name: Option<&'a QmpDescriptorName>,
         identity: Option<QmpHotForkChildProcessContractIdentity>,
     },
+    HotForkChildFiles {
+        action: HotForkChildFilesAction,
+        files: Option<&'a [QmpHotForkChildFile]>,
+        maximum_bytes: Option<u64>,
+        expected_generation: Option<u64>,
+    },
     HotForkPrivateRings {
         action: HotForkPrivateRingAction,
         name: Option<&'a QmpDescriptorName>,
@@ -318,6 +324,7 @@ impl QmpCommand<'_> {
             Self::HotFork { .. } => QmpCommandKind::HotFork,
             Self::HotForkChildProcess { .. } => QmpCommandKind::HotForkChildProcess,
             Self::HotForkChildProcessContract { .. } => QmpCommandKind::HotForkChildProcessContract,
+            Self::HotForkChildFiles { .. } => QmpCommandKind::HotForkChildFiles,
             Self::HotForkPrivateRings { .. } => QmpCommandKind::HotForkPrivateRings,
             Self::HotForkPluginEndpoints { .. } => QmpCommandKind::HotForkPluginEndpoints,
             Self::HotForkChildDiagnostics { .. } => QmpCommandKind::HotForkChildDiagnostics,
@@ -515,6 +522,37 @@ impl QmpCommand<'_> {
                 }
                 json!({
                     "exec-oob": QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_COMMAND,
+                    "arguments": Value::Object(arguments),
+                })
+            }
+            Self::HotForkChildFiles {
+                action,
+                files,
+                maximum_bytes,
+                expected_generation,
+            } => {
+                let mut arguments = serde_json::Map::new();
+                arguments.insert(
+                    String::from("action"),
+                    Value::String(action.wire_name().to_owned()),
+                );
+                if let Some(files) = files {
+                    arguments.insert(
+                        String::from("files"),
+                        Value::Array(files.iter().map(QmpHotForkChildFile::wire_value).collect()),
+                    );
+                }
+                if let Some(maximum_bytes) = maximum_bytes {
+                    arguments.insert(String::from("maximum-bytes"), Value::from(*maximum_bytes));
+                }
+                if let Some(generation) = expected_generation {
+                    arguments.insert(
+                        String::from("expected-generation"),
+                        Value::from(*generation),
+                    );
+                }
+                json!({
+                    "exec-oob": QMP_HOT_FORK_CHILD_FILES_COMMAND,
                     "arguments": Value::Object(arguments),
                 })
             }
