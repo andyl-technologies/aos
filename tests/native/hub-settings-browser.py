@@ -674,13 +674,14 @@ class HubSettingsSmoke:
         )
         return True
 
-    def set_labeled_value(self, label, value):
+    def set_labeled_value(self, label, value, scope=".workflow-editor"):
         """Updates the form control whose visible label has the given text."""
         label_literal = json.dumps(label)
         value_literal = json.dumps(value)
+        labels_literal = json.dumps(scope + " label")
         return self.chrome.evaluate(f"""
             (() => {{
-                const label = Array.from(document.querySelectorAll('.workflow-editor label'))
+                const label = Array.from(document.querySelectorAll({labels_literal}))
                     .find(item => {{
                         const caption = Array.from(item.children)
                             .find(child => child.tagName === 'SPAN');
@@ -701,6 +702,107 @@ class HubSettingsSmoke:
                 return control.value === {value_literal};
             }})()
         """)
+
+    def named_details(self, summary, marker):
+        """Locates a disclosure by its visible summary without changing open state."""
+        found = self.chrome.evaluate(f"""
+            (() => {{
+                const details = Array.from(document.querySelectorAll('main.settings-body details'))
+                    .find(item => item.querySelector(':scope > summary')?.textContent.trim()
+                        === {json.dumps(summary)});
+                if (!details) return false;
+                details.dataset.smokeDisclosure = {json.dumps(marker)};
+                return true;
+            }})()
+        """)
+        self.check(found, f"{summary} disclosure is available")
+        return f'details[data-smoke-disclosure="{marker}"]'
+
+    def review_cache_retention(self, registry_path):
+        """Checks default disclosure state and real registry choices for retention."""
+        selector = self.named_details("Add a retention subscription", "retention-create")
+        self.check(
+            not self.chrome.evaluate(f"document.querySelector({json.dumps(selector)}).open"),
+            "retention subscription creation starts closed",
+        )
+        manual = self.named_details("Manual roots and leases", "retention-manual")
+        self.check(
+            not self.chrome.evaluate(f"document.querySelector({json.dumps(manual)}).open"),
+            "manual retention tools start closed",
+        )
+        self.check(self.click_details(selector, True), "retention subscription editor opens")
+        self.wait_for(
+            f"document.querySelector({json.dumps(selector + ' select')}) !== null",
+            "retention registry picker",
+        )
+        registry_slug = registry_path.removeprefix("/").removesuffix("/-/settings")
+        value = self.chrome.evaluate(f"""
+            Array.from(document.querySelectorAll({json.dumps(selector + ' select option')}))
+                .find(option => option.textContent.trim() === {json.dumps(registry_slug)})?.value
+        """)
+        self.check(bool(value), "retention picker offers the actual fixture registry")
+        self.check(
+            self.set_labeled_value("Registry", value, selector),
+            "retention picker selects the registry's stable identity",
+        )
+        self.check(
+            not self.chrome.evaluate(f"""
+                Array.from(document.querySelectorAll({json.dumps(selector + ' label')}))
+                    .some(label => label.textContent.includes('Expected version'))
+            """),
+            "retention creation does not ask users to supply a resource version",
+        )
+        self.screenshot_pair("cache-retention-editor")
+        self.check(self.click_details(selector, False), "retention subscription editor closes")
+
+    def review_cache_gc_policy(self):
+        """Reviews a real GC policy change and invalidates it without applying it."""
+        selector = self.named_details("Edit garbage-collection policy", "gc-policy")
+        self.check(
+            not self.chrome.evaluate(f"document.querySelector({json.dumps(selector)}).open"),
+            "GC policy editor starts closed",
+        )
+        self.check(
+            not self.chrome.evaluate("document.body.textContent.includes('Inspected candidate plan')"),
+            "first-sweep acknowledgement is absent before selecting a candidate",
+        )
+        self.check(self.click_details(selector, True), "GC policy editor opens")
+        self.check(
+            self.set_labeled_value("Unreferenced grace (seconds)", "604801", selector),
+            "GC policy accepts a changed grace period",
+        )
+        submitted = self.chrome.evaluate(f"""
+            (() => {{
+                const button = document.querySelector({json.dumps(selector + ' button[type="submit"]')});
+                if (!button || button.disabled) return false;
+                button.click();
+                return true;
+            }})()
+        """)
+        self.check(submitted, "GC policy review submits through the rendered form")
+        self.wait_for(
+            f"document.querySelector({json.dumps(selector + ' .review-card, ' + selector + ' .inline-error')}) !== null",
+            "GC policy review response",
+        )
+        self.check(
+            self.chrome.evaluate(f"document.querySelector({json.dumps(selector + ' .inline-error')}) === null"),
+            "GC policy planning succeeds against the native Hub",
+        )
+        self.check(
+            self.chrome.evaluate(f"document.querySelector({json.dumps(selector + ' .review-card')}) !== null"),
+            "GC policy exposes immutable review effects",
+        )
+        self.screenshot_pair("cache-gc-policy-review")
+        self.check(
+            self.set_labeled_value("Unreferenced grace (seconds)", "604802", selector),
+            "GC policy draft remains editable after review",
+        )
+        self.wait_for(
+            f"document.querySelector({json.dumps(selector + ' .review-card')}) === null",
+            "stale GC policy review to clear after editing",
+        )
+        self.check(True, "editing GC policy invalidates its stale review")
+        self.check(self.click_details(selector, False), "GC policy editor closes")
 
     def review_delivery_destination(self):
         """Plans a fixture CDN destination and verifies stale-review invalidation."""
@@ -1054,6 +1156,10 @@ class HubSettingsSmoke:
             )
             self.navigate(cache_path + "/retention")
             self.assert_settings_page("cache retention settings")
+            self.review_cache_retention(registry_path)
+            self.navigate(cache_path + "/garbage-collection")
+            self.assert_settings_page("cache garbage-collection settings")
+            self.review_cache_gc_policy()
 
         self.chrome.drain_events(0.25)
 

@@ -83,7 +83,7 @@ fn GcConfiguredControls(
         <GcPolicyEditor client=client.clone() cache_id=cache_id.clone() policy=policy/>
         <section class="panel resource-panel">
             <div class="section-heading"><div><p class="section-kicker">"Current concurrency boundary"</p><h2>"GC generation"</h2><p>"Every sweep and acknowledgement below is bound to this generation. Changing policy creates a new review boundary before deletion work can begin."</p></div></div>
-            <div class="compact-list-row">
+            <div class="compact-list-row gc-generation-status">
                 <div><strong>"GC concurrency fence"</strong><code>{generation_version.clone()}</code></div>
                 <StatusBadge state=generation_label.to_string() positive=generation.state == "enabled"/>
             </div>
