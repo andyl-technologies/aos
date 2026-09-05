@@ -70,6 +70,7 @@ pub(super) fn run(
     )?;
     let (inactive, configuration) =
         drive_to_terminal_matrix(&mut lifecycle, configuration, &restarted)?;
+    verify_retained_hot_fork_boundary(&mut lifecycle)?;
     let closure = lifecycle
         .capture_checkpoint(&configuration)?
         .ok_or("inactive reactivation checkpoint absent")?;
@@ -89,6 +90,35 @@ pub(super) fn run(
     println!("inactive_world_boot_reactivation=true");
     println!("reactivated_guest_progress=true");
     println!("reactivation_checkpoint_evidence_match=true");
+    println!("inactive_hot_fork_retains_source_process=true");
+    Ok(())
+}
+
+fn verify_retained_hot_fork_boundary(
+    lifecycle: &mut ProductionVmLifecycleLoop,
+) -> Result<(), Box<dyn Error>> {
+    use crucible_api::vm_lifecycle::ProductionVmHotForkNodeServiceState;
+
+    let continuation = lifecycle.capture_hot_fork_world_continuation()?;
+    let retained = continuation
+        .nodes()
+        .iter()
+        .find(|node| node.node().name == "node-a")
+        .ok_or("powered-off hot-fork source absent")?;
+    let failed = continuation
+        .nodes()
+        .iter()
+        .find(|node| node.node().name == "node-b")
+        .ok_or("permanently failed hot-fork node absent")?;
+    if retained.service_state() != ProductionVmHotForkNodeServiceState::PoweredOff
+        || retained.process().is_none()
+        || retained.physical_time().is_none()
+        || failed.service_state() != ProductionVmHotForkNodeServiceState::PermanentlyFailed
+        || failed.process().is_some()
+        || failed.physical_time().is_some()
+    {
+        return Err("hot-fork continuation lost the inactive process ownership distinction".into());
+    }
     Ok(())
 }
 

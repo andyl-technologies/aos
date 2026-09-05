@@ -14,7 +14,7 @@ use super::*;
 pub enum ProductionVmHotForkNodeServiceState {
     /// The node has one paused source QEMU that must participate in the fork.
     Running,
-    /// The node is modeled as powered off and has no source process.
+    /// The node is powered off but retains a paused source for a later Boot.
     PoweredOff,
     /// The node is permanently failed and cannot acquire a child process.
     PermanentlyFailed,
@@ -66,13 +66,13 @@ impl ProductionVmHotForkNodeBoundary {
         self.scheduler_time
     }
 
-    /// Returns the physical QEMU time for a running source node.
+    /// Returns the physical QEMU time for a running or powered-off source node.
     #[must_use]
     pub const fn physical_time(&self) -> Option<VirtualTime> {
         self.physical_time
     }
 
-    /// Returns the exact Linux source-process incarnation for a running node.
+    /// Returns the exact Linux incarnation of a retained source process.
     #[must_use]
     pub const fn process(&self) -> Option<&QemuProcessIdentity> {
         self.process.as_ref()
@@ -220,12 +220,13 @@ impl ProductionVmHotForkWorldContinuation {
                 .get(&boundary.node)
                 .copied()
                 .ok_or_else(|| hot_fork_boundary_error("hot-fork node state disappeared"))?;
-            let running = boundary.service_state == ProductionVmHotForkNodeServiceState::Running;
+            let retained =
+                boundary.service_state != ProductionVmHotForkNodeServiceState::PermanentlyFailed;
             if generation != boundary.generation
                 || ProductionVmHotForkNodeServiceState::from(service_state)
                     != boundary.service_state
-                || boundary.physical_time.is_some() != running
-                || boundary.process.is_some() != running
+                || boundary.physical_time.is_some() != retained
+                || boundary.process.is_some() != retained
             {
                 return Err(SchedulerError::BoundaryViolation {
                     message: format!(
@@ -328,10 +329,16 @@ impl ProductionVmLifecycleLoop {
                 "production world has mutable debug or checkpoint ownership",
             ));
         }
+        // A committed journal retains completed-exit history, not unfinished
+        // ownership. It remains committed until the next lifecycle event.
+        // Completed history does not block capture; live journal entries and
+        // staged replacements still do.
         if self.node_lease_cleanup_failed
+            || !self.lifecycle_journal.nodes.is_empty()
+            || !self.run_manifest.staged_processes.is_empty()
             || !matches!(
                 self.lifecycle_journal.phase,
-                ProductionLifecycleJournalPhase::Idle
+                ProductionLifecycleJournalPhase::Idle | ProductionLifecycleJournalPhase::Committed
             )
         {
             return Err(hot_fork_boundary_error(
@@ -449,12 +456,11 @@ impl ProductionVmLifecycleLoop {
                 })?;
             let scheduler_time = self.inner.loop_impl().scheduler_time_for_node(&vm.id)?;
             let (physical_time, process) = match service_state {
-                ProductionNodeServiceState::Running => (
+                ProductionNodeServiceState::Running | ProductionNodeServiceState::PoweredOff => (
                     Some(self.inner.backend().node_now(&vm.id)?),
                     Some(self.inner.backend().process_identity(&vm.id)?),
                 ),
-                ProductionNodeServiceState::PoweredOff
-                | ProductionNodeServiceState::PermanentlyFailed => (None, None),
+                ProductionNodeServiceState::PermanentlyFailed => (None, None),
             };
             boundaries.push(ProductionVmHotForkNodeBoundary {
                 node: vm.id.clone(),
