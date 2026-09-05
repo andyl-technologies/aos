@@ -210,18 +210,28 @@ pub(super) fn private_backend_gdbstub_path(node_directory: &Path) -> PathBuf {
 }
 
 pub(super) fn live_unix_gdbstub_endpoint(path: &Path) -> Result<String, LifecycleApiError> {
-    let path = path.to_str().ok_or_else(|| {
+    let text = path.to_str().ok_or_else(|| {
         loop_factory_error(format!(
             "QEMU gdbstub path is not valid UTF-8: {}",
             path.display()
         ))
     })?;
-    if path.contains([',', '\n', '\0']) {
+    if text.contains([',', '\n', '\0']) {
         return Err(loop_factory_error(format!(
-            "QEMU gdbstub path contains unsupported syntax: {path}"
+            "QEMU gdbstub path contains unsupported syntax: {text}"
         )));
     }
-    Ok(format!("unix:{path},server=on,wait=off"))
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| loop_factory_error("QEMU gdbstub path must name a private socket file"))?;
+
+    // Like QMP, QEMU binds this name relative to its actual working directory.
+    // Guarded launch may replace the proposed lifecycle directory with a pinned
+    // resource-owned directory. An absolute endpoint would retain the old
+    // authority and can exceed sockaddr_un's path limit before QEMU starts.
+    // The gateway separately resolves the name against the returned directory.
+    Ok(format!("unix:{file_name},server=on,wait=off"))
 }
 
 pub(super) fn no_named_trigger_leaf(_leaf: ConditionLeaf<'_>) -> bool {
@@ -739,10 +749,27 @@ mod tests {
         let Ok(endpoint) = live_unix_gdbstub_endpoint(&path) else {
             panic!("ordinary private socket path must be accepted");
         };
+        assert_eq!(endpoint, "unix:debug-rsp.sock,server=on,wait=off");
+    }
+
+    #[test]
+    fn private_gdbstub_endpoint_survives_guarded_directory_rebinding()
+    -> Result<(), LifecycleApiError> {
+        let proposed = PathBuf::from("/tmp/campaign-baked-genesis")
+            .join("a".repeat(64))
+            .join("b".repeat(32))
+            .join("run-00000000000000000000/node-0");
+        let guarded = Path::new("/tmp/attempts/run/generation-1");
+        let old_path = private_backend_gdbstub_path(&proposed);
+        let actual_path = private_backend_gdbstub_path(guarded);
+        assert!(old_path.as_os_str().len() > 108);
+        assert_ne!(old_path, actual_path);
         assert_eq!(
-            endpoint,
-            "unix:/tmp/crucible-node/debug-rsp.sock,server=on,wait=off"
+            live_unix_gdbstub_endpoint(&old_path)?,
+            live_unix_gdbstub_endpoint(&actual_path)?
         );
+        assert_eq!(actual_path, guarded.join("debug-rsp.sock"));
+        Ok(())
     }
 
     #[test]

@@ -1546,6 +1546,9 @@ impl ProductionVmLifecycleLoop {
                 });
             }
             prepared.run_directory = launched.run_directory().to_path_buf();
+            if let Some(path) = prepared.debug_backend_path.as_mut() {
+                *path = private_backend_gdbstub_path(&prepared.run_directory);
+            }
             prepared.launch = prepared
                 .launch
                 .clone()

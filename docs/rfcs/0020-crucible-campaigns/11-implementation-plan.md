@@ -333,6 +333,17 @@ support. The check uses that standard kernel without a test-only override.
 It verifies limit installation, not CPU-pressure or OOM stress, and does not
 close the campaign-level execution, recovery, or independent operator gates.
 
+`checks.crucible.phase4.packagedCampaignVm` now exercises public CLI scenario,
+lineage, and policy compilation, verified import, campaign creation, and two
+production service startups with native baked-genesis capture. The 2026-09-04
+flight passed with evidence in
+`/nix/store/kblq6vxsavsm9w0lqzqb6ciwcamfzsxv-aos-vm-test-crucible-packaged-campaign-0/serial.log`.
+It exposed and now covers independent configuration-payload/checkpoint-closure
+versions and private debugger sockets surviving guarded directory rebinding.
+The campaign head survives restart unchanged and the executor endpoint is
+removed on each orderly shutdown. This is startup composition evidence, not
+semantic attempt execution, checkpoint-pause recovery, or hot-fork acceptance.
+
 Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
 `crucible-daemon`.
 
