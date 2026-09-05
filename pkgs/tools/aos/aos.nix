@@ -198,6 +198,9 @@ in
     inherit cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
     cargoNextest = true;
+    # Preserve failing-test details in retained Nix build directories, even
+    # when the terminal reporter only emits a generic test-run failure.
+    nextestFlags = "--profile ci";
     # Compilation still uses every allocated build core. Bound concurrent test
     # processes separately so loopback servers and SQLite workers retain enough
     # scheduler time to satisfy their production-sized deadlines on large hosts.

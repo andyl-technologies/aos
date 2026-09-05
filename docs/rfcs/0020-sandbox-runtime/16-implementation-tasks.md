@@ -2250,3 +2250,27 @@ tree and replaces its old pathname, proving the scan still visits the original
 root and descendant. Host/systemd all-feature tests pass 98 unit tests,
 26 integration tests, and two doctests after this correction. The VM gate
 still requires a rerun; no production readiness is enabled.
+
+### Production worker VM milestone
+
+The x86_64 `checks.fleet.sandbox-host-worker` gate now passes after the
+readable-directory correction. It requires all five pidfd namespace ioctls,
+rejects manager-only absence while a kernel cgroup remains, launches through
+the production compiler/worker, distinguishes supervisor and payload PID 1,
+rechecks the retained root/network/cgroup proof, refreshes the payload scope,
+freezes and thaws it, stops both processes, and rejects retained proofs after
+stop. The first guest executable also checks descriptor/environment scrubbing,
+the read-only Nix-store submount, and nonfatal reboot-probe denial.
+
+The shared package test runner again returned an unnamed failure before VM
+boot on the first rebuild. The `aos` package now selects its existing CI
+Nextest profile, which inherits default test settings and adds a JUnit report
+to retained build directories. That packaged suite and the subsequent VM gate
+passed. The earlier intermittent package failure is not attributed to a test
+without evidence.
+
+This gate uses a privileged qualification fixture and an inert ownership
+guardian. It does not qualify the deployed capability-less Host, enforcing
+MAC, publisher delivery, lease expiry, internal reboot, aarch64, or complete
+controller-to-guest execution. `BackendReadiness` remains unavailable and all
+tasks depending on those proofs remain open.
