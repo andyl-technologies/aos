@@ -108,6 +108,9 @@ in
       ${pkgs.coreutils}/bin/timeout -k 5 300 \
         ${flight}/bin/campaign-process-flight --ignored --exact \
         packaged::public_packaged_executor_completes_initial_discovery --nocapture
+      ${pkgs.coreutils}/bin/timeout -k 5 300 \
+        ${flight}/bin/campaign-process-flight --ignored --exact \
+        packaged::public_packaged_executor_completes_guest_quantum --nocapture
       ${pkgs.util-linux}/bin/umount /tmp/attempts
     '';
   }

@@ -353,7 +353,8 @@ struct CampaignServiceChild {
 impl CampaignServiceChild {
     fn stop(&mut self) -> Result<(), Box<dyn Error>> {
         send_sigterm(&self.child)?;
-        let status = wait_for_exit(&mut self.child, Duration::from_secs(15));
+        // The packaged pool has a thirty-second bounded cleanup window.
+        let status = wait_for_exit(&mut self.child, Duration::from_secs(45));
         let mut stderr = String::new();
         if let Some(mut stream) = self.child.stderr.take() {
             stream.read_to_string(&mut stderr)?;
