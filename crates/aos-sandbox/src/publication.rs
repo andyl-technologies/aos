@@ -624,6 +624,10 @@ pub enum AuthorityPublicationOutcome {
 }
 
 /// Publishes and replays authority bundles through an existing journal.
+///
+/// Reads and idempotent replay reject a poisoned journal until it is dropped
+/// and reopened. Its diagnostic materialized values may lag durable state and
+/// cannot establish a current publication after an ambiguous I/O failure.
 pub struct AuthorityPublicationStore<'a> {
     journal: &'a mut Journal,
 }
@@ -649,6 +653,7 @@ impl<'a> AuthorityPublicationStore<'a> {
         operation_id: OperationId,
         transaction_id: [u8; 16],
     ) -> Result<AuthorityPublicationOutcome, AuthorityPublicationError> {
+        self.journal.ensure_healthy()?;
         if let Some(existing) = self.journal.get(
             RecordNamespace::AuthorityPublication,
             &prepared_key(prepared.digest),
@@ -713,6 +718,7 @@ impl<'a> AuthorityPublicationStore<'a> {
         draft: &AuthorityPublicationDraftV1,
         prepared: &PreparedAuthorityPublicationV1,
     ) -> Result<AuthorityPublicationActivationV1, AuthorityPublicationError> {
+        self.journal.ensure_healthy()?;
         if let Some(existing) = self.journal.get(
             RecordNamespace::AuthorityPublication,
             &prepared_key(prepared.digest),
@@ -759,6 +765,7 @@ impl<'a> AuthorityPublicationStore<'a> {
     /// Returns [`AuthorityPublicationError::CorruptCurrent`] when the stored
     /// value is not the exact self-contained V3 publication named by `digest`,
     /// or [`AuthorityPublicationError::MigrationRequired`] for legacy state.
+    /// Returns a journal error if an earlier I/O failure poisoned the handle.
     pub fn prepared(
         &self,
         digest: ObjectDigest,
@@ -790,6 +797,7 @@ pub(crate) fn validate_durable_gate_publication(
     lease_generation: u64,
     lease_digest: ObjectDigest,
 ) -> Result<(), AuthorityPublicationError> {
+    journal.ensure_healthy()?;
     let prepared = journal
         .get(
             RecordNamespace::AuthorityPublication,
@@ -905,6 +913,9 @@ pub(crate) fn validate_durable_effect_attempt(
 pub(crate) fn validate_publication_namespace(
     journal: &Journal,
 ) -> Result<(), AuthorityPublicationError> {
+    // Diagnostic materialized values can lag an ambiguously committed successor.
+    // Never turn that stale snapshot into current publication or replay evidence.
+    journal.ensure_healthy()?;
     if journal
         .records(RecordNamespace::DesiredState)
         .any(|(key, _)| {
@@ -961,6 +972,7 @@ impl<'a> AuthorityPublicationStore<'a> {
     /// is not the exact bounded, cross-linked format emitted by preparation.
     /// Returns [`AuthorityPublicationError::MigrationRequired`] when any V1 or
     /// V2 current or prepared namespace remains in the journal.
+    /// Returns a journal error if an earlier I/O failure poisoned the handle.
     /// This does not cryptographically reverify signatures because the journal
     /// deliberately has no trust-anchor or public-key dependency.
     pub fn current(

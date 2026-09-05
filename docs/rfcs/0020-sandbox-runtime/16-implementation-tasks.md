@@ -1470,3 +1470,47 @@ the holder's request; forwarded channel hashes and publisher peer credentials
 cannot substitute for holder possession. Challenge consumption, signed-decision
 persistence, current-state rechecks, retained permits, reservation/residency
 accounting, and authoritative completion/recovery evidence are still required.
+
+### Protected capability-registry checkpoint
+
+`SBX-PUB-02` now has a concrete controller-owned capability registry in journal
+namespace 7. It persists full validated capability records under family-prefixed
+immutable handles, with irreversible equal-size revocation tombstones. Loading
+requires retained protected-opener provenance and validates the entire bounded
+materialized registry. Subsequent lookups use the journal index directly instead
+of retaining a second registry-sized map. Encoding is bounded while serializing,
+not after constructing an unrestricted byte buffer. The controller exposes this
+through an exclusive borrow of its sole journal writer.
+
+This is trusted administration and durable lookup, not authenticated admission.
+The facade must be the controller's sole writer for this namespace; generic
+journal writes are trusted low-level operations, not a validated capability
+transition protocol. Internal versioned JSON is not a portable network format.
+Individual handle revocation does not replace policy/scope-generation checks or
+cancel a retained completion permit. Durable append headroom for maintenance
+still needs reservation before production admissions are enabled.
+
+Adversarial review identified that an ambiguous journal write can leave old
+materialized diagnostic values readable. Authority consumers now have an explicit
+health guard: a failed revocation must deny reads even after facade reconstruction
+until protected reopen/replay resolves durable state. Namespace scans use ordered
+ranges so capability recovery does not walk unrelated desired-state records.
+The same review found stale-read paths in existing authority-publication replay
+and cached reconciler validation. Both now reject poisoned journals before replay,
+authority lookup, or executor observation/application. Real append/compaction
+failure tests cover facade reconstruction and cached/uncached reconciliation;
+diagnostic journal getters deliberately retain their non-authoritative contract.
+
+Project policy and revocation-generation heads, source-authority records,
+publisher-instance/root registries, authenticated two-channel challenge matching,
+reservation/residency accounting, retained permits, production services, and
+runtime qualification remain required. `SBX-PUB-02` remains unchecked.
+
+Validation: 149 controller and 181 core unit tests, one controller integration
+test, and five compile-fail doctests pass. Scoped all-target Clippy with warnings
+denied and changed-file formatting checks pass. The fixed internal record golden
+is 1,068 bytes with SHA-256
+`a7eb0f1c0e6306a04252c17046788aa1680081b4405fea31f8791c629982e331`.
+Independent registry and existing effect-path reviews found no remaining blocker.
+Warning-denied rustdoc is still running/queued on the shared Cargo cache at this
+checkpoint; the post-change workspace-wide compile check is not yet recorded.

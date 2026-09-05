@@ -12,6 +12,9 @@
 use aos_sandbox_core::{ObjectDigest, OperationId, RawPairedClockSample};
 use sha2::{Digest as _, Sha256};
 
+use crate::publisher_authority::{
+    PublisherAuthorityError, PublisherAuthorityLimits, PublisherCapabilityRegistry,
+};
 use crate::{
     AcceptOutcome, OperationPlan, OwnershipAuthoritySessionClient, OwnershipAuthorityVerifier,
     OwnershipClockObservationError, OwnershipResumeError, OwnershipResumeOutcomeV1,
@@ -199,6 +202,30 @@ where
             compiler,
             reconciler,
         }
+    }
+
+    /// Borrows the protected publisher capability registry for controller administration.
+    ///
+    /// The borrow excludes admission and reconciliation through this controller
+    /// until the registry is dropped. Loading validates the entire bounded
+    /// registry against the sole journal writer; no second database or cached
+    /// authority snapshot is introduced.
+    ///
+    /// This is a trusted controller administration interface, not a service
+    /// endpoint. Its caller must authorize installation and revocation. Resolving
+    /// a stored capability alone does not authenticate a holder or authorize a
+    /// publication effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PublisherAuthorityError`] if the journal lacks protected storage
+    /// provenance, has an ambiguous prior write, or contains malformed or
+    /// over-limit publisher authority records.
+    pub fn publisher_capabilities(
+        &mut self,
+        limits: PublisherAuthorityLimits,
+    ) -> Result<PublisherCapabilityRegistry<'_>, PublisherAuthorityError> {
+        PublisherCapabilityRegistry::load(self.reconciler.journal_mut(), limits)
     }
 
     /// Compiles and atomically admits one canonical activated request.
@@ -467,6 +494,50 @@ mod tests {
             Compiler,
             Reconciler::new(journal, executor),
         )
+    }
+
+    #[test]
+    fn capability_administration_borrows_only_protected_controller_storage() {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+        let directory = TestDirectory::new();
+        let mut unprotected = controller(
+            &directory.journal(),
+            Executor::default(),
+            NodeControllerLimits::default(),
+        );
+        assert!(matches!(
+            unprotected.publisher_capabilities(PublisherAuthorityLimits::default()),
+            Err(PublisherAuthorityError::Journal(
+                crate::JournalError::ProtectedBoundary
+            )),
+        ));
+
+        fs::set_permissions(&directory.0, fs::Permissions::from_mode(0o700)).unwrap();
+        let uid = fs::metadata(&directory.0).unwrap().uid();
+        let (journal, _) = Journal::open_protected_at_uid(
+            &directory.0,
+            "protected.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .unwrap();
+        let mut protected = NodeController::new(
+            scope(),
+            NodeControllerLimits::default(),
+            Compiler,
+            Reconciler::new(journal, Executor::default()),
+        );
+        {
+            let registry = protected
+                .publisher_capabilities(PublisherAuthorityLimits::default())
+                .unwrap();
+            assert!(matches!(
+                registry.resolve_current(aos_sandbox_core::CapabilityId::new()),
+                Err(PublisherAuthorityError::UnknownCapability),
+            ));
+        }
+        assert!(protected.reconcile_quantum().unwrap().is_idle());
     }
 
     #[test]

@@ -132,6 +132,25 @@ than silently reinterpreting one channel binding as the other. Challenge
 registration itself grants no publication authority and consumes bounded
 per-publisher pending-state capacity.
 
+Capability lookup uses the controller's sole protected journal writer. An
+administrative installation binds a fresh handle to the complete validated
+capability record; individual revocation retains a tombstone and never permits
+that handle to be rebound. This registry is not a bearer-token validator or a
+public issuance endpoint. Its caller must authorize administration, and admission
+must still authenticate the holder and evaluate current policy, scope-generation,
+source, and resource state. Revoking a handle denies new use; it does not cancel
+an already-issued retained completion permit.
+
+Authority reads fail closed after an ambiguous journal append or synchronization
+failure, even if the previous materialized values remain available for diagnostics.
+Dropping and recreating a registry facade cannot restore authority; reopening and
+replaying the protected journal is required. Replay and serialization have explicit
+record, entry, and aggregate bounds. Tombstones consume no additional logical
+record capacity, but the service must separately retain durable transaction space
+for revocation and completion before admitting new work. Namespace-local journal
+records are an internal persistence format, not a portable protocol or a substitute
+for failover replication and rollback protection.
+
 Version 1 uses retained controller-owned permits, not a timed completion window:
 a pre-syscall clock check cannot bound an already-entered rename or fsync.
 The controller durably records the one-shot permit before issuing it. It remains

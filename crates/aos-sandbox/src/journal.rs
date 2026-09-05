@@ -92,6 +92,8 @@ pub enum RecordNamespace {
     OwnershipGate = 5,
     /// Durable authority publications isolated from generic desired-state keys.
     AuthorityPublication = 6,
+    /// Controller-resolved publisher capabilities and current authority records.
+    PublisherAuthority = 7,
 }
 
 impl RecordNamespace {
@@ -103,6 +105,7 @@ impl RecordNamespace {
             4 => Ok(Self::Idempotency),
             5 => Ok(Self::OwnershipGate),
             6 => Ok(Self::AuthorityPublication),
+            7 => Ok(Self::PublisherAuthority),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }
@@ -546,7 +549,7 @@ impl Journal {
     }
 
     #[cfg(test)]
-    fn open_protected_at_uid(
+    pub(crate) fn open_protected_at_uid(
         directory_path: &Path,
         name: &str,
         limits: JournalLimits,
@@ -633,7 +636,33 @@ impl Journal {
         ))
     }
 
+    /// Rejects authority reads after an ambiguous durable mutation.
+    ///
+    /// Materialized values deliberately remain available for diagnostics after
+    /// an I/O failure, but they may precede a transaction that reached disk.
+    /// Authority consumers must use this guard before reading, including when
+    /// rebuilding a facade around the same exclusively borrowed journal.
+    pub(crate) fn ensure_healthy(&self) -> Result<(), JournalError> {
+        if self.poisoned {
+            Err(JournalError::Poisoned)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Requires retained protected storage provenance before resolving authority.
+    pub(crate) fn ensure_protected_authority(&self) -> Result<(), JournalError> {
+        self.ensure_healthy()?;
+        if self.protected.is_none() {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        Ok(())
+    }
+
     /// Returns the currently materialized value for a logical key.
+    ///
+    /// This diagnostic view remains readable after an ambiguous I/O failure.
+    /// It does not establish that the value is current durable authority.
     #[must_use]
     pub fn get(&self, namespace: RecordNamespace, key: &[u8]) -> Option<&[u8]> {
         self.state
@@ -645,12 +674,14 @@ impl Journal {
     ///
     /// The iterator is a stable snapshot only while this journal remains
     /// immutably borrowed. Callers must copy values needed across a commit.
+    /// Like [`Self::get`], this diagnostic view does not establish current
+    /// authority after an ambiguous I/O failure. The ordered namespace range
+    /// avoids scanning unrelated desired-state and operation records.
     pub fn records(&self, namespace: RecordNamespace) -> impl Iterator<Item = (&[u8], &[u8])> {
         self.state
-            .iter()
-            .filter_map(move |((record_namespace, key), value)| {
-                (*record_namespace == namespace).then_some((key.as_slice(), value.as_slice()))
-            })
+            .range((namespace, Vec::new())..)
+            .take_while(move |((record_namespace, _), _)| *record_namespace == namespace)
+            .map(|((_, key), value)| (key.as_slice(), value.as_slice()))
     }
 
     /// Returns the next monotonic frame sequence defining the current snapshot boundary.
@@ -694,9 +725,7 @@ impl Journal {
         &mut self,
         transaction: &JournalTransaction,
     ) -> Result<CommitResult, JournalError> {
-        if self.poisoned {
-            return Err(JournalError::Poisoned);
-        }
+        self.ensure_healthy()?;
         validate_transaction(transaction, self.limits)?;
         if self.transaction_ids.contains(transaction.id()) {
             return Err(JournalError::DuplicateTransaction);
@@ -769,9 +798,7 @@ impl Journal {
     /// bounds or any temporary-file, sync, rename, directory-sync, reopen, or
     /// validation operation fails.
     pub fn compact(&mut self) -> Result<(), JournalError> {
-        if self.poisoned {
-            return Err(JournalError::Poisoned);
-        }
+        self.ensure_healthy()?;
         if let Err(error) = self.compact_inner() {
             self.poisoned = true;
             return Err(error);
@@ -1819,6 +1846,77 @@ mod tests {
         JournalTransaction::new([id; 16], records).unwrap()
     }
 
+    #[test]
+    fn namespace_codes_are_append_only_and_unknown_codes_fail_closed() {
+        let namespaces = [
+            RecordNamespace::DesiredState,
+            RecordNamespace::Operation,
+            RecordNamespace::Effect,
+            RecordNamespace::Idempotency,
+            RecordNamespace::OwnershipGate,
+            RecordNamespace::AuthorityPublication,
+            RecordNamespace::PublisherAuthority,
+        ];
+        for (index, namespace) in namespaces.into_iter().enumerate() {
+            let code = u8::try_from(index + 1).unwrap();
+            assert_eq!(namespace as u8, code);
+            assert_eq!(RecordNamespace::from_byte(code).unwrap(), namespace);
+        }
+        for code in [0, 8, 255] {
+            assert!(RecordNamespace::from_byte(code).is_err());
+        }
+    }
+
+    #[test]
+    fn publisher_authority_namespace_survives_replay_and_compaction() {
+        let directory = TestDirectory::new("publisher-namespace");
+        let path = directory.journal();
+        let (mut journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
+        let key = b"same-key".to_vec();
+        journal
+            .commit(&transaction(
+                1,
+                vec![
+                    JournalRecord::put(
+                        RecordNamespace::PublisherAuthority,
+                        key.clone(),
+                        b"publisher-record".to_vec(),
+                    ),
+                    JournalRecord::put(
+                        RecordNamespace::AuthorityPublication,
+                        key.clone(),
+                        b"assignment-record".to_vec(),
+                    ),
+                ],
+            ))
+            .unwrap();
+        journal.compact().unwrap();
+        drop(journal);
+
+        let (journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
+        assert_eq!(
+            journal.get(RecordNamespace::PublisherAuthority, &key),
+            Some(b"publisher-record".as_slice()),
+        );
+        assert_eq!(
+            journal.get(RecordNamespace::AuthorityPublication, &key),
+            Some(b"assignment-record".as_slice()),
+        );
+        assert_eq!(
+            journal
+                .records(RecordNamespace::AuthorityPublication)
+                .collect::<Vec<_>>(),
+            vec![(key.as_slice(), b"assignment-record".as_slice())],
+        );
+        assert_eq!(
+            journal
+                .records(RecordNamespace::PublisherAuthority)
+                .collect::<Vec<_>>(),
+            vec![(key.as_slice(), b"publisher-record".as_slice())],
+        );
+        assert_eq!(journal.records(RecordNamespace::DesiredState).count(), 0);
+    }
+
     fn protected_open(directory: &Path) -> Result<(Journal, RecoveryReport), JournalError> {
         fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).unwrap();
         let uid = fs::metadata(directory).unwrap().uid();
@@ -2526,6 +2624,7 @@ mod tests {
         let directory = TestDirectory::new("poison");
         let path = directory.journal();
         let (mut journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
+        journal.ensure_healthy().unwrap();
         journal.file = OpenOptions::new().read(true).open(&path).unwrap();
         let entry = transaction(
             1,
@@ -2537,9 +2636,118 @@ mod tests {
         );
         assert!(matches!(journal.commit(&entry), Err(JournalError::Io(_))));
         assert!(matches!(
+            journal.ensure_healthy(),
+            Err(JournalError::Poisoned)
+        ));
+        assert!(matches!(
             journal.commit(&entry),
             Err(JournalError::Poisoned)
         ));
+    }
+
+    #[test]
+    fn publisher_registry_rejects_unprotected_or_poisoned_journal() {
+        use crate::publisher_authority::{PublisherAuthorityLimits, PublisherCapabilityRegistry};
+
+        let directory = TestDirectory::new("publisher-poison");
+        let (mut unprotected, _) =
+            Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+        assert!(matches!(
+            unprotected.ensure_protected_authority(),
+            Err(JournalError::ProtectedBoundary)
+        ));
+        assert!(
+            PublisherCapabilityRegistry::load(
+                &mut unprotected,
+                PublisherAuthorityLimits::default(),
+            )
+            .is_err()
+        );
+
+        let (mut journal, _) = protected_open(&directory.0).unwrap();
+        assert!(
+            PublisherCapabilityRegistry::load(&mut journal, PublisherAuthorityLimits::default(),)
+                .is_ok()
+        );
+        journal.file = OpenOptions::new()
+            .read(true)
+            .open(directory.0.join("protected.journal"))
+            .unwrap();
+        let entry = transaction(
+            1,
+            vec![JournalRecord::put(
+                RecordNamespace::DesiredState,
+                b"resource".to_vec(),
+                b"desired".to_vec(),
+            )],
+        );
+        assert!(matches!(journal.commit(&entry), Err(JournalError::Io(_))));
+        assert!(matches!(
+            journal.ensure_protected_authority(),
+            Err(JournalError::Poisoned)
+        ));
+        assert!(
+            PublisherCapabilityRegistry::load(&mut journal, PublisherAuthorityLimits::default(),)
+                .is_err()
+        );
+
+        drop(journal);
+        let (mut reopened, _) = protected_open(&directory.0).unwrap();
+        assert!(
+            PublisherCapabilityRegistry::load(&mut reopened, PublisherAuthorityLimits::default(),)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn failed_capability_revocation_denies_reads_until_protected_replay() {
+        use crate::publisher_authority::{
+            PublisherAuthorityError, PublisherAuthorityLimits, PublisherCapabilityRegistry,
+        };
+
+        let directory = TestDirectory::new("publisher-revocation-poison");
+        let (mut journal, _) = protected_open(&directory.0).unwrap();
+        let id = aos_sandbox_core::CapabilityId::new();
+        let capability = crate::publisher_authority::tests::capability(id, 200);
+        PublisherCapabilityRegistry::load(&mut journal, PublisherAuthorityLimits::default())
+            .unwrap()
+            .install_from_trusted_controller([1; 16], capability.clone())
+            .unwrap();
+
+        journal.file = OpenOptions::new()
+            .read(true)
+            .open(directory.0.join("protected.journal"))
+            .unwrap();
+        {
+            let mut registry = PublisherCapabilityRegistry::load(
+                &mut journal,
+                PublisherAuthorityLimits::default(),
+            )
+            .unwrap();
+            assert_eq!(registry.resolve_current(id).unwrap(), capability);
+            assert!(matches!(
+                registry.revoke_from_trusted_controller([2; 16], id),
+                Err(PublisherAuthorityError::Journal(JournalError::Io(_))),
+            ));
+            assert!(matches!(
+                registry.resolve_current(id),
+                Err(PublisherAuthorityError::Journal(JournalError::Poisoned)),
+            ));
+        }
+        assert!(matches!(
+            PublisherCapabilityRegistry::load(&mut journal, PublisherAuthorityLimits::default()),
+            Err(PublisherAuthorityError::Journal(JournalError::Poisoned)),
+        ));
+
+        drop(journal);
+        let (mut reopened, _) = protected_open(&directory.0).unwrap();
+        let registry =
+            PublisherCapabilityRegistry::load(&mut reopened, PublisherAuthorityLimits::default())
+                .unwrap();
+        // The injected descriptor rejected the write before any bytes reached
+        // disk. Only protected replay, not the stale in-memory snapshot, may
+        // therefore restore this still-active record.
+        assert_eq!(registry.resolve_current(id).unwrap(), capability);
     }
 
     #[test]

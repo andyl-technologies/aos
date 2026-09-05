@@ -711,6 +711,62 @@ fn publication_is_atomic_idempotent_and_byte_exact_after_reopen() {
 }
 
 #[test]
+fn poisoned_publication_snapshot_cannot_be_read_or_replayed_through_a_new_facade() {
+    let directory = TestDirectory::new();
+    let (mut journal, _) = Journal::open(directory.journal(), Default::default())
+        .unwrap_or_else(|error| panic!("test journal failed: {error}"));
+    let prepared = proposal(1, 190)
+        .prepare()
+        .unwrap_or_else(|error| panic!("test preparation failed: {error}"));
+    let key = IdempotencyKey::new("poisoned-publication")
+        .unwrap_or_else(|error| panic!("test key failed: {error}"));
+    let operation = OperationId::new();
+    AuthorityPublicationStore::new(&mut journal)
+        .publish(&prepared, &key, operation, [0xe1; 16])
+        .unwrap_or_else(|error| panic!("test publish failed: {error}"));
+
+    // Exercise an actual I/O failure, not a synthetic flag. The old permanent
+    // record remains diagnostic data, but cannot serve as current authority.
+    std::fs::create_dir(directory.0.join("controller.journal.compact.tmp"))
+        .unwrap_or_else(|error| panic!("test failure setup failed: {error}"));
+    assert!(matches!(journal.compact(), Err(JournalError::Io(_))));
+    assert!(
+        journal
+            .get(
+                RecordNamespace::AuthorityPublication,
+                &prepared_key(prepared.digest())
+            )
+            .is_some()
+    );
+
+    for _ in 0..2 {
+        let mut store = AuthorityPublicationStore::new(&mut journal);
+        assert!(matches!(
+            store.current(prepared.sandbox),
+            Err(AuthorityPublicationError::Journal(JournalError::Poisoned))
+        ));
+        assert!(matches!(
+            store.prepared(prepared.digest()),
+            Err(AuthorityPublicationError::Journal(JournalError::Poisoned))
+        ));
+        assert!(matches!(
+            store.publish(&prepared, &key, operation, [0xe2; 16]),
+            Err(AuthorityPublicationError::Journal(JournalError::Poisoned))
+        ));
+    }
+
+    drop(journal);
+    let (mut reopened, _) = Journal::open(directory.journal(), Default::default())
+        .unwrap_or_else(|error| panic!("test recovery failed: {error}"));
+    assert!(
+        AuthorityPublicationStore::new(&mut reopened)
+            .current(prepared.sandbox)
+            .unwrap_or_else(|error| panic!("test recovered current failed: {error}"))
+            .is_some()
+    );
+}
+
+#[test]
 fn publication_replay_requires_its_permanent_record_but_not_current() {
     let directory = TestDirectory::new();
     let (mut journal, _) = Journal::open(directory.journal(), Default::default())

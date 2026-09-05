@@ -533,6 +533,10 @@ pub enum OwnershipGateActivationOutcome {
 }
 
 /// Reconciles one exclusively owned single-node journal.
+///
+/// A poisoned journal rejects admission, gate resolution, and reconciliation
+/// before replay or executor interaction, even if structural validation was
+/// previously cached. Recovery requires reopening the journal.
 pub struct Reconciler<E> {
     journal: Journal,
     executor: E,
@@ -983,6 +987,9 @@ where
     }
 
     fn ensure_ledger_validated(&mut self) -> Result<(), ReconcilerError> {
+        // Cached structural validity says nothing about a later failed commit.
+        // Check on every entry before replay or any executor/session interaction.
+        self.journal.ensure_healthy()?;
         if !self.ledger_validated {
             // Scan the publication namespace once after recovery or an exposed
             // raw journal mutation. Individual gated operations still verify
@@ -1865,6 +1872,7 @@ mod tests {
         applied: BTreeMap<(OperationId, u32), EffectReceipt>,
         failures: VecDeque<EffectFailure>,
         apply_calls: usize,
+        observe_calls: usize,
         authority_pending: bool,
         authority_receipt_override: Option<ValidatedHostEffectReceiptV1>,
     }
@@ -1913,6 +1921,7 @@ mod tests {
             step: u32,
             _plan: &EffectPlan,
         ) -> Result<EffectObservation, EffectFailure> {
+            self.observe_calls += 1;
             Ok(self
                 .applied
                 .get(&(operation_id, step))
@@ -1941,6 +1950,7 @@ mod tests {
             step: u32,
             prepared: &PreparedAuthorityEffectV2,
         ) -> Result<AuthorityEffectObservationV2, EffectFailure> {
+            self.observe_calls += 1;
             Ok(if self.authority_pending {
                 AuthorityEffectObservationV2::Pending
             } else if self.applied.contains_key(&(operation_id, step)) {
@@ -2023,6 +2033,64 @@ mod tests {
         AuthorityPublicationStore::new(reconciler.journal_mut())
             .prepare_gate_activation(draft, prepared)
             .unwrap()
+    }
+
+    #[test]
+    fn poisoned_journal_blocks_replay_and_all_executor_io_even_with_cached_validation() {
+        for authority_bound in [false, true] {
+            for cached_validation in [false, true] {
+                let directory = TestDirectory::new();
+                let (journal, _) =
+                    Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+                let mut reconciler = Reconciler::new(journal, Executor::default());
+                let plan = if authority_bound {
+                    let (plan, draft, prepared) = gated_operation_with_publication(1);
+                    reconciler.accept(&plan).unwrap();
+                    let activation = gate_activation(&mut reconciler, &draft, &prepared);
+                    reconciler
+                        .activate_ownership_gate(plan.operation_id(), activation)
+                        .unwrap();
+                    plan
+                } else {
+                    let plan = operation();
+                    reconciler.accept(&plan).unwrap();
+                    plan
+                };
+                assert_eq!(
+                    reconciler.reconcile_once(plan.operation_id()).unwrap(),
+                    ReconcileOutcome::Progressed
+                );
+                assert_eq!(reconciler.executor.observe_calls, 0);
+
+                // A directory at the exact temporary-file name forces the
+                // real compaction I/O failure path, leaving diagnostic state.
+                fs::create_dir(directory.0.join("state.journal.compact.tmp")).unwrap();
+                assert!(matches!(
+                    reconciler.journal.compact(),
+                    Err(JournalError::Io(_))
+                ));
+                reconciler.ledger_validated = cached_validation;
+
+                assert!(matches!(
+                    reconciler.accept(&plan),
+                    Err(ReconcilerError::Journal(JournalError::Poisoned))
+                ));
+                assert!(matches!(
+                    reconciler.ownership_gate(plan.operation_id()),
+                    Err(ReconcilerError::Journal(JournalError::Poisoned))
+                ));
+                assert!(matches!(
+                    reconciler.reconcile_once(plan.operation_id()),
+                    Err(ReconcilerError::Journal(JournalError::Poisoned))
+                ));
+                assert!(matches!(
+                    reconciler.reconcile_next(),
+                    Err(ReconcilerError::Journal(JournalError::Poisoned))
+                ));
+                assert_eq!(reconciler.executor.observe_calls, 0);
+                assert_eq!(reconciler.executor.apply_calls, 0);
+            }
+        }
     }
 
     #[test]
