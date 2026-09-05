@@ -60,6 +60,8 @@ CACHE_SUFFIXES = (
 EXPECTED_ABSENCE_PATHS = {
     "/aos.hub.v1.IdentityService/GetIdentityProvider",
     "/aos.hub.v1.SigningKeyService/GetSigningKeyUsage",
+    # A registry without upstream configuration has no mirror resource yet.
+    "/aos.hub.v1.RegistryMirrorService/GetRegistryMirror",
 }
 
 

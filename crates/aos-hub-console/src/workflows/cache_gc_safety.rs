@@ -4,9 +4,9 @@
 //! operator can inspect the exact immutable candidate manifest before creating
 //! and applying a separate acknowledgement plan.
 
+use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
-use leptos::task::spawn_local;
 
 use crate::components::{HashValue, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
@@ -18,17 +18,31 @@ pub(super) fn GcSafetyControls(
     client: ApiClient,
     cache_id: String,
     generation_version: String,
+    exact_plan: RwSignal<Option<aos_proto_types::CacheGcPlan>>,
+    acknowledgement_required: bool,
 ) -> impl IntoView {
+    let ack_client = client.clone();
+    let ack_cache = cache_id.clone();
     view! {
         <div class="workflow-stack">
-            <GcPlanInspector client=client.clone() cache_id=cache_id.clone()/>
-            <FirstSweepAcknowledgement client=client cache_id=cache_id generation_version=generation_version/>
+            <details class="panel advanced-controls"><summary>"Load an existing candidate plan"</summary>
+                <GcPlanInspector client=client cache_id=cache_id selected=exact_plan/>
+            </details>
+            {move || if acknowledgement_required {
+                exact_plan.get().map(|plan| view! {
+                    <FirstSweepAcknowledgement client=ack_client.clone() cache_id=ack_cache.clone() generation_version=generation_version.clone() gc_plan_id=plan.plan_id/>
+                }).into_any()
+            } else { ().into_any() }}
         </div>
     }
 }
 
 #[component]
-fn GcPlanInspector(client: ApiClient, cache_id: String) -> impl IntoView {
+fn GcPlanInspector(
+    client: ApiClient,
+    cache_id: String,
+    selected: RwSignal<Option<aos_proto_types::CacheGcPlan>>,
+) -> impl IntoView {
     let plan_id = RwSignal::new(String::new());
     let plan = RwSignal::new(None::<aos_proto_types::CacheGcPlan>);
     let error = RwSignal::new(None::<String>);
@@ -43,6 +57,7 @@ fn GcPlanInspector(client: ApiClient, cache_id: String) -> impl IntoView {
         let client = client.clone();
         let cache_id = cache_id.clone();
         plan.set(None);
+        selected.set(None);
         error.set(None);
         busy.set(true);
         spawn_local(async move {
@@ -54,7 +69,10 @@ fn GcPlanInspector(client: ApiClient, cache_id: String) -> impl IntoView {
                 .await
             {
                 Ok(response) => match response.plan {
-                    Some(value) => plan.set(Some(value)),
+                    Some(value) => {
+                        selected.set(Some(value.clone()));
+                        plan.set(Some(value));
+                    }
                     None => error.set(Some("The Hub omitted the GC plan".to_string())),
                 },
                 Err(failure) => error.set(Some(failure.to_string())),
@@ -134,8 +152,9 @@ fn FirstSweepAcknowledgement(
     client: ApiClient,
     cache_id: String,
     generation_version: String,
+    gc_plan_id: String,
 ) -> impl IntoView {
-    let gc_plan_id = RwSignal::new(String::new());
+    let display_plan_id = gc_plan_id.clone();
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
@@ -143,7 +162,7 @@ fn FirstSweepAcknowledgement(
     let plan_version = generation_version.clone();
     let on_plan = move |event: SubmitEvent| {
         event.prevent_default();
-        let gc_plan = gc_plan_id.get_untracked().trim().to_string();
+        let gc_plan = gc_plan_id.clone();
         if gc_plan.is_empty() {
             error.set(Some("GC plan ID is required".to_string()));
             return;
@@ -206,7 +225,7 @@ fn FirstSweepAcknowledgement(
                 </div>
             </div>
             <form class="editor-form" on:submit=on_plan>
-                <label><span>"GC plan ID"</span><input required prop:value=move || gc_plan_id.get() on:input=move |event| gc_plan_id.set(event_target_value(&event))/></label>
+                <div class="compact-list-row"><span>"Inspected candidate plan"</span><code>{display_plan_id}</code></div>
                 <div class="compact-list-row"><span>"Bound GC resource version"</span><code>{generation_version}</code></div>
                 <div class="form-actions"><button class="danger-button" type="submit" disabled=move || busy.get()>"Review first-sweep acknowledgement"</button></div>
             </form>
