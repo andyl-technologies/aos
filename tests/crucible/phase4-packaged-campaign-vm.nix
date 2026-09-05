@@ -32,9 +32,12 @@
           export CARGO_HOME="$TMPDIR/cargo"
           mkdir -p "$CARGO_HOME" .cargo
           sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" > .cargo/config.toml
-          cargo test --frozen --offline --release --no-run --message-format=json \
+          if ! cargo test --frozen --offline --release --no-run --message-format=json \
             --manifest-path crates/Cargo.toml --target-dir "$TMPDIR/target" \
-            -p crucible-cli --test campaign_store_process > "$TMPDIR/artifacts.jsonl"
+            -p crucible-cli --test campaign_store_process > "$TMPDIR/artifacts.jsonl"; then
+            jq -r 'select(.reason == "compiler-message") | .message.rendered // empty' "$TMPDIR/artifacts.jsonl"
+            exit 1
+          fi
           test_binary=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "campaign_store_process" and .executable != null) | .executable' "$TMPDIR/artifacts.jsonl")
           test -f "$test_binary"
           mkdir -p "$out/bin"
@@ -102,6 +105,9 @@ in
       ${pkgs.coreutils}/bin/timeout -k 5 300 \
         ${flight}/bin/campaign-process-flight --ignored --exact \
         packaged::public_packaged_executor_captures_genesis_and_restarts --nocapture
+      ${pkgs.coreutils}/bin/timeout -k 5 300 \
+        ${flight}/bin/campaign-process-flight --ignored --exact \
+        packaged::public_packaged_executor_completes_initial_discovery --nocapture
       ${pkgs.util-linux}/bin/umount /tmp/attempts
     '';
   }

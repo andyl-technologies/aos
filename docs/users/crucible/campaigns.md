@@ -456,8 +456,10 @@ or replace the recovery and operator acceptance flights.
 
 `checks.crucible.phase4.packagedCampaignVm` additionally runs public CLI
 compilation, import, creation, and production service restart with real native
-baked-genesis capture. This startup check does not start semantic attempts or
-certify hot-fork execution. Private QEMU debugger sockets are relative to each
+baked-genesis capture. It also grants budget, starts the initial discovery,
+authenticates its immediate modeled terminal-success observation, and verifies
+orderly shutdown. It does not certify guest-driven branching, checkpoint-pause
+recovery, or hot-fork execution. Private QEMU debugger sockets are relative to each
 guarded generation directory; the gateway resolves the actual returned path.
 
 On service shutdown, the executor stops admission, signals cancellation, and
@@ -543,6 +545,22 @@ crucible campaign --socket "$CAMPAIGN_SOCKET" --principal operator \
 `start` and `resume` apply the same checked lifecycle transition. Use `start`
 for the first transition from a newly created campaign and `resume` after a
 pause; their reports preserve that operator intent.
+
+With a packaged runtime attached, a Running campaign with an empty frontier
+needs an attempt grant before it can discover its first choice:
+
+```sh
+crucible campaign --socket "$CAMPAIGN_SOCKET" --principal operator \
+  budget network-recovery --expected "$SNAPSHOT" --command "$BUDGET_COMMAND" \
+  add 1 --proposals 1
+```
+
+Read the updated head before issuing the next mutation. The coordinator records
+one genesis discovery with an empty branch path and `next-choice` stop; a modeled
+terminal verdict may complete it sooner. This admission survives restart and
+does not repeat. A proposal-only grant does not fund discovery. Campaign-wide
+grant enforcement for later planner issuance remains under verification; this
+first-attempt check does not certify that broader limit.
 
 Run each command with `--help` before scripting it. Pause policies are semantic:
 `drain` waits for admitted work, `retry` preserves canceled work as retryable,

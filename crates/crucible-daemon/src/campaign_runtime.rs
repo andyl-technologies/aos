@@ -479,7 +479,8 @@ fn supervisor_step_disposition(
             | CampaignExecutorCheckpointOutcome::Publishing { .. }
             | CampaignExecutorCheckpointOutcome::Paused { .. },
         ) => CampaignRuntimeStepDisposition::Wait,
-        CampaignSupervisorStepOutcome::Planner(CampaignPlannerStepOutcome::Advanced { .. })
+        CampaignSupervisorStepOutcome::InitialDiscovery { .. }
+        | CampaignSupervisorStepOutcome::Planner(CampaignPlannerStepOutcome::Advanced { .. })
         | CampaignSupervisorStepOutcome::Executor { .. }
         | CampaignSupervisorStepOutcome::Cancellation(
             CampaignExecutorCancelOutcome::Idle

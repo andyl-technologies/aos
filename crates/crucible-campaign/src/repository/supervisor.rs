@@ -194,6 +194,12 @@ impl<P, E> CampaignSupervisor<P, E> {
             .step(self.campaign.as_str(), worker_slot)
             .map_err(CampaignSupervisorError::Executor)?;
         if matches!(outcome, CampaignExecutorStepOutcome::Idle { .. }) {
+            if let Some(attempt) = self
+                .repository
+                .admit_initial_discovery_if_ready(self.campaign.as_str())?
+            {
+                return Ok(CampaignSupervisorStepOutcome::InitialDiscovery { attempt });
+            }
             self.planner_pending = true;
         }
         Ok(CampaignSupervisorStepOutcome::Executor {
@@ -229,6 +235,11 @@ pub enum CampaignSupervisorConfigError {
 /// One bounded single-host coordinator transition.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CampaignSupervisorStepOutcome {
+    /// The first budgeted genesis discovery was admitted durably.
+    InitialDiscovery {
+        /// Immutable discovery attempt, ready for normal executor reservation.
+        attempt: AttemptId,
+    },
     /// Durable lifecycle state currently prevents new planning or reservation.
     Inactive {
         /// Exact snapshot owning the lifecycle intent.

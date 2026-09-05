@@ -865,6 +865,7 @@ struct RepositoryMutationGuard<'a> {
 mod ancestry;
 mod attempt_closure;
 mod closure;
+mod discovery;
 mod execution;
 mod executor_driver;
 mod finding;
@@ -1266,7 +1267,7 @@ fn attempt_admission_upserts(
     let attempt = admission.attempt().content_id();
     let proposal = match admission.role() {
         AttemptAdmissionRole::ExecutionBasis {
-            proposal: Some(proposal),
+            proposal,
             admission_ordinal,
             ..
         } => {
@@ -1283,16 +1284,15 @@ fn attempt_admission_upserts(
                 map_key_content("accounting.attempt-admission", admission_content),
                 admission_content,
             );
-            upserts.insert(
-                map_key_content("accounting.proposal-admission", proposal.content_id()),
-                admission_content,
-            );
+            if let Some(proposal) = proposal {
+                upserts.insert(
+                    map_key_content("accounting.proposal-admission", proposal.content_id()),
+                    admission_content,
+                );
+            }
             return Ok(upserts);
         }
         AttemptAdmissionRole::AdditionalCause { proposal } => proposal,
-        AttemptAdmissionRole::ExecutionBasis { proposal: None, .. } => {
-            return Err(integrity("proposal-admission-is-discovery-basis"));
-        }
     };
     Ok(BTreeMap::from([
         (

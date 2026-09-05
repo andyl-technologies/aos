@@ -6,13 +6,23 @@
 
 use super::*;
 use crucible_session::engine::{
-    ContentAddressedBlobRef, ContentHash, Icount, NodeId, Plan, Properties, ReadyPoint,
-    ScenarioDefForm, Seed, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
+    Action, ContentAddressedBlobRef, ContentHash, EventGraph, Icount, NodeId, Plan, Properties,
+    ReadyPoint, ScenarioDefForm, Seed, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
 };
 
 #[test]
 #[ignore = "requires dedicated cgroup-v2 and ext4 project-quota roots inside the VM check"]
 fn public_packaged_executor_captures_genesis_and_restarts() -> Result<(), Box<dyn Error>> {
+    packaged_campaign_flight(false)
+}
+
+#[test]
+#[ignore = "requires dedicated cgroup-v2 and ext4 project-quota roots inside the VM check"]
+fn public_packaged_executor_completes_initial_discovery() -> Result<(), Box<dyn Error>> {
+    packaged_campaign_flight(true)
+}
+
+fn packaged_campaign_flight(execute: bool) -> Result<(), Box<dyn Error>> {
     let fixture = FlightFixture::new()?;
     let root = fixture._temporary.path();
     let kernel = required_path("CRUCIBLE_KERNEL")?;
@@ -41,12 +51,18 @@ fn public_packaged_executor_captures_genesis_and_restarts() -> Result<(), Box<dy
         }],
         vec![],
     )?;
-    let scenario = ScenarioDefForm::from_components(
+    // An empty plan does not terminate a running machine. Give the execution
+    // flight an explicit modeled completion at its first event boundary.
+    let plan = Plan::from_event_graph_for_world(
         &world,
-        &Plan::empty(),
-        &Properties::empty(),
-        Seed::from_u64(42),
+        EventGraph::builder()
+            .event("complete-flight")
+            .entrypoint()
+            .action(Action::Pass)
+            .build_for_world(&world)?,
     )?;
+    let scenario =
+        ScenarioDefForm::from_components(&world, &plan, &Properties::empty(), Seed::from_u64(42))?;
     let scenario_path = root.join("scenario.toml");
     fs::write(&scenario_path, scenario.to_canonical_toml()?)?;
     let compiled = run_json(
@@ -130,7 +146,7 @@ exact_user_pins = true
     fs::set_permissions(&authority, fs::Permissions::from_mode(0o600))?;
     let deployment = required_path("CRUCIBLE_FLIGHT_DEPLOYMENT")?;
     let executor_socket = root.join("executor.sock");
-    for _ in 0..2 {
+    for _ in 0..if execute { 1 } else { 2 } {
         let mut invocation = fixture.service_command(None);
         invocation
             .arg("--qemu")
@@ -153,11 +169,118 @@ exact_user_pins = true
         let head = campaign_status(&fixture)?;
         assert_eq!(head["state"], original["state"]);
         assert_eq!(head["snapshot"], original["snapshot"]);
+        if execute
+            && let Err(error) = execute_initial_discovery(
+                &fixture,
+                &head,
+                &json_string(&compiled, "genesis_artifact")?,
+            )
+        {
+            let shutdown = packaged.stop();
+            return Err(format!("{error}; service shutdown: {shutdown:?}").into());
+        }
         packaged.stop()?;
         assert!(!executor_socket.exists());
     }
-    println!("public_packaged_genesis_restart=true");
+    if execute {
+        println!("public_packaged_initial_discovery=true");
+    } else {
+        println!("public_packaged_genesis_restart=true");
+    }
     Ok(())
+}
+
+fn execute_initial_discovery(
+    fixture: &FlightFixture,
+    head: &Value,
+    genesis: &str,
+) -> Result<(), Box<dyn Error>> {
+    let path = crucible_campaign::BranchPath::new(Vec::new())?;
+    let attempt = crucible_campaign::Attempt::new(
+        crucible_campaign::AttemptStart::Discover {
+            configuration: crucible_campaign::ConfigurationArtifactId::parse(genesis)?,
+        },
+        path.id()?,
+        crucible_campaign::StopCondition::NextChoice,
+    )?
+    .id()?
+    .to_string();
+    let before = snapshot_at(fixture, &json_string(head, "snapshot")?)?;
+    run_json(
+        connected_campaign(fixture)
+            .args([
+                "budget",
+                CAMPAIGN,
+                "--expected",
+                &json_string(head, "snapshot")?,
+                "--command",
+            ])
+            .arg("51".repeat(32))
+            .args(["add", "1", "--proposals", "1"]),
+        "grant initial discovery budget",
+    )?;
+    let budgeted = campaign_status(fixture)?;
+    run_json(
+        connected_campaign(fixture)
+            .args([
+                "start",
+                CAMPAIGN,
+                "--expected",
+                &json_string(&budgeted, "snapshot")?,
+                "--command",
+            ])
+            .arg("52".repeat(32)),
+        "start initial discovery",
+    )?;
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let head = campaign_status(fixture)?;
+        let snapshot = snapshot_at(fixture, &json_string(&head, "snapshot")?)?;
+        if snapshot["snapshot"]["roots"]["observations"]
+            != before["snapshot"]["roots"]["observations"]
+        {
+            let explanation = run_json(
+                connected_campaign(fixture).args([
+                    "explain-attempt",
+                    CAMPAIGN,
+                    "--snapshot",
+                    &json_string(&head, "snapshot")?,
+                    "--attempt",
+                    &attempt,
+                ]),
+                "authenticate initial discovery completion",
+            )?;
+            assert_eq!(explanation["attempt"]["id"], attempt);
+            assert_eq!(explanation["admission"]["admission_ordinal"], 1);
+            assert_eq!(explanation["observation"]["stop"], "terminal-success");
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            let explanation = run_json(
+                connected_campaign(fixture).args([
+                    "explain-attempt",
+                    CAMPAIGN,
+                    "--snapshot",
+                    &json_string(&head, "snapshot")?,
+                    "--attempt",
+                    &attempt,
+                ]),
+                "explain stalled initial discovery",
+            );
+            return Err(format!("running packaged campaign produced no initial discovery observation within 30s: {head}; snapshot={snapshot}; attempt={explanation:?}").into());
+        }
+        // The public watch command is a coalesced read, not a subscription.
+        // Bound this process-flight wait without a tight client request loop.
+        thread::sleep(Duration::from_millis(200));
+    }
+}
+
+fn snapshot_at(fixture: &FlightFixture, snapshot: &str) -> Result<Value, Box<dyn Error>> {
+    run_json(
+        connected_campaign(fixture).args(["snapshot", CAMPAIGN, "--snapshot", snapshot]),
+        "inspect execution observation root",
+    )
 }
 
 fn required_path(name: &str) -> Result<PathBuf, Box<dyn Error>> {
