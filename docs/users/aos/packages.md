@@ -1,7 +1,5 @@
 # Manage packages with APM
 
-The [release contract](release-contract.md) distinguishes baseline package functionality from qualified workload behavior for each release and platform.
-
 `apm` consumes signed registry metadata and manages generation-based package
 profiles. User packages, machine-wide runtime packages, configuration
 generations, and A/B image generations are separate scopes. The distinction is

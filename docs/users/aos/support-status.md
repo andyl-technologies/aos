@@ -1,7 +1,5 @@
 # AOS support status
 
-The [release contract](release-contract.md) defines required qualification. This implementation inventory is not evidence that a particular published artifact or hardware configuration has passed it.
-
 AOS is an early preview. This page records the operational boundary reflected
 by the current implementation and tests. It is not a long-term compatibility
 promise.

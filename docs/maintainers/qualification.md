@@ -8,7 +8,6 @@ remove individual mandatory gates from a release request.
 Use the [release checklist](release-checklist.md) to operate a release and the
 [canonical runbook](canonical-releases.md) for command details. Physical and
 operational work is specified in [qualification exercises](qualification-exercises.md).
-The [user contract](../users/aos/release-contract.md) explains the promises.
 
 ## Inspect and freeze the contract
 
