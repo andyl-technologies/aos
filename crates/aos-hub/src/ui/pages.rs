@@ -193,6 +193,7 @@ pub fn images_page(
     images: &[IndexedSystemImage],
     channels: &[ChannelSummary],
     download_base: Option<&str>,
+    hub_url: &str,
     browse: &ImageBrowse<'_>,
     started: Instant,
 ) -> String {
@@ -202,6 +203,7 @@ pub fn images_page(
         images,
         channels,
         download_base,
+        hub_url,
         browse,
         started,
         &current_session_indicator(),
