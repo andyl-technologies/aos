@@ -10,7 +10,7 @@ use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 
-use crate::components::{InlineError, ReviewedPlanCard, StatusBadge};
+use crate::components::{HelpTooltip, InlineError, ReviewedPlanCard};
 use crate::mutation::{idempotency_key, watch_draft, PendingPlan};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
@@ -75,15 +75,14 @@ fn InstanceOverview(settings: aos_proto_types::InstanceSettings, version: String
             <section class="panel resource-panel">
                 <div class="section-heading">
                     <div><p class="section-kicker">"Deployment control plane"</p><h2>{display_or(&settings.site_title, "AOS Hub")}</h2><p>{display_or(&settings.tagline, "Instance settings and topology")}</p></div>
-                    <StatusBadge state="configured".to_string() positive=true/>
                 </div>
                 <div class="resource-identity">
-                    <div><span>"Signup"</span><strong>{settings.signup_policy}</strong></div>
-                    <div><span>"Password login"</span><strong>{on_off(settings.password_login)}</strong></div>
-                    <div><span>"Public cache discovery"</span><strong>{on_off(settings.caches_public)}</strong></div>
-                    <div><span>"Default crawl policy"</span><strong>{settings.default_crawl_policy}</strong></div>
-                    <div><span>"Settings version"</span><code>{version}</code></div>
+                    <div><span>"Signup"</span><strong>{signup_policy_label(&settings.signup_policy)}</strong></div>
+                    <div><span>"Password login"</span><strong>{enabled_disabled(settings.password_login)}</strong></div>
+                    <div><span>"Public cache discovery"</span><strong>{enabled_disabled(settings.caches_public)}</strong></div>
+                    <div><span>"Default crawl policy"</span><strong>{crawl_policy_label(&settings.default_crawl_policy)}</strong></div>
                 </div>
+                <details><summary>"Instance metadata"</summary><div class="resource-identity"><div><span>"Settings version"</span><code>{version}</code></div></div></details>
             </section>
             <section class="resource-grid">
                 <a class="resource-card" href="/-/instance/identity-and-signup"><div><span class="resource-kind">"Access"</span><h3>"Identity & signup"</h3><p>"Signup eligibility, login methods, and session lifetime."</p></div></a>
@@ -95,8 +94,10 @@ fn InstanceOverview(settings: aos_proto_types::InstanceSettings, version: String
                 <div class="resource-grid">
                     <a class="resource-card" href="/-/instance/bindings"><div><span class="resource-kind">"Storage"</span><h3>"Bindings"</h3><p>"Credentials and object-store connections."</p></div></a>
                     <a class="resource-card" href="/-/instance/domains"><div><span class="resource-kind">"Delivery"</span><h3>"Domains"</h3><p>"Hostname ownership and certificate intent."</p></div></a>
+                    <a class="resource-card" href="/-/instance/network-policies"><div><span class="resource-kind">"Network"</span><h3>"Network policies"</h3><p>"Trusted ingress, source, and probe requirements."</p></div></a>
                     <a class="resource-card" href="/-/instance/endpoints"><div><span class="resource-kind">"Delivery"</span><h3>"Endpoints"</h3><p>"Ingress identity, listener state, and verification."</p></div></a>
                     <a class="resource-card" href="/-/instance/gateways"><div><span class="resource-kind">"Delivery"</span><h3>"Gateways"</h3><p>"Exact storage-to-endpoint generations."</p></div></a>
+                    <a class="resource-card" href="/-/instance/topology-defaults"><div><span class="resource-kind">"Defaults"</span><h3>"Topology defaults"</h3><p>"Starting choices for future storage and delivery plans."</p></div></a>
                 </div>
             </section>
         </div>
@@ -164,12 +165,12 @@ fn IdentitySettings(
 
     view! {
         <section class="panel editor-panel">
-            <p class="section-kicker">"Access & trust"</p><h2>"Identity & signup"</h2>
+            <div class="section-heading"><div><p class="section-kicker">"Access & trust"</p><h2>"Identity & signup"</h2><p>"Choose who may create an account and which local login options the Hub offers."</p></div></div>
             <form class="editor-form" on:submit=on_plan>
                 <label><span>"Signup policy"</span><select prop:value=move || signup_policy.get() on:change=move |event| signup_policy.set(event_target_value(&event))><option value="invite_only">"Invite only"</option><option value="open">"Open"</option></select></label>
-                <label><span>"Session lifetime (seconds; 0 uses default)"</span><input required type="number" min="0" prop:value=move || session_lifetime.get() on:input=move |event| session_lifetime.set(event_target_value(&event))/></label>
+                <label><span>"Session lifetime in seconds"<HelpTooltip term="Session lifetime" summary="Enter 0 to use the Hub default. Existing sessions keep their original expiry."/></span><input required type="number" min="0" prop:value=move || session_lifetime.get() on:input=move |event| session_lifetime.set(event_target_value(&event))/></label>
                 <label class="checkbox-field"><input type="checkbox" prop:checked=move || password_login.get() on:change=move |event| password_login.set(event_target_checked(&event))/><span>"Offer local password login"</span></label>
-                <label class="full-field"><span>"Allowed signup domains (one per line; empty allows any)"</span><textarea prop:value=move || signup_domains.get() on:input=move |event| signup_domains.set(event_target_value(&event))></textarea></label>
+                <label class="full-field"><span>"Allowed signup domains"<HelpTooltip term="Allowed signup domains" summary="Enter one email domain per line. An empty list allows every domain when signup is open."/></span><textarea placeholder="example.com" prop:value=move || signup_domains.get() on:input=move |event| signup_domains.set(event_target_value(&event))></textarea></label>
                 <div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review identity settings"</button></div>
             </form>
             <SettingsReview pending=pending error=error busy=busy on_apply=on_apply/>
@@ -233,10 +234,10 @@ fn ResourceDefaults(
 
     view! {
         <section class="panel editor-panel">
-            <p class="section-kicker">"Inherited policy"</p><h2>"Resource defaults"</h2>
+            <div class="section-heading"><div><p class="section-kicker">"Inherited policy"</p><h2>"Resource defaults"</h2><p>"New registries and caches start with these policies. A resource-level setting may override them later."</p></div></div>
             <form class="editor-form" on:submit=on_plan>
                 <label><span>"Default registry crawl policy"</span><select prop:value=move || crawl_policy.get() on:change=move |event| crawl_policy.set(event_target_value(&event))><option value="allow_all">"Allow all"</option><option value="allow_no_ai">"Allow, excluding AI crawlers"</option><option value="deny_all">"Deny all"</option></select></label>
-                <label><span>"Maximum upload bytes (0 uses default)"</span><input required type="number" min="0" prop:value=move || max_upload.get() on:input=move |event| max_upload.set(event_target_value(&event))/></label>
+                <label><span>"Maximum upload size in bytes"<HelpTooltip term="Maximum upload size" summary="Enter 0 to use the Hub default. The reviewed plan shows the stored byte value."/></span><input required type="number" min="0" prop:value=move || max_upload.get() on:input=move |event| max_upload.set(event_target_value(&event))/></label>
                 <label class="checkbox-field"><input type="checkbox" prop:checked=move || caches_public.get() on:change=move |event| caches_public.set(event_target_checked(&event))/><span>"Expose cache discovery publicly"</span></label>
                 <div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review resource defaults"</button></div>
             </form>
@@ -301,7 +302,7 @@ fn BrandingSettings(
 
     view! {
         <section class="panel editor-panel">
-            <p class="section-kicker">"Appearance"</p><h2>"Branding"</h2>
+            <div class="section-heading"><div><p class="section-kicker">"Appearance"</p><h2>"Branding"</h2><p>"Set the public site identity, operator announcement, and links shown in Hub surfaces. Empty values use the built-in presentation or hide the optional item."</p></div></div>
             <form class="editor-form" on:submit=on_plan>
                 <label><span>"Site title"</span><input prop:value=move || site_title.get() on:input=move |event| site_title.set(event_target_value(&event))/></label>
                 <label><span>"Tagline"</span><input prop:value=move || tagline.get() on:input=move |event| tagline.set(event_target_value(&event))/></label>
@@ -428,6 +429,33 @@ fn display_or(value: &str, fallback: &str) -> String {
         fallback.to_string()
     } else {
         value.to_string()
+    }
+}
+
+fn signup_policy_label(value: &str) -> String {
+    match value {
+        "invite_only" => "Invite only".to_string(),
+        "open" => "Open signup".to_string(),
+        _ if value.is_empty() => "Hub default".to_string(),
+        _ => value.replace('_', " "),
+    }
+}
+
+fn crawl_policy_label(value: &str) -> String {
+    match value {
+        "allow_all" => "Allow all".to_string(),
+        "allow_no_ai" => "Allow, excluding AI crawlers".to_string(),
+        "deny_all" => "Deny all".to_string(),
+        _ if value.is_empty() => "Hub default".to_string(),
+        _ => value.replace('_', " "),
+    }
+}
+
+fn enabled_disabled(value: bool) -> &'static str {
+    if value {
+        "Enabled"
+    } else {
+        "Disabled"
     }
 }
 
