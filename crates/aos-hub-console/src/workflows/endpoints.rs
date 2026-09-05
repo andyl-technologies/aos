@@ -393,7 +393,7 @@ fn EndpointCreateForm(
     });
     view! {
         <section class="panel editor-panel">
-            <div class="section-heading"><div><p class="section-kicker">"Guided setup"</p><h2>"Create endpoint"</h2><p>"Choose resources by name. The endpoint pins their immutable identifiers and current generations for you."</p></div></div>
+            <div class="section-heading"><div><p class="section-kicker">"Guided setup"</p><h2>"Create endpoint"<HelpTooltip term="Create endpoint" summary="Choose resources by name. The endpoint pins their immutable identifiers and current generations for you."/></h2></div></div>
             <form class="editor-form" on:submit=on_plan>
                 <label><span>"Endpoint name"</span><input required prop:value=move || stable_id.get() on:input=move |event| stable_id.set(event_target_value(&event))/></label>
                 <label><span>"Scheme"</span><select prop:value=move || scheme.get() on:change=on_scheme_change><option value="https">"HTTPS"</option><option value="http">"HTTP"</option></select></label>

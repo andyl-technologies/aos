@@ -8,7 +8,7 @@ use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 
-use crate::components::{HashValue, InlineError, StatusBadge};
+use crate::components::{HashValue, HelpTooltip, InlineError, StatusBadge};
 use crate::transport::ApiClient;
 
 /// Renders committed configuration history or draft change requests.
@@ -260,8 +260,7 @@ fn Changesets(client: ApiClient, registry_id: String) -> impl IntoView {
             <div class="section-heading">
                 <div>
                     <p class="section-kicker">"Settings audit"</p>
-                    <h2>"Configuration changes"</h2>
-                    <p>"Reviewed settings changes recorded by the Hub, alongside the registry's Git history above."</p>
+                    <h2>"Configuration changes"<HelpTooltip term="Configuration changes" summary="Reviewed settings changes recorded by the Hub, alongside the registry's Git history above."/></h2>
                 </div>
             </div>
             <Suspense fallback=move || view! { <p class="loading-row">"Loading changesets…"</p> }>

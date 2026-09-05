@@ -559,7 +559,7 @@ fn SurfaceDiagnostics(
 
     view! {
         <section class="panel resource-panel">
-            <div class="section-heading"><div><p class="section-kicker">"Request topology"</p><h2>"Explain routing & object presence"</h2><p>"Resolve one public request through the live route set, or inspect one object's evidence across every placement."</p></div></div>
+            <div class="section-heading"><div><p class="section-kicker">"Request topology"</p><h2>"Explain routing & object presence"<HelpTooltip term="Explain routing & object presence" summary="Resolve one public request through the live route set, or inspect one object's evidence across every placement."/></h2></div></div>
             <div class="subworkflow-grid">
                 {can_explain.then(|| view! { <section class="subworkflow">
                     <h4>"Explain a request"</h4>
@@ -603,7 +603,7 @@ fn WriteAuthorityPanel(client: ApiClient, surface: aos_proto_types::SurfaceRef) 
     });
 
     view! {
-        <section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Single writer"</p><h2>"Write authority"</h2><p>"Desired and controller-observed writer generations must reconcile before writes become effective."</p></div></div><Suspense fallback=move || view! { <p class="loading-row">"Loading write authority…"</p> }>{move || { let client = client.clone(); let surface = surface.clone(); Suspend::new(async move { match authority.await.as_ref() { Ok(response) => view! { <WriteAuthorityState client=client surface=surface authority=response.authority.clone()/> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section>
+        <section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Single writer"</p><h2>"Write authority"<HelpTooltip term="Write authority" summary="Desired and controller-observed writer generations must reconcile before writes become effective."/></h2></div></div><Suspense fallback=move || view! { <p class="loading-row">"Loading write authority…"</p> }>{move || { let client = client.clone(); let surface = surface.clone(); Suspend::new(async move { match authority.await.as_ref() { Ok(response) => view! { <WriteAuthorityState client=client surface=surface authority=response.authority.clone()/> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section>
     }
 }
 

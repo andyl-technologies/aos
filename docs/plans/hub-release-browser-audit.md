@@ -62,6 +62,22 @@ restoration, the typeahead choosing `stable`, and no-JavaScript folder pages.
 Eight desktop and mobile screenshots fit their viewport widths with no browser
 errors.
 
+## Channel page and settings prose
+
+The channel page led with a bulleted rollout list, a long sentence of facts,
+and a paragraph of bucket instructions, with the map hidden in a disclosure.
+It now opens with three facts (target release, minimum allowed release, share
+of buckets assigned), the rollout bar with colour swatches in its labels, one
+lookup form with a single help line, and a colour-coded 16×16 bucket map whose
+cells name their bucket and release on hover. The map shares the rollout bar's
+palette so the bar, its labels, and the map read as one legend.
+
+Settings pages carried an explanatory paragraph under most section titles.
+Forty-five of those paragraphs moved into the existing `?` help mark beside the
+title, so each panel opens with its kicker and title alone and the explanation
+stays one hover, focus, or click away. The Binary caches page also shortened
+its status lines to one clause each.
+
 ## Publication correctness
 
 The native seed now records measured file hashes, sizes, and strong storage

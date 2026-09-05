@@ -9,7 +9,7 @@ use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::{Event, SubmitEvent};
 use leptos::prelude::*;
 
-use crate::components::{HashValue, InlineError, StatusBadge};
+use crate::components::{HashValue, HelpTooltip, InlineError, StatusBadge};
 use crate::transport::ApiClient;
 
 /// Renders registry publication begin, resume, upload, commit, and abort flows.
@@ -91,8 +91,7 @@ fn PublicationBegin(
             <div class="section-heading">
                 <div>
                     <p class="section-kicker">"Frozen producer manifest"</p>
-                    <h2>"Begin publication"</h2>
-                    <p>"Use the prepared signed publication manifest for this registry. The registry cannot be changed by the pasted manifest."</p>
+                    <h2>"Begin publication"<HelpTooltip term="Begin publication" summary="Use the prepared signed publication manifest for this registry. The registry cannot be changed by the pasted manifest."/></h2>
                 </div>
             </div>
             <form class="editor-form" on:submit=on_submit>
@@ -139,8 +138,7 @@ fn PublicationHistory(
             <div class="section-heading">
                 <div>
                     <p class="section-kicker">"Registry publishing"</p>
-                    <h2>"Publish history"</h2>
-                    <p>"Track publication progress, inspect failures, and resume interrupted uploads."</p>
+                    <h2>"Publish history"<HelpTooltip term="Publish history" summary="Track publication progress, inspect failures, and resume interrupted uploads."/></h2>
                 </div>
             </div>
             <Suspense fallback=move || view! { <p class="loading-row">"Loading publication history…"</p> }>

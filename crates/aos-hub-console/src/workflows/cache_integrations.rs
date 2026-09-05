@@ -6,7 +6,7 @@
 
 use leptos::prelude::*;
 
-use crate::components::{InlineError, StatusBadge};
+use crate::components::{HelpTooltip, InlineError, StatusBadge};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
 
@@ -195,7 +195,7 @@ fn CacheIntegrations(client: ApiClient, cache_id: String) -> impl IntoView {
     view! {
         <div class="workflow-stack">
         <section class="panel resource-panel">
-            <div class="section-heading"><div><p class="section-kicker">"Choose an outcome"</p><h2>"Connect this cache"</h2><p>"Client use, proactive population, and retention are separate settings. This page only shows relationships owned by this cache; registry cache ordering and signing stay with the registry."</p></div></div>
+            <div class="section-heading"><div><p class="section-kicker">"Choose an outcome"</p><h2>"Connect this cache"<HelpTooltip term="Connect this cache" summary="Client use, proactive population, and retention are separate settings. This page only shows relationships owned by this cache; registry cache ordering and signing stay with the registry."/></h2></div></div>
             <div class="resource-grid">
                 <article class="resource-card"><div><span class="resource-kind">"Client configuration"</span><h3>"Use this cache for installs"</h3><p>"Add it to a registry's signed, ordered consumer cache stack. The registry owns that setting."</p></div></article>
                 <button class="resource-card" type="button" on:click=move |_| task.set("populate".to_string())><div><span class="resource-kind">"Availability"</span><h3>"Populate this cache"</h3><p>"Copy and verify a registry's objects here without changing client configuration or retention."</p></div><span class="card-arrow">"→"</span></button>
@@ -218,10 +218,7 @@ fn CacheIntegrations(client: ApiClient, cache_id: String) -> impl IntoView {
             <div class="section-heading">
                 <div>
                     <p class="section-kicker">"Reverse topology"</p>
-                    <h2>"Registry integrations"</h2>
-                    <p>
-                        "One cache may serve many registries. Publication, retention, and population are independent relationships."
-                    </p>
+                    <h2>"Registry integrations"<HelpTooltip term="Registry integrations" summary="One cache may serve many registries. Publication, retention, and population are independent relationships."/></h2>
                 </div>
             </div>
             <Suspense fallback=move || view! { <p class="loading-row">"Loading integrations…"</p> }>

@@ -90,7 +90,7 @@ fn InstanceOverview(settings: aos_proto_types::InstanceSettings, version: String
                 <a class="resource-card" href="/-/instance/branding"><div><span class="resource-kind">"Appearance"</span><h3>"Branding"</h3><p>"Site identity, announcements, legal links, and support."</p></div></a>
             </section>
             <section class="panel resource-panel">
-                <div class="section-heading"><div><p class="section-kicker">"Shared infrastructure"</p><h2>"Delivery and storage"</h2><p>"Resources owned by the instance and granted to organizations, registries, and caches."</p></div></div>
+                <div class="section-heading"><div><p class="section-kicker">"Shared infrastructure"</p><h2>"Delivery and storage"<HelpTooltip term="Delivery and storage" summary="Resources owned by the instance and granted to organizations, registries, and caches."/></h2></div></div>
                 <div class="resource-grid">
                     <a class="resource-card" href="/-/instance/bindings"><div><span class="resource-kind">"Storage"</span><h3>"Bindings"</h3><p>"Credentials and object-store connections."</p></div></a>
                     <a class="resource-card" href="/-/instance/domains"><div><span class="resource-kind">"Delivery"</span><h3>"Domains"</h3><p>"Hostname ownership and certificate intent."</p></div></a>
@@ -165,7 +165,7 @@ fn IdentitySettings(
 
     view! {
         <section class="panel editor-panel">
-            <div class="section-heading"><div><p class="section-kicker">"Access & trust"</p><h2>"Identity & signup"</h2><p>"Choose who may create an account and which local login options the Hub offers."</p></div></div>
+            <div class="section-heading"><div><p class="section-kicker">"Access & trust"</p><h2>"Identity & signup"<HelpTooltip term="Identity & signup" summary="Choose who may create an account and which local login options the Hub offers."/></h2></div></div>
             <form class="editor-form" on:submit=on_plan>
                 <label><span>"Signup policy"</span><select prop:value=move || signup_policy.get() on:change=move |event| signup_policy.set(event_target_value(&event))><option value="invite_only">"Invite only"</option><option value="open">"Open"</option></select></label>
                 <label><span>"Session lifetime in seconds"<HelpTooltip term="Session lifetime" summary="Enter 0 to use the Hub default. Existing sessions keep their original expiry."/></span><input required type="number" min="0" prop:value=move || session_lifetime.get() on:input=move |event| session_lifetime.set(event_target_value(&event))/></label>
@@ -234,7 +234,7 @@ fn ResourceDefaults(
 
     view! {
         <section class="panel editor-panel">
-            <div class="section-heading"><div><p class="section-kicker">"Inherited policy"</p><h2>"Resource defaults"</h2><p>"New registries and caches start with these policies. A resource-level setting may override them later."</p></div></div>
+            <div class="section-heading"><div><p class="section-kicker">"Inherited policy"</p><h2>"Resource defaults"<HelpTooltip term="Resource defaults" summary="New registries and caches start with these policies. A resource-level setting may override them later."/></h2></div></div>
             <form class="editor-form" on:submit=on_plan>
                 <label><span>"Default registry crawl policy"</span><select prop:value=move || crawl_policy.get() on:change=move |event| crawl_policy.set(event_target_value(&event))><option value="allow_all">"Allow all"</option><option value="allow_no_ai">"Allow, excluding AI crawlers"</option><option value="deny_all">"Deny all"</option></select></label>
                 <label><span>"Maximum upload size in bytes"<HelpTooltip term="Maximum upload size" summary="Enter 0 to use the Hub default. The reviewed plan shows the stored byte value."/></span><input required type="number" min="0" prop:value=move || max_upload.get() on:input=move |event| max_upload.set(event_target_value(&event))/></label>
@@ -302,7 +302,7 @@ fn BrandingSettings(
 
     view! {
         <section class="panel editor-panel">
-            <div class="section-heading"><div><p class="section-kicker">"Appearance"</p><h2>"Branding"</h2><p>"Set the public site identity, operator announcement, and links shown in Hub surfaces. Empty values use the built-in presentation or hide the optional item."</p></div></div>
+            <div class="section-heading"><div><p class="section-kicker">"Appearance"</p><h2>"Branding"<HelpTooltip term="Branding" summary="Set the public site identity, operator announcement, and links shown in Hub surfaces. Empty values use the built-in presentation or hide the optional item."/></h2></div></div>
             <form class="editor-form" on:submit=on_plan>
                 <label><span>"Site title"</span><input prop:value=move || site_title.get() on:input=move |event| site_title.set(event_target_value(&event))/></label>
                 <label><span>"Tagline"</span><input prop:value=move || tagline.get() on:input=move |event| tagline.set(event_target_value(&event))/></label>

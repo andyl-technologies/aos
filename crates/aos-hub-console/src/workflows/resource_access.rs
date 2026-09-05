@@ -8,7 +8,7 @@
 
 use leptos::prelude::*;
 
-use crate::components::{InlineError, StatusBadge};
+use crate::components::{HelpTooltip, InlineError, StatusBadge};
 use crate::transport::ApiClient;
 
 /// One resource access surface resolved from a canonical console route.
@@ -140,8 +140,7 @@ fn AccessOverview(context: AccessContext) -> impl IntoView {
                 <div class="section-heading">
                     <div>
                         <p class="section-kicker">{context.kind}</p>
-                        <h2>"Identity & access"</h2>
-                        <p>"Manage who can use this resource and how clients verify its content."</p>
+                        <h2>"Identity & access"<HelpTooltip term="Identity & access" summary="Manage who can use this resource and how clients verify its content."/></h2>
                     </div>
                     <StatusBadge state=context.visibility.clone() positive=public/>
                 </div>

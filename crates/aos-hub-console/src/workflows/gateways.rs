@@ -444,7 +444,7 @@ fn GatewayCreateForm(
 
     view! {
         <section class="panel editor-panel">
-            <div class="section-heading"><div><p class="section-kicker">"Guided setup"</p><h2>"Create gateway"</h2><p>"Choose the storage and endpoint by name. The gateway pins the endpoint's selected generation automatically."</p></div></div>
+            <div class="section-heading"><div><p class="section-kicker">"Guided setup"</p><h2>"Create gateway"<HelpTooltip term="Create gateway" summary="Choose the storage and endpoint by name. The gateway pins the endpoint's selected generation automatically."/></h2></div></div>
             <form class="editor-form" on:submit=on_plan>
                 <label><span>"Gateway name"</span><input required prop:value=move || stable_id.get() on:input=move |event| stable_id.set(event_target_value(&event))/></label>
                 <label><span>"Binding"</span><select required prop:value=move || binding_id.get() on:change=move |event| binding_id.set(event_target_value(&event))>{binding_choices.iter().map(|binding| view! { <option value=binding.stable_id.clone()>{binding_option_label(binding)}</option> }).collect_view()}</select>{binding_choices.is_empty().then(|| view! { <small>"No bindings exist in this scope."</small> })}</label>

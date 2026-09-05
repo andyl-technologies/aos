@@ -8,7 +8,7 @@ use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 
-use crate::components::{EmptyState, InlineError, ReviewedPlanCard, StatusBadge};
+use crate::components::{EmptyState, HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::transport::ApiClient;
 
@@ -139,10 +139,7 @@ fn AccessTokenSettings(client: ApiClient, scope: String) -> impl IntoView {
                 <div class="section-heading">
                     <div>
                         <p class="section-kicker">"Scoped credentials"</p>
-                        <h2>"Access tokens"</h2>
-                        <p>
-                            "Token authority is bounded by both this resource scope and the owner's current grants."
-                        </p>
+                        <h2>"Access tokens"<HelpTooltip term="Access tokens" summary="Token authority is bounded by both this resource scope and the owner's current grants."/></h2>
                     </div>
                 </div>
                 <div class="resource-identity">
