@@ -126,6 +126,7 @@ const CANONICAL_GATE_NAMES: &[&str] = &[
     "gate:single-vm-fingerprint",
     "gate:layer1-injection",
     "gate:content-address",
+    "gate:campaign-model",
     "gate:replay-oracle",
     "gate:divergence-bisect",
     "gate:scheduler-liveness",

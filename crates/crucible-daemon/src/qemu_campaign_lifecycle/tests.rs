@@ -46,6 +46,23 @@ use crate::{
 };
 
 #[test]
+fn genesis_start_error_retains_worker_class_and_underlying_cause() {
+    let error = QemuFreshGenesisCheckpointError::Start(AttemptWorkerFailure::Terminal(
+        std::io::Error::other("guarded launch rejected"),
+    ));
+    assert!(
+        error
+            .to_string()
+            .contains("terminal execution failure: guarded launch rejected")
+    );
+    let worker = std::error::Error::source(&error).expect("worker classification source");
+    assert_eq!(
+        worker.source().expect("original cause").to_string(),
+        "guarded launch rejected"
+    );
+}
+
+#[test]
 fn selected_start_derives_matching_scheduler_and_plugin_branch_plans() {
     let scenario = ScenarioDef::from_canonical_material_with_seed(
         "crucible.test.campaign.branch-plan",
