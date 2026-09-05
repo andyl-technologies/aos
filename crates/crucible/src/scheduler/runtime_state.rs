@@ -458,6 +458,13 @@ pub struct SingleScheduler {
     /// This runtime-only term is folded into every live VM's horizon so the
     /// shared frontier reaches cadence and residence deadlines without polling.
     pub(super) signal_fault_wakeup: Option<SimInstant>,
+    /// Derived next event-graph time transition, independent of signal deadlines.
+    ///
+    /// Lifecycle owners recompute this from the durable graph, trigger state,
+    /// and armed timers after settlement and restore, before the next RUN.
+    pub(super) trigger_wakeup: Option<SimInstant>,
+    /// Next possible trigger activation, excluding certainly-false bookkeeping.
+    pub(super) trigger_activation: Option<SimInstant>,
     /// Test-only fault injection: when `true`,
     /// [`resolve_device_completions`](SingleScheduler::resolve_device_completions)
     /// stamps each I/O completion's key with the consumer's *frontier* icount

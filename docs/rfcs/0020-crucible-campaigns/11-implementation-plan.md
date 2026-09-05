@@ -355,8 +355,35 @@ preserving explicit interval overrides and the existing non-packaged default.
 The delayed scenario completes at the first rendezvous after baked genesis;
 the public explanation authenticates its terminal result and unchanged
 decision-free configuration.
-These flights do not prove guest-choice branching, arbitrary exact-time trigger
-deadlines between rendezvous, checkpoint-pause recovery, or hot-fork acceptance.
+The subsequent exact-time single-VM flight passes a compound `At`/`After`/`Timer`
+completion between rendezvous. Production projects rising and falling
+time-predicate edges from durable event-graph state and currently armed timers
+into a dedicated exact scheduler cap, independent of signal-fault cadence.
+Unrepresentable coordinates fail closed instead of rounding an equality
+predicate. A separate possible-activation projection preserves quiescence
+semantics for bookkeeping-only edges. Time-dependent events do not consume
+one-shots, update edge truth, or latch `Once` while a leading node's observation
+is ahead of the shared frontier. Unit coverage includes independent fault
+deadlines, repeatable pulses, timer replacement/cancellation, overflow, stale
+caps, skewed evaluation, and reconstruction from portable trigger state.
+
+The two-VM extension exposed an invalid uniqueness requirement on immutable
+QEMU snapshot content in portable checkpoint manifests. Distinct nodes may
+share identical snapshot bytes; their separate target manifests authenticate
+node ownership, artifacts, counters, and fault continuation. The content
+uniqueness check is removed, while duplicate node identities and foreign-node
+target authentication remain rejected and covered by regressions.
+All five packaged VM flights now pass, including the compound exact-time
+completion across two VMs. The flight's explanation read refreshes only an
+explicit stale-head response under its original deadline, because completion
+feedback may advance the campaign between status and snapshot-bound query.
+Other query or execution errors remain failures. The accompanying API suite
+passes 254 unit tests; the core suite passes 383 unit tests plus 31 focused
+scheduler/trigger integrations, and affected-crate Clippy remains clean.
+
+These flights do not prove guest-choice branching, checkpoint-pause recovery,
+or hot-fork acceptance. Exact-time scheduling still needs coverage of deadlines
+before baked-genesis readiness and worlds with no active VM clock driver.
 Longer diagnostic execution also stalled waiting for a post-device control
 acknowledgement and returned cleanup-pending on shutdown; the short successful
 flight does not close that liveness investigation.

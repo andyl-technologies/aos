@@ -975,6 +975,30 @@ impl ProductionVmLifecycleLoop {
             self.initial_lifecycle_observations_pending = false;
         }
         for _ in 0..MAX_TRIGGER_SETTLE_BATCHES {
+            // Rebuild this derived horizon from restored/settled authority before
+            // quiescence evaluation. In particular, a consumed deadline must not
+            // remain a stale blocker, and a newly armed timer must cap the next RUN.
+            let scheduler = self.inner.loop_impl();
+            let (wakeup, activation) = if self.terminal_verdict.is_some() {
+                (None, None)
+            } else {
+                let wakeup = self.trigger_state.next_evaluation_deadline(
+                    &self.trigger_graph,
+                    &scheduler.trigger_actions().armed_timers,
+                    scheduler.frontier(),
+                    Shift::new(self.icount_shift)?,
+                )?;
+                let activation = self.trigger_state.next_activation_deadline(
+                    &self.trigger_graph,
+                    &scheduler.trigger_actions().armed_timers,
+                    scheduler.frontier(),
+                    Shift::new(self.icount_shift)?,
+                )?;
+                (wakeup, activation)
+            };
+            self.inner
+                .loop_impl_mut()
+                .set_trigger_wakeup(wakeup, activation)?;
             let assertion_outcomes = self.assertion_evaluator.observe_prefix(
                 self.inner.loop_impl().condition_event_log_prefix(),
                 &mut self.assertion_oracle,
@@ -1000,7 +1024,11 @@ impl ProductionVmLifecycleLoop {
             .with_timer_fires(scheduler.trigger_actions().armed_timers.clone())
             .with_scheduler_quiescence(scheduler.quiescence()?)
             .with_world_white_box_policies(&self.trigger_world);
-            let firings = pass.evaluate_event_graph(&self.trigger_graph, &mut self.trigger_state);
+            let firings = pass.evaluate_event_graph_at_frontier(
+                &self.trigger_graph,
+                &mut self.trigger_state,
+                scheduler.frontier(),
+            );
             if firings.is_empty() && !assertions_changed {
                 return Ok(appends);
             }

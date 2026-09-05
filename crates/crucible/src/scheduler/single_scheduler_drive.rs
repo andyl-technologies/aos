@@ -833,6 +833,14 @@ impl SingleScheduler {
         &self,
         node: &RuntimeSchedulerNode,
     ) -> Result<ExactLocalEvent, SchedulerError> {
+        self.effective_exact_local_event_with_trigger(node, self.trigger_wakeup)
+    }
+
+    pub(super) fn effective_exact_local_event_with_trigger(
+        &self,
+        node: &RuntimeSchedulerNode,
+        trigger_deadline: Option<SimInstant>,
+    ) -> Result<ExactLocalEvent, SchedulerError> {
         let mut exact_local_event = next_exact_local_event(
             &node.id,
             node.exact_local_event.clone(),
@@ -870,6 +878,16 @@ impl SingleScheduler {
                     exact_local_event = ExactLocalEvent::SignalFaultEvaluation {
                         virtual_time: wakeup,
                     };
+                }
+            }
+        }
+        if let Some(wakeup) = trigger_deadline {
+            match exact_local_event.virtual_time() {
+                Some(current) if current <= wakeup => {}
+                _ => {
+                    exact_local_event = ExactLocalEvent::TriggerEvaluation {
+                        virtual_time: wakeup,
+                    }
                 }
             }
         }
