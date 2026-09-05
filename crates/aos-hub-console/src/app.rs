@@ -25,6 +25,9 @@ pub fn App() -> impl IntoView {
         let Some(next_route) = ConsoleRoute::resolve(&path) else {
             return;
         };
+        if route.get_untracked().as_ref() == Some(&next_route) {
+            return;
+        }
         let Some(window) = leptos::web_sys::window() else {
             return;
         };
@@ -77,8 +80,10 @@ pub fn App() -> impl IntoView {
     });
 
     view! {
-        {move || match route.get() {
-            Some(route) => {
+        <For
+            each=move || route.get().into_iter()
+            key=|route| route.href(route.page)
+            children=move |route| {
                 view! {
                     <ManagementShell
                         route=route
@@ -87,16 +92,16 @@ pub fn App() -> impl IntoView {
                         navigation_open=navigation_open
                         workflow_revision=workflow_revision
                     />
-                }.into_any()
-            },
-            None => view! {
+                }
+            }
+        />
+        {move || route.get().is_none().then(|| view! {
                 <main class="fatal-page">
                     <p class="eyebrow">"AOS Hub"</p>
                     <h1>"Unknown management route"</h1>
                     <p>"This path is not part of the closed control-plane route registry."</p>
                 </main>
-            }.into_any(),
-        }}
+        })}
     }
 }
 
