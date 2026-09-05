@@ -12,6 +12,7 @@ mod cbor;
 mod ownership_lease;
 mod policy;
 mod publisher;
+mod publisher_request;
 mod snapshot;
 mod spec;
 mod tree;
@@ -30,6 +31,10 @@ pub use cbor::{CanonicalCborError, DecodeLimits, validate_canonical_cbor};
 pub use ownership_lease::{decode_ownership_lease, encode_ownership_lease};
 pub use policy::{decode_optimization, decode_policy, encode_optimization, encode_policy};
 pub use publisher::{decode_publisher_domain_plan, encode_publisher_domain_plan};
+pub(crate) use publisher_request::encode_publisher_admission_draft_v1;
+pub use publisher_request::{
+    decode_publisher_admission_request_v1, encode_publisher_admission_request_v1,
+};
 pub use snapshot::{decode_snapshot, encode_snapshot};
 pub use spec::{decode_sandbox_spec, encode_sandbox_spec};
 pub use tree::{

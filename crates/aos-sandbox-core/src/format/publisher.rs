@@ -108,12 +108,12 @@ pub fn decode_publisher_domain_plan(
     .map_err(|error| semantics("publisher domain plan", error))
 }
 
-fn protocol_component(decoder: &mut Decoder<'_>) -> Result<u16, CanonicalCborError> {
+pub(super) fn protocol_component(decoder: &mut Decoder<'_>) -> Result<u16, CanonicalCborError> {
     u16::try_from(decoder.unsigned()?)
         .map_err(|_| semantics("publisher protocol", "version component exceeds u16"))
 }
 
-fn encode_target(encoder: &mut Encoder, target: &PublisherTarget) {
+pub(super) fn encode_target(encoder: &mut Encoder, target: &PublisherTarget) {
     encoder.array(6);
     encoder.bytes(target.principal.as_bytes());
     encoder.bytes(target.instance.as_bytes());
@@ -126,7 +126,9 @@ fn encode_target(encoder: &mut Encoder, target: &PublisherTarget) {
     encoder.bytes(target.isolation_policy.as_bytes());
 }
 
-fn decode_target(decoder: &mut Decoder<'_>) -> Result<PublisherTarget, CanonicalCborError> {
+pub(super) fn decode_target(
+    decoder: &mut Decoder<'_>,
+) -> Result<PublisherTarget, CanonicalCborError> {
     decoder.array(6)?;
     let principal = PrincipalId::from_bytes(exact_bytes(decoder, 16)?);
     let instance = PublisherInstanceId::from_bytes(exact_bytes(decoder, 16)?);
@@ -175,7 +177,7 @@ fn decode_request(decoder: &mut Decoder<'_>) -> Result<PublisherRequest, Canonic
     })
 }
 
-fn encode_authority(encoder: &mut Encoder, authority: &PublisherAuthorityBindings) {
+pub(super) fn encode_authority(encoder: &mut Encoder, authority: &PublisherAuthorityBindings) {
     encoder.array(6);
     encoder.bytes(authority.policy.as_bytes());
     encoder.unsigned(authority.policy_generation);
@@ -185,7 +187,7 @@ fn encode_authority(encoder: &mut Encoder, authority: &PublisherAuthorityBinding
     encoder.unsigned(authority.root_registry_generation);
 }
 
-fn decode_authority(
+pub(super) fn decode_authority(
     decoder: &mut Decoder<'_>,
 ) -> Result<PublisherAuthorityBindings, CanonicalCborError> {
     decoder.array(6)?;

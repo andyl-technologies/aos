@@ -509,9 +509,16 @@ generation, interval, and required features.
 The publisher request commitment is SHA-256 over the ASCII domain
 `aos-sandbox-publisher-request-v1\0` followed by a separately encoded canonical
 request preimage that excludes its own commitment and detached signatures.
-It is not a hash of the complete publisher plan or request array. The online
-admission protocol must specify and independently reconstruct this preimage;
-the hash helper alone does not validate its schema. It is not interchangeable with a broker argument hash,
+It is not a hash of the complete publisher plan or its nested request array.
+The exact `publisher-admission-request-v1` schema in `portable-v1.cddl` is an
+11-element array: version, capability handle, logical cache resource, publisher
+challenge, protocol version, target, claim without commitment, authority
+preconditions, issue time, expiry time, and required features. It is a protocol
+preimage, not an independently registered stored object. The request constructor
+and decoder reconstruct its commitment; they never accept a supplied commitment.
+The encoded request has a fixed 32 KiB ceiling, enforced before decoding even
+when a caller supplies more permissive generic CBOR limits.
+The byte-hash helper alone does not validate this schema. It is not interchangeable with a broker argument hash,
 content digest, producer signature, or online authorization decision. A
 publisher verifier checks every plan field against independently established
 expected facts, plus the pinned trust policy and key generation. The resulting
@@ -521,6 +528,23 @@ cached object. Online challenge-bound admission and controller-retained
 completion permits follow the distinct contract in
 [cache authority](06-cache-memory-and-oom.md#publisher-authority); plan expiry
 alone does not retract an already issued completion obligation.
+
+All authority generations and interval fields in the request are proposed
+preconditions. Admission must compare them with current protected records and
+bound the interval by both capability and policy validity. Decoding does not
+install them. The capability handle names a controller lookup; the cache
+resource names a logical selector whose project/domain mapping is resolved
+independently. The source-authorization commitment names protected authority
+evidence, not merely the content digest. Every one of these lookup identities
+and the challenge is committed into the resulting signed plan.
+
+Challenge bytes must be generated unpredictably by the live publisher and
+consumed durably by the controller. Nonzero validation and deterministic
+decoding do not prove freshness. Exact retransmission may return the original
+decision without reserving again; a different request for a consumed challenge
+must not acquire authority. Completion challenges are separately typed and
+reference the original immutable admission plan. Replacing its admission
+challenge would change the plan commitment and is not a completion protocol.
 
 The argument commitment is SHA-256 over the ASCII domain
 `aos-sandbox-broker-arguments-v1\0` followed by the broker verb's canonical

@@ -116,6 +116,22 @@ requires a fresh, exact-operation completion permit for the same immutable plan.
 The permit also binds the prepared artifact/seal commitment, root generation,
 reservation, and live publisher incarnation. Issuance and revocation initiation
 are serialized by the controller.
+
+The holder's authenticated channel and the publisher's controller connection
+are distinct. In the first service flow, the live publisher registers its
+fresh challenge and exact request commitment over its own authenticated
+controller connection. The holder then presents that exact request over an
+independently authenticated holder-to-controller channel. The controller joins
+the two records, authenticates the claimed holder/channel against the observed
+holder session, and resolves the capability, cache resource, source evidence,
+policy, and reservation from protected current state before deciding admission.
+Publisher peer credentials cannot authenticate the holder, and forwarding a
+channel hash is not proof of possession. A future delegated or remote flow
+must provide an explicit authenticated delegation/attestation contract rather
+than silently reinterpreting one channel binding as the other. Challenge
+registration itself grants no publication authority and consumes bounded
+per-publisher pending-state capacity.
+
 Version 1 uses retained controller-owned permits, not a timed completion window:
 a pre-syscall clock check cannot bound an already-entered rename or fsync.
 The controller durably records the one-shot permit before issuing it. It remains

@@ -62,10 +62,12 @@ pub use ownership_lease::{
     verify_ownership_transaction_receipt_signature,
 };
 pub use publisher::{
-    InvalidPublisherDomainPlan, PublisherAuthorityBindings, PublisherDomainPlan,
-    PublisherDomainPlanDraft, PublisherPlanExpectation, PublisherPlanTrustAnchor,
-    PublisherPlanVerificationError, PublisherRequest, PublisherRequestCommitment, PublisherTarget,
-    VerifiedPublisherDomainPlan, verify_publisher_domain_plan,
+    InvalidPublisherAdmissionRequest, InvalidPublisherDomainPlan, PublisherAdmissionClaimV1,
+    PublisherAdmissionRequestDraftV1, PublisherAdmissionRequestV1, PublisherAuthorityBindings,
+    PublisherChallengeV1, PublisherDomainPlan, PublisherDomainPlanDraft, PublisherPlanExpectation,
+    PublisherPlanTrustAnchor, PublisherPlanVerificationError, PublisherRequest,
+    PublisherRequestCommitment, PublisherTarget, VerifiedPublisherDomainPlan,
+    verify_publisher_domain_plan,
 };
 pub use registry::{
     DescriptorRole, PortableMediaType, ProtocolId, ProtocolVersion, RegistryError,

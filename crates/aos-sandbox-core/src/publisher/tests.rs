@@ -5,7 +5,7 @@
 use super::*;
 use crate::{CacheDomainId, MediaType, descriptor_for_bytes};
 
-fn draft() -> PublisherDomainPlanDraft {
+pub(super) fn draft() -> PublisherDomainPlanDraft {
     PublisherDomainPlanDraft {
         protocol_version: ProtocolVersion::new(1, 0),
         target: PublisherTarget {

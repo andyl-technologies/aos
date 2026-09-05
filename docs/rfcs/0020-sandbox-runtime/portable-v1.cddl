@@ -337,18 +337,28 @@ broker-authorization-plan-v1 = [
 ; All authority IDs, generations, channel and authority commitments are nonzero.
 ; Content media type is exactly application/vnd.aos.sandbox.content.v1;
 ; its encoded size must not exceed maximum-bytes. Features are strictly ordered.
+publisher-target-v1 = [
+  principal: id,
+  instance: id,
+  node: id,
+  project: id,
+  cache-domain: [kind: 1, domain: id],
+  isolation-policy: digest,
+]
+publisher-authority-bindings-v1 = [
+  policy: digest,
+  policy-generation: positive-u64,
+  controller-generation: positive-u64,
+  revocation-scope: id,
+  revocation-generation: positive-u64,
+  root-registry-generation: positive-u64,
+]
+
 ; application/vnd.aos.sandbox.publisher-domain-plan.v1+cbor
 publisher-domain-plan-v1 = [
   version: 1,
   publisher-protocol-version: [major: 1, minor: 0],
-  target: [
-    principal: id,
-    instance: id,
-    node: id,
-    project: id,
-    cache-domain: [kind: 1, domain: id],
-    isolation-policy: digest,
-  ],
+  target: publisher-target-v1,
   request: [
     holder: id,
     channel: bytes .size 32,
@@ -359,14 +369,34 @@ publisher-domain-plan-v1 = [
     request-commitment: digest,
     maximum-bytes: 0..9223372036854775807,
   ],
-  authority: [
-    policy: digest,
-    policy-generation: positive-u64,
-    controller-generation: positive-u64,
-    revocation-scope: id,
-    revocation-generation: positive-u64,
-    root-registry-generation: positive-u64,
+  authority: publisher-authority-bindings-v1,
+  issued-seconds: i64,
+  expires-seconds: i64,
+  required-features: [*64 feature],
+]
+
+; Publisher protocol 1.0 request/hash preimage, not a stored object media type.
+; The derived request-commitment and detached signature are deliberately absent.
+; Capability/resource handles and the challenge must be nonzero. Authentication,
+; currentness, challenge consumption, and reservations are controller decisions,
+; not consequences of decoding. Authority/time fields are proposed preconditions.
+publisher-admission-request-v1 = [
+  version: 1,
+  capability: id,
+  cache-resource: id,
+  challenge: bytes .size 32,
+  publisher-protocol-version: [major: 1, minor: 0],
+  target: publisher-target-v1,
+  claim: [
+    holder: id,
+    channel: bytes .size 32,
+    operation: id,
+    reservation: id,
+    content: descriptor,
+    source-authorization: digest,
+    maximum-bytes: 0..9223372036854775807,
   ],
+  authority: publisher-authority-bindings-v1,
   issued-seconds: i64,
   expires-seconds: i64,
   required-features: [*64 feature],

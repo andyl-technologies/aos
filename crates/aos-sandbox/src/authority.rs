@@ -8,9 +8,17 @@
 //!
 //! Returned raw signatures or canonical detached envelopes are accepted only
 //! when their statements exactly equal the prepared statements and their
-//! signatures verify against the pinned public policy material. Successful
-//! completion yields an owned quartet whose borrowed view can be passed to a
+//! signatures verify against the pinned public policy material. Paired
+//! broker/lease completion yields an owned quartet whose borrowed view can be passed to a
 //! transport adapter without re-encoding any artifact.
+//!
+//! [`PublisherPlanPreparation`] reuses this machinery for standalone project
+//! plans without ownership leases. Neither preparation nor signed-artifact
+//! completion establishes current publication authority or an effect permit.
+
+mod publisher;
+
+pub use publisher::{PublisherPlanPreparation, SignedPublisherPlan};
 
 use aos_sandbox_core::format::{
     decode_signature, decode_trust_policy, encode_broker_authorization_plan,

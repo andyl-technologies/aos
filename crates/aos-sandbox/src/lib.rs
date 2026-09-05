@@ -18,7 +18,8 @@ pub mod reconciler;
 pub use authority::{
     AuthorizationArtifactQuartet, AuthorizationArtifacts, AuthorizationPreparation,
     AuthorizationPreparationError, BrokerPlanPreparation, PreparedSigningRequest,
-    ReturnedSignature, SignedBrokerPlan, SigningAuthority,
+    PublisherPlanPreparation, ReturnedSignature, SignedBrokerPlan, SignedPublisherPlan,
+    SigningAuthority,
 };
 pub use controller::{
     ActivatedOperationCompiler, ControllerQuantumReport, ControllerReconciliationStep,

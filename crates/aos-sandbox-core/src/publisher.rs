@@ -9,11 +9,17 @@
 //! The v1 publisher accepts raw content within one project domain. Publishing
 //! publicly, building a tree, and reading cached data are different authorities.
 
+mod request;
 mod verification;
 
 #[cfg(test)]
 mod tests;
 
+pub use request::{
+    InvalidPublisherAdmissionRequest, MAXIMUM_PUBLISHER_ADMISSION_REQUEST_BYTES,
+    PublisherAdmissionClaimV1, PublisherAdmissionRequestDraftV1, PublisherAdmissionRequestV1,
+    PublisherChallengeV1,
+};
 pub use verification::{
     PublisherPlanExpectation, PublisherPlanTrustAnchor, PublisherPlanVerificationError,
     VerifiedPublisherDomainPlan, verify_publisher_domain_plan,
@@ -203,8 +209,9 @@ impl PublisherRequestCommitment {
     ///
     /// The preimage excludes this commitment and detached signatures; it is not
     /// the complete publisher plan encoding. This helper does not validate the
-    /// preimage schema or establish source authorization. The online admission
-    /// protocol must define and independently reconstruct that exact schema.
+    /// preimage schema or establish source authorization. The typed
+    /// [`PublisherAdmissionRequestV1`] constructor reconstructs the v1 preimage;
+    /// online admission must independently authorize all of its claims.
     #[must_use]
     pub fn for_canonical_bytes(bytes: &[u8]) -> Self {
         use sha2::{Digest as _, Sha256};
