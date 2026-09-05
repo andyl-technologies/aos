@@ -20,7 +20,6 @@ pub(crate) fn validate_runtime_authority_pending(
         .and_then(decode_operation)?;
     let plan = gate_plan(&gate);
     if operation.runtime_intent_digest != Some(pending.intent_digest())
-        || pending.state() != RuntimeAuthorityStateV1::Bound
         || &plan.request_digest != pending.request_digest()
         || plan.publication_draft.manifest() != pending.manifest()
         || plan.publication_draft_digest() != pending.source_draft_digest()
@@ -28,6 +27,25 @@ pub(crate) fn validate_runtime_authority_pending(
         return Err(ReconcilerError::CorruptLedger(
             "runtime authority intent does not match its admitted ownership gate",
         ));
+    }
+    if pending.state() == RuntimeAuthorityStateV1::Revoked {
+        if operation.effect_count != 1 {
+            return Err(ReconcilerError::CorruptLedger(
+                "runtime revocation requires one Stop effect",
+            ));
+        }
+        let effect = journal
+            .get(RecordNamespace::Effect, &effect_key(pending.operation(), 0))
+            .ok_or(ReconcilerError::CorruptLedger(
+                "runtime revocation effect is missing",
+            ))
+            .and_then(decode_effect)?;
+        validate_intent_effects(
+            pending.state(),
+            pending.operation(),
+            plan.publication_draft(),
+            &[effect.plan],
+        )?;
     }
     if let OwnershipGateStatusV1::Activated {
         publication_digest,
@@ -43,6 +61,64 @@ pub(crate) fn validate_runtime_authority_pending(
             lease_generation,
             lease_digest,
         )?;
+    }
+    Ok(())
+}
+
+/// Requires revocation to name one exact, canonical, assignment-scoped Stop.
+pub(super) fn validate_intent_effects(
+    state: RuntimeAuthorityStateV1,
+    operation: OperationId,
+    draft: &AuthorityPublicationDraftV1,
+    effects: &[EffectPlan],
+) -> Result<(), ReconcilerError> {
+    if state == RuntimeAuthorityStateV1::Bound {
+        return Ok(());
+    }
+    let invalid = || {
+        ReconcilerError::InvalidPlan("runtime revocation requires one canonical Host Stop effect")
+    };
+    let [effect] = effects else {
+        return Err(invalid());
+    };
+    let binding = effect.authority().ok_or_else(invalid)?;
+    let template = draft
+        .templates()
+        .iter()
+        .find(|template| template.digest() == binding.template_digest)
+        .ok_or_else(invalid)?;
+    if template.audience() != aos_sandbox_core::BrokerAudience::Host
+        || template.method()
+            != aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
+        || !template.descriptor_roles().is_empty()
+        || draft
+            .bind_effect(template.digest())?
+            .into_inner(operation, 0)
+            != *effect
+    {
+        return Err(invalid());
+    }
+
+    let checked =
+        aos_sandbox_protocol::decode_runtime_template_v1(template.body_without_deadline())
+            .map_err(|_| invalid())?;
+    let canonical =
+        aos_sandbox_protocol::semantics::host::canonical_host_template_semantics_v1(&checked)
+            .map_err(|_| invalid())?;
+    let semantics = template.semantics();
+    let manifest = draft.manifest().manifest();
+    let fence = checked.fence();
+    if canonical.verb() != aos_sandbox_core::BrokerVerb::HostStop
+        || canonical.verb() != semantics.verb()
+        || canonical.target() != semantics.target()
+        || canonical.commitment() != semantics.argument_commitment()
+        || fence.sandbox_id() != manifest.sandbox().as_bytes()
+        || fence.incarnation_id() != manifest.incarnation().as_bytes()
+        || fence.assignment_epoch() != manifest.epoch().get()
+        || fence.desired_generation() != manifest.desired_generation().get()
+        || fence.assignment_digest() != draft.manifest().digest().as_bytes()
+    {
+        return Err(invalid());
     }
     Ok(())
 }

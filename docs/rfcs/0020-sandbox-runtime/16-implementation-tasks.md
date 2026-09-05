@@ -1866,6 +1866,38 @@ code. Warning-denied controller rustdoc, changed-file formatting, and diff check
 pass. This increment has not rerun kernel/VM qualification.
 
 These durable decisions are not live authorization. Fresh runtime proof and
-session issuance against the current holder mapping remain open. Revocation
-requires a typed Host Stop path and is rejected by holder admission until that
-path exists; Host Apply is not a substitute. `SBX-PUB-02` remains unchecked.
+session issuance against the current holder mapping remain open. Revocation was
+not enabled in this increment; its action-aware integration follows below.
+`SBX-PUB-02` remains unchecked.
+
+### Canonical runtime templates and holder revocation
+
+Host Stop is an existing action inside `ApplyRuntime`, not a separate RPC. The
+controller now admits revocation only with exactly one descriptor-free Stop
+effect whose full assignment fence and canonical argument commitment match its
+selected signed-plan template. Freeze, Thaw, Kill, and multiple-effect plans
+cannot stand in for this transition. Protected replay repeats this check against
+the exact admitted effect, not merely the runtime-intent state tag. Admission and
+replay also require the tombstone to retain its predecessor's full assignment;
+stopping a replacement runtime cannot stand in for stopping the current one.
+
+A distinct inert runtime-template type validates deadline-free Host inputs
+without fabricating peer credentials or clock readings. It shares action, fence,
+and launch-plan validation and canonical semantic encoding with the live request
+path, but cannot be passed to a broker as a peer-validated request. Existing wire
+encodings and canonical semantic commitments are unchanged.
+
+Revocation atomically commits an ordered holder tombstone with ownership
+publication and gate activation, before executor I/O. This immediately removes
+the holder mapping even if Stop later fails; it does not assert that the runtime
+has stopped. The effect ledger continues to own dispatch and completion.
+Protected reopen and idempotent replay retain the tombstone. Fresh runtime proof,
+current-holder session issuance, and full lifecycle qualification remain open.
+
+The six-crate default-feature suite, including the Host broker, passes 597 unit
+tests, two integration tests, and 21 doctests. Regressions cover live/template
+semantic parity for every runtime action, malformed inert inputs, rejection of
+non-Stop revocation plans, and durable revocation before executor I/O.
+Controller/protocol strict all-target/all-feature Clippy (`--no-deps`),
+warning-denied rustdoc, changed-file formatting, and diff checks pass. This
+increment has not rerun kernel/VM qualification.

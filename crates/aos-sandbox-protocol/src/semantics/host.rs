@@ -12,7 +12,10 @@ use aos_sandbox_core::{
 };
 use sha2::{Digest as _, Sha256};
 
-use crate::ValidatedRuntimeRequest;
+use crate::{
+    ValidatedAssignmentFence, ValidatedRuntimePlan, ValidatedRuntimeRequest,
+    ValidatedRuntimeTemplateV1,
+};
 
 const FORMAT_MAGIC: &[u8; 8] = b"AOSHSEM1";
 const FORMAT_VERSION: u16 = 1;
@@ -68,18 +71,41 @@ impl CanonicalHostSemanticsV1 {
 pub fn canonical_host_semantics_v1(
     request: &ValidatedRuntimeRequest,
 ) -> Result<CanonicalHostSemanticsV1, HostSemanticError> {
-    let (verb, target, action_code) = action_semantics(request)?;
+    canonical_semantics(request.action(), request.fence(), request.launch_plan())
+}
+
+/// Derives portable semantics from inert, structurally validated template inputs.
+///
+/// The returned tuple is not permission to dispatch the template. Broker peer,
+/// signature, ownership, and deadline validation remain mandatory.
+///
+/// # Errors
+///
+/// Returns [`HostSemanticError`] for an invalid resource target or an encoding
+/// that exceeds the fixed semantic bound.
+pub fn canonical_host_template_semantics_v1(
+    template: &ValidatedRuntimeTemplateV1,
+) -> Result<CanonicalHostSemanticsV1, HostSemanticError> {
+    canonical_semantics(template.action(), template.fence(), template.launch_plan())
+}
+
+fn canonical_semantics(
+    action: RuntimeAction,
+    fence: &ValidatedAssignmentFence,
+    launch_plan: Option<&ValidatedRuntimePlan>,
+) -> Result<CanonicalHostSemanticsV1, HostSemanticError> {
+    let (verb, target, action_code) = action_semantics(action, fence)?;
 
     let mut encoder = Encoder::new();
     encoder.field(1, FORMAT_MAGIC)?;
     encoder.field(2, &FORMAT_VERSION.to_be_bytes())?;
     encoder.field(3, &[action_code])?;
-    encoder.field(4, request.fence().sandbox_id())?;
-    encoder.field(5, request.fence().incarnation_id())?;
-    encoder.field(6, &request.fence().assignment_epoch().to_be_bytes())?;
-    encoder.field(7, &request.fence().desired_generation().to_be_bytes())?;
-    encoder.field(8, request.fence().assignment_digest())?;
-    if let Some(plan) = request.launch_plan() {
+    encoder.field(4, fence.sandbox_id())?;
+    encoder.field(5, fence.incarnation_id())?;
+    encoder.field(6, &fence.assignment_epoch().to_be_bytes())?;
+    encoder.field(7, &fence.desired_generation().to_be_bytes())?;
+    encoder.field(8, fence.assignment_digest())?;
+    if let Some(plan) = launch_plan {
         encoder.descriptor(10, plan.root_image())?;
         encoder.field(11, plan.workspace_handle())?;
         encoder.field(12, plan.network_handle())?;
@@ -153,14 +179,19 @@ pub fn runtime_handle_v1(
 }
 
 fn action_semantics(
-    request: &ValidatedRuntimeRequest,
+    action: RuntimeAction,
+    fence: &ValidatedAssignmentFence,
 ) -> Result<(BrokerVerb, BrokerGrantTarget, u8), HostSemanticError> {
     let resource = || {
-        Ok(BrokerGrantTarget::Resource(runtime_resource_handle(
-            request,
-        )?))
+        let handle = BrokerResourceHandle::from_bytes(runtime_handle_v1(
+            fence.incarnation_id(),
+            fence.assignment_epoch(),
+            fence.assignment_digest(),
+        ))
+        .map_err(|_| HostSemanticError::InvalidTarget)?;
+        Ok(BrokerGrantTarget::Resource(handle))
     };
-    match request.action() {
+    match action {
         RuntimeAction::RUNTIME_ACTION_LAUNCH => {
             Ok((BrokerVerb::HostLaunch, BrokerGrantTarget::Assignment, 1))
         }

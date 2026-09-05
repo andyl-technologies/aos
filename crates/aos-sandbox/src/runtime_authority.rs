@@ -86,7 +86,7 @@ pub enum RuntimeAuthorityError {
     /// The immutable sandbox revision key was already used.
     #[error("runtime-authority binding revision already exists")]
     BindingAlreadyExists,
-    /// Pending intent, publication draft, or prepared publication facts differ.
+    /// Current assignment, pending intent, draft, or prepared publication facts differ.
     #[error("runtime-authority activation context does not match admitted intent")]
     ActivationConflict,
     /// The namespace or one of its durable cross-links is malformed or incomplete.
@@ -181,6 +181,13 @@ impl<'journal> RuntimeAuthorityStore<'journal> {
         }
         if intent.state == RuntimeAuthorityStateV1::Revoked && current.is_none() {
             return Err(RuntimeAuthorityError::CompareAndSwap);
+        }
+        if intent.state == RuntimeAuthorityStateV1::Revoked
+            && current
+                .as_ref()
+                .is_some_and(|prior| prior.manifest() != &manifest)
+        {
+            return Err(RuntimeAuthorityError::ActivationConflict);
         }
         let revision = actual_revision
             .unwrap_or(0)
@@ -445,6 +452,24 @@ fn validate_chains(
     bindings: &BTreeMap<[u8; 16], BTreeMap<u64, RuntimeAuthorityBindingV1>>,
     heads: &BTreeMap<[u8; 16], RuntimeAuthorityHeadV1>,
 ) -> Result<(), RuntimeAuthorityError> {
+    // Revocation stops the assignment whose holder is being removed, not a
+    // replacement assignment that happens to reuse the sandbox identity.
+    for intent in pending
+        .values()
+        .filter(|intent| intent.state == RuntimeAuthorityStateV1::Revoked)
+    {
+        let prior = intent
+            .expected_revision
+            .and_then(|revision| {
+                bindings
+                    .get(intent.sandbox().as_bytes())
+                    .and_then(|history| history.get(&revision))
+            })
+            .ok_or(RuntimeAuthorityError::CorruptState)?;
+        if Some(prior.digest) != intent.predecessor_digest || prior.manifest != intent.manifest {
+            return Err(RuntimeAuthorityError::CorruptState);
+        }
+    }
     if bindings.len() != heads.len() || bindings.keys().any(|sandbox| !heads.contains_key(sandbox))
     {
         return Err(RuntimeAuthorityError::CorruptState);

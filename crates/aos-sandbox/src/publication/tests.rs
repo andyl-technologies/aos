@@ -180,22 +180,51 @@ fn signed_host_plan(
     manifest: &CanonicalAssignmentManifestV1,
     lease_signer: KeyReference,
 ) -> (SignedBrokerPlan, BrokerDispatchSemanticIdentityV1, Vec<u8>) {
+    signed_host_control_plan(manifest, lease_signer, RuntimeAction::RUNTIME_ACTION_STOP)
+}
+
+fn signed_host_control_plan(
+    manifest: &CanonicalAssignmentManifestV1,
+    lease_signer: KeyReference,
+    action: RuntimeAction,
+) -> (SignedBrokerPlan, BrokerDispatchSemanticIdentityV1, Vec<u8>) {
     let key = SigningKey::from_bytes(&[40; 32]);
     let assignment = manifest
         .broker_assignment()
         .unwrap_or_else(|error| panic!("test broker assignment failed: {error}"));
-    let handle = aos_sandbox_protocol::semantics::host::runtime_handle_v1(
-        assignment.incarnation().as_bytes(),
-        assignment.epoch().get(),
-        assignment.digest().as_bytes(),
-    );
+    let body = ApplyRuntimeRequest {
+        header: Some(RequestHeader {
+            protocol_major: 1,
+            protocol_minor: 1,
+            request_id: vec![0x44; 16],
+            audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+            deadline_boottime_nanoseconds: 0,
+            maximum_response_bytes: 4096,
+            ..Default::default()
+        })
+        .into(),
+        fence: Some(AssignmentFence {
+            sandbox_id: assignment.sandbox().as_bytes().to_vec(),
+            incarnation_id: assignment.incarnation().as_bytes().to_vec(),
+            assignment_epoch: assignment.epoch().get(),
+            desired_generation: assignment.desired_generation().get(),
+            assignment_digest: assignment.digest().as_bytes().to_vec(),
+            ..Default::default()
+        })
+        .into(),
+        action: action.into(),
+        ..Default::default()
+    }
+    .encode_to_vec();
+    let checked = aos_sandbox_protocol::decode_runtime_template_v1(&body)
+        .unwrap_or_else(|error| panic!("test Host template failed: {error}"));
+    let canonical =
+        aos_sandbox_protocol::semantics::host::canonical_host_template_semantics_v1(&checked)
+            .unwrap_or_else(|error| panic!("test Host semantics failed: {error}"));
     let semantics = BrokerDispatchSemanticIdentityV1::new(
-        BrokerVerb::HostStop,
-        BrokerGrantTarget::Resource(
-            aos_sandbox_core::BrokerResourceHandle::from_bytes(handle)
-                .unwrap_or_else(|error| panic!("test runtime handle failed: {error}")),
-        ),
-        BrokerArgumentCommitment::for_canonical_bytes(b"host-stop"),
+        canonical.verb(),
+        canonical.target(),
+        canonical.commitment(),
     );
     let plan = BrokerAuthorizationPlan::new(
         BrokerAudience::Host,
@@ -228,30 +257,6 @@ fn signed_host_plan(
     let signed = preparation
         .complete(ReturnedSignature::Bytes(signature.signature()), 150)
         .unwrap_or_else(|error| panic!("test signed Host plan failed: {error}"));
-    let body = ApplyRuntimeRequest {
-        header: Some(RequestHeader {
-            protocol_major: 1,
-            protocol_minor: 1,
-            request_id: vec![0x44; 16],
-            audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
-            deadline_boottime_nanoseconds: 0,
-            maximum_response_bytes: 4096,
-            ..Default::default()
-        })
-        .into(),
-        fence: Some(AssignmentFence {
-            sandbox_id: assignment.sandbox().as_bytes().to_vec(),
-            incarnation_id: assignment.incarnation().as_bytes().to_vec(),
-            assignment_epoch: assignment.epoch().get(),
-            desired_generation: assignment.desired_generation().get(),
-            assignment_digest: assignment.digest().as_bytes().to_vec(),
-            ..Default::default()
-        })
-        .into(),
-        action: RuntimeAction::RUNTIME_ACTION_STOP.into(),
-        ..Default::default()
-    }
-    .encode_to_vec();
     (signed, semantics, body)
 }
 
@@ -427,9 +432,33 @@ pub(crate) fn activation_fixture(
 pub(crate) fn descriptor_free_activation_fixture(
     lease_generation: u64,
 ) -> (AuthorityPublicationDraftV1, PreparedAuthorityPublicationV1) {
+    descriptor_free_control_activation_fixture(lease_generation, RuntimeAction::RUNTIME_ACTION_STOP)
+}
+
+pub(crate) fn descriptor_free_stop_draft_with_node(node: u8) -> AuthorityPublicationDraftV1 {
+    let manifest = manifest_with_node(node);
+    let lease_key = SigningKey::from_bytes(&[41; 32]);
+    let lease_signer = key_reference("lease", KeyUsage::OwnershipLease, &lease_key);
+    let (plan, semantics, body) = signed_host_plan(&manifest, lease_signer);
+    let template = BrokerDispatchTemplateV1::new(
+        plan,
+        BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
+        body,
+        Vec::new(),
+        semantics,
+    )
+    .unwrap_or_else(|error| panic!("test Stop template failed: {error}"));
+    AuthorityPublicationDraftV1::new(manifest, vec![BrokerAudience::Host], vec![template])
+        .unwrap_or_else(|error| panic!("test Stop draft failed: {error}"))
+}
+
+pub(crate) fn descriptor_free_control_activation_fixture(
+    lease_generation: u64,
+    action: RuntimeAction,
+) -> (AuthorityPublicationDraftV1, PreparedAuthorityPublicationV1) {
     let mut source = proposal(lease_generation, 190);
     let lease_signer = source.lease.signer().clone();
-    let (plan, semantics, body) = signed_host_plan(&source.manifest, lease_signer);
+    let (plan, semantics, body) = signed_host_control_plan(&source.manifest, lease_signer, action);
     source.templates = vec![
         BrokerDispatchTemplateV1::new(
             plan,

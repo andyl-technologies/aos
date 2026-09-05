@@ -78,6 +78,10 @@ impl RuntimeAuthorityIntentV1 {
 
     /// Requests an ordered tombstone for the protected current holder mapping.
     ///
+    /// Admission requires exactly one canonical Host Stop effect for the current
+    /// assignment. The tombstone takes effect at ownership activation, before
+    /// dispatch; it is not evidence that runtime shutdown has completed.
+    ///
     /// # Errors
     ///
     /// Returns [`RuntimeAuthorityError::InvalidIntent`] for a zero expected

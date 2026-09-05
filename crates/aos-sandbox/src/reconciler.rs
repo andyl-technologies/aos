@@ -211,19 +211,28 @@ impl OperationPlan {
     /// # Errors
     ///
     /// Returns an error for an ungated plan, more than 4091 effects, or revocation
-    /// without a supported Host Stop effect path.
+    /// not bound to exactly one canonical Host Stop effect for this assignment.
     pub fn with_runtime_authority(
         mut self,
         intent: RuntimeAuthorityIntentV1,
     ) -> Result<Self, ReconcilerError> {
-        if self.ownership_gate.is_none()
-            || self.effects.len() > MAXIMUM_GATED_EFFECTS - 1
-            || intent.state() != RuntimeAuthorityStateV1::Bound
-        {
+        if self.ownership_gate.is_none() || self.effects.len() > MAXIMUM_GATED_EFFECTS - 1 {
             return Err(ReconcilerError::InvalidPlan(
-                "runtime holder binding requires a bounded ownership-gated Host Apply plan",
+                "runtime authority intent requires a bounded ownership-gated Host Apply plan",
             ));
         }
+        let gate = self
+            .ownership_gate
+            .as_ref()
+            .ok_or(ReconcilerError::InvalidPlan(
+                "runtime intent requires an ownership gate",
+            ))?;
+        runtime_authority::validate_intent_effects(
+            intent.state(),
+            self.operation_id,
+            gate.publication_draft(),
+            &self.effects,
+        )?;
         self.runtime_authority = Some(intent);
         Ok(self)
     }
@@ -2434,6 +2443,189 @@ mod tests {
         .unwrap();
         assert_eq!(current.operation(), first.operation_id());
         assert_eq!(current.revision(), 1);
+    }
+
+    #[test]
+    fn runtime_stop_revocation_commits_tombstone_before_executor_io_and_survives_reopen() {
+        use aos_sandbox_core::PrincipalId;
+        let directory = TestDirectory::new();
+        let mut reconciler =
+            Reconciler::new(protected_runtime_journal(&directory), Executor::default());
+        let (bound, first_draft, first_prepared) = gated_operation_with_publication(1);
+        let bound = bound
+            .with_runtime_authority(
+                RuntimeAuthorityIntentV1::bind_holder(PrincipalId::from_bytes([0xb1; 16]), None)
+                    .unwrap(),
+            )
+            .unwrap();
+        reconciler.accept(&bound).unwrap();
+        let activation = gate_activation(&mut reconciler, &first_draft, &first_prepared);
+        reconciler
+            .activate_ownership_gate(bound.operation_id(), activation)
+            .unwrap();
+
+        let (draft, prepared) = descriptor_free_activation_fixture(2);
+        let revoke = OperationPlan::ownership_gated(
+            OperationId::from_bytes([0xb2; 16]),
+            IdempotencyKey::new(b"revoke-holder".to_vec()).unwrap(),
+            [0xb3; 32],
+            b"runtime".to_vec(),
+            b"stop".to_vec(),
+            vec![draft.bind_effect(draft.templates()[0].digest()).unwrap()],
+            activation_claim(&draft, 2),
+            draft.clone(),
+        )
+        .unwrap()
+        .with_runtime_authority(RuntimeAuthorityIntentV1::revoke(Some(1)).unwrap())
+        .unwrap();
+        reconciler.accept(&revoke).unwrap();
+        assert_eq!(
+            reconciler.reconcile_once(revoke.operation_id()).unwrap(),
+            ReconcileOutcome::OwnershipPending
+        );
+        let sandbox = draft.manifest().manifest().sandbox();
+        assert_eq!(
+            RuntimeAuthorityStore::load(
+                reconciler.journal_mut(),
+                RuntimeAuthorityLimits::default()
+            )
+            .unwrap()
+            .current(sandbox)
+            .unwrap()
+            .unwrap()
+            .state(),
+            RuntimeAuthorityStateV1::Bound
+        );
+        let activation = gate_activation(&mut reconciler, &draft, &prepared);
+        reconciler
+            .activate_ownership_gate(revoke.operation_id(), activation)
+            .unwrap();
+        let tombstone = RuntimeAuthorityStore::load(
+            reconciler.journal_mut(),
+            RuntimeAuthorityLimits::default(),
+        )
+        .unwrap()
+        .current(sandbox)
+        .unwrap()
+        .unwrap();
+        assert_eq!(tombstone.state(), RuntimeAuthorityStateV1::Revoked);
+        assert_eq!(tombstone.holder(), None);
+        assert_eq!(tombstone.revision(), 2);
+        assert_eq!(tombstone.publication_digest(), prepared.digest());
+        assert_eq!(reconciler.executor.apply_calls, 0);
+        drop(reconciler);
+        let mut reconciler =
+            Reconciler::new(protected_runtime_journal(&directory), Executor::default());
+        assert_eq!(
+            reconciler.accept(&revoke).unwrap(),
+            AcceptOutcome::Replay(revoke.operation_id())
+        );
+        assert_eq!(
+            RuntimeAuthorityStore::load(
+                reconciler.journal_mut(),
+                RuntimeAuthorityLimits::default()
+            )
+            .unwrap()
+            .current(sandbox)
+            .unwrap()
+            .unwrap(),
+            tombstone
+        );
+    }
+
+    #[test]
+    fn runtime_revocation_rejects_other_signed_actions_and_multiple_stop_effects() {
+        use crate::publication::tests::descriptor_free_control_activation_fixture;
+        use aos_proto::aos::sandbox::local::v1::RuntimeAction;
+        for action in [
+            RuntimeAction::RUNTIME_ACTION_FREEZE,
+            RuntimeAction::RUNTIME_ACTION_THAW,
+            RuntimeAction::RUNTIME_ACTION_KILL,
+            RuntimeAction::RUNTIME_ACTION_STOP,
+        ] {
+            let (draft, _) = descriptor_free_control_activation_fixture(2, action);
+            let effect = draft.bind_effect(draft.templates()[0].digest()).unwrap();
+            let effects = if action == RuntimeAction::RUNTIME_ACTION_STOP {
+                vec![effect.clone(), effect]
+            } else {
+                vec![effect]
+            };
+            let plan = OperationPlan::ownership_gated(
+                OperationId::from_bytes([0xb4; 16]),
+                IdempotencyKey::new(b"wrong-revoke".to_vec()).unwrap(),
+                [0xb5; 32],
+                b"runtime".to_vec(),
+                b"stop".to_vec(),
+                effects,
+                activation_claim(&draft, 2),
+                draft,
+            )
+            .unwrap();
+            assert!(
+                matches!(
+                    plan.with_runtime_authority(RuntimeAuthorityIntentV1::revoke(Some(1)).unwrap()),
+                    Err(ReconcilerError::InvalidPlan(_))
+                ),
+                "{action:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn runtime_revocation_cannot_stop_a_replacement_assignment_instead_of_current() {
+        use aos_sandbox_core::PrincipalId;
+        let directory = TestDirectory::new();
+        let mut reconciler =
+            Reconciler::new(protected_runtime_journal(&directory), Executor::default());
+        let (bound, draft, prepared) = gated_operation_with_publication(1);
+        let bound = bound
+            .with_runtime_authority(
+                RuntimeAuthorityIntentV1::bind_holder(PrincipalId::from_bytes([0xb6; 16]), None)
+                    .unwrap(),
+            )
+            .unwrap();
+        reconciler.accept(&bound).unwrap();
+        let activation = gate_activation(&mut reconciler, &draft, &prepared);
+        reconciler
+            .activate_ownership_gate(bound.operation_id(), activation)
+            .unwrap();
+        let replacement = crate::publication::tests::descriptor_free_stop_draft_with_node(99);
+        assert_eq!(
+            replacement.manifest().manifest().sandbox(),
+            draft.manifest().manifest().sandbox()
+        );
+        assert_ne!(replacement.manifest(), draft.manifest());
+        let revoke = OperationPlan::ownership_gated(
+            OperationId::from_bytes([0xb7; 16]),
+            IdempotencyKey::new(b"wrong-runtime-stop".to_vec()).unwrap(),
+            [0xb8; 32],
+            b"runtime".to_vec(),
+            b"stop".to_vec(),
+            vec![
+                replacement
+                    .bind_effect(replacement.templates()[0].digest())
+                    .unwrap(),
+            ],
+            activation_claim(&replacement, 2),
+            replacement,
+        )
+        .unwrap()
+        .with_runtime_authority(RuntimeAuthorityIntentV1::revoke(Some(1)).unwrap())
+        .unwrap();
+        assert!(matches!(
+            reconciler.accept(&revoke),
+            Err(ReconcilerError::RuntimeAuthority(
+                crate::runtime_authority::RuntimeAuthorityError::ActivationConflict
+            ))
+        ));
+        assert_eq!(
+            reconciler
+                .journal
+                .records(RecordNamespace::Operation)
+                .count(),
+            1
+        );
+        assert_eq!(reconciler.executor.apply_calls, 0);
     }
 
     #[test]

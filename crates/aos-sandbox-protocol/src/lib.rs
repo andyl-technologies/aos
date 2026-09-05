@@ -23,6 +23,9 @@ pub use inventory::{
     decode_mount_inventory_response,
 };
 
+mod runtime_template;
+pub use runtime_template::{ValidatedRuntimeTemplateV1, decode_runtime_template_v1};
+
 pub use session::{
     AuthorizationArtifactBytes, MAXIMUM_HANDSHAKE_BYTES, MAXIMUM_PACKET_DESCRIPTORS,
     NegotiatedBrokerSession, ValidatedBrokerError, ValidatedBrokerRequestEnvelope,
@@ -531,31 +534,13 @@ pub fn decode_runtime_request(
         ProtocolId::HostBroker,
         now_boottime_nanoseconds,
     )?;
-    let fence = validate_fence(
-        request
-            .fence
-            .as_option()
-            .ok_or(ProtocolValidationError::MissingField("fence"))?,
-    )?;
-    let action = request
-        .action
-        .as_known()
-        .filter(|action| *action != RuntimeAction::RUNTIME_ACTION_UNSPECIFIED)
-        .ok_or(ProtocolValidationError::UnknownAction)?;
-    let launch_plan = match (action, request.launch_plan.as_option()) {
-        (RuntimeAction::RUNTIME_ACTION_LAUNCH, Some(plan)) => Some(validate_runtime_plan(plan)?),
-        (RuntimeAction::RUNTIME_ACTION_LAUNCH, None) => {
-            return Err(ProtocolValidationError::MissingField("launch_plan"));
-        }
-        (_, Some(_)) => return Err(ProtocolValidationError::InvalidField("launch_plan")),
-        (_, None) => None,
-    };
+    let template = runtime_template::validate_runtime_body(&request)?;
 
     Ok(ValidatedRuntimeRequest {
         header,
-        fence,
-        action,
-        launch_plan,
+        fence: template.fence,
+        action: template.action,
+        launch_plan: template.launch_plan,
     })
 }
 
@@ -750,7 +735,28 @@ pub fn validate_request_header(
         return Err(ProtocolValidationError::UnknownFields);
     }
     validate_peer_audience(peer, policy, header.audience.as_known())?;
-    let protocol_version = negotiate_protocol(
+    let protocol_version = validate_header_protocol(header, protocol)?;
+    let request_id = exact_nonzero::<16>(&header.request_id, "header.request_id")?;
+    if header.deadline_boottime_nanoseconds <= now_boottime_nanoseconds {
+        return Err(ProtocolValidationError::DeadlineExpired);
+    }
+    if !(MINIMUM_RESPONSE_BYTES..=MAXIMUM_RESPONSE_BYTES).contains(&header.maximum_response_bytes) {
+        return Err(ProtocolValidationError::InvalidResponseBound);
+    }
+    Ok(ValidatedHeader {
+        protocol_version,
+        audience: policy.audience,
+        request_id,
+        deadline_boottime_nanoseconds: header.deadline_boottime_nanoseconds,
+        maximum_response_bytes: header.maximum_response_bytes,
+    })
+}
+
+fn validate_header_protocol(
+    header: &RequestHeader,
+    protocol: ProtocolId,
+) -> Result<ProtocolVersion, ProtocolValidationError> {
+    Ok(negotiate_protocol(
         protocol,
         ProtocolVersion::new(
             u16::try_from(header.protocol_major).map_err(|_| {
@@ -772,21 +778,7 @@ pub fn validate_request_header(
                 }
             })?,
         ),
-    )?;
-    let request_id = exact_nonzero::<16>(&header.request_id, "header.request_id")?;
-    if header.deadline_boottime_nanoseconds <= now_boottime_nanoseconds {
-        return Err(ProtocolValidationError::DeadlineExpired);
-    }
-    if !(MINIMUM_RESPONSE_BYTES..=MAXIMUM_RESPONSE_BYTES).contains(&header.maximum_response_bytes) {
-        return Err(ProtocolValidationError::InvalidResponseBound);
-    }
-    Ok(ValidatedHeader {
-        protocol_version,
-        audience: policy.audience,
-        request_id,
-        deadline_boottime_nanoseconds: header.deadline_boottime_nanoseconds,
-        maximum_response_bytes: header.maximum_response_bytes,
-    })
+    )?)
 }
 
 pub(crate) fn validate_fence(
@@ -1037,6 +1029,99 @@ pub fn exercise_malformed_request_decoders(bytes: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inert_runtime_templates_share_semantics_but_not_live_request_validation() {
+        use crate::semantics::host::{
+            canonical_host_semantics_v1, canonical_host_template_semantics_v1,
+        };
+        for action in [
+            RuntimeAction::RUNTIME_ACTION_LAUNCH,
+            RuntimeAction::RUNTIME_ACTION_STOP,
+            RuntimeAction::RUNTIME_ACTION_FREEZE,
+            RuntimeAction::RUNTIME_ACTION_THAW,
+            RuntimeAction::RUNTIME_ACTION_KILL,
+        ] {
+            let mut request = valid_runtime_request();
+            request.action = action.into();
+            if action != RuntimeAction::RUNTIME_ACTION_LAUNCH {
+                request.launch_plan = None.into();
+            }
+            let live = decode_runtime_request(&request.encode_to_vec(), peer(), policy(), 100)
+                .unwrap_or_else(|error| panic!("live fixture failed: {error}"));
+            assert!(decode_runtime_template_v1(&request.encode_to_vec()).is_err());
+            request
+                .header
+                .get_or_insert_default()
+                .deadline_boottime_nanoseconds = 0;
+            let bytes = request.encode_to_vec();
+            let template = decode_runtime_template_v1(&bytes)
+                .unwrap_or_else(|error| panic!("template fixture failed: {error}"));
+            assert_eq!(
+                canonical_host_template_semantics_v1(&template),
+                canonical_host_semantics_v1(&live)
+            );
+            assert_eq!(template.action(), action);
+            assert!(matches!(
+                decode_runtime_request(&bytes, peer(), policy(), 0),
+                Err(ProtocolValidationError::DeadlineExpired)
+            ));
+        }
+    }
+
+    #[test]
+    fn runtime_template_rejects_unknown_fields_and_malformed_nested_inputs() {
+        let mut base = valid_runtime_request();
+        base.header
+            .get_or_insert_default()
+            .deadline_boottime_nanoseconds = 0;
+        type Mutation = (&'static str, fn(&mut ApplyRuntimeRequest));
+        let mutations: [Mutation; 7] = [
+            ("audience", |request| {
+                request.header.get_or_insert_default().audience =
+                    Audience::AUDIENCE_UNSPECIFIED.into()
+            }),
+            ("version", |request| {
+                request.header.get_or_insert_default().protocol_major = 99
+            }),
+            ("request id", |request| {
+                request.header.get_or_insert_default().request_id.clear()
+            }),
+            ("response bound", |request| {
+                request
+                    .header
+                    .get_or_insert_default()
+                    .maximum_response_bytes = 0
+            }),
+            ("fence", |request| {
+                request.fence.get_or_insert_default().desired_generation = 0
+            }),
+            ("stop with launch plan", |request| {
+                request.action = RuntimeAction::RUNTIME_ACTION_STOP.into()
+            }),
+            ("launch without plan", |request| {
+                request.launch_plan = None.into()
+            }),
+        ];
+        for (name, mutate) in mutations {
+            let mut request = base.clone();
+            mutate(&mut request);
+            assert!(
+                decode_runtime_template_v1(&request.encode_to_vec()).is_err(),
+                "{name}"
+            );
+        }
+        let mut unknown = base.encode_to_vec();
+        unknown.extend_from_slice(&[0xf8, 0x07, 0x01]);
+        assert!(matches!(
+            decode_runtime_template_v1(&unknown),
+            Err(ProtocolValidationError::UnknownFields)
+        ));
+        assert!(matches!(
+            decode_runtime_template_v1(&vec![0; MAXIMUM_REQUEST_BYTES + 1]),
+            Err(ProtocolValidationError::RequestTooLarge)
+        ));
+    }
 
     fn valid_runtime_request() -> ApplyRuntimeRequest {
         let mut request = ApplyRuntimeRequest::default();
