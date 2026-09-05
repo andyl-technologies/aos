@@ -2882,6 +2882,18 @@ T-CAM-6.1
 remains unchecked until the complete supported-profile registry and all
 subsystem-owned proofs are implemented and accepted in the Phase 6 lab.
 
+The native block-source owner now retains an exact backend/root and its
+original permissions, drains and reopens the root before fork barriers, and
+requires all reachable backing and file nodes to be read-only. Explicit
+writable descendants fail closed without losing restoration authority. A
+forked process cannot use the inherited parent token to restore or destroy the
+source. The packaged native QCOW2 tests retain their TAP evidence and exercise
+data preservation, restoration, inherited-token rejection, and the writable
+descendant negative case. This primitive is not yet called by the template
+coordinator. Complete source-set preparation, branch-private child overlay
+handoff, and post-fork native I/O reconstruction remain open; it does not
+acknowledge readiness or complete T-CAM-6.2 or T-CAM-6.3.
+
 **Exit:** either the spike satisfies the structural and minimum-speedup targets,
 its manual lab evidence is accepted, or hot fork remains rejected and the RFC is
 revised around another measured local-COW mechanism. No optimistic partial

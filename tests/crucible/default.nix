@@ -1740,6 +1740,10 @@ in rec {
     };
   };
   phase6 = {
+    qemuReadOnlyBlockSource = import ./phase6-qemu-read-only-block-source.nix {
+      inherit pkgs;
+      taskIds = [];
+    };
     qemuHotForkReadiness = import ./phase6-qemu-hot-fork-readiness.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase6.qemuHotForkReadiness";

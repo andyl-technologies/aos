@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "7dc8fc040c60b9a2b26ce487c36a3f635cc7bd6d20d1fd6e3faba88aa0ba8cf1";
+  patchBranchBundleSha256 = "26da1882f74304428b90a94477e938be04f140c06e30f97b6b683fa305b7a1ea";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "8cc6f71253ad60ab8e835f9d71b09c8b179e7c4d";
+  patchBranchHeadCommit = "9be52ad205c783d6b6fed49f43dfef6e14abaf1d";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1895,6 +1895,16 @@ let
       class = "D";
       enforces = "QFP-REG-1,QFP-STATE-2";
       capability = "virtio-net reset tolerates the announcement timer removed by exact restore, preserving suppressed migration traffic while allowing Boot and reset without a null timer dereference";
+    }
+    {
+      file = "0197-crucible-retain-read-only-block-sources.patch";
+      branchSubject = "crucible: retain read only block sources";
+      branchCommit = "9be52ad205c783d6b6fed49f43dfef6e14abaf1d";
+      branchTree = "4d3e833433007f489b0fa68f0dfb9298774532b0";
+      catalogName = "crucible-hot-fork-read-only-block-source";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-22";
+      capability = "a process-local owner retains the exact writable backend and root, drains and reopens the complete reachable source graph read-only before fork barriers, rejects explicit writable descendants, and restores original native access after a partial failure; inherited children cannot restore or free the parent token; coordinator integration and branch-private child graph handoff remain open";
     }
   ];
   catalogOnlyCapabilities = [

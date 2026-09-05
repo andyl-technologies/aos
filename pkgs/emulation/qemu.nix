@@ -450,7 +450,13 @@ in
             then ''
               build/tests/unit/test-rcu-list --tap -p /rcu/hot-fork/barrier
               build/tests/unit/test-aio --tap -p /aio/hot-fork/bh-timer-barrier
-              build/tests/unit/test-block-backend --tap
+              # Keep the exact native fixture output with the package; a
+              # separate certificate checks named cases, not a boot proxy.
+              # Pin GLib's seed so the installed transcript is reproducible.
+              timeout -k 5 60 build/tests/unit/test-block-backend --tap \
+                --seed=R02S00000000000000000000000000000000 \
+                > block-backend-tests.tap
+              cat block-backend-tests.tap
               build/tests/unit/test-crucible-hot-fork-child --tap
               build/tests/unit/test-crucible-hot-fork-coordinator --tap
               build/tests/unit/test-char --tap -p /char/socket/server/mainloop/unix
@@ -494,6 +500,10 @@ in
             fi
 
             mkdir -p "$out/share/aos/crucible"
+            ${lib.optionalString applyCruciblePatches ''
+              install -m 644 block-backend-tests.tap \
+                "$out/share/aos/crucible/block-backend-tests.tap"
+            ''}
             cat > "$out/share/aos/crucible/qemu-build-identity.env" <<'QEMU_BUILD_IDENTITY'
             qemu_package=${pname}
             qemu_version=${version}
