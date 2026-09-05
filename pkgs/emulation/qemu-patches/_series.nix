@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "ea6d8a43e52f35835d8cb78f2fd1098f93c0053cd53e727495b46316a212ea00";
+  patchBranchBundleSha256 = "54add28c24249fedc247740f36f9e2797d07f8cd53c8b321ab01ae99caf85337";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "edb6d9dad1581b8184c1c3e7ee3dcc102fbcfbfa";
+  patchBranchHeadCommit = "14821e8a826de955fe7177ca07c18862014346e5";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1935,6 +1935,16 @@ let
       class = "F";
       enforces = "HFORK-4,HFORK-8,HFORK-22";
       capability = "a process-local source-set owner authenticates the complete explicit native root, node, backend, and consumer closure before freezing; it preserves already-read-only access, retains original writable-root provenance independently of live permissions, and owns partial-failure restoration; unknown or extra resources and inherited parent tokens fail closed; native tests cover VMState and disk preservation, read-only restoration, held barriers, closure changes, non-backend file consumers, and partial recovery; production coordinator integration and child-private graph installation remain open";
+    }
+    {
+      file = "0201-crucible-freeze-retained-template-native-sources.patch";
+      branchSubject = "crucible: freeze retained template native sources";
+      branchCommit = "14821e8a826de955fe7177ca07c18862014346e5";
+      branchTree = "9e0ea2f9470121811d9f90174dcd3ca7e53b87f0";
+      catalogName = "crucible-hot-fork-template-native-sources";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-22";
+      capability = "the retained-template coordinator freezes a complete native source set outside block barriers, then rebinds immutable roots using original backend write provenance and schema-versioned source proof; abort restores and frees sources only after barrier release and retains partial recovery; native tests cover frozen binding and empty-child container disposal, while a live VMState flight verifies two prepare/abort cycles and resumed saves; nonempty native graph forks remain rejected until child-private graph installation is implemented";
     }
   ];
   catalogOnlyCapabilities = [

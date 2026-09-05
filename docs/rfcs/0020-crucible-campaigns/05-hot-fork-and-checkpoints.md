@@ -495,8 +495,17 @@ CrucibleHotForkBlockSnapshotRoot {
     snapshot-read-only: bool,
 }
 
+CrucibleHotForkBlockSourceProof {
+    schema-version: u32 = 1,
+    frozen: bool,
+    root-count: u64,
+    node-count: u64,
+    originally-writable-root-count: u64,
+    originally-writable-backend-count: u64,
+}
+
 CrucibleHotForkBlockBarrierState {
-    schema-version: u32 = 3,
+    schema-version: u32 = 4,
     generation: u64,
     owner-thread-id: i64,
     graph-barrier-generation: u64,
@@ -515,6 +524,7 @@ CrucibleHotForkBlockBarrierState {
     snapshot-bound: bool,
     snapshot-complete: bool,
     snapshot-roots: [CrucibleHotForkBlockSnapshotRoot],
+    snapshot-sources: CrucibleHotForkBlockSourceProof,
     complete: bool,
     backend-count: u64,
     rooted-backends: u64,
@@ -561,8 +571,8 @@ and `held-graph-mutation-generation` zero and is not quiescent. Waiting writers
 may be nonzero during a released observation immediately after admission
 reopens; they are not inside a graph critical section.
 
-While this barrier is held and quiescent, schema version 9 of the template
-coordinator additionally requires one complete
+While this barrier is held and quiescent, the template
+coordinator first requires one complete
 `CrucibleHotForkBlockSnapshotBinding` list in increasing `backend-id` order.
 The list MUST name every writable rooted backend exactly once. Backend names
 are QEMU identifiers of at most 255 bytes; overlay and snapshot node names are
@@ -577,13 +587,36 @@ Each named active root MUST be writable, MUST contain no allocated
 guest-visible range above its immediate backing node, and MUST have that
 immediate backing node open read-only at the same virtual size. QEMU records
 the exact backend generation, graph generation, owner, root identities, size,
-empty-overlay result, and read-only result. `snapshot-complete` is true exactly
+empty-overlay result, and read-only result. For this ordinary binding,
+`snapshot-complete` is true exactly
 while those values still match the retained barrier and the root list count
 equals `writable-rooted-backends`. Release clears the binding before graph or
 native-drain admission reopens.
 
-An active transaction acknowledges proof bit 5 exactly while this complete
-immutable writable-root binding is retained. The binding does not create the
+Template contract version 25 then captures the complete native source set,
+including parentless VMState roots, releases the block barrier, freezes the
+native sources, and reacquires the barrier before binding again. Native reopen
+cannot run behind the retained graph-writer barrier. The second binding
+requires the exact original backend identities and write permissions from the
+retained source capability, read-only active overlays, and the same immutable
+snapshot identities and empty-overlay checks. Its `snapshot-sources` proof is
+bound to the enclosing graph/backend generations and owner. `snapshot-complete`
+then requires no currently writable backend and exactly one snapshot binding
+per originally writable backend. Current permission counts MUST remain truthful;
+parentless writable roots count separately and are not invented backends.
+
+All source counts are zero when `frozen` is false. A frozen empty source set is
+distinct from an absent proof. The native source closure is bounded by 65,536
+graph visits, covers every backend and allocated node, and rejects empty or
+unowned backends and foreign graph consumers. Release clears the binding and
+its proof. Abort restores and frees retained native sources only after block
+release; partial restoration retains the transaction for an explicit retry.
+Physical fork revalidates the actual source set rather than trusting cached
+counts. Nonempty native graphs remain rejected at that boundary until private
+child VMState/disk installation is implemented and verified.
+
+An active transaction acknowledges proof bit 5 exactly while the complete
+immutable-root binding and frozen-source proof are retained. The binding does not create the
 snapshot bytes, rotate a preexisting writable root, reconstruct a child block
 graph, or create a branch-private child overlay. The host MUST authenticate and
 open the immutable snapshot plus empty active overlay before preparation;
@@ -1041,7 +1074,7 @@ CrucibleHotForkTemplateResourceStageState {
 }
 
 CrucibleHotForkTemplateState {
-    schema-version: u32 = 23,
+    schema-version: u32 = 25,
     generation: u64,
     outcome: CrucibleHotForkTemplateOutcome,
     transaction-active: bool,
@@ -1072,9 +1105,18 @@ admission barrier, the bottom-half/timer source barrier, and the plugin callback
 barrier, and retains all four while previously admitted work drains. A repeated
 `prepare` reevaluates the retained transaction. Once all four barriers are
 quiescent, QEMU reports `prepared` only when all seven parent-side template
-proofs are present in the same transaction. Otherwise the version-23 report
+proofs are present in the same transaction. Otherwise the version-25 report
 continues to report `draining` and retains the barriers so the host can capture
 and stage branch-private resources without releasing the source-ring barrier.
+An `abort` reply may likewise be `draining`: ordinary plugin/RCU/asynchronous
+barriers are released, but main-loop block release or native source restoration
+remains pending. The host MUST retain the stopped source and the same transaction
+generation, using bounded explicit abort exchanges until `rollback-complete` is
+true. An unheld block barrier alone is not completed restoration. QEMU delivers
+a pending `blocked` or `aborted` completion before interpreting the next action,
+so query, prepare, or abort may observe the preceding transaction's terminal
+outcome without starting a new generation. The typed client preserves these
+legal asynchronous states while rejecting a prepared abort response.
 Version 12 introduced the atomic resource report. It carries the exact
 private-ring and endpoint mutation generations, the
 endpoint-to-ring generation edge, their originating template generation, and
@@ -1330,7 +1372,7 @@ parent-death containment and authenticate the immediate child before any
 reconstruction or externally visible action. A real-fork unit test proves the
 thread ownership and returned-PID contract.
 
-Template contract version 24, resource-stage version 13, and fork-result schema
+Template contract version 25, resource-stage version 13, and fork-result schema
 version 2 now expose that coordinator as the public `crucible-hot-fork` QMP
 command. The request carries the exact template, private-ring, diagnostics,
 child-QMP, child-console, monitor, plugin-endpoint, plugin-barrier,
@@ -1567,7 +1609,7 @@ quiescent block barrier. Version 19 composes plugin-ring proof bit
 6 from the exact transaction-bound frozen ring, diagnostics stream, retained
 child-QMP stream and prepared reinitializer, endpoint pair, worker plan, and
 plugin barrier. The resource-table binding remains nondestructive. Template
-version 24 deliberately requires only bits 0 through 6: descriptor/mapping
+version 25 deliberately requires only bits 0 through 6: descriptor/mapping
 proof bit 7 and child-reinitialization proof bit 8 are child-only results that
 cannot truthfully exist in the retained parent template. A fully parent-bound
 transaction may therefore report `prepared`; only the private child report can

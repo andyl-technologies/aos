@@ -3009,6 +3009,35 @@ license-boundary source suite first encountered a compiler-cache connection
 reset; the explicit run without that cache completed all tests. This is not
 acceptance of the complete packaged license-boundary gate.
 
+The retained-template coordinator now captures the complete native source set
+and freezes it outside the block barriers. It reacquires those barriers and
+rebinds immutable roots against original backend write permissions, while live
+permission counts remain truthful. Block schema 4 carries source-proof schema
+1 and template schema 25 requires that provenance for bit 5. Abort releases
+barriers before restoring and freeing sources; incomplete restoration retains
+the transaction. Physical fork revalidates the source set and still rejects
+nonempty native graphs until child-private VMState/disk installation exists.
+
+The prototype native suite passes all 16 cases, including frozen binding and
+empty-child capability disposal. A source-built live VMState flight completes
+two retained prepare/abort transactions, resumes to exact guest boundaries, and
+saves fresh VMState after both restorations. It exposed a host action-validation
+bug: a legitimate draining abort reply was rejected before native restoration
+completed. The client now preserves that pending owner and accepts the preceding
+transaction's terminal completion on the next exchange. Focused tests cover
+pending block release, unheld-but-pending restoration, terminal delivery, and
+rejection of prepared or ordinary-barrier-held abort replies. These are source
+lifecycle results, not child graph, atomic whole-world, stress, or independent
+manual acceptance; those Phase 6 items remain open.
+
+The canonical 198-patch package reproduces all 16 native cases and the two-cycle
+source lifecycle flight through guest instruction 9,000,001. ABI conformance,
+hot-fork readiness, and byte-exact patch regeneration pass; the corresponding
+source artifact records the matching patch count, series hash, and build
+identity. The source lifecycle result explicitly reports
+`whole_world_child_handoff=false`. These checks do not replace the complete
+license-boundary gate or the remaining Phase 6 execution and acceptance flights.
+
 **Exit:** either the spike satisfies the structural and minimum-speedup targets,
 its manual lab evidence is accepted, or hot fork remains rejected and the RFC is
 revised around another measured local-COW mechanism. No optimistic partial

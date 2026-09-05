@@ -63,11 +63,12 @@ pub use hot_fork::{
     QMP_HOT_FORK_BLOCK_BACKEND_INVENTORY_MAX, QMP_HOT_FORK_BLOCK_BACKEND_INVENTORY_SCHEMA_VERSION,
     QMP_HOT_FORK_BLOCK_BACKEND_NAME_MAX_BYTES, QMP_HOT_FORK_BLOCK_BARRIER_COMMAND,
     QMP_HOT_FORK_BLOCK_BARRIER_SCHEMA_VERSION, QMP_HOT_FORK_BLOCK_NODE_NAME_MAX_BYTES,
-    QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_MAX, QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_SCHEMA_VERSION,
-    QMP_HOT_FORK_BOTTOM_HALF_NAME_MAX_BYTES, QMP_HOT_FORK_CHILD_CONSOLE_COMMAND,
-    QMP_HOT_FORK_CHILD_CONSOLE_SCHEMA_VERSION, QMP_HOT_FORK_CHILD_DIAGNOSTICS_COMMAND,
-    QMP_HOT_FORK_CHILD_DIAGNOSTICS_SCHEMA_VERSION, QMP_HOT_FORK_CHILD_DIAGNOSTICS_TARGET_FD,
-    QMP_HOT_FORK_CHILD_PROCESS_COMMAND, QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_COMMAND,
+    QMP_HOT_FORK_BLOCK_SOURCE_PROOF_SCHEMA_VERSION, QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_MAX,
+    QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_BOTTOM_HALF_NAME_MAX_BYTES,
+    QMP_HOT_FORK_CHILD_CONSOLE_COMMAND, QMP_HOT_FORK_CHILD_CONSOLE_SCHEMA_VERSION,
+    QMP_HOT_FORK_CHILD_DIAGNOSTICS_COMMAND, QMP_HOT_FORK_CHILD_DIAGNOSTICS_SCHEMA_VERSION,
+    QMP_HOT_FORK_CHILD_DIAGNOSTICS_TARGET_FD, QMP_HOT_FORK_CHILD_PROCESS_COMMAND,
+    QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_COMMAND,
     QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_SCHEMA_VERSION, QMP_HOT_FORK_CHILD_PROCESS_SCHEMA_VERSION,
     QMP_HOT_FORK_CHILD_QMP_COMMAND, QMP_HOT_FORK_CHILD_QMP_SCHEMA_VERSION,
     QMP_HOT_FORK_CHILD_RUNTIME_SCHEMA_VERSION, QMP_HOT_FORK_COMMAND,
@@ -93,8 +94,8 @@ pub use hot_fork::{
     QmpHotForkAioHandlerInventory, QmpHotForkAioInventory, QmpHotForkBhTimerBarrierState,
     QmpHotForkBlockBackend, QmpHotForkBlockBackendInventory, QmpHotForkBlockBarrierState,
     QmpHotForkBlockSnapshotBinding, QmpHotForkBlockSnapshotBindingError,
-    QmpHotForkBlockSnapshotRoot, QmpHotForkBottomHalf, QmpHotForkBottomHalfInventory,
-    QmpHotForkChildConsoleState, QmpHotForkChildDiagnosticState,
+    QmpHotForkBlockSnapshotRoot, QmpHotForkBlockSourceProof, QmpHotForkBottomHalf,
+    QmpHotForkBottomHalfInventory, QmpHotForkChildConsoleState, QmpHotForkChildDiagnosticState,
     QmpHotForkChildProcessContractIdentity, QmpHotForkChildProcessContractState,
     QmpHotForkChildProcessPhase, QmpHotForkChildProcessState, QmpHotForkChildQmpState,
     QmpHotForkChildRuntimePhase, QmpHotForkChildRuntimeState, QmpHotForkMonitorInventory,
@@ -1467,6 +1468,10 @@ where
 
     /// Aborts QEMU's retained hot-fork template transaction.
     ///
+    /// A draining reply retains ownership while main-loop barrier release or
+    /// native source restoration is pending. The caller must keep the source
+    /// stopped and retry abort until `rollback_complete()` is true.
+    ///
     /// # Errors
     ///
     /// Returns [`QmpError`] when QEMU cannot roll back an acquired barrier or
@@ -1665,23 +1670,36 @@ where
             block_snapshot_bindings,
         })?;
         let state = parse_hot_fork_template_state(&response.value)?;
+        // QEMU delivers a pending completion before interpreting the next
+        // action. Query and prepare can therefore observe the previous abort,
+        // and abort can observe an already-completed failed preparation.
         let postcondition_holds = match action {
             HotForkTemplateAction::Prepare => matches!(
                 state.outcome(),
                 QmpHotForkTemplateOutcome::Draining
                     | QmpHotForkTemplateOutcome::Blocked
                     | QmpHotForkTemplateOutcome::Prepared
+                    | QmpHotForkTemplateOutcome::Aborted
             ),
             HotForkTemplateAction::Query => matches!(
                 state.outcome(),
                 QmpHotForkTemplateOutcome::Idle
                     | QmpHotForkTemplateOutcome::Draining
                     | QmpHotForkTemplateOutcome::Prepared
+                    | QmpHotForkTemplateOutcome::Blocked
+                    | QmpHotForkTemplateOutcome::Aborted
             ),
-            HotForkTemplateAction::Abort => matches!(
-                state.outcome(),
-                QmpHotForkTemplateOutcome::Idle | QmpHotForkTemplateOutcome::Aborted
-            ),
+            HotForkTemplateAction::Abort => {
+                matches!(
+                    state.outcome(),
+                    QmpHotForkTemplateOutcome::Idle
+                        | QmpHotForkTemplateOutcome::Blocked
+                        | QmpHotForkTemplateOutcome::Aborted
+                ) || (state.outcome() == QmpHotForkTemplateOutcome::Draining
+                    && !state.plugin_barrier().held()
+                    && !state.rcu_barrier().held()
+                    && !state.bh_timer_barrier().held())
+            }
         };
         if !postcondition_holds {
             return Err(QmpError::MalformedTypedResponse {

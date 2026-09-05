@@ -4,9 +4,11 @@ use super::*;
 
 #[path = "exact_snapshot/retained_network.rs"]
 mod retained_network;
+mod source_set;
 pub use retained_network::{
     QemuLiveRetainedNetworkSnapshotReport, run_qemu_live_retained_network_snapshot_gate,
 };
+pub use source_set::{QemuLiveSourceSetReport, run_qemu_live_source_set_gate};
 #[path = "exact_snapshot/selectable_product.rs"]
 mod selectable_product;
 pub use selectable_product::{

@@ -42,7 +42,7 @@ fn aio_proof_still_requires_closed_quiescent_admission() {
 /// Reproduces the complete prepared response used by the typed QMP fixture.
 pub(super) fn prepared_report() -> Value {
     json!({
-        "schema-version": 24,
+        "schema-version": 25,
         "generation": 4,
         "outcome": "prepared",
         "transaction-active": true,
@@ -107,7 +107,7 @@ pub(super) fn prepared_report() -> Value {
             "quiescent": true
         },
         "block-barrier": {
-            "schema-version": 3,
+            "schema-version": 4,
             "generation": 4,
             "owner-thread-id": 44,
             "graph-barrier-generation": 5,
@@ -125,6 +125,14 @@ pub(super) fn prepared_report() -> Value {
             "snapshot-owner-thread-id": 44,
             "snapshot-bound": true,
             "snapshot-complete": true,
+            "snapshot-sources": {
+                "schema-version": 1,
+                "frozen": true,
+                "root-count": 3,
+                "node-count": 6,
+                "originally-writable-root-count": 2,
+                "originally-writable-backend-count": 1
+            },
             "snapshot-roots": [
                 {
                     "backend-id": 1,
@@ -138,10 +146,10 @@ pub(super) fn prepared_report() -> Value {
                 }
             ],
             "complete": true,
-            "backend-count": 3,
+            "backend-count": 2,
             "rooted-backends": 2,
-            "writable-backends": 2,
-            "writable-rooted-backends": 1,
+            "writable-backends": 0,
+            "writable-rooted-backends": 0,
             "quiesced-rooted-backends": 2,
             "in-flight": 0,
             "quiescent": true

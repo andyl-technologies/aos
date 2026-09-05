@@ -459,6 +459,9 @@ where
 
     /// Aborts QEMU's retained hot-fork template transaction.
     ///
+    /// A draining response requires another abort exchange while retaining the
+    /// stopped source; only `rollback_complete()` permits releasing ownership.
+    ///
     /// # Errors
     ///
     /// Returns [`QemuNodeChannelError`] when QEMU cannot roll back an acquired
