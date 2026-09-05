@@ -1,12 +1,12 @@
 //! Atomic admission of a complete retained-template QEMU child world.
 //!
 //! Per-node hot-fork launch owns useful process and channel authority, but a
-//! campaign branch is not executable until every running node has been paired
+//! campaign branch is not executable until every retained source is paired
 //! with the same process-neutral world continuation. This module keeps those
 //! children inaccessible during assembly, exact-binds each one to its installed
 //! node/source process/configuration/event prefix and assembly incarnation, and
-//! publishes one opaque complete-world capability only after the full
-//! running-node set is present. Dropping an
+//! publishes one opaque complete-world capability only after every retained
+//! source is present, including paused powered-off nodes. Dropping an
 //! incomplete assembly transfers every admitted child to its existing
 //! fail-closed quarantine path.
 
@@ -124,8 +124,8 @@ struct ExpectedWorldSource {
 /// Reason one child was refused before it could enter a world transaction.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum QemuHotForkWorldChildAdmissionFailure {
-    /// The continuation does not require a running QEMU for this node.
-    #[error("hot-fork child node is not a running member of the captured world")]
+    /// The continuation does not retain a source QEMU for this node.
+    #[error("hot-fork child node is not a retained source member of the captured world")]
     UnexpectedNode,
     /// Another child already occupies the exact node coordinate.
     #[error("hot-fork world already contains a child for this node")]
@@ -205,7 +205,7 @@ impl<C> QemuHotForkWorldIncomplete<C>
 where
     C: QemuHotForkWorldChild,
 {
-    /// Returns the canonically ordered running nodes still missing a child.
+    /// Returns the canonically ordered retained source nodes missing a child.
     #[must_use]
     pub fn missing_nodes(&self) -> &[NodeId] {
         &self.missing
@@ -236,7 +236,7 @@ where
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "hot-fork world is missing {} running node children",
+            "hot-fork world is missing {} retained source children",
             self.missing.len()
         )
     }
@@ -271,12 +271,12 @@ where
             .nodes()
             .iter()
             .filter_map(|boundary| match boundary.service_state() {
-                ProductionVmHotForkNodeServiceState::Running => boundary
+                ProductionVmHotForkNodeServiceState::Running
+                | ProductionVmHotForkNodeServiceState::PoweredOff => boundary
                     .process()
                     .cloned()
                     .map(|process| (boundary.node().clone(), ExpectedWorldSource { process })),
-                ProductionVmHotForkNodeServiceState::PoweredOff
-                | ProductionVmHotForkNodeServiceState::PermanentlyFailed => None,
+                ProductionVmHotForkNodeServiceState::PermanentlyFailed => None,
             })
             .collect();
         Self {
@@ -290,7 +290,7 @@ where
         }
     }
 
-    /// Returns the number of running source nodes required by this world.
+    /// Returns the number of retained source nodes required by this world.
     #[must_use]
     pub fn expected_child_count(&self) -> usize {
         self.expected.len()
@@ -357,12 +357,12 @@ where
         Ok(())
     }
 
-    /// Publishes one capability only when every running node is present.
+    /// Publishes one capability only when every retained source node is present.
     ///
     /// # Errors
     ///
     /// Returns [`QemuHotForkWorldIncomplete`] with the unchanged assembly and
-    /// canonically ordered missing-node set when any running node is absent.
+    /// canonically ordered missing-node set when any retained source is absent.
     pub fn publish(
         mut self,
     ) -> Result<QemuHotForkCompleteWorldAssembly<C>, QemuHotForkWorldIncomplete<C>> {

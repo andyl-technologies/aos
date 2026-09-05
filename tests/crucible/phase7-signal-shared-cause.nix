@@ -118,6 +118,7 @@ in
           grep -Fxq 'inactive_world_boot_reactivation=true' reactivation-result
           grep -Fxq 'reactivated_guest_progress=true' reactivation-result
           grep -Fxq 'reactivation_checkpoint_evidence_match=true' reactivation-result
+          grep -Fxq 'inactive_hot_fork_retains_source_process=true' reactivation-result
           mkdir -p "$out"
           cp result "$out/result"
           cp reactivation-result "$out/reactivation-result"
