@@ -353,7 +353,7 @@ fn BindingCard(
                         </div>
                         <StorageGrantEditor client=client.clone() binding=binding.clone() can_grant=can_grant/>
                     </div>
-                    {can_manage.then(|| view! { <BindingDelete client=client binding=binding/> })}
+                    {can_manage.then(|| view! { <BindingDelete client=client.clone() binding=binding.clone()/> })}
                     {(!can_manage && !can_grant).then(|| view! { <p class="muted">"You have read-only access to this binding."</p> })}
                     })}
                 })}
