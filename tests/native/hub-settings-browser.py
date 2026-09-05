@@ -737,6 +737,7 @@ class HubSettingsSmoke:
                     const button = Array.from(document.querySelectorAll('.workflow-card button'))
                         .find(item => item.textContent.trim() === 'Check and continue');
                     if (!button || button.disabled) return false;
+                    window.__aosSmokeOldWorkflowCard = button.closest('.workflow-card');
                     button.click();
                     return true;
                 })()
@@ -748,8 +749,11 @@ class HubSettingsSmoke:
                 f"delivery workflow resume request {attempt} succeeds",
             )
             self.wait_for(
+                "window.__aosSmokeOldWorkflowCard !== null && "
+                "!window.__aosSmokeOldWorkflowCard.isConnected && "
                 "document.querySelector('.loading-row') === null && "
-                "document.querySelector('.workflow-card button:not([disabled])') !== null",
+                "Array.from(document.querySelectorAll('.workflow-card button')).some("
+                "button => button.textContent.trim() === 'Check and continue' && !button.disabled)",
                 f"delivery workflow SPA refresh {attempt}",
             )
             self.assert_settings_page(f"resumed delivery workflow {attempt}")
