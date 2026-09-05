@@ -1537,6 +1537,54 @@ fn authority_adapters_bind_canonical_messages_without_prevalidation_writes() {
         objects_before_debugger_rejection
     );
 
+    // Keep the aggregate-only ledger vector fixed while also exercising the
+    // current indexed ledger. Only the expected snapshot identity differs.
+    let legacy_ledger = crate::CampaignBudgetLedger::empty()
+        .id()
+        .expect("legacy ledger id");
+    let legacy_genesis = CampaignSnapshot::genesis(
+        debugger_genesis.snapshot().lineage(),
+        debugger_genesis.snapshot().active_policy(),
+        legacy_genesis_roots(&repository, debugger_genesis.snapshot().roots()),
+    )
+    .expect("legacy genesis")
+    .with_budget_ledger(legacy_ledger);
+    let discovered_snapshot = repository
+        .head("debugger-authority")
+        .expect("discovered head");
+    let legacy_discovered = CampaignSnapshot::successor(
+        legacy_genesis.id().expect("legacy genesis"),
+        discovered_snapshot.snapshot().lineage(),
+        discovered_snapshot.snapshot().active_policy(),
+        legacy_genesis_roots(&repository, discovered_snapshot.snapshot().roots()),
+        discovered_snapshot
+            .snapshot()
+            .transition()
+            .expect("discovery fact"),
+    )
+    .expect("legacy discovery")
+    .with_budget_ledger(legacy_ledger);
+    let legacy_debugger = DebuggerSubmission::authorize(
+        &debugger_key,
+        legacy_discovered.id().expect("legacy discovery id"),
+        session,
+        debugger_request.clone(),
+    )
+    .expect("legacy debugger submission");
+    assert_eq!(
+        CampaignHash::derive(
+            "crucible.test.debugger-submission-vector.v1",
+            &legacy_debugger.canonical_bytes()
+        )
+        .to_hex(),
+        "ff56dbf506193292e161684db60ddcf38ad7883ea8f7b21e3d23321356d4f602"
+    );
+    assert!(
+        DebuggerSubmission::from_canonical_bytes(&legacy_debugger.canonical_bytes())
+            .expect("legacy debugger round trip")
+            .verify(&debugger_key)
+    );
+
     let debugger_submission = DebuggerSubmission::authorize(
         &debugger_key,
         discovered.new_snapshot,
@@ -1551,8 +1599,8 @@ fn authority_adapters_bind_canonical_messages_without_prevalidation_writes() {
             &debugger_bytes,
         )
         .to_hex(),
-        // Version-3 snapshots authenticate the aggregate budget ledger.
-        "ff56dbf506193292e161684db60ddcf38ad7883ea8f7b21e3d23321356d4f602",
+        // Version-3 snapshots now bind the version-2 indexed budget ledger.
+        "59dbaca9d6bf8a2cb838a0baccd7a956f54872d997c97b9a9f03441299d1d31e",
     );
     let decoded_debugger =
         DebuggerSubmission::from_canonical_bytes(&debugger_bytes).expect("decode debugger");
@@ -1660,12 +1708,46 @@ fn authority_adapters_bind_canonical_messages_without_prevalidation_writes() {
         measured,
     )
     .expect("authorize planner submission");
+    let legacy_invocation = PlannerInvocation::new(
+        invocation.engine(),
+        invocation.policy_artifact(),
+        invocation.policy(),
+        invocation.planner_state(),
+        legacy_genesis.planning_view().id().expect("legacy view"),
+        invocation.scan_page().clone(),
+        invocation.budget(),
+    )
+    .expect("legacy invocation");
+    let legacy_proposal = no_work_proposal(
+        legacy_invocation.id().expect("legacy invocation id"),
+        proposal.next_state().clone(),
+    );
+    let legacy_planner = PlannerSubmission::authorize(
+        &planner_key,
+        legacy_genesis.id().expect("legacy genesis id"),
+        legacy_proposal,
+        measured,
+    )
+    .expect("legacy planner submission");
+    assert_eq!(
+        CampaignHash::derive(
+            "crucible.test.planner-submission-vector.v1",
+            &legacy_planner.canonical_bytes()
+        )
+        .to_hex(),
+        "5d2c533e0a67e19ddc66637e1f31233a4a1c8ff590921cef505e5e67716b3dd4"
+    );
+    assert!(
+        PlannerSubmission::from_canonical_bytes(&legacy_planner.canonical_bytes())
+            .expect("legacy planner round trip")
+            .verify(&planner_key)
+    );
     let planner_bytes = planner_submission.canonical_bytes();
     assert_eq!(
         CampaignHash::derive("crucible.test.planner-submission-vector.v1", &planner_bytes,)
             .to_hex(),
-        // Version-3 snapshots authenticate the aggregate budget ledger.
-        "5d2c533e0a67e19ddc66637e1f31233a4a1c8ff590921cef505e5e67716b3dd4",
+        // Version-3 snapshots bind the version-2 indexed budget ledger.
+        "dd196823708be6c68bbb314183a01eec963c098061c9cf8ea2fa128c6ccf0da5",
     );
     let decoded_planner =
         PlannerSubmission::from_canonical_bytes(&planner_bytes).expect("decode planner");
@@ -1903,12 +1985,18 @@ fn branch_request_is_one_lazy_exact_indexed_delta_and_replays() {
         .get(next_roots.exploration, branch_request_index_anchor_key())
         .expect("branch-request anchor lookup")
         .expect("branch-request index");
+    let scan_index = repository
+        .merkle
+        .get(next_roots.exploration, planner_scan_index_anchor_key())
+        .expect("scan index lookup")
+        .expect("scan index");
     assert_eq!(
         entries.values,
         BTreeSet::from([
             accepted.request.content_id(),
             frontier_index,
             branch_request_index,
+            scan_index,
         ])
     );
 
@@ -2051,8 +2139,8 @@ fn ten_thousand_mixed_mutations_use_incremental_validation_and_replay_indexes() 
             .inspect_shallow(head.snapshot().roots().exploration)
             .expect("scaled exploration root")
             .entry_count(),
-        // Two permanent entries anchor the frontier and branch-request indexes.
-        (MUTATIONS / 2) + 2
+        // Permanent entries anchor frontier, feedback-request, and scan indexes.
+        (MUTATIONS / 2) + 3
     );
     assert_eq!(
         repository
@@ -2293,7 +2381,9 @@ fn reused_active_policy_generator_is_an_incremental_closure_anchor() {
         .expect("validation checkpoints")
         .get_mut(&discovered.new_snapshot.content_id())
         .expect("discovery checkpoint")
-        .closure_objects = MAX_CAMPAIGN_CLOSURE_OBJECTS - MAX_SIMPLE_SUCCESSOR_GROWTH - 32;
+        .closure_objects = MAX_CAMPAIGN_CLOSURE_OBJECTS - MAX_SIMPLE_SUCCESSOR_GROWTH
+        // Three nested scan-index paths and its exploration anchor are new.
+        - (4 * MERKLE_UPDATE_NODE_UPPER) - 32;
     let accepted = repository
         .submit_branch_request("generator-anchor", discovered.new_snapshot, &request)
         .expect("accept anchored generator request");
@@ -2477,7 +2567,7 @@ fn finite_proposal_is_an_exact_indexed_delta_and_replays_before_staleness() {
             .inspect_shallow(next.exploration)
             .expect("exploration root")
             .entry_count(),
-        6
+        7
     );
 
     let replay = repository

@@ -90,10 +90,16 @@ impl CampaignRepository {
         // checkpoint never understates restart validation.
         let anchors = self.incremental_closure_anchors(&parent_snapshot, transition_content)?;
         let linked_objects = self.verify_campaign_closure_anchored(transition_content, &anchors)?;
+        // The index update was recomputed from exact admission deltas above.
+        // Its values are parent-owned or covered by the transition closure;
+        // only the ledger and newly constructed trie paths add growth here.
+        let budget_growth = self.request_budget_closure_growth(&parent_snapshot, &loaded)?;
+        let scan_growth =
+            self.planner_scan_closure_growth(&loaded, &self.read_fact(transition_content)?)?;
         let closure_growth_upper = closure_growth_upper
             .checked_add(linked_objects)
-            // The snapshot-owned ledger is childless and may be newly written.
-            .and_then(|growth| growth.checked_add(1))
+            .and_then(|growth| growth.checked_add(budget_growth))
+            .and_then(|growth| growth.checked_add(scan_growth))
             .ok_or_else(|| integrity("campaign-closure-object-limit"))?;
         let closure_objects = parent_checkpoint
             .closure_objects
@@ -407,15 +413,27 @@ impl CampaignRepository {
             .merkle
             .get(roots.exploration, branch_request_index_anchor_key())?;
         let exploration = self.merkle.inspect_shallow(roots.exploration)?;
+        let scan_index = self
+            .merkle
+            .get(roots.exploration, planner_scan_index_anchor_key())?;
+        if let Some(index) = scan_index
+            && self.merkle.inspect_shallow(index)?.entry_count() != 0
+        {
+            return Err(integrity("genesis-planner-scan-index-is-not-empty"));
+        }
+        let original_entries = exploration
+            .entry_count()
+            .checked_sub(u64::from(scan_index.is_some()))
+            .ok_or_else(|| integrity("genesis-frontier-index-root-mismatch"))?;
         match (frontier_index, branch_request_index) {
             (Some(index), None)
-                if exploration.entry_count() == 1
+                if original_entries == 1
                     && self.merkle.inspect_shallow(index)?.entry_count() == 0 => {}
             (Some(frontier), Some(requests))
-                if exploration.entry_count() == 2
+                if original_entries == 2
                     && self.merkle.inspect_shallow(frontier)?.entry_count() == 0
                     && self.merkle.inspect_shallow(requests)?.entry_count() == 0 => {}
-            (None, None) if exploration.entry_count() == 0 => {}
+            (None, None) if original_entries == 0 && scan_index.is_none() => {}
             _ => return Err(integrity("genesis-frontier-index-root-mismatch")),
         }
 
@@ -669,6 +687,13 @@ impl CampaignRepository {
             return Err(integrity("branch-request-transition-reused-request"));
         }
         let mut upserts = BTreeMap::from([(request_key, request_content)]);
+        if let Some(index) = self.planner_scan_index_after(
+            prior_roots.exploration,
+            &[(request, request_record.branch_point())],
+            false,
+        )? {
+            upserts.insert(planner_scan_index_anchor_key(), index);
+        }
         let domain = self.read_choice_domain(request_record.domain().content_id())?;
         let feedback_indexed = self
             .candidate_source_profile(&request_record, &domain)?
@@ -1193,10 +1218,10 @@ impl CampaignRepository {
         self.verify_campaign_closure_anchored(root, &BTreeSet::new())
     }
 
-    fn incremental_closure_anchors(
+    /// Reuses exact immutable roots only after complete head authentication.
+    pub(super) fn authenticated_head_closure_anchors(
         &self,
         parent: &LoadedSnapshot,
-        transition: ContentId,
     ) -> Result<BTreeSet<ContentId>, CampaignRepositoryError> {
         let mut anchors = BTreeSet::from([
             parent.envelope.content_id(),
@@ -1228,7 +1253,16 @@ impl CampaignRepository {
                 self.require_record_kind(step, crate::CampaignRecordKind::PlannerStep)?;
             anchors.extend(envelope.children().iter().map(crate::ChildReference::id));
         }
+        Ok(anchors)
+    }
 
+    fn incremental_closure_anchors(
+        &self,
+        parent: &LoadedSnapshot,
+        transition: ContentId,
+    ) -> Result<BTreeSet<ContentId>, CampaignRepositoryError> {
+        let mut anchors = self.authenticated_head_closure_anchors(parent)?;
+        let roots = parent.snapshot.roots();
         match self.read_fact(transition)? {
             CampaignFact::CampaignDerived(_) => {}
             CampaignFact::BranchRequestIssued(request_id) => {
@@ -1346,7 +1380,7 @@ impl CampaignRepository {
         Ok(anchors)
     }
 
-    fn verify_campaign_closure_anchored(
+    pub(super) fn verify_campaign_closure_anchored(
         &self,
         root: ContentId,
         anchors: &BTreeSet<ContentId>,

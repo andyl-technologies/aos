@@ -596,6 +596,23 @@ fn ancestry_rejects_branch_request_with_an_unrelated_root_change() {
         )
         .expect("frontier root")
         .content_id();
+    let scan_index = repository
+        .planner_scan_index_after(
+            parent.snapshot.roots().exploration,
+            &[(request_id, request.branch_point())],
+            true,
+        )
+        .expect("scan update")
+        .expect("scan index");
+    roots.exploration = repository
+        .merkle
+        .insert(
+            roots.exploration,
+            planner_scan_index_anchor_key(),
+            scan_index,
+        )
+        .expect("scan root")
+        .content_id();
     roots.accounting = repository
         .merkle
         .insert(
