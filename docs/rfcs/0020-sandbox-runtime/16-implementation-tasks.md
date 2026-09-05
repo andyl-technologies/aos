@@ -2037,3 +2037,42 @@ without acquisition. Warning-denied all-feature controller rustdoc and workspace
 all-target checking pass; the latter retains unrelated workspace warnings.
 Strict all-target/all-feature controller Clippy (`--no-deps`), changed-file
 formatting, and diff checks also pass.
+
+### Production compiler and worker VM qualification
+
+`checks.fleet.sandbox-host-worker` builds an explicitly selected, ignored
+kernel test against the real packaged nspawn. It exercises the production
+launch compiler and `SystemdOneShotWorker`, with pinned workspace and network
+objects, shifted identity allocation, and fixed resource limits. Its assertions
+cover distinct supervisor and payload pins, retained-scope refresh, freeze,
+thaw, stop, dead-process confirmation, and rejection of the stopped scope.
+Ordinary host tests do not execute this privileged fixture.
+
+The fixture deliberately supplies an inert guardian dependency. It does not
+prove ownership expiry, deployed MAC enforcement, the hardened Host service,
+controller acquisition, session delivery, or publisher admission. It cannot
+construct production `BackendReadiness`. The production supervisor context
+`aos_nspawn_t` still has no deployed policy definition in this checkout.
+These requirements and full Host-to-session qualification remain open.
+
+The existing platform proof's masked-unit assertions now account for
+`systemctl is-enabled` returning status one for `masked-runtime`. Both VM
+fixtures use the AOS nftables executable's actual `sbin/nft` installation path;
+the initial runs exposed these fixture failures before worker qualification.
+
+Validation: the new fixture's 79 default Host unit tests and strict
+all-target/all-feature Host Clippy (`--no-deps`) pass. The packaged workspace
+build and its check phase pass. The worker VM reached production launch and
+failed: nspawn could not resolve the launcher's pinned workspace through
+`/proc/<launcher>/fd/<root>` (`Permission denied`). Its error also reported
+incomplete fail-stop cleanup after the failed transient unit was collected.
+Descriptor delivery under the closed supervisor capability profile and
+already-absent rollback handling require follow-up; the test remains red.
+
+The combined run stopped on a platform-fixture assertion that incorrectly
+unpacked the driver's three-value byte result. That assertion is corrected
+against the driver implementation but has not been rerun. The worker result
+above comes from a subsequent standalone realization of its already-built
+derivation. Neither VM gate is claimed as passed. The full evaluation check
+passed before the final fixture-path and stopped-pin assertion edits.
+No implementation task is checked off by this prerequisite.

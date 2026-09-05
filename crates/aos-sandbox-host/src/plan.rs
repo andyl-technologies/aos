@@ -45,6 +45,9 @@ use sha2::{Digest as _, Sha256};
 
 use crate::{HostError, Result};
 
+#[cfg(all(test, feature = "kernel-tests"))]
+mod kernel_tests;
+
 const PROCESSES: u8 = 2;
 const MEMORY: u8 = 3;
 const CPU_WEIGHT: u8 = 4;

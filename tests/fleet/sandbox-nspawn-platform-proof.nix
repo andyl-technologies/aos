@@ -188,7 +188,7 @@
           ${pkgs.iproute2}/sbin/ip netns delete aos-proof 2>/dev/null || true
           ${pkgs.iproute2}/sbin/ip netns add aos-proof
           ${pkgs.iproute2}/sbin/ip netns exec aos-proof \
-            ${pkgs.nftables}/bin/nft -f ${networkRules}/rules.nft
+            ${pkgs.nftables}/sbin/nft -f ${networkRules}/rules.nft
         '';
         preStop = ''
           ${pkgs.iproute2}/sbin/ip netns delete aos-proof
@@ -278,7 +278,8 @@ in {
 
     vm.wait_for_unit("multi-user.target", timeout=120)
     vm.succeed("systemctl mask --runtime --now systemd-machined.service")
-    assert vm.succeed("systemctl is-enabled systemd-machined.service").strip() == "masked-runtime"
+    status, output, error = vm.execute("systemctl is-enabled systemd-machined.service")
+    assert status == 1 and output.strip() == b"masked-runtime", (status, output, error)
     vm.fail("systemctl is-active --quiet systemd-machined.service")
     vm.succeed("systemctl start aos-nspawn-platform-proof.service")
     vm.wait_until_succeeds(
@@ -316,7 +317,7 @@ in {
     links = vm.succeed("${pkgs.iproute2}/sbin/ip netns exec aos-proof ${pkgs.iproute2}/sbin/ip -o link show")
     assert "lo:" in links, links
     assert "host0:" not in links, links
-    vm.succeed("${pkgs.iproute2}/sbin/ip netns exec aos-proof ${pkgs.nftables}/bin/nft list table inet aos_nspawn_proof")
+    vm.succeed("${pkgs.iproute2}/sbin/ip netns exec aos-proof ${pkgs.nftables}/sbin/nft list table inet aos_nspawn_proof")
 
     unit = vm.succeed("systemctl show aos-nspawn-platform-proof.service -p CollectMode -p Delegate -p DelegateSubgroup -p KillMode -p NetworkNamespacePath -p NotifyAccess -p OOMPolicy -p Restart -p Slice -p Type")
     assert "Delegate=yes" in unit, unit
@@ -386,7 +387,8 @@ in {
     assert second_observation["root"] == first_observation["root"]
     vm.succeed("systemctl is-active --quiet aos-nspawn-host-observer.service")
     vm.fail("systemctl is-active --quiet systemd-machined.service")
-    assert vm.succeed("systemctl is-enabled systemd-machined.service").strip() == "masked-runtime"
+    status, output, error = vm.execute("systemctl is-enabled systemd-machined.service")
+    assert status == 1 and output.strip() == b"masked-runtime", (status, output, error)
     vm.fail("test -e /run/systemd/machines/aos-proof")
   '';
 }
