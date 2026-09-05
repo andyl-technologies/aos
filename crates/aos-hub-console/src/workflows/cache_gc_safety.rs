@@ -76,7 +76,7 @@ fn GcPlanInspector(client: ApiClient, cache_id: String) -> impl IntoView {
                     <span>"GC plan ID"</span>
                     <input required prop:value=move || plan_id.get() on:input=move |event| plan_id.set(event_target_value(&event))/>
                 </label>
-                <button class="secondary-button" type="submit" disabled=move || busy.get()>"Load exact plan"</button>
+                <div class="form-actions"><button class="secondary-button" type="submit" disabled=move || busy.get()>"Load exact plan"</button></div>
             </form>
             {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
             {move || plan.get().map(|plan| view! { <GcPlanDetail plan=plan/> })}
@@ -208,7 +208,7 @@ fn FirstSweepAcknowledgement(
             <form class="editor-form" on:submit=on_plan>
                 <label><span>"GC plan ID"</span><input required prop:value=move || gc_plan_id.get() on:input=move |event| gc_plan_id.set(event_target_value(&event))/></label>
                 <div class="compact-list-row"><span>"Bound GC resource version"</span><code>{generation_version}</code></div>
-                <button class="danger-button" type="submit" disabled=move || busy.get()>"Review first-sweep acknowledgement"</button>
+                <div class="form-actions"><button class="danger-button" type="submit" disabled=move || busy.get()>"Review first-sweep acknowledgement"</button></div>
             </form>
             {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
             {move || pending.get().map(|reviewed| view! {

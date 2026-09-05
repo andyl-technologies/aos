@@ -3,7 +3,7 @@
 The driver reuses the real Chrome DevTools transport from ``hub-settings-browser``.
 It signs in to an isolated native fixture, discovers each scope's visible settings
 navigation and create links, then records page semantics, layout width, requests,
-and desktop/narrow screenshots for every canonical settings page.  It never submits a mutation form.
+and a bounded desktop/narrow screenshot set.  It never submits a mutation form.
 """
 
 import argparse
@@ -46,8 +46,8 @@ ORGANIZATION_SUFFIXES = (
 )
 REGISTRY_SUFFIXES = (
     "", "placements", "delivery", "caches", "access", "signing-keys", "tokens",
-    "containers", "mirror", "configuration",
-    "change-requests", "publish-history", "operations", "danger",
+    "containers", "mirror", "configuration", "changes", "publish-history", "operations",
+    "danger",
 )
 CACHE_SUFFIXES = (
     "", "placements", "delivery", "objects", "integrations", "access",
@@ -92,6 +92,12 @@ class Audit:
         self.wait("document.readyState === 'complete'", path)
         self.wait("document.querySelector('main.settings-body, form[action=\"/login/password\"]') !== null", path)
         self.chrome.drain_events(0.15)
+
+    def redirect(self, path, destination):
+        self.chrome.call("Page.navigate", {"url": urllib.parse.urljoin(self.url + "/", path.lstrip("/"))})
+        self.wait("document.readyState === 'complete'", path)
+        self.wait(f"location.pathname === {json.dumps(destination)}", f"{path} redirect")
+        self.check(True, f"{path} redirects to its public catalog")
 
     def login(self):
         self.navigate("/login?next=/-/instance")
@@ -161,9 +167,17 @@ class Audit:
         canonical_paths += paths("/-/org/workflow-test", ORGANIZATION_SUFFIXES)
         canonical_paths += paths("/workflow-test/main/-/settings", REGISTRY_SUFFIXES)
         canonical_paths += paths("/-/org/workflow-test/caches/builds", CACHE_SUFFIXES)
-        self.check(len(canonical_paths) == 74, "canonical route matrix contains all 74 settings pages")
+        self.check(len(canonical_paths) == 73, "canonical route matrix contains all 73 settings pages")
         for path in canonical_paths:
             self.inspect(path)
+        catalog_redirects = {
+            "/workflow-test/main/-/settings/packages": "/workflow-test/main/-/packages",
+            "/workflow-test/main/-/settings/documentation": "/workflow-test/main/-/docs",
+            "/workflow-test/main/-/settings/images": "/workflow-test/main/-/images",
+            "/workflow-test/main/-/settings/channels": "/workflow-test/main/-/channels",
+        }
+        for old_path, destination in catalog_redirects.items():
+            self.redirect(old_path, destination)
         self.chrome.drain_events(0.25)
         self.check(not self.chrome.javascript_errors, "no JavaScript exceptions during settings audit")
         self.check(not self.chrome.console_errors, "no console errors during settings audit")

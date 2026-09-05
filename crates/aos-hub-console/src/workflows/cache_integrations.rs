@@ -195,13 +195,15 @@ fn CacheIntegrations(client: ApiClient, cache_id: String) -> impl IntoView {
     view! {
         <div class="workflow-stack">
         <section class="panel resource-panel">
-            <div class="section-heading"><div><p class="section-kicker">"Choose an outcome"</p><h2>"Connect this cache"</h2><p>"Client use, proactive population, and retention are separate settings with separate effects."</p></div></div>
+            <div class="section-heading"><div><p class="section-kicker">"Choose an outcome"</p><h2>"Connect this cache"</h2><p>"Client use, proactive population, and retention are separate settings. This page only shows relationships owned by this cache; registry cache ordering and signing stay with the registry."</p></div></div>
             <div class="resource-grid">
                 <article class="resource-card"><div><span class="resource-kind">"Client configuration"</span><h3>"Use this cache for installs"</h3><p>"Add it to a registry's signed, ordered consumer cache stack. The registry owns that setting."</p></div></article>
-                <button class="resource-card container-repository-card" type="button" on:click=move |_| task.set("populate".to_string())><div><span class="resource-kind">"Availability"</span><h3>"Populate this cache"</h3><p>"Copy and verify a registry's objects here without changing client configuration or retention."</p></div><span class="card-arrow">"→"</span></button>
+                <button class="resource-card" type="button" on:click=move |_| task.set("populate".to_string())><div><span class="resource-kind">"Availability"</span><h3>"Populate this cache"</h3><p>"Copy and verify a registry's objects here without changing client configuration or retention."</p></div><span class="card-arrow">"→"</span></button>
                 <a class="resource-card" href=retention_href><div><span class="resource-kind">"Garbage collection"</span><h3>"Keep registry objects"</h3><p>"Create retention roots from signed catalogs, channels, or releases."</p></div><span class="card-arrow">"→"</span></a>
             </div>
-            <label><span>"Task"</span><select prop:value=move || task.get() on:change=move |event| task.set(event_target_value(&event))><option value="overview">"View current relationships"</option><option value="populate">"Configure population and coverage"</option><option value="preview">"Advanced cross-resource preview"</option></select></label>
+            <div class="compact-form">
+                <label><span>"Task"</span><select prop:value=move || task.get() on:change=move |event| task.set(event_target_value(&event))><option value="overview">"View current relationships"</option><option value="populate">"Configure population and coverage"</option><option value="preview">"Advanced cross-resource preview"</option></select></label>
+            </div>
         </section>
         {move || {
             let client = task_client.clone();
@@ -226,7 +228,7 @@ fn CacheIntegrations(client: ApiClient, cache_id: String) -> impl IntoView {
                 {move || Suspend::new(async move {
                     match integrations.await.as_ref() {
                         Ok(integrations) if integrations.is_empty() => view! {
-                            <p class="muted">"This cache has no registry integrations."</p>
+                            <div class="empty-state"><h3>"No registry relationships"</h3><p>"Connect a registry only when it needs client publication, population, or retention roots from this cache."</p></div>
                         }
                         .into_any(),
                         Ok(integrations) => view! {

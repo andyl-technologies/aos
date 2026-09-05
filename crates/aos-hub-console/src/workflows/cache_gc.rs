@@ -71,6 +71,7 @@ fn GcConfiguredControls(
     view! {
         <GcPolicyEditor client=client.clone() cache_id=cache_id.clone() policy=policy/>
         <section class="panel resource-panel">
+            <div class="section-heading"><div><p class="section-kicker">"Current concurrency boundary"</p><h2>"GC generation"</h2><p>"Every sweep and acknowledgement below is bound to this generation. Changing policy creates a new review boundary before deletion work can begin."</p></div></div>
             <div class="compact-list-row">
                 <div><strong>"GC concurrency fence"</strong><code>{generation_version.clone()}</code></div>
                 <StatusBadge state=generation.state positive=generation_version != "0"/>
@@ -214,7 +215,7 @@ fn GcPolicyEditor(
                 <label><span>"Maximum retry delay (seconds)"</span><input type="number" min="1" required prop:value=move || retry_max.get() on:input=move |event| retry_max.set(event_target_value(&event))/></label>
                 <label><span>"Maximum retry attempts"</span><input type="number" min="1" required prop:value=move || retry_attempts.get() on:input=move |event| retry_attempts.set(event_target_value(&event))/></label>
                 <label><span>"Tombstone retention (seconds)"</span><input type="number" min="1" required prop:value=move || tombstone_retention.get() on:input=move |event| tombstone_retention.set(event_target_value(&event))/></label>
-                <button class="secondary-button" type="submit" disabled=move || busy.get()>"Review GC policy"</button>
+                <div class="form-actions"><button class="secondary-button" type="submit" disabled=move || busy.get()>"Review GC policy"</button></div>
             </form>
             {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
             {move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}
@@ -311,7 +312,7 @@ fn GcPlanner(client: ApiClient, cache_id: String, version: String) -> impl IntoV
                 </div>
             </div>
             <div class="compact-list-row"><span>"Bound GC resource version"</span><code>{version}</code></div>
-            <button class="danger-button" type="button" disabled=move || busy.get() on:click=on_plan>"Create candidate plan"</button>
+            <div class="form-actions"><button class="danger-button" type="button" disabled=move || busy.get() on:click=on_plan>"Create candidate plan"</button></div>
             {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
             {move || exact_plan.get().map(|plan| view! { <GcPlanDetail plan=plan/> })}
             {move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}
@@ -347,7 +348,7 @@ fn GcRuns(client: ApiClient, cache_id: String) -> impl IntoView {
                 {move || Suspend::new(async move {
                     match runs.await.as_ref() {
                         Ok(runs) if runs.is_empty() => view! {
-                            <p class="muted">"No GC runs."</p>
+                            <div class="empty-state"><h3>"No GC runs"</h3><p>"Review a candidate plan to inspect what the current policy would delete. The first sweep requires a separate acknowledgement."</p></div>
                         }
                         .into_any(),
                         Ok(runs) => view! {
