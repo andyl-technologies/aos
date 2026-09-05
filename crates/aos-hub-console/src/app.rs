@@ -6,7 +6,7 @@
 //! transport.
 
 use leptos::ev;
-use leptos::leptos_dom::helpers::window_event_listener;
+use leptos::leptos_dom::helpers::{set_timeout, window_event_listener};
 use leptos::prelude::*;
 use wasm_bindgen::{JsCast, JsValue};
 
@@ -425,18 +425,27 @@ pub(crate) fn navigate(path: &str) {
 }
 
 /// Refreshes the active workflow without unloading the management application.
+///
+/// The refresh runs in the next browser task. Mutation callbacks and their
+/// queued reactive updates can therefore finish before the workflow subtree
+/// is disposed and mounted again.
 pub(crate) fn refresh() {
-    let Some(window) = leptos::web_sys::window() else {
-        return;
-    };
-    match leptos::web_sys::PopStateEvent::new("popstate") {
-        Ok(event) => {
-            let _ = window.dispatch_event(&event);
-        }
-        Err(_) => {
-            let _ = window.location().reload();
-        }
-    }
+    set_timeout(
+        || {
+            let Some(window) = leptos::web_sys::window() else {
+                return;
+            };
+            match leptos::web_sys::PopStateEvent::new("popstate") {
+                Ok(event) => {
+                    let _ = window.dispatch_event(&event);
+                }
+                Err(_) => {
+                    let _ = window.location().reload();
+                }
+            }
+        },
+        std::time::Duration::ZERO,
+    );
 }
 
 fn current_route() -> Option<ConsoleRoute> {
