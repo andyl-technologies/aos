@@ -852,6 +852,10 @@
 }
 
 @media (max-width: 48rem) {
+  .gc-generation-status {
+    flex-direction: column;
+  }
+
   .workflow-step {
     grid-template-columns: minmax(0, 1fr);
   }
