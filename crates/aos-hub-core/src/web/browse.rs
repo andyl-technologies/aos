@@ -1594,15 +1594,21 @@ pub async fn release(svc: &RpcService, headers: &HeaderMap, slug: &str, version:
         Ok(context) => context,
         Err(response) => return response,
     };
-    let (contents, notes, channels, session) = futures_util::future::join4(
+    let (contents, notes, channels, session, record) = futures_util::future::join5(
         super::release_pages::content_counts(&svc.db, registry.id),
         svc.db.release_browse_notes(registry.id, version),
         svc.db.list_channels(registry.id),
         session_indicator(svc, headers),
+        svc.db.release_record(registry.id, version),
     )
     .await;
-    let (Ok(contents), Ok(notes), Ok(channels)) = (contents, notes, channels) else {
+    let (Ok(contents), Ok(notes), Ok(channels), Ok(record)) = (contents, notes, channels, record)
+    else {
         return Rendered::ServiceUnavailable;
+    };
+    let record = match record {
+        Some(json) => verified_release_record(svc, &json).await,
+        None => None,
     };
     Rendered::Html(super::release_pages::release_page(
         &registry,
@@ -1611,9 +1617,31 @@ pub async fn release(svc: &RpcService, headers: &HeaderMap, slug: &str, version:
         &contents.get(version).cloned().unwrap_or_default(),
         notes.as_deref(),
         &channels,
+        record.as_ref(),
         started,
         &session,
     ))
+}
+
+/// Returns the stored release record only when its signed qualification
+/// envelope verifies against this deployment's trusted qualification keys.
+///
+/// The record was fetched from the served registry as-is; the Hub is a
+/// convenience over that surface and must not present qualification claims
+/// it cannot verify. A deployment without an evidence authority renders none.
+async fn verified_release_record(
+    svc: &RpcService,
+    json: &str,
+) -> Option<aos_release::record::ReleaseRecordV1> {
+    let record: aos_release::record::ReleaseRecordV1 =
+        aos_release::canonical::from_slice(json.as_bytes(), "release record").ok()?;
+    let receipt = record.validate().ok()?;
+    let authority = svc.release_evidence.as_ref()?;
+    authority
+        .verify_qualification(&receipt, &record.signed_qualification)
+        .await
+        .ok()?;
+    Some(record)
 }
 
 /// The per-registry health page (HTML): the cache × coverage validation matrix

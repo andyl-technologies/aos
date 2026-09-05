@@ -497,6 +497,53 @@ Firmware, kernel, bootloader, initrd, storage, updater, and harness changes
 invalidate dependent results. Live Hub health always needs a fresh observation.
 Uncertain impact selects the broader campaign.
 
+## Release-train support
+
+Support is a forward-looking promise, separate from the evidence that a release
+passed its gates, and it is reviewed with the rest of the contract.
+[`qualification/modules/support.nix`](../../qualification/modules/support.nix)
+declares it:
+
+```nix
+qualification.support = {
+  default = { kind = "standard"; superseded_after_trains = 2; };
+  trains."2026.9" = { kind = "lts"; supported_until = "2028-09-30"; };
+};
+```
+
+A stable release `major.minor.patch` belongs to the train `major.minor`. A train
+without an entry follows `default`: it stays supported until
+`superseded_after_trains` newer stable trains exist. An explicit entry may give
+a `supported_until` date, which then decides on its own; an `lts` train must
+state one. The module rejects train keys with leading zeros, impossible dates,
+LTS trains without an end date, and a rolling count of zero, and the exported
+contract carries the policy under `support`. Current contracts must state it;
+the Rust contract type validates the same rules.
+
+Each source line states only what it owns. The `train/YYYY.M` branch that
+maintains a train declares `trains."YYYY.M"` for that train alone; `master`
+declares `default`. Registry finalization copies the release's own train entry
+into the signed registry's `[support]` table and refuses a contract that names
+another train, so a backport on an old train can extend that train's support
+without touching newer ones, and no branch can rewrite the roadmap of another.
+The Hub indexes the table with the registry metadata and renders it on the
+Releases page, so changing the promise is a reviewed contract change on the
+owning branch followed by that branch's next release, never a Hub setting.
+
+## Public release record
+
+Registry finalization precedes qualification, so the qualification outcome
+cannot live in the registry tree. After admission, `aos release record`
+composes `aos.release-record/v1` from the frozen plan, the final manifest, the
+signed qualification receipt, and the public report, and the TUF and
+compose-surface steps authorize and serve it beside the release manifest. The
+record carries the result, policy, authority, and admission time; each claim's
+required and achieved assurance and disposition; the train's support
+statement; provenance digests; and the exact signed envelope. Achieved
+assurance describes the evidence at admission; later invalidation is recorded
+in a subsequent release, not by editing the record. See
+[`canonical-releases.md`](canonical-releases.md#compose-the-public-release-record).
+
 ## Policy changes and standards
 
 Review contract changes as release-authority changes. Preserve historical

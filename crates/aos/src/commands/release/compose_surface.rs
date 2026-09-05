@@ -117,6 +117,33 @@ pub(super) fn run(args: &ReleaseComposeSurfaceArgs, printer: &Printer) -> Result
         )),
         &captured.manifest_bytes,
     )?;
+    // The record is installed only as the delegated role authorized it: the
+    // exact bytes named by the target entry, at the entry's path. A record
+    // supplied without an entry, or an entry without a record, fails closed.
+    let authorized_record = set
+        .delegated
+        .signed
+        .targets
+        .iter()
+        .find(|target| target.release_id == plan.release_id)
+        .and_then(|target| target.record.as_ref());
+    match (authorized_record, args.release_record.as_deref()) {
+        (None, None) => {}
+        (Some(entry), Some(path)) => {
+            let bytes = read_canonical_bytes(path, "release record")?;
+            if Sha256Digest::of_bytes(&bytes) != entry.digest
+                || bytes.len() as u64 != entry.length
+                || entry.path != aos_release::record::record_path(plan.release_class, &plan.version)
+            {
+                bail!("release record does not match its delegated TUF target");
+            }
+            install_immutable(&surface.join(&entry.path), &bytes)?;
+        }
+        (Some(_), None) => {
+            bail!("delegated TUF targets authorize a release record that was not supplied")
+        }
+        (None, Some(_)) => bail!("release record supplied without a delegated TUF target entry"),
+    }
     let tuf = surface.join("tuf");
     fs::create_dir_all(&tuf)?;
     for (name, bytes) in [

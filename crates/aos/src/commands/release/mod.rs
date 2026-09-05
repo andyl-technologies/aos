@@ -16,10 +16,11 @@ mod finalize_registry;
 mod hub_transition;
 mod plan;
 mod promote;
-mod qualification_run;
 mod qualification_executor;
+mod qualification_run;
 mod qualification_transition;
 mod qualify;
+mod record;
 mod signer;
 mod stage;
 mod status;
@@ -40,7 +41,9 @@ use crate::cli::ReleaseCommand;
 /// Returns an error when planning, capture, or release verification fails.
 pub fn run(command: &ReleaseCommand, nix: &NixRunner, printer: &Printer) -> Result<()> {
     match command {
-        ReleaseCommand::Qualification { command } => qualification_executor::inspect(command, printer),
+        ReleaseCommand::Qualification { command } => {
+            qualification_executor::inspect(command, printer)
+        }
         ReleaseCommand::Contract(args) => contract::run(args, nix, printer),
         ReleaseCommand::Plan(args) => plan::run(args, nix, printer),
         ReleaseCommand::Build(args) => build::run(args, nix, printer),
@@ -88,6 +91,7 @@ pub fn run(command: &ReleaseCommand, nix: &NixRunner, printer: &Printer) -> Resu
             anyhow::bail!("release channel command must use the asynchronous dispatcher")
         }
         ReleaseCommand::Verify(args) => verify::run(args, printer),
+        ReleaseCommand::Record(args) => record::run(args, printer),
     }
 }
 
@@ -286,6 +290,9 @@ pub fn status_offline(args: &crate::cli::ReleaseStatusArgs, printer: &Printer) -
 ///
 /// # Errors
 /// Returns an error for malformed cases, untrusted downloads, or failed observations.
-pub async fn qualification_offline(command: &crate::cli::ReleaseQualificationCommand, printer: &Printer) -> Result<()> {
+pub async fn qualification_offline(
+    command: &crate::cli::ReleaseQualificationCommand,
+    printer: &Printer,
+) -> Result<()> {
     qualification_executor::run(command, printer).await
 }

@@ -49,6 +49,8 @@ pub enum ReleaseCommand {
     QualifyRun(ReleaseQualifyRunArgs),
     /// Import the exact qualified release into the canonical production Hub
     Promote(ReleasePromoteArgs),
+    /// Compose the public release record from admitted qualification evidence
+    Record(ReleaseRecordArgs),
     /// Install one explicitly approved first registry base in an empty Hub
     Bootstrap(ReleaseBootstrapArgs),
     /// Advance or complete planned production channel rollout
@@ -251,6 +253,10 @@ pub struct ReleaseTimestampRefreshArgs {
 
 #[derive(Args)]
 pub struct ReleaseTufArgs {
+    /// Public release record to authorize beside the manifest
+    #[arg(long)]
+    pub release_record: Option<PathBuf>,
+
     /// Canonical release plan governing all metadata roles
     #[arg(long)]
     pub plan: PathBuf,
@@ -334,6 +340,10 @@ pub struct ReleaseTufArgs {
 
 #[derive(Args)]
 pub struct ReleaseComposeSurfaceArgs {
+    /// Public release record authorized by the delegated targets
+    #[arg(long)]
+    pub release_record: Option<PathBuf>,
+
     /// Canonical release plan governing the publication surface
     #[arg(long)]
     pub plan: PathBuf,
@@ -751,6 +761,45 @@ pub struct ReleaseQualifyRunArgs {
 }
 
 #[derive(Args)]
+pub struct ReleaseRecordArgs {
+    /// Closed finalized bundle already qualified in staging
+    #[arg(long)]
+    pub bundle: PathBuf,
+
+    /// Canonical qualification receipt payload
+    #[arg(long)]
+    pub qualification_receipt: PathBuf,
+
+    /// Exact signed qualification envelope
+    #[arg(long)]
+    pub signed_qualification: PathBuf,
+
+    /// Canonical complete gate/platform qualification report
+    #[arg(long)]
+    pub qualification_report: PathBuf,
+
+    /// Exact signed staging receipt the qualification binds
+    #[arg(long)]
+    pub staging_receipt: PathBuf,
+
+    /// Trusted manifest key as KEY_ID=PATH; repeat to satisfy thresholds
+    #[arg(long = "trusted-key", value_name = "KEY_ID=PATH", required = true)]
+    pub trusted_keys: Vec<String>,
+
+    /// Independently trusted qualification key as KEY_ID=PATH
+    #[arg(
+        long = "qualification-key",
+        value_name = "KEY_ID=PATH",
+        required = true
+    )]
+    pub qualification_keys: Vec<String>,
+
+    /// Destination for the canonical release record JSON
+    #[arg(long)]
+    pub output: PathBuf,
+}
+
+#[derive(Debug, Args)]
 pub struct ReleasePromoteArgs {
     /// Closed finalized bundle already qualified in staging
     #[arg(long)]

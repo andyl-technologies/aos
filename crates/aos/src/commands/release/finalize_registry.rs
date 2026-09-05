@@ -13,6 +13,7 @@ use aos_package::registry::release::{
     RegistryGitSignature, RegistryGitSigningRequest, RegistryObjectSigner,
     RegistryPackagePublication, RegistryReleaseTransaction, require_active_signing_key,
 };
+use aos_package::registry::support::SupportSectionWrite;
 use aos_package::registry_ops::{ContainerReleaseAttachment, load_container_release_attachment};
 use aos_package::types::ProfileScope;
 use aos_package::{DSSE_SIGNATURE_NAMESPACE, ProvenanceSignature, ProvenanceSigner};
@@ -183,6 +184,18 @@ fn validate_transaction_binding(
         || transaction.plan_digest != plan_digest.to_string()
     {
         bail!("registry transaction identity differs from its release plan");
+    }
+    // The support tables a release may write are fixed by its version and
+    // its frozen contract; the transaction must state exactly those.
+    let planned_support = plan
+        .qualification
+        .as_ref()
+        .and_then(|contract| contract.support.as_ref())
+        .map(|policy| SupportSectionWrite::from_policy(&plan.version, policy))
+        .transpose()?
+        .flatten();
+    if transaction.support != planned_support {
+        bail!("registry transaction support tables differ from the release plan's contract");
     }
     let outputs = report
         .outputs

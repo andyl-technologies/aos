@@ -370,6 +370,21 @@ pub struct TufReleaseTargetV1 {
     pub manifest_digest: Sha256Digest,
     /// Exact manifest-envelope byte length.
     pub length: u64,
+    /// The public release record served beside the manifest, when published.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record: Option<TufTargetFileV1>,
+}
+
+/// One additional exact file authorized beside a release manifest.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TufTargetFileV1 {
+    /// Delegated path under `releases/<class>/`.
+    pub path: String,
+    /// Exact file digest.
+    pub digest: Sha256Digest,
+    /// Exact file byte length.
+    pub length: u64,
 }
 
 /// Release-class delegated targets metadata.
@@ -850,6 +865,12 @@ fn validate_delegated(
                 || target.path.contains("/../")
                 || target.path.ends_with('/')
                 || target.length == 0
+                || target.record.as_ref().is_some_and(|record| {
+                    !record.path.starts_with(&prefix)
+                        || record.path.contains("/../")
+                        || record.path == target.path
+                        || record.length == 0
+                })
         })
     {
         bail!("delegated TUF targets do not contain one exact authorized release");
@@ -1204,6 +1225,7 @@ mod tests {
                     release_class: ReleaseClass::Stable,
                     manifest_digest: Sha256Digest::of_bytes("manifest"),
                     length: 123,
+                    record: None,
                 },
             )?,
             signatures: vec![],

@@ -50,13 +50,24 @@ verification state. Public downloads may use a ready CDN or direct delivery
 route. Private downloads stay on the Hub origin so the signed-in browser can
 authorize the exact disk bytes with its session cookie.
 
-The Releases page opens with a support board: one tile per supported stable
-train (its `major.minor`, newest release, and the channels targeting it), the
-newest candidate and edge snapshots, and a count of end-of-life trains. Until a
-registry publishes an explicit support policy, the newest two stable trains and
-any channel-targeted train count as supported. Filters narrow the directory by
-major version, minor version, and status (stable, candidate, edge, or other
-prerelease).
+The Releases page opens with a support board: one tile per supported train,
+newest train first, showing the train's `major.minor`, its LTS marker, its
+newest release (a candidate counts for its train), "Until" and the end date
+when the registry states one, and the channels targeting it. Trains that no longer
+receive updates are not listed, and a train within ninety days of its end date
+is highlighted. The registry's committed `[support]` policy decides; without
+one, the newest two trains and any channel-targeted train count as supported.
+Filters narrow the directory by major version, minor version, and status
+(stable, candidate, edge, other prerelease, or long-term support when the
+registry marks LTS trains).
+
+A release page shows its notes, contents, and rollout. When the registry
+serves a public release record for it, the page adds a Qualification section:
+the result and admission time, the release class, the policy and authority,
+the train's support statement at release, a table of every claim with its
+required and achieved assurance, and provenance digests. The Hub shows the
+section only after verifying the record's signed qualification envelope
+against its trusted keys; the served registry remains the authority.
 
 A channel page shows the target release, the minimum allowed release, and the
 share of the 256 rollout buckets assigned, then the rollout bar and a
