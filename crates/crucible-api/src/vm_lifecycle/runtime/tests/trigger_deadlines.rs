@@ -5,6 +5,16 @@ use super::*;
 #[test]
 fn restored_trigger_state_rearms_the_exact_scheduler_cap_before_run()
 -> Result<(), Box<dyn std::error::Error>> {
+    restored_trigger_deadline(false)
+}
+
+#[test]
+fn restored_trigger_state_reaches_its_deadline_with_no_active_nodes()
+-> Result<(), Box<dyn std::error::Error>> {
+    restored_trigger_deadline(true)
+}
+
+fn restored_trigger_deadline(inactive: bool) -> Result<(), Box<dyn std::error::Error>> {
     let base = initially_violated_scenario();
     let world = base.world();
     let timer = crucible::TimerId {
@@ -38,6 +48,14 @@ fn restored_trigger_state_rearms_the_exact_scheduler_cap_before_run()
         crucible::Seed::from_u64(42),
     )?;
     let mut lifecycle = production_loop_without_backends(&source);
+    if inactive {
+        for node in world.vm_nodes() {
+            lifecycle
+                .inner
+                .loop_impl_mut()
+                .set_vm_node_activity(&node.id, SchedulerNodeActivity::Halted)?;
+        }
+    }
     lifecycle.settle_genesis_entrypoints()?;
     lifecycle.settle_trigger_graph()?;
     assert_eq!(
@@ -61,7 +79,7 @@ fn restored_trigger_state_rearms_the_exact_scheduler_cap_before_run()
 
     // Drive the scheduler model directly; this unit test intentionally owns no
     // real QEMU backend. The packaged flight covers the actual RUN boundary.
-    for _ in 0..world.vm_nodes().len() {
+    for _ in 0..if inactive { 1 } else { world.vm_nodes().len() } {
         let scheduler = lifecycle.inner.loop_impl_mut();
         scheduler.drive_quantum(QuantumRequest {
             configuration: scheduler.configuration().clone(),

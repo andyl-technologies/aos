@@ -91,6 +91,8 @@ in
           grep -Fxq 'node_effective_icount_authenticated=true' result
           grep -Fxq 'exact_checkpoint_evidence_match=true' result
           grep -Fxq 'locked_effect_replay_evidence_match=true' result
+          grep -Fxq 'inactive_world_exact_trigger_without_run=true' result
+          grep -Fxq 'inactive_world_checkpoint_event_log_match=true' result
           grep '^terminal_row=' result > terminal-rows
           test "$(wc -l < terminal-rows)" -eq 2
           test "$(sort -u terminal-rows | wc -l)" -eq 2
