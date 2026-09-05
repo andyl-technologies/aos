@@ -421,6 +421,24 @@ pub enum AttemptWorkerFailure<E> {
     Terminal(E),
 }
 
+impl<E: std::fmt::Display> std::fmt::Display for AttemptWorkerFailure<E> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Retryable(error) => write!(formatter, "retryable execution failure: {error}"),
+            Self::Canceled(error) => write!(formatter, "canceled execution: {error}"),
+            Self::Terminal(error) => write!(formatter, "terminal execution failure: {error}"),
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for AttemptWorkerFailure<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Retryable(error) | Self::Canceled(error) | Self::Terminal(error) => Some(error),
+        }
+    }
+}
+
 /// Durable semantic disposition supplied to model-owned operational cleanup.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AttemptExecutionDisposition {
