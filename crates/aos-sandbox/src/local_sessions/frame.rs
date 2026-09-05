@@ -24,10 +24,13 @@ pub(super) fn validate(
     // holder can receive or delegate its endpoint. Only per-record identity
     // participates in this execution-scope observation.
     let process = record.subject().pidfd();
+    session.execution.check_pins()?;
+    let anchor = session.execution.anchor();
     let info = match hint {
-        None => session.anchor.verify_exact_membership(process)?,
-        Some(hint) => session.anchor.verify_descendant_membership(process, hint)?,
+        None => anchor.verify_exact_membership(process)?,
+        Some(hint) => anchor.verify_descendant_membership(process, hint)?,
     };
+    session.execution.check_pins()?;
     Ok((offset, info))
 }
 

@@ -6,6 +6,9 @@
 //! This module authenticates a channel and scope snapshot, not current authority.
 //! Admission still requires the controller's healthy protected capability and
 //! policy state. Sessions are process-local and do not survive controller restart.
+//! Runtime-issued entries retain the complete original Host and payload proof,
+//! not an extracted cgroup descriptor. Membership checks reobserve those pins
+//! but do not renew the original observation or establish current authority.
 //!
 //! Each incoming sequenced packet has this exact framing:
 //!
@@ -118,6 +121,9 @@ pub enum LocalSessionError {
     /// The kernel subject does not satisfy the retained execution scope.
     #[error("local session membership failed: {0}")]
     Membership(#[from] aos_sandbox_linux::Error),
+    /// The original Host or payload execution behind a runtime-issued session changed.
+    #[error(transparent)]
+    RuntimeObservation(#[from] crate::runtime_scope::RuntimeScopeError),
 }
 
 /// Owns a preallocated fixed-capacity table of live holder channels.
@@ -245,7 +251,37 @@ impl LocalSessionRegistry {
         scope: LocalSessionScope,
         anchor: RetainedCgroupAnchor,
     ) -> Result<PreparedLocalSession<'_>, LocalSessionError> {
+        self.prepare_with_execution(scope, SessionExecutionScope::TrustedAdministration(anchor))
+    }
+
+    pub(crate) fn prepare_runtime(
+        &mut self,
+        runtime: crate::runtime_scope::CurrentRuntimeScope,
+        cache_resource: ResourceId,
+    ) -> Result<PreparedLocalSession<'_>, LocalSessionError> {
+        let binding = runtime.binding();
+        let manifest = binding.manifest().manifest();
+        let scope = LocalSessionScope {
+            holder: binding.holder().ok_or(LocalSessionError::InvalidScope)?,
+            project: manifest.project(),
+            sandbox: manifest.sandbox(),
+            incarnation: manifest.incarnation(),
+            epoch: manifest.epoch(),
+            cache_resource,
+        };
+        self.prepare_with_execution(
+            scope,
+            SessionExecutionScope::CurrentRuntime(Box::new(runtime)),
+        )
+    }
+
+    fn prepare_with_execution(
+        &mut self,
+        scope: LocalSessionScope,
+        execution: SessionExecutionScope,
+    ) -> Result<PreparedLocalSession<'_>, LocalSessionError> {
         validate_scope(scope)?;
+        execution.check_pins()?;
         let index = self
             .slots
             .iter()
@@ -259,7 +295,7 @@ impl LocalSessionRegistry {
             active: ActiveSession {
                 identities,
                 scope,
-                anchor,
+                execution,
                 server,
             },
             client,
@@ -352,8 +388,39 @@ struct SessionIdentities {
 struct ActiveSession {
     identities: SessionIdentities,
     scope: LocalSessionScope,
-    anchor: RetainedCgroupAnchor,
+    execution: SessionExecutionScope,
     server: SeqpacketSocket,
+}
+
+/// Keeps origin evidence intact without treating an old observation as current authority.
+enum SessionExecutionScope {
+    TrustedAdministration(RetainedCgroupAnchor),
+    CurrentRuntime(Box<crate::runtime_scope::CurrentRuntimeScope>),
+}
+
+impl SessionExecutionScope {
+    fn anchor(&self) -> &RetainedCgroupAnchor {
+        match self {
+            Self::TrustedAdministration(anchor) => anchor,
+            Self::CurrentRuntime(runtime) => runtime.observed().anchor(),
+        }
+    }
+
+    fn runtime(&self) -> Option<&crate::runtime_scope::CurrentRuntimeScope> {
+        match self {
+            Self::TrustedAdministration(_) => None,
+            Self::CurrentRuntime(runtime) => Some(runtime),
+        }
+    }
+
+    fn check_pins(&self) -> Result<(), LocalSessionError> {
+        if let Some(runtime) = self.runtime() {
+            runtime.observed().recheck()?;
+        } else {
+            self.anchor().validate_current()?;
+        }
+        Ok(())
+    }
 }
 
 /// Holds an exclusive free slot and undisclosed endpoints pending durable installation.
@@ -384,8 +451,11 @@ impl PreparedLocalSession<'_> {
     }
 
     pub(crate) fn check_pending_anchor(&self) -> Result<(), LocalSessionError> {
-        self.active.anchor.validate_current()?;
-        Ok(())
+        self.active.execution.check_pins()
+    }
+
+    pub(crate) fn runtime(&self) -> Option<&crate::runtime_scope::CurrentRuntimeScope> {
+        self.active.execution.runtime()
     }
 
     /// Installs the prebuilt entry without allocation after capability durability.
@@ -467,6 +537,27 @@ pub struct AuthenticatedLocalRecord<'a> {
 }
 
 impl AuthenticatedLocalRecord<'_> {
+    pub(crate) fn runtime_issuance(
+        &self,
+    ) -> Option<crate::publisher_authority::RuntimeIssuanceEvidenceV1> {
+        self.session
+            .execution
+            .runtime()
+            .map(crate::publisher_authority::RuntimeIssuanceEvidenceV1::from_scope)
+    }
+
+    /// Borrows the historical holder decision retained at runtime-backed issuance.
+    ///
+    /// Trusted-administration sessions return `None`. This identifies the
+    /// channel's origin, not a current assignment or refreshed ownership lease.
+    #[must_use]
+    pub fn runtime_binding(&self) -> Option<&crate::runtime_authority::RuntimeAuthorityBindingV1> {
+        self.session
+            .execution
+            .runtime()
+            .map(crate::runtime_scope::CurrentRuntimeScope::binding)
+    }
+
     /// Closes ingress immediately; a later receive removes the closed slot.
     pub(crate) fn close_channel(&mut self) {
         self.session.server.close();

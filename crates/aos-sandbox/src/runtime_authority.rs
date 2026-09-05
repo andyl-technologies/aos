@@ -620,6 +620,29 @@ fn current_from_journal(
     Ok(Some(binding))
 }
 
+/// Resolves an immutable revision after complete namespace validation.
+///
+/// The caller must retain exclusive journal access from validation through
+/// this lookup. Historical bindings are audit evidence, not current authority.
+pub(crate) fn binding_in_validated_namespace(
+    journal: &Journal,
+    sandbox: SandboxId,
+    revision: u64,
+) -> Result<RuntimeAuthorityBindingV1, RuntimeAuthorityError> {
+    journal.ensure_protected_authority()?;
+    let bytes = journal
+        .get(
+            RecordNamespace::RuntimeAuthority,
+            &binding_key(sandbox, revision),
+        )
+        .ok_or(RuntimeAuthorityError::CorruptState)?;
+    let binding = decode_binding(bytes)?;
+    if binding.sandbox() != sandbox || binding.revision() != revision {
+        return Err(RuntimeAuthorityError::CorruptState);
+    }
+    Ok(binding)
+}
+
 fn pending_key(operation: OperationId) -> Vec<u8> {
     let mut key = Vec::with_capacity(PENDING_KEY_BYTES);
     key.extend_from_slice(PENDING_PREFIX);

@@ -311,6 +311,52 @@ where
         scope.recheck(self.reconciler.journal_mut(), clock)
     }
 
+    /// Issues a local holder channel from an acquired current-runtime scope.
+    ///
+    /// The complete Host and payload proof moves into the live session. Scope
+    /// identities derive from its protected holder decision, while current
+    /// publication policy determines the cache grant. Version-three issuance
+    /// evidence commits before the endpoint escapes. Current authority and the
+    /// original observation deadline are rechecked before and after commit.
+    ///
+    /// The clock must be the same protected adapter used at acquisition. The
+    /// endpoint must be delivered only to the intended execution; invalidate
+    /// its session if delivery fails. Successful issuance does not authorize
+    /// publication, and later admission requires fresh runtime authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed or expired runtime authority, stale execution pins,
+    /// denied policy, capacity, clock, encoding, or protected commit failures.
+    /// Post-commit failure can retain an audited capability without a live session.
+    #[cfg(target_os = "linux")]
+    pub fn provision_current_runtime_ingress<T>(
+        &mut self,
+        sessions: &mut crate::local_sessions::LocalSessionRegistry,
+        runtime: crate::runtime_scope::CurrentRuntimeScope,
+        cache_resource: aos_sandbox_core::ResourceId,
+        config: crate::local_provisioning::LocalProvisioningPolicy,
+        clock: &mut T,
+    ) -> Result<
+        crate::local_sessions::LocalSessionEndpoint,
+        crate::local_provisioning::LocalProvisioningError,
+    >
+    where
+        T: FnMut() -> Result<
+            RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        crate::local_provisioning::provision_runtime(
+            self.reconciler.journal_mut(),
+            sessions,
+            runtime,
+            cache_resource,
+            config,
+            clock,
+        )
+    }
+
     /// Provisions a channel for an explicitly authorized local holder assignment.
     ///
     /// This trusted administration interface requires its caller to authorize

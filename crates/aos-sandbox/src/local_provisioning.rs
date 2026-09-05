@@ -5,6 +5,12 @@
 //! nondelegable publication grant. The capability and issuance evidence commit
 //! before either endpoint escapes; restart never reconstructs live sessions.
 //! This is not an RPC handler, source admission, or publication permission.
+//!
+//! Current-runtime issuance instead consumes a sealed observation, derives its
+//! holder/assignment scope, and retains the whole proof in the live session.
+//! Its version-three audit evidence is distinct from administrative issuance.
+//! A capability may outlive its issuance observation: use requires fresh
+//! runtime admission, not continued reliance on the historical audit record.
 
 #[cfg(all(test, feature = "kernel-tests"))]
 pub(crate) mod tests;
@@ -60,6 +66,9 @@ pub enum LocalProvisioningError {
     /// Channel preparation or final execution-scope validation failed.
     #[error(transparent)]
     Session(#[from] LocalSessionError),
+    /// Current runtime authority, validity, or retained execution validation failed.
+    #[error(transparent)]
+    Runtime(#[from] crate::runtime_scope::CurrentRuntimeScopeError),
     /// Protected policy replay or lookup failed.
     #[error(transparent)]
     Policy(#[from] PublisherPolicyError),
@@ -83,13 +92,38 @@ pub(crate) fn provision<T>(
 where
     T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
 {
-    if !(1..=3600).contains(&config.validity_seconds)
-        || config.clock_provenance == [0; 16]
-        || config.revocation_scope.as_bytes() == &[0; 16]
-    {
-        return Err(LocalProvisioningError::InvalidConfiguration);
-    }
+    validate_config(config)?;
     let prepared = sessions.prepare(scope, anchor)?;
+    provision_prepared(journal, prepared, config, clock)
+}
+
+/// Derives the local scope from current authority while keeping all execution pins owned.
+pub(crate) fn provision_runtime<T>(
+    journal: &mut Journal,
+    sessions: &mut LocalSessionRegistry,
+    runtime: crate::runtime_scope::CurrentRuntimeScope,
+    cache_resource: aos_sandbox_core::ResourceId,
+    config: LocalProvisioningPolicy,
+    clock: &mut T,
+) -> Result<LocalSessionEndpoint, LocalProvisioningError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    validate_config(config)?;
+    runtime.recheck(journal, clock)?;
+    let prepared = sessions.prepare_runtime(runtime, cache_resource)?;
+    provision_prepared(journal, prepared, config, clock)
+}
+
+fn provision_prepared<T>(
+    journal: &mut Journal,
+    prepared: crate::local_sessions::PreparedLocalSession<'_>,
+    config: LocalProvisioningPolicy,
+    clock: &mut T,
+) -> Result<LocalSessionEndpoint, LocalProvisioningError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
     let scope = *prepared.scope();
     let boot = KernelBootId::current()?.into_bytes();
     let observed = clock().map_err(|_| LocalProvisioningError::Clock)?;
@@ -179,11 +213,20 @@ where
     })?;
 
     prepared.check_pending_anchor()?;
-    PublisherCapabilityRegistry::load(journal, config.authority_limits)?
-        .install_local_session_from_trusted_controller(identity, capability, metadata)?;
+    if let Some(runtime) = prepared.runtime() {
+        runtime.recheck(journal, clock)?;
+        PublisherCapabilityRegistry::load(journal, config.authority_limits)?
+            .install_current_runtime_session(identity, capability, metadata, runtime)?;
+    } else {
+        PublisherCapabilityRegistry::load(journal, config.authority_limits)?
+            .install_local_session_from_trusted_controller(identity, capability, metadata)?;
+    }
 
     // A post-commit failure leaves an auditable but unusable issued record. The
     // preparation guard closes both endpoints and no session is activated.
+    if let Some(runtime) = prepared.runtime() {
+        runtime.recheck(journal, clock)?;
+    }
     let fresh = clock().map_err(|_| LocalProvisioningError::Clock)?;
     validate_clock(fresh, boot, config.clock_provenance)?;
     let maximum_elapsed = u64::try_from(expires_at - observed.wall_seconds())
@@ -201,7 +244,20 @@ where
         return Err(LocalProvisioningError::Clock);
     }
     prepared.check_pending_anchor()?;
+    if let Some(runtime) = prepared.runtime() {
+        runtime.check_validity(fresh)?;
+    }
     Ok(prepared.activate())
+}
+
+fn validate_config(config: LocalProvisioningPolicy) -> Result<(), LocalProvisioningError> {
+    if !(1..=3600).contains(&config.validity_seconds)
+        || config.clock_provenance == [0; 16]
+        || config.revocation_scope.as_bytes() == &[0; 16]
+    {
+        return Err(LocalProvisioningError::InvalidConfiguration);
+    }
+    Ok(())
 }
 
 fn validate_clock(

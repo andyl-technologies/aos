@@ -19,6 +19,8 @@
 //! {"version":1,"state":0,"capability":{...complete CapabilityRecord...}}
 //! {"version":2,"state":0,"capability":{...complete CapabilityRecord...},
 //!  "issuance":{...immutable local issuance metadata...},"claims_digest":[...]}
+//! {"version":3,"state":0,"capability":{...complete CapabilityRecord...},
+//!  "issuance":{...},"claims_digest":[...],"runtime":{...historical provenance...}}
 //! ```
 //!
 //! Version one remains the exact administrative record format. Version two
@@ -27,6 +29,10 @@
 //! and decision cross-links, trusted local-session runtime scope, fixed
 //! nondelegable publication grant, validity observation, and nonzero
 //! identities, generations, and commitments.
+//! Version three additionally references an immutable protected holder decision
+//! and the original Host observation's bounded lifetime. Full runtime-authority
+//! replay validates historical cross-links; none of these bytes restore live
+//! execution pins or prove that the historical holder remains current.
 //!
 //! State `0` is active and state `1` is revoked. Both state encodings have
 //! equal length in either version, so a tombstone consumes no additional
@@ -44,12 +50,15 @@ use crate::{
 };
 
 mod issuance;
+mod runtime_issuance;
 pub use issuance::{
     IssuanceDecisionMetadataDraftV1, IssuanceDecisionMetadataV1, ValidatedCapabilityIssuanceV1,
 };
+pub use runtime_issuance::RuntimeIssuanceEvidenceV1;
 
 const RECORD_VERSION_V1: u16 = 1;
 const RECORD_VERSION_V2: u16 = 2;
+const RECORD_VERSION_V3: u16 = 3;
 const RECORD_FAMILY: &[u8] = b"capability/";
 const RECORD_KEY_BYTES: usize = RECORD_FAMILY.len() + 16;
 const MAXIMUM_ENTRIES: usize = 65_536;
@@ -62,6 +71,7 @@ pub struct PublisherAuthorityLimits {
     maximum_entries: usize,
     maximum_record_bytes: usize,
     maximum_materialized_bytes: usize,
+    runtime_limits: crate::runtime_authority::RuntimeAuthorityLimits,
 }
 
 impl PublisherAuthorityLimits {
@@ -89,7 +99,21 @@ impl PublisherAuthorityLimits {
             maximum_entries,
             maximum_record_bytes,
             maximum_materialized_bytes,
+            runtime_limits: crate::runtime_authority::RuntimeAuthorityLimits::default(),
         })
+    }
+
+    /// Sets independent replay bounds for runtime-issued capabilities' historical provenance.
+    ///
+    /// Administrative records need no runtime namespace. Version-three records
+    /// additionally require its complete validation within these bounds.
+    #[must_use]
+    pub const fn with_runtime_limits(
+        mut self,
+        limits: crate::runtime_authority::RuntimeAuthorityLimits,
+    ) -> Self {
+        self.runtime_limits = limits;
+        self
     }
 }
 
@@ -99,6 +123,7 @@ impl Default for PublisherAuthorityLimits {
             maximum_entries: MAXIMUM_ENTRIES,
             maximum_record_bytes: MAXIMUM_RECORD_BYTES,
             maximum_materialized_bytes: MAXIMUM_MATERIALIZED_BYTES,
+            runtime_limits: crate::runtime_authority::RuntimeAuthorityLimits::default(),
         }
     }
 }
@@ -130,6 +155,7 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
         journal.ensure_protected_authority()?;
         let mut entries = 0_usize;
         let mut materialized_bytes = 0_usize;
+        let mut has_runtime_issuance = false;
         for (key, value) in journal.records(RecordNamespace::PublisherAuthority) {
             entries = entries
                 .checked_add(1)
@@ -148,7 +174,20 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
             if materialized_bytes > limits.maximum_materialized_bytes {
                 return Err(PublisherAuthorityError::LimitExceeded("materialized bytes"));
             }
-            decode_record(key, value, limits.maximum_record_bytes)?;
+            let record = decode_record(key, value, limits.maximum_record_bytes)?;
+            has_runtime_issuance |= record.runtime.is_some();
+        }
+
+        if has_runtime_issuance {
+            // Validate the bounded namespace once; individual immutable history
+            // lookups cannot interleave with another writer under this borrow.
+            crate::runtime_authority::RuntimeAuthorityStore::load(journal, limits.runtime_limits)?;
+            for (key, value) in journal.records(RecordNamespace::PublisherAuthority) {
+                let record = decode_record(key, value, limits.maximum_record_bytes)?;
+                if let Some(runtime) = record.runtime {
+                    runtime.validate_provenance(journal, &record.capability)?;
+                }
+            }
         }
 
         Ok(Self {
@@ -203,7 +242,7 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
         transaction_id: [u8; 16],
         capability: CapabilityRecord,
     ) -> Result<CommitResult, PublisherAuthorityError> {
-        self.install_encoded(transaction_id, capability, None)
+        self.install_encoded(transaction_id, capability, None, None)
     }
 
     /// Durably installs a local-session capability with immutable issuance evidence.
@@ -223,7 +262,37 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
         metadata: IssuanceDecisionMetadataV1,
     ) -> Result<CommitResult, PublisherAuthorityError> {
         let claims_digest = metadata.validate_for(&capability)?;
-        self.install_encoded(transaction_id, capability, Some((metadata, claims_digest)))
+        self.install_encoded(
+            transaction_id,
+            capability,
+            Some((metadata, claims_digest)),
+            None,
+        )
+    }
+
+    /// Installs provenance only from an intact, already rechecked live scope.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn install_current_runtime_session(
+        &mut self,
+        transaction_id: [u8; 16],
+        capability: CapabilityRecord,
+        metadata: IssuanceDecisionMetadataV1,
+        scope: &crate::runtime_scope::CurrentRuntimeScope,
+    ) -> Result<CommitResult, PublisherAuthorityError> {
+        let claims_digest = metadata.validate_for(&capability)?;
+        let runtime = RuntimeIssuanceEvidenceV1::from_scope(scope);
+        runtime.validate_for(&metadata)?;
+        crate::runtime_authority::RuntimeAuthorityStore::load(
+            self.journal,
+            self.limits.runtime_limits,
+        )?;
+        runtime.validate_provenance(self.journal, &capability)?;
+        self.install_encoded(
+            transaction_id,
+            capability,
+            Some((metadata, claims_digest)),
+            Some(runtime),
+        )
     }
 
     fn install_encoded(
@@ -231,6 +300,7 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
         transaction_id: [u8; 16],
         capability: CapabilityRecord,
         issuance: Option<(IssuanceDecisionMetadataV1, aos_sandbox_core::ObjectDigest)>,
+        runtime: Option<RuntimeIssuanceEvidenceV1>,
     ) -> Result<CommitResult, PublisherAuthorityError> {
         self.journal.ensure_protected_authority()?;
         let id = capability.id();
@@ -248,10 +318,11 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
         if self.entries >= self.limits.maximum_entries {
             return Err(PublisherAuthorityError::LimitExceeded("entry count"));
         }
-        let value = encode_record_with_issuance(
+        let value = encode_record_complete(
             DurableCapabilityStateV1::Active,
             &capability,
             issuance.as_ref(),
+            runtime.as_ref(),
             self.limits.maximum_record_bytes,
         )?;
         let next_materialized_bytes = self
@@ -278,8 +349,8 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
 
     /// Resolves immutable issuance audit evidence by capability ID.
     ///
-    /// Administrative version-one records return `Ok(None)`. Version-two
-    /// records return their evidence even after capability revocation. This is
+    /// Administrative version-one records return `Ok(None)`. Version-two and
+    /// version-three records return evidence even after capability revocation. This is
     /// audit data, not authority to exercise the capability.
     ///
     /// # Errors
@@ -302,6 +373,7 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
                 metadata,
                 claims_digest,
                 record.state == DurableCapabilityStateV1::Revoked,
+                record.runtime,
             )
         }))
     }
@@ -334,10 +406,11 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
         if record.state == DurableCapabilityStateV1::Revoked {
             return Err(PublisherAuthorityError::Revoked);
         }
-        let value = encode_record_with_issuance(
+        let value = encode_record_complete(
             DurableCapabilityStateV1::Revoked,
             &record.capability,
             record.issuance.as_ref(),
+            record.runtime.as_ref(),
             self.limits.maximum_record_bytes,
         )?;
         let next_materialized_bytes = self
@@ -365,6 +438,9 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
 /// Reports a durable publisher capability registry failure.
 #[derive(Debug, thiserror::Error)]
 pub enum PublisherAuthorityError {
+    /// A runtime-issued capability lost its protected historical binding provenance.
+    #[error(transparent)]
+    RuntimeAuthority(#[from] crate::runtime_authority::RuntimeAuthorityError),
     /// Registry limits are zero or exceed fixed implementation ceilings.
     #[error("publisher authority registry limits are invalid")]
     InvalidLimits,
@@ -431,6 +507,7 @@ struct DecodedCapabilityRecordV1 {
     state: DurableCapabilityStateV1,
     capability: CapabilityRecord,
     issuance: Option<(IssuanceDecisionMetadataV1, aos_sandbox_core::ObjectDigest)>,
+    runtime: Option<RuntimeIssuanceEvidenceV1>,
 }
 
 #[derive(Serialize)]
@@ -482,6 +559,7 @@ fn decode_record(
     match record_version(bytes)? {
         RECORD_VERSION_V1 => decode_record_v1(key_id, bytes, maximum_bytes),
         RECORD_VERSION_V2 => decode_record_v2(key_id, bytes, maximum_bytes),
+        RECORD_VERSION_V3 => runtime_issuance::decode_record_v3(key_id, bytes, maximum_bytes),
         version => Err(PublisherAuthorityError::UnsupportedVersion(version)),
     }
 }
@@ -509,6 +587,7 @@ fn decode_record_v1(
         state,
         capability: decoded.capability,
         issuance: None,
+        runtime: None,
     })
 }
 
@@ -541,6 +620,7 @@ fn decode_record_v2(
         state,
         capability: decoded.capability,
         issuance: Some((decoded.issuance, decoded.claims_digest)),
+        runtime: None,
     })
 }
 
@@ -608,6 +688,25 @@ fn encode_record_with_issuance(
         };
     }
     Ok(writer.bytes)
+}
+
+fn encode_record_complete(
+    state: DurableCapabilityStateV1,
+    capability: &CapabilityRecord,
+    issuance: Option<&(IssuanceDecisionMetadataV1, aos_sandbox_core::ObjectDigest)>,
+    runtime: Option<&RuntimeIssuanceEvidenceV1>,
+    maximum_bytes: usize,
+) -> Result<Vec<u8>, PublisherAuthorityError> {
+    match runtime {
+        Some(runtime) => runtime_issuance::encode_record_v3(
+            state,
+            capability,
+            issuance.ok_or(PublisherAuthorityError::IssuanceCrosslinkMismatch)?,
+            runtime,
+            maximum_bytes,
+        ),
+        None => encode_record_with_issuance(state, capability, issuance, maximum_bytes),
+    }
 }
 
 impl DurableCapabilityStateV1 {
@@ -918,10 +1017,10 @@ pub(crate) mod tests {
             .windows(b"\"version\":1".len())
             .position(|window| window == b"\"version\":1")
             .unwrap_or_else(|| panic!("version field absent"));
-        unknown_version[position + b"\"version\":".len()] = b'3';
+        unknown_version[position + b"\"version\":".len()] = b'4';
         assert!(matches!(
             decode_record(&capability_key(id), &unknown_version, MAXIMUM_RECORD_BYTES),
-            Err(PublisherAuthorityError::UnsupportedVersion(3))
+            Err(PublisherAuthorityError::UnsupportedVersion(4))
         ));
 
         let mut unknown_state = canonical.clone();

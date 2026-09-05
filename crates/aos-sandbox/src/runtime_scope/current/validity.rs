@@ -21,6 +21,14 @@ pub(super) struct ObservationValidity {
 }
 
 impl ObservationValidity {
+    pub(super) const fn initial(&self) -> RawPairedClockSample {
+        self.initial
+    }
+
+    pub(super) const fn expires_wall_seconds(&self) -> i64 {
+        self.expires_wall_seconds
+    }
+
     pub(super) fn new(
         initial: RawPairedClockSample,
         lease: &SignedOwnershipLease,

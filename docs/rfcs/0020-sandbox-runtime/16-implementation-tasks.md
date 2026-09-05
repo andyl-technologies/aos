@@ -1958,3 +1958,48 @@ The controller, core, local protocol, and ownership protocol default-feature
 suites pass 452 unit tests, one integration test, and twelve doctests. Strict
 controller all-target/all-feature Clippy (`--no-deps`), warning-denied rustdoc,
 changed-file formatting, and diff checks pass. No kernel/VM tests were rerun.
+
+### Current-runtime-backed local session issuance
+
+`provision_current_runtime_ingress` now consumes the acquired runtime scope and
+derives holder, project, sandbox, incarnation, and epoch from its protected
+binding. Current cache policy determines the nondelegable grant. The prepared
+session retains the complete Host/payload observation and trust context, not
+an extracted cgroup descriptor. Runtime authority and execution checks bracket
+the durable commit; final capability and observation time bounds are checked
+before activation. A post-commit failure drops the undisclosed endpoints and
+can leave only an audited capability without a live channel.
+
+Capability record version three adds immutable observation provenance and
+references the exact historical holder decision, publication, assignment, and
+lease. Replay validates complete protected runtime history before resolving
+those references. It accepts legitimate later renewal or tombstones without
+pretending that the old issuance decision is current authority. Capability
+revocation preserves all provenance with no increase in record size. Versions
+one and two retain their exact encodings and remain distinguishable from this
+runtime-backed path.
+
+Incoming runtime-issued holder records reobserve the original Host and payload
+pins as well as the actual record subject. Publisher request joining compares
+the complete retained runtime-origin evidence against the durable issuance
+record, rejecting missing, substituted, or cross-profile provenance. This
+still establishes origin consistency, not current publication permission.
+
+New audit regressions cover a fixed version-three golden, closed and bounded
+encoding, timing and identity substitution, historical-link substitution,
+missing runtime history, renewal, revocation, compaction, and protected reopen.
+They deliberately use audit fixtures rather than fabricated live runtime
+proofs. Actual Host-backed acquisition, issuance, delivery, and failure-path
+kernel/VM qualification remain required.
+
+A channel can outlive its original issuance observation. Fresh admission-time
+Host observation, renewal continuity without revoke/rebind ABA, and the
+remaining publisher admission checks are still open; retaining execution pins
+does not renew authority. `SBX-PUB-02` remains unchecked.
+
+The four-crate default-feature suites pass 457 unit tests, one integration
+test, and thirteen doctests. Historical runtime replay has an independently
+configurable bound, with an exhaustion regression. Strict controller
+all-target/all-feature Clippy (`--no-deps`), warning-denied rustdoc, changed-file
+formatting, and diff checks pass. Workspace all-target checking passes with
+warnings in unrelated crates. Kernel/VM tests have not been rerun.

@@ -216,6 +216,7 @@ pub struct ValidatedCapabilityIssuanceV1 {
     metadata: IssuanceDecisionMetadataV1,
     claims_digest: ObjectDigest,
     revoked: bool,
+    runtime: Option<super::RuntimeIssuanceEvidenceV1>,
 }
 
 impl ValidatedCapabilityIssuanceV1 {
@@ -223,11 +224,13 @@ impl ValidatedCapabilityIssuanceV1 {
         metadata: IssuanceDecisionMetadataV1,
         claims_digest: ObjectDigest,
         revoked: bool,
+        runtime: Option<super::RuntimeIssuanceEvidenceV1>,
     ) -> Self {
         Self {
             metadata,
             claims_digest,
             revoked,
+            runtime,
         }
     }
 
@@ -235,6 +238,15 @@ impl ValidatedCapabilityIssuanceV1 {
     #[must_use]
     pub const fn metadata(&self) -> &IssuanceDecisionMetadataV1 {
         &self.metadata
+    }
+
+    /// Borrows runtime-origin evidence only for version-three issuance records.
+    ///
+    /// Older trusted-administration records return `None`. Historical evidence
+    /// does not establish a current holder mapping or restore a live channel.
+    #[must_use]
+    pub const fn runtime(&self) -> Option<&super::RuntimeIssuanceEvidenceV1> {
+        self.runtime.as_ref()
     }
 
     /// Returns the domain-separated digest of the complete capability claims.

@@ -61,7 +61,9 @@ pub enum PublisherJoinError {
 ///
 /// Neither this value nor a successful recheck authorizes a publication effect.
 /// Runtime fields bind the installed session to its issuance record, not to a
-/// current assignment head. Source release, root registry, reservation state,
+/// current assignment head. Runtime-issued sessions must additionally match
+/// their complete historical observation evidence; administrative sessions
+/// cannot substitute for that origin. Source release, root registry, reservation state,
 /// challenge consumption, signing, and completion remain unverified here.
 /// No live proof can be reconstructed from the owned request or an audit receipt.
 ///
@@ -240,6 +242,9 @@ impl JoinedPublisherRequest<'_> {
             .ok_or(PublisherJoinError::IssuanceMismatch)?;
         let claims = capability.claims();
         let metadata = issuance.metadata();
+        if issuance.runtime() != self.holder.runtime_issuance().as_ref() {
+            return Err(PublisherJoinError::IssuanceMismatch);
+        }
         // These runtime comparisons establish only immutable issuance/session
         // consistency. Feeding them to CapabilityRecord::authorize as current
         // assignment state would silently elevate an old scope snapshot.

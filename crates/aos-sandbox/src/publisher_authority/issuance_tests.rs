@@ -48,7 +48,7 @@ fn open(path: &Path) -> Journal {
         .0
 }
 
-fn capability_draft(id: u8, resource: u8) -> CapabilityDraft {
+pub(super) fn capability_draft(id: u8, resource: u8) -> CapabilityDraft {
     let id = CapabilityId::from_bytes([id; 16]);
     let principal = PrincipalId::from_bytes([4; 16]);
     let grant = Grant::new(
@@ -87,7 +87,7 @@ fn capability(id: u8, resource: u8) -> CapabilityRecord {
     CapabilityRecord::issue(capability_draft(id, resource)).unwrap()
 }
 
-fn metadata(id: u8, resource: u8) -> IssuanceDecisionMetadataV1 {
+pub(super) fn metadata(id: u8, resource: u8) -> IssuanceDecisionMetadataV1 {
     IssuanceDecisionMetadataV1::new(IssuanceDecisionMetadataDraftV1 {
         decision_id: AuditId::from_bytes([id; 16]),
         session_id: [13; 16],

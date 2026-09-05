@@ -120,6 +120,24 @@ pub struct CurrentRuntimeScope {
 }
 
 impl CurrentRuntimeScope {
+    /// Checks a final protected sample without extending the observation or reloading state.
+    pub(crate) fn check_validity(
+        &self,
+        sample: RawPairedClockSample,
+    ) -> Result<(), CurrentRuntimeScopeError> {
+        self.validity.check(sample)?;
+        transport::check_deadline(self.validity.deadline())?;
+        Ok(())
+    }
+
+    pub(crate) const fn observation_clock(&self) -> RawPairedClockSample {
+        self.validity.initial()
+    }
+
+    pub(crate) const fn expires_wall_seconds(&self) -> i64 {
+        self.validity.expires_wall_seconds()
+    }
+
     /// Borrows the exact protected holder decision selected during acquisition.
     #[must_use]
     pub const fn binding(&self) -> &RuntimeAuthorityBindingV1 {
