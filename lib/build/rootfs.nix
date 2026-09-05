@@ -110,7 +110,9 @@
   # Module and firmware trees are copied into /usr below. Their source package
   # closures are build inputs, not runtime roots; retaining both forms would
   # duplicate the payload and can pull kernel SDKs into the immutable image.
-  allClosures = [toplevel kernel] ++ extraClosures;
+  # Callers compose capability roots with harness roots; both may retain the
+  # same output. Form their union before the strict reference-graph boundary.
+  allClosures = lib.unique (map builtins.toString ([toplevel kernel] ++ extraClosures));
 
   regInfo = import ./closure-info.nix {inherit pkgs lib;} {
     rootPaths = allClosures;

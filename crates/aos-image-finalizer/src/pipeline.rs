@@ -264,7 +264,7 @@ pub async fn finalize_image_set(
     signing_operations.push(sealed.signing_operation);
     let image_set = FinalizedImageSetV1 {
         schema_version: FINALIZED_IMAGE_SET_V1.to_owned(),
-        assembly_digest: Sha256Digest::of_canonical("aos.image.unsigned-assembly/v1", assembly)?,
+        assembly_digest: Sha256Digest::of_canonical(&assembly.schema_version, assembly)?,
         platform: assembly.platform,
         system_variant: assembly.system_variant.clone(),
         artifacts,

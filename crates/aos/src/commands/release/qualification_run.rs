@@ -40,6 +40,47 @@ const MAX_EXECUTOR_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_EXECUTOR_DIAGNOSTIC_BYTES: u64 = 64 * 1024;
 
 pub(super) async fn run(args: &ReleaseQualifyRunArgs, printer: &Printer) -> Result<()> {
+    if args.output.exists() {
+        bail!(
+            "qualification output already exists: {}",
+            args.output.display()
+        );
+    }
+    let parent = args
+        .output
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    fs::create_dir_all(parent)?;
+    let attempt = tempfile::Builder::new()
+        .prefix(".aos-qualification-attempt-")
+        .tempdir_in(parent)?
+        .keep();
+    let result = run_attempt(args, printer, &attempt).await;
+    match &result {
+        Ok(()) => fs::write(attempt.join("result"), b"passed\n")?,
+        Err(error) => fs::write(attempt.join("failure.txt"), format!("{error:#}\n"))?,
+    }
+    result.with_context(|| format!("qualification attempt retained at {}", attempt.display()))
+}
+
+async fn run_attempt(
+    args: &ReleaseQualifyRunArgs,
+    printer: &Printer,
+    attempt: &Path,
+) -> Result<()> {
+    let phase = match args.phase.as_str() {
+        "staging" => aos_release::qualification::QualificationPhase::Staging,
+        "rollout" => aos_release::qualification::QualificationPhase::Rollout,
+        "complete" => aos_release::qualification::QualificationPhase::Complete,
+        _ => bail!("unknown qualification hold point"),
+    };
+    let staging_phase = phase == aos_release::qualification::QualificationPhase::Staging;
+    let public_origin = if staging_phase {
+        STAGING_HUB
+    } else {
+        "https://aos.andyl.org"
+    };
     let captured = capture::bundle(&args.bundle)?;
     let manifest_keys = verify::load_trusted_keys(&args.trusted_keys)?;
     let summary = aos_release::verify::verify_release(
@@ -50,6 +91,7 @@ pub(super) async fn run(args: &ReleaseQualifyRunArgs, printer: &Printer) -> Resu
     )?;
     let plan: aos_release::plan::ReleasePlanV1 =
         canonical::from_slice(&captured.plan_bytes, "release plan")?;
+    plan.require_current_qualification()?;
     let manifest: ManifestEnvelopeV1 =
         canonical::from_slice(&captured.manifest_bytes, "release manifest")?;
 
@@ -61,20 +103,33 @@ pub(super) async fn run(args: &ReleaseQualifyRunArgs, printer: &Printer) -> Resu
     staging.validate()?;
     let bundle_digest =
         aos_release::verify::bundle_digest(&captured.manifest_bytes, &captured.files)?;
-    if staging.environment != HubEnvironment::Staging
-        || staging.deployment_id != plan.staging_deployment_id
+    let expected_environment = if staging_phase {
+        HubEnvironment::Staging
+    } else {
+        HubEnvironment::Production
+    };
+    let expected_deployment = if staging_phase {
+        &plan.staging_deployment_id
+    } else {
+        &plan.production_deployment_id
+    };
+    if !staging_phase && plan.qualification.is_none() {
+        bail!("rollout qualification requires a shared-contract plan");
+    }
+    if staging.environment != expected_environment
+        || staging.deployment_id != *expected_deployment
         || staging.registry != plan.registry
         || staging.release_id != plan.release_id
         || staging.manifest_digest != summary.manifest_digest
         || staging.bundle_digest != bundle_digest
-        || staging.staging_receipt_digest.is_some()
+        || (staging_phase && staging.staging_receipt_digest.is_some())
     {
         bail!("staging receipt does not bind the qualification input");
     }
     hub_transition::verify_deployment(
         &hub_transition::public_client()?,
-        STAGING_HUB,
-        &plan.staging_deployment_id,
+        public_origin,
+        expected_deployment,
     )
     .await?;
 
@@ -85,62 +140,206 @@ pub(super) async fn run(args: &ReleaseQualifyRunArgs, printer: &Printer) -> Resu
     let timeout = bounded_timeout(args.executor_timeout_seconds, "executor")?;
     let platform_subjects = artifact_platform_subjects(&manifest);
 
-    let mut evidence = Vec::new();
-    let mut reports = BTreeMap::new();
-    for gate in &plan.gates {
-        for (platform, subjects) in &platform_subjects {
-            let request = QualificationExecutorRequestV1 {
-                schema_version: QUALIFICATION_EXECUTOR_REQUEST_V1.to_owned(),
+    let cases = if plan.qualification.is_some() {
+        aos_release::qualification_evidence::cases(&plan, &manifest.payload, phase)?
+            .into_iter()
+            .map(Some)
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let mut requests = Vec::new();
+    if plan.qualification.is_some() {
+        for case in cases.into_iter().flatten() {
+            let platform = case.platform.unwrap_or(Platform::X86_64Linux);
+            requests.push(QualificationExecutorRequestV1 {
+                schema_version: "aos.release.qualification-executor-request/v2".to_owned(),
                 registry: plan.registry.clone(),
                 release_id: plan.release_id.clone(),
                 staging_receipt_digest: staging_digest,
                 manifest_digest: summary.manifest_digest,
-                policy_id: gate.policy_id.clone(),
-                policy_digest: gate.policy_digest,
-                platform: *platform,
-                subjects: subjects.clone(),
+                policy_id: case.requirement_id.clone(),
+                policy_digest: case.policy_digest,
+                platform,
+                subjects: case.subjects.clone(),
                 objects: public_objects(
+                    public_origin,
                     &plan.registry,
                     &manifest,
                     &captured.manifest_bytes,
-                    subjects,
+                    &case.subjects,
                 )?,
-                nonce: executor_nonce(&args.executor_nonce, &gate.policy_id, *platform),
-            };
-            request.validate()?;
-            let executable = executors
-                .get(platform)
-                .context("missing qualification executor")?;
-            let identity = identities
-                .get(platform)
-                .context("missing qualification executor identity")?;
-            let response = invoke_executor(executable, timeout, &request).await?;
-            verify_executor_response(&request, identity, &response)?;
-            let report_bytes = canonical::canonical_json(&response.report)?;
-            if reports
-                .insert(response.evidence.id.clone(), report_bytes)
-                .is_some()
-            {
-                bail!("qualification executor returned a duplicate evidence id");
+                nonce: executor_nonce(&args.executor_nonce, &case.id, platform),
+                qualification_case: Some(case),
+            });
+        }
+    } else {
+        for gate in &plan.gates {
+            for (platform, subjects) in &platform_subjects {
+                requests.push(QualificationExecutorRequestV1 {
+                    schema_version: QUALIFICATION_EXECUTOR_REQUEST_V1.to_owned(),
+                    qualification_case: None,
+                    registry: plan.registry.clone(),
+                    release_id: plan.release_id.clone(),
+                    staging_receipt_digest: staging_digest,
+                    manifest_digest: summary.manifest_digest,
+                    policy_id: gate.policy_id.clone(),
+                    policy_digest: gate.policy_digest,
+                    platform: *platform,
+                    subjects: subjects.clone(),
+                    objects: public_objects(
+                        public_origin,
+                        &plan.registry,
+                        &manifest,
+                        &captured.manifest_bytes,
+                        subjects,
+                    )?,
+                    nonce: executor_nonce(&args.executor_nonce, &gate.policy_id, *platform),
+                });
             }
-            evidence.push(response.evidence);
         }
     }
+    let mut evidence = Vec::new();
+    let mut reports = BTreeMap::new();
+    for request in requests.into_iter().filter(|_| args.report_input.is_none()) {
+        request.validate()?;
+        let executable = executors
+            .get(&request.platform)
+            .context("missing applicable qualification executor")?;
+        let identity = identities
+            .get(&request.platform)
+            .context("missing applicable executor identity")?;
+        let case_name = Sha256Digest::of_bytes(canonical::to_vec(&request)?).hex();
+        fs::write(
+            attempt.join(format!("{case_name}-request.json")),
+            canonical::to_vec(&request)?,
+        )?;
+        let response = invoke_executor(executable, timeout, &request).await?;
+        fs::write(
+            attempt.join(format!("{case_name}-response.json")),
+            canonical::to_vec(&response)?,
+        )?;
+        verify_executor_response(&request, identity, &response)?;
+        let report_bytes = canonical::canonical_json(&response.report)?;
+        if reports
+            .insert(response.evidence.id.clone(), report_bytes)
+            .is_some()
+        {
+            bail!("qualification executor returned a duplicate evidence id");
+        }
+        evidence.push(response.evidence);
+    }
     evidence.sort_by(|left, right| left.id.cmp(&right.id));
+    let mut resolved_args = args.clone();
+    if resolved_args.qualified_at == "now" {
+        resolved_args.qualified_at =
+            humantime::format_rfc3339(std::time::SystemTime::now()).to_string();
+    }
+    let args = &resolved_args;
     let report = QualificationReportV1 {
-        schema_version: QUALIFICATION_REPORT_V1.to_owned(),
+        claims: if args.report_input.is_none()
+            && plan.qualification.as_ref().is_some_and(|contract| {
+                contract.schema_version == aos_release::qualification::CONTRACT_V2
+            }) {
+            Some(aos_release::qualification_evidence::assess_observations(
+                &plan,
+                &manifest.payload,
+                phase,
+                &evidence,
+                &args.qualified_at,
+            )?)
+        } else {
+            None
+        },
+        phase: plan.qualification.as_ref().map(|_| phase),
+        admitted_at: plan
+            .qualification
+            .as_ref()
+            .map(|_| args.qualified_at.clone()),
+        schema_version: if plan.qualification.is_some() {
+            "aos.release.qualification-report/v3"
+        } else {
+            QUALIFICATION_REPORT_V1
+        }
+        .to_owned(),
         staging_receipt_digest: staging_digest,
         manifest_digest: summary.manifest_digest,
         evidence,
     };
-    report.validate(
-        &plan,
-        &manifest.payload,
-        staging_digest,
-        summary.manifest_digest,
-    )?;
+    let report = if let Some(path) = &args.report_input {
+        let bytes = capture::control_file(path, "prepared qualification report")?;
+        canonical::require_canonical(&bytes, "prepared qualification report")?;
+        canonical::from_slice::<QualificationReportV1>(&bytes, "prepared qualification report")?
+    } else {
+        report
+    };
+    if plan.qualification.is_some() {
+        if report.phase != Some(phase)
+            || report.staging_receipt_digest != staging_digest
+            || report.manifest_digest != summary.manifest_digest
+        {
+            bail!("prepared qualification report differs from this release hold point");
+        }
+        report.validate_phase(&plan, &manifest.payload, phase, &args.qualified_at)?;
+    } else {
+        report.validate(
+            &plan,
+            &manifest.payload,
+            staging_digest,
+            summary.manifest_digest,
+        )?;
+    }
     let report_bytes = canonical::to_vec(&report)?;
+    if let Some(path) = &args.report_input {
+        let parent = path
+            .parent()
+            .context("prepared report lacks parent directory")?;
+        for record in &report.evidence {
+            let bytes = capture::control_file(
+                &parent.join("reports").join(report_filename(&record.id)),
+                "prepared executor report",
+            )?;
+            if Sha256Digest::of_bytes(&bytes) != record.report_digest {
+                bail!("prepared executor report digest differs from its observation");
+            }
+            reports.insert(record.id.clone(), bytes);
+        }
+    }
 
+    if args.prepare_only {
+        persist(
+            &args.output,
+            &staging_bytes,
+            &report_bytes,
+            &reports,
+            b"",
+            b"",
+            b"",
+            &[],
+        )?;
+        printer.success("Collected qualification observations for independent review; no authority signature was requested");
+        return Ok(());
+    }
+    super::qualification_transition::verify_reviews(
+        &plan,
+        &report_bytes,
+        &args.review_receipts,
+        &manifest_keys,
+    )?;
+    if !staging_phase {
+        return super::qualification_transition::sign(
+            args,
+            &plan,
+            summary.manifest_digest,
+            staging_digest,
+            &report_bytes,
+            &reports,
+            &staging_bytes,
+            phase,
+            printer,
+        )
+        .await;
+    }
     let receipt = QualificationReceiptV1 {
         schema_version: aos_release::receipt::QUALIFICATION_RECEIPT_V1.to_owned(),
         staging_receipt_digest: staging_digest,
@@ -162,12 +361,14 @@ pub(super) async fn run(args: &ReleaseQualifyRunArgs, printer: &Printer) -> Resu
         &canonical::to_vec(&receipt)?,
         &signed_receipt,
         &signing_response,
+        &args.review_receipts,
     )?;
 
     if printer.json_if_active(&serde_json::json!({
         "schema_version": "aos.release.qualify-run-result/v1",
         "release_id": plan.release_id,
         "evidence_count": report.evidence.len(),
+        "claims": report.claims,
         "qualification_report_digest": receipt.report_digest,
         "output": args.output,
     })) {
@@ -210,12 +411,13 @@ fn artifact_platform_subjects(manifest: &ManifestEnvelopeV1) -> BTreeMap<Platfor
 }
 
 fn public_objects(
+    origin: &str,
     registry: &str,
     manifest: &ManifestEnvelopeV1,
     manifest_bytes: &[u8],
     subjects: &[String],
 ) -> Result<Vec<QualificationObjectV1>> {
-    let base = url::Url::parse(&format!("{STAGING_HUB}/{registry}/"))?;
+    let base = url::Url::parse(&format!("{origin}/{registry}/"))?;
     let subjects = subjects.iter().map(String::as_str).collect::<BTreeSet<_>>();
     let mut objects = manifest
         .payload
@@ -254,7 +456,7 @@ fn public_objects(
     Ok(objects)
 }
 
-fn verify_executor_response(
+pub(super) fn verify_executor_response(
     request: &QualificationExecutorRequestV1,
     identity: &str,
     response: &QualificationExecutorResponseV1,
@@ -265,13 +467,37 @@ fn verify_executor_response(
         bail!("qualification executor response does not bind its exact request");
     }
     response.evidence.validate()?;
-    let expected_id = format!("qualification/{}/{}", request.policy_id, request.platform);
+    let expected_id = request.qualification_case.as_ref().map_or_else(
+        || format!("qualification/{}/{}", request.policy_id, request.platform),
+        |case| format!("qualification/{}", case.id),
+    );
+    let expected_platform = request
+        .qualification_case
+        .as_ref()
+        .map_or(Some(request.platform), |case| case.platform);
+    if let Some(case) = &request.qualification_case {
+        if !response
+            .evidence
+            .qualification
+            .as_ref()
+            .is_some_and(|observation| {
+                case.digest()
+                    .is_ok_and(|digest| observation.case_digest == digest)
+            })
+        {
+            bail!("qualification response lacks its exact case observation");
+        }
+    }
     if response.evidence.id != expected_id
         || response.evidence.policy_id != request.policy_id
         || response.evidence.policy_digest != request.policy_digest
-        || response.evidence.platform != Some(request.platform)
+        || response.evidence.platform != expected_platform
         || response.evidence.subjects != request.subjects
-        || response.evidence.result != GateResult::Passed
+        || (response.evidence.result != GateResult::Passed
+            && request
+                .qualification_case
+                .as_ref()
+                .is_none_or(|case| case.claim.as_ref().is_none_or(|claim| claim.blocks_release)))
         || response.evidence.authority_id != identity
         || response.evidence.nonce.as_deref() != Some(request.nonce.as_str())
         || response.evidence.report_digest
@@ -282,22 +508,40 @@ fn verify_executor_response(
     Ok(())
 }
 
-async fn invoke_executor(
+pub(super) async fn invoke_executor(
     executable: &Path,
     timeout: Duration,
     request: &QualificationExecutorRequestV1,
 ) -> Result<QualificationExecutorResponseV1> {
+    invoke_scenario(executable, timeout, request, Path::new("/")).await
+}
+
+pub(super) async fn invoke_scenario(
+    executable: &Path,
+    timeout: Duration,
+    request: &QualificationExecutorRequestV1,
+    directory: &Path,
+) -> Result<QualificationExecutorResponseV1> {
     super::signer::validate_signer_executable(executable)?;
     let input = canonical::to_vec(request)?;
     let mut child = Command::new(executable)
+        .process_group(0)
         .env_clear()
-        .current_dir("/")
+        .current_dir(directory)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
         .with_context(|| format!("starting qualification executor {}", executable.display()))?;
+    // A scenario may own QEMU and remote-transport children. Closing only its
+    // immediate process on timeout would leave those resources running.
+    let group = child
+        .id()
+        .and_then(|id| i32::try_from(id).ok())
+        .and_then(rustix::process::Pid::from_raw)
+        .context("qualification executor lacks a process group")?;
+    let _group = ScenarioGroup(group);
     let mut stdin = child
         .stdin
         .take()
@@ -328,6 +572,10 @@ async fn invoke_executor(
     let (status, response_bytes, diagnostics) = tokio::time::timeout(timeout, exchange)
         .await
         .context("qualification executor timed out")??;
+    if directory != Path::new("/") {
+        fs::write(directory.join("scenario-stdout"), &response_bytes)?;
+        fs::write(directory.join("scenario-stderr"), &diagnostics)?;
+    }
     if !status.success() {
         bail!(
             "qualification executor failed: {}",
@@ -339,6 +587,14 @@ async fn invoke_executor(
     }
     canonical::require_canonical(&response_bytes, "qualification executor response")?;
     canonical::from_slice(&response_bytes, "qualification executor response")
+}
+
+struct ScenarioGroup(rustix::process::Pid);
+
+impl Drop for ScenarioGroup {
+    fn drop(&mut self) {
+        let _ = rustix::process::kill_process_group(self.0, rustix::process::Signal::KILL);
+    }
 }
 
 async fn read_limited(reader: impl AsyncRead + Unpin, maximum: u64) -> Result<Vec<u8>> {
@@ -452,9 +708,6 @@ fn platform_map<T>(
             bail!("duplicate {label} for {platform}");
         }
     }
-    if result.keys().copied().collect::<BTreeSet<_>>() != Platform::ALL.into_iter().collect() {
-        bail!("{label} mappings must name all four canonical platforms exactly once");
-    }
     Ok(result)
 }
 
@@ -509,7 +762,7 @@ fn bounded_timeout(seconds: u64, label: &str) -> Result<Duration> {
     Ok(Duration::from_secs(seconds))
 }
 
-fn persist(
+pub(super) fn persist(
     output: &Path,
     staging: &[u8],
     report: &[u8],
@@ -517,6 +770,7 @@ fn persist(
     receipt: &[u8],
     signed_receipt: &[u8],
     signing_response: &[u8],
+    review_paths: &[PathBuf],
 ) -> Result<()> {
     if output.exists() {
         bail!(
@@ -543,12 +797,17 @@ fn persist(
         ("signed-qualification.json", signed_receipt),
         ("qualification-signing-response.json", signing_response),
     ] {
-        write_file(&root.join(name), bytes)?;
+        if !bytes.is_empty() {
+            write_file(&root.join(name), bytes)?;
+        }
     }
     for (id, bytes) in executor_reports {
+        write_file(&reports.join(report_filename(id)), bytes)?;
+    }
+    for (index, path) in review_paths.iter().enumerate() {
         write_file(
-            &reports.join(format!("{}.json", id.replace('/', "--"))),
-            bytes,
+            &root.join(format!("review-{index}.json")),
+            &capture::control_file(path, "qualification review")?,
         )?;
     }
     File::open(&reports)?.sync_all()?;
@@ -571,6 +830,14 @@ fn write_file(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Hashes the full id so slash replacement cannot alias two reports.
+pub(super) fn report_filename(id: &str) -> String {
+    format!(
+        "{}.json",
+        Sha256Digest::separated("aos.release.report-path/v1", id.as_bytes()).hex()
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -583,7 +850,8 @@ mod tests {
             .map(|platform| format!("{platform}={}", executable.display()))
             .collect::<Vec<_>>();
         assert!(platform_paths(&all).is_ok());
-        assert!(platform_paths(&all[..3]).is_err());
+        assert!(platform_paths(&all[..3]).is_ok());
+        assert!(platform_paths(&[all[0].clone(), all[0].clone()]).is_err());
         Ok(())
     }
 

@@ -272,9 +272,10 @@ fn verify_file_closure(envelope: &ManifestEnvelopeV1, files: &[CapturedFile]) ->
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use base64::Engine as _;
     use ed25519_dalek::{Signer as _, SigningKey};
+    use std::collections::BTreeMap;
 
     use crate::RELEASE_JOURNAL_ENTRY_V1;
     use crate::artifact::{
@@ -426,6 +427,8 @@ mod tests {
             .collect();
         let plan = ReleasePlanV1 {
             schema_version: crate::RELEASE_PLAN_V1.to_owned(),
+            qualification: None,
+            qualification_predecessor: None,
             release_id: "release-2026.9.0".to_owned(),
             version: "2026.9.0".to_owned(),
             release_class: ReleaseClass::Stable,
@@ -598,6 +601,7 @@ mod tests {
             }],
             artifacts,
             evidence: vec![EvidenceRecord {
+                qualification: None,
                 id: "full-matrix-qualification".to_owned(),
                 policy_id: "full-matrix-qualification-v1".to_owned(),
                 policy_digest: digest("full-matrix-qualification-policy"),
@@ -690,6 +694,328 @@ mod tests {
         })
     }
 
+    pub(crate) fn qualification_fixture()
+    -> anyhow::Result<(ReleasePlanV1, crate::manifest::ReleaseManifestV1)> {
+        let fixture = release_fixture()?;
+        let mut plan: ReleasePlanV1 = canonical::from_slice(&fixture.plan, "fixture plan")?;
+        let envelope: ManifestEnvelopeV1 =
+            canonical::from_slice(&fixture.envelope, "fixture manifest")?;
+        let mut manifest = envelope.payload;
+        let mut policy: crate::qualification::QualificationContract = canonical::from_slice(
+            include_bytes!("../tests/fixtures/qualification-contract.json"),
+            "contract",
+        )?;
+        policy.package_rules = plan
+            .packages
+            .iter()
+            .map(|package| crate::qualification::PackageRule {
+                name: package.name.clone(),
+                role: crate::qualification::PackageRole::GeneralCatalog,
+                inherit_dependency_obligations: true,
+            })
+            .collect();
+        plan.schema_version = crate::RELEASE_PLAN_V2.into();
+        plan.qualification_predecessor =
+            Some(crate::qualification_evidence::QualificationPredecessor {
+                registry: plan.registry.clone(),
+                release_id: "preceding-snapshot".into(),
+                manifest_digest: digest("predecessor"),
+            });
+        plan.gates = policy.gates(plan.release_class)?;
+        plan.public_evidence_policy_digest = policy.digest()?;
+        plan.qualification = Some(policy);
+        for platform in Platform::LINUX {
+            let (mut value, _) = artifact(
+                format!("oci/{platform}"),
+                ArtifactKind::OciManifest,
+                Some(platform),
+                None,
+                Vec::new(),
+            )?;
+            value.kind = ArtifactKind::OciManifest;
+            manifest.artifacts.push(value);
+        }
+        let (value, _) = artifact(
+            "oci/index".into(),
+            ArtifactKind::OciIndex,
+            None,
+            None,
+            Vec::new(),
+        )?;
+        manifest.artifacts.push(value);
+        let metadata =
+            crate::canonical::canonical_json(&crate::qualification_fixture::metadata()?)?;
+        for artifact in manifest
+            .artifacts
+            .iter_mut()
+            .filter(|artifact| artifact.kind == ArtifactKind::ImageMetadata)
+        {
+            artifact.sha256 = Sha256Digest::of_bytes(&metadata);
+            artifact.size_bytes = u64::try_from(metadata.len())?;
+        }
+        plan.validate()?;
+        Ok((plan, manifest))
+    }
+
+    pub(crate) fn observations(
+        plan: &ReleasePlanV1,
+        manifest: &crate::manifest::ReleaseManifestV1,
+        phase: crate::qualification::QualificationPhase,
+    ) -> anyhow::Result<Vec<EvidenceRecord>> {
+        crate::qualification_evidence::cases(plan, manifest, phase)?
+            .into_iter()
+            .map(|case| {
+                let assessment_only = case.claim.as_ref().is_some_and(|claim| {
+                    claim.minimum_assurance == crate::qualification::claims::AssuranceLevel::A1
+                });
+                let assessment = crate::qualification_fixture::assessment(&case)?;
+                let environment = if assessment_only {
+                    None
+                } else {
+                    crate::qualification_fixture::environment(&case)?
+                };
+                let capabilities = crate::qualification_fixture::capabilities(&case)?;
+                let environment_digest = environment
+                    .as_ref()
+                    .map(|environment| environment.digest())
+                    .transpose()?
+                    .or_else(|| {
+                        assessment
+                            .as_ref()
+                            .map(|assessment| assessment.scope_digest)
+                    })
+                    .unwrap_or(digest("environment"));
+                let mut operations = crate::qualification_fixture::measurements();
+                if case.target.is_none() {
+                    operations = BTreeMap::from([("requests".into(), 1)]);
+                }
+                if assessment_only {
+                    operations.clear();
+                }
+                Ok(EvidenceRecord {
+                    id: format!("qualification/{}", case.id),
+                    policy_id: case.requirement_id.clone(),
+                    policy_digest: case.policy_digest,
+                    platform: case.platform,
+                    subjects: case.subjects.clone(),
+                    result: GateResult::Passed,
+                    report_digest: digest("observed-report"),
+                    authority_id: "fixture-executor".into(),
+                    nonce: Some("a".repeat(64)),
+                    started_at: "2026-09-01T00:00:00Z".into(),
+                    finished_at: "2026-09-01T00:00:01Z".into(),
+                    qualification: Some(crate::qualification_evidence::QualificationObservation {
+                        environment,
+                        capabilities,
+                        assessment,
+                        case_digest: case.digest()?,
+                        executor_digest: digest("executor"),
+                        environment_digest,
+                        checks: case
+                            .checks
+                            .iter()
+                            .map(|check| {
+                                (
+                                    check.clone(),
+                                    crate::qualification_evidence::CheckObservation {
+                                        passed: true,
+                                        detail: "fixture observation".into(),
+                                    },
+                                )
+                            })
+                            .collect(),
+                        observed_seconds: if assessment_only { 0 } else { 1 },
+                        operations,
+                        predecessor: case.predecessor,
+                    }),
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn shared_contract_has_exact_package_image_and_release_cases() -> anyhow::Result<()> {
+        use crate::qualification::{QualificationPhase, QualificationScope};
+        let (plan, manifest) = qualification_fixture()?;
+        let cases =
+            crate::qualification_evidence::cases(&plan, &manifest, QualificationPhase::Staging)?;
+        let package_cases: Vec<_> = cases
+            .iter()
+            .filter(|case| case.requirement_id == "package-function")
+            .collect();
+        assert_eq!(package_cases.len(), 4);
+        assert!(
+            package_cases
+                .iter()
+                .all(|case| case.subjects.len() == 1 && case.platform.is_some())
+        );
+        assert!(
+            cases
+                .iter()
+                .filter(|case| case.requirement_id.starts_with("image-"))
+                .all(|case| case.platform.is_some_and(Platform::supports_images))
+        );
+        assert!(
+            cases
+                .iter()
+                .find(|case| case.requirement_id == "operator-recovery")
+                .unwrap()
+                .platform
+                .is_none()
+        );
+        let policy = plan.qualification.as_ref().unwrap();
+        assert!(
+            policy
+                .requirements
+                .iter()
+                .any(|gate| gate.scope == QualificationScope::Containers)
+        );
+        let records = observations(&plan, &manifest, QualificationPhase::Staging)?;
+        crate::qualification_evidence::validate_observations(
+            &plan,
+            &manifest,
+            QualificationPhase::Staging,
+            &records,
+            "2026-09-01T00:00:02Z",
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn qualification_binds_private_plan_without_requesting_it_as_a_public_object()
+    -> anyhow::Result<()> {
+        use crate::qualification::QualificationPhase;
+        let (plan, manifest) = qualification_fixture()?;
+        let private_plan = manifest
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.kind == ArtifactKind::ReleasePlan)
+            .unwrap();
+        let mut changed_plan = plan.clone();
+        changed_plan.release_id = "different-release".into();
+        for phase in [
+            QualificationPhase::Build,
+            QualificationPhase::Staging,
+            QualificationPhase::Rollout,
+            QualificationPhase::Complete,
+        ] {
+            let original = crate::qualification_evidence::cases(&plan, &manifest, phase)?;
+            let changed = crate::qualification_evidence::cases(&changed_plan, &manifest, phase)?;
+            assert!(!original.is_empty());
+            for (before, after) in original.iter().zip(&changed) {
+                assert!(!before.subjects.contains(&private_plan.id));
+                assert_ne!(before.digest()?, after.digest()?);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn missing_oci_artifact_and_removed_plan_gate_fail_closed() -> anyhow::Result<()> {
+        let (mut plan, mut manifest) = qualification_fixture()?;
+        plan.gates.pop();
+        assert!(plan.validate().is_err());
+        let (plan, _) = qualification_fixture()?;
+        manifest
+            .artifacts
+            .retain(|artifact| artifact.kind != ArtifactKind::OciManifest);
+        assert!(
+            crate::qualification_evidence::cases(
+                &plan,
+                &manifest,
+                crate::qualification::QualificationPhase::Staging
+            )
+            .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn qualification_rejects_missing_failed_replayed_and_stale_observations() -> anyhow::Result<()>
+    {
+        use crate::qualification::QualificationPhase;
+        let (plan, manifest) = qualification_fixture()?;
+        let records = observations(&plan, &manifest, QualificationPhase::Staging)?;
+        let check = |records: &[EvidenceRecord], now| {
+            crate::qualification_evidence::validate_observations(
+                &plan,
+                &manifest,
+                QualificationPhase::Staging,
+                records,
+                now,
+            )
+        };
+        let now = "2026-09-01T00:00:02Z";
+        assert!(check(&records[1..], now).is_err());
+        let mut failed = records.clone();
+        failed[0].result = GateResult::Failed;
+        assert!(check(&failed, now).is_err());
+        let mut replay = records.clone();
+        replay[0].qualification.as_mut().unwrap().case_digest = digest("another-case");
+        assert!(check(&replay, now).is_err());
+        let mut missing = records.clone();
+        missing[0].qualification.as_mut().unwrap().checks.clear();
+        assert!(check(&missing, now).is_err());
+        let mut future = records.clone();
+        future[0].finished_at = "2026-09-02T00:00:00Z".into();
+        assert!(check(&future, now).is_err());
+        assert!(check(&records, "2026-10-02T00:00:02Z").is_err());
+        let mut wrong_prior = records.clone();
+        let update = wrong_prior
+            .iter_mut()
+            .find(|record| {
+                record
+                    .qualification
+                    .as_ref()
+                    .is_some_and(|observation| observation.predecessor.is_some())
+            })
+            .unwrap();
+        update.qualification.as_mut().unwrap().predecessor = None;
+        assert!(check(&wrong_prior, now).is_err());
+        assert!(
+            crate::qualification_evidence::validate_observations(
+                &plan,
+                &manifest,
+                QualificationPhase::Complete,
+                &records,
+                now
+            )
+            .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn completion_requires_measured_soak_and_nonzero_operation_denominators() -> anyhow::Result<()>
+    {
+        use crate::qualification::QualificationPhase;
+        let (plan, manifest) = qualification_fixture()?;
+        let mut records = observations(&plan, &manifest, QualificationPhase::Complete)?;
+        let check = |records: &[EvidenceRecord]| {
+            crate::qualification_evidence::validate_observations(
+                &plan,
+                &manifest,
+                QualificationPhase::Complete,
+                records,
+                "2026-09-15T00:00:01Z",
+            )
+        };
+        assert!(check(&records).is_err());
+        for record in &mut records {
+            record.finished_at = "2026-09-15T00:00:00Z".into();
+            record.qualification.as_mut().unwrap().observed_seconds = 1209600;
+        }
+        check(&records)?;
+        records[0]
+            .qualification
+            .as_mut()
+            .unwrap()
+            .operations
+            .clear();
+        assert!(check(&records).is_err());
+        Ok(())
+    }
+
     fn entry(
         sequence: u64,
         previous_entry_digest: Option<Sha256Digest>,
@@ -722,6 +1048,123 @@ mod tests {
             ReleaseState::Staged,
         );
         assert!(verify_journal(&[first, skipped]).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn qualification_admission_is_fresh_and_bound_to_the_frozen_plan() -> anyhow::Result<()> {
+        use crate::qualification_admission::QualificationAdmissionV1;
+        let (plan, _) = qualification_fixture()?;
+        let role = plan
+            .signers
+            .iter()
+            .find(|role| role.role == SignerRole::Qualification)
+            .unwrap();
+        let mut admission = QualificationAdmissionV1 {
+            schema_version: "aos.release.qualification-admission/v1".into(),
+            phase: crate::qualification::QualificationPhase::Complete,
+            rollout: None,
+            registry: plan.registry.clone(),
+            release_id: plan.release_id.clone(),
+            plan_digest: Sha256Digest::of_bytes(canonical::to_vec(&plan)?),
+            manifest_digest: digest("manifest"),
+            publication_receipt_digest: digest("publication"),
+            journal_digest: digest("journal"),
+            report_digest: digest("report"),
+            policy_digest: plan.public_evidence_policy_digest,
+            authority_id: role.key_ids[0].clone(),
+            admitted_at: "2026-09-01T00:00:00Z".into(),
+        };
+        assert!(admission.validate(&plan, "2026-09-01T00:10:00Z").is_ok());
+        assert!(admission.validate(&plan, "2026-09-01T00:10:01Z").is_err());
+        assert!(admission.validate(&plan, "2026-08-31T23:59:59Z").is_err());
+        admission.plan_digest = digest("another plan");
+        assert!(admission.validate(&plan, "2026-09-01T00:00:00Z").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn independent_review_rejects_missing_duplicate_and_replayed_acceptance() -> anyhow::Result<()>
+    {
+        use crate::qualification_admission::{QualificationReviewV1, verify_reviews};
+        use crate::receipt::{
+            RECEIPT_SIGNATURE_DOMAIN, SIGNED_RECEIPT_V1, SignedReceiptEnvelopeV1,
+        };
+        let fixture = release_fixture()?;
+        let (plan, _) = qualification_fixture()?;
+        let report = b"exact reviewed observations";
+        let review = QualificationReviewV1 {
+            schema_version: "aos.release.qualification-review/v1".into(),
+            plan_digest: Sha256Digest::of_bytes(canonical::to_vec(&plan)?),
+            report_digest: Sha256Digest::of_bytes(report),
+            authority_id: fixture.key.key_id.clone(),
+            accepted: true,
+        };
+        let signature = SigningKey::from_bytes(&[7_u8; 32]).sign(
+            Sha256Digest::separated(RECEIPT_SIGNATURE_DOMAIN, canonical::to_vec(&review)?)
+                .as_bytes(),
+        );
+        let envelope = SignedReceiptEnvelopeV1 {
+            schema_version: SIGNED_RECEIPT_V1.into(),
+            key_id: fixture.key.key_id.clone(),
+            payload: serde_json::to_value(review)?,
+            signature_base64: base64::engine::general_purpose::STANDARD
+                .encode(signature.to_bytes()),
+        };
+        let bytes = canonical::to_vec(&envelope)?;
+        let keys = [fixture.key];
+        assert!(verify_reviews(&plan, report, &[bytes.clone()], &keys).is_ok());
+        assert!(verify_reviews(&plan, report, &[], &keys).is_err());
+        assert!(verify_reviews(&plan, report, &[bytes.clone(), bytes.clone()], &keys).is_err());
+        assert!(verify_reviews(&plan, b"changed report", &[bytes], &keys).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn observations_cannot_be_replayed_for_changed_bytes_with_the_same_artifact_ids()
+    -> anyhow::Result<()> {
+        use crate::qualification::QualificationPhase;
+        let (plan, mut manifest) = qualification_fixture()?;
+        let evidence = observations(&plan, &manifest, QualificationPhase::Staging)?;
+        let artifact = manifest
+            .artifacts
+            .iter_mut()
+            .find(|artifact| artifact.kind == ArtifactKind::PackageNar)
+            .unwrap();
+        artifact.sha256 = digest("changed package bytes, unchanged logical artifact id");
+        assert!(
+            crate::qualification_evidence::validate_observations(
+                &plan,
+                &manifest,
+                QualificationPhase::Staging,
+                &evidence,
+                "2026-09-01T00:00:02Z",
+            )
+            .is_err()
+        );
+        let (mut another_plan, manifest) = qualification_fixture()?;
+        another_plan.release_id = "another-release-with-the-same-artifacts".into();
+        assert!(
+            crate::qualification_evidence::validate_observations(
+                &another_plan,
+                &manifest,
+                QualificationPhase::Staging,
+                &evidence,
+                "2026-09-01T00:00:02Z",
+            )
+            .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn archival_plans_are_readable_but_cannot_authorize_new_publication() -> anyhow::Result<()> {
+        let fixture = release_fixture()?;
+        let legacy: ReleasePlanV1 = canonical::from_slice(&fixture.plan, "archival plan")?;
+        legacy.validate()?;
+        assert!(legacy.require_current_qualification().is_err());
+        let (current, _) = qualification_fixture()?;
+        current.require_current_qualification()?;
         Ok(())
     }
 

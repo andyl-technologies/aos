@@ -67,6 +67,7 @@ async fn main() -> Result<()> {
         Some("prepare") => prepare(&arguments[1..]),
         Some("sign-exchange-v1") => signer_exchange(),
         Some("completion") => completion(&arguments[1..]),
+        Some("review") => review(&arguments[1..]),
         Some("maintainer-upstream-proxy") => maintainer_upstream_proxy(&arguments[1..]).await,
         None => qualification_executor().await,
         Some(command) => bail!("unknown release fleet fixture command: {command}"),
@@ -119,7 +120,7 @@ fn prepare(arguments: &[String]) -> Result<()> {
             },
         })
         .collect::<Vec<_>>();
-    let plan = release_plan(base_commit, package_cells.clone());
+    let plan = release_plan(base_commit, package_cells.clone())?;
     plan.validate()?;
     let plan_bytes = canonical::to_vec(&plan)?;
     write_new(output.join("release-plan.json"), &plan_bytes)?;
@@ -142,6 +143,46 @@ fn prepare(arguments: &[String]) -> Result<()> {
             &fs::read(&destination)?,
         )?);
     }
+    for (id, kind, platform) in Platform::LINUX
+        .into_iter()
+        .flat_map(|platform| {
+            [
+                (
+                    format!("image/server/{platform}"),
+                    ArtifactKind::RawImage,
+                    Some(platform),
+                ),
+                (
+                    format!("image/server/{platform}/metadata"),
+                    ArtifactKind::ImageMetadata,
+                    Some(platform),
+                ),
+                (
+                    format!("oci/{platform}"),
+                    ArtifactKind::OciManifest,
+                    Some(platform),
+                ),
+            ]
+        })
+        .chain([(String::from("oci/index"), ArtifactKind::OciIndex, None)])
+    {
+        let path = if kind == ArtifactKind::RawImage {
+            format!("releases/candidate/{RELEASE_VERSION}/fixtures/{id}/raw")
+        } else {
+            format!("releases/candidate/{RELEASE_VERSION}/fixtures/{id}")
+        };
+        let bytes = if kind == ArtifactKind::ImageMetadata {
+            canonical::canonical_json(&qualification_fixture::metadata()?)?
+        } else {
+            format!("synthetic release protocol fixture: {id}\n").into_bytes()
+        };
+        write_new(output.join(&path), &bytes)?;
+        let mut artifact = record(id, kind, platform, &path, &bytes)?;
+        if matches!(kind, ArtifactKind::RawImage | ArtifactKind::ImageMetadata) {
+            artifact.system_variant = Some("server".into());
+        }
+        artifacts.push(artifact);
+    }
     let gate_report = canonical::to_vec(&json!({
         "schema_version": "aos.release.fleet-gate-report/v1",
         "result": "passed"
@@ -159,7 +200,7 @@ fn prepare(arguments: &[String]) -> Result<()> {
     artifacts.push(gate_record);
     artifacts.sort_by(|left, right| left.id.cmp(&right.id));
 
-    let manifest = ReleaseManifestV1 {
+    let mut manifest = ReleaseManifestV1 {
         schema_version: aos_release::RELEASE_MANIFEST_V1.into(),
         release_id: RELEASE_ID.into(),
         version: RELEASE_VERSION.into(),
@@ -181,9 +222,26 @@ fn prepare(arguments: &[String]) -> Result<()> {
                 })
                 .collect(),
         }],
-        images: Vec::new(),
+        images: vec![aos_release::manifest::ImageResult {
+            system_variant: "server".into(),
+            platforms: Platform::LINUX
+                .into_iter()
+                .map(|platform| PlatformCell {
+                    platform,
+                    decision: MatrixCell::Artifact {
+                        artifact: FinalArtifactSet {
+                            artifact_ids: vec![
+                                format!("image/server/{platform}"),
+                                format!("image/server/{platform}/metadata"),
+                            ],
+                        },
+                    },
+                })
+                .collect(),
+        }],
         artifacts,
         evidence: vec![EvidenceRecord {
+            qualification: None,
             id: "fleet-preflight".into(),
             policy_id: "fleet-release-gate-v1".into(),
             policy_digest: digest("fleet-release-gate-policy"),
@@ -197,6 +255,22 @@ fn prepare(arguments: &[String]) -> Result<()> {
             finished_at: TIME.into(),
         }],
     };
+    manifest.evidence = aos_release::qualification_evidence::cases(
+        &plan,
+        &manifest,
+        aos_release::qualification::QualificationPhase::Build,
+    )?
+    .iter()
+    .map(|case| {
+        fixture_evidence(
+            case,
+            gate_report_digest,
+            "fleet-preflight-authority",
+            None,
+            &humantime::format_rfc3339(std::time::SystemTime::now()).to_string(),
+        )
+    })
+    .collect::<Result<Vec<_>>>()?;
     manifest.validate(&plan)?;
     let manifest_digest = Sha256Digest::of_canonical(MANIFEST_DOMAIN, &manifest)?;
     let signing_key = SigningKey::from_bytes(&RELEASE_SEED);
@@ -231,7 +305,7 @@ fn prepare(arguments: &[String]) -> Result<()> {
 fn release_plan(
     base_commit: &str,
     platforms: Vec<PlatformCell<PlannedArtifactSet>>,
-) -> ReleasePlanV1 {
+) -> Result<ReleasePlanV1> {
     let roles = [
         SignerRole::Registry,
         SignerRole::Cache,
@@ -245,8 +319,10 @@ fn release_plan(
         SignerRole::TufTimestamp,
         SignerRole::Channel,
     ];
-    ReleasePlanV1 {
+    let mut plan = ReleasePlanV1 {
         schema_version: aos_release::RELEASE_PLAN_V1.into(),
+        qualification: None,
+        qualification_predecessor: None,
         release_id: RELEASE_ID.into(),
         version: RELEASE_VERSION.into(),
         release_class: ReleaseClass::Candidate,
@@ -304,7 +380,54 @@ fn release_plan(
         },
         public_evidence_policy_digest: digest("fleet-public-evidence-policy"),
         restricted_operator_policy_digest: digest("fleet-restricted-operator-policy"),
-    }
+    };
+    let mut contract: aos_release::qualification::QualificationContract = canonical::from_slice(
+        include_bytes!("../../../aos-release/tests/fixtures/qualification-contract.json"),
+        "fixture contract",
+    )?;
+    contract.package_rules = vec![aos_release::qualification::PackageRule {
+        name: "fleet-package".into(),
+        role: aos_release::qualification::PackageRole::GeneralCatalog,
+        inherit_dependency_obligations: true,
+    }];
+    plan.schema_version = aos_release::RELEASE_PLAN_V2.into();
+    plan.gates = contract.gates(plan.release_class)?;
+    plan.public_evidence_policy_digest = contract.digest()?;
+    plan.qualification = Some(contract);
+    plan.qualification_predecessor = Some(
+        aos_release::qualification_evidence::QualificationPredecessor {
+            registry: plan.registry.clone(),
+            release_id: "fleet-predecessor".into(),
+            manifest_digest: digest("fleet-predecessor"),
+        },
+    );
+    plan.images = vec![aos_release::plan::ImagePlan {
+        system_variant: "server".into(),
+        platforms: Platform::LINUX
+            .into_iter()
+            .map(|platform| PlatformCell {
+                platform,
+                decision: MatrixCell::Artifact {
+                    artifact: PlannedArtifactSet {
+                        artifacts: [
+                            format!("image/server/{platform}"),
+                            format!("image/server/{platform}/metadata"),
+                        ]
+                        .into_iter()
+                        .map(|id| PlannedArtifact {
+                            id,
+                            derivation: None,
+                            output: None,
+                            store_path: None,
+                            source_store_paths: Vec::new(),
+                        })
+                        .collect(),
+                    },
+                },
+            })
+            .collect(),
+    }];
+    Ok(plan)
 }
 
 fn inventory_tree(
@@ -488,6 +611,9 @@ fn signer_exchange() -> Result<()> {
     Ok(())
 }
 
+#[path = "../../../aos-release/tests/support/qualification.rs"]
+mod qualification_fixture;
+
 async fn qualification_executor() -> Result<()> {
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input)?;
@@ -530,26 +656,116 @@ async fn qualification_executor() -> Result<()> {
         "platform": request.platform,
         "objects_verified": request.objects.len()
     });
+    let case = request
+        .qualification_case
+        .as_ref()
+        .context("fleet executor requires v2 case")?;
+    let now = humantime::format_rfc3339(std::time::SystemTime::now()).to_string();
     let response = QualificationExecutorResponseV1 {
         schema_version: QUALIFICATION_EXECUTOR_RESPONSE_V1.into(),
         request_digest: request.digest()?,
-        evidence: EvidenceRecord {
-            id: format!("qualification/{}/{}", request.policy_id, request.platform),
-            policy_id: request.policy_id.clone(),
-            policy_digest: request.policy_digest,
-            platform: Some(request.platform),
-            subjects: request.subjects.clone(),
-            result: GateResult::Passed,
-            report_digest: Sha256Digest::of_bytes(&canonical::canonical_json(&report)?),
-            authority_id: format!("fleet-executor-{}", request.platform),
-            nonce: Some(request.nonce.clone()),
-            started_at: TIME.into(),
-            finished_at: TIME.into(),
-        },
+        evidence: fixture_evidence(
+            case,
+            Sha256Digest::of_bytes(canonical::canonical_json(&report)?),
+            &format!("fleet-executor-{}", request.platform),
+            Some(request.nonce.clone()),
+            &now,
+        )?,
         report,
     };
     std::io::stdout().write_all(&canonical::to_vec(&response)?)?;
     Ok(())
+}
+
+/// Generates synthetic observations only for the isolated publication protocol fixture.
+fn fixture_evidence(
+    case: &aos_release::qualification_evidence::QualificationCase,
+    report_digest: Sha256Digest,
+    authority: &str,
+    nonce: Option<String>,
+    finish: &str,
+) -> Result<EvidenceRecord> {
+    use aos_release::qualification_evidence::{CheckObservation, QualificationObservation};
+    let seconds = if case.phase == aos_release::qualification::QualificationPhase::Complete {
+        14 * 24 * 60 * 60
+    } else {
+        0
+    };
+    let finished = humantime::parse_rfc3339(finish)?;
+    let environment = qualification_fixture::environment(case)?;
+    let capabilities = qualification_fixture::capabilities(case)?;
+    let environment_digest = environment
+        .as_ref()
+        .map(|environment| environment.digest())
+        .transpose()?
+        .unwrap_or(digest("synthetic-protocol-environment"));
+    Ok(EvidenceRecord {
+        qualification: Some(QualificationObservation {
+            environment,
+            capabilities,
+            assessment: qualification_fixture::assessment(case)?,
+            case_digest: case.digest()?,
+            executor_digest: digest("synthetic-protocol-executor"),
+            environment_digest,
+            checks: case
+                .checks
+                .iter()
+                .map(|id| {
+                    (
+                        id.clone(),
+                        CheckObservation {
+                            passed: true,
+                            detail: "Synthetic protocol fixture; no OS qualification claim".into(),
+                        },
+                    )
+                })
+                .collect(),
+            observed_seconds: seconds,
+            operations: if case.target.is_some() {
+                qualification_fixture::measurements()
+            } else {
+                std::collections::BTreeMap::from([("synthetic-requests".into(), 1)])
+            },
+            predecessor: case.predecessor.clone(),
+        }),
+        id: format!("qualification/{}", case.id),
+        policy_id: case.requirement_id.clone(),
+        policy_digest: case.policy_digest,
+        platform: case.platform,
+        subjects: case.subjects.clone(),
+        result: GateResult::Passed,
+        report_digest,
+        authority_id: authority.into(),
+        nonce,
+        started_at: humantime::format_rfc3339(finished - std::time::Duration::from_secs(seconds))
+            .to_string(),
+        finished_at: finish.into(),
+    })
+}
+
+fn review(arguments: &[String]) -> Result<()> {
+    if arguments.len() != 3 {
+        bail!("usage: review PLAN REPORT OUTPUT");
+    }
+    let payload = aos_release::qualification_admission::QualificationReviewV1 {
+        schema_version: "aos.release.qualification-review/v1".into(),
+        plan_digest: Sha256Digest::of_bytes(fs::read(&arguments[0])?),
+        report_digest: Sha256Digest::of_bytes(fs::read(&arguments[1])?),
+        authority_id: RELEASE_KEY_ID.into(),
+        accepted: true,
+    };
+    let digest = Sha256Digest::separated(RECEIPT_SIGNATURE_DOMAIN, canonical::to_vec(&payload)?);
+    let signature = SigningKey::from_bytes(&RELEASE_SEED).sign(digest.as_bytes());
+    write_new(
+        PathBuf::from(&arguments[2]),
+        &canonical::to_vec(&SignedReceiptEnvelopeV1 {
+            schema_version: SIGNED_RECEIPT_V1.into(),
+            key_id: RELEASE_KEY_ID.into(),
+            payload: serde_json::to_value(payload)?,
+            signature_base64: base64::engine::general_purpose::STANDARD
+                .encode(signature.to_bytes()),
+        })?,
+    )
 }
 
 fn completion(arguments: &[String]) -> Result<()> {

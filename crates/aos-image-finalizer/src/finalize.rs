@@ -28,6 +28,8 @@ const MODULE_SIGNATURE_OVERHEAD_BYTES: u64 = 4 * 1024 * 1024;
 /// Reconstructed module-bearing inputs ready for verity and UKI construction.
 #[derive(Debug)]
 pub struct PreparedFilesystemsV1 {
+    /// Build-derived inventory of the final signed filesystem contents.
+    pub capabilities: Option<aos_release::qualification::capabilities::ImageCapabilities>,
     /// Deterministically rebuilt signed EROFS root.
     pub root_filesystem: PathBuf,
     /// Deterministically rebuilt normal initrd.
@@ -218,7 +220,27 @@ pub async fn prepare_filesystems(
         .await?;
     }
 
+    let capabilities = if assembly.schema_version == crate::assembly::UNSIGNED_IMAGE_ASSEMBLY_V2 {
+        let config = input.join("kernel.config");
+        capture_copy(
+            assembly_root,
+            assembly,
+            AssemblyFileKind::KernelConfig,
+            &config,
+        )?;
+        Some(crate::capabilities::capture(
+            &assembly.kernel_release,
+            &config,
+            &root_tree,
+            &initrd_tree,
+            &recovery_a_tree,
+            &recovery_b_tree,
+        )?)
+    } else {
+        None
+    };
     Ok(PreparedFilesystemsV1 {
+        capabilities,
         root_filesystem,
         initrd,
         recovery_initrd_a,

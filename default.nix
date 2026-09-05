@@ -1074,6 +1074,10 @@ in {
   # Pure, fail-closed release eligibility data. The release coordinator reads
   # this value with strict JSON evaluation before resolving any derivation.
   releasePackageInventory = pkgs.platformSupport.releaseInventory pkgs.allPackageNames;
+  releaseQualification = import ./qualification {
+    inherit lib;
+    packageNames = pkgs.allPackageNames;
+  };
   releasePackageDerivations =
     pkgs.platformSupport.releaseDerivations
     hostPlatform.system
@@ -1091,6 +1095,7 @@ in {
   # Checks hierarchy — module checks come from systems, everything else
   # stays at the top level.
   checks = rec {
+    qualification = import ./tests/qualification {inherit pkgs lib build fleet container;};
     rust = {
       cargo-artifacts = import ./tests/cargo-artifacts {inherit pkgs;};
       aos = pkgs.aos;
@@ -1234,7 +1239,7 @@ in {
     container = rec {
       phase0 = import ./tests/containers/phase0.nix {
         inherit pkgs lib;
-        goldenRoots = discoverSystems.server.config.environment.systemPackages;
+        goldenRoots = discoverSystems.server.config.aos.containers.definitions.aos.packageRoots;
       };
       eval = import ./tests/containers/eval.nix {
         inherit pkgs lib mkSystem;
@@ -1252,7 +1257,7 @@ in {
         inherit pkgs lib;
         containerImage = containerImages.aos;
         aosSystem = hostPlatform.system;
-        goldenRoots = discoverSystems.server.config.environment.systemPackages;
+        goldenRoots = discoverSystems.server.config.aos.containers.definitions.aos.packageRoots;
         # These are negative exact-path assertions, not test dependencies. Drop
         # string context so proving their absence does not build or retain the
         # bootable system artifacts the container deliberately excludes.

@@ -1,5 +1,7 @@
 # `andyl/main` registry runbook
 
+Use the shared [qualification contract](qualification.md) and [release checklist](release-checklist.md). Production selects stronger obligations in the same contract.
+
 `andyl/main` is the supported registry. It is a separate trust and lifecycle
 domain from `andyl/testing`; testing releases and testing roots never promote
 into it.
@@ -80,7 +82,8 @@ Creating the topology row does not authorize or publish a base.
   without a prerelease component, and the `stable` channel.
 - Edge plans are rejected. Publish experimental work to `andyl/testing`.
 
-Run every phase in [`canonical-releases.md`](canonical-releases.md), including
+Follow the [release checklist](release-checklist.md), using
+[`canonical-releases.md`](canonical-releases.md) for command arguments, including
 staging, public-byte qualification, production promotion, partitioned channel
 advance, completion approval, TUF timestamp publication, and offline
 verification. Preserve the full evidence set for the retention period. Stable

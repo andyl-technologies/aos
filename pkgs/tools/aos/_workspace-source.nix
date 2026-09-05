@@ -30,10 +30,12 @@ in
         || lib.hasPrefix "${repoRootString}/lib" pathString
         || lib.hasPrefix "${repoRootString}/modules" pathString
         || lib.hasPrefix "${repoRootString}/pkgs" pathString
+        || lib.hasPrefix "${repoRootString}/qualification" pathString
         || lib.hasPrefix "${repoRootString}/stdenv" pathString
         || lib.hasPrefix "${repoRootString}/systems" pathString
         || pathString == "${repoRootString}/tests"
         || lib.hasPrefix "${repoRootString}/tests/fleet" pathString
+        || lib.hasPrefix "${repoRootString}/tests/qualification" pathString
         || lib.hasPrefix "${repoRootString}/tests/vm" pathString
         || pathString == "${repoRootString}/default.nix"
         || pathString == "${repoRootString}/flake.nix"
