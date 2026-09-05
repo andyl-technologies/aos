@@ -5,6 +5,8 @@
     reason = "Integration fixture failures intentionally panic."
 )]
 
+pub(crate) mod join;
+
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
@@ -126,12 +128,12 @@ fn only_execution_instance(journal: &Journal) -> PublisherInstanceId {
     PublisherInstanceId::from_bytes(suffix.try_into().expect("instance key width"))
 }
 
-struct RegisteredFixture {
-    local: Fixture,
-    sessions: PublisherSessionRegistry,
+pub(crate) struct RegisteredFixture {
+    pub(crate) local: Fixture,
+    pub(crate) sessions: PublisherSessionRegistry,
     _transport: ListenerFixture,
-    client: SeqpacketSocket,
-    registration: PublisherExecutionRegistrationV1,
+    pub(crate) client: SeqpacketSocket,
+    pub(crate) registration: PublisherExecutionRegistrationV1,
 }
 
 fn registered_fixture() -> RegisteredFixture {

@@ -9,6 +9,9 @@
 mod challenge;
 pub use challenge::PendingPublisherChallengeReceipt;
 pub(crate) use challenge::register_challenge;
+mod join;
+pub(crate) use join::join_holder_request;
+pub use join::{JoinedPublisherRequest, PublisherJoinError, PublisherJoinPolicy};
 
 use aos_sandbox_core::ownership_lease::RawPairedClockSample;
 use aos_sandbox_core::{Operation, PublisherInstanceId, ResourceKind, Selector};
@@ -267,4 +270,4 @@ fn validate_elapsed(
 }
 
 #[cfg(all(test, feature = "kernel-tests"))]
-mod tests;
+pub(crate) mod tests;

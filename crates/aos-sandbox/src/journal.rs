@@ -2741,6 +2741,120 @@ mod tests {
 
     #[cfg(all(target_os = "linux", feature = "kernel-tests"))]
     #[test]
+    fn poisoned_journal_blocks_holder_join_despite_cached_live_state() {
+        use crate::publisher_authority::PublisherCapabilityRegistry;
+        use crate::publisher_control::tests::join::{join_fixture, join_now, send_holder};
+        use crate::publisher_control::{PublisherControlError, PublisherJoinError};
+        use crate::publisher_ingress::PublisherIngressStore;
+
+        let mut fixture = join_fixture();
+        let capability = fixture.request.capability();
+        let instance = fixture.registered.registration.fields().instance;
+        {
+            let capabilities = PublisherCapabilityRegistry::load(
+                &mut fixture.registered.local.journal,
+                fixture.join_policy.authority_limits,
+            )
+            .unwrap();
+            assert_eq!(
+                capabilities.resolve_current(capability).unwrap().id(),
+                capability
+            );
+        }
+        {
+            let ingress = PublisherIngressStore::load(
+                &mut fixture.registered.local.journal,
+                fixture.join_policy.control.ingress_limits,
+            )
+            .unwrap();
+            let pending = ingress
+                .challenge(instance, fixture.request.challenge())
+                .unwrap()
+                .unwrap();
+            assert_eq!(&pending.fields().request, &fixture.request);
+        }
+        let authority_before: Vec<_> = fixture
+            .registered
+            .local
+            .journal
+            .records(RecordNamespace::PublisherAuthority)
+            .map(|(key, value)| (key.to_vec(), value.to_vec()))
+            .collect();
+        let ingress_before: Vec<_> = fixture
+            .registered
+            .local
+            .journal
+            .records(RecordNamespace::PublisherIngress)
+            .map(|(key, value)| (key.to_vec(), value.to_vec()))
+            .collect();
+        send_holder(&mut fixture.holder, &fixture.request);
+
+        // An append/sync error is always durability-ambiguous to the service.
+        // Keep the materialized capability and challenge maps in memory while
+        // forcing the protected handle into its permanently poisoned state.
+        fixture.registered.local.journal.file = OpenOptions::new()
+            .read(true)
+            .open(
+                fixture
+                    .registered
+                    .local
+                    .directory
+                    .path()
+                    .join("issuance.journal"),
+            )
+            .unwrap();
+        let failed = transaction(
+            0xee,
+            vec![JournalRecord::put(
+                RecordNamespace::DesiredState,
+                b"holder-join-poison".to_vec(),
+                b"must-not-authorize".to_vec(),
+            )],
+        );
+        assert!(matches!(
+            fixture.registered.local.journal.commit(&failed),
+            Err(JournalError::Io(_))
+        ));
+        assert!(matches!(
+            fixture
+                .registered
+                .local
+                .journal
+                .ensure_protected_authority(),
+            Err(JournalError::Poisoned)
+        ));
+
+        assert!(matches!(
+            join_now(&mut fixture),
+            Err(PublisherJoinError::Control(PublisherControlError::Journal(
+                JournalError::Poisoned
+            )))
+        ));
+        assert_eq!(
+            fixture.holders.capability_id(fixture.holder_id).unwrap(),
+            capability,
+            "the poisoned precheck must not consume and reinterpret the queued holder record"
+        );
+        let authority_after: Vec<_> = fixture
+            .registered
+            .local
+            .journal
+            .records(RecordNamespace::PublisherAuthority)
+            .map(|(key, value)| (key.to_vec(), value.to_vec()))
+            .collect();
+        let ingress_after: Vec<_> = fixture
+            .registered
+            .local
+            .journal
+            .records(RecordNamespace::PublisherIngress)
+            .map(|(key, value)| (key.to_vec(), value.to_vec()))
+            .collect();
+        assert_eq!(authority_after, authority_before);
+        assert_eq!(ingress_after, ingress_before);
+    }
+
+    #[cfg(all(target_os = "linux", feature = "kernel-tests"))]
+    #[test]
     fn failed_local_issuance_commit_never_activates_a_session() {
         use crate::local_provisioning::LocalProvisioningError;
         use crate::local_provisioning::tests::{

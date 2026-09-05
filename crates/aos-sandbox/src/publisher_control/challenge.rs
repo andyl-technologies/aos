@@ -148,7 +148,7 @@ where
     })
 }
 
-fn request_limits() -> DecodeLimits {
+pub(super) fn request_limits() -> DecodeLimits {
     DecodeLimits {
         maximum_bytes: 32 * 1024,
         maximum_collection_items: 64,
@@ -185,7 +185,7 @@ fn bind_execution(
     Ok(())
 }
 
-fn bind_request(
+pub(super) fn bind_request(
     request: &PublisherAdmissionRequestV1,
     execution: &PublisherExecutionRegistrationV1,
 ) -> Result<(), PublisherControlError> {
@@ -206,7 +206,7 @@ fn bind_request(
     Ok(())
 }
 
-fn validate_current_request(
+pub(super) fn validate_current_request(
     journal: &mut Journal,
     request: &PublisherAdmissionRequestV1,
     policy: &ResolvedPolicy,
@@ -236,7 +236,7 @@ fn validate_current_request(
     Ok(())
 }
 
-fn validate_execution_time(
+pub(super) fn validate_execution_time(
     execution: &PublisherExecutionRegistrationV1,
     now: RawPairedClockSample,
 ) -> Result<(), PublisherControlError> {
@@ -249,7 +249,7 @@ fn validate_execution_time(
     Ok(())
 }
 
-fn validate_registration_clock(
+pub(super) fn validate_registration_clock(
     registration: &PublisherChallengeRegistrationV1,
     now: RawPairedClockSample,
     boot: [u8; 16],

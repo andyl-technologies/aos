@@ -374,6 +374,47 @@ where
         )
     }
 
+    /// Joins the actual holder record to a pending challenge of a live publisher.
+    ///
+    /// The returned non-cloneable context retains both channel observations and
+    /// exclusive journal access. It checks current protected issuance and policy
+    /// consistency, but does not prove current runtime assignment, source release,
+    /// root authority, reservation, or admission. No challenge is consumed and
+    /// no signing or completion permit is issued.
+    ///
+    /// # Errors
+    /// Rejects malformed or substituted requests, absent or dead channels,
+    /// stale protected claims, revoked capabilities, unhealthy storage, and
+    /// expired or inconsistent clocks. Failure after receiving a holder record
+    /// closes its ingress; later receive or explicit invalidation removes the slot.
+    #[cfg(target_os = "linux")]
+    pub fn join_publisher_request<'a, T>(
+        &'a mut self,
+        holders: &'a mut crate::local_sessions::LocalSessionRegistry,
+        publishers: &'a mut crate::publisher_sessions::PublisherSessionRegistry,
+        holder_session: crate::local_sessions::LocalSessionId,
+        config: crate::publisher_control::PublisherJoinPolicy,
+        clock: &mut T,
+    ) -> Result<
+        crate::publisher_control::JoinedPublisherRequest<'a>,
+        crate::publisher_control::PublisherJoinError,
+    >
+    where
+        T: FnMut() -> Result<
+            aos_sandbox_core::ownership_lease::RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        crate::publisher_control::join_holder_request(
+            self.reconciler.journal_mut(),
+            holders,
+            publishers,
+            holder_session,
+            config,
+            clock,
+        )
+    }
+
     /// Releases a retired volatile publisher slot after its pinned process exits.
     ///
     /// This does not erase audit records, release durable publication accounting,

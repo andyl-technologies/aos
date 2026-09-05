@@ -1795,3 +1795,40 @@ the strong payload attestation of a real launched sandbox.
 End-to-end production runtime provisioning, real strong
 payload handoff qualification, holder-channel delivery/admission, and
 publication effects remain open; this does not complete `SBX-PUB-02`.
+
+### Joining independently authenticated holder and publisher channels
+
+The controller now reads the holder's actual local-channel record and joins
+its complete canonical request to the immutable pending challenge registered
+by the separately authenticated publisher. A non-cloneable borrowed context
+retains the holder record, original live publisher execution, and exclusive
+protected journal access. A request copied onto another holder channel fails
+even when both channels name the same principal. Readable publisher packets
+remain queued; liveness checks do not consume a second challenge.
+
+Joining resolves the active capability and V2 issuance evidence and checks
+the exact holder/channel/session/resource/runtime snapshot, current policy and
+controller heads, revocation scope and generation, individual tombstones,
+resource/domain/isolation mapping, boot, clock provenance, and fixed challenge
+and capability wall/boottime deadlines. Both channels are checked for shutdown
+as well as live scoped kernel identity. Any failed recheck permanently poisons
+the join and closes holder ingress; failed publisher observations retire the
+transport while retaining its original execution reservation.
+
+This does not consume a challenge, write an admission decision, reserve
+publication capacity, sign a plan, or grant a completion permit. The runtime
+fields establish consistency with issuance, not current assignment authority:
+the controller still needs a protected typed current-assignment/holder mapping
+and fresh runtime proof. Source release, protected root currentness, atomic
+accounting/consumption, and production delivery/dispatch remain open, so
+`SBX-PUB-02` remains unchecked. Existing durable and wire encodings are unchanged.
+
+The five-crate serial all-feature suite passes 492 unit tests, three integration
+tests, and nineteen doctests. Strict all-target/all-feature Clippy and
+warning-denied controller rustdoc pass. Changed-file formatting and the locked
+all-target workspace check pass; unrelated workspace warnings remain.
+The final `checks.vm.sandbox-local-identity` derivation passes 381 default
+library tests inside the Nix sandbox and all 52 selected kernel test entries
+on AOS Linux 6.18.33 x86_64, including thirteen holder-join cases and the
+poisoned-journal regression. It does not qualify current assignment authority,
+real payload endpoint delivery, source release, or publication effects.

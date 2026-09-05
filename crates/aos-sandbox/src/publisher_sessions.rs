@@ -113,6 +113,20 @@ pub struct PublisherSessionRegistry {
 }
 
 impl PublisherSessionRegistry {
+    /// Retains the registered execution without consuming another request record.
+    pub(crate) fn retain_execution(
+        &mut self,
+        instance: PublisherInstanceId,
+    ) -> Result<LivePublisherExecution<'_>, PublisherSessionError> {
+        let index = self.index(instance)?;
+        let session = self.slots[index]
+            .as_mut()
+            .ok_or(PublisherSessionError::UnknownSession)?;
+        let mut retained = LivePublisherExecution { session };
+        retained.recheck()?;
+        Ok(retained)
+    }
+
     /// Creates an empty table with storage reserved before accepting any peer.
     ///
     /// # Errors
@@ -269,6 +283,46 @@ struct PublisherSession {
     binding: ChannelBinding,
     peer_info: PidFdInfo,
     retired: bool,
+}
+
+/// Borrows the original registered execution, not a replayed audit record.
+pub(crate) struct LivePublisherExecution<'a> {
+    session: &'a mut PublisherSession,
+}
+
+impl LivePublisherExecution<'_> {
+    pub(crate) fn retire(&mut self) {
+        self.session.retire();
+    }
+
+    pub(crate) fn instance(&self) -> PublisherInstanceId {
+        self.session.instance
+    }
+
+    pub(crate) fn scope(&self) -> &PublisherSessionScope {
+        &self.session.scope
+    }
+
+    pub(crate) fn channel_binding(&self) -> ChannelBinding {
+        self.session.binding
+    }
+
+    /// Retires a failed channel but preserves its process reservation until exit.
+    pub(crate) fn recheck(&mut self) -> Result<PidFdInfo, PublisherSessionError> {
+        let result = (|| {
+            if self.session.retired {
+                return Err(PublisherSessionError::Retired);
+            }
+            crate::local_channel::check_connected(&self.session.socket)?;
+            let info = self.session.check_current()?;
+            crate::local_channel::check_connected(&self.session.socket)?;
+            Ok(info)
+        })();
+        if result.is_err() {
+            self.session.retire();
+        }
+        result
+    }
 }
 
 impl PublisherSession {

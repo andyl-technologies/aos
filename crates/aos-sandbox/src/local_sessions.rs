@@ -193,7 +193,7 @@ impl LocalSessionRegistry {
             }
         };
         let session = self.slots[index]
-            .as_ref()
+            .as_mut()
             .ok_or(LocalSessionError::UnknownSession)?;
         Ok(AuthenticatedLocalRecord {
             session,
@@ -460,13 +460,18 @@ impl LocalSessionEndpoint {
 /// }
 /// ```
 pub struct AuthenticatedLocalRecord<'a> {
-    session: &'a ActiveSession,
+    session: &'a mut ActiveSession,
     record: ReceivedRecord,
     payload_offset: usize,
     process_info: PidFdInfo,
 }
 
 impl AuthenticatedLocalRecord<'_> {
+    /// Closes ingress immediately; a later receive removes the closed slot.
+    pub(crate) fn close_channel(&mut self) {
+        self.session.server.close();
+    }
+
     /// Returns only the application payload after the checked frame header.
     #[must_use]
     pub fn payload(&self) -> &[u8] {
@@ -517,6 +522,9 @@ impl AuthenticatedLocalRecord<'_> {
     /// its session: the caller must discard the record and then invalidate the
     /// session before further use after a failure.
     pub fn recheck_execution_scope(&self) -> Result<PidFdInfo, LocalSessionError> {
-        frame::validate(self.session, &self.record).map(|(_, info)| info)
+        crate::local_channel::check_connected(&self.session.server)?;
+        let (_, info) = frame::validate(self.session, &self.record)?;
+        crate::local_channel::check_connected(&self.session.server)?;
+        Ok(info)
     }
 }

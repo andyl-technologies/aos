@@ -15,6 +15,8 @@ pub mod controller;
 pub mod dispatch;
 pub mod journal;
 #[cfg(target_os = "linux")]
+mod local_channel;
+#[cfg(target_os = "linux")]
 pub mod local_provisioning;
 #[cfg(target_os = "linux")]
 pub mod local_sessions;
