@@ -541,6 +541,59 @@ fn target_manifest_identity_authenticates_immutable_backing() {
 }
 
 #[test]
+fn closure_manifest_allows_content_deduplication_between_distinct_nodes() {
+    let mut shared = manifest();
+    let first = target("a");
+    let mut second = target("b");
+    second.snapshot = first.snapshot;
+    shared.targets = vec![first, second];
+    shared.identity = closure_identity(&shared).expect("derive shared-content identity");
+    let bytes = encode_manifest(&shared).expect("encode shared-content manifest");
+    let decoded = decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default())
+        .expect("distinct nodes may share immutable snapshot content");
+    assert!(decoded == shared);
+    assert_eq!(
+        encode_manifest(&decoded).expect("re-encode manifest"),
+        bytes
+    );
+
+    shared.targets[1].node = wire_string("a");
+    let bytes = encode_manifest(&shared).expect("encode duplicate-node manifest");
+    assert!(decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default()).is_err());
+}
+
+#[test]
+fn shared_snapshot_content_does_not_authorize_a_foreign_node_target() {
+    std::thread::Builder::new()
+        .name(String::from("checkpoint-target-ownership"))
+        .stack_size(32 * 1024 * 1024)
+        .spawn(|| {
+            let store = tempfile::tempdir().expect("create checkpoint store");
+            let (source, identity, node, _) = publish_one_node_raw_checkpoint(store.path());
+            let restored =
+                load_exact_checkpoint_set(store.path(), &source.scenario_def(), &source, identity)
+                    .expect("load authentic checkpoint");
+            let target = restored.targets.get(&node).expect("find target");
+            let fault = restored
+                .fault_checkpoint
+                .as_ref()
+                .expect("find fault state")
+                .id();
+            validate_exact_checkpoint_target(&node, target, fault)
+                .expect("original node owns the snapshot and artifacts");
+            let foreign = NodeId {
+                name: String::from("foreign-node"),
+            };
+            let error = validate_exact_checkpoint_target(&foreign, target, fault)
+                .expect_err("identical content does not transfer node ownership");
+            assert!(error.to_string().contains("failed manifest authentication"));
+        })
+        .expect("spawn large-stack ownership test")
+        .join()
+        .expect("ownership test should not panic");
+}
+
+#[test]
 fn closure_manifest_rejects_unsorted_or_trailing_records() {
     let mut unsorted = manifest();
     unsorted.targets = vec![target("b"), target("a")];

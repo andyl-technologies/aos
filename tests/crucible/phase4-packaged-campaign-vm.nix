@@ -64,7 +64,7 @@
     maximum_inodes = 4096
     finish_timeout_ms = 15000
     maximum_slots = 1
-    maximum_vcpus = 1
+    maximum_vcpus = 2
     maximum_resident_bytes = 536870912
     maximum_disk_bytes = 2147483648
     maximum_execution_quanta = 10000
@@ -111,6 +111,12 @@ in
       ${pkgs.coreutils}/bin/timeout -k 5 300 \
         ${flight}/bin/campaign-process-flight --ignored --exact \
         packaged::public_packaged_executor_completes_guest_quantum --nocapture
+      ${pkgs.coreutils}/bin/timeout -k 5 300 \
+        ${flight}/bin/campaign-process-flight --ignored --exact \
+        packaged::public_packaged_executor_observes_exact_trigger_deadlines --nocapture
+      ${pkgs.coreutils}/bin/timeout -k 5 300 \
+        ${flight}/bin/campaign-process-flight --ignored --exact \
+        packaged::public_packaged_executor_synchronizes_exact_time_across_vms --nocapture
       ${pkgs.util-linux}/bin/umount /tmp/attempts
     '';
   }

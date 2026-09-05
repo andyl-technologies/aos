@@ -7,8 +7,8 @@
 use super::*;
 use crucible_session::engine::{
     Action, ContentAddressedBlobRef, ContentHash, EventGraph, EventId, Icount, NodeId, Plan,
-    Predicate, Properties, ReadyPoint, ScenarioDefForm, Seed, SimDuration, VmArchitecture,
-    WhiteBoxPolicy, World, WorldNode,
+    Predicate, Properties, ReadyPoint, ScenarioDefForm, Seed, SimDuration, TimerId, VirtualTime,
+    VmArchitecture, WhiteBoxPolicy, World, WorldNode,
 };
 
 #[test]
@@ -29,11 +29,25 @@ fn public_packaged_executor_completes_guest_quantum() -> Result<(), Box<dyn Erro
     packaged_campaign_flight(PackagedFlight::GuestQuantum)
 }
 
+#[test]
+#[ignore = "requires dedicated cgroup-v2 and ext4 project-quota roots inside the VM check"]
+fn public_packaged_executor_observes_exact_trigger_deadlines() -> Result<(), Box<dyn Error>> {
+    packaged_campaign_flight(PackagedFlight::ExactTime)
+}
+
+#[test]
+#[ignore = "requires dedicated cgroup-v2 and ext4 project-quota roots inside the VM check"]
+fn public_packaged_executor_synchronizes_exact_time_across_vms() -> Result<(), Box<dyn Error>> {
+    packaged_campaign_flight(PackagedFlight::ExactTimeMultiVm)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PackagedFlight {
     Restart,
     Discovery,
     GuestQuantum,
+    ExactTime,
+    ExactTimeMultiVm,
 }
 
 fn packaged_campaign_flight(mode: PackagedFlight) -> Result<(), Box<dyn Error>> {
@@ -41,34 +55,69 @@ fn packaged_campaign_flight(mode: PackagedFlight) -> Result<(), Box<dyn Error>> 
     let root = fixture._temporary.path();
     let kernel = required_path("CRUCIBLE_KERNEL")?;
     let root_image = required_path("CRUCIBLE_ROOT_IMAGE")?;
-    let world = World::from_nodes_and_links(
-        vec![WorldNode {
-            id: NodeId {
-                name: "node".into(),
-            },
-            arch: VmArchitecture::X86_64,
-            memory_mib: 128,
-            cmdline: "console=ttyS0".into(),
-            ready_point: ReadyPoint::FixedIcount {
-                icount: Icount { retired: 0 },
-            },
-            white_box: WhiteBoxPolicy::Disabled,
-            smp_vcpus: 1,
-            icount_shift: 0,
-            kernel: Some(ContentAddressedBlobRef::from_hash(ContentHash::from_bytes(
-                &fs::read(kernel)?,
-            ))),
-            root_image: Some(ContentAddressedBlobRef::from_hash(ContentHash::from_bytes(
-                &fs::read(root_image)?,
-            ))),
-            initrd: None,
-        }],
-        vec![],
-    )?;
+    let first_node = WorldNode {
+        id: NodeId {
+            name: "node".into(),
+        },
+        arch: VmArchitecture::X86_64,
+        memory_mib: 128,
+        cmdline: "console=ttyS0".into(),
+        ready_point: ReadyPoint::FixedIcount {
+            icount: Icount { retired: 0 },
+        },
+        white_box: WhiteBoxPolicy::Disabled,
+        smp_vcpus: 1,
+        icount_shift: 0,
+        kernel: Some(ContentAddressedBlobRef::from_hash(ContentHash::from_bytes(
+            &fs::read(kernel)?,
+        ))),
+        root_image: Some(ContentAddressedBlobRef::from_hash(ContentHash::from_bytes(
+            &fs::read(root_image)?,
+        ))),
+        initrd: None,
+    };
+    let mut nodes = vec![first_node];
+    if mode == PackagedFlight::ExactTimeMultiVm {
+        let mut second = nodes[0].clone();
+        second.id = NodeId {
+            name: "node-b".into(),
+        };
+        nodes.push(second);
+    }
+    let world = World::from_nodes_and_links(nodes, vec![])?;
     // The launcher primes the guest to 1,000,000 instructions. At shift zero,
     // 2,000,000 ns is the first packaged rendezvous beyond that baked boundary;
     // `After` is an exact-time predicate, not a lower-bound comparison.
-    let graph = if mode == PackagedFlight::GuestQuantum {
+    let graph = if matches!(
+        mode,
+        PackagedFlight::ExactTime | PackagedFlight::ExactTimeMultiVm
+    ) {
+        let timer = TimerId {
+            name: "finish-timer".into(),
+        };
+        // Both boundaries lie strictly between packaged rendezvous. Terminal
+        // success requires all three exact time predicate forms to agree.
+        EventGraph::builder()
+            .event("begin-flight")
+            .entrypoint()
+            .action(Action::Group(Vec::new()))
+            .event("arm-flight")
+            .when(Predicate::After {
+                of: EventId::from_name("begin-flight"),
+                duration: SimDuration { nanos: 1_250_003 },
+            })
+            .action(Action::arm_timer(timer.clone(), SimDuration { nanos: 33 }))
+            .event("complete-flight")
+            .when(Predicate::AllOf {
+                predicates: vec![
+                    Predicate::at(VirtualTime { ticks: 1_250_036 }),
+                    Predicate::after(SimDuration { nanos: 33 }, EventId::from_name("arm-flight")),
+                    Predicate::timer(timer),
+                ],
+            })
+            .action(Action::Pass)
+            .build_for_world(&world)?
+    } else if mode == PackagedFlight::GuestQuantum {
         EventGraph::builder()
             .event("begin-flight")
             .entrypoint()
@@ -217,6 +266,10 @@ exact_user_pins = true
         PackagedFlight::Restart => println!("public_packaged_genesis_restart=true"),
         PackagedFlight::Discovery => println!("public_packaged_initial_discovery=true"),
         PackagedFlight::GuestQuantum => println!("public_packaged_guest_quantum=true"),
+        PackagedFlight::ExactTime => println!("public_packaged_exact_trigger_deadlines=true"),
+        PackagedFlight::ExactTimeMultiVm => {
+            println!("public_packaged_multi_vm_exact_trigger_deadlines=true")
+        }
     }
     Ok(())
 }
@@ -271,17 +324,30 @@ fn execute_initial_discovery(
         if snapshot["snapshot"]["roots"]["observations"]
             != before["snapshot"]["roots"]["observations"]
         {
-            let explanation = run_json(
-                connected_campaign(fixture).args([
+            let output = connected_campaign(fixture)
+                .args([
                     "explain-attempt",
                     CAMPAIGN,
                     "--snapshot",
                     &json_string(&head, "snapshot")?,
                     "--attempt",
                     &attempt,
-                ]),
-                "authenticate initial discovery completion",
-            )?;
+                ])
+                .output()?;
+            // Completion feedback may advance the head after our status read.
+            // Refresh only an explicit stale-head response, under the original
+            // deadline; all execution, authentication, and other query errors
+            // still fail this public flight.
+            if output.status.code() == Some(4)
+                && String::from_utf8_lossy(&output.stderr)
+                    .contains("campaign request used stale snapshot")
+                && Instant::now() < deadline
+            {
+                thread::sleep(Duration::from_millis(200));
+                continue;
+            }
+            let explanation =
+                parse_json_output(output, "authenticate initial discovery completion")?;
             assert_eq!(explanation["attempt"]["id"], attempt);
             assert_eq!(explanation["admission"]["admission_ordinal"], 1);
             assert_eq!(explanation["observation"]["stop"], "terminal-success");
