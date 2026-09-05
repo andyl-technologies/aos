@@ -5,11 +5,11 @@
 //! enter the browser as plaintext. Manual synchronization is a separate,
 //! reviewed operation over the currently displayed mirror revision.
 
+use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
-use leptos::task::spawn_local;
 
-use crate::components::{HashValue, InlineError, ReviewedPlanCard, StatusBadge};
+use crate::components::{HashValue, HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge, format_timestamp};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::transport::{ApiClient, TransportError};
 
@@ -41,10 +41,7 @@ pub(super) fn RegistryMirrorWorkflow(client: ApiClient, registry_id: String) -> 
             <div class="section-heading">
                 <div>
                     <p class="section-kicker">"Verified upstream replication"</p>
-                    <h2>"Registry mirror"</h2>
-                    <p>
-                        "Full mirrors synchronize on a schedule. Pull-through mirrors fetch verified objects on demand."
-                    </p>
+                    <h2>"Registry mirror"<HelpTooltip term="Registry mirror" summary="Full mirrors synchronize on a schedule. Pull-through mirrors fetch verified objects on demand."/></h2>
                 </div>
             </div>
             <Suspense fallback=move || view! { <p class="loading-row">"Loading mirror…"</p> }>
@@ -76,6 +73,7 @@ fn MirrorEditor(
     registry_id: String,
     current: Option<aos_proto_types::RegistryMirror>,
 ) -> impl IntoView {
+    let can_manage = client.allows("registry.configure");
     let existing = current.clone().unwrap_or_default();
     let source_url = RwSignal::new(existing.source_url);
     let refspec = RwSignal::new(existing.refspec);
@@ -213,6 +211,9 @@ fn MirrorEditor(
 
     view! {
         {current.map(|mirror| view! { <MirrorStatus mirror=mirror/> })}
+        {(!has_current).then(|| view! { <p class="muted">"No upstream mirror is configured. Add one to synchronize content from another registry."</p> })}
+        {can_manage.then(|| view! {
+        <details class="advanced-controls"><summary>{if has_current { "Edit upstream mirror" } else { "Configure upstream mirror" }}</summary>
         <form class="editor-form" on:submit=on_plan_set>
             <label>
                 <span>"HTTPS source URL"</span>
@@ -231,11 +232,12 @@ fn MirrorEditor(
                 />
             </label>
             <label>
-                <span>"Authentication secret version reference (optional)"</span>
+                <span>"Authentication secret"</span>
                 <input
                     prop:value=move || auth_secret_ref.get()
                     on:input=move |event| auth_secret_ref.set(event_target_value(&event))
                 />
+                <small>"Optional immutable secret version reference for a private upstream. Do not enter a password or token here."</small>
             </label>
             <label>
                 <span>"Synchronization interval (seconds)"</span>
@@ -272,6 +274,10 @@ fn MirrorEditor(
                 "Review mirror configuration"
             </button>
         </form>
+        <PlanReview pending=set_pending busy=busy on_apply=apply_set/>
+        </details>
+        {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
+        {has_current.then(|| view! {
         <div class="form-actions">
             <button
                 class="secondary-button"
@@ -290,10 +296,10 @@ fn MirrorEditor(
                 "Review mirror removal"
             </button>
         </div>
-        {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
-        <PlanReview pending=set_pending busy=busy on_apply=apply_set/>
         <PlanReview pending=sync_pending busy=busy on_apply=apply_sync/>
         <PlanReview pending=remove_pending busy=busy on_apply=apply_remove/>
+        })}
+        })}
     }
 }
 
@@ -301,6 +307,8 @@ fn MirrorEditor(
 fn MirrorStatus(mirror: aos_proto_types::RegistryMirror) -> impl IntoView {
     view! {
         <div class="resource-identity">
+            <div><span>"Upstream"</span><code>{mirror.source_url}</code></div>
+            <div><span>"Mode"</span><strong>{if mode_name(mirror.mode) == "full" { "Full synchronization" } else { "Pull through" }}</strong></div>
             <div>
                 <span>"State"</span>
                 <StatusBadge state=mirror.state.clone() positive=mirror.state == "ready"/>
@@ -311,7 +319,7 @@ fn MirrorStatus(mirror: aos_proto_types::RegistryMirror) -> impl IntoView {
             </div>
             <div>
                 <span>"Last synchronization"</span>
-                <strong>{display_timestamp(mirror.last_sync_at)}</strong>
+                <strong>{format_timestamp(mirror.last_sync_at, "Never")}</strong>
             </div>
             <div>
                 <span>"Version"</span>
@@ -474,14 +482,6 @@ fn default_string(value: String, fallback: &str) -> String {
         fallback.to_string()
     } else {
         value
-    }
-}
-
-fn display_timestamp(value: i64) -> String {
-    if value == 0 {
-        "never".to_string()
-    } else {
-        value.to_string()
     }
 }
 

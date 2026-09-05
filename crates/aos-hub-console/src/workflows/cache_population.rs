@@ -4,17 +4,18 @@
 //! They record and validate availability intent; publication does not currently
 //! consume the required bit as a release-visibility gate.
 
+use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
-use leptos::task::spawn_local;
 
-use crate::components::{HashValue, InlineError, ReviewedPlanCard, StatusBadge};
-use crate::mutation::{idempotency_key, PendingPlan};
+use crate::components::{HashValue, HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
+use crate::mutation::{idempotency_key, watch_draft, PendingPlan};
 use crate::transport::ApiClient;
 
 /// Renders population targets, observed coverage, and the reviewed set editor.
 #[component]
 pub(super) fn CachePopulation(client: ApiClient, cache_id: String) -> impl IntoView {
+    let can_manage = client.allows("registry.configure");
     let read_client = client.clone();
     let read_cache = cache_id.clone();
     let targets = LocalResource::new(move || {
@@ -42,10 +43,7 @@ pub(super) fn CachePopulation(client: ApiClient, cache_id: String) -> impl IntoV
             <div class="section-heading">
                 <div>
                     <p class="section-kicker">"Release availability"</p>
-                    <h2>"Population and coverage"</h2>
-                    <p>
-                        "Required targets record availability policy and expose coverage failures. Publication visibility is not currently gated by this setting."
-                    </p>
+                    <h2>"Population and coverage"<HelpTooltip term="Population and coverage" summary="Required targets record availability policy and expose coverage failures. Publication visibility is not currently gated by this setting."/></h2>
                 </div>
             </div>
             <Suspense fallback=move || view! { <p class="loading-row">"Loading population targets…"</p> }>
@@ -55,13 +53,13 @@ pub(super) fn CachePopulation(client: ApiClient, cache_id: String) -> impl IntoV
                     Suspend::new(async move {
                         match targets.await.as_ref() {
                             Ok(targets) if targets.is_empty() => view! {
-                                <p class="muted">"No proactive population targets."</p>
+                                <div class="empty-state"><h3>"No proactive population targets"</h3><p>"Add a target when this cache must copy and verify selected registry content ahead of demand."</p></div>
                             }
                             .into_any(),
                             Ok(targets) => view! {
                                 <div class="binding-list">
                                     {targets.iter().cloned().map(|target| view! {
-                                        <PopulationTargetCard client=client.clone() cache_id=cache_id.clone() target=target/>
+                                        <PopulationTargetCard client=client.clone() cache_id=cache_id.clone() target=target can_manage=can_manage/>
                                     }).collect_view()}
                                 </div>
                             }
@@ -71,7 +69,7 @@ pub(super) fn CachePopulation(client: ApiClient, cache_id: String) -> impl IntoV
                     })
                 }}
             </Suspense>
-            <PopulationEditor client=client cache_id=cache_id/>
+            {can_manage.then(|| view! { <PopulationEditor client=client cache_id=cache_id/> })}
         </section>
     }
 }
@@ -81,6 +79,7 @@ fn PopulationTargetCard(
     client: ApiClient,
     cache_id: String,
     target: aos_proto_types::PopulationTarget,
+    can_manage: bool,
 ) -> impl IntoView {
     let edit_target = target.clone();
     let registry_id = target.registry_id.clone();
@@ -137,7 +136,7 @@ fn PopulationTargetCard(
                     }
                 })}
             </Suspense>
-            <div class="form-actions">
+            {can_manage.then(|| view! { <div class="form-actions">
                 <PopulationAction client=client.clone() cache_id=cache_id.clone() registry_id=registry_id.clone() version=version.clone() action=PopulationActionKind::Run/>
                 <PopulationAction client=client.clone() cache_id=cache_id.clone() registry_id=registry_id.clone() version=version.clone() action=PopulationActionKind::Validate/>
                 <PopulationAction client=client.clone() cache_id=cache_id.clone() registry_id=registry_id.clone() version=version.clone() action=PopulationActionKind::Repair/>
@@ -146,7 +145,7 @@ fn PopulationTargetCard(
             <details>
                 <summary>"Edit this population target"</summary>
                 <PopulationEditor client=client cache_id=cache_id initial=edit_target/>
-            </details>
+            </details> })}
         </article>
     }
 }
@@ -182,6 +181,13 @@ fn PopulationAction(
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
+    let draft_epoch = watch_draft(
+        move || {
+            let _ = release_tag.get();
+        },
+        pending,
+        error,
+    );
     let plan_client = client.clone();
     let on_plan = move |_| {
         let key = idempotency_key(match action {
@@ -195,6 +201,7 @@ fn PopulationAction(
         let registry_id = registry_id.clone();
         let version = version.clone();
         let tag = nonempty(&release_tag.get_untracked());
+        let planned_epoch = draft_epoch.get_untracked();
         error.set(None);
         pending.set(None);
         busy.set(true);
@@ -223,7 +230,10 @@ fn PopulationAction(
                 .map_err(|failure| failure.to_string())
                 .and_then(|response| PendingPlan::from_response(response, key));
             match result {
-                Ok(reviewed) => pending.set(Some(reviewed)),
+                Ok(reviewed) if draft_epoch.get_untracked() == planned_epoch => {
+                    pending.set(Some(reviewed));
+                }
+                Ok(_) => {}
                 Err(detail) => error.set(Some(detail)),
             }
             busy.set(false);
@@ -323,9 +333,24 @@ fn PopulationEditor(
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
+    let draft_epoch = watch_draft(
+        move || {
+            let _ = (
+                registry_id.get(),
+                trigger.get(),
+                required.get(),
+                placement_policy.get(),
+                validation_gate.get(),
+                expected_version.get(),
+            );
+        },
+        pending,
+        error,
+    );
     let plan_client = client.clone();
     let on_plan = move |event: SubmitEvent| {
         event.prevent_default();
+        pending.set(None);
         let registry = registry_id.get_untracked().trim().to_string();
         if registry.is_empty() {
             error.set(Some("Registry stable ID is required".to_string()));
@@ -345,6 +370,7 @@ fn PopulationEditor(
             idempotency_key: key.clone(),
         };
         let client = plan_client.clone();
+        let planned_epoch = draft_epoch.get_untracked();
         error.set(None);
         pending.set(None);
         busy.set(true);
@@ -358,7 +384,10 @@ fn PopulationEditor(
                 .map_err(|failure| failure.to_string())
                 .and_then(|response| PendingPlan::from_response(response, key));
             match result {
-                Ok(reviewed) => pending.set(Some(reviewed)),
+                Ok(reviewed) if draft_epoch.get_untracked() == planned_epoch => {
+                    pending.set(Some(reviewed));
+                }
+                Ok(_) => {}
                 Err(detail) => error.set(Some(detail)),
             }
             busy.set(false);
@@ -411,7 +440,7 @@ fn PopulationEditor(
                 </label>
                 <label><span>"Placement policy revision (optional)"</span><input prop:value=move || placement_policy.get() on:input=move |event| placement_policy.set(event_target_value(&event))/></label>
                 <label><span>"Validation gate"</span><input required prop:value=move || validation_gate.get() on:input=move |event| validation_gate.set(event_target_value(&event))/></label>
-                <button class="secondary-button" type="submit" disabled=move || busy.get()>"Review population target"</button>
+                <div class="form-actions"><button class="secondary-button" type="submit" disabled=move || busy.get()>"Review population target"</button></div>
             </form>
             {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
             {move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}

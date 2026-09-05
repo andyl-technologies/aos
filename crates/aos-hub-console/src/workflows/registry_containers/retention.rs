@@ -5,9 +5,11 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use crate::app::refresh;
-use crate::components::{InlineError, ReviewedPlanCard};
+use crate::components::{format_timestamp, InlineError, ReviewedPlanCard};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::transport::ApiClient;
+
+use super::display_or;
 
 /// Renders and reviews the registry's container retention policy.
 #[component]
@@ -144,7 +146,7 @@ fn RetentionEditor(
         });
     });
     view! {
-        <section class="panel editor-panel"><div class="section-heading"><div><p class="section-kicker">"Registry-scoped reachability"</p><h2>"Container retention"</h2><p>"Signed roots, live tags, active uploads, and retained referrers remain mandatory roots regardless of these bounds."</p></div></div><div class="resource-identity"><div><span>"Policy version"</span><code>{policy.resource_version}</code></div><div><span>"Last updated"</span><strong>{policy.updated_at}</strong></div></div>{can_manage.then(|| view! { <form class="editor-form" on:submit=on_plan><label><span>"Untagged grace (seconds)"</span><input type="number" min="0" required prop:value=move || untagged.get() on:input=move |event| untagged.set(event_target_value(&event))/></label><label><span>"Deleted-tag history (seconds)"</span><input type="number" min="0" required prop:value=move || history.get() on:input=move |event| history.set(event_target_value(&event))/></label><label><span>"Recent manual revisions"</span><input type="number" min="0" required prop:value=move || revisions.get() on:input=move |event| revisions.set(event_target_value(&event))/></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || referrers.get() on:change=move |event| referrers.set(event_target_checked(&event))/><span>"Retain referrer artifacts"</span></label><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review retention policy"</button></div></form> })}{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section>
+        <section class="panel editor-panel"><div class="section-heading"><div><p class="section-kicker">"Registry-scoped reachability"</p><h2>"Container retention"</h2><p>"Tagged images, signed releases, active uploads, and retained referrer artifacts are protected from collection."</p></div></div><div class="resource-identity"><div><span>"Policy version"</span><code>{display_or(&policy.resource_version, "Default policy")}</code></div><div><span>"Last updated"</span><strong>{format_timestamp(policy.updated_at, "Not configured")}</strong></div></div>{can_manage.then(|| view! { <form class="editor-form" on:submit=on_plan><label><span>"Untagged grace (seconds)"</span><input type="number" min="0" required prop:value=move || untagged.get() on:input=move |event| untagged.set(event_target_value(&event))/></label><label><span>"Deleted-tag history (seconds)"</span><input type="number" min="0" required prop:value=move || history.get() on:input=move |event| history.set(event_target_value(&event))/></label><label><span>"Recent manual revisions"</span><input type="number" min="0" required prop:value=move || revisions.get() on:input=move |event| revisions.set(event_target_value(&event))/></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || referrers.get() on:change=move |event| referrers.set(event_target_checked(&event))/><span>"Retain referrer artifacts"</span></label><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review retention policy"</button></div></form> })}{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section>
     }
 }
 

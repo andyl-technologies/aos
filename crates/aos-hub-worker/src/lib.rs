@@ -178,6 +178,8 @@ pub mod workerqueue;
 /// input changes. The placement identity matters during topology cutover: the
 /// same publication may become readable from a newly reconciled placement
 /// after an earlier source returned an unchanged or stale surface.
+/// The format domain also changes when an upgrade adds derived projections;
+/// otherwise a finished build would bypass the indexer's completeness checks.
 fn registry_index_build_id(
     registry_id: i64,
     registry_resource_version: i64,
@@ -187,7 +189,9 @@ fn registry_index_build_id(
     use sha2::{Digest as _, Sha256};
 
     let mut digest = Sha256::new();
-    digest.update(b"aos-registry-index-build-v2\0");
+    // Version 3 rebuilds the release catalog and lazy documentation tree on
+    // existing installations, even when their signed publication is unchanged.
+    digest.update(b"aos-registry-index-build-v3\0");
     digest.update(registry_id.to_be_bytes());
     digest.update(registry_resource_version.to_be_bytes());
     digest.update(placement_id.to_be_bytes());
@@ -279,6 +283,24 @@ mod index_build_identity_tests {
         assert_ne!(
             original,
             registry_index_build_id(7, 3, Some("publication-a"), 12)
+        );
+    }
+
+    #[test]
+    fn release_browser_upgrade_does_not_reuse_finished_v2_builds() {
+        use sha2::{Digest as _, Sha256};
+
+        let mut old = Sha256::new();
+        old.update(b"aos-registry-index-build-v2\0");
+        old.update(7_i64.to_be_bytes());
+        old.update(3_i64.to_be_bytes());
+        old.update(11_i64.to_be_bytes());
+        old.update([1]);
+        old.update(b"publication-a");
+
+        assert_ne!(
+            registry_index_build_id(7, 3, Some("publication-a"), 11),
+            hex::encode(old.finalize())
         );
     }
 

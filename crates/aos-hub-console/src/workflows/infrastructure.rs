@@ -4,9 +4,9 @@
 //! values for future placement and delivery plans; they never move existing
 //! objects or rewrite live routes.
 
+use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
-use leptos::task::spawn_local;
 
 use crate::components::{HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
@@ -130,6 +130,10 @@ fn Bindings(
     });
     let inventory_view_client = client.clone();
     let binding_card_scope = owner_scope_key.clone();
+    let inventory_path = organization_slug.as_ref().map_or_else(
+        || "/-/instance/bindings".to_string(),
+        |slug| format!("/-/org/{slug}/bindings"),
+    );
 
     view! {
         <div class="workflow-stack">
@@ -168,13 +172,13 @@ fn Bindings(
                     }}
                 </Suspense>
             </section> })}
-            {creation_only.then(|| view! { <BindingCreate client=client owner_scope_key=owner_scope_key/> })}
+            {creation_only.then(|| view! { <BindingCreate client=client owner_scope_key=owner_scope_key return_path=inventory_path/> })}
         </div>
     }
 }
 
 #[component]
-fn BindingCreate(client: ApiClient, owner_scope_key: String) -> impl IntoView {
+fn BindingCreate(client: ApiClient, owner_scope_key: String, return_path: String) -> impl IntoView {
     let stable_id = RwSignal::new(String::new());
     let name = RwSignal::new(String::new());
     let kind = RwSignal::new("s3".to_string());
@@ -269,7 +273,7 @@ fn BindingCreate(client: ApiClient, owner_scope_key: String) -> impl IntoView {
 
     view! {
         <section class="panel editor-panel">
-            <h2>"Create binding"</h2>
+            <div class="section-heading"><div><p class="section-kicker">"Storage connection"</p><h2>"Create binding"<HelpTooltip term="Create binding" summary="Name one storage provider connection. Credentials are attached and validated after creation."/></h2></div></div>
             <form class="editor-form" on:submit=on_plan>
                 <label><span>"Stable ID"</span><input required placeholder="binding:primary" prop:value=move || stable_id.get() on:input=move |event| stable_id.set(event_target_value(&event))/></label>
                 <label><span>"Name"</span><input required prop:value=move || name.get() on:input=move |event| name.set(event_target_value(&event))/></label>
@@ -289,7 +293,7 @@ fn BindingCreate(client: ApiClient, owner_scope_key: String) -> impl IntoView {
                         <label><span>"Object access"</span><select prop:value=move || access.get() on:change=move |event| access.set(event_target_value(&event))><option value="private">"Private objects"</option><option value="public">"Public objects"</option></select></label>
                     }.into_any(),
                 }}
-                <div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Create binding"</button></div>
+                <div class="form-actions"><a class="secondary-button" href=return_path>"Cancel"</a><button class="button" type="submit" disabled=move || busy.get()>"Review creation"</button></div>
             </form>
             {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
             {move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}
@@ -318,9 +322,12 @@ fn BindingCard(
         .and_then(storage_provider_details)
         .unwrap_or_default();
     let owned = binding.owner_scope_key == consumer_scope_key;
+    let can_manage = owned && client.allows("binding.manage");
+    let can_grant = owned && client.allows("binding.grant");
+    let controls_requested = RwSignal::new(false);
 
     view! {
-        <details class="binding-card">
+        <details class="binding-card" on:toggle=move |_| controls_requested.set(true)>
             <summary>
                 <div><span class="resource-kind">{if owned { provider } else { "granted" }}</span><h3>{binding.spec.as_ref().map(|spec| spec.name.clone()).unwrap_or_default()}</h3><code>{binding.stable_id.clone()}</code></div>
                 <div class="binding-summary-state"><StatusBadge state=health.state.clone() positive=health.state == "healthy"/><span>{if capabilities.writes_supported { "read/write" } else { "read only" }}</span></div>
@@ -336,16 +343,19 @@ fn BindingCard(
                     <div><span>"Conditional writes"</span><strong>{yes_no(capabilities.conditional_writes_supported)}</strong></div>
                 </div>
                 {(!health.error.is_empty()).then(|| view! { <InlineError detail=health.error/> })}
-                {owned.then(|| view! {
+                {move || controls_requested.get().then(|| view! {
+                    {owned.then(|| view! {
                     <div class="subworkflow-grid">
                         <div class="subworkflow-stack">
-                            <StorageWriteRevisions client=client.clone() binding=binding.clone() organization_slug=organization_slug/>
-                            <StorageCredentialEditor client=client.clone() binding=binding.clone()/>
-                            <StorageCredentialValidation client=client.clone() binding=binding.clone()/>
+                            <StorageWriteRevisions client=client.clone() binding=binding.clone() organization_slug=organization_slug.clone()/>
+                            {can_manage.then(|| view! { <StorageCredentialEditor client=client.clone() binding=binding.clone()/> })}
+                            {can_manage.then(|| view! { <StorageCredentialValidation client=client.clone() binding=binding.clone()/> })}
                         </div>
-                        <StorageGrantEditor client=client.clone() binding=binding.clone()/>
+                        <StorageGrantEditor client=client.clone() binding=binding.clone() can_grant=can_grant/>
                     </div>
-                    <BindingDelete client=client binding=binding/>
+                    {can_manage.then(|| view! { <BindingDelete client=client.clone() binding=binding.clone()/> })}
+                    {(!can_manage && !can_grant).then(|| view! { <p class="muted">"You have read-only access to this binding."</p> })}
+                    })}
                 })}
             </div>
         </details>
@@ -625,7 +635,11 @@ fn StorageCredentialValidation(
 }
 
 #[component]
-fn StorageGrantEditor(client: ApiClient, binding: aos_proto_types::Binding) -> impl IntoView {
+fn StorageGrantEditor(
+    client: ApiClient,
+    binding: aos_proto_types::Binding,
+    can_grant: bool,
+) -> impl IntoView {
     let consumer_scope = RwSignal::new(String::new());
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
@@ -687,11 +701,15 @@ fn StorageGrantEditor(client: ApiClient, binding: aos_proto_types::Binding) -> i
             busy.set(false);
         });
     });
-    view! { <section class="subworkflow"><h4>"Consumer scopes"</h4><p>"Grant explicit use without changing ownership."</p><div class="compact-list">{binding.grants.into_iter().filter(|grant| grant.state == "active").map(|grant| view! { <StorageGrantRow client=grant_client.clone() grant=grant/> }).collect_view()}</div><form class="stacked-form" on:submit=on_plan><label><span>"Consumer scope key"</span><input required placeholder="org:acme or registry:acme/main" prop:value=move || consumer_scope.get() on:input=move |event| consumer_scope.set(event_target_value(&event))/></label><button class="secondary-button" type="submit" disabled=move || busy.get()>"Grant"</button></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
+    view! { <section class="subworkflow"><h4>"Consumer scopes"</h4><p>"Grant explicit use without changing ownership."</p><div class="compact-list">{binding.grants.into_iter().filter(|grant| grant.state == "active").map(|grant| view! { <StorageGrantRow client=grant_client.clone() grant=grant can_grant=can_grant/> }).collect_view()}</div>{can_grant.then(|| view! { <form class="stacked-form" on:submit=on_plan><label><span>"Consumer scope key"</span><input required placeholder="org:acme or registry:acme/main" prop:value=move || consumer_scope.get() on:input=move |event| consumer_scope.set(event_target_value(&event))/></label><button class="secondary-button" type="submit" disabled=move || busy.get()>"Review grant"</button></form> })}{can_grant.then(|| view! { {move || error.get().map(|detail| view! { <InlineError detail=detail/> })} {move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })} })}</section> }
 }
 
 #[component]
-fn StorageGrantRow(client: ApiClient, grant: aos_proto_types::ConsumerScopeGrant) -> impl IntoView {
+fn StorageGrantRow(
+    client: ApiClient,
+    grant: aos_proto_types::ConsumerScopeGrant,
+    can_grant: bool,
+) -> impl IntoView {
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
@@ -747,7 +765,7 @@ fn StorageGrantRow(client: ApiClient, grant: aos_proto_types::ConsumerScopeGrant
             busy.set(false);
         });
     });
-    view! { <div class="compact-list-row"><div><code>{grant.consumer_scope_key}</code><span>{format!("{} · {} live pins", grant.grant_kind, grant.live_pin_count)}</span></div><button class="table-action" type="button" disabled=move || busy.get() on:click=on_plan>"Revoke"</button></div>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })} }
+    view! { <div class="compact-list-row"><div><code>{grant.consumer_scope_key}</code><span>{format!("{} · {} live pins", grant.grant_kind, grant.live_pin_count)}</span></div>{can_grant.then(|| view! { <button class="table-action" type="button" disabled=move || busy.get() on:click=on_plan>"Review revoke"</button> })}</div>{can_grant.then(|| view! { {move || error.get().map(|detail| view! { <InlineError detail=detail/> })} {move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })} })} }
 }
 
 #[component]
@@ -862,63 +880,55 @@ async fn load_topology_defaults(
         ),
     };
     let binding_scope = owner_scope_key.clone();
-    let bindings = client
-        .collect_pages::<_, aos_proto_types::ListBindingsResponse, _, _, _>(
-            aos_proto_types::BINDING_SERVICE_LIST_BINDINGS_PATH,
-            move |page_token| aos_proto_types::ListBindingsRequest {
-                owner_scope_key: binding_scope.clone(),
-                page_size: 100,
-                page_token,
-                include_granted: true,
-            },
-            |response| (response.bindings, response.next_page_token),
-        )
-        .await
-        .map_err(|failure| failure.to_string())?;
+    let bindings = client.collect_pages::<_, aos_proto_types::ListBindingsResponse, _, _, _>(
+        aos_proto_types::BINDING_SERVICE_LIST_BINDINGS_PATH,
+        move |page_token| aos_proto_types::ListBindingsRequest {
+            owner_scope_key: binding_scope.clone(),
+            page_size: 100,
+            page_token,
+            include_granted: true,
+        },
+        |response| (response.bindings, response.next_page_token),
+    );
     let domain_scope = owner_scope_key.clone();
-    let domains = client
-        .collect_pages::<_, aos_proto_types::ListDomainsResponse, _, _, _>(
-            aos_proto_types::DOMAIN_SERVICE_LIST_DOMAINS_PATH,
-            move |page_token| aos_proto_types::ListDomainsRequest {
-                owner_scope_key: domain_scope.clone(),
-                page_size: 100,
-                page_token,
-            },
-            |response| (response.domains, response.next_page_token),
-        )
-        .await
-        .map_err(|failure| failure.to_string())?;
-    let endpoints = client
-        .collect_pages::<_, aos_proto_types::ListEndpointsResponse, _, _, _>(
-            aos_proto_types::DELIVERY_SERVICE_LIST_ENDPOINTS_PATH,
-            move |page_token| aos_proto_types::ListTopologyResourcesRequest {
-                owner_scope_key: owner_scope_key.clone(),
-                page_size: 100,
-                page_token,
-                include_granted: true,
-            },
-            |response| (response.endpoints, response.next_page_token),
-        )
-        .await
-        .map_err(|failure| failure.to_string())?;
-    let mut gateways = Vec::new();
-    for binding in &bindings {
-        let binding = binding_ref(binding, organization.as_deref())
-            .ok_or_else(|| "a binding has no canonical reference".to_string())?;
-        let mut binding_gateways = client
-            .collect_pages::<_, aos_proto_types::ListGatewaysResponse, _, _, _>(
-                aos_proto_types::DELIVERY_SERVICE_LIST_GATEWAYS_PATH,
-                move |page_token| aos_proto_types::ListGatewaysRequest {
-                    binding: Some(binding.clone()),
-                    page_size: 100,
-                    page_token,
-                },
-                |response| (response.gateways, response.next_page_token),
-            )
-            .await
-            .map_err(|failure| failure.to_string())?;
-        gateways.append(&mut binding_gateways);
-    }
+    let domains = client.collect_pages::<_, aos_proto_types::ListDomainsResponse, _, _, _>(
+        aos_proto_types::DOMAIN_SERVICE_LIST_DOMAINS_PATH,
+        move |page_token| aos_proto_types::ListDomainsRequest {
+            owner_scope_key: domain_scope.clone(),
+            page_size: 100,
+            page_token,
+        },
+        |response| (response.domains, response.next_page_token),
+    );
+    let endpoint_scope = owner_scope_key.clone();
+    let endpoints = client.collect_pages::<_, aos_proto_types::ListEndpointsResponse, _, _, _>(
+        aos_proto_types::DELIVERY_SERVICE_LIST_ENDPOINTS_PATH,
+        move |page_token| aos_proto_types::ListTopologyResourcesRequest {
+            owner_scope_key: endpoint_scope.clone(),
+            page_size: 100,
+            page_token,
+            include_granted: true,
+        },
+        |response| (response.endpoints, response.next_page_token),
+    );
+    let gateway_scope = owner_scope_key;
+    let gateways = client.collect_pages::<_, aos_proto_types::ListGatewaysResponse, _, _, _>(
+        aos_proto_types::DELIVERY_SERVICE_LIST_GATEWAYS_PATH,
+        move |page_token| aos_proto_types::ListGatewaysRequest {
+            binding: None,
+            page_size: 100,
+            page_token,
+            owner_scope_key: gateway_scope.clone(),
+            include_granted: true,
+        },
+        |response| (response.gateways, response.next_page_token),
+    );
+    let (bindings, domains, endpoints, gateways) =
+        futures::join!(bindings, domains, endpoints, gateways);
+    let bindings = bindings.map_err(|failure| failure.to_string())?;
+    let domains = domains.map_err(|failure| failure.to_string())?;
+    let endpoints = endpoints.map_err(|failure| failure.to_string())?;
+    let gateways = gateways.map_err(|failure| failure.to_string())?;
 
     Ok((
         defaults,
@@ -938,6 +948,16 @@ fn TopologyDefaultsForm(
     organization: Option<String>,
     choices: TopologyDefaultChoices,
 ) -> impl IntoView {
+    let current_binding = display_default(&defaults.binding_id);
+    let current_domain = display_default(&defaults.domain_id);
+    let current_endpoint = generation_default(&defaults.endpoint_id, defaults.endpoint_generation);
+    let current_gateway = generation_default(&defaults.gateway_id, defaults.gateway_generation);
+    let current_version = if defaults.resource_version.is_empty() {
+        "Not yet saved".to_string()
+    } else {
+        defaults.resource_version.clone()
+    };
+    let can_manage = client.allows("binding.manage");
     let binding = RwSignal::new(defaults.binding_id.clone());
     let domain = RwSignal::new(defaults.domain_id.clone());
     let endpoint = RwSignal::new(defaults.endpoint_id.clone());
@@ -1060,7 +1080,23 @@ fn TopologyDefaultsForm(
             busy.set(false);
         });
     });
-    view! { <section class="panel editor-panel"><div class="section-heading"><div><p class="section-kicker">"Base configuration"</p><h2>"Topology defaults"</h2><p>"Bootstrap writes this ordinary editable configuration once. Changes here become the defaults for future plans without rewriting live placements or routes."</p></div></div><form class="editor-form" on:submit=on_plan><label><span>"Binding"</span><select prop:value=move || binding.get() on:change=move |event| binding.set(event_target_value(&event))><option value="">"No default"</option>{choices.bindings.iter().map(|choice| view! { <option value=choice.stable_id.clone()>{binding_option_label(choice)}</option> }).collect_view()}</select></label><label><span>"Domain"</span><select prop:value=move || domain.get() on:change=move |event| domain.set(event_target_value(&event))><option value="">"No default"</option>{choices.domains.iter().map(|choice| view! { <option value=choice.stable_id.clone()>{choice.hostname.clone()}</option> }).collect_view()}</select></label><label><span>"Endpoint"</span><select prop:value=move || endpoint.get() on:change=on_endpoint_change><option value="">"No default"</option>{endpoint_choices.iter().map(|choice| view! { <option value=choice.stable_id.clone()>{endpoint_option_label(choice)}</option> }).collect_view()}</select></label><label><span>"Endpoint generation"</span><input readonly aria-readonly="true" prop:value=move || endpoint_generation.get()/></label><label><span>"Gateway"</span><select prop:value=move || gateway.get() on:change=on_gateway_change><option value="">"No default"</option>{gateway_choices.iter().map(|choice| view! { <option value=choice.stable_id.clone()>{gateway_option_label(choice)}</option> }).collect_view()}</select></label><label><span>"Gateway generation"</span><input readonly aria-readonly="true" prop:value=move || gateway_generation.get()/></label><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Save defaults"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
+    view! { <div class="workflow-stack"><section class="panel effective-overview"><div class="section-heading"><div><p class="section-kicker">"Defaults for future workflows"</p><h2>"Topology defaults"<HelpTooltip term="Topology defaults" summary="New storage and delivery plans start from these choices. Existing placements and routes do not change."/></h2></div></div><div class="resource-identity"><div><span>"Binding"</span><code>{current_binding}</code></div><div><span>"Domain"</span><code>{current_domain}</code></div><div><span>"Endpoint"</span><code>{current_endpoint}</code></div><div><span>"Gateway"</span><code>{current_gateway}</code></div></div><details><summary>"Configuration metadata"</summary><div class="resource-identity"><div><span>"Version"</span><code>{current_version}</code></div></div></details></section>{if can_manage { view! { <details class="panel advanced-controls"><summary>"Change topology defaults"</summary><form class="editor-form" on:submit=on_plan><label><span>"Binding"</span><select prop:value=move || binding.get() on:change=move |event| binding.set(event_target_value(&event))><option value="">"No default"</option>{choices.bindings.iter().map(|choice| view! { <option value=choice.stable_id.clone()>{binding_option_label(choice)}</option> }).collect_view()}</select></label><label><span>"Domain"</span><select prop:value=move || domain.get() on:change=move |event| domain.set(event_target_value(&event))><option value="">"No default"</option>{choices.domains.iter().map(|choice| view! { <option value=choice.stable_id.clone()>{choice.hostname.clone()}</option> }).collect_view()}</select></label><label><span>"Endpoint"</span><select prop:value=move || endpoint.get() on:change=on_endpoint_change><option value="">"No default"</option>{endpoint_choices.iter().map(|choice| view! { <option value=choice.stable_id.clone()>{endpoint_option_label(choice)}</option> }).collect_view()}</select></label><label><span>"Endpoint generation"</span><input readonly aria-readonly="true" prop:value=move || endpoint_generation.get()/></label><label><span>"Gateway"</span><select prop:value=move || gateway.get() on:change=on_gateway_change><option value="">"No default"</option>{gateway_choices.iter().map(|choice| view! { <option value=choice.stable_id.clone()>{gateway_option_label(choice)}</option> }).collect_view()}</select></label><label><span>"Gateway generation"</span><input readonly aria-readonly="true" prop:value=move || gateway_generation.get()/></label><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review defaults"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</details> }.into_any() } else { view! { <section class="panel"><p class="muted">"You have read-only access to these defaults."</p></section> }.into_any() }}</div> }
+}
+
+fn display_default(value: &str) -> String {
+    if value.is_empty() {
+        "Not set".to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+fn generation_default(stable_id: &str, generation: i64) -> String {
+    if stable_id.is_empty() {
+        "Not set".to_string()
+    } else {
+        format!("{stable_id} · generation {generation}")
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

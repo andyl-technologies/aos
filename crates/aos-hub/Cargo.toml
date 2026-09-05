@@ -46,6 +46,7 @@ tempfile = { workspace = true }
 aos-core = { workspace = true }
 aos-package = { workspace = true }
 aos-hub-core = { workspace = true }
+aos-doc-model = { workspace = true }
 aos-registry-surface = { workspace = true }
 
 [features]

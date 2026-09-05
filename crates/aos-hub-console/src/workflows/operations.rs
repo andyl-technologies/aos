@@ -7,8 +7,8 @@
 //! Cancellation and retry are direct operation state transitions, fenced by
 //! the exact resource version displayed during confirmation.
 
+use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::prelude::*;
-use leptos::task::spawn_local;
 
 use crate::components::{InlineError, StatusBadge};
 use crate::mutation::idempotency_key;
@@ -220,8 +220,8 @@ fn OperationCard(client: ApiClient, operation: aos_proto_types::OperationDetail)
         <details class="binding-card">
             <summary>
                 <div>
-                    <span class="resource-kind">{humanize_kind(&reference.kind)}</span>
-                    <h3>{reference.operation_id.clone()}</h3>
+                    <span class="resource-kind">"Operation"</span>
+                    <h3>{humanize_kind(&reference.kind)}</h3>
                     <span>{format!("Created {}", timestamp(reference.created_at))}</span>
                 </div>
                 <div class="binding-summary-state">
@@ -252,7 +252,7 @@ fn OperationCard(client: ApiClient, operation: aos_proto_types::OperationDetail)
                     </div>
                 </section>
                 {(!operation.error.is_empty()).then(|| view! {
-                    <InlineError detail=operation.error/>
+                    <div class="operation-failure"><strong>"Operation failed"</strong><p>{operation.error}</p></div>
                 })}
                 <div class="form-actions">
                     {can_cancel.then(|| view! {
@@ -406,11 +406,7 @@ fn short_digest(digest: &str) -> &str {
 }
 
 fn timestamp(value: i64) -> String {
-    if value <= 0 {
-        "Not recorded".to_string()
-    } else {
-        format!("Unix {value}")
-    }
+    crate::components::format_timestamp(value, "Not recorded")
 }
 
 fn reload() {

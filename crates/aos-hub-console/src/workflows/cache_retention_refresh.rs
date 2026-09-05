@@ -3,8 +3,8 @@
 //! Refresh-all resolves every registry subscription against current signed
 //! catalogs under the same cache-wide GC concurrency fence used by sweeps.
 
+use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::prelude::*;
-use leptos::task::spawn_local;
 
 use crate::components::{InlineError, ReviewedPlanCard};
 use crate::mutation::{idempotency_key, PendingPlan};
@@ -114,7 +114,7 @@ fn RefreshAllEditor(client: ApiClient, cache_id: String, version: String) -> imp
         <section class="panel resource-panel">
             <div class="section-heading">
                 <div><p class="section-kicker">"Re-resolve signed catalogs"</p><h2>"Refresh every subscription"</h2></div>
-                <code>{version}</code>
+                <span>"Root generation "<code>{version}</code></span>
             </div>
             <p>"Creates one operation that resolves every subscription and atomically advances the cache root generation."</p>
             <button class="secondary-button" type="button" disabled=move || busy.get() on:click=on_plan>"Review refresh all"</button>

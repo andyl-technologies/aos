@@ -1,7 +1,7 @@
 //! Authenticated OCI Distribution client with resumable verified transfers.
 //!
 //! The client accepts a complete [`RegistryReference`], validates that an
-//! explicit Hub origin names the same authority, and implements the standard
+//! explicit registry origin names the same authority, and implements the standard
 //! Bearer challenge. Pull retains partial blobs and resumes with ranges. Push
 //! persists only upload locations and offsets - never credentials - and updates
 //! a mutable tag only after the entire descriptor graph is verified and durable.
@@ -11,6 +11,7 @@ mod pull;
 mod push;
 
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -19,6 +20,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail, ensure};
 use bytes::Bytes;
 use futures_util::StreamExt as _;
+use futures_util::future::BoxFuture;
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue, WWW_AUTHENTICATE};
 use reqwest::redirect::Policy;
 use reqwest::{Method, Response, StatusCode};
@@ -157,16 +159,20 @@ pub struct RegistryClient {
     inner: Arc<ClientInner>,
 }
 
+type CredentialProvider = Arc<dyn Fn() -> BoxFuture<'static, Result<Option<String>>> + Send + Sync>;
+
 struct ClientInner {
     http: reqwest::Client,
     origin: Url,
     reference_authority: String,
     seed_token: Option<Zeroizing<String>>,
+    credential_provider: Option<CredentialProvider>,
+    deferred_token: tokio::sync::OnceCell<Option<Zeroizing<String>>>,
     scoped_tokens: Mutex<BTreeMap<String, Zeroizing<String>>>,
 }
 
 impl RegistryClient {
-    /// Constructs a client for a reference and optional explicit Hub origin.
+    /// Constructs a client for a reference and optional explicit registry origin.
     ///
     /// Without `origin`, HTTPS is used at the reference authority. An explicit
     /// HTTP origin is accepted only for a loopback host, supporting native Hub
@@ -181,6 +187,43 @@ impl RegistryClient {
         reference: &RegistryReference,
         origin: Option<&str>,
         seed_token: Option<String>,
+    ) -> Result<Self> {
+        Self::build(reference, origin, seed_token, None)
+    }
+
+    /// Constructs a client that loads credentials only after anonymous authentication fails.
+    ///
+    /// The provider is called only when a same-origin Bearer token endpoint
+    /// rejects an anonymous request with 401 or 403, or the registry rejects
+    /// the resulting anonymous scoped token. A successfully resolved credential
+    /// is cached for this client and never sent to an external token realm.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same construction errors as [`Self::new`]. Provider errors
+    /// are propagated by the transfer that needs authentication.
+    pub fn with_credential_provider<F, Fut>(
+        reference: &RegistryReference,
+        origin: Option<&str>,
+        provider: F,
+    ) -> Result<Self>
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<Option<String>>> + Send + 'static,
+    {
+        Self::build(
+            reference,
+            origin,
+            None,
+            Some(Arc::new(move || Box::pin(provider()))),
+        )
+    }
+
+    fn build(
+        reference: &RegistryReference,
+        origin: Option<&str>,
+        seed_token: Option<String>,
+        credential_provider: Option<CredentialProvider>,
     ) -> Result<Self> {
         let origin = match origin {
             Some(origin) => Url::parse(origin).context("parsing registry origin")?,
@@ -200,6 +243,8 @@ impl RegistryClient {
                 origin,
                 reference_authority: reference.authority().to_string(),
                 seed_token: seed_token.map(Zeroizing::new),
+                credential_provider,
+                deferred_token: tokio::sync::OnceCell::new(),
                 scoped_tokens: Mutex::new(BTreeMap::new()),
             }),
         })
@@ -361,7 +406,8 @@ impl RegistryClient {
     ) -> Result<Response> {
         let scopes = normalized_scopes(scopes)?;
         let cache_key = scopes.join("\n");
-        let mut retried = false;
+        let mut retries = 0;
+        let mut previous_challenge = None;
         loop {
             let token = self.token_for_scope(&cache_key)?;
             let mut request = self
@@ -379,18 +425,35 @@ impl RegistryClient {
                 () = cancellation.cancelled() => bail!("OCI transfer cancelled"),
                 response = request.send() => response.context("sending Distribution request")?,
             };
-            if response.status() != StatusCode::UNAUTHORIZED || retried {
+            let denied = matches!(
+                response.status(),
+                StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+            );
+            // An anonymous token can carry fewer grants than requested. Retry
+            // only this denied request after one authenticated exchange.
+            let retry_credentials = retries == 1 && self.inner.credential_provider.is_some();
+            if !denied
+                || retries >= 2
+                || (retries == 1 && !retry_credentials)
+                || (retries == 0 && response.status() != StatusCode::UNAUTHORIZED)
+            {
                 return Ok(response);
             }
-            let challenge = response
-                .headers()
-                .get(WWW_AUTHENTICATE)
-                .context("registry returned 401 without WWW-Authenticate")?
-                .to_str()
-                .context("registry returned a non-ASCII authentication challenge")?;
-            let token = self.authorize(challenge, &scopes, cancellation).await?;
+            let challenge = match response.headers().get(WWW_AUTHENTICATE) {
+                Some(value) => value
+                    .to_str()
+                    .context("registry returned a non-ASCII authentication challenge")?
+                    .to_owned(),
+                None => previous_challenge
+                    .clone()
+                    .context("registry returned 401 without WWW-Authenticate")?,
+            };
+            let token = self
+                .authorize(&challenge, &scopes, cancellation, retry_credentials)
+                .await?;
             self.store_scoped_token(&cache_key, token)?;
-            retried = true;
+            previous_challenge = Some(challenge);
+            retries += 1;
         }
     }
 
@@ -467,11 +530,28 @@ impl RegistryClient {
         Ok(())
     }
 
+    async fn deferred_credential(
+        &self,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<Zeroizing<String>>> {
+        let Some(provider) = &self.inner.credential_provider else {
+            return Ok(None);
+        };
+        let seed = tokio::select! {
+            () = cancellation.cancelled() => bail!("OCI transfer cancelled"),
+            seed = self.inner.deferred_token.get_or_try_init(|| async {
+                provider().await.map(|token| token.map(Zeroizing::new))
+            }) => seed?,
+        };
+        Ok(seed.clone())
+    }
+
     async fn authorize(
         &self,
         challenge: &str,
         requested_scopes: &[String],
         cancellation: &CancellationToken,
+        require_credentials: bool,
     ) -> Result<Zeroizing<String>> {
         let parameters = parse_bearer_challenge(challenge)?;
         let realm = parameters
@@ -517,13 +597,45 @@ impl RegistryClient {
             external = external_client(&realm, cancellation).await?;
             external.get(realm.clone())
         };
-        if same_origin && let Some(seed) = self.inner.seed_token.as_deref() {
-            request = request.header(AUTHORIZATION, bearer_header(seed)?);
+        let deferred_seed;
+        if same_origin {
+            let seed = if require_credentials {
+                deferred_seed = self.deferred_credential(cancellation).await?;
+                deferred_seed.as_deref()
+            } else {
+                self.inner.seed_token.as_deref()
+            };
+            if let Some(seed) = seed {
+                request = request.header(AUTHORIZATION, bearer_header(seed)?);
+            }
         }
-        let response = tokio::select! {
+        let mut response = tokio::select! {
             () = cancellation.cancelled() => bail!("OCI transfer cancelled"),
             response = request.send() => response.context("requesting registry bearer token")?,
         };
+        // Public registries can challenge every request and still issue tokens
+        // anonymously. Consult local credentials only after that exchange fails.
+        if same_origin
+            && matches!(
+                response.status(),
+                StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+            )
+            && !require_credentials
+            && self.inner.credential_provider.is_some()
+        {
+            let seed = self.deferred_credential(cancellation).await?;
+            if let Some(seed) = seed {
+                let request = self
+                    .inner
+                    .http
+                    .get(realm)
+                    .header(AUTHORIZATION, bearer_header(&seed)?);
+                response = tokio::select! {
+                    () = cancellation.cancelled() => bail!("OCI transfer cancelled"),
+                    response = request.send() => response.context("requesting authenticated registry bearer token")?,
+                };
+            }
+        }
         ensure!(
             response.status().is_success(),
             "registry bearer-token request failed with {}",

@@ -4,13 +4,13 @@
 //! resource identity is always visible, mutable policy is edited separately,
 //! and every durable change crosses the immutable plan review boundary.
 
+use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
-use leptos::task::spawn_local;
 
 use crate::app::navigate;
 use crate::components::{EmptyState, HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
-use crate::mutation::{idempotency_key, PendingPlan};
+use crate::mutation::{idempotency_key, watch_draft, PendingPlan};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
 use crate::workflows::infrastructure::InfrastructureWorkflow;
@@ -20,6 +20,8 @@ use super::organization_scope::organization_authorization_scope;
 /// Renders the typed resource adapter owned by the current canonical page.
 #[component]
 pub(crate) fn ResourceWorkflow(route: ConsoleRoute, client: ApiClient) -> impl IntoView {
+    crate::mutation::install_workflow_task_scope();
+
     match (&route.scope, route.page.key) {
         (ConsoleScope::Caches, "overview") => {
             view! { <GlobalCacheInventory client=client/> }.into_any()
@@ -118,7 +120,9 @@ fn GlobalCacheInventory(client: ApiClient) -> impl IntoView {
                         <h2>"Caches"</h2>
                         <HelpTooltip term="Caches" summary="Binary caches visible across your organizations and public Hub resources."/>
                     </div>
+                    <p>"Manage reusable binary caches here. Each registry chooses which caches its clients use."</p>
                 </div>
+                <a class="secondary-button" href="/-/orgs">"Choose an organization to create a cache"</a>
             </div>
             <Suspense fallback=move || view! { <p class="loading-row">"Loading caches…"</p> }>
                 {move || Suspend::new(async move {
@@ -129,7 +133,7 @@ fn GlobalCacheInventory(client: ApiClient) -> impl IntoView {
                         Ok((caches, registry_stacks)) => view! {
                             <div class="workflow-stack">
                                 {(!caches.is_empty()).then(|| view! {
-                                    <div><h3>"Standalone binary caches"</h3><div class="resource-grid">
+                                    <div><h3>"Binary caches"</h3><div class="resource-grid">
                                 {caches.iter().cloned().map(|cache| {
                                     let href = cache_path(&cache.slug);
                                     view! {
@@ -352,17 +356,10 @@ fn OrganizationCreate(client: ApiClient) -> impl IntoView {
 fn OrganizationOverview(client: ApiClient, slug: String) -> impl IntoView {
     let request_slug = slug.clone();
     let resource_client = client.clone();
-    let organization = LocalResource::new(move || {
+    let snapshot = LocalResource::new(move || {
         let client = resource_client.clone();
         let slug = request_slug.clone();
-        async move {
-            client
-                .call::<_, aos_proto_types::OrganizationResponse>(
-                    aos_proto_types::ORGANIZATION_SERVICE_GET_ORGANIZATION_PATH,
-                    &aos_proto_types::GetOrganizationRequest { slug },
-                )
-                .await
-        }
+        async move { load_organization_snapshot(&client, &slug).await }
     });
 
     view! {
@@ -370,16 +367,141 @@ fn OrganizationOverview(client: ApiClient, slug: String) -> impl IntoView {
             {move || {
                 let client = client.clone();
                 Suspend::new(async move {
-                    match organization.await.as_ref() {
-                        Ok(response) => match response.organization.clone() {
-                            Some(value) => view! { <OrganizationEditor client=client organization=value/> }.into_any(),
-                            None => view! { <InlineError detail="The Hub omitted the organization.".to_string()/> }.into_any(),
-                        },
-                        Err(error) => view! { <InlineError detail=error.to_string()/> }.into_any(),
+                    match snapshot.await.as_ref() {
+                        Ok(snapshot) => view! {
+                            <OrganizationSnapshotView snapshot=snapshot.clone()/>
+                            <OrganizationEditor client=client organization=snapshot.organization.clone()/>
+                        }.into_any(),
+                        Err(detail) => view! { <InlineError detail=detail.clone()/> }.into_any(),
                     }
                 })
             }}
         </Suspense>
+    }
+}
+
+#[derive(Clone)]
+struct OrganizationSnapshot {
+    organization: aos_proto_types::Organization,
+    projects: Vec<aos_proto_types::Project>,
+    registries: Vec<aos_proto_types::Registry>,
+    caches: Vec<aos_proto_types::BinaryCache>,
+    bindings: Option<Vec<aos_proto_types::Binding>>,
+}
+
+async fn load_organization_snapshot(
+    client: &ApiClient,
+    slug: &str,
+) -> Result<OrganizationSnapshot, String> {
+    let response = client
+        .call::<_, aos_proto_types::OrganizationResponse>(
+            aos_proto_types::ORGANIZATION_SERVICE_GET_ORGANIZATION_PATH,
+            &aos_proto_types::GetOrganizationRequest {
+                slug: slug.to_string(),
+            },
+        )
+        .await
+        .map_err(|failure| failure.to_string())?;
+    let organization = response
+        .organization
+        .ok_or_else(|| "The Hub omitted the organization.".to_string())?;
+
+    let project_slug = slug.to_string();
+    let projects = client.collect_pages::<_, aos_proto_types::ListProjectsResponse, _, _, _>(
+        aos_proto_types::PROJECT_SERVICE_LIST_PROJECTS_PATH,
+        move |page_token| aos_proto_types::ListProjectsRequest {
+            org_slug: project_slug.clone(),
+            page_size: 100,
+            page_token,
+        },
+        |response| (response.projects, response.next_page_token),
+    );
+    let registries = client.collect_pages::<_, aos_proto_types::ListRegistriesResponse, _, _, _>(
+        aos_proto_types::REGISTRY_SERVICE_LIST_REGISTRIES_PATH,
+        |page_token| aos_proto_types::ListRegistriesRequest {
+            page_size: 250,
+            page_token,
+        },
+        |response| (response.registries, response.next_page_token),
+    );
+    let cache_scope = organization.owner_scope_key.clone();
+    let caches = client.collect_pages::<_, aos_proto_types::ListBinaryCachesResponse, _, _, _>(
+        aos_proto_types::BINARY_CACHE_SERVICE_LIST_BINARY_CACHES_PATH,
+        move |page_token| aos_proto_types::ListBinaryCachesRequest {
+            owner_scope_key: cache_scope.clone(),
+            page_size: 100,
+            page_token,
+        },
+        |response| (response.caches, response.next_page_token),
+    );
+    let binding_scope = organization.owner_scope_key.clone();
+    let bindings = async {
+        if !client.allows("binding.read") {
+            return Ok(None);
+        }
+        client
+            .collect_pages::<_, aos_proto_types::ListBindingsResponse, _, _, _>(
+                aos_proto_types::BINDING_SERVICE_LIST_BINDINGS_PATH,
+                move |page_token| aos_proto_types::ListBindingsRequest {
+                    owner_scope_key: binding_scope.clone(),
+                    page_size: 100,
+                    page_token,
+                    include_granted: false,
+                },
+                |response| (response.bindings, response.next_page_token),
+            )
+            .await
+            .map(Some)
+    };
+    let (projects, registries, caches, bindings) =
+        futures::join!(projects, registries, caches, bindings);
+    let prefix = format!("{slug}/");
+
+    Ok(OrganizationSnapshot {
+        organization,
+        projects: projects.map_err(|failure| failure.to_string())?,
+        registries: registries
+            .map_err(|failure| failure.to_string())?
+            .into_iter()
+            .filter(|registry| registry.slug.starts_with(&prefix))
+            .collect(),
+        caches: caches.map_err(|failure| failure.to_string())?,
+        bindings: bindings.map_err(|failure| failure.to_string())?,
+    })
+}
+
+#[component]
+fn OrganizationSnapshotView(snapshot: OrganizationSnapshot) -> impl IntoView {
+    let slug = snapshot.organization.slug.clone();
+    let healthy_bindings = snapshot.bindings.as_ref().map(|bindings| {
+        bindings
+            .iter()
+            .filter(|binding| {
+                binding
+                    .health
+                    .as_ref()
+                    .is_some_and(|health| health.state == "healthy")
+            })
+            .count()
+    });
+    let binding_count = snapshot.bindings.as_ref().map(Vec::len);
+
+    view! {
+        <section class="panel resource-panel">
+            <div class="section-heading"><div><p class="section-kicker">"Organization scope"</p><h2>{snapshot.organization.display_name}</h2><p>"Resources and infrastructure owned by this organization."</p></div></div>
+            <div class="resource-identity">
+                <div><span>"Projects"</span><strong>{snapshot.projects.len()}</strong></div>
+                <div><span>"Registries"</span><strong>{snapshot.registries.len()}</strong></div>
+                <div><span>"Binary caches"</span><strong>{snapshot.caches.len()}</strong></div>
+                <div><span>"Healthy storage bindings"</span><strong>{match (healthy_bindings, binding_count) { (Some(healthy), Some(total)) => format!("{healthy} of {total}"), _ => "No access".to_string() }}</strong></div>
+            </div>
+            <div class="resource-grid">
+                <a class="resource-card" href=format!("/-/org/{slug}/projects")><div><span class="resource-kind">"Logical resources"</span><h3>"Projects"</h3><p>"Organize registry paths and ownership."</p></div><span class="card-arrow">"→"</span></a>
+                <a class="resource-card" href=format!("/-/org/{slug}/registries")><div><span class="resource-kind">"Content"</span><h3>"Registries"</h3><p>"Package, documentation, and container surfaces."</p></div><span class="card-arrow">"→"</span></a>
+                <a class="resource-card" href=format!("/-/org/{slug}/caches")><div><span class="resource-kind">"Shared cache"</span><h3>"Binary caches"</h3><p>"Independent cache resources used by registry stacks."</p></div><span class="card-arrow">"→"</span></a>
+                <a class="resource-card" href=format!("/-/org/{slug}/bindings")><div><span class="resource-kind">"Infrastructure"</span><h3>"Storage and delivery"</h3><p>"Bindings, domains, network policies, endpoints, and gateways."</p></div><span class="card-arrow">"→"</span></a>
+            </div>
+        </section>
     }
 }
 
@@ -388,17 +510,26 @@ fn OrganizationEditor(
     client: ApiClient,
     organization: aos_proto_types::Organization,
 ) -> impl IntoView {
+    let can_manage = client.allows("members.manage");
     let display_name = RwSignal::new(organization.display_name.clone());
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
     let slug = organization.slug.clone();
     let resource_version = organization.resource_version.clone();
+    let draft_epoch = watch_draft(
+        move || {
+            let _ = display_name.get();
+        },
+        pending,
+        error,
+    );
 
     let plan_client = client.clone();
     let plan_slug = slug.clone();
     let on_plan = move |event: SubmitEvent| {
         event.prevent_default();
+        pending.set(None);
         let client = plan_client.clone();
         let idempotency_key = idempotency_key("organization-update");
         let request = aos_proto_types::PlanUpdateOrganizationRequest {
@@ -407,6 +538,7 @@ fn OrganizationEditor(
             expected_resource_version: resource_version.clone(),
             idempotency_key: idempotency_key.clone(),
         };
+        let planned_epoch = draft_epoch.get_untracked();
         busy.set(true);
         error.set(None);
         spawn_local(async move {
@@ -419,7 +551,10 @@ fn OrganizationEditor(
                 .map_err(|failure| failure.to_string())
                 .and_then(|response| PendingPlan::from_response(response, idempotency_key));
             match result {
-                Ok(reviewed) => pending.set(Some(reviewed)),
+                Ok(reviewed) if draft_epoch.get_untracked() == planned_epoch => {
+                    pending.set(Some(reviewed));
+                }
+                Ok(_) => {}
                 Err(detail) => error.set(Some(detail)),
             }
             busy.set(false);
@@ -451,13 +586,14 @@ fn OrganizationEditor(
     });
 
     view! {
-        <section class="panel editor-panel">
+        <details class="panel editor-panel">
+            <summary>"Advanced organization profile"</summary>
             <div class="resource-identity">
                 <div><span>"Stable ID"</span><code>{organization.stable_id}</code></div>
                 <div><span>"Scope"</span><code>{organization.owner_scope_key}</code></div>
                 <div><span>"Version"</span><code>{organization.resource_version}</code></div>
             </div>
-            <form class="editor-form" on:submit=on_plan>
+            {can_manage.then(|| view! { <form class="editor-form" on:submit=on_plan>
                 <label>
                     <span>"Organization slug"<HelpTooltip term="Organization slug" summary="This canonical identity cannot change after creation."/></span>
                     <input disabled value=organization.slug />
@@ -470,7 +606,7 @@ fn OrganizationEditor(
                 <div class="form-actions">
                     <button class="button" type="submit" disabled=move || busy.get()>"Review update"</button>
                 </div>
-            </form>
+            </form> })}
             {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
             {move || pending.get().map(|reviewed| view! {
                 <ReviewedPlanCard
@@ -480,12 +616,13 @@ fn OrganizationEditor(
                     on_cancel=Callback::new(move |()| pending.set(None))
                 />
             })}
-        </section>
+        </details>
     }
 }
 
 #[component]
 fn ProjectInventory(client: ApiClient, organization: String, creation_only: bool) -> impl IntoView {
+    let cancel_path = format!("/-/org/{organization}/projects");
     let can_create = client.allows("registry.configure");
     let inventory_org = organization.clone();
     let inventory_client = client.clone();
@@ -591,9 +728,9 @@ fn ProjectInventory(client: ApiClient, organization: String, creation_only: bool
             {creation_only.then(|| view! { <section class="panel editor-panel">
                 <h2>"Create project"</h2>
                 <form class="editor-form compact-form" on:submit=on_plan>
-                    <label><span>"Materialized path"</span><input required placeholder="platform/runtime" prop:value=move || path.get() on:input=move |event| path.set(event_target_value(&event))/></label>
+                    <label><span>"Project path"</span><input required placeholder="platform/runtime" prop:value=move || path.get() on:input=move |event| path.set(event_target_value(&event))/></label>
                     <label><span>"Display name"</span><input required prop:value=move || name.get() on:input=move |event| name.set(event_target_value(&event))/></label>
-                    <div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review creation"</button></div>
+                    <div class="form-actions"><a class="secondary-button" href=cancel_path>"Cancel"</a><button class="button" type="submit" disabled=move || busy.get()>"Review creation"</button></div>
                 </form>
                 {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
                 {move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}
@@ -686,6 +823,7 @@ fn RegistryInventory(
     organization: String,
     creation_only: bool,
 ) -> impl IntoView {
+    let cancel_path = format!("/-/org/{organization}/registries");
     let can_create = client.allows("registry.configure");
     let inventory_client = client.clone();
     let prefix = format!("{organization}/");
@@ -784,7 +922,7 @@ fn RegistryInventory(
                 <label><span>"Project path"</span><input placeholder="Optional; for example platform/runtime" prop:value=move || project_path.get() on:input=move |event| project_path.set(event_target_value(&event))/></label>
                 <label><span>"Registry name"</span><input required prop:value=move || name.get() on:input=move |event| name.set(event_target_value(&event))/></label>
                 <label><span>"Visibility"</span><select prop:value=move || visibility.get() on:change=move |event| visibility.set(event_target_value(&event))><VisibilityOptions value=visibility/></select></label>
-                <div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review creation"</button></div>
+                <div class="form-actions"><a class="secondary-button" href=cancel_path>"Cancel"</a><button class="button" type="submit" disabled=move || busy.get()>"Review creation"</button></div>
             </form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> })}
         </div>
     }
@@ -830,6 +968,7 @@ fn CacheInventory(
     owner_scope_key: String,
     creation_only: bool,
 ) -> impl IntoView {
+    let cancel_path = format!("/-/org/{organization}/caches");
     let can_create = client.allows("registry.configure");
     let inventory_client = client.clone();
     let list_scope = owner_scope_key.clone();
@@ -930,7 +1069,7 @@ fn CacheInventory(
         });
     });
     view! { <div class="workflow-stack">{(!creation_only).then(|| view! { <section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Reusable object stores"</p><div class="section-title"><h2>"Binary caches"</h2><HelpTooltip term="Binary caches" summary="Caches may stand alone or be shared by several registry consumer stacks and retention subscriptions."/></div></div>{can_create.then(|| view! { <a class="button" href=format!("/-/org/{organization}/caches/new")>"Create binary cache"</a> })}</div><Suspense fallback=move || view! { <p class="loading-row">"Loading caches…"</p> }>{move || { let organization = organization.clone(); Suspend::new(async move { match inventory.await.as_ref() { Ok(caches) if caches.is_empty() => view! { <p class="muted">"No binary caches in this organization."</p> }.into_any(), Ok(caches) => view! { <div class="resource-grid">{caches.iter().cloned().map(|cache| { let href = format!("/-/org/{}/caches/{}", organization, cache.slug.rsplit('/').next().unwrap_or(&cache.slug)); view! { <a class="resource-card" href=href><div><span class="resource-kind">{cache.visibility}</span><h3>{cache.name}</h3><code>{cache.slug}</code><p class="resource-metric">{format!("{} objects · {} placements", cache.object_count, cache.placement_count)}</p></div><span class="card-arrow">"→"</span></a> } }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section> })}
-    {creation_only.then(|| view! { <section class="panel editor-panel"><h2>"Create binary cache"</h2><form class="editor-form compact-form" on:submit=on_plan><label><span>"Cache slug"</span><input required placeholder="build" prop:value=move || cache_name.get() on:input=move |event| cache_name.set(event_target_value(&event))/></label><label><span>"Display name"</span><input required prop:value=move || display_name.get() on:input=move |event| display_name.set(event_target_value(&event))/></label><label><span>"Visibility"</span><select prop:value=move || visibility.get() on:change=move |event| visibility.set(event_target_value(&event))><VisibilityOptions value=visibility/></select></label><label><span>"Compression"</span><select prop:value=move || compression.get() on:change=move |event| compression.set(event_target_value(&event))><option value="zstd">"Zstandard"</option><option value="xz">"XZ"</option><option value="none">"None"</option></select></label><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review creation"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> })}</div> }
+    {creation_only.then(|| view! { <section class="panel editor-panel"><h2>"Create binary cache"</h2><form class="editor-form compact-form" on:submit=on_plan><label><span>"Cache slug"</span><input required placeholder="build" prop:value=move || cache_name.get() on:input=move |event| cache_name.set(event_target_value(&event))/></label><label><span>"Display name"</span><input required prop:value=move || display_name.get() on:input=move |event| display_name.set(event_target_value(&event))/></label><label><span>"Visibility"</span><select prop:value=move || visibility.get() on:change=move |event| visibility.set(event_target_value(&event))><VisibilityOptions value=visibility/></select></label><label><span>"Compression"</span><select prop:value=move || compression.get() on:change=move |event| compression.set(event_target_value(&event))><option value="zstd">"Zstandard"</option><option value="xz">"XZ"</option><option value="none">"None"</option></select></label><div class="form-actions"><a class="secondary-button" href=cancel_path>"Cancel"</a><button class="button" type="submit" disabled=move || busy.get()>"Review creation"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> })}</div> }
 }
 
 #[component]
@@ -941,19 +1080,34 @@ fn RegistryOverview(client: ApiClient, slug: String) -> impl IntoView {
         let client = resource_client.clone();
         let slug = request_slug.clone();
         async move {
-            client
-                .call::<_, aos_proto_types::GetRegistryResponse>(
-                    aos_proto_types::REGISTRY_SERVICE_GET_REGISTRY_PATH,
-                    &aos_proto_types::GetRegistryRequest { slug },
-                )
-                .await
+            let registry_request = aos_proto_types::GetRegistryRequest { slug: slug.clone() };
+            let topology_request = aos_proto_types::GetSurfaceTopologyRequest {
+                surface: Some(aos_proto_types::SurfaceRef {
+                    target: Some(aos_proto_types::surface_ref::Target::RegistrySlug(slug)),
+                }),
+            };
+            let registry = client.call::<_, aos_proto_types::GetRegistryResponse>(
+                aos_proto_types::REGISTRY_SERVICE_GET_REGISTRY_PATH,
+                &registry_request,
+            );
+            let topology = client.call::<_, aos_proto_types::GetSurfaceTopologyResponse>(
+                aos_proto_types::TOPOLOGY_SERVICE_GET_SURFACE_TOPOLOGY_PATH,
+                &topology_request,
+            );
+            let (registry, topology) = futures::join!(registry, topology);
+            Ok::<_, crate::transport::TransportError>((registry?, topology?))
         }
     });
-    view! { <Suspense fallback=move || view! { <p class="loading-row">"Loading registry…"</p> }>{move || { let client = client.clone(); Suspend::new(async move { match resource.await.as_ref() { Ok(response) => match response.registry.clone() { Some(registry) => view! { <RegistryEditor client=client registry=registry/> }.into_any(), None => view! { <InlineError detail="The Hub omitted the registry.".to_string()/> }.into_any() }, Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense> }
+    view! { <Suspense fallback=move || view! { <p class="loading-row">"Loading registry…"</p> }>{move || { let client = client.clone(); Suspend::new(async move { match resource.await.as_ref() { Ok((response, topology)) => match response.registry.clone() { Some(registry) => view! { <RegistryEditor client=client registry=registry topology=topology.clone()/> }.into_any(), None => view! { <InlineError detail="The Hub omitted the registry.".to_string()/> }.into_any() }, Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense> }
 }
 
 #[component]
-fn RegistryEditor(client: ApiClient, registry: aos_proto_types::Registry) -> impl IntoView {
+fn RegistryEditor(
+    client: ApiClient,
+    registry: aos_proto_types::Registry,
+    topology: aos_proto_types::GetSurfaceTopologyResponse,
+) -> impl IntoView {
+    let can_manage = client.allows("registry.configure");
     let visibility = RwSignal::new(registry.visibility.clone());
     let crawl_policy = RwSignal::new(registry.crawl_policy.clone());
     let llms = RwSignal::new(registry.llms_txt_body.clone());
@@ -965,12 +1119,24 @@ fn RegistryEditor(client: ApiClient, registry: aos_proto_types::Registry) -> imp
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
+    let draft_epoch = watch_draft(
+        move || {
+            let _ = visibility.get();
+            let _ = crawl_policy.get();
+            let _ = llms.get();
+            let _ = llms_mode.get();
+        },
+        pending,
+        error,
+    );
     let slug = registry.slug.clone();
     let version = registry.resource_version.clone();
+    let trust_keys = registry.trust_keys.clone();
     let plan_client = client.clone();
     let plan_slug = slug.clone();
     let on_plan = move |event: SubmitEvent| {
         event.prevent_default();
+        pending.set(None);
         let llms_txt_body = match llms_override(llms_mode.get_untracked(), &llms.get_untracked()) {
             Ok(body) => body,
             Err(detail) => {
@@ -979,13 +1145,14 @@ fn RegistryEditor(client: ApiClient, registry: aos_proto_types::Registry) -> imp
             }
         };
         let client = plan_client.clone();
+        let planned_epoch = draft_epoch.get_untracked();
         let idempotency_key = idempotency_key("registry-update");
         let request = aos_proto_types::PlanUpdateRegistryRequest {
             slug: plan_slug.clone(),
             visibility: visibility.get_untracked(),
             crawl_policy: crawl_policy.get_untracked(),
             llms_txt_body,
-            trust_keys: registry.trust_keys.clone(),
+            trust_keys: trust_keys.clone(),
             update_mask: vec![
                 "visibility".into(),
                 "crawl_policy".into(),
@@ -1006,13 +1173,19 @@ fn RegistryEditor(client: ApiClient, registry: aos_proto_types::Registry) -> imp
                 .map_err(|failure| failure.to_string())
                 .and_then(|response| PendingPlan::from_response(response, idempotency_key));
             match result {
-                Ok(reviewed) => pending.set(Some(reviewed)),
+                Ok(reviewed) if draft_epoch.get_untracked() == planned_epoch => {
+                    pending.set(Some(reviewed));
+                }
+                Ok(_) => {}
                 Err(detail) => error.set(Some(detail)),
             };
             busy.set(false);
         });
     };
     let llms_url = format!("/{slug}/llms.txt");
+    let containers_href = format!("/{slug}/-/settings/containers");
+    let can_view_containers = ConsoleRoute::resolve(&containers_href)
+        .is_some_and(|route| client.allows(route.page.navigation_permission()));
     let apply_client = client;
     let destination = format!("/{slug}/-/settings");
     let on_apply = Callback::new(move |()| {
@@ -1036,13 +1209,43 @@ fn RegistryEditor(client: ApiClient, registry: aos_proto_types::Registry) -> imp
             busy.set(false);
         });
     });
-    view! { <section class="panel editor-panel"><div class="resource-identity"><div><span>"Registry"</span><code>{slug}</code></div><div><span>"Index"</span><StatusBadge state=registry.index_state.clone() positive=registry.index_state == "fresh"/></div><div><span>"Version"</span><code>{registry.resource_version}</code></div></div><form class="editor-form" on:submit=on_plan><label><span>"Visibility"</span><select prop:value=move || visibility.get() on:change=move |event| visibility.set(event_target_value(&event))><VisibilityOptions value=visibility/></select></label><label><span>"Crawler policy"</span><select prop:value=move || crawl_policy.get() on:change=move |event| crawl_policy.set(event_target_value(&event))><option value="allow_all">"Allow all"</option><option value="allow_no_ai">"Allow search; deny AI crawlers"</option><option value="deny_all">"Deny all"</option></select></label><fieldset class="full-field choice-field"><legend>"llms.txt"</legend><label class="choice-row"><input type="radio" name="llms-mode" value="automatic" prop:checked=move || llms_mode.get() == LlmsMode::Automatic on:change=move |_| llms_mode.set(LlmsMode::Automatic)/><span><strong>"Automatic"</strong>" — generated from the signed package and channel index."</span></label><label class="choice-row"><input type="radio" name="llms-mode" value="custom" prop:checked=move || llms_mode.get() == LlmsMode::Custom on:change=move |_| llms_mode.set(LlmsMode::Custom)/><span><strong>"Custom override"</strong>" — serve operator-authored Markdown verbatim."</span></label>{move || (llms_mode.get() == LlmsMode::Custom).then(|| view! { <label class="llms-custom"><span>"Custom Markdown"</span><textarea rows="8" required prop:value=move || llms.get() on:input=move |event| llms.set(event_target_value(&event))></textarea></label> })}{move || (visibility.get() == "public").then(|| view! { <p class="field-note">"Public document: "<a href=llms_url.clone() target="_blank">{llms_url.clone()}</a></p> })}</fieldset><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review update"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
+    view! { <div class="workflow-stack"><section class="panel effective-overview"><div class="section-heading"><div><p class="section-kicker">"Effective registry"</p><h2>{if registry.name.is_empty() { registry.slug.clone() } else { registry.name.clone() }}</h2><p>{if registry.description.is_empty() { "Registry publication and delivery status".to_string() } else { registry.description.clone() }}</p></div><StatusBadge state=registry.index_state.clone() positive=registry.index_state == "fresh"/></div><div class="resource-identity"><div><span>"Registry"</span><code>{slug.clone()}</code></div><div><span>"Visibility"</span><strong>{registry.visibility.clone()}</strong></div><div><span>"Infrastructure owner"</span><code>{registry.owner_scope_key.clone()}</code></div><div><span>"Consumer caches"</span><strong>{registry.consumer_cache_stack.len()}</strong></div><div><span>"Trust keys"</span><strong>{registry.trust_keys.len()}</strong></div><div><span>"Version"</span><code>{registry.resource_version.clone()}</code></div></div><EffectiveDelivery routes=topology.routes advertisements=topology.route_advertisements/>{(!registry.index_error.is_empty()).then(|| view! { <InlineError detail=registry.index_error.clone()/> })}<div class="overview-actions"><a class="secondary-button" href=format!("/{slug}/-/packages")>"Browse packages"</a><a class="secondary-button" href=format!("/{slug}/-/docs")>"Browse documentation"</a><a class="secondary-button" href=format!("/{slug}/-/images")>"Browse images"</a><a class="secondary-button" href=format!("/{slug}/-/channels")>"Browse channels"</a></div><div class="overview-actions"><a class="button" href=format!("/{slug}/-/settings/delivery")>"View delivery"</a><a class="secondary-button" href=format!("/{slug}/-/settings/placements")>"View storage & replicas"</a><a class="secondary-button" href=format!("/{slug}/-/settings/caches")>"View binary caches"</a>{can_view_containers.then(|| view! { <a class="secondary-button" href=containers_href>"View containers"</a> })}</div></section><details class="panel advanced-controls"><summary>"Edit registry policy"</summary>{if can_manage { view! { <form class="editor-form" on:submit=on_plan><label><span>"Visibility"</span><select prop:value=move || visibility.get() on:change=move |event| visibility.set(event_target_value(&event))><VisibilityOptions value=visibility/></select></label><label><span>"Crawler policy"</span><select prop:value=move || crawl_policy.get() on:change=move |event| crawl_policy.set(event_target_value(&event))><option value="allow_all">"Allow all"</option><option value="allow_no_ai">"Allow search; deny AI crawlers"</option><option value="deny_all">"Deny all"</option></select></label><fieldset class="full-field choice-field"><legend>"llms.txt"</legend><label class="choice-row"><input type="radio" name="llms-mode" value="automatic" prop:checked=move || llms_mode.get() == LlmsMode::Automatic on:change=move |_| llms_mode.set(LlmsMode::Automatic)/><span><strong>"Automatic"</strong>" — generated from the signed package and channel index."</span></label><label class="choice-row"><input type="radio" name="llms-mode" value="custom" prop:checked=move || llms_mode.get() == LlmsMode::Custom on:change=move |_| llms_mode.set(LlmsMode::Custom)/><span><strong>"Custom override"</strong>" — serve operator-authored Markdown verbatim."</span></label>{move || (llms_mode.get() == LlmsMode::Custom).then(|| view! { <label class="llms-custom"><span>"Custom Markdown"</span><textarea rows="8" required prop:value=move || llms.get() on:input=move |event| llms.set(event_target_value(&event))></textarea></label> })}{move || (visibility.get() == "public").then(|| view! { <p class="field-note">"Public document: "<a href=llms_url.clone() target="_blank">{llms_url.clone()}</a></p> })}</fieldset><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review update"</button></div></form> }.into_any() } else { view! { <p class="muted">"You have read-only access to this registry."</p> }.into_any() }}{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</details></div> }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LlmsMode {
     Automatic,
     Custom,
+}
+
+#[component]
+fn EffectiveDelivery(
+    routes: Vec<aos_proto_types::Route>,
+    advertisements: Vec<aos_proto_types::RouteAdvertisement>,
+) -> impl IntoView {
+    let enabled = routes
+        .into_iter()
+        .filter(|route| route.spec.as_ref().is_some_and(|spec| spec.enabled))
+        .collect::<Vec<_>>();
+
+    view! {
+        <section class="effective-delivery">
+            <h3>"Effective client URLs"</h3>
+            {if enabled.is_empty() {
+                view! { <p class="muted">"No delivery route is enabled."</p> }.into_any()
+            } else {
+                view! { <div class="compact-list">{enabled.into_iter().map(|route| {
+                    let audiences = advertisements
+                        .iter()
+                        .filter(|advertisement| advertisement.route_id == route.stable_id)
+                        .map(|advertisement| advertisement.audience.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    view! { <div class="compact-list-row"><div><code>{route.canonical_rendered_url}</code><span>{if audiences.is_empty() { "Alternate route".to_string() } else { format!("Canonical for {audiences}") }}</span></div></div> }
+                }).collect_view()}</div> }.into_any()
+            }}
+        </section>
+    }
 }
 
 fn llms_override(mode: LlmsMode, body: &str) -> Result<String, String> {
@@ -1063,19 +1266,36 @@ fn CacheOverview(client: ApiClient, stable_id: String) -> impl IntoView {
         let client = resource_client.clone();
         let cache_id = request_id.clone();
         async move {
-            client
-                .call::<_, aos_proto_types::BinaryCacheResponse>(
-                    aos_proto_types::BINARY_CACHE_SERVICE_GET_BINARY_CACHE_PATH,
-                    &aos_proto_types::GetBinaryCacheRequest { cache_id },
-                )
-                .await
+            let cache_request = aos_proto_types::GetBinaryCacheRequest {
+                cache_id: cache_id.clone(),
+            };
+            let topology_request = aos_proto_types::GetSurfaceTopologyRequest {
+                surface: Some(aos_proto_types::SurfaceRef {
+                    target: Some(aos_proto_types::surface_ref::Target::CacheSlug(cache_id)),
+                }),
+            };
+            let cache = client.call::<_, aos_proto_types::BinaryCacheResponse>(
+                aos_proto_types::BINARY_CACHE_SERVICE_GET_BINARY_CACHE_PATH,
+                &cache_request,
+            );
+            let topology = client.call::<_, aos_proto_types::GetSurfaceTopologyResponse>(
+                aos_proto_types::TOPOLOGY_SERVICE_GET_SURFACE_TOPOLOGY_PATH,
+                &topology_request,
+            );
+            let (cache, topology) = futures::join!(cache, topology);
+            Ok::<_, crate::transport::TransportError>((cache?, topology?))
         }
     });
-    view! { <Suspense fallback=move || view! { <p class="loading-row">"Loading cache…"</p> }>{move || { let client = client.clone(); Suspend::new(async move { match resource.await.as_ref() { Ok(response) => match response.cache.clone() { Some(cache) => view! { <CacheEditor client=client cache=cache/> }.into_any(), None => view! { <InlineError detail="The Hub omitted the binary cache.".to_string()/> }.into_any() }, Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense> }
+    view! { <Suspense fallback=move || view! { <p class="loading-row">"Loading cache…"</p> }>{move || { let client = client.clone(); Suspend::new(async move { match resource.await.as_ref() { Ok((response, topology)) => match response.cache.clone() { Some(cache) => view! { <CacheEditor client=client cache=cache topology=topology.clone()/> }.into_any(), None => view! { <InlineError detail="The Hub omitted the binary cache.".to_string()/> }.into_any() }, Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense> }
 }
 
 #[component]
-fn CacheEditor(client: ApiClient, cache: aos_proto_types::BinaryCache) -> impl IntoView {
+fn CacheEditor(
+    client: ApiClient,
+    cache: aos_proto_types::BinaryCache,
+    topology: aos_proto_types::GetSurfaceTopologyResponse,
+) -> impl IntoView {
+    let can_manage = client.allows("registry.configure");
     let name = RwSignal::new(cache.name.clone());
     let visibility = RwSignal::new(cache.visibility.clone());
     let priority = RwSignal::new(cache.nix_priority.to_string());
@@ -1084,6 +1304,17 @@ fn CacheEditor(client: ApiClient, cache: aos_proto_types::BinaryCache) -> impl I
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
+    let draft_epoch = watch_draft(
+        move || {
+            let _ = name.get();
+            let _ = visibility.get();
+            let _ = priority.get();
+            let _ = compression.get();
+            let _ = mass_query.get();
+        },
+        pending,
+        error,
+    );
     let stable_id = cache.stable_id.clone();
     let slug = cache.slug.clone();
     let version = cache.resource_version.clone();
@@ -1091,6 +1322,7 @@ fn CacheEditor(client: ApiClient, cache: aos_proto_types::BinaryCache) -> impl I
     let plan_id = stable_id.clone();
     let on_plan = move |event: SubmitEvent| {
         event.prevent_default();
+        pending.set(None);
         let parsed_priority = match priority.get_untracked().parse::<u32>() {
             Ok(value) => value,
             Err(_) => {
@@ -1099,6 +1331,7 @@ fn CacheEditor(client: ApiClient, cache: aos_proto_types::BinaryCache) -> impl I
             }
         };
         let client = plan_client.clone();
+        let planned_epoch = draft_epoch.get_untracked();
         let idempotency_key = idempotency_key("cache-update");
         let request = aos_proto_types::PlanBinaryCacheMutationRequest {
             stable_id: plan_id.clone(),
@@ -1133,7 +1366,10 @@ fn CacheEditor(client: ApiClient, cache: aos_proto_types::BinaryCache) -> impl I
                 .map_err(|failure| failure.to_string())
                 .and_then(|response| PendingPlan::from_response(response, idempotency_key));
             match result {
-                Ok(reviewed) => pending.set(Some(reviewed)),
+                Ok(reviewed) if draft_epoch.get_untracked() == planned_epoch => {
+                    pending.set(Some(reviewed));
+                }
+                Ok(_) => {}
                 Err(detail) => error.set(Some(detail)),
             };
             busy.set(false);
@@ -1141,12 +1377,13 @@ fn CacheEditor(client: ApiClient, cache: aos_proto_types::BinaryCache) -> impl I
     };
     let apply_client = client;
     let destination = cache_path(&slug);
+    let apply_destination = destination.clone();
     let on_apply = Callback::new(move |()| {
         let Some(reviewed) = pending.get_untracked() else {
             return;
         };
         let client = apply_client.clone();
-        let destination = destination.clone();
+        let destination = apply_destination.clone();
         busy.set(true);
         spawn_local(async move {
             match client
@@ -1162,7 +1399,7 @@ fn CacheEditor(client: ApiClient, cache: aos_proto_types::BinaryCache) -> impl I
             busy.set(false);
         });
     });
-    view! { <section class="panel editor-panel"><div class="resource-identity"><div><span>"Cache"</span><code>{cache.slug}</code></div><div><span>"Usage"</span><strong>{format_bytes(cache.used_bytes)}</strong></div><div><span>"Objects"</span><strong>{cache.object_count}</strong></div><div><span>"Roots"</span><strong>{cache.retention_root_count}</strong></div></div><form class="editor-form" on:submit=on_plan><label><span>"Display name"</span><input required prop:value=move || name.get() on:input=move |event| name.set(event_target_value(&event))/></label><label><span>"Visibility"</span><select prop:value=move || visibility.get() on:change=move |event| visibility.set(event_target_value(&event))><VisibilityOptions value=visibility/></select></label><label><span>"Nix priority"</span><input type="number" min="0" prop:value=move || priority.get() on:input=move |event| priority.set(event_target_value(&event))/></label><label><span>"Compression"</span><select prop:value=move || compression.get() on:change=move |event| compression.set(event_target_value(&event))><option value="zstd">"Zstandard"</option><option value="xz">"XZ"</option><option value="none">"None"</option></select></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || mass_query.get() on:change=move |event| mass_query.set(event_target_checked(&event))/><span>"Advertise WantMassQuery"</span></label><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review update"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
+    view! { <div class="workflow-stack"><section class="panel effective-overview"><div class="section-heading"><div><p class="section-kicker">"Effective binary cache"</p><h2>{cache.name.clone()}</h2><p>"Client, storage, signing, and retention status for this cache."</p></div><StatusBadge state=if cache.signed { "signed".to_string() } else { "unsigned".to_string() } positive=cache.signed/></div><div class="resource-identity"><div><span>"Cache"</span><code>{cache.slug.clone()}</code></div><div><span>"Visibility"</span><strong>{cache.visibility.clone()}</strong></div><div><span>"Infrastructure owner"</span><code>{cache.owner_scope_key.clone()}</code></div><div><span>"Usage"</span><strong>{format_bytes(cache.used_bytes)}</strong></div><div><span>"Objects"</span><strong>{cache.object_count}</strong></div><div><span>"Placements"</span><strong>{cache.placement_count}</strong></div><div><span>"Retention roots"</span><strong>{cache.retention_root_count}</strong></div><div><span>"Compression"</span><strong>{cache.compression.clone()}</strong></div></div><EffectiveDelivery routes=topology.routes advertisements=topology.route_advertisements/><div class="overview-actions"><a class="button" href=format!("{destination}/delivery")>"View delivery"</a><a class="secondary-button" href=format!("{destination}/placements")>"View storage & replicas"</a><a class="secondary-button" href=format!("{destination}/signing-keys")>"View signing keys"</a><a class="secondary-button" href=format!("{destination}/retention")>"Retention policy"</a><a class="secondary-button" href=format!("{destination}/integrations")>"Registry integrations"</a><a class="secondary-button" href=format!("{destination}/objects")>"Inspect objects"</a><a class="secondary-button" href=format!("{destination}/garbage-collection")>"Garbage collection"</a></div></section><details class="panel advanced-controls"><summary>"Cache configuration"</summary>{if can_manage { view! { <form class="editor-form" on:submit=on_plan><label><span>"Display name"</span><input required prop:value=move || name.get() on:input=move |event| name.set(event_target_value(&event))/></label><label><span>"Visibility"</span><select prop:value=move || visibility.get() on:change=move |event| visibility.set(event_target_value(&event))><VisibilityOptions value=visibility/></select></label><label><span>"Client priority"</span><input type="number" min="0" prop:value=move || priority.get() on:input=move |event| priority.set(event_target_value(&event))/><small>"Lower numbers are preferred by Nix when several caches can serve an object."</small></label><label><span>"Compression"</span><select prop:value=move || compression.get() on:change=move |event| compression.set(event_target_value(&event))><option value="zstd">"Zstandard"</option><option value="xz">"XZ"</option><option value="none">"None"</option></select></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || mass_query.get() on:change=move |event| mass_query.set(event_target_checked(&event))/><span>"Allow clients to query the complete cache index (WantMassQuery)"</span></label><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review update"</button></div></form> }.into_any() } else { view! { <p class="muted">"You have read-only access to this cache."</p> }.into_any() }}{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</details></div> }
 }
 
 #[component]
@@ -1198,6 +1435,7 @@ fn OrganizationDelete(
     let plan_client = client.clone();
     let plan_slug = slug.clone();
     let required = slug.clone();
+    let confirmation_target = slug.clone();
     let on_plan = move |event: SubmitEvent| {
         event.prevent_default();
         if confirmation.get_untracked() != required {
@@ -1250,7 +1488,7 @@ fn OrganizationDelete(
             busy.set(false);
         });
     });
-    view! { <section class="panel danger-panel"><p class="section-kicker">"Destructive operation"</p><h2>"Delete organization"</h2><p>"The plan will fail closed while owned projects, registries, caches, grants, or other resources remain."</p><form class="editor-form" on:submit=on_plan><label><span>{format!("Type `{slug}` to continue")}</span><input autocomplete="off" prop:value=move || confirmation.get() on:input=move |event| confirmation.set(event_target_value(&event))/></label><div class="form-actions"><button class="danger-button" type="submit" disabled=move || busy.get()>"Review deletion"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
+    view! { <section class="panel danger-panel"><p class="section-kicker">"Destructive operation"</p><h2>"Delete organization"</h2><p>"The plan will fail closed while owned projects, registries, caches, grants, or other resources remain."</p><form class="editor-form" on:submit=on_plan><label class="full-field"><span>"Type "<code>{slug}</code>" to continue"</span><input autocomplete="off" prop:value=move || confirmation.get() on:input=move |event| confirmation.set(event_target_value(&event))/></label><div class="form-actions"><button class="danger-button" type="submit" disabled=move || busy.get() || confirmation.get() != confirmation_target>"Review deletion"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
 }
 
 #[component]
@@ -1306,6 +1544,7 @@ fn TopologyDelete(
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
     let required = stable_id.clone();
+    let confirmation_target = stable_id.clone();
     let request_id = stable_id.clone();
     let plan_client = client.clone();
     let on_plan = move |event: SubmitEvent| {
@@ -1358,7 +1597,7 @@ fn TopologyDelete(
             busy.set(false);
         });
     });
-    view! { <section class="panel danger-panel"><p class="section-kicker">"Destructive operation"</p><h2>{format!("Delete {kind}")}</h2><p>"The server plan enumerates dependent placements, routes, grants, integrations, and retention roots. No dependent resource is silently removed."</p><form class="editor-form" on:submit=on_plan><label><span>{format!("Type `{stable_id}` to continue")}</span><input autocomplete="off" prop:value=move || confirmation.get() on:input=move |event| confirmation.set(event_target_value(&event))/></label><div class="form-actions"><button class="danger-button" type="submit" disabled=move || busy.get()>"Review deletion"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
+    view! { <section class="panel danger-panel"><p class="section-kicker">"Destructive operation"</p><h2>{format!("Delete {kind}")}</h2><p>"The server plan enumerates dependent placements, routes, grants, integrations, and retention roots. No dependent resource is silently removed."</p><form class="editor-form" on:submit=on_plan><label class="full-field"><span>"Type "<code>{stable_id}</code>" to continue"</span><input autocomplete="off" prop:value=move || confirmation.get() on:input=move |event| confirmation.set(event_target_value(&event))/></label><div class="form-actions"><button class="danger-button" type="submit" disabled=move || busy.get() || confirmation.get() != confirmation_target>"Review deletion"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
 }
 
 fn cache_path(slug: &str) -> String {

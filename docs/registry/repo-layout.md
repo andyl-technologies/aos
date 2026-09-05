@@ -57,6 +57,9 @@ The git-repo-**root** `registry.toml` is the existing `RegistryRootConfig`
 name        = "aos-core"
 description = "AOS core packages"
 require_signed_ukis = true
+# Optional initial release shown by the public browser.
+# Omitting it selects the highest verified non-prerelease semantic version.
+default_release = "1.2.0"
 
 # Ordered cache endpoints, authenticated by the signed tag. Managed
 # endpoints correspond to explicit Hub routes; external endpoints do
@@ -292,3 +295,19 @@ assembling objects**; **`http-layout.md` = the transport encoding of that conten
 See also: [`signing-and-trust.md`](signing-and-trust.md) (keys, rotation/revocation),
 [`http-layout.md`](http-layout.md) (served layout), `current-state.md` (as-built
 code status), and the design brief §14.
+
+The public browser scopes Packages, Docs, Images, and Containers to a published
+release. `[registry].default_release` is an optional semantic version used for
+initial navigation; it does not change package-manager tracking or channel
+assignments. Without it, the browser selects the highest verified non-prerelease
+version across all published branches, then the highest verified prerelease.
+A selected version remains in page URLs, filters, searches, and installation
+instructions. An unavailable release does not fall back to another catalog.
+
+Docs combines the release's configuration paths into one tree. Any path may be
+opened as a subtree. Child lists, variant lists, and indexed search results use
+50-item cursor pages. Expanding a branch fetches only its immediate children;
+selecting an option loads its exact verified documentation object. Search covers
+the entire release unless the reader chooses the current subtree. Typed path
+segments preserve literal dots and dynamic attributes without confusing them
+with hierarchy separators.

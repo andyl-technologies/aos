@@ -42,6 +42,9 @@
 //! early with [`SeedOutcome::AlreadySeeded`] rather than duplicating rows, so
 //! `serve --dev --seed` is safe to leave on across restarts.
 
+mod documentation;
+mod publication;
+
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
@@ -361,6 +364,24 @@ pub async fn seed_dev_with_snapshots(
                 == 4,
         "seeded image publication did not become exact release GC roots"
     );
+
+    for (registry_id, placement_id, surface_root) in [
+        (registry_id, public_placement_id, surface_root.as_path()),
+        (
+            private_registry_id,
+            private_placement_id,
+            private_surface_root.as_path(),
+        ),
+    ] {
+        publication::record(
+            db,
+            registry_id,
+            placement_id,
+            surface_root,
+            &image_snapshots,
+        )
+        .await?;
+    }
 
     // Mint one org-scoped token so the fixture can prove both anonymous public
     // access and authenticated private access through the same consumer CLI.
@@ -860,6 +881,13 @@ fn write_signed_surface(root: &Path, key: &SigningKey, trust_key: &str) -> Resul
         .or_default()
         .push(("aos-system.toml".to_string(), system_oid));
     closure_entries.push(("aossystemhash".to_string(), put_blob("aossystemhash\n")?));
+
+    let documentation_package = documentation::write(root)?;
+    package_buckets
+        .entry('c')
+        .or_default()
+        .push(("config-demo.toml".into(), put_blob(&documentation_package)?));
+    closure_entries.push(("c".repeat(32), put_blob(&format!("{}\n", "c".repeat(32)))?));
 
     // Build the `packages/` tree of per-letter bucket subtrees.
     let mut packages_entries: Vec<(String, Oid)> = Vec::new();

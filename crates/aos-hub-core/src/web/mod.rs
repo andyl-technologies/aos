@@ -50,8 +50,14 @@ pub mod console_render;
 pub mod container_browse_pages;
 pub mod csrf;
 pub mod help;
+pub mod release_browse;
+pub mod release_pages;
 pub mod render;
 pub mod session;
 pub mod toml_highlight;
 
 pub use render::PageChrome;
+
+pub(crate) mod documentation_browser;
+mod documentation_content;
+mod documentation_pages;

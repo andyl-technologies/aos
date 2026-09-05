@@ -39,6 +39,10 @@ installs or updates the Worker application. See the
 
 ## Remote client: `aos hub`
 
+For coordinated CDN setup, use the [delivery workflow](delivery.md). Its
+`plan`, `apply`, `show`, `list`, `resume`, and `activate` commands preserve
+reviewed intent and expose durable progress across interrupted sessions.
+
 Build the repository CLI with:
 
 ```sh
