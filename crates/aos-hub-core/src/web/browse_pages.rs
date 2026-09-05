@@ -449,17 +449,38 @@ pub fn registry_home(
     if let Some(desc) = status.and_then(|s| s.description.as_deref()) {
         let _ = write!(body, "<p>{}</p>", escape(desc));
     }
+    body.push_str("<h2>Setup</h2>\n");
+    if let Some(add_command) = setup.add_command() {
+        let _ = write!(
+            body,
+            "<p>Add this registry to apm:</p><pre>{}</pre>",
+            escape(&add_command)
+        );
+        body.push_str("<details><summary>AOS module and Nix configuration</summary>");
+        if let Some(stanza) = setup.module_stanza() {
+            let _ = write!(body, "<p>AOS module:</p><pre>{}</pre>", escape(&stanza));
+        }
+        let _ = write!(
+            body,
+            "<p>Nix cache configuration:</p><pre>{}</pre>",
+            escape(&setup.plain_nix())
+        );
+        body.push_str("</details>");
+    } else {
+        body.push_str("<p class=\"dim\">Client setup is unavailable until this registry has a canonical Git delivery route.</p>");
+    }
+
     // The longer README-style preamble (committed `[registry] readme`): blank
     // lines separate paragraphs, each rendered as its own escaped <p>.
     if let Some(readme) = status.and_then(|s| s.readme.as_deref()) {
-        body.push_str("<div class=\"readme\">");
+        body.push_str("<details class=\"readme\"><summary>About this registry</summary> ");
         for para in readme.split("\n\n") {
             let para = para.trim();
             if !para.is_empty() {
                 let _ = write!(body, "<p>{}</p>", escape(para));
             }
         }
-        body.push_str("</div>\n");
+        body.push_str("</details>\n");
     }
     if let Some(status) = status {
         match status.state.as_str() {
@@ -481,12 +502,13 @@ pub fn registry_home(
         }
     }
 
-    body.push_str("<h2>Trust</h2>\n");
     if registry.trust_keys.is_empty() && roster.is_empty() {
         body.push_str(
             "<p class=\"warn\">No trust anchors pinned — content is displayed unverified.</p>\n",
         );
-    } else {
+    }
+    body.push_str("<details><summary>Trust anchors and signing keys</summary>\n");
+    if !registry.trust_keys.is_empty() || !roster.is_empty() {
         let rows: Vec<Vec<String>> = registry
             .trust_keys
             .iter()
@@ -513,8 +535,11 @@ pub fn registry_home(
             }))
             .collect();
         body.push_str(&table(&["anchor", "fingerprint", "key"], &rows));
+    } else {
+        body.push_str("<p>No trust anchors or roster keys are configured.</p>");
     }
 
+    body.push_str("</details>\n");
     body.push_str("<h2>Channels</h2>\n");
     if channels.is_empty() {
         body.push_str("<p class=\"dim\">No channels resolved.</p>\n");
@@ -562,7 +587,7 @@ pub fn registry_home(
         slug = escape(slug),
     );
 
-    body.push_str("<h2>Caches</h2>\n");
+    body.push_str("<details><summary>Binary cache health and diagnostics</summary>\n");
     if caches.is_empty() {
         body.push_str("<p class=\"dim\">No committed caches.</p>\n");
     } else {
@@ -596,41 +621,37 @@ pub fn registry_home(
         escape(slug),
     );
 
-    body.push_str("<h2>Setup</h2>\n");
-    let Some(add_command) = setup.add_command() else {
-        body.push_str(
-            "<p class=\"dim\">No canonical Git route is ready. Configure delivery before adding this registry to a client.</p>\n",
-        );
-        return page_with_session(
-            display_name,
-            &registry_crumbs(slug, &[]),
-            &body,
-            &state_line(status, started),
-            session,
-        );
-    };
-    let _ = write!(
-        body,
-        "<p class=\"dim\">apm:</p>\n<pre>{}</pre>\n",
-        escape(&add_command),
-    );
-    if let Some(stanza) = setup.module_stanza() {
-        let _ = write!(
-            body,
-            "<p class=\"dim\">AOS module:</p>\n<pre>{}</pre>\n",
-            escape(&stanza),
-        );
-    }
-    let plain = setup.plain_nix();
-    let _ = write!(
-        body,
-        "<p class=\"dim\">plain Nix (substitute from the advertised cache):</p>\n<pre>{}</pre>\n",
-        escape(&plain),
-    );
+    body.push_str("</details>");
 
     page_with_session(
         display_name,
         &registry_crumbs(slug, &[]),
+        &body,
+        &state_line(status, started),
+        session,
+    )
+}
+
+/// Carries the selected ordering through independent filter and snapshot forms.
+fn package_sort_inputs(body: &mut String, sort: Option<(SortColumn, SortDir)>) {
+    if let Some((column, direction)) = sort {
+        let _ = write!(body, "<input type=\"hidden\" name=\"sort\" value=\"{}\"><input type=\"hidden\" name=\"dir\" value=\"{}\">", column.token(), direction.token());
+    }
+}
+
+/// Explains an unknown or incomplete snapshot without presenting an empty catalog.
+pub fn package_snapshot_unavailable(
+    registry: &RegistryRecord,
+    status: Option<&IndexStatus>,
+    selection: &str,
+    started: Instant,
+    session: &SessionIndicator,
+) -> String {
+    let mut body = registry_nav(&registry.slug, "packages");
+    let _ = write!(body, "<h1>Package snapshot unavailable</h1><p>No complete, verified package snapshot is available for <code>{}</code>. The release may not exist or its index may still be incomplete.</p><p><a href=\"/{}/-/packages\">Browse indexed HEAD and available snapshots</a></p>", escape(selection), escape(&registry.slug));
+    page_with_session(
+        "Package snapshot unavailable",
+        &registry_crumbs(&registry.slug, &[]),
         &body,
         &state_line(status, started),
         session,
@@ -982,7 +1003,16 @@ pub fn package_index(
     let mut body = registry_nav(slug, "packages");
     let _ = writeln!(body, "<h1>Packages ({total_all})</h1>");
 
-    body.push_str("<form method=\"get\" class=\"snapshot-selector\"><label>registry snapshot <select name=\"release\">");
+    body.push_str("<form method=\"get\" class=\"snapshot-selector\">");
+    if let Some(filter) = filter {
+        let _ = write!(
+            body,
+            "<input type=\"hidden\" name=\"filter\" value=\"{}\">",
+            escape(filter)
+        );
+    }
+    package_sort_inputs(&mut body, sort);
+    body.push_str("<label>Registry snapshot <select name=\"release\">");
     let _ = write!(
         body,
         "<option value=\"\"{}>indexed HEAD{}</option>",
@@ -1025,6 +1055,7 @@ pub fn package_index(
     // registry's distinct values per field. (No native `<datalist>`: its popup
     // can't be themed.)
     body.push_str("<form method=\"get\" class=\"pkg-search\">");
+    package_sort_inputs(&mut body, sort);
     if let Some(snapshot) = snapshot {
         let _ = write!(
             body,
@@ -1071,9 +1102,20 @@ pub fn package_index(
              <code>{}</code> · <a href=\"/{}/-/packages{}\">clear filter</a></p>",
             escape(filter.unwrap_or("")),
             escape(slug),
-            snapshot
-                .map(|value| format!("?release={}", urlencode(value)))
-                .unwrap_or_default(),
+            {
+                let mut parameters = Vec::new();
+                if !snapshot_query.is_empty() {
+                    parameters.push(snapshot_query.clone());
+                }
+                if let Some((column, direction)) = sort {
+                    parameters.push(format!("sort={}&dir={}", column.token(), direction.token()));
+                }
+                if parameters.is_empty() {
+                    String::new()
+                } else {
+                    format!("?{}", parameters.join("&"))
+                }
+            },
         );
     } else {
         let _ = writeln!(body, "<p class=\"dim\">{total_all} packages</p>");
@@ -1090,7 +1132,13 @@ pub fn package_index(
     }
 
     if body_rows.is_empty() {
-        body.push_str("<p class=\"dim\">No packages.</p>\n");
+        body.push_str(if total_all == 0 {
+            "<p class=\"dim\">No packages have been published in this registry snapshot.</p>\n"
+        } else if total_matches == 0 {
+            "<p class=\"dim\">No packages match this filter. Change or clear the filter to browse packages.</p>\n"
+        } else {
+            "<p class=\"dim\">No packages on this page. Use the pagination controls to return to the results.</p>\n"
+        });
     } else {
         let preserved_query = [snapshot_query.as_str(), filter_query.as_str()]
             .into_iter()
@@ -3706,6 +3754,8 @@ mod tests {
             Instant::now(),
             &anon(),
         );
+        assert!(html.find("<h2>Setup").unwrap() < html.find("Trust anchors").unwrap());
+        assert!(html.contains("<details><summary>Binary cache health and diagnostics</summary>"));
         assert!(html.contains("&lt;k&gt;"));
         assert!(html.contains(
             "apr add http://127.0.0.1:8420/demo/ --name demo --trust-key demo:Ed25519:AAAA"
@@ -4196,6 +4246,55 @@ mod tests {
         let html = instance_home(&rows, Some("zzz"), 1, Instant::now(), &anon());
         assert!(html.contains("0 of 1 registries match"));
         assert!(html.contains("No registries match."));
+    }
+
+    #[test]
+    fn package_browse_preserves_selection_and_explains_empty_results() {
+        let snapshots = [("1.0.0".into(), "abc123".into())];
+        let mut browse = PackageBrowse {
+            snapshot: Some("1.0.0"),
+            head_commit: Some("def456"),
+            snapshots: &snapshots,
+            filter: Some("license == MIT"),
+            filter_error: None,
+            sort: Some((SortColumn::Name, SortDir::Asc)),
+            page_number: 1,
+            total_matches: 0,
+            total_all: 2,
+            truncated: false,
+            names: &[],
+            versions: &[],
+            licenses: &[],
+            platforms: &[],
+        };
+        let html = package_index(&registry(), None, &[], &browse, Instant::now(), &anon());
+        assert!(html.contains("No packages match this filter"));
+        let snapshot_form = html
+            .split("class=\"snapshot-selector\"")
+            .nth(1)
+            .unwrap()
+            .split("</form>")
+            .next()
+            .unwrap();
+        assert!(snapshot_form.contains("name=\"filter\" value=\"license == MIT\""));
+        assert!(snapshot_form.contains("name=\"sort\" value=\"name\""));
+        let filter_form = html
+            .split("class=\"pkg-search\"")
+            .nth(1)
+            .unwrap()
+            .split("</form>")
+            .next()
+            .unwrap();
+        assert!(filter_form.contains("name=\"release\" value=\"1.0.0\""));
+        assert!(filter_form.contains("name=\"dir\" value=\"asc\""));
+        browse.total_all = 0;
+        let html = package_index(&registry(), None, &[], &browse, Instant::now(), &anon());
+        assert!(html.contains("No packages have been published"));
+        let html =
+            package_snapshot_unavailable(&registry(), None, "<unknown>", Instant::now(), &anon());
+        assert!(html.contains("No complete, verified package snapshot"));
+        assert!(html.contains("&lt;unknown&gt;"));
+        assert!(!html.contains("No packages have been published"));
     }
 
     #[tokio::test]
