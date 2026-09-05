@@ -246,6 +246,53 @@ where
         PublisherPolicyStore::load(self.reconciler.journal_mut(), limits)
     }
 
+    /// Provisions a channel for an explicitly authorized local holder assignment.
+    ///
+    /// This trusted administration interface requires its caller to authorize
+    /// the principal, sandbox incarnation, assignment epoch, and retained cgroup
+    /// together. Neither guest UIDs nor incoming packet claims supply that mapping.
+    /// The clock callback must be the protected paired-clock adapter identified
+    /// by configuration, never a request-provided timestamp. Successful issuance
+    /// is not source admission or permission to publish; every use needs current
+    /// capability, policy, revocation, assignment, and resource checks.
+    ///
+    /// The returned descriptor must be delivered only to the intended execution
+    /// scope. On delivery failure, invalidate its session. Restart creates an
+    /// empty session table even when issued capability records survive.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on capacity, scope, policy, time, or protected commit
+    /// failure. No endpoint escapes on failure; post-commit failures may retain
+    /// an audited capability that has no live session.
+    #[cfg(target_os = "linux")]
+    pub fn provision_local_ingress<T>(
+        &mut self,
+        sessions: &mut crate::local_sessions::LocalSessionRegistry,
+        scope: crate::local_sessions::LocalSessionScope,
+        anchor: aos_sandbox_linux::cgroup::RetainedCgroupAnchor,
+        config: crate::local_provisioning::LocalProvisioningPolicy,
+        clock: &mut T,
+    ) -> Result<
+        crate::local_sessions::LocalSessionEndpoint,
+        crate::local_provisioning::LocalProvisioningError,
+    >
+    where
+        T: FnMut() -> Result<
+            aos_sandbox_core::ownership_lease::RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        crate::local_provisioning::provision(
+            self.reconciler.journal_mut(),
+            sessions,
+            scope,
+            anchor,
+            config,
+            clock,
+        )
+    }
+
     /// Compiles and atomically admits one canonical activated request.
     ///
     /// The call has no volatile queue: success means the desired mutation,

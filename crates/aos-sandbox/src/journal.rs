@@ -2724,6 +2724,68 @@ mod tests {
         );
     }
 
+    #[cfg(all(target_os = "linux", feature = "kernel-tests"))]
+    #[test]
+    fn failed_local_issuance_commit_never_activates_a_session() {
+        use crate::local_provisioning::LocalProvisioningError;
+        use crate::local_provisioning::tests::{
+            anchor, fixture, open_journal, provision_samples, sample, sessions,
+        };
+        use crate::publisher_authority::{
+            PublisherAuthorityError, PublisherAuthorityLimits, PublisherCapabilityRegistry,
+        };
+
+        let mut fixture = fixture(true, true);
+        let mut sessions = sessions();
+        assert_eq!(
+            fixture
+                .journal
+                .records(RecordNamespace::PublisherAuthority)
+                .count(),
+            0,
+        );
+        // Preserve the healthy protected journal and policy state while making
+        // the first issuance append fail before any bytes can be written.
+        fixture.journal.file = OpenOptions::new()
+            .read(true)
+            .open(fixture.directory.path().join("issuance.journal"))
+            .unwrap();
+        assert!(matches!(
+            provision_samples(&mut fixture, &mut sessions, vec![Ok(sample(150, 1000))]),
+            Err(LocalProvisioningError::Authority(
+                PublisherAuthorityError::Journal(JournalError::Io(_))
+            ))
+        ));
+        assert!(matches!(
+            fixture.journal.ensure_healthy(),
+            Err(JournalError::Poisoned)
+        ));
+        assert!(matches!(
+            PublisherCapabilityRegistry::load(
+                &mut fixture.journal,
+                PublisherAuthorityLimits::default(),
+            ),
+            Err(PublisherAuthorityError::Journal(JournalError::Poisoned)),
+        ));
+        // Capacity is exactly one. A new preparation can succeed only if the
+        // failed operation neither activated a session nor retained its slot.
+        let pending = sessions.prepare(fixture.scope, anchor()).unwrap();
+        drop(pending);
+
+        let directory = fixture.directory.path().to_path_buf();
+        drop(fixture.journal);
+        let reopened = open_journal(&directory);
+        assert_eq!(
+            reopened
+                .records(RecordNamespace::PublisherAuthority)
+                .count(),
+            0
+        );
+        // Replay, not the poisoned in-memory view, establishes that this
+        // injected pre-write failure committed neither capability nor audit.
+        reopened.ensure_protected_authority().unwrap();
+    }
+
     #[test]
     fn failed_capability_revocation_denies_reads_until_protected_replay() {
         use crate::publisher_authority::{

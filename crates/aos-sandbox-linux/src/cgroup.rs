@@ -96,6 +96,19 @@ pub struct RetainedCgroupAnchor {
 }
 
 impl RetainedCgroupAnchor {
+    /// Reobserves the retained cgroup's filesystem identity and active kernfs file.
+    ///
+    /// This does not authenticate a member or fence later removal. It allows
+    /// trusted provisioning to reject a stale anchor before exposing a channel.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the retained identity is invalid or a fresh
+    /// `cgroup.procs` open cannot obtain an active kernel reference.
+    pub fn validate_current(&self) -> Result<()> {
+        self.validate_active()
+    }
+
     fn new(root: BeneathRoot) -> Result<Self> {
         if !cfg!(target_pointer_width = "64") {
             return Err(Error::invalid(
@@ -252,6 +265,7 @@ fn recheck_process(process: &PidFd, before: PidFdInfo) -> Result<PidFdInfo> {
 mod tests {
     use super::*;
     use std::fs::File;
+    #[cfg(feature = "kernel-tests")]
     use std::num::NonZeroU32;
 
     #[test]
@@ -267,6 +281,7 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "kernel-tests")]
     #[test]
     fn real_readonly_hierarchy_resolves_exact_current_membership() {
         let root = CgroupV2Root::try_from(

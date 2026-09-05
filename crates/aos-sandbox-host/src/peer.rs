@@ -117,7 +117,7 @@ fn peer_mismatch() -> aos_sandbox_protocol::ProtocolValidationError {
     aos_sandbox_protocol::ProtocolValidationError::PeerCredentialMismatch
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "kernel-tests"))]
 mod tests {
     #![allow(clippy::unwrap_used)]
 

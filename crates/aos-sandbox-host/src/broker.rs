@@ -629,6 +629,7 @@ fn runtime_handle(identity: &HostRuntimeIdentity) -> [u8; 32] {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    #[cfg(feature = "kernel-tests")]
     mod service_peer;
 
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

@@ -1642,3 +1642,61 @@ remaining blocker for this observation component. Deletion/recreation,
 concurrent migration, bind-mount grafts, and dual-architecture behavior still
 require dedicated AOS VM qualification; ordinary host tests and source review
 do not substitute for those gates.
+
+### Controller-issued local holder channels
+
+The controller now has a trusted administrative provisioning path for an
+explicit holder/project/sandbox/incarnation/assignment/cache-resource tuple
+and retained cgroup anchor. It does not infer a principal from a UID or PID,
+and its caller must authorize that runtime mapping. A fixed-capacity volatile
+session table reserves a slot and configures both socket-pair endpoints for
+kernel record subjects before exposure. Fallible kernel randomness supplies
+new session/capability identities and role-separated channel bindings.
+
+Issuance resolves the current protected policy, exact project-cache resource,
+controller head, and revocation head under the sole journal writer. The
+derived capability contains exactly one nondelegable cache-publish grant,
+with validity bounded by policy and trusted paired-clock observations. A
+versioned capability envelope atomically retains the full claims and explicit
+issuance evidence, including the live session identity, boot/clock provenance,
+policy/controller generations, and resource isolation commitment. Existing
+version-one records retain their byte encoding; revocation retains audit data.
+
+Only a successful durable commit followed by fresh clock and cgroup checks
+activates the reserved slot and exposes its endpoint. Failures close pending
+endpoints; a post-commit failure can retain an audited capability without a
+live session. Restart starts with an empty table and cannot reconstruct
+channel possession from journal records. Incoming records use bounded framing
+and kernel-subject PIDFD membership under the provisioned anchor; successful
+records borrow their session, excluding concurrent table invalidation. Fatal
+framing, transport, or membership errors close the local channel.
+
+These are issuance and live channel/scope foundations, not completed online
+admission. Every use still needs current capability, policy, revocation,
+assignment and resource checks. Production runtime-to-principal provisioning,
+endpoint delivery, publisher execution registration, challenge joining,
+source-slot/release decisions, accounting, and retained completion permits
+remain open. `SBX-PUB-02` is not complete.
+
+Packaging qualification found that the ordinary Nix sandbox exposes procfs
+but not `/sys/fs/cgroup`. Real-cgroup tests now require the explicit
+`kernel-tests` feature; pure framing, scope, policy, and journal tests remain
+in the default suite. `checks.vm.sandbox-local-identity` compiles the enabled
+fixtures from AOS sources, runs the default library suites inside the build
+sandbox, then executes the kernel fixtures in a headless AOS VM. The guest
+mounts its own cgroup-v2 hierarchy and moves only its test shell into a proper
+descendant, exercising both exact and hinted membership. Every selected test
+filter must discover tests before execution. This is not a runtime skip or
+permission to expose host cgroups to a package build.
+
+Validation passes: 359 default unit tests (160 controller, 67 Linux boundary,
+73 host, 59 mount), three integration tests, sixteen doctests, all-feature
+strict Clippy, warning-denied rustdoc, changed-file formatting, and the locked
+all-target workspace check. The latter retains unrelated existing warnings.
+The named VM derivation also runs those 359 default library tests inside the
+actual Nix build sandbox, then passes all seventeen selected kernel tests on
+AOS Linux 6.18.33 x86_64, including the broker subprocess fixtures. This closes
+the exact-AOS-kernel gap for the carried exact/descendant cgroup and stale-peer
+cases, not cgroup mutation/migration races, aarch64 qualification, or full
+production runtime provisioning. Independent implementation and packaging
+reviews found no remaining blocker for this increment.

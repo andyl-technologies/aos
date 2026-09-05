@@ -8,6 +8,10 @@ license.workspace = true
 name = "aos-sandbox-hostd"
 path = "src/main.rs"
 
+[features]
+default = []
+kernel-tests = ["aos-sandbox-linux/kernel-tests"]
+
 [dependencies]
 aos-proto = { path = "../aos-proto" }
 aos-sandbox-broker.workspace = true

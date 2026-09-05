@@ -1123,12 +1123,10 @@ const fn cmsg_align(length: usize) -> usize {
     (length + alignment - 1) & !(alignment - 1)
 }
 
-#[cfg(test)]
 pub(crate) fn seqpacket_pair() -> Result<(OwnedFd, OwnedFd)> {
     seqpacket_pair_with_flags(libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC)
 }
 
-#[cfg(test)]
 pub(crate) fn seqpacket_pair_with_flags(flags: i32) -> Result<(OwnedFd, OwnedFd)> {
     let mut descriptors = [-1; 2];
     // SAFETY: the output array contains space for exactly two descriptors;

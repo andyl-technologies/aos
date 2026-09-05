@@ -36,6 +36,24 @@ pub struct SeqpacketSocket {
 }
 
 impl SeqpacketSocket {
+    /// Creates a private channel with record-subject reporting enabled before exposure.
+    ///
+    /// Returns the controller's bounded receiver and an owned endpoint for
+    /// explicit delivery to a provisioned peer. Both ends are nonblocking and
+    /// close-on-exec. Their connection establisher is the creating process;
+    /// authenticate delivered-endpoint writers through each received record.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when socket creation, identity-option configuration, or
+    /// peer pinning fails. Neither endpoint escapes on failure.
+    pub fn pair_with_record_subjects() -> Result<(Self, OwnedFd), SeqpacketError> {
+        let (receiver, endpoint) = uapi::seqpacket_pair()?;
+        uapi::enable_seqpacket_identity(receiver.as_fd())?;
+        uapi::enable_seqpacket_identity(endpoint.as_fd())?;
+        Ok((Self::from_owned(receiver)?, endpoint))
+    }
+
     /// Validates and adopts an owned connected Unix `SOCK_SEQPACKET` descriptor.
     ///
     /// The constructor makes the descriptor nonblocking and close-on-exec.

@@ -2,13 +2,19 @@
 //!
 //! The [`journal`] module owns the append-only desired-state and operation
 //! journal. It validates and replays durable transactions before a future
-//! reconciler is allowed to issue effects. Linux syscalls and privileged
-//! broker implementations deliberately live outside this crate.
+//! reconciler is allowed to issue effects. Protected publisher stores retain
+//! current policy and capabilities; Linux local provisioning commits issuance
+//! before activating process-local holder channels. Raw Linux syscalls and
+//! privileged broker implementations deliberately live outside this crate.
 
 pub mod authority;
 pub mod controller;
 pub mod dispatch;
 pub mod journal;
+#[cfg(target_os = "linux")]
+pub mod local_provisioning;
+#[cfg(target_os = "linux")]
+pub mod local_sessions;
 pub mod ownership_authority;
 pub mod ownership_resume;
 pub mod ownership_service;

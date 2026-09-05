@@ -1720,6 +1720,7 @@ fn validate_effect_matches(
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    #[cfg(feature = "kernel-tests")]
     mod service_peer;
 
     use aos_proto::aos::sandbox::local::v1::{

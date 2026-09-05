@@ -12,6 +12,10 @@ path = "src/bin/aos-sandbox-mount-helper.rs"
 name = "aos-sandbox-mountd"
 path = "src/bin/aos-sandbox-mountd.rs"
 
+[features]
+default = []
+kernel-tests = ["aos-sandbox-linux/kernel-tests"]
+
 [dependencies]
 aos-proto.workspace = true
 aos-sandbox.workspace = true
