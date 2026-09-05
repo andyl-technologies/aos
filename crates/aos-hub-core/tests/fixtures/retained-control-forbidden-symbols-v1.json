@@ -70,7 +70,7 @@
       "category": "cli",
       "symbol": "HubConfigCmd::Revert",
       "targets": [
-        "crates/aos/src/commands/hub.rs"
+        "crates/aos/src/commands/hub"
       ]
     },
     {
@@ -79,7 +79,7 @@
       "symbol": "HubIdentityCmd",
       "targets": [
         "crates/aos/src/cli/hub.rs",
-        "crates/aos/src/commands/hub.rs"
+        "crates/aos/src/commands/hub"
       ]
     },
     {
@@ -89,7 +89,7 @@
       "targets": [
         "crates/aos/src/cli/hub.rs",
         "crates/aos/src/cli/hub_retained_control.rs",
-        "crates/aos/src/commands/hub.rs"
+        "crates/aos/src/commands/hub"
       ]
     },
     {
