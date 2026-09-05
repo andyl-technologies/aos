@@ -24,7 +24,9 @@ use aos_sandbox_linux::seqpacket::{KernelAuthorizedRecordSubject, SeqpacketError
 use aos_sandbox_protocol::payload_scope::{
     ValidatedPayloadScopeResponse, decode_payload_scope_request, decode_payload_scope_response,
 };
-use aos_sandbox_protocol::session::SIGNED_PLAN_LEASE_FEATURE_NAMESPACE;
+use aos_sandbox_protocol::session::{
+    SIGNED_PLAN_LEASE_FEATURE_NAMESPACE, ValidatedUntrustedAuthorizationArtifacts,
+};
 use aos_sandbox_protocol::{
     AuthorizationArtifactBytes, PeerCredentials, PeerPolicy, ProtocolValidationError,
     ValidatedAssignmentFence, decode_response_envelope, decode_server_hello,
@@ -191,7 +193,13 @@ impl RuntimeScopeClient {
             RESPONSE_BYTES,
         )?;
         session.validate_header(request.header())?;
-        session.decode_request(&packet, 0)?;
+        let decoded = session.decode_request(&packet, 0)?;
+        let authorization = decoded
+            .authorization()
+            .ok_or(ProtocolValidationError::InvalidField(
+                "payload-scope authorization",
+            ))?
+            .clone();
 
         host.recheck()?;
         transport::send(&mut self.socket, &packet, deadline)?;
@@ -235,6 +243,8 @@ impl RuntimeScopeClient {
             anchor,
             metadata,
             payload_info,
+            authorization,
+            request_deadline_boottime_nanoseconds: request.header().deadline_boottime_nanoseconds(),
         };
         observed.recheck()?;
         transport::check_deadline(deadline)?;
@@ -337,9 +347,32 @@ pub struct ObservedPayloadScope {
     anchor: RetainedCgroupAnchor,
     metadata: ValidatedPayloadScopeResponse,
     payload_info: PidFdInfo,
+    authorization: ValidatedUntrustedAuthorizationArtifacts,
+    request_deadline_boottime_nanoseconds: u64,
 }
 
 impl ObservedPayloadScope {
+    /// Borrows the exact authorization quartet sent in the authenticated exchange.
+    ///
+    /// The host accepted these bytes for this observation. They remain untrusted
+    /// inputs to any separate controller decision: callers must verify current
+    /// protected publication, ownership, holder mapping, and expiry themselves.
+    /// An equal assignment fence alone does not identify the same plan or lease.
+    #[must_use]
+    pub const fn authorization(&self) -> &ValidatedUntrustedAuthorizationArtifacts {
+        &self.authorization
+    }
+
+    /// Returns the original request's absolute `CLOCK_BOOTTIME` deadline.
+    ///
+    /// This preserves the caller's bound, not the shorter transport watchdog or
+    /// a verified lease expiry. Execution rechecks do not renew this deadline
+    /// or establish that the observation still authorizes an operation.
+    #[must_use]
+    pub const fn request_deadline_boottime_nanoseconds(&self) -> u64 {
+        self.request_deadline_boottime_nanoseconds
+    }
+
     /// Borrows the exact assignment fence echoed by the authenticated host.
     #[must_use]
     pub const fn fence(&self) -> &ValidatedAssignmentFence {

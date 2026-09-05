@@ -1901,3 +1901,24 @@ non-Stop revocation plans, and durable revocation before executor I/O.
 Controller/protocol strict all-target/all-feature Clippy (`--no-deps`),
 warning-denied rustdoc, changed-file formatting, and diff checks pass. This
 increment has not rerun kernel/VM qualification.
+
+### Retained runtime-observation request provenance
+
+`ObservedPayloadScope` now retains the exact structurally validated plan, lease,
+and detached signatures sent on its authenticated Host exchange, plus the
+original request's BOOTTIME deadline. Consumers can distinguish lease renewals
+and plan changes even when the echoed assignment fence is unchanged. The
+original host execution and payload pins remain owned by the observation.
+
+These borrowed artifacts remain untrusted inputs to separate controller
+authorization. Neither retaining them nor rechecking kernel membership proves
+current ownership, refreshes expiry, or authorizes a holder. Protected-current
+publication comparison, fresh lease verification, and current-holder issuance
+are still required; `SBX-PUB-02` remains unchecked. The request deadline is not
+the transport watchdog and is not advertised as a verified lease expiry.
+
+Controller default-feature validation passes 185 unit tests, one integration
+test, and seven doctests. Strict controller all-target/all-feature Clippy
+(`--no-deps`), warning-denied rustdoc, changed-file formatting, and diff checks
+pass. This increment does not qualify the full Host observation-to-session flow
+or rerun kernel/VM tests.
