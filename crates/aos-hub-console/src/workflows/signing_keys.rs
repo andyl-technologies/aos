@@ -226,7 +226,7 @@ fn signing_keys_resource(
             }
 
             let mut keys = BTreeMap::new();
-            for scope in scopes {
+            for (index, scope) in scopes.into_iter().enumerate() {
                 let page = client
                     .collect_pages::<_, aos_proto_types::ListSigningKeysResponse, _, _, _>(
                         aos_proto_types::SIGNING_KEY_SERVICE_LIST_SIGNING_KEYS_PATH,
@@ -237,8 +237,15 @@ fn signing_keys_resource(
                         },
                         |response| (response.signing_keys, response.next_page_token),
                     )
-                    .await
-                    .map_err(|failure| failure.to_string())?;
+                    .await;
+                let page = match page {
+                    Ok(page) => page,
+                    // A resource administrator need not administer its owning
+                    // organization. Keep local keys usable when that optional
+                    // parent inventory is outside the caller's permissions.
+                    Err(TransportError::Http { status: 403, .. }) if index > 0 => continue,
+                    Err(failure) => return Err(failure.to_string()),
+                };
                 for key in page {
                     keys.insert(key.stable_id.clone(), key);
                 }

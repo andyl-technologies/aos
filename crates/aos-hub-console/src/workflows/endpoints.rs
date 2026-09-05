@@ -956,7 +956,8 @@ fn ingress_name(value: i32) -> &'static str {
         aos_proto_types::EndpointIngressKind::Unspecified => "hub",
     }
 }
-fn endpoint_identity(endpoint: &aos_proto_types::Endpoint) -> String {
+/// Formats the actual IP origin or a managed-domain reference without inventing a hostname.
+pub(super) fn endpoint_identity(endpoint: &aos_proto_types::Endpoint) -> String {
     let Some(host) = endpoint.host.as_ref().and_then(|value| value.host.as_ref()) else {
         return "Unknown endpoint host".to_string();
     };
@@ -973,7 +974,17 @@ fn endpoint_identity(endpoint: &aos_proto_types::Endpoint) -> String {
                 .join(".");
             format!("{}://{}:{}", endpoint.scheme, host, endpoint.effective_port)
         }
-        aos_proto_types::endpoint_host::Host::Ipv6(_) => "IPv6 endpoint".to_string(),
+        aos_proto_types::endpoint_host::Host::Ipv6(bytes) => {
+            match <[u8; 16]>::try_from(bytes.as_slice()) {
+                Ok(bytes) => format!(
+                    "{}://[{}]:{}",
+                    endpoint.scheme,
+                    std::net::Ipv6Addr::from(bytes),
+                    endpoint.effective_port
+                ),
+                Err(_) => "Invalid IPv6 endpoint".to_string(),
+            }
+        }
     }
 }
 fn grant_request(

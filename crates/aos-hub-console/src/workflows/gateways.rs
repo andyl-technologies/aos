@@ -491,7 +491,7 @@ fn storage_provider_label(binding: &aos_proto_types::Binding) -> &'static str {
 pub(super) fn endpoint_option_label(endpoint: &aos_proto_types::Endpoint) -> String {
     format!(
         "{} · generation {}",
-        endpoint_origin_label(endpoint),
+        super::endpoints::endpoint_identity(endpoint),
         endpoint.desired_generation
     )
 }
@@ -506,30 +506,6 @@ pub(super) fn gateway_option_label(gateway: &aos_proto_types::Gateway) -> String
         "{} · generation {} · {endpoint}",
         gateway.stable_id, gateway.desired_generation
     )
-}
-
-fn endpoint_origin_label(endpoint: &aos_proto_types::Endpoint) -> String {
-    use aos_proto_types::endpoint_host::Host;
-
-    let host = endpoint
-        .host
-        .as_ref()
-        .and_then(|value| value.host.as_ref())
-        .map(|host| match host {
-            Host::DomainId(domain) => domain.clone(),
-            Host::Ipv4(bytes) => bytes
-                .iter()
-                .map(u8::to_string)
-                .collect::<Vec<_>>()
-                .join("."),
-            Host::Ipv6(bytes) => bytes
-                .chunks_exact(2)
-                .map(|part| format!("{:02x}{:02x}", part[0], part[1]))
-                .collect::<Vec<_>>()
-                .join(":"),
-        })
-        .unwrap_or_else(|| "unknown host".to_string());
-    format!("{}://{}:{}", endpoint.scheme, host, endpoint.effective_port)
 }
 
 #[component]

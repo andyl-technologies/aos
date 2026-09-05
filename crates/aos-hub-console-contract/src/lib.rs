@@ -300,7 +300,10 @@ impl PageSpec {
         }
         match self.key {
             "defaults" => "binding.manage",
-            "audit" => "audit.read",
+            "audit" | "operations" => "audit.read",
+            "signing" => "keys.manage",
+            "mirror" => "registry.configure",
+            "publish-history" => "publish",
             "webhooks" => "members.manage",
             "storage" => "binding.read",
             "domains" => "domain.read",
@@ -1245,8 +1248,6 @@ mod tests {
                     "caches",
                     "identity",
                     "members",
-                    "signing",
-                    "operations",
                 ][..],
             ),
             (
@@ -1258,9 +1259,7 @@ mod tests {
                     "caches",
                     "identity",
                     "members",
-                    "signing",
                     "tokens",
-                    "operations",
                 ][..],
             ),
             (
@@ -1273,7 +1272,6 @@ mod tests {
                     "identity",
                     "members",
                     "sso",
-                    "signing",
                     "operations",
                     "audit",
                     "danger",
@@ -1291,6 +1289,31 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(actual, expected, "{permissions:?}");
         }
+    }
+
+    #[test]
+    fn administrative_settings_match_their_read_api_permissions() {
+        for (path, permission) in [
+            ("/acme/main/-/settings/mirror", "registry.configure"),
+            ("/acme/main/-/settings/publish-history", "publish"),
+            ("/acme/main/-/settings/signing-keys", "keys.manage"),
+            ("/acme/main/-/settings/operations", "audit.read"),
+            ("/-/org/acme/signing-keys", "keys.manage"),
+            ("/-/instance/operations", "audit.read"),
+        ] {
+            let route = ConsoleRoute::resolve(path).expect("settings route");
+            assert_eq!(route.page.navigation_permission(), permission, "{path}");
+            assert!(!route
+                .visible_navigation(&["read".into()])
+                .contains(&route.page));
+            assert!(route
+                .visible_navigation(&["read".into(), permission.into()])
+                .contains(&route.page));
+        }
+        let tokens = ConsoleRoute::resolve("/acme/main/-/settings/tokens").expect("tokens");
+        assert!(tokens
+            .visible_navigation(&["read".into(), "tokens.self".into()])
+            .contains(&tokens.page));
     }
 
     #[test]
