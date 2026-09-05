@@ -3,10 +3,10 @@
 use aos_release::{
     canonical,
     plan::ReleaseClass,
-    qualification::{QualificationContractV1, QualificationPhase, QualificationScope},
+    qualification::{QualificationContract, QualificationPhase, QualificationScope},
 };
 
-fn contract() -> QualificationContractV1 {
+fn contract() -> QualificationContract {
     canonical::from_slice(
         include_bytes!("fixtures/qualification-contract.json"),
         "qualification fixture",
@@ -93,12 +93,45 @@ fn contract_rejects_weakened_platform_and_production_obligations() {
 fn unknown_and_duplicate_contract_fields_fail_closed() {
     let mut value = serde_json::to_value(contract()).unwrap();
     value["allow_failed_gates"] = true.into();
-    assert!(serde_json::from_value::<QualificationContractV1>(value).is_err());
+    assert!(serde_json::from_value::<QualificationContract>(value).is_err());
     assert!(
-        canonical::from_slice::<QualificationContractV1>(
+        canonical::from_slice::<QualificationContract>(
             br#"{"id":"a","id":"b"}"#,
             "duplicate contract"
         )
         .is_err()
     );
+}
+
+#[test]
+fn archival_contracts_preserve_their_original_bytes_and_gate_domains() {
+    let bytes = include_bytes!("fixtures/qualification-contract-v1.json");
+    let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    let archived: QualificationContract =
+        canonical::from_slice(bytes, "archived qualification").unwrap();
+    archived.validate().unwrap();
+    assert_eq!(
+        canonical::to_vec(&archived).unwrap(),
+        canonical::canonical_json(&value).unwrap()
+    );
+    assert_eq!(
+        archived.digest().unwrap(),
+        aos_release::Sha256Digest::of_canonical(aos_release::qualification::CONTRACT_V1, &value)
+            .unwrap()
+    );
+    let gates = archived.gates(ReleaseClass::Stable).unwrap();
+    for (gate, requirement) in gates.iter().zip(value["requirements"].as_array().unwrap()) {
+        assert_eq!(
+            gate.policy_digest,
+            aos_release::Sha256Digest::of_canonical(
+                aos_release::qualification::CONTRACT_V1,
+                &(requirement, &value["thresholds"]["stable"])
+            )
+            .unwrap()
+        );
+    }
+    let mut smuggled = value;
+    smuggled["claims"] = serde_json::to_value(contract().claims).unwrap();
+    let parsed: QualificationContract = serde_json::from_value(smuggled).unwrap();
+    assert!(parsed.validate().is_err());
 }

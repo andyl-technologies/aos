@@ -17,10 +17,10 @@ use sha2::{Digest as _, Sha256};
 
 use crate::assembly::{
     AssemblyFileKind, AssemblyFileV1, AssemblyToolV1, ImageBudgetsV1, ImageCommandLinesV1,
-    ImageLayoutV1, ImageSignerRolesV1, UNSIGNED_IMAGE_ASSEMBLY_V1, UnsignedImageAssemblyV1,
+    ImageLayoutV1, ImageSignerRolesV1, UNSIGNED_IMAGE_ASSEMBLY_V2, UnsignedImageAssemblyV1,
 };
 
-const RECIPE_SCHEMA: &str = "aos.image.assembly-recipe/v1";
+const RECIPE_SCHEMA: &str = "aos.image.assembly-recipe/v2";
 const MAX_RECIPE_BYTES: u64 = 1024 * 1024;
 
 #[derive(Deserialize)]
@@ -115,6 +115,11 @@ pub fn capture_unsigned_assembly(
         ("initrd", AssemblyFileKind::Initrd, "inputs/initrd.img"),
         ("kernel", AssemblyFileKind::Kernel, "inputs/vmlinuz"),
         (
+            "kernel-config",
+            AssemblyFileKind::KernelConfig,
+            "inputs/kernel.config",
+        ),
+        (
             "module-certificate",
             AssemblyFileKind::ModuleCertificate,
             "trust/module-signing.crt",
@@ -202,7 +207,7 @@ pub fn capture_unsigned_assembly(
         })
         .collect::<Result<Vec<_>>>()?;
     let assembly = UnsignedImageAssemblyV1 {
-        schema_version: UNSIGNED_IMAGE_ASSEMBLY_V1.to_owned(),
+        schema_version: UNSIGNED_IMAGE_ASSEMBLY_V2.to_owned(),
         release_id: release_id.to_owned(),
         version: recipe.release,
         platform: recipe.platform,
@@ -314,6 +319,7 @@ mod tests {
             "inputs/recovery-os-release-a",
             "inputs/recovery-os-release-b",
             "inputs/vmlinuz",
+            "inputs/kernel.config",
             "trust/module-signing.crt",
             "inputs/os-release",
             "trust/pcr-public.pem",
@@ -367,7 +373,7 @@ mod tests {
         let assembly = capture_unsigned_assembly(temporary.path(), "release-2026.9.0", |_| {
             Ok(format!("sha256:{}", "a".repeat(64)))
         })?;
-        assert_eq!(assembly.files.len(), 16);
+        assert_eq!(assembly.files.len(), 17);
         assert_eq!(assembly.tools.len(), 1);
         Ok(())
     }

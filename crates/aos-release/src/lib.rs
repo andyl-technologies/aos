@@ -14,6 +14,8 @@
 //! - [`plan`] freezes release intent before build effects begin.
 //! - [`manifest`] binds finalized artifacts to the frozen plan.
 //! - [`evidence`] records public gate and qualification results.
+//! - [`qualification`] defines typed scopes, built capabilities and assurance obligations.
+//! - [`qualification_evidence`] expands cases and derives assurance from observations.
 //! - [`inventory`] validates the Nix-derived four-target package inventory.
 //! - [`signing`] defines role-bound signing requests and responses.
 //! - [`state`] defines the append-only release journal state machine.
@@ -21,6 +23,17 @@
 //! - [`verify`] verifies complete release values and captured bundle bytes.
 
 #![forbid(unsafe_code)]
+
+#[cfg(test)]
+extern crate self as aos_release;
+
+#[cfg(test)]
+#[path = "../tests/support/qualification.rs"]
+mod qualification_fixture;
+
+#[cfg(test)]
+#[path = "qualification/assurance_tests.rs"]
+mod assurance_tests;
 
 pub mod artifact;
 pub mod build;

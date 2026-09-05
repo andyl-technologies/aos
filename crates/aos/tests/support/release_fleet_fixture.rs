@@ -153,6 +153,11 @@ fn prepare(arguments: &[String]) -> Result<()> {
                     Some(platform),
                 ),
                 (
+                    format!("image/server/{platform}/metadata"),
+                    ArtifactKind::ImageMetadata,
+                    Some(platform),
+                ),
+                (
                     format!("oci/{platform}"),
                     ArtifactKind::OciManifest,
                     Some(platform),
@@ -161,11 +166,19 @@ fn prepare(arguments: &[String]) -> Result<()> {
         })
         .chain([(String::from("oci/index"), ArtifactKind::OciIndex, None)])
     {
-        let path = format!("releases/candidate/{RELEASE_VERSION}/fixtures/{id}");
-        let bytes = format!("synthetic release protocol fixture: {id}\n");
-        write_new(output.join(&path), bytes.as_bytes())?;
-        let mut artifact = record(id, kind, platform, &path, bytes.as_bytes())?;
-        if kind == ArtifactKind::RawImage {
+        let path = if kind == ArtifactKind::RawImage {
+            format!("releases/candidate/{RELEASE_VERSION}/fixtures/{id}/raw")
+        } else {
+            format!("releases/candidate/{RELEASE_VERSION}/fixtures/{id}")
+        };
+        let bytes = if kind == ArtifactKind::ImageMetadata {
+            canonical::canonical_json(&qualification_fixture::metadata()?)?
+        } else {
+            format!("synthetic release protocol fixture: {id}\n").into_bytes()
+        };
+        write_new(output.join(&path), &bytes)?;
+        let mut artifact = record(id, kind, platform, &path, &bytes)?;
+        if matches!(kind, ArtifactKind::RawImage | ArtifactKind::ImageMetadata) {
             artifact.system_variant = Some("server".into());
         }
         artifacts.push(artifact);
@@ -217,7 +230,10 @@ fn prepare(arguments: &[String]) -> Result<()> {
                     platform,
                     decision: MatrixCell::Artifact {
                         artifact: FinalArtifactSet {
-                            artifact_ids: vec![format!("image/server/{platform}")],
+                            artifact_ids: vec![
+                                format!("image/server/{platform}"),
+                                format!("image/server/{platform}/metadata"),
+                            ],
                         },
                     },
                 })
@@ -365,7 +381,7 @@ fn release_plan(
         public_evidence_policy_digest: digest("fleet-public-evidence-policy"),
         restricted_operator_policy_digest: digest("fleet-restricted-operator-policy"),
     };
-    let mut contract: aos_release::qualification::QualificationContractV1 = canonical::from_slice(
+    let mut contract: aos_release::qualification::QualificationContract = canonical::from_slice(
         include_bytes!("../../../aos-release/tests/fixtures/qualification-contract.json"),
         "fixture contract",
     )?;
@@ -376,8 +392,7 @@ fn release_plan(
     }];
     plan.schema_version = aos_release::RELEASE_PLAN_V2.into();
     plan.gates = contract.gates(plan.release_class)?;
-    plan.public_evidence_policy_digest =
-        Sha256Digest::of_canonical(aos_release::qualification::CONTRACT_V1, &contract)?;
+    plan.public_evidence_policy_digest = contract.digest()?;
     plan.qualification = Some(contract);
     plan.qualification_predecessor = Some(
         aos_release::qualification_evidence::QualificationPredecessor {
@@ -394,14 +409,19 @@ fn release_plan(
                 platform,
                 decision: MatrixCell::Artifact {
                     artifact: PlannedArtifactSet {
-                        artifacts: vec![PlannedArtifact {
-                            id: format!("image/server/{platform}"),
-
+                        artifacts: [
+                            format!("image/server/{platform}"),
+                            format!("image/server/{platform}/metadata"),
+                        ]
+                        .into_iter()
+                        .map(|id| PlannedArtifact {
+                            id,
                             derivation: None,
                             output: None,
                             store_path: None,
                             source_store_paths: Vec::new(),
-                        }],
+                        })
+                        .collect(),
                     },
                 },
             })
@@ -591,6 +611,9 @@ fn signer_exchange() -> Result<()> {
     Ok(())
 }
 
+#[path = "../../../aos-release/tests/support/qualification.rs"]
+mod qualification_fixture;
+
 async fn qualification_executor() -> Result<()> {
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input)?;
@@ -669,11 +692,21 @@ fn fixture_evidence(
         0
     };
     let finished = humantime::parse_rfc3339(finish)?;
+    let environment = qualification_fixture::environment(case)?;
+    let capabilities = qualification_fixture::capabilities(case)?;
+    let environment_digest = environment
+        .as_ref()
+        .map(|environment| environment.digest())
+        .transpose()?
+        .unwrap_or(digest("synthetic-protocol-environment"));
     Ok(EvidenceRecord {
         qualification: Some(QualificationObservation {
+            environment,
+            capabilities,
+            assessment: qualification_fixture::assessment(case)?,
             case_digest: case.digest()?,
             executor_digest: digest("synthetic-protocol-executor"),
-            environment_digest: digest("synthetic-protocol-environment"),
+            environment_digest,
             checks: case
                 .checks
                 .iter()
@@ -688,7 +721,11 @@ fn fixture_evidence(
                 })
                 .collect(),
             observed_seconds: seconds,
-            operations: std::collections::BTreeMap::from([("synthetic-requests".into(), 1)]),
+            operations: if case.target.is_some() {
+                qualification_fixture::measurements()
+            } else {
+                std::collections::BTreeMap::from([("synthetic-requests".into(), 1)])
+            },
             predecessor: case.predecessor.clone(),
         }),
         id: format!("qualification/{}", case.id),

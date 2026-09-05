@@ -231,6 +231,9 @@ impl EvidenceRecord {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct QualificationReportV1 {
+    /// Coordinator-derived claim outcomes at admission, present in v3 reports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claims: Option<Vec<crate::qualification::claims::ClaimOutcome>>,
     /// Explicit v2 hold point; legacy reports cover staging only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase: Option<crate::qualification::QualificationPhase>,
@@ -248,6 +251,66 @@ pub struct QualificationReportV1 {
 }
 
 impl QualificationReportV1 {
+    /// Recomputes stored assurance results and checks freshness at a hold point.
+    ///
+    /// Results describe the report's signed admission time. A later consumer
+    /// also checks evidence at its own trusted time before authorizing effects.
+    ///
+    /// # Errors
+    /// Returns an error for unsupported semantics, a wrong phase, fabricated
+    /// assurance, future admission time or unmet release-blocking obligations.
+    pub fn validate_phase(
+        &self,
+        plan: &ReleasePlanV1,
+        manifest: &ReleaseManifestV1,
+        phase: crate::qualification::QualificationPhase,
+        now: &str,
+    ) -> Result<()> {
+        let contract = plan
+            .qualification
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("report has no qualification contract"))?;
+        let current = contract.schema_version == crate::qualification::CONTRACT_V2;
+        if self.phase != Some(phase)
+            || self.schema_version
+                != if current {
+                    "aos.release.qualification-report/v3"
+                } else {
+                    "aos.release.qualification-report/v2"
+                }
+        {
+            bail!("qualification report schema or phase differs from its contract");
+        }
+        let admitted = self
+            .admitted_at
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("report admission time is absent"))?;
+        if humantime::parse_rfc3339(admitted)? > humantime::parse_rfc3339(now)? {
+            bail!("report admission time is in the future");
+        }
+        if current {
+            let derived = crate::qualification_evidence::assess_observations(
+                plan,
+                manifest,
+                phase,
+                &self.evidence,
+                admitted,
+            )?;
+            if self.claims.as_ref() != Some(&derived) {
+                bail!("reported assurance differs from independently validated evidence");
+            }
+        } else if self.claims.is_some() {
+            bail!("archival reports cannot carry current assurance results");
+        }
+        crate::qualification_evidence::validate_observations(
+            plan,
+            manifest,
+            phase,
+            &self.evidence,
+            now,
+        )
+    }
+
     /// Validates full planned-gate coverage across every artifact platform.
     ///
     /// A target-independent record covers all platforms for its gate. When a
@@ -266,27 +329,25 @@ impl QualificationReportV1 {
         manifest_digest: Sha256Digest,
     ) -> Result<()> {
         if (self.schema_version != QUALIFICATION_REPORT_V1
-            && self.schema_version != "aos.release.qualification-report/v2")
+            && self.schema_version != "aos.release.qualification-report/v2"
+            && self.schema_version != "aos.release.qualification-report/v3")
             || self.staging_receipt_digest != staging_receipt_digest
             || self.manifest_digest != manifest_digest
         {
             bail!("qualification report identity differs from staged release bytes");
         }
         if plan.qualification.is_some() {
-            if self.schema_version != "aos.release.qualification-report/v2"
-                || self.phase != Some(crate::qualification::QualificationPhase::Staging)
-            {
-                bail!("shared-contract staging admission requires a v2 staging report");
-            }
-            return crate::qualification_evidence::validate_observations(
+            return self.validate_phase(
                 plan,
                 manifest,
                 crate::qualification::QualificationPhase::Staging,
-                &self.evidence,
                 self.admitted_at
                     .as_deref()
                     .ok_or_else(|| anyhow::anyhow!("qualification admission time is absent"))?,
             );
+        }
+        if self.claims.is_some() || self.schema_version != QUALIFICATION_REPORT_V1 {
+            bail!("archival qualification report cannot carry current assurance results");
         }
         if self.evidence.is_empty()
             || self
@@ -570,6 +631,7 @@ mod tests {
             .collect::<Vec<_>>();
         evidence.sort_by(|left, right| left.id.cmp(&right.id));
         let report = QualificationReportV1 {
+            claims: None,
             phase: None,
             admitted_at: None,
             schema_version: QUALIFICATION_REPORT_V1.to_owned(),
@@ -598,6 +660,7 @@ mod tests {
     fn target_independent_evidence_covers_the_matrix() {
         let (plan, manifest, staging, manifest_digest) = fixture();
         let report = QualificationReportV1 {
+            claims: None,
             phase: None,
             admitted_at: None,
             schema_version: QUALIFICATION_REPORT_V1.to_owned(),
@@ -619,6 +682,7 @@ mod tests {
         let mut unknown_gate = record(None, digest("different-gate"));
         unknown_gate.policy_id = "different-gate-v1".to_owned();
         let report = QualificationReportV1 {
+            claims: None,
             phase: None,
             admitted_at: None,
             schema_version: QUALIFICATION_REPORT_V1.to_owned(),
@@ -635,6 +699,7 @@ mod tests {
         let mut unknown_subject = record(None, plan.gates[0].policy_digest);
         unknown_subject.subjects = vec!["package/not-in-manifest".to_owned()];
         let report = QualificationReportV1 {
+            claims: None,
             phase: None,
             admitted_at: None,
             schema_version: QUALIFICATION_REPORT_V1.to_owned(),

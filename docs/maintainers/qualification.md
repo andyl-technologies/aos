@@ -1,6 +1,6 @@
 # Release qualification
 
-AOS uses one versioned server contract for testing and production. The
+AOS uses one versioned system contract for testing and production. The
 authoritative inputs are [`qualification/`](../../qualification/default.nix).
 The release class selects obligations in that contract; operators cannot
 remove individual mandatory gates from a release request.
@@ -76,12 +76,24 @@ the actual tested configurations and evidence separately for each release.
 | Physical hardware | x86_64 / aarch64 | Native | Set per claim | CPU SKU set, chipset/SoC, firmware, device/driver combinations |
 | Cloud VM | x86_64 / aarch64 | Provider virtualization | Set per claim | Provider/service, exact instance SKU, region and virtual device profile |
 
-`qualification/targets.nix` defines the four mandatory reference configurations.
+[`qualification/modules/qemu.nix`](../../qualification/modules/qemu.nix) and
+[`containers.nix`](../../qualification/modules/containers.nix) define the four
+mandatory reference configurations.
 Their required checks cannot be waived by lowering assurance. Additional claims
 must state their required level and release-blocking status before the plan is
 frozen. Additional A3 image/container claims require corresponding target cases
 and scenarios. Physical or cloud categories receive no blanket assurance from
 the reference VM results.
+
+Each required target has a release-blocking A2 claim at staging and an A3 claim
+at completion. A3 requires the complete functional and recovery checks and the
+class observation window on that same recorded configuration. Staging evidence
+does not award A3 before observation completes.
+
+A2 and A3 outcomes cover the exact inventory identified by their environment
+digest. Declare separate required targets for the CPU, board, device and runtime
+combinations that must each be exercised. A target's compatibility predicates
+define which configurations may satisfy its case.
 
 ### Release evidence matrix
 
@@ -157,7 +169,8 @@ requirements require a separate resource-sizing campaign.
 | Resource exhaustion | Exercise full state/update storage and memory pressure in the isolated test; mutation fails with a useful error, committed state remains readable, and operation succeeds after resources are restored |
 | Observation | Run mixed network, package and persistent-data operations for the release-class window; retain attempts, successes, failures, reboot/recovery counts and monitoring records; no unexplained crash, integrity mismatch, data loss or unresolved required-function failure |
 
-The cycle minima are encoded in target configuration and bound into each case.
+The cycle minima are numeric requirement bounds, composed by the image and
+container modules and bound into each case.
 They are engineering acceptance thresholds, not reliability probabilities.
 Scenario reports must show the counts and comparisons, not just a success flag.
 
@@ -278,14 +291,22 @@ Changing its observation rule requires a reviewed policy revision first.
 
 ## Requirements, subjects, and evidence
 
+The qualification catalog uses the AOS `lib.evalModules` fixed point. Feature
+modules under `qualification/modules/` own their options, configuration and
+assertions. The module registry discovers feature files automatically and
+excludes `_`-prefixed implementation files. `qualification/default.nix` accepts
+additional `modules`; normal `mkDefault`, `mkForce`, `mkIf`, `mkMerge` and list
+ordering rules apply. Required acceptance floors still constrain the result.
+Package classifications and target claims derive from the final configuration.
+
 Each requirement specifies its hold point, subject population, observation
-method, acceptance checks, regression coverage, and invalidation conditions.
+method, acceptance checks, numeric bounds, regression coverage, and invalidation conditions.
 The coordinator expands requirements into exact cases:
 
 - release-wide gates cover the frozen release artifacts;
 - package gates cover each published package/platform cell independently;
-- image gates cover each variant and reference machine configuration;
-- OCI gates cover the multi-platform index and exact platform artifacts; and
+- image claims cover each variant and their declared target configuration;
+- OCI claims cover the multi-platform index and exact platform artifacts; and
 - update cases additionally bind the frozen preceding release.
 
 The case digest binds these choices, the frozen plan, and the complete artifact
@@ -296,6 +317,37 @@ times, operation counts, and the predecessor exercised. Missing, failed,
 unknown, duplicated, future-dated, expired, or incorrectly scoped evidence
 cannot satisfy a required case. Preserve failed attempts; a later pass does not
 erase them from the operational record.
+
+Current plans embed `aos.release.qualification-contract/v2`; current cases use
+`aos.release.qualification-case/v2`. Every target observation includes a reviewed
+assessment bound to the canonical environment-profile digest. A1 contains the
+reviewer's rationale and exact retained references, without execution times or
+operation counts. A2 and A3 additionally contain a typed
+`aos.release.environment-inventory/v1` document. The coordinator verifies its
+digest and matches the ordered host-to-subject topology, CPU predicates, backend
+versions, boot implementation, security properties, resources and device bindings.
+An environment digest alone cannot establish compatibility.
+
+Finalized images publish `aos.image.metadata/v2` with an
+`aos.image.capabilities/v1` inventory. The Nix assembly captures the built
+kernel's resolved configuration; the finalizer inventories signed module bytes
+and firmware from the runtime, normal initrd and both recovery filesystems.
+Built-in drivers come from that kernel's `modules.builtin`. Image observations
+retain the complete metadata value and its subject artifact ID. The coordinator
+checks its size and hash against the manifest, verifies required configuration
+values and driver/firmware availability at the required stages, and binds direct
+execution to the same capability digest. Build availability and observed device
+binding are separate requirements.
+
+`aos.release.qualification-report/v3` records coordinator-derived claim outcomes
+alongside the observations. Consumers recompute those outcomes; an executor
+cannot assign its own assurance. Missing, failed and stale optional claims remain
+visible and do not block admission. Malformed or incorrectly bound evidence is
+rejected even for an optional claim. A complete functional run with insufficient
+observation duration can establish A2 but cannot satisfy an A3 obligation. Reports
+require the configured authority signatures and independent review before they
+authorize release operations. Archived v1 contracts retain their original digest
+semantics and cannot authorize new publication.
 
 Build observations belong in the immutable manifest. Staging observations
 refer to that finished manifest and its staging receipt. Rollout and completion
@@ -368,7 +420,7 @@ import their retained observations for review and admission.
 
 `lib.testing.mkQualificationExecutor` (from `lib/testing`) packages a runner
 with explicit `platform`, `identity`, `scenarios`, absolute `workRoot`, and
-`timeoutSeconds`. `scenarios` maps requirement IDs to absolute executables in
+`timeoutSeconds`. `scenarios` maps case policy IDs, including `claim-<claim-id>`, to absolute executables in
 AOS-built Nix closures. Missing implementations fail; an empty adapter is never
 a passing gate. Environment-specific adapters and remote macOS transport must
 be provisioned before a campaign. All source regression groups are exposed at
@@ -383,12 +435,17 @@ maps artifact IDs to the verified local paths. Scenarios use AOS-built tools
 and the published image's normal provisioning and serial/SSH interfaces.
 
 The scenario emits `QualificationExecutorResponseV1`. Its observation must
-contain the exact case digest, acceptance checks, and predecessor. Set
+contain the exact case digest, acceptance checks, numeric measurements, assessment
+and applicable environment/capability evidence. Include the predecessor for update
+claims. Set
 `executor_digest` to the SHA-256 of the retained scenario registry bytes;
 its store paths bind the executable closures. Include the actual non-sensitive
-environment inventory in `report.environment`, and set `environment_digest`
-to its canonical JSON SHA-256. Record real UTC times and measured workload
-counts. The runner checks this binding and retains response bytes, stdout,
+environment inventory in both `qualification.environment` and `report.environment`,
+and set `environment_digest` to its canonical JSON SHA-256. Retain the assessment
+in `report.assessment` as well as the structured observation. For A1, use the
+reviewed profile digest as `environment_digest` and omit the tested inventory.
+Record real UTC times and measured workload counts for direct execution. The
+runner checks these bindings and retains response bytes, stdout,
 stderr, and failures. Coordinator attempts retain each request and returned
 response, including rejected results. Never overwrite a failed attempt.
 

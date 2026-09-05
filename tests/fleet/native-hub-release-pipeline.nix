@@ -551,10 +551,20 @@ in {
       report = json.loads(publisher.succeed(
           f"{JQ} -c . /var/tmp/qualification-run/qualification-report.json"
       ))
-      assert len(report["evidence"]) == 15, report
+      assert report["schema_version"] == "aos.release.qualification-report/v3", report
+      assert len(report["evidence"]) == 11, report
+      assert len(report["claims"]) == 4, report
+      assert all(claim["achieved_assurance"] == "A2" and claim["disposition"] == "passed"
+                 and claim["environment_digest"] for claim in report["claims"]), report
       assert {item["platform"] for item in report["evidence"]} == {
           None, "x86_64-linux", "aarch64-linux", "x86_64-darwin", "aarch64-darwin",
       }, report
+      complete_report = json.loads(publisher.succeed(
+          f"{JQ} -c . /var/tmp/complete-qualification/qualification-report.json"
+      ))
+      assert len(complete_report["claims"]) == 4, complete_report
+      assert all(claim["achieved_assurance"] == "A3" and claim["disposition"] == "passed"
+                 for claim in complete_report["claims"]), complete_report
       publisher.succeed(f"{CURL} -fsS {PRODUCTION}/andyl/main/channels/candidate/00 >/dev/null")
     '';
 }

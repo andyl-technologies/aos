@@ -37,12 +37,14 @@ pub(super) fn run(args: &ReleasePlanArgs, nix: &NixRunner, printer: &Printer) ->
     let inventory: PackageInventoryV1 = serde_json::from_value(inventory_value)
         .context("decoding Nix release package inventory")?;
     inventory.validate()?;
-    let qualification: aos_release::qualification::QualificationContractV1 =
+    let qualification: aos_release::qualification::QualificationContract =
         serde_json::from_value(nix.eval_json("releaseQualification")?)
             .context("decoding the shared Nix qualification contract")?;
     qualification.validate()?;
-    let expected_policy =
-        Sha256Digest::of_canonical(aos_release::qualification::CONTRACT_V1, &qualification)?;
+    if qualification.schema_version != aos_release::qualification::CONTRACT_V2 {
+        bail!("new release plans require the typed v2 qualification contract");
+    }
+    let expected_policy = qualification.digest()?;
     if request.public_evidence_policy_digest != expected_policy
         || request.gates != qualification.gates(request.release_class)?
     {

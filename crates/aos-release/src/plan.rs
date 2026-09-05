@@ -215,7 +215,7 @@ pub struct ReleasePlanV1 {
     pub schema_version: String,
     /// Shared qualification contract; required by v2, absent in archival v1 plans.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub qualification: Option<crate::qualification::QualificationContractV1>,
+    pub qualification: Option<crate::qualification::QualificationContract>,
     /// Frozen preceding snapshot for the required update/recovery cycle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub qualification_predecessor: Option<crate::qualification_evidence::QualificationPredecessor>,
@@ -355,7 +355,12 @@ impl ReleasePlanV1 {
     /// Returns an error for an archival plan or invalid shared contract.
     pub fn require_current_qualification(&self) -> Result<()> {
         self.validate()?;
-        if self.schema_version != crate::RELEASE_PLAN_V2 || self.qualification.is_none() {
+        if self.schema_version != crate::RELEASE_PLAN_V2
+            || self
+                .qualification
+                .as_ref()
+                .is_none_or(|contract| contract.schema_version != crate::qualification::CONTRACT_V2)
+        {
             bail!(
                 "archival release plans are read-only; new publication requires a v2 shared qualification contract"
             );
@@ -433,8 +438,13 @@ impl ReleasePlanV1 {
         for gate in &self.gates {
             require_identifier(&gate.policy_id, "gate policy id")?;
         }
+        // Current contracts bind advisory claims explicitly and independently
+        // enforce the mandatory assurance floors in validate_plan.
         if self.release_class.requires_complete_matrix()
             && self.gates.iter().any(|gate| !gate.required_for_stable)
+            && !self.qualification.as_ref().is_some_and(|contract| {
+                contract.schema_version == crate::qualification::CONTRACT_V2
+            })
         {
             bail!("stable plans cannot select advisory-only release gates");
         }

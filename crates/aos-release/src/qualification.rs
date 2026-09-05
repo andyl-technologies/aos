@@ -1,11 +1,11 @@
-//! Shared server qualification policy and release-transition applicability.
+//! Shared qualification policy, scoped assurance and release applicability.
 //!
 //! Nix exports this document; the coordinator canonicalizes it and embeds it in
 //! the signed plan. Offline consumers need neither Nix nor the source checkout.
 //!
 //! ```text
-//! qualification-contract/v1
-//!   promises + exclusions + targets + package_rules + requirements
+//! qualification-contract/v2
+//!   promises + exclusions + typed targets + claims + requirements + package_rules
 //!   thresholds[edge | candidate | stable | emergency]
 //! ```
 
@@ -20,8 +20,15 @@ use crate::evidence::GateRequirement;
 use crate::plan::{ReleaseClass, ReleasePlanV1};
 use crate::platform::Platform;
 
-/// Schema of the shared, source-controlled qualification contract.
+pub mod capabilities;
+pub mod claims;
+pub mod environment;
+
+/// Schema of archived qualification contracts with untyped environments.
 pub const CONTRACT_V1: &str = "aos.release.qualification-contract/v1";
+
+/// Schema of current contracts with typed scopes and assurance obligations.
+pub const CONTRACT_V2: &str = "aos.release.qualification-contract/v2";
 
 /// Hold point at which evidence authorizes the next release operation.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -73,8 +80,12 @@ pub struct QualificationTarget {
     pub kind: TargetKind,
     /// Whether an absent artifact blocks this contract.
     pub required: bool,
-    /// Public machine, firmware, runtime, and resource requirements.
+    /// Archived v1 machine and runtime requirements; forbidden in v2 policy.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub configuration: BTreeMap<String, String>,
+    /// Typed current environment scope, including execution topology.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<environment::EnvironmentProfile>,
 }
 
 /// Reference environment kind.
@@ -131,6 +142,9 @@ pub struct QualificationRequirement {
     pub regressions: Vec<String>,
     /// Identities whose change invalidates previous observations.
     pub invalidated_by: Vec<String>,
+    /// Numeric acceptance bounds checked independently of textual assertions.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub measurements: BTreeMap<String, claims::MeasurementRequirement>,
 }
 
 /// Class-dependent obligations in the same server contract.
@@ -150,7 +164,7 @@ pub struct QualificationThresholds {
 /// One authoritative qualification policy for testing and production.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct QualificationContractV1 {
+pub struct QualificationContract {
     /// Exact document schema.
     pub schema_version: String,
     /// Reviewed contract identity.
@@ -167,17 +181,37 @@ pub struct QualificationContractV1 {
     pub package_rules: Vec<PackageRule>,
     /// Shared gate catalog.
     pub requirements: Vec<QualificationRequirement>,
+    /// Scoped assurance obligations; absent only in archival v1 contracts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub claims: Vec<claims::QualificationClaim>,
 }
 
-impl QualificationContractV1 {
+impl QualificationContract {
     /// Validates the catalog and minimum server-contract obligations.
     ///
     /// # Errors
     /// Returns an error for unknown schemas, missing classifications, duplicate
     /// identities, weakened baseline thresholds, or absent mandatory gates.
     pub fn validate(&self) -> Result<()> {
-        if self.schema_version != CONTRACT_V1 || self.id != "aos-server-v1" {
+        let current = self.schema_version == CONTRACT_V2;
+        if !matches!(self.schema_version.as_str(), CONTRACT_V1 | CONTRACT_V2)
+            || self.id
+                != if current {
+                    "aos-system-v2"
+                } else {
+                    "aos-server-v1"
+                }
+        {
             bail!("unsupported qualification contract");
+        }
+        if !current
+            && (!self.claims.is_empty()
+                || self
+                    .requirements
+                    .iter()
+                    .any(|gate| !gate.measurements.is_empty()))
+        {
+            bail!("archival contracts cannot carry current assurance semantics");
         }
         nonempty_strings(&self.promises, "contract promises")?;
         nonempty_strings(&self.exclusions, "contract exclusions")?;
@@ -202,8 +236,27 @@ impl QualificationContractV1 {
             bail!("qualification must classify packages and inherit dependency obligations");
         }
         for target in &self.targets {
-            if !target.platform.supports_images() || target.configuration.is_empty() {
+            if !target.platform.supports_images() {
                 bail!("reference image/container targets require Linux and explicit configuration");
+            }
+            if current {
+                if !target.configuration.is_empty() {
+                    bail!(
+                        "current contracts require typed environments, not legacy configuration strings"
+                    );
+                }
+                let environment = target
+                    .environment
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("target lacks its typed environment"))?;
+                environment.validate(target.platform)?;
+                match (target.kind, environment.boot) {
+                    (TargetKind::Image, environment::BootImplementation::SystemdBootUki)
+                    | (TargetKind::Container, environment::BootImplementation::LinuxContainer) => {}
+                    _ => bail!("target boot implementation differs from its artifact kind"),
+                }
+            } else if target.configuration.is_empty() || target.environment.is_some() {
+                bail!("archival targets require their original configuration representation");
             }
             for (key, value) in &target.configuration {
                 require_identifier(key, "target configuration key")?;
@@ -223,6 +276,7 @@ impl QualificationContractV1 {
         }
         for gate in &self.requirements {
             nonempty_strings(&gate.checks, "acceptance conditions")?;
+            claims::merge_measurements(&mut BTreeMap::new(), &gate.measurements)?;
             for identity in ["subject", "policy", "executor", "environment"] {
                 if !gate.invalidated_by.iter().any(|value| value == identity) {
                     bail!("requirement {} omits invalidation by {identity}", gate.id);
@@ -326,7 +380,19 @@ impl QualificationContractV1 {
                 bail!("{class} qualification thresholds weaken the server contract");
             }
         }
+        if current {
+            claims::validate_claims(self)?;
+            self.validate_current_floors()?;
+        }
         Ok(())
+    }
+
+    /// Computes the policy identity using its original schema domain.
+    ///
+    /// # Errors
+    /// Returns an error if canonical encoding fails.
+    pub fn digest(&self) -> Result<Sha256Digest> {
+        Sha256Digest::of_canonical(&self.schema_version, self)
     }
 
     /// Returns the obligations selected by the release class.
@@ -357,18 +423,37 @@ impl QualificationContractV1 {
     /// # Errors
     /// Returns an error if a requirement cannot be canonically encoded.
     pub fn gates(&self, class: ReleaseClass) -> Result<Vec<GateRequirement>> {
-        self.selected(class)
+        let mut gates = self
+            .selected(class)
+            .filter(|requirement| {
+                self.schema_version != CONTRACT_V2
+                    || !matches!(
+                        requirement.scope,
+                        QualificationScope::Images | QualificationScope::Containers
+                    )
+            })
             .map(|requirement| {
                 Ok(GateRequirement {
                     policy_id: requirement.id.clone(),
                     policy_digest: Sha256Digest::of_canonical(
-                        CONTRACT_V1,
+                        &self.schema_version,
                         &(requirement, self.thresholds_for(class)?),
                     )?,
                     required_for_stable: true,
                 })
             })
-            .collect()
+            .collect::<Result<Vec<_>>>()?;
+        for claim in &self.claims {
+            gates.push(GateRequirement {
+                policy_id: format!("claim-{}", claim.id),
+                policy_digest: Sha256Digest::of_canonical(
+                    CONTRACT_V2,
+                    &(self, claim, self.thresholds_for(class)?),
+                )?,
+                required_for_stable: claim.blocks_release,
+            });
+        }
+        Ok(gates)
     }
 
     /// Requires the plan's gate and package populations to match this contract.
@@ -387,7 +472,7 @@ impl QualificationContractV1 {
             _ => bail!("server contract requires a distinct same-registry predecessor"),
         }
         if plan.gates != self.gates(plan.release_class)?
-            || plan.public_evidence_policy_digest != Sha256Digest::of_canonical(CONTRACT_V1, self)?
+            || plan.public_evidence_policy_digest != self.digest()?
         {
             bail!("release gates or evidence policy differ from the frozen qualification contract");
         }
@@ -427,6 +512,77 @@ impl QualificationContractV1 {
             })
         {
             bail!("qualification profile requires a complete package matrix");
+        }
+        Ok(())
+    }
+
+    fn validate_current_floors(&self) -> Result<()> {
+        use environment::{Accelerator, Backend};
+
+        for (platform, accelerator) in [
+            (Platform::X86_64Linux, Accelerator::Kvm),
+            (Platform::Aarch64Linux, Accelerator::Tcg),
+        ] {
+            if !self.targets.iter().any(|target| {
+                target.required
+                    && target.platform == platform
+                    && target.kind == TargetKind::Image
+                    && target.environment.as_ref().is_some_and(|scope| {
+                        scope.layers.last().is_some_and(|layer| {
+                            matches!(&layer.backend,
+                            Backend::Qemu { accelerator: actual, .. } if *actual == accelerator)
+                        }) && scope.security.secure_boot
+                            && scope.security.measured_boot
+                            && scope.security.verity
+                            && scope.security.encrypted_state
+                            && scope.security.persistent_firmware
+                    })
+            }) {
+                bail!("required QEMU/security baseline is missing for {platform}");
+            }
+        }
+        for (id, scope) in [
+            ("image-observation", QualificationScope::Images),
+            ("container-observation", QualificationScope::Containers),
+        ] {
+            if !self.requirements.iter().any(|gate| {
+                gate.id == id
+                    && gate.scope == scope
+                    && gate.phase == QualificationPhase::Complete
+                    && !gate.production_only
+            }) {
+                bail!("current contract lacks per-configuration observation: {id}");
+            }
+        }
+        for (requirement, measurement, minimum, maximum) in [
+            ("image-installation", "reboot_cycles", 10, None),
+            ("image-installation", "cold_boot_cycles", 3, None),
+            ("image-update-recovery", "update_rollback_cycles", 3, None),
+            ("container-lifecycle", "lifecycle_cycles", 10, None),
+            ("image-observation", "workload_operations", 1, None),
+            ("container-observation", "workload_operations", 1, None),
+            ("image-observation", "data_integrity_failures", 0, Some(0)),
+            (
+                "container-observation",
+                "data_integrity_failures",
+                0,
+                Some(0),
+            ),
+        ] {
+            let bound = self
+                .requirements
+                .iter()
+                .find(|gate| gate.id == requirement)
+                .and_then(|gate| gate.measurements.get(measurement))
+                .ok_or_else(|| {
+                    anyhow::anyhow!("missing required measurement {requirement}/{measurement}")
+                })?;
+            if bound.minimum < minimum
+                || maximum
+                    .is_some_and(|maximum| bound.maximum.is_none_or(|actual| actual > maximum))
+            {
+                bail!("measurement weakens the release baseline: {requirement}/{measurement}");
+            }
         }
         Ok(())
     }

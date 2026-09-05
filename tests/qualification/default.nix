@@ -6,7 +6,10 @@
   fleet,
   container,
 }: let
-  contract = import ../../qualification {packageNames = pkgs.allPackageNames;};
+  contract = import ../../qualification {
+    inherit lib;
+    packageNames = pkgs.allPackageNames;
+  };
   available = {checks = {inherit build fleet container;};};
   resolve = path:
     builtins.foldl' (attrs: key: attrs.${key}) available (lib.splitString "." path);

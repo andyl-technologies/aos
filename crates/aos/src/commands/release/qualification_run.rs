@@ -237,13 +237,27 @@ async fn run_attempt(
     }
     let args = &resolved_args;
     let report = QualificationReportV1 {
+        claims: if args.report_input.is_none()
+            && plan.qualification.as_ref().is_some_and(|contract| {
+                contract.schema_version == aos_release::qualification::CONTRACT_V2
+            }) {
+            Some(aos_release::qualification_evidence::assess_observations(
+                &plan,
+                &manifest.payload,
+                phase,
+                &evidence,
+                &args.qualified_at,
+            )?)
+        } else {
+            None
+        },
         phase: plan.qualification.as_ref().map(|_| phase),
         admitted_at: plan
             .qualification
             .as_ref()
             .map(|_| args.qualified_at.clone()),
         schema_version: if plan.qualification.is_some() {
-            "aos.release.qualification-report/v2"
+            "aos.release.qualification-report/v3"
         } else {
             QUALIFICATION_REPORT_V1
         }
@@ -266,13 +280,7 @@ async fn run_attempt(
         {
             bail!("prepared qualification report differs from this release hold point");
         }
-        aos_release::qualification_evidence::validate_observations(
-            &plan,
-            &manifest.payload,
-            phase,
-            &report.evidence,
-            &args.qualified_at,
-        )?;
+        report.validate_phase(&plan, &manifest.payload, phase, &args.qualified_at)?;
     } else {
         report.validate(
             &plan,
@@ -360,6 +368,7 @@ async fn run_attempt(
         "schema_version": "aos.release.qualify-run-result/v1",
         "release_id": plan.release_id,
         "evidence_count": report.evidence.len(),
+        "claims": report.claims,
         "qualification_report_digest": receipt.report_digest,
         "output": args.output,
     })) {
@@ -484,7 +493,11 @@ pub(super) fn verify_executor_response(
         || response.evidence.policy_digest != request.policy_digest
         || response.evidence.platform != expected_platform
         || response.evidence.subjects != request.subjects
-        || response.evidence.result != GateResult::Passed
+        || (response.evidence.result != GateResult::Passed
+            && request
+                .qualification_case
+                .as_ref()
+                .is_none_or(|case| case.claim.as_ref().is_none_or(|claim| claim.blocks_release)))
         || response.evidence.authority_id != identity
         || response.evidence.nonce.as_deref() != Some(request.nonce.as_str())
         || response.evidence.report_digest

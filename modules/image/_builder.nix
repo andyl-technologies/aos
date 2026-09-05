@@ -478,6 +478,9 @@
           kernel=$(find ${system.config.system.build.kernel}/boot -maxdepth 1 -type f -name 'vmlinuz-*' -print)
           [ "$(printf '%s\n' "$kernel" | wc -l)" -eq 1 ]
           cp "$kernel" "$out/inputs/vmlinuz"
+          # Qualification records the resolved build result, including defaults
+          # selected by olddefconfig, rather than the requested option fragment.
+          cp ${system.config.system.build.kernel}/boot/config-${system.config.system.build.kernel.version} "$out/inputs/kernel.config"
           cp ${pkgs.systemd}/lib/systemd/boot/efi/${efiName.systemd} "$out/inputs/systemd-boot.efi"
           cp ${pkgs.systemd}/lib/systemd/boot/efi/linux${
             if lib.platform.constraints.cpu == "x86_64"
@@ -516,7 +519,7 @@
           }
 
           ${pkgs.jq}/bin/jq -cS -n \
-            --arg schema aos.image.assembly-recipe/v1 \
+            --arg schema aos.image.assembly-recipe/v2 \
             --arg release ${lib.escapeShellArg version} \
             --arg platform ${lib.escapeShellArg lib.system} \
             --arg variant ${lib.escapeShellArg name} \
