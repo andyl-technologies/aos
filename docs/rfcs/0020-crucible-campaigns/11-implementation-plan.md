@@ -121,9 +121,8 @@ Primary crates: `crucible`, `crucible-protocol`, `crucible-shmem`,
 The 2026-09-04 rerun of
 `nix-build -A checks.crucible.phase2.qemuLiveSelectableProduct --no-out-link`
 passed after synchronizing the plugin's patch-coverage roster with carried
-patches 0192-0195. The retained evidence is
-`/nix/store/f900aqralyj2vbn1fxk6rzryr1n9qvl8-crucible-phase2-qemu-live-selectable-product-0/result`:
-it captures a pending choice at icount 3,306,251,991, force-crashes the source,
+patches 0192-0195. The check captures a pending choice at icount
+3,306,251,991, force-crashes the source,
 restores the exact request in a fresh QEMU, and observes the selected network
 payload after both discrete and integer replies. This automated prerequisite
 does not close the independent §14 operator gate.
@@ -315,8 +314,7 @@ extensions under `gate:abi-conformance`.
 guest. Unprivileged writers encounter both hard-byte and hard-inode quota
 limits; a nonempty release retains its exact authority, and emptied/released
 projects can be reused. The host needs KVM, not an ext4 mount or quota changes.
-The 2026-09-04 flight passed with evidence in
-`/nix/store/6dxixiq283f6m65ndn5564n0j72wyfla-aos-vm-test-crucible-project-quota-0/serial.log`.
+The 2026-09-04 flight passed.
 This isolates storage enforcement; complete packaged-QEMU resource/recovery
 and operator flights remain separate requirements.
 
@@ -325,8 +323,7 @@ production cgroup/project-quota owner with real QEMU and its guarded image
 helper. The 2026-09-04 flight passed twice through a single project-ID slot,
 checking exclusive namespace acquisition, unprivileged child credentials,
 installed CPU/memory/task limits, sticky cancellation, direct-child reap, and
-removal of both the attempt cgroup and storage tree. Evidence is retained in
-`/nix/store/dg92fhl7lgnm3lp3g0yydbgsc9491y2g-aos-vm-test-crucible-qemu-host-owner-0/serial.log`.
+removal of both the attempt cgroup and storage tree.
 The first flight exposed missing `CONFIG_CFS_BANDWIDTH` in the AOS kernel;
 the standard kernel now enables CPU bandwidth and built-in project-quota
 support. The check uses that standard kernel without a test-only override.
@@ -336,15 +333,13 @@ close the campaign-level execution, recovery, or independent operator gates.
 `checks.crucible.phase4.packagedCampaignVm` now exercises public CLI scenario,
 lineage, and policy compilation, verified import, campaign creation, and two
 production service startups with native baked-genesis capture. The 2026-09-04
-flight passed with evidence in
-`/nix/store/kblq6vxsavsm9w0lqzqb6ciwcamfzsxv-aos-vm-test-crucible-packaged-campaign-0/serial.log`.
+flight passed.
 It exposed and now covers independent configuration-payload/checkpoint-closure
 versions and private debugger sockets surviving guarded directory rebinding.
 The campaign head survives restart unchanged and the executor endpoint is
 removed on each orderly shutdown. The extended 2026-09-04 flight also passed
 public attempt-budget grant, start, first discovery admission, authenticated
-`terminal-success` explanation, and guarded executor shutdown, with evidence in
-`/nix/store/mngc0yl2y281wj47ayglnpp7ywncj1dn-aos-vm-test-crucible-packaged-campaign-0/serial.log`.
+`terminal-success` explanation, and guarded executor shutdown.
 The coordinator now derives the unique empty-path genesis discovery for an
 otherwise empty frontier; cold validation recomputes its grant, lifecycle,
 ordinal, and exact accounting delta. The flight also exposed skipped genesis
@@ -354,13 +349,12 @@ conditional events afterward. No-backend regressions cover terminal entrypoints,
 dependent events, and non-repetition.
 
 The subsequent 2026-09-04 flight also passes delayed completion after real guest
-execution, with all three cases retained in
-`/nix/store/h013qvhbzv2y53c5yxnk79729qm2xdav-aos-vm-test-crucible-packaged-campaign-0/serial.log`.
+execution, with all three cases passing.
 Packaged CLI execution now defaults to a 1,000,000-instruction rendezvous,
 preserving explicit interval overrides and the existing non-packaged default.
 The delayed scenario completes at the first rendezvous after baked genesis;
 the public explanation authenticates its terminal result and unchanged
-decision-free configuration. The cases pass in 2.26, 2.04, and 4.72 seconds.
+decision-free configuration.
 These flights do not prove guest-choice branching, arbitrary exact-time trigger
 deadlines between rendezvous, checkpoint-pause recovery, or hot-fork acceptance.
 Longer diagnostic execution also stalled waiting for a post-device control
