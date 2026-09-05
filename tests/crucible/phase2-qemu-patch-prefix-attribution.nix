@@ -871,6 +871,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0200-crucible-retain-complete-native-source-sets.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =
