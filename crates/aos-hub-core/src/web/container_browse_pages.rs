@@ -233,11 +233,9 @@ pub fn repository(
         repository.manifest_count,
         escape(&human_size(repository.compressed_byte_size))
     );
-    body.push_str("<h2>Pull this repository</h2>");
-    body.push_str(&pull_commands(base.as_deref()));
     body.push_str("<h2>Tags</h2>");
     if tags.is_empty() {
-        body.push_str("<p class=\"dim\">No tags are published.</p>");
+        body.push_str("<p class=\"dim\">No tags are published. Pull commands appear when a published tag identifies an available manifest.</p>");
     } else {
         let rows = tags
             .iter()
@@ -265,6 +263,16 @@ pub fn repository(
         &repository_href(slug, &repository.name),
         next_cursor,
     ));
+    if let Some(tag) = tags.first() {
+        let _ = write!(
+            body,
+            "<h2>Pull a published image</h2><p>This command pins the current digest of tag <a href=\"{}\">{}</a>. Select another tag above for a different version.</p>",
+            escape(&tag_href(slug, &repository.name, tag.name.as_str())),
+            escape(tag.name.as_str()),
+        );
+        let reference = base.map(|base| format!("{base}@{}", tag.digest));
+        body.push_str(&pull_commands(reference.as_deref()));
+    }
     page_with_session(
         repository.name.as_str(),
         &registry_crumbs(
@@ -400,4 +408,88 @@ pub fn manifest(
         &state_line(status, started),
         session,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aos_oci_types::{MediaType, Sha256Digest, Tag};
+
+    #[test]
+    fn repository_pull_uses_a_published_digest_and_never_assumes_latest() {
+        let registry = RegistryRecord {
+            id: 1,
+            stable_id: "registry:test".into(),
+            scope_key: "registry:test".into(),
+            owner_scope_key: "instance".into(),
+            slug: "demo".into(),
+            trust_keys: vec![],
+            require_signatures: true,
+            org_id: None,
+            project_path: String::new(),
+            visibility: "public".into(),
+            crawl_policy: "allow_all".into(),
+            llms_txt_body: None,
+            resource_version: 1,
+            updated_at: 0,
+        };
+        let record = OciAdminRepositoryRecord {
+            id: 1,
+            registry_id: 1,
+            name: RepositoryName::parse("systems/minimal").unwrap(),
+            description: String::new(),
+            inherited_visibility: "public".into(),
+            lifecycle_state: "active".into(),
+            resource_version: 1,
+            metadata_resource_version: 1,
+            manifest_count: 1,
+            compressed_byte_size: 1,
+            unique_byte_size: 1,
+            tag_count: 1,
+            created_at: 0,
+            updated_at: 0,
+        };
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let tags = [OciAdminTagRecord {
+            name: Tag::parse("2026.09").unwrap(),
+            digest: Sha256Digest::parse(&digest).unwrap(),
+            media_type: MediaType::OciImageManifest,
+            ownership_kind: "release".into(),
+            release: Some("2026.09".into()),
+            channel: None,
+            resource_version: 1,
+            created_at: 0,
+            updated_at: 0,
+        }];
+        let render = |tags: &[OciAdminTagRecord], authority| {
+            repository(
+                &registry,
+                None,
+                &record,
+                tags,
+                authority,
+                None,
+                Instant::now(),
+                &SessionIndicator::default(),
+            )
+        };
+        let html = render(&tags, Some("oci.example"));
+        for client in ["docker", "nerdctl", "aos container"] {
+            assert!(html.contains(&format!(
+                "{client} pull oci.example/systems/minimal@{digest}"
+            )));
+        }
+        assert!(!html.contains("pull oci.example/systems/minimal</code>"));
+        assert!(!html.contains(":latest"));
+        assert!(
+            html.find("<h2>Tags</h2>").unwrap()
+                < html.find("<h2>Pull a published image</h2>").unwrap()
+        );
+        let empty = render(&[], Some("oci.example"));
+        assert!(empty.contains("No tags are published"));
+        assert!(!empty.contains("docker pull"));
+        let unavailable = render(&tags, None);
+        assert!(unavailable.contains("No ready OCI delivery route"));
+        assert!(!unavailable.contains("docker pull"));
+    }
 }

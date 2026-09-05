@@ -12,6 +12,7 @@
 //! collection and cross-field invariants before any renderer sees content.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -21,6 +22,23 @@ use thiserror::Error;
 mod nar;
 
 pub use nar::decode_single_file_nar;
+
+/// Returns the stable HTML anchor for a documentation search kind and key.
+///
+/// Both strings use lossless UTF-8 hex encoding, so punctuation and kind
+/// boundaries cannot collide. The colon namespace cannot overlap validated
+/// author-supplied section IDs, which accept only safe token characters.
+#[must_use]
+pub fn documentation_anchor(kind: &str, key: &str) -> String {
+    let mut anchor = String::from("doc");
+    for value in [kind, key] {
+        anchor.push(':');
+        for byte in value.bytes() {
+            let _ = write!(anchor, "{byte:02x}");
+        }
+    }
+    anchor
+}
 
 /// Canonical schema identifier carried inside every document.
 pub const DOCUMENT_SCHEMA: &str = "aos.package-documentation/v1";
@@ -1025,7 +1043,9 @@ impl PackageDocumentation {
     }
 
     fn render_html_fragment_into(&self, output: &mut String) {
-        output.push_str("<main class=\"package-documentation\"><header><h1>");
+        output.push_str("<main class=\"package-documentation\"><header id=\"");
+        output.push_str(&documentation_anchor("package", &self.package.name));
+        output.push_str("\"><h1>");
         escape_html_into(&self.package.name, output);
         output.push_str("</h1><p>");
         escape_html_into(&self.package.summary, output);
@@ -1046,7 +1066,9 @@ impl PackageDocumentation {
         if !self.options.is_empty() {
             output.push_str("<section id=\"options\"><h2>Options</h2><dl>");
             for option in &self.options {
-                output.push_str("<dt><code>");
+                output.push_str("<dt id=\"");
+                output.push_str(&documentation_anchor("option", &option.display_path));
+                output.push_str("\"><code>");
                 escape_html_into(&option.display_path, output);
                 output.push_str("</code></dt><dd><p><strong>");
                 escape_html_into(&option.type_signature, output);
@@ -1192,7 +1214,9 @@ fn render_runtime_html(runtime: &RuntimeSurface, output: &mut String) {
     if !runtime.units.is_empty() {
         output.push_str("<h3>Services</h3><dl>");
         for unit in &runtime.units {
-            output.push_str("<dt><code>");
+            output.push_str("<dt id=\"");
+            output.push_str(&documentation_anchor("service", &unit.name));
+            output.push_str("\"><code>");
             escape_html_into(&unit.name, output);
             output.push_str("</code></dt><dd>");
             escape_html_into(&unit.kind, output);
@@ -1257,7 +1281,9 @@ fn render_runtime_html(runtime: &RuntimeSurface, output: &mut String) {
     if !runtime.credentials.is_empty() {
         output.push_str("<h3>Credentials</h3><ul>");
         for credential in &runtime.credentials {
-            output.push_str("<li><strong>");
+            output.push_str("<li id=\"");
+            output.push_str(&documentation_anchor("credential", &credential.name));
+            output.push_str("\"><strong>");
             escape_html_into(&credential.name, output);
             output.push_str("</strong> — ");
             escape_html_into(&credential.purpose, output);
@@ -1275,8 +1301,17 @@ fn render_runtime_html(runtime: &RuntimeSurface, output: &mut String) {
     }
     if !runtime.capabilities.is_empty() {
         output.push_str("<h3>Capabilities</h3><ul>");
+        // A capability may appear in both directions. Search keys identify its
+        // name, so the first entry owns the anchor shared by those results.
+        let mut anchored_names = BTreeSet::new();
         for capability in &runtime.capabilities {
-            output.push_str("<li><code>");
+            output.push_str("<li");
+            if anchored_names.insert(capability.name.as_str()) {
+                output.push_str(" id=\"");
+                output.push_str(&documentation_anchor("capability", &capability.name));
+                output.push('"');
+            }
+            output.push_str("><code>");
             escape_html_into(&capability.name, output);
             output.push_str("</code> · ");
             escape_html_into(&capability.direction, output);
@@ -2228,6 +2263,21 @@ mod tests {
             activation: None,
         });
 
+        document.runtime.capabilities.push(RuntimeCapability {
+            name: "http-server".into(),
+            direction: "provides".into(),
+        });
+        document.runtime.capabilities.push(RuntimeCapability {
+            name: "http-server".into(),
+            direction: "uses".into(),
+        });
+        let html = document.render_html_fragment();
+        for row in document.search_documents() {
+            let id = format!("id=\"{}\"", documentation_anchor(&row.kind, &row.key));
+            assert_eq!(html.matches(&id).count(), 1, "missing or ambiguous {id}");
+        }
+        assert!(html.contains("nginx.virtualHosts.&lt;name&gt;.listenPort"));
+
         let plain = document.render_plain();
         assert!(plain.contains("RUNTIME"));
         assert!(plain.contains("nginx.service"));
@@ -2239,6 +2289,31 @@ mod tests {
         let roff = document.render_roff();
         assert!(roff.contains(".SH RUNTIME"));
         assert!(roff.contains("nginx.service"));
+    }
+
+    #[test]
+    fn documentation_anchors_preserve_punctuation_and_kind_boundaries() {
+        assert_eq!(
+            documentation_anchor("option", "a.<b>"),
+            "doc:6f7074696f6e:612e3c623e"
+        );
+        let identities = [
+            ("option", "a.b"),
+            ("option", "a-b"),
+            ("option", "a_2eb"),
+            ("service", "a.b"),
+            ("a:b", "c"),
+            ("a", "b:c"),
+            ("option", "\"<>&'é"),
+        ];
+        let anchors = identities.map(|(kind, key)| documentation_anchor(kind, key));
+        assert_eq!(anchors.iter().collect::<BTreeSet<_>>().len(), anchors.len());
+        for anchor in anchors {
+            assert!(anchor
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b':'));
+            assert!(validate_token("section id", &anchor).is_err());
+        }
     }
 
     #[test]
