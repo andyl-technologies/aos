@@ -19,7 +19,7 @@ use leptos::prelude::*;
 #[cfg(target_arch = "wasm32")]
 #[derive(Clone, Copy, PartialEq)]
 struct WorkflowTaskScope {
-    handles: StoredValue<Vec<(u32, AbortHandle)>>,
+    handles: StoredValue<Option<Vec<(u32, AbortHandle)>>>,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -35,32 +35,30 @@ static WORKFLOW_TASK_SEQUENCE: AtomicU32 = AtomicU32::new(0);
 #[cfg(target_arch = "wasm32")]
 impl WorkflowTaskScope {
     fn new() -> Self {
-        let handles = StoredValue::new(Vec::<(u32, AbortHandle)>::new());
-        on_cleanup(move || {
-            let _ = handles.try_update_value(|handles| {
-                for (_, handle) in handles.drain(..) {
-                    handle.abort();
-                }
-            });
-        });
-        Self { handles }
+        Self {
+            handles: StoredValue::new(Some(Vec::new())),
+        }
     }
 
     fn spawn(self, task: impl Future<Output = ()> + 'static) {
         let task_id = WORKFLOW_TASK_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let (handle, registration) = AbortHandle::new_pair();
-        if self
-            .handles
-            .try_update_value(|handles| handles.push((task_id, handle)))
-            .is_none()
-        {
+        let registered = self.handles.try_update_value(|handles| {
+            handles.as_mut().is_some_and(|handles| {
+                handles.push((task_id, handle));
+                true
+            })
+        });
+        if registered != Some(true) {
             return;
         }
 
         leptos::task::spawn_local(async move {
             let _ = Abortable::new(task, registration).await;
             let _ = self.handles.try_update_value(|handles| {
-                handles.retain(|(id, _)| *id != task_id);
+                if let Some(handles) = handles {
+                    handles.retain(|(id, _)| *id != task_id);
+                }
             });
         });
     }
@@ -70,6 +68,9 @@ impl WorkflowTaskScope {
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn install_workflow_task_scope() {
     let scope = WorkflowTaskScope::new();
+    // App mounts exactly one keyed ResourceWorkflow. Keeping its Copy scope
+    // handle here lets event callbacks find the owner-created cancellation
+    // registry without relying on the unrelated owner active during an event.
     ACTIVE_WORKFLOW_TASK_SCOPE.with(|active| {
         *active.borrow_mut() = Some(scope);
     });
@@ -80,6 +81,14 @@ pub(crate) fn install_workflow_task_scope() {
                 *active = None;
             }
         });
+        let handles = scope
+            .handles
+            .try_update_value(Option::take)
+            .flatten()
+            .unwrap_or_default();
+        for (_, handle) in handles {
+            handle.abort();
+        }
     });
 }
 
