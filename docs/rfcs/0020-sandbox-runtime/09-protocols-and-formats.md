@@ -609,6 +609,9 @@ the live Host proof, and bind it again. Only exact agreement between the current
 signed manifest, current runtime-generation head, current allocation head, and
 retained live proof yields a `CurrentNamespaceTarget`. Restart cannot recreate
 that value, and it does not by itself prove attachment replay or readiness.
+The proposal includes the non-authorizing opaque payload-scope handle so the
+successor Host plan can grant that exact retained execution; it contains no
+descriptor, lease, or reconstructed kernel authority.
 
 Host 1.3 adds `ObserveMountScope` for the privileged Mount broker. This keeps
 payload root and namespace descriptors out of the node controller. The Host
@@ -623,6 +626,10 @@ plan must already grant this exact query, and the supplied plan/lease fence
 must equal the installed fence. Querying cannot install or renew authority.
 A replacement payload scope, including after reboot, requires new authority
 for its new handle; the query cannot silently select the replacement.
+Host 1.2 and 1.3 are carrier versions; the separately signed broker-authority
+profile remains 1.1. Controller verification and Host admission therefore
+match the signed plan at 1.1 while independently requiring the newer query
+header and negotiated carrier.
 
 Success transfers the payload pidfd, payload-subtree cgroup, root directory,
 mount namespace, and user namespace in that order. Errors transfer none.
@@ -658,8 +665,20 @@ tuple, Host runtime and scope handles, kernel identities, and relative slot.
 The response returns only that nonzero digest and the exclusive Host-query
 BOOTTIME deadline. Preparation writes no durable fence, allocates no mount
 resource, invokes no helper, and performs no namespace mutation. The controller
-must place the returned digest in a separately signed Mount Apply grant, and
-Apply resolves and rechecks the same live scope and catalog facts before effect.
+places the returned digest in the portable semantics for a separately signed
+Mount Apply grant. It verifies that plan under the pinned controller trust
+anchor, current assignment and ownership authority, and retains the live
+namespace target beside the deadline-free Apply template. Apply still resolves
+and rechecks the same live scope and catalog facts before effect.
+
+The controller accepts only a fence-free prospective Mount body: callers cannot
+supply its assignment, namespace generation, request identity, or deadline. It
+derives those fields and the Host runtime/scope handles from
+`CurrentNamespaceTarget`, requires one request ID and deadline across all three
+layers, and authenticates the actual Mount response writer against the pinned
+service cgroup. The resulting preparation remains memory-only. Durable effect
+admission and attachment replay must consume and recheck it; journal bytes or a
+catalog digest alone cannot recreate it after restart.
 
 Caller role derives from peer credentials, socket activation, and the expected
 service-unit identity; a serialized role is descriptive only. Unknown

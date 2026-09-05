@@ -235,6 +235,10 @@ fn protected_reopen_derives_exact_current_request_and_verified_lease() {
     );
     assert_eq!(prepared.lease.generation(), 1);
     assert_eq!(prepared.binding.holder(), Some(selection.holder));
+    assert_eq!(
+        prepared.template.plan().protocol_version(),
+        AUTHORITY_VERSION
+    );
     let original_binding = prepared.binding;
     drop(reconciler);
 

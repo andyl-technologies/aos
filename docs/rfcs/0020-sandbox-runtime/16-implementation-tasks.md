@@ -2578,3 +2578,39 @@ formatting, and diff checks. The hermetic `checks.eval` gate also passes,
 including the release CLI build, full workspace test phase, configuration
 evaluation, and system-structure checks. This allocation-only increment does
 not claim live Host, Mount, or attachment VM qualification.
+
+### Controller-bound Mount catalog preparation
+
+The controller now consumes a live `CurrentNamespaceTarget` and a fence-free
+Mount intent to construct the complete preparation exchange. Assignment facts,
+namespace generation, request identity, deadline, deterministic runtime handle,
+and opaque payload-scope handle all derive from current protected and retained
+state. Caller-supplied context is rejected. One request ID, assignment fence,
+and exclusive deadline bind the outer Mount request, prospective Apply, and
+authorized Host RootMount query.
+
+The Host query reuses the exact current publication plan and ownership lease,
+but only after controller verification finds its distinct RootMount grant.
+Signed authority stays at protocol 1.1 while the Host payload and RootMount
+carriers require 1.2 and 1.3 respectively; the controller and Host now agree on
+that split. The Mount client authenticates the actual response writer against a
+trusted service cgroup and accepts no descriptors or outer authorization.
+
+The volatile result retains its live namespace target, Mount-produced catalog
+commitment, inherited deadline, portable semantic grant identity, and
+deadline-free Apply body. A separately supplied Mount plan is reverified under
+the pinned controller trust anchor, exact current assignment and ownership
+authority, then matched to that catalog-dependent grant. Neither preparation
+nor plan binding writes the journal or dispatches an effect. Durable Mount
+attempt admission, restart re-preparation, attachment replay, root-owned catalog
+publication, and backend readiness remain outstanding.
+
+Validation covers strict all-target, all-feature clippy for both changed crates;
+276 sandbox unit tests, the downstream sandbox API test, 70 protocol unit
+tests, 13 sandbox doctests, and the protocol doctest. The complete test set
+passes with one test thread. An unconstrained parallel run also passed every
+new preparation and protocol test, but exposed the existing timing sensitivity
+in two unrelated Unix-socket close-observation tests; no result from that run is
+used as positive evidence. `nix-build -A checks.eval` passes, including the
+release CLI build, full workspace test phase, configuration evaluation, and
+system-structure checks.

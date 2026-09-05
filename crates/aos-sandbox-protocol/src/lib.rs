@@ -34,9 +34,9 @@ pub use session::{
     ValidatedBrokerResponseEnvelope, ValidatedDescriptorDisposition, ValidatedDescriptorEntry,
     ValidatedRuntimeEffectStatus, decode_query_runtime_effect_response, decode_request_envelope,
     decode_response_envelope, decode_server_hello, encode_authorized_request_envelope,
-    encode_error_response_envelope, encode_success_response_envelope, failed_server_hello,
-    negotiate_client_hello, validate_request_descriptor_roles,
-    validate_runtime_effect_receipt_for_apply,
+    encode_error_response_envelope, encode_success_response_envelope,
+    encode_unauthed_request_envelope, failed_server_hello, negotiate_client_hello,
+    validate_request_descriptor_roles, validate_runtime_effect_receipt_for_apply,
 };
 
 use aos_proto::aos::sandbox::local::v1::{

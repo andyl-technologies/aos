@@ -428,6 +428,127 @@ where
         target.recheck(self.reconciler.journal_mut(), clock)
     }
 
+    /// Resolves one fence-free Mount intent against a live payload scope.
+    ///
+    /// The controller derives the current assignment and namespace generation,
+    /// verifies that current Host authority grants the exact RootMount query,
+    /// and sends no descriptors to Mount. Mount acquires and checks the payload
+    /// root and namespaces directly from Host. The returned commitment remains
+    /// volatile and is not effect authority; callers must obtain a separately
+    /// signed Mount Apply plan before dispatch.
+    ///
+    /// # Errors
+    ///
+    /// Rejects caller-supplied fence context, stale runtime or assignment
+    /// authority, a missing exact Host grant, substituted service responses,
+    /// expired deadlines, invalid Mount semantics, and transport failures.
+    #[cfg(target_os = "linux")]
+    pub fn prepare_current_mount_catalog<T>(
+        &mut self,
+        target: crate::runtime_scope::CurrentNamespaceTarget,
+        intent: &crate::mount_preparation::MountCatalogIntentV1,
+        client: crate::mount_preparation::MountCatalogClient,
+        clock: &mut T,
+    ) -> Result<
+        crate::mount_preparation::PreparedCurrentMountCatalogV1,
+        crate::mount_preparation::MountCatalogPreparationError,
+    >
+    where
+        T: FnMut() -> Result<
+            RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        crate::mount_preparation::prepare_current(
+            self.reconciler.journal_mut(),
+            target,
+            intent,
+            client,
+            clock,
+        )
+    }
+
+    /// Rechecks a prepared Mount catalog against live authority and its deadline.
+    ///
+    /// Successful validation neither extends the preparation nor proves that a
+    /// signed Apply was admitted or that an attachment is installed.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed current authority, runtime or namespace heads, expired
+    /// live evidence, and unavailable retained kernel executions.
+    #[cfg(target_os = "linux")]
+    pub fn recheck_current_mount_catalog<T>(
+        &mut self,
+        prepared: &crate::mount_preparation::PreparedCurrentMountCatalogV1,
+        clock: &mut T,
+    ) -> Result<(), crate::mount_preparation::MountCatalogPreparationError>
+    where
+        T: FnMut() -> Result<
+            RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        prepared.recheck(self.reconciler.journal_mut(), clock)
+    }
+
+    /// Verifies and binds the separately signed Mount plan for a prepared catalog.
+    ///
+    /// The plan must use the pinned controller trust anchor, current assignment
+    /// and ownership authority, Mount audience, authority protocol 1.1, and the
+    /// exact catalog-dependent semantics returned by preparation. Success still
+    /// performs no broker effect and writes no durable operation.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale live authority, signature or assignment substitution,
+    /// wrong audience/protocol/ownership authority, an absent exact grant, and
+    /// an expired preparation.
+    #[cfg(target_os = "linux")]
+    pub fn bind_current_mount_plan<T>(
+        &mut self,
+        catalog: crate::mount_preparation::PreparedCurrentMountCatalogV1,
+        signed_plan: crate::SignedBrokerPlan,
+        clock: &mut T,
+    ) -> Result<
+        crate::mount_preparation::PreparedCurrentMountDispatchV1,
+        crate::mount_preparation::MountCatalogPreparationError,
+    >
+    where
+        T: FnMut() -> Result<
+            RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        crate::mount_preparation::bind_signed_mount_plan(
+            self.reconciler.journal_mut(),
+            catalog,
+            signed_plan,
+            clock,
+        )
+    }
+
+    /// Rechecks a signed Mount preparation without dispatching it.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed current authority, runtime or namespace heads, expired
+    /// live evidence, and unavailable retained kernel executions.
+    #[cfg(target_os = "linux")]
+    pub fn recheck_current_mount_dispatch<T>(
+        &mut self,
+        prepared: &crate::mount_preparation::PreparedCurrentMountDispatchV1,
+        clock: &mut T,
+    ) -> Result<(), crate::mount_preparation::MountCatalogPreparationError>
+    where
+        T: FnMut() -> Result<
+            RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        prepared.recheck(self.reconciler.journal_mut(), clock)
+    }
+
     /// Issues a local holder channel from an acquired current-runtime scope.
     ///
     /// The complete Host and payload proof moves into the live session. Scope

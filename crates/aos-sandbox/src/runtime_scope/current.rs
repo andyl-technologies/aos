@@ -21,6 +21,7 @@ use rand::{TryRngCore as _, rngs::OsRng};
 
 use super::*;
 use crate::Journal;
+use crate::SignedBrokerPlan;
 use crate::ownership_authority::ProtectedOwnershipClockError;
 use crate::publication::{
     AuthorityPublicationStore, CurrentAuthorityPublicationV1, RecoveredBrokerDispatchTemplateV1,
@@ -72,7 +73,7 @@ pub enum CurrentRuntimeScopeError {
     /// The selected holder is absent, revoked, replaced, or belongs to another node.
     #[error("current runtime holder or publication does not match")]
     CurrentMismatch,
-    /// No current Host 1.2 plan grants this exact payload-scope query.
+    /// No current Host authority plan grants this exact payload-scope query.
     #[error("current publication does not grant payload-scope observation")]
     MissingGrant,
     /// Clock provenance, boot, ordering, expiry, or deadline arithmetic failed.
@@ -190,6 +191,93 @@ impl CurrentRuntimeScope {
         transport::check_deadline(self.validity.deadline())?;
         Ok(())
     }
+
+    pub(crate) fn authorize_mount_scope<T>(
+        &self,
+        journal: &mut Journal,
+        request: &aos_sandbox_protocol::mount_scope::ValidatedMountScopeRequest,
+        request_body: &[u8],
+        clock: &mut T,
+    ) -> Result<(), CurrentRuntimeScopeError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.recheck(journal, clock)?;
+
+        let fresh = read_clock(&self.policy, clock)?;
+        let publication =
+            select_exact_current(journal, self.selection, &self.policy, &self.binding)?;
+        let lease = verify_lease(journal, &self.binding, &publication, &self.policy, fresh)?;
+        let artifacts = self.observed.authorization();
+        let template = publication
+            .templates()
+            .iter()
+            .find(|template| {
+                template.canonical_plan() == artifacts.broker_plan()
+                    && template.canonical_plan_signature() == artifacts.broker_plan_signature()
+            })
+            .ok_or(CurrentRuntimeScopeError::CurrentMismatch)?;
+        let verified = verify_plan(template, &self.binding, &self.policy, &lease, fresh)?;
+        let semantics =
+            aos_sandbox_protocol::semantics::mount_scope::canonical_mount_scope_semantics_v1(
+                request,
+            )
+            .map_err(|_| CurrentRuntimeScopeError::MissingGrant)?;
+        verified
+            .match_request(BrokerPlanRequest {
+                verb: semantics.verb(),
+                target: semantics.target(),
+                argument_commitment: semantics.commitment(),
+                request_bytes: u32::try_from(request_body.len())
+                    .map_err(|_| CurrentRuntimeScopeError::MissingGrant)?,
+                descriptor_count: 0,
+            })
+            .map_err(|_| CurrentRuntimeScopeError::MissingGrant)?;
+
+        self.recheck(journal, clock)
+    }
+
+    pub(crate) fn verify_mount_plan<T>(
+        &self,
+        journal: &mut Journal,
+        signed: &SignedBrokerPlan,
+        clock: &mut T,
+    ) -> Result<(), CurrentRuntimeScopeError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.recheck(journal, clock)?;
+
+        let fresh = read_clock(&self.policy, clock)?;
+        let publication =
+            select_exact_current(journal, self.selection, &self.policy, &self.binding)?;
+        let lease = verify_lease(journal, &self.binding, &publication, &self.policy, fresh)?;
+        let signature = decode_signature(signed.canonical_signature(), DecodeLimits::default())
+            .map_err(aos_sandbox_core::BrokerPlanVerificationError::from)?;
+        let verified = verify_broker_plan(
+            signed.canonical_plan(),
+            &signature,
+            &self.policy.broker_anchor,
+            BrokerPlanExpectation {
+                audience: BrokerAudience::Mount,
+                protocol: aos_sandbox_core::ProtocolId::MountBroker,
+                protocol_version: AUTHORITY_VERSION,
+                assignment: self
+                    .binding
+                    .manifest()
+                    .broker_assignment()
+                    .map_err(|_| CurrentRuntimeScopeError::CurrentMismatch)?,
+                node: self.policy.node,
+                now_seconds: fresh.wall_seconds(),
+            },
+            DecodeLimits::default(),
+        )?;
+        if verified.plan().ownership_authority() != lease.signer() {
+            return Err(CurrentRuntimeScopeError::CurrentMismatch);
+        }
+
+        self.recheck(journal, clock)
+    }
 }
 
 pub(crate) fn acquire<T>(
@@ -265,7 +353,7 @@ fn prepare(
         .iter()
         .find(|template| {
             template.audience() == BrokerAudience::Host
-                && template.plan().protocol_version() == VERSION
+                && template.plan().protocol_version() == AUTHORITY_VERSION
                 && template.plan().grants().iter().any(|grant| {
                     grant.verb() == semantics.verb()
                         && grant.target() == semantics.target()
@@ -379,7 +467,7 @@ fn verify_plan(
         BrokerPlanExpectation {
             audience: BrokerAudience::Host,
             protocol: ProtocolId::HostBroker,
-            protocol_version: VERSION,
+            protocol_version: AUTHORITY_VERSION,
             assignment: binding
                 .manifest()
                 .broker_assignment()

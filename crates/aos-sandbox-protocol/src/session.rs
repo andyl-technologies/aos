@@ -677,6 +677,51 @@ pub fn encode_authorized_request_envelope(
     Ok(encoded)
 }
 
+/// Encodes one descriptor-free request that carries no effect authority.
+///
+/// Inventory and preparation methods are deliberately unprivileged protocol
+/// operations. Their service still authenticates the fixed socket peer, and
+/// any nested authority remains part of the method body and is validated by
+/// that method's decoder.
+///
+/// # Errors
+///
+/// Returns [`ProtocolValidationError`] for an empty or oversized body, an
+/// invalid method/protocol pairing, an authority-requiring method, or a packet
+/// that exceeds the method's negotiated allocation ceiling.
+pub fn encode_unauthed_request_envelope(
+    protocol: ProtocolId,
+    method: BrokerMethod,
+    body: &[u8],
+) -> Result<Vec<u8>, ProtocolValidationError> {
+    let method = validate_method(Some(method), protocol)?;
+    validate_outbound_carriers(method, &[])?;
+    if method_requires_authorization(method) {
+        return Err(ProtocolValidationError::InvalidField(
+            "envelope.authorization profile",
+        ));
+    }
+    if body.is_empty() {
+        return Err(ProtocolValidationError::InvalidField("envelope.body"));
+    }
+
+    let envelope = BrokerRequestEnvelope {
+        method: method.into(),
+        body: body.to_vec(),
+        ..Default::default()
+    };
+    let encoded = envelope.encode_to_vec();
+    let maximum = if method == BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG {
+        MAXIMUM_MOUNT_CATALOG_PREPARATION_PACKET_BYTES
+    } else {
+        MAXIMUM_REQUEST_BYTES
+    };
+    if encoded.len() > maximum {
+        return Err(ProtocolValidationError::RequestTooLarge);
+    }
+    Ok(encoded)
+}
+
 /// Decodes a hostile Host effect-query body and validates its exact receipt.
 ///
 /// # Errors
@@ -2017,6 +2062,60 @@ mod tests {
         assert_eq!(
             decoded_artifacts.ownership_lease_signature(),
             artifacts.ownership_lease_signature
+        );
+    }
+
+    #[test]
+    fn outbound_unauthed_envelope_is_descriptor_and_authority_free() {
+        let encoded = encode_unauthed_request_envelope(
+            ProtocolId::MountBroker,
+            BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG,
+            b"complete nested preparation",
+        )
+        .unwrap_or_else(|error| panic!("unauthed envelope failed: {error}"));
+        let decoded = decode_request_envelope(&encoded, ProtocolId::MountBroker, 0)
+            .unwrap_or_else(|error| panic!("unauthed envelope did not round trip: {error}"));
+        assert_eq!(
+            decoded.method(),
+            BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG
+        );
+        assert_eq!(decoded.body(), b"complete nested preparation");
+        assert!(decoded.descriptors().is_empty());
+        assert!(decoded.authorization().is_none());
+
+        assert_eq!(
+            encode_unauthed_request_envelope(
+                ProtocolId::MountBroker,
+                BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
+                b"body",
+            ),
+            Err(ProtocolValidationError::InvalidField(
+                "envelope.authorization profile"
+            ))
+        );
+        assert_eq!(
+            encode_unauthed_request_envelope(
+                ProtocolId::HostBroker,
+                BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG,
+                b"body",
+            ),
+            Err(ProtocolValidationError::MethodMismatch)
+        );
+        assert_eq!(
+            encode_unauthed_request_envelope(
+                ProtocolId::MountBroker,
+                BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG,
+                &[],
+            ),
+            Err(ProtocolValidationError::InvalidField("envelope.body"))
+        );
+        assert_eq!(
+            encode_unauthed_request_envelope(
+                ProtocolId::MountBroker,
+                BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG,
+                &vec![0; MAXIMUM_MOUNT_CATALOG_PREPARATION_PACKET_BYTES + 1],
+            ),
+            Err(ProtocolValidationError::RequestTooLarge)
         );
     }
 

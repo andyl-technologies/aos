@@ -20,6 +20,8 @@ mod local_channel;
 pub mod local_provisioning;
 #[cfg(target_os = "linux")]
 pub mod local_sessions;
+#[cfg(target_os = "linux")]
+pub mod mount_preparation;
 pub mod ownership_authority;
 pub mod ownership_resume;
 pub mod ownership_service;

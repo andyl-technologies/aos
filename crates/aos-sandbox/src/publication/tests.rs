@@ -260,7 +260,7 @@ fn signed_host_control_plan_with_scope(
     let plan = BrokerAuthorizationPlan::new(
         BrokerAudience::Host,
         ProtocolId::HostBroker,
-        ProtocolVersion::new(1, if observe_scope { 2 } else { 1 }),
+        ProtocolVersion::new(1, 1),
         assignment,
         manifest.manifest().node(),
         lease_signer,

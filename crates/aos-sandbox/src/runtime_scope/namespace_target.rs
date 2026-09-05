@@ -64,6 +64,7 @@ pub struct NamespaceTargetAdvanceV1 {
     observed_audit_digest: [u8; 32],
     target_generation: u64,
     allocation_digest: [u8; 32],
+    payload_scope_handle: [u8; 32],
 }
 
 impl NamespaceTargetAdvanceV1 {
@@ -101,6 +102,16 @@ impl NamespaceTargetAdvanceV1 {
     #[must_use]
     pub const fn allocation_digest(self) -> [u8; 32] {
         self.allocation_digest
+    }
+
+    /// Returns the live Host scope that the successor plan must grant exactly.
+    ///
+    /// This opaque handle is not authority and cannot reconstruct descriptors.
+    /// Host must retain the same physical execution across the authorized
+    /// assignment successor for a RootMount query to use it.
+    #[must_use]
+    pub const fn payload_scope_handle(self) -> [u8; 32] {
+        self.payload_scope_handle
     }
 }
 
@@ -176,7 +187,7 @@ impl CurrentNamespaceTarget {
         generation.recheck(journal, clock)?;
         if signed_target < allocation.target_generation {
             return Ok(NamespaceTargetOutcome::AdvanceRequired(
-                allocation.advance(),
+                allocation.advance(*generation.scope().observed().payload_scope_handle()),
             ));
         }
 
@@ -244,7 +255,7 @@ impl Record {
         )?)
     }
 
-    const fn advance(&self) -> NamespaceTargetAdvanceV1 {
+    const fn advance(&self, payload_scope_handle: [u8; 32]) -> NamespaceTargetAdvanceV1 {
         NamespaceTargetAdvanceV1 {
             sandbox: SandboxId::from_bytes(self.identity.0),
             incarnation: IncarnationId::from_bytes(self.identity.1),
@@ -252,6 +263,7 @@ impl Record {
             observed_audit_digest: self.observed_audit_digest,
             target_generation: self.target_generation,
             allocation_digest: self.digest,
+            payload_scope_handle,
         }
     }
 }

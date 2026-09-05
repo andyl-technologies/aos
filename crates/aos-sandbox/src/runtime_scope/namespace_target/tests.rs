@@ -208,6 +208,9 @@ fn current_observation_reuses_target_and_new_observations_advance_by_delta() {
     assert!(changed);
     assert_eq!(next.target_generation, 10);
     assert_eq!(next.predecessor, first.digest);
+    let proposal = next.advance([6; 32]);
+    assert_eq!(proposal.target_generation(), 10);
+    assert_eq!(proposal.payload_scope_handle(), [6; 32]);
     history.append(next.clone()).unwrap();
     assert_eq!(
         history.select(identity, 5, [5; 32], 8).unwrap(),

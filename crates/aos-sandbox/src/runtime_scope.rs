@@ -69,7 +69,8 @@ pub use namespace_target::{
     CurrentNamespaceTarget, NamespaceTargetAdvanceV1, NamespaceTargetError, NamespaceTargetOutcome,
 };
 
-const VERSION: ProtocolVersion = ProtocolVersion::new(1, 2);
+const CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(1, 2);
+const AUTHORITY_VERSION: ProtocolVersion = ProtocolVersion::new(1, 1);
 const METHOD: BrokerMethod = BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE;
 const RESPONSE_BYTES: u32 = 16 * 1024;
 
@@ -216,7 +217,7 @@ impl RuntimeScopeClient {
             &hello_bytes,
             ProtocolId::HostBroker,
             Audience::AUDIENCE_NODE_CONTROLLER,
-            VERSION,
+            CARRIER_VERSION,
             &features,
             &[METHOD],
             RESPONSE_BYTES,
