@@ -562,14 +562,17 @@ pub trait HostWorker {
     /// Implementations must invoke `before_effect` after asynchronous
     /// preparation and immediately before each mutating backend call. An
     /// idempotent no-op reconciliation does not consume effect authority. The
-    /// sole exception is mandatory kill/stop compensation after an attempted
-    /// launch fails identity proof: that rollback completes the already-admitted
-    /// effect and cannot be disabled by expiry of its ordinary forward guard.
+    /// sole exception is mandatory kill/stop compensation after a launch or
+    /// containment attempt has passed that guard: cleanup completes the
+    /// already-admitted effect and cannot be disabled by later guard expiry.
+    /// Rejecting a pre-existing unit is not an attempted launch, so containment
+    /// of that unit first requires its own fresh effect-guard check.
     ///
     /// # Errors
     ///
-    /// Returns an error when the system manager rejects the fixed operation or
-    /// the resulting unit, cgroup, invocation, or pidfd identity is invalid.
+    /// Returns an error when the effect guard denies a mutation, the system
+    /// manager rejects the fixed operation, or the resulting unit, cgroup,
+    /// invocation, or pidfd identity is invalid.
     async fn execute(
         &self,
         fence: &ValidatedAssignmentFence,
@@ -1080,9 +1083,16 @@ async fn reconcile_launch<B: LaunchBackend + Sync>(
 ) -> Result<WorkerObservation> {
     let initial = match backend.observe().await {
         Ok(observation) => observation,
-        Err(error) => return rollback_launch(backend, error).await,
+        Err(error) => {
+            // No forward effect has occurred in this call. An ambiguous
+            // observation alone cannot turn an expired request into cleanup
+            // authority over a possibly pre-existing unit.
+            before_effect()?;
+            return rollback_launch(backend, error).await;
+        }
     };
-    let mut observation = if initial.state == ObservedRuntimeState::Absent {
+    let attempted_launch = initial.state == ObservedRuntimeState::Absent;
+    let mut observation = if attempted_launch {
         before_effect()?;
         if let Err(error) = backend.start(spec).await {
             return rollback_launch(backend, error).await;
@@ -1101,7 +1111,12 @@ async fn reconcile_launch<B: LaunchBackend + Sync>(
             observation.payload = Some(payload);
             Ok(observation)
         }
-        Err(error) => rollback_launch(backend, error).await,
+        Err(error) => {
+            if !attempted_launch {
+                before_effect()?;
+            }
+            rollback_launch(backend, error).await
+        }
     }
 }
 
@@ -1130,9 +1145,10 @@ async fn rollback_launch<B: LaunchBackend + Sync>(
     backend: &B,
     original: HostError,
 ) -> Result<WorkerObservation> {
-    // This is mandatory containment for an effect already attempted under a
-    // valid launch grant, not a caller-directed inverse operation. Lease expiry
-    // cannot turn failed identity proof into permission to keep running.
+    // The caller has already guarded either a launch attempt or this
+    // containment attempt. This completes that admitted effect rather than
+    // opening a caller-directed inverse operation; expiry cannot interrupt
+    // cleanup once containment has begun.
     let kill_failed = backend.kill().await.is_err();
     let stop_failed = backend.stop().await.is_err();
     if kill_failed || stop_failed {
@@ -1964,6 +1980,60 @@ mod tests {
         assert_eq!(backend.starts.load(Ordering::SeqCst), 1);
         assert_eq!(backend.kills.load(Ordering::SeqCst), 1);
         assert_eq!(backend.stops.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn preexisting_failures_require_live_containment_authority() {
+        for observation_fails in [false, true] {
+            for guard_allows in [false, true] {
+                let initial = if observation_fails {
+                    Err(HostError::Worker("initial observation failed".to_owned()))
+                } else {
+                    Ok(observation(ObservedRuntimeState::Ready, true))
+                };
+                let backend = backend(vec![initial]);
+                let mut guard_calls = 0;
+                let mut guard = || {
+                    guard_calls += 1;
+                    if guard_allows {
+                        Ok(())
+                    } else {
+                        Err(HostError::Worker("expired containment guard".to_owned()))
+                    }
+                };
+                let mut verify = |_: &WorkerObservation, _: &LaunchPins| {
+                    Err(HostError::Worker("pre-existing pin mismatch".to_owned()))
+                };
+
+                let result = reconcile_launch(
+                    &backend,
+                    &spec(),
+                    &current_pins("/proc/self/exe"),
+                    &mut guard,
+                    &mut verify,
+                )
+                .await;
+                assert!(result.is_err());
+                assert_eq!(guard_calls, 1);
+                assert_eq!(backend.starts.load(Ordering::SeqCst), 0);
+                assert_eq!(
+                    backend.kills.load(Ordering::SeqCst),
+                    usize::from(guard_allows)
+                );
+                assert_eq!(
+                    backend.stops.load(Ordering::SeqCst),
+                    usize::from(guard_allows)
+                );
+                if !guard_allows {
+                    assert!(
+                        result
+                            .unwrap_err()
+                            .to_string()
+                            .contains("expired containment guard")
+                    );
+                }
+            }
+        }
     }
 
     #[tokio::test]

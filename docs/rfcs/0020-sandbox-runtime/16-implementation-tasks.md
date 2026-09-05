@@ -2359,3 +2359,20 @@ establishes identity. Focused Rust tests, strict Clippy, formatting, and the
 `checks.fleet.sandbox-host-worker` VM gate pass. This closes the repeated
 owned-root boot proof noted above, not controller namespace-generation
 reconciliation, attachment replay, enforcing MAC, or lease/publisher delivery.
+
+### Reconciliation containment authority
+
+Launch reconciliation now rechecks the live effect guard before containing a
+pre-existing unit whose initial observation or identity proof fails. Those
+read-only failures are not evidence that this call already attempted a launch;
+an expired request must not gain kill/stop authority from them. Successful
+no-op reconciliation still consumes no forward-effect authority. Once a launch
+or guarded containment attempt begins, mandatory cleanup remains independent
+of later expiry.
+
+Regression tests cover initial observation failure and pre-existing identity
+mismatch with both accepted and expired guards, including exact zero-mutation
+assertions for denied containment. The post-start expiry test still requires
+kill and stop. All-feature Host tests and strict Clippy pass. This narrows the
+older ledger's unconditional pre-existing containment behavior; it does not
+adopt an unverified unit or weaken post-attempt fail-stop cleanup.
