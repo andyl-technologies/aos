@@ -510,6 +510,33 @@ button.danger { color: var(--bad); border-color: var(--bad); }
  * the legend's frontier-first release order; the glyph alone is
  * sufficient — color is reinforcement, never the only channel. */
 pre.partition-grid { line-height: 1.15; letter-spacing: 0.18em; }
+/* The channel bucket map: 256 colour cells, one per bucket, sharing the rollout
+ * bar's palette so the bar, its labels, and the map read as one legend. */
+div.partition-grid { display: grid; grid-template-columns: repeat(16, 1fr); gap: 2px; width: min(100%, 22rem); aspect-ratio: 1; margin: .6rem 0; }
+div.partition-grid > span { display: block; background: var(--accent); border-radius: 2px; }
+div.partition-grid > span.r1 { background: var(--ok); }
+div.partition-grid > span.r2 { background: var(--warn); }
+div.partition-grid > span.r3 { background: var(--dim); }
+div.partition-grid > span.r4 { background: var(--ink); }
+div.partition-grid > span.r5 { background: var(--link); }
+div.partition-grid > span.unassigned { background: var(--rule); }
+div.partition-grid > span.hit { outline: 3px solid var(--ink); outline-offset: -1px; box-shadow: 0 0 0 2px var(--paper) inset; z-index: 1; }
+.rollout-swatch { display: inline-block; width: .8em; height: .8em; margin-right: .4em; border-radius: 2px; background: var(--accent); vertical-align: -.05em; }
+.rollout-swatch.r1 { background: var(--ok); }
+.rollout-swatch.r2 { background: var(--warn); }
+.rollout-swatch.r3 { background: var(--dim); }
+.rollout-swatch.r4 { background: var(--ink); }
+.rollout-swatch.r5 { background: var(--link); }
+.rollout-swatch.unassigned { background: var(--rule); }
+.channel-facts { display: flex; flex-wrap: wrap; gap: .7rem; margin: .4rem 0 1rem; }
+.channel-fact { display: flex; flex-direction: column; gap: .15rem; min-width: 11rem; padding: .7rem .9rem; border: 1px solid var(--rule); }
+.channel-fact > span { font-size: .75rem; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); }
+.channel-fact > strong { font-size: 1.1rem; }
+.channel-fact > small, .channel-fact > a.dim { font-size: .8rem; }
+.bucket-lookup h2, .bucket-map h2 { font-size: 1rem; margin: 1.4rem 0 .4rem; }
+.bucket-form { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+.bucket-help { font-size: .85rem; margin: .3rem 0; }
+.bucket-result { padding: .6rem .8rem; border-left: 3px solid var(--ok); background: color-mix(in srgb, var(--ok) 8%, var(--paper)); }
 .r0 { color: var(--ok); }
 .r1 { color: var(--link); }
 .r2 { color: var(--warn); }

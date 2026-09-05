@@ -2047,8 +2047,8 @@ pub fn channel_grid_pre(channel: &ChannelSummary) -> String {
     out
 }
 
-/// The channel page with the 16×16 partition grid, the anti-rollback
-/// floor, and the no-JS `?bucket=` calculator.
+/// The channel page: target, floor, and coverage facts, the rollout bar, a
+/// colour-coded 16×16 bucket map, and the no-JS `?bucket=` lookup.
 pub fn channel_page(
     registry: &RegistryRecord,
     status: Option<&IndexStatus>,
@@ -2058,98 +2058,79 @@ pub fn channel_page(
     started: Instant,
     session: &SessionIndicator,
 ) -> String {
+    use crate::web::release_pages::{rollout_distribution, rollout_shares, ROLLOUT_PALETTE};
     let slug = &registry.slug;
+    let release_link = |release: &str| {
+        format!(
+            "<a href=\"/{}/-/releases/{}\">{}</a>",
+            escape(slug),
+            urlencode(release),
+            escape(release)
+        )
+    };
 
-    // Assign glyphs frontier-first so the newest release is always '■'.
-    let mut release_order: Vec<String> = Vec::new();
-    if let Some(frontier) = &channel.frontier {
-        release_order.push(frontier.clone());
-    }
-    for release in channel.partitions.iter().flatten() {
-        if !release_order.contains(release) {
-            release_order.push(release.clone());
-        }
-    }
-    let class_for: BTreeMap<&str, usize> = release_order
-        .iter()
+    // Colours follow the rollout bar's order so the bar, its labels, and the
+    // bucket map read as one legend.
+    let class_for: BTreeMap<&str, usize> = rollout_shares(channel)
+        .into_iter()
         .enumerate()
-        .map(|(i, release)| (release.as_str(), i.min(GRID_GLYPHS.len() - 1)))
+        .filter_map(|(index, (release, _))| release.map(|release| (release, index % ROLLOUT_PALETTE)))
         .collect();
-
+    let assigned = channel.partitions.iter().flatten().count();
     let hit = bucket_query.and_then(parse_bucket);
-    let mut grid = String::new();
-    for row in 0..16 {
-        for col in 0..16 {
-            let bucket = row * 16 + col;
-            let cell = match channel.partitions[bucket].as_deref() {
-                Some(release) => {
-                    let i = class_for
-                        .get(release)
-                        .copied()
-                        .unwrap_or(GRID_GLYPHS.len() - 1);
-                    format!("<span class=\"r{i}\">{}</span>", GRID_GLYPHS[i])
-                }
-                None => "<span class=\"dim\">·</span>".to_string(),
-            };
-            if hit == Some(bucket as u8) {
-                let _ = write!(grid, "<strong class=\"hit\">{cell}</strong>");
-            } else {
-                grid.push_str(&cell);
-            }
-        }
-        grid.push('\n');
-    }
 
     let mut body = registry_nav(slug, "channels");
     let _ = writeln!(body, "<h1>Channel {}</h1>", escape(&channel.name));
-    body.push_str(&crate::web::release_pages::rollout_distribution(
-        slug, channel,
-    ));
-    let frontier = channel.frontier.as_deref().map_or_else(
-        || "—".to_string(),
-        |release| {
-            format!(
-                "<strong><a href=\"/{}/-/releases/{}\">{}</a></strong> · <a href=\"/{}/-/images?release={}\">images</a>",
-                escape(slug),
-                urlencode(release),
-                escape(release),
-                escape(slug),
-                urlencode(release),
-            )
-        },
-    );
-    let _ = writeln!(
-        body,
-        "<p>Target release {frontier} · Minimum allowed release {} · {} of 256 buckets assigned</p>",
-        match floor {
-            Some(floor) => format!(
-                "<strong><a href=\"/{}/-/releases/{}\">{}</a></strong>",
-                escape(slug),
-                urlencode(floor),
-                escape(floor),
-            ),
-            None => "<span class=\"dim\">—</span>".to_string(),
-        },
-        channel.partitions.iter().flatten().count(),
-    );
 
-    if channel.partitions.iter().all(Option::is_none) {
+    body.push_str("<div class=\"channel-facts\">");
+    let _ = write!(
+        body,
+        "<div class=\"channel-fact\"><span>Target release</span><strong>{}</strong>{}</div>",
+        channel
+            .frontier
+            .as_deref()
+            .map(&release_link)
+            .unwrap_or_else(|| "<span class=\"dim\">None</span>".into()),
+        channel
+            .frontier
+            .as_deref()
+            .map(|release| format!(
+                "<a class=\"dim\" href=\"/{}/-/images?release={}\">images</a>",
+                escape(slug),
+                urlencode(release)
+            ))
+            .unwrap_or_default()
+    );
+    let _ = write!(
+        body,
+        "<div class=\"channel-fact\"><span>Minimum allowed release</span><strong>{}</strong></div>",
+        floor
+            .map(&release_link)
+            .unwrap_or_else(|| "<span class=\"dim\">None</span>".into())
+    );
+    let _ = write!(
+        body,
+        "<div class=\"channel-fact\"><span>Buckets assigned</span><strong>{}%</strong><small class=\"dim\">{assigned} of 256</small></div>",
+        crate::web::release_pages::percentage(assigned)
+    );
+    body.push_str("</div>");
+    body.push_str(&rollout_distribution(slug, channel));
+
+    if assigned == 0 {
         let _ = write!(
             body,
             "<p>No release is assigned to this channel yet. <a href=\"/{}/-/releases\">Browse signed releases</a> or <a href=\"/{}/-/images\">available images</a>.</p>",
             escape(slug), escape(slug),
         );
     }
-    body.push_str(
-        "<p>Your host's assigned release depends on its rollout bucket. \
-         Find <code>[registry.state] bucket</code> in your configured <code>registries.d</code> entry, \
-         then enter that number below (decimal 0–255 or hexadecimal 0x00–0xFF).</p>",
-    );
 
+    // The lookup is the one interactive element: a host's bucket comes from its
+    // registries.d entry, and the answer is the release that bucket maps to.
+    body.push_str("<section class=\"bucket-lookup\"><h2>Which release does my host get?</h2>");
     let _ = writeln!(
         body,
-        "<form method=\"get\"><label>Find my assigned release: bucket \
-         <input name=\"bucket\" value=\"{}\" size=\"6\"></label> <button>Look up release</button></form>",
+        "<form method=\"get\" class=\"bucket-form\"><label>Bucket <input name=\"bucket\" value=\"{}\" size=\"6\" placeholder=\"0x1A\"></label> <button>Look up release</button></form>\
+         <p class=\"dim bucket-help\">The bucket is <code>[registry.state] bucket</code> in the host's <code>registries.d</code> entry, 0–255 or 0x00–0xFF.</p>",
         escape(bucket_query.unwrap_or("")),
     );
     if let Some(raw) = bucket_query {
@@ -2157,10 +2138,8 @@ pub fn channel_page(
             Some(bucket) => {
                 let target = match channel.partitions[bucket as usize].as_deref() {
                     Some(release) => format!(
-                        "release <strong><a href=\"/{}/-/releases/{}\">{}</a></strong> · <a href=\"/{}/-/images?release={}\">images</a>",
-                        escape(slug),
-                        urlencode(release),
-                        escape(release),
+                        "release <strong>{}</strong> · <a href=\"/{}/-/images?release={}\">images</a>",
+                        release_link(release),
                         escape(slug),
                         urlencode(release),
                     ),
@@ -2168,7 +2147,7 @@ pub fn channel_page(
                 };
                 let _ = writeln!(
                     body,
-                    "<p>bucket <strong>0x{bucket:02X}</strong> ({bucket}) → {target}</p>",
+                    "<p class=\"bucket-result\">bucket <strong>0x{bucket:02X}</strong> ({bucket}) → {target}</p>",
                 );
             }
             None => {
@@ -2180,41 +2159,29 @@ pub fn channel_page(
             }
         }
     }
+    body.push_str("</section>");
 
-    let _ = writeln!(
-        body,
-        "<details><summary>Bucket map</summary><pre class=\"partition-grid\">{grid}</pre>"
-    );
-
-    let legend_rows: Vec<Vec<String>> = release_order
-        .iter()
-        .map(|release| {
-            let count = channel
-                .partitions
-                .iter()
-                .flatten()
-                .filter(|r| *r == release)
-                .count();
-            let i = class_for
-                .get(release.as_str())
-                .copied()
-                .unwrap_or(GRID_GLYPHS.len() - 1);
-            vec![
-                format!("<span class=\"r{i}\">{}</span>", GRID_GLYPHS[i]),
-                format!(
-                    "<a href=\"/{}/-/releases/{}\">{}</a> · <a href=\"/{}/-/images?release={}\">images</a>",
-                    escape(slug),
-                    urlencode(release),
-                    escape(release),
-                    escape(slug),
-                    urlencode(release),
-                ),
-                format!("{count} partitions ({}%)", count * 100 / 256),
-            ]
-        })
-        .collect();
-    body.push_str(&table(&["glyph", "release", "coverage"], &legend_rows));
-    body.push_str("</details>");
+    // One cell per bucket in row-major order; the colour is the release and the
+    // title carries the exact mapping for hover and assistive readers.
+    body.push_str("<section class=\"bucket-map\"><h2>Bucket map</h2><div class=\"partition-grid\" role=\"img\" aria-label=\"256 rollout buckets coloured by release\">");
+    for bucket in 0..256usize {
+        let (class, title) = match channel.partitions[bucket].as_deref() {
+            Some(release) => (
+                format!("r{}", class_for.get(release).copied().unwrap_or(ROLLOUT_PALETTE - 1)),
+                format!("bucket 0x{bucket:02X} ({bucket}) → {}", escape(release)),
+            ),
+            None => (
+                "unassigned".to_string(),
+                format!("bucket 0x{bucket:02X} ({bucket}) → unassigned"),
+            ),
+        };
+        let _ = write!(
+            body,
+            "<span class=\"{class}{}\" title=\"{title}\"></span>",
+            if hit == Some(bucket as u8) { " hit" } else { "" }
+        );
+    }
+    body.push_str("</div><p class=\"dim\">Rows run left to right from bucket 0x00 to 0xFF.</p></section>");
 
     page_with_session(
         &format!("{} channel", channel.name),
@@ -3595,10 +3562,9 @@ mod tests {
             &anon(),
         );
         assert!(html.contains("No release is assigned to this channel yet"));
-        assert!(
-            html.find("[registry.state] bucket").unwrap() < html.find("name=\"bucket\"").unwrap()
-        );
+        assert!(html.contains("[registry.state] bucket") && html.contains("name=\"bucket\""));
         assert!(html.contains("Look up release"));
+        assert_eq!(html.matches("class=\"unassigned\" title=\"bucket").count(), 256);
     }
 
     #[tokio::test]
@@ -3624,21 +3590,25 @@ mod tests {
             &anon(),
         );
         let grid = html
-            .split("partition-grid\">")
+            .split("class=\"partition-grid\"")
             .nth(1)
             .unwrap()
-            .split("</pre>")
+            .split("</div>")
             .next()
             .unwrap();
-        assert_eq!(grid.lines().count(), 16);
-        assert!(grid.lines().all(|l| l.matches("</span>").count() == 16));
-        // Frontier glyph appears exactly 64 times, in the frontier class.
-        assert_eq!(grid.matches('■').count(), 64);
-        assert_eq!(grid.matches("<span class=\"r0\">■</span>").count(), 64);
+        assert_eq!(grid.matches("</span>").count(), 256);
+        // The frontier is the newest release, so it takes the first colour on
+        // exactly its 64 buckets, and each cell names its bucket and release.
+        assert_eq!(grid.matches("<span class=\"r0\" title=\"bucket").count(), 64);
+        assert_eq!(grid.matches("<span class=\"r1\" title=\"bucket").count(), 192);
+        assert!(grid.contains("title=\"bucket 0x3F (63) → 1.2.0\""));
+        assert!(grid.contains("title=\"bucket 0x40 (64) → 1.1.0\""));
         assert!(html.contains(
-            "Target release <strong><a href=\"/demo/-/releases/1.2.0\">1.2.0</a></strong>"
+            "<span>Target release</span><strong><a href=\"/demo/-/releases/1.2.0\">1.2.0</a></strong>"
         ));
         assert!(html.contains("/demo/-/images?release=1.2.0"));
+        assert!(html.contains("<span>Buckets assigned</span><strong>100%</strong>"));
+        assert!(html.contains("<span class=\"rollout-swatch r0\""));
     }
 
     #[tokio::test]
@@ -3661,9 +3631,9 @@ mod tests {
         assert!(
             html.contains("release <strong><a href=\"/demo/-/releases/1.2.0\">1.2.0</a></strong>")
         );
-        assert!(html.contains("<strong class=\"hit\">"));
+        assert!(html.contains("class=\"r0 hit\" title=\"bucket 0x0A (10) → 1.2.0\""));
         assert!(html.contains(
-            "Minimum allowed release <strong><a href=\"/demo/-/releases/1.1.0\">1.1.0</a></strong>"
+            "<span>Minimum allowed release</span><strong><a href=\"/demo/-/releases/1.1.0\">1.1.0</a></strong>"
         ));
 
         assert_eq!(parse_bucket("10"), Some(10), "decimal wins when both parse");
