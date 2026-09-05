@@ -94,19 +94,19 @@ Read-only Packages, Documentation, Images, and Channels catalogs are leaving
 settings navigation. Their old settings URLs redirect to canonical registry
 browse pages, which retain those end-user capabilities.
 
-## Next passes
+## Review areas and outcomes
 
-| Area | Work and evidence |
+| Area | Outcome |
 | --- | --- |
-| Shared layout | Consistent form columns, full-width textareas, action rows, help, cards, and disclosures; desktop and narrow browser audit. |
-| Topology | Guided delivery/storage/cache relationships; remove repeated remote SQL reads. Baseline GetSurfaceTopology: 2.06-2.47 s, 38 SQL calls for 2 routes/2 placements. |
-| Public overview | Verify useful install/use entry points, status, discoverability, and empty states. |
-| Packages | Verify search, version/platform selection, install commands, and bare-registry paths. |
-| Documentation | Verify discovery, reading/navigation, version context, examples, and configuration guidance. |
-| Containers | Verify repository/tag/digest discovery and copyable pull commands; public route fixed by OCI pull rollout. |
-| Images | Verify platform/format selection, verified downloads, and machine-use guidance. |
-| Channels | Verify rollout explanation, release selection, and client commands. |
-| CLI integration | Trace and test optional Hub enhancement and independent HTTP/Git fallbacks. |
+| Shared layout | Reviewed every settings page closed/expanded at desktop and narrow widths; corrected form columns, help, action rows, identity wrapping, disclosures, and GC status stacking. |
+| Topology | Guided delivery/storage/cache relationships and scoped batch reads; hosted topology SQL calls fell from 38 to 23 for unchanged inventory. |
+| Public overview | Setup commands precede detailed trust/cache/readme information; warnings remain visible. |
+| Packages | Preserve search, sorting, and signed snapshot selection; explicit unavailable states; pagination above and below results. |
+| Documentation | Dedicated lazy document reads, exact digest links, stable section anchors, and preserved search/kind pagination. |
+| Containers | Digest-pinned pull examples, working public route, useful filter spacing and distinct empty states; populated staging inventory unavailable. |
+| Images | Independent APM usage and optional exact Hub commands; portable signed CLI list/show/download; populated staging inventory unavailable. |
+| Channels | Clear release/rollout guidance and signed client commands; public stable channel verified. |
+| CLI integration | Strict documentation modes, portable signed image resolution, and deferred OCI profile authentication; managed control-plane mutations retain Hub authority. |
 
 ## Verification record
 
@@ -148,22 +148,22 @@ visual findings are detailed in `hub-settings-instance-org-review.md`.
 
 The sweep uses an instance owner. Navigation permissions additionally have 30
 passing contract checks; a restricted-user browser session was not exercised.
-One final presentation correction stacks the GC generation status on narrow
-screens (`50e96fb7b`); rebuilt-asset verification of that correction is pending.
+The final presentation correction stacks the GC generation status on narrow
+screens (`50e96fb7b`); the packaged native/browser run at `a02b6f4da` below
+verifies the rebuilt correction.
 
 Public pages now prioritize setup, preserve package filters/sort/snapshot
 selection, distinguish unavailable snapshots, use stable documentation anchors,
 load documentation only when requested, pin container pull examples to a digest,
 and show an independent APM image command. Public browse tests (26), documentation
 model tests (14), exact documentation lookup tests (7), and the signed-snapshot
-listing regression passed. Public browser review and hosted verification remain
-in progress.
+listing regression passed. Public browser review and hosted verification passed as recorded below.
 
 The explicit `aos doc hub` mode requires a valid Hub origin and registry;
 installed and package documentation remain independent. Five real-process tests
 passed, including offline installed documentation and no silent authentication
-fallback. Portable image resolution and its trust-continuity tests remain in
-progress.
+fallback. Portable image resolution and its trust-continuity tests passed; the final
+combined CLI and existing APM registry suites are recorded separately below.
 
 
 ### Hosted verification at `fb0e89eae`
@@ -189,3 +189,109 @@ from 11,598 to 8,216 bytes; the postdeployment request took 0.436 seconds.
 Documentation remains available through its dedicated page and exact digest link.
 Signed-in browser evidence remains the native fixture; CLI OAuth verification
 is not a browser login.
+
+
+### Final public refinements and console build
+
+The six public staging pages passed desktop/narrow browser checks, with no
+page overflow or captured errors. Packages (265 entries), documentation (266),
+and the stable channel (256/256 rollout buckets) exercised real content.
+Containers and Images were empty, so their populated detail views were not
+verified on staging. Evidence: `/tmp/aos-hub-public-staging-fb0e89eae/report.json`.
+This review prompted pagination above and below package/documentation lists,
+container filter spacing, and precise filtered versus unfiltered empty states
+(`a02b6f4da`). All 75 core web tests then passed, including the corrected
+canonical-settings versus legacy-catalog route assertion.
+
+The console-only release profile now uses size optimization, ThinLTO, one
+codegen unit, and stripped debug info, with matching dependency cache settings.
+On identical source and tool versions, WASM fell from 16,258,602 to 15,364,367
+bytes; deterministic gzip-9 output fell from 2,748,437 to 2,183,452 bytes (20.6%).
+The optimized assets passed all 99 functional and 519 route checks through a
+documented loopback proxy that replaced only console assets against the native
+fixture. No unexpected request, JavaScript, or console failures occurred.
+Evidence: `/tmp/aos-console-size-thin-browser/` and
+`/tmp/aos-console-size-report.json`. This proxy verification is distinct from
+an embedded native artifact or hosted transfer measurement.
+
+The subsequent Nix distribution including the narrow GC correction built at
+`/nix/store/xfh7g357shi1hs0vxybf7dmk9nr1y9fs-aos-hub-console-dist-0.1.0`;
+its WASM is 15,365,452 bytes. Staging's previous console transfers 2,741,353 bytes
+with actual `Content-Encoding: gzip`. The deployed measurement below verifies the final transfer size.
+
+
+### Final packaged and hosted Hub at `a02b6f4da`
+
+Built the committed Hub/server/UI snapshot from `git archive a02b6f4da` while
+later CLI-only work continued separately. The final installer is
+`/nix/store/qycc6qsyvf0507y5vqx3lhmxs8wadslf-aos-hub-cloudflare-0.1.0`.
+Its exact native executable passed 29 fresh-process integration checks and 99
+Chrome functional checks. The narrow GC review screenshot was inspected and
+confirms the corrected stacked label/status layout. Evidence:
+`/tmp/aos-hub-final-native-a02b6f4da.log` and
+`/tmp/aos-hub-final-functional-a02b6f4da/report.json`.
+
+Staging now serves `staging-a02b6f4da6713b549c28a0488c531e1aa0f69b25`.
+The database, domains, bindings, secrets, and OCI pull availability were
+preserved, and fresh pre/postdeployment recovery bookmarks were captured.
+Final authenticated reads all returned 200. The topology inventory is unchanged
+and uses 23 SQL calls; final request times were 1.332, 1.069, and 0.998 seconds.
+Workflow and container inventories still use 10 and 9 calls respectively.
+Evidence: `/tmp/aos-staging-authenticated-final-a02b6f4da/report.json`.
+
+Served Worker JS, CSS, and decompressed WASM match the final distribution bytes.
+Actual gzip transfer fell from 2,741,353 to 2,182,580 bytes (20.4%). The measured
+WASM request took 1.525 seconds versus 2.147 seconds in the earlier single
+request; the size reduction is verified, while these timings are not a load-time
+benchmark. Evidence: `/tmp/aos-hub-final-served-assets-a02b6f4da.json`.
+
+The native asset identity is `85afbf0a` and the Worker identity is `40dde7a0`.
+Native package scrubbing replaces 71 embedded vendor-path store hashes with
+fixed-length placeholders in WASM diagnostic strings. Normalizing that single
+vendor hash makes the bytes identical; code, JS, CSS, and public browse assets
+match. Each runtime serves its own correct content-addressed filenames.
+
+
+The final public staging pass additionally passed 48 checks with 16 inspected
+screenshots at 1440px and 390px. Actual package filtering, snapshot selection,
+and top/bottom pagination preserve filter, sorting, and release selection.
+A 167-result documentation search preserves query and kind through both pagers.
+Container filter spacing and distinct unpublished/no-match states are verified.
+There were no observed page overflows, JavaScript exceptions, console errors,
+or HTTP errors. Evidence: `/tmp/aos-staging-public-final/summary.json`,
+`report.json`, and `supplement-report.json` in the same directory.
+
+### Portable image CLI integration
+
+`bfcae06c5` adds signed image discovery through configured APM Git/HTTP registries
+and verified NAR extraction directly to an output file. Hub selection remains
+optional and explicit. Independent review found and corrected two trust-state
+edge cases: exact release equality is enforced before cache/key publication,
+and live selectors retain a TUF root reference separately from selected-commit
+ancestry. Neither selector changes nor historical selection lower shared live
+rollback floors or rewrite APM configuration.
+
+The final real-process regression passed against a signed static HTTP origin
+and binary cache, with no Hub, Nix executable, Git executable, or checkout in the
+consumer environment. It covers multiple architectures, ambiguous selection,
+format/target filters, verified download, historical releases, new channels,
+configured TUF state, rollback refusal, corrupted content, explicit Hub 401
+without fallback, and signed retag rejection without changing published cache,
+keys, or state. The earlier 77 focused state/parser/NAR tests also passed.
+Evidence: `/tmp/aos-portable-image-trust-final.log`.
+
+
+### Combined CLI and bare-registry preservation
+
+After image and OCI integration, all 12 CLI process tests passed (five
+documentation, one comprehensive signed-image scenario, two container admission,
+and four container transfer/publication tests). Six container parser tests and
+29 OCI protocol tests passed. The existing APM registry end-to-end suite passed
+15 tests with no failures; one pre-existing Git-version matrix test requires
+separately pinned Git binaries and remains ignored. It covers Git/static HTTP,
+release/upload/channel synchronization, freshness/rollback defenses, and
+pack/delta paths. Evidence: `/tmp/aos-root-registry-e2e-final.log`.
+
+These results are from `569c914d7`, before integrating upstream's subsequently
+merged CLI/module refactors. Any checks after that integration are recorded
+separately.
