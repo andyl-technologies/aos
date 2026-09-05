@@ -1,0 +1,784 @@
+diff --git a/block.c b/block.c
+index 0ece805e4..ed927f1c5 100644
+--- a/block.c
++++ b/block.c
+@@ -5568,6 +5568,8 @@ static void bdrv_delete(BlockDriverState *bs)
+     bdrv_close(bs);
+ 
+     qemu_mutex_destroy(&bs->reqs_lock);
++    /* Intrusive hot-fork inventory entries must retire before their storage. */
++    qemu_mutex_destroy(&bs->dirty_bitmap_mutex);
+ 
+     g_free(bs);
+ }
+diff --git a/block/crucible-hot-fork-source.c b/block/crucible-hot-fork-source.c
+index 3cac3f887..686f4cbad 100644
+--- a/block/crucible-hot-fork-source.c
++++ b/block/crucible-hot-fork-source.c
+@@ -26,6 +26,14 @@ typedef enum ReadOnlySourcePhase {
+     SOURCE_FROZEN,
+ } ReadOnlySourcePhase;
+ 
++typedef struct ReadOnlySourceNode {
++    BlockDriverState *node;
++    BlockDriverState *parent;
++    BlockDriver *driver;
++    BdrvCrucibleHotForkFileState file;
++    bool file_pinned;
++} ReadOnlySourceNode;
++
+ struct QemuBlockBackendHotForkReadOnlySource {
+     BlockBackend *backend;
+     BlockDriverState *root;
+@@ -33,74 +41,209 @@ struct QemuBlockBackendHotForkReadOnlySource {
+     uint64_t shared_permissions;
+     pid_t owner;
+     ReadOnlySourcePhase phase;
++    char *node_name;
++    GArray *graph;
+ };
+ 
++static bool GRAPH_RDLOCK source_node_read_only(BlockDriverState *node,
++                                              Error **errp)
++{
++    BdrvCrucibleHotForkFileState file;
++
++    if (!bdrv_is_read_only(node)) {
++        error_setg(errp, "Crucible source graph retains a writable node");
++        return false;
++    }
++    if (node->drv && node->drv->bdrv_crucible_hot_fork_file &&
++        (!node->drv->bdrv_crucible_hot_fork_file(
++            node, BDRV_CRUCIBLE_HOT_FORK_FILE_QUERY, &file, errp) ||
++         !file.read_only)) {
++        if (!errp || !*errp) {
++            error_setg(errp, "Crucible source retains a writable file descriptor");
++        }
++        return false;
++    }
++    return true;
++}
++
+ bool qemu_block_hot_fork_all_sources_read_only(Error **errp)
+ {
+     BlockDriverState *node = NULL;
+     size_t remaining = HOT_FORK_SOURCE_MAX_VISITS;
+ 
+     GLOBAL_STATE_CODE();
++    GRAPH_RDLOCK_GUARD_MAINLOOP();
+     while ((node = bdrv_next_all_states(node))) {
+-        if (!remaining || !bdrv_is_read_only(node)) {
++        if (!remaining) {
+             error_setg(errp, "Crucible fork requires a complete "
+                        "read-only native block graph");
+             return false;
+         }
++        if (!source_node_read_only(node, errp)) {
++            return false;
++        }
+         remaining--;
+     }
+     return true;
+ }
+ 
+-static bool GRAPH_RDLOCK source_graph_read_only(BlockDriverState *node,
+-                                               unsigned depth,
+-                                               size_t *remaining,
+-                                               Error **errp)
++static bool GRAPH_RDLOCK source_graph_capture(
++    GArray *graph, BlockDriverState *node, BlockDriverState *parent,
++    unsigned depth, Error **errp)
+ {
+     BdrvChild *child;
++    ReadOnlySourceNode entry = {
++        .node = node,
++        .parent = parent,
++        .driver = node->drv,
++    };
+ 
+-    if (depth == HOT_FORK_SOURCE_MAX_DEPTH || !*remaining) {
++    if (depth == HOT_FORK_SOURCE_MAX_DEPTH ||
++        graph->len == HOT_FORK_SOURCE_MAX_VISITS) {
+         error_setg(errp, "Crucible source graph exceeds hot-fork validation bounds");
+         return false;
+     }
+-    --*remaining;
+-    if (!bdrv_is_read_only(node)) {
+-        error_setg(errp, "Crucible source graph retains a writable node");
++    /* Only the native qcow2/raw/regular-file launch profile is implemented. */
++    if (!node->drv ||
++        (!node->drv->bdrv_crucible_hot_fork_file &&
++         strcmp(node->drv->format_name, "qcow2") &&
++         strcmp(node->drv->format_name, "raw"))) {
++        error_setg(errp, "Crucible source driver has no native ownership disposition");
++        return false;
++    }
++    if (node->drv->bdrv_crucible_hot_fork_file) {
++        if (!QLIST_EMPTY(&node->children) ||
++            !node->drv->bdrv_crucible_hot_fork_file(
++                node, BDRV_CRUCIBLE_HOT_FORK_FILE_PIN, &entry.file, errp)) {
++            if (!errp || !*errp) {
++                error_setg(errp, "Crucible file source must be a graph leaf");
++            }
++            return false;
++        }
++        entry.file_pinned = true;
++    }
++    bdrv_ref(node);
++    g_array_append_val(graph, entry);
++    QLIST_FOREACH(child, &node->children, next) {
++        if (!source_graph_capture(graph, child->bs, node, depth + 1, errp)) {
++            return false;
++        }
++    }
++    return true;
++}
++
++static bool GRAPH_RDLOCK source_graph_matches(
++    const GArray *graph, BlockDriverState *node, BlockDriverState *parent,
++    size_t *index, bool frozen, Error **errp)
++{
++    const ReadOnlySourceNode *entry;
++    BdrvChild *child;
++    BdrvCrucibleHotForkFileState file;
++
++    if (*index == graph->len) {
++        error_setg(errp, "Crucible source graph acquired an unowned node");
++        return false;
++    }
++    entry = &g_array_index(graph, ReadOnlySourceNode, (*index)++);
++    if (entry->node != node || entry->parent != parent ||
++        entry->driver != node->drv) {
++        error_setg(errp, "Crucible source graph identity changed externally");
++        return false;
++    }
++    if (entry->file_pinned &&
++        (!entry->driver->bdrv_crucible_hot_fork_file(
++            node, BDRV_CRUCIBLE_HOT_FORK_FILE_QUERY, &file, errp) ||
++         file.device != entry->file.device || file.inode != entry->file.inode)) {
++        if (!errp || !*errp) {
++            error_setg(errp, "Crucible source file identity changed externally");
++        }
++        return false;
++    }
++    if (frozen && !source_node_read_only(node, errp)) {
+         return false;
+     }
+     QLIST_FOREACH(child, &node->children, next) {
+-        if (!source_graph_read_only(child->bs, depth + 1, remaining, errp)) {
++        if (!source_graph_matches(graph, child->bs, node, index, frozen, errp)) {
+             return false;
+         }
+     }
+     return true;
+ }
+ 
+-static bool source_graph_frozen(
+-    const QemuBlockBackendHotForkReadOnlySource *source, Error **errp)
++static bool source_graph_validate(
++    const QemuBlockBackendHotForkReadOnlySource *source, bool frozen, Error **errp)
+ {
+-    size_t remaining = HOT_FORK_SOURCE_MAX_VISITS;
++    size_t index = 0;
+     GRAPH_RDLOCK_GUARD_MAINLOOP();
+ 
+-    /* Explicit child options can keep a file writable after its root reopens. */
+-    return source_graph_read_only(source->root, 0, &remaining, errp);
++    if (!source_graph_matches(source->graph, source->root, NULL,
++                              &index, frozen, errp)) {
++        return false;
++    }
++    if (index != source->graph->len) {
++        error_setg(errp, "Crucible source graph lost a retained node");
++        return false;
++    }
++    return true;
++}
++
++static void source_graph_free(GArray *graph)
++{
++    size_t index;
++
++    {
++        GRAPH_RDLOCK_GUARD_MAINLOOP();
++        for (index = 0; index < graph->len; index++) {
++            ReadOnlySourceNode *entry =
++                &g_array_index(graph, ReadOnlySourceNode, index);
++            BdrvCrucibleHotForkFileState file;
++
++            if (entry->file_pinned) {
++                /* The validated, referenced graph cannot change under BQL. */
++                bool released = entry->driver->bdrv_crucible_hot_fork_file(
++                    entry->node, BDRV_CRUCIBLE_HOT_FORK_FILE_UNPIN,
++                    &file, &error_abort);
++                assert(released);
++            }
++        }
++    }
++    for (index = 0; index < graph->len; index++) {
++        bdrv_unref(g_array_index(graph, ReadOnlySourceNode, index).node);
++    }
++    g_array_free(graph, true);
++}
++
++static bool source_root_matches(const QemuBlockBackendHotForkReadOnlySource *source)
++{
++    const BdrvChild *parent = QLIST_FIRST(&source->root->parents);
++
++    if (strcmp(source->node_name, bdrv_get_node_name(source->root))) {
++        return false;
++    }
++    if (!source->backend) {
++        return parent == NULL;
++    }
++    return blk_bs(source->backend) == source->root &&
++           parent == blk_root(source->backend) && parent &&
++           QLIST_NEXT(parent, next_parent) == NULL;
+ }
+ 
+ static bool source_matches(const QemuBlockBackendHotForkReadOnlySource *source,
+                            Error **errp)
+ {
+-    uint64_t permissions, shared_permissions;
++    uint64_t permissions = 0, shared_permissions = 0;
+     uint64_t expected_permissions, expected_shared;
+ 
+-    if (!source || source->owner != getpid() ||
+-        blk_bs(source->backend) != source->root) {
++    if (!source || source->owner != getpid() || !source_root_matches(source)) {
+         error_setg(errp, "Crucible read-only source lost its process or root");
+         return false;
+     }
+-    blk_get_perm(source->backend, &permissions, &shared_permissions);
++    if (source->backend) {
++        blk_get_perm(source->backend, &permissions, &shared_permissions);
++    }
+     expected_permissions = source->permissions;
+     expected_shared = source->shared_permissions;
+-    if (source->phase != SOURCE_ORIGINAL) {
++    if (source->backend && source->phase != SOURCE_ORIGINAL) {
+         expected_permissions &= ~HOT_FORK_WRITE_PERMISSIONS;
+         expected_shared |= HOT_FORK_WRITE_PERMISSIONS;
+     }
+@@ -110,7 +253,7 @@ static bool source_matches(const QemuBlockBackendHotForkReadOnlySource *source,
+         error_setg(errp, "Crucible read-only source access changed externally");
+         return false;
+     }
+-    return true;
++    return source_graph_validate(source, false, errp);
+ }
+ 
+ static bool source_transition_allowed(
+@@ -140,18 +283,18 @@ static bool source_transition_allowed(
+     return true;
+ }
+ 
+-QemuBlockBackendHotForkReadOnlySource *
+-qemu_block_backend_hot_fork_read_only_source_new(BlockBackend *blk,
+-                                               Error **errp)
++static QemuBlockBackendHotForkReadOnlySource *source_new(
++    BlockBackend *blk, BlockDriverState *root, Error **errp)
+ {
+     QemuBlockBackendHotForkReadOnlySource *source;
+-    BlockDriverState *root;
+     BdrvChild *parent;
+     size_t parents = 0;
+-    uint64_t permissions, shared_permissions;
++    uint64_t permissions = 0, shared_permissions = 0;
++    GArray *graph;
++    bool captured;
+ 
+     GLOBAL_STATE_CODE();
+-    if (!blk || !(root = blk_bs(blk)) || !bdrv_is_writable(root)) {
++    if (!root || !bdrv_is_writable(root)) {
+         error_setg(errp, "Crucible read-only source requires a writable root");
+         return NULL;
+     }
+@@ -159,11 +302,23 @@ qemu_block_backend_hot_fork_read_only_source_new(BlockBackend *blk,
+     QLIST_FOREACH(parent, &root->parents, next_parent) {
+         parents++;
+     }
+-    blk_get_perm(blk, &permissions, &shared_permissions);
+-    if (parents != 1 || !(permissions & HOT_FORK_WRITE_PERMISSIONS)) {
++    if (blk) {
++        blk_get_perm(blk, &permissions, &shared_permissions);
++    }
++    if ((blk && (parents != 1 || !(permissions & HOT_FORK_WRITE_PERMISSIONS))) ||
++        (!blk && (parents != 0 || !*bdrv_get_node_name(root)))) {
+         error_setg(errp, "Crucible read-only source requires one writable owner");
+         return NULL;
+     }
++    graph = g_array_new(false, false, sizeof(ReadOnlySourceNode));
++    {
++        GRAPH_RDLOCK_GUARD_MAINLOOP();
++        captured = source_graph_capture(graph, root, NULL, 0, errp);
++    }
++    if (!captured) {
++        source_graph_free(graph);
++        return NULL;
++    }
+     source = g_new0(QemuBlockBackendHotForkReadOnlySource, 1);
+     *source = (QemuBlockBackendHotForkReadOnlySource) {
+         .backend = blk,
+@@ -172,12 +327,29 @@ qemu_block_backend_hot_fork_read_only_source_new(BlockBackend *blk,
+         .shared_permissions = shared_permissions,
+         .owner = getpid(),
+         .phase = SOURCE_ORIGINAL,
++        .node_name = g_strdup(bdrv_get_node_name(root)),
++        .graph = graph,
+     };
+-    blk_ref(blk);
++    if (blk) {
++        blk_ref(blk);
++    }
+     bdrv_ref(root);
+     return source;
+ }
+ 
++QemuBlockBackendHotForkReadOnlySource *
++qemu_block_backend_hot_fork_read_only_source_new(BlockBackend *blk,
++                                               Error **errp)
++{
++    return source_new(blk, blk ? blk_bs(blk) : NULL, errp);
++}
++
++QemuBlockBackendHotForkReadOnlySource *
++qemu_block_hot_fork_read_only_node_new(BlockDriverState *root, Error **errp)
++{
++    return source_new(NULL, root, errp);
++}
++
+ bool qemu_block_backend_hot_fork_read_only_source_freeze(
+     QemuBlockBackendHotForkReadOnlySource *source, Error **errp)
+ {
+@@ -189,7 +361,8 @@ bool qemu_block_backend_hot_fork_read_only_source_freeze(
+     }
+     bdrv_drained_begin(source->root);
+     if (source->phase == SOURCE_ORIGINAL) {
+-        if (blk_set_perm(source->backend,
++        if (source->backend &&
++            blk_set_perm(source->backend,
+                          source->permissions & ~HOT_FORK_WRITE_PERMISSIONS,
+                          source->shared_permissions | HOT_FORK_WRITE_PERMISSIONS,
+                          errp) < 0) {
+@@ -204,7 +377,8 @@ bool qemu_block_backend_hot_fork_read_only_source_freeze(
+         }
+         source->phase = SOURCE_FROZEN;
+     }
+-    frozen = source_matches(source, errp) && source_graph_frozen(source, errp);
++    frozen = source_matches(source, errp) &&
++             source_graph_validate(source, true, errp);
+ out:
+     bdrv_drained_end(source->root);
+     return frozen;
+@@ -227,7 +401,8 @@ bool qemu_block_backend_hot_fork_read_only_source_restore(
+         source->phase = SOURCE_PERMISSIONS_REDUCED;
+     }
+     if (source->phase == SOURCE_PERMISSIONS_REDUCED) {
+-        if (blk_set_perm(source->backend, source->permissions,
++        if (source->backend &&
++            blk_set_perm(source->backend, source->permissions,
+                          source->shared_permissions, errp) < 0) {
+             goto out;
+         }
+@@ -244,7 +419,8 @@ bool qemu_block_backend_hot_fork_read_only_source_is_frozen(
+ {
+     GLOBAL_STATE_CODE();
+     return source && source->phase == SOURCE_FROZEN &&
+-           source_matches(source, NULL) && source_graph_frozen(source, NULL);
++           source_matches(source, NULL) &&
++           source_graph_validate(source, true, NULL);
+ }
+ 
+ bool qemu_block_backend_hot_fork_read_only_source_free(
+@@ -258,8 +434,12 @@ bool qemu_block_backend_hot_fork_read_only_source_free(
+         error_setg(errp, "Crucible read-only source must be restored before release");
+         return false;
+     }
++    source_graph_free(source->graph);
+     bdrv_unref(source->root);
+-    blk_unref(source->backend);
++    if (source->backend) {
++        blk_unref(source->backend);
++    }
++    g_free(source->node_name);
+     g_free(source);
+     return true;
+ }
+diff --git a/block/file-posix.c b/block/file-posix.c
+index 9f58a7584..56c7aa1cc 100644
+--- a/block/file-posix.c
++++ b/block/file-posix.c
+@@ -157,6 +157,9 @@ typedef struct BDRVRawState {
+     int perm_change_flags;
+     BDRVReopenState *reopen_state;
+ 
++    /* Native source leases prohibit pathname replacement during reopen. */
++    unsigned crucible_source_pins;
++
+     bool has_discard:1;
+     bool has_write_zeroes:1;
+     bool use_linux_aio:1;
+@@ -1109,6 +1112,18 @@ static int raw_reconfigure_getfd(BlockDriverState *bs, int flags,
+         }
+     }
+ 
++    if (fd != -1 && s->crucible_source_pins) {
++        struct stat original, replacement;
++
++        if (fstat(s->fd, &original) < 0 || fstat(fd, &replacement) < 0 ||
++            original.st_dev != replacement.st_dev ||
++            original.st_ino != replacement.st_ino) {
++            qemu_close(fd);
++            error_setg(errp, "Crucible source reopen changed its file identity");
++            return -ESTALE;
++        }
++    }
++
+     if (fd != -1 && (*open_flags & O_RDWR)) {
+         ret = check_hdev_writable(fd);
+         if (ret < 0) {
+@@ -3902,6 +3917,50 @@ raw_co_copy_range_to(BlockDriverState *bs,
+     return raw_thread_pool_submit(handle_aiocb_copy_range, &acb);
+ }
+ 
++static bool GRAPH_RDLOCK raw_crucible_hot_fork_file(
++    BlockDriverState *bs, BdrvCrucibleHotForkFileAction action,
++    BdrvCrucibleHotForkFileState *state, Error **errp)
++{
++    BDRVRawState *s = bs->opaque;
++    struct stat metadata;
++    int flags;
++
++    GLOBAL_STATE_CODE();
++    if (s->fd < 0 || s->reopen_state || s->perm_change_fd ||
++        fstat(s->fd, &metadata) < 0 || !S_ISREG(metadata.st_mode) ||
++        (flags = fcntl(s->fd, F_GETFL)) < 0) {
++        error_setg(errp, "Crucible source requires a settled regular-file descriptor");
++        return false;
++    }
++    switch (action) {
++    case BDRV_CRUCIBLE_HOT_FORK_FILE_PIN:
++        if (s->crucible_source_pins == UINT_MAX) {
++            error_setg(errp, "Crucible file source pin count is exhausted");
++            return false;
++        }
++        s->crucible_source_pins++;
++        break;
++    case BDRV_CRUCIBLE_HOT_FORK_FILE_UNPIN:
++        if (!s->crucible_source_pins) {
++            error_setg(errp, "Crucible file source has no retained pin");
++            return false;
++        }
++        s->crucible_source_pins--;
++        break;
++    case BDRV_CRUCIBLE_HOT_FORK_FILE_QUERY:
++        break;
++    default:
++        error_setg(errp, "Invalid Crucible file source action");
++        return false;
++    }
++    *state = (BdrvCrucibleHotForkFileState) {
++        .device = metadata.st_dev,
++        .inode = metadata.st_ino,
++        .read_only = (flags & O_ACCMODE) == O_RDONLY,
++    };
++    return true;
++}
++
+ BlockDriver bdrv_file = {
+     .format_name = "file",
+     .protocol_name = "file",
+@@ -3913,6 +3972,7 @@ BlockDriver bdrv_file = {
+     .bdrv_reopen_prepare = raw_reopen_prepare,
+     .bdrv_reopen_commit = raw_reopen_commit,
+     .bdrv_reopen_abort = raw_reopen_abort,
++    .bdrv_crucible_hot_fork_file = raw_crucible_hot_fork_file,
+     .bdrv_close = raw_close,
+     .bdrv_co_create = raw_co_create,
+     .bdrv_co_create_opts = raw_co_create_opts,
+diff --git a/include/block/block_int-common.h b/include/block/block_int-common.h
+index deeb3e800..2271ea260 100644
+--- a/include/block/block_int-common.h
++++ b/include/block/block_int-common.h
+@@ -91,6 +91,19 @@ typedef struct BdrvTrackedRequest {
+ } BdrvTrackedRequest;
+ 
+ 
++/* Native process-local file identity; this is never a shared-memory object. */
++typedef struct BdrvCrucibleHotForkFileState {
++    dev_t device;
++    ino_t inode;
++    bool read_only;
++} BdrvCrucibleHotForkFileState;
++
++typedef enum BdrvCrucibleHotForkFileAction {
++    BDRV_CRUCIBLE_HOT_FORK_FILE_QUERY,
++    BDRV_CRUCIBLE_HOT_FORK_FILE_PIN,
++    BDRV_CRUCIBLE_HOT_FORK_FILE_UNPIN,
++} BdrvCrucibleHotForkFileAction;
++
+ struct BlockDriver {
+     /*
+      * These fields are initialized when this object is created,
+@@ -234,6 +247,16 @@ struct BlockDriver {
+     void (*bdrv_parse_filename)(const char *filename, QDict *options,
+                                 Error **errp);
+ 
++    /*
++     * Retains and queries native regular-file identity for Crucible sources.
++     * A pin rejects reopen onto a different inode before replacing the old
++     * descriptor. Unsupported drivers leave this callback absent. The BQL
++     * protects this process-local lease; it does not acknowledge fork safety.
++     */
++    bool GRAPH_RDLOCK_PTR (*bdrv_crucible_hot_fork_file)(
++        BlockDriverState *bs, BdrvCrucibleHotForkFileAction action,
++        BdrvCrucibleHotForkFileState *state, Error **errp);
++
+     /* For handling image reopen for split or non-split files. */
+     int GRAPH_UNLOCKED_PTR (*bdrv_reopen_prepare)(
+         BDRVReopenState *reopen_state, BlockReopenQueue *queue, Error **errp);
+diff --git a/include/system/block-backend-global-state.h b/include/system/block-backend-global-state.h
+index ddc0f06e6..eb94fc23d 100644
+--- a/include/system/block-backend-global-state.h
++++ b/include/system/block-backend-global-state.h
+@@ -150,6 +150,13 @@ bool qemu_block_hot_fork_all_sources_read_only(Error **errp);
+ QemuBlockBackendHotForkReadOnlySource *
+ qemu_block_backend_hot_fork_read_only_source_new(BlockBackend *blk,
+                                                Error **errp);
++/*
++ * Retains an exact named root with no graph parents, as used by the native
++ * VMState container. Name, parentlessness, graph edges, and file identities
++ * remain authenticated throughout the same process-local source lifecycle.
++ */
++QemuBlockBackendHotForkReadOnlySource *
++qemu_block_hot_fork_read_only_node_new(BlockDriverState *root, Error **errp);
+ /*
+  * Flush and reopen the retained root read-only through its native driver.
+  * Success requires every reachable child (including backing and file nodes)
+diff --git a/tests/unit/test-block-backend.c b/tests/unit/test-block-backend.c
+index df2bc691c..da60f8dc4 100644
+--- a/tests/unit/test-block-backend.c
++++ b/tests/unit/test-block-backend.c
+@@ -26,6 +26,7 @@
+ #include "block/block.h"
+ #include "block/block-global-state.h"
+ #include "block/block_int.h"
++#include "block/graph-lock.h"
+ #include "block/thread-pool.h"
+ #include "system/block-backend.h"
+ #include "qapi/error.h"
+@@ -37,6 +38,31 @@
+ 
+ #define HOT_FORK_SNAPSHOT_SIZE (1024 * 1024)
+ 
++static void test_hot_fork_block_mutex_lifetime(void)
++{
++    QemuMutexHotForkInventory baseline, live, retired;
++    unsigned cycle;
++
++    qemu_mutex_hot_fork_inventory(&baseline);
++    g_assert_false(baseline.overflowed);
++    for (cycle = 0; cycle < 1024; cycle++) {
++        BlockDriverState *node = bdrv_new();
++
++        qemu_mutex_hot_fork_inventory(&live);
++        g_assert_false(live.overflowed);
++        g_assert_cmpuint(live.entry_count, ==, baseline.entry_count + 2);
++        qemu_mutex_hot_fork_inventory_destroy(&live);
++
++        bdrv_unref(node);
++        qemu_mutex_hot_fork_inventory(&retired);
++        g_assert_false(retired.overflowed);
++        g_assert_cmpuint(retired.entry_count, ==, baseline.entry_count);
++        g_assert_cmpuint(retired.generation, ==, baseline.generation + 4 * (cycle + 1));
++        qemu_mutex_hot_fork_inventory_destroy(&retired);
++    }
++    qemu_mutex_hot_fork_inventory_destroy(&baseline);
++}
++
+ static void test_drain_aio_error_flush_cb(void *opaque, int ret)
+ {
+     bool *completed = opaque;
+@@ -322,6 +348,15 @@ static void test_hot_fork_snapshot_binding_case(bool writable_file)
+     memset(written, 0x37, sizeof(written));
+     g_assert_cmpint(blk_pwrite(blk, 0, sizeof(written), written, 0), ==, 0);
+     blk_get_perm(blk, &original_permissions, &original_shared);
++    {
++        BlockBackend *other = blk_new(qemu_get_aio_context(),
++                                       BLK_PERM_CONSISTENT_READ, BLK_PERM_ALL);
++
++        g_assert_cmpint(blk_insert_bs(other, blk_bs(blk), &error_abort), ==, 0);
++        g_assert_false(qemu_block_backend_hot_fork_read_only_source_freeze(
++            source, NULL));
++        blk_unref(other);
++    }
+     if (writable_file) {
+         g_assert_false(qemu_block_backend_hot_fork_read_only_source_freeze(
+             source, &local_err));
+@@ -424,6 +459,145 @@ static void test_hot_fork_unowned_writable_source(void)
+     g_assert_true(qemu_block_hot_fork_all_sources_read_only(&error_abort));
+ }
+ 
++static BlockDriverState *test_hot_fork_vmstate_open(const char *path)
++{
++    QDict *options = qdict_new();
++
++    bdrv_img_create(path, "qcow2", NULL, NULL, NULL,
++                    HOT_FORK_SNAPSHOT_SIZE, BDRV_O_RDWR, true, &error_abort);
++    qdict_put_str(options, "driver", "qcow2");
++    qdict_put_str(options, "node-name", "vmstate");
++    qdict_put_str(options, "file.driver", "file");
++    qdict_put_str(options, "file.filename", path);
++    return bdrv_open(NULL, NULL, options, BDRV_O_RDWR, &error_abort);
++}
++
++static BdrvCrucibleHotForkFileState test_hot_fork_file_state(BlockDriverState *root)
++{
++    BdrvCrucibleHotForkFileState file;
++    GRAPH_RDLOCK_GUARD_MAINLOOP();
++    BlockDriverState *node = root->file->bs;
++
++    g_assert_true(node->drv->bdrv_crucible_hot_fork_file(
++        node, BDRV_CRUCIBLE_HOT_FORK_FILE_QUERY, &file, &error_abort));
++    return file;
++}
++
++static void test_hot_fork_vmstate_source(void)
++{
++    char path[] = "/tmp/qemu-hot-fork-vmstate-XXXXXX";
++    int fd = mkstemp(path);
++    BlockDriverState *root;
++    QemuBlockBackendHotForkReadOnlySource *source;
++    BdrvCrucibleHotForkFileState original, frozen;
++    BlockBackend *other;
++    uint8_t written[512], observed[512];
++
++    g_assert_cmpint(fd, >=, 0);
++    close(fd);
++    root = test_hot_fork_vmstate_open(path);
++    memset(written, 0x5a, sizeof(written));
++    g_assert_cmpint(bdrv_save_vmstate(root, written, 0, sizeof(written)),
++                    ==, sizeof(written));
++    original = test_hot_fork_file_state(root);
++    g_assert_false(original.read_only);
++
++    source = qemu_block_hot_fork_read_only_node_new(root, &error_abort);
++    g_assert_nonnull(source);
++    other = blk_new(qemu_get_aio_context(), BLK_PERM_CONSISTENT_READ, BLK_PERM_ALL);
++    g_assert_cmpint(blk_insert_bs(other, root, &error_abort), ==, 0);
++    g_assert_false(qemu_block_backend_hot_fork_read_only_source_freeze(source, NULL));
++    g_assert_null(qemu_block_hot_fork_read_only_node_new(root, NULL));
++    blk_unref(other);
++
++    g_assert_true(qemu_block_backend_hot_fork_read_only_source_freeze(
++        source, &error_abort));
++    g_assert_true(qemu_block_backend_hot_fork_read_only_source_is_frozen(source));
++    g_assert_true(qemu_block_hot_fork_all_sources_read_only(&error_abort));
++    frozen = test_hot_fork_file_state(root);
++    g_assert_true(frozen.read_only);
++    g_assert_cmpuint(frozen.device, ==, original.device);
++    g_assert_cmpuint(frozen.inode, ==, original.inode);
++    g_assert_cmpint(bdrv_load_vmstate(root, observed, 0, sizeof(observed)),
++                    ==, sizeof(observed));
++    g_assert_cmpmem(written, sizeof(written), observed, sizeof(observed));
++#ifdef __linux__
++    {
++        pid_t child = fork();
++        int status;
++
++        g_assert_cmpint(child, >=, 0);
++        if (child == 0) {
++            bool rejected =
++                !qemu_block_backend_hot_fork_read_only_source_restore(source, NULL) &&
++                !qemu_block_backend_hot_fork_read_only_source_free(source, NULL);
++            _exit(rejected ? 0 : 1);
++        }
++        g_assert_cmpint(waitpid(child, &status, 0), ==, child);
++        g_assert_true(WIFEXITED(status));
++        g_assert_cmpint(WEXITSTATUS(status), ==, 0);
++    }
++#endif
++    g_assert_true(qemu_block_backend_hot_fork_read_only_source_restore(
++        source, &error_abort));
++    g_assert_false(test_hot_fork_file_state(root).read_only);
++    g_assert_cmpint(bdrv_save_vmstate(root, written, sizeof(written), sizeof(written)),
++                    ==, sizeof(written));
++    g_assert_true(qemu_block_backend_hot_fork_read_only_source_free(
++        source, &error_abort));
++    bdrv_unref(root);
++    unlink(path);
++}
++
++static void test_hot_fork_source_reopen_identity(void)
++{
++    char path[] = "/tmp/qemu-hot-fork-identity-XXXXXX";
++    char replacement[] = "/tmp/qemu-hot-fork-replacement-XXXXXX";
++    g_autofree char *saved = NULL;
++    int fd = mkstemp(path);
++    int replacement_fd = mkstemp(replacement);
++    BlockDriverState *root;
++    QemuBlockBackendHotForkReadOnlySource *source;
++    BdrvCrucibleHotForkFileState original, rejected;
++    Error *local_err = NULL;
++
++    g_assert_cmpint(fd, >=, 0);
++    g_assert_cmpint(replacement_fd, >=, 0);
++    close(fd);
++    close(replacement_fd);
++    saved = g_strdup_printf("%s.saved", path);
++    root = test_hot_fork_vmstate_open(path);
++    original = test_hot_fork_file_state(root);
++    source = qemu_block_hot_fork_read_only_node_new(root, &error_abort);
++    g_assert_cmpint(rename(path, saved), ==, 0);
++    g_assert_cmpint(rename(replacement, path), ==, 0);
++
++    g_assert_false(qemu_block_backend_hot_fork_read_only_source_freeze(
++        source, &local_err));
++    g_assert_nonnull(local_err);
++    g_assert_nonnull(strstr(error_get_pretty(local_err), "file identity"));
++    error_free(local_err);
++    rejected = test_hot_fork_file_state(root);
++    g_assert_cmpuint(rejected.device, ==, original.device);
++    g_assert_cmpuint(rejected.inode, ==, original.inode);
++    g_assert_false(rejected.read_only);
++    g_assert_false(qemu_block_backend_hot_fork_read_only_source_is_frozen(source));
++
++    g_assert_cmpint(rename(path, replacement), ==, 0);
++    g_assert_cmpint(rename(saved, path), ==, 0);
++    g_assert_true(qemu_block_backend_hot_fork_read_only_source_restore(
++        source, &error_abort));
++    g_assert_true(qemu_block_backend_hot_fork_read_only_source_freeze(
++        source, &error_abort));
++    g_assert_true(qemu_block_backend_hot_fork_read_only_source_restore(
++        source, &error_abort));
++    g_assert_true(qemu_block_backend_hot_fork_read_only_source_free(
++        source, &error_abort));
++    bdrv_unref(root);
++    unlink(path);
++    unlink(replacement);
++}
++
+ static int test_hot_fork_worker_request(void *opaque)
+ {
+     return 0;
+@@ -613,6 +787,8 @@ int main(int argc, char **argv)
+ 
+     g_test_init(&argc, &argv, NULL);
+ 
++    g_test_add_func("/block-backend/hot_fork_block_mutex_lifetime",
++                    test_hot_fork_block_mutex_lifetime);
+     g_test_add_func("/block-backend/drain_aio_error", test_drain_aio_error);
+     g_test_add_func("/block-backend/drain_all_aio_error",
+                     test_drain_all_aio_error);
+@@ -626,6 +802,10 @@ int main(int argc, char **argv)
+                     test_hot_fork_source_writable_file);
+     g_test_add_func("/block-backend/hot_fork_unowned_writable_source",
+                     test_hot_fork_unowned_writable_source);
++    g_test_add_func("/block-backend/hot_fork_vmstate_source",
++                    test_hot_fork_vmstate_source);
++    g_test_add_func("/block-backend/hot_fork_source_reopen_identity",
++                    test_hot_fork_source_reopen_identity);
+     g_test_add_func("/block-backend/hot_fork_pending_native_worker",
+                     test_hot_fork_pending_native_worker);
+     g_test_add_func("/block-backend/hot_fork_native_worker_retirement_rejections",

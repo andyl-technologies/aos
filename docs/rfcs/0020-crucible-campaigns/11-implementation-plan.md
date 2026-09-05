@@ -2948,6 +2948,34 @@ checks now pass after recording the bounded operational waits and adversarial
 stimuli. Engineering-hygiene size and layer-boundary findings remain open, so
 neither complete controller packaging nor license-gate acceptance is claimed.
 
+Native source ownership now also covers the production VMState shape: a named
+root with no backend or other graph parent. The retained owner authenticates
+root consumers, graph edges, and native regular-file device/inode identities.
+File leases reject a reopen onto a replacement inode before replacing the
+original descriptor; frozen validation checks actual read-only descriptor
+access as well as block-node flags. Native tests preserve VMState bytes through
+freeze and restore, reject an unexpected root consumer and inherited parent
+token, and retain the original file after pathname replacement is rejected.
+
+These tests also exposed freed block-node storage retained by the intrusive
+mutex inventory. Block teardown now destroys its dirty-bitmap mutex before
+freeing the node. A fixed 1,024-lifecycle regression checks that both mutexes
+appear on creation and the exact baseline returns after every destruction.
+The negative control omitting that teardown fails on its first cycle with one
+extra registry entry; the corrected native suite passes all 13 cases, including
+the existing fork/read/private-write fixture. This is native ownership and
+teardown evidence, not closure of the longer-run post-device acknowledgement
+investigation. The source-set coordinator, child-private VMState/disk graph
+installation, and atomic whole-world continuation remain open.
+
+The canonical package passes the native source-ownership certificate and QMP
+readiness checks. Byte-for-byte regeneration passes for all 196 carried patches,
+ABI conformance passes, and the corresponding-source artifact carries the
+matching patch-series, bundle, and QEMU build identities. The full 196-patch
+series flight and focused drop-one attribution are still pending at this
+checkpoint. The complete license-boundary gate remains subject to the controller
+engineering-hygiene findings above.
+
 **Exit:** either the spike satisfies the structural and minimum-speedup targets,
 its manual lab evidence is accepted, or hot fork remains rejected and the RFC is
 revised around another measured local-COW mechanism. No optimistic partial

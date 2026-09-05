@@ -212,6 +212,7 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0196-crucible-reset-virtio-net-after-exact-restore.patch",
     "0197-crucible-retain-read-only-block-sources.patch",
     "0198-crucible-retire-native-workers-before-hot-fork.patch",
+    "0199-crucible-retain-native-vmstate-source-ownership.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each
