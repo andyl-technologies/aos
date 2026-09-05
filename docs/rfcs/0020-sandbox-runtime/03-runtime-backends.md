@@ -110,7 +110,10 @@ DevicePolicy=closed plus a typed allowlist
 CapabilityBoundingSet=<closed nspawn-supervisor set>
 RestrictAddressFamilies=<closed union required by supervisor and payload profile>
 SystemCallFilter=<closed inherited supervisor/payload ceiling>
-ProtectSystem=strict plus broker-resolved root/cgroup exceptions
+ProtectSystem=strict
+ExtraFileDescriptors=<one detached root mount named aos-sandbox-root-mount-v1>
+PrivateTmp=yes
+TemporaryFileSystem=/run/systemd/nspawn:rw,mode=0700,nosuid,nodev,noexec,size=16M
 SELinuxContext=<dedicated nspawn-supervisor domain>
 NetworkNamespacePath=<broker-pinned prepared namespace>
 TimeoutStartSec/TimeoutStopSec=<bounded policy>
@@ -130,10 +133,11 @@ ptrace access. The production MAC gate tests the nspawn supervisor separately
 from payload and brokers, including a fixed SELinux process transition for
 guest PID 1 rather than leaving it in the supervisor domain.
 
-The fixed `ExecStart` uses the absolute AOS store path of nspawn and a
-broker-resolved root. The argument profile includes `--boot`, `--quiet`,
+The fixed `ExecStart` pins nspawn from its absolute AOS store path and addresses
+that executable through the retained descriptor. The argument profile includes
+`--boot`, `--quiet`,
 `--keep-unit`, `--register=no`, `--settings=no`, an opaque `--machine` label,
-`--directory` for the private root, an explicit
+`--aos-root-mount-fd=aos-sandbox-root-mount-v1` for the private root, an explicit
 `--private-users=<uid-base>:<count>` allocation,
 `--private-users-ownership=map`, `--notify-ready=yes`, and a fixed
 `--selinux-context=<payload-domain>`. The service manager joins the
@@ -142,10 +146,34 @@ namespace and receives no network namespace path. This avoids nspawn's
 unpatched [259-series ordering
 failure](https://github.com/systemd/systemd/issues/36363) when its own
 `--network-namespace-path` is combined with private users, so AOS does not need
-to carry a second nspawn patch. It never asks nspawn to create a veth or raise
-an external link. It never uses `-U`,
+to carry an additional network-ordering patch. It never asks nspawn to create a
+veth or raise an external link. It never uses `-U`,
 `--private-users=pick`, `auto` ownership, or `--volatile` for a durable root.
 Neither the property set nor argv is supplied by the public caller.
+
+The privileged workspace publisher prepares a detached recursive root mount.
+It travels as one named D-Bus file descriptor, not a root pathname for the
+restricted supervisor to reopen. Nspawn's AOS descriptor profile requires the
+exact role and arity, rejects host root and non-directory objects, and retains
+an inode-based exclusive lock. Its supervisor-local descriptor alias is never
+canonicalized for image lookup or pathname locking. Nspawn clones the detached
+tree for each boot and attaches it with `move_mount`, retaining a detached
+replacement for subsequent boots. The descriptor and lock are close-on-exec,
+and the setup channel is removed from `LISTEN_*` before collecting payload
+activation descriptors. The payload close-other-descriptors step also excludes
+these setup pins. Renaming or replacing the published root pathname cannot
+redirect the mounted root. An attached directory descriptor is not a substitute:
+the kernel rejects importing it across mount namespaces. Host remains
+capability-free; it cannot create this mount on behalf of a missing publisher.
+Readiness still requires post-launch payload-root
+identity verification against the broker's original pin.
+
+Private temporary directories and the bounded private nspawn runtime tmpfs
+provide setup scratch space without granting writable access to other host
+paths. The root mount is derived from the transferred object rather than a
+`ReadWritePaths` exception that reopens a host pathname. These mechanics do not
+replace the enforcing MAC allowlist, identity-allocation checks, or production
+qualification gates.
 
 Before nspawn starts, `aos-netd` creates and pins a network namespace owned by
 the host user namespace, leaves its veth down, installs default-drop,

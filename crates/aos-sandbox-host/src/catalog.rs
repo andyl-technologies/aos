@@ -391,6 +391,11 @@ impl HostCatalogSnapshot {
 }
 
 /// Resolves one fixed catalog file beneath a pre-opened private directory.
+///
+/// This reader verifies published metadata and attached directory pins. It
+/// does not acquire the live detached mount required by nspawn's root transfer
+/// role. A privileged workspace publisher and its assignment-bound descriptor
+/// handoff remain required before this catalog can support production launch.
 #[derive(Debug)]
 pub struct FileHostCatalog {
     root: BeneathRoot,

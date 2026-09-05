@@ -89,6 +89,11 @@ pub struct ResolvedWorkspace {
 impl ResolvedWorkspace {
     /// Constructs a workspace only when its descriptor has the catalogued identity.
     ///
+    /// Identity validation does not prove mount transferability. For launch,
+    /// the privileged publisher must supply a detached mount of this root;
+    /// nspawn's kernel mount import rejects an attached directory from another
+    /// mount namespace before payload execution.
+    ///
     /// # Errors
     ///
     /// Returns an error when the descriptor cannot be inspected or its device

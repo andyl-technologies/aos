@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use zbus::proxy::CacheProperties;
-use zbus::zvariant::{OwnedValue, Str, Value};
+use zbus::zvariant::{Fd, OwnedValue, Str, Value};
 
 use crate::client::{JobOutcome, SystemdClient};
 use crate::error::{Error, Result, is_no_such_unit};
@@ -76,6 +76,7 @@ const NSPAWN_ALLOWED_SYSCALLS: &[&str] = &[
     "unshare",
 ];
 const NSPAWN_ENVIRONMENT: &[&str] = &["LANG=C.UTF-8", "PATH=", "SYSTEMD_LOG_TARGET=journal"];
+const NSPAWN_ROOT_DESCRIPTOR_ROLE: &str = "aos-sandbox-root-mount-v1";
 const NSPAWN_SUPERVISOR_SELINUX_CONTEXT: &str = "system_u:system_r:aos_nspawn_t:s0";
 const PAYLOAD_SELINUX_CONTEXT: &str = "system_u:system_r:aos_sandbox_payload_t:s0";
 const PAYLOAD_DROPPED_CAPABILITIES: &str = "CAP_AUDIT_CONTROL,CAP_AUDIT_READ,CAP_AUDIT_WRITE,CAP_BLOCK_SUSPEND,CAP_BPF,CAP_CHECKPOINT_RESTORE,CAP_DAC_READ_SEARCH,CAP_IPC_LOCK,CAP_IPC_OWNER,CAP_LEASE,CAP_LINUX_IMMUTABLE,CAP_MAC_ADMIN,CAP_MAC_OVERRIDE,CAP_MKNOD,CAP_NET_ADMIN,CAP_NET_BROADCAST,CAP_NET_RAW,CAP_PERFMON,CAP_SYSLOG,CAP_SYS_ADMIN,CAP_SYS_BOOT,CAP_SYS_CHROOT,CAP_SYS_MODULE,CAP_SYS_NICE,CAP_SYS_PACCT,CAP_SYS_PTRACE,CAP_SYS_RAWIO,CAP_SYS_RESOURCE,CAP_SYS_TIME,CAP_SYS_TTY_CONFIG,CAP_WAKE_ALARM";
@@ -347,12 +348,12 @@ pub struct PayloadRootContinuityPolicyV1 {
     _sealed: (),
 }
 
-/// Carries the two host paths resolved atomically for one launch assignment.
+/// Carries the root and network pins resolved atomically for one launch assignment.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SandboxResolvedPaths {
     root_directory: String,
     network_namespace_path: String,
-    _root_pin: SandboxDescriptorPath,
+    root_pin: SandboxDescriptorPath,
     _network_pin: SandboxDescriptorPath,
 }
 
@@ -376,7 +377,7 @@ pub struct SandboxNspawnCommand {
 #[derive(Clone, Debug)]
 pub struct SandboxDescriptorPath {
     path: String,
-    _pin: Arc<OwnedFd>,
+    pin: Arc<OwnedFd>,
 }
 
 impl PartialEq for SandboxDescriptorPath {
@@ -398,7 +399,7 @@ impl SandboxDescriptorPath {
         let pin = Arc::new(fd.try_clone_to_owned()?);
         Ok(Self {
             path: format!("/proc/{}/fd/{}", std::process::id(), pin.as_raw_fd()),
-            _pin: pin,
+            pin,
         })
     }
 
@@ -437,7 +438,7 @@ impl SandboxNspawnCommand {
         })
     }
 
-    fn arguments(&self, root: &str) -> Vec<String> {
+    fn arguments(&self) -> Vec<String> {
         let machine = encode_hex(self.incarnation);
         vec![
             "--boot".to_owned(),
@@ -446,7 +447,7 @@ impl SandboxNspawnCommand {
             "--register=no".to_owned(),
             "--settings=no".to_owned(),
             format!("--machine=aos-{machine}"),
-            format!("--directory={root}"),
+            format!("--aos-root-mount-fd={NSPAWN_ROOT_DESCRIPTOR_ROLE}"),
             format!(
                 "--private-users={}:{}",
                 self.uid_range_start, self.uid_range_size
@@ -463,7 +464,12 @@ impl SandboxNspawnCommand {
 }
 
 impl SandboxResolvedPaths {
-    /// Constructs launch paths solely from live broker-owned descriptors.
+    /// Constructs launch resources solely from live broker-owned descriptors.
+    ///
+    /// The root must be a detached mount supplied by the privileged workspace
+    /// publisher. Directory identity alone does not make an attached mount
+    /// transferable across the service's mount namespace; nspawn rejects such
+    /// a descriptor before executing any payload.
     #[must_use]
     pub fn from_descriptors(
         root_directory: SandboxDescriptorPath,
@@ -472,7 +478,7 @@ impl SandboxResolvedPaths {
         Self {
             root_directory: root_directory.path.clone(),
             network_namespace_path: network_namespace.path.clone(),
-            _root_pin: root_directory,
+            root_pin: root_directory,
             _network_pin: network_namespace,
         }
     }
@@ -502,7 +508,8 @@ impl SandboxDevice {
 
 /// The complete typed input used to create one sandbox transient service.
 ///
-/// The specification owns every descriptor named by its procfs launch paths.
+/// The specification owns the root transferred over D-Bus and every descriptor
+/// named by its executable and network procfs launch paths.
 /// It must remain alive through systemd's initial activation and the broker's
 /// post-launch identity proof. The generated service disables automatic
 /// restart; callers must never manually restart or start a retained sandbox
@@ -544,7 +551,7 @@ impl SandboxUnitSpec {
                 "nspawn command incarnation does not match unit name",
             ));
         }
-        let arguments = command.arguments(paths.root_directory());
+        let arguments = command.arguments();
         validate_arguments(&arguments)?;
         duration_micros(timeout_start, "start timeout")?;
         duration_micros(timeout_stop, "stop timeout")?;
@@ -605,7 +612,7 @@ impl SandboxUnitSpec {
         self.paths.network_namespace_path()
     }
 
-    /// Returns the broker-resolved private root exposed to the supervisor.
+    /// Returns the broker-local alias of the root sent as a supervisor descriptor.
     #[must_use]
     pub fn root_directory(&self) -> &str {
         self.paths.root_directory()
@@ -621,6 +628,14 @@ impl SandboxUnitSpec {
         let mut argv = Vec::with_capacity(self.arguments.len() + 1);
         argv.push(self.command.executable.clone());
         argv.extend(self.arguments.iter().cloned());
+
+        // The restricted supervisor cannot dereference the broker's procfs
+        // aliases: Linux's ptrace access check compares their capability sets.
+        // Pass the root object over D-Bus instead. Nspawn consumes this named
+        // setup descriptor without canonicalizing or forwarding it to PID 1.
+        let root_fd = self.paths.root_pin.pin.try_clone().map_err(|error| {
+            invalid(format!("cannot duplicate nspawn root descriptor: {error}"))
+        })?;
 
         let mut properties = vec![
             string_property("Description", format!("AOS sandbox {}", self.name)),
@@ -664,7 +679,21 @@ impl SandboxUnitSpec {
             bool_property("RestrictRealtime", true),
             string_property("KeyringMode", "private"),
             u32_property("UMask", 0o077),
-            string_array_property("ReadWritePaths", vec![self.paths.root_directory.clone()])?,
+            complex_property(
+                "ExtraFileDescriptors",
+                vec![(Fd::from(root_fd), NSPAWN_ROOT_DESCRIPTOR_ROLE.to_owned())],
+            )?,
+            bool_property("PrivateTmp", true),
+            // Nspawn's transient propagation/export state is private to this
+            // supervisor. The root is mounted from its received descriptor;
+            // no writable host pathname is reopened to make it accessible.
+            complex_property(
+                "TemporaryFileSystem",
+                vec![(
+                    "/run/systemd/nspawn".to_owned(),
+                    "rw,mode=0700,nosuid,nodev,noexec,size=16M".to_owned(),
+                )],
+            )?,
             string_array_property(
                 "Environment",
                 NSPAWN_ENVIRONMENT
@@ -1185,7 +1214,7 @@ mod tests {
         assert!(
             spec.arguments()
                 .iter()
-                .any(|argument| argument == &format!("--directory={}", spec.root_directory()))
+                .any(|argument| argument == "--aos-root-mount-fd=aos-sandbox-root-mount-v1")
         );
 
         let retained = spec.clone();
@@ -1205,6 +1234,36 @@ mod tests {
                 (identity.dev(), identity.ino())
             );
         }
+    }
+
+    #[test]
+    fn root_property_owns_exact_descriptor_without_a_supervisor_path() {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let spec = fixture();
+        let expected = std::fs::metadata(spec.root_directory()).unwrap();
+        assert!(
+            spec.arguments()
+                .iter()
+                .all(|argument| !argument.starts_with("--directory="))
+        );
+        let properties = spec.properties().unwrap();
+        drop(spec);
+
+        let (_, property) = properties
+            .into_iter()
+            .find(|(name, _)| name == "ExtraFileDescriptors")
+            .unwrap();
+        let descriptors = Vec::<(Fd<'static>, String)>::try_from(property).unwrap();
+        assert_eq!(descriptors.len(), 1);
+        let (fd, role) = descriptors.into_iter().next().unwrap();
+        assert_eq!(role, "aos-sandbox-root-mount-v1");
+        let file = std::fs::File::from(OwnedFd::try_from(fd).unwrap());
+        let observed = file.metadata().unwrap();
+        assert_eq!(
+            (observed.dev(), observed.ino()),
+            (expected.dev(), expected.ino())
+        );
     }
 
     #[test]
@@ -1237,7 +1296,9 @@ mod tests {
                 "RestrictRealtime",
                 "KeyringMode",
                 "UMask",
-                "ReadWritePaths",
+                "ExtraFileDescriptors",
+                "PrivateTmp",
+                "TemporaryFileSystem",
                 "Environment",
                 "SetLoginEnvironment",
                 "BindsTo",
@@ -1276,7 +1337,9 @@ mod tests {
         assert!(signatures.contains(&("SystemCallFilter", "(bas)".to_string())));
         assert!(signatures.contains(&("SystemCallArchitectures", "as".to_string())));
         assert!(signatures.contains(&("SELinuxContext", "s".to_string())));
-        assert!(signatures.contains(&("ReadWritePaths", "as".to_string())));
+        assert!(signatures.contains(&("ExtraFileDescriptors", "a(hs)".to_string())));
+        assert!(signatures.contains(&("PrivateTmp", "b".to_string())));
+        assert!(signatures.contains(&("TemporaryFileSystem", "a(ss)".to_string())));
         assert!(signatures.contains(&("MemorySwapMax", "t".to_string())));
         assert!(signatures.contains(&("LimitNOFILE", "t".to_string())));
 

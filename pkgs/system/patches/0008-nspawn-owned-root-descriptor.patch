@@ -1,0 +1,399 @@
+diff --git a/src/nspawn/meson.build b/src/nspawn/meson.build
+index 724397446..cd19ff973 100644
+--- a/src/nspawn/meson.build
++++ b/src/nspawn/meson.build
+@@ -9,6 +9,7 @@ nspawn_sources = files(
+         'nspawn-bind-user.c',
+         'nspawn-cgroup.c',
+         'nspawn-register.c',
++        'nspawn-root-fd.c',
+         'nspawn-seccomp.c',
+         'nspawn-setuid.c',
+         'nspawn-stub-pid1.c',
+@@ -55,6 +56,9 @@ executables += [
+         nspawn_test_template + {
+                 'sources' : files('test-nspawn-tables.c'),
+         },
++        nspawn_test_template + {
++                'sources' : files('test-nspawn-root-fd.c', 'nspawn-root-fd.c'),
++        },
+         nspawn_test_template + {
+                 'sources' : files('test-nspawn-seccomp.c', 'nspawn-seccomp.c'),
+                 'conditions' : ['HAVE_SECCOMP'],
+diff --git a/src/nspawn/nspawn-root-fd.c b/src/nspawn/nspawn-root-fd.c
+new file mode 100644
+index 000000000..2db084a95
+--- /dev/null
++++ b/src/nspawn/nspawn-root-fd.c
+@@ -0,0 +1,77 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++
++#include <fcntl.h>
++#include <sys/file.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++#include "sd-daemon.h"
++
++#include "alloc-util.h"
++#include "fd-util.h"
++#include "nspawn-root-fd.h"
++#include "string-util.h"
++#include "strv.h"
++
++int aos_root_directory_from_fd(int fd, int *ret_root_fd, int *ret_lock_fd, char **ret_path) {
++        _cleanup_close_ int root_fd = -EBADF, lock_fd = -EBADF;
++        _cleanup_free_ char *path = NULL;
++        struct stat source, host_root;
++
++        assert(ret_root_fd);
++        assert(ret_lock_fd);
++        assert(ret_path);
++
++        root_fd = fcntl(fd, F_DUPFD_CLOEXEC, SD_LISTEN_FDS_START);
++        if (root_fd < 0)
++                return -errno;
++        if (fstat(root_fd, &source) < 0 || stat("/", &host_root) < 0)
++                return -errno;
++        if (!S_ISDIR(source.st_mode))
++                return -ENOTDIR;
++        if (source.st_dev == host_root.st_dev && source.st_ino == host_root.st_ino)
++                return -EINVAL;
++
++        /* Open a fresh file description for an inode lock, not a pathname lock.
++         * Independent launches of the same root must contend even after rename.
++         * The broker retains allocation authority; this is additional local
++         * exclusion, not cooperation with upstream's pathname-based image lock. */
++        lock_fd = openat(root_fd, ".", O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
++        if (lock_fd < 0)
++                return -errno;
++        if (flock(lock_fd, LOCK_EX|LOCK_NB) < 0)
++                return -errno;
++
++        /* This alias is diagnostic only. Runtime setup imports the detached
++         * descriptor through the new mount API; it must never canonicalize the
++         * alias or reopen a replaceable host pathname. The mount operation is
++         * also the final kernel check that the received tree is transferable. */
++        if (asprintf(&path, "/proc/self/fd/%d", root_fd) < 0)
++                return -ENOMEM;
++
++        *ret_root_fd = TAKE_FD(root_fd);
++        *ret_lock_fd = TAKE_FD(lock_fd);
++        *ret_path = TAKE_PTR(path);
++        return 0;
++}
++
++int aos_root_directory_acquire(int *ret_root_fd, int *ret_lock_fd, char **ret_path) {
++        _cleanup_strv_free_ char **names = NULL;
++        int n, r;
++
++        /* This is a setup-only descriptor, never a payload activation socket.
++         * Unsetting LISTEN_* makes the later fdset collector empty. Require the
++         * exact role and arity before adopting anything; generic nspawn socket
++         * activation remains unchanged when this option is absent. */
++        n = sd_listen_fds_with_names(/* unset_environment= */ true, &names);
++        if (n < 0)
++                return n;
++        if (n != 1 || !streq_ptr(names[0], AOS_ROOT_DIRECTORY_FD_NAME))
++                r = -EINVAL;
++        else
++                r = aos_root_directory_from_fd(SD_LISTEN_FDS_START, ret_root_fd, ret_lock_fd, ret_path);
++
++        for (int i = 0; i < n; i++)
++                safe_close(SD_LISTEN_FDS_START + i);
++        return r;
++}
+diff --git a/src/nspawn/nspawn-root-fd.h b/src/nspawn/nspawn-root-fd.h
+new file mode 100644
+index 000000000..1356eeaae
+--- /dev/null
++++ b/src/nspawn/nspawn-root-fd.h
+@@ -0,0 +1,7 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#pragma once
++
++#define AOS_ROOT_DIRECTORY_FD_NAME "aos-sandbox-root-mount-v1"
++
++int aos_root_directory_from_fd(int fd, int *ret_root_fd, int *ret_lock_fd, char **ret_path);
++int aos_root_directory_acquire(int *ret_root_fd, int *ret_lock_fd, char **ret_path);
+diff --git a/src/nspawn/nspawn.c b/src/nspawn/nspawn.c
+index 3b514968f..652c4e346 100644
+--- a/src/nspawn/nspawn.c
++++ b/src/nspawn/nspawn.c
+@@ -79,6 +79,7 @@
+ #include "nspawn-network.h"
+ #include "nspawn-oci.h"
+ #include "nspawn-register.h"
++#include "nspawn-root-fd.h"
+ #include "nspawn-seccomp.h"
+ #include "nspawn-settings.h"
+ #include "nspawn-setuid.h"
+@@ -135,6 +136,7 @@ typedef enum ContainerStatus {
+ } ContainerStatus;
+ 
+ static char *arg_directory = NULL;
++static bool arg_aos_root_directory_fd = false;
+ static char *arg_template = NULL;
+ static char *arg_chdir = NULL;
+ static char *arg_pivot_root_new = NULL;
+@@ -466,6 +468,8 @@ static int help(void) {
+                "                            Permit/prohibit specific system calls\n"
+                "     --aos-payload-seccomp-profile=PROFILE\n"
+                "                            Apply a compiled AOS payload filter before exec\n"
++               "     --aos-root-mount-fd=NAME\n"
++               "                            Consume the named AOS supervisor-only root mount\n"
+                "  -Z --selinux-context=SECLABEL\n"
+                "                            Set the SELinux security context to be used by\n"
+                "                            processes in the container\n"
+@@ -720,6 +724,7 @@ static int parse_argv(int argc, char *argv[]) {
+                 ARG_VERITY_DATA,
+                 ARG_SYSTEM_CALL_FILTER,
+                 ARG_AOS_PAYLOAD_SECCOMP_PROFILE,
++                ARG_AOS_ROOT_DIRECTORY_FD,
+                 ARG_RLIMIT,
+                 ARG_HOSTNAME,
+                 ARG_NO_NEW_PRIVILEGES,
+@@ -802,6 +807,7 @@ static int parse_argv(int argc, char *argv[]) {
+                 { "verity-data",            required_argument, NULL, ARG_VERITY_DATA            },
+                 { "system-call-filter",     required_argument, NULL, ARG_SYSTEM_CALL_FILTER     },
+                 { "aos-payload-seccomp-profile", required_argument, NULL, ARG_AOS_PAYLOAD_SECCOMP_PROFILE },
++                { "aos-root-mount-fd", required_argument, NULL, ARG_AOS_ROOT_DIRECTORY_FD },
+                 { "rlimit",                 required_argument, NULL, ARG_RLIMIT                 },
+                 { "oom-score-adjust",       required_argument, NULL, ARG_OOM_SCORE_ADJUST       },
+                 { "cpu-affinity",           required_argument, NULL, ARG_CPU_AFFINITY           },
+@@ -1405,6 +1411,12 @@ static int parse_argv(int argc, char *argv[]) {
+                         arg_aos_payload_seccomp_profile = optarg;
+                         break;
+ 
++                case ARG_AOS_ROOT_DIRECTORY_FD:
++                        if (arg_aos_root_directory_fd || !streq(optarg, AOS_ROOT_DIRECTORY_FD_NAME))
++                                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Invalid or repeated AOS root descriptor role.");
++                        arg_aos_root_directory_fd = true;
++                        break;
++
+                 case ARG_RLIMIT: {
+                         const char *eq;
+                         _cleanup_free_ char *name = NULL;
+@@ -3067,7 +3079,7 @@ static int on_request_stop(sd_bus_message *m, void *userdata, sd_bus_error *erro
+ static int pick_paths(void) {
+         int r;
+ 
+-        if (arg_directory) {
++        if (arg_directory && !arg_aos_root_directory_fd) {
+                 _cleanup_(pick_result_done) PickResult result = PICK_RESULT_NULL;
+                 PickFilter filter = *pick_filter_image_dir;
+ 
+@@ -4024,6 +4036,13 @@ static int outer_child(
+                         return r;
+         }
+ 
++        if (arg_aos_root_directory_fd) {
++                r = path_is_os_tree(directory);
++                if (r <= 0)
++                        return log_error_errno(r < 0 ? r : SYNTHETIC_ERRNO(EINVAL),
++                                               "AOS root mount does not contain an OS tree: %m");
++        }
++
+         r = determine_uid_shift(directory);
+         if (r < 0)
+                 return r;
+@@ -6013,6 +6032,7 @@ static int do_cleanup(void) {
+ static int run(int argc, char *argv[]) {
+         bool remove_directory = false, remove_image = false, veth_created = false;
+         _cleanup_close_ int master = -EBADF, userns_fd = -EBADF, mount_fd = -EBADF;
++        _cleanup_close_ int aos_root_fd = -EBADF, aos_root_lock_fd = -EBADF;
+         _cleanup_fdset_free_ FDSet *fds = NULL;
+         int r, ret = EXIT_SUCCESS;
+         char veth_name[IFNAMSIZ] = "";
+@@ -6032,6 +6052,30 @@ static int run(int argc, char *argv[]) {
+         if (r <= 0)
+                 goto finish;
+ 
++        if (arg_aos_root_directory_fd) {
++                /* Descriptor roots have no pathname identity for image lookup,
++                 * snapshots, registration, or settings discovery. Keep this
++                 * setup channel confined to the closed AOS directory profile. */
++                if (!arg_privileged || arg_start_mode != START_BOOT ||
++                    !arg_keep_unit || !arg_machine || arg_register || arg_background || arg_cleanup ||
++                    !FLAGS_SET(arg_settings_mask, _SETTINGS_MASK_ALL) ||
++                    !arg_aos_payload_seccomp_profile ||
++                    arg_userns_mode != USER_NAMESPACE_FIXED || arg_uid_shift == 0 || arg_uid_range < 65536 ||
++                    arg_userns_ownership != USER_NAMESPACE_OWNERSHIP_MAP ||
++                    arg_directory || arg_image || arg_template || arg_oci_bundle ||
++                    arg_ephemeral || arg_read_only || arg_pivot_root_new || arg_pivot_root_old ||
++                    arg_volatile_mode != VOLATILE_NO) {
++                        r = log_error_errno(SYNTHETIC_ERRNO(EINVAL), "AOS root descriptor requires the closed directory profile.");
++                        goto finish;
++                }
++
++                r = aos_root_directory_acquire(&aos_root_fd, &aos_root_lock_fd, &arg_directory);
++                if (r < 0) {
++                        log_error_errno(r, "Failed to acquire AOS root descriptor: %m");
++                        goto finish;
++                }
++        }
++
+         if (arg_cleanup)
+                 return do_cleanup();
+ 
+@@ -6217,7 +6261,7 @@ static int run(int argc, char *argv[]) {
+ 
+                         free_and_replace(arg_directory, np);
+                         remove_directory = true;
+-                } else {
++                } else if (!arg_aos_root_directory_fd) {
+                         r = chase_and_update(&arg_directory, arg_template ? CHASE_NONEXISTENT : 0);
+                         if (r < 0)
+                                 goto finish;
+@@ -6268,7 +6312,11 @@ static int run(int argc, char *argv[]) {
+                         }
+                 }
+ 
+-                if (arg_start_mode == START_BOOT) {
++                if (arg_aos_root_directory_fd) {
++                        /* A detached mount has no host pathname. Validate the
++                         * OS tree only after attaching its clone in the outer
++                         * child's private namespace, never via a chased alias. */
++                } else if (arg_start_mode == START_BOOT) {
+                         _cleanup_free_ char *b = NULL;
+                         const char *p;
+                         int check_os_release, is_os_tree;
+@@ -6532,9 +6580,26 @@ static int run(int argc, char *argv[]) {
+         }
+ 
+         for (;;) {
++                _cleanup_close_ int aos_mount_fd = -EBADF;
++
++                if (arg_aos_root_directory_fd) {
++                        /* Import a detached tree from the privileged publisher.
++                         * Keep a fresh detached replacement for another boot;
++                         * a tree already attached in a foreign namespace cannot
++                         * be attached again. No host pathname is reopened. */
++                        aos_mount_fd = mount_fd_clone(aos_root_fd, /* recursive= */ true, &aos_root_fd);
++                        if (aos_mount_fd < 0) {
++                                r = log_error_errno(aos_mount_fd, "Failed to clone AOS root mount: %m");
++                                goto finish;
++                        }
++                        r = free_and_strdup(&arg_directory, FORMAT_PROC_FD_PATH(aos_root_fd));
++                        if (r < 0)
++                                goto finish;
++                }
++
+                 r = run_container(
+                                 rootdir,
+-                                mount_fd,
++                                arg_aos_root_directory_fd ? aos_mount_fd : mount_fd,
+                                 dissected_image,
+                                 userns_fd,
+                                 fds,
+diff --git a/src/nspawn/test-nspawn-root-fd.c b/src/nspawn/test-nspawn-root-fd.c
+new file mode 100644
+index 000000000..ce64fdf28
+--- /dev/null
++++ b/src/nspawn/test-nspawn-root-fd.c
+@@ -0,0 +1,105 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++
++#include <fcntl.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++#include "sd-daemon.h"
++
++#include "alloc-util.h"
++#include "fd-util.h"
++#include "nspawn-root-fd.h"
++#include "path-util.h"
++#include "process-util.h"
++#include "rm-rf.h"
++#include "tests.h"
++#include "tmpfile-util.h"
++
++TEST(root_descriptor_survives_path_replacement) {
++        _cleanup_(rm_rf_physical_and_freep) char *parent = NULL;
++        _cleanup_free_ char *original = NULL, *renamed = NULL, *alias = NULL, *second_alias = NULL;
++        _cleanup_close_ int source = -EBADF, root = -EBADF, lock = -EBADF, second_root = -EBADF, second_lock = -EBADF;
++        struct stat before, after, replacement;
++
++        ASSERT_OK(mkdtemp_malloc("/tmp/test-nspawn-root-fd.XXXXXX", &parent));
++        ASSERT_NOT_NULL(original = path_join(parent, "root"));
++        ASSERT_NOT_NULL(renamed = path_join(parent, "renamed"));
++        ASSERT_OK_ERRNO(mkdir(original, 0700));
++        ASSERT_OK_ERRNO(source = open(original, O_PATH|O_DIRECTORY|O_CLOEXEC));
++        ASSERT_OK_ERRNO(fstat(source, &before));
++        ASSERT_OK(aos_root_directory_from_fd(source, &root, &lock, &alias));
++        ASSERT_ERROR(aos_root_directory_from_fd(source, &second_root, &second_lock, &second_alias), EWOULDBLOCK);
++        source = safe_close(source);
++
++        ASSERT_OK_ERRNO(rename(original, renamed));
++        ASSERT_OK_ERRNO(mkdir(original, 0700));
++        ASSERT_OK_ERRNO(stat(alias, &after));
++        ASSERT_OK_ERRNO(stat(original, &replacement));
++        ASSERT_EQ(before.st_dev, after.st_dev);
++        ASSERT_EQ(before.st_ino, after.st_ino);
++        ASSERT_NE(after.st_ino, replacement.st_ino);
++        ASSERT_TRUE(FLAGS_SET(fcntl(root, F_GETFD), FD_CLOEXEC));
++        ASSERT_TRUE(FLAGS_SET(fcntl(lock, F_GETFD), FD_CLOEXEC));
++
++        lock = safe_close(lock);
++        ASSERT_OK(aos_root_directory_from_fd(root, &second_root, &second_lock, &second_alias));
++}
++
++TEST(rejects_host_root_and_non_directory) {
++        _cleanup_close_ int source = -EBADF, root = -EBADF, lock = -EBADF;
++        _cleanup_free_ char *alias = NULL;
++
++        ASSERT_OK_ERRNO(source = open("/", O_PATH|O_DIRECTORY|O_CLOEXEC));
++        ASSERT_ERROR(aos_root_directory_from_fd(source, &root, &lock, &alias), EINVAL);
++        source = safe_close(source);
++        ASSERT_OK_ERRNO(source = open("/dev/null", O_PATH|O_CLOEXEC));
++        ASSERT_ERROR(aos_root_directory_from_fd(source, &root, &lock, &alias), ENOTDIR);
++        ASSERT_ERROR(aos_root_directory_from_fd(-1, &root, &lock, &alias), EBADF);
++}
++
++TEST(setup_role_is_exact_and_not_forwarded) {
++        _cleanup_(rm_rf_physical_and_freep) char *directory = NULL;
++        static const struct {
++                const char *count;
++                const char *names;
++                int expected;
++        } cases[] = {
++                { "1", AOS_ROOT_DIRECTORY_FD_NAME, 0 },
++                { "0", "", -EINVAL },
++                { "1", "unexpected", -EINVAL },
++                { "2", AOS_ROOT_DIRECTORY_FD_NAME ":unexpected", -EINVAL },
++        };
++
++        ASSERT_OK(mkdtemp_malloc("/tmp/test-nspawn-root-role.XXXXXX", &directory));
++        FOREACH_ELEMENT(c, cases) {
++                int r;
++
++                ASSERT_OK(r = safe_fork("(aos-root-role)", FORK_WAIT, NULL));
++                if (r == 0) {
++                        _cleanup_free_ char *pid = NULL, *alias = NULL;
++                        int source, root = -EBADF, lock = -EBADF;
++
++                        ASSERT_OK_ERRNO(source = open(directory, O_PATH|O_DIRECTORY|O_CLOEXEC));
++                        ASSERT_OK_ERRNO(dup2(source, SD_LISTEN_FDS_START));
++                        if (source != SD_LISTEN_FDS_START)
++                                safe_close(source);
++                        if (c->count[0] == '2')
++                                ASSERT_OK_ERRNO(dup2(SD_LISTEN_FDS_START, SD_LISTEN_FDS_START + 1));
++                        ASSERT_OK_ERRNO(asprintf(&pid, "%d", getpid()));
++                        ASSERT_OK_ERRNO(setenv("LISTEN_PID", pid, 1));
++                        ASSERT_OK_ERRNO(setenv("LISTEN_FDS", c->count, 1));
++                        ASSERT_OK_ERRNO(setenv("LISTEN_FDNAMES", c->names, 1));
++
++                        ASSERT_EQ(aos_root_directory_acquire(&root, &lock, &alias), c->expected);
++                        ASSERT_NULL(getenv("LISTEN_PID"));
++                        ASSERT_NULL(getenv("LISTEN_FDS"));
++                        ASSERT_NULL(getenv("LISTEN_FDNAMES"));
++                        ASSERT_EQ(sd_listen_fds(/* unset_environment= */ false), 0);
++                        if (c->count[0] != '0')
++                                ASSERT_ERROR_ERRNO(fcntl(SD_LISTEN_FDS_START, F_GETFD), EBADF);
++                        _exit(EXIT_SUCCESS);
++                }
++        }
++}
++
++DEFINE_TEST_MAIN(LOG_DEBUG);

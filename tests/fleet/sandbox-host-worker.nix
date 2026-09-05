@@ -45,6 +45,30 @@
     '';
   };
 
+  qualificationInit = pkgs.mkDerivation {
+    pname = "aos-host-worker-qualification-init";
+    version = "1";
+    src = null;
+    phases = [
+      {
+        name = "build";
+        script = ''
+          $CC -std=c17 -Wall -Wextra -Werror \
+            -DAOS_QUALIFICATION_SYSTEMD='"${pkgs.systemd}/lib/systemd/systemd"' \
+            ${../sandbox/nspawn-worker-init.c} -o qualification-init
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out/bin"
+          cp qualification-init "$out/bin/"
+        '';
+      }
+    ];
+    meta.license = "Apache-2.0";
+  };
+
   payloadTarget = pkgs.writeTextFile {
     name = "aos-host-worker-payload-target";
     destination = "/default.target";
@@ -73,7 +97,7 @@
     mkdir -p "$out/etc/systemd/system" "$out/sbin" "$out/nix/store" "$out/var"
     cp ${payloadTarget}/default.target "$out/etc/systemd/system/default.target"
     cp ${payloadService}/qualification.service "$out/etc/systemd/system/qualification.service"
-    ln -s ${pkgs.systemd}/lib/systemd/systemd "$out/sbin/init"
+    ln -s ${qualificationInit}/bin/qualification-init "$out/sbin/init"
     printf 'NAME=AOS-host-worker-qualification\nID=aos-host-worker-qualification\n' > "$out/etc/os-release"
     printf '${incarnation}\n' > "$out/etc/machine-id"
   '';
@@ -139,7 +163,9 @@ in {
         vm.succeed("systemctl start aos-host-worker-qualification.service", timeout=200)
         vm.fail("systemctl is-active --quiet ${runtimeUnit}")
     finally:
-        print(vm.execute("journalctl -u aos-host-worker-qualification.service -u ${runtimeUnit} --no-pager")[1])
+        print(vm.execute("journalctl -u aos-host-worker-qualification.service -u ${runtimeUnit} --no-pager")[1].decode("utf-8", errors="replace"))
+        print(vm.execute("journalctl -k --no-pager")[1].decode("utf-8", errors="replace"))
+        print(vm.execute("cat /var/log/audit/audit.log")[1].decode("utf-8", errors="replace"))
         vm.execute("systemctl stop ${runtimeUnit} ${guardian}.service")
   '';
 }

@@ -981,7 +981,6 @@ mod tests {
                             .map(|byte| format!("{byte:02x}"))
                             .collect::<String>()
                     );
-                    let expected_directory = format!("--directory={}", spec.root_directory());
                     let expected_arguments = [
                         "--boot",
                         "--quiet",
@@ -989,7 +988,7 @@ mod tests {
                         "--register=no",
                         "--settings=no",
                         expected_machine.as_str(),
-                        expected_directory.as_str(),
+                        "--aos-root-mount-fd=aos-sandbox-root-mount-v1",
                         "--private-users=65536:65536",
                         "--private-users-ownership=map",
                         "--notify-ready=yes",

@@ -626,6 +626,7 @@ impl SystemdOneShotWorker {
             .await
             .map_err(|error| worker_error(&error))?
         else {
+            self.verify_absent_cgroup(&name)?;
             return Ok(WorkerObservation {
                 state: ObservedRuntimeState::Absent,
                 invocation_id: None,
@@ -655,6 +656,33 @@ impl SystemdOneShotWorker {
             leader,
             payload: None,
         })
+    }
+
+    fn verify_absent_cgroup(&self, name: &SandboxUnitName) -> Result<()> {
+        let descriptor = self
+            .cgroup_root
+            .as_fd()
+            .try_clone_to_owned()
+            .map_err(|error| HostError::Worker(error.to_string()))?;
+        let root = CgroupV2Root::from_owned(descriptor)
+            .map_err(|error| HostError::Worker(error.to_string()))?;
+        let path = name.cgroup_path();
+        match root.resolve(Path::new(path.as_str().trim_start_matches('/'))) {
+            Err(aos_sandbox_linux::Error::Syscall { source, .. })
+                if source.raw_os_error() == Some(rustix::io::Errno::NOENT.raw_os_error()) =>
+            {
+                // A missing manager object is not containment evidence by
+                // itself. Require the exact runtime cgroup to be absent and
+                // recheck the live cgroup-v2 anchor after that observation.
+                root.resolve(Path::new("."))
+                    .map_err(|error| HostError::Worker(error.to_string()))?;
+                Ok(())
+            }
+            Ok(_) => Err(HostError::Worker(
+                "systemd unit is absent but its runtime cgroup still exists".to_owned(),
+            )),
+            Err(error) => Err(HostError::Worker(error.to_string())),
+        }
     }
 
     fn pin_leader(
@@ -1091,6 +1119,19 @@ async fn rollback_launch<B: LaunchBackend + Sync>(
     let kill_failed = backend.kill().await.is_err();
     let stop_failed = backend.stop().await.is_err();
     if kill_failed || stop_failed {
+        // CollectMode may remove a failed unit before either cleanup method
+        // reaches it. Reconcile only through a fresh absent observation; the
+        // systemd backend also proves the exact kernel cgroup is gone. A lost
+        // bus, a remaining cgroup, and every loaded unit state stay failures.
+        if matches!(
+            backend.observe().await,
+            Ok(WorkerObservation {
+                state: ObservedRuntimeState::Absent,
+                ..
+            })
+        ) {
+            return Err(original);
+        }
         return Err(HostError::Worker(format!(
             "{original}; fail-stop cleanup incomplete (kill_failed={kill_failed}, stop_failed={stop_failed})"
         )));
@@ -1327,8 +1368,8 @@ fn verify_supervisor_pins(
     )?;
     // The nspawn supervisor deliberately remains outside the guest root, so
     // `/proc/<supervisor>/root` is not evidence for the container root. The
-    // root guarantee here is instead the owned descriptor embedded in the
-    // fixed `--directory=/proc/<hostd>/fd/N` argument and retained until this
+    // root guarantee here is instead the owned descriptor transferred through
+    // the fixed supervisor-only root FD role and retained until this
     // post-start check. Guest-root comparison must wait for payload PID 1
     // discovery and pinning; treating the supervisor root as equivalent would
     // be a false proof.
@@ -1415,6 +1456,8 @@ mod tests {
         starts: AtomicUsize,
         kills: AtomicUsize,
         stops: AtomicUsize,
+        fail_kill: bool,
+        fail_stop: bool,
     }
 
     struct FakePayloadBackend {
@@ -1503,12 +1546,20 @@ mod tests {
 
         async fn kill(&self) -> Result<()> {
             self.kills.fetch_add(1, Ordering::SeqCst);
-            Ok(())
+            if self.fail_kill {
+                Err(HostError::Worker("fake kill error".to_owned()))
+            } else {
+                Ok(())
+            }
         }
 
         async fn stop(&self) -> Result<()> {
             self.stops.fetch_add(1, Ordering::SeqCst);
-            Ok(())
+            if self.fail_stop {
+                Err(HostError::Worker("fake stop error".to_owned()))
+            } else {
+                Ok(())
+            }
         }
     }
 
@@ -1518,7 +1569,67 @@ mod tests {
             starts: AtomicUsize::new(0),
             kills: AtomicUsize::new(0),
             stops: AtomicUsize::new(0),
+            fail_kill: false,
+            fail_stop: false,
         }
+    }
+
+    #[tokio::test]
+    async fn failed_cleanup_requires_fresh_absence_without_masking_launch_error() {
+        for (fail_kill, fail_stop) in [(true, false), (false, true), (true, true)] {
+            for state in [
+                ObservedRuntimeState::Absent,
+                ObservedRuntimeState::Starting,
+                ObservedRuntimeState::Ready,
+                ObservedRuntimeState::Frozen,
+                ObservedRuntimeState::Stopping,
+                ObservedRuntimeState::Exited,
+                ObservedRuntimeState::Failed,
+            ] {
+                let mut backend = backend(vec![Ok(observation(state, false))]);
+                backend.fail_kill = fail_kill;
+                backend.fail_stop = fail_stop;
+                let error = rollback_launch(
+                    &backend,
+                    HostError::Worker("original launch failure".to_owned()),
+                )
+                .await
+                .unwrap_err()
+                .to_string();
+                assert!(error.contains("original launch failure"));
+                assert_eq!(
+                    error.contains("cleanup incomplete"),
+                    state != ObservedRuntimeState::Absent,
+                    "{state:?}, kill={fail_kill}, stop={fail_stop}"
+                );
+                assert_eq!(backend.kills.load(Ordering::SeqCst), 1);
+                assert_eq!(backend.stops.load(Ordering::SeqCst), 1);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn cleanup_observation_failure_keeps_containment_indeterminate() {
+        let mut backend = backend(vec![Err(HostError::Worker("lost bus".to_owned()))]);
+        backend.fail_kill = true;
+        assert!(
+            rollback_launch(&backend, HostError::Worker("original failure".to_owned()))
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("cleanup incomplete")
+        );
+    }
+
+    #[test]
+    fn absent_runtime_requires_a_live_cgroup_filesystem() {
+        let descriptor = std::fs::File::open("/").unwrap().into();
+        let worker = SystemdOneShotWorker::new(BeneathRoot::from_owned(descriptor).unwrap());
+        assert!(
+            worker
+                .verify_absent_cgroup(&SandboxUnitName::from_incarnation([0x71; 16]))
+                .is_err()
+        );
     }
 
     fn current_pins(executable_path: &str) -> LaunchPins {

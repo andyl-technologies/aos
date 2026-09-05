@@ -14,6 +14,7 @@
 use aos_proto::aos::sandbox::local::v1::{
     ApplyRuntimeRequest, Audience, Feature, ResourceLimit, RuntimeAction,
 };
+use aos_sandbox_linux::mount::DetachedMount;
 use aos_sandbox_linux::path::BeneathRoot;
 use aos_sandbox_linux::pidfd::NamespaceKind;
 use aos_sandbox_protocol::{PeerCredentials, PeerPolicy, decode_runtime_request};
@@ -40,6 +41,18 @@ fn directory(path: &str) -> OwnedFd {
 fn resources() -> ResolvedLaunchResources {
     let workspace = directory(WORKSPACE);
     let stat = fstat(&workspace).unwrap();
+    // The privileged root publisher must supply a transferable mount, not an
+    // attached directory from another mount namespace. This fixture performs
+    // that preparation explicitly; it does not add capabilities to hostd.
+    let source = BeneathRoot::from_owned(workspace)
+        .unwrap()
+        .resolve(
+            std::path::Path::new("."),
+            aos_sandbox_linux::path::ResolveOptions::directory(),
+        )
+        .unwrap();
+    let detached = DetachedMount::clone_from(&source, true).unwrap();
+    let workspace = detached.as_fd().try_clone_to_owned().unwrap();
     let workspace =
         ResolvedWorkspace::from_pinned(WORKSPACE.to_owned(), stat.st_dev, stat.st_ino, workspace)
             .unwrap();

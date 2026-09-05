@@ -2076,3 +2076,53 @@ above comes from a subsequent standalone realization of its already-built
 derivation. Neither VM gate is claimed as passed. The full evaluation check
 passed before the final fixture-path and stopped-pin assertion edits.
 No implementation task is checked off by this prerequisite.
+
+### Descriptor-backed root mount transfer and collected-unit reconciliation
+
+The production transient-unit compiler now transfers one root mount through
+`ExtraFileDescriptors` with the fixed `aos-sandbox-root-mount-v1` role. The
+paired AOS nspawn option consumes that role and arity, excludes the setup
+descriptor from payload activation, and requires the closed private-user
+directory profile. Root identity checks and an inode-based exclusive lock do
+not reopen a replaceable host pathname. Each boot imports a cloned detached
+tree through `move_mount`, retaining a detached replacement for another boot.
+The OS-tree check runs only after attachment in the private mount namespace.
+Private temporary directories and a bounded nspawn runtime tmpfs replace the
+old pathname-based writable exception; no supervisor capabilities are added.
+
+The privileged workspace publisher must supply the detached mount. Host stays
+capability-free. The current file catalog verifies metadata and attached pins,
+but it does not implement that live, assignment-bound publisher handoff.
+Production readiness remains unavailable. The VM explicitly prepares the
+detached tree as a prerequisite fixture, not as a substitute publisher service.
+
+The worker now requires both manager absence and kernel cgroup absence before
+reporting an absent runtime. The cgroup-v2 anchor is checked before and after
+the missing-child observation. Failed kill/stop calls can reconcile a collected
+unit only through a fresh absent observation; the original launch error is
+still returned. Loaded states, remaining cgroups, and unavailable observations
+keep containment indeterminate. `NoSuchUnit` recognition matches only systemd's
+exact D-Bus error name, not a substring or another error domain.
+
+Regressions cover root descriptor ownership in the D-Bus property, role and
+arity rejection, setup-environment removal, pathname replacement, inode-lock
+contention, close-on-exec flags, cleanup-state combinations, and misleading
+error names. The worker VM adds a first-PID-1 executable that rejects inherited
+setup descriptors and `LISTEN_*` environment before executing guest systemd.
+
+The intermediate VM run proved descriptor delivery but failed legacy binding
+of an attached root from another mount namespace. That evidence led to the
+detached-mount contract above. The updated VM reached namespace setup, where
+the outer helper was terminated with `SIGSYS`; the denied syscall has not yet
+been identified. Collected-unit cleanup returned the original launch failure
+without an incomplete-cleanup qualifier. The fixture now retains kernel and
+audit diagnostics for a follow-up run. No VM pass or production Host
+qualification is claimed. Publisher integration, enforcing MAC, ownership
+expiry, and complete Host-to-session qualification remain open.
+
+Validation: 94 Host/systemd unit tests, 25 integration tests, two doctests, and
+strict all-target/all-feature Host/systemd Clippy pass. The patched systemd
+build passes its root-descriptor C tests, and the first-PID-1 fixture compiles
+with warnings denied. The packaged workspace build and checks pass. The full
+evaluation check passed before the final detached-mount transfer edits; the
+worker and platform VM diagnostics are being rerun against the current tree.

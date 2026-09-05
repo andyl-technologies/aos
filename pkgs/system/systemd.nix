@@ -78,6 +78,8 @@ in
     #          addon and SMBIOS fragments that run before initrd validation.
     #   0007 — Add the closed AOS payload seccomp profile to nspawn and install
     #          it after container setup, immediately before payload execution.
+    #   0008 — Consume a named supervisor-only root descriptor without
+    #          reopening its pathname or forwarding it to the payload.
     patches = [
       ./patches/0001-remove-usr-lib-unit-lookup-paths.patch
       ./patches/0002-add-prefix-to-conf-paths.patch
@@ -86,6 +88,7 @@ in
       ./patches/0005-fail-closed-on-roothash-signature-rejection.patch
       ./patches/0006-ignore-external-cmdline-for-embedded-uki.patch
       ./patches/0007-nspawn-aos-payload-seccomp-profile.patch
+      ./patches/0008-nspawn-owned-root-descriptor.patch
     ];
 
     buildDeps = [
@@ -437,6 +440,18 @@ in
           fi
 
           ./test-nspawn-seccomp
+          ./test-nspawn-root-fd
+
+          if ! "$out/bin/systemd-nspawn" --help | grep -F -q -- \
+            '--aos-root-mount-fd=NAME'; then
+            echo "ERROR: systemd-nspawn lacks the AOS root descriptor option" >&2
+            exit 1
+          fi
+          if "$out/bin/systemd-nspawn" --aos-root-mount-fd=unknown \
+            > /dev/null 2>&1; then
+            echo "ERROR: systemd-nspawn accepted an unknown root descriptor role" >&2
+            exit 1
+          fi
         '';
       }
       {

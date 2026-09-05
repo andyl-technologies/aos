@@ -113,10 +113,10 @@
     '';
   };
 
-  # This exercises the production procfs descriptor-addressing shape at the
-  # seam available to a declarative VM unit. The sibling pin holder is test
-  # scaffolding; it does not stand in for the production broker's ownership or
-  # transient-unit compilation proof.
+  # This exercises upstream nspawn's procfs pathname handling at a declarative
+  # VM seam. The sibling pin holder is test scaffolding, not the production
+  # root-mount descriptor handoff, ownership, or transient-unit compiler. The
+  # sandbox-host-worker gate exercises the actual production launch compiler.
   descriptorLauncher = pkgs.writeTextFile {
     name = "aos-nspawn-descriptor-launcher";
     destination = "/bin/aos-nspawn-descriptor-launcher";
@@ -281,7 +281,10 @@ in {
     status, output, error = vm.execute("systemctl is-enabled systemd-machined.service")
     assert status == 1 and output.strip() == b"masked-runtime", (status, output, error)
     vm.fail("systemctl is-active --quiet systemd-machined.service")
-    vm.succeed("systemctl start aos-nspawn-platform-proof.service")
+    status, output, error = vm.execute("systemctl start aos-nspawn-platform-proof.service", timeout=100)
+    if status != 0:
+        print(vm.succeed("journalctl -u aos-nspawn-platform-proof.service -u aos-nspawn-proof-netns.service --no-pager"))
+    assert status == 0, (status, output, error)
     vm.wait_until_succeeds(
         "test -s /var/lib/aos-nspawn-platform-proof/root/var/lib/aos-nspawn-proof/report.json",
         timeout=90,

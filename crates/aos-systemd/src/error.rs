@@ -53,8 +53,35 @@ impl Error {
 }
 
 pub(crate) fn is_no_such_unit(err: &zbus::Error) -> bool {
-    matches!(err, zbus::Error::MethodError(name, _, _) if name.as_str().contains("NoSuchUnit"))
+    matches!(err, zbus::Error::MethodError(name, _, _) if name.as_str() == "org.freedesktop.systemd1.NoSuchUnit")
 }
 
 /// Convenience alias for results from this crate.
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_unit_error_requires_the_exact_systemd_name() {
+        for (name, expected) in [
+            ("org.freedesktop.systemd1.NoSuchUnit", true),
+            ("org.freedesktop.systemd1.NoSuchUnitExtra", false),
+            ("org.freedesktop.systemd1.NotNoSuchUnit", false),
+            ("org.example.NoSuchUnit", false),
+            ("org.freedesktop.systemd1.AccessDenied", false),
+        ] {
+            let message = zbus::Message::signal("/", "org.aos.Test", "Error")
+                .unwrap()
+                .build(&())
+                .unwrap();
+            let error = Error::Zbus(zbus::Error::MethodError(
+                name.try_into().unwrap(),
+                None,
+                message,
+            ));
+            assert_eq!(error.is_no_such_unit(), expected, "{name}");
+        }
+    }
+}
