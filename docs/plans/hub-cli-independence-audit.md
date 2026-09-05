@@ -55,7 +55,7 @@ The following tests exercise the no-Hub data path:
 
 `apr` owns a local registry workspace and signed Git state. In particular,
 `apr channel init`, `advance`, and `status` operate on the selected registry
-checkout (`crates/aos-package/src/registry_ops.rs:11871`). These commands do not
+checkout (`crates/aos-package/src/registry_ops/channels.rs`). These commands do not
 need Hub control-plane state.
 
 Hub-authored change requests also cross a Git ref namespace. Reading and

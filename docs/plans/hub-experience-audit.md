@@ -286,11 +286,9 @@ Evidence: `/tmp/aos-portable-image-trust-final.log`.
 After image and OCI integration, all 12 CLI process tests passed (five
 documentation, one comprehensive signed-image scenario, two container admission,
 and four container transfer/publication tests). Six container parser tests and
-29 OCI protocol tests passed. The existing APM registry end-to-end suite passed
-15 tests with no failures; one pre-existing Git-version matrix test requires
-separately pinned Git binaries and remains ignored. It covers Git/static HTTP,
-release/upload/channel synchronization, freshness/rollback defenses, and
-pack/delta paths. Evidence: `/tmp/aos-root-registry-e2e-final.log`.
+29 OCI protocol tests passed. A preliminary APM registry run used the upstream checkout rather than this
+feature worktree and is excluded from feature verification. The suite will be
+rerun with the feature's absolute manifest path after the upstream merge.
 
 These results are from `569c914d7`, before integrating upstream's subsequently
 merged CLI/module refactors. Any checks after that integration are recorded
