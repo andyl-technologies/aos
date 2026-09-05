@@ -63,20 +63,20 @@ A page is complete only after its final behavior is verified, not just edited.
 | Organization | Operations | `operations` | Review in progress |
 | Organization | Audit log | `audit-log` | Review in progress |
 | Organization | Danger zone | `danger` | Review in progress |
-| Registry | Overview | `(root)` | Review in progress |
-| Registry | Storage & replicas | `placements` | Review in progress |
-| Registry | Delivery | `delivery` | Review in progress |
-| Registry | Binary caches | `caches` | Review in progress |
-| Registry | Identity & access | `access` | Review in progress |
-| Registry | Signing keys | `signing-keys` | Review in progress |
-| Registry | Access tokens | `tokens` | Review in progress |
-| Registry | Containers | `containers` | Review in progress |
-| Registry | Upstream mirror | `mirror` | Review in progress |
-| Registry | Configuration history | `configuration` | Review in progress |
-| Registry | Change requests | `change-requests` | Review in progress |
-| Registry | Publications | `publish-history` | Review in progress |
-| Registry | Operations & health | `operations` | Review in progress |
-| Registry | Danger zone | `danger` | Review in progress |
+| Registry | Overview | `(root)` | Reviewed desktop/narrow; clearer public links and action spacing; final rerun pending |
+| Registry | Storage & replicas | `placements` | Reviewed desktop/narrow; fixed task selector alignment and summary wrapping; final rerun pending |
+| Registry | Delivery | `delivery` | Reviewed desktop and automated narrow metrics; final expanded visual review pending |
+| Registry | Binary caches | `caches` | Reviewed desktop/narrow; real cache links, corrected help column and action spacing; final rerun pending |
+| Registry | Identity & access | `access` | Reviewed desktop/narrow; clearer roles, tokens, signing and ownership guidance; final rerun pending |
+| Registry | Signing keys | `signing-keys` | Reviewed desktop/narrow; read-first inventory and gated editors; final expanded rerun pending |
+| Registry | Access tokens | `tokens` | Reviewed desktop/narrow; read-first inventory and gated issuance; final expanded rerun pending |
+| Registry | Containers | `containers` | Reviewed desktop/narrow; disabled GC caused503 and overflow; capability gate fixed, final rerun pending |
+| Registry | Upstream mirror | `mirror` | Reviewed desktop/narrow; added status/empty state, gated editor and useful timestamp; final rerun pending |
+| Registry | Configuration history | `configuration` | Reviewed desktop/narrow; moved ID inspector into disclosure and clarified history types; final rerun pending |
+| Registry | Change requests | `change-requests` | Reviewed desktop/narrow; clearer merge guidance; corrected audit URL; final rerun pending |
+| Registry | Publications | `publish-history` | Reviewed desktop/narrow; history first, advanced manifest editor and clearer purpose; final rerun pending |
+| Registry | Operations & health | `operations` | Reviewed desktop/narrow; readable timestamps and failure presentation; final rerun pending |
+| Registry | Danger zone | `danger` | Reviewed desktop/narrow; confirmation overlapped input; full-width confirmation fixed, final rerun pending |
 | Cache | Overview | `(root)` | Review in progress |
 | Cache | Storage & replicas | `placements` | Review in progress |
 | Cache | Delivery | `delivery` | Review in progress |
@@ -112,3 +112,20 @@ browse pages, which retain those end-user capabilities.
 
 Earlier implementation evidence is in `hub-settings-workflows.md`. New page
 sweep and final integration results will be recorded here as they complete.
+
+### Individual browser review, before final rebuild
+
+Native fixture source `9a4fd29e6` passed all 29 workflow checks with embedded
+console assets. The initial full page sweep found a missing instance binding
+creation route and stopped at that defect. Separate scope sweeps continued
+the review while the route was fixed. Registry advanced container maintenance
+exposed disabled-rollout 503s; the shell now reports availability before the
+console loads these controls. These findings are fixes awaiting final browser
+verification, not waived test failures.
+
+Registry evidence: `/tmp/aos-hub-settings-registry-review-9a4fd29e6/`,
+`/tmp/aos-hub-settings-registry-rest-9a4fd29e6/`, and
+`/tmp/aos-hub-settings-registry-activity-9a4fd29e6/`.
+Cache evidence: `/tmp/aos-hub-settings-final-cache-9a4fd29e6/`.
+The final audit captures closed and expanded views at desktop and narrow widths
+for every canonical page; the four former catalog routes are checked separately.
