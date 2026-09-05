@@ -435,6 +435,22 @@ class HubSettingsSmoke:
             time.sleep(0.1)
         raise AssertionError(f"timed out waiting for {description}")
 
+    def wait_for_request(self, path, previous_count, description):
+        """Waits for one additional successful tracked request to finish."""
+        deadline = time.monotonic() + self.timeout
+        while time.monotonic() < deadline:
+            self.chrome.drain_events(0.05)
+            matching = [
+                request
+                for request in self.chrome.request_timing_report()
+                if request.get("path") == path and "durationMs" in request
+            ]
+            if len(matching) > previous_count:
+                self.check(matching[-1].get("status") == 200, description)
+                return
+            time.sleep(0.05)
+        raise AssertionError(f"timed out waiting for {description}")
+
     def navigate(self, path):
         url = urllib.parse.urljoin(self.base_url + "/", path.lstrip("/"))
         self.chrome.call("Page.navigate", {"url": url})
@@ -710,7 +726,11 @@ class HubSettingsSmoke:
         )
         self.screenshot_pair("registry-delivery-progress")
 
-        origin = self.chrome.evaluate("performance.timeOrigin")
+        resume_path = "/aos.hub.v1.DeliveryService/ResumeDeliveryDestination"
+        resume_count = sum(
+            request.get("path") == resume_path and "durationMs" in request
+            for request in self.chrome.request_timing_report()
+        )
         resumed = self.chrome.evaluate("""
             (() => {
                 const button = Array.from(document.querySelectorAll('.workflow-card button'))
@@ -721,9 +741,15 @@ class HubSettingsSmoke:
             })()
         """)
         self.check(resumed, "saved delivery workflow exposes its resume action")
+        self.wait_for_request(
+            resume_path,
+            resume_count,
+            "delivery workflow resume request succeeds",
+        )
         self.wait_for(
-            f"performance.timeOrigin !== {json.dumps(origin)}",
-            "delivery workflow resume reload",
+            "document.querySelector('.loading-row') === null && "
+            "document.querySelector('.workflow-card button:not([disabled])') !== null",
+            "delivery workflow SPA refresh",
         )
         self.assert_settings_page("resumed delivery workflow")
         current_id = self.chrome.evaluate(
