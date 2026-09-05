@@ -91,8 +91,8 @@ fn contents_links(slug: &str, version: &str, counts: &ReleaseContents) -> String
     body
 }
 
-/// Renders the same counts as one wrapping line for the release directory,
-/// where tiles would force the table wider than the page.
+/// Renders the same counts as a compact two-by-two grid for the release
+/// directory, where tiles would force the table wider than the page.
 fn contents_line(slug: &str, version: &str, counts: &ReleaseContents) -> String {
     let mut parts = Vec::with_capacity(CONTENT_SECTIONS.len());
     for ((section, label), count) in CONTENT_SECTIONS.iter().zip(content_counts_of(counts)) {
@@ -109,7 +109,7 @@ fn contents_line(slug: &str, version: &str, counts: &ReleaseContents) -> String 
     }
     format!(
         "<span class=\"release-contents-line\">{}</span>",
-        parts.join(" · ")
+        parts.concat()
     )
 }
 
