@@ -70,7 +70,7 @@ pub(super) fn GcDeletionJobs(client: ApiClient, cache_id: String) -> impl IntoVi
             {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
             {move || jobs.get().map(|jobs| {
                 if jobs.is_empty() {
-                    view! { <p class="muted">"No matching deletion jobs."</p> }.into_any()
+                    view! { <div class="empty-state"><h3>"No matching deletion jobs"</h3><p>"Deletion jobs appear after a reviewed sweep starts and remain here until the bound placements finish or report an error."</p></div> }.into_any()
                 } else {
                     view! {
                         <div class="binding-list">

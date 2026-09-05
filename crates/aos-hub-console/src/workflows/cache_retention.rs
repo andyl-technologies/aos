@@ -148,7 +148,7 @@ pub(super) fn CacheRetentionWorkflow(client: ApiClient, cache_id: String) -> imp
                         <p class="section-kicker">"Registry-derived GC roots"</p>
                         <h2>"Retention subscriptions"</h2>
                         <p>
-                            "Retain signed catalogs, channels, releases, tags, or semantic-version ranges without changing client cache publication."
+                            "Retain signed catalogs, channels, releases, tags, or semantic-version ranges without changing client cache publication. Subscription roots are inherited from registry metadata; manual roots below supplement them for local recovery or incident control."
                         </p>
                     </div>
                 </div>
@@ -159,7 +159,7 @@ pub(super) fn CacheRetentionWorkflow(client: ApiClient, cache_id: String) -> imp
                         Suspend::new(async move {
                         match subscriptions.await.as_ref() {
                             Ok(subscriptions) if subscriptions.is_empty() => view! {
-                                <p class="muted">"No registry retention subscriptions."</p>
+                                <div class="empty-state"><h3>"No registry retention subscriptions"</h3><p>"Create a subscription to inherit roots from a registry's signed catalogs, channels, or releases."</p></div>
                             }
                             .into_any(),
                             Ok(subscriptions) => view! {
@@ -544,7 +544,7 @@ fn RetentionEditor(
                     <span>"Retain all releases"</span>
                 </label>
                 <label><span>"Removal grace (seconds)"</span><input type="number" min="1" required prop:value=move || fields.removal_grace.get() on:input=move |event| fields.removal_grace.set(event_target_value(&event))/></label>
-                <button class="secondary-button" type="submit" disabled=move || busy.get()>"Review subscription"</button>
+                <div class="form-actions"><button class="secondary-button" type="submit" disabled=move || busy.get()>"Review subscription"</button></div>
             </form>
             {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
             {move || pending.get().map(|reviewed| view! {

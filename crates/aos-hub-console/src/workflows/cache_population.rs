@@ -56,7 +56,7 @@ pub(super) fn CachePopulation(client: ApiClient, cache_id: String) -> impl IntoV
                     Suspend::new(async move {
                         match targets.await.as_ref() {
                             Ok(targets) if targets.is_empty() => view! {
-                                <p class="muted">"No proactive population targets."</p>
+                                <div class="empty-state"><h3>"No proactive population targets"</h3><p>"Add a target when this cache must copy and verify selected registry content ahead of demand."</p></div>
                             }
                             .into_any(),
                             Ok(targets) => view! {
@@ -443,7 +443,7 @@ fn PopulationEditor(
                 </label>
                 <label><span>"Placement policy revision (optional)"</span><input prop:value=move || placement_policy.get() on:input=move |event| placement_policy.set(event_target_value(&event))/></label>
                 <label><span>"Validation gate"</span><input required prop:value=move || validation_gate.get() on:input=move |event| validation_gate.set(event_target_value(&event))/></label>
-                <button class="secondary-button" type="submit" disabled=move || busy.get()>"Review population target"</button>
+                <div class="form-actions"><button class="secondary-button" type="submit" disabled=move || busy.get()>"Review population target"</button></div>
             </form>
             {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
             {move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}
