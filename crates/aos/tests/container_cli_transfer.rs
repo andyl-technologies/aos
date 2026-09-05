@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use aos_oci::{PlatformSelector, verify_layout, write_oci_archive};
@@ -45,6 +45,7 @@ struct RegistryState {
     publication_root: Mutex<Option<String>>,
     next_upload: AtomicU64,
     token_requests: AtomicU64,
+    require_seed: AtomicBool,
 }
 
 struct TestRegistry {
@@ -163,6 +164,113 @@ fn process_external_signing_never_passes_private_material_to_aos() {
         ],
     );
     assert!(!no_clobber.status.success());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn public_transfers_ignore_matching_expired_hub_profiles() {
+    let fixture = oci_support::fixture();
+    let registry = spawn_registry("public", Some(&fixture)).await;
+    let workspace = tempfile::tempdir().expect("workspace");
+    let home = workspace.path().join("home");
+    let config = home.join(".config/aos");
+    fs::create_dir_all(&config).expect("profile directory");
+    let origin = registry.origin.trim_end_matches('/');
+    let profile = serde_json::json!({
+        "schema_version": "aos.hub.profiles/v1",
+        "active_origin": origin,
+        "profiles": {origin: {
+            "access_token": "expired-access-secret", "access_expires_at": 0,
+            "refresh_token": "expired-refresh-secret", "refresh_expires_at": 4102444800_i64
+        }}
+    });
+    let profile_path = config.join("hub-profiles.json");
+    let profile_bytes = serde_json::to_vec(&profile).expect("profile JSON");
+    fs::write(&profile_path, &profile_bytes).expect("profile fixture");
+    let reference = registry.reference("latest");
+    let pushed = registry.reference("copied");
+    for arguments in [
+        vec!["--json", "container", "inspect", &reference],
+        vec![
+            "--json",
+            "container",
+            "pull",
+            &reference,
+            "--output",
+            "pulled.oci",
+        ],
+        vec!["--json", "container", "push", "pulled.oci", &pushed],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_aos"))
+            .args(&arguments)
+            .current_dir(workspace.path())
+            .env_clear()
+            .env("HOME", &home)
+            .env("PATH", "")
+            .env("AOS_REGISTRY_ORIGIN", origin)
+            .env("AOS_HUB", "http://127.0.0.1:9")
+            .output()
+            .expect("public registry command");
+        successful_json(arguments[2], &output);
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("expired-refresh-secret"));
+    }
+    assert_eq!(
+        fs::read(&profile_path).expect("unchanged profile"),
+        profile_bytes
+    );
+    assert!(
+        registry
+            .state
+            .control_calls
+            .lock()
+            .expect("control calls")
+            .is_empty()
+    );
+
+    registry.state.require_seed.store(true, Ordering::SeqCst);
+    let denied = run_aos(
+        workspace.path(),
+        &home,
+        &[
+            "container",
+            "inspect",
+            &reference,
+            "--registry-origin",
+            origin,
+        ],
+    );
+    assert!(!denied.status.success());
+    let error = String::from_utf8_lossy(&denied.stderr);
+    assert!(error.contains("refreshing Hub profile"), "{error}");
+    assert!(!error.contains("expired-refresh-secret"), "{error}");
+    assert_eq!(
+        *registry.state.control_calls.lock().expect("refresh calls"),
+        vec!["/oauth2/token"]
+    );
+
+    let explicit = run_aos(
+        workspace.path(),
+        &home,
+        &[
+            "--json",
+            "container",
+            "inspect",
+            &reference,
+            "--registry-origin",
+            origin,
+            "--token",
+            SEED_CREDENTIAL,
+        ],
+    );
+    successful_json("explicit inspect", &explicit);
+    assert_eq!(
+        registry
+            .state
+            .control_calls
+            .lock()
+            .expect("refresh calls")
+            .len(),
+        1
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -516,6 +624,7 @@ async fn spawn_registry(repository: &str, fixture: Option<&oci_support::Fixture>
         publication_root: Mutex::new(None),
         next_upload: AtomicU64::new(1),
         token_requests: AtomicU64::new(0),
+        require_seed: AtomicBool::new(false),
     });
     let router = Router::new()
         .fallback(any(handle_registry_request))
@@ -545,6 +654,14 @@ async fn handle_registry_request(
     let path = parts.uri.path();
     if path.starts_with("/aos.hub.v1.ContainerService/") {
         return container_control_response(&state, path, &parts.headers, body);
+    }
+    if path == "/oauth2/token" {
+        state
+            .control_calls
+            .lock()
+            .expect("control calls")
+            .push(path.to_string());
+        return response(StatusCode::UNAUTHORIZED, Body::empty());
     }
     if path == "/token" {
         return token_response(&state, &parts.headers);
@@ -674,6 +791,9 @@ fn token_response(state: &RegistryState, headers: &HeaderMap) -> Response<Body> 
         .get(AUTHORIZATION)
         .and_then(|value| value.to_str().ok());
     assert!(authorization.is_none() || authorization == Some(SEED_AUTHORIZATION));
+    if state.require_seed.load(Ordering::SeqCst) && authorization.is_none() {
+        return response(StatusCode::UNAUTHORIZED, Body::empty());
+    }
     response(
         StatusCode::OK,
         Body::from(format!(r#"{{"token":"{EXCHANGED_CREDENTIAL}"}}"#)),
