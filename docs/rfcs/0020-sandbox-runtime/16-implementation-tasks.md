@@ -2237,3 +2237,16 @@ observer's exact supervisor identity checks remain unchanged. This requires
 explicit lifecycle implementation, not a longer timeout or accepting a new
 supervisor as the same execution. The worker VM is rerunning after the Rust
 ABI correction; no readiness or reboot qualification is claimed.
+
+The full evaluation/system-structure check passes for `9fbea39b3`. The shared
+CLI package initially failed its test run without naming a failing test in
+the build log; the same derivation passed on the evaluation run. The worker
+VM retry then passed its mandatory five-namespace probe and reached payload
+discovery, which returned `EBADF`. A focused regression reproduced the cause:
+`Dir::read_from` preserves the anchor's `O_PATH` flag, which is invalid for
+directory enumeration. The scanner now opens only `.` relative to the retained
+anchor with readable directory flags. The regression also renames the pinned
+tree and replaces its old pathname, proving the scan still visits the original
+root and descendant. Host/systemd all-feature tests pass 98 unit tests,
+26 integration tests, and two doctests after this correction. The VM gate
+still requires a rerun; no production readiness is enabled.

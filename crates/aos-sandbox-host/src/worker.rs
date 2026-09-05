@@ -788,10 +788,27 @@ impl PayloadInspectionBackend for LinuxPayloadInspector<'_> {
                 });
             }
 
-            let entries = rustix::fs::Dir::read_from(directory.as_fd())
-                .map_err(|error| HostError::Worker(error.to_string()))?;
+            // Resolution pins use O_PATH. Dir::read_from preserves that flag,
+            // but getdents requires a readable descriptor. Open only the pinned
+            // directory itself, never a reconstructed pathname or parent hint.
+            let readable = rustix::fs::openat(
+                directory.as_fd(),
+                ".",
+                rustix::fs::OFlags::RDONLY
+                    | rustix::fs::OFlags::DIRECTORY
+                    | rustix::fs::OFlags::NOFOLLOW
+                    | rustix::fs::OFlags::CLOEXEC,
+                rustix::fs::Mode::empty(),
+            )
+            .map_err(|error| {
+                HostError::Worker(format!("open payload cgroup for reading: {error}"))
+            })?;
+            let entries = rustix::fs::Dir::new(readable)
+                .map_err(|error| HostError::Worker(format!("iterate payload cgroup: {error}")))?;
             for entry in entries {
-                let entry = entry.map_err(|error| HostError::Worker(error.to_string()))?;
+                let entry = entry.map_err(|error| {
+                    HostError::Worker(format!("read payload cgroup entry: {error}"))
+                })?;
                 let name = entry.file_name().to_bytes();
                 if matches!(name, b"." | b"..") {
                     continue;
@@ -1450,6 +1467,40 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn payload_snapshot_reads_path_only_pins_after_directory_rename() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("payload");
+        std::fs::create_dir_all(path.join("init.scope")).unwrap();
+        std::fs::write(path.join("cgroup.procs"), b"1234\n").unwrap();
+        std::fs::write(path.join("init.scope/cgroup.procs"), b"5678\n").unwrap();
+        let descriptor = rustix::fs::open(
+            &path,
+            rustix::fs::OFlags::PATH | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .unwrap();
+        let root = BeneathRoot::from_owned(descriptor).unwrap();
+
+        std::fs::rename(&path, temporary.path().join("retained")).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("cgroup.procs"), b"9999\n").unwrap();
+
+        let snapshot = LinuxPayloadInspector {
+            payload_root: &root,
+        }
+        .snapshot()
+        .unwrap();
+        assert_eq!(
+            snapshot
+                .iter()
+                .map(|entry| (entry.pid.get(), entry.relative_cgroup_hint.as_str()))
+                .collect::<Vec<_>>(),
+            [(1234, ""), (5678, "init.scope")]
+        );
+        assert_eq!(snapshot[0].cgroup_id, root.identity().inode);
+    }
 
     struct FakeLaunchBackend {
         observations: Mutex<VecDeque<Result<WorkerObservation>>>,
