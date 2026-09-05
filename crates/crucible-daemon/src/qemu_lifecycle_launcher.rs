@@ -145,7 +145,7 @@ where
             )
         };
         if let Err(mut error) = preparation {
-            let message = error.to_string();
+            let message = launch_error_chain(&error);
             if let Some(child) = error.take_unreaped_child() {
                 self.owner.retain_failed_launch_child(child);
                 drop(lease);
@@ -189,7 +189,7 @@ where
         let node = match launched {
             Ok(node) => node,
             Err(mut error) => {
-                let message = error.to_string();
+                let message = launch_error_chain(&error);
                 if let Some(child) = error.take_unreaped_child() {
                     self.owner.retain_failed_launch_child(child);
                     drop(lease);
@@ -308,7 +308,7 @@ where
         let node = match launched {
             Ok(node) => node,
             Err(mut error) => {
-                let message = error.to_string();
+                let message = launch_error_chain(&error);
                 if let Some(child) = error.take_unreaped_child() {
                     self.owner.retain_failed_launch_child(child);
                     drop(lease);
@@ -507,12 +507,76 @@ fn abort_unspawned_generation(
     }
 }
 
-fn launcher_error(operation: &'static str, error: impl std::fmt::Display) -> LifecycleApiError {
-    launcher_message(format!("{operation}: {error}"))
+fn launcher_error(
+    operation: &'static str,
+    error: impl std::error::Error + 'static,
+) -> LifecycleApiError {
+    launcher_message(format!("{operation}: {}", launch_error_chain(&error)))
 }
 
 fn launcher_message(message: impl Into<String>) -> LifecycleApiError {
     LifecycleApiError::LoopFactory {
         message: message.into(),
+    }
+}
+
+/// Preserves typed causes when crossing the lifecycle's string-only boundary.
+/// Bounds also contain unexpectedly recursive or verbose backend errors.
+fn launch_error_chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut message = String::new();
+    let mut current = Some(error);
+    for _ in 0..12 {
+        let Some(error) = current else { break };
+        if !message.is_empty() {
+            message.push_str("; caused by: ");
+        }
+        message.extend(error.to_string().chars().take(1024));
+        current = error.source();
+    }
+    if current.is_some() {
+        message.push_str("; further causes omitted");
+    }
+    message
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn launch_failure_preserves_rejected_asset_detail() {
+        let error = crucible_qemu::QemuLiveNodeStepGateError::LaunchCommand {
+            source: crucible_qemu::QemuLaunchCommandError::InvalidStorePath {
+                field: "root_image",
+                path: "/tmp/root.raw".to_owned(),
+            },
+        };
+        let message = launcher_error("launch fresh node", error).to_string();
+        assert!(message.contains("build QEMU launch command failed"));
+        assert!(message.contains("root_image must be an AOS store path, got `/tmp/root.raw`"));
+    }
+
+    #[test]
+    fn launch_failure_bounds_recursive_and_verbose_causes() {
+        // A manually implemented source exercises errors outside our derives.
+        #[derive(Debug)]
+        struct Recursive;
+        impl std::fmt::Display for Recursive {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "recursive backend")
+            }
+        }
+        impl std::error::Error for Recursive {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(self)
+            }
+        }
+        let message = launch_error_chain(&Recursive);
+        assert_eq!(message.matches("recursive backend").count(), 12);
+        assert!(message.ends_with("further causes omitted"));
+        assert_eq!(
+            launch_error_chain(&std::io::Error::other("x".repeat(2048))).len(),
+            1024
+        );
     }
 }
