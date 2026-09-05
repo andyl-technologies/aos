@@ -49,6 +49,8 @@
     pname = "aos-host-worker-qualification-init";
     version = "1";
     src = null;
+    # The compiled exec path is a runtime reference, not a build-time hint.
+    runtimeDeps = [pkgs.systemd];
     phases = [
       {
         name = "build";
@@ -94,11 +96,14 @@
     '';
   };
   root = pkgs.runCommand "aos-host-worker-payload-root" {} ''
-    mkdir -p "$out/etc/systemd/system" "$out/sbin" "$out/nix/store" "$out/var"
+    ${pkgs.grep}/bin/grep -aFq '${pkgs.systemd}/lib/systemd/systemd' \
+      '${qualificationInit}/bin/qualification-init'
+    mkdir -p "$out/etc/systemd/system" "$out/usr/lib" "$out/sbin" "$out/nix/store" "$out/var"
     cp ${payloadTarget}/default.target "$out/etc/systemd/system/default.target"
     cp ${payloadService}/qualification.service "$out/etc/systemd/system/qualification.service"
     ln -s ${qualificationInit}/bin/qualification-init "$out/sbin/init"
-    printf 'NAME=AOS-host-worker-qualification\nID=aos-host-worker-qualification\n' > "$out/etc/os-release"
+    printf 'NAME=AOS-host-worker-qualification\nID=aos-host-worker-qualification\n' > "$out/usr/lib/os-release"
+    ln -s ../usr/lib/os-release "$out/etc/os-release"
     printf '${incarnation}\n' > "$out/etc/machine-id"
   '';
 
@@ -143,6 +148,7 @@
             ${pkgs.nftables}/sbin/nft 'add chain inet qualification output { type filter hook output priority 0; policy drop; }'
           touch ${network}
           ${pkgs.util-linux}/bin/mount --bind /run/netns/aos-host-worker-qualification ${network}
+          ${pkgs.systemd}/bin/systemctl start aos-sandboxes.slice
           unset LD_LIBRARY_PATH
           ${fixture}/bin/aos-sandbox-host-worker-tests --ignored --exact '${testName}' --list \
             > /run/aos-host-worker-selected-tests
@@ -164,8 +170,8 @@ in {
         vm.fail("systemctl is-active --quiet ${runtimeUnit}")
     finally:
         print(vm.execute("journalctl -u aos-host-worker-qualification.service -u ${runtimeUnit} --no-pager")[1].decode("utf-8", errors="replace"))
-        print(vm.execute("journalctl -k --no-pager")[1].decode("utf-8", errors="replace"))
-        print(vm.execute("cat /var/log/audit/audit.log")[1].decode("utf-8", errors="replace"))
+        print(vm.execute("journalctl -k -n 100 --no-pager")[1].decode("utf-8", errors="replace"))
+        print(vm.execute("${pkgs.grep}/bin/grep 'type=SECCOMP' /var/log/audit/audit.log")[1].decode("utf-8", errors="replace"))
         vm.execute("systemctl stop ${runtimeUnit} ${guardian}.service")
   '';
 }

@@ -157,8 +157,11 @@ restricted supervisor to reopen. Nspawn's AOS descriptor profile requires the
 exact role and arity, rejects host root and non-directory objects, and retains
 an inode-based exclusive lock. Its supervisor-local descriptor alias is never
 canonicalized for image lookup or pathname locking. Nspawn clones the detached
-tree for each boot and attaches it with `move_mount`, retaining a detached
-replacement for subsequent boots. The descriptor and lock are close-on-exec,
+tree for each boot, applies the fixed idmap to the detached root alone with
+`mount_setattr`, and attaches it with `move_mount`, retaining a detached
+replacement for subsequent boots. Child idmaps and read-only mount boundaries
+remain intact; the profile does not use upstream's unmount-and-remap path for
+an already assembled tree. The descriptor and lock are close-on-exec,
 and the setup channel is removed from `LISTEN_*` before collecting payload
 activation descriptors. The payload close-other-descriptors step also excludes
 these setup pins. Renaming or replacing the published root pathname cannot

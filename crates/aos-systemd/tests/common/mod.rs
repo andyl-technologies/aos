@@ -265,7 +265,7 @@ impl FakeService {
     #[zbus(property)]
     fn control_group(&self) -> String {
         let name = self.state.observed_unit.lock().unwrap();
-        format!("/aos-sandboxes.slice/{name}")
+        format!("/aos.slice/aos-sandboxes.slice/{name}")
     }
 }
 

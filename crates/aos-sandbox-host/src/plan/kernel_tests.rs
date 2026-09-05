@@ -166,6 +166,21 @@ async fn production_compiler_worker_launch_refresh_and_stop() {
         worker.observe(&identity).await.unwrap().state,
         ObservedRuntimeState::Absent
     );
+    // Manager absence alone must not hide a remaining kernel cgroup. In
+    // particular, the hyphenated slice has a systemd-created aos.slice parent.
+    let cgroup = format!(
+        "/sys/fs/cgroup{}",
+        SandboxUnitName::from_incarnation(INCARNATION)
+            .cgroup_path()
+            .as_str()
+    );
+    std::fs::create_dir(&cgroup).unwrap();
+    assert!(worker.observe(&identity).await.is_err());
+    std::fs::remove_dir(&cgroup).unwrap();
+    assert_eq!(
+        worker.observe(&identity).await.unwrap().state,
+        ObservedRuntimeState::Absent
+    );
     let (spec, pins) = prepared.into_parts();
     let mut effect_checks = 0;
     let mut before_effect = || {

@@ -320,7 +320,7 @@ async fn sandbox_observation_reads_typed_live_properties() {
     assert_eq!(observation.invocation_id, Some([9; 16]));
     assert_eq!(
         observation.cgroup.unwrap().as_str(),
-        format!("/aos-sandboxes.slice/{}", name.as_str())
+        format!("/aos.slice/aos-sandboxes.slice/{}", name.as_str())
     );
 }
 

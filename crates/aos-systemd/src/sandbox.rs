@@ -31,6 +31,8 @@ const UNIT_PREFIX: &str = "aos-sandbox-";
 const UNIT_SUFFIX: &str = ".service";
 const GUARD_PREFIX: &str = "aos-lease-guard-";
 const SANDBOX_SLICE: &str = "aos-sandboxes.slice";
+// Hyphens encode slice ancestry: systemd nests this slice beneath aos.slice.
+const SANDBOX_SLICE_CGROUP: &str = "/aos.slice/aos-sandboxes.slice";
 const MAX_ARGUMENTS: usize = 256;
 const MAX_ARGUMENT_BYTES: usize = 128 * 1024;
 const MAX_DEVICES: usize = 64;
@@ -151,7 +153,7 @@ impl SandboxUnitName {
     }
 
     fn expected_cgroup(&self) -> String {
-        format!("/{SANDBOX_SLICE}/{}", self.service)
+        format!("{SANDBOX_SLICE_CGROUP}/{}", self.service)
     }
 }
 
@@ -1356,6 +1358,17 @@ mod tests {
             <&str>::try_from(&collect_mode.1).unwrap(),
             "inactive-or-failed"
         );
+
+        let syscall_filter = properties
+            .iter()
+            .find(|(name, _)| name == "SystemCallFilter")
+            .unwrap();
+        let (allowlist, syscalls) =
+            <(bool, Vec<String>)>::try_from(syscall_filter.1.try_clone().unwrap()).unwrap();
+        assert!(allowlist);
+        assert!(syscalls.iter().any(|syscall| syscall == "mount_setattr"));
+        assert!(!syscalls.iter().any(|syscall| syscall == "open_tree_attr"));
+        assert!(!syscalls.iter().any(|syscall| syscall == "@mount"));
     }
 
     #[test]
@@ -1366,6 +1379,11 @@ mod tests {
 
         let name = SandboxUnitName::from_incarnation([3; 16]);
         let path = name.expected_cgroup();
+        assert_eq!(
+            path,
+            format!("/aos.slice/aos-sandboxes.slice/{}", name.as_str())
+        );
+        assert!(parse_cgroup(&name, format!("/aos-sandboxes.slice/{}", name.as_str())).is_err());
         assert_eq!(
             parse_cgroup(&name, path.clone()).unwrap().unwrap().as_str(),
             path

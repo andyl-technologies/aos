@@ -2126,3 +2126,53 @@ build passes its root-descriptor C tests, and the first-PID-1 fixture compiles
 with warnings denied. The packaged workspace build and checks pass. The full
 evaluation check passed before the final detached-mount transfer edits; the
 worker and platform VM diagnostics are being rerun against the current tree.
+
+### Idmapped-root syscall and guest fixture follow-up
+
+The diagnostic worker VM identified the namespace helper's fatal seccomp
+record as x86-64 syscall 467 (`open_tree_attr`). The packaged systemd uses this
+operation when preparing the required root idmap; it belongs to `@mount`, not
+the inherited `@system-service` set. An intermediate explicit allowance got
+past this denial but exposed `EBUSY` in upstream's pathname remap: it attempts
+to unmount a root that already contains the prepared Nix-store submount.
+The descriptor profile now applies its fixed idmap with the already-allowed
+`mount_setattr` while the root is still detached, then attaches it once. It
+does not recursively change child idmaps or discard read-only mount boundaries.
+The extra syscall allowance is no longer needed and is not retained. A D-Bus
+property regression keeps both `open_tree_attr` and the broad `@mount` set out
+of the supervisor allowance; the separate payload denial also stays intact.
+
+The platform VM reached guest PID 1, then refused its empty `/usr` fixture.
+Both test roots now publish the standard `/usr/lib/os-release` file and an
+`/etc/os-release` symlink. The platform fixture also places `CollectMode` in
+the unit section and removes an obsolete static `CPUAccounting` setting.
+These are fixture repairs, not production guest-root completion. Diagnostics
+now retain a bounded kernel tail and seccomp audit records instead of every
+audited exec on the test node.
+
+After these fixture repairs, the platform VM booted the guest and reached its
+cgroup assertion. The observed path exposed a production canonicalization bug:
+systemd places the hyphenated `aos-sandboxes.slice` beneath `aos.slice`.
+Production parsing, cgroup-absence checks, and mock observations now use that
+exact hierarchy. The worker VM additionally creates an empty runtime cgroup
+with no manager unit and requires absence observation to fail, then removes
+the fixture cgroup and requires it to succeed. Guest PID 1 now checks that the
+prepared Nix-store mount still has its read-only flag after root setup.
+
+The full evaluation check passed for `1deded69a`. The diagnostic worker fixture
+initially hit a `rustc` allocator abort while compiling `aos-proto`; an exact
+derivation retry with eight build jobs passed, including its 82 Host unit
+tests. After the detached-idmap and cgroup-path changes, 94 Host/systemd unit
+tests, 25 integration tests, two doctests, strict Host/systemd Clippy, the
+patched systemd build/checks, and the full evaluation check pass.
+
+The updated worker VM passed its remaining-cgroup absence regression and
+reached the first guest executable. Its setup-descriptor/environment and
+read-only Nix-store checks passed, but exec of guest systemd returned `ENOENT`.
+Inspection found that the fixture's undeclared runtime executable reference
+had been scrubbed to an `eeee...` store hash. The fixture now declares systemd
+as a runtime dependency, and its root builder checks the final installed
+binary for the exact executable path. The platform VM passed initial payload
+and corrected cgroup assertions, then failed while waiting for its observer
+report; observer journal and cgroup-tree diagnostics are added for that run.
+The repaired VM gates are being rerun; neither gate is yet green.

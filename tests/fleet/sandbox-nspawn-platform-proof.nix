@@ -86,12 +86,13 @@
   };
 
   containerRoot = pkgs.runCommand "aos-nspawn-platform-proof-root" {} ''
-    mkdir -p $out/etc/systemd/system $out/sbin $out/var/lib/aos-nspawn-proof
+    mkdir -p $out/etc/systemd/system $out/usr/lib $out/sbin $out/var/lib/aos-nspawn-proof
     cp ${defaultTarget}/default.target $out/etc/systemd/system/default.target
     cp ${payloadService}/aos-nspawn-payload-proof.service \
       $out/etc/systemd/system/aos-nspawn-payload-proof.service
     ln -s ${pkgs.systemd}/lib/systemd/systemd $out/sbin/init
-    printf 'NAME=AOS-nspawn-platform-proof\nID=aos-nspawn-proof\n' > $out/etc/os-release
+    printf 'NAME=AOS-nspawn-platform-proof\nID=aos-nspawn-proof\n' > $out/usr/lib/os-release
+    ln -s ../usr/lib/os-release $out/etc/os-release
     printf 'a05a05a05a05a05a05a05a05a05a05a0\n' > $out/etc/machine-id
   '';
 
@@ -198,6 +199,7 @@
       systemd.services.aos-nspawn-platform-proof = {
         requires = ["aos-nspawn-proof-netns.service"];
         after = ["aos-nspawn-proof-netns.service"];
+        unitConfig.CollectMode = "inactive-or-failed";
         serviceConfig = {
           Type = "notify";
           NotifyAccess = "main";
@@ -205,7 +207,6 @@
           DelegateSubgroup = "supervisor";
           Slice = "aos-sandboxes.slice";
           Restart = "no";
-          CollectMode = "inactive-or-failed";
           KillMode = "mixed";
           OOMPolicy = "kill";
           TasksMax = 4096;
@@ -213,7 +214,6 @@
           MemoryMax = "1G";
           MemorySwapMax = 0;
           CPUWeight = 100;
-          CPUAccounting = true;
           MemoryAccounting = true;
           IOAccounting = true;
           TasksAccounting = true;
@@ -275,6 +275,14 @@ in {
   testScript = ''
     import json
     import re
+
+    def wait_for_observer_report():
+        try:
+            vm.wait_until_succeeds("test -s /run/aos-nspawn-host-observer.json", timeout=15)
+        except Exception:
+            print(vm.execute("journalctl -u aos-nspawn-host-observer.service -u aos-nspawn-platform-proof.service --no-pager")[1].decode("utf-8", errors="replace"))
+            print(vm.execute("${pkgs.systemd}/bin/systemd-cgls --no-pager /aos.slice/aos-sandboxes.slice/aos-nspawn-platform-proof.service")[1].decode("utf-8", errors="replace"))
+            raise
 
     vm.wait_for_unit("multi-user.target", timeout=120)
     vm.succeed("systemctl mask --runtime --now systemd-machined.service")
@@ -350,12 +358,12 @@ in {
 
     assert vm.succeed(f"readlink /proc/{supervisor_pid}/exe").strip() == "${pkgs.systemd}/bin/systemd-nspawn"
     control_group = vm.succeed("systemctl show aos-nspawn-platform-proof.service -p ControlGroup --value").strip()
-    assert control_group.startswith("/aos-sandboxes.slice/"), control_group
+    assert control_group == "/aos.slice/aos-sandboxes.slice/aos-nspawn-platform-proof.service", control_group
     vm.succeed(f"test -d /sys/fs/cgroup{control_group}/supervisor")
     vm.succeed(f"test -d /sys/fs/cgroup{control_group}/payload")
 
     vm.succeed("systemctl start aos-nspawn-host-observer.service")
-    vm.wait_until_succeeds("test -s /run/aos-nspawn-host-observer.json", timeout=15)
+    wait_for_observer_report()
     first_observation = json.loads(vm.succeed("cat /run/aos-nspawn-host-observer.json"))
     assert first_observation["state"] == "observing", first_observation
     assert first_observation["boot_generation"] == 1, first_observation
@@ -363,7 +371,7 @@ in {
     first_observer_pid = int(vm.succeed("systemctl show aos-nspawn-host-observer.service -p MainPID --value").strip())
     vm.succeed("rm /run/aos-nspawn-host-observer.json")
     vm.succeed("systemctl restart aos-nspawn-host-observer.service")
-    vm.wait_until_succeeds("test -s /run/aos-nspawn-host-observer.json", timeout=15)
+    wait_for_observer_report()
     restarted_observation = json.loads(vm.succeed("cat /run/aos-nspawn-host-observer.json"))
     assert restarted_observation == first_observation, (first_observation, restarted_observation)
     assert int(vm.succeed("systemctl show aos-nspawn-host-observer.service -p MainPID --value").strip()) != first_observer_pid

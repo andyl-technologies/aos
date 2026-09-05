@@ -1,5 +1,5 @@
 diff --git a/src/nspawn/meson.build b/src/nspawn/meson.build
-index 724397446..cd19ff973 100644
+index 7243974..cd19ff9 100644
 --- a/src/nspawn/meson.build
 +++ b/src/nspawn/meson.build
 @@ -9,6 +9,7 @@ nspawn_sources = files(
@@ -22,7 +22,7 @@ index 724397446..cd19ff973 100644
                  'conditions' : ['HAVE_SECCOMP'],
 diff --git a/src/nspawn/nspawn-root-fd.c b/src/nspawn/nspawn-root-fd.c
 new file mode 100644
-index 000000000..2db084a95
+index 0000000..2db084a
 --- /dev/null
 +++ b/src/nspawn/nspawn-root-fd.c
 @@ -0,0 +1,77 @@
@@ -105,7 +105,7 @@ index 000000000..2db084a95
 +}
 diff --git a/src/nspawn/nspawn-root-fd.h b/src/nspawn/nspawn-root-fd.h
 new file mode 100644
-index 000000000..1356eeaae
+index 0000000..1356eea
 --- /dev/null
 +++ b/src/nspawn/nspawn-root-fd.h
 @@ -0,0 +1,7 @@
@@ -117,7 +117,7 @@ index 000000000..1356eeaae
 +int aos_root_directory_from_fd(int fd, int *ret_root_fd, int *ret_lock_fd, char **ret_path);
 +int aos_root_directory_acquire(int *ret_root_fd, int *ret_lock_fd, char **ret_path);
 diff --git a/src/nspawn/nspawn.c b/src/nspawn/nspawn.c
-index 3b514968f..652c4e346 100644
+index 3b51496..2190b37 100644
 --- a/src/nspawn/nspawn.c
 +++ b/src/nspawn/nspawn.c
 @@ -79,6 +79,7 @@
@@ -183,7 +183,36 @@ index 3b514968f..652c4e346 100644
                  _cleanup_(pick_result_done) PickResult result = PICK_RESULT_NULL;
                  PickFilter filter = *pick_filter_image_dir;
  
-@@ -4024,6 +4036,13 @@ static int outer_child(
+@@ -3989,6 +4001,28 @@ static int outer_child(
+                 assert(arg_directory);
+                 assert(!arg_image);
+ 
++                if (arg_aos_root_directory_fd) {
++                        _cleanup_close_ int idmap_userns_fd = -EBADF;
++
++                        /* Attribute only the detached root before attachment.
++                         * Upstream's later pathname remap unmounts the root,
++                         * which fails with EBUSY for a prepared tree containing
++                         * submounts. Do not recursively rewrite the publisher's
++                         * child idmaps or drop its read-only mount boundaries. */
++                        idmap_userns_fd = make_userns(arg_uid_shift, arg_uid_range,
++                                                     UID_INVALID, UID_INVALID, REMOUNT_IDMAPPING_HOST_ROOT);
++                        if (idmap_userns_fd < 0)
++                                return log_error_errno(idmap_userns_fd, "Failed to prepare AOS root idmap: %m");
++
++                        struct mount_attr attr = {
++                                .attr_set = MOUNT_ATTR_IDMAP,
++                                .userns_fd = idmap_userns_fd,
++                        };
++                        if (mount_setattr(mount_fd, "", AT_EMPTY_PATH, &attr, sizeof(attr)) < 0)
++                                return log_error_errno(errno, "Failed to idmap detached AOS root: %m");
++                        idmap = true;
++                }
++
+                 if (move_mount(mount_fd, "", AT_FDCWD, directory, MOVE_MOUNT_F_EMPTY_PATH) < 0)
+                         return log_error_errno(errno, "Failed to attach root directory: %m");
+ 
+@@ -4024,6 +4058,13 @@ static int outer_child(
                          return r;
          }
  
@@ -197,7 +226,16 @@ index 3b514968f..652c4e346 100644
          r = determine_uid_shift(directory);
          if (r < 0)
                  return r;
-@@ -6013,6 +6032,7 @@ static int do_cleanup(void) {
+@@ -4152,7 +4193,7 @@ static int outer_child(
+         if (r < 0)
+                 return r;
+ 
+-        if (!IN_SET(arg_userns_mode, USER_NAMESPACE_NO, USER_NAMESPACE_MANAGED) &&
++        if (!idmap && !IN_SET(arg_userns_mode, USER_NAMESPACE_NO, USER_NAMESPACE_MANAGED) &&
+             IN_SET(arg_userns_ownership, USER_NAMESPACE_OWNERSHIP_MAP, USER_NAMESPACE_OWNERSHIP_FOREIGN, USER_NAMESPACE_OWNERSHIP_AUTO) &&
+             chown_uid != 0) {
+                 _cleanup_strv_free_ char **dirs = NULL;
+@@ -6013,6 +6054,7 @@ static int do_cleanup(void) {
  static int run(int argc, char *argv[]) {
          bool remove_directory = false, remove_image = false, veth_created = false;
          _cleanup_close_ int master = -EBADF, userns_fd = -EBADF, mount_fd = -EBADF;
@@ -205,7 +243,7 @@ index 3b514968f..652c4e346 100644
          _cleanup_fdset_free_ FDSet *fds = NULL;
          int r, ret = EXIT_SUCCESS;
          char veth_name[IFNAMSIZ] = "";
-@@ -6032,6 +6052,30 @@ static int run(int argc, char *argv[]) {
+@@ -6032,6 +6074,30 @@ static int run(int argc, char *argv[]) {
          if (r <= 0)
                  goto finish;
  
@@ -236,7 +274,7 @@ index 3b514968f..652c4e346 100644
          if (arg_cleanup)
                  return do_cleanup();
  
-@@ -6217,7 +6261,7 @@ static int run(int argc, char *argv[]) {
+@@ -6217,7 +6283,7 @@ static int run(int argc, char *argv[]) {
  
                          free_and_replace(arg_directory, np);
                          remove_directory = true;
@@ -245,7 +283,7 @@ index 3b514968f..652c4e346 100644
                          r = chase_and_update(&arg_directory, arg_template ? CHASE_NONEXISTENT : 0);
                          if (r < 0)
                                  goto finish;
-@@ -6268,7 +6312,11 @@ static int run(int argc, char *argv[]) {
+@@ -6268,7 +6334,11 @@ static int run(int argc, char *argv[]) {
                          }
                  }
  
@@ -258,7 +296,7 @@ index 3b514968f..652c4e346 100644
                          _cleanup_free_ char *b = NULL;
                          const char *p;
                          int check_os_release, is_os_tree;
-@@ -6532,9 +6580,26 @@ static int run(int argc, char *argv[]) {
+@@ -6532,9 +6602,26 @@ static int run(int argc, char *argv[]) {
          }
  
          for (;;) {
@@ -288,7 +326,7 @@ index 3b514968f..652c4e346 100644
                                  fds,
 diff --git a/src/nspawn/test-nspawn-root-fd.c b/src/nspawn/test-nspawn-root-fd.c
 new file mode 100644
-index 000000000..ce64fdf28
+index 0000000..ce64fdf
 --- /dev/null
 +++ b/src/nspawn/test-nspawn-root-fd.c
 @@ -0,0 +1,105 @@
