@@ -3,11 +3,76 @@
 //! These queries preserve resource ownership while exposing explicitly granted
 //! resources to their consumer scope. Pagination precedes resource expansion.
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context as _, Result};
 
 use super::{Database, DeliveryIdentityPage, GatewayRecord, RouteRecord, SurfaceTarget};
 
 impl Database {
+    /// Lists pending/running operations whose immutable targets touch a surface.
+    ///
+    /// Primary and secondary targets are matched in SQL so unrelated tenants'
+    /// operations never cross the Worker database bridge. Placement identities
+    /// use the same surface stable-id prefix as typed operation admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a missing surface, database failure, or malformed rows.
+    pub async fn list_active_surface_operations(
+        &self,
+        surface: SurfaceTarget,
+    ) -> Result<Vec<super::TopologyOperationRecord>> {
+        let (kind, stable_id) = match surface {
+            SurfaceTarget::Registry(id) => (
+                "registry",
+                self.registry_by_id(id)
+                    .await?
+                    .context("registry surface does not exist")?
+                    .stable_id,
+            ),
+            SurfaceTarget::BinaryCache(id) => (
+                "binary_cache",
+                self.binary_cache_by_id(id)
+                    .await?
+                    .context("binary-cache surface does not exist")?
+                    .stable_id,
+            ),
+        };
+        let (registry_id, cache_id) = surface.ids();
+        self.backend
+            .query(
+                &format!(
+                    "WITH surface_targets AS (
+                       SELECT ?1 AS target_kind, ?2 AS stable_id
+                       UNION ALL
+                       SELECT 'placement', ?2 || '/placement:' || name
+                         FROM surface_placements
+                        WHERE registry_id = ?3 OR cache_id = ?4
+                     )
+                     SELECT {} FROM topology_operations o
+                      WHERE o.state IN ('pending', 'running')
+                        AND o.operation_id IN (
+                          SELECT candidate.operation_id FROM topology_operations candidate
+                          JOIN surface_targets target
+                            ON target.target_kind = candidate.primary_target_kind
+                           AND target.stable_id = candidate.primary_target_stable_id
+                          UNION
+                          SELECT secondary_target.operation_id
+                            FROM operation_secondary_targets secondary_target
+                          JOIN surface_targets target
+                            ON target.target_kind = secondary_target.target_kind
+                           AND target.stable_id = secondary_target.stable_id
+                        )
+                      ORDER BY o.created_at DESC, o.operation_id",
+                    super::OPERATION_COLUMNS,
+                ),
+                &vals![kind, stable_id, registry_id, cache_id],
+            )
+            .await?
+            .iter()
+            .map(super::row_to_topology_operation)
+            .collect()
+    }
+
     /// Lists a bounded route page for one surface in stable identity order.
     ///
     /// Callers authorize the surface before querying. The exclusive continuation
@@ -142,6 +207,184 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::{
+        GrantResource, NewSurfacePlacementSpec, NewTopologyOperation, NewTopologyOperationTarget,
+        NewTopologyOperationTargetRef,
+    };
+    use crate::domain::Permission;
+
+    async fn operation_target(
+        db: &Database,
+        target: NewTopologyOperationTargetRef,
+        role: &str,
+    ) -> NewTopologyOperationTarget {
+        let generation_key = match &target {
+            NewTopologyOperationTargetRef::Placement(id) => {
+                db.surface_placement(*id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .resource_version
+            }
+            _ => 0,
+        };
+        NewTopologyOperationTarget {
+            role: role.into(),
+            target,
+            generation_key,
+            configuration_digest: String::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn active_surface_operations_match_scoped_primary_and_secondary_targets() {
+        let db = Database::open_in_memory().await.unwrap();
+        let owner = db
+            .create_org("surface-ops", "Surface operations")
+            .await
+            .unwrap();
+        let other = db
+            .create_org("other-ops", "Other operations")
+            .await
+            .unwrap();
+        let registry = db
+            .create_managed_registry(owner, "", "main", "private", &[], false)
+            .await
+            .unwrap();
+        let cache = db
+            .create_binary_cache(
+                Some(owner),
+                "surface-ops/cache",
+                "Cache",
+                "private",
+                0,
+                "zstd",
+                false,
+            )
+            .await
+            .unwrap();
+        let unrelated = db
+            .create_managed_registry(other, "", "main", "private", &[], false)
+            .await
+            .unwrap();
+        let binding = db
+            .ensure_instance_default_binding("local_fs", Some("/tmp/surface-ops-fixture"), None)
+            .await
+            .unwrap();
+        let owner_scope = db.org_by_id(owner).await.unwrap().unwrap().stable_id;
+        db.grant_consumer_scope(
+            GrantResource::Binding {
+                id: binding.id,
+                stable_id: &binding.stable_id,
+            },
+            &owner_scope,
+            "explicit",
+            "test",
+            "surface-ops-grant",
+        )
+        .await
+        .unwrap();
+
+        for (label, surface, target) in [
+            (
+                "registry",
+                SurfaceTarget::Registry(registry),
+                NewTopologyOperationTargetRef::Registry(registry),
+            ),
+            (
+                "cache",
+                SurfaceTarget::BinaryCache(cache),
+                NewTopologyOperationTargetRef::BinaryCache(cache),
+            ),
+        ] {
+            let placement = db
+                .create_surface_placement(&NewSurfacePlacementSpec {
+                    surface,
+                    name: "primary".into(),
+                    binding_id: binding.id,
+                    prefix: format!("surface-ops/{label}"),
+                    kind: "complete".into(),
+                    desired_state: "active".into(),
+                    hash_range: None,
+                    desired_read_enabled: true,
+                    read_order: 0,
+                    requires_conditional_writes: false,
+                })
+                .await
+                .unwrap();
+            let placement_target = NewTopologyOperationTargetRef::Placement(placement.id);
+            let foreign_target = NewTopologyOperationTargetRef::Registry(unrelated);
+            for (name, primary, secondary) in [
+                ("a-primary", target.clone(), None),
+                ("b-placement", placement_target.clone(), None),
+                (
+                    "c-secondary-surface",
+                    foreign_target.clone(),
+                    Some(target.clone()),
+                ),
+                (
+                    "d-secondary-placement",
+                    foreign_target.clone(),
+                    Some(placement_target.clone()),
+                ),
+                ("e-both", target.clone(), Some(placement_target)),
+                ("f-newest", target.clone(), None),
+                ("g-completed", target.clone(), None),
+                ("h-unrelated", foreign_target, None),
+            ] {
+                let mut targets = vec![operation_target(&db, primary, "primary").await];
+                if let Some(secondary) = secondary {
+                    targets.push(operation_target(&db, secondary, "source").await);
+                }
+                db.create_topology_operation(&NewTopologyOperation {
+                    operation_id: format!("{label}-{name}"),
+                    operation_kind: "test_surface_operation".into(),
+                    control_permission: Permission::Read,
+                    targets,
+                    detail_json: "{}".into(),
+                    progress_total: None,
+                })
+                .await
+                .unwrap();
+            }
+            // Stable timestamps make both ordering keys observable, while a
+            // completed match verifies the inventory's active-state filter.
+            db.backend
+                .execute("UPDATE topology_operations SET created_at = 1", &[])
+                .await
+                .unwrap();
+            db.backend
+                .execute(
+                    "UPDATE topology_operations SET created_at = 2 WHERE operation_id = ?1",
+                    &vals![format!("{label}-f-newest")],
+                )
+                .await
+                .unwrap();
+            db.backend.execute("UPDATE topology_operations SET state = 'succeeded', started_at = 2, finished_at = 2 WHERE operation_id = ?1", &vals![format!("{label}-g-completed")]).await.unwrap();
+            db.backend.execute("UPDATE topology_operations SET state = 'running', started_at = 2 WHERE operation_id = ?1", &vals![format!("{label}-b-placement")]).await.unwrap();
+            let actual = db
+                .list_active_surface_operations(surface)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|operation| operation.operation_id)
+                .collect::<Vec<_>>();
+            let expected = [
+                "f-newest",
+                "a-primary",
+                "b-placement",
+                "c-secondary-surface",
+                "d-secondary-placement",
+                "e-both",
+            ]
+            .map(|name| format!("{label}-{name}"));
+            assert_eq!(actual, expected);
+        }
+        assert!(db
+            .list_active_surface_operations(SurfaceTarget::Registry(i64::MAX))
+            .await
+            .is_err());
+    }
 
     #[tokio::test]
     async fn route_pages_are_bounded_and_resume_in_stable_identity_order() {
