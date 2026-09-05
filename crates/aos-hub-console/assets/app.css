@@ -637,7 +637,18 @@
 
 .resource-identity > div {
   display: grid;
+  min-width: 0;
   gap: 0.2rem;
+}
+
+.resource-identity code,
+.workflow-card-heading h3,
+.workflow-card-heading code {
+  overflow-wrap: anywhere;
+}
+
+.workflow-card-heading > div {
+  min-width: 0;
 }
 
 .danger-panel,

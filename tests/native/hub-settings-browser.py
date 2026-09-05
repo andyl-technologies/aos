@@ -602,6 +602,13 @@ class HubSettingsSmoke:
                     "narrow settings navigation closes from its summary",
                 )
                 self.mobile_navigation_checked = True
+            if suffix == "narrow":
+                self.check(
+                    self.chrome.evaluate(
+                        "document.documentElement.scrollWidth <= window.innerWidth"
+                    ),
+                    f"{label} fits the narrow viewport without horizontal overflow",
+                )
             time.sleep(0.1)
             capture = self.chrome.call("Page.captureScreenshot", {
                 "format": "png",
