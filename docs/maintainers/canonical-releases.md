@@ -592,7 +592,7 @@ adapters whose far ends execute on supported Intel and Apple Silicon macOS.
 Release-wide cases use the x86_64 Linux executor. Image and container cases
 select their declared reference target; package cases select each published
 package/platform independently. An absent unrelated platform requires no
-adapter. Legacy plans retain their original platform-wide execution semantics.
+adapter. Archival v1 plans remain readable, but new publication operations require v2.
 
 Each adapter reads one canonical request from standard input and writes one
 canonical `aos.release.qualification-executor-response/v1` object to standard
@@ -619,15 +619,22 @@ aos release qualify-run \
   --authority-verification-identity qualification-provider-v1 \
   --executor-nonce 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
   --authority-nonce abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789 \
-  --qualified-at 2026-09-03T12:00:00Z \
-  --output qualification
+  --qualified-at now \
+  --prepare-only \
+  --output qualification-prepared
 ```
 
 Both nonce values are single-use operator inputs. The plan must name a distinct
 `qualification` signer role with exactly the public key supplied above. The
-command retains each machine-readable executor report, the canonical aggregate
-report, its receipt, and the signed receipt. It refuses incomplete executor
-configuration even when a particular release has no artifact for one platform.
+collection command retains each machine-readable executor report and the canonical
+aggregate report. Review those exact bytes, then repeat the command with
+`--report-input qualification-prepared/qualification-report.json`,
+`--review-receipt approvals/review.json`, and `--output qualification`, omitting
+`--prepare-only`. Repeat review receipts to satisfy the planned threshold.
+The [shared qualification guide](qualification.md#collect-review-and-sign)
+specifies the review payload and later hold points. Missing applicable adapters
+fail closed. `--qualified-at now` resolves after collection, avoiding a receipt
+time earlier than the tests it authorizes.
 
 ## Admit signed qualification
 
@@ -670,7 +677,7 @@ aos release promote \
   --staging-receipt release-qualified/staging-receipt.json \
   --qualification-receipt release-qualified/qualification-receipt.json \
   --signed-qualification release-qualified/signed-qualification.json \
-  --qualification-report release-qualified/qualification-report.json \
+  --qualification-report qualification/qualification-report.json \
   --trusted-key release-2026=/media/keys/release-2026.pub \
   --staging-receipt-key staging-hub-2026=/media/keys/staging-hub-2026.pub \
   --qualification-key qualifier-2026=/media/keys/qualifier-2026.pub \
@@ -692,10 +699,14 @@ evidence.
 ## Advance a planned channel range
 
 Advance only a partition range frozen in the release plan, using the exact
-generation observed by the operator:
+generation observed by the operator. First collect and sign a `rollout` report
+against the current production receipt, journal, and exact next range, as
+specified in [the shared guide](qualification.md#collect-review-and-sign):
 
 ```sh
 aos release channel advance \
+  --qualification qualification-rollout \
+  --qualification-key qualifier-2026=/media/keys/qualifier-2026.pub \
   --bundle release-bundle \
   --journal release-promoted/release-journal.jsonl \
   --production-receipt release-promoted/production-receipt.json \
@@ -728,10 +739,14 @@ receipt, the exact rolling journal-head digest, the frozen retention policy,
 affirmative corresponding-source retention, affirmative operational handoff, a
 public authority identity, and an RFC 3339 UTC completion time.
 
-Then recheck the complete public rollout and close the journal:
+Collect and sign the `complete` observation report after the required workload
+window, using the production receipt and current rolling journal. Then recheck
+the complete public rollout and close the journal:
 
 ```sh
 aos release channel complete \
+  --qualification qualification-complete \
+  --qualification-key qualifier-2026=/media/keys/qualifier-2026.pub \
   --bundle release-bundle \
   --journal release-edge-final/release-journal.jsonl \
   --production-receipt release-promoted/production-receipt.json \

@@ -6,6 +6,11 @@ use clap::{Args, Subcommand};
 
 #[derive(Subcommand)]
 pub enum ReleaseCommand {
+    /// Inspect cases or execute an exact qualification request
+    Qualification {
+        #[command(subcommand)]
+        command: ReleaseQualificationCommand,
+    },
     /// Inspect the shared qualification contract and required release gates
     Contract(ReleaseContractArgs),
     /// Derive and freeze a release plan from Git and the Nix inventory
@@ -53,6 +58,43 @@ pub enum ReleaseCommand {
     },
     /// Verify a captured release bundle using only public trust inputs
     Verify(ReleaseVerifyArgs),
+}
+
+#[derive(Subcommand)]
+pub enum ReleaseQualificationCommand {
+    /// Expand the applicable cases in an exported plan and manifest
+    Cases(ReleaseQualificationCasesArgs),
+    /// Download exact public objects and run a configured scenario
+    Execute(ReleaseQualificationExecuteArgs),
+}
+
+#[derive(Args)]
+pub struct ReleaseQualificationCasesArgs {
+    /// Canonical frozen release plan
+    #[arg(long)]
+    pub plan: PathBuf,
+    /// Canonical manifest payload or signed manifest envelope
+    #[arg(long)]
+    pub manifest: PathBuf,
+    /// Select the release hold point
+    #[arg(long, value_parser = ["build", "staging", "rollout", "complete"])]
+    pub phase: String,
+}
+
+#[derive(Args)]
+pub struct ReleaseQualificationExecuteArgs {
+    /// Immutable scenario registry produced by the Nix qualification builder
+    #[arg(long)]
+    pub scenarios: PathBuf,
+    /// Public executor identity expected by the coordinator
+    #[arg(long)]
+    pub identity: String,
+    /// Parent directory for retained requests, objects, observations, and diagnostics
+    #[arg(long)]
+    pub work_root: PathBuf,
+    /// Maximum duration of a scenario in seconds
+    #[arg(long, default_value_t = 1800)]
+    pub timeout_seconds: u64,
 }
 
 #[derive(Args)]
@@ -619,14 +661,36 @@ pub struct ReleaseQualifyArgs {
     pub output: PathBuf,
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub struct ReleaseQualifyRunArgs {
+    /// Collect a report for independent review without invoking the signer
+    #[arg(long, conflicts_with = "report_input")]
+    pub prepare_only: bool,
+
+    /// Admit an already collected canonical report after independent review
+    #[arg(long)]
+    pub report_input: Option<PathBuf>,
+    /// Select the hold point whose exact public objects are qualified
+    #[arg(long, default_value = "staging", value_parser = ["staging", "rollout", "complete"])]
+    pub phase: String,
+
+    /// Canonical channel/generation/partition intent, required for rollout signing
+    #[arg(long)]
+    pub rollout_intent: Option<PathBuf>,
+
+    /// Current journal, required for rollout and completion qualification
+    #[arg(long)]
+    pub journal: Option<PathBuf>,
+
+    /// Independent signed report review; repeat to the release-evidence threshold
+    #[arg(long = "review-receipt")]
+    pub review_receipts: Vec<PathBuf>,
     /// Closed finalized bundle whose public staging objects are tested
     #[arg(long)]
     pub bundle: PathBuf,
 
     /// Exact signed staging receipt returned by the Hub
-    #[arg(long)]
+    #[arg(long, alias = "publication-receipt")]
     pub staging_receipt: PathBuf,
 
     /// Trusted manifest key as KEY_ID=PATH; repeat to satisfy thresholds
@@ -637,11 +701,11 @@ pub struct ReleaseQualifyRunArgs {
     #[arg(long = "hub-receipt-key", value_name = "KEY_ID=PATH", required = true)]
     pub hub_receipt_keys: Vec<String>,
 
-    /// Native executor as PLATFORM=ABSOLUTE_PATH; supply all four platforms
+    /// Executor as PLATFORM=ABSOLUTE_PATH for each applicable platform
     #[arg(long = "executor", value_name = "PLATFORM=PATH", required = true)]
     pub executors: Vec<String>,
 
-    /// Expected executor identity as PLATFORM=IDENTITY; supply all four platforms
+    /// Expected executor identity as PLATFORM=IDENTITY for each applicable platform
     #[arg(
         long = "executor-identity",
         value_name = "PLATFORM=IDENTITY",
@@ -677,8 +741,8 @@ pub struct ReleaseQualifyRunArgs {
     #[arg(long)]
     pub authority_nonce: String,
 
-    /// RFC 3339 UTC time recorded on the aggregate qualification receipt
-    #[arg(long)]
+    /// RFC 3339 admission time, or now after observations have been collected
+    #[arg(long, default_value = "now")]
     pub qualified_at: String,
 
     /// New qualification result directory; existing paths are never replaced
@@ -759,6 +823,13 @@ pub enum ReleaseChannelCommand {
 
 #[derive(Args)]
 pub struct ReleaseChannelAdvanceArgs {
+    /// Signed current rollout qualification directory
+    #[arg(long)]
+    pub qualification: Option<PathBuf>,
+
+    /// Planned qualification authority public key as KEY_ID=PATH
+    #[arg(long = "qualification-key")]
+    pub qualification_keys: Vec<String>,
     /// Closed finalized bundle whose manifest is being rolled out
     #[arg(long)]
     pub bundle: PathBuf,
@@ -818,6 +889,13 @@ pub struct ReleaseChannelAdvanceArgs {
 
 #[derive(Args)]
 pub struct ReleaseChannelCompleteArgs {
+    /// Signed current completion qualification directory
+    #[arg(long)]
+    pub qualification: Option<PathBuf>,
+
+    /// Planned qualification authority public key as KEY_ID=PATH
+    #[arg(long = "qualification-key")]
+    pub qualification_keys: Vec<String>,
     /// Closed finalized bundle whose rollout is completing
     #[arg(long)]
     pub bundle: PathBuf,

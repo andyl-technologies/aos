@@ -51,6 +51,8 @@ pub struct QualificationCase {
     pub phase: QualificationPhase,
     /// Exact target platform, or none for release-wide evidence.
     pub platform: Option<Platform>,
+    /// Direct package criticality; runtime dependencies inherit their consumers' obligations.
+    pub package_role: Option<crate::qualification::PackageRole>,
     /// Public reference machine/runtime configuration, where applicable.
     pub target: Option<QualificationTarget>,
     /// Sorted exact artifact ids; package tests never cover unrelated packages.
@@ -147,12 +149,30 @@ pub fn cases(
             } else {
                 None
             };
+            let package_role = if requirement.scope == QualificationScope::Packages {
+                let (name, _) = suffix
+                    .rsplit_once('/')
+                    .ok_or_else(|| anyhow::anyhow!("invalid package case identity"))?;
+                Some(
+                    contract
+                        .package_rules
+                        .iter()
+                        .find(|rule| rule.name == name)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("package case lacks its criticality classification")
+                        })?
+                        .role,
+                )
+            } else {
+                None
+            };
             result.push(QualificationCase {
                 id: format!("{}/{suffix}", requirement.id),
                 requirement_id: requirement.id.clone(),
                 policy_digest: gate.policy_digest,
                 phase,
                 platform,
+                package_role,
                 target,
                 subjects,
                 checks: requirement.checks.clone(),
@@ -287,7 +307,8 @@ pub fn validate_observations(
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("missing qualification contract"))?;
     let thresholds = contract.thresholds_for(plan.release_class)?;
-    if evidence.len() != expected.len() {
+    if evidence.len() != expected.len() || evidence.windows(2).any(|pair| pair[0].id >= pair[1].id)
+    {
         bail!("qualification evidence count differs from applicable cases");
     }
     let mut seen = BTreeSet::new();
@@ -308,6 +329,7 @@ pub fn validate_observations(
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("missing structured observation"))?;
         if !seen.insert(&record.id)
+            || record.id != format!("qualification/{}", case.id)
             || record.result != GateResult::Passed
             || record.policy_id != case.requirement_id
             || record.policy_digest != case.policy_digest
@@ -338,7 +360,12 @@ pub fn validate_observations(
         {
             bail!("qualification observation has inconsistent or future timestamps");
         }
-        if now.duration_since(finish)?.as_secs() > thresholds.exercise_max_age_seconds {
+        let maximum_age = if phase == QualificationPhase::Rollout {
+            600
+        } else {
+            thresholds.exercise_max_age_seconds
+        };
+        if now.duration_since(finish)?.as_secs() > maximum_age {
             bail!("qualification evidence is expired");
         }
         if case.requirement_id == "rollout-observation"

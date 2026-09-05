@@ -32,6 +32,7 @@ pub mod manifest;
 pub mod plan;
 pub mod platform;
 pub mod qualification;
+pub mod qualification_admission;
 pub mod qualification_evidence;
 pub mod receipt;
 pub mod registry;

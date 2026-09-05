@@ -35,6 +35,7 @@ pub(super) async fn run(args: &ReleasePromoteArgs, printer: &Printer) -> Result<
     )?;
     let plan: aos_release::plan::ReleasePlanV1 =
         canonical::from_slice(&captured.plan_bytes, "release plan")?;
+    plan.require_current_qualification()?;
     let manifest: ManifestEnvelopeV1 =
         canonical::from_slice(&captured.manifest_bytes, "release manifest")?;
     let bundle_digest =
@@ -95,6 +96,14 @@ pub(super) async fn run(args: &ReleasePromoteArgs, printer: &Printer) -> Result<
     {
         bail!("qualification evidence does not bind the exact promoted release");
     }
+    super::qualification_transition::verify_staging_report(
+        &plan,
+        &manifest.payload,
+        &args.qualification_report,
+        &report_bytes,
+        &qualification,
+        &manifest_keys,
+    )?;
     let latest = journal.last().context("release journal is empty")?;
     if !latest.evidence.contains(&staging_digest)
         || !latest.evidence.contains(&qualification_digest)

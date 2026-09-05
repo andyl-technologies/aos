@@ -34,6 +34,7 @@ pub(super) async fn run(args: &ReleaseStageArgs, printer: &Printer) -> Result<()
     )?;
     let plan: aos_release::plan::ReleasePlanV1 =
         canonical::from_slice(&captured.plan_bytes, "release plan")?;
+    plan.require_current_qualification()?;
     let journal_bytes = capture::control_file(&args.journal, "release journal")?;
     let journal = parse_journal(&journal_bytes)?;
     require_finalized_journal(&journal, summary.plan_digest, summary.manifest_digest)?;
