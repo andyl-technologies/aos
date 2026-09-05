@@ -27,6 +27,9 @@
   qemuReadOnlyBlockSource = import ./phase6-qemu-read-only-block-source.nix {
     inherit pkgs qemuPackage;
   };
+  qemuNativeWorkerRetirement = import ./phase6-qemu-native-worker-retirement.nix {
+    inherit pkgs qemuPackage;
+  };
   qemuPluginFailLoud = import ./phase2-plugin-fail-loud.nix {inherit pkgs lib;};
   qemuRrQuantumIcount = import ./phase2-qemu-rr-quantum-icount.nix {inherit pkgs lib;};
   qemuDetIpi = import ./phase2-qemu-det-ipi.nix {inherit pkgs lib;};
@@ -3263,6 +3266,24 @@
           grep -Fxq 'native_source_freeze_restore=true' "$live_result"
           grep -Fxq 'writable_descendant_rejected_and_restored=true' "$live_result"
           grep -Fxq 'inherited_parent_token_rejected=true' "$live_result"
+          grep -Fxq 'whole_world_child_handoff=false' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0198-crucible-retire-native-workers-before-hot-fork.patch";
+      check = certifyExactPatch {
+        patchName = "0198-crucible-retire-native-workers-before-hot-fork.patch";
+        liveCheck = qemuNativeWorkerRetirement;
+        evidenceName = "native-fork-child-read-private-write";
+        liveEvidence = ''
+          grep -Fxq 'inherited_native_workers_negative_control=true' "$live_result"
+          grep -Fxq 'native_child_source_read=true' "$live_result"
+          grep -Fxq 'durable_child_private_overlay_write=true' "$live_result"
+          grep -Fxq 'parent_source_unchanged=true' "$live_result"
+          grep -Fxq 'pending_work_and_foreign_contexts_rejected=true' "$live_result"
+          grep -Fxq 'held_barrier_rejected_without_wait=true' "$live_result"
+          grep -Fxq 'unowned_writable_nodes_rejected=true' "$live_result"
           grep -Fxq 'whole_world_child_handoff=false' "$live_result"
         '';
       };

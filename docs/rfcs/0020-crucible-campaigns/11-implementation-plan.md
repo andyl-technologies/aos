@@ -487,9 +487,9 @@ matching network evidence, and orderly exit. A diagnostic-only flight before
 the startup change also passed, so these results do not establish the cause of
 the earlier intermittent first-stop failure. The complete packaged network
 gate also passes, including the production two-VM hostless link, loss branch,
-exact restore, and packet/fault-decision continuation. The broader patch-series
-gate and the separate longer-run acknowledgement/cleanup investigation remain
-open.
+exact restore, and packet/fault-decision continuation. The complete 194-patch
+series gate also passes at this checkpoint. Validation of later patch increments
+and the separate longer-run acknowledgement/cleanup investigation remain open.
 
 Version-3 campaign snapshots introduced a childless, version-1 aggregate budget
 ledger. Genesis starts empty; every successor authenticates exact grant and
@@ -2909,9 +2909,21 @@ forked process cannot use the inherited parent token to restore or destroy the
 source. The packaged native QCOW2 tests retain their TAP evidence and exercise
 data preservation, restoration, inherited-token rejection, and the writable
 descendant negative case. This primitive is not yet called by the template
-coordinator. Complete source-set preparation, branch-private child overlay
-handoff, and post-fork native I/O reconstruction remain open; it does not
-acknowledge readiness or complete T-CAM-6.2 or T-CAM-6.3.
+coordinator. Complete source-set preparation and branch-private child overlay
+handoff remain open; it does not acknowledge readiness or complete T-CAM-6.2 or
+T-CAM-6.3.
+
+The template coordinator now retires drained native block workers after
+snapshot allocation queries and before AIO barriers. Pending requests, pools
+on other contexts, and held barriers reject retirement without discarding work.
+Acknowledgement and physical fork require the pools to remain absent. The
+physical fork also checks every native block node, rejecting writable unowned
+VMState nodes that backend enumeration misses. An actual native fork fixture
+reproduces the inherited-worker read stall, then proves source reads and durable
+private-overlay writes after retirement while preserving the parent's source.
+This establishes native child I/O reconstruction for the fixture, not complete
+production source preparation, child graph installation, or whole-world
+continuation; those acceptance items remain open.
 
 **Exit:** either the spike satisfies the structural and minimum-speedup targets,
 its manual lab evidence is accepted, or hot fork remains rejected and the RFC is
