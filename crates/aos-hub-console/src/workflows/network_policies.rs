@@ -623,7 +623,7 @@ fn BoundaryDelete(client: ApiClient, boundary: aos_proto_types::NetworkPolicy) -
             busy.set(false);
         });
     });
-    view! { <section class="subworkflow danger-subworkflow"><h4>"Delete boundary"</h4><p>"Public identity is permanent; other boundaries remain blocked by endpoints, grants, routes, or live pins."</p><button class="danger-button" type="button" disabled=move || busy.get() on:click=on_plan>"Delete"</button>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
+    view! { <section class="subworkflow danger-subworkflow"><h4>"Delete network policy"</h4><p>"Public identity is permanent; other network policies remain blocked by endpoints, grants, routes, or live pins."</p><button class="danger-button" type="button" disabled=move || busy.get() on:click=on_plan>"Delete"</button>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
 }
 
 fn boundary_identity(

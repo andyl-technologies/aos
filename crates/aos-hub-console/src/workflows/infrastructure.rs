@@ -952,7 +952,11 @@ fn TopologyDefaultsForm(
     let current_domain = display_default(&defaults.domain_id);
     let current_endpoint = generation_default(&defaults.endpoint_id, defaults.endpoint_generation);
     let current_gateway = generation_default(&defaults.gateway_id, defaults.gateway_generation);
-    let current_version = defaults.resource_version.clone();
+    let current_version = if defaults.resource_version.is_empty() {
+        "Not yet saved".to_string()
+    } else {
+        defaults.resource_version.clone()
+    };
     let can_manage = client.allows("binding.manage");
     let binding = RwSignal::new(defaults.binding_id.clone());
     let domain = RwSignal::new(defaults.domain_id.clone());
