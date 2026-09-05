@@ -593,6 +593,23 @@ facts inferred from descriptor types. This observation does not itself grant
 holder mapping, current assignment authority, or permission to deliver a local
 channel; those remain separate controller admission requirements.
 
+The controller records observed runtime executions and signed namespace targets
+in separate protected journal namespaces. The first live observation for an
+incarnation seeds its target from the current signed assignment manifest. A
+later observed generation allocates a target advanced by the same positive
+delta. Each immutable target record names the exact runtime-generation audit
+digest, and each per-incarnation head names the latest observed generation,
+target, and allocation digest. Replay validates both complete bounded histories
+and their cross-references before controller effects.
+
+Allocation is not authority. When a new observed execution still has an older
+signed target, the controller returns only a copyable advancement proposal. The
+caller must publish an authorized assignment successor, reacquire and retrack
+the live Host proof, and bind it again. Only exact agreement between the current
+signed manifest, current runtime-generation head, current allocation head, and
+retained live proof yields a `CurrentNamespaceTarget`. Restart cannot recreate
+that value, and it does not by itself prove attachment replay or readiness.
+
 Host 1.3 adds `ObserveMountScope` for the privileged Mount broker. This keeps
 payload root and namespace descriptors out of the node controller. The Host
 accepts the method only from a root peer in the fixed Mount service cgroup;

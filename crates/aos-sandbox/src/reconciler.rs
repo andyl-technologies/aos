@@ -511,6 +511,10 @@ pub enum ReconcileOutcome {
 /// Reports admission, ledger, journal, or executor-contract failures.
 #[derive(Debug, thiserror::Error)]
 pub enum ReconcilerError {
+    /// Protected namespace-target allocation history could not be validated.
+    #[cfg(target_os = "linux")]
+    #[error("namespace target failed: {0}")]
+    NamespaceTarget(#[source] Box<crate::runtime_scope::NamespaceTargetError>),
     /// Protected runtime-generation history could not be validated.
     #[cfg(target_os = "linux")]
     #[error("runtime generation failed: {0}")]
@@ -1157,6 +1161,20 @@ where
                 #[cfg(not(target_os = "linux"))]
                 return Err(ReconcilerError::CorruptLedger(
                     "runtime generations require Linux validation",
+                ));
+            }
+            if self
+                .journal
+                .records(RecordNamespace::NamespaceTarget)
+                .next()
+                .is_some()
+            {
+                #[cfg(target_os = "linux")]
+                crate::runtime_scope::validate_namespace_target_namespace(&mut self.journal)
+                    .map_err(|error| ReconcilerError::NamespaceTarget(Box::new(error)))?;
+                #[cfg(not(target_os = "linux"))]
+                return Err(ReconcilerError::CorruptLedger(
+                    "namespace targets require Linux validation",
                 ));
             }
             self.ledger_validated = true;

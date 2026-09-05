@@ -31,7 +31,7 @@ mod tests;
 const NAMESPACE: RecordNamespace = RecordNamespace::RuntimeGeneration;
 const MAXIMUM_HISTORY: usize = 4096;
 const MAXIMUM_BYTES: usize = 4 * 1024 * 1024;
-type Identity = ([u8; 16], [u8; 16]);
+pub(super) type Identity = ([u8; 16], [u8; 16]);
 
 /// Reports rejected generation history or unavailable current runtime authority.
 #[derive(Debug, thiserror::Error)]
@@ -141,15 +141,15 @@ impl CurrentRuntimeGeneration {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct Facts {
-    identity: Identity,
-    runtime: [u8; 32],
-    scope: [u8; 32],
-    pid: u32,
-    leaf_cgroup: u64,
-    anchor: u64,
-    binding_revision: u64,
-    binding_digest: [u8; 32],
+pub(super) struct Facts {
+    pub(super) identity: Identity,
+    pub(super) runtime: [u8; 32],
+    pub(super) scope: [u8; 32],
+    pub(super) pid: u32,
+    pub(super) leaf_cgroup: u64,
+    pub(super) anchor: u64,
+    pub(super) binding_revision: u64,
+    pub(super) binding_digest: [u8; 32],
 }
 
 impl Facts {
@@ -188,15 +188,15 @@ impl Facts {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct Record {
-    facts: Facts,
-    generation: u64,
-    predecessor: [u8; 32],
-    digest: [u8; 32],
+pub(super) struct Record {
+    pub(super) facts: Facts,
+    pub(super) generation: u64,
+    pub(super) predecessor: [u8; 32],
+    pub(super) digest: [u8; 32],
 }
 
 impl Record {
-    fn transaction(&self) -> Result<JournalTransaction, RuntimeGenerationError> {
+    pub(super) fn transaction(&self) -> Result<JournalTransaction, RuntimeGenerationError> {
         let mut id = [0; 16];
         id.copy_from_slice(&self.digest[..16]);
         Ok(JournalTransaction::new(
@@ -210,14 +210,15 @@ impl Record {
 }
 
 #[derive(Default)]
-struct History {
+pub(super) struct History {
     latest: BTreeMap<Identity, Record>,
+    records: BTreeMap<(Identity, u64), [u8; 32]>,
     scopes: BTreeSet<(Identity, [u8; 32])>,
     count: usize,
 }
 
 impl History {
-    fn load(journal: &mut Journal) -> Result<Self, RuntimeGenerationError> {
+    pub(super) fn load(journal: &mut Journal) -> Result<Self, RuntimeGenerationError> {
         journal.ensure_protected_authority()?;
         // Keep the exclusive journal borrow through all historical lookups.
         RuntimeAuthorityStore::load(journal, RuntimeAuthorityLimits::default())?;
@@ -296,6 +297,10 @@ impl History {
         let expected = previous.map_or(Some(1), |record| record.generation.checked_add(1));
         if Some(record.generation) != expected
             || record.predecessor != previous.map_or([0; 32], |record| record.digest)
+            || self
+                .records
+                .insert((record.facts.identity, record.generation), record.digest)
+                .is_some()
             || !self
                 .scopes
                 .insert((record.facts.identity, record.facts.scope))
@@ -307,7 +312,11 @@ impl History {
         Ok(())
     }
 
-    fn select(&self, facts: Facts) -> Result<(Record, bool), RuntimeGenerationError> {
+    pub(super) fn record_digest(&self, identity: Identity, generation: u64) -> Option<[u8; 32]> {
+        self.records.get(&(identity, generation)).copied()
+    }
+
+    pub(super) fn select(&self, facts: Facts) -> Result<(Record, bool), RuntimeGenerationError> {
         let previous = self.latest.get(&facts.identity);
         if let Some(record) = previous
             && record.facts.same_execution(&facts)

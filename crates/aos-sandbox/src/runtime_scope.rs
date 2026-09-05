@@ -20,6 +20,11 @@
 //! associate it with a durable, monotone execution number. Protected generation
 //! history survives restart and compaction, but neither its replay nor a fresh
 //! observation establishes that filesystem attachments have been restored.
+//!
+//! [`CurrentNamespaceTarget`] adds the separate signed-generation mapping. A
+//! changed observed execution allocates an inert successor target first; only a
+//! freshly reacquired proof under an assignment naming that target can produce
+//! the live value needed by later mount preparation.
 
 use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt as _;
@@ -48,6 +53,7 @@ mod current;
 mod generation;
 #[cfg(all(test, feature = "kernel-tests"))]
 mod kernel_tests;
+mod namespace_target;
 #[cfg(test)]
 mod tests;
 mod transport;
@@ -58,6 +64,10 @@ pub use current::{
 };
 pub(crate) use generation::validate_namespace as validate_generation_namespace;
 pub use generation::{CurrentRuntimeGeneration, RuntimeGenerationError};
+pub(crate) use namespace_target::validate_namespace as validate_namespace_target_namespace;
+pub use namespace_target::{
+    CurrentNamespaceTarget, NamespaceTargetAdvanceV1, NamespaceTargetError, NamespaceTargetOutcome,
+};
 
 const VERSION: ProtocolVersion = ProtocolVersion::new(1, 2);
 const METHOD: BrokerMethod = BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE;

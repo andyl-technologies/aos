@@ -2544,3 +2544,37 @@ changed-scope rejection. The root-only VM exercises the complete five-FD Host
 exchange and prepared catalog with kernel descriptor identities. The synthetic
 responder does not qualify Host launch attestation, production catalog
 publication, controller plan signing, or end-to-end attachment replay.
+
+### Observed-to-signed namespace target allocation
+
+The controller now keeps the local observed runtime sequence distinct from the
+namespace generation carried by signed assignment authority. The first live
+observation for an incarnation seeds a protected allocation from the current
+manifest. Later observed generations advance that target by the same positive
+delta, so skipped unused observations cannot alias an earlier namespace target.
+Immutable allocation records reference the exact runtime-generation audit
+digest and form their own hash-linked, per-incarnation history and exact head.
+
+If current authority still names an older target, the controller returns an
+inert advancement proposal containing the required target and both audit
+identities. It does not return a live target. The caller must complete the
+authorized same-owner assignment advancement, reacquire and retrack the Host
+proof, and bind it again. Only an exact current manifest target can produce the
+non-cloneable `CurrentNamespaceTarget`; later checks repeat live runtime,
+runtime-head, allocation-head, and signed-manifest validation. Restart cannot
+reconstruct it from the journal.
+
+Journal namespace 12 uses fixed-width `AOSNST01` records, a bounded 4096-record
+history, and fail-closed cross-reference validation before reconciliation.
+Codec, substitution, replay, compaction, monotonic-delta, overflow, capacity,
+and corrupt-ledger regressions are present. This supplies the fencing bridge
+needed before controller Mount preparation, but does not yet issue the Host
+RootMount grant, call Mount, sign a Mount Apply plan, replay attachments, or
+qualify backend readiness.
+
+Validation passes the serial all-feature sandbox suite (273 unit tests, the
+public API test, and 12 doctests), strict Clippy for every sandbox target,
+formatting, and diff checks. The hermetic `checks.eval` gate also passes,
+including the release CLI build, full workspace test phase, configuration
+evaluation, and system-structure checks. This allocation-only increment does
+not claim live Host, Mount, or attachment VM qualification.

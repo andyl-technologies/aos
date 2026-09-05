@@ -369,6 +369,65 @@ where
         generation.recheck(self.reconciler.journal_mut(), clock)
     }
 
+    /// Allocates or verifies the signed namespace target for a live runtime.
+    ///
+    /// The first observed execution seeds its target from the current signed
+    /// manifest. A later execution advances the durable target monotonically.
+    /// If current authority still names the prior target, the result carries an
+    /// inert advancement proposal; callers must publish the authorized
+    /// assignment successor, reacquire the live proof, and call this method
+    /// again. Only a `Current` result may proceed to mount preparation.
+    ///
+    /// # Errors
+    ///
+    /// Rejects corrupt or exhausted allocation history, stale runtime proofs,
+    /// incompatible signed target changes, and failed protected commits.
+    #[cfg(target_os = "linux")]
+    pub fn bind_current_namespace_target<T>(
+        &mut self,
+        generation: crate::runtime_scope::CurrentRuntimeGeneration,
+        clock: &mut T,
+    ) -> Result<
+        crate::runtime_scope::NamespaceTargetOutcome,
+        crate::runtime_scope::NamespaceTargetError,
+    >
+    where
+        T: FnMut() -> Result<
+            RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        crate::runtime_scope::CurrentNamespaceTarget::bind(
+            generation,
+            self.reconciler.journal_mut(),
+            clock,
+        )
+    }
+
+    /// Rechecks a live namespace target against both protected audit heads.
+    ///
+    /// Successful validation does not extend the original Host observation or
+    /// prove that any attachment has been replayed.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed current authority, runtime or allocation heads, expired
+    /// live evidence, corrupt history, and signed-target substitution.
+    #[cfg(target_os = "linux")]
+    pub fn recheck_current_namespace_target<T>(
+        &mut self,
+        target: &crate::runtime_scope::CurrentNamespaceTarget,
+        clock: &mut T,
+    ) -> Result<(), crate::runtime_scope::NamespaceTargetError>
+    where
+        T: FnMut() -> Result<
+            RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        target.recheck(self.reconciler.journal_mut(), clock)
+    }
+
     /// Issues a local holder channel from an acquired current-runtime scope.
     ///
     /// The complete Host and payload proof moves into the live session. Scope
