@@ -402,8 +402,15 @@
 
 .review-columns > div,
 .subworkflow {
+  min-width: 0;
   padding: 0.8rem;
   border: 1px solid var(--rule);
+}
+
+.review-card li,
+.review-card code {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .warning-list {
@@ -638,17 +645,22 @@
 .resource-identity > div {
   display: grid;
   min-width: 0;
+  max-width: 100%;
   gap: 0.2rem;
 }
 
 .resource-identity code,
 .workflow-card-heading h3,
 .workflow-card-heading code {
+  max-width: 100%;
   overflow-wrap: anywhere;
+  white-space: normal;
+  word-break: break-word;
 }
 
 .workflow-card-heading > div {
   min-width: 0;
+  max-width: 100%;
 }
 
 .danger-panel,
