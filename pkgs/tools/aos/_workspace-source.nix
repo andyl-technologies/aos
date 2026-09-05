@@ -35,6 +35,8 @@ in
         || pathString == "${repoRootString}/tests"
         || lib.hasPrefix "${repoRootString}/tests/fleet" pathString
         || lib.hasPrefix "${repoRootString}/tests/vm" pathString
+        || pathString == "${repoRootString}/tests/native"
+        || pathString == "${repoRootString}/tests/native/hub-settings.py"
         || pathString == "${repoRootString}/default.nix"
         || pathString == "${repoRootString}/flake.nix"
         || pathString == "${repoRootString}/justfile"
