@@ -472,6 +472,23 @@ remaining engineering-hygiene findings
 are separate from the passing standalone source-size guard above; no complete
 packaging or release-gate closure is claimed.
 
+The live-network adversary now prepares both its controller and independent
+resume watchdog before the caller publishes guest work. A readiness handshake
+removes thread creation from the publication-to-first-stop interval; the
+two-second safety clock starts only when the pending-work barrier is released,
+not during guest priming. Completed work still fails first-stop certification,
+with the effective ceiling, completed coordinate, and frame counts retained in
+the error instead of guest payloads. Regressions cover priming beyond the
+watchdog interval, cancellation before release, and completed-boundary
+diagnostics. All 615 QEMU unit tests pass, with one existing ignored subprocess
+fixture, and strict Clippy passes. The updated real-QEMU network flight passes
+all six stops, pending-work overlap, exact retained retry, fresh-process restore,
+matching network evidence, and orderly exit. A diagnostic-only flight before
+the startup change also passed, so these results do not establish the cause of
+the earlier intermittent first-stop failure. The complete packaged network
+gate and the separate longer-run acknowledgement/cleanup investigation remain
+open.
+
 Version-3 campaign snapshots introduced a childless, version-1 aggregate budget
 ledger. Genesis starts empty; every successor authenticates exact grant and
 spending deltas. New proposals and unique attempts require aggregate allowance,
