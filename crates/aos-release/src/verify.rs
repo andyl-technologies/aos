@@ -843,6 +843,35 @@ mod tests {
     }
 
     #[test]
+    fn qualification_binds_private_plan_without_requesting_it_as_a_public_object()
+    -> anyhow::Result<()> {
+        use crate::qualification::QualificationPhase;
+        let (plan, manifest) = qualification_fixture()?;
+        let private_plan = manifest
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.kind == ArtifactKind::ReleasePlan)
+            .unwrap();
+        let mut changed_plan = plan.clone();
+        changed_plan.release_id = "different-release".into();
+        for phase in [
+            QualificationPhase::Build,
+            QualificationPhase::Staging,
+            QualificationPhase::Rollout,
+            QualificationPhase::Complete,
+        ] {
+            let original = crate::qualification_evidence::cases(&plan, &manifest, phase)?;
+            let changed = crate::qualification_evidence::cases(&changed_plan, &manifest, phase)?;
+            assert!(!original.is_empty());
+            for (before, after) in original.iter().zip(&changed) {
+                assert!(!before.subjects.contains(&private_plan.id));
+                assert_ne!(before.digest()?, after.digest()?);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn missing_oci_artifact_and_removed_plan_gate_fail_closed() -> anyhow::Result<()> {
         let (mut plan, mut manifest) = qualification_fixture()?;
         plan.gates.pop();
