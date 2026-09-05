@@ -1315,8 +1315,9 @@ impl ProductionVmNodeLauncher for PackagedProductionVmNodeLauncher {
         };
         let node = launched.map_err(|error| {
             loop_factory_error(format!(
-                "launch QEMU node `{}` through packaged authority: {error}",
-                request.node_name()
+                "launch QEMU node `{}` through packaged authority: {}",
+                request.node_name(),
+                diagnostics::error_chain(&error),
             ))
         })?;
         let identity =
@@ -1417,6 +1418,7 @@ mod checkpoint_recovery;
 use checkpoint_recovery::durable_run_state_api_error;
 mod config;
 mod construction;
+mod diagnostics;
 use construction::build_production_vm_lifecycle_loop_with_restore;
 mod helpers;
 mod network_faults;
