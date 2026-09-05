@@ -97,6 +97,26 @@ async fn seed_creates_browsable_registry_and_login() {
         .expect("private image registry exists");
     assert_eq!(private.visibility, "private");
     assert_eq!(db.list_system_images(private.id).await.unwrap().len(), 2);
+    // Byte-identical releases in two registries must each own a complete
+    // artifact snapshot and documentation tree.
+    for registry_id in [registry.id, private.id] {
+        assert!(db
+            .documentation_tree_commit(registry_id, "1.0.0")
+            .await
+            .unwrap()
+            .is_some());
+        let publication = db
+            .registry_publication_state(registry_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let publication = db
+            .registry_publication(publication.current_publication_id.as_deref().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(publication.state, "ready");
+    }
     assert_eq!(
         db.ready_registry_canonical_url(registry.id)
             .await

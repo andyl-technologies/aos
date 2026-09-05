@@ -313,6 +313,7 @@ dependencies = [
  "anyhow",
  "aos-cache",
  "aos-core",
+ "aos-doc-model",
  "aos-hub-core",
  "aos-oci",
  "aos-oci-types",

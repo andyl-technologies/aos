@@ -57,8 +57,6 @@
 
 use crate::clock::Instant;
 
-use std::collections::BTreeMap;
-
 use axum::http::{header, HeaderMap};
 
 use aos_proto_types as pb;
@@ -69,7 +67,7 @@ use crate::ratelimit::{RateClass, RateDecision};
 use crate::service::RpcService;
 use crate::web::browse_pages as pages;
 use crate::web::console::handlers::resolved_client_ip;
-use crate::web::console_render::{Pager, SessionIndicator};
+use crate::web::console_render::SessionIndicator;
 use crate::web::session;
 
 /// The outcome of a browse handler: an HTML page, a JSON document, a redirect,
@@ -88,14 +86,20 @@ pub enum Rendered {
     Html(String),
     /// A serialized JSON document.
     Json(String),
+    /// Session-visible browser data, never stored in a shared HTTP cache.
+    PrivateJson(String),
     /// A mutable selected JSON resource with a strong current entity tag.
     RevalidatedJson { body: String, etag: String },
     /// An immutable serialized JSON object and its strong SHA-256 entity tag.
     ImmutableJson { body: String, etag: String },
     /// A permanent redirect to the carried location (`/{slug}` → `/{slug}/`).
     Redirect(String),
+    /// A resolved mutable preference or selection, never cached as a permanent route.
+    TemporaryRedirect(String),
     /// The per-IP browse budget is exhausted; carries the `Retry-After` seconds.
     TooManyRequests(i64),
+    /// A malformed browse query with a safe explanation.
+    BadRequest(&'static str),
     /// The resource does not exist or is not visible to this caller.
     NotFound,
     /// The registry exists and is visible, but a non-HTML client requested it
@@ -118,12 +122,6 @@ pub enum Rendered {
 /// force. Sized far above any realistic registry so normal browsing is never
 /// truncated.
 const MAX_BROWSE_PACKAGES: usize = 10_000;
-
-/// Maximum documentation projections ranked for one request.
-const MAX_DOCUMENTATION_RESULTS: usize = 10_000;
-
-/// Documentation rows per server-rendered browse page.
-const DOCUMENTATION_RESULTS_PER_PAGE: usize = 100;
 
 /// Display cap for the package detail's "required by" reverse-dependency list.
 const REVERSE_DEP_CAP: usize = 100;
@@ -171,7 +169,7 @@ fn accepts_html(headers: &HeaderMap) -> bool {
 /// Reads the `__Host-aos_session` cookie and resolves the signed-in email, so
 /// the page chrome reflects the login state. An anonymous or invalid cookie (or
 /// any database error) yields the anonymous indicator.
-async fn session_indicator(svc: &RpcService, headers: &HeaderMap) -> SessionIndicator {
+pub(super) async fn session_indicator(svc: &RpcService, headers: &HeaderMap) -> SessionIndicator {
     // RFC-0004 ch.14 Phase C: resolve through the KV read-through cache when one
     // is attached (off the relational read path), else straight from the database.
     let resolved = match session::session_secret_from_headers(headers) {
@@ -192,7 +190,7 @@ async fn session_indicator(svc: &RpcService, headers: &HeaderMap) -> SessionIndi
 /// under [`RateClass::BrowseSearch`]. The expensive anonymous page kinds (the
 /// hub home scan and the package index re-load + filter + sort) call this so no
 /// entrypoint is an unthrottled hole.
-async fn browse_rate_limited(svc: &RpcService, headers: &HeaderMap) -> Option<Rendered> {
+pub(super) async fn browse_rate_limited(svc: &RpcService, headers: &HeaderMap) -> Option<Rendered> {
     let ip = resolved_client_ip(headers);
     match svc
         .ratelimit
@@ -290,7 +288,7 @@ async fn can_read_registry(
 ///
 /// Returns `None` (rendered as `404`) when the registry does not exist *or* is
 /// not visible to this caller — the two are deliberately indistinguishable.
-async fn load_visible(
+pub(super) async fn load_visible(
     svc: &RpcService,
     headers: &HeaderMap,
     slug: &str,
@@ -349,10 +347,20 @@ fn distinct_capped(values: impl Iterator<Item = String>) -> Vec<String> {
 /// paginates every list. Built from the raw URL query string by
 /// [`BrowseQuery::parse`] (the transport has no typed extractor in the
 /// runtime-neutral handlers).
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, serde::Serialize)]
 pub struct BrowseQuery {
     /// Hub-home registries substring search.
     pub q: Option<String>,
+    /// Legacy document-local anchor key.
+    pub doc_key: Option<String>,
+    /// Stable configuration subtree identity.
+    pub root: Option<String>,
+    /// Exact documented option or guide variant.
+    pub entry: Option<String>,
+    /// Search scope: release (default) or subtree.
+    pub scope: Option<String>,
+    /// Opaque cursor for additional variants at the selected node.
+    pub variant_cursor: Option<String>,
     /// Documentation result-kind filter.
     pub kind: Option<String>,
     /// Package-index filter expression.
@@ -384,6 +392,7 @@ pub struct BrowseQuery {
     /// Documentation option owner package or root filter.
     pub owner: Option<String>,
     /// Documentation option type-signature filter.
+    #[serde(rename = "type")]
     pub option_type: Option<String>,
     /// Documentation contribution filter.
     pub contributable: Option<bool>,
@@ -406,6 +415,39 @@ pub struct BrowseQuery {
 }
 
 impl BrowseQuery {
+    /// Pins an initial preference or commit alias while retaining page filters.
+    pub(super) fn pin_release(
+        &self,
+        path: &str,
+        context: &super::release_browse::ReleaseContext,
+    ) -> Option<Rendered> {
+        let release = context.query_value()?;
+        if self.release.as_deref() == Some(release) {
+            return None;
+        }
+        let mut selected = self.clone();
+        selected.release = Some(release.to_string());
+        let Ok(serde_json::Value::Object(fields)) = serde_json::to_value(selected) else {
+            return Some(Rendered::ServiceUnavailable);
+        };
+        let mut query = url::form_urlencoded::Serializer::new(String::new());
+        for (key, value) in fields {
+            match value {
+                serde_json::Value::Null => {}
+                serde_json::Value::String(value) => {
+                    query.append_pair(&key, &value);
+                }
+                value => {
+                    query.append_pair(&key, &value.to_string());
+                }
+            }
+        }
+        Some(Rendered::TemporaryRedirect(format!(
+            "{path}?{}",
+            query.finish()
+        )))
+    }
+
     /// Parse the recognized keys from a raw URL query string (`None` when there
     /// is no query); unknown keys are ignored.
     #[must_use]
@@ -416,6 +458,11 @@ impl BrowseQuery {
         };
         for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
             match key.as_ref() {
+                "doc_key" => out.doc_key = Some(value.into_owned()),
+                "root" => out.root = Some(value.into_owned()),
+                "entry" => out.entry = Some(value.into_owned()),
+                "scope" => out.scope = Some(value.into_owned()),
+                "variant_cursor" => out.variant_cursor = Some(value.into_owned()),
                 "q" => out.q = Some(value.into_owned()),
                 "kind" => out.kind = Some(value.into_owned()),
                 "filter" => out.filter = Some(value.into_owned()),
@@ -582,45 +629,33 @@ pub async fn registry_home(svc: &RpcService, headers: &HeaderMap, slug: &str) ->
     let Some((registry, status)) = load_visible(svc, headers, slug).await else {
         return Rendered::NotFound;
     };
-    // These reads are mutually independent — five keyed only on `registry.id`,
-    // plus the session/manage indicators keyed on the request headers — so
-    // dispatch them as one concurrent wave rather than a serial chain of database
-    // round-trips. On the Worker each underlying query promise is created on first
-    // poll and resolves alongside the others, collapsing seven sequential
-    // round-trips into one (the dominant cost of this page); on the native
-    // sqlx pool they run across pooled connections.
-    let ((channels, packages, caches, roster, validations), (session, can_manage)) =
-        futures_util::future::join(
-            futures_util::future::join5(
-                svc.db.list_channels(registry.id),
-                svc.db.package_count(registry.id),
-                svc.db.registry_cache_stack_entries(registry.id),
-                // RFC-0004 ch.14 Phase C: trust roster read-through KV cache.
-                svc.list_roster_cached(registry.id),
-                svc.db.latest_validation_runs(registry.id),
-            ),
-            futures_util::future::join(
-                session_indicator(svc, headers),
-                manage_link(svc, &registry, headers),
-            ),
-        )
-        .await;
-    let channels = channels.unwrap_or_default();
-    let package_count = packages.unwrap_or_default();
-    let caches = resolved_cache_urls(caches.unwrap_or_default());
-    let roster = roster.unwrap_or_default();
-    let validations = validations.unwrap_or_default();
+    let ((channels, caches, roster), (session, can_manage, context)) = futures_util::future::join(
+        futures_util::future::join3(
+            svc.db.list_channels(registry.id),
+            svc.db.registry_cache_stack_entries(registry.id),
+            svc.list_roster_cached(registry.id),
+        ),
+        futures_util::future::join3(
+            session_indicator(svc, headers),
+            manage_link(svc, &registry, headers),
+            super::release_browse::ReleaseContext::load(&svc.db, registry.id, None, false),
+        ),
+    )
+    .await;
+    let (Ok(channels), Ok(caches), Ok(roster), Ok(context)) = (channels, caches, roster, context)
+    else {
+        return Rendered::ServiceUnavailable;
+    };
+    let caches = resolved_cache_urls(caches);
     let external = svc.registry_consumer_url(&registry).await.ok();
     let setup = pages::RegistrySetup::new(&registry, status.as_ref(), external.as_deref(), &caches);
     Rendered::Html(pages::registry_home(
         &registry,
         status.as_ref(),
         &channels,
-        package_count,
-        &caches,
         &roster,
-        &validations,
         &setup,
+        &context,
         can_manage,
         started,
         &session,
@@ -671,29 +706,100 @@ pub async fn images(
     let Some((registry, status)) = load_visible(svc, headers, slug).await else {
         return Rendered::NotFound;
     };
+    let context = match super::release_browse::ReleaseContext::load(
+        &svc.db,
+        registry.id,
+        query.release.as_deref(),
+        true,
+    )
+    .await
+    {
+        Ok(context) => context,
+        Err(response) => return response,
+    };
+    if let Some(redirect) = query.pin_release(&format!("/{slug}/-/images"), &context) {
+        return redirect;
+    }
     let (images, channels, session) = futures_util::future::join3(
         svc.db.list_system_images(registry.id),
         svc.db.list_channels(registry.id),
         session_indicator(svc, headers),
     )
     .await;
+    let (Ok(images), Ok(channels)) = (images, channels) else {
+        return Rendered::ServiceUnavailable;
+    };
     let download_base = svc.registry_consumer_url(&registry).await.ok();
     Rendered::Html(pages::images_page(
         &registry,
         status.as_ref(),
-        &images.unwrap_or_default(),
-        &channels.unwrap_or_default(),
+        &images,
+        &channels,
         download_base.as_deref(),
         &svc.external_url,
         &pages::ImageBrowse {
             page_number: query.page_number(),
             query: query.q.as_deref(),
-            release: query.release.as_deref(),
+            release: context.selected(),
             channel: query.channel.as_deref(),
             architecture: query.architecture.as_deref(),
             format: query.format.as_deref(),
             target: query.target.as_deref(),
         },
+        &context,
+        started,
+        &session,
+    ))
+}
+
+/// Lists the immutable container roots belonging to the selected release.
+pub async fn containers(
+    svc: &RpcService,
+    headers: &HeaderMap,
+    slug: &str,
+    query: &BrowseQuery,
+) -> Rendered {
+    if let Some(limited) = browse_rate_limited(svc, headers).await {
+        return limited;
+    }
+    let started = Instant::now();
+    let Some((registry, status)) = load_visible(svc, headers, slug).await else {
+        return Rendered::NotFound;
+    };
+    if !svc.container_rollout.pull {
+        return Rendered::ServiceUnavailable;
+    }
+    let context = match super::release_browse::ReleaseContext::load(
+        &svc.db,
+        registry.id,
+        query.release.as_deref(),
+        true,
+    )
+    .await
+    {
+        Ok(context) => context,
+        Err(response) => return response,
+    };
+    if let Some(redirect) = query.pin_release(&format!("/{slug}/-/containers"), &context) {
+        return redirect;
+    }
+    let (containers, authority, session) = futures_util::future::join3(
+        svc.db.list_release_browse_containers(registry.id),
+        svc.container_distribution_authority(registry.id),
+        session_indicator(svc, headers),
+    )
+    .await;
+    let Ok(containers) = containers else {
+        return Rendered::ServiceUnavailable;
+    };
+    Rendered::Html(super::container_browse_pages::release_index(
+        &registry,
+        status.as_ref(),
+        &context,
+        &containers,
+        authority.ok().flatten().as_deref(),
+        query.query(),
+        query.page_number(),
         started,
         &session,
     ))
@@ -704,7 +810,7 @@ pub async fn images(
 /// Anonymous callers can open this page only for public registries. Internal
 /// and private registries retain the same session-aware non-disclosure policy
 /// as every other browse page.
-pub async fn containers(
+pub async fn container_repositories(
     svc: &RpcService,
     headers: &HeaderMap,
     slug: &str,
@@ -784,6 +890,54 @@ pub async fn container_repository(
     else {
         return Rendered::NotFound;
     };
+    if let Some(release) = query.release.as_deref() {
+        let context = match super::release_browse::ReleaseContext::load(
+            &svc.db,
+            registry.id,
+            Some(release),
+            false,
+        )
+        .await
+        {
+            Ok(context) => context,
+            Err(response) => return response,
+        };
+        let Ok(containers) = svc.db.list_release_browse_containers(registry.id).await else {
+            return Rendered::ServiceUnavailable;
+        };
+        let containers = containers
+            .into_iter()
+            .filter(|container| {
+                container.repository == repository_name
+                    && Some(container.release.as_str()) == context.selected()
+            })
+            .collect::<Vec<_>>();
+        if containers.len() == 1 {
+            let container = &containers[0];
+            return Rendered::TemporaryRedirect(format!(
+                "/{slug}/-/containers/manifest?repository={}&digest={}&release={}",
+                super::console_render::urlencode(repository_name.as_str()),
+                super::console_render::urlencode(&container.digest.to_string()),
+                super::console_render::urlencode(&container.release)
+            ));
+        }
+        let authority = svc
+            .container_distribution_authority(registry.id)
+            .await
+            .ok()
+            .flatten();
+        return Rendered::Html(super::container_browse_pages::release_index(
+            &registry,
+            status.as_ref(),
+            &context,
+            &containers,
+            authority.as_deref(),
+            None,
+            query.page_number(),
+            started,
+            &session_indicator(svc, headers).await,
+        ));
+    }
     let Ok(page) = svc
         .db
         .list_oci_admin_tags(
@@ -917,6 +1071,32 @@ pub async fn container_manifest(
     if !svc.container_rollout.pull {
         return Rendered::ServiceUnavailable;
     }
+    let context = if let Some(release) = query.release.as_deref() {
+        let context = match super::release_browse::ReleaseContext::load(
+            &svc.db,
+            registry.id,
+            Some(release),
+            false,
+        )
+        .await
+        {
+            Ok(context) => context,
+            Err(response) => return response,
+        };
+        let Ok(roots) = svc.db.list_release_browse_containers(registry.id).await else {
+            return Rendered::ServiceUnavailable;
+        };
+        if !roots.iter().any(|root| {
+            root.repository == repository
+                && root.digest == digest
+                && Some(root.release.as_str()) == context.selected()
+        }) {
+            return Rendered::NotFound;
+        }
+        Some(context)
+    } else {
+        None
+    };
     let Ok(Some(manifest)) = svc
         .db
         .oci_admin_manifest(registry.id, &repository, &reference)
@@ -951,6 +1131,7 @@ pub async fn container_manifest(
         &page.items,
         authority.as_deref(),
         page.next_cursor.as_deref(),
+        context.as_ref(),
         started,
         &session,
     ))
@@ -968,38 +1149,41 @@ async fn package_index_html(
     use crate::db::PackageRow;
     use crate::filter::{version_key, Filter};
 
-    let snapshot = query
-        .release
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let Ok(snapshots) = db.list_complete_package_snapshots(registry.id).await else {
-        return Rendered::ServiceUnavailable;
+    let context = match super::release_browse::ReleaseContext::load(
+        db,
+        registry.id,
+        query.release.as_deref(),
+        false,
+    )
+    .await
+    {
+        Ok(context) => context,
+        Err(response) => return response,
     };
-    if snapshot.is_some_and(|selection| {
-        !snapshots
-            .iter()
-            .any(|(tag, commit)| selection == tag || selection == commit)
-    }) {
-        return Rendered::Html(pages::package_snapshot_unavailable(
-            registry,
-            status,
-            snapshot.unwrap_or_default(),
-            started,
-            session,
-        ));
+    if let Some(redirect) = query.pin_release(&format!("/{}/-/packages", registry.slug), &context) {
+        return redirect;
     }
-    let result = if let Some(snapshot) = snapshot {
-        db.list_packages_at_release(registry.id, snapshot)
-            .await
-            .map(|rows| (rows, false))
+    let mut all = if let Some(release) = context.selected() {
+        match db.release_browse_packages(registry.id, release).await {
+            Ok(Some(packages)) => super::release_browse::package_rows(&packages),
+            Ok(None) => {
+                return Rendered::Html(super::release_browse::unavailable_page(
+                    registry,
+                    status,
+                    &context,
+                    "packages",
+                    "The package catalog for this release is still indexing.",
+                    started,
+                    session,
+                ))
+            }
+            Err(_) => return Rendered::ServiceUnavailable,
+        }
     } else {
-        db.list_packages_capped(registry.id, MAX_BROWSE_PACKAGES)
-            .await
+        Vec::new()
     };
-    let Ok((all, truncated)) = result else {
-        return Rendered::ServiceUnavailable;
-    };
+    let truncated = all.len() > MAX_BROWSE_PACKAGES;
+    all.truncate(MAX_BROWSE_PACKAGES);
     let total_all = all.len();
     let filter_text = query.filter();
 
@@ -1055,9 +1239,7 @@ async fn package_index_html(
         .saturating_add(pages::PACKAGES_PER_PAGE)
         .min(total_matches);
     let browse = pages::PackageBrowse {
-        snapshot,
-        head_commit: status.and_then(|status| status.last_indexed_commit.as_deref()),
-        snapshots: &snapshots,
+        context: &context,
         filter: filter_text,
         filter_error: filter_error.as_deref(),
         sort,
@@ -1092,47 +1274,62 @@ pub async fn package(
     let Some((registry, status)) = load_visible(svc, headers, slug).await else {
         return Rendered::NotFound;
     };
-    let Some(mut detail) = svc
-        .db
-        .package_detail(registry.id, name)
-        .await
-        .ok()
-        .flatten()
-    else {
+    let context = match super::release_browse::ReleaseContext::load(
+        &svc.db,
+        registry.id,
+        query.release.as_deref(),
+        false,
+    )
+    .await
+    {
+        Ok(context) => context,
+        Err(response) => return response,
+    };
+    if let Some(redirect) = query.pin_release(
+        &format!(
+            "/{slug}/-/packages/{}",
+            super::console_render::urlencode(name)
+        ),
+        &context,
+    ) {
+        return redirect;
+    }
+    let Some(release) = context.selected() else {
         return Rendered::NotFound;
     };
-    let snapshot = query
-        .release
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    if let Some(snapshot) = snapshot {
-        let snapshot_packages = svc
-            .db
-            .list_packages_at_release(registry.id, snapshot)
-            .await
-            .unwrap_or_default();
-        let Some(snapshot_package) = snapshot_packages
-            .iter()
-            .find(|package| package.name == name)
-        else {
-            return Rendered::NotFound;
-        };
-        detail.versions.retain(|version| {
-            snapshot_package.latest_version.as_deref() == Some(version.version.as_str())
-        });
-        for version in &mut detail.versions {
-            version
-                .platforms
-                .retain(|platform| snapshot_package.platforms.contains(&platform.platform));
+    let catalog = match svc.db.release_browse_packages(registry.id, release).await {
+        Ok(Some(catalog)) => catalog,
+        Ok(None) => {
+            return Rendered::Html(super::release_browse::unavailable_page(
+                &registry,
+                status.as_ref(),
+                &context,
+                "packages",
+                "The package catalog for this release is still indexing.",
+                started,
+                &session_indicator(svc, headers).await,
+            ))
         }
-    }
-    let (closure, session, caches, external, documentation_result) = futures_util::future::join5(
-        resolve_package_closure(svc, registry.id, name, &detail),
+        Err(_) => return Rendered::ServiceUnavailable,
+    };
+    let Some(package) = catalog.iter().find(|package| package.package.name == name) else {
+        return Rendered::Html(super::release_browse::unavailable_page(
+            &registry,
+            status.as_ref(),
+            &context,
+            "packages",
+            "This package was not published in the selected release.",
+            started,
+            &session_indicator(svc, headers).await,
+        ));
+    };
+    let detail = super::release_browse::package_detail(package);
+    let closure = super::release_browse::package_closure(&catalog, &detail, REVERSE_DEP_CAP);
+    let (session, caches, external, documentation_result) = futures_util::future::join4(
         session_indicator(svc, headers),
         svc.db.registry_cache_stack_entries(registry.id),
         svc.registry_consumer_url(&registry),
-        package_documentation_reference(&svc.db, registry.id, &detail, snapshot),
+        package_documentation_reference(&svc.db, registry.id, &detail, Some(release)),
     )
     .await;
     let caches = resolved_cache_urls(caches.unwrap_or_default());
@@ -1153,7 +1350,7 @@ pub async fn package(
         &detail,
         &closure,
         &setup,
-        snapshot,
+        &context,
         documentation.as_ref(),
         documentation_unavailable,
         started,
@@ -1209,49 +1406,7 @@ pub async fn documentation_search(
     slug: &str,
     query: &BrowseQuery,
 ) -> Rendered {
-    if let Some(limited) = browse_rate_limited(svc, headers).await {
-        return limited;
-    }
-    let started = Instant::now();
-    let Some((registry, status)) = load_visible(svc, headers, slug).await else {
-        return Rendered::NotFound;
-    };
-    let kind = query.kind.as_deref().filter(|kind| {
-        matches!(
-            *kind,
-            "package" | "option" | "service" | "credential" | "capability"
-        )
-    });
-    let results = match query.query() {
-        Some(term) => svc
-            .db
-            .search_package_documentation(registry.id, term, kind, MAX_DOCUMENTATION_RESULTS)
-            .await
-            .unwrap_or_default(),
-        None => svc
-            .db
-            .browse_package_documentation(registry.id, kind, MAX_DOCUMENTATION_RESULTS)
-            .await
-            .unwrap_or_default(),
-    };
-    let total_results = results.len();
-    let pager = Pager::new(
-        query.page_number(),
-        DOCUMENTATION_RESULTS_PER_PAGE,
-        total_results,
-    );
-    let session = session_indicator(svc, headers).await;
-    Rendered::Html(pages::documentation_index_page(
-        &registry,
-        status.as_ref(),
-        pager.slice(&results),
-        query.q.as_deref(),
-        kind,
-        pager.page(),
-        total_results,
-        started,
-        &session,
-    ))
+    super::documentation_browser::browse(svc, headers, slug, query, false).await
 }
 
 /// One exact package/version/platform structured documentation page (HTML).
@@ -1264,50 +1419,15 @@ pub async fn documentation(
     platform: &str,
     query: &BrowseQuery,
 ) -> Rendered {
-    let started = Instant::now();
-    let Some((registry, status)) = load_visible(svc, headers, slug).await else {
-        return Rendered::NotFound;
-    };
-    let Some(locator) = documentation_locator_for_page(
-        &svc.db,
-        registry.id,
-        package,
-        version,
-        platform,
-        query.digest.as_deref(),
-    )
-    .await
-    .ok()
-    .flatten() else {
-        return Rendered::NotFound;
-    };
-    let Ok(document) = svc
-        .load_package_documentation_locator(registry.id, &locator)
+    super::documentation_browser::legacy(svc, headers, slug, package, version, platform, query)
         .await
-    else {
-        return Rendered::NotFound;
-    };
-    let panel = pages::PackageDocumentationPanel {
-        document,
-        store_path: locator.artifact.store_path,
-        document_sha256: locator.artifact.document_sha256,
-        nar_hash: locator.artifact.nar_hash,
-    };
-    let session = session_indicator(svc, headers).await;
-    Rendered::Html(pages::documentation_page(
-        &registry,
-        status.as_ref(),
-        &panel,
-        started,
-        &session,
-    ))
 }
 
 /// Resolves a human documentation URL to its exact signed identity.
 ///
 /// Digest links may address retained releases, but must still match every
 /// identity segment in the URL and remain inside the authorized registry.
-async fn documentation_locator_for_page(
+pub(super) async fn documentation_locator_for_page(
     db: &crate::db::Database,
     registry_id: i64,
     package: &str,
@@ -1343,44 +1463,6 @@ fn resolved_cache_urls(
                 .map(|priority| (entry.committed_url, priority))
         })
         .collect()
-}
-
-/// Resolve a package's forward and reverse closure for the detail page.
-async fn resolve_package_closure(
-    svc: &RpcService,
-    registry_id: i64,
-    name: &str,
-    detail: &crate::db::PackageDetail,
-) -> pages::PackageClosure {
-    let primary = detail.versions.first().and_then(|v| v.platforms.first());
-    let mut closure = pages::PackageClosure::default();
-    if let Some(platform) = primary {
-        closure.platform = Some(platform.platform.clone());
-        if let Ok(resolved) = svc
-            .db
-            .resolve_reference_names(registry_id, &platform.refs)
-            .await
-        {
-            closure.dependencies = resolved
-                .into_iter()
-                .map(|(hash, name, version)| pages::ResolvedDependency {
-                    hash,
-                    name,
-                    version,
-                })
-                .collect();
-        }
-    }
-
-    let platform = primary.map(|p| p.platform.as_str()).unwrap_or("");
-    if let Ok(Some(store_hash)) = svc.db.primary_store_hash(registry_id, name, platform).await {
-        if let Ok(mut reverse) = svc.db.reverse_dependencies(registry_id, &store_hash).await {
-            closure.reverse_total = reverse.len();
-            reverse.truncate(REVERSE_DEP_CAP);
-            closure.reverse = reverse;
-        }
-    }
-    closure
 }
 
 /// The channels index page (HTML).
@@ -1446,31 +1528,77 @@ pub async fn releases(
     let Some((registry, status)) = load_visible(svc, headers, slug).await else {
         return Rendered::NotFound;
     };
-    let (releases, images, package_counts) = futures_util::future::join3(
-        svc.db.list_releases(registry.id),
-        svc.db.list_system_images(registry.id),
-        svc.db.list_release_package_counts(registry.id),
+    let context = match super::release_browse::ReleaseContext::load(
+        &svc.db,
+        registry.id,
+        query.release.as_deref(),
+        false,
+    )
+    .await
+    {
+        Ok(context) => context,
+        Err(response) => return response,
+    };
+    if query.release.is_some() {
+        if let Some(release) = context.selected() {
+            return Rendered::Redirect(super::release_browse::release_href(slug, release));
+        }
+    }
+    let (contents, channels, session) = futures_util::future::join3(
+        super::release_pages::content_counts(&svc.db, registry.id),
+        svc.db.list_channels(registry.id),
+        session_indicator(svc, headers),
     )
     .await;
-    let releases = releases.unwrap_or_default();
-    let package_counts = package_counts.unwrap_or_default();
-    let image_counts = images
-        .unwrap_or_default()
-        .into_iter()
-        .fold(BTreeMap::<String, usize>::new(), |mut counts, image| {
-            *counts.entry(image.release).or_default() += 1;
-            counts
-        })
-        .into_iter()
-        .collect::<Vec<_>>();
-    let session = session_indicator(svc, headers).await;
-    Rendered::Html(pages::releases_page(
+    let (Ok(contents), Ok(channels)) = (contents, channels) else {
+        return Rendered::ServiceUnavailable;
+    };
+    Rendered::Html(super::release_pages::releases_page(
         &registry,
         status.as_ref(),
-        &releases,
-        &package_counts,
-        &image_counts,
+        &context,
+        &contents,
+        &channels,
         query.page_number(),
+        started,
+        &session,
+    ))
+}
+
+/// Renders one exact release's publication, contents, and current rollouts.
+pub async fn release(svc: &RpcService, headers: &HeaderMap, slug: &str, version: &str) -> Rendered {
+    let started = Instant::now();
+    let Some((registry, status)) = load_visible(svc, headers, slug).await else {
+        return Rendered::NotFound;
+    };
+    let context = match super::release_browse::ReleaseContext::load(
+        &svc.db,
+        registry.id,
+        Some(version),
+        false,
+    )
+    .await
+    {
+        Ok(context) => context,
+        Err(response) => return response,
+    };
+    let (contents, notes, channels, session) = futures_util::future::join4(
+        super::release_pages::content_counts(&svc.db, registry.id),
+        svc.db.release_browse_notes(registry.id, version),
+        svc.db.list_channels(registry.id),
+        session_indicator(svc, headers),
+    )
+    .await;
+    let (Ok(contents), Ok(notes), Ok(channels)) = (contents, notes, channels) else {
+        return Rendered::ServiceUnavailable;
+    };
+    Rendered::Html(super::release_pages::release_page(
+        &registry,
+        status.as_ref(),
+        &context,
+        &contents.get(version).cloned().unwrap_or_default(),
+        notes.as_deref(),
+        &channels,
         started,
         &session,
     ))
@@ -2348,15 +2476,12 @@ mod package_index_tests {
             release: Some("unknown".into()),
             ..query
         };
-        let Rendered::Html(missing) =
-            package_index_html(&db, &registry, None, &query, Instant::now(), &session).await
-        else {
-            panic!("missing snapshot must explain selection");
-        };
-        assert!(missing.contains("Package snapshot unavailable"));
-        assert!(!missing.contains("No packages have been published"));
+        assert!(matches!(
+            package_index_html(&db, &registry, None, &query, Instant::now(), &session).await,
+            Rendered::NotFound
+        ));
         db.backend
-            .execute("DROP TABLE release_artifact_snapshot_heads", &[])
+            .execute("DROP TABLE releases", &[])
             .await
             .unwrap();
         assert!(matches!(

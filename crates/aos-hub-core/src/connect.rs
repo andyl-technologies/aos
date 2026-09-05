@@ -292,6 +292,15 @@ fn browse_response(rendered: Rendered) -> Response {
         Rendered::Json(body) => {
             ([(header::CONTENT_TYPE, "application/json")], body).into_response()
         }
+        Rendered::PrivateJson(body) => (
+            [
+                (header::CONTENT_TYPE, "application/json"),
+                (header::CACHE_CONTROL, "private, no-store"),
+                (header::VARY, "Cookie, Authorization"),
+            ],
+            body,
+        )
+            .into_response(),
         Rendered::RevalidatedJson { body, etag } => (
             [
                 (header::CONTENT_TYPE, "application/json"),
@@ -313,12 +322,20 @@ fn browse_response(rendered: Rendered) -> Response {
         Rendered::Redirect(location) => {
             axum::response::Redirect::permanent(&location).into_response()
         }
+        Rendered::TemporaryRedirect(location) => {
+            let mut response = axum::response::Redirect::temporary(&location).into_response();
+            response
+                .headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            response
+        }
         Rendered::TooManyRequests(retry_after) => (
             StatusCode::TOO_MANY_REQUESTS,
             [(header::RETRY_AFTER, retry_after.max(1).to_string())],
             "rate limit exceeded",
         )
             .into_response(),
+        Rendered::BadRequest(message) => (StatusCode::BAD_REQUEST, message).into_response(),
         Rendered::NotFound => StatusCode::NOT_FOUND.into_response(),
         Rendered::NotAcceptable => StatusCode::NOT_ACCEPTABLE.into_response(),
         Rendered::ServiceUnavailable => StatusCode::SERVICE_UNAVAILABLE.into_response(),
@@ -425,9 +442,15 @@ async fn browse_dispatch(
         None => match rest.as_str() {
             "" => browse::registry_home(&svc, &headers, &slug).await,
             "packages" => browse::packages(&svc, &headers, &slug, &q).await,
+            "docs/children" => {
+                crate::web::documentation_browser::browse(&svc, &headers, &slug, &q, true).await
+            }
             "docs" => browse::documentation_search(&svc, &headers, &slug, &q).await,
             "images" => browse::images(&svc, &headers, &slug, &q).await,
             "containers" => browse::containers(&svc, &headers, &slug, &q).await,
+            "containers/repositories" => {
+                browse::container_repositories(&svc, &headers, &slug, &q).await
+            }
             "containers/repository" => {
                 browse::container_repository(&svc, &headers, &slug, &q).await
             }
@@ -453,6 +476,11 @@ async fn browse_dispatch(
                 } else if let Some(name) = other.strip_prefix("channels/").filter(|n| !n.is_empty())
                 {
                     browse::channel(&svc, &headers, &slug, name, &q).await
+                } else if let Some(version) = other
+                    .strip_prefix("releases/")
+                    .filter(|version| !version.is_empty() && !version.contains('/'))
+                {
+                    browse::release(&svc, &headers, &slug, version).await
                 } else {
                     Rendered::NotFound
                 }
@@ -4279,6 +4307,24 @@ mod tests {
 
     #[test]
     fn documentation_responses_distinguish_mutable_selectors_from_content_addresses() {
+        let children = browse_response(Rendered::PrivateJson("{}".into()));
+        assert_eq!(
+            children.headers().get(header::CACHE_CONTROL),
+            Some(&HeaderValue::from_static("private, no-store"))
+        );
+        assert_eq!(
+            children.headers().get(header::VARY),
+            Some(&HeaderValue::from_static("Cookie, Authorization"))
+        );
+        let initial = browse_response(Rendered::TemporaryRedirect(
+            "/demo/-/docs?release=1.2.3".into(),
+        ));
+        assert_eq!(initial.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(
+            initial.headers().get(header::CACHE_CONTROL),
+            Some(&HeaderValue::from_static("no-store"))
+        );
+
         let selected = browse_response(Rendered::RevalidatedJson {
             body: "{}".into(),
             etag: "selected".into(),
