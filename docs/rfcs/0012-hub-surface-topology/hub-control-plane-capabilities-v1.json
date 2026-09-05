@@ -224,31 +224,91 @@
       "service": "PackageService",
       "audience": "public",
       "cli_families": ["registry package"],
-      "web_workflows": ["public-packages", "registry-packages"],
-      "methods": ["ListPackages", "GetPackage"]
+      "web_workflows": ["public-packages"],
+      "methods": ["ListPackages", "GetPackage"],
+      "web_method_exceptions": [
+        {
+          "method": "ListPackages",
+          "reason": "The server-rendered /{registry}/-/packages catalog lists packages without requiring a management session."
+        },
+        {
+          "method": "GetPackage",
+          "reason": "The server-rendered /{registry}/-/packages/{package} page presents versions and installation metadata."
+        }
+      ]
     },
     {
       "service": "DocumentationService",
       "audience": "public",
       "cli_families": ["registry docs", "package docs"],
-      "web_workflows": ["public-package-documentation", "registry-package-documentation"],
-      "methods": ["GetPackageDocumentation", "SearchPackageDocumentation", "ListPackageOptions", "GetPackageOption", "ComparePackageDocumentation", "GetDocumentationArtifact", "GetPackageDocumentationSchema"]
+      "web_workflows": ["public-package-documentation"],
+      "methods": ["GetPackageDocumentation", "SearchPackageDocumentation", "ListPackageOptions", "GetPackageOption", "ComparePackageDocumentation", "GetDocumentationArtifact", "GetPackageDocumentationSchema"],
+      "web_method_exceptions": [
+        {
+          "method": "GetPackageDocumentation",
+          "reason": "The public version/platform documentation page and /-/api/v1/packages/{package}/docs provide the canonical reference."
+        },
+        {
+          "method": "SearchPackageDocumentation",
+          "reason": "The server-rendered /{registry}/-/docs search page provides documentation discovery."
+        },
+        {
+          "method": "ListPackageOptions",
+          "reason": "The public documentation page renders canonical options; /-/api/v1/packages/{package}/options exposes filtered structured options."
+        },
+        {
+          "method": "GetPackageOption",
+          "reason": "The public /-/api/v1/packages/{package}/options/{path} endpoint exposes individual canonical options."
+        },
+        {
+          "method": "ComparePackageDocumentation",
+          "reason": "The public /-/api/v1/packages/{package}/compare endpoint exposes semantic documentation comparisons."
+        },
+        {
+          "method": "GetDocumentationArtifact",
+          "reason": "The public immutable documentation artifact endpoint returns canonical bytes and an ETag."
+        },
+        {
+          "method": "GetPackageDocumentationSchema",
+          "reason": "The public documentation schema endpoint provides the canonical schema."
+        }
+      ]
     },
     {
       "service": "ChannelService",
       "audience": "public",
       "cli_families": ["registry channel"],
-      "web_workflows": ["public-channels", "registry-channels"],
-      "methods": ["ListChannels", "GetChannel"]
+      "web_workflows": ["public-channels"],
+      "methods": ["ListChannels", "GetChannel"],
+      "web_method_exceptions": [
+        {
+          "method": "ListChannels",
+          "reason": "The server-rendered /{registry}/-/channels catalog lists release channels."
+        },
+        {
+          "method": "GetChannel",
+          "reason": "The public channel detail page renders the partition assignment map."
+        }
+      ]
     },
     {
       "service": "ImageService",
       "audience": "public",
       "cli_families": ["image"],
-      "web_workflows": ["public-images", "registry-images"],
+      "web_workflows": ["public-images"],
       "web_method_exceptions": [
-        {"method": "GetImage", "reason": "ListImages returns complete signed image metadata for the selected registry release and encoding."},
-        {"method": "ResolveImage", "reason": "ListImages returns each immutable authenticated or anonymous disk-byte download URL used by the browser action."}
+        {
+          "method": "ListImages",
+          "reason": "The public /{registry}/-/images page provides filtering and immutable signed download actions."
+        },
+        {
+          "method": "GetImage",
+          "reason": "The public image catalog includes complete signed image metadata; no duplicate settings browser is retained."
+        },
+        {
+          "method": "ResolveImage",
+          "reason": "The public image catalog provides resolved immutable download URLs."
+        }
       ],
       "methods": ["ListImages", "GetImage", "ResolveImage"]
     },

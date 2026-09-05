@@ -417,7 +417,6 @@ fn EnrollKey(client: ApiClient, context: SigningContext) -> impl IntoView {
 
 #[component]
 fn KeyLifecycle(client: ApiClient, keys: Vec<aos_proto_types::SigningKey>) -> impl IntoView {
-    let can_manage = client.allows("keys.manage");
     let active = keys
         .into_iter()
         .filter(|key| {

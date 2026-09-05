@@ -580,7 +580,10 @@ fn GatewayCard(
                     <div><span>"Version"</span><code>{gateway.resource_version.clone()}</code></div>
                 </div>
                 {(!gateway.reconciliation_error.is_empty()).then(|| view! { <InlineError detail=gateway.reconciliation_error.clone()/> })}
-                {move || details_requested.get().then(|| view! {
+                {move || details_requested.get().then(|| {
+                    let client = client.clone();
+                    let gateway = gateway.clone();
+                    view! {
                     <GatewayPreview client=client.clone() gateway_id=gateway.stable_id.clone()/>
                     <details class="advanced-controls" on:toggle=move |_| advanced_requested.set(true)>
                         <summary>"Advanced gateway details"</summary>
@@ -596,7 +599,7 @@ fn GatewayCard(
                             {(!can_manage && !can_grant).then(|| view! { <p class="muted">"You have read-only access to this gateway."</p> })}
                         })}
                     </details>
-                })}
+                } })}
             </div>
         </details>
     }
