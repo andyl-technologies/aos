@@ -159,6 +159,7 @@ Confirm that the shell contains the staging runtime values, then deploy:
   --external-url https://aos.staging.andyl.org \
   --deployment-id "$staging_deployment_id" \
   --database-instance hub \
+  --oci-pull-enabled \
   --rate-limit-namespace-base 2000 \
   --email-from noreply+aos@send.andyl.org \
   --route-reservation-keys-file "$keyring" \
@@ -173,6 +174,11 @@ schema identity `aos-hub/topology-hard-cutover/2`. Preserve that live instance
 on routine updates. Inspect provider settings before deployment: a database
 instance name alone does not establish its schema version, and changing the
 name selects different state. Production uses `hub-v2` as documented below.
+
+Staging enables OCI pulls so the public Containers browse pages render. Push,
+administration, verified publication, and garbage collection remain disabled
+unless explicitly enabled for a separate validation. Preserve the pull flag
+on subsequent deployments; omitting it disables public container browsing.
 
 ### Configure the direct staging CDN
 

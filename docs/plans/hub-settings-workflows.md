@@ -184,3 +184,27 @@ Staging deployment verification (2026-09-05 UTC):
   the separate Hub profile refresh still returns `invalid_grant`. Cloudflare
   authentication does not renew a Hub session. Local native/VM/browser evidence
   above remains the completed workflow verification.
+
+
+Authenticated staging follow-up (2026-09-05 UTC):
+
+- Renewed Hub device login authenticated successfully as the existing instance
+  owner. Three reads each of topology, delivery workflow inventory, and container
+  repository inventory returned HTTP 200 against `andyl/main`.
+- Topology took 2.06-2.47 seconds for two placements, two routes, three audience
+  advertisements, and one canonical endpoint. Server timing reported 38 SQL
+  calls and 1.54-2.05 seconds of SQL time per request. Sequential route/placement
+  expansion and repeated surface resolution remain a measured bottleneck; this
+  is not a before/after benchmark of the earlier scoped-operation fix.
+- Delivery workflow listing took 0.99-1.37 seconds (10 SQL calls). Container
+  listing took 0.78-0.93 seconds after a 4.52-second first request (9 SQL calls).
+  The inventories are empty, so existing live workflow resume was not exercised.
+- The public `/{registry}/-/containers` page separately returned 503 because
+  OCI pulls were disabled. Redeployed the same immutable installer with
+  `--oci-pull-enabled`; that route now returns HTTP 200. Other OCI rollout gates
+  remain disabled. Isolated Chrome rendered the public page with its empty
+  repository state and no JavaScript, console, or network errors. The staging
+  runbook preserves this flag for later updates.
+- CLI authentication verifies the hosted APIs but does not provide a browser
+  session cookie. Full signed-in browser interaction remains covered by the
+  local 76-check run, rather than claimed as repeated on staging.
