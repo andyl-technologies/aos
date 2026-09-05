@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "26da1882f74304428b90a94477e938be04f140c06e30f97b6b683fa305b7a1ea";
+  patchBranchBundleSha256 = "8e09abe0188965ffc5f27804b5f8492b3e99142ab48625e976cde2235089aeb3";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "9be52ad205c783d6b6fed49f43dfef6e14abaf1d";
+  patchBranchHeadCommit = "44f8b821093d6440e1c1f488fbea2f2b9b29d095";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1905,6 +1905,16 @@ let
       class = "F";
       enforces = "HFORK-4,HFORK-8,HFORK-22";
       capability = "a process-local owner retains the exact writable backend and root, drains and reopens the complete reachable source graph read-only before fork barriers, rejects explicit writable descendants, and restores original native access after a partial failure; inherited children cannot restore or free the parent token; coordinator integration and branch-private child graph handoff remain open";
+    }
+    {
+      file = "0198-crucible-retire-native-workers-before-hot-fork.patch";
+      branchSubject = "crucible: retire native workers before hot fork";
+      branchCommit = "44f8b821093d6440e1c1f488fbea2f2b9b29d095";
+      branchTree = "aded2fe8eeb2adac496baa92f1f9bea241a2bea8";
+      catalogName = "crucible-hot-fork-native-worker-retirement";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-22";
+      capability = "the main-loop coordinator retires drained default-context native block workers before AIO barriers and rechecks pool absence at acknowledgement and fork; pending work, foreign-context pools, held barriers, and writable native block nodes fail closed; an actual fork fixture proves child source reads, private QCOW2 writes, and parent-source preservation after retirement, while complete source-set preparation and production child graph handoff remain open";
     }
   ];
   catalogOnlyCapabilities = [

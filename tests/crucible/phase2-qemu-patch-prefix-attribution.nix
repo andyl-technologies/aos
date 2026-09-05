@@ -863,6 +863,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0198-crucible-retire-native-workers-before-hot-fork.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =
