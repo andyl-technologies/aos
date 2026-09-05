@@ -162,7 +162,11 @@ pub fn repository_index(
         escape(query.unwrap_or_default())
     );
     if repositories.is_empty() {
-        body.push_str("<p class=\"dim\">No matching container repositories are published.</p>");
+        body.push_str(if query.is_some_and(|value| !value.trim().is_empty()) {
+            "<p class=\"dim\">No container repositories match this prefix.</p>"
+        } else {
+            "<p class=\"dim\">No container repositories have been published yet.</p>"
+        });
     } else {
         let rows = repositories
             .iter()

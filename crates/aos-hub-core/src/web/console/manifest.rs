@@ -256,7 +256,13 @@ mod tests {
     #[test]
     fn only_canonical_registry_pages_are_nested_console_routes() {
         assert_eq!(
-            nested_route_methods("settings/images"),
+            nested_route_methods("settings/placements"),
+            Some(RouteMethods::Get)
+        );
+        assert_eq!(nested_route_methods("settings/images"), None);
+        // Legacy catalogs are redirects, not canonical management pages.
+        assert_eq!(
+            route_methods_for_path("/acme/main/-/settings/images"),
             Some(RouteMethods::Get)
         );
         assert_eq!(nested_route_methods("settings/signing-key"), None);

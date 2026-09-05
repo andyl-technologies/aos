@@ -666,6 +666,14 @@ p.chips { margin: 0.2rem 0 0.8rem; }
 
 /* Image filters are an intentional responsive grid instead of an inline run of
  * controls whose browser-selected wrapping made labels collide. */
+.filter-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.6rem;
+  margin: 0.6rem 0 1.2rem;
+}
+.filter-form label { display: grid; gap: 0.3rem; min-width: 0; }
 .image-filters { margin: 0.6rem 0 1.2rem; }
 .image-filter-fields {
   display: grid;

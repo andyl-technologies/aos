@@ -1131,6 +1131,24 @@ pub fn package_index(
         );
     }
 
+    // Carry the filter and sort across pagination so paging never re-sorts or
+    // drops the filter. The query has no leading separator; Pager::nav appends
+    // `&page=N` itself.
+    let mut params: Vec<String> = Vec::new();
+    if !snapshot_query.is_empty() {
+        params.push(snapshot_query.clone());
+    }
+    if !filter_query.is_empty() {
+        params.push(filter_query.clone());
+    }
+    if let Some((col, dir)) = sort {
+        params.push(format!("sort={}", col.token()));
+        params.push(format!("dir={}", dir.token()));
+    }
+    let pager = Pager::new(page_number, PACKAGES_PER_PAGE, total_matches);
+    let navigation = pager.nav(&format!("/{slug}/-/packages"), &params.join("&"));
+    body.push_str(&navigation);
+
     if body_rows.is_empty() {
         body.push_str(if total_all == 0 {
             "<p class=\"dim\">No packages have been published in this registry snapshot.</p>\n"
@@ -1162,22 +1180,7 @@ pub fn package_index(
         body.push_str(&table_raw_headers(&headers, &body_rows));
     }
 
-    // Carry the filter and sort across pagination so paging never re-sorts or
-    // drops the filter. The query has no leading separator; Pager::nav appends
-    // `&page=N` itself.
-    let mut params: Vec<String> = Vec::new();
-    if !snapshot_query.is_empty() {
-        params.push(snapshot_query);
-    }
-    if !filter_query.is_empty() {
-        params.push(filter_query.clone());
-    }
-    if let Some((col, dir)) = sort {
-        params.push(format!("sort={}", col.token()));
-        params.push(format!("dir={}", dir.token()));
-    }
-    let pager = Pager::new(page_number, PACKAGES_PER_PAGE, total_matches);
-    body.push_str(&pager.nav(&format!("/{slug}/-/packages"), &params.join("&")));
+    body.push_str(&navigation);
 
     page_with_session(
         &format!("{slug} packages"),
@@ -1692,6 +1695,17 @@ pub fn documentation_index_page(
         );
     }
 
+    let mut params = Vec::new();
+    if let Some(query) = query.filter(|query| !query.trim().is_empty()) {
+        params.push(format!("q={}", urlencode(query)));
+    }
+    if let Some(kind) = kind {
+        params.push(format!("kind={}", urlencode(kind)));
+    }
+    let pager = Pager::new(page_number, PACKAGES_PER_PAGE, total_results);
+    let navigation = pager.nav(&format!("/{slug}/-/docs"), &params.join("&"));
+    body.push_str(&navigation);
+
     if !results.is_empty() {
         body.push_str("<ol class=\"docs-results\">");
         for result in results {
@@ -1713,15 +1727,7 @@ pub fn documentation_index_page(
         }
         body.push_str("</ol>");
     }
-    let mut params = Vec::new();
-    if let Some(query) = query.filter(|query| !query.trim().is_empty()) {
-        params.push(format!("q={}", urlencode(query)));
-    }
-    if let Some(kind) = kind {
-        params.push(format!("kind={}", urlencode(kind)));
-    }
-    let pager = Pager::new(page_number, PACKAGES_PER_PAGE, total_results);
-    body.push_str(&pager.nav(&format!("/{slug}/-/docs"), &params.join("&")));
+    body.push_str(&navigation);
     let _ = write!(
         body,
         "<p class=\"docs-tools\"><a href=\"/{}/-/api/docs/schema\">JSON Schema</a> · <code>apm docs search &lt;query&gt;</code> · editor completion via <code>apm docs lsp</code></p>",
