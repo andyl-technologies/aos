@@ -605,7 +605,8 @@ class HubSettingsSmoke:
             if suffix == "narrow":
                 self.check(
                     self.chrome.evaluate(
-                        "document.documentElement.scrollWidth <= window.innerWidth"
+                        "Math.max(document.documentElement.scrollWidth, "
+                        "document.body.scrollWidth) <= document.documentElement.clientWidth"
                     ),
                     f"{label} fits the narrow viewport without horizontal overflow",
                 )
@@ -951,7 +952,7 @@ class HubSettingsSmoke:
         self.check(organization_path is not None, "organization fixture is discoverable")
         self.navigate(organization_path)
         self.assert_settings_page("organization overview")
-        self.toggle_details("details.advanced-controls", "organization advanced settings")
+        self.toggle_details("details.editor-panel", "organization advanced profile")
         self.screenshot_pair("organization-overview")
 
         registries_path = organization_path + "/registries"
