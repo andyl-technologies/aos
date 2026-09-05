@@ -114,7 +114,10 @@
       rootfsDeps = allDeps;
       testScript = ''
         echo "==> Running tool check"
-        ${command} > /tmp/tool-output 2>&1
+        if ! ${command} > /tmp/tool-output 2>&1; then
+          cat /tmp/tool-output
+          exit 1
+        fi
         echo "==> Command exited successfully"
         cat /tmp/tool-output
         ${checkOutput}
