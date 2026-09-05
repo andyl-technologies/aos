@@ -211,7 +211,15 @@ pub fn cases(
                 manifest
                     .artifacts
                     .iter()
-                    .filter(|artifact| artifact.kind != ArtifactKind::Evidence)
+                    // The plan is a private control input already bound by
+                    // plan_digest, not an anonymously downloadable object.
+                    // Evidence cannot include itself in its own subject hash.
+                    .filter(|artifact| {
+                        !matches!(
+                            artifact.kind,
+                            ArtifactKind::ReleasePlan | ArtifactKind::Evidence
+                        )
+                    })
                     .map(|artifact| artifact.id.clone())
                     .collect(),
             )?,
