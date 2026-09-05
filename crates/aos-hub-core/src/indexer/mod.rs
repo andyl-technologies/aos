@@ -873,6 +873,12 @@ async fn index_registry_inner(
         name: tree.root.registry.name.clone(),
         description: tree.root.registry.description.clone(),
         readme: tree.root.registry.readme.clone(),
+        support: tree
+            .root
+            .support
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?,
         caches,
         cache_stack,
         roster: roster_rows,

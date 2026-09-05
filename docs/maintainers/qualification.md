@@ -497,6 +497,35 @@ Firmware, kernel, bootloader, initrd, storage, updater, and harness changes
 invalidate dependent results. Live Hub health always needs a fresh observation.
 Uncertain impact selects the broader campaign.
 
+## Release-train support
+
+Support is a forward-looking promise, separate from the evidence that a release
+passed its gates, and it is reviewed with the rest of the contract.
+[`qualification/modules/support.nix`](../../qualification/modules/support.nix)
+declares it:
+
+```nix
+qualification.support = {
+  default = { kind = "standard"; superseded_after_trains = 2; };
+  trains."2026.9" = { kind = "lts"; supported_until = "2028-09-30"; };
+};
+```
+
+A stable release `major.minor.patch` belongs to the train `major.minor`. A train
+without an entry follows `default`: it stays supported until
+`superseded_after_trains` newer stable trains exist. An explicit entry may give
+a `supported_until` date, which then decides on its own; an `lts` train must
+state one. The module rejects train keys with leading zeros, impossible dates,
+LTS trains without an end date, and a rolling count of zero, and the exported
+contract carries the policy under `support`. Current contracts must state it;
+the Rust contract type validates the same rules.
+
+Copy the export verbatim into the registry's `registry.toml` as the `[support]`
+table (see [`repo-layout.md`](../registry/repo-layout.md)). The Hub indexes that
+table with the registry metadata and renders it on the Releases page, so
+changing the promise is a reviewed contract change followed by a registry
+commit, never a Hub setting.
+
 ## Policy changes and standards
 
 Review contract changes as release-authority changes. Preserve historical

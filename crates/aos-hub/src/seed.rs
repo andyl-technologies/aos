@@ -818,7 +818,9 @@ fn write_signed_surface(root: &Path, key: &SigningKey, trust_key: &str) -> Resul
          console without standing up a real registry. Everything here is \
          regenerated on each seed, so feel free to publish, roll out, and \
          delete at will.\n\"\"\"\n\n\
-         [caches]\nendpoint = \"https://cache.example.com/\"\n",
+         [caches]\nendpoint = \"https://cache.example.com/\"\n\n\
+         [support.default]\nkind = \"standard\"\nsuperseded_after_trains = 2\n\n\
+         [[support.trains]]\ntrain = \"1.0\"\nkind = \"lts\"\nsupported_until = \"2036-12-31\"\n",
     )?;
     let keys_toml = put_blob(&format!(
         "schema = 1\n\n[[keys]]\nid = \"maintainer\"\nkey = \"{trust_key}\"\n",

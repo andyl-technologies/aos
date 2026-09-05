@@ -159,6 +159,7 @@ mod tests {
             name: "Release docs".into(),
             description: None,
             readme: None,
+            support: None,
             caches: Vec::new(),
             roster: Vec::new(),
             packages: Vec::new(),

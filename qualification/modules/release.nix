@@ -60,6 +60,10 @@ in {
           requirements = named "id" cfg.requirements;
           package_rules = named "name" cfg.packageRules;
           claims = named "id" cfg.claims;
+          support = {
+            inherit (cfg.support) default;
+            trains = named "train" cfg.support.trains;
+          };
         };
   };
 }
