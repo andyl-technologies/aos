@@ -287,9 +287,40 @@ After image and OCI integration, all 12 CLI process tests passed (five
 documentation, one comprehensive signed-image scenario, two container admission,
 and four container transfer/publication tests). Six container parser tests and
 29 OCI protocol tests passed. A preliminary APM registry run used the upstream checkout rather than this
-feature worktree and is excluded from feature verification. The suite will be
-rerun with the feature's absolute manifest path after the upstream merge.
+feature worktree and is excluded from feature verification. The correctly targeted postmerge run is recorded below.
 
 These results are from `569c914d7`, before integrating upstream's subsequently
 merged CLI/module refactors. Any checks after that integration are recorded
 separately.
+
+
+### Upstream integration verified at `face93a37`
+
+Integrated upstream `c6d076d48`, including the APM VM-suite split, Hub command
+modules, and registry-operations modules. The only merge conflict was the old
+Hub command monolith; delivery dispatch/authentication handling and gateway
+scope filters were ported into the new modules without restoring the monolith.
+This changes CLI/module integration; the deployed Hub/UI snapshot remains the
+verified `a02b6f4da` package.
+
+Postmerge tests ran explicitly in
+`/home/dylan/src/aos/.worktrees/codex/hub-settings-workflows`, with that absolute
+Cargo manifest path and commit recorded in the logs:
+
+- 81 CLI integration/contract tests passed, including 59 retained-control parser
+  contracts, 10 topology-cutover tests, and the 12 image/document/container
+  process tests.
+- The existing APM registry suite passed 15 tests with no failures and one
+  existing pinned-Git-version matrix ignore. This is the feature-branch result,
+  replacing the excluded upstream-checkout run.
+- The newly built CLI passed all 29 native delivery checks against the exact
+  packaged Hub binary, including explicit credentials, restart/replay,
+  concurrent resume, and rejected activation prerequisites.
+- Ported Rust files passed formatting checks, and the VM settings derivation
+  evaluated successfully after the upstream test-module reorganization. This
+  was evaluation, not another VM execution.
+
+Evidence: `/tmp/aos-feature-cli-postmerge-face93a37.log`,
+`/tmp/aos-feature-registry-postmerge-face93a37.log`,
+`/tmp/aos-feature-native-postmerge-face93a37.log`, and
+`/tmp/aos-feature-vm-eval-postmerge-face93a37.log`.
