@@ -214,13 +214,14 @@ impl TrainSummary {
     }
 }
 
-/// Groups stable releases into trains, newest first, and classifies each one.
+/// Groups releases into trains, newest first, keeping each train's newest
+/// release (a candidate counts for its train), and classifies each one.
 ///
 /// The registry's committed policy decides; without one, the default policy
 /// applies (the newest two trains are supported, matching the retention floor
 /// in the release model). A train a channel currently targets stays supported
 /// regardless, because hosts are still being moved onto it.
-pub(crate) fn stable_trains(
+pub(crate) fn release_trains(
     releases: &[ReleaseRow],
     channels: &[ChannelSummary],
     policy: Option<&SupportPolicy>,
@@ -230,9 +231,6 @@ pub(crate) fn stable_trains(
     let policy = policy.unwrap_or(&fallback);
     let mut trains: Vec<TrainSummary> = Vec::new();
     for release in releases {
-        if ReleaseStatus::of(&release.semver) != ReleaseStatus::Stable {
-            continue;
-        }
         let Some(train) = train_of(&release.semver) else {
             continue;
         };
@@ -269,9 +267,9 @@ pub(crate) fn stable_trains(
     trains
 }
 
-/// Renders the support board: one tile per supported stable train plus the
-/// newest candidate and edge snapshots, so a reader can tell at a glance
-/// whether their train still receives updates and which release is newest.
+/// Renders the support board: one tile per supported train, newest train
+/// first, showing that train's newest release and the channels targeting it.
+/// Trains that no longer receive updates are not listed.
 fn support_board(
     slug: &str,
     releases: &[ReleaseRow],
@@ -279,12 +277,7 @@ fn support_board(
     policy: Option<&SupportPolicy>,
     today: Date,
 ) -> String {
-    let trains = stable_trains(releases, channels, policy, today);
-    let newest = |status: ReleaseStatus| {
-        releases
-            .iter()
-            .find(|release| ReleaseStatus::of(&release.semver) == status)
-    };
+    let trains = release_trains(releases, channels, policy, today);
     let mut body =
         String::from("<section class=\"support-board\" aria-label=\"Supported releases\">");
     for summary in trains.iter().filter(|summary| summary.supported()) {
@@ -323,33 +316,7 @@ fn support_board(
             }
         );
     }
-    for (status, class) in [
-        (ReleaseStatus::Candidate, "candidate"),
-        (ReleaseStatus::Edge, "edge"),
-    ] {
-        if let Some(release) = newest(status) {
-            let _ = write!(
-                body,
-                "<a class=\"support-tile {class}\" href=\"{}\"><span class=\"support-train\">{}</span><strong>{}</strong><span class=\"support-state\">Unsupported</span></a>",
-                escape(&release_href(slug, &release.semver)),
-                status.label(),
-                escape(&release.semver)
-            );
-        }
-    }
-    let eol = trains.iter().filter(|summary| !summary.supported()).count();
-    if eol > 0 {
-        let _ = write!(
-            body,
-            "<a class=\"support-tile eol\" href=\"/{}/-/releases?status=stable\"><span class=\"support-train\">End of life</span><strong>{eol} older {}</strong><span class=\"support-state\">Unsupported</span></a>",
-            escape(slug),
-            if eol == 1 { "train" } else { "trains" }
-        );
-    }
-    if trains.is_empty()
-        && newest(ReleaseStatus::Candidate).is_none()
-        && newest(ReleaseStatus::Edge).is_none()
-    {
+    if releases.is_empty() {
         body.push_str("<p class=\"dim\">No releases have been published yet.</p>");
     }
     body.push_str("</section>");
@@ -845,20 +812,13 @@ mod tests {
 
     #[test]
     fn trains_group_stable_releases_and_mark_support() {
-        let releases = [
-            "2026.9.2",
-            "2026.9.1",
-            "2026.10.0-rc.1",
-            "2026.8.3",
-            "2026.7.0",
-            "2025.12.4",
-        ]
-        .iter()
-        .map(|version| release(version))
-        .collect::<Vec<_>>();
+        let releases = ["2026.9.2", "2026.9.1", "2026.8.3", "2026.7.0", "2025.12.4"]
+            .iter()
+            .map(|version| release(version))
+            .collect::<Vec<_>>();
         let channels = vec![channel("stable", "2026.9.2"), channel("lts", "2025.12.4")];
         let today = Date::parse("2026-09-05").unwrap();
-        let trains = stable_trains(&releases, &channels, None, today);
+        let trains = release_trains(&releases, &channels, None, today);
         assert_eq!(
             trains
                 .iter()
@@ -894,7 +854,7 @@ mod tests {
         )
         .unwrap();
         let today = Date::parse("2026-09-05").unwrap();
-        let trains = stable_trains(&releases, &[], Some(&policy), today);
+        let trains = release_trains(&releases, &[], Some(&policy), today);
         assert_eq!(
             trains[0].state,
             SupportState::Supported { until: None },
@@ -914,7 +874,10 @@ mod tests {
         assert!(board.contains("<span class=\"support-train\">2025.12 · LTS</span>"));
         assert!(board.contains("class=\"support-tile supported ending\""));
         assert!(board.contains("Supported until 2026-09-30"));
-        assert!(board.contains("1 older train"));
+        assert!(
+            !board.contains("2026.7"),
+            "end-of-life trains are not listed"
+        );
 
         let query = BrowseQuery {
             status: Some("lts".into()),
@@ -966,7 +929,14 @@ mod tests {
             board.contains("<span class=\"support-train\">2026.9</span><strong>2026.9.2</strong>")
         );
         assert!(board.contains("<span class=\"support-channels\">stable</span>"));
-        assert!(board.contains("class=\"support-tile candidate\""));
-        assert!(board.contains("1 older train"));
+        assert!(
+            !board.contains("2026.9.0-rc.1"),
+            "candidates join their train"
+        );
+        assert!(
+            !board.contains("2025.12"),
+            "end-of-life trains are not listed"
+        );
+        assert!(board.find("2026.9").unwrap() < board.find("2026.8").unwrap());
     }
 }
