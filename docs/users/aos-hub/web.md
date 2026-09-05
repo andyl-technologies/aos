@@ -34,7 +34,7 @@ release.
 The Docs page is a configuration browser. The tree on the left is the scope:
 expand branches lazily or filter the loaded labels. The reader lists the
 current scope's children with their types and descriptions, or every option
-beneath it as dotted paths with **All options beneath**, fifty per page.
+beneath it as dotted paths with **Options**, fifty per page.
 Opening a documented option shows its type, default, example, allowed values,
 activation, and declaration. With JavaScript enabled, choosing a scope swaps
 the reader in place and keeps the tree expanded; every link also works as an

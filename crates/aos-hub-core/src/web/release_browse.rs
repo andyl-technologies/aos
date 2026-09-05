@@ -318,16 +318,15 @@ impl ReleaseContext {
         );
         let _ = write!(
             body,
-            "<a class=\"release-directory\" href=\"/{}/-/releases\">All {} releases →</a>",
+            "<a class=\"release-directory-link\" href=\"/{}/-/releases\">All {} releases →</a>",
             escape(slug),
             self.releases.len()
         );
         if let Some(release) = self.release() {
             let _ = write!(
                 body,
-                "<a href=\"{}\">View release →</a>{}",
-                escape(&release_href(slug, &release.semver)),
-                verification(release)
+                "<a href=\"{}\">View release →</a>",
+                escape(&release_href(slug, &release.semver))
             );
         }
         body.push_str(&self.index_json());

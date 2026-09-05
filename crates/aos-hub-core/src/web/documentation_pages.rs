@@ -91,7 +91,7 @@ fn folder_html(
         dotted(&node.path)
     };
     let mut html = format!(
-        "<section class=\"doc-folder\" data-doc-folder aria-labelledby=\"doc-folder-title\"><div class=\"doc-folder-head\"><h2 id=\"doc-folder-title\">{}</h2><nav class=\"doc-view-toggle\" aria-label=\"Listing\"><a href=\"{}\"{}>Children <span class=\"dim\">{}</span></a><a href=\"{}&amp;view=all\"{}>All options beneath</a></nav></div>",
+        "<section class=\"doc-folder\" data-doc-folder aria-labelledby=\"doc-folder-title\"><div class=\"doc-folder-head\"><h2 id=\"doc-folder-title\">{}</h2><nav class=\"doc-view-toggle\" aria-label=\"Listing\"><a href=\"{}\"{}>Children <span class=\"dim\">{}</span></a><a href=\"{}&amp;view=all\"{}>Options</a></nav></div>",
         escape(&heading),
         escape(&base),
         if flattened { "" } else { " aria-current=\"true\"" },

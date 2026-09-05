@@ -55,14 +55,26 @@ pub(crate) async fn content_counts(
     Ok(result)
 }
 
+const CONTENT_SECTIONS: [(&str, &str); 4] = [
+    ("packages", "Packages"),
+    ("docs", "Docs"),
+    ("images", "Images"),
+    ("containers", "Containers"),
+];
+
+fn content_counts_of(counts: &ReleaseContents) -> [Option<usize>; 4] {
+    [
+        counts.packages,
+        counts.documentation,
+        Some(counts.images),
+        Some(counts.containers),
+    ]
+}
+
+/// Renders the release's content counts as linked tiles for its detail page.
 fn contents_links(slug: &str, version: &str, counts: &ReleaseContents) -> String {
     let mut body = String::from("<div class=\"release-contents\">");
-    for (section, label, count) in [
-        ("packages", "Packages", counts.packages),
-        ("docs", "Docs", counts.documentation),
-        ("images", "Images", Some(counts.images)),
-        ("containers", "Containers", Some(counts.containers)),
-    ] {
+    for ((section, label), count) in CONTENT_SECTIONS.iter().zip(content_counts_of(counts)) {
         let _ = write!(
             body,
             "<a href=\"/{}/-/{}?release={}\"><span>{}</span><strong>{}</strong></a>",
@@ -77,6 +89,28 @@ fn contents_links(slug: &str, version: &str, counts: &ReleaseContents) -> String
     }
     body.push_str("</div>");
     body
+}
+
+/// Renders the same counts as one wrapping line for the release directory,
+/// where tiles would force the table wider than the page.
+fn contents_line(slug: &str, version: &str, counts: &ReleaseContents) -> String {
+    let mut parts = Vec::with_capacity(CONTENT_SECTIONS.len());
+    for ((section, label), count) in CONTENT_SECTIONS.iter().zip(content_counts_of(counts)) {
+        parts.push(format!(
+            "<a href=\"/{}/-/{}?release={}\">{} {}</a>",
+            escape(slug),
+            section,
+            urlencode(version),
+            count
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "indexing".into()),
+            label.to_lowercase()
+        ));
+    }
+    format!(
+        "<span class=\"release-contents-line\">{}</span>",
+        parts.join(" · ")
+    )
 }
 
 /// Renders the registry-wide release directory.
@@ -106,13 +140,13 @@ pub(crate) fn releases_page(
                     escape(&release_href(slug, version)),
                     escape(version),
                     if is_prerelease(version) {
-                        "<span class=\"subline\">Prerelease</span>"
+                        "<div class=\"subline\">Prerelease</div>"
                     } else {
                         ""
                     }
                 ),
                 release.tagged_at.map(ago).unwrap_or_else(|| "—".into()),
-                contents_links(
+                contents_line(
                     slug,
                     version,
                     &contents.get(version).cloned().unwrap_or_default(),
@@ -125,6 +159,9 @@ pub(crate) fn releases_page(
     if rows.is_empty() {
         body.push_str("<p>No releases have been published yet.</p>");
     } else {
+        // The directory must fit the page: wrapped cells beat a hidden
+        // horizontal scroll that clips the channel column.
+        body.push_str("<div class=\"release-directory\">");
         body.push_str(&table(
             &[
                 "release",
@@ -135,6 +172,7 @@ pub(crate) fn releases_page(
             ],
             &rows,
         ));
+        body.push_str("</div>");
     }
     body.push_str(&pager.nav(&format!("/{slug}/-/releases"), ""));
     page_with_session(

@@ -144,7 +144,7 @@ class BrowserAudit:
             status, body, _, _ = self.get(flat)
             text = body.decode()
             rows = text.count('class="doc-folder-option"')
-            self.check(status == 200 and 0 < rows <= 50 and 'aria-current="true">All options beneath' in text, "flattened subtree page stays within one 50-option page")
+            self.check(status == 200 and 0 < rows <= 50 and 'aria-current="true">Options' in text, "flattened subtree page stays within one 50-option page")
             total += rows
             pages += 1
             next_link = re.search(r'<a class="doc-more" href="([^"]+)">Next options', text)

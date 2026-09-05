@@ -1638,8 +1638,12 @@ label.inline {
 .release-jump input[type=search] { width: 17rem; max-width: 60vw; font: inherit; }
 .release-suggest { min-width: 100%; }
 .release-suggest .release-suggest-channel { font-weight: 600; }
-.release-directory { font-size: .85rem; }
+.release-directory-link { font-size: .85rem; }
 .registry-utility { margin-left: auto; }
+.release-directory .table-scroll table { width: 100%; min-width: 0; }
+.release-directory td { white-space: normal; overflow-wrap: anywhere; }
+.release-directory td:first-child { white-space: nowrap; }
+.release-contents-line { display: inline-block; max-width: 22rem; }
 .release-contents { display: flex; flex-wrap: wrap; gap: .7rem; }
 .release-contents a { display: flex; flex-direction: column; padding: .65rem; min-width: 6rem; border: 1px solid var(--rule); }
 .rollout-bar { display: flex; height: 1rem; overflow: hidden; border-radius: 3px; background: var(--rule); }
