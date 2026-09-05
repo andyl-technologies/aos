@@ -61,6 +61,14 @@ Filters narrow the directory by major version, minor version, and status
 (stable, candidate, edge, other prerelease, or long-term support when the
 registry marks LTS trains).
 
+A release page shows its notes, contents, and rollout. When the registry
+serves a public release record for it, the page adds a Qualification section:
+the result and admission time, the release class, the policy and authority,
+the train's support statement at release, a table of every claim with its
+required and achieved assurance, and provenance digests. The Hub shows the
+section only after verifying the record's signed qualification envelope
+against its trusted keys; the served registry remains the authority.
+
 A channel page shows the target release, the minimum allowed release, and the
 share of the 256 rollout buckets assigned, then the rollout bar and a
 colour-coded bucket map. Enter a host's bucket to see which release it gets.

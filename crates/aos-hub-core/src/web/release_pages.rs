@@ -575,6 +575,7 @@ pub(crate) fn release_page(
     contents: &ReleaseContents,
     notes: Option<&str>,
     channels: &[ChannelSummary],
+    record: Option<&aos_release::record::ReleaseRecordV1>,
     started: Instant,
     session: &SessionIndicator,
 ) -> String {
@@ -614,6 +615,9 @@ pub(crate) fn release_page(
             let _ = write!(body, "<p>{}</p>", escape(paragraph));
         }
         body.push_str("</section>");
+    }
+    if let Some(record) = record {
+        body.push_str(&qualification_section(slug, record));
     }
     body.push_str("<h2>Current rollout</h2>");
     body.push_str(&channel_participation(slug, version, channels));
@@ -663,6 +667,127 @@ pub(crate) fn release_page(
         &state_line(status, started),
         session,
     )
+}
+
+/// Renders the verified public release record: the qualification outcome,
+/// per-claim assurance, the train's support promise, and provenance digests.
+///
+/// Assurance describes the evidence at admission time, so the admission date
+/// sits beside the result rather than implying a standing guarantee.
+fn qualification_section(slug: &str, record: &aos_release::record::ReleaseRecordV1) -> String {
+    use aos_release::evidence::GateResult;
+    use aos_release::qualification::claims::ClaimDisposition;
+
+    let summary = &record.qualification;
+    let (result_class, result_label) = match summary.result {
+        GateResult::Passed => ("ok", "Qualified"),
+        GateResult::Failed => ("bad", "Failed qualification"),
+    };
+    let mut body = String::from("<h2>Qualification</h2><div class=\"release-facts\">");
+    let _ = write!(
+        body,
+        "<div class=\"release-fact\"><span>Result</span><strong class=\"{result_class}\">{result_label}</strong><small class=\"dim\">{}</small></div>",
+        escape(&summary.qualified_at)
+    );
+    let _ = write!(
+        body,
+        "<div class=\"release-fact\"><span>Class</span><strong>{:?}</strong>{}</div>",
+        record.release_class,
+        summary
+            .phase
+            .map(|phase| format!("<small class=\"dim\">{phase:?} hold point</small>"))
+            .unwrap_or_default()
+    );
+    let _ = write!(
+        body,
+        "<div class=\"release-fact\"><span>Policy</span><strong>{}</strong><small class=\"dim\">{}</small></div>",
+        escape(&summary.policy_id),
+        hash_value(&summary.policy_digest.to_string())
+    );
+    let _ = write!(
+        body,
+        "<div class=\"release-fact\"><span>Authority</span><strong>{}</strong></div>",
+        escape(&summary.authority_id)
+    );
+    if let Some(support) = &record.support {
+        let _ = write!(
+            body,
+            "<div class=\"release-fact\"><span>Support at release</span><strong>{} {}</strong>{}</div>",
+            escape(&record.train),
+            support.kind.label(),
+            support
+                .supported_until
+                .as_deref()
+                .map(|until| format!("<small class=\"dim\">Until {}</small>", escape(until)))
+                .unwrap_or_default()
+        );
+    }
+    body.push_str("</div>");
+
+    if !summary.claims.is_empty() {
+        let rows = summary
+            .claims
+            .iter()
+            .map(|claim| {
+                let (class, label) = match claim.disposition {
+                    ClaimDisposition::Passed => ("ok", "Passed"),
+                    ClaimDisposition::Failed => ("bad", "Failed"),
+                    ClaimDisposition::Missing => ("warn", "Missing"),
+                    ClaimDisposition::Stale => ("warn", "Stale"),
+                };
+                vec![
+                    escape(&claim.claim_id),
+                    format!("{:?}", claim.required_assurance),
+                    format!("<strong>{:?}</strong>", claim.achieved_assurance),
+                    format!("<span class=\"{class}\">{label}</span>"),
+                    if claim.blocks_release {
+                        "Blocks release".into()
+                    } else {
+                        "<span class=\"dim\">Informational</span>".into()
+                    },
+                ]
+            })
+            .collect::<Vec<_>>();
+        body.push_str(&table(
+            &["claim", "required", "achieved", "result", "obligation"],
+            &rows,
+        ));
+    }
+    let _ = write!(
+        body,
+        "<details><summary>Provenance</summary>{}</details>",
+        table(
+            &["field", "value"],
+            &[
+                vec!["Source commit".into(), hash_value(&record.source_commit)],
+                vec!["Plan".into(), hash_value(&record.plan_digest.to_string())],
+                vec![
+                    "Manifest".into(),
+                    hash_value(&record.manifest_digest.to_string())
+                ],
+                vec![
+                    "Qualification receipt".into(),
+                    hash_value(&summary.receipt_digest.to_string())
+                ],
+                vec![
+                    "Report".into(),
+                    hash_value(&summary.report_digest.to_string())
+                ],
+                vec![
+                    "Record".into(),
+                    format!(
+                        "<code>{}</code>",
+                        escape(&aos_release::record::record_path(
+                            record.release_class,
+                            &record.version
+                        ))
+                    )
+                ],
+            ],
+        )
+    );
+    let _ = slug;
+    body
 }
 
 fn channel_participation(slug: &str, version: &str, channels: &[ChannelSummary]) -> String {
@@ -789,6 +914,58 @@ mod tests {
             frontier: Some(frontier.into()),
             partitions: vec![Some(frontier.to_string()); 256],
         }
+    }
+
+    #[test]
+    fn release_record_renders_result_claims_support_and_provenance() {
+        use aos_release::digest::Sha256Digest;
+        use aos_release::evidence::GateResult;
+        use aos_release::qualification::claims::{AssuranceLevel, ClaimDisposition, ClaimOutcome};
+        use aos_release::record::{QualificationSummaryV1, ReleaseRecordV1, ReleaseSupportV1};
+        let record = ReleaseRecordV1 {
+            schema_version: aos_release::record::RECORD_V1.into(),
+            registry: "andyl/main".into(),
+            release_id: "release-2026.9.1".into(),
+            version: "2026.9.1".into(),
+            train: "2026.9".into(),
+            release_class: aos_release::plan::ReleaseClass::Stable,
+            source_commit: "a".repeat(64),
+            plan_digest: Sha256Digest::of_bytes(b"plan"),
+            manifest_digest: Sha256Digest::of_bytes(b"manifest"),
+            qualification: QualificationSummaryV1 {
+                policy_id: "full-release-qualification".into(),
+                policy_digest: Sha256Digest::of_bytes(b"policy"),
+                result: GateResult::Passed,
+                qualified_at: "2026-09-05T12:00:00Z".into(),
+                authority_id: "qualification-authority".into(),
+                receipt_digest: Sha256Digest::of_bytes(b"receipt"),
+                report_digest: Sha256Digest::of_bytes(b"report"),
+                phase: None,
+                claims: vec![ClaimOutcome {
+                    case_id: "disk-x86_64-linux".into(),
+                    claim_id: "disk-x86_64-linux-qualified".into(),
+                    required_assurance: AssuranceLevel::A3,
+                    achieved_assurance: AssuranceLevel::A2,
+                    disposition: ClaimDisposition::Passed,
+                    blocks_release: true,
+                    environment_digest: None,
+                }],
+            },
+            support: Some(ReleaseSupportV1 {
+                kind: SupportKind::Lts,
+                supported_until: Some("2028-09-30".into()),
+            }),
+            signed_qualification: "{}".into(),
+        };
+        let html = qualification_section("org/main", &record);
+        assert!(html.contains("<strong class=\"ok\">Qualified</strong>"));
+        assert!(html.contains("2026-09-05T12:00:00Z"));
+        assert!(html.contains("<strong>2026.9 LTS</strong>"));
+        assert!(html.contains("Until 2028-09-30"));
+        assert!(html.contains("disk-x86_64-linux-qualified"));
+        assert!(html.contains("<strong>A2</strong>"));
+        assert!(html.contains("Blocks release"));
+        assert!(html.contains("releases/stable/2026.9.1/release-record.json"));
     }
 
     #[test]

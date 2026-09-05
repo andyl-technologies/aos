@@ -757,6 +757,11 @@ async fn index_registry_inner(
                     .unwrap_or_default();
                 db.retain_release_notes(registry.id, &tag_oid.to_hex(), notes)
                     .await?;
+                let record =
+                    fetch_release_record(fetch, &tag_name, &release_tree.root.registry.name)
+                        .await?;
+                db.retain_release_record(registry.id, &tag_oid.to_hex(), record.as_deref())
+                    .await?;
                 let documentation = release_snapshot_documentation(&release_tree.packages);
                 let manifest_digest = hex::encode(Sha256::digest(serde_json::to_vec(&artifacts)?));
                 let artifact_snapshot = ReleaseArtifactSnapshot {
@@ -2173,6 +2178,52 @@ async fn revalidate_reused_release_images(
         "revalidated reusable release direct objects"
     );
     Ok(verified)
+}
+
+/// Fetches the served public release record for a verified release, if any.
+///
+/// The record lives beside the release manifest under the delegated TUF role
+/// for its class; the class is not known here, so each role path is probed.
+/// The document is checked for internal consistency and for naming this exact
+/// release and registry, then retained as fetched. Its signed qualification
+/// envelope is verified against the deployment's qualification keys when the
+/// release page reads it, so a stored record never renders unverified.
+async fn fetch_release_record(
+    fetch: &dyn SurfaceFetch,
+    version: &str,
+    registry_name: &str,
+) -> Result<Option<String>> {
+    for class in [
+        aos_release::plan::ReleaseClass::Stable,
+        aos_release::plan::ReleaseClass::Candidate,
+        aos_release::plan::ReleaseClass::Edge,
+    ] {
+        let path = aos_release::record::record_path(class, version);
+        let Some(bytes) = fetch.fetch(&path).await? else {
+            continue;
+        };
+        let record: aos_release::record::ReleaseRecordV1 =
+            match aos_release::canonical::from_slice(&bytes, "release record") {
+                Ok(record) => record,
+                Err(error) => {
+                    tracing::warn!(%path, "ignoring malformed release record: {error:#}");
+                    return Ok(None);
+                }
+            };
+        if record.validate().is_err()
+            || record.version != version
+            || record.registry != registry_name
+            || aos_release::tuf::TufRole::for_release(record.release_class)
+                != aos_release::tuf::TufRole::for_release(class)
+        {
+            tracing::warn!(%path, "ignoring release record that does not describe this release");
+            return Ok(None);
+        }
+        return Ok(Some(
+            String::from_utf8(bytes).context("release record is not UTF-8")?,
+        ));
+    }
+    Ok(None)
 }
 
 /// Proves that every signed direct-delivery object exists with its exact identity.

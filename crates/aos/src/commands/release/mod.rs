@@ -20,6 +20,7 @@ mod qualification_executor;
 mod qualification_run;
 mod qualification_transition;
 mod qualify;
+mod record;
 mod signer;
 mod stage;
 mod status;
@@ -90,6 +91,7 @@ pub fn run(command: &ReleaseCommand, nix: &NixRunner, printer: &Printer) -> Resu
             anyhow::bail!("release channel command must use the asynchronous dispatcher")
         }
         ReleaseCommand::Verify(args) => verify::run(args, printer),
+        ReleaseCommand::Record(args) => record::run(args, printer),
     }
 }
 

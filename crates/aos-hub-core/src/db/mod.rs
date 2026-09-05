@@ -645,6 +645,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("delivery_workflow.sql"),
     include_str!("release_browse.sql"),
     include_str!("registry_support_policy.sql"),
+    include_str!("release_records.sql"),
 ];
 
 /// Identity stamped into databases created by the topology hard-cutover
