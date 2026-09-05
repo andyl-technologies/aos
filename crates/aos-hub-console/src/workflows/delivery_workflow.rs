@@ -280,10 +280,15 @@ fn DeliveryDestinationForm(
                 )
                 .await
             {
-                Ok(_) => super::routes::reload(),
-                Err(failure) => error.set(Some(failure.to_string())),
+                Ok(_) => {
+                    busy.set(false);
+                    super::routes::reload();
+                }
+                Err(failure) => {
+                    error.set(Some(failure.to_string()));
+                    busy.set(false);
+                }
             }
-            busy.set(false);
         });
     });
 
@@ -583,10 +588,15 @@ fn DeliveryWorkflowCard(
                 )
                 .await
             {
-                Ok(_) => super::routes::reload(),
-                Err(failure) => error.set(Some(failure.to_string())),
+                Ok(_) => {
+                    busy.set(false);
+                    super::routes::reload();
+                }
+                Err(failure) => {
+                    error.set(Some(failure.to_string()));
+                    busy.set(false);
+                }
             }
-            busy.set(false);
         });
     };
     let action_client = client.clone();
@@ -607,10 +617,15 @@ fn DeliveryWorkflowCard(
                 )
                 .await
             {
-                Ok(_) => super::routes::reload(),
-                Err(failure) => error.set(Some(failure.to_string())),
+                Ok(_) => {
+                    busy.set(false);
+                    super::routes::reload();
+                }
+                Err(failure) => {
+                    error.set(Some(failure.to_string()));
+                    busy.set(false);
+                }
             }
-            busy.set(false);
         });
     };
     let activate_client = client.clone();
@@ -658,10 +673,15 @@ fn DeliveryWorkflowCard(
                 )
                 .await
             {
-                Ok(_) => super::routes::reload(),
-                Err(failure) => error.set(Some(failure.to_string())),
+                Ok(_) => {
+                    busy.set(false);
+                    super::routes::reload();
+                }
+                Err(failure) => {
+                    error.set(Some(failure.to_string()));
+                    busy.set(false);
+                }
             }
-            busy.set(false);
         });
     });
 
