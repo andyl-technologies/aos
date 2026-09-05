@@ -3,7 +3,7 @@
 //! Completeness requires an exact coordinator and valid registry metadata;
 //! it does not substitute for the independent child-disposition barriers.
 //!
-//! ```json
+//! ```text
 //! {"schema-version":4,"generation":1,"complete":false,"overflowed":false,
 //!  "unclassified-threads":0,"threads":[]}
 //! ```

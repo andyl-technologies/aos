@@ -431,6 +431,7 @@ fn world_resource_error(message: impl Into<String>) -> QemuVmRealizationError {
 
 #[cfg(test)]
 mod tests {
+    // crucible-lint: allow panic-shortcut -- fixture construction and expected success must fail the test on error.
     #![allow(clippy::expect_used)]
 
     use std::sync::atomic::{AtomicUsize, Ordering};

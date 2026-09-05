@@ -1,3 +1,5 @@
+//! Tests retained-template lifecycle launch, recovery, and quarantine ownership.
+
 // crucible-lint: allow panic-shortcut -- fixtures use panic shortcuts for precise failures.
 #![allow(clippy::expect_used)]
 

@@ -3,7 +3,7 @@
 //! Only the operations represented here can reach the machine-control stream.
 //! Each request retains its command kind for bounded response authentication.
 //!
-//! ```json
+//! ```text
 //! {"execute":"query-status"}
 //! ```
 

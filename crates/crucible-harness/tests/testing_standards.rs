@@ -51,6 +51,7 @@ enum TestShape {
     AdversarialCompare,
     FleetEquivalence,
     CampaignContinuity,
+    CampaignModel,
     BasicBlockCoverage,
     CheckpointMaterialization,
     StateSpaceSearch,
@@ -133,6 +134,13 @@ const GATE_TESTING_STANDARDS: &[GateTestingStandard] = &[
             Layer::CrossCutting,
         ],
         shape: TestShape::AbiGoldenVectors,
+        backend: TestBackend::InProcess,
+    },
+    GateTestingStandard {
+        gate: "gate:campaign-model",
+        owner_packages: &["crucible-campaign"],
+        layers: &[Layer::L3],
+        shape: TestShape::CampaignModel,
         backend: TestBackend::InProcess,
     },
     GateTestingStandard {
@@ -333,7 +341,7 @@ const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
     },
     CrateTestingOwnership {
         package: "crucible-campaign",
-        gates: &["gate:typed-choice"],
+        gates: &["gate:campaign-model", "gate:typed-choice"],
     },
     CrateTestingOwnership {
         package: "crucible-session",
@@ -378,6 +386,38 @@ const HASH_COMPARE_GATES: &[&str] = &[
 ];
 const TWICE_REDUCE_HELPER: &str = "assert_twice_reduce_canonical_digest(";
 const DUMP_COMPARE_PATTERNS: &[&str] = &["human_formatted_dump", "formatted_dump", "dump()"];
+
+#[test]
+fn campaign_model_standard_requires_public_repository_recovery_proofs() -> Result<(), Box<dyn Error>>
+{
+    let target = gate_targets()
+        .iter()
+        .find(|target| target.gate == "gate:campaign-model")
+        .ok_or("campaign-model gate target is missing")?;
+    let standard =
+        standard_for_gate(target.gate).ok_or("campaign-model testing standard is missing")?;
+    let source = fs::read_to_string(
+        workspace_root().join("crates/crucible-campaign/tests/gate_campaign_model.rs"),
+    )?;
+    assert!(source_shape_failures(target, standard, &source).is_empty());
+
+    for proof in [
+        "CampaignRepository::new",
+        "CampaignLineage::new",
+        "assert_eq!(lineage.id()?, reverse_lineage.id()?)",
+        "CampaignRepositoryError::Stale",
+        "derive_campaign",
+        "assert_eq!(rebuilt.snapshot_id(), derived.new_snapshot)",
+        "restarted.state",
+    ] {
+        let without_proof = source.replace(proof, "missing_repository_proof");
+        assert!(
+            !source_shape_failures(target, standard, &without_proof).is_empty(),
+            "campaign model standard accepted a gate missing {proof}",
+        );
+    }
+    Ok(())
+}
 
 #[test]
 fn gate_targets_follow_per_layer_testing_standards() -> Result<(), Box<dyn Error>> {

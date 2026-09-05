@@ -1,3 +1,5 @@
+//! Tests durable fallback, recovery, and ownership in managed hot checkpoint pools.
+
 // crucible-lint: allow panic-shortcut -- fixtures use panic shortcuts for precise failures.
 #![allow(clippy::expect_used)]
 

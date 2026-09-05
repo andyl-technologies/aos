@@ -298,6 +298,11 @@ pub trait QemuHotForkAttemptLifecycleFactory {
     /// On error, the unchanged lifecycle is returned for exact retry. A
     /// commit-indeterminate insertion must therefore be idempotent under the
     /// same token.
+    ///
+    /// # Errors
+    ///
+    /// Returns the unchanged lifecycle and a classified failure when the
+    /// factory cannot complete source-template reinsertion.
     fn recover(
         &mut self,
         lifecycle: Self::Lifecycle,

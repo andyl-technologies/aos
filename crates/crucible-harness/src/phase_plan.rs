@@ -581,6 +581,14 @@ pub const PHASE_GATE_ORDER: &[PhaseGateOccurrence] = &[
     ),
     catalog_gate(
         PhasePlanPhase::Phase1,
+        "gate:campaign-model",
+        "checks.crucible.phase1.gates.campaignModel",
+        "canonical campaign identities and repository lifecycle",
+        false,
+        false,
+    ),
+    catalog_gate(
+        PhasePlanPhase::Phase1,
         "gate:replay-oracle",
         "checks.crucible.phase1.gates.replayOracle",
         "double-backed replay oracle",

@@ -1,3 +1,5 @@
+//! Tests managed template admission, capacity accounting, and recovery ownership.
+
 // crucible-lint: allow panic-shortcut -- fixtures use panic shortcuts for precise failures.
 #![allow(clippy::expect_used)]
 

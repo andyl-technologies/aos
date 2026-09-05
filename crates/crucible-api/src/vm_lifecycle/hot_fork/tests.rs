@@ -1,3 +1,5 @@
+//! Tests exact host-world continuation capture and atomic hot-fork installation.
+
 use super::*;
 
 fn permanently_failed_continuation() -> (ScenarioDefForm, ProductionVmHotForkWorldContinuation) {

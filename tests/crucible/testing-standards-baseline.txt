@@ -8,6 +8,12 @@
 # device retry semantics. They do not rerun a failed test. The fixed sleeps are
 # production process-polling boundaries or child-process fixtures; their tests
 # still fail on the first unmet assertion or timeout.
+# The packaged campaign wait refreshes only authenticated stale-head reads;
+# all other query and execution failures remain terminal. Planner pipe and
+# hot-fork waits poll one retained process under a fixed deadline or poll cap.
+# The delayed cancellation fixture delivers one cancellation, and the moved
+# node fixture waits for loader completion before its single audit assertion.
+# Hot-fork `retry` names classify resource recovery; they never rerun a test.
 crucible-api	src/vm_lifecycle/checkpoint_store/tests	retry	1
 crucible-api	src/vm_lifecycle/quantum_loop/checkpoint_capture	retry	1
 crucible-campaign	src/campaign_service	retry	1
@@ -26,6 +32,7 @@ crucible-cli	src/cli/campaign	retry	1
 crucible-cli	src/cli/campaign/tests	retry	1
 crucible-cli	src/main	retry	1
 crucible-cli	tests/campaign_store_process	thread::sleep	1
+crucible-cli	tests/support/campaign_packaged_process	thread::sleep	1
 crucible-daemon	src/campaign_bootstrap/tests	thread::sleep	1
 crucible-daemon	src/campaign_server/tests	thread::sleep	1
 crucible-daemon	src/campaign_server	thread::sleep	1
@@ -42,7 +49,15 @@ crucible-daemon	src/executor_server	thread::sleep	1
 crucible-daemon	src/executor_supervisor/tests	retry	1
 crucible-daemon	src/executor_worker	retry	1
 crucible-daemon	src/lib	retry	1
-crucible-daemon	src/planner_process	thread::sleep	1
+crucible-daemon	src/planner_process/owner	retry	1
+crucible-daemon	src/planner_process/pipes	thread::sleep	1
+crucible-daemon	src/planner_process/pipes/tests	thread::sleep	1
+crucible-daemon	src/qemu_hot_fork_factory/tests	retry	1
+crucible-daemon	src/qemu_hot_fork_pool/tests	retry	1
+crucible-daemon	src/qemu_hot_fork_reconciliation	retry	1
+crucible-daemon	src/qemu_hot_fork_reconciliation	std::thread::sleep	1
+crucible-daemon	src/qemu_hot_fork_reconciliation	thread::sleep	1
+crucible-daemon	src/qemu_hot_fork_runner	thread::sleep	1
 crucible-daemon	src/qemu_campaign_lifecycle/tests	retry	1
 crucible-daemon	src/qemu_resource_guard/tests	retry	1
 crucible-qemu	src/linux_attempt_host	retry	1
@@ -82,8 +97,8 @@ crucible-qemu	src/node/tests/fault_command	retry	1
 crucible-qemu	src/node_factory	thread::sleep	1
 crucible-qemu	src/node_factory/tests	thread::sleep	1
 crucible-qemu	src/node_tests	retry	1
-crucible-qemu	src/node_tests	std::thread::sleep	1
-crucible-qemu	src/node_tests	thread::sleep	1
+crucible-qemu	src/node/tests/hot_fork	std::thread::sleep	1
+crucible-qemu	src/node/tests/hot_fork	thread::sleep	1
 crucible-qemu	src/node/tests/host_io_runtime	retry	1
 crucible-qemu	src/node_tests/fault_event_budget	retry	1
 crucible-qemu	src/node_tests/fingerprint	retry	1

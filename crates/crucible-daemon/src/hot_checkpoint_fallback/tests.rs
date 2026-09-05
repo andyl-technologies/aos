@@ -1,3 +1,5 @@
+//! Tests authenticated hot checkpoint fallback and retained execution closure selection.
+
 // crucible-lint: allow panic-shortcut -- fixtures use panic shortcuts for exact failures.
 #![allow(clippy::expect_used)]
 
