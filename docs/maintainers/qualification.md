@@ -530,6 +530,20 @@ The Hub indexes the table with the registry metadata and renders it on the
 Releases page, so changing the promise is a reviewed contract change on the
 owning branch followed by that branch's next release, never a Hub setting.
 
+## Public release record
+
+Registry finalization precedes qualification, so the qualification outcome
+cannot live in the registry tree. After admission, `aos release record`
+composes `aos.release-record/v1` from the frozen plan, the final manifest, the
+signed qualification receipt, and the public report, and the TUF and
+compose-surface steps authorize and serve it beside the release manifest. The
+record carries the result, policy, authority, and admission time; each claim's
+required and achieved assurance and disposition; the train's support
+statement; provenance digests; and the exact signed envelope. Achieved
+assurance describes the evidence at admission; later invalidation is recorded
+in a subsequent release, not by editing the record. See
+[`canonical-releases.md`](canonical-releases.md#compose-the-public-release-record).
+
 ## Policy changes and standards
 
 Review contract changes as release-authority changes. Preserve historical
