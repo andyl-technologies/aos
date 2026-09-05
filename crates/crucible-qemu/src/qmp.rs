@@ -2194,10 +2194,10 @@ impl QmpOperationDeadline {
     }
 }
 
-/// Polling policy for QMP snapshot jobs.
+/// Polling policy for QMP snapshot jobs and retained template acquisition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct QmpJobPollPolicy {
-    /// Maximum number of `query-jobs` polls before reporting a non-concluded job.
+    /// Maximum exchanges before reporting an incomplete job or template barrier.
     pub max_polls: usize,
     /// Delay between polls.
     pub poll_interval: Duration,

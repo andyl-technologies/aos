@@ -1440,6 +1440,21 @@ impl QemuNode {
             .prepare_hot_fork_template(block_snapshot_bindings)
     }
 
+    /// Acquires all retained template barriers before child-resource staging.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when bounded acquisition fails or
+    /// QEMU changes the retained transaction generation.
+    pub fn prepare_hot_fork_template_barriers(
+        &mut self,
+        block_snapshot_bindings: &[crate::QmpHotForkBlockSnapshotBinding],
+    ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
+        self.channels
+            .qmp_machine_control
+            .prepare_hot_fork_template_barriers(block_snapshot_bindings)
+    }
+
     /// Queries QEMU's retained hot-fork template transaction.
     ///
     /// # Errors
