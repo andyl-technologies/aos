@@ -175,15 +175,15 @@ class NativeHub:
             "idempotencyKey": key + "-apply",
         })
 
-    def cli(self, *arguments, succeeds=True, explicit_hub=True):
+    def cli(self, command, *arguments, succeeds=True, explicit_hub=True):
         origin_args = ["--hub", self.url] if explicit_hub else []
         result = subprocess.run(
-            [self.client, "--json", "hub", "delivery", *arguments,
+            [self.client, "--json", "hub", *command.split(), *arguments,
              *origin_args, "--token", self.token],
             capture_output=True, text=True, timeout=60, env=self.environment,
         )
         if succeeds != (result.returncode == 0):
-            raise AssertionError(f"delivery {arguments[0]}: {result.stdout} {result.stderr}")
+            raise AssertionError(f"{command}: {result.stdout} {result.stderr}")
         return json.loads(result.stdout)["data"] if succeeds else result.stdout + result.stderr
 
 
@@ -264,12 +264,12 @@ def exercise(hub, require_assets, serve_only=False):
     }
     intent_file = hub.root / "intent.json"
     intent_file.write_text(json.dumps(intent))
-    plan = hub.cli("plan", "--intent-file", str(intent_file), "--idempotency-key", "setup-plan")["plan"]
+    plan = hub.cli("delivery plan", "--intent-file", str(intent_file), "--idempotency-key", "setup-plan")["plan"]
     hub.check(True, "explicit local credentials bypass an unrelated expired Hub profile")
-    rejected = hub.cli("apply", "--plan-id", plan["plan_id"], "--confirm-hash", "wrong-hash",
+    rejected = hub.cli("delivery apply", "--plan-id", plan["plan_id"], "--confirm-hash", "wrong-hash",
                        "--idempotency-key", "unreviewed-apply", "--yes", succeeds=False)
     hub.check("confirmation" in rejected.lower(), "setup rejects an incorrect review confirmation")
-    apply = ("apply", "--plan-id", plan["plan_id"], "--confirm-hash", plan["confirmation_hash"],
+    apply = ("delivery apply", "--plan-id", plan["plan_id"], "--confirm-hash", plan["confirmation_hash"],
              "--idempotency-key", "setup-apply", "--yes")
     workflow = hub.cli(*apply)["workflow"]
     workflow_id = workflow["workflow_id"]
@@ -277,7 +277,7 @@ def exercise(hub, require_assets, serve_only=False):
               "real unconfigured CDN setup stays blocked with explicit prerequisites")
     replay = hub.cli(*apply)["workflow"]
     hub.check(replay["workflow_id"] == workflow_id, "retrying apply preserves workflow identity")
-    hub.check(len(hub.cli("list", "--surface", "registry:workflow-test/main")["workflows"]) == 1,
+    hub.check(len(hub.cli("delivery list", "--surface", "registry:workflow-test/main")["workflows"]) == 1,
               "apply replay creates no duplicate workflow")
     profile = Path(hub.environment["AOS_CONFIG_HOME"]) / "hub-profiles.json"
     store = json.loads(profile.read_text())
@@ -285,7 +285,7 @@ def exercise(hub, require_assets, serve_only=False):
     store["profiles"][hub.url] = expired
     store["active_origin"] = hub.url
     profile.write_text(json.dumps(store))
-    hub.check(hub.cli("show", workflow_id, explicit_hub=False)["workflow"]["workflow_id"] == workflow_id,
+    hub.check(hub.cli("delivery show", workflow_id, explicit_hub=False)["workflow"]["workflow_id"] == workflow_id,
               "explicit token uses the stored origin without refreshing expired credentials")
     topology = hub.rpc("TopologyService", "GetSurfaceTopology", {"surface": surface})
     before = topology.get("routeAdvertisements", [])
@@ -293,21 +293,25 @@ def exercise(hub, require_assets, serve_only=False):
 
     hub.stop()
     hub.start()
-    recovered = hub.cli("show", workflow_id)["workflow"]
+    recovered = hub.cli("delivery show", workflow_id)["workflow"]
     identities = ("workflow_id", "domain_id", "endpoint_id", "endpoint_generation", "gateway_id", "route_id")
     hub.check(all(recovered.get(key) == replay.get(key) for key in identities)
               and recovered["intent"] == replay["intent"],
               "real server restart preserves workflow steps and reviewed intent")
-    resume = ("resume", workflow_id, "--if-version", recovered["resource_version"],
+    resume = ("delivery resume", workflow_id, "--if-version", recovered["resource_version"],
               "--idempotency-key", "resume-after-restart")
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda _: hub.cli(*resume)["workflow"], range(2)))
     hub.check(all(item["workflow_id"] == workflow_id for item in results),
               "concurrent resume over TCP preserves one durable workflow")
-    current = hub.cli("show", workflow_id)["workflow"]
-    failure = hub.cli("activate", "plan", workflow_id, "--if-version", current["resource_version"],
+    current = hub.cli("delivery show", workflow_id)["workflow"]
+    failure = hub.cli("delivery activate plan", workflow_id, "--if-version", current["resource_version"],
                       "--idempotency-key", "premature-activation", succeeds=False)
     hub.check(bool(failure), "activation review rejects unverified external infrastructure")
+    rejected_activation = hub.cli("delivery activate apply", "--plan-id", plan["plan_id"],
+                                  "--confirm-hash", plan["confirmation_hash"],
+                                  "--idempotency-key", "wrong-kind-activation", "--yes", succeeds=False)
+    hub.check(bool(rejected_activation), "activation apply rejects a setup plan")
     after = hub.rpc("TopologyService", "GetSurfaceTopology", {"surface": surface})
     hub.check(after.get("routeAdvertisements", []) == before,
               "failed setup and activation leave advertised destinations unchanged")
