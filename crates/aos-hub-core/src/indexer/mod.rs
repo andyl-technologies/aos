@@ -137,6 +137,11 @@ struct SignedClosureLayer {
 /// while keeping Worker memory and subrequests bounded.
 const RELEASE_TREE_FETCH_CONCURRENCY: usize = 8;
 
+/// Limits cold release rebuilds, which also retain canonical documentation and
+/// construct browse projections. Revalidating an existing snapshot is smaller
+/// and keeps the wider fetch window above.
+const RELEASE_REBUILD_CONCURRENCY: usize = 2;
+
 /// Outcome of one indexing run.
 #[derive(Debug)]
 pub struct IndexOutcome {
@@ -542,12 +547,22 @@ async fn index_registry_inner(
         "registry index phase prepared"
     );
     let release_tags: Vec<_> = refs.tags.iter().collect();
+    let release_concurrency = if reusable_releases.len() == release_tags.len() {
+        RELEASE_TREE_FETCH_CONCURRENCY
+    } else {
+        RELEASE_REBUILD_CONCURRENCY
+    };
     let mut releases = Vec::new();
     let mut release_artifact_snapshots = Vec::new();
     let mut release_images = Vec::new();
     let mut image_presence = Vec::new();
     let mut image_release_tag_oids = std::collections::BTreeSet::new();
-    for batch in release_tags.chunks(RELEASE_TREE_FETCH_CONCURRENCY) {
+    // Each tree projection expands into SQL parameters and a serialized remote
+    // request. Keep only one such write in flight: overlapping eight complete
+    // projection buffers can exceed the Worker's memory limit. Signed trees
+    // and canonical documents may still be fetched and verified concurrently.
+    let browse_projection_gate = futures_util::lock::Mutex::new(());
+    for batch in release_tags.chunks(release_concurrency) {
         let verified = try_join_all(batch.iter().copied().map(|(tag_name, tag_oid)| {
             let reader = &reader;
             let reusable = reusable_releases.get(tag_name.as_str()).cloned();
@@ -555,6 +570,7 @@ async fn index_registry_inner(
             let trusted = trusted.as_slice();
             let advertised_commit = advertised_commit.as_str();
             let refs_digest = refs_digest.as_str();
+            let browse_projection_gate = &browse_projection_gate;
             async move {
                 if let Some(reusable) = reusable.filter(|reusable| {
                     reusable.release.tag_oid == tag_oid.to_hex()
@@ -722,14 +738,17 @@ async fn index_registry_inner(
 
                 let artifacts = release_snapshot_artifacts(&release_tree.packages);
                 let search = verify_package_documentation(fetch, &release_tree.packages).await?;
-                db.retain_release_browse_catalog(
-                    registry.id,
-                    &source_commit,
-                    &release_tree.packages,
-                    release_tree.root.registry.default_release.as_deref(),
-                    &search,
-                )
-                .await?;
+                {
+                    let _projection = browse_projection_gate.lock().await;
+                    db.retain_release_browse_catalog(
+                        registry.id,
+                        &source_commit,
+                        &release_tree.packages,
+                        release_tree.root.registry.default_release.as_deref(),
+                        &search,
+                    )
+                    .await?;
+                }
                 let signed_text = std::str::from_utf8(&signed.signed_payload)
                     .context("release tag message is not UTF-8")?;
                 let notes = signed_text
