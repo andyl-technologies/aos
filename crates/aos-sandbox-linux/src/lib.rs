@@ -10,6 +10,7 @@
 //!
 //! - [`pidfd`] pins a process and obtains typed namespace descriptors;
 //! - [`path`] resolves descendants beneath a pre-opened directory;
+//! - [`cgroup`] checks exact and hinted descendant membership against retained cgroup-v2 anchors;
 //! - [`mount`] constructs, attributes, idmaps, and attaches detached mounts;
 //! - [`inventory`] lists mounts and reads stable mount metadata;
 //! - [`immutable_file`] pins descriptors and maps seal-proven immutable files; and
@@ -18,6 +19,7 @@
 #![cfg(target_os = "linux")]
 
 pub mod boot;
+pub mod cgroup;
 pub mod immutable_file;
 pub mod inventory;
 pub mod mount;

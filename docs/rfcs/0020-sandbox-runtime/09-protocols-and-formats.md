@@ -443,6 +443,33 @@ and supplied principal IDs cannot reconstruct that authority after restart.
 Authenticated remote carriers must establish equivalent semantic principal and
 channel bindings through their own authentication, not serialize local pidfds.
 
+Local cgroup scope uses a retained, filesystem-validated cgroup-v2 directory,
+not an arbitrary directory whose inode happens to match a reported number.
+The supported 64-bit profile preserves the complete kernfs cgroup identifier.
+Fresh opens of the fixed `cgroup.procs` file observe active kernfs state;
+directory link counts do not establish it. Exact service membership compares
+fresh PIDFD information with the retained directory. Descendant membership
+resolves a bounded, untrusted relative hint beneath that anchor with
+`RESOLVE_BENEATH`, `RESOLVE_NO_XDEV`, `RESOLVE_NO_SYMLINKS`, and
+`RESOLVE_NO_MAGICLINKS`, then matches the resolved candidate's complete ID to
+the PIDFD. The hint only locates a candidate. It neither authenticates a subject
+nor causes a numeric PID to be reopened. Cgroup-v2's no-reparent rule preserves
+the retained candidate's ancestry; a same-filesystem bind-mount graft is still
+rejected by `NO_XDEV`. Repeated active and membership observations remain
+snapshots, not a lock against privileged migration or a later effect.
+
+The first producer session must be provisioned by the controller for an explicit
+holder/capability/project/sandbox/incarnation/assignment tuple and a retained
+payload-cgroup anchor. Neither shifted UID allocation nor host/guest UID zero
+selects that principal. A fresh, unpredictable, role-separated channel binding
+belongs to the controller's live session table, and each record must independently
+match the provisioned cgroup scope. The publisher uses its separate configured
+service principal and a fresh registered execution identity. Restart discards
+live session authority; durable challenge records cannot resurrect sockets,
+cgroup anchors, or publisher instances. This provisioning and principal/session
+table remain implementation requirements, not properties granted by the Linux
+observation types.
+
 ## Node-local broker protocols
 
 Privileged brokers listen only on protected Unix `SOCK_SEQPACKET` sockets. The

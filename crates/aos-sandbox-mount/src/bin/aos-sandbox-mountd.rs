@@ -11,7 +11,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use aos_sandbox::journal::{Journal, JournalLimits};
-use aos_sandbox_linux::path::BeneathRoot;
+use aos_sandbox_linux::cgroup::CgroupV2Root;
 use aos_sandbox_mount::authorization::MountAuthorityV1;
 use aos_sandbox_mount::broker::MountBroker;
 use aos_sandbox_mount::catalog::FileMountCatalog;
@@ -110,7 +110,7 @@ fn validate_private_root(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn open_cgroup_root() -> Result<BeneathRoot> {
+fn open_cgroup_root() -> Result<CgroupV2Root> {
     let descriptor: OwnedFd = rustix::fs::open(
         CGROUP_ROOT,
         rustix::fs::OFlags::PATH
@@ -120,5 +120,5 @@ fn open_cgroup_root() -> Result<BeneathRoot> {
         rustix::fs::Mode::empty(),
     )
     .map_err(|error| MountError::State(error.to_string()))?;
-    BeneathRoot::from_owned(descriptor).map_err(|error| MountError::State(error.to_string()))
+    CgroupV2Root::from_owned(descriptor).map_err(|error| MountError::State(error.to_string()))
 }

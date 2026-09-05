@@ -1600,3 +1600,45 @@ was inspected for option inheritance, but these new tests are not yet AOS VM or
 dual-architecture qualification. Production principal/session mapping, registered
 source ingress, and online publisher admission remain open; `SBX-PUB-02` is not
 checked by this transport increment.
+
+### Retained cgroup scope for local identities
+
+The Linux boundary now admits only genuine cgroup-v2 directories into typed
+resolution roots and retained anchors. The supported 64-bit profile preserves
+the full kernfs ID reported by PIDFD information. Fresh `cgroup.procs` opens
+observe active kernfs state; directory link counts cannot substitute for them.
+Exact membership and proper-descendant membership are distinct operations. A
+bounded relative hint selects a descendant through strict kernel-beneath,
+no-mount-crossing resolution, then fresh PIDFD information must match that exact
+retained candidate. No `/proc/PID/cgroup` parsing, numeric PID reopening, global
+scan, principal derivation from UIDs/inodes, or cgroup mutation occurs in these
+production APIs.
+
+Before/after process observations reject observed PID/thread-group/cgroup
+changes, and final liveness rejects exit. These are snapshots: migration away
+and back between observations, later migration, and later effects are not
+fenced. The host and mount broker startup paths now require typed cgroup roots;
+their peer proofs retain the observed cgroup directory and borrow the pinned
+socket establisher. The host runtime worker's separate verification path is not
+silently claimed to have migrated with the service verifier.
+
+The principal/session audit found no authoritative UID-to-principal or live
+payload-cgroup registry to reuse. The first producer channel must instead be
+provisioned for an explicit holder/capability/project/sandbox/incarnation/epoch
+tuple and retained payload-cgroup anchor. The publisher needs its independent
+configured service principal and fresh execution registration. Live session
+tables, server-minted channel bindings, challenge joins, source slots/release
+decisions, and reservation accounting remain implementation requirements.
+`SBX-PUB-02` remains open.
+
+Validation passes: 68 Linux-boundary, 76 host-broker, and 61 mount-broker unit
+tests, two integration tests, twelve doctests, scoped strict Clippy,
+warning-denied rustdoc, changed-file formatting, and the locked all-target
+workspace compile check. The workspace check retains unrelated existing
+warnings. The read-only host test exercised both exact and hinted descendant
+membership on Linux 6.18.44, with fake-filesystem, traversal, wrong-object, and
+overlong-hint rejection. Independent source and implementation reviews found no
+remaining blocker for this observation component. Deletion/recreation,
+concurrent migration, bind-mount grafts, and dual-architecture behavior still
+require dedicated AOS VM qualification; ordinary host tests and source review
+do not substitute for those gates.

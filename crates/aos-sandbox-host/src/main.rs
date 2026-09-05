@@ -19,6 +19,7 @@ use aos_sandbox_host::service::HostService;
 use aos_sandbox_host::state::FileHostStateStore;
 use aos_sandbox_host::worker::{PidfdNamespaceAccessProbe, SystemdOneShotWorker};
 use aos_sandbox_host::{HostError, Result};
+use aos_sandbox_linux::cgroup::CgroupV2Root;
 use aos_sandbox_linux::path::BeneathRoot;
 
 const CATALOG_ROOT: &str = "/run/aos/sandbox-host";
@@ -85,7 +86,10 @@ fn run() -> Result<()> {
         drop(readiness);
     }
     let worker = SystemdOneShotWorker::new(open_cgroup_root()?);
-    let verifier = ControllerPeerVerifier::new(open_cgroup_root()?);
+    let verifier = ControllerPeerVerifier::new(
+        CgroupV2Root::try_from(open_cgroup_root()?)
+            .map_err(|error| HostError::State(error.to_string()))?,
+    );
     // Any present phase-0 artifact is protected, boot-bound, and
     // rollback-protected above. Its declared digests are not yet independently
     // verified, and the self-probe above does not prove ptrace access to a

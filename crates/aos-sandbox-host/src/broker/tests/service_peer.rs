@@ -7,7 +7,7 @@ use std::os::fd::OwnedFd;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use aos_sandbox_linux::path::BeneathRoot;
+use aos_sandbox_linux::cgroup::CgroupV2Root;
 use rustix::net::{
     AddressFamily, SendFlags, SocketAddrUnix, SocketFlags, SocketType, bind, connect, listen, send,
     socket_with,
@@ -112,8 +112,8 @@ async fn stale_accepted_peer_is_nonfatal_and_next_connection_is_handled() {
         fixture.authority(),
     )
     .unwrap();
-    let root: OwnedFd = std::fs::File::open(directory.path()).unwrap().into();
-    let verifier = ControllerPeerVerifier::new(BeneathRoot::from_owned(root).unwrap());
+    let root: OwnedFd = std::fs::File::open("/sys/fs/cgroup").unwrap().into();
+    let verifier = ControllerPeerVerifier::new(CgroupV2Root::from_owned(root).unwrap());
     let mut service = HostService::new(broker, verifier, (0, 0));
 
     assert_eq!(
@@ -121,7 +121,7 @@ async fn stale_accepted_peer_is_nonfatal_and_next_connection_is_handled() {
         ConnectionOutcome::PeerRejected
     );
     // A second live but unauthenticated peer exercises the same service and
-    // listener after stale-peer rejection. The fake cgroup root fails closed,
+    // listener after stale-peer rejection. This test process is not the controller,
     // so no handshake, authority admission, or broker effect can execute.
     let client = connect_client(&path);
     assert_eq!(

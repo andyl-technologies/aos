@@ -8,7 +8,7 @@
 
 use std::path::Path;
 
-use aos_sandbox_linux::path::{BeneathRoot, ResolveOptions};
+use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
 use aos_sandbox_linux::seqpacket::ConnectionPeerIdentity;
 use aos_sandbox_protocol::PeerCredentials;
 
@@ -19,6 +19,7 @@ const NODE_CONTROLLER_CGROUP: &str = "aos-control.slice/aos-sandboxd.service";
 /// Retains proof that one accepted peer belongs to `aos-sandboxd.service`.
 ///
 /// The proof cannot outlive its pinned socket identity.
+/// It retains the observed cgroup too, but does not stop later migration or exit.
 ///
 /// ```compile_fail
 /// use aos_sandbox_host::peer::{ControllerPeerVerifier, VerifiedControllerPeer};
@@ -33,6 +34,7 @@ const NODE_CONTROLLER_CGROUP: &str = "aos-control.slice/aos-sandboxd.service";
 pub struct VerifiedControllerPeer<'a> {
     credentials: PeerCredentials,
     _identity: &'a ConnectionPeerIdentity,
+    _cgroup: RetainedCgroupAnchor,
 }
 
 impl VerifiedControllerPeer<'_> {
@@ -46,13 +48,13 @@ impl VerifiedControllerPeer<'_> {
 /// Verifies peers against the exact node-controller cgroup under cgroup v2.
 #[derive(Debug)]
 pub struct ControllerPeerVerifier {
-    cgroup_root: BeneathRoot,
+    cgroup_root: CgroupV2Root,
 }
 
 impl ControllerPeerVerifier {
     /// Constructs a verifier around a pre-opened cgroup-v2 mount root.
     #[must_use]
-    pub const fn new(cgroup_root: BeneathRoot) -> Self {
+    pub const fn new(cgroup_root: CgroupV2Root) -> Self {
         Self { cgroup_root }
     }
 
@@ -91,19 +93,12 @@ impl ControllerPeerVerifier {
         let pid = observed.pid();
         let expected = self
             .cgroup_root
-            .resolve(expected_relative_cgroup, ResolveOptions::directory())
+            .resolve(expected_relative_cgroup)
             .map_err(|_| HostError::Protocol(peer_mismatch()))?;
-        let pidfd = identity.pidfd();
-        let info = pidfd
-            .info()
+        let info = expected
+            .verify_exact_membership(identity.pidfd())
             .map_err(|_| HostError::Protocol(peer_mismatch()))?;
-        if info.pid() != pid.get()
-            || info.thread_group_id() != pid.get()
-            || info.cgroup_id() != Some(expected.identity().inode)
-            || !pidfd
-                .is_alive()
-                .map_err(|_| HostError::Protocol(peer_mismatch()))?
-        {
+        if info.pid() != pid.get() || info.thread_group_id() != pid.get() {
             return Err(HostError::Protocol(peer_mismatch()));
         }
         Ok(VerifiedControllerPeer {
@@ -113,6 +108,7 @@ impl ControllerPeerVerifier {
                 pid: Some(pid.get()),
             },
             _identity: identity,
+            _cgroup: expected,
         })
     }
 }
@@ -133,8 +129,8 @@ mod tests {
     #[test]
     fn unregistered_controller_path_rejects_a_live_socket_peer() {
         let directory = tempfile::tempdir().unwrap();
-        let root: OwnedFd = File::open(directory.path()).unwrap().into();
-        let verifier = ControllerPeerVerifier::new(BeneathRoot::from_owned(root).unwrap());
+        let root: OwnedFd = File::open("/sys/fs/cgroup").unwrap().into();
+        let verifier = ControllerPeerVerifier::new(CgroupV2Root::from_owned(root).unwrap());
         let (socket, _other) = rustix::net::socketpair(
             rustix::net::AddressFamily::UNIX,
             rustix::net::SocketType::SEQPACKET,
@@ -144,7 +140,8 @@ mod tests {
         .unwrap();
         let identity =
             ConnectionPeerIdentity::from_socket(std::os::fd::AsFd::as_fd(&socket)).unwrap();
-        let error = verifier.verify(&identity).unwrap_err();
+        let missing = Path::new(directory.path().file_name().unwrap());
+        let error = verifier.verify_in_cgroup(&identity, missing).unwrap_err();
         assert!(matches!(
             error,
             HostError::Protocol(
