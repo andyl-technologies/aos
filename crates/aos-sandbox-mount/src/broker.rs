@@ -1720,6 +1720,8 @@ fn validate_effect_matches(
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    mod service_peer;
+
     use aos_proto::aos::sandbox::local::v1::{
         ApplyMountRequest, AssignmentFence, Audience, BrokerAuthorizationArtifactsV1, BrokerMethod,
         BrokerRequestEnvelope, Descriptor, MountAttributes, RequestHeader,

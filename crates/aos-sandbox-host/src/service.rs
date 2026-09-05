@@ -92,8 +92,16 @@ where
         &mut self,
         listener: &ActivatedSeqpacketListener,
     ) -> Result<ConnectionOutcome> {
-        let connection = listener.accept()?;
-        let Ok(peer) = self.verifier.verify(connection.peer()) else {
+        let connection = match listener.accept() {
+            Ok(connection) => connection,
+            // A queued connector may exit before its pidfd can be inspected.
+            // Reject that child without turning peer churn into daemon exit.
+            Err(HostError::Protocol(ProtocolValidationError::PeerCredentialMismatch)) => {
+                return Ok(ConnectionOutcome::PeerRejected);
+            }
+            Err(error) => return Err(error),
+        };
+        let Ok(peer) = self.verifier.verify(connection.peer_identity()) else {
             return Ok(ConnectionOutcome::PeerRejected);
         };
         let Ok(hello) = connection.receive(MAXIMUM_HANDSHAKE_BYTES) else {

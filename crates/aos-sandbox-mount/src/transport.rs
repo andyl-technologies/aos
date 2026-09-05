@@ -1,15 +1,18 @@
 //! Systemd-activated bounded `SOCK_SEQPACKET` ingress for mountd.
+//!
+//! The socket's kernel-supplied peer pidfd pins the connection establisher.
+//! Delegating the connected descriptor delegates this legacy channel; packet
+//! writers are not independently authenticated by its `SCM_RIGHTS` carrier.
 
 use std::io::IoSliceMut;
 use std::mem::MaybeUninit;
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsFd, OwnedFd};
 use std::time::Duration;
 
+use aos_sandbox_linux::seqpacket::ConnectionPeerIdentity;
 use aos_sandbox_protocol::{MAXIMUM_REQUEST_BYTES, MAXIMUM_RESPONSE_BYTES, PeerCredentials};
 use rustix::io::{FdFlags, fcntl_getfd, fcntl_setfd};
-use rustix::net::sockopt::{
-    Timeout, set_socket_timeout, socket_acceptconn, socket_peercred, socket_type,
-};
+use rustix::net::sockopt::{Timeout, set_socket_timeout, socket_acceptconn, socket_type};
 use rustix::net::{
     RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, ReturnFlags, SendFlags, SocketFlags,
     SocketType, accept_with, recvmsg, send,
@@ -47,25 +50,20 @@ impl ActivatedSeqpacketListener {
     ///
     /// # Errors
     ///
-    /// Returns an error when accept, socket timeout, credential retrieval, or
-    /// PID conversion fails.
+    /// Returns an error when acceptance, socket timeout configuration, or
+    /// kernel-pinned connection identity retrieval fails.
     pub fn accept(&self) -> Result<MountConnection> {
         let fd = accept_with(&self.fd, SocketFlags::CLOEXEC).map_err(transport_error)?;
         set_socket_timeout(&fd, Timeout::Recv, Some(CONNECTION_IO_TIMEOUT))
             .map_err(transport_error)?;
         set_socket_timeout(&fd, Timeout::Send, Some(CONNECTION_IO_TIMEOUT))
             .map_err(transport_error)?;
-        let credentials = socket_peercred(&fd).map_err(transport_error)?;
-        let pid = u32::try_from(credentials.pid.as_raw_nonzero().get())
-            .map_err(|_| MountError::State("mount peer PID does not fit u32".to_owned()))?;
-        Ok(MountConnection {
-            fd,
-            peer: PeerCredentials {
-                uid: credentials.uid.as_raw(),
-                gid: credentials.gid.as_raw(),
-                pid: Some(pid),
-            },
-        })
+        let peer = ConnectionPeerIdentity::from_socket(fd.as_fd()).map_err(|_| {
+            MountError::Protocol(
+                aos_sandbox_protocol::ProtocolValidationError::PeerCredentialMismatch,
+            )
+        })?;
+        Ok(MountConnection { fd, peer })
     }
 }
 
@@ -73,7 +71,7 @@ impl ActivatedSeqpacketListener {
 #[derive(Debug)]
 pub struct MountConnection {
     fd: OwnedFd,
-    peer: PeerCredentials,
+    peer: ConnectionPeerIdentity,
 }
 
 /// Owns one packet and every close-on-exec descriptor received beside it.
@@ -89,7 +87,18 @@ impl MountConnection {
     /// Returns credentials read from the connected kernel socket.
     #[must_use]
     pub const fn peer(&self) -> PeerCredentials {
-        self.peer
+        let credentials = self.peer.credentials();
+        PeerCredentials {
+            uid: credentials.uid(),
+            gid: credentials.gid(),
+            pid: Some(credentials.pid().get()),
+        }
+    }
+
+    /// Borrows the pinned connection establisher, not a later packet writer.
+    #[must_use]
+    pub const fn peer_identity(&self) -> &ConnectionPeerIdentity {
+        &self.peer
     }
 
     /// Receives exactly one bounded packet and adopts its ancillary descriptors.

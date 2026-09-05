@@ -761,6 +761,12 @@ pub(crate) fn listmount(request: &MountIdRequest, output: &mut [u64], flags: u32
 }
 
 pub(crate) fn prepare_seqpacket(fd: BorrowedFd<'_>) -> Result<()> {
+    validate_connected_seqpacket(fd)?;
+    ensure_cloexec(fd)?;
+    ensure_nonblocking(fd)
+}
+
+pub(crate) fn validate_connected_seqpacket(fd: BorrowedFd<'_>) -> Result<()> {
     let socket_type = socket_integer_option(fd, libc::SO_TYPE, "getsockopt(SO_TYPE)")?;
     if socket_type != libc::SOCK_SEQPACKET {
         return Err(Error::WrongDescriptorType {
@@ -780,9 +786,10 @@ pub(crate) fn prepare_seqpacket(fd: BorrowedFd<'_>) -> Result<()> {
             expected: "connected Unix SOCK_SEQPACKET socket, not a listener",
         });
     }
-    require_connected_unix_peer(fd)?;
+    require_connected_unix_peer(fd)
+}
 
-    ensure_cloexec(fd)?;
+fn ensure_nonblocking(fd: BorrowedFd<'_>) -> Result<()> {
     // SAFETY: F_GETFL observes the borrowed descriptor and takes no pointer.
     let current = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
     if current < 0 {
@@ -791,6 +798,46 @@ pub(crate) fn prepare_seqpacket(fd: BorrowedFd<'_>) -> Result<()> {
     // SAFETY: F_SETFL consumes the scalar flags while the descriptor is live.
     let result = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, current | libc::O_NONBLOCK) };
     unit_result(result.into(), "fcntl(F_SETFL, O_NONBLOCK)")
+}
+
+pub(crate) fn prepare_record_subject_listener(fd: BorrowedFd<'_>) -> Result<()> {
+    if socket_integer_option(fd, libc::SO_TYPE, "getsockopt(SO_TYPE)")? != libc::SOCK_SEQPACKET
+        || socket_integer_option(fd, libc::SO_DOMAIN, "getsockopt(SO_DOMAIN)")? != libc::AF_UNIX
+        || socket_integer_option(fd, libc::SO_ACCEPTCONN, "getsockopt(SO_ACCEPTCONN)")? != 1
+    {
+        return Err(Error::WrongDescriptorType {
+            expected: "listening Unix SOCK_SEQPACKET socket",
+        });
+    }
+    require_seqpacket_identity(fd)?;
+    ensure_cloexec(fd)?;
+    ensure_nonblocking(fd)
+}
+
+pub(crate) fn require_seqpacket_identity(fd: BorrowedFd<'_>) -> Result<()> {
+    if socket_integer_option(fd, libc::SO_PASSCRED, "getsockopt(SO_PASSCRED)")? != 1
+        || socket_integer_option(fd, SO_PASSPIDFD, "getsockopt(SO_PASSPIDFD)")? != 1
+    {
+        return Err(Error::invalid(
+            "record subject options",
+            "SO_PASSCRED and SO_PASSPIDFD must already be enabled",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn accept_record_subject_socket(fd: BorrowedFd<'_>) -> Result<OwnedFd> {
+    // SAFETY: the listener remains borrowed; null address pointers request no
+    // peer-address output. Success returns a fresh descriptor, immediately owned.
+    let result = unsafe {
+        libc::accept4(
+            fd.as_raw_fd(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK,
+        )
+    };
+    fd_result(result.into(), "accept4(SOCK_SEQPACKET)")
 }
 
 fn require_connected_unix_peer(fd: BorrowedFd<'_>) -> Result<()> {
@@ -1078,13 +1125,18 @@ const fn cmsg_align(length: usize) -> usize {
 
 #[cfg(test)]
 pub(crate) fn seqpacket_pair() -> Result<(OwnedFd, OwnedFd)> {
+    seqpacket_pair_with_flags(libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC)
+}
+
+#[cfg(test)]
+pub(crate) fn seqpacket_pair_with_flags(flags: i32) -> Result<(OwnedFd, OwnedFd)> {
     let mut descriptors = [-1; 2];
     // SAFETY: the output array contains space for exactly two descriptors;
     // success transfers both newly-created descriptors to this process.
     let result = unsafe {
         libc::socketpair(
             libc::AF_UNIX,
-            libc::SOCK_SEQPACKET | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
+            libc::SOCK_SEQPACKET | flags,
             0,
             descriptors.as_mut_ptr(),
         )
@@ -1152,6 +1204,46 @@ pub(crate) fn seqpacket_listener() -> Result<OwnedFd> {
     let result = unsafe { libc::listen(socket.as_raw_fd(), 1) };
     unit_result(result.into(), "listen(SOCK_SEQPACKET)")?;
     Ok(socket)
+}
+
+#[cfg(test)]
+pub(crate) fn connect_seqpacket_listener(listener: BorrowedFd<'_>) -> Result<OwnedFd> {
+    let socket = unconnected_seqpacket()?;
+    // SAFETY: every field of sockaddr_un admits the all-zero bit pattern.
+    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    let mut length = size_of::<libc::sockaddr_un>() as libc::socklen_t;
+    // SAFETY: the writable buffer and its initialized capacity remain live
+    // throughout getsockname; the listener descriptor remains borrowed.
+    let result = unsafe {
+        libc::getsockname(
+            listener.as_raw_fd(),
+            std::ptr::addr_of_mut!(address).cast(),
+            &mut length,
+        )
+    };
+    unit_result(result.into(), "getsockname(test listener)")?;
+    if length as usize > size_of::<libc::sockaddr_un>() {
+        return Err(Error::invalid(
+            "test listener address",
+            "oversized kernel address",
+        ));
+    }
+    // SAFETY: the initialized address bytes cover the kernel-returned length;
+    // the fresh socket and address both remain live during connect.
+    let result = unsafe {
+        libc::connect(
+            socket.as_raw_fd(),
+            std::ptr::addr_of!(address).cast(),
+            length,
+        )
+    };
+    unit_result(result.into(), "connect(test SOCK_SEQPACKET)")?;
+    Ok(socket)
+}
+
+#[cfg(test)]
+pub(crate) fn enable_test_socket_option(fd: BorrowedFd<'_>, option: i32) -> Result<()> {
+    set_socket_bool(fd, option, "setsockopt(test identity option)")
 }
 
 #[cfg(test)]

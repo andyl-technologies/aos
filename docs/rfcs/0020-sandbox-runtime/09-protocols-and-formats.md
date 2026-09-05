@@ -402,6 +402,47 @@ authenticated remote carrier supplies its own principal and channel security
 to the same semantic handler. Socket paths, credentials, framing, and remote
 identity therefore remain outside the portable ownership protocol.
 
+## Record-subject local ingress
+
+Producer-output and publisher admission use a distinct local carrier from the
+descriptor-passing broker protocols below. Each accepted record must include
+exactly one kernel-validated `SCM_CREDENTIALS` and one kernel-generated
+`SCM_PIDFD`; `SCM_RIGHTS` is forbidden. The receiver bounds the complete packet
+before allocating its payload. Connection-establisher identity from
+`SO_PEERCRED`/`SO_PEERPIDFD` remains separate from the subject nominated for each
+record. Neither identity alone proves application provenance or a portable
+principal, and forwarded channel-binding bytes are not authentication.
+
+Listener adoption requires Unix `SOCK_SEQPACKET`, listening state, and both
+`SO_PASSCRED` and `SO_PASSPIDFD` already enabled. Every accepted child must
+independently have both options enabled before any record is read. The adapter
+must reject and close an incorrectly configured child, never repair its options
+after acceptance. It retains the listener so subsequent correctly configured
+connections can proceed. Exclusive socket-configuration ownership is part of
+this contract; a duplicate descriptor that changes options breaks that premise.
+
+This reuses systemd socket activation with `Accept=no`, `PassCredentials=yes`,
+and `PassPIDFD=yes`, but does not trust configuration text as runtime proof.
+[Systemd 259.8](https://github.com/systemd/systemd/blob/v259.8/src/core/socket.c)
+applies these options after creating the listening socket and treats failures as
+nonfatal. An early queued connection can therefore lack them. Linux 6.18.33's
+`net/unix/af_unix.c` copies the listener's credential-receive flags during
+`unix_stream_connect`, which also serves sequenced packets, before publishing
+the connected peer; acceptance does not refresh those flags. Inspecting the
+child closes this setup race without patching systemd. `Accept=yes` is not an
+equivalent carrier: systemd can apply options to the accepted child itself, so
+current option values would no longer establish inheritance at connection time.
+First-party socket creation must enable the options before bind/listen.
+
+The kernel permits credential nominations within the sender's kernel authority;
+this is not necessarily the writer's effective UID/GID. A service must map the
+retained kernel subject to its protected principal registration, check the
+required live service/sandbox identity, and bind the actual session before
+evaluating release or publication policy. Numeric PIDs, persisted inode numbers,
+and supplied principal IDs cannot reconstruct that authority after restart.
+Authenticated remote carriers must establish equivalent semantic principal and
+channel bindings through their own authentication, not serialize local pidfds.
+
 ## Node-local broker protocols
 
 Privileged brokers listen only on protected Unix `SOCK_SEQPACKET` sockets. The
@@ -417,6 +458,14 @@ protocol has:
 - an exact FD-role table matching SCM_RIGHTS ancillary descriptors;
 - maximum body and FD counts checked before allocation; and
 - peer-credential and service-unit verification.
+
+Host and mount brokers pin the connection establisher using `SO_PEERPIDFD`
+rather than reopening the numeric PID reported by `SO_PEERCRED`. Verification
+reads fresh cgroup and liveness information through that retained descriptor.
+The legacy channel is delegable: this authenticates its establisher, not every
+later writer. A dead or unresolvable accepted peer is a per-connection rejection,
+not a fatal listener error. Publisher/producer record-subject admission must not
+reuse this connection-only proof as holder authentication.
 
 The protocol passes real descriptors or broker-minted handles. It never
 serializes descriptor integers as reusable references. Extra, missing,

@@ -11,6 +11,9 @@
 //! Unix descriptor delegation means it need not be the process writing later
 //! records. [`ConnectionPeerIdentity`] and [`KernelAuthorizedRecordSubject`]
 //! therefore remain separate types and neither claims application provenance.
+//! [`RecordSubjectListener`] checks inherited identity options before adopting
+//! accepted children; enabling them after an untrusted peer connects is not an
+//! equivalent authentication boundary.
 
 use std::num::NonZeroU32;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
@@ -18,6 +21,12 @@ use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use crate::Error;
 use crate::pidfd::{PidFd, PidFdInfo};
 use crate::uapi::{self, RawAncillary};
+
+mod listener;
+pub use listener::RecordSubjectListener;
+
+#[cfg(test)]
+mod process_tests;
 
 /// A nonblocking, close-on-exec Unix sequenced-packet socket.
 #[derive(Debug)]
@@ -38,19 +47,7 @@ impl SeqpacketSocket {
     /// descriptor flags cannot be inspected or changed.
     pub fn from_owned(fd: OwnedFd) -> Result<Self, SeqpacketError> {
         uapi::prepare_seqpacket(fd.as_fd())?;
-        let credentials = PeerCredentials::from_raw(uapi::peer_credentials(fd.as_fd())?)?;
-        let pidfd = PidFd::from_owned(uapi::peer_pidfd(fd.as_fd())?)?;
-        let initial_info = pidfd.info()?;
-        if initial_info.pid() != credentials.pid().get() {
-            return Err(SeqpacketError::PeerIdentity(
-                "SO_PEERCRED and SO_PEERPIDFD identify different processes",
-            ));
-        }
-        let peer = ConnectionPeerIdentity {
-            credentials,
-            pidfd,
-            initial_info,
-        };
+        let peer = ConnectionPeerIdentity::from_socket(fd.as_fd())?;
         Ok(Self { fd: Some(fd), peer })
     }
 
@@ -67,6 +64,8 @@ impl SeqpacketSocket {
     /// Enables kernel-validated credentials and generated pidfds on records.
     ///
     /// This must be called before an untrusted sender can enqueue records.
+    /// Use [`RecordSubjectListener`] for externally reachable listeners: this
+    /// method cannot establish whether earlier queued records had these options.
     ///
     /// # Errors
     ///
@@ -231,6 +230,34 @@ pub struct ConnectionPeerIdentity {
 }
 
 impl ConnectionPeerIdentity {
+    /// Pins the establisher of a connected Unix sequenced-packet socket.
+    ///
+    /// Captures `SO_PEERCRED` and `SO_PEERPIDFD` from the same borrowed socket,
+    /// never reopening a recyclable numeric PID. No socket options, descriptor
+    /// flags, or file-status flags are modified. This does not identify later
+    /// writers after socket delegation and requires no record-subject options.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a wrong socket type/family, listener or unconnected socket,
+    /// unavailable peer pidfd, invalid credentials, or inconsistent pidfd info.
+    pub fn from_socket(fd: BorrowedFd<'_>) -> Result<Self, SeqpacketError> {
+        uapi::validate_connected_seqpacket(fd)?;
+        let credentials = PeerCredentials::from_raw(uapi::peer_credentials(fd)?)?;
+        let pidfd = PidFd::from_owned(uapi::peer_pidfd(fd)?)?;
+        let initial_info = pidfd.info()?;
+        if initial_info.pid() != credentials.pid().get() {
+            return Err(SeqpacketError::PeerIdentity(
+                "SO_PEERCRED and SO_PEERPIDFD identify different processes",
+            ));
+        }
+        Ok(Self {
+            credentials,
+            pidfd,
+            initial_info,
+        })
+    }
+
     /// Returns the peer credentials fixed at connection establishment.
     #[must_use]
     pub const fn credentials(&self) -> PeerCredentials {
@@ -532,6 +559,28 @@ mod tests {
             SeqpacketSocket::from_owned(left).expect("adopt left socket"),
             SeqpacketSocket::from_owned(right).expect("adopt right socket"),
         )
+    }
+
+    #[test]
+    fn connection_identity_capture_does_not_change_socket_flags() {
+        for flags in [0, libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC] {
+            let (left, _right) = uapi::seqpacket_pair_with_flags(flags).expect("create test pair");
+            let before_status = uapi::get_status_flags(left.as_fd()).expect("initial status flags");
+            let before_cloexec = uapi::is_cloexec(left.as_fd()).expect("initial FD flags");
+            let identity = ConnectionPeerIdentity::from_socket(left.as_fd()).expect("capture peer");
+            assert_eq!(identity.credentials().pid().get(), std::process::id());
+            assert_eq!(identity.initial_info().pid(), std::process::id());
+            assert!(uapi::is_cloexec(identity.pidfd().as_fd()).expect("peer pidfd CLOEXEC"));
+            assert_eq!(
+                uapi::get_status_flags(left.as_fd()).expect("final status flags"),
+                before_status
+            );
+            assert_eq!(
+                uapi::is_cloexec(left.as_fd()).expect("final FD flags"),
+                before_cloexec
+            );
+            assert!(uapi::require_seqpacket_identity(left.as_fd()).is_err());
+        }
     }
 
     #[test]

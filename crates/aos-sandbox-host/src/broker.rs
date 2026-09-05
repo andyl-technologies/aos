@@ -629,6 +629,8 @@ fn runtime_handle(identity: &HostRuntimeIdentity) -> [u8; 32] {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    mod service_peer;
+
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 

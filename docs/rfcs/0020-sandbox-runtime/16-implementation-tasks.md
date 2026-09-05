@@ -1555,3 +1555,48 @@ generation exhaustion, CAS failures, and enforced input/store bounds. A real
 failed-write regression denies every policy resolver until protected replay.
 Independent implementation and source-boundary reviews found no remaining
 blocker for this persistence increment. `SBX-PUB-02` remains unchecked.
+
+### Authenticated local ingress integration
+
+Master through `c6d076d48` is merged in `9ec715cad`. Its exact development
+environment works offline; the merged workspace passes the locked all-target
+compile check with the existing realized AOS FUSE transport pkg-config path.
+Unrelated existing workspace warnings remain. This environment avoids rebuilding
+the feature branch's packaged CLI for each incremental Cargo invocation.
+
+The next local ingress increment adopts only listeners already configured for
+kernel record credentials and PIDFDs, then checks those options independently on
+every accepted child. Source inspection of Linux 6.18.33 and systemd 259.8 found
+that enabling options after acceptance cannot establish the necessary
+pre-connection invariant. The RFC's record-subject carrier now explicitly
+requires listener activation (`Accept=no`) and rejects early unconfigured
+connections without invalidating the healthy listener. This is transport
+identity, not a principal registry, source-release decision, or admission grant.
+Existing host/mount descriptor-passing transports remain a separate contract.
+
+Their audit also found a numeric-PID reopening gap between `SO_PEERCRED` and
+`pidfd_open`. Both now retain the socket's `SO_PEERPIDFD`; verification borrows
+that unforgeable identity and reads fresh process/cgroup information. An accepted
+peer that exits before identity capture is rejected without terminating the
+service. The legacy connection remains delegable, and its ordered `SCM_RIGHTS`
+protocol is unchanged. Per-record holder authentication is not inferred from
+this migration.
+
+Validation passes: 66 Linux-boundary, 76 host-broker, and 61 mount-broker unit
+tests, two integration tests, twelve doctests, strict all-target Clippy for the
+three changed crates, warning-denied rustdoc, changed-file formatting, and the
+locked all-target workspace compile check. The workspace retains unrelated
+existing warnings. New real-socket tests cover pre-accept messages, missing
+options, stale queued children followed by usable connections, forbidden rights,
+oversized records, unchanged flags during borrowed peer capture, and descriptor
+cleanup. Safe subprocess fixtures prove a live delegated writer differs from
+the connector and a reaped connector yields `ESRCH` despite a retained live
+client endpoint. Actual host and mount services reject stale connectors and
+handle the next connection without backend effects. Compile-fail tests reject
+fabricated credential records and escaping borrowed peer proofs.
+
+These kernel tests ran on host Linux 6.18.44. The exact AOS Linux 6.18.33 source
+was inspected for option inheritance, but these new tests are not yet AOS VM or
+dual-architecture qualification. Production principal/session mapping, registered
+source ingress, and online publisher admission remain open; `SBX-PUB-02` is not
+checked by this transport increment.

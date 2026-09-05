@@ -2,20 +2,22 @@
 //!
 //! Hostd never binds a caller-selected path. It adopts one socket supplied by
 //! PID 1, validates its type and listening state, accepts close-on-exec peers,
-//! obtains credentials with `SO_PEERCRED`, receives bounded packets and their
-//! close-on-exec ancillary descriptors, and emits bounded packets.
+//! pins the connection establisher with `SO_PEERCRED` and `SO_PEERPIDFD`, receives
+//! bounded packets and their close-on-exec ancillary descriptors, and emits
+//! bounded packets.
+//! A delegated connection retains its establisher identity; this carrier does
+//! not authenticate individual packet writers.
 
 use std::io::IoSliceMut;
 use std::mem::MaybeUninit;
 use std::os::fd::{AsFd, OwnedFd};
 use std::time::Duration;
 
+use aos_sandbox_linux::seqpacket::ConnectionPeerIdentity;
 use aos_sandbox_protocol::session::MAXIMUM_HOST_QUERY_PACKET_BYTES;
 use aos_sandbox_protocol::{MAXIMUM_RESPONSE_BYTES, PeerCredentials};
 use rustix::io::{FdFlags, fcntl_getfd, fcntl_setfd};
-use rustix::net::sockopt::{
-    Timeout, set_socket_timeout, socket_acceptconn, socket_peercred, socket_type,
-};
+use rustix::net::sockopt::{Timeout, set_socket_timeout, socket_acceptconn, socket_type};
 use rustix::net::{
     RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, ReturnFlags, SendFlags, SocketFlags,
     SocketType, accept_with, recvmsg, send,
@@ -56,25 +58,20 @@ impl ActivatedSeqpacketListener {
     ///
     /// # Errors
     ///
-    /// Returns an error when `accept4` or `SO_PEERCRED` fails, or when the
-    /// kernel reports a peer PID that cannot fit the protocol representation.
+    /// Returns an error when acceptance, socket timeout configuration, or
+    /// kernel-pinned connection identity retrieval fails.
     pub fn accept(&self) -> Result<HostConnection> {
         let fd = accept_with(&self.fd, SocketFlags::CLOEXEC).map_err(transport_error)?;
         set_socket_timeout(&fd, Timeout::Recv, Some(CONNECTION_IO_TIMEOUT))
             .map_err(transport_error)?;
         set_socket_timeout(&fd, Timeout::Send, Some(CONNECTION_IO_TIMEOUT))
             .map_err(transport_error)?;
-        let credentials = socket_peercred(&fd).map_err(transport_error)?;
-        let pid = u32::try_from(credentials.pid.as_raw_nonzero().get())
-            .map_err(|_| HostError::Worker("peer PID does not fit u32".to_owned()))?;
-        Ok(HostConnection {
-            fd,
-            peer: PeerCredentials {
-                uid: credentials.uid.as_raw(),
-                gid: credentials.gid.as_raw(),
-                pid: Some(pid),
-            },
-        })
+        let peer = ConnectionPeerIdentity::from_socket(fd.as_fd()).map_err(|_| {
+            HostError::Protocol(
+                aos_sandbox_protocol::ProtocolValidationError::PeerCredentialMismatch,
+            )
+        })?;
+        Ok(HostConnection { fd, peer })
     }
 
     /// Borrows the activated listener for event-loop registration.
@@ -88,7 +85,7 @@ impl ActivatedSeqpacketListener {
 #[derive(Debug)]
 pub struct HostConnection {
     fd: OwnedFd,
-    peer: PeerCredentials,
+    peer: ConnectionPeerIdentity,
 }
 
 /// Owns one packet and every close-on-exec descriptor received beside it.
@@ -104,7 +101,18 @@ impl HostConnection {
     /// Returns credentials read from the connected kernel socket.
     #[must_use]
     pub const fn peer(&self) -> PeerCredentials {
-        self.peer
+        let credentials = self.peer.credentials();
+        PeerCredentials {
+            uid: credentials.uid(),
+            gid: credentials.gid(),
+            pid: Some(credentials.pid().get()),
+        }
+    }
+
+    /// Borrows the pinned connection establisher, not a later packet writer.
+    #[must_use]
+    pub const fn peer_identity(&self) -> &ConnectionPeerIdentity {
+        &self.peer
     }
 
     /// Receives exactly one bounded packet and adopts its ancillary descriptors.
