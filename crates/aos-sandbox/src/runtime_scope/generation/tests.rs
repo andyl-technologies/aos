@@ -106,7 +106,11 @@ fn activate(
             *sandbox.as_bytes(),
             *binding.manifest().manifest().incarnation().as_bytes(),
         ),
-        runtime: [2; 32],
+        runtime: aos_sandbox_protocol::semantics::host::runtime_handle_v1(
+            binding.manifest().manifest().incarnation().as_bytes(),
+            binding.manifest().manifest().epoch().get(),
+            binding.assignment_digest().as_bytes(),
+        ),
         scope: [3; 32],
         pid: 123,
         leaf_cgroup: 456,
@@ -219,12 +223,11 @@ fn scope_handle_cannot_hide_execution_substitution() {
     let (_, facts) = fixture(open(directory.path()));
     let mut history = History::default();
     history.append(record(facts.clone())).unwrap();
-    for field in 0..4 {
+    for field in 0..3 {
         let mut changed = facts.clone();
         match field {
-            0 => changed.runtime = [88; 32],
-            1 => changed.pid += 1,
-            2 => changed.leaf_cgroup += 1,
+            0 => changed.pid += 1,
+            1 => changed.leaf_cgroup += 1,
             _ => changed.anchor += 1,
         }
         assert!(matches!(
@@ -256,8 +259,48 @@ fn replay_and_compaction_preserve_monotone_audit_only() {
 }
 
 #[test]
+fn assignment_alias_change_keeps_the_attested_execution_number() {
+    let directory = tempfile::tempdir().unwrap();
+    let (mut reconciler, facts) = fixture(open(directory.path()));
+    let first = record(facts.clone());
+    write(reconciler.journal_mut(), &first);
+    let mut fresh = facts;
+    fresh.runtime = [88; 32];
+    fresh.binding_revision += 1;
+    fresh.binding_digest = [89; 32];
+    // This helper plans inert audit records, not current authority. Production
+    // only supplies these inputs from a newly authenticated CurrentRuntimeScope.
+    let history = History::load(reconciler.journal_mut()).unwrap();
+    assert_eq!(history.select(fresh).unwrap(), (first, false));
+}
+
+#[test]
+fn valid_record_and_head_hashes_do_not_hide_origin_binding_substitution() {
+    for substitution in 0..4 {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut reconciler, facts) = fixture(open(directory.path()));
+        let mut forged = record(facts);
+        match substitution {
+            0 => forged.facts.runtime = [88; 32],
+            1 => forged.facts.binding_digest = [89; 32],
+            2 => forged.facts.binding_revision += 1,
+            _ => forged.facts.identity.1 = [90; 16],
+        }
+        forged.digest = forged.compute_digest();
+        assert_eq!(Record::decode(&forged.encode()).unwrap(), forged);
+        // Both the record and head contain the recomputed digest, so only
+        // checking their hashes and mutual agreement would accept this state.
+        write(reconciler.journal_mut(), &forged);
+        assert!(
+            History::load(reconciler.journal_mut()).is_err(),
+            "substitution {substitution}"
+        );
+    }
+}
+
+#[test]
 fn corrupt_heads_keys_links_and_binding_references_fail_closed() {
-    for corruption in 0..9 {
+    for corruption in 0..10 {
         let directory = tempfile::tempdir().unwrap();
         let (mut reconciler, mut facts) = fixture(open(directory.path()));
         let journal = reconciler.journal_mut();
@@ -278,7 +321,8 @@ fn corrupt_heads_keys_links_and_binding_references_fail_closed() {
                     5 => changed.facts.binding_digest = [77; 32],
                     6 => changed.facts.binding_revision += 1,
                     7 => changed.facts.identity.1 = [88; 16],
-                    _ => changed.facts.scope = first.facts.scope,
+                    8 => changed.facts.scope = first.facts.scope,
+                    _ => changed.facts.runtime = [88; 32],
                 }
                 changed.digest = changed.compute_digest();
                 replace(journal, second.key(), changed.encode());

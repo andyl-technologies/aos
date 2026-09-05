@@ -423,6 +423,10 @@ impl ObservedPayloadScope {
     }
 
     /// Borrows the host's live pin handle, not an independent authentication token.
+    ///
+    /// A Host may preserve this physical identity across assignment updates.
+    /// That does not preserve the old assignment's authority, runtime alias,
+    /// or an issued session; those still require their own currentness checks.
     #[must_use]
     pub const fn payload_scope_handle(&self) -> &[u8; 32] {
         self.metadata.payload_scope_handle()

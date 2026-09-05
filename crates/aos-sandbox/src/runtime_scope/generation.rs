@@ -75,7 +75,11 @@ pub struct CurrentRuntimeGeneration {
 }
 
 impl CurrentRuntimeGeneration {
-    /// Returns the monotone number within this sandbox incarnation.
+    /// Returns this controller's observed execution number within the incarnation.
+    ///
+    /// This audit sequence is not automatically the signed assignment's
+    /// expected namespace generation. Replay must separately bind that target
+    /// to the current proof before dispatching any authorized mount operation.
     #[must_use]
     pub const fn generation(&self) -> u64 {
         self.record.generation
@@ -171,10 +175,11 @@ impl Facts {
     }
 
     fn same_execution(&self, other: &Self) -> bool {
-        // A holder/lease renewal is not itself a namespace change. The record
-        // keeps its original binding reference; live checks use the fresh one.
+        // The Host preserves its opaque physical scope across independently
+        // authorized assignment updates. The assignment-derived runtime alias
+        // can therefore change without changing namespaces. The record keeps
+        // its original alias/binding for audit; live checks use the fresh pair.
         self.identity == other.identity
-            && self.runtime == other.runtime
             && self.scope == other.scope
             && self.pid == other.pid
             && self.leaf_cgroup == other.leaf_cgroup
@@ -253,9 +258,15 @@ impl History {
                         entry.insert((
                             *binding.manifest().manifest().incarnation().as_bytes(),
                             *binding.digest().as_bytes(),
+                            aos_sandbox_protocol::semantics::host::runtime_handle_v1(
+                                binding.manifest().manifest().incarnation().as_bytes(),
+                                binding.manifest().manifest().epoch().get(),
+                                binding.assignment_digest().as_bytes(),
+                            ),
                         ));
                     }
-                    if bindings.get(&binding_key) != Some(&(facts.identity.1, facts.binding_digest))
+                    if bindings.get(&binding_key)
+                        != Some(&(facts.identity.1, facts.binding_digest, facts.runtime))
                     {
                         return Err(RuntimeGenerationError::CorruptState);
                     }

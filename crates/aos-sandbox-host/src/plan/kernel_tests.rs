@@ -21,6 +21,7 @@ use aos_sandbox_protocol::{PeerCredentials, PeerPolicy, decode_runtime_request};
 use buffa::Message as _;
 
 use super::*;
+use crate::broker::RetainedRuntimePins;
 use crate::worker::{
     HostRuntimeIdentity, HostWorker, ObservedRuntimeState, SystemdOneShotWorker, WorkerOperation,
 };
@@ -268,6 +269,50 @@ async fn production_compiler_worker_launch_refresh_and_stop() {
         .unwrap();
     assert_eq!(thawed.state, ObservedRuntimeState::Ready);
 
+    let scope_observation = worker
+        .refresh_payload_scope(&identity, invocation, supervisor, payload)
+        .await
+        .unwrap();
+    let mut retained_scope = RetainedRuntimePins {
+        invocation_id: scope_observation.invocation_id.unwrap(),
+        supervisor: scope_observation.leader.unwrap(),
+        payload: scope_observation.payload.unwrap(),
+        scope_handle: [0xa1; 32],
+    };
+    let revised_identity = HostRuntimeIdentity::new(
+        *identity.sandbox_id(),
+        *identity.incarnation_id(),
+        identity.assignment_epoch() + 1,
+        identity.desired_generation() + 1,
+        [0xb2; 32],
+    );
+    // This checks physical continuity only, not admission of the synthetic
+    // assignment. All pins come from the actual production worker and nspawn.
+    assert_eq!(
+        retained_scope
+            .scope_for_observation(
+                &identity,
+                &revised_identity,
+                invocation,
+                supervisor,
+                payload,
+            )
+            .unwrap(),
+        Some([0xa1; 32])
+    );
+    assert_eq!(
+        retained_scope
+            .scope_for_observation(
+                &identity,
+                &revised_identity,
+                [0xff; 16],
+                supervisor,
+                payload,
+            )
+            .unwrap(),
+        None
+    );
+
     // Guest-triggered reboot must reuse the supervisor's owned root mount.
     // Reconciliation uses fresh prepared pins and the production verifier;
     // neither the fixture marker nor a stale payload proof can authorize it.
@@ -319,6 +364,19 @@ async fn production_compiler_worker_launch_refresh_and_stop() {
         );
         let new_payload = reconciled.payload.as_ref().unwrap();
         new_payload.recheck_kernel(supervisor).unwrap();
+        assert_eq!(
+            retained_scope
+                .scope_for_observation(
+                    &identity,
+                    &revised_identity,
+                    invocation,
+                    supervisor,
+                    new_payload,
+                )
+                .unwrap(),
+            None,
+            "a reboot cannot retain the old physical scope"
+        );
         assert!(!old_payload.has_same_cgroup(new_payload));
         for old_namespace in old_namespaces {
             let current_namespace = new_payload.pidfd().namespace(old_namespace.kind()).unwrap();
@@ -332,6 +390,28 @@ async fn production_compiler_worker_launch_refresh_and_stop() {
                 .unwrap()
                 .identity()
         );
+        let fresh_scope = worker
+            .refresh_payload_scope(&identity, invocation, supervisor, new_payload)
+            .await
+            .unwrap();
+        retained_scope = RetainedRuntimePins {
+            invocation_id: fresh_scope.invocation_id.unwrap(),
+            supervisor: fresh_scope.leader.unwrap(),
+            payload: fresh_scope.payload.unwrap(),
+            scope_handle: [u8::try_from(generation).unwrap(); 32],
+        };
+        assert_eq!(
+            retained_scope
+                .scope_for_observation(
+                    &identity,
+                    &revised_identity,
+                    invocation,
+                    supervisor,
+                    new_payload,
+                )
+                .unwrap(),
+            Some(retained_scope.scope_handle)
+        );
         current = reconciled;
     }
     let payload = current.payload.as_ref().unwrap();
@@ -344,6 +424,18 @@ async fn production_compiler_worker_launch_refresh_and_stop() {
         ObservedRuntimeState::Absent | ObservedRuntimeState::Exited
     ));
     assert_eq!(effect_checks, 4);
+    assert!(
+        retained_scope
+            .scope_for_observation(
+                &identity,
+                &revised_identity,
+                invocation,
+                supervisor,
+                payload,
+            )
+            .unwrap()
+            .is_none()
+    );
     assert!(
         !payload.pidfd().is_alive().unwrap(),
         "stopped payload is still alive"

@@ -1,6 +1,7 @@
 //! Durable ordering and replay for fixed host runtime effects.
 
 mod payload_scope;
+mod runtime_pins;
 
 use std::collections::BTreeMap;
 
@@ -507,9 +508,6 @@ where
         identity: HostRuntimeIdentity,
         mut observation: WorkerObservation,
     ) -> Result<()> {
-        self.runtime_pins.retain(|retained, _| {
-            retained.sandbox_id() != identity.sandbox_id() || retained == &identity
-        });
         self.observed_leaders.retain(|retained, _| {
             retained.sandbox_id() != identity.sandbox_id() || retained == &identity
         });
@@ -520,7 +518,8 @@ where
                 | ObservedRuntimeState::Exited
                 | ObservedRuntimeState::Failed
         ) {
-            self.runtime_pins.remove(&identity);
+            self.runtime_pins
+                .retain(|retained, _| retained.sandbox_id() != identity.sandbox_id());
             self.observed_leaders.remove(&identity);
             return Ok(());
         }
@@ -535,24 +534,30 @@ where
             supervisor,
             observation.payload.take(),
         ) {
-            let scope_handle = self
-                .runtime_pins
-                .get(&identity)
-                .filter(|retained| {
-                    retained.invocation_id == invocation_id
-                        && retained.supervisor.handle() == supervisor.handle()
-                        && retained.payload.relative_cgroup_hint() == payload.relative_cgroup_hint()
-                        && retained.payload.has_same_cgroup(&payload)
-                        && retained
-                            .payload
-                            .pidfd()
-                            .info()
-                            .ok()
-                            .zip(payload.pidfd().info().ok())
-                            .is_some_and(|(retained, current)| retained == current)
-                })
-                .map(|retained| retained.scope_handle)
-                .map_or_else(|| self.mint_scope_handle(), Ok)?;
+            payload.recheck_kernel(&supervisor)?;
+            let mut prior_scope = None;
+            for (prior_identity, retained) in &self.runtime_pins {
+                if let Some(handle) = retained.scope_for_observation(
+                    prior_identity,
+                    &identity,
+                    invocation_id,
+                    &supervisor,
+                    &payload,
+                )? {
+                    let duplicate = prior_scope.replace(handle).is_some();
+                    if duplicate {
+                        return Err(HostError::State(
+                            "ambiguous retained payload scope".to_owned(),
+                        ));
+                    }
+                }
+            }
+            let scope_handle = prior_scope.map_or_else(|| self.mint_scope_handle(), Ok)?;
+            // The opaque scope identifies physical pins, not assignment
+            // authority. Reindex only after a complete current proof; old
+            // assignment handles remain rejected by the durable fence checks.
+            self.runtime_pins
+                .retain(|retained, _| retained.sandbox_id() != identity.sandbox_id());
             self.runtime_pins.insert(
                 identity,
                 RetainedRuntimePins {
@@ -564,6 +569,11 @@ where
             );
             return Ok(());
         }
+        // A supervisor-only observation cannot transfer a payload proof to a
+        // different assignment. Such a transfer requires launch verification.
+        self.runtime_pins.retain(|retained, _| {
+            retained.sandbox_id() != identity.sandbox_id() || retained == &identity
+        });
         let remains_exact = self.runtime_pins.get(&identity).is_some_and(|retained| {
             observation.invocation_id == Some(retained.invocation_id)
                 && self

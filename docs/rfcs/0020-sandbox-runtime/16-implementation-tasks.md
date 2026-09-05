@@ -2426,3 +2426,44 @@ incremental target stopped before execution because a cached protocol build
 script referenced another worktree's Hub API manifest. The full evaluation
 gate is therefore not qualified by this increment; no unrelated Hub code or
 test assertions were changed to bypass these failures.
+
+### Physical scope continuity across assignment updates
+
+The Host now preserves a payload scope handle across separately admitted
+assignment updates only when both retained kernel proofs identify the same
+sandbox incarnation, supervisor invocation, live payload, root, cgroup,
+mount namespace, and network namespace. Full launch verification is required
+to transfer the pins to another assignment key; a supervisor-only observation
+cannot do so. Stopped, dead, replaced, or uncheckable old executions do not
+establish continuity. Old runtime handles still fail the durable current-fence
+checks, and a preserved scope handle grants no authority by itself.
+
+The controller's observed-generation comparison now treats the signed
+assignment's runtime handle as an alias rather than physical identity. The
+origin alias remains in the immutable audit record, and replay recomputes it
+from the protected historical assignment binding. A regression supplies
+substituted origin facts with mutually consistent record/head hashes and
+requires rejection. Publisher/session authorization continuity checks remain
+unchanged; physical continuity does not renew or transfer an old grant.
+
+This removes a potential feedback loop in namespace-target publication:
+updating an assignment digest need not itself mint another physical scope
+and advance the observed execution counter again. The distinct observed
+counter and signed namespace-target binding still require explicit controller
+integration before attachment replay; this increment does not equate them or
+qualify readiness.
+
+The production worker VM passes with real retained kernel pins: synthetic
+assignment metadata changes preserve physical scope, a mismatched supervisor
+invocation does not, two guest-triggered reboots each reject the old scope,
+and stopping the payload invalidates continuity. The metadata substitution
+tests physical identity only; it does not qualify signed assignment admission
+or controller-driven attachment replay.
+
+Serial all-feature validation passes 258 sandbox and 88 Host unit tests,
+plus API/doc tests; the privileged worker test is separately qualified in
+`checks.fleet.sandbox-host-worker`. Strict Clippy, Rust formatting, and diff
+checks pass. The final-source `checks.eval` and Host worker VM gates pass.
+An earlier final-source build failed the unrelated OCI roundtrip test's
+upload-cancellation deadline; its exact retained binary passed in isolation,
+and the full workspace test phase passed on retry without code changes.
