@@ -6,7 +6,9 @@ license.workspace = true
 publish = false
 
 [target.'cfg(target_os = "linux")'.dependencies]
+aos-sandbox-core.workspace = true
 aos-sandbox-linux.workspace = true
+libc.workspace = true
 
 [lints]
 workspace = true

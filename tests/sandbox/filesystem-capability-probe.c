@@ -6,16 +6,22 @@
  * packaged headers expose the required ABI and that the running kernel can
  * enable and measure verity and can service reads through a registered FUSE
  * backing file without sending FUSE_READ to userspace.
+ * The VM-only fake-verity mode proves an unprivileged FUSE daemon can return
+ * fabricated measurement bytes, then checks the Rust APIs reject that proof
+ * source without issuing their own measurement ioctl.
  */
 
 #define _GNU_SOURCE
 
 #include <errno.h>
 #include <fcntl.h>
+#include <grp.h>
 #include <linux/fs.h>
 #include <linux/fsverity.h>
 #include <linux/fuse.h>
+#include <limits.h>
 #include <poll.h>
+#include <sched.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -40,6 +46,7 @@
 #define PROBE_FILE_NAME "payload"
 #define MAXIMUM_PROBE_FILE_BYTES 4096U
 #define PROBE_MAX_WRITE (128U * 1024U)
+#define FAKE_VERITY_FILE_BYTES 7U
 
 struct server_result {
     uint64_t offered_flags;
@@ -47,6 +54,9 @@ struct server_result {
     uint32_t protocol_minor;
     int32_t backing_id;
     int32_t error_number;
+    uint32_t measurement_requests;
+    uint32_t statfs_requests;
+    uint32_t ordinary_open_requests;
 };
 
 static const char *architecture(void)
@@ -110,7 +120,7 @@ static void fill_attr(struct fuse_attr *attribute, const struct stat *backing,
 
 static int reply_init(int fuse_fd, const struct fuse_in_header *header,
                       const void *payload, size_t payload_length,
-                      struct server_result *result)
+                      struct server_result *result, bool fake_verity)
 {
     struct {
         struct fuse_out_header header;
@@ -127,7 +137,7 @@ static int reply_init(int fuse_fd, const struct fuse_in_header *header,
     memcpy(&decoded, payload, sizeof(decoded));
     flags = (uint64_t)request->flags | ((uint64_t)request->flags2 << 32);
     result->offered_flags = flags;
-    if ((flags & FUSE_PASSTHROUGH) == 0U) {
+    if (!fake_verity && (flags & FUSE_PASSTHROUGH) == 0U) {
         errno = EOPNOTSUPP;
         return -1;
     }
@@ -142,8 +152,8 @@ static int reply_init(int fuse_fd, const struct fuse_in_header *header,
     response.body.max_readahead = request->max_readahead;
     response.body.max_write = PROBE_MAX_WRITE;
     response.body.flags = FUSE_INIT_EXT;
-    response.body.flags2 = (uint32_t)(FUSE_PASSTHROUGH >> 32);
-    response.body.max_stack_depth = 1U;
+    response.body.flags2 = fake_verity ? 0U : (uint32_t)(FUSE_PASSTHROUGH >> 32);
+    response.body.max_stack_depth = fake_verity ? 0U : 1U;
     result->protocol_minor = response.body.minor;
     return write_message(fuse_fd, &response, sizeof(response));
 }
@@ -225,7 +235,94 @@ static int reply_open(int fuse_fd, const struct fuse_in_header *header,
     return write_message(fuse_fd, &response, sizeof(response));
 }
 
-static int serve_fuse(int fuse_fd, int backing_fd, int result_fd)
+static int reply_ordinary_open(int fuse_fd, const struct fuse_in_header *header,
+                               const void *payload, size_t payload_length,
+                               struct server_result *result)
+{
+    struct fuse_open_in request;
+    struct {
+        struct fuse_out_header header;
+        struct fuse_open_out body;
+    } response;
+
+    if (payload_length != sizeof(request))
+        return reply_error(fuse_fd, header, EINVAL);
+    memcpy(&request, payload, sizeof(request));
+    if (header->nodeid != PROBE_FILE_NODE_ID)
+        return reply_error(fuse_fd, header, EISDIR);
+    if ((request.flags & O_ACCMODE) != O_RDONLY || (request.flags & O_TRUNC))
+        return reply_error(fuse_fd, header, EROFS);
+    memset(&response, 0, sizeof(response));
+    response.header.len = sizeof(response);
+    response.header.unique = header->unique;
+    response.body.fh = 1U;
+    /* No passthrough flag or backing ID: fstatfs must observe this FUSE inode. */
+    result->ordinary_open_requests++;
+    return write_message(fuse_fd, &response, sizeof(response));
+}
+
+static int reply_statfs(int fuse_fd, const struct fuse_in_header *header,
+                        struct server_result *result)
+{
+    struct {
+        struct fuse_out_header header;
+        struct fuse_statfs_out body;
+    } response;
+
+    memset(&response, 0, sizeof(response));
+    response.header.len = sizeof(response);
+    response.header.unique = header->unique;
+    response.body.st.bsize = 4096U;
+    response.body.st.frsize = 4096U;
+    response.body.st.namelen = 255U;
+    result->statfs_requests++;
+    return write_message(fuse_fd, &response, sizeof(response));
+}
+
+static int reply_fabricated_verity(int fuse_fd,
+                                  const struct fuse_in_header *header,
+                                  const void *payload, size_t payload_length,
+                                  struct server_result *result)
+{
+    struct fuse_ioctl_in request;
+    struct fsverity_digest digest = {
+        .digest_algorithm = FS_VERITY_HASH_ALG_SHA256,
+        .digest_size = 32U,
+    };
+    struct fuse_ioctl_out ioctl_response = {0};
+    unsigned char wire[sizeof(struct fuse_out_header) +
+                       sizeof(ioctl_response) + sizeof(digest) + 32U];
+    struct fuse_out_header response = {
+        .len = sizeof(wire),
+        .unique = header->unique,
+    };
+    size_t offset = 0U;
+
+    if (payload_length < sizeof(request))
+        return reply_error(fuse_fd, header, EINVAL);
+    memcpy(&request, payload, sizeof(request));
+    if (header->nodeid != PROBE_FILE_NODE_ID || request.fh != 1U ||
+        request.cmd != FS_IOC_MEASURE_VERITY ||
+        request.in_size != payload_length - sizeof(request) ||
+        request.out_size < sizeof(digest) + 32U)
+        return reply_error(fuse_fd, header, ENOTTY);
+
+    /* Linux 6.18 handles this variable-length ioctl explicitly even on ordinary
+     * restricted FUSE files: no unrestricted ioctl or retry iovec is needed.
+     * These bytes are deliberately fabricated; no backing inode is sealed. */
+    memcpy(wire + offset, &response, sizeof(response));
+    offset += sizeof(response);
+    memcpy(wire + offset, &ioctl_response, sizeof(ioctl_response));
+    offset += sizeof(ioctl_response);
+    memcpy(wire + offset, &digest, sizeof(digest));
+    offset += sizeof(digest);
+    memset(wire + offset, 0xa5, 32U);
+    result->measurement_requests++;
+    return write_message(fuse_fd, wire, sizeof(wire));
+}
+
+static int serve_fuse(int fuse_fd, int backing_fd, int result_fd,
+                      bool fake_verity)
 {
     /* The kernel requires room for the negotiated write size plus request
      * headers on every read, even when this read-only probe expects LOOKUP. */
@@ -235,7 +332,9 @@ static int serve_fuse(int fuse_fd, int backing_fd, int result_fd)
     bool done = false;
 
     alarm(20U);
-    if (fstat(backing_fd, &backing) < 0)
+    memset(&backing, 0, sizeof(backing));
+    backing.st_size = FAKE_VERITY_FILE_BYTES;
+    if (!fake_verity && fstat(backing_fd, &backing) < 0)
         goto failed;
 
     while (!done) {
@@ -269,7 +368,7 @@ static int serve_fuse(int fuse_fd, int backing_fd, int result_fd)
         switch (header->opcode) {
         case FUSE_INIT:
             status = reply_init(fuse_fd, header, payload, payload_length,
-                                &result);
+                                &result, fake_verity);
             break;
         case FUSE_LOOKUP:
             status = reply_lookup(fuse_fd, header, (const char *)payload,
@@ -279,7 +378,20 @@ static int serve_fuse(int fuse_fd, int backing_fd, int result_fd)
             status = reply_getattr(fuse_fd, header, &backing);
             break;
         case FUSE_OPEN:
-            status = reply_open(fuse_fd, header, backing_fd, &result);
+            status = fake_verity
+                         ? reply_ordinary_open(fuse_fd, header, payload,
+                                               payload_length, &result)
+                         : reply_open(fuse_fd, header, backing_fd, &result);
+            break;
+        case FUSE_STATFS:
+            status = fake_verity ? reply_statfs(fuse_fd, header, &result)
+                                 : reply_error(fuse_fd, header, ENOSYS);
+            break;
+        case FUSE_IOCTL:
+            status = fake_verity
+                         ? reply_fabricated_verity(fuse_fd, header, payload,
+                                                   payload_length, &result)
+                         : reply_error(fuse_fd, header, ENOSYS);
             break;
         case FUSE_READ:
             result.read_requests++;
@@ -316,7 +428,7 @@ static int serve_fuse(int fuse_fd, int backing_fd, int result_fd)
 
 failed:
     result.error_number = errno == 0 ? EIO : errno;
-    fprintf(stderr, "FUSE passthrough server failed: %s\n",
+    fprintf(stderr, "FUSE capability server failed: %s\n",
             strerror(result.error_number));
     (void)write_message(result_fd, &result, sizeof(result));
     return 1;
@@ -407,7 +519,7 @@ static int probe_fuse_passthrough(const char *mountpoint,
         int status;
 
         close(result_pipe[0]);
-        status = serve_fuse(fuse_fd, backing_fd, result_pipe[1]);
+        status = serve_fuse(fuse_fd, backing_fd, result_pipe[1], false);
         close(result_pipe[1]);
         close(backing_fd);
         close(fuse_fd);
@@ -466,6 +578,151 @@ parent_failed:
         (void)waitpid(server, NULL, 0);
     close(result_pipe[0]);
     return 1;
+}
+
+static int probe_fake_verity(const char *mountpoint, const char *rust_probe)
+{
+    char options[256];
+    char path[4096];
+    struct {
+        struct fsverity_digest header;
+        unsigned char bytes[32];
+    } digest = {.header = {.digest_size = 32U}};
+    struct server_result result = {0};
+    int report_pipe[2] = {-1, -1};
+    int fuse_fd = -1;
+    int candidate_fd = -1;
+    pid_t server = -1;
+    pid_t client = -1;
+    int status;
+    ssize_t report_bytes;
+    bool mounted = false;
+    int outcome = 1;
+
+    /* VM-only coordinator: none of these mounts can propagate into another
+     * process's mount namespace. Every child has its own finite alarm. */
+    alarm(35U);
+    if (mountpoint[0] != '/' || rust_probe[0] != '/' ||
+        unshare(CLONE_NEWNS) < 0 ||
+        mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) < 0)
+        goto cleanup;
+    fuse_fd = open("/dev/fuse", O_RDWR | O_CLOEXEC);
+    if (fuse_fd < 0 || pipe2(report_pipe, O_CLOEXEC) < 0)
+        goto cleanup;
+    if (snprintf(options, sizeof(options),
+                 "fd=%d,rootmode=40000,user_id=0,group_id=0,default_permissions",
+                 fuse_fd) >= (int)sizeof(options) ||
+        snprintf(path, sizeof(path), "%s/%s", mountpoint, PROBE_FILE_NAME) >=
+            (int)sizeof(path))
+        goto cleanup;
+    if (mount("aos-fake-verity-proof", mountpoint, "fuse",
+              MS_RDONLY | MS_NOSUID | MS_NODEV, options) < 0)
+        goto cleanup;
+    mounted = true;
+    server = fork();
+    if (server < 0)
+        goto cleanup;
+    if (server == 0) {
+        close(report_pipe[0]);
+        /* Mount establishment is privileged; fabricating the forwarded ioctl
+         * requires only the inherited connection, not mount administration. */
+        if (setgroups(0, NULL) < 0 || setresgid(65534, 65534, 65534) < 0 ||
+            setresuid(65534, 65534, 65534) < 0)
+            _exit(125);
+        status = serve_fuse(fuse_fd, -1, report_pipe[1], true);
+        close(report_pipe[1]);
+        close(fuse_fd);
+        _exit(status);
+    }
+    close(report_pipe[1]);
+    report_pipe[1] = -1;
+    close(fuse_fd);
+    fuse_fd = -1;
+
+    /* Prove the kernel actually forwards and accepts the forged measurement.
+     * A plain ENOTTY fixture would not exercise the provenance threat. */
+    candidate_fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (candidate_fd < 0 ||
+        ioctl(candidate_fd, FS_IOC_MEASURE_VERITY, &digest) < 0 ||
+        digest.header.digest_algorithm != FS_VERITY_HASH_ALG_SHA256 ||
+        digest.header.digest_size != 32U)
+        goto cleanup;
+    for (size_t i = 0; i < sizeof(digest.bytes); i++) {
+        if (digest.bytes[i] != 0xa5)
+            goto cleanup;
+    }
+    close(candidate_fd);
+    candidate_fd = -1;
+
+    client = fork();
+    if (client < 0)
+        goto cleanup;
+    if (client == 0) {
+        alarm(15U);
+        /* No control, report, or FUSE descriptor crosses the exec boundary. */
+        if (close_range(3U, UINT_MAX, CLOSE_RANGE_CLOEXEC) < 0)
+            _exit(126);
+        execl(rust_probe, rust_probe, "--reject-fuse", mountpoint, (char *)NULL);
+        _exit(127);
+    }
+    while (waitpid(client, &status, 0) < 0) {
+        if (errno != EINTR)
+            goto cleanup;
+    }
+    client = -1;
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+        goto cleanup;
+
+    if (umount2(mountpoint, MNT_DETACH) < 0)
+        goto cleanup;
+    mounted = false;
+    do {
+        report_bytes = read(report_pipe[0], &result, sizeof(result));
+    } while (report_bytes < 0 && errno == EINTR);
+    while (waitpid(server, &status, 0) < 0) {
+        if (errno != EINTR)
+            goto cleanup;
+    }
+    server = -1;
+    if (report_bytes != (ssize_t)sizeof(result) ||
+        !WIFEXITED(status) || WEXITSTATUS(status) != 0 ||
+        result.error_number != 0 || result.backing_id != -1 ||
+        result.read_requests != 0U || result.measurement_requests != 1U ||
+        result.statfs_requests < 2U || result.ordinary_open_requests < 3U)
+        goto cleanup;
+
+    printf("{\"schema_version\":\"aos.sandbox.fake-verity-proof/v1\","
+           "\"fabricated_ioctl_accepted\":true,"
+           "\"measurement_requests\":%u,\"statfs_requests\":%u,"
+           "\"ordinary_open_requests\":%u,\"userspace_reads\":0,"
+           "\"backing_registered\":false,\"rust_rejected_both\":true}\n",
+           result.measurement_requests, result.statfs_requests,
+           result.ordinary_open_requests);
+    outcome = 0;
+
+cleanup:
+    if (outcome != 0)
+        fprintf(stderr, "fake-verity proof failed: %s\n", strerror(errno));
+    if (candidate_fd >= 0)
+        close(candidate_fd);
+    if (mounted)
+        (void)umount2(mountpoint, MNT_DETACH);
+    if (client > 0) {
+        (void)kill(client, SIGKILL);
+        (void)waitpid(client, NULL, 0);
+    }
+    if (server > 0) {
+        (void)kill(server, SIGKILL);
+        (void)waitpid(server, NULL, 0);
+    }
+    if (fuse_fd >= 0)
+        close(fuse_fd);
+    if (report_pipe[0] >= 0)
+        close(report_pipe[0]);
+    if (report_pipe[1] >= 0)
+        close(report_pipe[1]);
+    alarm(0U);
+    return outcome;
 }
 
 static int probe_fsverity(const char *path)
@@ -551,13 +808,16 @@ static int probe_fsverity(const char *path)
 
 int main(int argc, char **argv)
 {
+    if (argc == 4 && strcmp(argv[1], "fake-verity") == 0)
+        return probe_fake_verity(argv[2], argv[3]);
     if (argc == 3 && strcmp(argv[1], "fs-verity") == 0)
         return probe_fsverity(argv[2]);
     if (argc == 4 && strcmp(argv[1], "fuse-passthrough") == 0)
         return probe_fuse_passthrough(argv[2], argv[3]);
 
     fprintf(stderr,
-            "usage: %s fs-verity FILE | fuse-passthrough MOUNTPOINT BACKING\n",
+            "usage: %s fs-verity FILE | fuse-passthrough MOUNTPOINT BACKING | "
+            "fake-verity MOUNTPOINT RUST_PROBE\n",
             argv[0]);
     return 2;
 }

@@ -14,7 +14,7 @@
     src = import ../../pkgs/tools/aos/_workspace-source.nix {inherit lib;};
     cargoDeps = pkgs.aos.passthru.cargoDeps;
     cargoRoot = "crates";
-    cargoFlags = "-p aos-sandbox-verity-backing-probe --bin aos-sandbox-verity-backing-probe";
+    cargoFlags = "-p aos-sandbox-verity-backing-probe --bins";
     # The executable needs the real ext4/fs-verity fixture below, not build-time
     # mount privilege. It links only its Linux boundary and ordinary runtime.
     doCheck = false;
@@ -68,6 +68,42 @@ in
         }
       ' passthrough.json
       cat verity.json passthrough.json
+
+      mkdir /tmp/fake-verity
+      ./filesystem-probe fake-verity /tmp/fake-verity \
+        ${rustBackingProbe}/bin/aos-sandbox-verity-backing-probe > fake-verity.json
+      ${pkgs.jq}/bin/jq -e '
+        .schema_version == "aos.sandbox.fake-verity-proof/v1" and
+        .fabricated_ioctl_accepted == true and
+        .measurement_requests == 1 and .statfs_requests >= 2 and
+        .ordinary_open_requests >= 3 and .userspace_reads == 0 and
+        .backing_registered == false and .rust_rejected_both == true
+      ' fake-verity.json
+      cat fake-verity.json
+
+      echo 'Qualifying fresh-inode fs-verity materialization'
+      mkdir /tmp/ext4/materialize-private
+      chmod 0700 /tmp/ext4/materialize-private
+      ${rustBackingProbe}/bin/materialize \
+        /tmp/ext4/materialize-private > materialize.json
+      ${pkgs.jq}/bin/jq -e '
+        . == {
+          schema_version: "aos.sandbox.verity-materialize-proof/v1",
+          descriptor_verified: true,
+          fresh_inode: true,
+          exact_size: true,
+          exact_bytes: true,
+          source_offset_unchanged: true,
+          measurement_is_sha256: true,
+          backing_verified: true,
+          writable_open_denied: true,
+          quota_rejected_before_create: true,
+          existing_name_untouched: true,
+          callback_failure_retained: true,
+          retained_unsealed_writable: true
+        }
+      ' materialize.json
+      cat materialize.json
 
       # This measured expectation is supplied by the trusted test coordinator;
       # it does not demonstrate a production publication-authorization catalog.

@@ -929,7 +929,9 @@ dependencies = [
 name = "aos-sandbox-verity-backing-probe"
 version = "0.0.0"
 dependencies = [
+ "aos-sandbox-core",
  "aos-sandbox-linux",
+ "libc",
 ]
 
 [[package]]

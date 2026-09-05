@@ -19,6 +19,9 @@ pub(super) fn run() -> Result<(), Box<dyn Error>> {
         arguments.len() == 3,
         "usage: verity-backing-probe ROOT SHA256_MEASUREMENT",
     )?;
+    if arguments[1] == "--reject-fuse" {
+        return reject_fabricated_fuse(Path::new(&arguments[2]));
+    }
     let root_path = Path::new(&arguments[1]);
     let digest_text = arguments[2].to_str().ok_or("measurement is not ASCII")?;
     let digest = decode_digest(digest_text)?;
@@ -137,6 +140,29 @@ pub(super) fn run() -> Result<(), Box<dyn Error>> {
         "{{\"schema_version\":\"aos.sandbox.verity-backing-proof/v1\",\"read_verified\":true,\"identity_verified\":true,\"mapping_verified\":true,\"wrong_size_rejected\":true,\"over_limit_rejected\":true,\"wrong_digest_rejected\":true,\"unsealed_rejected\":true,\"symlink_rejected\":true,\"unlinked_pin_verified\":true}}"
     );
     Ok(())
+}
+
+/// Rejects a userspace filesystem even when its ioctl can fabricate a seal.
+fn reject_fabricated_fuse(root_path: &Path) -> Result<(), Box<dyn Error>> {
+    // These match the raw C fake-verity server's ordinary regular-file attrs
+    // and synthetic digest. The server separately proves its ioctl succeeds;
+    // these calls must never reach that ioctl, regardless of matching bytes.
+    let root = BeneathRoot::from_owned(File::open(root_path)?.into())?;
+    let expected = FsVerityDigest::Sha256([0xa5; 32]);
+    require(
+        matches!(
+            FsVerityBacking::open_beneath(&root, Path::new("payload"), expected, 7, 7),
+            Err(ImmutableFileError::UnsupportedVerityFilesystem)
+        ),
+        "owned backing did not reject the userspace proof source",
+    )?;
+    require(
+        matches!(
+            FsVerityMapping::run_beneath(&root, Path::new("payload"), expected, 7, 7, |_, _| ()),
+            Err(ImmutableFileError::UnsupportedVerityFilesystem)
+        ),
+        "scoped mapping did not reject the userspace proof source",
+    )
 }
 
 fn check_bytes(reader: &File) -> Result<(), Box<dyn Error>> {
