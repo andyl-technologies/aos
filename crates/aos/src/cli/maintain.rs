@@ -36,6 +36,8 @@ pub enum MaintainCommand {
     Ui(MaintainUiArgs),
     /// Create an immutable update plan without modifying repository source
     Plan(MaintainPlanArgs),
+    /// Refresh fixed-output hashes after editing one package version
+    RefreshHashes(MaintainRefreshHashesArgs),
     /// Execute an immutable plan in a managed isolated worktree
     Run(MaintainRunArgs),
     /// Resume a durable run from its last verified boundary
@@ -177,6 +179,20 @@ pub struct MaintainPlanArgs {
         requires = "unit"
     )]
     pub component: Vec<String>,
+}
+
+#[derive(Args)]
+pub struct MaintainRefreshHashesArgs {
+    /// Update unit whose package definition contains stale fixed-output hashes
+    pub unit: String,
+
+    /// Instantiate the package for one explicit Nix target platform
+    #[arg(long, visible_alias = "system", value_name = "PLATFORM")]
+    pub target: Option<String>,
+
+    /// Verify hashes without retaining refreshed values
+    #[arg(long)]
+    pub check: bool,
 }
 
 #[derive(Args)]
