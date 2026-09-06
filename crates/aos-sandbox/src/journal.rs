@@ -112,6 +112,8 @@ pub enum RecordNamespace {
     MountInventory = 15,
     /// Immutable generations of attachment desired state.
     AttachmentDesired = 16,
+    /// Durable post-attach kernel verification for attachment generations.
+    AttachmentVerification = 17,
 }
 
 impl RecordNamespace {
@@ -133,6 +135,7 @@ impl RecordNamespace {
             14 => Ok(Self::MountCompletion),
             15 => Ok(Self::MountInventory),
             16 => Ok(Self::AttachmentDesired),
+            17 => Ok(Self::AttachmentVerification),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }
@@ -1892,13 +1895,14 @@ mod tests {
             RecordNamespace::MountCompletion,
             RecordNamespace::MountInventory,
             RecordNamespace::AttachmentDesired,
+            RecordNamespace::AttachmentVerification,
         ];
         for (index, namespace) in namespaces.into_iter().enumerate() {
             let code = u8::try_from(index + 1).unwrap();
             assert_eq!(namespace as u8, code);
             assert_eq!(RecordNamespace::from_byte(code).unwrap(), namespace);
         }
-        for code in [0, 17, 255] {
+        for code in [0, 18, 255] {
             assert!(RecordNamespace::from_byte(code).is_err());
         }
     }

@@ -593,6 +593,19 @@ pub(crate) fn get(
         .map(|record| DurableAttachmentDesiredStateV1 { record }))
 }
 
+pub(crate) fn get_generation(
+    journal: &Journal,
+    attachment_id: AttachmentId,
+    desired_generation: u64,
+) -> Result<Option<DurableAttachmentDesiredStateV1>, AttachmentDesiredStateError> {
+    let history = History::load(journal)?;
+    Ok(history
+        .generations
+        .get(&(attachment_id, desired_generation))
+        .cloned()
+        .map(|record| DurableAttachmentDesiredStateV1 { record }))
+}
+
 pub(crate) fn recheck_current(
     journal: &Journal,
     state: &DurableAttachmentDesiredStateV1,

@@ -6,7 +6,7 @@
 //!
 //! ```text
 //! desired generation + fresh complete Mount inventory
-//!     -> wait | prepare | install | replace | verify
+//!     -> wait | prepare | install | replace | verify | ready
 //!     -> detach | release | fault | conflict | terminal
 //! ```
 //!
@@ -25,6 +25,7 @@ use crate::Journal;
 use crate::attachment_state::{
     self, AttachmentDesiredPresenceV1, AttachmentDesiredStateError, DurableAttachmentDesiredStateV1,
 };
+use crate::attachment_verification::{self, AttachmentVerificationError};
 use crate::mount_attempt::{
     CurrentMountInventoryReconciliationV1, MountAttemptError, MountAttemptInventoryObservationV1,
     MountAttemptInventoryStatusV1,
@@ -55,6 +56,8 @@ pub enum AttachmentReconciliationConflictV1 {
     UntrackedTransition,
     /// A released resource generation cannot be silently resurrected.
     ReleasedGeneration,
+    /// Durable post-attach evidence no longer matches the installed generation.
+    VerificationMismatch,
 }
 
 /// Describes one safe planning conclusion without granting effect authority.
@@ -88,6 +91,15 @@ pub enum AttachmentReconciliationActionV1 {
         mount_handle: [u8; 32],
         /// Non-recycled kernel mount identity observed by Mount.
         unique_mount_id: u64,
+    },
+    /// The installed generation exactly matches durable post-attach evidence.
+    Ready {
+        /// Stable handle of the verified installed resource.
+        mount_handle: [u8; 32],
+        /// Non-recycled kernel mount identity observed after attachment.
+        unique_mount_id: u64,
+        /// Digest of the immutable controller verification record.
+        verification_digest: [u8; 32],
     },
     /// An installed resource should be detached from the consumer namespace.
     Detach {
@@ -134,6 +146,7 @@ pub enum AttachmentReconciliationActionV1 {
 pub struct CurrentAttachmentReconciliationV1 {
     desired: DurableAttachmentDesiredStateV1,
     inventory: CurrentMountInventoryReconciliationV1,
+    verification: Option<attachment_verification::Record>,
     action: AttachmentReconciliationActionV1,
 }
 
@@ -141,6 +154,7 @@ pub(crate) struct AttachmentReconciliationEvidenceV1 {
     desired: DurableAttachmentDesiredStateV1,
     snapshot: crate::mount_attempt::DurableMountInventorySnapshotV1,
     attempts: Vec<MountAttemptInventoryObservationV1>,
+    verification: Option<attachment_verification::Record>,
     action: AttachmentReconciliationActionV1,
 }
 
@@ -180,6 +194,7 @@ impl CurrentAttachmentReconciliationV1 {
             desired: self.desired,
             snapshot,
             attempts,
+            verification: self.verification,
             action: self.action,
         };
         (evidence, target)
@@ -221,7 +236,16 @@ impl AttachmentReconciliationEvidenceV1 {
             .inventory()
             .mounts()
             .iter()
-            .map(|resource| project_resource(resource, self.desired.intent(), target_facts))
+            .map(|resource| {
+                project_resource(
+                    resource,
+                    self.desired.intent(),
+                    target_facts,
+                    self.verification.as_ref().is_some_and(|verification| {
+                        verification.matches_current(&self.desired, target, resource)
+                    }),
+                )
+            })
             .collect::<Vec<_>>();
         let attempts = self
             .attempts
@@ -236,6 +260,9 @@ impl AttachmentReconciliationEvidenceV1 {
             target_facts,
             &resources,
             &attempts,
+            self.verification
+                .as_ref()
+                .map(VerificationFacts::from_record),
         );
         if action != self.action {
             return Err(AttachmentReconciliationError::ActionChanged);
@@ -259,12 +286,21 @@ pub enum AttachmentReconciliationError {
     /// The Mount inventory or its current-target comparison is stale or invalid.
     #[error(transparent)]
     Mount(#[from] MountAttemptError),
+    /// Durable post-attach verification history is malformed or inconsistent.
+    #[error("attachment verification failed: {0}")]
+    Verification(#[source] Box<AttachmentVerificationError>),
     /// The protected clock adapter could not produce a planning observation.
     #[error(transparent)]
     Clock(#[from] ProtectedOwnershipClockError),
     /// Lease time or another rechecked input now selects a different action.
     #[error("attachment reconciliation action changed before use")]
     ActionChanged,
+}
+
+impl From<AttachmentVerificationError> for AttachmentReconciliationError {
+    fn from(error: AttachmentVerificationError) -> Self {
+        Self::Verification(Box::new(error))
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -304,6 +340,7 @@ struct ResourceFacts {
     predecessor_binding: bool,
     recipe_matches: bool,
     installed_unique_mount_id: Option<u64>,
+    verification_matches: bool,
     fault: Option<(MountFaultPhase, [u8; 32])>,
 }
 
@@ -319,6 +356,23 @@ struct AttemptFacts {
     status: MountAttemptInventoryStatusV1,
 }
 
+#[derive(Clone, Copy)]
+struct VerificationFacts {
+    mount_handle: [u8; 32],
+    unique_mount_id: u64,
+    record_digest: [u8; 32],
+}
+
+impl VerificationFacts {
+    fn from_record(record: &attachment_verification::Record) -> Self {
+        Self {
+            mount_handle: record.mount_handle(),
+            unique_mount_id: record.unique_mount_id(),
+            record_digest: record.record_digest(),
+        }
+    }
+}
+
 pub(crate) fn reconcile_current<T>(
     journal: &mut Journal,
     desired: DurableAttachmentDesiredStateV1,
@@ -330,6 +384,7 @@ where
 {
     inventory.recheck(journal, clock)?;
     attachment_state::recheck_current(journal, &desired)?;
+    let verification = attachment_verification::current_record(journal, &desired)?;
 
     let now = clock()?.wall_seconds();
     let target = TargetFacts::from_target(inventory.target());
@@ -338,7 +393,16 @@ where
         .inventory()
         .mounts()
         .iter()
-        .map(|resource| project_resource(resource, desired.intent(), target))
+        .map(|resource| {
+            project_resource(
+                resource,
+                desired.intent(),
+                target,
+                verification.as_ref().is_some_and(|verification| {
+                    verification.matches_current(&desired, inventory.target(), resource)
+                }),
+            )
+        })
         .collect::<Vec<_>>();
     let attempts = inventory
         .attempts()
@@ -353,6 +417,7 @@ where
         target,
         &resources,
         &attempts,
+        verification.as_ref().map(VerificationFacts::from_record),
     );
 
     attachment_state::recheck_current(journal, &desired)?;
@@ -361,6 +426,7 @@ where
     Ok(CurrentAttachmentReconciliationV1 {
         desired,
         inventory,
+        verification,
         action,
     })
 }
@@ -382,6 +448,7 @@ fn project_resource(
     resource: &ValidatedMountInventoryRecord,
     intent: &AttachmentIntent,
     target: TargetFacts,
+    verification_matches: bool,
 ) -> ResourceFacts {
     let recipe = resource.recipe();
     let binding = resource.binding();
@@ -415,6 +482,7 @@ fn project_resource(
         installed_unique_mount_id: resource
             .installed_observation()
             .map(|observation| observation.unique_mount_id()),
+        verification_matches,
         fault,
     }
 }
@@ -484,6 +552,7 @@ fn decide(
     target: TargetFacts,
     resources: &[ResourceFacts],
     attempts: &[AttemptFacts],
+    verification: Option<VerificationFacts>,
 ) -> AttachmentReconciliationActionV1 {
     if source_consistency(intent.consistency()).is_none() {
         return conflict(
@@ -573,7 +642,7 @@ fn decide(
     if release_requested {
         decide_release(resources, lease_expired)
     } else {
-        decide_present(intent, resources)
+        decide_present(intent, resources, verification)
     }
 }
 
@@ -648,6 +717,7 @@ fn classify_attempts(
 fn decide_present(
     intent: &AttachmentIntent,
     resources: &[ResourceFacts],
+    verification: Option<VerificationFacts>,
 ) -> AttachmentReconciliationActionV1 {
     let desired_generation = intent.desired_generation().get();
     let mut desired = resources.iter().filter(|resource| {
@@ -666,6 +736,12 @@ fn decide_present(
     }
 
     if let Some(resource) = desired_resource {
+        if verification.is_some() && !resource.verification_matches {
+            return conflict(
+                AttachmentReconciliationConflictV1::VerificationMismatch,
+                Some(resource.handle),
+            );
+        }
         return match resource.lifecycle {
             MountLifecycle::MOUNT_LIFECYCLE_PREPARED => {
                 match replacement_predecessor(resources, desired_generation) {
@@ -686,9 +762,16 @@ fn decide_present(
                         Some(resource.handle),
                     );
                 };
-                AttachmentReconciliationActionV1::Verify {
-                    mount_handle: resource.handle,
-                    unique_mount_id,
+                match verification {
+                    Some(verification) => AttachmentReconciliationActionV1::Ready {
+                        mount_handle: verification.mount_handle,
+                        unique_mount_id: verification.unique_mount_id,
+                        verification_digest: verification.record_digest,
+                    },
+                    None => AttachmentReconciliationActionV1::Verify {
+                        mount_handle: resource.handle,
+                        unique_mount_id,
+                    },
                 }
             }
             MountLifecycle::MOUNT_LIFECYCLE_FAULTED => {
@@ -713,6 +796,13 @@ fn decide_present(
                 Some(resource.handle),
             ),
         };
+    }
+
+    if verification.is_some() {
+        return conflict(
+            AttachmentReconciliationConflictV1::VerificationMismatch,
+            None,
+        );
     }
 
     if let Some(resource) = resources.iter().find(|resource| {
@@ -981,6 +1071,7 @@ mod tests {
             recipe_matches: generation == 2,
             installed_unique_mount_id: (lifecycle == MountLifecycle::MOUNT_LIFECYCLE_INSTALLED)
                 .then_some(u64::from(handle)),
+            verification_matches: false,
             fault: None,
         }
     }
@@ -996,6 +1087,7 @@ mod tests {
             target(),
             resources,
             attempts,
+            None,
         )
     }
 
@@ -1138,6 +1230,66 @@ mod tests {
     }
 
     #[test]
+    fn only_an_exact_verified_resource_is_ready() {
+        let mut installed = resource(12, 2, MountLifecycle::MOUNT_LIFECYCLE_INSTALLED);
+        installed.verification_matches = true;
+        let verification = VerificationFacts {
+            mount_handle: [12; 32],
+            unique_mount_id: 12,
+            record_digest: [13; 32],
+        };
+
+        assert_eq!(
+            decide(
+                AttachmentDesiredPresenceV1::Present,
+                &intent(2),
+                15,
+                target(),
+                &[installed],
+                &[],
+                Some(verification),
+            ),
+            AttachmentReconciliationActionV1::Ready {
+                mount_handle: [12; 32],
+                unique_mount_id: 12,
+                verification_digest: [13; 32],
+            }
+        );
+
+        let changed = resource(12, 2, MountLifecycle::MOUNT_LIFECYCLE_INSTALLED);
+        assert_eq!(
+            decide(
+                AttachmentDesiredPresenceV1::Present,
+                &intent(2),
+                15,
+                target(),
+                &[changed],
+                &[],
+                Some(verification),
+            ),
+            AttachmentReconciliationActionV1::Conflict {
+                reason: AttachmentReconciliationConflictV1::VerificationMismatch,
+                mount_handle: Some([12; 32]),
+            }
+        );
+        assert_eq!(
+            decide(
+                AttachmentDesiredPresenceV1::Present,
+                &intent(2),
+                15,
+                target(),
+                &[],
+                &[],
+                Some(verification),
+            ),
+            AttachmentReconciliationActionV1::Conflict {
+                reason: AttachmentReconciliationConflictV1::VerificationMismatch,
+                mount_handle: None,
+            }
+        );
+    }
+
+    #[test]
     fn release_and_expiry_drain_without_relabeling_resource_generations() {
         let prepared = resource(11, 1, MountLifecycle::MOUNT_LIFECYCLE_PREPARED);
         assert_eq!(
@@ -1148,6 +1300,7 @@ mod tests {
                 target(),
                 &[prepared],
                 &[],
+                None,
             ),
             AttachmentReconciliationActionV1::Release {
                 mount_handle: [11; 32],
@@ -1163,6 +1316,7 @@ mod tests {
                 target(),
                 &[installed],
                 &[],
+                None,
             ),
             AttachmentReconciliationActionV1::Detach {
                 mount_handle: [11; 32],
@@ -1176,6 +1330,7 @@ mod tests {
                 target(),
                 &[],
                 &[],
+                None,
             ),
             AttachmentReconciliationActionV1::LeaseExpired
         );
@@ -1187,6 +1342,7 @@ mod tests {
                 target(),
                 &[],
                 &[],
+                None,
             ),
             AttachmentReconciliationActionV1::Released
         );
@@ -1284,6 +1440,7 @@ mod tests {
                 target(),
                 &[],
                 &[],
+                None,
             ),
             AttachmentReconciliationActionV1::AwaitLease { issued_seconds: 10 }
         );
@@ -1296,6 +1453,7 @@ mod tests {
                 target(),
                 &[],
                 &[],
+                None,
             ),
             AttachmentReconciliationActionV1::Conflict {
                 reason: AttachmentReconciliationConflictV1::UnsupportedSourceConsistency,
@@ -1310,7 +1468,7 @@ mod tests {
         let base = installed_wire_resource();
         let exact = validated_resource(base.clone());
         assert!(recipe_matches_intent(&exact, &expected));
-        let projected = project_resource(&exact, &expected, target());
+        let projected = project_resource(&exact, &expected, target(), false);
         assert!(projected.current_binding);
         assert!(projected.recipe_matches);
 

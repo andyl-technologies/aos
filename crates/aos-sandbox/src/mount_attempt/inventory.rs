@@ -3,7 +3,8 @@
 //! Inventory is queried over a one-shot Mount session and accepted only from
 //! the pinned service execution that wrote both the hello and response. The
 //! controller keeps the exact validated query and response as its latest
-//! durable observation. This snapshot is evidence for later reconciliation;
+//! durable observation. Its controller-state commitment also covers durable
+//! attachment verification. This snapshot is evidence for later reconciliation;
 //! it does not recreate descriptor authority or prove attachment readiness.
 
 use std::os::fd::OwnedFd;
@@ -48,7 +49,7 @@ const MAXIMUM_QUERY_BYTES: usize = 4 * 1024;
 const MAXIMUM_RECORD_BYTES: usize = 16 * 1024 * 1024 - 1024;
 const KEY: &[u8] = b"latest";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.mount-inventory.transaction.v1\0";
-const CONTROLLER_STATE_DOMAIN: &[u8] = b"aos.sandbox.mount-inventory.controller-state.v3\0";
+const CONTROLLER_STATE_DOMAIN: &[u8] = b"aos.sandbox.mount-inventory.controller-state.v4\0";
 
 /// Reports whether an authenticated inventory snapshot committed or replayed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -424,6 +425,8 @@ pub(crate) fn controller_state_digest(
     validate_namespace_target_namespace(journal)?;
     crate::attachment_state::validate_namespace(journal)
         .map_err(|_| MountAttemptError::CorruptState)?;
+    crate::attachment_verification::validate_namespace(journal)
+        .map_err(|_| MountAttemptError::CorruptState)?;
     let attempts = AttemptHistory::load(journal)?;
     let completions = CompletionHistory::load(journal)?;
     let target_count = u32::try_from(journal.records(RecordNamespace::NamespaceTarget).count())
@@ -435,6 +438,12 @@ pub(crate) fn controller_state_digest(
     let attachment_count =
         u32::try_from(journal.records(RecordNamespace::AttachmentDesired).count())
             .map_err(|_| MountAttemptError::Capacity)?;
+    let verification_count = u32::try_from(
+        journal
+            .records(RecordNamespace::AttachmentVerification)
+            .count(),
+    )
+    .map_err(|_| MountAttemptError::Capacity)?;
     let mut digest = Sha256::new();
     digest.update(CONTROLLER_STATE_DOMAIN);
     digest.update(target_count.to_be_bytes());
@@ -466,6 +475,21 @@ pub(crate) fn controller_state_digest(
     }
     digest.update(attachment_count.to_be_bytes());
     for (key, value) in journal.records(RecordNamespace::AttachmentDesired) {
+        digest.update(
+            u32::try_from(key.len())
+                .map_err(|_| MountAttemptError::Capacity)?
+                .to_be_bytes(),
+        );
+        digest.update(key);
+        digest.update(
+            u32::try_from(value.len())
+                .map_err(|_| MountAttemptError::Capacity)?
+                .to_be_bytes(),
+        );
+        digest.update(value);
+    }
+    digest.update(verification_count.to_be_bytes());
+    for (key, value) in journal.records(RecordNamespace::AttachmentVerification) {
         digest.update(
             u32::try_from(key.len())
                 .map_err(|_| MountAttemptError::Capacity)?

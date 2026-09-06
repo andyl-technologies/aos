@@ -16,6 +16,8 @@ pub mod attachment_mount;
 pub mod attachment_reconciliation;
 #[cfg(target_os = "linux")]
 pub mod attachment_state;
+#[cfg(target_os = "linux")]
+pub mod attachment_verification;
 pub mod authority;
 pub mod controller;
 pub mod dispatch;
@@ -62,6 +64,10 @@ pub use attachment_state::{
     AttachmentDesiredCommitOutcomeV1, AttachmentDesiredMutationV1, AttachmentDesiredPresenceV1,
     AttachmentDesiredStateError, CommittedCurrentAttachmentDesiredStateV1,
     DurableAttachmentDesiredStateV1,
+};
+#[cfg(target_os = "linux")]
+pub use attachment_verification::{
+    AttachmentVerificationError, AttachmentVerificationOutcomeV1, DurableAttachmentVerificationV1,
 };
 pub use authority::{
     AuthorizationArtifactQuartet, AuthorizationArtifacts, AuthorizationPreparation,

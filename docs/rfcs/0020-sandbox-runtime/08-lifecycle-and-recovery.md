@@ -293,6 +293,16 @@ dispatch. Release is catalogless because it removes only broker custody, but it
 still requires current authority, an exact signed plan, durable-before-I/O
 admission, and a validated success receipt.
 
+An installed row is not immediately ready. The controller first commits an
+immutable post-attach verification record binding current desired state and
+namespace authority to Mount's complete kernel observation and installed
+resource. That commit invalidates the inventory snapshot used to create it.
+Only a subsequent authenticated complete inventory that reproduces the exact
+resource and observation may return `Ready`; disappearance or mutation of an
+already verified generation is a conflict. Verification survives controller
+restart as audit evidence but never reconstructs namespace descriptors or
+authorizes another Mount effect.
+
 Lease expiry begins draining. It does not delete a backing object until active
 kernel/open pins are reconciled. FUSE worker failure can leave an attachment
 faulted; the reconciler freezes the consumer when its required filesystem

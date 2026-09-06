@@ -2907,3 +2907,40 @@ and 14 doctests with one test thread. Strict all-target/all-feature Clippy,
 warnings-as-errors rustdoc, targeted Rust formatting, and diff checks pass. The
 hermetic `checks.eval` gate passes the release build, full workspace test phase,
 configuration evaluation, and system-structure checks.
+
+### Durable post-attach verification and attachment readiness
+
+An installed Mount inventory row can now become attachment-ready only through
+a separate durable verification transition. The controller consumes the exact
+closed `Verify` reconciliation, rechecks desired state, the complete inventory
+commitment, and live namespace target, then commits an immutable `AOSATV01`
+record. The record binds the desired generation and record digest, historical
+namespace-allocation reference, current assignment tuple, inventory snapshot
+and query, Mount handle and resource revision, resource boot identity, complete
+kernel mount observation, and canonical desired-recipe and full-resource
+digests. Root and mount-point bytes, unique and parent mount IDs, mount namespace,
+device and superblock identity, VFS attributes, propagation, and identity-map
+commitment all remain explicit durable evidence.
+
+Journal namespace 17 retains bounded generation history and validates every
+desired-state and namespace-allocation cross-reference on replay. The Mount
+inventory controller-state commitment advances to domain v4 and includes this
+namespace, so recording verification necessarily stales its source inventory.
+A later authenticated inventory yields `Ready` only when the exact current
+desired resource reproduces the durable record under the same live target.
+Missing or changed verified state reports a closed verification conflict rather
+than silently recreating or re-verifying the generation. Explicit release and
+lease expiry still drain the resource and do not treat readiness as authority.
+
+Focused attachment tests cover byte-exact codec mutation and truncation,
+sentinel and unsafe-path rejection, exact replay conflict, orphaned history,
+startup fail-closed validation, and exact-ready versus changed/missing resource
+planning. Validation passes all 327 sandbox unit tests, its downstream public
+API test, and 14 doctests with one test thread. Strict all-target/all-feature
+Clippy, warnings-as-errors rustdoc, Rust formatting, and diff checks pass. The
+hermetic `nix-build -A checks.eval --cores 8` gate passes the release build, all
+4,537 workspace tests, configuration evaluation, and system-structure checks.
+An initial unconstrained run exposed a pre-existing SQLite lock race in one Hub
+test, and its first retry gave one `rustc` process SIGSEGV under 128-way build
+parallelism. The exact Hub test passed independently, and the concurrency-capped
+hermetic rerun passed without changing source or test scope.

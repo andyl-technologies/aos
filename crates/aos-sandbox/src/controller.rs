@@ -756,8 +756,8 @@ where
     /// The desired generation, complete authenticated inventory, exact durable
     /// attempt classifications, attachment lease time, and retained namespace
     /// target are rechecked before and after planning. The result is descriptive:
-    /// prepare, install, replace, verify, detach, release, wait, fault, conflict,
-    /// and terminal observations do not themselves authorize a broker effect.
+    /// prepare, install, replace, verify, ready, detach, release, wait, fault,
+    /// conflict, and terminal observations do not authorize a broker effect.
     ///
     /// # Errors
     ///
@@ -780,6 +780,39 @@ where
             self.reconciler.journal_mut(),
             desired,
             inventory,
+            clock,
+        )
+    }
+
+    /// Durably records exact post-attach kernel evidence for one generation.
+    ///
+    /// The input must be a current reconciliation whose closed action is
+    /// `Verify`. The controller binds the desired record, current namespace
+    /// allocation and assignment, complete installed Mount resource, and
+    /// authenticated inventory snapshot in one immutable record. This commit
+    /// makes that snapshot stale; a subsequent fresh inventory must reproduce
+    /// the verified resource before reconciliation reports `Ready`.
+    ///
+    /// # Errors
+    ///
+    /// Rejects any non-verification action, stale desired, inventory, or live
+    /// namespace evidence, a changed installed resource, conflicting durable
+    /// verification, capacity exhaustion, and failed protected commits.
+    #[cfg(target_os = "linux")]
+    pub fn record_current_attachment_verification<T>(
+        &mut self,
+        reconciliation: crate::CurrentAttachmentReconciliationV1,
+        clock: &mut T,
+    ) -> Result<crate::DurableAttachmentVerificationV1, crate::AttachmentVerificationError>
+    where
+        T: FnMut() -> Result<
+            RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        crate::attachment_verification::record_current(
+            self.reconciler.journal_mut(),
+            reconciliation,
             clock,
         )
     }

@@ -761,6 +761,30 @@ intermediate transition, or a recipe substitution stops planning. The result
 retains evidence for the next recheck but carries no catalog descriptor, signed
 plan, or broker effect authority.
 
+Post-attach verification consumes only the closed `Verify` result. The
+controller persists an immutable `AOSATV01` record keyed by attachment and
+desired generation. It binds the desired-record digest, exact historical
+namespace-allocation reference, current assignment tuple, source inventory
+snapshot and query, stable Mount handle and resource revision, resource boot
+ID, complete installed kernel observation, and canonical digests of both the
+desired recipe and complete installed resource. The observation retains the
+non-recycled mount ID, parent and mount-namespace IDs, device and superblock
+identity, VFS attributes and propagation, root and mount-point bytes, and the
+complete identity-map commitment.
+
+Verification records are append-only and bounded. Replay validates every
+desired-generation and namespace-allocation cross-reference and recomputes the
+recipe commitment from historical desired state. A verification commit enters
+journal namespace 17 and advances the Mount inventory controller-state domain
+to version 4, deliberately making its source snapshot stale. Only a later
+authenticated complete inventory that reproduces the exact verified installed
+resource under the same current desired state and live target yields `Ready`.
+A missing resource or changed recipe, assignment, revision, boot identity,
+kernel observation, operation correlation, or other durable resource field is
+a verification conflict, not permission to reinstall or reverify the same
+generation. Release and lease-expiry drains remain available under newer
+desired authority and do not mistake historical readiness for effect authority.
+
 Caller role derives from peer credentials, socket activation, and the expected
 service-unit identity; a serialized role is descriptive only. Unknown
 operations, features, or FD roles fail before effects. An exact request replay
