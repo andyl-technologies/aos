@@ -31,6 +31,7 @@ in {
       mode = "0640";
       text = localRules;
     };
+    environment.etc."polkit-1/actions/org.freedesktop.policykit.policy".source = "${pkgs.polkit}/share/polkit-1/actions/org.freedesktop.policykit.policy";
 
     aos.services.dbus.packages = [pkgs.polkit];
 
@@ -130,7 +131,9 @@ in {
                 "systemctl is-active --quiet polkit.service", timeout=30
             )
             vm.succeed("test $(systemctl show -p MainPID --value polkit.service) != 0")
-            vm.succeed("test $(ps -o user= -p $(systemctl show -p MainPID --value polkit.service) | tr -d ' ') = polkitd")
+            vm.succeed(
+                "grep -Eq '^Uid:[[:space:]]+27[[:space:]]+27[[:space:]]+27[[:space:]]+27$' /proc/$(systemctl show -p MainPID --value polkit.service)/status"
+            )
           '';
         }
         {
