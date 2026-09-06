@@ -2601,9 +2601,9 @@ commitment, inherited deadline, portable semantic grant identity, and
 deadline-free Apply body. A separately supplied Mount plan is reverified under
 the pinned controller trust anchor, exact current assignment and ownership
 authority, then matched to that catalog-dependent grant. Neither preparation
-nor plan binding writes the journal or dispatches an effect. Durable Mount
-attempt admission, restart re-preparation, attachment replay, root-owned catalog
-publication, and backend readiness remain outstanding.
+nor plan binding writes the journal or dispatches an effect. Restart
+re-preparation, attachment replay, root-owned catalog publication, and backend
+readiness remain outstanding.
 
 Validation covers strict all-target, all-feature clippy for both changed crates;
 276 sandbox unit tests, the downstream sandbox API test, 70 protocol unit
@@ -2614,3 +2614,37 @@ in two unrelated Unix-socket close-observation tests; no result from that run is
 used as positive evidence. `nix-build -A checks.eval` passes, including the
 release CLI build, full workspace test phase, configuration evaluation, and
 system-structure checks.
+
+### Durable controller Mount attempt admission
+
+The controller can now turn a live prepared catalog and its separately signed
+Mount plan into a durable-before-I/O attempt. Admission rechecks the current
+runtime and namespace heads, re-verifies the Mount plan against the exact
+current ownership lease, limits the attempt to both lease and catalog
+lifetimes, and commits the exact template body, deadline-bearing Apply body,
+authorization packet, catalog commitment, and immutable namespace-allocation
+reference before returning the packet. Reusing a request identity replays only
+byte-identical state; any changed lease, deadline, plan, catalog, body, or
+packet conflicts.
+
+Journal namespace 13 uses the versioned, digest-protected `AOSMTA01` format.
+Replay is bounded by both record count and retained bytes and revalidates the
+Mount protobuf, authorization envelope, canonical plan and lease encodings,
+signature-statement subjects, assignment fence, catalog-derived semantics,
+template digest, and the complete runtime-generation-to-namespace-allocation
+chain. Corruption blocks reconciliation before an executor is consulted. The
+returned `DurableCurrentMountAttemptV1` remains non-cloneable and retains the
+live preparation; its deadline and all live heads are checked again before use.
+
+This increment performs no Mount socket I/O and does not mark an attachment
+installed or ready. Restart deliberately cannot reconstruct a dispatch token:
+Mount's descriptor catalog is volatile, so recovery still needs authenticated
+inventory, fresh catalog preparation and planning, and an attachment state
+machine capable of adopting or removing broker-proven intermediate mounts.
+
+Validation passes all 285 sandbox unit tests, the downstream public API test,
+and 14 doctests with one test thread, plus strict all-target/all-feature Clippy,
+Rust formatting, and diff checks. The hermetic `checks.eval` gate passes its
+release build, full workspace test phase, configuration evaluation, and system
+structure checks. No live Mount dispatch or attachment VM qualification is
+claimed by this admission-only increment.

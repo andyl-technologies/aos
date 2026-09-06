@@ -276,6 +276,45 @@ fn replay_and_compaction_require_exact_runtime_audit_references() {
 }
 
 #[test]
+fn durable_reference_names_one_exact_validated_allocation() {
+    let directory = tempfile::tempdir().unwrap();
+    let (mut reconciler, facts) = fixture(open(directory.path()));
+    let runtime = runtime_record(facts);
+    write_runtime(reconciler.journal_mut(), &runtime);
+    let target = allocation(
+        runtime.facts.identity,
+        runtime.generation,
+        runtime.digest,
+        8,
+    );
+    write_allocation(reconciler.journal_mut(), &target);
+    validate_namespace(reconciler.journal_mut()).unwrap();
+
+    let reference = DurableNamespaceTargetReferenceV1::from_parts(
+        SandboxId::from_bytes(target.identity.0),
+        IncarnationId::from_bytes(target.identity.1),
+        target.observed_generation,
+        target.observed_audit_digest,
+        target.target_generation,
+        target.digest,
+    );
+    validate_durable_reference_in_validated_namespace(reconciler.journal_mut(), reference).unwrap();
+
+    let substituted = DurableNamespaceTargetReferenceV1::from_parts(
+        reference.sandbox(),
+        reference.incarnation(),
+        reference.observed_generation(),
+        reference.observed_audit_digest(),
+        reference.target_generation() + 1,
+        reference.allocation_digest(),
+    );
+    assert!(matches!(
+        validate_durable_reference_in_validated_namespace(reconciler.journal_mut(), substituted),
+        Err(NamespaceTargetError::CorruptState)
+    ));
+}
+
+#[test]
 fn recomputed_allocation_hash_cannot_hide_runtime_reference_substitution() {
     for substitution in 0..2 {
         let directory = tempfile::tempdir().unwrap();

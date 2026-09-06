@@ -21,6 +21,8 @@ pub mod local_provisioning;
 #[cfg(target_os = "linux")]
 pub mod local_sessions;
 #[cfg(target_os = "linux")]
+pub mod mount_attempt;
+#[cfg(target_os = "linux")]
 pub mod mount_preparation;
 pub mod ownership_authority;
 pub mod ownership_resume;
@@ -56,6 +58,10 @@ pub use dispatch::{
 pub use journal::{
     CommitResult, IdempotencyKey, IdempotencyOutcome, Journal, JournalError, JournalLimits,
     JournalRecord, JournalTransaction, RecordNamespace, RecoveryReport,
+};
+#[cfg(target_os = "linux")]
+pub use mount_attempt::{
+    DurableCurrentMountAttemptV1, MountAttemptAdmissionOutcomeV1, MountAttemptError,
 };
 pub use ownership_authority::{
     DurableOwnershipAuthority, DurableOwnershipAuthorityError, DurableOwnershipBeginOutcome,

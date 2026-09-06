@@ -26,10 +26,8 @@ use aos_sandbox_protocol::{
 };
 use sha2::{Digest as _, Sha256};
 
-use crate::SignedBrokerPlan;
-#[cfg(test)]
-use crate::SignedOwnershipLease;
 use crate::publication::{RecoveredBrokerDispatchTemplateV1, RecoveredOwnershipLeaseV1};
+use crate::{SignedBrokerPlan, SignedOwnershipLease};
 
 const TEMPLATE_DOMAIN: &[u8] = b"aos.sandbox.broker-dispatch-template.v1\0";
 const SEMANTIC_IDENTITY_DOMAIN: &[u8] = b"aos.sandbox.broker-semantic-identity.v1\0";
@@ -220,7 +218,6 @@ impl BrokerDispatchAttemptV1 {
     /// Returns [`BrokerDispatchAttemptError`] for assignment or node
     /// substitution, expired plan/lease authority, an unsafe deadline, wire
     /// overflow, or failure to preserve the template's signed grant bounds.
-    #[cfg(test)]
     pub(crate) fn new(
         template: &BrokerDispatchTemplateV1,
         lease: &SignedOwnershipLease,
@@ -522,7 +519,6 @@ fn match_plan_grant(
     }
 }
 
-#[cfg(test)]
 fn validate_context(
     template: &BrokerDispatchTemplateV1,
     lease: &SignedOwnershipLease,
@@ -541,7 +537,6 @@ fn validate_context(
     Ok(())
 }
 
-#[cfg(test)]
 fn conservative_lease_deadline(
     lease: &SignedOwnershipLease,
     clock: RawPairedClockSample,
@@ -554,7 +549,6 @@ fn conservative_lease_deadline(
     )
 }
 
-#[cfg(test)]
 fn conservative_lease_deadline_fields(
     authority_issued_seconds: i64,
     authority_expires_seconds: i64,
@@ -608,15 +602,33 @@ fn template_digest(
     roles: &[BrokerDescriptorRole],
     semantics: BrokerDispatchSemanticIdentityV1,
 ) -> ObjectDigest {
+    template_digest_from_parts(
+        signed_plan.digest(),
+        signed_plan.canonical_signature(),
+        method,
+        body,
+        roles,
+        semantics,
+    )
+}
+
+pub(crate) fn template_digest_from_parts(
+    plan_digest: ObjectDigest,
+    plan_signature: &[u8],
+    method: BrokerMethod,
+    body: &[u8],
+    roles: &[BrokerDescriptorRole],
+    semantics: BrokerDispatchSemanticIdentityV1,
+) -> ObjectDigest {
     let mut digest = Sha256::new();
     digest.update(TEMPLATE_DOMAIN);
-    digest.update(signed_plan.digest().as_bytes());
+    digest.update(plan_digest.as_bytes());
     digest.update(
-        u64::try_from(signed_plan.canonical_signature().len())
+        u64::try_from(plan_signature.len())
             .unwrap_or(u64::MAX)
             .to_be_bytes(),
     );
-    digest.update(signed_plan.canonical_signature());
+    digest.update(plan_signature);
     digest.update((method as i32).to_be_bytes());
     digest.update(semantics.verb.get().to_be_bytes());
     encode_target(&mut digest, semantics.target);
@@ -682,6 +694,22 @@ pub(crate) fn validate_durable_deadline_free_body(body: &[u8]) -> bool {
         .checked_add(MAXIMUM_DEADLINE_FIELD_BYTES)
         .is_some_and(|size| size <= MAXIMUM_REQUEST_BYTES)
         && locate_deadline_free_header(body).is_ok()
+}
+
+pub(crate) fn validate_durable_attempt_body(
+    deadline_free_body: &[u8],
+    deadline_boottime_nanoseconds: u64,
+    attempt_body: &[u8],
+) -> bool {
+    durable_attempt_body(deadline_free_body, deadline_boottime_nanoseconds)
+        .is_ok_and(|body| body == attempt_body)
+}
+
+pub(crate) fn durable_attempt_body(
+    deadline_free_body: &[u8],
+    deadline_boottime_nanoseconds: u64,
+) -> Result<Vec<u8>, BrokerDispatchAttemptError> {
+    inject_deadline(deadline_free_body, deadline_boottime_nanoseconds)
 }
 
 fn validate_remaining_body_fields(bytes: &[u8]) -> Result<(), BrokerDispatchTemplateError> {

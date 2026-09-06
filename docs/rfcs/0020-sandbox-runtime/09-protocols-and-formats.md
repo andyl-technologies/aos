@@ -676,9 +676,15 @@ supply its assignment, namespace generation, request identity, or deadline. It
 derives those fields and the Host runtime/scope handles from
 `CurrentNamespaceTarget`, requires one request ID and deadline across all three
 layers, and authenticates the actual Mount response writer against the pinned
-service cgroup. The resulting preparation remains memory-only. Durable effect
-admission and attachment replay must consume and recheck it; journal bytes or a
-catalog digest alone cannot recreate it after restart.
+service cgroup. The resulting preparation remains memory-only. Controller
+attempt admission consumes and rechecks it, re-verifies the current ownership
+lease, attenuates a local deadline, and commits the exact deadline-free template
+body, deadline-bearing Apply body, authorization packet, catalog commitment,
+and immutable namespace-allocation reference before returning a dispatch token.
+The token retains the live proof and cannot be cloned or recreated from journal
+bytes. On restart, authenticated inventory and a new catalog preparation are
+required before replay; a durable packet or catalog digest alone is never
+descriptor authority.
 
 Caller role derives from peer credentials, socket activation, and the expected
 service-unit identity; a serialized role is descriptive only. Unknown

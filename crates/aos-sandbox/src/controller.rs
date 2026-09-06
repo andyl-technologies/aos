@@ -549,6 +549,67 @@ where
         prepared.recheck(self.reconciler.journal_mut(), clock)
     }
 
+    /// Durably admits one exact current Mount attempt before packet dispatch.
+    ///
+    /// The attempt binds the prepared catalog and signed plan to the current
+    /// ownership lease and a caller-selected local deadline no later than the
+    /// catalog's exclusive deadline. The controller commits the exact body,
+    /// authorized packet, catalog commitment, and immutable namespace audit
+    /// reference before returning a live token. This method performs no broker
+    /// I/O and does not claim that an attachment is installed.
+    ///
+    /// Restart cannot reconstruct the returned token because Mount's descriptor
+    /// catalog and the retained namespace proof are memory-only. Recovery must
+    /// authenticate broker inventory and repeat preparation before another
+    /// effect attempt.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale live authority, expired or mismatched plan/lease bounds,
+    /// a deadline beyond the catalog lifetime, conflicting request replay,
+    /// corrupt cross-referenced history, capacity, and failed durable commits.
+    #[cfg(target_os = "linux")]
+    pub fn admit_current_mount_attempt<T>(
+        &mut self,
+        prepared: crate::mount_preparation::PreparedCurrentMountDispatchV1,
+        deadline_boottime_nanoseconds: u64,
+        clock: &mut T,
+    ) -> Result<crate::mount_attempt::DurableCurrentMountAttemptV1, crate::MountAttemptError>
+    where
+        T: FnMut() -> Result<
+            RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        crate::mount_attempt::admit_current(
+            self.reconciler.journal_mut(),
+            prepared,
+            deadline_boottime_nanoseconds,
+            clock,
+        )
+    }
+
+    /// Rechecks an admitted Mount attempt without dispatching it.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed live authority, missing or substituted durable bytes,
+    /// corrupt cross-references, expired preparation, and journal failures.
+    #[cfg(target_os = "linux")]
+    pub fn recheck_current_mount_attempt<T>(
+        &mut self,
+        attempt: &crate::mount_attempt::DurableCurrentMountAttemptV1,
+        clock: &mut T,
+    ) -> Result<(), crate::MountAttemptError>
+    where
+        T: FnMut() -> Result<
+            RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        attempt.recheck(self.reconciler.journal_mut(), clock)
+    }
+
     /// Issues a local holder channel from an acquired current-runtime scope.
     ///
     /// The complete Host and payload proof moves into the live session. Scope

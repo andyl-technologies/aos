@@ -130,6 +130,61 @@ pub struct CurrentNamespaceTarget {
     allocation: Record,
 }
 
+/// Names one immutable namespace allocation without carrying live authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct DurableNamespaceTargetReferenceV1 {
+    sandbox: SandboxId,
+    incarnation: IncarnationId,
+    observed_generation: u64,
+    observed_audit_digest: [u8; 32],
+    target_generation: u64,
+    allocation_digest: [u8; 32],
+}
+
+impl DurableNamespaceTargetReferenceV1 {
+    pub(crate) const fn sandbox(self) -> SandboxId {
+        self.sandbox
+    }
+
+    pub(crate) const fn incarnation(self) -> IncarnationId {
+        self.incarnation
+    }
+
+    pub(crate) const fn observed_generation(self) -> u64 {
+        self.observed_generation
+    }
+
+    pub(crate) const fn observed_audit_digest(self) -> [u8; 32] {
+        self.observed_audit_digest
+    }
+
+    pub(crate) const fn target_generation(self) -> u64 {
+        self.target_generation
+    }
+
+    pub(crate) const fn allocation_digest(self) -> [u8; 32] {
+        self.allocation_digest
+    }
+
+    pub(crate) const fn from_parts(
+        sandbox: SandboxId,
+        incarnation: IncarnationId,
+        observed_generation: u64,
+        observed_audit_digest: [u8; 32],
+        target_generation: u64,
+        allocation_digest: [u8; 32],
+    ) -> Self {
+        Self {
+            sandbox,
+            incarnation,
+            observed_generation,
+            observed_audit_digest,
+            target_generation,
+            allocation_digest,
+        }
+    }
+}
+
 impl CurrentNamespaceTarget {
     /// Returns the namespace generation named by current signed authority.
     #[must_use]
@@ -153,6 +208,18 @@ impl CurrentNamespaceTarget {
     #[must_use]
     pub const fn runtime_generation(&self) -> &CurrentRuntimeGeneration {
         &self.generation
+    }
+
+    pub(crate) fn durable_reference(&self) -> DurableNamespaceTargetReferenceV1 {
+        let identity = self.allocation.identity;
+        DurableNamespaceTargetReferenceV1 {
+            sandbox: SandboxId::from_bytes(identity.0),
+            incarnation: IncarnationId::from_bytes(identity.1),
+            observed_generation: self.allocation.observed_generation,
+            observed_audit_digest: self.allocation.observed_audit_digest,
+            target_generation: self.allocation.target_generation,
+            allocation_digest: self.allocation.digest,
+        }
     }
 
     pub(crate) fn bind<T>(
@@ -441,4 +508,31 @@ fn head_key(identity: Identity) -> Vec<u8> {
 
 pub(crate) fn validate_namespace(journal: &mut Journal) -> Result<(), NamespaceTargetError> {
     History::load(journal).map(|_| ())
+}
+
+pub(crate) fn validate_durable_reference_in_validated_namespace(
+    journal: &Journal,
+    reference: DurableNamespaceTargetReferenceV1,
+) -> Result<(), NamespaceTargetError> {
+    let identity = (
+        *reference.sandbox.as_bytes(),
+        *reference.incarnation.as_bytes(),
+    );
+    let mut key = vec![b't'];
+    key.extend_from_slice(&identity.0);
+    key.extend_from_slice(&identity.1);
+    key.extend_from_slice(&reference.observed_generation.to_be_bytes());
+    let record = journal
+        .get(NAMESPACE, &key)
+        .ok_or(NamespaceTargetError::CorruptState)
+        .and_then(Record::decode)?;
+    if record.identity != identity
+        || record.observed_generation != reference.observed_generation
+        || record.observed_audit_digest != reference.observed_audit_digest
+        || record.target_generation != reference.target_generation
+        || record.digest != reference.allocation_digest
+    {
+        return Err(NamespaceTargetError::CorruptState);
+    }
+    Ok(())
 }

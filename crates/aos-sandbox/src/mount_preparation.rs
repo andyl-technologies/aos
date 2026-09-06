@@ -519,6 +519,12 @@ where
     Ok(prepared)
 }
 
+pub(crate) fn check_mount_deadline(
+    deadline_boottime_nanoseconds: u64,
+) -> Result<(), MountCatalogPreparationError> {
+    transport::check_deadline(deadline_boottime_nanoseconds)
+}
+
 fn request_header(
     version: ProtocolVersion,
     audience: Audience,

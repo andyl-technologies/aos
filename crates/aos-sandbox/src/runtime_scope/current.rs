@@ -94,6 +94,9 @@ pub enum CurrentRuntimeScopeError {
     /// Signed Host plan verification or exact grant matching failed.
     #[error(transparent)]
     Plan(#[from] aos_sandbox_core::BrokerPlanVerificationError),
+    /// Mount attempt attenuation rejected the current plan, lease, or deadline.
+    #[error(transparent)]
+    Dispatch(#[from] crate::BrokerDispatchAttemptError),
     /// The Host exchange or retained kernel execution observation failed.
     #[error(transparent)]
     Observation(#[from] RuntimeScopeError),
@@ -247,8 +250,41 @@ impl CurrentRuntimeScope {
         T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
     {
         self.recheck(journal, clock)?;
+        self.verified_mount_lease(journal, signed, read_clock(&self.policy, clock)?)?;
+        self.recheck(journal, clock)
+    }
+
+    pub(crate) fn prepare_mount_attempt<T>(
+        &self,
+        journal: &mut Journal,
+        template: &crate::BrokerDispatchTemplateV1,
+        deadline_boottime_nanoseconds: u64,
+        clock: &mut T,
+    ) -> Result<crate::BrokerDispatchAttemptV1, CurrentRuntimeScopeError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.recheck(journal, clock)?;
 
         let fresh = read_clock(&self.policy, clock)?;
+        let lease = self.verified_mount_lease(journal, template.signed_plan(), fresh)?;
+        let attempt = crate::BrokerDispatchAttemptV1::new(
+            template,
+            &lease,
+            deadline_boottime_nanoseconds,
+            fresh,
+        )?;
+
+        self.recheck(journal, clock)?;
+        Ok(attempt)
+    }
+
+    fn verified_mount_lease(
+        &self,
+        journal: &mut Journal,
+        signed: &SignedBrokerPlan,
+        fresh: RawPairedClockSample,
+    ) -> Result<SignedOwnershipLease, CurrentRuntimeScopeError> {
         let publication =
             select_exact_current(journal, self.selection, &self.policy, &self.binding)?;
         let lease = verify_lease(journal, &self.binding, &publication, &self.policy, fresh)?;
@@ -275,8 +311,7 @@ impl CurrentRuntimeScope {
         if verified.plan().ownership_authority() != lease.signer() {
             return Err(CurrentRuntimeScopeError::CurrentMismatch);
         }
-
-        self.recheck(journal, clock)
+        Ok(lease)
     }
 }
 

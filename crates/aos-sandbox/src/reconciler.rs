@@ -511,6 +511,10 @@ pub enum ReconcileOutcome {
 /// Reports admission, ledger, journal, or executor-contract failures.
 #[derive(Debug, thiserror::Error)]
 pub enum ReconcilerError {
+    /// Protected Mount-attempt history could not be validated.
+    #[cfg(target_os = "linux")]
+    #[error("mount attempt failed: {0}")]
+    MountAttempt(#[source] Box<crate::mount_attempt::MountAttemptError>),
     /// Protected namespace-target allocation history could not be validated.
     #[cfg(target_os = "linux")]
     #[error("namespace target failed: {0}")]
@@ -1175,6 +1179,20 @@ where
                 #[cfg(not(target_os = "linux"))]
                 return Err(ReconcilerError::CorruptLedger(
                     "namespace targets require Linux validation",
+                ));
+            }
+            if self
+                .journal
+                .records(RecordNamespace::MountAttempt)
+                .next()
+                .is_some()
+            {
+                #[cfg(target_os = "linux")]
+                crate::mount_attempt::validate_namespace(&mut self.journal)
+                    .map_err(|error| ReconcilerError::MountAttempt(Box::new(error)))?;
+                #[cfg(not(target_os = "linux"))]
+                return Err(ReconcilerError::CorruptLedger(
+                    "mount attempts require Linux validation",
                 ));
             }
             self.ledger_validated = true;
