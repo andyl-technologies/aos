@@ -6,6 +6,7 @@ mod child_execution;
 mod child_files;
 mod child_measure;
 mod child_stress;
+mod child_world;
 #[path = "exact_snapshot/retained_network.rs"]
 mod retained_network;
 mod source_set;
@@ -16,6 +17,7 @@ pub use child_files::{QemuLiveHotForkChildReport, run_qemu_live_hot_fork_child_g
 pub use child_stress::{
     QemuLiveHotForkChildStressReport, run_qemu_live_hot_fork_child_stress_gate,
 };
+pub use child_world::{QemuLiveHotForkChildWorldReport, run_qemu_live_hot_fork_child_world_gate};
 pub use retained_network::{
     QemuLiveRetainedNetworkSnapshotReport, run_qemu_live_retained_network_snapshot_gate,
 };
