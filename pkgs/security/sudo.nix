@@ -7,6 +7,8 @@
   audit,
   libselinux,
   openldap,
+  cyrus-sasl,
+  openssl,
   zlib,
   coreutils,
 }: let
@@ -22,7 +24,7 @@ in
     };
 
     buildDeps = [gnumake];
-    runtimeDeps = [linux-pam audit libselinux openldap zlib];
+    runtimeDeps = [linux-pam audit libselinux openldap cyrus-sasl openssl zlib];
     propagatedDeps = [];
     configureFlags = builtins.concatStringsSep " " [
       "--with-env-editor"
