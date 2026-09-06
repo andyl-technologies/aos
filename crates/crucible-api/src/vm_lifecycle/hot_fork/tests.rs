@@ -2,6 +2,21 @@
 
 use super::*;
 
+struct RetainedOwnershipLease {
+    identity: ProductionVmNodeGeneration,
+    _ownership: std::sync::Arc<()>,
+}
+
+impl ProductionVmNodeLease for RetainedOwnershipLease {
+    fn identity(&self) -> &ProductionVmNodeGeneration {
+        &self.identity
+    }
+
+    fn finish(&mut self) -> Result<(), LifecycleApiError> {
+        Ok(())
+    }
+}
+
 fn permanently_failed_loop() -> (ScenarioDefForm, ProductionVmLifecycleLoop) {
     let source = super::super::runtime::tests::nonterminal_signal_replay_scenario();
     let mut lifecycle = super::super::runtime::tests::production_loop_without_backends(&source);
@@ -126,6 +141,88 @@ fn empty_backend_world_captures_complete_process_neutral_continuation() {
     continuation
         .validate_complete_internal_state()
         .unwrap_or_else(|error| panic!("captured continuation should remain complete: {error}"));
+}
+
+#[test]
+fn permanently_failed_world_prepares_without_source_processes() {
+    let (source, lifecycle) = permanently_failed_loop();
+    let source_world = lifecycle
+        .prepare_hot_fork_source_world()
+        .unwrap_or_else(|error| panic!("permanently failed world should prepare: {error}"));
+
+    assert_eq!(source_world.prepared_nodes().len(), 0);
+    assert_eq!(
+        source_world.continuation().nodes().len(),
+        source.world().vm_nodes().len()
+    );
+    assert!(source_world.continuation().nodes().iter().all(|boundary| {
+        boundary.service_state() == ProductionVmHotForkNodeServiceState::PermanentlyFailed
+    }));
+
+    let recovered = source_world
+        .recover()
+        .unwrap_or_else(|error| panic!("empty source world should recover: {error}"));
+    assert_eq!(recovered.inner.backend().len(), 0);
+}
+
+#[test]
+fn retained_service_state_without_process_authority_fails_before_preparation() {
+    let (_source, mut lifecycle) = permanently_failed_loop();
+    let node = lifecycle
+        .source
+        .world()
+        .vm_nodes()
+        .first()
+        .unwrap_or_else(|| panic!("fixture should contain a World node"))
+        .id
+        .clone();
+    lifecycle
+        .node_service_states
+        .insert(node, ProductionNodeServiceState::PoweredOff);
+
+    let failure = lifecycle
+        .prepare_hot_fork_source_world()
+        .err()
+        .unwrap_or_else(|| panic!("retained state without QEMU authority must fail closed"));
+
+    assert!(failure.unreconciled_nodes().is_empty());
+    assert!(failure.rollback_diagnostics().is_empty());
+    let recovered = failure
+        .into_recovered_lifecycle()
+        .unwrap_or_else(|error| panic!("preparation did not mutate the lifecycle: {error}"));
+    assert_eq!(recovered.inner.backend().len(), 0);
+}
+
+#[test]
+fn dropping_unreconciled_preparation_failure_quarantines_its_lifecycle_owner() {
+    let (_source, mut lifecycle) = permanently_failed_loop();
+    let node = lifecycle
+        .source
+        .world()
+        .vm_nodes()
+        .first()
+        .unwrap_or_else(|| panic!("fixture should contain a World node"))
+        .id
+        .clone();
+    let ownership = std::sync::Arc::new(());
+    let retained_ownership = std::sync::Arc::downgrade(&ownership);
+    lifecycle.node_leases.insert(
+        node.clone(),
+        Box::new(RetainedOwnershipLease {
+            identity: ProductionVmNodeGeneration::new(node.clone(), 1)
+                .unwrap_or_else(|error| panic!("test generation should be valid: {error}")),
+            _ownership: ownership,
+        }),
+    );
+    let failure = ProductionVmHotForkSourceWorldPreparationFailure::new(
+        lifecycle,
+        "injected unresolved retained source",
+        vec![node],
+    );
+
+    drop(failure);
+
+    assert!(retained_ownership.upgrade().is_some());
 }
 
 #[test]

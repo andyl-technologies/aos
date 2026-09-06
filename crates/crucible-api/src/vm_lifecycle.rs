@@ -32,6 +32,8 @@ use crucible::{
     SimulationBackend, SingleScheduler, SingleSchedulerCheckpoint, VirtualTime, VmArchitecture,
     World,
 };
+#[cfg(target_os = "linux")]
+use crucible_qemu::QemuNodeSetPreparedHotForkTemplate;
 use crucible_qemu::{
     ProductionFaultRuntime, ProductionFaultRuntimeCheckpoint, ProductionNetworkStateCheckpoint,
     QemuLaunchResourceRequirements, QemuNode, QemuNodeLifecycleDecision,
@@ -80,6 +82,7 @@ mod hot_fork;
 #[cfg(target_os = "linux")]
 pub use hot_fork::{
     ProductionVmHotForkNodeBoundary, ProductionVmHotForkNodeServiceState,
+    ProductionVmHotForkSourceWorld, ProductionVmHotForkSourceWorldPreparationFailure,
     ProductionVmHotForkWorldContinuation,
 };
 

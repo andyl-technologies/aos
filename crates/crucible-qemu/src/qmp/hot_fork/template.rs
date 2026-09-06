@@ -359,6 +359,17 @@ impl QmpHotForkTemplateState {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn one_aborted(request: super::QmpHotForkRequest) -> Self {
+        let mut state = Self::one_draining_without_resources(request);
+        state.outcome = QmpHotForkTemplateOutcome::Aborted;
+        state.transaction_active = false;
+        state.acknowledged_proofs = 0;
+        state.missing_proofs = QMP_HOT_FORK_TEMPLATE_REQUIRED_PROOFS;
+        state.rollback_complete = true;
+        state
+    }
+
     /// Returns the process-local transaction generation.
     #[must_use]
     pub const fn generation(&self) -> u64 {
