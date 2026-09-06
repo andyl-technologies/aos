@@ -2,7 +2,7 @@
 
 This audit records the complete maintainer sweep started on 2026-09-05 and its post-upgrade verification on 2026-09-06. Direct providers, stream policy, source and dependency-artifact hashes, and package gates authorize updates. Repology findings remain non-authoritative triage signals.
 
-The final scan used inventory envelope `sha256:eb05b2049df791cbac0674c31d4a469f51f1e4fb6a8fb32162db9127c3df8094` and discovery snapshot `sha256:d8ea6f2b1e450616b054304518d35b8f9a0683349b459f90f6729e7ee78af482`.
+The final clean-tree scan used inventory envelope `sha256:87f7ba021ecbdaf7e0025d1eeb6f3b6666f0e3ea14f4218e0674057ee14e8ddc` and discovery snapshot `sha256:43461dd0b5593f71726d1a61c0e25fd8b9600b69df80fa6260933f91f278566d`.
 
 ## Final coverage
 
