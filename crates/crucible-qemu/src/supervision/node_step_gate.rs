@@ -2021,10 +2021,14 @@ fn build_live_node_with_authority(
         }
     }
     let debug_guest_activation_listener = (config.whitebox == QemuLaunchPluginSwitch::On)
-        .then(|| {
-            crate::unix_socket_path::bind(
+        .then(|| match &spawn_authority {
+            LiveNodeSpawnAuthority::Uncontained => crate::unix_socket_path::bind(
                 &run_directory.join(crate::QEMU_DEBUG_GUEST_ACTIVATION_SOCKET_FILE_NAME),
             )
+            .and_then(crate::unix_socket_path::ExpectedPeerUnixListener::for_process),
+            LiveNodeSpawnAuthority::Guarded { run_directory, .. } => run_directory
+                .bind_child_owned_socket(crate::QEMU_DEBUG_GUEST_ACTIVATION_SOCKET_FILE_NAME)
+                .map_err(|source| std::io::Error::other(source.to_string())),
         })
         .transpose()
         .map_err(|source| {
@@ -2191,7 +2195,7 @@ fn build_live_node_with_authority(
     }
     let debug_guest_activation_stream = launch_try!(
         debug_guest_activation_listener
-            .map(|listener| listener.accept().map(|(stream, _address)| stream))
+            .map(|listener| listener.accept_from(child.process_id()))
             .transpose()
             .map_err(|source| {
                 QemuLiveNodeStepGateError::prime(

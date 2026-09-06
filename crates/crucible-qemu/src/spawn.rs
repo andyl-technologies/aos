@@ -282,6 +282,47 @@ impl QemuPreparedRunDirectory {
         })
     }
 
+    /// Binds one owner-only listener for this directory's admitted child.
+    pub(crate) fn bind_child_owned_socket(
+        &self,
+        file_name: &str,
+    ) -> Result<crate::unix_socket_path::ExpectedPeerUnixListener, QemuSpawnError> {
+        let directory_metadata = fstat(&self.directory).map_err(|source| QemuSpawnError::Io {
+            operation: "reinspect prepared QEMU run directory for socket binding",
+            source: source.into(),
+        })?;
+        if !self.directory_identity.matches(&directory_metadata) {
+            return Err(QemuSpawnError::PreparedRunDirectoryChanged {
+                path: self.path.clone(),
+            });
+        }
+        let credentials = self.child_credentials.ok_or_else(|| {
+            invalid_input(
+                "bind child-owned QEMU socket",
+                "prepared run directory has no admitted child credentials",
+            )
+        })?;
+        let listener = crate::unix_socket_path::bind_child_owned_at(
+            self.directory.as_fd(),
+            file_name,
+            credentials.user_id,
+            credentials.group_id,
+        )
+        .map_err(|source| QemuSpawnError::Io {
+            operation: "bind child-owned QEMU socket",
+            source,
+        })?;
+        crate::unix_socket_path::ExpectedPeerUnixListener::for_child(
+            listener,
+            credentials.user_id,
+            credentials.group_id,
+        )
+        .map_err(|source| QemuSpawnError::Io {
+            operation: "configure child-owned QEMU socket listener",
+            source,
+        })
+    }
+
     /// Returns the original run-directory path for diagnostics only.
     #[must_use]
     pub fn path(&self) -> &Path {
