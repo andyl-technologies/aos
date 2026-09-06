@@ -36,9 +36,8 @@ struct NixPathInfo {
 /// Realizes every planned derivation twice and writes a closed evidence tree.
 pub(super) fn run(args: &ReleaseBuildArgs, nix: &NixRunner, printer: &Printer) -> Result<()> {
     let started_at = require_utc_time(&args.started_at, "build start time")?;
-    let completed_at = require_utc_time(&args.completed_at, "build completion time")?;
-    if completed_at < started_at {
-        bail!("build completion time precedes its start time");
+    if started_at > std::time::SystemTime::now() {
+        bail!("build start time is in the future");
     }
 
     let plan_bytes = capture::control_file(&args.plan, "release plan")?;
@@ -121,13 +120,14 @@ pub(super) fn run(args: &ReleaseBuildArgs, nix: &NixRunner, printer: &Printer) -
             })
         })
         .collect::<Result<Vec<_>>>()?;
+    let completed_at = humantime::format_rfc3339(std::time::SystemTime::now()).to_string();
     let report = BuildReportV1 {
         schema_version: BUILD_REPORT_V1.to_string(),
         plan_digest,
         source_commit: plan.source.commit.clone(),
         outputs,
         sources,
-        completed_at: args.completed_at.clone(),
+        completed_at: completed_at.clone(),
     };
     report.validate(&plan, plan_digest)?;
     let sbom = SpdxDocument::from_build(&report);
@@ -138,7 +138,7 @@ pub(super) fn run(args: &ReleaseBuildArgs, nix: &NixRunner, printer: &Printer) -
     let journal = build_journal(
         plan_digest,
         &args.started_at,
-        &args.completed_at,
+        &completed_at,
         &report_bytes,
         &sbom_bytes,
     )?;

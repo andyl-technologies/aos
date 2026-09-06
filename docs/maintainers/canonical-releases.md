@@ -165,15 +165,15 @@ both the reviewed request and generated plan as release evidence.
 
 ## Build the frozen package matrix
 
-Record operator-supplied UTC start and completion times and select a new output
-directory:
+Record the UTC start time and select a new output directory. The command
+captures the completion time after realization, repeat-building, and build
+evidence collection finish:
 
 ```sh
 nix run . -- release build \
   --plan release-plan.json \
   --output release-build \
-  --started-at 2026-09-03T10:00:00Z \
-  --completed-at 2026-09-03T12:00:00Z
+  --started-at 2026-09-03T10:00:00Z
 ```
 
 The command realizes the exact named outputs from their frozen derivations and
