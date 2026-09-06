@@ -31,11 +31,11 @@
 mod container;
 mod container_admin;
 mod delivery_workflow;
-mod surface_topology;
 #[cfg(test)]
 mod delivery_workflow_tests;
 mod publication_manifest;
 mod release_publication;
+mod surface_topology;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
@@ -10847,6 +10847,7 @@ impl RpcService {
             name: None,
             description: None,
             readme: None,
+            support: None,
             indexed_at: None,
             generation: 0,
             content_digest: None,

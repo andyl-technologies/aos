@@ -99,7 +99,10 @@ pub async fn run_remote(
         message: "provide a package name for remote builds".to_string(),
     })?;
     let attr = format!("pkgs.{package}");
-    run_remote_attr(nix, printer, &attr, package, target, remote_url, view, token).await?;
+    run_remote_attr(
+        nix, printer, &attr, package, target, remote_url, view, token,
+    )
+    .await?;
     Ok(())
 }
 

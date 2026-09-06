@@ -16,6 +16,7 @@ use super::release_browse::{
 };
 use super::render::{escape, hash_value, table};
 use crate::db::{ChannelSummary, Database, IndexStatus, RegistryRecord, ReleaseRow};
+use aos_registry_surface::support::{Date, SupportKind, SupportPolicy, SupportState};
 
 /// Published content counts, distinguishing incomplete projections from empty sets.
 #[derive(Debug, Clone, Default)]
@@ -156,6 +157,10 @@ impl ReleaseStatus {
         (Self::Prerelease, "prerelease", "Other prerelease"),
     ];
 
+    /// Query value for the policy-dependent long-term-support filter, which
+    /// selects stable releases whose train the registry marks as LTS.
+    pub(crate) const LTS_TOKEN: &'static str = "lts";
+
     fn token(self) -> &'static str {
         Self::ALL
             .iter()
@@ -194,31 +199,38 @@ pub(crate) struct TrainSummary {
     pub train: (u64, u64),
     /// Newest stable version in the train.
     pub latest: String,
-    /// Whether the registry still treats this train as supported.
-    pub supported: bool,
+    /// Support class under the registry's policy.
+    pub kind: SupportKind,
+    /// Where the train stands today.
+    pub state: SupportState,
     /// Channels whose frontier currently names a release in this train.
     pub channels: Vec<String>,
 }
 
-/// Number of newest stable trains that count as supported without an explicit
-/// policy: the current train and the one before it, matching the retention
-/// floor in the release model.
-pub(crate) const DEFAULT_SUPPORTED_TRAINS: usize = 2;
+impl TrainSummary {
+    /// Whether the train still receives updates.
+    pub(crate) fn supported(&self) -> bool {
+        self.state.is_supported()
+    }
+}
 
-/// Groups stable releases into trains, newest first, and marks support.
+/// Groups releases into trains, newest first, keeping each train's newest
+/// release (a candidate counts for its train), and classifies each one.
 ///
-/// Until the registry publishes an explicit support policy, the newest
-/// [`DEFAULT_SUPPORTED_TRAINS`] trains and any train a channel currently
-/// targets count as supported; everything older is end of life.
-pub(crate) fn stable_trains(
+/// The registry's committed policy decides; without one, the default policy
+/// applies (the newest two trains are supported, matching the retention floor
+/// in the release model). A train a channel currently targets stays supported
+/// regardless, because hosts are still being moved onto it.
+pub(crate) fn release_trains(
     releases: &[ReleaseRow],
     channels: &[ChannelSummary],
+    policy: Option<&SupportPolicy>,
+    today: Date,
 ) -> Vec<TrainSummary> {
+    let fallback = SupportPolicy::default();
+    let policy = policy.unwrap_or(&fallback);
     let mut trains: Vec<TrainSummary> = Vec::new();
     for release in releases {
-        if ReleaseStatus::of(&release.semver) != ReleaseStatus::Stable {
-            continue;
-        }
         let Some(train) = train_of(&release.semver) else {
             continue;
         };
@@ -228,7 +240,8 @@ pub(crate) fn stable_trains(
         trains.push(TrainSummary {
             train,
             latest: release.semver.clone(),
-            supported: false,
+            kind: policy.kind(train),
+            state: SupportState::EndOfLife { until: None },
             channels: Vec::new(),
         });
     }
@@ -244,29 +257,53 @@ pub(crate) fn stable_trains(
             })
             .map(|channel| channel.name.clone())
             .collect();
-        summary.supported = index < DEFAULT_SUPPORTED_TRAINS || !summary.channels.is_empty();
+        summary.state = match policy.classify(summary.train, index, today) {
+            SupportState::EndOfLife { until } if !summary.channels.is_empty() => {
+                SupportState::Supported { until }
+            }
+            state => state,
+        };
     }
     trains
 }
 
-/// Renders the support board: one tile per supported stable train plus the
-/// newest candidate and edge snapshots, so a reader can tell at a glance
-/// whether their train still receives updates and which release is newest.
-fn support_board(slug: &str, releases: &[ReleaseRow], channels: &[ChannelSummary]) -> String {
-    let trains = stable_trains(releases, channels);
-    let newest = |status: ReleaseStatus| {
-        releases
-            .iter()
-            .find(|release| ReleaseStatus::of(&release.semver) == status)
-    };
+/// Renders the support board: one tile per supported train, newest train
+/// first, showing that train's newest release and the channels targeting it.
+/// Trains that no longer receive updates are not listed.
+fn support_board(
+    slug: &str,
+    releases: &[ReleaseRow],
+    channels: &[ChannelSummary],
+    policy: Option<&SupportPolicy>,
+    today: Date,
+) -> String {
+    let trains = release_trains(releases, channels, policy, today);
     let mut body =
         String::from("<section class=\"support-board\" aria-label=\"Supported releases\">");
-    for summary in trains.iter().filter(|summary| summary.supported) {
+    for summary in trains.iter().filter(|summary| summary.supported()) {
         let (major, minor) = summary.train;
+        // Only a stated end date earns a line; an open-ended train says nothing
+        // and the release page carries the full policy.
+        let (class, state) = match &summary.state {
+            SupportState::EndingSoon { until } => (
+                "supported ending",
+                format!("<span class=\"support-state\">Until {until}</span>"),
+            ),
+            SupportState::Supported { until: Some(until) } => (
+                "supported",
+                format!("<span class=\"support-state\">Until {until}</span>"),
+            ),
+            _ => ("supported", String::new()),
+        };
         let _ = write!(
             body,
-            "<a class=\"support-tile supported\" href=\"{}\"><span class=\"support-train\">{major}.{minor}</span><strong>{}</strong><span class=\"support-state\">Supported</span>{}</a>",
+            "<a class=\"support-tile {class}\" href=\"{}\"><span class=\"support-train\">{major}.{minor}{}</span><strong>{}</strong>{state}{}</a>",
             escape(&release_href(slug, &summary.latest)),
+            if summary.kind == SupportKind::Lts {
+                " · LTS"
+            } else {
+                ""
+            },
             escape(&summary.latest),
             if summary.channels.is_empty() {
                 String::new()
@@ -283,33 +320,7 @@ fn support_board(slug: &str, releases: &[ReleaseRow], channels: &[ChannelSummary
             }
         );
     }
-    for (status, class) in [
-        (ReleaseStatus::Candidate, "candidate"),
-        (ReleaseStatus::Edge, "edge"),
-    ] {
-        if let Some(release) = newest(status) {
-            let _ = write!(
-                body,
-                "<a class=\"support-tile {class}\" href=\"{}\"><span class=\"support-train\">{}</span><strong>{}</strong><span class=\"support-state\">No support promise</span></a>",
-                escape(&release_href(slug, &release.semver)),
-                status.label(),
-                escape(&release.semver)
-            );
-        }
-    }
-    let eol = trains.iter().filter(|summary| !summary.supported).count();
-    if eol > 0 {
-        let _ = write!(
-            body,
-            "<a class=\"support-tile eol\" href=\"/{}/-/releases?status=stable\"><span class=\"support-train\">End of life</span><strong>{eol} older {}</strong><span class=\"support-state\">No updates</span></a>",
-            escape(slug),
-            if eol == 1 { "train" } else { "trains" }
-        );
-    }
-    if trains.is_empty()
-        && newest(ReleaseStatus::Candidate).is_none()
-        && newest(ReleaseStatus::Edge).is_none()
-    {
+    if releases.is_empty() {
         body.push_str("<p class=\"dim\">No releases have been published yet.</p>");
     }
     body.push_str("</section>");
@@ -317,7 +328,12 @@ fn support_board(slug: &str, releases: &[ReleaseRow], channels: &[ChannelSummary
 }
 
 /// Renders the major, minor, and status filter form for the directory.
-fn filter_form(slug: &str, releases: &[ReleaseRow], query: &BrowseQuery) -> String {
+fn filter_form(
+    slug: &str,
+    releases: &[ReleaseRow],
+    query: &BrowseQuery,
+    policy: Option<&SupportPolicy>,
+) -> String {
     let mut majors = releases
         .iter()
         .filter_map(|release| train_of(&release.semver).map(|(major, _)| major))
@@ -385,8 +401,22 @@ fn filter_form(slug: &str, releases: &[ReleaseRow], query: &BrowseQuery) -> Stri
             }
         );
     }
+    let lts_selected = query.status.as_deref() == Some(ReleaseStatus::LTS_TOKEN);
+    let has_lts = policy.is_some_and(SupportPolicy::has_lts);
+    if has_lts || lts_selected {
+        let _ = write!(
+            body,
+            "<option value=\"{}\"{}>Long-term support</option>",
+            ReleaseStatus::LTS_TOKEN,
+            if lts_selected { " selected" } else { "" }
+        );
+    }
     body.push_str("</select></label><button type=\"submit\">Filter</button>");
-    if selected_major.is_some() || selected_minor.is_some() || selected_status.is_some() {
+    if selected_major.is_some()
+        || selected_minor.is_some()
+        || selected_status.is_some()
+        || lts_selected
+    {
         let _ = write!(body, "<a href=\"/{}/-/releases\">Clear</a>", escape(slug));
     }
     body.push_str("</form>");
@@ -394,9 +424,13 @@ fn filter_form(slug: &str, releases: &[ReleaseRow], query: &BrowseQuery) -> Stri
 }
 
 /// Applies the directory filters to the release list.
+///
+/// The `lts` status selects stable releases whose train the policy marks as
+/// long-term support; it matches nothing when the registry has no policy.
 pub(crate) fn filter_releases<'a>(
     releases: &'a [ReleaseRow],
     query: &BrowseQuery,
+    policy: Option<&SupportPolicy>,
 ) -> Vec<&'a ReleaseRow> {
     let major = query
         .major
@@ -406,14 +440,19 @@ pub(crate) fn filter_releases<'a>(
         .minor
         .as_deref()
         .and_then(|value| value.parse::<u64>().ok());
+    let lts = query.status.as_deref() == Some(ReleaseStatus::LTS_TOKEN);
     let status = query.status.as_deref().and_then(ReleaseStatus::parse);
     releases
         .iter()
         .filter(|release| {
             let train = train_of(&release.semver);
+            let is_lts = train.is_some_and(|train| {
+                policy.is_some_and(|policy| policy.kind(train) == SupportKind::Lts)
+            });
             major.is_none_or(|major| train.is_some_and(|(actual, _)| actual == major))
                 && minor.is_none_or(|minor| train.is_some_and(|(_, actual)| actual == minor))
                 && status.is_none_or(|status| ReleaseStatus::of(&release.semver) == status)
+                && (!lts || (ReleaseStatus::of(&release.semver) == ReleaseStatus::Stable && is_lts))
         })
         .collect()
 }
@@ -445,11 +484,19 @@ pub(crate) fn releases_page(
     session: &SessionIndicator,
 ) -> String {
     let slug = &registry.slug;
+    let policy = status.and_then(|status| status.support.as_ref());
+    let today = Date::from_unix(crate::clock::now_unix_secs());
     let mut body = context.nav(slug, "releases");
     body.push_str("<h1>Releases</h1>");
-    body.push_str(&support_board(slug, context.releases(), channels));
-    body.push_str(&filter_form(slug, context.releases(), query));
-    let filtered = filter_releases(context.releases(), query);
+    body.push_str(&support_board(
+        slug,
+        context.releases(),
+        channels,
+        policy,
+        today,
+    ));
+    body.push_str(&filter_form(slug, context.releases(), query, policy));
+    let filtered = filter_releases(context.releases(), query, policy);
     if filtered.len() != context.releases().len() {
         let _ = write!(
             body,
@@ -528,6 +575,7 @@ pub(crate) fn release_page(
     contents: &ReleaseContents,
     notes: Option<&str>,
     channels: &[ChannelSummary],
+    record: Option<&aos_release::record::ReleaseRecordV1>,
     started: Instant,
     session: &SessionIndicator,
 ) -> String {
@@ -567,6 +615,9 @@ pub(crate) fn release_page(
             let _ = write!(body, "<p>{}</p>", escape(paragraph));
         }
         body.push_str("</section>");
+    }
+    if let Some(record) = record {
+        body.push_str(&qualification_section(slug, record));
     }
     body.push_str("<h2>Current rollout</h2>");
     body.push_str(&channel_participation(slug, version, channels));
@@ -616,6 +667,127 @@ pub(crate) fn release_page(
         &state_line(status, started),
         session,
     )
+}
+
+/// Renders the verified public release record: the qualification outcome,
+/// per-claim assurance, the train's support promise, and provenance digests.
+///
+/// Assurance describes the evidence at admission time, so the admission date
+/// sits beside the result rather than implying a standing guarantee.
+fn qualification_section(slug: &str, record: &aos_release::record::ReleaseRecordV1) -> String {
+    use aos_release::evidence::GateResult;
+    use aos_release::qualification::claims::ClaimDisposition;
+
+    let summary = &record.qualification;
+    let (result_class, result_label) = match summary.result {
+        GateResult::Passed => ("ok", "Qualified"),
+        GateResult::Failed => ("bad", "Failed qualification"),
+    };
+    let mut body = String::from("<h2>Qualification</h2><div class=\"release-facts\">");
+    let _ = write!(
+        body,
+        "<div class=\"release-fact\"><span>Result</span><strong class=\"{result_class}\">{result_label}</strong><small class=\"dim\">{}</small></div>",
+        escape(&summary.qualified_at)
+    );
+    let _ = write!(
+        body,
+        "<div class=\"release-fact\"><span>Class</span><strong>{:?}</strong>{}</div>",
+        record.release_class,
+        summary
+            .phase
+            .map(|phase| format!("<small class=\"dim\">{phase:?} hold point</small>"))
+            .unwrap_or_default()
+    );
+    let _ = write!(
+        body,
+        "<div class=\"release-fact\"><span>Policy</span><strong>{}</strong><small class=\"dim\">{}</small></div>",
+        escape(&summary.policy_id),
+        hash_value(&summary.policy_digest.to_string())
+    );
+    let _ = write!(
+        body,
+        "<div class=\"release-fact\"><span>Authority</span><strong>{}</strong></div>",
+        escape(&summary.authority_id)
+    );
+    if let Some(support) = &record.support {
+        let _ = write!(
+            body,
+            "<div class=\"release-fact\"><span>Support at release</span><strong>{} {}</strong>{}</div>",
+            escape(&record.train),
+            support.kind.label(),
+            support
+                .supported_until
+                .as_deref()
+                .map(|until| format!("<small class=\"dim\">Until {}</small>", escape(until)))
+                .unwrap_or_default()
+        );
+    }
+    body.push_str("</div>");
+
+    if !summary.claims.is_empty() {
+        let rows = summary
+            .claims
+            .iter()
+            .map(|claim| {
+                let (class, label) = match claim.disposition {
+                    ClaimDisposition::Passed => ("ok", "Passed"),
+                    ClaimDisposition::Failed => ("bad", "Failed"),
+                    ClaimDisposition::Missing => ("warn", "Missing"),
+                    ClaimDisposition::Stale => ("warn", "Stale"),
+                };
+                vec![
+                    escape(&claim.claim_id),
+                    format!("{:?}", claim.required_assurance),
+                    format!("<strong>{:?}</strong>", claim.achieved_assurance),
+                    format!("<span class=\"{class}\">{label}</span>"),
+                    if claim.blocks_release {
+                        "Blocks release".into()
+                    } else {
+                        "<span class=\"dim\">Informational</span>".into()
+                    },
+                ]
+            })
+            .collect::<Vec<_>>();
+        body.push_str(&table(
+            &["claim", "required", "achieved", "result", "obligation"],
+            &rows,
+        ));
+    }
+    let _ = write!(
+        body,
+        "<details><summary>Provenance</summary>{}</details>",
+        table(
+            &["field", "value"],
+            &[
+                vec!["Source commit".into(), hash_value(&record.source_commit)],
+                vec!["Plan".into(), hash_value(&record.plan_digest.to_string())],
+                vec![
+                    "Manifest".into(),
+                    hash_value(&record.manifest_digest.to_string())
+                ],
+                vec![
+                    "Qualification receipt".into(),
+                    hash_value(&summary.receipt_digest.to_string())
+                ],
+                vec![
+                    "Report".into(),
+                    hash_value(&summary.report_digest.to_string())
+                ],
+                vec![
+                    "Record".into(),
+                    format!(
+                        "<code>{}</code>",
+                        escape(&aos_release::record::record_path(
+                            record.release_class,
+                            &record.version
+                        ))
+                    )
+                ],
+            ],
+        )
+    );
+    let _ = slug;
+    body
 }
 
 fn channel_participation(slug: &str, version: &str, channels: &[ChannelSummary]) -> String {
@@ -745,6 +917,58 @@ mod tests {
     }
 
     #[test]
+    fn release_record_renders_result_claims_support_and_provenance() {
+        use aos_release::digest::Sha256Digest;
+        use aos_release::evidence::GateResult;
+        use aos_release::qualification::claims::{AssuranceLevel, ClaimDisposition, ClaimOutcome};
+        use aos_release::record::{QualificationSummaryV1, ReleaseRecordV1, ReleaseSupportV1};
+        let record = ReleaseRecordV1 {
+            schema_version: aos_release::record::RECORD_V1.into(),
+            registry: "andyl/main".into(),
+            release_id: "release-2026.9.1".into(),
+            version: "2026.9.1".into(),
+            train: "2026.9".into(),
+            release_class: aos_release::plan::ReleaseClass::Stable,
+            source_commit: "a".repeat(64),
+            plan_digest: Sha256Digest::of_bytes(b"plan"),
+            manifest_digest: Sha256Digest::of_bytes(b"manifest"),
+            qualification: QualificationSummaryV1 {
+                policy_id: "full-release-qualification".into(),
+                policy_digest: Sha256Digest::of_bytes(b"policy"),
+                result: GateResult::Passed,
+                qualified_at: "2026-09-05T12:00:00Z".into(),
+                authority_id: "qualification-authority".into(),
+                receipt_digest: Sha256Digest::of_bytes(b"receipt"),
+                report_digest: Sha256Digest::of_bytes(b"report"),
+                phase: None,
+                claims: vec![ClaimOutcome {
+                    case_id: "disk-x86_64-linux".into(),
+                    claim_id: "disk-x86_64-linux-qualified".into(),
+                    required_assurance: AssuranceLevel::A3,
+                    achieved_assurance: AssuranceLevel::A2,
+                    disposition: ClaimDisposition::Passed,
+                    blocks_release: true,
+                    environment_digest: None,
+                }],
+            },
+            support: Some(ReleaseSupportV1 {
+                kind: SupportKind::Lts,
+                supported_until: Some("2028-09-30".into()),
+            }),
+            signed_qualification: "{}".into(),
+        };
+        let html = qualification_section("org/main", &record);
+        assert!(html.contains("<strong class=\"ok\">Qualified</strong>"));
+        assert!(html.contains("2026-09-05T12:00:00Z"));
+        assert!(html.contains("<strong>2026.9 LTS</strong>"));
+        assert!(html.contains("Until 2028-09-30"));
+        assert!(html.contains("disk-x86_64-linux-qualified"));
+        assert!(html.contains("<strong>A2</strong>"));
+        assert!(html.contains("Blocks release"));
+        assert!(html.contains("releases/stable/2026.9.1/release-record.json"));
+    }
+
+    #[test]
     fn status_reads_the_calendar_train_suffixes() {
         assert_eq!(ReleaseStatus::of("2026.9.1"), ReleaseStatus::Stable);
         assert_eq!(
@@ -769,19 +993,13 @@ mod tests {
 
     #[test]
     fn trains_group_stable_releases_and_mark_support() {
-        let releases = [
-            "2026.9.2",
-            "2026.9.1",
-            "2026.10.0-rc.1",
-            "2026.8.3",
-            "2026.7.0",
-            "2025.12.4",
-        ]
-        .iter()
-        .map(|version| release(version))
-        .collect::<Vec<_>>();
+        let releases = ["2026.9.2", "2026.9.1", "2026.8.3", "2026.7.0", "2025.12.4"]
+            .iter()
+            .map(|version| release(version))
+            .collect::<Vec<_>>();
         let channels = vec![channel("stable", "2026.9.2"), channel("lts", "2025.12.4")];
-        let trains = stable_trains(&releases, &channels);
+        let today = Date::parse("2026-09-05").unwrap();
+        let trains = release_trains(&releases, &channels, None, today);
         assert_eq!(
             trains
                 .iter()
@@ -789,16 +1007,74 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["2026.9.2", "2026.8.3", "2026.7.0", "2025.12.4"]
         );
-        assert!(trains[0].supported && trains[0].channels == vec!["stable"]);
-        assert!(trains[1].supported && trains[1].channels.is_empty());
+        assert!(trains[0].supported() && trains[0].channels == vec!["stable"]);
+        assert!(trains[1].supported() && trains[1].channels.is_empty());
         assert!(
-            !trains[2].supported,
+            !trains[2].supported(),
             "third train is end of life by default"
         );
         assert!(
-            trains[3].supported,
+            trains[3].supported(),
             "a channel target keeps an old train supported"
         );
+        assert!(trains
+            .iter()
+            .all(|train| train.kind == SupportKind::Standard));
+    }
+
+    #[test]
+    fn policy_dates_and_kinds_override_the_rolling_default() {
+        let releases = ["2026.9.2", "2026.8.3", "2026.7.0", "2025.12.4"]
+            .iter()
+            .map(|version| release(version))
+            .collect::<Vec<_>>();
+        let policy: SupportPolicy = serde_json::from_str(
+            r#"{"default":{"kind":"standard","superseded_after_trains":1},
+                "trains":{"2025.12":{"kind":"lts","supported_until":"2027-12-31"},
+                          "2026.8":{"supported_until":"2026-09-30"}}}"#,
+        )
+        .unwrap();
+        let today = Date::parse("2026-09-05").unwrap();
+        let trains = release_trains(&releases, &[], Some(&policy), today);
+        assert_eq!(
+            trains[0].state,
+            SupportState::Supported { until: None },
+            "newest train is implicit and supported"
+        );
+        assert_eq!(
+            trains[1].state,
+            SupportState::EndingSoon {
+                until: Date::parse("2026-09-30").unwrap()
+            }
+        );
+        assert_eq!(trains[2].state, SupportState::EndOfLife { until: None });
+        assert_eq!(trains[3].kind, SupportKind::Lts);
+        assert!(trains[3].supported());
+
+        let board = support_board("org/main", &releases, &[], Some(&policy), today);
+        assert!(board.contains("<span class=\"support-train\">2025.12 · LTS</span>"));
+        assert!(board.contains("class=\"support-tile supported ending\""));
+        assert!(board.contains("<span class=\"support-state\">Until 2026-09-30</span>"));
+        assert!(!board.contains(">Supported<"));
+        assert!(
+            !board.contains("2026.7"),
+            "end-of-life trains are not listed"
+        );
+
+        let query = BrowseQuery {
+            status: Some("lts".into()),
+            ..BrowseQuery::default()
+        };
+        let matched = filter_releases(&releases, &query, Some(&policy))
+            .into_iter()
+            .map(|release| release.semver.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(matched, vec!["2025.12.4"]);
+        assert!(filter_releases(&releases, &query, None).is_empty());
+        let form = filter_form("org/main", &releases, &query, Some(&policy));
+        assert!(form.contains("<option value=\"lts\" selected>Long-term support</option>"));
+        let plain = filter_form("org/main", &releases, &BrowseQuery::default(), None);
+        assert!(!plain.contains("value=\"lts\""));
     }
 
     #[test]
@@ -812,7 +1088,7 @@ mod tests {
             status: Some("stable".into()),
             ..BrowseQuery::default()
         };
-        let matched = filter_releases(&releases, &query)
+        let matched = filter_releases(&releases, &query, None)
             .into_iter()
             .map(|release| release.semver.as_str())
             .collect::<Vec<_>>();
@@ -821,14 +1097,28 @@ mod tests {
             minor: Some("9".into()),
             ..BrowseQuery::default()
         };
-        assert_eq!(filter_releases(&releases, &query).len(), 2);
+        assert_eq!(filter_releases(&releases, &query, None).len(), 2);
         assert_eq!(filter_query(&query), "minor=9");
-        let board = support_board("org/main", &releases, &[channel("stable", "2026.9.2")]);
+        let today = Date::parse("2026-09-05").unwrap();
+        let board = support_board(
+            "org/main",
+            &releases,
+            &[channel("stable", "2026.9.2")],
+            None,
+            today,
+        );
         assert!(
             board.contains("<span class=\"support-train\">2026.9</span><strong>2026.9.2</strong>")
         );
         assert!(board.contains("<span class=\"support-channels\">stable</span>"));
-        assert!(board.contains("class=\"support-tile candidate\""));
-        assert!(board.contains("1 older train"));
+        assert!(
+            !board.contains("2026.9.0-rc.1"),
+            "candidates join their train"
+        );
+        assert!(
+            !board.contains("2025.12"),
+            "end-of-life trains are not listed"
+        );
+        assert!(board.find("2026.9").unwrap() < board.find("2026.8").unwrap());
     }
 }

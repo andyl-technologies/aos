@@ -710,6 +710,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "aos-contract",
+ "aos-registry-surface",
  "base64 0.22.1",
  "ed25519-dalek",
  "humantime",

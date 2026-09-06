@@ -253,6 +253,38 @@ or remove the private work path according to the restricted operator policy.
 Repeat for `x86_64-linux` and `aarch64-linux`. Darwin targets do not run this
 command because their release matrix contains packages only.
 
+## Compose the public release record
+
+After staging admission, derive the public release record from the exact
+evidence the promotion step consumes. Every field is copied from the frozen
+plan, the final manifest, the signed qualification receipt, and the public
+report after the same verification promotion performs; nothing is authored.
+
+```sh
+aos release record \
+  --bundle release-final \
+  --staging-receipt release-staged/staging-receipt.json \
+  --qualification-receipt release-qualified/qualification-receipt.json \
+  --signed-qualification release-qualified/signed-qualification.json \
+  --qualification-report qualification/report.json \
+  --trusted-key manifest-2026=/media/trust/manifest-2026.pub \
+  --qualification-key qualification-authority=/media/trust/qualification.pub \
+  --output release-qualified/release-record.json
+```
+
+The record (`aos.release-record/v1`) states the release identity and train,
+the qualification result, policy, authority, and admission time, every claim
+with its required and achieved assurance, the train's support statement from
+the plan's contract, provenance digests, and the exact signed qualification
+envelope. Pass it to `aos release tuf --release-record` so the delegated role
+authorizes it beside the manifest, and to `aos release compose-surface
+--release-record` so it is served at
+`releases/<class>/<version>/release-record.json`. Composition fails closed when
+the delegated targets and the supplied record disagree in either direction.
+Consumers verify the record through the TUF chain and, independently, through
+its embedded signed envelope; the Hub renders it only after verifying that
+envelope against its trusted qualification keys.
+
 ## Finalize the isolated registry
 
 Prepare canonical `aos.registry-release-transaction/v1` JSON whose entries are
@@ -285,6 +317,14 @@ aos release finalize-registry \
   --git-unix-seconds 1788436800 \
   --git-offset-minutes 0
 ```
+
+The transaction's optional `support` object states the `[support]` tables this
+release writes into `registry.toml`: its own train's entry and, only from the
+newest train, the rolling `default`. Finalization derives the same object from
+the plan's frozen contract and refuses a transaction that differs, and the
+policy digest describes `registry.toml` after those tables are applied. A
+contract that names another train's entry is rejected, so a backport release
+can only extend its own train.
 
 Omit both container arguments for a release with no OCI artifact; finalization
 removes any prior release's fixed-path sidecar from the new signed tree.
