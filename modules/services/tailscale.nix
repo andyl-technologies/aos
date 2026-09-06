@@ -102,7 +102,10 @@ in {
           description = "tailscaled creates its protected local API socket";
           script = ''
             vm.succeed("test -S /run/tailscale/tailscaled.sock")
-            vm.succeed("tailscale --socket=/run/tailscale/tailscaled.sock status >/dev/null")
+            vm.succeed(
+                "tailscale --socket=/run/tailscale/tailscaled.sock debug prefs "
+                "| grep -F '\"LoggedOut\": true'"
+            )
           '';
         }
       ];
