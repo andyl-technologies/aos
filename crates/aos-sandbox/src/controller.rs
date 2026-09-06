@@ -665,6 +665,39 @@ where
         crate::mount_attempt::record_snapshot(self.reconciler.journal_mut(), client)
     }
 
+    /// Reconciles a fresh Mount snapshot with one current namespace target.
+    ///
+    /// The snapshot must still be the latest durable observation and must
+    /// postdate the exact current Mount-attempt and completion set. The result
+    /// retains the live target and classifies exact pending, faulted, completed,
+    /// unacknowledged-success, superseded, and unobserved attempts without
+    /// authorizing retry or cleanup.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale target or snapshot state, substituted resource identity,
+    /// contradictory completion evidence, and corrupt durable cross-references.
+    #[cfg(target_os = "linux")]
+    pub fn reconcile_current_mount_inventory<T>(
+        &mut self,
+        target: crate::runtime_scope::CurrentNamespaceTarget,
+        snapshot: crate::mount_attempt::DurableMountInventorySnapshotV1,
+        clock: &mut T,
+    ) -> Result<crate::mount_attempt::CurrentMountInventoryReconciliationV1, crate::MountAttemptError>
+    where
+        T: FnMut() -> Result<
+            RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        crate::mount_attempt::reconcile_current_inventory(
+            self.reconciler.journal_mut(),
+            target,
+            snapshot,
+            clock,
+        )
+    }
+
     /// Issues a local holder channel from an acquired current-runtime scope.
     ///
     /// The complete Host and payload proof moves into the live session. Scope

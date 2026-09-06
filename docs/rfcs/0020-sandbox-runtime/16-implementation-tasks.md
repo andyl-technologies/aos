@@ -2693,22 +2693,51 @@ closed read-only method with an empty descriptor table, and validates every
 bounded resource, lifecycle, kernel identity, recipe, and replacement
 correlation before the response reaches controller state.
 
-The exact query and response become the latest durable `AOSMTI01` snapshot in
+The exact query and response become the latest durable `AOSMTI02` snapshot in
 journal namespace 15. Its response ceiling leaves explicit room below the
 journal's 16 MiB record-frame limit while carrying the protocol's complete
 1,024-row inventory. Snapshot replacement rejects broker journal rollback,
 same-sequence resource equivocation, request-ID reuse, and a single broker
 instance claiming two kernel boots. Corrupt records block ordinary controller
-reconciliation before executor access.
+reconciliation before executor access. The record binds the complete validated
+namespace-target, Mount-attempt, and completion set that existed before the
+query, so a later controller mutation makes the snapshot stale rather than
+letting pre-intent absence masquerade as a current observation.
 
 This increment establishes authenticated durable observation, not a cleanup
-decision or attachment-ready state. The next controller layer must compare the
-snapshot with exact Mount attempts and completions, retain current namespace
-authority, and classify absent, pending, faulted, satisfied, and superseded
-resources without guessing. Live service exchange and reboot behavior still
-require the Mount namespace VM qualification.
+decision or attachment-ready state. Live service exchange and reboot behavior
+still require the Mount namespace VM qualification.
 
 Validation passes all 294 sandbox unit tests, its downstream public API test,
+and 14 doctests. Strict all-target/all-feature Clippy passes for the changed
+crate. The hermetic `checks.eval` gate passes the release build, full workspace
+tests, configuration evaluation, and system structure checks.
+
+### Current-target Mount inventory reconciliation
+
+The controller can now consume a current live namespace target and a fresh
+durable inventory snapshot to compare every exact attempt for that target with
+Mount's complete table. Resource handles are derived from or taken from the
+original request, never from paths or list position. Any binding fence,
+namespace generation, attachment, destination slot, view, source generation,
+attributes, or replacement-predecessor substitution fails the comparison.
+
+The retained report classifies each attempt in stable request-ID order as not
+observed, exact pending, exact faulted, successful without a controller
+receipt, superseded by another operation, or completed with a durable receipt.
+It separately exposes current-bound Mount handles with no local attempt. The
+snapshot must remain latest and its controller-state commitment must still
+match before and after comparison; the live target is likewise rechecked on
+both sides. The report retains that non-cloneable target for the next planning
+step.
+
+The classifications are evidence, not policy. In particular, absence does not
+authorize retry, an untracked handle does not authorize deletion, and a Mount
+completion does not establish post-attach readiness. Attachment desired state,
+fresh planning, cleanup authorization, and final kernel verification remain
+separate work.
+
+Validation passes all 301 sandbox unit tests, its downstream public API test,
 and 14 doctests. Strict all-target/all-feature Clippy passes for the changed
 crate. The hermetic `checks.eval` gate passes the release build, full workspace
 tests, configuration evaluation, and system structure checks.

@@ -63,9 +63,14 @@ pub(crate) use completion::{
     dispatch_current, validate_namespace as validate_completion_namespace,
 };
 pub use inventory::{
-    DurableMountInventorySnapshotV1, MountInventoryClient, MountInventorySnapshotOutcomeV1,
+    CurrentMountInventoryReconciliationV1, DurableMountInventorySnapshotV1,
+    MountAttemptInventoryObservationV1, MountAttemptInventoryStatusV1, MountInventoryClient,
+    MountInventorySnapshotOutcomeV1,
 };
-pub(crate) use inventory::{record_snapshot, validate_namespace as validate_inventory_namespace};
+pub(crate) use inventory::{
+    reconcile_current as reconcile_current_inventory, record_snapshot,
+    validate_namespace as validate_inventory_namespace,
+};
 
 const NAMESPACE: RecordNamespace = RecordNamespace::MountAttempt;
 const MOUNT_CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(1, 2);

@@ -133,7 +133,7 @@ fn request(assignment: BrokerAssignment, deadline: u64) -> ApplyMountRequest {
     }
 }
 
-fn record() -> Record {
+pub(super) fn record() -> Record {
     let broker_key = SigningKey::from_bytes(&[42; 32]);
     let lease_key = SigningKey::from_bytes(&[43; 32]);
     let lease_authority =

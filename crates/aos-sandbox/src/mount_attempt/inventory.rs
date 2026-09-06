@@ -21,14 +21,23 @@ use aos_sandbox_protocol::{
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
-use super::MountAttemptError;
+use super::completion::CompletionHistory;
+use super::{History as AttemptHistory, MountAttemptError};
 use crate::mount_preparation::transport;
 use crate::mount_preparation::{
     MountCatalogPreparationError, MountServiceIdentity, ServiceExecution, request_id,
 };
+use crate::runtime_scope::validate_namespace_target_namespace;
 use crate::{Journal, JournalRecord, JournalTransaction, RecordNamespace};
 
 mod format;
+mod reconciliation;
+
+pub(crate) use reconciliation::reconcile_current;
+pub use reconciliation::{
+    CurrentMountInventoryReconciliationV1, MountAttemptInventoryObservationV1,
+    MountAttemptInventoryStatusV1,
+};
 
 const NAMESPACE: RecordNamespace = RecordNamespace::MountInventory;
 const CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(1, 2);
@@ -39,6 +48,7 @@ const MAXIMUM_QUERY_BYTES: usize = 4 * 1024;
 const MAXIMUM_RECORD_BYTES: usize = 16 * 1024 * 1024 - 1024;
 const KEY: &[u8] = b"latest";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.mount-inventory.transaction.v1\0";
+const CONTROLLER_STATE_DOMAIN: &[u8] = b"aos.sandbox.mount-inventory.controller-state.v2\0";
 
 /// Reports whether an authenticated inventory snapshot committed or replayed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -211,10 +221,26 @@ impl DurableMountInventorySnapshotV1 {
         ObjectDigest::from_bytes(self.record.digest)
     }
 
+    /// Returns the exact attempt/completion set observed before the query.
+    #[must_use]
+    pub const fn controller_state_digest(&self) -> ObjectDigest {
+        ObjectDigest::from_bytes(self.record.controller_state_digest)
+    }
+
     /// Borrows the complete validated Mount resource inventory.
     #[must_use]
     pub const fn inventory(&self) -> &ValidatedMountInventory {
         &self.inventory
+    }
+
+    fn recheck(&self, journal: &mut Journal) -> Result<(), MountAttemptError> {
+        let history = SnapshotHistory::load(journal)?;
+        if history.record.as_ref().map(|value| &value.0) != Some(&self.record)
+            || controller_state_digest(journal)? != self.record.controller_state_digest
+        {
+            return Err(MountAttemptError::Conflict);
+        }
+        Ok(())
     }
 }
 
@@ -227,6 +253,7 @@ struct QuerySuccess {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct SnapshotRecord {
     pub(super) request_id: [u8; 16],
+    pub(super) controller_state_digest: [u8; 32],
     pub(super) request_body: Vec<u8>,
     pub(super) response_body: Vec<u8>,
     pub(super) digest: [u8; 32],
@@ -234,6 +261,7 @@ pub(super) struct SnapshotRecord {
 
 impl SnapshotRecord {
     fn from_query(
+        controller_state_digest: [u8; 32],
         request_body: Vec<u8>,
         response_body: Vec<u8>,
     ) -> Result<(Self, ValidatedMountInventory), MountAttemptError> {
@@ -242,6 +270,7 @@ impl SnapshotRecord {
             decode_mount_inventory_response(&response_body, request.maximum_response_bytes())?;
         let mut record = Self {
             request_id: *request.request_id(),
+            controller_state_digest,
             request_body,
             response_body,
             digest: [0; 32],
@@ -279,6 +308,7 @@ impl SnapshotRecord {
 
     fn validate(&self) -> Result<ValidatedMountInventory, MountAttemptError> {
         if self.request_id == [0; 16]
+            || self.controller_state_digest == [0; 32]
             || self.request_body.is_empty()
             || self.request_body.len() > MAXIMUM_QUERY_BYTES
             || self.response_body.is_empty()
@@ -351,9 +381,16 @@ pub(crate) fn record_snapshot(
     client: MountInventoryClient,
 ) -> Result<DurableMountInventorySnapshotV1, MountAttemptError> {
     let history = SnapshotHistory::load(journal)?;
+    let observed_controller_state = controller_state_digest(journal)?;
     let success = client.query()?;
-    let (record, inventory) =
-        SnapshotRecord::from_query(success.request_body, success.response_body)?;
+    if controller_state_digest(journal)? != observed_controller_state {
+        return Err(MountAttemptError::Conflict);
+    }
+    let (record, inventory) = SnapshotRecord::from_query(
+        observed_controller_state,
+        success.request_body,
+        success.response_body,
+    )?;
     if inventory != success.inventory {
         return Err(MountAttemptError::CorruptState);
     }
@@ -379,6 +416,48 @@ pub(crate) fn record_snapshot(
 
 pub(crate) fn validate_namespace(journal: &mut Journal) -> Result<(), MountAttemptError> {
     SnapshotHistory::load(journal).map(|_| ())
+}
+
+fn controller_state_digest(journal: &mut Journal) -> Result<[u8; 32], MountAttemptError> {
+    validate_namespace_target_namespace(journal)?;
+    let attempts = AttemptHistory::load(journal)?;
+    let completions = CompletionHistory::load(journal)?;
+    let target_count = u32::try_from(journal.records(RecordNamespace::NamespaceTarget).count())
+        .map_err(|_| MountAttemptError::Capacity)?;
+    let attempt_count =
+        u32::try_from(attempts.records.len()).map_err(|_| MountAttemptError::Capacity)?;
+    let completion_count =
+        u32::try_from(completions.records.len()).map_err(|_| MountAttemptError::Capacity)?;
+    let mut digest = Sha256::new();
+    digest.update(CONTROLLER_STATE_DOMAIN);
+    digest.update(target_count.to_be_bytes());
+    for (key, value) in journal.records(RecordNamespace::NamespaceTarget) {
+        digest.update(
+            u32::try_from(key.len())
+                .map_err(|_| MountAttemptError::Capacity)?
+                .to_be_bytes(),
+        );
+        digest.update(key);
+        digest.update(
+            u32::try_from(value.len())
+                .map_err(|_| MountAttemptError::Capacity)?
+                .to_be_bytes(),
+        );
+        digest.update(value);
+    }
+    digest.update(attempt_count.to_be_bytes());
+    for (request_id, record) in attempts.records {
+        digest.update(b"attempt\0");
+        digest.update(request_id);
+        digest.update(record.digest);
+    }
+    digest.update(completion_count.to_be_bytes());
+    for (request_id, record) in completions.records {
+        digest.update(b"completion\0");
+        digest.update(request_id);
+        digest.update(record.digest);
+    }
+    Ok(digest.finalize().into())
 }
 
 fn decode_inventory_request_body(bytes: &[u8]) -> Result<ValidatedHeader, MountAttemptError> {
@@ -531,6 +610,7 @@ mod tests {
         instance_byte: u8,
     ) -> (SnapshotRecord, ValidatedMountInventory) {
         SnapshotRecord::from_query(
+            [20; 32],
             query(request_byte),
             response(sequence, boot_byte, instance_byte),
         )
@@ -590,7 +670,8 @@ mod tests {
         };
         let (rollback, rollback_inventory) = snapshot(2, 9, 3, 5);
         let (equivocation, equivocation_inventory) =
-            SnapshotRecord::from_query(query(3), response_with_released_mount(10, 3, 5)).unwrap();
+            SnapshotRecord::from_query([20; 32], query(3), response_with_released_mount(10, 3, 5))
+                .unwrap();
         let (cross_boot_process, cross_boot_inventory) = snapshot(4, 11, 6, 4);
 
         assert!(matches!(
@@ -640,6 +721,38 @@ mod tests {
             .unwrap();
         assert!(matches!(
             validate_namespace(&mut journal),
+            Err(MountAttemptError::CorruptState)
+        ));
+    }
+
+    #[test]
+    fn changed_controller_attempt_namespace_invalidates_the_snapshot() {
+        let (_directory, mut journal) = journal();
+        let controller_state = controller_state_digest(&mut journal).unwrap();
+        let (record, inventory) =
+            SnapshotRecord::from_query(controller_state, query(1), response(2, 3, 4)).unwrap();
+        journal.commit(&record.transaction().unwrap()).unwrap();
+        let snapshot = DurableMountInventorySnapshotV1 {
+            record,
+            inventory,
+            outcome: MountInventorySnapshotOutcomeV1::Recorded,
+        };
+        snapshot.recheck(&mut journal).unwrap();
+
+        let attempt = crate::mount_attempt::tests::record();
+        journal.commit(&attempt.transaction().unwrap()).unwrap();
+
+        assert!(snapshot.recheck(&mut journal).is_err());
+    }
+
+    #[test]
+    fn snapshot_rejects_a_recomputed_zero_controller_state() {
+        let (mut record, _) = snapshot(1, 2, 3, 4);
+        record.controller_state_digest = [0; 32];
+        record.digest = record.compute_digest();
+
+        assert!(matches!(
+            record.validate(),
             Err(MountAttemptError::CorruptState)
         ));
     }

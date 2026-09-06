@@ -303,7 +303,7 @@ pub(super) struct CompletionHistory {
 }
 
 impl CompletionHistory {
-    fn load(journal: &mut Journal) -> Result<Self, MountAttemptError> {
+    pub(super) fn load(journal: &mut Journal) -> Result<Self, MountAttemptError> {
         let attempts = AttemptHistory::load(journal)?;
         let mut records = BTreeMap::new();
         let mut retained_bytes = 0_usize;

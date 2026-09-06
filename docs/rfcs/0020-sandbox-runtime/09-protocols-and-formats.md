@@ -700,12 +700,21 @@ The controller queries `InventoryMountResources` over a separate one-shot
 Mount 1.2 session with no effect authorization. It authenticates the actual
 hello and response writers, accepts no descriptors, and applies the complete
 resource-table validator before committing the exact query and response in a
-bounded `AOSMTI01` latest-snapshot record. Successive snapshots may advance the
-Mount journal sequence or refresh an unchanged sequence from a new broker
-process; sequence rollback, same-sequence resource changes, request-ID reuse,
-and one broker process spanning kernel boots fail closed. The snapshot remains
-observation evidence. Current desired-state comparison and a fresh namespace
-proof are still required before retry, adoption, or cleanup.
+bounded `AOSMTI02` latest-snapshot record. The record also commits the complete
+validated namespace-target, Mount-attempt, and completion set that the query
+postdates. Successive snapshots may advance the Mount journal sequence or
+refresh an unchanged sequence from a new broker process; sequence rollback,
+same-sequence resource changes, request-ID reuse, and one broker process
+spanning kernel boots fail closed.
+
+Current-target comparison consumes a fresh snapshot and a live namespace
+proof. It rejects any resource whose fence, namespace generation, recipe, or
+replacement predecessor contradicts the exact durable attempt. Each attempt is
+then classified as unobserved, pending, faulted, successful without a retained
+reply, superseded, or completed with a durable reply. Current-bound resources
+with no local attempt are reported separately as untracked residuals. These are
+planning observations, not permission to retry, adopt, detach, or clean up;
+every effect still requires fresh catalog and signed authority.
 
 Caller role derives from peer credentials, socket activation, and the expected
 service-unit identity; a serialized role is descriptive only. Unknown
