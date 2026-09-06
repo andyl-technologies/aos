@@ -985,7 +985,8 @@ in {
 
     system.build.kernel = pkgs.linux;
     system.build.systemPath =
-      makeBinPath config.environment.systemPackages
+      "/run/wrappers/bin:"
+      + makeBinPath config.environment.systemPackages
       + ":"
       + makeSbinPath config.environment.systemPackages;
 
