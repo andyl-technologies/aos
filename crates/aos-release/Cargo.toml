@@ -7,6 +7,7 @@ description = "Pure release contracts and offline verification for canonical AOS
 
 [dependencies]
 aos-contract = { workspace = true }
+aos-registry-surface = { workspace = true }
 anyhow = { workspace = true }
 base64 = { workspace = true }
 ed25519-dalek = { workspace = true }

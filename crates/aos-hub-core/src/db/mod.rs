@@ -644,6 +644,8 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("oci_gc_remediation.sql"),
     include_str!("delivery_workflow.sql"),
     include_str!("release_browse.sql"),
+    include_str!("registry_support_policy.sql"),
+    include_str!("release_records.sql"),
 ];
 
 /// Identity stamped into databases created by the topology hard-cutover
@@ -1400,6 +1402,8 @@ pub struct IndexStatus {
     pub description: Option<String>,
     /// Committed registry readme (longer preamble), shown on the home page.
     pub readme: Option<String>,
+    /// Committed release-train support policy from `registry.toml`.
+    pub support: Option<aos_registry_surface::support::SupportPolicy>,
     /// Unix time of the last successful index.
     pub indexed_at: Option<i64>,
     /// Monotonic immutable index generation.
@@ -3191,6 +3195,8 @@ pub struct IndexSnapshot {
     pub description: Option<String>,
     /// Committed registry readme (longer preamble).
     pub readme: Option<String>,
+    /// Committed release-train support policy as canonical JSON.
+    pub support: Option<String>,
     /// The committed `[caches]` stack flattened to `(url, priority)` entries.
     ///
     /// This is the priority list a stack-unaware client resolves; when the
@@ -5130,13 +5136,14 @@ impl Database {
             "INSERT INTO registry_index
              (registry_id, state, error, last_indexed_commit, name, description, readme,
               indexed_at, refs_digest, cache_stack, generation, content_digest,
-              documentation_projection_generation)
-             VALUES (?1, 'fresh', NULL, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, 1)
+              documentation_projection_generation, support_json)
+             VALUES (?1, 'fresh', NULL, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, 1, ?10)
              ON CONFLICT(registry_id) DO UPDATE SET
                  state = 'fresh', error = NULL,
                  last_indexed_commit = excluded.last_indexed_commit,
                  name = excluded.name, description = excluded.description,
                  readme = excluded.readme,
+                 support_json = excluded.support_json,
                  indexed_at = excluded.indexed_at,
                  refs_digest = excluded.refs_digest,
                  cache_stack = excluded.cache_stack,
@@ -5153,6 +5160,7 @@ impl Database {
                 snapshot.refs_digest,
                 snapshot.cache_stack,
                 index_digest,
+                snapshot.support,
             ]
             .to_vec(),
         ));
@@ -13720,13 +13728,19 @@ impl Database {
         self.backend
             .query_opt(
                 "SELECT state, error, last_indexed_commit, name, description, readme, indexed_at,
-                        generation, content_digest
+                        generation, content_digest, support_json
                  FROM registry_index WHERE registry_id = ?1",
                 &vals![registry_id],
             )
             .await
             .context("loading index status")?
             .map(|row| {
+                // A policy that no longer parses is treated as absent rather
+                // than failing every page; the indexer validated it when it
+                // was written, so this only guards against a schema change.
+                let support = row
+                    .get::<Option<String>>(9)?
+                    .and_then(|json| serde_json::from_str(&json).ok());
                 Ok(IndexStatus {
                     state: row.get(0)?,
                     error: row.get(1)?,
@@ -13734,6 +13748,7 @@ impl Database {
                     name: row.get(3)?,
                     description: row.get(4)?,
                     readme: row.get(5)?,
+                    support,
                     indexed_at: row.get(6)?,
                     generation: row.get(7)?,
                     content_digest: row.get(8)?,
@@ -28885,6 +28900,7 @@ source_nar_hash = ""
             name: "demo".into(),
             description: None,
             readme: None,
+            support: None,
             caches: vec![
                 ("https://cache.example".into(), 40),
                 ("https://primary-cache.example".into(), 100),
@@ -34691,6 +34707,7 @@ source_nar_hash = ""
             name: "generation guard".into(),
             description: None,
             readme: None,
+            support: None,
             caches: Vec::new(),
             cache_stack: None,
             roster: Vec::new(),

@@ -104,6 +104,7 @@ impl DirectoryEntry {
                 name: self.name.clone(),
                 description: self.description.clone(),
                 readme: None,
+                support: None,
                 indexed_at: None,
                 generation: 0,
                 content_digest: None,

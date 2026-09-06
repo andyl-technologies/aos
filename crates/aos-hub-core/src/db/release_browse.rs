@@ -143,6 +143,56 @@ impl Database {
     ///
     /// # Errors
     /// Returns an error on database failure or malformed row values.
+    /// Retains, replaces, or clears the public release record for one tag.
+    ///
+    /// # Errors
+    /// Returns an error on database failure.
+    pub async fn retain_release_record(
+        &self,
+        registry_id: i64,
+        tag_oid: &str,
+        record_json: Option<&str>,
+    ) -> Result<()> {
+        match record_json {
+            Some(json) => {
+                self.backend
+                    .execute(
+                        "INSERT INTO release_records(registry_id, tag_oid, record_json)
+                         VALUES (?1, ?2, ?3)
+                         ON CONFLICT(registry_id, tag_oid) DO UPDATE SET record_json = excluded.record_json",
+                        &vals![registry_id, tag_oid, json],
+                    )
+                    .await?;
+            }
+            None => {
+                self.backend
+                    .execute(
+                        "DELETE FROM release_records WHERE registry_id = ?1 AND tag_oid = ?2",
+                        &vals![registry_id, tag_oid],
+                    )
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Loads the retained public release record JSON for a release version.
+    ///
+    /// # Errors
+    /// Returns an error on database failure.
+    pub async fn release_record(&self, registry_id: i64, release: &str) -> Result<Option<String>> {
+        self.backend
+            .query_opt(
+                "SELECT record.record_json FROM release_records record JOIN releases rel
+               ON rel.registry_id = record.registry_id AND rel.tag_oid = record.tag_oid
+             WHERE rel.registry_id = ?1 AND rel.semver = ?2",
+                &vals![registry_id, release],
+            )
+            .await?
+            .map(|row| row.get(0))
+            .transpose()
+    }
+
     pub async fn release_browse_notes(
         &self,
         registry_id: i64,

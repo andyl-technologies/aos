@@ -17,9 +17,9 @@ use aos_release::signing::{
 };
 use aos_release::tuf::{
     ImmutableTufSetV1, RootMetadataV1, TufEnvelopeV1, TufReleaseExpectation, TufReleaseTargetV1,
-    TufRole, TufRolePolicyV1, TufRootTrust, TufSignatureV1, canonical_targets_metadata,
-    delegated_release_metadata, immutable_snapshot_metadata, metadata_signing_digest,
-    verify_immutable_set, verify_root_envelope,
+    TufRole, TufRolePolicyV1, TufRootTrust, TufSignatureV1, TufTargetFileV1,
+    canonical_targets_metadata, delegated_release_metadata, immutable_snapshot_metadata,
+    metadata_signing_digest, verify_immutable_set, verify_root_envelope,
 };
 use base64::Engine as _;
 use serde::Serialize;
@@ -57,6 +57,30 @@ pub(super) async fn run(args: &ReleaseTufArgs, printer: &aos_core::output::Print
     )?;
     let manifest: ManifestEnvelopeV1 =
         canonical::from_slice(&captured_bundle.manifest_bytes, "release manifest")?;
+    // The record is optional metadata beside the manifest; when supplied it
+    // must already describe this exact manifest so the delegated role never
+    // authorizes a record for a different release.
+    let release_record = args
+        .release_record
+        .as_deref()
+        .map(|path| -> Result<(Vec<u8>, String)> {
+            let bytes = capture::control_file(path, "release record")?;
+            canonical::require_canonical(&bytes, "release record")?;
+            let record: aos_release::record::ReleaseRecordV1 =
+                canonical::from_slice(&bytes, "release record")?;
+            record.validate()?;
+            if record.manifest_digest != summary.manifest_digest
+                || record.release_id != plan.release_id
+                || record.version != plan.version
+            {
+                bail!("release record does not describe the authorized manifest");
+            }
+            Ok((
+                bytes,
+                aos_release::record::record_path(plan.release_class, &plan.version),
+            ))
+        })
+        .transpose()?;
 
     let root_bytes = read_canonical(&args.root, "TUF root")?;
     let root: TufEnvelopeV1<RootMetadataV1> = canonical::from_slice(&root_bytes, "TUF root")?;
@@ -118,6 +142,13 @@ pub(super) async fn run(args: &ReleaseTufArgs, printer: &aos_core::output::Print
                 release_class: plan.release_class,
                 manifest_digest: manifest_envelope_digest,
                 length: u64::try_from(captured_bundle.manifest_bytes.len())?,
+                record: release_record
+                    .as_ref()
+                    .map(|(bytes, path)| TufTargetFileV1 {
+                        path: path.clone(),
+                        digest: Sha256Digest::of_bytes(bytes),
+                        length: bytes.len() as u64,
+                    }),
             },
         )?,
         delegated_role,
