@@ -270,7 +270,7 @@ pub use node_factory::{
     build_qemu_node_from_restored_checkpoint_paused, spawn_setup_and_restore_qemu_node,
 };
 #[cfg(target_os = "linux")]
-pub use node_set::QemuNodeSetBlockBoundaryCheckpoint;
+pub use node_set::{QemuNodeSetBlockBoundaryCheckpoint, QemuNodeSetPreparedHotForkTemplate};
 pub use node_set::{
     QemuNodeSelectablePendingRequest, QemuNodeSet, QemuNodeTerminalReplacementPlan,
 };

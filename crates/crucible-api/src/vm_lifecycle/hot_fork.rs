@@ -9,6 +9,296 @@
 
 use super::*;
 
+const MAXIMUM_HOT_FORK_RING_IMAGE_BYTES: usize = 64 * 1024 * 1024;
+const MAXIMUM_HOT_FORK_ROLLBACK_POLLS_PER_NODE: usize = 100;
+const HOT_FORK_ROLLBACK_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+struct HotForkRollbackTarget {
+    node: NodeId,
+    template_generation: Option<u64>,
+}
+
+struct HotForkRollbackReport {
+    nodes: Vec<NodeId>,
+    diagnostics: BTreeMap<NodeId, String>,
+}
+
+/// Prepared, stopped production source world at one exact scheduler boundary.
+///
+/// The capability owns the complete lifecycle while every retained source is
+/// prepared at the same captured scheduler boundary. QEMU nodes, generation
+/// leases, run directories, the enclosing run lock, resource guards, and the
+/// host continuation cannot be detached from one another through this API.
+#[must_use = "install the complete source world or recover every prepared QEMU source"]
+pub struct ProductionVmHotForkSourceWorld {
+    lifecycle: Option<Box<ProductionVmLifecycleLoop>>,
+    continuation: ProductionVmHotForkWorldContinuation,
+    prepared: Vec<QemuNodeSetPreparedHotForkTemplate>,
+}
+
+impl ProductionVmHotForkSourceWorld {
+    /// Returns the captured process-neutral world continuation.
+    pub const fn continuation(&self) -> &ProductionVmHotForkWorldContinuation {
+        &self.continuation
+    }
+
+    /// Returns the canonically ordered prepared retained-source nodes.
+    #[must_use]
+    pub fn prepared_nodes(&self) -> impl ExactSizeIterator<Item = &NodeId> {
+        self.prepared
+            .iter()
+            .map(QemuNodeSetPreparedHotForkTemplate::node)
+    }
+
+    /// Aborts every retained-template transaction and recovers the lifecycle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProductionVmHotForkSourceWorldPreparationFailure`] retaining
+    /// the complete world when any source rollback cannot be authenticated as
+    /// complete within the finite rollback bound.
+    pub fn recover(
+        mut self,
+    ) -> Result<ProductionVmLifecycleLoop, ProductionVmHotForkSourceWorldPreparationFailure> {
+        let Some(mut lifecycle) = self.lifecycle.take() else {
+            return Err(
+                ProductionVmHotForkSourceWorldPreparationFailure::new_without_lifecycle(
+                    "prepared source world lost its lifecycle owner",
+                ),
+            );
+        };
+        let targets = self
+            .prepared
+            .iter()
+            .map(|prepared| HotForkRollbackTarget {
+                node: prepared.node().clone(),
+                template_generation: Some(prepared.template_generation()),
+            })
+            .collect::<Vec<_>>();
+        let rollback = rollback_hot_fork_sources(&mut lifecycle, &targets);
+        if rollback.nodes.is_empty() {
+            self.prepared.clear();
+            return Ok(*lifecycle);
+        }
+        self.prepared.clear();
+        Err(
+            ProductionVmHotForkSourceWorldPreparationFailure::with_rollback(
+                *lifecycle,
+                "one or more prepared sources did not complete rollback",
+                rollback,
+            ),
+        )
+    }
+
+    fn validate_source_ownership(&mut self) -> Result<(), SchedulerError> {
+        let lifecycle = self.lifecycle.as_deref_mut().ok_or_else(|| {
+            hot_fork_boundary_error("prepared source world lost its lifecycle owner")
+        })?;
+        for prepared in &self.prepared {
+            let node = prepared.node();
+            let generation = lifecycle
+                .node_generations
+                .get(node)
+                .copied()
+                .ok_or_else(|| {
+                    hot_fork_boundary_error(format!(
+                        "prepared source `{}` has no process generation",
+                        node.name
+                    ))
+                })?;
+            let expected = ProductionVmNodeGeneration::new(node.clone(), generation)
+                .map_err(|error| hot_fork_boundary_error(error.to_string()))?;
+            let lease = lifecycle.node_leases.get(node).ok_or_else(|| {
+                hot_fork_boundary_error(format!(
+                    "prepared source `{}` has no retained lease",
+                    node.name
+                ))
+            })?;
+            if lease.identity() != &expected {
+                return Err(hot_fork_boundary_error(format!(
+                    "prepared source `{}` lease names another generation",
+                    node.name
+                )));
+            }
+            if !lifecycle.node_run_directories.contains_key(node) {
+                return Err(hot_fork_boundary_error(format!(
+                    "prepared source `{}` has no retained run directory",
+                    node.name
+                )));
+            }
+            if !lifecycle.inner.backend().contains(node) {
+                return Err(hot_fork_boundary_error(format!(
+                    "prepared source `{}` disappeared from the authoritative backend set",
+                    node.name
+                )));
+            }
+            let expected_resources = lifecycle
+                .launch_configs
+                .get(node)
+                .map(ProductionLiveNodeStepGateConfig::resource_requirements)
+                .ok_or_else(|| {
+                    hot_fork_boundary_error(format!(
+                        "prepared source `{}` has no exact launch profile",
+                        node.name
+                    ))
+                })?;
+            if prepared.configuration() != self.continuation.configuration().id()
+                || prepared.event_log().offset() != self.continuation.event_log_offset()
+                || prepared.launch_resources() != expected_resources
+            {
+                return Err(hot_fork_boundary_error(format!(
+                    "prepared source `{}` semantic token differs from the captured world",
+                    node.name
+                )));
+            }
+            lifecycle
+                .inner
+                .backend_mut()
+                .validate_retained_hot_fork_template(prepared)
+                .map_err(|error| {
+                    hot_fork_boundary_error(format!(
+                        "revalidate prepared source `{}`: {error}",
+                        node.name
+                    ))
+                })?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for ProductionVmHotForkSourceWorld {
+    fn drop(&mut self) {
+        let Some(mut lifecycle) = self.lifecycle.take() else {
+            return;
+        };
+        let targets = self
+            .prepared
+            .iter()
+            .map(|prepared| HotForkRollbackTarget {
+                node: prepared.node().clone(),
+                template_generation: Some(prepared.template_generation()),
+            })
+            .collect::<Vec<_>>();
+        let rollback = rollback_hot_fork_sources(&mut lifecycle, &targets);
+        if !rollback.nodes.is_empty() {
+            quarantine_unreconciled_hot_fork_lifecycle(lifecycle);
+        }
+    }
+}
+
+/// Failed source-world preparation retaining all process and guard authority.
+#[must_use = "recover the lifecycle or retain it for fail-closed cleanup"]
+pub struct ProductionVmHotForkSourceWorldPreparationFailure {
+    lifecycle: Option<Box<ProductionVmLifecycleLoop>>,
+    message: String,
+    unreconciled_nodes: Vec<NodeId>,
+    rollback_diagnostics: BTreeMap<NodeId, String>,
+}
+
+impl ProductionVmHotForkSourceWorldPreparationFailure {
+    fn new(
+        lifecycle: ProductionVmLifecycleLoop,
+        message: impl Into<String>,
+        unreconciled_nodes: Vec<NodeId>,
+    ) -> Self {
+        Self {
+            lifecycle: Some(Box::new(lifecycle)),
+            message: message.into(),
+            unreconciled_nodes,
+            rollback_diagnostics: BTreeMap::new(),
+        }
+    }
+
+    fn new_without_lifecycle(message: impl Into<String>) -> Self {
+        Self {
+            lifecycle: None,
+            message: message.into(),
+            unreconciled_nodes: Vec::new(),
+            rollback_diagnostics: BTreeMap::new(),
+        }
+    }
+
+    fn with_rollback(
+        lifecycle: ProductionVmLifecycleLoop,
+        message: impl Into<String>,
+        rollback: HotForkRollbackReport,
+    ) -> Self {
+        Self {
+            lifecycle: Some(Box::new(lifecycle)),
+            message: message.into(),
+            unreconciled_nodes: rollback.nodes,
+            rollback_diagnostics: rollback.diagnostics,
+        }
+    }
+
+    /// Returns sources whose rollback could not be authenticated as complete.
+    #[must_use]
+    pub fn unreconciled_nodes(&self) -> &[NodeId] {
+        &self.unreconciled_nodes
+    }
+
+    /// Returns the bounded cleanup diagnostic for each unresolved source.
+    #[must_use]
+    pub const fn rollback_diagnostics(&self) -> &BTreeMap<NodeId, String> {
+        &self.rollback_diagnostics
+    }
+
+    /// Recovers the lifecycle only after every prepared source rolled back.
+    ///
+    /// # Errors
+    ///
+    /// Returns the unchanged failure while any source still owns unresolved
+    /// retained-template state.
+    pub fn into_recovered_lifecycle(mut self) -> Result<ProductionVmLifecycleLoop, Self> {
+        if self.unreconciled_nodes.is_empty() {
+            match self.lifecycle.take() {
+                Some(lifecycle) => Ok(*lifecycle),
+                None => Err(self),
+            }
+        } else {
+            Err(self)
+        }
+    }
+}
+
+impl std::fmt::Debug for ProductionVmHotForkSourceWorldPreparationFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProductionVmHotForkSourceWorldPreparationFailure")
+            .field("message", &self.message)
+            .field("unreconciled_nodes", &self.unreconciled_nodes)
+            .field("rollback_diagnostics", &self.rollback_diagnostics)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for ProductionVmHotForkSourceWorldPreparationFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "prepare production hot-fork source world: {}",
+            self.message
+        )
+    }
+}
+
+impl std::error::Error for ProductionVmHotForkSourceWorldPreparationFailure {}
+
+impl Drop for ProductionVmHotForkSourceWorldPreparationFailure {
+    fn drop(&mut self) {
+        if self.unreconciled_nodes.is_empty() {
+            return;
+        }
+        if let Some(lifecycle) = self.lifecycle.take() {
+            quarantine_unreconciled_hot_fork_lifecycle(lifecycle);
+        }
+    }
+}
+
+fn quarantine_unreconciled_hot_fork_lifecycle(lifecycle: Box<ProductionVmLifecycleLoop>) {
+    let _retained_for_process_lifetime = Box::leak(lifecycle);
+}
+
 /// Modeled service state of one node in a hot-fork world continuation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProductionVmHotForkNodeServiceState {
@@ -292,6 +582,171 @@ impl ProductionVmHotForkWorldContinuation {
 }
 
 impl ProductionVmLifecycleLoop {
+    /// Prepares every retained QEMU source as one failure-atomic source world.
+    ///
+    /// The lifecycle is consumed before preparation begins. Each per-node
+    /// preparation token binds the captured configuration, event-log prefix,
+    /// resource profile, and exact source process incarnation. No QEMU node or
+    /// generation lease is extracted from the lifecycle in this phase.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProductionVmHotForkSourceWorldPreparationFailure`] retaining
+    /// the lifecycle and every process/resource authority when continuation
+    /// capture, ownership validation, source preparation, or rollback fails.
+    pub fn prepare_hot_fork_source_world(
+        mut self,
+    ) -> Result<ProductionVmHotForkSourceWorld, ProductionVmHotForkSourceWorldPreparationFailure>
+    {
+        let continuation = match self.capture_hot_fork_world_continuation() {
+            Ok(continuation) => continuation,
+            Err(error) => {
+                return Err(ProductionVmHotForkSourceWorldPreparationFailure::new(
+                    self,
+                    error.to_string(),
+                    Vec::new(),
+                ));
+            }
+        };
+        let retained_nodes = continuation
+            .nodes()
+            .iter()
+            .filter(|boundary| {
+                boundary.service_state() != ProductionVmHotForkNodeServiceState::PermanentlyFailed
+            })
+            .map(|boundary| boundary.node().clone())
+            .collect::<Vec<_>>();
+        if let Err(error) = validate_retained_source_ownership(&self, &retained_nodes) {
+            return Err(ProductionVmHotForkSourceWorldPreparationFailure::new(
+                self,
+                error.to_string(),
+                Vec::new(),
+            ));
+        }
+
+        let mut prepared: Vec<QemuNodeSetPreparedHotForkTemplate> = Vec::new();
+        if prepared.try_reserve_exact(retained_nodes.len()).is_err() {
+            return Err(ProductionVmHotForkSourceWorldPreparationFailure::new(
+                self,
+                "reserve retained source preparation tokens",
+                Vec::new(),
+            ));
+        }
+        let configuration = continuation.configuration().id();
+        let event_log = self.inner.loop_impl().event_log().clone();
+        for node in &retained_nodes {
+            let launch_resources = match self.launch_configs.get(node) {
+                Some(config) => config.resource_requirements(),
+                None => {
+                    let rollback = rollback_hot_fork_sources(
+                        &mut self,
+                        &prepared
+                            .iter()
+                            .map(|token| HotForkRollbackTarget {
+                                node: token.node().clone(),
+                                template_generation: Some(token.template_generation()),
+                            })
+                            .collect::<Vec<_>>(),
+                    );
+                    return Err(
+                        ProductionVmHotForkSourceWorldPreparationFailure::with_rollback(
+                            self,
+                            format!("retained source `{}` has no launch profile", node.name),
+                            rollback,
+                        ),
+                    );
+                }
+            };
+            match self.inner.backend_mut().prepare_retained_hot_fork_template(
+                node,
+                configuration,
+                event_log.clone(),
+                launch_resources,
+                &[],
+                MAXIMUM_HOT_FORK_RING_IMAGE_BYTES,
+            ) {
+                Ok(token) => prepared.push(token),
+                Err(error) => {
+                    let mut rollback_targets = prepared
+                        .iter()
+                        .map(|token| HotForkRollbackTarget {
+                            node: token.node().clone(),
+                            template_generation: Some(token.template_generation()),
+                        })
+                        .collect::<Vec<_>>();
+                    // Preparation can fail after QEMU acquired barriers or
+                    // transferred descriptors, so the failing node participates
+                    // in the same explicit rollback transaction.
+                    rollback_targets.push(HotForkRollbackTarget {
+                        node: node.clone(),
+                        template_generation: None,
+                    });
+                    let rollback = rollback_hot_fork_sources(&mut self, &rollback_targets);
+                    return Err(
+                        ProductionVmHotForkSourceWorldPreparationFailure::with_rollback(
+                            self,
+                            format!("prepare retained source `{}`: {error}", node.name),
+                            rollback,
+                        ),
+                    );
+                }
+            }
+        }
+
+        let after = self.hot_fork_node_boundaries();
+        if after.as_ref() != Ok(&continuation.nodes) {
+            let rollback_targets = prepared
+                .iter()
+                .map(|token| HotForkRollbackTarget {
+                    node: token.node().clone(),
+                    template_generation: Some(token.template_generation()),
+                })
+                .collect::<Vec<_>>();
+            let rollback = rollback_hot_fork_sources(&mut self, &rollback_targets);
+            let message = after.map_or_else(
+                |error| format!("revalidate prepared source world: {error}"),
+                |_boundaries| String::from("prepared source world changed after capture"),
+            );
+            return Err(
+                ProductionVmHotForkSourceWorldPreparationFailure::with_rollback(
+                    self, message, rollback,
+                ),
+            );
+        }
+
+        let mut world = ProductionVmHotForkSourceWorld {
+            lifecycle: Some(Box::new(self)),
+            continuation,
+            prepared,
+        };
+        if let Err(error) = world.validate_source_ownership() {
+            let message = error.to_string();
+            let targets = world
+                .prepared
+                .iter()
+                .map(|token| HotForkRollbackTarget {
+                    node: token.node().clone(),
+                    template_generation: Some(token.template_generation()),
+                })
+                .collect::<Vec<_>>();
+            let Some(mut lifecycle) = world.lifecycle.take() else {
+                return Err(
+                    ProductionVmHotForkSourceWorldPreparationFailure::new_without_lifecycle(
+                        message,
+                    ),
+                );
+            };
+            let rollback = rollback_hot_fork_sources(&mut lifecycle, &targets);
+            world.prepared.clear();
+            return Err(
+                ProductionVmHotForkSourceWorldPreparationFailure::with_rollback(
+                    *lifecycle, message, rollback,
+                ),
+            );
+        }
+        Ok(world)
+    }
+
     /// Captures the complete process-neutral half of one atomic world hot fork.
     ///
     /// The lifecycle must already own every source QEMU at an exact global
@@ -472,6 +927,104 @@ impl ProductionVmLifecycleLoop {
             });
         }
         Ok(boundaries)
+    }
+}
+
+fn validate_retained_source_ownership(
+    lifecycle: &ProductionVmLifecycleLoop,
+    retained_nodes: &[NodeId],
+) -> Result<(), SchedulerError> {
+    for node in retained_nodes {
+        let generation = lifecycle
+            .node_generations
+            .get(node)
+            .copied()
+            .ok_or_else(|| {
+                hot_fork_boundary_error(format!(
+                    "retained source `{}` has no process generation",
+                    node.name
+                ))
+            })?;
+        let expected = ProductionVmNodeGeneration::new(node.clone(), generation)
+            .map_err(|error| hot_fork_boundary_error(error.to_string()))?;
+        let lease = lifecycle.node_leases.get(node).ok_or_else(|| {
+            hot_fork_boundary_error(format!(
+                "retained source `{}` has no generation lease",
+                node.name
+            ))
+        })?;
+        if lease.identity() != &expected {
+            return Err(hot_fork_boundary_error(format!(
+                "retained source `{}` lease names another generation",
+                node.name
+            )));
+        }
+        if !lifecycle.node_run_directories.contains_key(node) {
+            return Err(hot_fork_boundary_error(format!(
+                "retained source `{}` has no owned run directory",
+                node.name
+            )));
+        }
+        if !lifecycle.launch_configs.contains_key(node) {
+            return Err(hot_fork_boundary_error(format!(
+                "retained source `{}` has no exact launch profile",
+                node.name
+            )));
+        }
+        if !lifecycle.inner.backend().contains(node) {
+            return Err(hot_fork_boundary_error(format!(
+                "retained source `{}` has no authoritative QEMU node",
+                node.name
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn rollback_hot_fork_sources(
+    lifecycle: &mut ProductionVmLifecycleLoop,
+    targets: &[HotForkRollbackTarget],
+) -> HotForkRollbackReport {
+    let mut diagnostics = BTreeMap::new();
+    for target in targets.iter().rev() {
+        let mut complete = false;
+        let mut diagnostic = None;
+        for poll in 0..MAXIMUM_HOT_FORK_ROLLBACK_POLLS_PER_NODE {
+            match lifecycle
+                .inner
+                .backend_mut()
+                .abort_retained_hot_fork_template(&target.node, target.template_generation)
+            {
+                Ok(true) => {
+                    complete = true;
+                    break;
+                }
+                Ok(false) => {
+                    if poll + 1 < MAXIMUM_HOT_FORK_ROLLBACK_POLLS_PER_NODE {
+                        std::thread::sleep(HOT_FORK_ROLLBACK_POLL_INTERVAL);
+                    }
+                }
+                Err(error) => {
+                    diagnostic = Some(error.to_string());
+                    break;
+                }
+            }
+        }
+        if !complete {
+            diagnostics.insert(
+                target.node.clone(),
+                diagnostic.unwrap_or_else(|| {
+                    format!(
+                        "retained-template rollback exceeded {} bounded exchanges",
+                        MAXIMUM_HOT_FORK_ROLLBACK_POLLS_PER_NODE
+                    )
+                }),
+            );
+        }
+    }
+    HotForkRollbackReport {
+        nodes: diagnostics.keys().cloned().collect(),
+        diagnostics,
     }
 }
 

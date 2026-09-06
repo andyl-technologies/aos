@@ -224,9 +224,10 @@ struct ScriptedQmpMachineControl {
     fail_descriptor_close: bool,
     fail_endpoint_install: bool,
     mismatch_endpoint_disposition: bool,
-    mismatch_request_basis: bool,
+    request_basis_mismatch_after_queries: Option<u64>,
     serve_child_qmp: bool,
     template_query_count: Arc<Mutex<u64>>,
+    hot_fork_aborted: Arc<Mutex<bool>>,
     hot_fork_script: HotForkScript,
 }
 
@@ -243,6 +244,7 @@ enum DescriptorScript {
     ForkParentDispositionFailed,
     HostIoCloneFailure,
     RequestBasisMismatch,
+    PreparationRequestBasisMismatch,
 }
 
 #[derive(Clone, Copy)]
@@ -716,6 +718,23 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
 }
 
 impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
+    fn prepare_hot_fork_template_barriers(
+        &mut self,
+        _block_snapshot_bindings: &[crate::QmpHotForkBlockSnapshotBinding],
+    ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
+        *self.hot_fork_aborted.lock().unwrap() = false;
+        Ok(crate::QmpHotForkTemplateState::one_draining_without_resources(exact_hot_fork_request()))
+    }
+
+    fn abort_hot_fork_template(
+        &mut self,
+    ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
+        *self.hot_fork_aborted.lock().unwrap() = true;
+        Ok(crate::QmpHotForkTemplateState::one_aborted(
+            exact_hot_fork_request(),
+        ))
+    }
+
     fn stop_for_checkpoint(&mut self) -> Result<(), QemuNodeChannelError> {
         self.log.lock().unwrap().push(ChannelCall::QmpStop);
         if self.fail_stop {
@@ -1297,7 +1316,10 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
             .push(ChannelCall::QmpHotForkTemplate);
         let mut template_query_count = self.template_query_count.lock().unwrap();
         *template_query_count += 1;
-        let request = if self.mismatch_request_basis && *template_query_count > 2 {
+        let request = if self
+            .request_basis_mismatch_after_queries
+            .is_some_and(|threshold| *template_query_count > threshold)
+        {
             crate::QmpHotForkRequest::for_test(1, 2, 1, 1, 1, 7, 1, 15, 8, 9, 10, 11, 12, 13, 0)
         } else {
             exact_hot_fork_request()
@@ -1308,7 +1330,9 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
             .unwrap()
             .as_ref()
             .is_some_and(|(_name, _cookie, _generation, bound)| *bound);
-        Ok(if resources_are_sealed {
+        Ok(if *self.hot_fork_aborted.lock().unwrap() {
+            crate::QmpHotForkTemplateState::one_aborted(request)
+        } else if resources_are_sealed {
             crate::QmpHotForkTemplateState::one_prepared(request)
         } else {
             crate::QmpHotForkTemplateState::one_draining_without_resources(request)
@@ -2287,6 +2311,27 @@ fn prepared_hot_fork_node_with_log(
 }
 
 #[cfg(target_os = "linux")]
+pub(crate) fn node_set_hot_fork_source(
+    fail_during_preparation: bool,
+) -> Result<QemuNode, Box<dyn Error>> {
+    let (setup_identity, host_barrier, image) = held_hot_fork_ring_image()?;
+    let barrier = crate::QmpHotForkPluginBarrierState::one_quiescent(15, host_barrier.ring_count());
+    scripted_hot_fork_capture_node(
+        shared_log(),
+        setup_identity,
+        setup_identity,
+        host_barrier,
+        image,
+        [barrier; 8],
+        if fail_during_preparation {
+            DescriptorScript::PreparationRequestBasisMismatch
+        } else {
+            DescriptorScript::Success
+        },
+    )
+}
+
+#[cfg(target_os = "linux")]
 fn exact_hot_fork_request() -> crate::QmpHotForkRequest {
     crate::QmpHotForkRequest::for_test(1, 1, 1, 1, 1, 7, 1, 15, 8, 9, 10, 11, 12, 13, 0)
 }
@@ -2592,12 +2637,14 @@ fn scripted_hot_fork_capture_node(
                 descriptor_script,
                 DescriptorScript::EndpointDispositionMismatch
             ),
-            mismatch_request_basis: matches!(
-                descriptor_script,
-                DescriptorScript::RequestBasisMismatch
-            ),
+            request_basis_mismatch_after_queries: match descriptor_script {
+                DescriptorScript::RequestBasisMismatch => Some(2),
+                DescriptorScript::PreparationRequestBasisMismatch => Some(1),
+                _ => None,
+            },
             serve_child_qmp: matches!(descriptor_script, DescriptorScript::SchedulerContinuation),
             template_query_count: Arc::new(Mutex::new(0)),
+            hot_fork_aborted: Arc::new(Mutex::new(false)),
             hot_fork_script: match descriptor_script {
                 DescriptorScript::ForkRejected => HotForkScript::Rejected,
                 DescriptorScript::ForkIndeterminate => HotForkScript::Indeterminate,
@@ -2611,7 +2658,8 @@ fn scripted_hot_fork_capture_node(
                 | DescriptorScript::EndpointInstallFailure
                 | DescriptorScript::EndpointDispositionMismatch
                 | DescriptorScript::HostIoCloneFailure
-                | DescriptorScript::RequestBasisMismatch => HotForkScript::Forked,
+                | DescriptorScript::RequestBasisMismatch
+                | DescriptorScript::PreparationRequestBasisMismatch => HotForkScript::Forked,
             },
         },
     );
@@ -2744,9 +2792,10 @@ fn scripted_node_with_fault_events(
             fail_descriptor_close: false,
             fail_endpoint_install: false,
             mismatch_endpoint_disposition: false,
-            mismatch_request_basis: false,
+            request_basis_mismatch_after_queries: None,
             serve_child_qmp: false,
             template_query_count: Arc::new(Mutex::new(0)),
+            hot_fork_aborted: Arc::new(Mutex::new(false)),
             hot_fork_script: HotForkScript::Rejected,
         },
     );
@@ -2848,9 +2897,10 @@ fn scripted_node_with_coverage(
             fail_descriptor_close: false,
             fail_endpoint_install: false,
             mismatch_endpoint_disposition: false,
-            mismatch_request_basis: false,
+            request_basis_mismatch_after_queries: None,
             serve_child_qmp: false,
             template_query_count: Arc::new(Mutex::new(0)),
+            hot_fork_aborted: Arc::new(Mutex::new(false)),
             hot_fork_script: HotForkScript::Rejected,
         },
     );
