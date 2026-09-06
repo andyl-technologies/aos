@@ -152,6 +152,7 @@ in
   assert (decisionFor "darwin-runtimes" "aarch64-darwin").state == "eligible";
   assert (decisionFor "darwin-runtimes" "x86_64-linux").state == "not-applicable";
   assert (decisionFor "aos-hub-e2e" "x86_64-linux").state == "not-applicable";
+  assert (decisionFor "darling" "aarch64-linux").state == "not-applicable";
   assert (decisionFor "go-1_4" "aarch64-linux").state == "not-applicable";
     pkgs.mkDerivation {
       pname = "package-platform-support-check";
