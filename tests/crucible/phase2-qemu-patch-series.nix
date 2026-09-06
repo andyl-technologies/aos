@@ -1734,26 +1734,29 @@
       "tests/crucible/phase2-plugin-fail-loud.nix: coverage-on TCG exec capability failure is not covered"
     ];
 
-  manifestLines =
+  # The manifest and decision records are store files rather than text in
+  # the phase script: every carried capability paragraph would otherwise
+  # travel in one environment string, which the kernel caps per argument.
+  manifestFile = builtins.toFile "crucible-qemu-patch-series-manifest" (
     lib.concatMapStringsSep "\n" (patch: ''
-      echo "patch=${patch.file}"
-      echo "catalog_name=${patch.catalogName}"
-      echo "class=${patch.class}"
-      echo "enforces=${patch.enforces}"
-      echo "capability=${patch.capability}"
-      echo
+      patch=${patch.file}
+      catalog_name=${patch.catalogName}
+      class=${patch.class}
+      enforces=${patch.enforces}
+      capability=${patch.capability}
     '')
-    carriedPatches;
+    carriedPatches
+  );
 
-  noPatchDecisionLines =
+  noPatchDecisionFile = builtins.toFile "crucible-qemu-patch-series-no-patch-decisions" (
     lib.concatMapStringsSep "\n" (decision: ''
-      echo "no_patch_item=${decision.item}"
-      echo "no_patch_enforces=${decision.enforces}"
-      echo "no_patch_capability=${decision.capability}"
-      echo "no_patch_evidence=${decision.evidence}"
-      echo
+      no_patch_item=${decision.item}
+      no_patch_enforces=${decision.enforces}
+      no_patch_capability=${decision.capability}
+      no_patch_evidence=${decision.evidence}
     '')
-    noPatchDecisions;
+    noPatchDecisions
+  );
 in
   if failures != []
   then throw "crucible phase2 QEMU patch-series conformance failed:\n${builtins.concatStringsSep "\n" failures}"
@@ -1796,13 +1799,8 @@ in
               fi
             done
 
-            cat > "$out/manifest" <<'MANIFEST'
-            ${manifestLines}
-            MANIFEST
-
-            cat > "$out/no-patch-decisions" <<'NO_PATCH_DECISIONS'
-            ${noPatchDecisionLines}
-            NO_PATCH_DECISIONS
+            cp "${manifestFile}" "$out/manifest"
+            cp "${noPatchDecisionFile}" "$out/no-patch-decisions"
 
             awk '
               /^patch=/ { patch = $0 }
