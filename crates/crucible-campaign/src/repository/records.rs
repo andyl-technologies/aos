@@ -990,8 +990,9 @@ impl CampaignRepository {
         &self,
         admission: &AttemptAdmission,
     ) -> Result<ContentId, CampaignRepositoryError> {
-        self.put_envelope(ObjectEnvelope::for_record(
+        self.put_envelope(ObjectEnvelope::for_record_versioned(
             crate::CampaignRecordKind::AttemptAdmission,
+            admission.schema_version(),
             crate::object::content_children(admission.content_children())?,
             admission.canonical_bytes(),
         )?)
@@ -1535,6 +1536,9 @@ impl CampaignRepository {
             BranchRequestCause::ExhaustivePolicy(policy) => {
                 self.read_policy(policy.content_id())?;
             }
+            BranchRequestCause::ScenarioDefault(policy) => {
+                self.read_policy(policy.content_id())?;
+            }
             BranchRequestCause::Operator(_) | BranchRequestCause::Debugger(_) => {}
         }
         Ok(parent)
@@ -1562,6 +1566,9 @@ impl CampaignRepository {
                 )?;
             }
             BranchRequestCause::ExhaustivePolicy(policy) => {
+                self.read_policy(policy.content_id())?;
+            }
+            BranchRequestCause::ScenarioDefault(policy) => {
                 self.read_policy(policy.content_id())?;
             }
             BranchRequestCause::Operator(_) | BranchRequestCause::Debugger(_) => {}
@@ -1790,7 +1797,13 @@ impl CampaignRepository {
             {
                 return Err(integrity("branch-request-policy-is-not-active"));
             }
+            BranchRequestCause::ScenarioDefault(policy)
+                if policy != snapshot.snapshot.active_policy() =>
+            {
+                return Err(integrity("branch-request-policy-is-not-active"));
+            }
             BranchRequestCause::ExhaustivePolicy(_)
+            | BranchRequestCause::ScenarioDefault(_)
             | BranchRequestCause::Operator(_)
             | BranchRequestCause::Debugger(_) => {}
         }
@@ -1825,6 +1838,35 @@ impl CampaignRepository {
             if u128::from(request.budget().maximum_proposals()) != cardinality {
                 return Err(integrity(
                     "exhaustive-branch-request-budget-is-not-domain-cardinality",
+                ));
+            }
+        }
+
+        if let BranchRequestCause::ScenarioDefault(policy_id) = request.cause() {
+            let policy = self.read_policy(policy_id.content_id())?;
+            if !policy.admits_scenario_defaults() {
+                return Err(integrity(
+                    "scenario-default-branch-request-is-disabled-by-policy",
+                ));
+            }
+            let CandidateSource::Finite(source) = request.source() else {
+                return Err(integrity(
+                    "scenario-default-branch-request-source-is-not-finite",
+                ));
+            };
+            let opportunity = self.read_opportunity(request.opportunity().content_id())?;
+            if source.prior_weights().is_some()
+                || source.values().len() != 1
+                || !source.values().contains(opportunity.default())
+            {
+                return Err(integrity(
+                    "scenario-default-branch-request-source-is-not-exact-default",
+                ));
+            }
+            if request.budget().maximum_proposals() != 1 || request.budget().maximum_attempts() != 1
+            {
+                return Err(integrity(
+                    "scenario-default-branch-request-budget-is-not-one",
                 ));
             }
         }

@@ -819,7 +819,8 @@ where
                     request.request(),
                 )?
             }
-            crate::BranchRequestCause::ExhaustivePolicy(_) => {
+            crate::BranchRequestCause::ExhaustivePolicy(_)
+            | crate::BranchRequestCause::ScenarioDefault(_) => {
                 self.repository.submit_branch_request(
                     request.campaign().as_str(),
                     request.expected_snapshot(),
