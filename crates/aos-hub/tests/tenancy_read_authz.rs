@@ -165,6 +165,7 @@ async fn seed_inventory(db: &Database, registry_id: i64) {
         name: "secret".into(),
         description: None,
         readme: None,
+        support: None,
         caches: Vec::new(),
         roster: Vec::new(),
         packages: vec![package],

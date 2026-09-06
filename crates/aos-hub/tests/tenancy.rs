@@ -239,7 +239,13 @@ async fn nested_registry_browse_resolves_and_unpublished_bytes_fail_closed() {
     assert!(body.contains("Fixture registry"), "{body}");
 
     // Nested /-/packages page.
-    let (status, body) = get(&app, "/acme/infra/prod/cdn/-/packages", None, None).await;
+    let (status, body) = get(
+        &app,
+        "/acme/infra/prod/cdn/-/packages?release=1.0.0",
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(body.contains("curl"), "{body}");
 
@@ -308,7 +314,7 @@ async fn flat_explicit_route_resolves_and_unpublished_bytes_fail_closed() {
     let (status, body) = get(&app, "/demo/", None, None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(body.contains("Fixture registry"), "{body}");
-    let (status, _) = get(&app, "/demo/-/packages", None, None).await;
+    let (status, _) = get(&app, "/demo/-/packages?release=1.0.0", None, None).await;
     assert_eq!(status, StatusCode::OK);
     let (status, _) = get(&app, &format!("/demo/{object_path}"), None, None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -407,7 +413,13 @@ async fn private_registry_hidden_anonymously_visible_to_member() {
         &common::registry_scope(&db, "acme/infra/prod/cdn").await,
         &[Permission::Read],
     );
-    let (status, _) = get(&app, "/acme/infra/prod/cdn/-/packages", None, Some(&token)).await;
+    let (status, _) = get(
+        &app,
+        "/acme/infra/prod/cdn/-/packages?release=1.0.0",
+        None,
+        Some(&token),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
 }
 
