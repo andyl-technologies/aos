@@ -45,6 +45,7 @@
 }: let
   version = "18.4";
   isDarwin = stdenv.hostPlatform.isDarwin;
+  isCross = stdenv.isCross;
   control = writeShellScriptBin "postgresql-control" ''
     set -euo pipefail
 
@@ -170,11 +171,16 @@
         ;;
     esac
   '';
-  clangForBitcode = writeShellScriptBin "clang" ''
-    exec ${llvm}/bin/clang \
+  clangForBitcode = buildPackages.writeShellScriptBin "clang" ''
+    exec ${buildPackages.llvm}/bin/clang \
+      ${lib.optionalString isCross "--target=${stdenv.hostPlatform.config}"} \
       -isystem ${glibc.dev}/include \
       -isystem ${linux-headers}/include \
       "$@"
+  '';
+  llvmConfigForBitcode = buildPackages.writeShellScriptBin "llvm-config" ''
+    ${buildPackages.llvm}/bin/llvm-config "$@" \
+      | ${buildPackages.sed}/bin/sed 's|${buildPackages.llvm}|${llvm}|g'
   '';
 in
   mkDerivation {
@@ -417,10 +423,14 @@ in
               src/common/config_info.c
           ''
           else ''
-            export LLVM_CONFIG=${llvm}/bin/llvm-config
+            export LLVM_CONFIG=${
+              if isCross
+              then llvmConfigForBitcode
+              else llvm
+            }/bin/llvm-config
             # PostgreSQL invokes Clang directly for LLVM bitcode, so retain
             # the libc header path normally injected by the AOS GCC wrapper.
-            export CLANG="${llvm}/bin/clang -idirafter ${stdenv.cc.libc.dev}/include"
+            export CLANG=${clangForBitcode}/bin/clang
             export TCLSH=${tcl}/bin/tclsh9.0
             export XML_CATALOG_FILES="${docbook-xsl}/share/xml/docbook/stylesheet/catalog.xml ${docbook-xml}/share/xml/docbook/schema/dtd/4.5/catalog.xml"
             ./configure \
@@ -534,6 +544,14 @@ in
                 -e "s|^abs_top_builddir = .*|abs_top_builddir = $out/lib/pgxs/src|" \
                 -e "s|^abs_top_srcdir = .*|abs_top_srcdir = $out/lib/pgxs/src|" \
                 "$out/lib/pgxs/src/Makefile.global"
+              ${
+                lib.optionalString isCross ''
+                  find "$out/lib/pgxs" -type f -exec sed -i \
+                    -e 's|${clangForBitcode}/bin/clang|${llvm}/bin/clang|g' \
+                    -e 's|${llvmConfigForBitcode}/bin/llvm-config|${llvm}/bin/llvm-config|g' \
+                    {} +
+                ''
+              }
             ''
           )
           + ''

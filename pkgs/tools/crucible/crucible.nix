@@ -27,17 +27,16 @@
   controllerOnly ? false,
 }: let
   version = "0.1.0";
-  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   buildRustDev =
-    if isDarwinCross
+    if stdenv.isCross
     then buildPackages.rust.dev
     else rust.dev;
   buildPkgConfig =
-    if isDarwinCross
+    if stdenv.isCross
     then buildPackages.pkg-config
     else pkg-config;
   buildProtobuf =
-    if isDarwinCross
+    if stdenv.isCross
     then buildPackages.protobuf
     else protobuf;
   nativeQemuSystemBinary =
@@ -148,12 +147,12 @@
     ];
     buildDeps =
       [buildRustDev buildPkgConfig openssl buildProtobuf]
-      ++ lib.optionals isDarwinCross [buildPackages.crucible-controller];
+      ++ lib.optionals stdenv.isCross [buildPackages.crucible-controller];
     runtimeDeps = [openssl];
   };
   debugGatewayArtifactContract = {
     family = "crucible-gpl-debug-gateway-release-and-test";
-    nativeInputs = map toString [rust.dev];
+    nativeInputs = map toString [buildRustDev];
     licenseScope = "GPL-2.0-only";
   };
   debugGatewayArtifacts = mkCargoArtifacts {
@@ -170,7 +169,7 @@
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p crucible-debug-gateway"
       "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p crucible-debug-gateway"
     ];
-    buildDeps = [rust.dev];
+    buildDeps = [buildRustDev];
   };
   controller = mkCargoPackage {
     pname = "crucible-controller";
@@ -213,11 +212,11 @@
     # while Cargo's virtual workspace remains rooted at crates/.
     postBuild = ''
       ${
-        if isDarwinCross
+        if stdenv.isCross
         then ''
           # The native controller dependency runs the executable policy and
-          # Clippy gates. Compile every Darwin test target with the cross
-          # compiler, but defer executing Mach-O tests until qualification.
+          # Clippy gates. Compile every target test with the cross compiler,
+          # but defer executing it until native qualification.
           echo "Crucible runtime, license, and doctest execution was validated by ${buildPackages.crucible-controller}"
           cargo check \
             --all-targets \
@@ -262,9 +261,9 @@
         -p crucible-cli \
         --bin crucible
       ${
-        if isDarwinCross
+        if stdenv.isCross
         then ''
-          echo "skipping Darwin doctest execution while cross-compiling"
+          echo "skipping target doctest execution while cross-compiling"
         ''
         else ''
           cargo test \
@@ -300,15 +299,15 @@
     postInstall = ''
       test -x "$out/bin/crucible"
       cp ${
-        if isDarwinCross
+        if stdenv.isCross
         then ''"target/$CARGO_BUILD_TARGET/release/examples/crucible-debugger-live-fixture"''
         else "target/release/examples/crucible-debugger-live-fixture"
       } \
         "$out/bin/crucible-debugger-live-fixture"
       ${
-        if isDarwinCross
+        if stdenv.isCross
         then ''
-          echo "deferring installed Crucible CLI execution until Darwin qualification"
+          echo "deferring installed Crucible CLI execution until native qualification"
         ''
         else ''
           if "$out/bin/crucible" --help | grep -q 'auto|qemu|double'; then
@@ -373,7 +372,7 @@
     cargoFlags = "-p crucible-debug-gateway";
     cargoTestFlags = "-p crucible-debug-gateway";
     doCheck = true;
-    buildDeps = [rust.dev];
+    buildDeps = [buildRustDev];
     runtimeDeps = [];
 
     postInstall = ''

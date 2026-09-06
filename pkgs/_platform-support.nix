@@ -669,6 +669,7 @@ let
   };
 
   architectureOverrides = {
+    darling = ["x86_64"];
     "go-1_4" = ["x86_64"];
     "openjdk-7" = ["x86_64"];
     "openjdk-8" = ["x86_64"];
