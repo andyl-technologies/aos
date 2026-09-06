@@ -489,6 +489,21 @@ phase-1 workspace build's missing `gdb`, and the phase-0 S12/S14 checks that
 copied a developer's whole cargo target directory into the store.
 The sweep started from 107 failing attributes on the branch against 66 on master before master's evaluation aborted in its phase 7 packaging checks. After the repairs the branch fails 56: 54 that master fails too, among them the eleven `phase1.spatial*` gates whose model items exist in neither tree, the engineering-hygiene file-size findings, and the phase 6 debug and triage gates that name an ADV-28 wording neither chapter carries; the reproduction-artifact format gate, whose inputs are byte-identical to master's; and `referenceIntegrity`, which only reports that those checks do not evaluate. Twelve gates master fails now pass here. The shared failures are master debt and stay out of this branch's scope.
 
+Building `checks.crucible.phase2.gates.typedChoice` on a quiet host then
+exercised the packaged `crucible-controller` test run behind the
+license-boundary gate, which fails on this branch for four harness gates and
+two timeouts. Three of the four were this branch's: the QMP client had grown
+to 3,066 lines past the source-size guard, and its public hot-fork surface now
+lives in `qmp/hot_fork_stages.rs` and `qmp/hot_fork_coordinator.rs`; the
+flaky-is-failing lint had no baseline rows for the flights' bounded process
+polls; and the phase-plan harness rejected the source-set lifecycle
+registration for lacking explicit task ids. The three `ten_thousand_*`
+repository scale tests take several minutes each in release, so nextest's
+default two-minute budget timed them out deterministically; a per-test
+override now gives them ten. The fourth gate, the engineering-hygiene size
+findings, fails on master too and stays open, so the packaged
+license-boundary gate remains red for that reason alone.
+
 The live-network adversary now prepares both its controller and independent
 resume watchdog before the caller publishes guest work. A readiness handshake
 removes thread creation from the publication-to-first-stop interval; the
