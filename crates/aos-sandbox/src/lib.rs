@@ -22,6 +22,8 @@ pub mod attachment_state;
 pub mod attachment_verification;
 pub mod authority;
 pub mod controller;
+#[cfg(target_os = "linux")]
+pub mod destination_slot_inventory;
 pub mod dispatch;
 pub mod filesystem_view_state;
 pub mod journal;
@@ -89,6 +91,12 @@ pub use controller::{
     ActivatedOperationCompiler, ControllerQuantumReport, ControllerReconciliationStep,
     ControllerRequestScopeV1, ControllerServiceError, NodeController, NodeControllerLimits,
     OperationCompilationError,
+};
+#[cfg(target_os = "linux")]
+pub use destination_slot_inventory::{
+    CurrentDestinationSlotReconciliationV1, DestinationSlotInventoryClient,
+    DestinationSlotInventorySnapshotOutcomeV1, DestinationSlotReconciliationActionV1,
+    DurableDestinationSlotInventorySnapshotV1,
 };
 pub use dispatch::{
     BrokerDispatchAttemptError, BrokerDispatchAttemptV1, BrokerDispatchSemanticIdentityV1,

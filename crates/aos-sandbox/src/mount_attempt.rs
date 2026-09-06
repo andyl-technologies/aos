@@ -72,7 +72,6 @@ pub use completion::{
 pub(crate) use completion::{
     dispatch_current, validate_namespace as validate_completion_namespace,
 };
-#[cfg(test)]
 pub(crate) use inventory::controller_state_digest as mount_controller_state_digest;
 pub use inventory::{
     CurrentMountInventoryReconciliationV1, DurableMountInventorySnapshotV1,

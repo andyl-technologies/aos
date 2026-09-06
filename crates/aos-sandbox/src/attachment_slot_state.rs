@@ -726,6 +726,30 @@ pub(crate) fn get_current(
         .map(|record| DurableAttachmentSlotV1 { record }))
 }
 
+pub(crate) fn recheck_current(
+    journal: &Journal,
+    slot: &DurableAttachmentSlotV1,
+) -> Result<(), AttachmentSlotStateError> {
+    let current = get_current(journal, slot.slot_id())?;
+    if current.as_ref() != Some(slot) {
+        return Err(AttachmentSlotStateError::Conflict);
+    }
+    Ok(())
+}
+
+pub(crate) fn creation_operation(
+    journal: &Journal,
+    slot: &DurableAttachmentSlotV1,
+) -> Result<OperationId, AttachmentSlotStateError> {
+    recheck_current(journal, slot)?;
+    let history = History::load(journal)?;
+    history
+        .revisions
+        .get(&(slot.slot_id(), 1))
+        .map(|record| record.operation_id)
+        .ok_or(AttachmentSlotStateError::CorruptState)
+}
+
 pub(crate) fn validate_namespace(journal: &Journal) -> Result<(), AttachmentSlotStateError> {
     History::load(journal).map(|_| ())
 }

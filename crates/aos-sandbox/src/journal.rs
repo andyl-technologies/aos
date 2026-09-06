@@ -122,6 +122,8 @@ pub enum RecordNamespace {
     SandboxSpec = 20,
     /// Node-local broker materialization state for destination-slot anchors.
     MountDestinationSlot = 21,
+    /// Latest authenticated complete Mount destination-slot inventory.
+    DestinationSlotInventory = 22,
 }
 
 impl RecordNamespace {
@@ -148,6 +150,7 @@ impl RecordNamespace {
             19 => Ok(Self::AttachmentSlot),
             20 => Ok(Self::SandboxSpec),
             21 => Ok(Self::MountDestinationSlot),
+            22 => Ok(Self::DestinationSlotInventory),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }
@@ -1912,13 +1915,14 @@ mod tests {
             RecordNamespace::AttachmentSlot,
             RecordNamespace::SandboxSpec,
             RecordNamespace::MountDestinationSlot,
+            RecordNamespace::DestinationSlotInventory,
         ];
         for (index, namespace) in namespaces.into_iter().enumerate() {
             let code = u8::try_from(index + 1).unwrap();
             assert_eq!(namespace as u8, code);
             assert_eq!(RecordNamespace::from_byte(code).unwrap(), namespace);
         }
-        for code in [0, 22, 255] {
+        for code in [0, 23, 255] {
             assert!(RecordNamespace::from_byte(code).is_err());
         }
     }

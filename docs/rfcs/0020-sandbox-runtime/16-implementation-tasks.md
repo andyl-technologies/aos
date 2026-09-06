@@ -3231,3 +3231,46 @@ ordering needed to make that anchor available before workload execution.
 Source-handle resolution/materialization, anchor installation, controller
 destination-slot lifecycle dispatch, lease-expiry scheduling, live namespace
 VM qualification, and end-to-end reconciliation remain.
+
+### Durable controller destination-slot inventory
+
+The node controller can now authenticate Mount's complete protocol 1.3
+destination-slot inventory and retain the exact query and response as its
+latest durable observation. The fixed `AOSDSI01` record commits the request
+identity, complete broker response, and a digest of the controller namespaces
+that govern namespace targets, view revisions, logical slots, attachment
+intent, verification, and Mount attempts. Any relevant controller mutation
+therefore makes an older snapshot unusable before follow-up planning.
+
+Snapshot replacement rejects reused request identities, broker journal
+rollback, same-sequence resource equivocation, and a changed kernel boot under
+one broker-process identity. Reconciler startup validates the new append-only
+journal namespace before operation replay or executor I/O. Inventory remains
+observation evidence: the returned opaque value carries no namespace
+descriptor and grants no signed broker authority.
+
+One current logical slot can be compared with that fresh snapshot to classify
+materialization, interrupted materialization, ready state, reap, interrupted
+reap, or terminal release. The comparison requires exact sandbox,
+incarnation, namespace generation, sandbox-specification descriptor, creation
+operation, and release operation correlations. A reused slot ID with a
+different binding or operation fails closed instead of being treated as an
+absent resource. Released logical intent deliberately finishes an interrupted
+materialization before asking Mount to reap the resulting exact resource.
+
+Focused tests cover every available and released lifecycle classification,
+the closed durable codec, rollback and equivocation, stale controller state,
+binding and operation substitution, successful opaque-result retention, and
+fail-closed reconciler startup. All 321 sandbox unit tests and six downstream
+API tests pass. Strict all-target/all-feature Clippy with warnings denied,
+warnings-as-errors rustdoc, targeted Rust formatting, and diff checks pass. The
+hermetic `nix-build -A checks.eval --cores 8` gate passes the release build,
+complete workspace test phase, configuration evaluation, and system-structure
+checks.
+
+This supplies restart-safe evidence for controller-side destination-slot
+orchestration but does not yet prepare, sign, persist, dispatch, or complete a
+materialize or reap request. Source-handle resolution/materialization,
+read-only attachment-anchor installation before payload launch, controller
+slot-effect dispatch, lease-expiry scheduling, live namespace VM
+qualification, and end-to-end attachment reconciliation remain.

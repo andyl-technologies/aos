@@ -913,6 +913,48 @@ where
         )
     }
 
+    /// Queries and durably records Mount's complete destination-slot inventory.
+    ///
+    /// The one-shot client authenticates the actual hello and response writers,
+    /// validates the closed protocol 1.3 response, and commits the exact query
+    /// and response. The resulting snapshot is observation evidence only.
+    ///
+    /// # Errors
+    ///
+    /// Rejects service identity or negotiation failure, malformed or
+    /// non-monotonic broker inventory, stale controller state, capacity, and
+    /// failed durable commits.
+    #[cfg(target_os = "linux")]
+    pub fn record_destination_slot_inventory(
+        &mut self,
+        client: crate::DestinationSlotInventoryClient,
+    ) -> Result<crate::DurableDestinationSlotInventorySnapshotV1, crate::MountAttemptError> {
+        crate::destination_slot_inventory::record_snapshot(self.reconciler.journal_mut(), client)
+    }
+
+    /// Reconciles one current logical slot with fresh complete broker state.
+    ///
+    /// Exact sandbox, incarnation, namespace, specification, and logical
+    /// operation correlations are required. The returned action is descriptive
+    /// and does not authorize a Mount request or retain namespace authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale snapshots or slot state, substituted broker bindings,
+    /// conflicting operation correlations, and corrupt durable state.
+    #[cfg(target_os = "linux")]
+    pub fn reconcile_current_destination_slot(
+        &mut self,
+        slot: crate::DurableAttachmentSlotV1,
+        snapshot: crate::DurableDestinationSlotInventorySnapshotV1,
+    ) -> Result<crate::CurrentDestinationSlotReconciliationV1, crate::MountAttemptError> {
+        crate::destination_slot_inventory::reconcile_current(
+            self.reconciler.journal_mut(),
+            slot,
+            snapshot,
+        )
+    }
+
     /// Plans one attachment's next step from current intent and Mount inventory.
     ///
     /// The desired generation, complete authenticated inventory, exact durable
