@@ -529,7 +529,8 @@ exact sequence under the campaign's sole-writer boundary:
    finite values or generator, and cause closure;
 4. prove the parent is the exact artifact indexed by its semantic identity in
    the campaign graph and that planner/policy causes use the active policy;
-5. publish the immutable request and `BranchRequestIssued` fact;
+5. derive its immutable acceptance summary and publish the request plus a
+   `BranchRequestAccepted { request, summary }` fact;
 6. add `BranchRequestId -> BranchRequest`, update its exact continuation
    projection, and, for a feedback-gated source, add the request to the
    branch-point request index used for feedback wakeups;
@@ -539,7 +540,19 @@ The acceptance transition creates no proposal, branch edge, attempt, executor
 reservation, or VM. A projector/planner later pulls one source continuation
 under current budget and backpressure. An imported successor is accepted only
 if replaying the transition over its parent produces the exact exploration-root
-delta and no unrelated root or policy change.
+delta, reproduces any recorded acceptance summary, and makes no unrelated root
+or policy change. Historical `BranchRequestIssued` facts remain readable. An
+idempotent replay of one recomputes its missing summary from the original
+parent graph, returns the original prior/new snapshot pair, and marks the
+summary as legacy-recomputed.
+
+The summary separates addressable source cardinality from the
+proposal-budget-visible window. It reports exact counts when the source owner
+can prove them and inclusive ranges otherwise. Existing-edge and remaining
+candidate counts apply only within `min(source upper bound, maximum proposals)`;
+the attempt limit is reported separately and does not truncate either count.
+Some generator definitions, including progressive and modeled-uniform sources,
+incorporate the request limit into their addressable source definition.
 
 - **[LAZY-20]** Exact branch-request replay MUST precede stale-snapshot rejection
   and return the originally committed prior/new snapshot pair.

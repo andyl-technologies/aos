@@ -96,11 +96,12 @@ pub use executor_capability::{
     ExecutorMaterializationLocality, WatchExecutorCapacityRequest,
 };
 pub use exploration::{
-    Attempt, AttemptAdmission, AttemptAdmissionRole, AttemptStart, BranchBudget,
-    BranchEdgeVisitStatistics, BranchPath, BranchPathSegment, BranchPuctProjection, BranchRequest,
-    BranchRequestCause, CandidateSource, ContinuationProjection, ContinuationState,
-    ExpansionCredit, ExpansionState, ExpansionStatistics, FeedbackWait, FiniteCandidateSource,
-    GUIDANCE_MICROS_PER_UNIT, GuidanceEvidence, MAX_BRANCH_EDGE_VISIT_PROJECTION_BYTES,
+    Attempt, AttemptAdmission, AttemptAdmissionRole, AttemptStart, BranchAcceptanceCount,
+    BranchAcceptanceRange, BranchAcceptanceSummary, BranchBudget, BranchEdgeVisitStatistics,
+    BranchPath, BranchPathSegment, BranchPuctProjection, BranchRequest, BranchRequestCause,
+    CandidateSource, ContinuationProjection, ContinuationState, ExpansionCredit, ExpansionState,
+    ExpansionStatistics, FeedbackWait, FiniteCandidateSource, GUIDANCE_MICROS_PER_UNIT,
+    GuidanceEvidence, MAX_BRANCH_EDGE_VISIT_PROJECTION_BYTES,
     MAX_BRANCH_EDGE_VISIT_PROJECTION_CREDITS, MAX_BRANCH_FINDING_OCCURRENCE_VISITS,
     MAX_BRANCH_FINDING_PROJECTION_BYTES, MAX_BRANCH_FINDING_ROOT_ENTRIES,
     MAX_BRANCH_NOVELTY_IDENTITIES, MAX_BRANCH_NOVELTY_IDENTITY_VISITS,

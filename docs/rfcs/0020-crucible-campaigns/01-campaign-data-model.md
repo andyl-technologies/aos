@@ -269,7 +269,11 @@ pub enum CampaignFact {
         branch_point: BranchPointId,
         opportunity: ChoiceOpportunityId,
     },
-    BranchRequestIssued(BranchRequestId),
+    BranchRequestIssued(BranchRequestId), // legacy, readable on import and replay
+    BranchRequestAccepted {
+        request: BranchRequestId,
+        summary: BranchAcceptanceSummary,
+    },
     PlannerAdvanced(PlannerStepId),
     ProposalIssued(ProposalId),
     AttemptAdmitted(AttemptAdmissionId),
@@ -290,6 +294,20 @@ pub enum CampaignFact {
     CampaignDerived(CampaignDerivation),
 }
 ```
+
+New branch-request transitions use `BranchRequestAccepted`. Its immutable
+summary records the validated addressable source cardinality, the existing
+semantic edges and remaining candidates within the request's proposal-visible
+window, and the request's proposal and attempt limits. Counts are exact when
+the source owner can prove a total and inclusive ranges otherwise. Source
+cardinality is distinct from the proposal window: the latter is capped by the
+request proposal limit, while generators whose definition incorporates that
+limit may also have a limit-bounded source cardinality.
+
+Repositories continue to authenticate and replay legacy
+`BranchRequestIssued` transitions. Because those facts have no recorded
+summary, replay recomputes it against the transition's immutable parent graph
+and identifies the result as legacy-recomputed rather than recorded evidence.
 
 Publishing a valid `ChoiceOpportunity` body does not make it campaign
 knowledge. The graph owner admits it only through an exact

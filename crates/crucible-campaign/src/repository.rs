@@ -44,6 +44,7 @@ use crate::{
     SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse, SurvivorSelection,
     SurvivorSelectionBundle, SurvivorSelectionId,
 };
+use crate::{BranchAcceptanceCount, BranchAcceptanceSummary};
 
 const MAX_ENVELOPE_BYTES: u64 = crate::codec::MAX_CANONICAL_BYTES as u64;
 const MAX_SNAPSHOT_ANCESTRY: usize = 1_000_001;
@@ -201,6 +202,14 @@ pub struct BranchRequestResult {
     pub new_snapshot: CampaignSnapshotId,
     /// Exact immutable request identity.
     pub request: BranchRequestId,
+    /// Immutable candidate and budget summary at the accepting snapshot.
+    pub summary: BranchAcceptanceSummary,
+    /// Authenticated snapshot body that committed the acceptance.
+    pub snapshot: CampaignSnapshot,
+    /// Transition fact that binds the request and summary into `snapshot`.
+    pub acceptance_fact: CampaignFact,
+    /// Whether the original transition durably recorded the summary.
+    pub summary_recorded: bool,
     /// Whether this call observed a previously committed request.
     pub replayed: bool,
 }
@@ -866,6 +875,7 @@ struct RepositoryMutationGuard<'a> {
     _publication: Box<dyn RefPublicationGuard + 'a>,
 }
 
+mod acceptance;
 mod ancestry;
 mod attempt_closure;
 mod budget;

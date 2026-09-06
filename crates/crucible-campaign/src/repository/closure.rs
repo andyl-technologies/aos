@@ -299,6 +299,29 @@ impl CampaignRepository {
                                 transition.content_id(),
                             )?;
                         }
+                        CampaignFact::BranchRequestAccepted { request, summary } => {
+                            let request_record = self.read_branch_request(request.content_id())?;
+                            if let BranchRequestCause::Operator(command) = request_record.cause()
+                                && !seen_commands.insert(command)
+                            {
+                                return Err(integrity("snapshot-ancestry-reused-mutation-command"));
+                            }
+                            let expected_summary = self.branch_acceptance_summary(
+                                parent_snapshot.snapshot.roots().graph,
+                                &request_record,
+                            )?;
+                            if summary != expected_summary {
+                                return Err(integrity(
+                                    "branch-request-acceptance-summary-mismatch",
+                                ));
+                            }
+                            self.validate_branch_request_successor(
+                                &parent_snapshot,
+                                &loaded,
+                                request,
+                                transition.content_id(),
+                            )?;
+                        }
                         CampaignFact::ProposalIssued(proposal) => {
                             self.validate_proposal_successor(&parent_snapshot, &loaded, proposal)?;
                         }
@@ -1265,7 +1288,11 @@ impl CampaignRepository {
         let roots = parent.snapshot.roots();
         match self.read_fact(transition)? {
             CampaignFact::CampaignDerived(_) => {}
-            CampaignFact::BranchRequestIssued(request_id) => {
+            CampaignFact::BranchRequestIssued(request_id)
+            | CampaignFact::BranchRequestAccepted {
+                request: request_id,
+                ..
+            } => {
                 let request = self.decode_branch_request(request_id.content_id())?;
                 if let BranchRequestCause::Planner(invocation) = request.cause()
                     && self

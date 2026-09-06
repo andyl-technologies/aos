@@ -1164,6 +1164,46 @@ fn command_and_fact_identities_bind_payload_and_admission_order() {
         ObjectEnvelope::from_canonical_bytes(&prior_envelope_with_pin_body.canonical_bytes())
             .is_err()
     );
+
+    let branch = CampaignFact::BranchRequestAccepted {
+        request: stored_id!(
+            BranchRequestId,
+            ObjectKind::CampaignFact,
+            4,
+            "accepted-branch-request"
+        ),
+        summary: BranchAcceptanceSummary::new(
+            BranchAcceptanceCount::Exact(2),
+            BranchAcceptanceCount::Exact(0),
+            BranchAcceptanceCount::Exact(2),
+            2,
+            1,
+        )
+        .expect("branch acceptance summary"),
+    };
+    assert_eq!(
+        &branch.canonical_bytes()[..std::mem::size_of::<u32>()],
+        &7_u32.to_be_bytes()
+    );
+    let branch_envelope = ObjectEnvelope::for_fact(&branch).expect("branch acceptance envelope");
+    assert_eq!(branch_envelope.content_id().schema_version(), 7);
+    assert_eq!(branch_envelope.children().len(), 1);
+    assert_eq!(
+        CampaignFact::from_canonical_bytes(branch_envelope.body())
+            .expect("canonical branch acceptance fact"),
+        branch
+    );
+    let prior_envelope_with_branch_body = crucible_cas::content_envelope::ContentEnvelope::new(
+        CampaignRecordKind::Fact.schema_name(),
+        6,
+        branch_envelope.children().clone(),
+        branch.canonical_bytes(),
+    )
+    .expect("mismatched prior branch envelope");
+    assert!(
+        ObjectEnvelope::from_canonical_bytes(&prior_envelope_with_branch_body.canonical_bytes())
+            .is_err()
+    );
 }
 
 #[test]

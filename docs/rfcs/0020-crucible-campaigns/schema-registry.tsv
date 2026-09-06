@@ -20,7 +20,7 @@ crucible.content-store.pack-repack-plan	1	crucible-cas::content_store	administra
 crucible.campaign.lineage	1	crucible-campaign::object	campaign-fact	gate:campaign-model,gate:content-address
 crucible.campaign.policy	1	crucible-campaign::object	policy	gate:campaign-model,gate:content-address
 crucible.campaign.snapshot	3	crucible-campaign::object	campaign-snapshot	gate:campaign-model,gate:content-address
-crucible.campaign.fact	6	crucible-campaign::object	campaign-fact	gate:campaign-model,gate:content-address
+crucible.campaign.fact	7	crucible-campaign::object	campaign-fact	gate:campaign-model,gate:content-address
 crucible.campaign.budget-ledger	2	crucible-campaign::object	campaign-fact	gate:campaign-model,gate:content-address
 crucible.campaign.planning-view	1	crucible-campaign::object	campaign-fact	gate:campaign-model,gate:content-address
 crucible.campaign.planner-engine	1	crucible-campaign::object	policy	gate:campaign-model,gate:content-address

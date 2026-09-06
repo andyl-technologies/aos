@@ -1536,6 +1536,12 @@ fn progressive_integer_generator_refines_only_after_exact_feedback() {
     let requested = repository
         .submit_known_branch_request("generated-progressive", genesis.snapshot_id(), &request)
         .expect("submit progressive request");
+    assert_eq!(
+        requested.summary.validated_cardinality(),
+        BranchAcceptanceCount::Exact(9)
+    );
+    assert_eq!(requested.summary.maximum_proposals(), 9);
+    assert_eq!(domain.cardinality(), 17);
     let mut current = requested.new_snapshot;
     let mut observations = Vec::new();
     for (index, value) in expected.iter().take(3).enumerate() {

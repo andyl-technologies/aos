@@ -1112,6 +1112,8 @@ impl CampaignRepository {
         }
         let parent = self.validate_branch_request_references(request)?;
         self.validate_branch_request_campaign_scope(&current, request, &parent)?;
+        let acceptance_summary =
+            self.branch_acceptance_summary(current.snapshot.roots().graph, request)?;
 
         let frontier_index = self.merkle.get(
             current.snapshot.roots().exploration,
@@ -1214,7 +1216,10 @@ impl CampaignRepository {
             )?;
         }
 
-        let fact = CampaignFact::BranchRequestIssued(request_id);
+        let fact = CampaignFact::BranchRequestAccepted {
+            request: request_id,
+            summary: acceptance_summary,
+        };
         let transition_content = self.put_fact(&fact)?;
         let mut roots = current.snapshot.roots();
         roots.exploration = exploration.content_id();
@@ -1250,6 +1255,10 @@ impl CampaignRepository {
                     prior_snapshot: current_id,
                     new_snapshot: CampaignSnapshotId::from_content_id(next_content)?,
                     request: request_id,
+                    summary: acceptance_summary,
+                    snapshot: next,
+                    acceptance_fact: fact,
+                    summary_recorded: true,
                     replayed: false,
                 })
             }
@@ -1717,6 +1726,7 @@ impl CampaignRepository {
                 }
                 CampaignFact::ControlRequested(_)
                 | CampaignFact::BranchRequestIssued(_)
+                | CampaignFact::BranchRequestAccepted { .. }
                 | CampaignFact::PinCommandAccepted(_) => {
                     return Err(CampaignRepositoryError::CommandReuse);
                 }
@@ -1853,6 +1863,7 @@ impl CampaignRepository {
                 }
                 CampaignFact::ControlRequested(_)
                 | CampaignFact::BranchRequestIssued(_)
+                | CampaignFact::BranchRequestAccepted { .. }
                 | CampaignFact::PinCommandAccepted(_) => {
                     return Err(CampaignRepositoryError::CommandReuse);
                 }

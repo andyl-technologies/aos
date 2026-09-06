@@ -533,6 +533,86 @@ mod generator_expansion;
 mod generator_strategies;
 
 #[test]
+fn cold_ancestry_rejects_a_forged_branch_acceptance_summary() {
+    let (repository, lineage, policy) = fixture();
+    let genesis = repository
+        .create(
+            "forged-acceptance-summary",
+            &lineage,
+            &policy,
+            &BTreeMap::new(),
+        )
+        .expect("create");
+    let request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "forged-acceptance-summary",
+    );
+    let discovered = repository
+        .discover_choice_opportunity(
+            "forged-acceptance-summary",
+            genesis.snapshot_id(),
+            request.parent(),
+            request.opportunity(),
+        )
+        .expect("discover request opportunity");
+    let accepted = repository
+        .submit_branch_request(
+            "forged-acceptance-summary",
+            discovered.new_snapshot,
+            &request,
+        )
+        .expect("accept branch request");
+    let accepted_snapshot = repository
+        .read_snapshot(accepted.new_snapshot.content_id())
+        .expect("accepted snapshot");
+    let forged_summary = BranchAcceptanceSummary::new(
+        BranchAcceptanceCount::Exact(2),
+        BranchAcceptanceCount::Exact(1),
+        BranchAcceptanceCount::Exact(1),
+        2,
+        2,
+    )
+    .expect("internally consistent forged summary");
+    assert_ne!(forged_summary, accepted.summary);
+    let forged_fact = repository
+        .put_fact(&CampaignFact::BranchRequestAccepted {
+            request: accepted.request,
+            summary: forged_summary,
+        })
+        .expect("put forged acceptance fact");
+    let forged_snapshot = CampaignSnapshot::successor(
+        discovered.new_snapshot,
+        accepted_snapshot.snapshot.lineage(),
+        accepted_snapshot.snapshot.active_policy(),
+        accepted_snapshot.snapshot.roots(),
+        CampaignFactId::from_content_id(forged_fact).expect("forged fact ID"),
+    )
+    .expect("forge acceptance successor");
+    let forged_content = repository
+        .put_snapshot(&forged_snapshot)
+        .expect("put forged acceptance snapshot");
+
+    repository
+        .validated_heads
+        .lock()
+        .expect("validated-head cache")
+        .clear();
+    let result = repository.validate_complete_head(forged_content);
+    assert!(
+        matches!(
+            result,
+            Err(CampaignRepositoryError::Integrity {
+                reason: "branch-request-acceptance-summary-mismatch"
+            })
+        ),
+        "unexpected forged acceptance result: {result:?}"
+    );
+}
+
+#[test]
 fn ancestry_rejects_branch_request_with_an_unrelated_root_change() {
     let (repository, lineage, policy) = fixture();
     let genesis = repository

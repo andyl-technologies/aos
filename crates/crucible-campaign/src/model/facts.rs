@@ -2,9 +2,9 @@
 
 use crate::codec::{self, Canonical, Decoder, Encoder};
 use crate::{
-    AttemptAdmissionId, AttemptId, BranchPointId, BranchRequestId, CampaignCodecError,
-    CampaignCommandId, CampaignFactId, CampaignHash, CampaignPolicyId, CampaignSnapshotId,
-    ChoiceOpportunityId, ConfigurationArtifactId, ConfigurationId, FindingId,
+    AttemptAdmissionId, AttemptId, BranchAcceptanceSummary, BranchPointId, BranchRequestId,
+    CampaignCodecError, CampaignCommandId, CampaignFactId, CampaignHash, CampaignPolicyId,
+    CampaignSnapshotId, ChoiceOpportunityId, ConfigurationArtifactId, ConfigurationId, FindingId,
     ObjectiveEvaluationId, ObservationId, PlannerStepId, ProposalId,
 };
 
@@ -15,6 +15,7 @@ const DERIVATION_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 3;
 const CREDITED_OBSERVATION_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 4;
 const PIN_COMMAND_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 5;
 const CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 6;
+const BRANCH_ACCEPTANCE_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 7;
 
 /// Durable user intent projected from campaign accounting facts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -540,6 +541,13 @@ pub enum CampaignFact {
     },
     /// A bounded finite or generated branch request was issued.
     BranchRequestIssued(BranchRequestId),
+    /// A branch request was accepted with snapshot-bound cardinality and budget counts.
+    BranchRequestAccepted {
+        /// Exact immutable branch request.
+        request: BranchRequestId,
+        /// Owner-derived summary bound into this transition fact.
+        summary: BranchAcceptanceSummary,
+    },
     /// A coordinator-validated planner step advanced planning state.
     PlannerAdvanced(PlannerStepId),
     /// A candidate proposal was issued.
@@ -582,6 +590,7 @@ impl CampaignFact {
             Self::ObservationCredited(_) => CREDITED_OBSERVATION_CAMPAIGN_FACT_SCHEMA_VERSION,
             Self::PinCommandAccepted(_) => PIN_COMMAND_CAMPAIGN_FACT_SCHEMA_VERSION,
             Self::ObjectiveEvaluationPublished(_) => CAMPAIGN_FACT_SCHEMA_VERSION,
+            Self::BranchRequestAccepted { .. } => BRANCH_ACCEPTANCE_CAMPAIGN_FACT_SCHEMA_VERSION,
             _ => LEGACY_CAMPAIGN_FACT_SCHEMA_VERSION,
         }
     }
@@ -618,12 +627,13 @@ impl CampaignFact {
                 let version = u32::decode(decoder)?;
                 match version {
                     LEGACY_CAMPAIGN_FACT_SCHEMA_VERSION => {
-                        CampaignFact::decode_versioned(decoder, false, false, false, false)
+                        CampaignFact::decode_versioned(decoder, false, false, false, false, false)
                             .map(|fact| Self { version, fact })
                     }
                     DERIVATION_CAMPAIGN_FACT_SCHEMA_VERSION => {
-                        let fact =
-                            CampaignFact::decode_versioned(decoder, true, false, false, false)?;
+                        let fact = CampaignFact::decode_versioned(
+                            decoder, true, false, false, false, false,
+                        )?;
                         if !matches!(fact, CampaignFact::CampaignDerived(_)) {
                             return Err(CampaignCodecError::InvalidValue {
                                 reason: "campaign fact variant requires its original schema version",
@@ -632,8 +642,9 @@ impl CampaignFact {
                         Ok(Self { version, fact })
                     }
                     CREDITED_OBSERVATION_CAMPAIGN_FACT_SCHEMA_VERSION => {
-                        let fact =
-                            CampaignFact::decode_versioned(decoder, false, true, false, false)?;
+                        let fact = CampaignFact::decode_versioned(
+                            decoder, false, true, false, false, false,
+                        )?;
                         if !matches!(fact, CampaignFact::ObservationCredited(_)) {
                             return Err(CampaignCodecError::InvalidValue {
                                 reason: "campaign fact variant requires its original schema version",
@@ -642,8 +653,9 @@ impl CampaignFact {
                         Ok(Self { version, fact })
                     }
                     PIN_COMMAND_CAMPAIGN_FACT_SCHEMA_VERSION => {
-                        let fact =
-                            CampaignFact::decode_versioned(decoder, false, false, true, false)?;
+                        let fact = CampaignFact::decode_versioned(
+                            decoder, false, false, true, false, false,
+                        )?;
                         if !matches!(fact, CampaignFact::PinCommandAccepted(_)) {
                             return Err(CampaignCodecError::InvalidValue {
                                 reason: "campaign fact variant requires its original schema version",
@@ -652,9 +664,21 @@ impl CampaignFact {
                         Ok(Self { version, fact })
                     }
                     CAMPAIGN_FACT_SCHEMA_VERSION => {
-                        let fact =
-                            CampaignFact::decode_versioned(decoder, false, false, false, true)?;
+                        let fact = CampaignFact::decode_versioned(
+                            decoder, false, false, false, true, false,
+                        )?;
                         if !matches!(fact, CampaignFact::ObjectiveEvaluationPublished(_)) {
+                            return Err(CampaignCodecError::InvalidValue {
+                                reason: "campaign fact variant requires its original schema version",
+                            });
+                        }
+                        Ok(Self { version, fact })
+                    }
+                    BRANCH_ACCEPTANCE_CAMPAIGN_FACT_SCHEMA_VERSION => {
+                        let fact = CampaignFact::decode_versioned(
+                            decoder, false, false, false, false, true,
+                        )?;
+                        if !matches!(fact, CampaignFact::BranchRequestAccepted { .. }) {
                             return Err(CampaignCodecError::InvalidValue {
                                 reason: "campaign fact variant requires its original schema version",
                             });
@@ -701,6 +725,11 @@ impl Canonical for CampaignFact {
             Self::BranchRequestIssued(id) => {
                 encoder.u8(1);
                 id.encode(encoder);
+            }
+            Self::BranchRequestAccepted { request, summary } => {
+                encoder.u8(16);
+                request.encode(encoder);
+                summary.encode(encoder);
             }
             Self::PlannerAdvanced(id) => {
                 encoder.u8(2);
@@ -764,7 +793,7 @@ impl Canonical for CampaignFact {
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        Self::decode_versioned(decoder, true, true, true, true)
+        Self::decode_versioned(decoder, true, true, true, true, true)
     }
 }
 
@@ -775,6 +804,7 @@ impl CampaignFact {
         credited_observation_supported: bool,
         pin_command_supported: bool,
         objective_evaluation_supported: bool,
+        branch_acceptance_supported: bool,
     ) -> Result<Self, CampaignCodecError> {
         match decoder.u8()? {
             0 => Ok(Self::ChoiceOpportunityDiscovered {
@@ -809,6 +839,10 @@ impl CampaignFact {
             15 if objective_evaluation_supported => {
                 ObjectiveEvaluationId::decode(decoder).map(Self::ObjectiveEvaluationPublished)
             }
+            16 if branch_acceptance_supported => Ok(Self::BranchRequestAccepted {
+                request: BranchRequestId::decode(decoder)?,
+                summary: BranchAcceptanceSummary::decode(decoder)?,
+            }),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "campaign-fact",
                 tag,

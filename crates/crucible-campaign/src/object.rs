@@ -210,7 +210,7 @@ impl CampaignRecordKind {
     pub const fn schema_version(self) -> u32 {
         match self {
             Self::Snapshot => 3,
-            Self::Fact => 6,
+            Self::Fact => 7,
             Self::PlannerInvocation => 2,
             Self::PlannerStep => 4,
             Self::ExpansionState => 2,
@@ -642,7 +642,7 @@ impl ObjectEnvelope {
         let version_supported = envelope.schema_version() == record_kind.schema_version()
             || record_kind == CampaignRecordKind::Snapshot && envelope.schema_version() == 2
             || record_kind == CampaignRecordKind::Fact
-                && matches!(envelope.schema_version(), 2..=5)
+                && matches!(envelope.schema_version(), 2..=6)
             || record_kind == CampaignRecordKind::BranchPath && envelope.schema_version() == 1
             || record_kind == CampaignRecordKind::BranchRequest
                 && matches!(envelope.schema_version(), 1..=3)
@@ -909,7 +909,10 @@ fn fact_children(fact: &CampaignFact) -> Result<BTreeSet<ContentChild>, Campaign
             ("parent-configuration", parent.content_id()),
             ("choice-opportunity", opportunity.content_id()),
         ],
-        CampaignFact::BranchRequestIssued(id) => vec![("branch-request", id.content_id())],
+        CampaignFact::BranchRequestIssued(id)
+        | CampaignFact::BranchRequestAccepted { request: id, .. } => {
+            vec![("branch-request", id.content_id())]
+        }
         CampaignFact::PlannerAdvanced(id) => vec![("planner-step", id.content_id())],
         CampaignFact::ProposalIssued(id) => vec![("proposal", id.content_id())],
         CampaignFact::AttemptAdmitted(admission) => {
