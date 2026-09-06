@@ -269,6 +269,85 @@ impl QemuNode {
     }
 }
 
+impl QemuNode {
+    /// Stages child-private destinations and forks the prepared template.
+    ///
+    /// This composes [`Self::stage_hot_fork_child_files`] with
+    /// [`Self::fork_prepared_hot_fork_template_into`]. The plan is bound to
+    /// the template generation QEMU reports, so a caller cannot inject one,
+    /// and an explicit pre-fork rejection releases the plan again. Ambiguous
+    /// and post-fork failures retain the staged plan in this node.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::QemuHotForkLaunchError::Rejected`] when the template is
+    /// not exactly prepared, the destinations cannot be staged, or QEMU
+    /// explicitly rejects the fork; the plan is released again in every such
+    /// case. Other launch-error variants mean a child exists or may exist and
+    /// leave the source quarantined with its plan staged.
+    pub fn fork_prepared_hot_fork_template_with_files_into<O, F>(
+        &mut self,
+        process_owner: &mut O,
+        contract_for: F,
+        destinations: &[super::hot_fork_child_files::QemuHotForkChildFileDestination<'_>],
+        maximum_bytes: u64,
+    ) -> Result<crate::QemuHotForkChildLaunch<O::Authority>, crate::QemuHotForkLaunchError>
+    where
+        O: crate::QemuHotForkChildProcessOwner,
+        F: for<'a> FnOnce(
+            &'a O,
+        )
+            -> Result<&'a crate::QemuChildProcessContract, QemuNodeChannelError>,
+    {
+        let prepared = self
+            .query_hot_fork_template()
+            .map_err(|source| crate::QemuHotForkLaunchError::Rejected { source })?;
+        if prepared.generation() == 0
+            || prepared.outcome() != QmpHotForkTemplateOutcome::Prepared
+            || !prepared.transaction_active()
+            || !prepared.ready()
+        {
+            return Err(crate::QemuHotForkLaunchError::Rejected {
+                source: QemuNodeChannelError::new(
+                    "stage hot-fork child files",
+                    "source template is not in the exact prepared state",
+                ),
+            });
+        }
+        let plan = self
+            .stage_hot_fork_child_files(destinations, maximum_bytes, prepared.generation())
+            .map_err(|source| crate::QemuHotForkLaunchError::Rejected { source })?;
+
+        match self.fork_prepared_hot_fork_template_into(process_owner, contract_for) {
+            Err(source @ crate::QemuHotForkLaunchError::Rejected { .. }) => {
+                let source = match self.release_hot_fork_child_files() {
+                    Ok(released)
+                        if !released.staged()
+                            && !released.consumed()
+                            && released.generation() == plan.generation() =>
+                    {
+                        source
+                    }
+                    Ok(_released) => crate::QemuHotForkLaunchError::Rejected {
+                        source: QemuNodeChannelError::new(
+                            "roll back hot-fork child files",
+                            "QEMU contradicted the exact released plan generation",
+                        ),
+                    },
+                    Err(rollback) => crate::QemuHotForkLaunchError::Rejected {
+                        source: QemuNodeChannelError::new(
+                            "roll back hot-fork child files",
+                            format!("{source}; rollback failed: {rollback}"),
+                        ),
+                    },
+                };
+                Err(source)
+            }
+            result => result,
+        }
+    }
+}
+
 fn initial_template_state_is_exact(state: &QmpHotForkTemplateState) -> bool {
     state.generation() != 0
         && state.outcome() == QmpHotForkTemplateOutcome::Draining

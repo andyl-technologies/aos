@@ -1,0 +1,38 @@
+diff --git a/block/file-posix.c b/block/file-posix.c
+index 5e5b76c72..4ed5690bd 100644
+--- a/block/file-posix.c
++++ b/block/file-posix.c
+@@ -3932,13 +3932,30 @@ static bool GRAPH_RDLOCK raw_crucible_hot_fork_file(
+ {
+     BDRVRawState *s = bs->opaque;
+     struct stat metadata;
+-    int flags;
++    int flags = -1;
++    int stat_result = -1;
++    int stat_errno = EBADF;
+ 
+     GLOBAL_STATE_CODE();
++    if (s->fd >= 0) {
++        stat_result = fstat(s->fd, &metadata);
++        stat_errno = stat_result < 0 ? errno : 0;
++    }
+     if (s->fd < 0 || s->reopen_state || s->perm_change_fd ||
+-        fstat(s->fd, &metadata) < 0 || !S_ISREG(metadata.st_mode) ||
++        stat_result < 0 || !S_ISREG(metadata.st_mode) ||
+         (flags = fcntl(s->fd, F_GETFL)) < 0) {
+-        error_setg(errp, "Crucible source requires a settled regular-file descriptor");
++        /*
++         * A fork child reads this on its diagnostics stream, so it names
++         * which of the settled-descriptor conditions the node failed.
++         */
++        error_setg(errp,
++                   "Crucible source node %s requires a settled regular-file "
++                   "descriptor (fd %d, reopen %d, perm-change %d, fstat %s, "
++                   "regular %d, flags %d)",
++                   bdrv_get_node_name(bs), s->fd, s->reopen_state != NULL,
++                   s->perm_change_fd,
++                   stat_result < 0 ? strerror(stat_errno) : "ok",
++                   stat_result == 0 && S_ISREG(metadata.st_mode), flags);
+         return false;
+     }
+     switch (action) {

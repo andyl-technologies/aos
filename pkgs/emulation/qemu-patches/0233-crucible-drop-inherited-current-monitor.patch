@@ -1,0 +1,22 @@
+diff --git a/monitor/monitor.c b/monitor/monitor.c
+index 5034c07b4..8975d314d 100644
+--- a/monitor/monitor.c
++++ b/monitor/monitor.c
+@@ -963,6 +963,17 @@ int monitor_hot_fork_reconstruct_child_protocol_held(
+     if (monitor_hot_fork_drop_fd_names) {
+         monitor_hot_fork_drop_fd_names(&qmp_mon->common);
+     }
++    /*
++     * The source's monitor thread was inside the fork command, so the
++     * current-monitor table binds that thread's leader coroutine to this
++     * monitor.  The thread is gone, but the C library hands its stack and
++     * thread-local storage to the replacement, whose leader then inherits
++     * the binding and trips dispatch's assertion that no monitor is
++     * current.  No coroutine in the child is inside a command: the
++     * dispatcher is idle and rebuilt below, and the forking thread was in
++     * the main loop, not a command.  Drop every binding.
++     */
++    g_hash_table_remove_all(coroutine_mon);
+     {
+         /*
+          * Each precondition is evaluated on its own so a stale basis names

@@ -1,0 +1,551 @@
+diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+index c223f89d0..833d6a2a2 100644
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -51,6 +51,16 @@ static bool rr_crucible_sim_single_vcpu(void);
+ static CPUState *rr_current_cpu;
+ static bool rr_initial_wait_complete;
+ static unsigned int rr_tcg_exec_state;
++static QemuCond *single_tcg_halt_cond;
++static QemuThread *single_tcg_cpu_thread;
++/*
++ * The parked vCPU thread's guest random stream, published at every VM-stop
++ * park so a Crucible hot-fork child can restart the thread with the exact
++ * stream the parent thread was holding.
++ */
++static GRand *rr_parked_thread_rand;
++
++static G_NORETURN void rr_cpu_thread_loop(CPUState *cpu);
+ 
+ enum {
+     RR_TCG_EXEC_IDLE,
+@@ -381,8 +391,23 @@ static bool rr_crucible_sim_vcpu_work_pending(void)
+     return false;
+ }
+ 
++/*
++ * Publish the state a Crucible hot-fork child needs to restart this thread
++ * from the park it is about to enter.  Only VM-stop parks can be retained by
++ * a fork, so other idle waits skip the copy.
++ */
++static void rr_hot_fork_note_parked(void)
++{
++    if (!first_cpu->stopped && !qemu_plugin_crucible_vmstop_pending()) {
++        return;
++    }
++    g_clear_pointer(&rr_parked_thread_rand, g_rand_free);
++    rr_parked_thread_rand = qemu_guest_random_thread_snapshot();
++}
++
+ static void rr_crucible_sim_park_vmstop(void)
+ {
++    rr_hot_fork_note_parked();
+     while (qemu_plugin_crucible_vmstop_pending()) {
+         /*
+          * The main-loop stop handshake sets CPUState::stop for every vCPU and
+@@ -823,6 +848,7 @@ static void rr_wait_io_event(void)
+             if (rr_crucible_sim_stop_or_unplug_pending()) {
+                 break;
+             }
++            rr_hot_fork_note_parked();
+             qemu_cond_wait_bql(first_cpu->halt_cond);
+             continue;
+         }
+@@ -848,6 +874,7 @@ static void rr_wait_io_event(void)
+                 break;
+             }
+         }
++        rr_hot_fork_note_parked();
+         qemu_cond_wait_bql(first_cpu->halt_cond);
+     }
+ 
+@@ -946,6 +973,8 @@ static void *rr_cpu_thread_fn(void *arg)
+     CPUState *cpu = arg;
+ 
+     assert(tcg_enabled());
++    qemu_thread_hot_fork_set_current_disposition(
++        QEMU_THREAD_HOT_FORK_VCPU_RESTART);
+     rcu_register_thread();
+     force_rcu.notify = rr_force_rcu;
+     rcu_add_force_rcu_notifier(&force_rcu);
+@@ -981,6 +1010,85 @@ static void *rr_cpu_thread_fn(void *arg)
+     /* process any pending work */
+     rr_crucible_sim_normalize_first_exit(cpu);
+ 
++    rr_cpu_thread_loop(cpu);
++}
++
++/*
++ * A Crucible hot-fork child restarts the round-robin thread here.
++ *
++ * The parent thread vanished while parked at a retained VM-stop boundary,
++ * after its one-time start-up.  The replacement re-registers with RCU and
++ * the thread registry, adopts the sole TCG context and the parked guest
++ * random stream, announces itself, and enters the steady-state loop, which
++ * parks again on the inherited stop before any guest work can run.
++ */
++static void *rr_hot_fork_child_cpu_thread_fn(void *arg)
++{
++    Notifier force_rcu;
++    CPUState *cpu = arg;
++    CPUState *sibling;
++
++    assert(tcg_enabled());
++    qemu_thread_hot_fork_set_current_disposition(
++        QEMU_THREAD_HOT_FORK_VCPU_RESTART);
++    rcu_register_thread();
++    force_rcu.notify = rr_force_rcu;
++    rcu_add_force_rcu_notifier(&force_rcu);
++    tcg_hot_fork_adopt_thread_context();
++
++    bql_lock();
++    qemu_thread_get_self(cpu->thread);
++    CPU_FOREACH(sibling) {
++        sibling->thread_id = qemu_get_thread_id();
++        sibling->neg.can_do_io = true;
++    }
++    qemu_guest_random_thread_adopt(g_steal_pointer(&rr_parked_thread_rand),
++                                   cpu->random_seed);
++    CPU_FOREACH(sibling) {
++        cpu_thread_signal_created(sibling);
++    }
++
++    rr_cpu_thread_loop(cpu);
++}
++
++int rr_hot_fork_restart_vcpu_thread(void)
++{
++    CPUState *cpu;
++
++    if (!single_tcg_cpu_thread || !single_tcg_halt_cond || !first_cpu ||
++        !bql_locked()) {
++        return -EINVAL;
++    }
++    if (!qatomic_read(&rr_initial_wait_complete)) {
++        return -EBUSY;
++    }
++    CPU_FOREACH(cpu) {
++        if (!cpu->created || cpu->thread != single_tcg_cpu_thread ||
++            cpu->halt_cond != single_tcg_halt_cond) {
++            return -EBUSY;
++        }
++    }
++
++    /*
++     * The inherited condition variable still counts the vanished parent
++     * thread as a waiter.  Replace it before anything waits on or signals it.
++     */
++    qemu_cond_init(single_tcg_halt_cond);
++    CPU_FOREACH(cpu) {
++        cpu->created = false;
++        cpu->thread_kicked = false;
++    }
++    qemu_thread_create(single_tcg_cpu_thread, "ALL CPUs/TCG",
++                       rr_hot_fork_child_cpu_thread_fn, first_cpu,
++                       QEMU_THREAD_JOINABLE);
++    CPU_FOREACH(cpu) {
++        cpu_thread_wait_created(cpu);
++    }
++    return 0;
++}
++
++static G_NORETURN void rr_cpu_thread_loop(CPUState *cpu)
++{
+     while (1) {
+         /* Only used for icount_enabled() */
+         int64_t cpu_budget = 0;
+@@ -1246,8 +1354,6 @@ static void *rr_cpu_thread_fn(void *arg)
+ void rr_start_vcpu_thread(CPUState *cpu)
+ {
+     char thread_name[VCPU_THREAD_NAME_SIZE];
+-    static QemuCond *single_tcg_halt_cond;
+-    static QemuThread *single_tcg_cpu_thread;
+ 
+     g_assert(tcg_enabled());
+     tcg_cpu_init_cflags(cpu, false);
+diff --git a/accel/tcg/tcg-accel-ops-rr.h b/accel/tcg/tcg-accel-ops-rr.h
+index 2a76a2961..fa156f633 100644
+--- a/accel/tcg/tcg-accel-ops-rr.h
++++ b/accel/tcg/tcg-accel-ops-rr.h
+@@ -17,5 +17,7 @@ void rr_kick_vcpu_thread(CPUState *unused);
+ 
+ /* start the round robin vcpu thread */
+ void rr_start_vcpu_thread(CPUState *cpu);
++/* Crucible hot fork: restart the shared vCPU thread in the immediate child. */
++int rr_hot_fork_restart_vcpu_thread(void);
+ 
+ #endif /* TCG_ACCEL_OPS_RR_H */
+diff --git a/accel/tcg/tcg-accel-ops.c b/accel/tcg/tcg-accel-ops.c
+index 7502118d6..28b4e74f9 100644
+--- a/accel/tcg/tcg-accel-ops.c
++++ b/accel/tcg/tcg-accel-ops.c
+@@ -206,6 +206,7 @@ static void tcg_accel_ops_init(AccelOpsClass *ops)
+     } else {
+         ops->create_vcpu_thread = rr_start_vcpu_thread;
+         ops->kick_vcpu_thread = rr_kick_vcpu_thread;
++        ops->hot_fork_restart_vcpu_threads = rr_hot_fork_restart_vcpu_thread;
+ 
+         if (icount_enabled()) {
+             ops->handle_interrupt = icount_handle_interrupt;
+diff --git a/include/qemu/guest-random.h b/include/qemu/guest-random.h
+index 5caa7b0de..e6d56f256 100644
+--- a/include/qemu/guest-random.h
++++ b/include/qemu/guest-random.h
+@@ -41,6 +41,25 @@ uint64_t qemu_guest_random_seed_thread_part1(void);
+  */
+ void qemu_guest_random_seed_thread_part2(uint64_t seed);
+ 
++/**
++ * qemu_guest_random_thread_snapshot(void)
++ *
++ * Returns a copy of the calling thread's deterministic guest random stream,
++ * or NULL when the thread has none.  The caller owns the copy.
++ */
++GRand *qemu_guest_random_thread_snapshot(void);
++
++/**
++ * qemu_guest_random_thread_adopt(GRand *snapshot, uint64_t seed)
++ * @snapshot: a stream returned by qemu_guest_random_thread_snapshot(), or NULL
++ * @seed: the fallback seed for the thread, as for part2
++ *
++ * Installs @snapshot as the calling thread's guest random stream, taking
++ * ownership of it.  Without a snapshot the thread is seeded as
++ * qemu_guest_random_seed_thread_part2() would seed it.
++ */
++void qemu_guest_random_thread_adopt(GRand *snapshot, uint64_t seed);
++
+ /**
+  * qemu_guest_getrandom(void *buf, size_t len, Error **errp)
+  * @buf: a buffer of bytes to be written
+diff --git a/include/qemu/thread.h b/include/qemu/thread.h
+index bfeb40293..81a63725b 100644
+--- a/include/qemu/thread.h
++++ b/include/qemu/thread.h
+@@ -211,6 +211,7 @@ typedef enum QemuThreadHotForkDisposition {
+     QEMU_THREAD_HOT_FORK_RCU_RESTART,
+     QEMU_THREAD_HOT_FORK_MONITOR_RESTART,
+     QEMU_THREAD_HOT_FORK_UNCLASSIFIED_AIO,
++    QEMU_THREAD_HOT_FORK_VCPU_RESTART,
+ } QemuThreadHotForkDisposition;
+ 
+ typedef struct QemuThreadHotForkInventoryEntry {
+diff --git a/include/system/accel-ops.h b/include/system/accel-ops.h
+index 4c99d25ae..bde1c1ac8 100644
+--- a/include/system/accel-ops.h
++++ b/include/system/accel-ops.h
+@@ -38,6 +38,13 @@ struct AccelOpsClass {
+ 
+     void (*create_vcpu_thread)(CPUState *cpu); /* MANDATORY NON-NULL */
+     void (*kick_vcpu_thread)(CPUState *cpu);
++    /*
++     * Crucible hot fork: restart the vCPU thread(s) that vanished with the
++     * parent, from the parked state the retained boundary froze.  Called in
++     * the immediate child under the BQL.  Absent when the accelerator cannot
++     * carry its vCPU threads across a fork.
++     */
++    int (*hot_fork_restart_vcpu_threads)(void);
+     bool (*cpu_thread_is_idle)(CPUState *cpu);
+ 
+     void (*synchronize_post_reset)(CPUState *cpu);
+diff --git a/include/system/cpus.h b/include/system/cpus.h
+index 3226c765d..f8777820a 100644
+--- a/include/system/cpus.h
++++ b/include/system/cpus.h
+@@ -26,6 +26,13 @@ void qemu_wait_io_event_common(CPUState *cpu);
+ void qemu_wait_io_event(CPUState *cpu);
+ void cpu_thread_signal_created(CPUState *cpu);
+ void cpu_thread_signal_destroyed(CPUState *cpu);
++/* Wait under the BQL until @cpu's thread has announced its creation. */
++void cpu_thread_wait_created(CPUState *cpu);
++/*
++ * Crucible hot fork: restart the accelerator's vCPU threads in the immediate
++ * fork child.  Returns -ENOTSUP when the accelerator has no restart path.
++ */
++int cpus_hot_fork_restart_vcpu_threads(void);
+ void cpu_handle_guest_debug(CPUState *cpu);
+ 
+ /* end interface for cpus accelerator threads */
+diff --git a/include/tcg/startup.h b/include/tcg/startup.h
+index f71305765..ad0501a9e 100644
+--- a/include/tcg/startup.h
++++ b/include/tcg/startup.h
+@@ -45,6 +45,15 @@ void tcg_init(size_t tb_size, int splitwx, unsigned max_cpus);
+  */
+ void tcg_register_thread(void);
+ 
++/**
++ * tcg_hot_fork_adopt_thread_context: Adopt the sole system-mode TCG context
++ *
++ * A Crucible hot-fork child restarts its single round-robin vCPU thread.
++ * That thread binds itself to the context the vanished parent thread claimed
++ * instead of registering a new one.
++ */
++void tcg_hot_fork_adopt_thread_context(void);
++
+ /**
+  * tcg_prologue_init(): Generate the code for the TCG prologue
+  *
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 7d6110e94..9e5fc330b 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -42,6 +42,7 @@
+ #include "system/cpu-timers.h"
+ #include "system/kvm.h"
+ #include "system/runstate.h"
++#include "system/cpus.h"
+ #include "system/runstate-action.h"
+ #include "system/block-backend.h"
+ #include "system/crucible-hot-fork-coordinator.h"
+@@ -4556,6 +4557,15 @@ static int crucible_hot_fork_finish_child_operation(void *opaque)
+         result = qemu_crucible_hot_fork_activate_plugin_child(
+             &operation->plugin_reinitializer);
+     }
++    if (result == 0) {
++        /*
++         * The vCPU thread vanished with the parent while parked at the
++         * retained VM-stop boundary.  Restart it once the plugin child is
++         * active, so its idle/resume callbacks have a target, and before the
++         * block barrier releases; it parks again on the inherited stop.
++         */
++        result = cpus_hot_fork_restart_vcpu_threads();
++    }
+     if (result == 0 &&
+         (!qemu_block_backend_hot_fork_barrier(
+              QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_RELEASE, &block) ||
+@@ -5272,6 +5282,10 @@ qmp_query_crucible_hot_fork_thread_inventory(Error **errp)
+                 CRUCIBLE_HOT_FORK_THREAD_DISPOSITION_UNCLASSIFIED_AIO;
+             unclassified_count++;
+             break;
++        case QEMU_THREAD_HOT_FORK_VCPU_RESTART:
++            thread->disposition =
++                CRUCIBLE_HOT_FORK_THREAD_DISPOSITION_VCPU_RESTART;
++            break;
+         default:
+             g_assert_not_reached();
+         }
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index 912d3fe33..f5bd86a2d 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -198,11 +198,15 @@
+ # @unclassified-aio: an AIO-context worker, still without an accepted
+ #     subsystem barrier or child reinitializer
+ #
++# @vcpu-restart: the single round-robin TCG vCPU thread; it parks on the
++#     BQL at every retained VM-stop boundary, and the fork child discards the
++#     inherited thread and restarts one that adopts the parked state
++#
+ # Since: 10.0 (Crucible downstream extension)
+ ##
+ { 'enum': 'CrucibleHotForkThreadDisposition',
+   'data': [ 'coordinator', 'unclassified', 'rcu-restart', 'monitor-restart',
+-            'unclassified-aio' ] }
++            'unclassified-aio', 'vcpu-restart' ] }
+ 
+ ##
+ # @CrucibleHotForkThread:
+diff --git a/system/cpus.c b/system/cpus.c
+index c038e3d39..10fcc283b 100644
+--- a/system/cpus.c
++++ b/system/cpus.c
+@@ -595,6 +595,21 @@ void cpu_thread_signal_destroyed(CPUState *cpu)
+     qemu_cond_signal(&qemu_cpu_cond);
+ }
+ 
++void cpu_thread_wait_created(CPUState *cpu)
++{
++    while (!cpu->created) {
++        qemu_cond_wait(&qemu_cpu_cond, &bql);
++    }
++}
++
++int cpus_hot_fork_restart_vcpu_threads(void)
++{
++    if (!cpus_accel || !cpus_accel->hot_fork_restart_vcpu_threads) {
++        return -ENOTSUP;
++    }
++    return cpus_accel->hot_fork_restart_vcpu_threads();
++}
++
+ void cpu_pause(CPUState *cpu)
+ {
+     if (qemu_cpu_is_self(cpu)) {
+diff --git a/tcg/tcg.c b/tcg/tcg.c
+index dfd48b826..1a707628d 100644
+--- a/tcg/tcg.c
++++ b/tcg/tcg.c
+@@ -1012,6 +1012,19 @@ void tcg_register_thread(void)
+ 
+     tcg_ctx = s;
+ }
++
++void tcg_hot_fork_adopt_thread_context(void)
++{
++    /*
++     * The single round-robin context the vanished parent thread claimed is
++     * still this process's only context; its code-generation region and
++     * pointers describe the copied translation cache, so the restarted vCPU
++     * thread must adopt it rather than claim a fresh one.
++     */
++    g_assert(tcg_max_ctxs == 1 && qatomic_read(&tcg_cur_ctxs) == 1);
++    g_assert(tcg_ctx == NULL);
++    tcg_ctx = qatomic_read(&tcg_ctxs[0]);
++}
+ #endif /* !CONFIG_USER_ONLY */
+ 
+ /* pool based memory allocation */
+diff --git a/tests/unit/test-crucible-hot-fork-child.c b/tests/unit/test-crucible-hot-fork-child.c
+index cdbf7e006..0b50d621d 100644
+--- a/tests/unit/test-crucible-hot-fork-child.c
++++ b/tests/unit/test-crucible-hot-fork-child.c
+@@ -570,6 +570,18 @@ static void *monitor_registry_worker(void *opaque)
+     return result;
+ }
+ 
++static void *vcpu_registry_worker(void *opaque)
++{
++    void *result;
++
++    qemu_thread_hot_fork_set_current_disposition(
++        QEMU_THREAD_HOT_FORK_VCPU_RESTART);
++    rcu_register_thread();
++    result = registry_worker(opaque);
++    rcu_unregister_thread();
++    return result;
++}
++
+ static void *monitor_registry_worker_with_runtime_barriers(void *opaque)
+ {
+     RegistryWorker *worker = opaque;
+@@ -975,6 +987,43 @@ static void test_registry_transaction_carries_parked_restart_mutexes(void)
+     parked_worker_destroy();
+ }
+ 
++static void test_registry_transaction_admits_one_vcpu_restart_worker(void)
++{
++    QemuThreadHotForkRegistryTransaction transaction = { 0 };
++    RegistryWorkerThread monitor_worker;
++    RegistryWorkerThread vcpu_worker;
++    RegistryWorkerThread second_vcpu_worker;
++    const char *blocker;
++
++    start_registry_worker_thread(&monitor_worker, "IO mon_iothread",
++                                 monitor_registry_worker);
++    start_registry_worker_thread(&vcpu_worker, "ALL CPUs/TCG",
++                                 vcpu_registry_worker);
++    g_assert_cmpint(qemu_thread_hot_fork_begin_registry_transaction(
++                        &transaction),
++                    ==, 0);
++    g_assert_true(transaction.active);
++    g_assert_cmpuint(transaction.restart_thread_count, ==, 3);
++    g_assert_cmpint(qemu_thread_hot_fork_release_parent_registry_transaction(
++                        &transaction),
++                    ==, 0);
++
++    start_registry_worker_thread(&second_vcpu_worker, "ALL CPUs/TCG",
++                                 vcpu_registry_worker);
++    transaction = (QemuThreadHotForkRegistryTransaction) { 0 };
++    g_assert_cmpint(qemu_thread_hot_fork_begin_registry_transaction(
++                        &transaction),
++                    ==, -EBUSY);
++    g_assert_false(transaction.active);
++    blocker = qemu_thread_hot_fork_registry_transaction_blocker();
++    g_assert_nonnull(blocker);
++    g_assert_nonnull(strstr(blocker, "vcpu 2"));
++
++    stop_registry_worker_thread(&second_vcpu_worker);
++    stop_registry_worker_thread(&vcpu_worker);
++    stop_registry_worker_thread(&monitor_worker);
++}
++
+ static void test_registry_transaction_rejects_deep_restart_mutex(void)
+ {
+     QemuThreadHotForkRegistryTransaction transaction = { 0 };
+@@ -2457,6 +2506,8 @@ int main(int argc, char **argv)
+                     test_registry_transaction_carries_coordinator_owned_mutex);
+     g_test_add_func("/crucible/hot-fork-child/registry-parked-restart-mutexes",
+                     test_registry_transaction_carries_parked_restart_mutexes);
++    g_test_add_func("/crucible/hot-fork-child/registry-vcpu-restart-worker",
++                    test_registry_transaction_admits_one_vcpu_restart_worker);
+     g_test_add_func("/crucible/hot-fork-child/registry-deeply-held-mutex",
+                     test_registry_transaction_rejects_deep_restart_mutex);
+     g_test_add_func("/crucible/hot-fork-child/immediate-child-replacement",
+diff --git a/util/guest-random.c b/util/guest-random.c
+index ae07da683..13bf69f12 100644
+--- a/util/guest-random.c
++++ b/util/guest-random.c
+@@ -124,6 +124,21 @@ void qemu_guest_random_seed_thread_part2(uint64_t seed)
+     }
+ }
+ 
++GRand *qemu_guest_random_thread_snapshot(void)
++{
++    return thread_rand ? g_rand_copy(thread_rand) : NULL;
++}
++
++void qemu_guest_random_thread_adopt(GRand *snapshot, uint64_t seed)
++{
++    g_assert(thread_rand == NULL);
++    if (snapshot) {
++        thread_rand = snapshot;
++    } else {
++        qemu_guest_random_seed_thread_part2(seed);
++    }
++}
++
+ int qemu_guest_random_seed_main(const char *seedstr, Error **errp)
+ {
+     uint64_t seed;
+diff --git a/util/qemu-thread-posix.c b/util/qemu-thread-posix.c
+index 80ffadc0a..5ac7bfedd 100644
+--- a/util/qemu-thread-posix.c
++++ b/util/qemu-thread-posix.c
+@@ -1207,6 +1207,7 @@ int qemu_thread_hot_fork_begin_registry_transaction(
+     size_t coordinator_count = 0;
+     size_t rcu_restart_count = 0;
+     size_t monitor_restart_count = 0;
++    size_t vcpu_restart_count = 0;
+     int64_t thread_id = qemu_get_thread_id();
+     CrucibleHotForkMutexCarrier carrier = {
+         .coordinator_thread_id = thread_id,
+@@ -1245,6 +1246,10 @@ int qemu_thread_hot_fork_begin_registry_transaction(
+                    QEMU_THREAD_HOT_FORK_MONITOR_RESTART) {
+             monitor_restart_count++;
+             restart = true;
++        } else if (record->disposition ==
++                   QEMU_THREAD_HOT_FORK_VCPU_RESTART) {
++            vcpu_restart_count++;
++            restart = true;
+         }
+         if (restart) {
+             if (carrier.restart_thread_count ==
+@@ -1259,10 +1264,11 @@ int qemu_thread_hot_fork_begin_registry_transaction(
+     qemu_hot_fork_registry_blocker[0] = '\0';
+     if (qemu_hot_fork_thread_overflow != 0 ||
+         qemu_hot_fork_thread_starts_in_flight != 0 ||
+-        qemu_hot_fork_thread_count != 3 ||
++        qemu_hot_fork_thread_count != 3 + vcpu_restart_count ||
+         coordinator_count != 1 ||
+         rcu_restart_count != 1 ||
+         monitor_restart_count != 1 ||
++        vcpu_restart_count > 1 ||
+         qemu_hot_fork_coordinator_thread_id != thread_id ||
+         qemu_hot_fork_current_thread != coordinator ||
+         coordinator->thread_id != thread_id || !coordinator->tracked ||
+@@ -1275,11 +1281,12 @@ int qemu_thread_hot_fork_begin_registry_transaction(
+             snprintf(qemu_hot_fork_registry_blocker,
+                      sizeof(qemu_hot_fork_registry_blocker),
+                      "thread registry is not forkable (threads %zu, "
+-                     "coordinators %zu, rcu %zu, monitor %zu, overflow %zu, "
+-                     "starts %zu, caller %" PRId64 ", coordinator %" PRId64
+-                     ")",
++                     "coordinators %zu, rcu %zu, monitor %zu, vcpu %zu, "
++                     "overflow %zu, starts %zu, caller %" PRId64
++                     ", coordinator %" PRId64 ")",
+                      qemu_hot_fork_thread_count, coordinator_count,
+                      rcu_restart_count, monitor_restart_count,
++                     vcpu_restart_count,
+                      (size_t)qemu_hot_fork_thread_overflow,
+                      (size_t)qemu_hot_fork_thread_starts_in_flight,
+                      thread_id,

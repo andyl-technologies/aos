@@ -110,7 +110,7 @@ pub fn run_qemu_live_source_set_gate(
     })
 }
 
-fn require_vmstate_source(
+pub(super) fn require_vmstate_source(
     state: &QmpHotForkTemplateState,
 ) -> Result<(), QemuLiveNodeStepGateError> {
     let block = state.block_barrier();

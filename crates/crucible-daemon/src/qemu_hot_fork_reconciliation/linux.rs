@@ -207,6 +207,12 @@ where
     host_continuation: Option<QemuHotForkHostContinuation>,
     source_release: LinuxSourceReleasePhase,
     diagnostics: Option<crucible_qemu::QemuHotForkChildDiagnosticCapture>,
+    /// Target run directory whose VMState container the child adopted.
+    ///
+    /// Retained for the child's lifetime and released before the target
+    /// guard's storage cleanup, so the pinned descriptors never outlive the
+    /// attempt storage they authenticate.
+    run_directory: Option<crucible_qemu::QemuPreparedRunDirectory>,
 }
 
 /// Narrow live-child capability retained by one hot-fork reconciliation owner.
@@ -304,6 +310,7 @@ where
             .field("host_continuation", &self.host_continuation.is_some())
             .field("source_release", &self.source_release)
             .field("diagnostics", &self.diagnostics.is_some())
+            .field("run_directory", &self.run_directory.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -319,6 +326,7 @@ where
         world_assembly: Option<QemuHotForkWorldAssemblyToken>,
         target: G,
         launch: QemuHotForkChildLaunch<LinuxQemuHotForkChildProcessAuthority>,
+        run_directory: crucible_qemu::QemuPreparedRunDirectory,
     ) -> Self {
         let (_parent, process, child_qmp, diagnostics_consumer, host_continuation) =
             launch.into_parts();
@@ -345,6 +353,7 @@ where
             host_continuation: Some(host_continuation),
             source_release: LinuxSourceReleasePhase::CloseChildChannel,
             diagnostics: None,
+            run_directory: Some(run_directory),
         }
     }
 

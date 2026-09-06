@@ -493,6 +493,111 @@ fn hot_fork_target_process_contract_is_staged_before_child_creation() -> Result<
 
 #[test]
 #[cfg(target_os = "linux")]
+fn hot_fork_with_files_stages_the_plan_before_the_contract_and_fork() -> Result<(), Box<dyn Error>>
+{
+    use std::os::fd::AsFd as _;
+
+    let (mut node, log) = prepared_hot_fork_node_with_log(DescriptorScript::Success)?;
+    let mut process_owner = ScriptedHotForkTargetOwner {
+        contract: unvalidated_hot_fork_process_contract()?,
+        retained: Vec::new(),
+    };
+    let directory = tempfile::tempdir()?;
+    let vmstate = std::fs::File::create(directory.path().join("vmstate.qcow2"))?;
+    let vmstate_root = crate::QmpHotForkChildFileRoot::node_name("vmstate")?;
+    let destinations = [crate::QemuHotForkChildFileDestination::new(
+        &vmstate_root,
+        vmstate.as_fd(),
+    )];
+
+    let launch = node.fork_prepared_hot_fork_template_with_files_into(
+        &mut process_owner,
+        |owner| Ok(&owner.contract),
+        &destinations,
+        1 << 20,
+    )?;
+
+    // The plan is bound to QEMU's template generation, consumed exactly once,
+    // and staged before the target contract and the fork itself.
+    let plan = node
+        .hot_fork_child_files_stage()
+        .ok_or("child file plan was not retained")?;
+    assert!(plan.consumed());
+    assert_eq!(plan.template_generation(), 1);
+    assert_eq!(
+        launch.parent_state().request().child_files_generation(),
+        plan.generation()
+    );
+    let calls = recorded(&log);
+    let files = calls
+        .iter()
+        .position(|call| matches!(call, ChannelCall::QmpHotForkInstallChildFiles))
+        .ok_or("child file stage was not recorded")?;
+    let contract = calls
+        .iter()
+        .position(|call| matches!(call, ChannelCall::QmpHotForkInstallProcessContract))
+        .ok_or("process contract stage was not recorded")?;
+    let fork = calls
+        .iter()
+        .position(|call| matches!(call, ChannelCall::QmpHotFork))
+        .ok_or("hot fork was not recorded")?;
+    assert!(files < contract && contract < fork);
+
+    drop(launch);
+    node.shutdown_child()?;
+    Ok(())
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn hot_fork_with_files_explicit_rejection_releases_the_plan() -> Result<(), Box<dyn Error>> {
+    use std::os::fd::AsFd as _;
+
+    let (mut node, log) = prepared_hot_fork_node_with_log(DescriptorScript::ForkRejected)?;
+    let mut process_owner = ScriptedHotForkTargetOwner {
+        contract: unvalidated_hot_fork_process_contract()?,
+        retained: Vec::new(),
+    };
+    let directory = tempfile::tempdir()?;
+    let vmstate = std::fs::File::create(directory.path().join("vmstate.qcow2"))?;
+    let vmstate_root = crate::QmpHotForkChildFileRoot::node_name("vmstate")?;
+    let destinations = [crate::QemuHotForkChildFileDestination::new(
+        &vmstate_root,
+        vmstate.as_fd(),
+    )];
+
+    let error = node
+        .fork_prepared_hot_fork_template_with_files_into(
+            &mut process_owner,
+            |owner| Ok(&owner.contract),
+            &destinations,
+            1 << 20,
+        )
+        .expect_err("scripted source must reject before child creation");
+
+    assert!(matches!(
+        error,
+        crate::QemuHotForkLaunchError::Rejected { .. }
+    ));
+    assert!(node.hot_fork_child_files_stage().is_none());
+    assert!(node.hot_fork_child_process_contract_stage().is_none());
+    let calls = recorded(&log);
+    let fork = calls
+        .iter()
+        .position(|call| matches!(call, ChannelCall::QmpHotFork))
+        .ok_or("hot fork was not recorded")?;
+    let release = calls
+        .iter()
+        .position(|call| matches!(call, ChannelCall::QmpHotForkReleaseChildFiles))
+        .ok_or("child file release was not recorded")?;
+    assert!(fork < release);
+
+    node.shutdown_child()?;
+    Ok(())
+}
+
+#[test]
+#[cfg(target_os = "linux")]
 fn hot_fork_explicit_rejection_rolls_back_the_target_process_contract() -> Result<(), Box<dyn Error>>
 {
     let (mut node, log) = prepared_hot_fork_node_with_log(DescriptorScript::ForkRejected)?;

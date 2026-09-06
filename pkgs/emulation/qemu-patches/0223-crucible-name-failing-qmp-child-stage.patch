@@ -1,0 +1,234 @@
+diff --git a/chardev/char-socket.c b/chardev/char-socket.c
+index ce30b0e97..8744abb60 100644
+--- a/chardev/char-socket.c
++++ b/chardev/char-socket.c
+@@ -1137,6 +1137,13 @@ static int tcp_chr_hot_fork_validate_replacement_fd(
+ #endif
+ }
+ 
++/* Names the failing operation on the child's diagnostics stream (stderr). */
++static void tcp_chr_hot_fork_report_child_stage(const char *stage, int result)
++{
++    fprintf(stderr, "crucible hot-fork socket child %s failed: result %d\n",
++            stage, result);
++}
++
+ int qemu_chr_socket_hot_fork_reconstruct_child_held(
+     QemuChrSocketHotForkChildBasis *basis, int replacement_fd,
+     uint64_t expected_socket_cookie)
+@@ -1159,19 +1166,23 @@ int qemu_chr_socket_hot_fork_reconstruct_child_held(
+     result = tcp_chr_hot_fork_validate_replacement_fd(
+         replacement_fd, expected_socket_cookie);
+     if (result != 0) {
++        tcp_chr_hot_fork_report_child_stage("validate replacement", result);
+         return result;
+     }
+     replacement_flags = fcntl(replacement_fd, F_GETFL);
+     if (replacement_flags < 0) {
++        tcp_chr_hot_fork_report_child_stage("replacement flags", -errno);
+         return -errno;
+     }
+     replacement_dup = qemu_dup_flags(replacement_fd, replacement_flags);
+     if (replacement_dup < 0) {
++        tcp_chr_hot_fork_report_child_stage("duplicate replacement", -errno);
+         return -errno;
+     }
+     replacement = qio_channel_socket_new_fd(replacement_dup, &local_err);
+     if (!replacement) {
+         result = local_err ? -EIO : -errno;
++        tcp_chr_hot_fork_report_child_stage("replacement channel", result);
+         error_free(local_err);
+         close(replacement_dup);
+         return result;
+@@ -1179,6 +1190,8 @@ int qemu_chr_socket_hot_fork_reconstruct_child_held(
+     if (qio_channel_set_blocking(
+             QIO_CHANNEL(replacement), false, &local_err) != 0) {
+         result = local_err ? -EIO : -errno;
++        tcp_chr_hot_fork_report_child_stage("nonblocking replacement",
++                                            result);
+         error_free(local_err);
+         object_unref(OBJECT(replacement));
+         return result;
+diff --git a/iothread.c b/iothread.c
+index 121873604..50f1c5def 100644
+--- a/iothread.c
++++ b/iothread.c
+@@ -508,6 +508,10 @@ int iothread_hot_fork_reconstruct_child(
+             qemu_crucible_hot_fork_note_child_detail(
+                 IOTHREAD_HOT_FORK_CHILD_START_DETAIL - 1);
+         }
++        fprintf(stderr, "crucible hot-fork monitor iothread did not start "
++                "within %d ms: progress %u\n",
++                IOTHREAD_HOT_FORK_CHILD_START_TIMEOUT_MS,
++                qemu_crucible_hot_fork_child_detail());
+         return -ETIMEDOUT;
+     }
+     assert(iothread->thread_id > 0);
+diff --git a/monitor/monitor.c b/monitor/monitor.c
+index d9724a8fa..170bd8f99 100644
+--- a/monitor/monitor.c
++++ b/monitor/monitor.c
+@@ -890,6 +890,13 @@ void monitor_hot_fork_register_fdsets_empty(bool (*check)(void))
+     monitor_hot_fork_fdsets_empty = check;
+ }
+ 
++/* Names the failing stage on the child's diagnostics stream (its stderr). */
++static void monitor_hot_fork_report_child_stage(const char *stage, int result)
++{
++    fprintf(stderr, "crucible hot-fork monitor child %s stage failed: "
++            "result %d\n", stage, result);
++}
++
+ int monitor_hot_fork_reconstruct_child_protocol_held(
+     MonitorHotForkChildBasis *basis, int replacement_fd,
+     uint64_t expected_socket_cookie)
+@@ -915,28 +922,59 @@ int monitor_hot_fork_reconstruct_child_protocol_held(
+     monitor_hot_fork_inventory_locked(&inventory);
+     mon = QTAILQ_FIRST(&mon_list);
+     qmp_mon = basis->monitor;
+-    if (!monitor_hot_fork_inventory_is_supported(&inventory) ||
+-        inventory.generation != basis->generation || !mon ||
+-        QTAILQ_NEXT(mon, entry) || !monitor_is_qmp(mon) ||
+-        qmp_mon != container_of(mon, MonitorQMP, common) ||
+-        basis->iothread != mon_iothread ||
+-        basis->iothread_context !=
+-            iothread_get_g_main_context(basis->iothread) ||
+-        basis->iothread_thread_id != basis->iothread->thread_id ||
+-        basis->dispatcher != qmp_dispatcher_co ||
+-        !monitor_qmp_hot_fork_dispatcher_is_idle(basis->dispatcher) ||
+-        basis->chardev != monitor_hot_fork_child_chardev(qmp_mon) ||
+-        qmp_dispatcher_co_shutdown ||
+-        !monitor_hot_fork_child_local_state_clean(qmp_mon) ||
+-        !monitor_hot_fork_fdsets_empty ||
+-        !monitor_hot_fork_fdsets_empty()) {
+-        result = -ESTALE;
+-        goto out;
++    {
++        /*
++         * Each precondition is evaluated on its own so a stale basis names
++         * the one that moved; the child has no other way to say why its
++         * inherited monitor no longer matches the retained basis.
++         */
++        const bool supported =
++            monitor_hot_fork_inventory_is_supported(&inventory);
++        const bool generation_matches =
++            inventory.generation == basis->generation;
++        const bool single_qmp_monitor = mon && !QTAILQ_NEXT(mon, entry) &&
++            monitor_is_qmp(mon) &&
++            qmp_mon == container_of(mon, MonitorQMP, common);
++        const bool iothread_matches = basis->iothread == mon_iothread &&
++            basis->iothread_context ==
++                iothread_get_g_main_context(basis->iothread);
++        const bool iothread_id_matches =
++            basis->iothread_thread_id == basis->iothread->thread_id;
++        const bool dispatcher_matches =
++            basis->dispatcher == qmp_dispatcher_co &&
++            !qmp_dispatcher_co_shutdown;
++        const bool dispatcher_idle =
++            monitor_qmp_hot_fork_dispatcher_is_idle(basis->dispatcher);
++        const bool chardev_matches = single_qmp_monitor &&
++            basis->chardev == monitor_hot_fork_child_chardev(qmp_mon);
++        const bool local_state_clean = single_qmp_monitor &&
++            monitor_hot_fork_child_local_state_clean(qmp_mon);
++        const bool fdsets_empty = monitor_hot_fork_fdsets_empty &&
++            monitor_hot_fork_fdsets_empty();
++
++        if (!supported || !generation_matches || !single_qmp_monitor ||
++            !iothread_matches || !iothread_id_matches ||
++            !dispatcher_matches || !dispatcher_idle || !chardev_matches ||
++            !local_state_clean || !fdsets_empty) {
++            fprintf(stderr,
++                    "crucible hot-fork monitor child basis is stale: "
++                    "supported %d generation %d single-qmp-monitor %d "
++                    "iothread %d iothread-id %d dispatcher %d "
++                    "dispatcher-idle %d chardev %d local-state-clean %d "
++                    "fdsets-empty %d\n",
++                    supported, generation_matches, single_qmp_monitor,
++                    iothread_matches, iothread_id_matches,
++                    dispatcher_matches, dispatcher_idle, chardev_matches,
++                    local_state_clean, fdsets_empty);
++            result = -ESTALE;
++            goto out;
++        }
+     }
+ 
+     result = qemu_chr_socket_hot_fork_reconstruct_child_held(
+         &basis->socket, replacement_fd, expected_socket_cookie);
+     if (result != 0) {
++        monitor_hot_fork_report_child_stage("socket", result);
+         goto out;
+     }
+     basis->attempted = true;
+@@ -949,11 +987,17 @@ int monitor_hot_fork_reconstruct_child_protocol_held(
+         basis->input_held = basis->socket.input_held;
+         result = basis->input_held ? 0 : -EPROTO;
+     }
++    if (result != 0) {
++        monitor_hot_fork_report_child_stage("protocol reset", result);
++    }
+ out:
+     qemu_mutex_unlock(&monitor_lock);
+     if (result == 0) {
+         result = monitor_qmp_hot_fork_rebuild_dispatcher_held(
+             basis->dispatcher, &replacement_dispatcher);
++        if (result != 0) {
++            monitor_hot_fork_report_child_stage("dispatcher", result);
++        }
+         if (result == 0) {
+             basis->dispatcher = replacement_dispatcher;
+             basis->dispatcher_rebuilt = true;
+@@ -963,6 +1007,8 @@ out:
+             if (result == 0) {
+                 basis->iothread_thread_id = replacement_iothread_id;
+                 basis->iothread_rebuilt = true;
++            } else {
++                monitor_hot_fork_report_child_stage("iothread", result);
+             }
+         }
+     }
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index e34d25dc4..c3d8492cf 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -581,6 +581,28 @@ typedef struct CrucibleHotForkOperation {
+  * resource transaction therefore cannot substitute a different monitor
+  * implementation after descriptor mutation has begun.
+  */
++/*
++ * Written to the child's stderr, already routed to its branch-private
++ * diagnostics stream, so the host learns which QMP reconstruction stage
++ * failed and how far the basis got; the exit status names only the step.
++ */
++static void crucible_hot_fork_qmp_child_report(
++    const MonitorHotForkChildBasis *basis, const char *stage, int result)
++{
++    fprintf(stderr,
++            "crucible hot-fork qmp child %s failed: result %d attempted %d "
++            "disposed %d dispatcher %d iothread %d parser %d capabilities "
++            "%d input-held %d greeted %d socket(attempted %d disposed %d "
++            "attached %d input-held %d)\n",
++            stage, result, basis->attempted,
++            basis->inherited_protocol_disposed, basis->dispatcher_rebuilt,
++            basis->iothread_rebuilt, basis->parser_reset,
++            basis->capabilities_reset, basis->input_held,
++            basis->greeting_emitted, basis->socket.attempted,
++            basis->socket.inherited_disposed,
++            basis->socket.replacement_attached, basis->socket.input_held);
++}
++
+ static int crucible_hot_fork_reinitialize_child_qmp(
+     int retained_fd, uint64_t socket_cookie, uint64_t template_generation,
+     uint64_t qmp_generation, uint64_t monitor_generation,
+@@ -608,10 +630,12 @@ static int crucible_hot_fork_reinitialize_child_qmp(
+     result = monitor_hot_fork_reconstruct_child_protocol_held(
+         basis, retained_fd, socket_cookie);
+     if (result != 0) {
++        crucible_hot_fork_qmp_child_report(basis, "reconstruct", result);
+         return result;
+     }
+     result = monitor_hot_fork_greet_child_protocol_held(basis);
+     if (result != 0) {
++        crucible_hot_fork_qmp_child_report(basis, "greet", result);
+         return result;
+     }
+     if (!basis->attempted || !basis->inherited_protocol_disposed ||

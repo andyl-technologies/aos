@@ -210,6 +210,10 @@ struct GuardedThinLauncher {
 
 impl QemuNodeLauncher for GuardedResumeLauncher {
     type Node = GuardedResumeNode;
+
+    fn launch_resources(&self) -> crucible_qemu::QemuLaunchResourceRequirements {
+        crucible_qemu::QemuLaunchResourceRequirements::from_vm_shape(128, 1, false)
+    }
 }
 
 impl QemuFailedLaunchChildSource for GuardedResumeLauncher {
@@ -242,6 +246,10 @@ impl QemuGuardedNodeRealizationLauncher for GuardedResumeLauncher {
 
 impl QemuNodeLauncher for GuardedThinLauncher {
     type Node = GuardedResumeNode;
+
+    fn launch_resources(&self) -> crucible_qemu::QemuLaunchResourceRequirements {
+        crucible_qemu::QemuLaunchResourceRequirements::from_vm_shape(128, 1, false)
+    }
 }
 
 impl QemuFailedLaunchChildSource for GuardedThinLauncher {

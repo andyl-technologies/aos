@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "aa9a7709bbf6230454ff8b4247e909cef49633fcb309e62e5dcbab13844e3324";
+  patchBranchBundleSha256 = "6d89269105267e0bfac7ad4bc8e738a57efe9d0142e8586d54aaa59d5ec26196";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "08bf61dc667ce255e379ec7dbd8eca2050bdf4f4";
+  patchBranchHeadCommit = "662508040ae24c244d9852c41c1ded3a24c1f236";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1965,6 +1965,316 @@ let
       class = "F";
       enforces = "HFORK-9,HFORK-22";
       capability = "a versioned out-of-band QMP command stages, queries, and releases one one-shot child-private file plan bound to the retained template: every destination is duplicated from standard getfd, must be an empty writable regular file with the expected identity, and must name a distinct root by backend or node name; the fork transaction requires the exact plan generation, resolves each frozen root to its unique originally writable leaf on the main loop, copies the frozen bytes, excludes the pinned and prepared descriptors from child descriptor disposition, installs the plan in the immediate child after block release, frees it in the parent, and consumes the plan generation; nonempty native graphs without a plan and plans without native roots fail before process creation; the readiness gate covers stock rejection, exact absent state, stage without a template, and release without a plan";
+    }
+    {
+      file = "0204-crucible-allow-out-of-band-descriptor-transfer.patch";
+      branchSubject = "crucible: allow out-of-band descriptor transfer";
+      branchCommit = "96afbc53a8aabb547fbb73f9df3cdf525aa575d8";
+      branchTree = "c9ad6dc17d957d0bac1d7d7923401816d5225b82";
+      catalogName = "crucible-out-of-band-descriptor-transfer";
+      class = "F";
+      enforces = "HFORK-9,HFORK-22";
+      capability = "standard getfd and closefd accept out-of-band execution so descriptor transfer for branch-private rings, endpoints, contracts, and child-private files completes on the monitor thread while a retained hot-fork template parks main-loop dispatch; the handlers only consume the SCM_RIGHTS stash and the monitor-locked descriptor list, so semantics are unchanged; the readiness gate proves stock QEMU rejects out-of-band getfd while patched QEMU dispatches it and reports the missing descriptor, and the same for closefd; the first live guarded fork flight timed out on main-loop getfd under the retained barriers before this change";
+    }
+    {
+      file = "0205-crucible-round-source-mapping-extents.patch";
+      branchSubject = "crucible: round source mapping extents to pages";
+      branchCommit = "3917bf2514c420a98e94beb10f81738229a9728c";
+      branchTree = "ca71481d2d23875467c4eadb08955383bf534a3f";
+      catalogName = "crucible-source-mapping-page-extents";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "the source-mapping lookup accepts the exact protocol region length and binds the writable shared VMA that spans its page-rounded extent, reporting that extent; the retained-template coordinator compares the private-ring source length against the page-rounded manifest length when sealing plugin endpoints and building the child plan; a unit case binds a page-plus-one-byte region to its two-page VMA and rejects shorter or zero lengths; the first live guarded fork flight was rejected at private-ring staging with EINVAL because setup regions are ring-aligned, not page-aligned, before this change";
+    }
+    {
+      file = "0206-crucible-report-plugin-child-plan-blockers.patch";
+      branchSubject = "crucible: report plugin child plan blockers";
+      branchCommit = "e639b6dc33ebcff2e5256abc7289395d839fb0a5";
+      branchTree = "1e2d933909970be49bb63348e71944d1fd0efd4f";
+      catalogName = "crucible-plugin-child-plan-blockers";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "plugin endpoint staging names the exact precondition that blocks binding the plugin child plan (template phase, barrier quiescence, inventory completeness, process generation, endpoint identities, private-ring staging, template binding, descriptor identity, length, aliasing, source mapping extent, endpoint distinctness, worker mask, or parked workers) in the QMP error instead of one opaque rejection; plan construction and the readiness proofs are unchanged; the live guarded fork flight needed the blocker to attribute its rejection because the descriptor-bearing client poisons its stream on any staging failure";
+    }
+    {
+      file = "0207-crucible-validate-child-plan-mapping-extents.patch";
+      branchSubject = "crucible: validate child plan mapping extents";
+      branchCommit = "09354f826acafc0bb700c138744aa0d2d4624da0";
+      branchTree = "90e5321c7867b918e85a02b91f6fec141cae4046";
+      catalogName = "crucible-child-plan-mapping-extents";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "plugin child plan validation accepts the page-rounded source mapping extent for the exact setup-region length instead of demanding equality, while still requiring page-aligned start and extent, zero offset, and a bounded address range; the live guarded fork flight was blocked at plan construction with no named precondition before this change because the validity predicate ran after the blocker checks";
+    }
+    {
+      file = "0208-crucible-restore-nonblocking-cancellation-eventfd.patch";
+      branchSubject = "crucible: restore nonblocking cancellation eventfd";
+      branchCommit = "f0b1b1ad9d9a4d481ad49b2fc7aea3911cda59ef";
+      branchTree = "6d0847e6b266c3345eb2175d48981223290fbd15";
+      catalogName = "crucible-nonblocking-cancellation-eventfd";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "staging the child process contract restores O_NONBLOCK on the cancellation eventfd before authenticating it: QEMU socket receive clears the flag on every SCM_RIGHTS descriptor, and that flag lives on the open file description the host still shares for sticky-cancellation polling; the live guarded fork flight was rejected at contract staging with a blocking eventfd before this change, and every earlier stage of the same flight passed";
+    }
+    {
+      file = "0209-crucible-report-fork-preparation-blockers.patch";
+      branchSubject = "crucible: report fork preparation blockers";
+      branchCommit = "3ca78bdd427c390dc0b33ed5c2bfcec08599b27e";
+      branchTree = "921d6637183ac4a2202648ffa1f0aace33f41d47";
+      catalogName = "crucible-fork-preparation-blockers";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "a rejected crucible-hot-fork preparation names the first blocking basis (operation activity, barrier reports, template phase, paused boundary, each staged generation, barrier quiescence, snapshot completeness, plugin child plan, process generations, contract and child-file generations, resource plan bindings, monitor basis, native worker and source retirement, and child-private file plan failures) in the QMP error instead of a bare errno; admission and preparation are unchanged; the live guarded fork flight reached this command and was rejected with only ESTALE before this change";
+    }
+    {
+      file = "0210-crucible-verify-monitor-basis-before-fork.patch";
+      branchSubject = "crucible: verify child monitor basis before fork";
+      branchCommit = "7e84359711641fb4fe5e0dd768b4b3cd5c12b50b";
+      branchTree = "e1bec65707114fa2ba03cae60d5cc1ed4f2aec1c";
+      catalogName = "crucible-monitor-basis-verified-before-fork";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "crucible-hot-fork verifies the staged child monitor basis on the dispatching monitor thread, where the recursive parser lock succeeds, and carries that verdict into the main-loop preparation instead of re-observing the monitor inventory there; the monitor thread blocks inside the command so no monitor state can change before preparation consumes the verdict; the live guarded fork flight was rejected with 'child monitor basis changed' before this change because the main loop counted the dispatching monitor as unstable";
+    }
+    {
+      file = "0211-crucible-report-runtime-transaction-blockers.patch";
+      branchSubject = "crucible: report runtime transaction blockers";
+      branchCommit = "768841a4c25b85b1cd6c13eedee36367c566cb08";
+      branchTree = "cffa1ab9aa0bba427e153b217672d1b8bd7d25b3";
+      catalogName = "crucible-runtime-transaction-blockers";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "the retained runtime transaction names which step blocked a fork and why: the thread registry reports its forkability counts or the first registered mutex that is not quiescent with its owner thread, depth, and waiters; the RCU transaction reports a missing retained barrier or an unregistered coordinator reader; the asynchronous-source transaction reports its barrier state; the coordinator surfaces the composed step and basis in the crucible-hot-fork error; the live guarded fork flight reached the runtime transaction and was rejected with only EBUSY before this change";
+    }
+    {
+      file = "0212-crucible-carry-parked-mutexes-across-fork.patch";
+      branchSubject = "crucible: carry parked mutexes across fork";
+      branchCommit = "8b0c78ff47e00e06e26999f342816624902a2278";
+      branchTree = "2a01557126baa6745f9c999436195341ce97ebc1";
+      catalogName = "crucible-carried-fork-mutexes";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "the thread registry transaction carries registered mutexes the fork coordinator owns and mutexes parked on discard-and-restart threads (held at depth one, or awaited as the sole condition waiter, by the RCU or monitor worker); every mutex records its sole condition waiter; the child rebinds coordinator-owned mutexes to its thread ID, reinitializes mutexes a vanished thread held, forgets vanished waiters, and re-proves the registry before it adopts the survivor; every other owner or waiter still blocks the fork; unit tests fork with a coordinator-owned mutex and with a parked monitor worker and reject a depth-two hold";
+    }
+    {
+      file = "0213-crucible-restart-rr-vcpu-thread-in-child.patch";
+      branchSubject = "crucible: restart the RR vCPU thread in the fork child";
+      branchCommit = "a871f4de9bc14577f4d3255004f2b7bc8f72ecf2";
+      branchTree = "6b46ea9d47f15188499bae39099422ff91c31d9b";
+      catalogName = "crucible-rr-vcpu-thread-restart";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "the single round-robin TCG vCPU thread carries the vcpu-restart disposition, publishes its guest random stream at every VM-stop park, and is admitted by the registry transaction as the fourth thread; the fork child reinitializes the halt condition, restarts the thread through the accelerator's hot-fork restart hook after the plugin child is active and before the block barrier releases, and the replacement adopts the sole TCG context and the parked random stream, announces itself under the BQL, and parks again on the inherited stop; QMP, the readiness gate, and the Apache client accept the new disposition; a unit test admits one vcpu-restart worker and rejects two";
+    }
+    {
+      file = "0214-crucible-place-child-through-cgroup-procs.patch";
+      branchSubject = "crucible: place the fork child through cgroup.procs";
+      branchCommit = "7c00c1ba88c65ceeec00a35c3ae2fe2717b17d47";
+      branchTree = "2586ee61e01a838d63fcdcf4b4c87f7df56fcd9b";
+      catalogName = "crucible-cgroup-procs-child-placement";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "the one-shot child process contract additionally retains the supervisor-opened writable cgroup.procs descriptor of the authenticated target cgroup-v2 directory (schema 2: cgroup-procs-fdname, cgroup-procs-inode, cgroup-placement-bound); the coordinator creates the child with fork and the child's first instruction writes itself into that descriptor, which the kernel authorizes with the opener's credentials, before cancellation and RLIMIT_FSIZE checks; clone3(CLONE_INTO_CGROUP), which the kernel evaluates with the unprivileged source's own credentials against the delegated common ancestor, rejected the first live fork with EPERM before this change";
+    }
+    {
+      file = "0215-crucible-release-registry-before-parent-locks.patch";
+      branchSubject = "crucible: release the registry before the fork parent locks";
+      branchCommit = "4cc27c38419e86cadeb072e12511ce8606cb5e6b";
+      branchTree = "de04829ba387d6e10b1080ec76171ae42d4e944d";
+      catalogName = "crucible-fork-parent-registry-release-order";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "the fork parent releases its retained runtime transaction, which holds the registered-mutex guard across fork(), before the coordinator retains the child through its own registered lock and before any block-layer work; the registered-mutex guard now aborts with a named diagnostic on re-entrant use by the thread that retains it instead of deadlocking silently; a subprocess unit test proves the abort; the live guarded fork flight created its first child and then timed out in the parent before this change";
+    }
+    {
+      file = "0216-crucible-complete-child-placement-before-return.patch";
+      branchSubject = "crucible: complete child cgroup placement before the fork returns";
+      branchCommit = "42abcb10c3ac61f81d695af15a6bb0302c4f99df";
+      branchTree = "96f184b4c3bc2cb3cf25634d56fb58427147219e";
+      catalogName = "crucible-child-placement-before-fork-return";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "the coordinator opens one close-on-exec pipe before fork(); the child reports through it immediately after its first-instruction cgroup.procs placement and closes both ends before any descriptor inventory; the parent waits up to ten seconds for that report and completes the fork with parent status 0, -ECHILD when the child ended first, or -ETIMEDOUT, still retaining the child for reaping; the supervisor that observes the fork's completion therefore observes the child inside its target cgroup; the live guarded fork flight raced that placement and rejected the child as not a member of its target cgroup before this change";
+    }
+    {
+      file = "0217-crucible-identify-failed-child-step-in-exit-status.patch";
+      branchSubject = "crucible: identify the failed child step in the exit status";
+      branchCommit = "b16e697e7437e69284d42d9913a60bb1edc760ce";
+      branchTree = "021311e22b70d970369bc72cb39a4fbb78956b1a";
+      catalogName = "crucible-child-step-exit-status";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "a hot-fork child that fails reconstruction exits with 64 plus the index of the failed step (process contract, descriptor table, runtime reconstruction, resource plan, diagnostics, QMP, console, plan completion, runtime plan, plugin activation, vCPU restart, block barrier release, child file installation, empty native release, monitor input release), which the source reports through crucible-hot-fork-child-process after reap; guarded launch gives the child no stderr, and the live guarded fork flight found its first child reaped as a zombie with no cause before this change";
+    }
+    {
+      file = "0218-crucible-identify-failed-resource-plan-substep.patch";
+      branchSubject = "crucible: identify the failed resource plan sub-step";
+      branchCommit = "d569ecd795f0ddcc54a66a6b3814dd17ea8dd1a1";
+      branchTree = "b788d4a6fe594d9acd9f3cd220c97aa622354007";
+      catalogName = "crucible-child-resource-plan-substep-status";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "the child resource plan application records its running sub-step (plan preconditions, descriptor table, child runtime start, plugin reinitialization, child runtime finish, QMP reinitialization, console reinitialization, mapping table verification, runtime disposition, diagnostics target) and a failure inside that step exits with 96 plus the sub-step; the live guarded fork flight reported only exit status 73 for its first reaped child before this change";
+    }
+    {
+      file = "0219-crucible-admit-mapping-into-backing-partial-page.patch";
+      branchSubject = "crucible: admit shared mappings into a backing partial page";
+      branchCommit = "454ae8aa7b0f065f27174c7371f7896f8f83e78d";
+      branchTree = "8189b5cec2c5c1d87781b0c22a64fb157c2f0db6";
+      catalogName = "crucible-mapping-backing-partial-page";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "the child's shared mapping table check bounds a mapping by the page-rounded size of its sealed backing instead of its exact byte size, so a page-rounded mapping extent over an exact ring-aligned region is admitted while reaching past the backing's final page is still rejected; a unit test covers both; the live guarded fork flight's child exited at the resource plan preconditions before this change";
+    }
+    {
+      file = "0220-crucible-bound-child-iothread-start.patch";
+      branchSubject = "crucible: bound the child monitor iothread start";
+      branchCommit = "6404797edcf1cc05fe648ecfea05cb1ab269cee9";
+      branchTree = "fbbad27d2dd3ced4913e577e81438066522c7a3e";
+      catalogName = "crucible-child-iothread-start-bound";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "a hot-fork child waits at most ten seconds for its rebuilt monitor iothread to announce itself and otherwise fails its QMP reinitialization with ETIMEDOUT; the replacement thread records its progress (entered, disposition set, RCU registered, context pushed, started) in the child detail so the child's exit status names how far it got; the live guarded fork flight found the child's coordinator waiting forever on that semaphore with no such thread alive before this change";
+    }
+    {
+      file = "0221-crucible-report-child-failure-result.patch";
+      branchSubject = "crucible: report the failing child result on its diagnostics stream";
+      branchCommit = "40b1a4a994a7a357170fbab7417b3cb0237bd3a0";
+      branchTree = "f859ee6c0778a4c07d720e1e881ff85e668dac90";
+      catalogName = "crucible-child-failure-result-report";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "a hot-fork child that fails its reconstruction writes the failing step, recorded detail, and negative errno result as one line on its stderr before exiting, which descriptor application has already routed to the branch-private diagnostics stream, so the host learns the exact result alongside the exit status that names the step; the live guarded fork flight saw only exit status 100 (plugin reinitializer) before this change";
+    }
+    {
+      file = "0222-crucible-wait-for-plugin-child-workers.patch";
+      branchSubject = "crucible: wait for the plugin child workers to park";
+      branchCommit = "019aa3e3ef02ec5a0432d98ecf54e2e7a40628bd";
+      branchTree = "050baf86fcf64e96a39e4716b89a27ad189432e8";
+      catalogName = "crucible-plugin-child-worker-settle";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "the child's plugin reinitializer queries the plugin child runtime, at most ten seconds at one-millisecond intervals, until every replacement worker has parked behind the retained hold, because those workers park from their own threads after the synchronous initialization returns; a status that differs from that settling shape in any other way still fails with EPROTO at once, and the bound fails with ETIMEDOUT; the live guarded fork flight reported step 9 detail 4 result -71 before this change";
+    }
+    {
+      file = "0223-crucible-name-failing-qmp-child-stage.patch";
+      branchSubject = "crucible: name the failing child QMP reconstruction stage";
+      branchCommit = "bb022cb284baaafe5d5354f7ed44b2123789b4b9";
+      branchTree = "57bcd5be1801b19a84e40649b946085c92f5320f";
+      catalogName = "crucible-qmp-child-stage-report";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "a hot-fork child whose QMP reconstruction fails writes the failing stage (socket validation and attachment, protocol reset, dispatcher rebuild, iothread restart, or greeting), its result, and the reconstruction basis flags to its stderr, already routed to the branch-private diagnostics stream, and a monitor iothread that misses its start bound reports the replacement's recorded progress; the live guarded fork flight saw only detail 6 result ESTALE before this change";
+    }
+    {
+      file = "0224-crucible-drop-inherited-monitor-fd-names.patch";
+      branchSubject = "crucible: drop inherited monitor descriptor names in the child";
+      branchCommit = "3e56d05507ea58110ca6e0cef1615bf7ea074927";
+      branchTree = "44eda0440a3eabc99aaf6912f2ae95e351264fba";
+      catalogName = "crucible-child-monitor-fd-names";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "a hot-fork child drops the getfd names its source's monitor still lists before judging the monitor's local state, without closing anything, because the child's descriptor table transaction has already closed or replaced every number those names refer to; a monitor whose local state is still unclean names each predicate on the diagnostics stream; the live guarded fork flight found the retained basis stale on exactly that local state before this change";
+    }
+    {
+      file = "0225-crucible-rebuild-child-monitor-iothread-context.patch";
+      branchSubject = "crucible: rebuild the monitor iothread GLib context in the child";
+      branchCommit = "38bf4af24f0dc7990ffe4261e258b0e5c8ee9efa";
+      branchTree = "d01a67686a368b6e97914adf348d1c1db39dc732";
+      catalogName = "crucible-child-monitor-iothread-context";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "a hot-fork child gives its rebuilt monitor iothread a fresh GLib main context and loop, moves the AioContext's GSource into it, and re-homes the held monitor socket and its basis to that context before any input source is attached, because the inherited context records the vanished thread as its owner and GLib lets no other thread acquire it; the live guarded fork flight found the replacement thread failing its thread-default push and waiting forever before this change";
+    }
+    {
+      file = "0226-crucible-idle-rebuilt-dispatcher-in-child.patch";
+      branchSubject = "crucible: run the rebuilt dispatcher to its idle wait in the child";
+      branchCommit = "9f1a3740fd0a62e107f98e986e11eb365df03fe6";
+      branchTree = "3ab3d37f40f409aeeb38334a0b7618c2cda101e4";
+      catalogName = "crucible-child-dispatcher-idle";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "a hot-fork child drives the iohandler context after scheduling its rebuilt QMP dispatcher coroutine until that coroutine reaches its idle wait, and fails the rebuild with EPROTO if the dispatcher is replaced, shut down, or still busy afterwards, because the child's main thread is still inside its reconstruction and would not otherwise run the coroutine before the greeting transition that requires an idle dispatcher; the live guarded fork flight reported that transition stale on exactly the idle predicate before this change";
+    }
+    {
+      file = "0227-crucible-name-failing-console-child-stage.patch";
+      branchSubject = "crucible: name the failing console child stage";
+      branchCommit = "f0764fa8cd30121d4dd2a11537af034cae30a72b";
+      branchTree = "6c2759887ff573876bd21acbf55c25f890a12a6b";
+      catalogName = "crucible-console-child-stage-report";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "a hot-fork child whose console reconstruction fails writes the stale console stage precondition, the reconstruction or release result, and the socket state a stale basis was compared against (attachment flags, frontend, context, state, channel identity, sources, generation) to its stderr, already routed to the branch-private diagnostics stream; the live guarded fork flight saw only detail 7 result ESTALE before this change";
+    }
+    {
+      file = "0228-crucible-admit-default-console-context.patch";
+      branchSubject = "crucible: admit the default main context for the console child";
+      branchCommit = "f23c11490ff6d4877948edcafb06a1acda5fc1ff";
+      branchTree = "bf47a61b0aac17e6d99fbf744accac5ee9fcf9b1";
+      catalogName = "crucible-console-child-default-context";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "a hot-fork child's console reconstruction accepts a basis whose GLib context is NULL, the default main context the console chardev runs on and the child's main thread still owns as the continuation of the forking thread, requiring only the staged identity and the bound chardev and frontend; the live guarded fork flight reported the console basis stale on exactly the context predicate before this change";
+    }
+    {
+      file = "0229-crucible-admit-idle-active-plugin-workers.patch";
+      branchSubject = "crucible: admit idle parked workers in an active plugin child";
+      branchCommit = "c3c99444f012e317fccca6263759514a6430ecc4";
+      branchTree = "bc8a27ebbcae5432bcc8f6f3091273a431e4c0c1";
+      catalogName = "crucible-active-plugin-child-workers";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "activating a hot-fork plugin child requires the active phase, the active and mapping-installed flags, and the plan identity, but no longer an empty parked-worker mask, because a released worker that is idle parks at its receive safe point; the held state alone requires every worker parked with nothing pending or in flight, and a release that fails or activates into a mismatched status is named on the diagnostics stream; the live guarded fork flight failed activation with EPROTO on the parked mask before this change";
+    }
+    {
+      file = "0230-crucible-report-child-file-install-failure.patch";
+      branchSubject = "crucible: report a failed child-file install on the diagnostics stream";
+      branchCommit = "36c07dddbaecf6abe1db618aa656f12f09431f50";
+      branchTree = "beab37891dd7e5721f348db0b589ba92cf5d3605";
+      catalogName = "crucible-child-file-install-report";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "a hot-fork child whose child-private file installation or empty-child source release fails writes the block layer's error message to its stderr, already routed to the branch-private diagnostics stream, before exiting with the step that names the failure; the live guarded fork flight saw only step 13 before this change";
+    }
+    {
+      file = "0231-crucible-name-unsettled-source-descriptor.patch";
+      branchSubject = "crucible: name the node and check behind an unsettled source descriptor";
+      branchCommit = "62b96971c2a61517b3246feb6339eb9c8de63176";
+      branchTree = "225cac4fa42dab598aba99a38a9f8ba5b8425a6d";
+      catalogName = "crucible-unsettled-source-descriptor-report";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "the file driver's hot-fork source query names the block node and the settled-descriptor condition it failed (descriptor number, pending reopen, pending permission change, fstat result, regular-file check, descriptor flags) in its error, which a fork child reads on its diagnostics stream; the live guarded fork flight saw only the generic settled-descriptor message before this change";
+    }
+    {
+      file = "0232-crucible-retain-child-file-plan-descriptors.patch";
+      branchSubject = "crucible: retain the child-file plan descriptors instead of closing them";
+      branchCommit = "45df8f9949098df7b2029aeb4f6b63c322d78300";
+      branchTree = "a0e0a397aa80f180aac013cbc242b48731c6846b";
+      catalogName = "crucible-child-file-plan-descriptors-retained";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "a fork operation leaves the child-file plan's descriptors (the pinned source descriptors the inherited graph references and the prepared replacements) in the child's retained table rather than adding them to the descriptors the child must close, and refuses to start a fork whose plan descriptor collides with a closed one, so the child's adoption can query each source and reopen each replacement; the live guarded fork flight found the source file descriptor closed at adoption before this change";
+    }
+    {
+      file = "0233-crucible-drop-inherited-current-monitor.patch";
+      branchSubject = "crucible: drop the inherited current-monitor bindings in the child";
+      branchCommit = "830508b8510e39ba1c88c5dc6b41722d93328f77";
+      branchTree = "22d25296cd29a3bb82d7953227887ae8395e7fd0";
+      catalogName = "crucible-child-current-monitor-bindings";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "a hot-fork child drops every current-monitor binding during its monitor reconstruction, because the source's monitor thread was inside the fork command and the C library hands that vanished thread's stack and thread-local storage, and so its leader coroutine, to the replacement thread, which would otherwise inherit the binding and trip dispatch's assertion that no monitor is current; the live guarded fork flight lost the child to that assertion on its first out-of-band command before this change";
+    }
+    {
+      file = "0234-crucible-forkable-template-ram.patch";
+      branchSubject = "crucible: make guest RAM forkable while a template is retained";
+      branchCommit = "662508040ae24c244d9852c41c1ded3a24c1f236";
+      branchTree = "6a2d9247bf0f20a742489193dc6c1be67ad0e166";
+      catalogName = "crucible-forkable-template-ram";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "a hot-fork template marks every RAM block's host memory MADV_DOFORK before it holds its barriers, so a fork child inherits guest RAM as private copy-on-write pages, and restores the MADV_DONTFORK that RAM block creation applies when the template completes; the change is refused under KVM, which needs MADV_DONTFORK, and skipped for a qtest server, which never applied it; the live guarded fork flight lost the child to a fault on the first guest page its VMState save read before this change";
     }
   ];
   catalogOnlyCapabilities = [

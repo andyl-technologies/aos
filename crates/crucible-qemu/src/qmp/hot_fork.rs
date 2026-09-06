@@ -64,7 +64,7 @@ pub(crate) use child_process_contract::{
 pub use child_process_contract::{
     QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_COMMAND,
     QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_SCHEMA_VERSION, QmpHotForkChildProcessContractIdentity,
-    QmpHotForkChildProcessContractState,
+    QmpHotForkChildProcessContractNames, QmpHotForkChildProcessContractState,
 };
 pub(crate) use child_qmp::parse_hot_fork_child_qmp_state;
 pub use child_qmp::{
@@ -93,6 +93,7 @@ pub use plugin_endpoints::{
     QmpHotForkPluginEndpointState,
 };
 pub(crate) use private_rings::parse_hot_fork_private_ring_state;
+pub(crate) use private_rings::source_mapping_extent;
 pub use private_rings::{
     QMP_HOT_FORK_PRIVATE_RINGS_COMMAND, QMP_HOT_FORK_PRIVATE_RINGS_SCHEMA_VERSION,
     QmpHotForkPrivateRingState,

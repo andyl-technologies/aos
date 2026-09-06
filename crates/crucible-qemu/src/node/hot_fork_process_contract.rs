@@ -41,8 +41,7 @@ impl QemuHotForkChildProcessContractStageProof {
 
 #[derive(Debug)]
 pub(super) struct QemuHotForkChildProcessContractStage {
-    cgroup_name: crate::QmpDescriptorName,
-    cancellation_name: crate::QmpDescriptorName,
+    names: crate::QmpHotForkChildProcessContractNames,
     proof: QemuHotForkChildProcessContractStageProof,
 }
 
@@ -60,8 +59,7 @@ impl QemuHotForkChildProcessContractStage {
             && !state.consumed()
             && state.generation() == self.proof.generation
             && state.template_generation() == self.proof.template_generation
-            && state.cgroup_name() == Some(&self.cgroup_name)
-            && state.cancellation_name() == Some(&self.cancellation_name)
+            && state.names_match(&self.names)
             && state.identity() == Some(self.proof.identity)
             && !self.proof.consumed
     }
@@ -74,13 +72,18 @@ impl QemuNode {
         generation: u64,
         template_generation: u64,
     ) -> Result<(), QemuNodeChannelError> {
-        let identity = crate::QmpHotForkChildProcessContractIdentity::new(1, 2, 3, 4)
+        let identity = crate::QmpHotForkChildProcessContractIdentity::new(1, 2, 9, 3, 4)
             .map_err(QemuNodeChannelError::from)?;
         self.hot_fork_child_process_contract_stage = Some(QemuHotForkChildProcessContractStage {
-            cgroup_name: crate::QmpDescriptorName::new("test-hot-fork-cgroup")
-                .map_err(QemuNodeChannelError::from)?,
-            cancellation_name: crate::QmpDescriptorName::new("test-hot-fork-cancellation")
-                .map_err(QemuNodeChannelError::from)?,
+            names: crate::QmpHotForkChildProcessContractNames::new(
+                crate::QmpDescriptorName::new("test-hot-fork-cgroup")
+                    .map_err(QemuNodeChannelError::from)?,
+                crate::QmpDescriptorName::new("test-hot-fork-cgroup-procs")
+                    .map_err(QemuNodeChannelError::from)?,
+                crate::QmpDescriptorName::new("test-hot-fork-cancellation")
+                    .map_err(QemuNodeChannelError::from)?,
+            )
+            .map_err(QemuNodeChannelError::from)?,
             proof: QemuHotForkChildProcessContractStageProof {
                 generation,
                 template_generation,
@@ -91,12 +94,16 @@ impl QemuNode {
         Ok(())
     }
 
-    /// Stages the target attempt's cgroup and sticky cancellation descriptors.
+    /// Stages the target attempt's cgroup, `cgroup.procs`, and cancellation
+    /// descriptors.
     ///
-    /// QEMU authenticates both imported descriptors, retains independent
+    /// QEMU authenticates all three imported descriptors, retains independent
     /// duplicates, and binds the resulting one-shot generation to the current
-    /// retained template. The later fork uses `clone3(CLONE_INTO_CGROUP)`, so
-    /// the child is charged to the target cgroup from its first instruction.
+    /// retained template. The fork child writes itself into the retained
+    /// `cgroup.procs` as its first instruction; the kernel authorizes that
+    /// write with the credentials of the supervisor that opened the
+    /// descriptor, so the child is charged to the target cgroup before any
+    /// other instruction runs.
     ///
     /// # Errors
     ///
@@ -128,15 +135,14 @@ impl QemuNode {
             ));
         }
 
-        let (cgroup, cancellation) =
-            contract
-                .duplicate_hot_fork_descriptors()
-                .map_err(|source| {
-                    QemuNodeChannelError::new(
-                        "stage hot-fork child process contract",
-                        source.to_string(),
-                    )
-                })?;
+        let (cgroup, cgroup_procs, cancellation) = contract
+            .duplicate_hot_fork_descriptors()
+            .map_err(|source| {
+                QemuNodeChannelError::new(
+                    "stage hot-fork child process contract",
+                    source.to_string(),
+                )
+            })?;
         let status = rustix::fs::fstat(&cgroup).map_err(|source| {
             QemuNodeChannelError::new("stage hot-fork child process contract", source.to_string())
         })?;
@@ -148,6 +154,19 @@ impl QemuNode {
         }
         let cgroup_device = status.st_dev;
         let cgroup_inode = status.st_ino;
+        let procs_status = rustix::fs::fstat(&cgroup_procs).map_err(|source| {
+            QemuNodeChannelError::new("stage hot-fork child process contract", source.to_string())
+        })?;
+        if rustix::fs::FileType::from_raw_mode(procs_status.st_mode)
+            != rustix::fs::FileType::RegularFile
+            || procs_status.st_dev != cgroup_device
+        {
+            return Err(QemuNodeChannelError::new(
+                "stage hot-fork child process contract",
+                "target cgroup.procs descriptor is not a control file of the target cgroup",
+            ));
+        }
+        let cgroup_procs_inode = procs_status.st_ino;
         let cancellation_eventfd_id = super::hot_fork_plugin_endpoints::eventfd_id(
             cancellation.as_raw_fd(),
         )
@@ -157,6 +176,7 @@ impl QemuNode {
         let identity = crate::QmpHotForkChildProcessContractIdentity::new(
             cgroup_device,
             cgroup_inode,
+            cgroup_procs_inode,
             cancellation_eventfd_id,
             contract.maximum_writable_bytes(),
         )
@@ -164,18 +184,28 @@ impl QemuNode {
         let cgroup_name =
             crate::QmpDescriptorName::new(format!("crucible-hfork-cgroup-v1-{cgroup_inode:016x}"))
                 .map_err(QemuNodeChannelError::from)?;
+        let cgroup_procs_name = crate::QmpDescriptorName::new(format!(
+            "crucible-hfork-cgroup-procs-v1-{cgroup_procs_inode:016x}"
+        ))
+        .map_err(QemuNodeChannelError::from)?;
         let cancellation_name = crate::QmpDescriptorName::new(format!(
             "crucible-hfork-cancel-v1-{cancellation_eventfd_id:016x}"
         ))
+        .map_err(QemuNodeChannelError::from)?;
+        let names = crate::QmpHotForkChildProcessContractNames::new(
+            cgroup_name,
+            cgroup_procs_name,
+            cancellation_name,
+        )
         .map_err(QemuNodeChannelError::from)?;
 
         let state = self
             .channels
             .qmp_machine_control
             .install_hot_fork_child_process_contract(
-                &cgroup_name,
+                &names,
                 cgroup.as_fd(),
-                &cancellation_name,
+                cgroup_procs.as_fd(),
                 cancellation.as_fd(),
                 identity,
                 template_generation,
@@ -190,8 +220,7 @@ impl QemuNode {
             consumed: false,
         };
         self.hot_fork_child_process_contract_stage = Some(QemuHotForkChildProcessContractStage {
-            cgroup_name,
-            cancellation_name,
+            names,
             proof: proof.clone(),
         });
         Ok(proof)
@@ -228,11 +257,7 @@ impl QemuNode {
         let state = self
             .channels
             .qmp_machine_control
-            .release_hot_fork_child_process_contract(
-                &stage.cgroup_name,
-                &stage.cancellation_name,
-                stage.proof.identity,
-            )?;
+            .release_hot_fork_child_process_contract(&stage.names, stage.proof.identity)?;
         self.hot_fork_child_process_contract_stage = None;
         Ok(state)
     }
