@@ -20,6 +20,7 @@ use aos_sandbox_protocol::{ValidatedAssignmentFence, ValidatedMountRequest};
 use serde::{Deserialize, Serialize};
 
 use crate::authorization::semantics_v1::MountCatalogCommitmentV1;
+use crate::destination_slot::catalog_relative_path as destination_slot_catalog_path;
 use crate::host_scope::ObservedMountScope;
 use crate::{MountError, Result};
 
@@ -681,6 +682,17 @@ impl MountCatalogEntry {
         ] {
             validate_relative(path)?;
         }
+        let expected_slot_path = destination_slot_catalog_path(
+            &self.assignment.sandbox_id,
+            &self.assignment.incarnation_id,
+            self.namespace_generation,
+            &self.destination_slot_id,
+        );
+        if Path::new(&self.target_slot_path) != expected_slot_path {
+            return Err(MountError::State(
+                "mount catalog destination does not name its broker-derived slot pin".to_owned(),
+            ));
+        }
         for identity in [
             self.source_identity,
             self.target_root_identity,
@@ -828,7 +840,9 @@ mod tests {
             mount_namespace_path: "pins/mntns".to_owned(),
             user_namespace_path: "pins/userns".to_owned(),
             target_root_path: "pins/root".to_owned(),
-            target_slot_path: "pins/slot".to_owned(),
+            target_slot_path: destination_slot_catalog_path(&[1; 16], &[2; 16], 1, &[5; 16])
+                .to_string_lossy()
+                .into_owned(),
             target_relative_path: "run/aos/attachments/slot".to_owned(),
             source_identity: FileIdentityWire {
                 device: 1,
@@ -851,6 +865,11 @@ mod tests {
                 inode: 5,
             },
         };
+        assert!(entry.validate().is_ok());
+        let mut redirected_slot = entry.clone();
+        redirected_slot.target_slot_path = "pins/slot".to_owned();
+        assert!(redirected_slot.validate().is_err());
+
         let directory = |device, inode| FileIdentity {
             device,
             inode,

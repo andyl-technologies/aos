@@ -3090,3 +3090,53 @@ system-structure checks. This closes the portable-spec declaration-proof
 portion of `SBX-VIEW-01`; node-local resolution to a broker-owned pinned
 destination descriptor, slot materialization and reaping, lease-expiry
 scheduling, and live Mount namespace VM qualification remain.
+
+### Crash-recoverable destination-slot materialization
+
+Mount can now turn one exact portable destination-slot declaration into a
+broker-owned directory beneath its private attachment-anchor root. The
+`DestinationSlotBindingV1` API accepts no caller path: it derives a catalog
+location from the sandbox, incarnation, namespace generation, and slot ID, and
+derives the fixed payload location under `run/aos/attachments`. Construction
+reproduces the canonical sandbox-spec descriptor and requires that exact
+specification to declare the slot before any node-local effect is possible.
+Catalog validation now rejects a protected destination pin that does not use
+the broker-derived catalog location.
+
+Journal namespace 21 stores fixed-size `AOSMSL01` resources through durable
+`Materializing`, `Ready`, `Reaping`, and `Released` phases. Materialization
+commits intent before creating the directory and commits its exact device,
+inode, and kernel-unique attachment-anchor mount ID before returning a live
+close-on-exec `O_PATH` pin. Same-boot recovery accepts only the exact retained
+directory; absence, replacement, changed ownership or mode, and mount crossing
+fail closed. Interrupted creation resumes from either side of `mkdirat`.
+Operation IDs remain unique across all retained resources, exact requests
+replay, conflicting bindings do not redirect an existing slot, and released
+identities remain permanent tombstones.
+
+Reaping compares the caller's expected ready-record digest and checks the
+complete Mount resource table both before and after durable reap admission
+under the caller's mutation serialization. Admission closes new resolution
+before `unlinkat`; an interrupted removal resumes from either directory state.
+A stale-boot resource exposes no descriptor and can advance only to its
+permanent tombstone after proving that no path or Mount resource remains.
+
+Focused validation covers canonical declaration and path derivation, exact
+identity and descriptor replay, operation and binding conflicts, both
+materialization crash boundaries, both removal states, pre- and post-admission
+usage checks, same-boot absence and inode substitution, stale-boot cleanup, and
+every fixed record byte. All 356 sandbox unit tests, five downstream API tests,
+74 host-runnable Mount unit tests, the helper integration test, strict
+all-target/all-feature Clippy, warnings-as-errors rustdoc, and Rust formatting
+pass. The hermetic `nix-build -A checks.eval --cores 8` gate passes the release
+build, all 4,674 workspace tests with five skipped, configuration evaluation,
+and system-structure checks. Its first test run encountered the repository's
+known concurrent SQLite-open race in one Hub test; that exact test and the
+complete hermetic retry passed without a source change.
+
+This advances the node-local destination half of `SBX-VIEW-01` without granting
+authority by itself. The signed Mount protocol and service still need to admit
+the exact portable declaration, own catalog publication and resource-table
+serialization, install the attachment anchor read-only before payload launch,
+and orchestrate lease-expiry reaping. Source-handle resolution, live namespace
+VM qualification, and end-to-end attachment lifecycle coverage also remain.

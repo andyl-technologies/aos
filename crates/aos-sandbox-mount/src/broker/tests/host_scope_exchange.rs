@@ -122,9 +122,15 @@ fn assert_prepared_catalog(
     let directory = tempfile::tempdir().unwrap();
     std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let source_path = directory.path().join("source");
-    let slot_path = directory.path().join("slot");
+    let slot_relative_path = crate::destination_slot::catalog_relative_path(
+        mount.fence().sandbox_id(),
+        mount.fence().incarnation_id(),
+        mount.namespace_generation(),
+        mount.destination_slot_id(),
+    );
+    let slot_path = directory.path().join(&slot_relative_path);
     std::fs::create_dir(&source_path).unwrap();
-    std::fs::create_dir(&slot_path).unwrap();
+    std::fs::create_dir_all(&slot_path).unwrap();
     let relative_slot = slot_path.strip_prefix("/").unwrap().to_str().unwrap();
     let source = std::fs::metadata(&source_path).unwrap();
     let slot = std::fs::metadata(&slot_path).unwrap();
@@ -147,11 +153,19 @@ fn assert_prepared_catalog(
             "view_revision": view,
             "source_generation": mount.source_generation(),
             "namespace_generation": mount.namespace_generation(),
+            "desired_attachment_generation": mount.desired_attachment_generation(),
+            "resource_attachment_generation": mount.resource_attachment_generation(),
+            "source_view_id": mount.source_view_id(),
+            "source_incarnation_id": null,
+            "source_consistency": "immutable_revision",
+            "attachment_lease_id": mount.attachment_lease_id(),
+            "attachment_lease_issued_seconds": mount.attachment_lease_issued_seconds(),
+            "attachment_lease_expires_seconds": mount.attachment_lease_expires_seconds(),
             "source_path": "source",
             "mount_namespace_path": "unused/mount",
             "user_namespace_path": "unused/user",
             "target_root_path": "unused/root",
-            "target_slot_path": "slot",
+            "target_slot_path": slot_relative_path,
             "target_relative_path": relative_slot,
             "source_identity": { "device": source.dev(), "inode": source.ino() },
             "mount_namespace_identity": {

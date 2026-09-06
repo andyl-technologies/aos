@@ -120,6 +120,8 @@ pub enum RecordNamespace {
     AttachmentSlot = 19,
     /// Canonical portable sandbox specifications indexed by content identity.
     SandboxSpec = 20,
+    /// Node-local broker materialization state for destination-slot anchors.
+    MountDestinationSlot = 21,
 }
 
 impl RecordNamespace {
@@ -145,6 +147,7 @@ impl RecordNamespace {
             18 => Ok(Self::FilesystemViewRevision),
             19 => Ok(Self::AttachmentSlot),
             20 => Ok(Self::SandboxSpec),
+            21 => Ok(Self::MountDestinationSlot),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }
@@ -1908,13 +1911,14 @@ mod tests {
             RecordNamespace::FilesystemViewRevision,
             RecordNamespace::AttachmentSlot,
             RecordNamespace::SandboxSpec,
+            RecordNamespace::MountDestinationSlot,
         ];
         for (index, namespace) in namespaces.into_iter().enumerate() {
             let code = u8::try_from(index + 1).unwrap();
             assert_eq!(namespace as u8, code);
             assert_eq!(RecordNamespace::from_byte(code).unwrap(), namespace);
         }
-        for code in [0, 21, 255] {
+        for code in [0, 22, 255] {
             assert!(RecordNamespace::from_byte(code).is_err());
         }
     }

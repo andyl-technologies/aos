@@ -7,6 +7,7 @@
 //!
 //! - [`broker`] implements crash-safe request ordering and replay;
 //! - [`catalog`] resolves exact assignment-bound descriptor pins;
+//! - [`destination_slot`] materializes and pins broker-owned attachment anchors;
 //! - [`plan`] defines the sealed, fixed helper handoff;
 //! - [`spawn`] performs the sole audited `posix_spawn` descriptor mapping;
 //! - [`helper`] executes one namespace-local syscall plan and exits;
@@ -18,6 +19,7 @@
 pub mod authorization;
 pub mod broker;
 pub mod catalog;
+pub mod destination_slot;
 pub mod helper;
 pub mod host_scope;
 pub mod keeper;
