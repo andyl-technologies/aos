@@ -104,6 +104,7 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
             ScriptedQmpMachineControl {
                 log: Arc::clone(&log),
                 process_id,
+                track_process_endpoint_retirement: false,
                 fail_stop: false,
                 fail_snapshot: false,
                 timeout_snapshot: false,
