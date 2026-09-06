@@ -441,6 +441,12 @@ fn select_component(
             rejected.push(reject(candidate, "outside-maintained-stream"));
             continue;
         }
+        if let Some(minor) = component.release_policy.series_minor
+            && key.minor() != Some(minor)
+        {
+            rejected.push(reject(candidate, "outside-maintained-stream"));
+            continue;
+        }
         if key.cmp(&current) != Ordering::Greater {
             rejected.push(reject(candidate, "not-newer"));
             continue;
@@ -512,6 +518,14 @@ impl VersionKey {
         }
     }
 
+    fn minor(&self) -> Option<u64> {
+        match self {
+            Self::Semver(version) => Some(version.minor),
+            Self::Numeric(parts) => Some(parts.get(1).copied().unwrap_or(0)),
+            Self::Provider(_) => None,
+        }
+    }
+
     fn is_prerelease(&self) -> bool {
         matches!(self, Self::Semver(version) if !version.pre.is_empty())
     }
@@ -576,6 +590,12 @@ pub fn version_is_newer_in_stream(
 
     if let Some(major) = policy.series_major
         && candidate.major() != Some(major)
+    {
+        return Ok(false);
+    }
+
+    if let Some(minor) = policy.series_minor
+        && candidate.minor() != Some(minor)
     {
         return Ok(false);
     }
@@ -652,6 +672,7 @@ mod tests {
                         strategy: ReleaseStrategy::LatestInSeries,
                         version_scheme: VersionScheme::Semver,
                         series_major: Some(1),
+                        series_minor: None,
                         allow_prerelease: false,
                         minimum_age_days,
                     },
@@ -769,6 +790,19 @@ mod tests {
             "1.3.1",
             "2.0.0"
         )?);
+        Ok(())
+    }
+
+    #[test]
+    fn minor_stream_accepts_only_patch_updates() -> Result<()> {
+        let mut policy = unit(0)?.components[&ComponentId::parse("main")?]
+            .release_policy
+            .clone();
+        policy.series_minor = Some(3);
+
+        assert!(version_is_newer_in_stream(&policy, "1.3.1", "1.3.2")?);
+        assert!(!version_is_newer_in_stream(&policy, "1.3.1", "1.4.0")?);
+        assert!(!version_is_newer_in_stream(&policy, "1.3.1", "2.0.0")?);
         Ok(())
     }
 

@@ -1,24 +1,88 @@
 ##! Go — the Go programming language, built from source
 {
   mkDerivation,
-  fetchurl,
+  mkUpstream,
   gnumake,
   go-1_24,
   stdenv,
   buildPackages,
 }: let
-  version = "1.26.8";
-  src = fetchurl {
-    urls = [
-      "https://go.dev/dl/go${version}.src.tar.gz"
-    ];
-    hash = "sha256-Tjm5jkL5RvoFrIvFtxh335fb23y7Gnd7VBZnrXEX/S4=";
+  upstream = mkUpstream {
+    schema = "aos.package-update/v1";
+    unitId = "go";
+    family = "go";
+    stream = "1.27";
+    owner = "pkgs/toolchain/go/go.nix";
+    classification = "assisted";
+    package = {
+      currentVersion = "1.27.1";
+      versionProjection = {
+        kind = "component-field";
+        component = "main";
+        field = "comparisonVersion";
+      };
+    };
+    components.main = {
+      current = {
+        upstreamId = "go1.27.1";
+        comparisonVersion = "1.27.1";
+      };
+      discovery.primary.provider = "go-releases";
+      discovery.advisors.repology.project = "go";
+      releasePolicy = {
+        strategy = "latest-in-series";
+        versionScheme = "semver";
+        series = {
+          major = 1;
+          minor = 27;
+        };
+        allowPrerelease = false;
+        minimumAgeDays = 0;
+      };
+      sources.source = {
+        fetcher = "fetchurl";
+        urlTemplates = [
+          {
+            scheme = "https";
+            authority = "go.dev";
+            path = [
+              "dl"
+              {
+                parts = [
+                  {literal = "go";}
+                  {
+                    componentField = {
+                      component = "main";
+                      field = "comparisonVersion";
+                    };
+                  }
+                  {literal = ".src.tar.gz";}
+                ];
+              }
+            ];
+          }
+        ];
+        hash = "sha256-TkCKuuEm2Ra2FkYnGT8sVPDjyhMS1pO4bbRfhiqyOLE=";
+        hashMode = "flat";
+        allowedRedirectHosts = [
+          "dl.google.com"
+          "go.dev"
+        ];
+      };
+    };
+    policy = {
+      lifecycle = "supported";
+      riskFloor = "high";
+    };
   };
+  version = upstream.version;
+  src = upstream.components.main.sources.source;
+  update = upstream.forPackage {member = "go";};
 in
   if stdenv.hostPlatform.isDarwin
   then
     import ./_go-darwin.nix {
-      inherit mkDerivation version src stdenv;
+      inherit mkDerivation version src update stdenv;
       pname = "go";
       nativeGo = buildPackages.go;
       description = "Go ${version} — Darwin-hosted Go compiler and tools";
@@ -27,6 +91,7 @@ in
     mkDerivation {
       pname = "go";
       inherit version;
+      inherit update;
 
       inherit src;
 

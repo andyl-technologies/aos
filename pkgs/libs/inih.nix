@@ -15,7 +15,6 @@
     repository = "benhoyt/inih";
     provider = "github-releases";
     tagPrefix = "r";
-    major = 58;
     versionScheme = "numeric";
     source = {
       authority = "github.com";

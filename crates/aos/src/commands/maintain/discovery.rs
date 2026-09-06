@@ -117,6 +117,26 @@ pub(super) async fn scan(
                 fresh_primary
             } else {
                 match &component.primary {
+                    Some(DiscoveryProvider::GoReleases) => match go_releases(
+                        &client,
+                        store,
+                        &component.current.upstream_id,
+                        evaluated_at,
+                    )
+                    .await
+                    {
+                        Ok(observation) => {
+                            observations.insert(key.clone(), observation.clone());
+                            Some(observation)
+                        }
+                        Err(error) => {
+                            warnings.push(format!(
+                                "{} {} primary discovery failed: {error:#}",
+                                unit.unit_id, component_id
+                            ));
+                            None
+                        }
+                    },
                     Some(DiscoveryProvider::GithubReleases {
                         repository,
                         tag_prefix,
@@ -620,7 +640,7 @@ async fn github_releases(
             break;
         }
     }
-    record_github_first_observed(
+    record_provider_first_observed(
         store,
         "github-releases",
         repository,
@@ -643,6 +663,110 @@ async fn github_releases(
         adapter_version: ADAPTER_VERSION.to_string(),
         coverage,
         response_digest: store.store_provider_response(&response_bytes)?,
+        candidates,
+    };
+    observation.validate()?;
+    Ok(observation)
+}
+
+async fn go_releases(
+    client: &reqwest::Client,
+    store: &StateStore,
+    current_identity: &str,
+    retrieved_at: u64,
+) -> Result<UpstreamObservationV1> {
+    let request_url = "https://go.dev/dl/?mode=json";
+    let response = client
+        .get(request_url)
+        .header(USER_AGENT, USER_AGENT_VALUE)
+        .header(ACCEPT, "application/json")
+        .send()
+        .await
+        .context("requesting Go release feed")?;
+    let status = response.status();
+    if !status.is_success() {
+        bail!("Go release feed returned HTTP {status}");
+    }
+
+    let bytes = bounded_body(response).await?;
+    let value = canonical::parse_json(&bytes, "Go release feed")?;
+    let entries = value
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("Go release feed is not an array"))?;
+    let mut candidates = Vec::new();
+    for entry in entries {
+        if !entry
+            .get("stable")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let raw_id = required_string(entry, "version", "Go release")?;
+        let raw_version = raw_id
+            .strip_prefix("go")
+            .filter(|version| !version.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("Go release has an invalid version identity"))?;
+        if raw_id.len() > 512 || raw_version.len() > 256 {
+            bail!("Go release identity is oversized");
+        }
+        let source_filename = format!("{raw_id}.src.tar.gz");
+        let has_source = entry
+            .get("files")
+            .and_then(Value::as_array)
+            .is_some_and(|files| {
+                files.iter().any(|file| {
+                    file.get("kind").and_then(Value::as_str) == Some("source")
+                        && file.get("filename").and_then(Value::as_str)
+                            == Some(source_filename.as_str())
+                })
+            });
+        if !has_source {
+            continue;
+        }
+
+        candidates.push(ObservationCandidate {
+            raw_id: raw_id.clone(),
+            raw_version: raw_version.to_string(),
+            published_at_unix: None,
+            first_observed_at_unix: retrieved_at,
+            prerelease: false,
+            yanked: false,
+            release_url: Some(format!("https://go.dev/dl/#{raw_id}")),
+            status: None,
+            vulnerable: None,
+            licenses: Vec::new(),
+        });
+    }
+    record_provider_first_observed(store, "go-releases", "go", &mut candidates, retrieved_at)?;
+    candidates.sort_by(|left, right| left.raw_id.cmp(&right.raw_id));
+    if candidates
+        .windows(2)
+        .any(|pair| pair[0].raw_id == pair[1].raw_id)
+    {
+        bail!("Go release feed returned duplicate release identities");
+    }
+    let coverage = if candidates
+        .iter()
+        .any(|candidate| candidate.raw_id == current_identity)
+    {
+        ObservationCoverage::ThroughCurrent {
+            identity: current_identity.to_string(),
+        }
+    } else {
+        ObservationCoverage::Truncated {
+            reason: "go-feed-does-not-cover-current".to_string(),
+        }
+    };
+    let observation = UpstreamObservationV1 {
+        schema: aos_maintain::UPSTREAM_OBSERVATION_V1.to_string(),
+        provider: "go-releases".to_string(),
+        project: "go".to_string(),
+        retrieved_at_unix: retrieved_at,
+        request_url: request_url.to_string(),
+        adapter_version: ADAPTER_VERSION.to_string(),
+        coverage,
+        response_digest: store.store_provider_response(&bytes)?,
         candidates,
     };
     observation.validate()?;
@@ -746,7 +870,7 @@ async fn github_tags(
             break;
         }
     }
-    record_github_first_observed(
+    record_provider_first_observed(
         store,
         "github-tags",
         repository,
@@ -775,7 +899,7 @@ async fn github_tags(
     Ok(observation)
 }
 
-fn record_github_first_observed(
+fn record_provider_first_observed(
     store: &StateStore,
     provider: &str,
     repository: &str,
