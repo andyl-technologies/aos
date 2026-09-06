@@ -22,6 +22,9 @@ use crate::{
     ReconcileOutcome, Reconciler, ReconcilerError, SingleNodeEffectExecutor,
 };
 
+#[cfg(target_os = "linux")]
+mod destination_slot;
+
 const REQUEST_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.controller-request.v1\0";
 const MAXIMUM_ACTIVATION_BYTES: usize = 1024 * 1024;
 const MAXIMUM_PENDING_OPERATIONS: usize = 1_000_000;

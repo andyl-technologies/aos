@@ -308,6 +308,25 @@ impl CurrentDestinationSlotReconciliationV1 {
     pub const fn action(&self) -> DestinationSlotReconciliationActionV1 {
         self.action
     }
+
+    pub(crate) fn recheck(&self, journal: &mut Journal) -> Result<(), MountAttemptError> {
+        recheck_current(journal, &self.slot).map_err(|_| MountAttemptError::Conflict)?;
+        self.snapshot.recheck(journal)?;
+
+        let creation =
+            creation_operation(journal, &self.slot).map_err(|_| MountAttemptError::CorruptState)?;
+        let resource = matching_resource(&self.slot, &self.snapshot.inventory)?;
+        if let Some(resource) = resource {
+            validate_binding(&self.slot, resource)?;
+            if resource.materialization().operation_id() != creation.as_bytes() {
+                return Err(MountAttemptError::Conflict);
+            }
+        }
+        if classify(&self.slot, creation, resource)? != self.action {
+            return Err(MountAttemptError::Conflict);
+        }
+        Ok(())
+    }
 }
 
 struct QuerySuccess {
@@ -488,16 +507,7 @@ pub(crate) fn reconcile_current(
 
     let creation_operation =
         creation_operation(journal, &slot).map_err(|_| MountAttemptError::CorruptState)?;
-    let matching: Vec<&ValidatedDestinationSlotInventoryRecord> = snapshot
-        .inventory
-        .slots()
-        .iter()
-        .filter(|resource| resource.destination_slot_id() == slot.slot_id().as_bytes())
-        .collect();
-    if matching.len() > 1 {
-        return Err(MountAttemptError::Conflict);
-    }
-    let resource = matching.first().copied();
+    let resource = matching_resource(&slot, &snapshot.inventory)?;
     if let Some(resource) = resource {
         validate_binding(&slot, resource)?;
         if resource.materialization().operation_id() != creation_operation.as_bytes() {
@@ -514,6 +524,21 @@ pub(crate) fn reconcile_current(
         snapshot,
         action,
     })
+}
+
+pub(crate) fn matching_resource<'a>(
+    slot: &DurableAttachmentSlotV1,
+    inventory: &'a ValidatedDestinationSlotInventory,
+) -> Result<Option<&'a ValidatedDestinationSlotInventoryRecord>, MountAttemptError> {
+    let mut matching = inventory
+        .slots()
+        .iter()
+        .filter(|resource| resource.destination_slot_id() == slot.slot_id().as_bytes());
+    let resource = matching.next();
+    if matching.next().is_some() {
+        return Err(MountAttemptError::Conflict);
+    }
+    Ok(resource)
 }
 
 fn validate_binding(

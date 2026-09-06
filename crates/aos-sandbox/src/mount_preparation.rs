@@ -856,7 +856,7 @@ fn request_header(
     }
 }
 
-fn current_fence(target: &CurrentNamespaceTarget) -> AssignmentFence {
+pub(crate) fn current_fence(target: &CurrentNamespaceTarget) -> AssignmentFence {
     let binding = target.runtime_generation().scope().binding();
     let manifest = binding.manifest().manifest();
     AssignmentFence {

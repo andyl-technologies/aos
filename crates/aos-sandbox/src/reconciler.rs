@@ -537,6 +537,10 @@ pub enum ReconcilerError {
     #[cfg(target_os = "linux")]
     #[error("destination-slot inventory failed: {0}")]
     DestinationSlotInventory(#[source] Box<crate::mount_attempt::MountAttemptError>),
+    /// Protected destination-slot effect history could not be validated.
+    #[cfg(target_os = "linux")]
+    #[error("destination-slot effect failed: {0}")]
+    DestinationSlotEffect(#[source] Box<crate::DestinationSlotEffectError>),
     /// Protected namespace-target allocation history could not be validated.
     #[cfg(target_os = "linux")]
     #[error("namespace target failed: {0}")]
@@ -1289,6 +1293,34 @@ where
                 #[cfg(not(target_os = "linux"))]
                 return Err(ReconcilerError::CorruptLedger(
                     "mount inventory requires Linux validation",
+                ));
+            }
+            if self
+                .journal
+                .records(RecordNamespace::DestinationSlotAttempt)
+                .next()
+                .is_some()
+            {
+                #[cfg(target_os = "linux")]
+                crate::destination_slot_effect::validate_attempt_namespace(&mut self.journal)
+                    .map_err(|error| ReconcilerError::DestinationSlotEffect(Box::new(error)))?;
+                #[cfg(not(target_os = "linux"))]
+                return Err(ReconcilerError::CorruptLedger(
+                    "destination-slot attempts require Linux validation",
+                ));
+            }
+            if self
+                .journal
+                .records(RecordNamespace::DestinationSlotCompletion)
+                .next()
+                .is_some()
+            {
+                #[cfg(target_os = "linux")]
+                crate::destination_slot_effect::validate_completion_namespace(&mut self.journal)
+                    .map_err(|error| ReconcilerError::DestinationSlotEffect(Box::new(error)))?;
+                #[cfg(not(target_os = "linux"))]
+                return Err(ReconcilerError::CorruptLedger(
+                    "destination-slot completions require Linux validation",
                 ));
             }
             if self

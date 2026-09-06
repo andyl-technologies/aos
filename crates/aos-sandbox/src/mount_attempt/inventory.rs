@@ -50,7 +50,7 @@ const MAXIMUM_QUERY_BYTES: usize = 4 * 1024;
 const MAXIMUM_RECORD_BYTES: usize = 16 * 1024 * 1024 - 1024;
 const KEY: &[u8] = b"latest";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.mount-inventory.transaction.v1\0";
-const CONTROLLER_STATE_DOMAIN: &[u8] = b"aos.sandbox.mount-inventory.controller-state.v6\0";
+const CONTROLLER_STATE_DOMAIN: &[u8] = b"aos.sandbox.mount-inventory.controller-state.v7\0";
 
 /// Reports whether an authenticated inventory snapshot committed or replayed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -470,6 +470,11 @@ pub(crate) fn controller_state_digest(
         .map_err(|_| MountAttemptError::CorruptState)?;
     let attempts = AttemptHistory::load(journal)?;
     let completions = CompletionHistory::load(journal)?;
+    let destination_slots = crate::destination_slot_effect::controller_state_records(journal)
+        .map_err(|error| match error {
+            crate::DestinationSlotEffectError::Capacity => MountAttemptError::Capacity,
+            _ => MountAttemptError::CorruptState,
+        })?;
     let target_count = u32::try_from(journal.records(RecordNamespace::NamespaceTarget).count())
         .map_err(|_| MountAttemptError::Capacity)?;
     let attempt_count =
@@ -521,6 +526,26 @@ pub(crate) fn controller_state_digest(
         digest.update(b"completion\0");
         digest.update(request_id);
         digest.update(record.digest);
+    }
+    digest.update(
+        u32::try_from(destination_slots.attempts.len())
+            .map_err(|_| MountAttemptError::Capacity)?
+            .to_be_bytes(),
+    );
+    for (request_id, record_digest) in destination_slots.attempts {
+        digest.update(b"destination-slot-attempt\0");
+        digest.update(request_id);
+        digest.update(record_digest);
+    }
+    digest.update(
+        u32::try_from(destination_slots.completions.len())
+            .map_err(|_| MountAttemptError::Capacity)?
+            .to_be_bytes(),
+    );
+    for (request_id, record_digest) in destination_slots.completions {
+        digest.update(b"destination-slot-completion\0");
+        digest.update(request_id);
+        digest.update(record_digest);
     }
     digest.update(view_revision_count.to_be_bytes());
     for (key, value) in journal.records(RecordNamespace::FilesystemViewRevision) {

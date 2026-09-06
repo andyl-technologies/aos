@@ -124,6 +124,10 @@ pub enum RecordNamespace {
     MountDestinationSlot = 21,
     /// Latest authenticated complete Mount destination-slot inventory.
     DestinationSlotInventory = 22,
+    /// Exact controller destination-slot effects admitted before Mount I/O.
+    DestinationSlotAttempt = 23,
+    /// Successful Mount destination-slot receipts bound to admitted effects.
+    DestinationSlotCompletion = 24,
 }
 
 impl RecordNamespace {
@@ -151,6 +155,8 @@ impl RecordNamespace {
             20 => Ok(Self::SandboxSpec),
             21 => Ok(Self::MountDestinationSlot),
             22 => Ok(Self::DestinationSlotInventory),
+            23 => Ok(Self::DestinationSlotAttempt),
+            24 => Ok(Self::DestinationSlotCompletion),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }
@@ -1916,13 +1922,15 @@ mod tests {
             RecordNamespace::SandboxSpec,
             RecordNamespace::MountDestinationSlot,
             RecordNamespace::DestinationSlotInventory,
+            RecordNamespace::DestinationSlotAttempt,
+            RecordNamespace::DestinationSlotCompletion,
         ];
         for (index, namespace) in namespaces.into_iter().enumerate() {
             let code = u8::try_from(index + 1).unwrap();
             assert_eq!(namespace as u8, code);
             assert_eq!(RecordNamespace::from_byte(code).unwrap(), namespace);
         }
-        for code in [0, 23, 255] {
+        for code in [0, 25, 255] {
             assert!(RecordNamespace::from_byte(code).is_err());
         }
     }

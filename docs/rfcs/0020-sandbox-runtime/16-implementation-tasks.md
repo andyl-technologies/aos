@@ -3274,3 +3274,61 @@ materialize or reap request. Source-handle resolution/materialization,
 read-only attachment-anchor installation before payload launch, controller
 slot-effect dispatch, lease-expiry scheduling, live namespace VM
 qualification, and end-to-end attachment reconciliation remain.
+
+### Durable signed controller destination-slot effects
+
+The node controller can now carry a reconciled materialize or reap decision
+through exact signed Mount 1.3 dispatch. It derives every portable request
+field from the current logical slot, its retained canonical sandbox
+specification, fresh authenticated destination-slot inventory, and a live
+namespace target. A separately supplied signed plan must grant those exact
+canonical semantics under the current assignment. Preparation stays volatile
+and non-authorizing until admission rechecks every input and commits the
+complete deadline-bearing packet before Mount I/O.
+
+Journal namespaces 23 and 24 retain fixed, digest-protected
+`AOSDSE01` attempts and `AOSDSC01` successful receipts. An attempt binds the
+logical operation, immutable namespace-target allocation, specification,
+assignment, semantics, signed plan, original exclusive deadline, lease,
+request body, packet, and the complete prior ready-resource identity needed by
+a reap. Recovery starts only from a fresh inventory row reporting the exact
+pending materialization or reap. It reproduces the original body, plan, and
+deadline while allowing only a monotonically newer current ownership lease;
+missing, completed, substituted, expired, or differently correlated state
+fails closed without dispatch.
+
+The dispatch client negotiates only the destination-slot method, authenticates
+the actual Mount hello and response writers against the retained service
+cgroup, and accepts only a terminal receipt for the admitted request and exact
+resource. The controller commits that receipt before returning a live
+completion token. Attempt and completion records participate in the Mount
+inventory controller-state digest, now domain v7, so their admission
+immediately invalidates older planning snapshots. Startup validates both new
+namespaces and all logical, specification, namespace-target, attempt,
+completion, and materialization cross-links. Request identities cannot cross
+between ordinary Mount attempts and destination-slot attempts.
+
+Mount recovery also repairs a stale-boot `Materializing` row whose path was
+already proved absent: it durably rebinds only the same exact operation and
+request to the current boot before retrying directory creation. This closes
+the otherwise stuck pre-`mkdirat` reboot boundary without making stale
+physical identity usable.
+
+Focused tests cover every attempt and completion byte, recomputed field
+substitution, immutable pending reconstruction, materialization cross-links,
+action correlation, materialize and reap receipts, capacity bounds,
+cross-domain request IDs, fail-closed startup, and stale-boot interrupted
+materialization. All 375 sandbox unit tests, seven downstream API tests,
+14 sandbox doctests, 81 host-runnable Mount unit tests, the Mount helper
+integration test, and Mount doctests pass. Strict all-target/all-feature
+crate-local Clippy, warnings-as-errors rustdoc, targeted Rust formatting, and
+diff checks pass. The all-feature Mount unit run additionally passes 83 tests;
+its sole host failure is the existing root-VM-only Host-scope fixture, which
+intentionally refuses to run outside that environment.
+
+This completes controller-side signed admission, durable dispatch, exact
+pending recovery, and receipt recording for destination-slot effects. It does
+not yet install the broker-owned attachment anchor into a payload root,
+materialize source handles, schedule attachment-lease expiry, or resolve
+stale ready destination slots after a host reboot. Live namespace VM
+qualification and an end-to-end attachment lifecycle also remain.

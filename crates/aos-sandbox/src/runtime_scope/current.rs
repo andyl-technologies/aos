@@ -249,8 +249,27 @@ impl CurrentRuntimeScope {
     where
         T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
     {
+        self.verify_mount_plan_version(journal, signed, AUTHORITY_VERSION, clock)
+    }
+
+    /// Verifies a Mount plan under an exact registered authority version.
+    pub(crate) fn verify_mount_plan_version<T>(
+        &self,
+        journal: &mut Journal,
+        signed: &SignedBrokerPlan,
+        protocol_version: aos_sandbox_core::ProtocolVersion,
+        clock: &mut T,
+    ) -> Result<(), CurrentRuntimeScopeError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
         self.recheck(journal, clock)?;
-        self.verified_mount_lease(journal, signed, read_clock(&self.policy, clock)?)?;
+        self.verified_mount_lease(
+            journal,
+            signed,
+            protocol_version,
+            read_clock(&self.policy, clock)?,
+        )?;
         self.recheck(journal, clock)
     }
 
@@ -264,10 +283,32 @@ impl CurrentRuntimeScope {
     where
         T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
     {
+        self.prepare_mount_attempt_version(
+            journal,
+            template,
+            deadline_boottime_nanoseconds,
+            AUTHORITY_VERSION,
+            clock,
+        )
+    }
+
+    /// Builds one Mount envelope under an exact registered authority version.
+    pub(crate) fn prepare_mount_attempt_version<T>(
+        &self,
+        journal: &mut Journal,
+        template: &crate::BrokerDispatchTemplateV1,
+        deadline_boottime_nanoseconds: u64,
+        protocol_version: aos_sandbox_core::ProtocolVersion,
+        clock: &mut T,
+    ) -> Result<crate::BrokerDispatchAttemptV1, CurrentRuntimeScopeError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
         self.recheck(journal, clock)?;
 
         let fresh = read_clock(&self.policy, clock)?;
-        let lease = self.verified_mount_lease(journal, template.signed_plan(), fresh)?;
+        let lease =
+            self.verified_mount_lease(journal, template.signed_plan(), protocol_version, fresh)?;
         let attempt = crate::BrokerDispatchAttemptV1::new(
             template,
             &lease,
@@ -283,6 +324,7 @@ impl CurrentRuntimeScope {
         &self,
         journal: &mut Journal,
         signed: &SignedBrokerPlan,
+        protocol_version: aos_sandbox_core::ProtocolVersion,
         fresh: RawPairedClockSample,
     ) -> Result<SignedOwnershipLease, CurrentRuntimeScopeError> {
         let publication =
@@ -297,7 +339,7 @@ impl CurrentRuntimeScope {
             BrokerPlanExpectation {
                 audience: BrokerAudience::Mount,
                 protocol: aos_sandbox_core::ProtocolId::MountBroker,
-                protocol_version: AUTHORITY_VERSION,
+                protocol_version,
                 assignment: self
                     .binding
                     .manifest()

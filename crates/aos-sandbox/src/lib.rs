@@ -23,6 +23,8 @@ pub mod attachment_verification;
 pub mod authority;
 pub mod controller;
 #[cfg(target_os = "linux")]
+pub mod destination_slot_effect;
+#[cfg(target_os = "linux")]
 pub mod destination_slot_inventory;
 pub mod dispatch;
 pub mod filesystem_view_state;
@@ -91,6 +93,14 @@ pub use controller::{
     ActivatedOperationCompiler, ControllerQuantumReport, ControllerReconciliationStep,
     ControllerRequestScopeV1, ControllerServiceError, NodeController, NodeControllerLimits,
     OperationCompilationError,
+};
+#[cfg(target_os = "linux")]
+pub use destination_slot_effect::{
+    CompletedCurrentDestinationSlotAttemptV1, DestinationSlotAttemptAdmissionOutcomeV1,
+    DestinationSlotCompletionOutcomeV1, DestinationSlotDispatchClient, DestinationSlotEffectError,
+    DurableCurrentDestinationSlotAttemptV1, PreparedCurrentDestinationSlotDispatchV1,
+    PreparedCurrentDestinationSlotResumeDispatchV1, PreparedCurrentDestinationSlotResumeV1,
+    PreparedCurrentDestinationSlotV1,
 };
 #[cfg(target_os = "linux")]
 pub use destination_slot_inventory::{

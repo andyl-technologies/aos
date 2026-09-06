@@ -397,6 +397,12 @@ where
         Some(outcome) => outcome,
         None => {
             history.ensure_capacity(&record)?;
+            if crate::destination_slot_effect::contains_attempt_request_id(
+                journal,
+                &record.request_id,
+            ) {
+                return Err(MountAttemptError::Conflict);
+            }
             prepared.recheck(journal, clock)?;
             journal.commit(&record.transaction()?)?;
             MountAttemptAdmissionOutcomeV1::Admitted
@@ -863,7 +869,12 @@ impl History {
             }
 
             let record = Record::decode(value)?;
-            if key != record.key() {
+            if key != record.key()
+                || crate::destination_slot_effect::contains_attempt_request_id(
+                    journal,
+                    &record.request_id,
+                )
+            {
                 return Err(MountAttemptError::CorruptState);
             }
             record.validate_contents()?;

@@ -726,6 +726,23 @@ pub(crate) fn get_current(
         .map(|record| DurableAttachmentSlotV1 { record }))
 }
 
+/// Reads one revision after the caller has validated the complete slot namespace.
+pub(crate) fn get_revision_in_validated_namespace(
+    journal: &Journal,
+    slot_id: AttachmentSlotId,
+    revision: Revision,
+) -> Result<Option<DurableAttachmentSlotV1>, AttachmentSlotStateError> {
+    let mut key = Vec::with_capacity(24);
+    key.extend_from_slice(slot_id.as_bytes());
+    key.extend_from_slice(&revision.get().to_be_bytes());
+
+    journal
+        .get(RecordNamespace::AttachmentSlot, &key)
+        .map(Record::decode)
+        .transpose()
+        .map(|record| record.map(|record| DurableAttachmentSlotV1 { record }))
+}
+
 pub(crate) fn recheck_current(
     journal: &Journal,
     slot: &DurableAttachmentSlotV1,

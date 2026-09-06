@@ -114,6 +114,12 @@ impl DurableSandboxSpecV1 {
         &self.record.spec
     }
 
+    /// Borrows the exact canonical bytes from which the descriptor was derived.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> &[u8] {
+        &self.record.spec_bytes
+    }
+
     /// Borrows the content descriptor derived from the canonical bytes.
     #[must_use]
     pub const fn descriptor(&self) -> &ObjectDescriptor {
@@ -402,6 +408,19 @@ pub(crate) fn get(
         .get(&descriptor_tuple(descriptor))
         .cloned()
         .map(|record| DurableSandboxSpecV1 { record }))
+}
+
+/// Reads one specification after the caller has validated the complete namespace.
+pub(crate) fn get_in_validated_namespace(
+    journal: &Journal,
+    descriptor: &ObjectDescriptor,
+) -> Result<Option<DurableSandboxSpecV1>, SandboxSpecStateError> {
+    validate_spec_descriptor(descriptor)?;
+    journal
+        .get(RecordNamespace::SandboxSpec, &descriptor_key(descriptor))
+        .map(Record::decode)
+        .transpose()
+        .map(|record| record.map(|record| DurableSandboxSpecV1 { record }))
 }
 
 pub(crate) fn validate_namespace(journal: &Journal) -> Result<(), SandboxSpecStateError> {

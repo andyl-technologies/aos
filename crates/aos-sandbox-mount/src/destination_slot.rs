@@ -574,15 +574,23 @@ impl DestinationSlotStoreV1 {
             }
         };
 
-        let current = self
+        let mut current = self
             .records
             .get(&key)
             .cloned()
             .ok_or_else(|| corrupt("materializing destination-slot record disappeared"))?;
         if current.kernel_boot_id != self.kernel_boot_id {
-            return Err(conflict(
-                "stale-boot destination slot must be reaped before replacement",
-            ));
+            // A stale Materializing row has no physical identity and recovery
+            // already proved that its path is absent. Re-admit the same exact
+            // operation under this boot before crossing the mkdir boundary.
+            current = Record::materializing(
+                self.kernel_boot_id,
+                current.binding.clone(),
+                current.materialize_operation,
+                current.materialize_request,
+            )?;
+            commit_record(journal, &current)?;
+            self.records.insert(key, current.clone());
         }
         before_effect()?;
         let pin = self.materialize_directory(&current.binding)?;
@@ -1720,6 +1728,42 @@ mod tests {
             assert_eq!(ready.phase(), DestinationSlotResourcePhaseV1::Ready);
             fixture.store.resolve(&fixture.binding).unwrap();
         }
+    }
+
+    #[test]
+    fn stale_boot_materializing_restarts_the_exact_operation() {
+        let mut fixture = Fixture::new();
+        let mut stale = Record::materializing(
+            fixture.store.kernel_boot_id,
+            fixture.binding.clone(),
+            fixture.materialization.operation_id,
+            fixture.materialization.request_digest,
+        )
+        .unwrap();
+        stale.kernel_boot_id[0] ^= 1;
+        stale.digest = stale.compute_digest();
+        stale.validate().unwrap();
+        commit_record(&mut fixture.journal, &stale).unwrap();
+        fixture.store.records.insert(fixture.binding.key(), stale);
+
+        let mut fixture = fixture.reopen();
+        let (ready, outcome) = fixture
+            .store
+            .materialize(&mut fixture.journal, &fixture.materialization)
+            .unwrap();
+
+        assert_eq!(outcome, DestinationSlotMutationOutcomeV1::Recorded);
+        assert_eq!(ready.phase(), DestinationSlotResourcePhaseV1::Ready);
+        assert_eq!(ready.kernel_boot_id(), &fixture.store.kernel_boot_id);
+        assert_eq!(
+            ready.materialization_operation(),
+            fixture.materialization.operation_id
+        );
+        assert_eq!(
+            ready.materialization_request(),
+            fixture.materialization.request_digest
+        );
+        fixture.store.resolve(&fixture.binding).unwrap();
     }
 
     #[test]
