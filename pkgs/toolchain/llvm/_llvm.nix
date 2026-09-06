@@ -36,6 +36,7 @@
   # Version-specific workarounds
   needsArc4randomFix ? true,
   needsClOptStringFix ? false,
+  extraRuntimeDeps ? [],
   extraCmakeFlags ? [],
 }: let
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
@@ -74,6 +75,7 @@ in
     ];
     runtimeDeps =
       [zlib]
+      ++ extraRuntimeDeps
       ++ (
         if isDarwinCross
         then [stdenv.darwinRuntimes]
