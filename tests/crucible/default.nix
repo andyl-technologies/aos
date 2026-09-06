@@ -1774,6 +1774,19 @@ in rec {
       attrPath = "checks.crucible.phase6.qemuHotForkChildExecutionVm";
       taskIds = ["T-CAM-6.5"];
     };
+    # The same comparison at the larger guest RAM sizes the task names.
+    qemuHotForkChildExecution512mVm = import ./phase6-qemu-hot-fork-child-execution-vm.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase6.qemuHotForkChildExecution512mVm";
+      taskIds = ["T-CAM-6.5"];
+      guestMemoryMiB = 512;
+    };
+    qemuHotForkChildExecution1gVm = import ./phase6-qemu-hot-fork-child-execution-vm.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase6.qemuHotForkChildExecution1gVm";
+      taskIds = ["T-CAM-6.5"];
+      guestMemoryMiB = 1024;
+    };
     qemuPatchLicenseLedger = import ./phase6-qemu-patch-license-ledger.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase6.qemuPatchLicenseLedger";

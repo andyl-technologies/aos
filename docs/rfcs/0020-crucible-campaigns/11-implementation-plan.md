@@ -3368,6 +3368,28 @@ Both instances pass inside the nested test VM against the firmware guest. The 25
 Deep template promotion and resource-pressure fallback remain open under
 this task.
 
+The child execution flight now completes the T-CAM-6.5 comparison. A third
+oracle boots a fresh process from genesis and executes straight to the
+child's suffix boundary with no snapshot in between, which is the thin-replay
+leg, and the child's suffix fingerprint and round-robin sample must match it
+as well as the exact restore. The flight takes the guest RAM size as an
+argument, and `qemuHotForkChildExecution512mVm` and
+`qemuHotForkChildExecution1gVm` run the same comparison at 512 MiB and 1 GiB.
+The flights' attempt memory and writable-storage budgets now follow the
+configured guest RAM: a diverging child's private pages approach a second
+guest image, and a VMState container grows with the guest, so the fixed
+512 MiB and 1 GiB budgets killed the 512 MiB child at 913 MiB and refused
+the 1 GiB source's 1.5 GiB container before any fork was reached; the VM
+test sizes its memory and its tmpfs-backed quota image the same way.
+All three sizes pass inside the nested test VM. At 128 MiB the child stood installed at the captured boundary 723 ms after the fork call, against 1,180 ms for the exact restore and 1,232 ms for the genesis replay; at 512 MiB, 1,167 ms against 4,658 ms and 4,085 ms; at 1 GiB, 3,093 ms against 9,471 ms and 9,963 ms. Fork cost grew with guest RAM as page-table copying does, and the oracles grew with the bytes they restore or execute, so the fork's advantage widened from roughly 1.6 times at 128 MiB to about 3 times at 1 GiB. One footprint finding came out of sizing the budgets: under the plugin's instrumentation the source alone reached about 2.8 times its guest RAM while booting the 512 MiB guest to the busy ceiling, which is the figure the attempt budget now allows for.
+
+Deep template promotion is refused by design today: a forked child resets
+the inherited template state, marks itself a child, and rejects child-file
+staging, so a child cannot retain a template or fork a grandchild without
+first being re-adopted as a source. Lifting that needs its own QEMU
+coordinator and host reconciliation work and stays open under T-CAM-6.7
+with the resource-pressure fallback stress.
+
 The daemon's Linux fork launch now owns the child-private file plan for
 production children. Every node launcher exposes its admitted launch resource
 profile, the retained template identity records it, and the launch provisions

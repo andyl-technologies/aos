@@ -500,6 +500,12 @@ impl QemuLiveNodeStepGateConfig {
         self
     }
 
+    /// Returns the guest RAM size in MiB this configuration launches with.
+    #[must_use]
+    pub const fn memory_mib(&self) -> u32 {
+        self.memory_mib
+    }
+
     /// Returns this configuration with the World-declared VM shape.
     #[must_use]
     pub const fn with_vm_shape(

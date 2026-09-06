@@ -7,6 +7,8 @@
   lib,
   attrPath ? "checks.crucible.phase6.qemuHotForkChildVm",
   taskIds ? [],
+  # Guest RAM the source, child, and restore process each map.
+  guestMemoryMiB ? 128,
 }: let
   source = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -41,6 +43,10 @@
     ];
   };
   testing = import ../../lib/testing {inherit pkgs lib;};
+
+  # Sparse project-quota image: room for the source's VMState container, the
+  # child's private copy and save, and the restore oracle's copy.
+  attemptsImageGiB = 3 + (4 * guestMemoryMiB) / 1024;
   # The flight attaches a debugger to a child that stalls before its private
   # QMP greeting, so its QEMU keeps the symbol table: only DWARF is removed,
   # which is what would otherwise pull the compiler into the closure.
@@ -61,8 +67,12 @@
   pluginWithSymbols = pkgs.crucible-qemu-plugin.overrideAttrs {dontStrip = "1";};
 in
   testing.mkVMTest {
-    name = "crucible-qemu-hot-fork-child-execution";
-    memory = 3072;
+    name = "crucible-qemu-hot-fork-child-execution-${builtins.toString guestMemoryMiB}m";
+    # The instrumented source reaches about three times its guest RAM, a
+    # diverging child adds a guest image of private copies, an oracle maps a
+    # third guest, and the quota image below lives on the VM's tmpfs, so its
+    # VMState containers count too.
+    memory = 4096 + 12 * guestMemoryMiB;
     rootfsDeps = [
       probe
       qemuWithSymbols
@@ -92,7 +102,7 @@ in
       echo '+cpu +memory +pids' > /sys/fs/cgroup/cgroup.subtree_control
       mkdir /sys/fs/cgroup/crucible
       echo '+cpu +memory +pids' > /sys/fs/cgroup/crucible/cgroup.subtree_control
-      truncate -s 3G /tmp/attempts.img
+      truncate -s ${builtins.toString attemptsImageGiB}G /tmp/attempts.img
       ${pkgs.e2fsprogs}/sbin/mkfs.ext4 -F -O quota,project -E quotatype=prjquota /tmp/attempts.img
       mkdir /tmp/attempts
       ${pkgs.util-linux}/bin/mount -o loop,prjquota /tmp/attempts.img /tmp/attempts
@@ -109,7 +119,8 @@ in
         ${pluginWithSymbols}/lib/libcrucible_qemu_plugin.so \
         ${pkgs.linux}/boot/vmlinuz-* \
         ${qemuWithSymbols}/share/qemu/bios-256k.bin \
-        /sys/fs/cgroup/crucible /tmp/attempts/run > /tmp/hot-fork-child-execution-result \
+        /sys/fs/cgroup/crucible /tmp/attempts/run ${builtins.toString guestMemoryMiB} \
+        > /tmp/hot-fork-child-execution-result \
         || probe_status=$?
       cat /tmp/hot-fork-child-execution-result
       if [ "$probe_status" -ne 0 ]; then
@@ -128,8 +139,10 @@ in
       done
       [ "$probe_status" -eq 0 ]
       grep -Fxq PASS /tmp/hot-fork-child-execution-result
+      grep -Fxq guest_memory_mib=${builtins.toString guestMemoryMiB} /tmp/hot-fork-child-execution-result
       grep -Fxq child_boundary_matches_capture=true /tmp/hot-fork-child-execution-result
       grep -Fxq child_suffix_matches_exact_restore=true /tmp/hot-fork-child-execution-result
+      grep -Fxq child_suffix_matches_genesis_replay=true /tmp/hot-fork-child-execution-result
       printf '%s\n' 'check=${attrPath}' \
         'tasks=${builtins.concatStringsSep "," taskIds}' >> /tmp/hot-fork-child-execution-result
       ${pkgs.util-linux}/bin/umount /tmp/attempts

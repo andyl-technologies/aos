@@ -15,9 +15,10 @@ use std::os::fd::AsFd as _;
 use std::path::Path;
 
 use super::child_files::{
-    DISK_BYTES, GuardedSource, MAXIMUM_RING_IMAGE_BYTES, MEMORY_BYTES, SOURCE_BUSY_CEILING,
-    describe_child_diagnostics, describe_forked_child, describe_reaped_child, file_identity,
-    invariant, launch_guarded_source, qmp_operation, realization, wait_for_child_exit,
+    GuardedSource, MAXIMUM_RING_IMAGE_BYTES, SOURCE_BUSY_CEILING, attempt_disk_bytes,
+    attempt_memory_bytes, describe_child_diagnostics, describe_forked_child, describe_reaped_child,
+    file_identity, invariant, launch_guarded_source, qmp_operation, realization,
+    wait_for_child_exit,
 };
 use super::child_measure::{ProcessFootprint, elapsed_milliseconds, monotonic_nanoseconds};
 use super::{exact_gate_checkpoint, source_set::require_vmstate_source, *};
@@ -224,7 +225,7 @@ fn run_one_lifecycle(
         .map_err(|source| invariant(&format!("prepare child resources failed: {source}")))?;
 
     let mut target_owner = factory
-        .begin(1, MEMORY_BYTES, DISK_BYTES)
+        .begin(1, attempt_memory_bytes(config), attempt_disk_bytes(config))
         .map_err(|source| realization("create target attempt owner", source))?;
     let target_directory = target_owner
         .prepare_generation_run_directory(config.resource_requirements())
