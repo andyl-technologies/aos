@@ -3502,3 +3502,50 @@ lease-expiry scheduling, and live namespace VM qualification remain. A retained
 internal guest reboot also needs an explicit handoff for the next
 namespace-generation anchor before it can satisfy the RFC's reboot-replay
 invariant; reusing the initial descriptor is not treated as that proof.
+
+### Root-owned Host catalog publication
+
+The Host crate now provides the privileged publication endpoint for complete
+launch-resource snapshots. It opens only a root-owned catalog directory with no
+group or other write bits, takes an exclusive lock through an independent
+directory description, and accepts either an exact byte-for-byte replay or the
+immediate successor generation. Rollback, generation skips, same-generation
+equivocation, concurrent writers, malformed current state, symlink redirection,
+and a current catalog without owner-only regular-file protection fail closed.
+
+Publication preserves subordinate-identity custody across generations. A live
+range may remain only with the same workspace handle, sandbox, and incarnation,
+or advance to an exact retired-allocation tombstone. Existing tombstones remain
+canonical and cannot disappear. Snapshot overlap checks then prevent either
+complete or partial reuse. The current interface deliberately retains every
+tombstone: reclaiming one still requires a future cleanup-evidence input proving
+that no runtime, namespace descriptor, mount, or backing dataset survives.
+
+The publisher removes an interrupted fixed staging name, creates a mode-`0600`
+file without following links, writes and fsyncs the complete bounded encoding,
+atomically renames it over `catalog.json`, fsyncs the directory, and performs an
+exact protected-file readback while still holding the writer lock. It does not
+mint handles or physical identities; trusted reconciliation must still derive
+the snapshot from authoritative workspace, network, and Mount state.
+
+Focused publication coverage exercises stale staging recovery, exact replay,
+generation conflicts, writer serialization, file protection, canonical
+tombstones, holder/incarnation substitution, partial overlap, retirement, and
+tombstone preservation. The complete default-feature Host suite passes 93 unit
+tests, its public semantics integration test, and two compile-fail doctests;
+warning-denied Host rustdoc, strict all-target/all-feature Host Clippy without
+dependency linting, and diff checks pass. The all-feature host-side unit run
+still includes a root-VM-only peer-cgroup fixture and therefore is not a valid
+non-root check. A full final-source `nix-build -A checks.eval --cores 8
+--no-out-link` compiled the changed Host crate and ran 4,717 workspace tests;
+4,716 passed and five were skipped, but the check remained red because the
+unrelated Hub OCI distribution cancellation test exhausted its 30-second retry
+window. No sandbox catalog test failed.
+
+This advances `SBX-CTRL-03`, `SBX-HOST-01`, and `SBX-RT-02`, but does not connect
+the endpoint to the controller. Combined catalog projection still depends on
+production workspace and network realizers and an authenticated privileged
+publication dispatch. Backend readiness, cleanup-authorized identity reclaim,
+source-handle materialization, native attachment replay, lease-expiry
+scheduling, internal-reboot anchor handoff, and live namespace VM qualification
+remain open.

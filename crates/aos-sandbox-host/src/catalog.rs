@@ -11,6 +11,8 @@
 //! parent and leaf entries for the complete verify-to-exec interval, and the
 //! worker post-validates the identities after systemd starts the supervisor.
 
+use std::fs::File;
+use std::io::{Read as _, Write as _};
 use std::os::fd::AsFd as _;
 use std::path::Path;
 
@@ -28,13 +30,14 @@ use crate::plan::{
 use crate::{HostError, Result};
 
 const CATALOG_FILE: &str = "catalog.json";
+const CATALOG_NEXT_FILE: &str = "catalog.next";
 const MAXIMUM_CATALOG_BYTES: usize = 16 * 1024 * 1024;
 const MAXIMUM_ENTRIES: usize = 16_384;
 const MAXIMUM_ATTACHMENTS: usize = 256;
 const MINIMUM_IDENTITY_RANGE: u32 = 65_536;
 
 /// Records one incarnation-bound, nonoverlapping subordinate identity range.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CatalogIdentityAllocation {
     range_start: u32,
@@ -441,6 +444,7 @@ impl HostCatalogSnapshot {
             || !strictly_ordered_by(&self.workspaces, |entry| entry.handle)
             || !strictly_ordered_by(&self.networks, |entry| entry.handle)
             || !strictly_ordered_by(&self.attachment_anchors, |entry| entry.handle)
+            || !strictly_ordered(&self.retired_identity_allocations)
         {
             return Err(HostError::Catalog(
                 "host catalog header or entry ordering is invalid".to_owned(),
@@ -501,6 +505,26 @@ pub struct FileHostCatalog {
     root: BeneathRoot,
 }
 
+/// Publishes complete Host launch catalogs beneath one protected root.
+///
+/// Publication holds an exclusive lock on the root directory, validates the
+/// complete generation transition, and atomically replaces `catalog.json`.
+/// The writer retains no authority to mint the entries it receives: trusted
+/// reconciliation must still derive every opaque handle and physical identity.
+#[derive(Debug)]
+pub struct FileHostCatalogPublisher {
+    root: BeneathRoot,
+}
+
+/// Reports whether an exact Host catalog generation was published or replayed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HostCatalogPublicationOutcome {
+    /// The supplied snapshot became the visible catalog generation.
+    Published,
+    /// The byte-equivalent snapshot was already visible.
+    Replay,
+}
+
 impl FileHostCatalog {
     /// Constructs a catalog reader from a pre-opened private directory.
     #[must_use]
@@ -518,25 +542,7 @@ impl FileHostCatalog {
     /// Returns an error for symlinks, non-directories, non-root ownership,
     /// writable group/other mode bits, or descriptor validation failures.
     pub fn open_root_owned(path: impl AsRef<Path>) -> Result<Self> {
-        let fd = rustix::fs::open(
-            path.as_ref(),
-            rustix::fs::OFlags::RDONLY
-                | rustix::fs::OFlags::DIRECTORY
-                | rustix::fs::OFlags::NOFOLLOW
-                | rustix::fs::OFlags::CLOEXEC,
-            rustix::fs::Mode::empty(),
-        )
-        .map_err(|error| HostError::Catalog(error.to_string()))?;
-        let metadata =
-            rustix::fs::fstat(&fd).map_err(|error| HostError::Catalog(error.to_string()))?;
-        if metadata.st_uid != 0 || metadata.st_mode & 0o022 != 0 {
-            return Err(HostError::Catalog(
-                "catalog root must be a root-owned non-writable real directory".to_owned(),
-            ));
-        }
-        let root =
-            BeneathRoot::from_owned(fd).map_err(|error| HostError::Catalog(error.to_string()))?;
-        Ok(Self::new(root))
+        open_catalog_root(path).map(Self::new)
     }
 
     fn snapshot(&self) -> Result<HostCatalogSnapshot> {
@@ -546,6 +552,61 @@ impl FileHostCatalog {
             .and_then(|file| file.read_bounded(MAXIMUM_CATALOG_BYTES))
             .map_err(|error| HostError::Catalog(error.to_string()))?;
         HostCatalogSnapshot::decode(&bytes)
+    }
+}
+
+impl FileHostCatalogPublisher {
+    /// Constructs a catalog publisher from a pre-opened private directory.
+    #[must_use]
+    pub const fn new(root: BeneathRoot) -> Self {
+        Self { root }
+    }
+
+    /// Opens a root-owned catalog directory that is not group/other writable.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for symlinks, non-directories, non-root ownership,
+    /// writable group/other mode bits, or descriptor validation failures.
+    pub fn open_root_owned(path: impl AsRef<Path>) -> Result<Self> {
+        open_catalog_root(path).map(Self::new)
+    }
+
+    /// Durably publishes one complete catalog generation or accepts its replay.
+    ///
+    /// A successor must advance by exactly one generation. Every live identity
+    /// range must either stay with the same workspace incarnation or become an
+    /// exact tombstone, and every existing tombstone must remain present.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when another publisher holds the directory lock, the
+    /// current or proposed catalog is invalid, the transition loses identity
+    /// continuity, or atomic persistence and exact readback fail.
+    pub fn publish(&self, snapshot: &HostCatalogSnapshot) -> Result<HostCatalogPublicationOutcome> {
+        snapshot.validate()?;
+        let encoded = snapshot.encode()?;
+        let _publication_lock = lock_catalog_root(&self.root)?;
+        let current = read_catalog_snapshot(&self.root)?;
+
+        if let Some((current_snapshot, current_bytes)) = current.as_ref() {
+            if current_snapshot.generation == snapshot.generation && current_bytes == &encoded {
+                return Ok(HostCatalogPublicationOutcome::Replay);
+            }
+            validate_catalog_transition(current_snapshot, snapshot)?;
+        }
+
+        publish_catalog_bytes(&self.root, &encoded)?;
+        let (_, visible_bytes) = read_catalog_snapshot(&self.root)?.ok_or_else(|| {
+            HostError::Catalog("published host catalog disappeared during readback".to_owned())
+        })?;
+        if visible_bytes != encoded {
+            return Err(HostError::Catalog(
+                "published host catalog failed exact readback".to_owned(),
+            ));
+        }
+
+        Ok(HostCatalogPublicationOutcome::Published)
     }
 }
 
@@ -634,6 +695,216 @@ impl HostCatalog for FileHostCatalog {
             attachment_anchor,
         })
     }
+}
+
+fn open_catalog_root(path: impl AsRef<Path>) -> Result<BeneathRoot> {
+    let descriptor = rustix::fs::open(
+        path.as_ref(),
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::DIRECTORY
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(catalog_error)?;
+    let metadata = rustix::fs::fstat(&descriptor).map_err(catalog_error)?;
+    if metadata.st_uid != 0 || metadata.st_mode & 0o022 != 0 {
+        return Err(HostError::Catalog(
+            "catalog root must be a root-owned non-writable real directory".to_owned(),
+        ));
+    }
+
+    BeneathRoot::from_owned(descriptor).map_err(|error| HostError::Catalog(error.to_string()))
+}
+
+fn lock_catalog_root(root: &BeneathRoot) -> Result<std::os::fd::OwnedFd> {
+    // Opening `.` creates an independent open-file description, so flock also
+    // serializes concurrent calls made through the same publisher instance.
+    let descriptor = rustix::fs::openat(
+        root.as_fd(),
+        ".",
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::DIRECTORY
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(catalog_error)?;
+    let metadata = rustix::fs::fstat(&descriptor).map_err(catalog_error)?;
+    if metadata.st_dev != root.identity().device || metadata.st_ino != root.identity().inode {
+        return Err(HostError::Catalog(
+            "catalog root identity changed before publication".to_owned(),
+        ));
+    }
+    rustix::fs::flock(
+        &descriptor,
+        rustix::fs::FlockOperation::NonBlockingLockExclusive,
+    )
+    .map_err(|error| {
+        if error == rustix::io::Errno::WOULDBLOCK {
+            HostError::Catalog("another host catalog publisher holds the root lock".to_owned())
+        } else {
+            HostError::Catalog(error.to_string())
+        }
+    })?;
+    Ok(descriptor)
+}
+
+fn read_catalog_snapshot(root: &BeneathRoot) -> Result<Option<(HostCatalogSnapshot, Vec<u8>)>> {
+    let descriptor = match rustix::fs::openat(
+        root.as_fd(),
+        CATALOG_FILE,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC
+            | rustix::fs::OFlags::NONBLOCK,
+        rustix::fs::Mode::empty(),
+    ) {
+        Ok(descriptor) => descriptor,
+        Err(rustix::io::Errno::NOENT) => return Ok(None),
+        Err(error) => return Err(catalog_error(error)),
+    };
+    let metadata = rustix::fs::fstat(&descriptor).map_err(catalog_error)?;
+    let root_metadata = rustix::fs::fstat(root.as_fd()).map_err(catalog_error)?;
+    if rustix::fs::FileType::from_raw_mode(metadata.st_mode) != rustix::fs::FileType::RegularFile
+        || metadata.st_uid != root_metadata.st_uid
+        || metadata.st_nlink != 1
+        || metadata.st_mode & 0o7777 != 0o600
+    {
+        return Err(HostError::Catalog(
+            "host catalog is not a protected owner-only regular file".to_owned(),
+        ));
+    }
+    let declared_size = usize::try_from(metadata.st_size)
+        .map_err(|_| HostError::Catalog("host catalog size is invalid".to_owned()))?;
+    if declared_size == 0 || declared_size > MAXIMUM_CATALOG_BYTES {
+        return Err(HostError::Catalog(
+            "host catalog size is invalid".to_owned(),
+        ));
+    }
+
+    let mut bytes = Vec::with_capacity(declared_size);
+    File::from(descriptor)
+        .take((MAXIMUM_CATALOG_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|error| HostError::Catalog(error.to_string()))?;
+    if bytes.len() != declared_size || bytes.len() > MAXIMUM_CATALOG_BYTES {
+        return Err(HostError::Catalog(
+            "host catalog changed while being read".to_owned(),
+        ));
+    }
+    let snapshot = HostCatalogSnapshot::decode(&bytes)?;
+    Ok(Some((snapshot, bytes)))
+}
+
+fn validate_catalog_transition(
+    current: &HostCatalogSnapshot,
+    proposed: &HostCatalogSnapshot,
+) -> Result<()> {
+    if proposed.generation <= current.generation {
+        return Err(HostError::Catalog(
+            "host catalog generation rolled back or equivocated".to_owned(),
+        ));
+    }
+    if current.generation.checked_add(1) != Some(proposed.generation) {
+        return Err(HostError::Catalog(
+            "host catalog generation skipped its immediate successor".to_owned(),
+        ));
+    }
+
+    for retired in &current.retired_identity_allocations {
+        if proposed
+            .retired_identity_allocations
+            .binary_search(retired)
+            .is_err()
+        {
+            return Err(HostError::Catalog(
+                "host catalog discarded an identity allocation tombstone".to_owned(),
+            ));
+        }
+    }
+    let mut proposed_bindings = proposed
+        .workspaces
+        .iter()
+        .map(identity_binding)
+        .collect::<Vec<_>>();
+    proposed_bindings.sort_unstable();
+    for workspace in &current.workspaces {
+        let allocation = workspace.identity;
+        let retained_by_same_incarnation = proposed_bindings
+            .binary_search(&identity_binding(workspace))
+            .is_ok();
+        let retired_exactly = proposed
+            .retired_identity_allocations
+            .binary_search(&allocation)
+            .is_ok();
+        if !retained_by_same_incarnation && !retired_exactly {
+            return Err(HostError::Catalog(
+                "host catalog lost continuity for a live identity allocation".to_owned(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn identity_binding(
+    workspace: &WorkspaceCatalogEntry,
+) -> (u32, u32, OpaqueHandle, [u8; 16], [u8; 16]) {
+    (
+        workspace.identity.range_start,
+        workspace.identity.range_size,
+        workspace.handle,
+        workspace.assignment.sandbox_id,
+        workspace.assignment.incarnation_id,
+    )
+}
+
+fn publish_catalog_bytes(root: &BeneathRoot, bytes: &[u8]) -> Result<()> {
+    match rustix::fs::unlinkat(
+        root.as_fd(),
+        CATALOG_NEXT_FILE,
+        rustix::fs::AtFlags::empty(),
+    ) {
+        Ok(()) | Err(rustix::io::Errno::NOENT) => {}
+        Err(error) => return Err(catalog_error(error)),
+    }
+    let descriptor = rustix::fs::openat(
+        root.as_fd(),
+        CATALOG_NEXT_FILE,
+        rustix::fs::OFlags::WRONLY
+            | rustix::fs::OFlags::CREATE
+            | rustix::fs::OFlags::EXCL
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+    )
+    .map_err(catalog_error)?;
+    let result = rustix::fs::fchmod(&descriptor, rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR)
+        .map_err(catalog_error)
+        .and_then(|()| {
+            let mut output = File::from(descriptor);
+            output
+                .write_all(bytes)
+                .and_then(|()| output.sync_all())
+                .map_err(|error| HostError::Catalog(error.to_string()))
+        })
+        .and_then(|()| {
+            rustix::fs::renameat(root.as_fd(), CATALOG_NEXT_FILE, root.as_fd(), CATALOG_FILE)
+                .map_err(catalog_error)
+        })
+        .and_then(|()| rustix::fs::fsync(root.as_fd()).map_err(catalog_error));
+    if result.is_err() {
+        let _ = rustix::fs::unlinkat(
+            root.as_fd(),
+            CATALOG_NEXT_FILE,
+            rustix::fs::AtFlags::empty(),
+        );
+    }
+    result
+}
+
+fn catalog_error(error: rustix::io::Errno) -> HostError {
+    HostError::Catalog(error.to_string())
 }
 
 fn validate_handle(handle: OpaqueHandle, label: &str) -> Result<()> {
@@ -739,7 +1010,7 @@ fn current_network_namespace_identity() -> Result<aos_sandbox_linux::pidfd::Name
     Ok(host.identity())
 }
 
-fn strictly_ordered(values: &[OpaqueHandle]) -> bool {
+fn strictly_ordered<T: Ord>(values: &[T]) -> bool {
     values.windows(2).all(|pair| pair[0] < pair[1])
 }
 
@@ -768,6 +1039,58 @@ mod tests {
     use buffa::Message as _;
 
     use super::*;
+
+    fn publisher(directory: &tempfile::TempDir) -> FileHostCatalogPublisher {
+        let descriptor = rustix::fs::open(
+            directory.path(),
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .unwrap();
+        FileHostCatalogPublisher::new(BeneathRoot::from_owned(descriptor).unwrap())
+    }
+
+    fn empty_snapshot(generation: u64) -> HostCatalogSnapshot {
+        HostCatalogSnapshot::new(generation, Vec::new(), Vec::new()).unwrap()
+    }
+
+    fn workspace_snapshot(
+        generation: u64,
+        handle_byte: u8,
+        sandbox_byte: u8,
+        incarnation_byte: u8,
+        range_start: u32,
+    ) -> HostCatalogSnapshot {
+        let assignment = CatalogAssignment::new(
+            [sandbox_byte; 16],
+            [incarnation_byte; 16],
+            4,
+            generation,
+            [6; 32],
+        )
+        .unwrap();
+        let descriptor = ObjectDescriptor::new(
+            aos_sandbox_core::MediaType::new("application/vnd.aos.sandbox.view.v1+cbor".to_owned())
+                .unwrap(),
+            aos_sandbox_core::ObjectDigest::from_bytes([7; 32]),
+            8,
+        );
+        let workspace = WorkspaceCatalogEntry::new(
+            [handle_byte; 32],
+            assignment,
+            descriptor,
+            format!("/run/aos/sandbox-pins/workspaces/root-{handle_byte}"),
+            11,
+            12,
+            CatalogIdentityAllocation::new(range_start, 65_536, generation).unwrap(),
+            Vec::new(),
+        )
+        .unwrap();
+        HostCatalogSnapshot::new(generation, vec![workspace], Vec::new()).unwrap()
+    }
 
     fn request() -> Vec<u8> {
         let mut request = ApplyRuntimeRequest::default();
@@ -891,6 +1214,118 @@ mod tests {
         assert!(decoded.workspaces[0].identity.matches(plan));
         assert!(decoded.workspaces[0].assignment.matches(fence));
         assert_eq!(decoded.attachment_anchors[0].handle, [12; 32]);
+    }
+
+    #[test]
+    fn publisher_atomically_replaces_stale_staging_and_accepts_exact_replay() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join(CATALOG_NEXT_FILE), b"interrupted").unwrap();
+        let publisher = publisher(&directory);
+        let snapshot = empty_snapshot(7);
+
+        assert_eq!(
+            publisher.publish(&snapshot).unwrap(),
+            HostCatalogPublicationOutcome::Published
+        );
+        assert!(!directory.path().join(CATALOG_NEXT_FILE).exists());
+        let metadata = std::fs::metadata(directory.path().join(CATALOG_FILE)).unwrap();
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_eq!(metadata.permissions().mode() & 0o7777, 0o600);
+        assert_eq!(
+            publisher.publish(&snapshot).unwrap(),
+            HostCatalogPublicationOutcome::Replay
+        );
+        assert_eq!(
+            std::fs::read(directory.path().join(CATALOG_FILE)).unwrap(),
+            snapshot.encode().unwrap()
+        );
+    }
+
+    #[test]
+    fn publisher_rejects_generation_equivocation_rollback_and_skip() {
+        let directory = tempfile::tempdir().unwrap();
+        let publisher = publisher(&directory);
+        publisher.publish(&empty_snapshot(3)).unwrap();
+        let equivocation = empty_snapshot(3)
+            .with_retired_identity_allocations(vec![CatalogIdentityAllocation::new(
+                65_536, 65_536, 1,
+            )
+            .unwrap()])
+            .unwrap();
+
+        assert!(publisher.publish(&equivocation).is_err());
+        assert!(publisher.publish(&empty_snapshot(2)).is_err());
+        assert!(publisher.publish(&empty_snapshot(5)).is_err());
+        assert_eq!(
+            read_catalog_snapshot(&publisher.root).unwrap().unwrap().0,
+            empty_snapshot(3)
+        );
+    }
+
+    #[test]
+    fn publisher_rejects_unprotected_or_redirected_current_catalogs() {
+        use std::os::unix::fs::{symlink, PermissionsExt as _};
+
+        let directory = tempfile::tempdir().unwrap();
+        let publisher = publisher(&directory);
+        let catalog_path = directory.path().join(CATALOG_FILE);
+        std::fs::write(&catalog_path, empty_snapshot(1).encode().unwrap()).unwrap();
+        std::fs::set_permissions(&catalog_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(publisher.publish(&empty_snapshot(2)).is_err());
+
+        std::fs::remove_file(&catalog_path).unwrap();
+        let target = directory.path().join("redirected.json");
+        std::fs::write(&target, empty_snapshot(1).encode().unwrap()).unwrap();
+        symlink(&target, &catalog_path).unwrap();
+        assert!(publisher.publish(&empty_snapshot(2)).is_err());
+    }
+
+    #[test]
+    fn publisher_requires_live_ranges_to_stay_bound_or_become_tombstones() {
+        let directory = tempfile::tempdir().unwrap();
+        let publisher = publisher(&directory);
+        let first = workspace_snapshot(1, 9, 2, 3, 65_536);
+        let retained = workspace_snapshot(2, 9, 2, 3, 65_536);
+        publisher.publish(&first).unwrap();
+        publisher.publish(&retained).unwrap();
+
+        let substituted = workspace_snapshot(3, 10, 2, 3, 65_536);
+        assert!(publisher.publish(&substituted).is_err());
+        let reassigned_sandbox = workspace_snapshot(3, 9, 4, 3, 65_536);
+        assert!(publisher.publish(&reassigned_sandbox).is_err());
+        let replaced_incarnation = workspace_snapshot(3, 9, 2, 4, 65_536);
+        assert!(publisher.publish(&replaced_incarnation).is_err());
+        let partial_overlap = workspace_snapshot(3, 10, 2, 3, 98_304);
+        assert!(publisher.publish(&partial_overlap).is_err());
+
+        let retired_allocation = retained.workspaces[0].identity;
+        let retired = empty_snapshot(3)
+            .with_retired_identity_allocations(vec![retired_allocation])
+            .unwrap();
+        assert_eq!(
+            publisher.publish(&retired).unwrap(),
+            HostCatalogPublicationOutcome::Published
+        );
+        assert!(publisher.publish(&empty_snapshot(4)).is_err());
+
+        let preserved = empty_snapshot(4)
+            .with_retired_identity_allocations(vec![retired_allocation])
+            .unwrap();
+        assert_eq!(
+            publisher.publish(&preserved).unwrap(),
+            HostCatalogPublicationOutcome::Published
+        );
+    }
+
+    #[test]
+    fn publisher_serializes_calls_with_an_independent_directory_lock() {
+        let directory = tempfile::tempdir().unwrap();
+        let publisher = publisher(&directory);
+        let held_lock = lock_catalog_root(&publisher.root).unwrap();
+
+        assert!(publisher.publish(&empty_snapshot(1)).is_err());
+        drop(held_lock);
+        assert!(publisher.publish(&empty_snapshot(1)).is_ok());
     }
 
     #[test]
@@ -1023,6 +1458,18 @@ mod tests {
                 .with_retired_identity_allocations(vec![
                     CatalogIdentityAllocation::new(65_536, 65_536, 1).unwrap(),
                 ])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn retired_identity_tombstones_require_canonical_order() {
+        let later = CatalogIdentityAllocation::new(131_072, 65_536, 1).unwrap();
+        let earlier = CatalogIdentityAllocation::new(65_536, 65_536, 1).unwrap();
+
+        assert!(
+            empty_snapshot(2)
+                .with_retired_identity_allocations(vec![later, earlier])
                 .is_err()
         );
     }
