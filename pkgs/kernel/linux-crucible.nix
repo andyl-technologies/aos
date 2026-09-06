@@ -1,7 +1,7 @@
 {
   lib,
   stdenv,
-  linuxWith,
+  linuxFixtureWith,
 }: let
   fixturePlatform =
     {
@@ -64,7 +64,7 @@
     "ro"
     "net.ifnames=0"
   ];
-  kernel = (linuxWith extraConfig).overrideAttrs (prev: {
+  kernel = (linuxFixtureWith extraConfig).overrideAttrs (prev: {
     pname = "linux-crucible";
     passthru =
       (prev.passthru or {})

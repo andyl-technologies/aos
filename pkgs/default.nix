@@ -1415,6 +1415,13 @@
       # (silent no-op). callPackage threads it directly. (RFC-0006 lockdown.)
       linuxWith = extraConfig:
         callPackage ./kernel/linux.nix {inherit linuxSource extraConfig;};
+      # Fixture kernels may deliberately omit facilities required by deployed
+      # systems. Keep that exception explicit and unavailable through linuxWith.
+      linuxFixtureWith = extraConfig:
+        callPackage ./kernel/linux.nix {
+          inherit linuxSource extraConfig;
+          enforceRequiredConfig = false;
+        };
       linux-headers = callPackage ./kernel/linux-headers.nix {inherit linuxSource;};
       zfsForKernel = kernel:
         callPackage ./filesystem/zfs.nix {inherit kernel;};
