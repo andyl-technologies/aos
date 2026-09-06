@@ -9,20 +9,32 @@
 }: let
   registry = pkgs.writeTextFile {
     name = "${name}-scenarios";
+    destination = "/scenarios.json";
     text = builtins.toJSON {
       schema_version = "aos.release.qualification-scenarios/v1";
       inherit platform scenarios;
     };
   };
   quote = value: "'" + builtins.replaceStrings ["'"] ["'\\''"] value + "'";
+  registryPath = "${registry}/scenarios.json";
+  executor = pkgs.writeShellScriptBin name ''
+    exec ${pkgs.aos}/bin/aos release qualification execute \
+      --scenarios ${registryPath} \
+      --identity ${quote identity} \
+      --work-root ${quote workRoot} \
+      --timeout-seconds ${toString timeoutSeconds}
+  '';
 in
   assert builtins.elem platform ["x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin"];
   assert timeoutSeconds > 0 && timeoutSeconds <= 21600;
   assert builtins.substring 0 1 workRoot == "/";
-    pkgs.writeShellScriptBin name ''
-      exec ${pkgs.aos}/bin/aos release qualification execute \
-        --scenarios ${registry} \
-        --identity ${quote identity} \
-        --work-root ${quote workRoot} \
-        --timeout-seconds ${toString timeoutSeconds}
-    ''
+    executor
+    // {
+      passthru =
+        (executor.passthru or {})
+        // {
+          qualification = {
+            inherit identity platform registryPath scenarios;
+          };
+        };
+    }

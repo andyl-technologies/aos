@@ -491,6 +491,15 @@ unknown registry mapping, wrong check set, empty check details, malformed UTC
 times, an observation longer than its execution interval, or an environment
 shape that does not match the case.
 
+The x86_64 Linux operator adapter is exposed as
+`packages.x86_64-linux.qualification-operator-executor`. Before starting it,
+install a single-link canonical report for each applicable case at
+`/run/aos-release/qualification-reports/operator-recovery.json` and, for main
+releases, `production-recovery.json`. The adapter drains the coordinator
+request, captures the report without following links, and binds it through
+`qualification respond`. A missing, changing, stale, malformed, or
+case-incomplete operator report fails the attempt.
+
 A fixture gate proves regression behavior only. The native Hub fleet uses
 visibly synthetic observations and timing to test admission mechanics; those
 records cannot establish release workload duration or physical reliability.
