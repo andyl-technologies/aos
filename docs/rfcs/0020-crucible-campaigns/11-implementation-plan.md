@@ -3335,6 +3335,22 @@ patch's rationale and prefix attribution; the remaining T-CAM-6.8 work is
 keeping those current as the series grows, which the series and attribution
 gates enforce.
 
+Towards T-CAM-6.7, `checks.crucible.phase6.qemuHotForkChildStressVm` runs
+child lifecycles against one retained template: each lifecycle stages child
+resources and a private VMState destination, forks, waits for the child's
+private QMP greeting, kills the child, lets the source reap it, releases
+every child stage in the reconciliation's order, and finishes the target
+attempt so the next lifecycle restages the same template. Every twenty-five
+lifecycles and at the end the source's thread and descriptor counts must
+equal the baseline taken with the template retained and no child staged,
+and the flight reports the source's private dirty memory at each sample.
+The routine instance runs 250 lifecycles; `qemuHotForkChildStress10kVm`
+runs the ten thousand the task names, is built on demand, and additionally
+holds the source's private dirty growth over its second half to 4 MiB.
+Both instances pass inside the nested test VM against the firmware guest. The 250-lifecycle instance took 35 s and the 10,000-lifecycle instance 1,278 s, about 128 ms per lifecycle; the source held 6 threads and 24 descriptors at every sample of both runs; fork calls peaked at 88 ms and fork-to-greeting at 91 ms; the run root held its one source slot throughout. The source's private dirty memory rose from 37,108 KiB after warm-up to 51,072 KiB by lifecycle 1,000, stepped once more to 51,944 KiB before lifecycle 3,000, and did not move again through lifecycle 10,000, so the second-half growth was zero against the 4 MiB bound: the growth is heap settling, not a per-lifecycle leak.
+Deep template promotion and resource-pressure fallback remain open under
+this task.
+
 The daemon's Linux fork launch now owns the child-private file plan for
 production children. Every node launcher exposes its admitted launch resource
 profile, the retained template identity records it, and the launch provisions

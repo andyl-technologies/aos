@@ -167,7 +167,7 @@ pub fn run_qemu_live_hot_fork_child_gate(
             || source_after.descriptors != source_baseline.descriptors
         {
             return Err(invariant(&format!(
-                "source did not return to its baseline after child {child_index}: threads                  {}/{}, descriptors {}/{}",
+                "source did not return to its baseline after child {child_index}: threads {}/{}, descriptors {}/{}",
                 source_after.threads,
                 source_baseline.threads,
                 source_after.descriptors,

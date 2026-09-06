@@ -1779,6 +1779,19 @@ in rec {
       attrPath = "checks.crucible.phase6.qemuPatchLicenseLedger";
       taskIds = ["T-CAM-6.8"];
     };
+    qemuHotForkChildStressVm = import ./phase6-qemu-hot-fork-child-stress-vm.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase6.qemuHotForkChildStressVm";
+      taskIds = ["T-CAM-6.7"];
+    };
+    # The ten-thousand-lifecycle run the stress task names; built on demand.
+    qemuHotForkChildStress10kVm = import ./phase6-qemu-hot-fork-child-stress-vm.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase6.qemuHotForkChildStress10kVm";
+      taskIds = ["T-CAM-6.7"];
+      lifecycles = 10000;
+      lateGrowthBoundKib = 4096;
+    };
     advancedDependencyLadder = greenBeforeAdvance {
       attrPath = "checks.crucible.phase6.advancedDependencyLadder";
       gate = import ./phase6-advanced-dependency-ladder.nix {
