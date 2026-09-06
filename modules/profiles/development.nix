@@ -30,7 +30,7 @@
     pkgs.docker
     pkgs.efibootmgr
     pkgs.fish
-    pkgs.gcc
+    pkgs.cc
     pkgs.gdb
     pkgs.git
     pkgs.git-lfs
@@ -105,6 +105,7 @@
   allLibraries = developmentLibraries ++ cfg.extraLibraries;
   includePath = lib.concatStringsSep ":" (map (package: "${package}/include") allLibraries);
   libraryPath = lib.concatStringsSep ":" (map (package: "${package}/lib") allLibraries);
+  linkerFlags = lib.concatStringsSep " " (map (package: "-Wl,-rpath,${package}/lib") allLibraries);
   pkgConfigPath = lib.concatStringsSep ":" (
     lib.concatMap
     (package: ["${package}/lib/pkgconfig" "${package}/share/pkgconfig"])
@@ -143,6 +144,7 @@ in {
     environment.sessionVariables = {
       C_INCLUDE_PATH = lib.mkDefault includePath;
       LIBRARY_PATH = lib.mkDefault libraryPath;
+      NIX_LDFLAGS = lib.mkDefault linkerFlags;
       PKG_CONFIG_PATH = lib.mkDefault pkgConfigPath;
     };
 
@@ -185,6 +187,7 @@ in {
             session_env = (
                 "export C_INCLUDE_PATH='${includePath}' "
                 "LIBRARY_PATH='${libraryPath}' "
+                "NIX_LDFLAGS='${linkerFlags}' "
                 "PKG_CONFIG_PATH='${pkgConfigPath}'; "
             )
             vm.succeed(
