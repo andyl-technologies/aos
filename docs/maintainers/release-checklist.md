@@ -18,12 +18,10 @@ Whenever an item names a journal state, inspect the journal it produced with
 `aos release status --journal PATH_TO_JOURNAL` and compare the printed `State:`
 line with the expected value. Keep the old journal; later commands write successors.
 
-**Current blockers:** the test programs for published release artifacts still
-need implementation and installation. Also, `release build` takes
-`--completed-at` before executing the build; accurate completion-time capture
-needs fixing before its report can be used for a real release. Do not substitute
-synthetic fleet reports or guessed timestamps. Main also remains closed until
-its [launch requirements](registry-main.md) are satisfied.
+**Current blocker:** the test programs for published release artifacts still
+need implementation and installation. Do not substitute synthetic fleet
+reports. Main also remains closed until its
+[launch requirements](registry-main.md) are satisfied.
 
 ## 1. Prepare the release
 

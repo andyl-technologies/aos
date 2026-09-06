@@ -1051,10 +1051,6 @@ pub struct ReleaseBuildArgs {
     /// RFC 3339 UTC time at which the build operation began
     #[arg(long)]
     pub started_at: String,
-
-    /// RFC 3339 UTC time at which the completed report is recorded
-    #[arg(long)]
-    pub completed_at: String,
 }
 
 #[derive(Args)]
@@ -1125,6 +1121,27 @@ mod tests {
             ])
             .is_ok()
         );
+    }
+
+    #[test]
+    fn build_captures_its_completion_time() {
+        let command = [
+            "aos",
+            "release",
+            "build",
+            "--plan",
+            "release-plan.json",
+            "--output",
+            "release-build",
+            "--started-at",
+            "2026-09-03T10:00:00Z",
+        ];
+        assert!(Cli::try_parse_from(command).is_ok());
+
+        let supplied_completion = command
+            .into_iter()
+            .chain(["--completed-at", "2026-09-03T12:00:00Z"]);
+        assert!(Cli::try_parse_from(supplied_completion).is_err());
     }
 
     #[test]
