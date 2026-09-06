@@ -54,13 +54,11 @@ in
       pkgs.tar
       pkgs.zlib
     ];
-    runtimeDeps = [
-      pkgs.dtc
-      pkgs.glib
-      pkgs.libslirp
-      pkgs.pixman
-      pkgs.zlib
-    ];
+    # Configure every variant against the same system-library surface as the
+    # shipped emulator.  The drop-one experiment changes exactly one patch;
+    # drifting its dependencies would make configure failures look like patch
+    # attribution evidence.
+    runtimeDeps = qemuPackage.runtimeDeps;
 
     DROPPED_PATCH = droppedPatch;
     DROP_INDEX = toString index;
