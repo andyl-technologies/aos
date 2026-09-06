@@ -971,7 +971,7 @@ pub enum AssignmentLedgerError {
 /// Crash-safe directory ledger with one nonblocking process writer lock.
 pub struct DirectoryAssignmentLedger {
     root: PathBuf,
-    _writer_lock: File,
+    writer_lock: File,
     retention_state: AssignmentRetentionState,
 }
 
@@ -1007,7 +1007,7 @@ impl DirectoryAssignmentLedger {
         let retention_state = load_or_create_retention_state(&root)?;
         Ok(Self {
             root,
-            _writer_lock: writer_lock,
+            writer_lock,
             retention_state,
         })
     }
@@ -1181,6 +1181,16 @@ fn is_staging_name(name: &str) -> bool {
         && process.bytes().all(|byte| byte.is_ascii_digit())
         && !ordinal.is_empty()
         && ordinal.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+impl Drop for DirectoryAssignmentLedger {
+    fn drop(&mut self) {
+        // A fork can retain a duplicate of this open-file description until
+        // exec closes it. Release ownership explicitly when the Rust owner
+        // ends so that inherited or duplicated descriptors cannot extend the
+        // ledger's writer lease.
+        let _ = flock(&self.writer_lock, FlockOperation::Unlock);
+    }
 }
 
 impl AssignmentLedger for DirectoryAssignmentLedger {
