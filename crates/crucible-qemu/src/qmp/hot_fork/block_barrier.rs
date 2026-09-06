@@ -182,7 +182,7 @@ pub struct QmpHotForkBlockBarrierState {
 }
 
 impl QmpHotForkBlockBarrierState {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn one_quiescent(generation: u64) -> Self {
         Self {
             generation,

@@ -41,7 +41,7 @@ pub struct QmpHotForkPrivateRingState {
 }
 
 impl QmpHotForkPrivateRingState {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn one_staged(
         generation: u64,
         descriptor_name: QmpDescriptorName,
@@ -64,7 +64,7 @@ impl QmpHotForkPrivateRingState {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn one_template_staged(
         generation: u64,
         template_generation: u64,

@@ -74,6 +74,7 @@ impl QemuVmStateBinding {
 pub(super) enum PreparedVmStateMaterialization {
     Provisioned,
     Updating,
+    HotForkChild,
     Exact {
         binding: QemuVmStateBinding,
         bytes: u64,
@@ -85,6 +86,7 @@ pub(super) enum PreparedRootOverlayMaterialization {
     Absent,
     Provisioned,
     Updating,
+    HotForkChild,
     Exact {
         binding: QemuVmStateBinding,
         bytes: u64,
@@ -621,7 +623,8 @@ impl QemuPreparedRunDirectory {
                 actual,
             }),
             PreparedVmStateMaterialization::Provisioned
-            | PreparedVmStateMaterialization::Updating => {
+            | PreparedVmStateMaterialization::Updating
+            | PreparedVmStateMaterialization::HotForkChild => {
                 Err(QemuSpawnError::PreparedVmStateNotReady {
                     path: self.path.join(crate::DEFAULT_VMSTATE_FILE_NAME),
                 })
@@ -651,7 +654,8 @@ impl QemuPreparedRunDirectory {
             }),
             PreparedRootOverlayMaterialization::Absent
             | PreparedRootOverlayMaterialization::Provisioned
-            | PreparedRootOverlayMaterialization::Updating => {
+            | PreparedRootOverlayMaterialization::Updating
+            | PreparedRootOverlayMaterialization::HotForkChild => {
                 Err(QemuSpawnError::PreparedRootOverlayNotReady {
                     path: self.path.join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
                 })

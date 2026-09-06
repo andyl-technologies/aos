@@ -5,6 +5,10 @@ edition = "2024"
 license.workspace = true
 publish = false
 
+[features]
+default = []
+test-support = ["crucible/test-support", "crucible-qemu/test-support"]
+
 [lints]
 workspace = true
 

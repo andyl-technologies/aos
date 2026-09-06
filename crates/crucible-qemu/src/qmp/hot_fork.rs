@@ -343,7 +343,7 @@ pub struct QmpHotForkRcuInventory {
 }
 
 impl QmpHotForkRcuInventory {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn from_reader_ids(thread_ids: &[u32]) -> Self {
         Self {
             generation: 1,
@@ -494,7 +494,7 @@ pub struct QmpHotForkAioInventory {
 }
 
 impl QmpHotForkAioInventory {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn one_idle(context_id: u64, home_thread_id: u32) -> Self {
         Self {
             generation: 1,
@@ -645,7 +645,7 @@ pub struct QmpHotForkAioHandlerInventory {
 }
 
 impl QmpHotForkAioHandlerInventory {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn one_read(handler_id: u64, context_id: u64, descriptor: u32) -> Self {
         Self {
             generation: 1,
@@ -826,7 +826,7 @@ pub struct QmpHotForkBlockBackendInventory {
 }
 
 impl QmpHotForkBlockBackendInventory {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn one_hidden(backend_id: u64, context_id: u64) -> Self {
         Self {
             generation: 1,
@@ -977,7 +977,7 @@ pub struct QmpHotForkBottomHalfInventory {
 }
 
 impl QmpHotForkBottomHalfInventory {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn one_idle(bottom_half_id: u64, context_id: u64) -> Self {
         Self {
             generation: 1,
@@ -1116,7 +1116,7 @@ pub struct QmpHotForkMutexInventory {
 }
 
 impl QmpHotForkMutexInventory {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn one_owned(mutex_id: u64, owner_thread_id: u32) -> Self {
         Self {
             generation: 1,
@@ -1259,7 +1259,7 @@ pub struct QmpHotForkTimerInventory {
 }
 
 impl QmpHotForkTimerInventory {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn empty() -> Self {
         Self {
             generation: 1,
@@ -1326,7 +1326,7 @@ pub struct QmpHotForkMonitorInventory {
 }
 
 impl QmpHotForkMonitorInventory {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) const fn one_supported() -> Self {
         Self {
             generation: 1,

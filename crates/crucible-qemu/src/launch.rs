@@ -129,7 +129,8 @@ pub const DEFAULT_VMSTATE_FILE_NAME: &str = "crucible-vmstate.qcow2";
 /// this name, so it is part of the QEMU-facing launch contract.
 pub const DEFAULT_VMSTATE_NODE_NAME: &str = "vmstate";
 const VMSTATE_DRIVE_ID: &str = DEFAULT_VMSTATE_NODE_NAME;
-const ROOT_DRIVE_ID: &str = "crucible-root0";
+/// Stable QEMU block-backend identifier for the writable root overlay.
+pub const ROOT_DRIVE_ID: &str = "crucible-root0";
 const ROOT_DEVICE_ID: &str = "crucible-root-device0";
 const MAX_ICOUNT_SHIFT: u8 = 62;
 const MAX_RR_SWITCH_QUANTUM: u64 = i32::MAX as u64;

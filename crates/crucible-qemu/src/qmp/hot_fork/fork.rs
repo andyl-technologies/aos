@@ -145,7 +145,7 @@ impl QmpHotForkRequest {
         })
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     // crucible-lint: allow rust-allow -- the protocol fixture must vary each independent generation.
     #[allow(clippy::too_many_arguments)]
     pub(crate) const fn for_test(
@@ -314,7 +314,7 @@ pub struct QmpHotForkState {
 }
 
 impl QmpHotForkState {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) const fn for_test(
         request: QmpHotForkRequest,
         outcome: QmpHotForkOutcome,

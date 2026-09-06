@@ -155,7 +155,7 @@ pub struct QmpHotForkChildProcessContractState {
 }
 
 impl QmpHotForkChildProcessContractState {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn one_template_staged(
         generation: u64,
         template_generation: u64,
@@ -173,7 +173,7 @@ impl QmpHotForkChildProcessContractState {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn one_released(generation: u64) -> Self {
         Self {
             generation,

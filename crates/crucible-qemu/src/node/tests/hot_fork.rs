@@ -274,7 +274,11 @@ fn hot_fork_explicit_rejection_retains_a_reusable_source_owner() -> Result<(), B
 #[cfg(target_os = "linux")]
 fn hot_fork_indeterminate_exchange_quarantines_the_complete_source_owner()
 -> Result<(), Box<dyn Error>> {
-    let mut node = sealed_hot_fork_node(DescriptorScript::ForkIndeterminate)?;
+    let mut node = crate::node::test_support::hot_fork::scripted_hot_fork_source_for_test(
+        crate::node::test_support::hot_fork::QemuTestHotForkOutcome::Indeterminate,
+    )?;
+    node.prepare_hot_fork_child_resources(usize::MAX)?;
+    node.install_test_hot_fork_child_process_contract_stage(13, 1)?;
     let mut process_owner = ScriptedHotForkChildOwner::default();
 
     let error = node
@@ -939,6 +943,99 @@ fn hot_fork_consumes_the_staged_child_file_plan() -> Result<(), Box<dyn Error>> 
         .position(|call| matches!(call, ChannelCall::QmpHotFork))
         .ok_or("hot fork was not recorded")?;
     assert!(stage < query && query < fork);
+
+    drop(launch);
+    node.shutdown_child()?;
+    Ok(())
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn successful_child_file_proof_seals_only_its_exact_destination_pair() -> Result<(), Box<dyn Error>>
+{
+    use std::io::Read as _;
+    let requirements = crate::QemuLaunchResourceRequirements::from_vm_shape(1, 1, true);
+    let contract = unvalidated_hot_fork_process_contract()?;
+    let first_root = tempfile::tempdir()?;
+    let second_root = tempfile::tempdir()?;
+    for root in [first_root.path(), second_root.path()] {
+        std::fs::File::create(root.join(crate::DEFAULT_VMSTATE_FILE_NAME))?;
+        std::fs::File::create(root.join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME))?;
+    }
+    let mut first = crate::QemuPreparedRunDirectory::open_for_test_requirements(
+        requirements,
+        first_root.path(),
+        &contract,
+    )?;
+    let mut second = crate::QemuPreparedRunDirectory::open_for_test_requirements(
+        requirements,
+        second_root.path(),
+        &contract,
+    )?;
+    std::fs::write(
+        second_root.path().join(crate::DEFAULT_VMSTATE_FILE_NAME),
+        b"foreign-vmstate",
+    )?;
+    std::fs::write(
+        second_root
+            .path()
+            .join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
+        b"foreign-overlay",
+    )?;
+
+    let mut node = crate::node::test_support::hot_fork::scripted_hot_fork_source_for_test(
+        crate::node::test_support::hot_fork::QemuTestHotForkOutcome::Forked,
+    )?;
+    node.prepare_hot_fork_child_resources(usize::MAX)?;
+    let vmstate_root = crate::QmpHotForkChildFileRoot::node_name(crate::DEFAULT_VMSTATE_NODE_NAME)?;
+    let overlay_root = crate::QmpHotForkChildFileRoot::device(crate::ROOT_DRIVE_ID)?;
+    let destinations = [
+        crate::QemuHotForkChildFileDestination::new(
+            &vmstate_root,
+            first.hot_fork_child_file_destination()?,
+        ),
+        crate::QemuHotForkChildFileDestination::new(
+            &overlay_root,
+            first.hot_fork_root_overlay_destination()?,
+        ),
+    ];
+    let mut process_owner = ScriptedHotForkTargetOwner {
+        contract,
+        retained: Vec::new(),
+    };
+    let launch = node.fork_prepared_hot_fork_template_with_files_into(
+        &mut process_owner,
+        |owner| Ok(&owner.contract),
+        &destinations,
+        1 << 30,
+    )?;
+
+    assert!(second.seal_hot_fork_child_file_transfer(&launch).is_err());
+    first.seal_hot_fork_child_file_transfer(&launch)?;
+    let mut vmstate = String::new();
+    let mut overlay = String::new();
+    std::fs::File::open(first_root.path().join(crate::DEFAULT_VMSTATE_FILE_NAME))?
+        .read_to_string(&mut vmstate)?;
+    std::fs::File::open(
+        first_root
+            .path()
+            .join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
+    )?
+    .read_to_string(&mut overlay)?;
+    assert_eq!(vmstate, "scripted-hot-fork-vmstate-v1\n");
+    assert_eq!(overlay, "scripted-hot-fork-root-overlay-v1\n");
+    assert_eq!(
+        std::fs::read(second_root.path().join(crate::DEFAULT_VMSTATE_FILE_NAME))?,
+        b"foreign-vmstate"
+    );
+    assert_eq!(
+        std::fs::read(
+            second_root
+                .path()
+                .join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME)
+        )?,
+        b"foreign-overlay"
+    );
 
     drop(launch);
     node.shutdown_child()?;

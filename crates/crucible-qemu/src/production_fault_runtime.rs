@@ -136,6 +136,58 @@ impl ProductionNetworkStateCheckpoint {
 }
 
 impl ProductionFaultRuntimeCheckpoint {
+    /// Fallibly duplicates this process-neutral checkpoint for a sibling world.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProductionFaultRuntimeError::CheckpointCloneAllocation`] when
+    /// bounded ledger storage cannot be reserved for the duplicate.
+    pub fn try_clone(&self) -> Result<Self, ProductionFaultRuntimeError> {
+        let allocation_error = || ProductionFaultRuntimeError::CheckpointCloneAllocation;
+
+        Ok(Self {
+            runtime: self.runtime.clone(),
+            host: self.host.clone(),
+            qemu_fingerprints: self.qemu_fingerprints.try_clone_with(
+                |node| Ok(node.clone()),
+                |fingerprint| Ok(*fingerprint),
+                allocation_error,
+            )?,
+            qemu_fault_sequences: self.qemu_fault_sequences.try_clone_with(
+                |node| Ok(node.clone()),
+                |sequence| Ok(*sequence),
+                allocation_error,
+            )?,
+            qemu_fault_event_sequences: self.qemu_fault_event_sequences.try_clone_with(
+                |node| Ok(node.clone()),
+                |sequence| Ok(*sequence),
+                allocation_error,
+            )?,
+            qemu_issued_actions: self.qemu_issued_actions.try_clone_with(
+                |identity| Ok(*identity),
+                |action| try_clone_action(action, allocation_error),
+                allocation_error,
+            )?,
+            qemu_action_commits: self.qemu_action_commits.try_clone_with(
+                |identity| Ok(*identity),
+                |commit| Ok(*commit),
+                allocation_error,
+            )?,
+            qemu_active_rule_ids: self
+                .qemu_active_rule_ids
+                .try_clone_with(|identity| Ok(*identity), allocation_error)?,
+            network_state: self.network_state.clone(),
+            emitted_events: self.emitted_events.clone(),
+            pending_qemu_observations: self.pending_qemu_observations.clone(),
+            pending_qemu_events: self.pending_qemu_events.try_clone_with(
+                |node| Ok(node.clone()),
+                |events| try_clone_fault_events(events, allocation_error),
+                allocation_error,
+            )?,
+            identity: self.identity,
+        })
+    }
+
     /// Returns the aggregate content identity of this continuation.
     #[must_use]
     pub const fn id(&self) -> ContentHash {
@@ -296,6 +348,9 @@ pub enum ProductionFaultRuntimeError {
         /// Independently owned continuation that failed canonical encoding.
         component: &'static str,
     },
+    /// A process-neutral checkpoint duplicate could not reserve ledger storage.
+    #[error("cannot reserve bounded production fault-checkpoint clone storage")]
+    CheckpointCloneAllocation,
 }
 
 /// One fully authenticated node lifecycle decision awaiting host application.

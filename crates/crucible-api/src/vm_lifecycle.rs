@@ -32,8 +32,6 @@ use crucible::{
     SimulationBackend, SingleScheduler, SingleSchedulerCheckpoint, VirtualTime, VmArchitecture,
     World,
 };
-#[cfg(target_os = "linux")]
-use crucible_qemu::QemuNodeSetPreparedHotForkTemplate;
 use crucible_qemu::{
     ProductionFaultRuntime, ProductionFaultRuntimeCheckpoint, ProductionNetworkStateCheckpoint,
     QemuLaunchResourceRequirements, QemuNode, QemuNodeLifecycleDecision,
@@ -41,6 +39,8 @@ use crucible_qemu::{
     QemuReplayOracleValidation, QemuSharedBlockDevice, QemuVmSnapshot as ExactSnapshotHandle,
     linux_process_identity, quarantine_orphaned_qemu_process,
 };
+#[cfg(target_os = "linux")]
+use crucible_qemu::{QemuNodeSetPreparedHotForkSource, QemuNodeSetPreparedHotForkTemplate};
 use quantum_loop::{
     DurableRunStateError, LifecycleStatePersistence, PRODUCTION_RUN_STATE_FILE,
     decode_prior_run_state, decode_run_json_bounded, persist_run_state_atomic,
@@ -79,6 +79,8 @@ pub use fault_implementation::{
 };
 #[cfg(target_os = "linux")]
 mod hot_fork;
+#[cfg(all(target_os = "linux", feature = "test-support"))]
+pub use hot_fork::prepared_hot_fork_source_world_for_test;
 #[cfg(target_os = "linux")]
 pub use hot_fork::{
     ProductionVmHotForkNodeBoundary, ProductionVmHotForkNodeServiceState,
@@ -510,7 +512,7 @@ impl ProductionRunDirectory {
         &self.path
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn temporary() -> Result<Self, std::io::Error> {
         let temporary = tempfile::tempdir()?;
         Ok(Self {

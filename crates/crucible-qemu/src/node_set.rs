@@ -107,6 +107,208 @@ impl QemuNodeSetPreparedHotForkTemplate {
     }
 }
 
+/// Identity-checked operational loan to one retained hot-fork source.
+///
+/// The loan exposes only the fork and source-side reconciliation operations
+/// needed while an authoritative [`QemuNodeSet`] keeps the source process
+/// installed. It cannot remove, resume, shut down, or otherwise repurpose the
+/// source node. Every QMP operation first revalidates the exact source process
+/// incarnation and retained-template generation bound by the preparation
+/// token.
+#[cfg(target_os = "linux")]
+pub struct QemuNodeSetPreparedHotForkSource<'a> {
+    source: &'a mut QemuNode,
+    prepared: &'a QemuNodeSetPreparedHotForkTemplate,
+}
+
+#[cfg(target_os = "linux")]
+impl QemuNodeSetPreparedHotForkSource<'_> {
+    /// Returns the exact source process incarnation bound during preparation.
+    #[must_use]
+    pub const fn process_identity(&self) -> &QemuProcessIdentity {
+        &self.prepared.source_process
+    }
+
+    /// Returns the exact configuration authenticated during preparation.
+    #[must_use]
+    pub const fn configuration(&self) -> ContentHash {
+        self.prepared.configuration()
+    }
+
+    /// Returns a branch-private clone of the authenticated event-log prefix.
+    #[must_use]
+    pub fn fork_event_log(&self) -> EventLog {
+        self.prepared.event_log().clone()
+    }
+
+    /// Returns the source launch-resource profile bound during preparation.
+    #[must_use]
+    pub const fn launch_resources(&self) -> QemuLaunchResourceRequirements {
+        self.prepared.launch_resources()
+    }
+
+    /// Stages child-private files and forks this exact prepared source.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::QemuHotForkLaunchError::Rejected`] when the source
+    /// process or prepared generation changed before the operation, or when
+    /// QEMU rejects the fork before creating a child. Other variants mean a
+    /// child exists or may exist and require reconciliation or quarantine.
+    pub fn fork_with_files_into<O, F>(
+        &mut self,
+        process_owner: &mut O,
+        contract_for: F,
+        destinations: &[crate::QemuHotForkChildFileDestination<'_>],
+        maximum_bytes: u64,
+    ) -> Result<crate::QemuHotForkChildLaunch<O::Authority>, crate::QemuHotForkLaunchError>
+    where
+        O: crate::QemuHotForkChildProcessOwner,
+        F: for<'a> FnOnce(
+            &'a O,
+        ) -> Result<
+            &'a crate::QemuChildProcessContract,
+            crate::QemuNodeChannelError,
+        >,
+    {
+        self.validate()
+            .map_err(|source| crate::QemuHotForkLaunchError::Rejected {
+                source: crate::QemuNodeChannelError::new(
+                    "authenticate retained hot-fork source",
+                    source.to_string(),
+                ),
+            })?;
+        self.source.fork_prepared_hot_fork_template_with_files_into(
+            process_owner,
+            contract_for,
+            destinations,
+            maximum_bytes,
+        )
+    }
+
+    /// Queries the exact parent-owned record for one forked child.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::QemuNodeChannelError`] when source authentication or
+    /// the child-status exchange fails.
+    pub fn query_child_process(
+        &mut self,
+        generation: u64,
+    ) -> Result<crate::QmpHotForkChildProcessState, crate::QemuNodeChannelError> {
+        self.validate()?;
+        self.source.query_hot_fork_child_process(generation)
+    }
+
+    /// Releases the exact parent-owned record for one reaped child.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::QemuNodeChannelError`] when source authentication or
+    /// the child-status release fails.
+    pub fn release_child_process(
+        &mut self,
+        generation: u64,
+    ) -> Result<crate::QmpHotForkChildProcessState, crate::QemuNodeChannelError> {
+        self.validate()?;
+        self.source.release_hot_fork_child_process(generation)
+    }
+
+    /// Releases the source-owned plugin endpoint stage.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::QemuNodeChannelError`] when source authentication or
+    /// the ordered endpoint release fails.
+    pub fn release_plugin_endpoints(&mut self) -> Result<(), crate::QemuNodeChannelError> {
+        self.validate()?;
+        self.source.release_hot_fork_plugin_endpoints()
+    }
+
+    /// Releases the source-owned child QMP stage.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::QemuNodeChannelError`] when source authentication or
+    /// the ordered QMP release fails.
+    pub fn release_child_qmp(&mut self) -> Result<(), crate::QemuNodeChannelError> {
+        self.validate()?;
+        self.source.release_hot_fork_child_qmp()
+    }
+
+    /// Releases the source-owned diagnostics stage with its child consumer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::QemuNodeChannelError`] when source authentication,
+    /// consumer matching, or the ordered diagnostics release fails.
+    pub fn release_child_diagnostics(
+        &mut self,
+        consumer: &mut crate::QemuHotForkChildDiagnosticConsumer,
+    ) -> Result<crate::QemuHotForkChildDiagnosticCapture, crate::QemuNodeChannelError> {
+        self.validate()?;
+        self.source
+            .release_hot_fork_child_diagnostics_with_consumer(consumer)
+    }
+
+    /// Releases the source-owned private ring mapping.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::QemuNodeChannelError`] when source authentication or
+    /// the ordered ring release fails.
+    pub fn release_private_ring(&mut self) -> Result<(), crate::QemuNodeChannelError> {
+        self.validate()?;
+        self.source
+            .release_hot_fork_private_ring_mapping()
+            .map(drop)
+    }
+
+    /// Releases the exact child-process contract stage.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::QemuNodeChannelError`] when source authentication or
+    /// the ordered contract release fails.
+    pub fn release_child_process_contract(
+        &mut self,
+    ) -> Result<crate::QmpHotForkChildProcessContractState, crate::QemuNodeChannelError> {
+        self.validate()?;
+        self.source.release_hot_fork_child_process_contract()
+    }
+
+    /// Releases the exact child-file plan stage.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::QemuNodeChannelError`] when source authentication or
+    /// the ordered file-plan release fails.
+    pub fn release_child_files(
+        &mut self,
+    ) -> Result<crate::QmpHotForkChildFilesState, crate::QemuNodeChannelError> {
+        self.validate()?;
+        self.source.release_hot_fork_child_files()
+    }
+
+    fn validate(&mut self) -> Result<(), crate::QemuNodeChannelError> {
+        let current_process = self.source.process_identity().map_err(|source| {
+            crate::QemuNodeChannelError::new(
+                "authenticate retained hot-fork source process",
+                source.to_string(),
+            )
+        })?;
+        let state = self.source.query_hot_fork_template()?;
+        validate_prepared_hot_fork_token(self.prepared, &current_process, &state).map_err(
+            |source| {
+                crate::QemuNodeChannelError::new(
+                    "authenticate retained hot-fork source transaction",
+                    source.to_string(),
+                )
+            },
+        )
+    }
+}
+
 /// One node-qualified guest selectable request retained at a paused boundary.
 ///
 /// The node identity is part of the delivery authority. A request drained from
@@ -394,6 +596,33 @@ impl QemuNodeSet {
                 message: format!("query retained hot-fork template: {error}"),
             })?;
         validate_prepared_hot_fork_token(prepared, &current_process, &state)
+    }
+
+    /// Borrows one prepared source through its exact retained-template token.
+    ///
+    /// The returned capability exposes only fork and source-side child
+    /// reconciliation. The node remains installed in this authoritative set
+    /// for the complete lifetime of the loan.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when the token names a missing node, the source
+    /// process incarnation changed, or QEMU no longer owns the exact prepared
+    /// transaction generation.
+    #[cfg(target_os = "linux")]
+    pub fn prepared_hot_fork_source<'a>(
+        &'a mut self,
+        prepared: &'a QemuNodeSetPreparedHotForkTemplate,
+    ) -> Result<QemuNodeSetPreparedHotForkSource<'a>, BackendError> {
+        let current_process = self.process_identity(&prepared.node)?;
+        let source = self.node_mut(&prepared.node)?;
+        let state = source
+            .query_hot_fork_template()
+            .map_err(|error| BackendError::Rejected {
+                message: format!("query retained hot-fork template: {error}"),
+            })?;
+        validate_prepared_hot_fork_token(prepared, &current_process, &state)?;
+        Ok(QemuNodeSetPreparedHotForkSource { source, prepared })
     }
 
     /// Stops and removes one intended-crash runtime.
@@ -1496,6 +1725,73 @@ mod tests {
 
         let error = validate_prepared_hot_fork_token(&token, &replacement_process, &prepared)
             .expect_err("PID reuse must not preserve a source token");
+
+        assert!(error.to_string().contains("changed incarnation"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn prepared_source_loan_rejects_a_stale_transaction_generation() {
+        let mut nodes = QemuNodeSet::new();
+        let node = NodeId {
+            name: String::from("node-a"),
+        };
+        nodes.insert(
+            node.clone(),
+            crate::node::tests::node_set_hot_fork_source(false).expect("scripted QEMU source"),
+        );
+        let mut token = nodes
+            .prepare_retained_hot_fork_template(
+                &node,
+                ContentHash::from_bytes(b"loan-generation"),
+                EventLog::new(),
+                QemuLaunchResourceRequirements::from_vm_shape(128, 1, true),
+                &[],
+                64 * 1024 * 1024,
+            )
+            .expect("prepare source");
+
+        token.template_generation = token.template_generation.saturating_add(1);
+        let error = nodes
+            .prepared_hot_fork_source(&token)
+            .err()
+            .unwrap_or_else(|| panic!("stale generation must not mint a source loan"));
+
+        assert!(
+            error
+                .to_string()
+                .contains("exact prepared hot-fork transaction")
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn prepared_source_loan_rejects_a_changed_process_incarnation() {
+        let mut nodes = QemuNodeSet::new();
+        let node = NodeId {
+            name: String::from("node-a"),
+        };
+        nodes.insert(
+            node.clone(),
+            crate::node::tests::node_set_hot_fork_source(false).expect("scripted QEMU source"),
+        );
+        let mut token = nodes
+            .prepare_retained_hot_fork_template(
+                &node,
+                ContentHash::from_bytes(b"loan-incarnation"),
+                EventLog::new(),
+                QemuLaunchResourceRequirements::from_vm_shape(128, 1, true),
+                &[],
+                64 * 1024 * 1024,
+            )
+            .expect("prepare source");
+
+        token.source_process.start_time_ticks =
+            token.source_process.start_time_ticks.saturating_add(1);
+        let error = nodes
+            .prepared_hot_fork_source(&token)
+            .err()
+            .unwrap_or_else(|| panic!("changed incarnation must not mint a source loan"));
 
         assert!(error.to_string().contains("changed incarnation"));
     }

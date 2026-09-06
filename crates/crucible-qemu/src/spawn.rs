@@ -184,6 +184,25 @@ impl QemuPreparedRunDirectory {
         Self::open_for_requirements(command.resource_requirements(), path.as_ref(), contract)
     }
 
+    /// Opens a prepared directory from an explicit resource profile for tests.
+    ///
+    /// This constructor exercises the same descriptor pinning and resource
+    /// admission as [`Self::open_for_launch`] without requiring an unrelated
+    /// launch-command fixture.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError`] when the profile exceeds the process contract
+    /// or the directory does not contain the required pinned regular files.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn open_for_test_requirements(
+        requirements: crate::QemuLaunchResourceRequirements,
+        path: impl AsRef<Path>,
+        contract: &QemuChildProcessContract,
+    ) -> Result<Self, QemuSpawnError> {
+        Self::open_for_requirements(requirements, path.as_ref(), contract)
+    }
+
     pub(crate) fn open_for_requirements(
         requirements: crate::QemuLaunchResourceRequirements,
         path: &Path,
@@ -357,6 +376,163 @@ impl QemuPreparedRunDirectory {
             ));
         }
         Ok(std::os::fd::AsFd::as_fd(&self.vmstate))
+    }
+
+    /// Lends the provisioned empty root overlay as a hot-fork destination.
+    ///
+    /// Disk-backed hot-fork children must receive a branch-private copy of the
+    /// source generation's writable overlay. The destination must remain the
+    /// empty regular file pinned when this run directory was provisioned.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError`] when this launch has no root overlay, the
+    /// overlay is being materialized, its pinned identity changed, or it is no
+    /// longer empty.
+    pub fn hot_fork_root_overlay_destination(
+        &self,
+    ) -> Result<std::os::fd::BorrowedFd<'_>, QemuSpawnError> {
+        if !self.launch_resources.has_root_overlay()
+            || self.root_overlay_materialization != PreparedRootOverlayMaterialization::Provisioned
+        {
+            return Err(QemuSpawnError::PreparedRootOverlayNotReady {
+                path: self.path.join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
+            });
+        }
+        let retained = self.revalidate_root_overlay_identity()?;
+        if retained.st_size != 0 {
+            return Err(invalid_input(
+                "lend prepared root-overlay container",
+                "prepared root-overlay container is not empty",
+            ));
+        }
+        let overlay = self.root_overlay.as_ref().ok_or_else(|| {
+            QemuSpawnError::PreparedRootOverlayNotReady {
+                path: self.path.join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
+            }
+        })?;
+        Ok(std::os::fd::AsFd::as_fd(overlay))
+    }
+
+    /// Seals the destination pair against one successful QEMU fork result.
+    ///
+    /// The launch token is the unforgeable proof that QEMU consumed the exact
+    /// staged child-file generation. Sealing reauthenticates both named pinned
+    /// artifacts after QEMU wrote them, verifies that the pair remains distinct
+    /// and within the admitted aggregate storage ceiling, then prevents either
+    /// file from being lent to another fork or mistaken for fresh artifacts.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError`] and leaves the pair fail-closed when the run
+    /// directory was not in its provisioned state, a named inode changed, the
+    /// pair aliases one backing file, or its combined size exceeds admission.
+    pub fn seal_hot_fork_child_file_transfer<A>(
+        &mut self,
+        launch: &crate::QemuHotForkChildLaunch<A>,
+    ) -> Result<(), QemuSpawnError> {
+        if self.vmstate_materialization != PreparedVmStateMaterialization::Provisioned
+            || (self.launch_resources.has_root_overlay()
+                && self.root_overlay_materialization
+                    != PreparedRootOverlayMaterialization::Provisioned)
+            || launch.parent_state().request().child_files_generation() == 0
+        {
+            self.invalidate_hot_fork_child_file_transfer();
+            return Err(invalid_input(
+                "seal hot-fork child files",
+                "successful fork does not match a provisioned child-file destination pair",
+            ));
+        }
+        let vmstate = self.revalidate_identity();
+        let overlay = self
+            .launch_resources
+            .has_root_overlay()
+            .then(|| self.revalidate_root_overlay_identity())
+            .transpose();
+        let validation = vmstate.and_then(|vmstate| {
+            overlay.map(|overlay| {
+                let overlay_bytes = overlay
+                    .as_ref()
+                    .and_then(|metadata| u64::try_from(metadata.st_size).ok())
+                    .unwrap_or(0);
+                let vmstate_bytes = u64::try_from(vmstate.st_size).unwrap_or(u64::MAX);
+                (vmstate_bytes, overlay_bytes)
+            })
+        });
+        let (vmstate_bytes, overlay_bytes) = match validation {
+            Ok(bytes) => bytes,
+            Err(source) => {
+                self.invalidate_hot_fork_child_file_transfer();
+                return Err(source);
+            }
+        };
+        let expected_file_count = 1 + usize::from(self.launch_resources.has_root_overlay());
+        let vmstate_root = crate::QmpHotForkChildFileRoot::node_name(
+            crate::DEFAULT_VMSTATE_NODE_NAME,
+        )
+        .map_err(|_source| {
+            invalid_input(
+                "seal hot-fork child files",
+                "the built-in VMState root selector is invalid",
+            )
+        })?;
+        let overlay_root = self
+            .launch_resources
+            .has_root_overlay()
+            .then(|| crate::QmpHotForkChildFileRoot::device(crate::ROOT_DRIVE_ID))
+            .transpose()
+            .map_err(|_source| {
+                invalid_input(
+                    "seal hot-fork child files",
+                    "the built-in root-overlay selector is invalid",
+                )
+            })?;
+        let matches_vmstate = launch.child_files().iter().any(|file| {
+            file.root() == &vmstate_root
+                && u64::try_from(self.vmstate_identity.device) == Ok(file.device())
+                && u64::try_from(self.vmstate_identity.inode) == Ok(file.inode())
+        });
+        let matches_overlay = match (overlay_root.as_ref(), self.root_overlay_identity) {
+            (None, None) => true,
+            (Some(root), Some(identity)) => launch.child_files().iter().any(|file| {
+                file.root() == root
+                    && u64::try_from(identity.device) == Ok(file.device())
+                    && u64::try_from(identity.inode) == Ok(file.inode())
+            }),
+            _ => false,
+        };
+        if launch.child_files().len() != expected_file_count
+            || !matches_vmstate
+            || !matches_overlay
+            || vmstate_bytes == 0
+            || (self.launch_resources.has_root_overlay() && overlay_bytes == 0)
+            || self.root_overlay_identity == Some(self.vmstate_identity)
+            || vmstate_bytes
+                .checked_add(overlay_bytes)
+                .is_none_or(|bytes| bytes > self.admitted_ceiling.2)
+        {
+            self.invalidate_hot_fork_child_file_transfer();
+            return Err(invalid_input(
+                "seal hot-fork child files",
+                "transferred child files alias or exceed their admitted storage ceiling",
+            ));
+        }
+        self.vmstate_materialization = PreparedVmStateMaterialization::HotForkChild;
+        if self.launch_resources.has_root_overlay() {
+            self.root_overlay_materialization = PreparedRootOverlayMaterialization::HotForkChild;
+        }
+        Ok(())
+    }
+
+    /// Invalidates destinations after any fork exchange without a success token.
+    ///
+    /// This operation can only remove launch authority. It is safe after an
+    /// explicit rejection and required after an ambiguous or post-fork error.
+    pub fn invalidate_hot_fork_child_file_transfer(&mut self) {
+        self.vmstate_materialization = PreparedVmStateMaterialization::Updating;
+        if self.launch_resources.has_root_overlay() {
+            self.root_overlay_materialization = PreparedRootOverlayMaterialization::Updating;
+        }
     }
 
     fn revalidate(&self) -> Result<(), QemuSpawnError> {

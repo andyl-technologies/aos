@@ -62,7 +62,7 @@ impl QmpHotForkBlockSourceProof {
         self.originally_writable_backend_count
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) const fn empty_frozen() -> Self {
         Self {
             frozen: true,

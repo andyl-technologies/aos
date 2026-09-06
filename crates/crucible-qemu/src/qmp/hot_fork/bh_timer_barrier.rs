@@ -44,7 +44,7 @@ pub struct QmpHotForkBhTimerBarrierState {
 }
 
 impl QmpHotForkBhTimerBarrierState {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) const fn one_quiescent(generation: u64) -> Self {
         Self {
             generation,

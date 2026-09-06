@@ -242,7 +242,6 @@ enum DescriptorScript {
     EndpointInstallFailure,
     EndpointDispositionMismatch,
     ForkRejected,
-    ForkIndeterminate,
     ForkParentDispositionFailed,
     HostIoCloneFailure,
     RequestBasisMismatch,
@@ -253,7 +252,6 @@ enum DescriptorScript {
 enum HotForkScript {
     Forked,
     Rejected,
-    Indeterminate,
     ParentDispositionFailed,
 }
 
@@ -1564,12 +1562,6 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
                     "injected pre-fork rejection",
                 ),
             }),
-            HotForkScript::Indeterminate => Err(crate::QemuHotForkCommandError::Indeterminate {
-                source: QemuNodeChannelError::new(
-                    "fork retained hot-fork template",
-                    "injected indeterminate exchange",
-                ),
-            }),
             HotForkScript::ParentDispositionFailed => Ok(crate::QmpHotForkState::for_test(
                 request,
                 crate::QmpHotForkOutcome::ParentDispositionFailed,
@@ -2371,6 +2363,11 @@ fn prepared_hot_fork_node_with_log(
 pub(crate) fn node_set_hot_fork_source(
     fail_during_preparation: bool,
 ) -> Result<QemuNode, Box<dyn Error>> {
+    if !fail_during_preparation {
+        return super::test_support::hot_fork::scripted_hot_fork_source_for_test(
+            super::test_support::hot_fork::QemuTestHotForkOutcome::Forked,
+        );
+    }
     let (setup_identity, host_barrier, image) = held_hot_fork_ring_image()?;
     let barrier = crate::QmpHotForkPluginBarrierState::one_quiescent(15, host_barrier.ring_count());
     scripted_hot_fork_capture_node(
@@ -2434,8 +2431,8 @@ fn unvalidated_hot_fork_process_contract() -> Result<crate::QemuChildProcessCont
             cgroup_procs,
             cancellation,
             1,
-            4096,
-            4096,
+            1 << 30,
+            1 << 30,
         ),
     )
 }
@@ -2705,7 +2702,6 @@ fn scripted_hot_fork_capture_node(
             hot_fork_aborted: Arc::new(Mutex::new(false)),
             hot_fork_script: match descriptor_script {
                 DescriptorScript::ForkRejected => HotForkScript::Rejected,
-                DescriptorScript::ForkIndeterminate => HotForkScript::Indeterminate,
                 DescriptorScript::ForkParentDispositionFailed => {
                     HotForkScript::ParentDispositionFailed
                 }

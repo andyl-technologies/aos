@@ -75,7 +75,7 @@ pub struct QmpHotForkTemplateResourceStageState {
 }
 
 impl QmpHotForkTemplateResourceStageState {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     const fn empty() -> Self {
         Self {
             template_generation: 0,
@@ -282,7 +282,7 @@ pub struct QmpHotForkTemplateState {
 }
 
 impl QmpHotForkTemplateState {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn one_draining_without_resources(request: super::QmpHotForkRequest) -> Self {
         let plugin_barrier =
             QmpHotForkPluginBarrierState::one_quiescent(request.plugin_barrier_generation(), 1);
@@ -307,7 +307,7 @@ impl QmpHotForkTemplateState {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn one_prepared(request: super::QmpHotForkRequest) -> Self {
         let plugin_barrier =
             QmpHotForkPluginBarrierState::one_quiescent(request.plugin_barrier_generation(), 1);
@@ -359,7 +359,7 @@ impl QmpHotForkTemplateState {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn one_aborted(request: super::QmpHotForkRequest) -> Self {
         let mut state = Self::one_draining_without_resources(request);
         state.outcome = QmpHotForkTemplateOutcome::Aborted;

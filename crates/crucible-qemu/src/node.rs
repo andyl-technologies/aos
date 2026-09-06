@@ -2728,6 +2728,11 @@ fn channel_error_to_shutdown_error(error: QemuNodeChannelError) -> QemuShutdownT
     QemuShutdownTargetError::new(error.operation, error.message)
 }
 
+#[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
+mod test_support;
+#[cfg(all(target_os = "linux", feature = "test-support"))]
+pub use test_support::hot_fork::{QemuTestHotForkOutcome, scripted_hot_fork_source_for_test};
+
 #[cfg(test)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #[allow(clippy::expect_used, clippy::unwrap_used)]
