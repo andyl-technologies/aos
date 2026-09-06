@@ -79,6 +79,7 @@ pub(super) async fn scan(
         .filter(|observation| observation.provider == "repology")
         .map(|observation| (observation.project.clone(), observation.clone()))
         .collect::<BTreeMap<_, _>>();
+    let repology_current_versions = repology_current_versions(envelope);
     let mut repology_requests = 0_usize;
     let mut repology_fallbacks = 0_u64;
     let mut last_repology_request = None;
@@ -196,9 +197,20 @@ pub(super) async fn scan(
                         {
                             Ok(observation.clone())
                         } else {
-                            let result =
-                                paced_repology(&client, store, project, &mut last_repology_request)
-                                    .await;
+                            let relevant_versions =
+                                repology_current_versions.get(project).ok_or_else(|| {
+                                    anyhow::anyhow!(
+                                        "Repology project lacks current-version context"
+                                    )
+                                })?;
+                            let result = paced_repology(
+                                &client,
+                                store,
+                                project,
+                                relevant_versions,
+                                &mut last_repology_request,
+                            )
+                            .await;
                             if let Ok(observation) = &result {
                                 repology_by_project.insert(project.clone(), observation.clone());
                             }
@@ -242,7 +254,18 @@ pub(super) async fn scan(
                     Some(observation)
                 } else if repology_requests < repology_limit {
                     repology_requests += 1;
-                    match paced_repology(&client, store, project, &mut last_repology_request).await
+                    let relevant_versions =
+                        repology_current_versions.get(project).ok_or_else(|| {
+                            anyhow::anyhow!("Repology project lacks current-version context")
+                        })?;
+                    match paced_repology(
+                        &client,
+                        store,
+                        project,
+                        relevant_versions,
+                        &mut last_repology_request,
+                    )
+                    .await
                     {
                         Ok(observation) => {
                             repology_by_project.insert(project.to_string(), observation.clone());
@@ -445,17 +468,46 @@ fn observation_is_fresh(observation: &UpstreamObservationV1, now_unix: u64) -> b
         && now_unix.saturating_sub(observation.retrieved_at_unix) <= OBSERVATION_MAX_AGE_SECONDS
 }
 
+fn repology_current_versions(envelope: &InventoryEnvelopeV1) -> BTreeMap<String, BTreeSet<String>> {
+    let mut versions = BTreeMap::<String, BTreeSet<String>>::new();
+    for unit in &envelope.inventory.units {
+        for component in unit.components.values() {
+            versions
+                .entry(unit.family.to_string())
+                .or_default()
+                .insert(component.current.comparison_version.clone());
+            for advisor in &component.advisors {
+                if let DiscoveryProvider::Repology { project } = advisor {
+                    versions
+                        .entry(project.clone())
+                        .or_default()
+                        .insert(component.current.comparison_version.clone());
+                }
+            }
+        }
+    }
+    versions
+}
+
 async fn paced_repology(
     client: &reqwest::Client,
     store: &StateStore,
     project: &str,
+    relevant_versions: &BTreeSet<String>,
     last_request: &mut Option<tokio::time::Instant>,
 ) -> Result<UpstreamObservationV1> {
     if let Some(last_request) = last_request {
         tokio::time::sleep_until(*last_request + std::time::Duration::from_secs(1)).await;
     }
     *last_request = Some(tokio::time::Instant::now());
-    repology(client, store, project, super::state::now_unix()?).await
+    repology(
+        client,
+        store,
+        project,
+        relevant_versions,
+        super::state::now_unix()?,
+    )
+    .await
 }
 
 async fn github_releases(
@@ -796,6 +848,7 @@ async fn repology(
     client: &reqwest::Client,
     store: &StateStore,
     project: &str,
+    relevant_versions: &BTreeSet<String>,
     retrieved_at: u64,
 ) -> Result<UpstreamObservationV1> {
     store.claim_repology_request(retrieved_at)?;
@@ -834,6 +887,10 @@ async fn repology(
         let Some(version) = entry.get("version").and_then(Value::as_str) else {
             continue;
         };
+        let status = entry.get("status").and_then(Value::as_str);
+        if !repology_version_is_relevant(version, status, relevant_versions) {
+            continue;
+        }
         let repository = entry
             .get("repo")
             .and_then(Value::as_str)
@@ -863,14 +920,8 @@ async fn repology(
             raw_id,
             raw_version: version.to_string(),
             first_key,
-            yanked: matches!(
-                entry.get("status").and_then(Value::as_str),
-                Some("ignored" | "incorrect" | "untrusted")
-            ),
-            status: entry
-                .get("status")
-                .and_then(Value::as_str)
-                .map(str::to_string),
+            yanked: matches!(status, Some("ignored" | "incorrect" | "untrusted")),
+            status: status.map(str::to_string),
             vulnerable: entry.get("vulnerable").and_then(Value::as_bool),
             licenses,
         });
@@ -917,6 +968,14 @@ async fn repology(
     };
     observation.validate()?;
     Ok(observation)
+}
+
+fn repology_version_is_relevant(
+    version: &str,
+    status: Option<&str>,
+    relevant_versions: &BTreeSet<String>,
+) -> bool {
+    status == Some("newest") || relevant_versions.contains(version)
 }
 
 async fn bounded_body(response: reqwest::Response) -> Result<Vec<u8>> {
@@ -1049,6 +1108,27 @@ mod tests {
         first.licenses.clear();
         assert_eq!(unanimous_licenses(&[&first, &second]), None);
         assert_eq!(unanimous_licenses(&[&first]), None);
+    }
+
+    #[test]
+    fn repology_observations_retain_only_current_and_newest_versions() {
+        let current = BTreeSet::from(["7.7.1".to_string(), "8.6.0".to_string()]);
+
+        assert!(repology_version_is_relevant(
+            "7.7.1",
+            Some("outdated"),
+            &current
+        ));
+        assert!(repology_version_is_relevant(
+            "9.2.0",
+            Some("newest"),
+            &current
+        ));
+        assert!(!repology_version_is_relevant(
+            "6.5.0",
+            Some("legacy"),
+            &current
+        ));
     }
 
     #[test]
