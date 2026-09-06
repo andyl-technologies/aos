@@ -13,6 +13,24 @@ use crucible_campaign::{
 use super::*;
 
 #[test]
+fn writer_owner_drop_releases_lock_held_by_a_duplicated_descriptor() {
+    let directory = tempfile::tempdir().expect("ledger directory");
+    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("first writer");
+    let inherited = ledger
+        .writer_lock
+        .try_clone()
+        .expect("duplicate inherited writer descriptor");
+
+    assert!(DirectoryAssignmentLedger::open(directory.path()).is_err());
+    drop(ledger);
+
+    let replacement = DirectoryAssignmentLedger::open(directory.path())
+        .expect("owner drop releases inherited lock");
+    drop(replacement);
+    drop(inherited);
+}
+
+#[test]
 fn directory_ledger_reopens_exact_records_and_attempt_state() {
     let directory = tempfile::tempdir().expect("ledger tempdir");
     let request = request(0x11, 0x31, 2);
