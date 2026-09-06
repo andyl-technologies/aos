@@ -84,7 +84,7 @@ in {
             name = "sudo-policy";
             description = "sudoers and PAM configuration are valid";
             script = ''
-              vm.succeed("${pkgs.sudo}/bin/visudo -cf /etc/sudoers")
+              vm.succeed("${pkgs.sudo}/sbin/visudo -cf /etc/sudoers")
               vm.succeed("grep -q pam_unix.so /etc/pam.d/sudo")
             '';
           }
