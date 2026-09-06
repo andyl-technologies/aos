@@ -11,7 +11,7 @@
   source = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
   probe = pkgs.mkDerivation {
-    pname = "crucible-qemu-live-hot-fork-child";
+    pname = "crucible-qemu-live-hot-fork-child-execution";
     version = "0";
     src = source;
     buildDeps = [pkgs.coreutils pkgs.rust pkgs.sed];
@@ -33,9 +33,9 @@
           sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" > .cargo/config.toml
           cargo build --frozen --offline --release \
             --manifest-path crates/Cargo.toml --target-dir "$TMPDIR/target" \
-            -p crucible-qemu --example crucible-qemu-live-hot-fork-child
+            -p crucible-qemu --example crucible-qemu-live-hot-fork-child-execution
           mkdir -p "$out/bin"
-          cp "$TMPDIR/target/release/examples/crucible-qemu-live-hot-fork-child" "$out/bin/"
+          cp "$TMPDIR/target/release/examples/crucible-qemu-live-hot-fork-child-execution" "$out/bin/"
         '';
       }
     ];
@@ -61,7 +61,7 @@
   pluginWithSymbols = pkgs.crucible-qemu-plugin.overrideAttrs {dontStrip = "1";};
 in
   testing.mkVMTest {
-    name = "crucible-qemu-hot-fork-child";
+    name = "crucible-qemu-hot-fork-child-execution";
     memory = 3072;
     rootfsDeps = [
       probe
@@ -104,14 +104,14 @@ in
       probe_status=0
       CRUCIBLE_HOT_FORK_CHILD_DEBUGGER=${pkgs.gdb}/bin/gdb \
         ${pkgs.coreutils}/bin/timeout -k 5 600 \
-        ${probe}/bin/crucible-qemu-live-hot-fork-child \
+        ${probe}/bin/crucible-qemu-live-hot-fork-child-execution \
         ${qemuWithSymbols}/bin/qemu-system-x86_64 \
         ${pluginWithSymbols}/lib/libcrucible_qemu_plugin.so \
         ${pkgs.linux}/boot/vmlinuz-* \
         ${qemuWithSymbols}/share/qemu/bios-256k.bin \
-        /sys/fs/cgroup/crucible /tmp/attempts/run > /tmp/hot-fork-child-result \
+        /sys/fs/cgroup/crucible /tmp/attempts/run > /tmp/hot-fork-child-execution-result \
         || probe_status=$?
-      cat /tmp/hot-fork-child-result
+      cat /tmp/hot-fork-child-execution-result
       if [ "$probe_status" -ne 0 ]; then
         echo "probe exited with status $probe_status"
         echo "core settings: pattern=$(cat /proc/sys/kernel/core_pattern) \
@@ -127,16 +127,11 @@ in
           ${qemuWithSymbols}/bin/qemu-system-x86_64 "$core" || true
       done
       [ "$probe_status" -eq 0 ]
-      grep -Fxq PASS /tmp/hot-fork-child-result
-      grep -Fxq child_forked=true /tmp/hot-fork-child-result
-      grep -Fxq child_in_target_cgroup=true /tmp/hot-fork-child-result
-      grep -Fxq child_holds_private_vmstate_inode=true /tmp/hot-fork-child-result
-      grep -Fxq child_released_source_vmstate_inode=true /tmp/hot-fork-child-result
-      grep -Fxq source_vmstate_unchanged=true /tmp/hot-fork-child-result
-      grep -Fxq children_forked=3 /tmp/hot-fork-child-result
-      grep -Fxq whole_world_child_handoff=false /tmp/hot-fork-child-result
+      grep -Fxq PASS /tmp/hot-fork-child-execution-result
+      grep -Fxq child_boundary_matches_capture=true /tmp/hot-fork-child-execution-result
+      grep -Fxq child_suffix_matches_exact_restore=true /tmp/hot-fork-child-execution-result
       printf '%s\n' 'check=${attrPath}' \
-        'tasks=${builtins.concatStringsSep "," taskIds}' >> /tmp/hot-fork-child-result
+        'tasks=${builtins.concatStringsSep "," taskIds}' >> /tmp/hot-fork-child-execution-result
       ${pkgs.util-linux}/bin/umount /tmp/attempts
     '';
   }

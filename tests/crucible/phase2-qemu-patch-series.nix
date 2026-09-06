@@ -1644,6 +1644,13 @@
       enforces = "HFORK-4,HFORK-22";
       capability = "the private-ring, diagnostics, child-QMP, child-console, and plugin endpoint stages may be released while a template is retained at its barrier phase and no fork operation is active, so a stage the last fork consumed gives way to the next child's and an unconsumed one can be withdrawn; release during a fork operation or a transitional template phase still fails closed, and the ordering rules between stages are unchanged; the live guarded fork flight could not release the plugin endpoints for a second child before this change";
     }
+    {
+      file = "0236-crucible-restarted-vcpu-thread-current-cpu.patch";
+      catalogName = "crucible-restarted-vcpu-thread-current-cpu";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "the round-robin vCPU thread a hot-fork child restarts sets its thread-local current CPU to the CPU it restarted for before entering the steady-state loop, as the original thread leaves it set by its initial-wait work, so the loop's icount deadline handling passes its vCPU-thread assertion when the child guest is resumed; the live child execution flight lost the child to that assertion on its first resume before this change";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

@@ -90,6 +90,30 @@ pub trait QemuShmemHotPathChannel: Send {
         ))
     }
 
+    /// Arms a hot-fork child's inherited instruction counter as its ceiling.
+    ///
+    /// A child's private ring carries the source's queue contents but a fresh
+    /// node slot, so its scheduler ceiling starts at zero while the plugin
+    /// still stands at the source's counter; the first control boundary would
+    /// publish that counter past the ceiling and abort. Arming the inherited
+    /// counter before any host request, without a wake, lets the child
+    /// publish exactly where the source stopped.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when this channel cannot arm a ceiling
+    /// or the counter is behind the slot's published counter.
+    #[cfg(target_os = "linux")]
+    fn arm_hot_fork_child_ceiling(
+        &mut self,
+        _inherited_icount: u64,
+    ) -> Result<(), QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "arm hot-fork child ceiling",
+            "this shared-memory channel does not implement hot-fork child arming",
+        ))
+    }
+
     /// Captures both directed network rings and the host injection cursor.
     ///
     /// # Errors

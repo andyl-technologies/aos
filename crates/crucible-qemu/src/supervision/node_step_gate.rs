@@ -103,9 +103,10 @@ pub use error::QemuLiveNodeStepGateError;
 mod exact_snapshot;
 mod plugin_resources;
 pub use exact_snapshot::{
-    QemuLiveHotForkChildReport, QemuLiveRetainedNetworkSnapshotReport,
-    QemuLiveSelectableProductSnapshotReport, QemuLiveSourceSetReport,
-    run_qemu_live_exact_snapshot_gate, run_qemu_live_hot_fork_child_gate,
+    QemuLiveHotForkChildExecutionReport, QemuLiveHotForkChildReport,
+    QemuLiveRetainedNetworkSnapshotReport, QemuLiveSelectableProductSnapshotReport,
+    QemuLiveSourceSetReport, run_qemu_live_exact_snapshot_gate,
+    run_qemu_live_hot_fork_child_execution_gate, run_qemu_live_hot_fork_child_gate,
     run_qemu_live_retained_network_snapshot_gate, run_qemu_live_selectable_product_snapshot_gate,
     run_qemu_live_source_set_gate,
 };

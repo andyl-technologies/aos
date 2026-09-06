@@ -260,6 +260,18 @@ plan's pinned source and prepared descriptors stay in the child's retained
 table, since adoption queries each source before closing it and reopens each
 replacement.
 
+Executing in the child adds two more repairs. Installing the child as a
+scheduler node arms the counter it inherited as its scheduler ceiling on the
+private ring, through the same quiesced-executor arming an exact VMState
+restore uses: the private ring carries the source's queue contents but a
+fresh node slot, so its ceiling would otherwise be zero while the plugin
+still stands at the source's counter, and the child's first control boundary
+would abort the plugin on publishing past it. The restarted round-robin vCPU
+thread names the CPU it restarted for as its thread-local current CPU before
+entering the steady-state loop, as the original thread leaves it set by its
+initial-wait work, so the loop's icount deadline handling passes its
+vCPU-thread assertion on the child's first resume.
+
 QEMU marks guest RAM `MADV_DONTFORK` at RAM block creation so helper forks
 never duplicate it. A template makes every RAM block forkable before it holds
 its barriers and restores the protection when it completes; the change is

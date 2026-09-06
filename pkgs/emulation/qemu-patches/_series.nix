@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "11acd6fdb46b85b871e9666b55dd999074c20a3e627263e0925238c816b50734";
+  patchBranchBundleSha256 = "5537b0ba3474854e7c388e66736b772c5a7e95ee4947dea31689777b689c555f";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "dc7ec30f2cbd79726aef9bdc20d8da018fc746bf";
+  patchBranchHeadCommit = "d61a8b275a60cf2c601ceb14142f08588944dd28";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -2285,6 +2285,16 @@ let
       class = "F";
       enforces = "HFORK-4,HFORK-22";
       capability = "the private-ring, diagnostics, child-QMP, child-console, and plugin endpoint stages may be released while a template is retained at its barrier phase and no fork operation is active, so a stage the last fork consumed gives way to the next child's and an unconsumed one can be withdrawn; release during a fork operation or a transitional template phase still fails closed, and the ordering rules between stages are unchanged; the live guarded fork flight could not release the plugin endpoints for a second child before this change";
+    }
+    {
+      file = "0236-crucible-restarted-vcpu-thread-current-cpu.patch";
+      branchSubject = "crucible: name the current CPU on the restarted vCPU thread";
+      branchCommit = "d61a8b275a60cf2c601ceb14142f08588944dd28";
+      branchTree = "e713904ad3b0d8a5e530ed80d4d626c18373236f";
+      catalogName = "crucible-restarted-vcpu-thread-current-cpu";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "the round-robin vCPU thread a hot-fork child restarts sets its thread-local current CPU to the CPU it restarted for before entering the steady-state loop, as the original thread leaves it set by its initial-wait work, so the loop's icount deadline handling passes its vCPU-thread assertion when the child guest is resumed; the live child execution flight lost the child to that assertion on its first resume before this change";
     }
   ];
   catalogOnlyCapabilities = [
