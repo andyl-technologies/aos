@@ -11,7 +11,10 @@
   triageDoc = builtins.readFile ../../docs/rfcs/0010-crucible/34-failure-triage.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
-  engineLib = builtins.readFile ../../crates/crucible/src/lib.rs;
+  engineLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/lib.rs;
+  };
   signatureTest = builtins.readFile ../../crates/crucible/tests/gate_failure_signature.rs;
   defaultChecks = builtins.readFile ./default.nix;
 

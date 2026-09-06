@@ -10,7 +10,10 @@
 
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginBlockIo = builtins.concatStringsSep "\n" [
-    (builtins.readFile ../../crates/crucible-qemu-plugin/src/block_io.rs)
+    (import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-qemu-plugin/src/block_io.rs;
+    })
     (builtins.readFile ../../crates/crucible-qemu-plugin/src/block_io_tests.rs)
   ];
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;

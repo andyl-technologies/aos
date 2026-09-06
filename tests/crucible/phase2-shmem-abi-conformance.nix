@@ -13,7 +13,10 @@
   shmemLib =
     import ./_crucible-shmem-source.nix {inherit lib;}
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/region.rs
-    + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs
+    + import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-shmem/src/shmem/frame_node.rs;
+    }
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/frame_entry.rs
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/futex.rs
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/preemption_mailbox.rs
@@ -429,7 +432,7 @@
     ++ failuresFor "crates/crucible-shmem/tests/fixtures/shmem_abi_golden.fixture" goldenFixture [
       {
         label = "ABI version";
-        needle = "abi_version=20";
+        needle = "abi_version=21";
       }
       {
         label = "total serialized length";
@@ -471,7 +474,7 @@
     ++ failuresFor "crates/crucible-shmem/interface/crucible-shmem-abi.toml" interfaceManifest [
       {
         label = "machine-readable ABI version";
-        needle = "abi_version = 20";
+        needle = "abi_version = 21";
       }
       {
         label = "selectable reply direction";

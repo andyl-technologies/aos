@@ -13,7 +13,10 @@
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = import ./_cli-source.nix {inherit lib;};
   cliFork = builtins.readFile ../../crates/crucible-cli/src/cli/resume_fork.rs;
-  apiLifecycle = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle.rs;
+  apiLifecycle = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-api/src/vm_lifecycle.rs;
+  };
   apiRuntime =
     builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/runtime.rs
     + builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/quantum_loop.rs

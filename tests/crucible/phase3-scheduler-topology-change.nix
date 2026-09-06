@@ -8,9 +8,15 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
+  libSource = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/lib.rs;
+  };
   simBackend = import ./_crucible-local-and-test-backends-source.nix;
-  qemuQuantum = builtins.readFile ../../crates/crucible-qemu/src/quantum.rs;
+  qemuQuantum = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/quantum.rs;
+  };
   topologyChangeTest = builtins.readFile ../../crates/crucible/tests/scheduler_topology_change.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;

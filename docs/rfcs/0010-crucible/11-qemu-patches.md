@@ -1,6 +1,6 @@
 # 11 — The QEMU patch series
 
-The carried series contains **180 patches**. This count is checked against
+The carried series contains **233 patches**. This count is checked against
 `pkgs/emulation/qemu-patches/_series.nix` by
 `checks.crucible.referenceIntegrity`.
 
@@ -212,9 +212,7 @@ PLUGIN TIME CONTROL (API surface)                      class  enforces
   crucible-plugin-wake-fd ....... main-loop wake-fd          F    SHM-26, INV-8
   crucible-plugin-tcg-exec-cb ... TCG-exec callback          F    coverage, INV-7
   crucible-plugin-vmstop ........ exact boundary to native pause D  DET-1, INV-10, QEMU-43
-  crucible-serialize-rr-cursor .. authoritative RR cursor VMState D  DET-1, DET-18, INV-10
-  crucible-fingerprint-state-domains guest-only state domains D  DET-18, DET-19, INV-10
-  crucible-stopped-state-control-progress bounded native-stop wake D  DET-1, INV-10, QEMU-43
+  crucible-stopped-state-control-progress bounded native-stop wake D  DET-1, INV-10, QEMU-43, QFP-STATE-2
   crucible-inactive-retention-clock-guard active-rule-before-clock D  DET-1, QFP-STATE-2, FAULT-ORDER
   crucible-deferred-result-evidence-test typed deferred evidence coverage F  QEMU-44, FAULT-EVIDENCE
   crucible-deterministic-instruction-input-state stable instruction selector identity D  DET-1, QEMU-44, FAULT-EVIDENCE
@@ -259,10 +257,6 @@ SIGNAL-DRIVEN FAULT EXECUTION                          class  enforces
   crucible-hardware-error-inject architecture error/ECC delivery D QFP-HWERR-1, QFP-HWERR-2, FAULT-ORDER
   crucible-vcpu-service-control rational CPU service/stall/offline D QFP-VCPU-1, QFP-VCPU-2, FAULT-ORDER
   crucible-node-lifecycle-faults crash/hang/reset/power lifecycle D QFP-LIFE-1, QFP-LIFE-2, FAULT-ORDER
-  crucible-block-typed-errors closed guest-visible block errors F STOR-RESULT, IO-8, PATCH-26
-  crucible-block-discard .... deterministic discard transport F STOR-DISCARD, DET-16, PATCH-26
-  crucible-block-transport-reset transactional reset/recovery F STOR-RESET, STOR-RESULT, DET-16, PATCH-26
-  crucible-plugin-vmstop ... exact plugin-boundary native pause D DET-1, INV-10, QEMU-43
   crucible-terminal-lifecycle-completion staged terminal exit D QFP-LIFE-1, QFP-LIFE-2, FAULT-ORDER
   crucible-authenticated-terminal-lifecycle authenticated exit D QFP-LIFE-1, QFP-LIFE-2, FAULT-ORDER
   crucible-immutable-process-generation launch-bound process ID D QFP-LIFE-1, QFP-LIFE-2, FAULT-ORDER
@@ -272,13 +266,175 @@ SIGNAL-DRIVEN FAULT EXECUTION                          class  enforces
   crucible-fault-vmstate aggregate fault-state identity D QFP-STATE-1, QFP-STATE-2, QFP-STATE-3
   crucible-lifecycle-precondition atomic lifecycle VM-state precondition D QFP-LIFE-1, QFP-LIFE-2, FAULT-ORDER
   crucible-typed-node-result-schema fixed typed result and occurrence evidence D QFP-RESULT-1, QFP-EVENT-1, FAULT-ORDER
-  crucible-device-wait-vmstop nonblocking exact control/device-completion pause D QFP-STATE-2, DET-1, INV-10
+  crucible-device-wait-vmstop nonblocking exact control/device-completion pause F QFP-STATE-2, DET-1, INV-10
   crucible-accelerator-result-opportunity exact one-shot accelerator result arming F QFP-ACCEL-3, QFP-RESULT-1, QFP-EVENT-1, FAULT-ORDER
   crucible-authenticated-event-request-envelope restored authenticated occurrence requests F QFP-STATE-2, QFP-ACCEL-3, QFP-EVENT-1, FAULT-ORDER
-  crucible-inert-clock-restore inactive clock VMState commits retain native device timers D DET-1, QFP-CLOCK-2, QFP-STATE-2
 
 GUEST↔HOST CHANNEL (coordinate with 16)                class  enforces
   (no new patch required — see §11.7)                   —     GHC reuse
+
+HOT FORK AND RETAINED TEMPLATES (RFC-0020 05)          class  enforces
+  crucible-hot-fork-readiness .... report QEMU-owned quiescence proofs  F    HFORK-3, HFORK-4
+  crucible-hot-fork-thread-ownership .. classify unresolved subsystem workers  F    HFORK-3, HFORK-4
+  crucible-hot-fork-rcu-inventory .. expose bounded observational RCU state  F    HFORK-3, HFORK-4
+  crucible-hot-fork-aio-inventory .. expose bounded AioContext activity  F    HFORK-3, HFORK-4
+  crucible-hot-fork-mutex-inventory .. expose bounded QEMU lock ownership  F    HFORK-3, HFORK-4
+  crucible-hot-fork-timer-inventory .. expose bounded live-timer state  F    HFORK-3, HFORK-4
+  crucible-hot-fork-bottom-half-inventory .. expose every allocated QEMUBH  F    HFORK-3, HFORK-4
+  crucible-hot-fork-aio-handler-inventory .. expose every POSIX AIO handler  F    HFORK-3, HFORK-4
+  crucible-hot-fork-block-backend-inventory .. expose every block backend  F    HFORK-3, HFORK-5
+  crucible-hot-fork-plugin-resource-inventory .. bind plugin resources to QEMU state  F    HFORK-3, HFORK-4, HFORK-5
+  crucible-hot-fork-plugin-callback-barrier .. retain callback quiescence  F    HFORK-3, HFORK-4
+  crucible-hot-fork-template-coordinator .. own retained preparation  F    HFORK-3, HFORK-4, HFORK-5
+  crucible-hot-fork-rcu-barrier .. retain RCU quiescence  F    HFORK-3, HFORK-4, HFORK-5
+  crucible-hot-fork-bh-timer-barrier .. park bottom halves and timers  F    HFORK-3, HFORK-4, HFORK-5
+  crucible-hot-fork-aio-barrier .. close asynchronous admission  F    HFORK-3, HFORK-4, HFORK-5
+  crucible-hot-fork-block-drain-barrier .. retain native block quiescence  F    HFORK-3, HFORK-4, HFORK-5
+  crucible-hot-fork-block-template-coordinator .. order retained block quiescence  F    HFORK-3, HFORK-4, HFORK-5
+  crucible-hot-fork-block-graph-barrier .. retain graph-writer exclusion  F    HFORK-3, HFORK-4, HFORK-5
+  crucible-hot-fork-block-snapshot-roots .. bind immutable writable roots  F    HFORK-3, HFORK-4, HFORK-5
+  crucible-hot-fork-ring-producer-barrier .. freeze shared rings  F    HFORK-3, HFORK-4, HFORK-5
+  crucible-hot-fork-plugin-worker-manifest .. seal plugin workers  F    HFORK-3, HFORK-4, HFORK-5
+  crucible-hot-fork-plugin-worker-barrier .. park sealed workers  F    HFORK-3, HFORK-4, HFORK-5
+  crucible-hot-fork-ring-consumer-barrier .. drain shared-ring consumers  F    HFORK-3, HFORK-4, HFORK-5
+  crucible-hot-fork-private-ring-stage .. retain authenticated private rings  F    HFORK-3, HFORK-8, HFORK-9
+  crucible-hot-fork-worker-local-state .. account dequeued worker state  F    HFORK-3, HFORK-4, HFORK-5
+  crucible-hot-fork-plugin-endpoint-stage .. retain branch-private plugin endpoints  F    HFORK-3, HFORK-8, HFORK-9
+  crucible-hot-fork-retained-resource-stage .. stage under the retained barrier  F    HFORK-3, HFORK-8, HFORK-9
+  crucible-hot-fork-resource-generation-binding .. bind retained generations  F    HFORK-3, HFORK-8, HFORK-9
+  crucible-hot-fork-worker-disposition-binding .. bind worker dispositions  F    HFORK-3, HFORK-4, HFORK-8, HFORK-9
+  crucible-hot-fork-source-ring-noninheritance .. exclude source rings  F    HFORK-3, HFORK-8, HFORK-9, HFORK-12
+  crucible-hot-fork-child-runtime-registration .. register child reconstruction  F    HFORK-3, HFORK-4, HFORK-8, HFORK-9, HFORK-12
+  crucible-hot-fork-child-process-generation .. bind one child incarnation  F    HFORK-3, HFORK-8, HFORK-9, HFORK-11, HFORK-12
+  crucible-hot-fork-child-runtime-observation .. expose exact child state  F    HFORK-3, HFORK-8, HFORK-9, HFORK-11, HFORK-12
+  crucible-hot-fork-endpoint-replacement-plan .. bind descriptor slots  F    HFORK-3, HFORK-4, HFORK-8, HFORK-9, HFORK-12
+  crucible-hot-fork-child-endpoint-replacement-primitive .. replace two exact slots  F    HFORK-4, HFORK-8, HFORK-9, HFORK-12
+  crucible-hot-fork-immediate-child-identity .. pin the exact fork lineage  F    HFORK-4, HFORK-8, HFORK-9, HFORK-11, HFORK-12
+  crucible-hot-fork-plugin-ring-proof .. bind the frozen plugin resources  F    HFORK-4, HFORK-8, HFORK-9, HFORK-11, HFORK-12
+  crucible-hot-fork-closed-child-descriptor-table .. close inherited FDs  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12
+  crucible-hot-fork-child-descriptor-admission .. close child admission  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12
+  crucible-hot-fork-child-mapping-disposition .. reject unsafe VMAs  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-child-shared-backing-authentication ..   F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-child-resource-transaction .. order child disposition  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-source-mapping-binding .. bind the retained source VMA  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-child-runtime-source-binding .. bind runtime remap geometry  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-registered-child-runtime-composition .. compose the runtime adapter  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-retained-plugin-child-plan .. bind the retained plan  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-plugin-child-resource-tables .. bind exact plugin tables  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-child-resource-contribution-composition .. compose exact tables  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-sealed-child-resource-plan-application .. consume one exact union  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-child-descriptor-replacement-composition .. merge branch-private endpoints  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-branch-private-child-diagnostics .. bind private stderr  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-branch-private-child-qmp .. retain a private monitor stream  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-child-qmp-reinitializer-contract .. bind child monitor reconstruction  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-child-qmp-reinitializer-composition .. consume the monitor adapter  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-child-qmp-disposition-report .. expose accepted completion  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-child-qmp-query-basis .. preserve post-apply identity  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-monitor-inventory .. bound monitor and parser state  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-child-qmp-profile-binding .. bind admitted monitor generation  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-child-monitor-ownership-basis .. retain exact monitor owners  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-child-monitor-chardev-disposition .. bind the inherited endpoint owner  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-child-monitor-socket-resources .. bind the supported socket backend  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-held-child-monitor-socket .. replace the inherited child stream while held  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-held-child-qmp-protocol .. reset inherited protocol state while held  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-held-child-qmp-dispatcher .. replace the inherited dispatcher while held  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-held-child-monitor-iothread .. replace the inherited monitor worker while held  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-child-qmp-activation .. greet before releasing replacement input  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-concrete-child-qmp-runtime .. bind monitor reconstruction before fork  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-child-thread-registry .. reconstruct the immediate child registry  F    HFORK-4, HFORK-22
+  crucible-hot-fork-rcu-runtime-transaction .. compose RCU and registry fork ownership  F    HFORK-4, HFORK-22
+  crucible-hot-fork-rcu-thread-disposition .. bind the RCU worker disposition  F    HFORK-4, HFORK-22
+  crucible-hot-fork-monitor-thread-disposition .. bind the monitor IOThread disposition  F    HFORK-4, HFORK-8, HFORK-9, HFORK-22
+  crucible-hot-fork-rcu-worker-ordering .. defer child RCU worker startup  F    HFORK-4, HFORK-22
+  crucible-hot-fork-retained-rcu-barrier .. retain template RCU exclusion  F    HFORK-4, HFORK-22
+  crucible-hot-fork-retained-async-barrier .. retain template async exclusion  F    HFORK-4, HFORK-22
+  crucible-hot-fork-async-runtime-transaction .. release child async exclusion before QMP  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-main-loop-coordinator .. execute fork on the QEMU main loop  F    HFORK-3, HFORK-4, HFORK-22
+  crucible-hot-fork-private-qmp-transaction .. fork retained templates through private QMP  F    HFORK-3, HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-parent-reap-status .. retain exact child wait status  F    HFORK-3, HFORK-4, HFORK-11, HFORK-22
+  crucible-hot-fork-child-process-contract .. contain children from birth  F    HFORK-3, HFORK-4, HFORK-11, HFORK-22
+  crucible-hot-fork-child-console .. replace the fork-child console endpoint  F    HFORK-3, HFORK-4, HFORK-8, HFORK-11, HFORK-22
+  crucible-hot-fork-read-only-block-source .. retain native immutable sources  F    HFORK-4, HFORK-8, HFORK-22
+  crucible-hot-fork-native-worker-retirement .. rebuild native child I/O  F    HFORK-4, HFORK-8, HFORK-22
+  crucible-hot-fork-native-source-ownership .. retain VMState and file identities  F    HFORK-4, HFORK-8, HFORK-22
+  crucible-hot-fork-complete-native-source-set .. own the native source closure  F    HFORK-4, HFORK-8, HFORK-22
+  crucible-hot-fork-template-native-sources .. freeze and restore retained sources  F    HFORK-4, HFORK-8, HFORK-22
+  crucible-hot-fork-child-native-files .. adopt child-private native files  F    HFORK-9, HFORK-22
+  crucible-hot-fork-child-files .. bind child-private files to the fork transaction  F    HFORK-9, HFORK-22
+  crucible-out-of-band-descriptor-transfer .. allow out-of-band descriptor transfer  F    HFORK-9, HFORK-22
+  crucible-plugin-child-plan-blockers .. report plugin child plan blockers  F    HFORK-4, HFORK-22
+  crucible-child-plan-mapping-extents .. validate child plan mapping extents  F    HFORK-4, HFORK-22
+  crucible-fork-preparation-blockers .. report fork preparation blockers  F    HFORK-4, HFORK-22
+  crucible-monitor-basis-verified-before-fork .. verify child monitor basis before fork  F    HFORK-4, HFORK-22
+  crucible-carried-fork-mutexes .. carry coordinator-owned and parked mutexes  F    HFORK-4, HFORK-22
+  crucible-rr-vcpu-thread-restart .. restart the round-robin vCPU thread in the child  F    HFORK-4, HFORK-22
+  crucible-cgroup-procs-child-placement .. place the fork child through cgroup.procs  F    HFORK-4, HFORK-22
+  crucible-fork-parent-registry-release-order .. release the registry before the fork parent locks  F    HFORK-4, HFORK-22
+  crucible-child-placement-before-fork-return .. complete child placement before the fork returns  F    HFORK-4, HFORK-22
+  crucible-child-step-exit-status .. identify the failed child step in the exit status  F    HFORK-4, HFORK-22
+  crucible-child-resource-plan-substep-status .. identify the failed resource plan sub-step  F    HFORK-4, HFORK-22
+  crucible-child-iothread-start-bound .. bound the child monitor iothread start  F    HFORK-4, HFORK-22
+  crucible-child-failure-result-report .. report the failing child result on its diagnostics stream  F    HFORK-4, HFORK-22
+  crucible-plugin-child-worker-settle .. wait for the plugin child workers to park  F    HFORK-4, HFORK-22
+  crucible-qmp-child-stage-report .. name the failing child QMP reconstruction stage  F    HFORK-4, HFORK-22
+  crucible-child-monitor-fd-names .. drop inherited monitor descriptor names in the child  F    HFORK-4, HFORK-22
+  crucible-child-monitor-iothread-context .. rebuild the monitor iothread GLib context in the child  F    HFORK-4, HFORK-22
+  crucible-child-dispatcher-idle .. run the rebuilt dispatcher to its idle wait in the child  F    HFORK-4, HFORK-22
+  crucible-console-child-stage-report .. name the failing console child stage  F    HFORK-4, HFORK-22
+  crucible-console-child-default-context .. admit the default main context for the console child  F    HFORK-4, HFORK-22
+  crucible-active-plugin-child-workers .. admit idle parked workers in an active plugin child  F    HFORK-4, HFORK-22
+  crucible-child-file-install-report .. report a failed child-file install on the diagnostics  F    HFORK-4, HFORK-22
+  crucible-unsettled-source-descriptor-report .. name the node and check behind an unsettled source  F    HFORK-4, HFORK-22
+  crucible-child-file-plan-descriptors-retained .. retain the child-file plan descriptors instead of closing  F    HFORK-4, HFORK-22
+  crucible-child-current-monitor-bindings .. drop the inherited current-monitor bindings in the child  F    HFORK-4, HFORK-22
+  crucible-forkable-template-ram .. make guest RAM forkable while a template is retained  F    HFORK-4, HFORK-22
+  crucible-stage-release-under-retained-template .. admit child stage release while a template is retained  F    HFORK-4, HFORK-22
+  crucible-restarted-vcpu-thread-current-cpu .. name the current CPU on the restarted vCPU thread  F    HFORK-4, HFORK-22
+
+EXACT RESTORE, CURSORS, AND FINGERPRINT STATE          class  enforces
+  crucible-serialized-rr-cursor .. restore the exact multi-vCPU continuation  D    DET-29, QEMU-34, QEMU-43, QFP-STATE-2
+  crucible-fingerprint-guest-state-domains .. hash guest-semantic state only  D    DET-29, QEMU-34, QFP-STATE-2
+  crucible-exact-restore-network-announcement .. keep restored traffic exact  D    DET-1, QFP-STATE-2, FAULT-ORDER
+  crucible-genesis-observation-boundary .. sample the exact prelaunch state  D    DET-1, QFP-REG-1, QFP-STATE-2
+  crucible-deterministic-rcu-quiescence .. remove host-timed sim exits  D    DET-1, DET-29, QEMU-43
+  crucible-deterministic-host-kick-boundary .. bound generic host work  D    DET-1, DET-29, QEMU-43
+  crucible-exact-boundary-vcpu-introspection .. observe checkpoint CPU state  D    DET-1, QFP-REG-1, QFP-STATE-2
+  crucible-active-tcg-kick-boundary .. preserve bounded kick liveness  D    DET-1, DET-29, QEMU-43
+  crucible-canonical-rr-genesis-cursor .. expose the unique genesis coordinate  D    DET-1, QFP-REG-1, QFP-STATE-2
+  crucible-canonical-terminal-rr-cursor .. project terminal live observations  D    DET-1, DET-29, QFP-STATE-2
+  crucible-canonical-register-cursor .. commit after-instruction coordinates  D    DET-1, DET-29, QFP-STATE-2
+  crucible-retention-virtual-time-origin .. keep retention in one clock domain  D    DET-1, TIME-23, E14
+  crucible-canonical-snapshot-rr-resume .. preserve source continuation  D    DET-1, QFP-STATE-2, QEMU-43
+  crucible-isolate-checkpoint-control-wake .. preserve frozen device state  D    DET-1, QFP-STATE-2, PATCH-20
+  crucible-preserve-checkpoint-block-durability .. retain volatile state  D    DET-1, QFP-STATE-2, QFP-BLOCK-3
+  crucible-anchor-rr-cursor-genesis .. establish scheduler state before execution  D    DET-1, QFP-STATE-2, QEMU-43
+  crucible-control-boundary-node-faults .. complete halted-node mutations  F    QFP-LIFE-1, QFP-LIFE-2, FAULT-ORDER
+  crucible-release-halted-rr-turn .. publish idle inside a partial RR turn  D    DET-1, PLUG-24, QEMU-43
+  crucible-restore-accelerator-rule-indexes .. restore persistent policy  F    QFP-ACCEL-SERVICE, FAULT-RESTORE
+  crucible-virtio-net-exact-restore-reset .. reset after announcement suppression  D    QFP-REG-1, QFP-STATE-2
+  crucible-source-mapping-page-extents .. round source mapping extents to pages  F    HFORK-4, HFORK-22
+
+REGISTER AND GUEST OBSERVATION                         class  enforces
+  crucible-register-rejection-atomicity .. prove rejected commands are inert  D    DET-1, QFP-REG-1, QFP-REG-2, FAULT-EVIDENCE
+  crucible-valid-aarch64-abort-fixture .. reach exception delivery  F    QFP-MEMA-1, FAULT-EVIDENCE, PATCH-3
+  crucible-bql-exact-register-capture .. observe snapshot boundaries  D    DET-1, QFP-STATE-2, QEMU-43
+  crucible-selector-control-plane-fixtures .. isolate selector admission  F    FAULT-ORDER, PATCH-3, QFP-INST-3
+
+SCHEDULING, DEVICES, AND CONTROL PATHS                 class  enforces
+  crucible-raw-pte-update-identity .. separate transient PTEs from A/D writes  D    QFP-MEMA-1, QFP-MEMA-2, FAULT-ORDER
+  crucible-physical-page-table-region-fixture .. target descriptor storage  F    QFP-MEMA-1, QFP-MEMA-2, FAULT-EVIDENCE
+  crucible-canonical-memory-retry-identity .. survive TB retranslation  D    DET-1, QFP-MEMA-1, QFP-STATE-2
+  crucible-inactive-nested-tsc-guard .. preserve SVM icount parity  D    DET-1, QFP-CLOCK-2, PATCH-3
+  crucible-aarch64-memory-exception-vectors .. admit architectural aborts  D    QFP-MEMA-1, FAULT-EVIDENCE, PATCH-3
+  crucible-defer-active-slice-host-wakes .. seal the active RR slice  D    DET-1, QFP-KICK-3, QEMU-43
+  crucible-deterministic-network-kick .. preserve exact network continuation  D    DET-1, PLUG-23, PLUG-24, QEMU-43
+  crucible-accelerator-service-schema .. admit typed service capacity  F    QFP-ACCEL-SERVICE, FAULT-ORDER
+  crucible-compile-affected-clock-sources .. isolate rule compilation  F    QFP-CLOCK-SOURCE, FAULT-ORDER
+  crucible-authenticate-fault-result-payloads .. bind results to payloads  F    QFP-RESULT, FAULT-ORDER
+  crucible-clock-impulse-read-error-policies .. retain clock policy  F    QFP-CLOCK-TRANSFORM, QFP-CLOCK-SOURCE, FAULT-ORDER
+  crucible-nonblocking-cancellation-eventfd .. restore nonblocking cancellation eventfd  F    HFORK-4, HFORK-22
+  crucible-runtime-transaction-blockers .. report runtime transaction blockers  F    HFORK-4, HFORK-22
+  crucible-mapping-backing-partial-page .. admit shared mappings into a backing partial page  F    HFORK-4, HFORK-22
 
 DIAGNOSTIC-ONLY (dev, NOT shipped)                     class  enforces
   crucible-tcg-exec-diag ........ per-exec icount trace      dev  divergence debug

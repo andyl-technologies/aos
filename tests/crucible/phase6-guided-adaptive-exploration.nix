@@ -12,7 +12,10 @@
 
   advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
-  libRs = builtins.readFile ../../crates/crucible/src/lib.rs;
+  libRs = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/lib.rs;
+  };
   guidedTest = builtins.readFile ../../crates/crucible/tests/gate_guided_adaptive_exploration.rs;
   guidanceLintTest = builtins.readFile ../../crates/crucible-harness/tests/support/harness_lint/guidance.rs;
 

@@ -21,7 +21,10 @@
     ../../crates/crucible-qemu/src/realization/backend_executor.rs
     ../../crates/crucible-qemu/src/realization/backend_executor_test.rs
   ]);
-  qemuNodeExecutor = builtins.readFile ../../crates/crucible-qemu/src/realization/node_executor.rs;
+  qemuNodeExecutor = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/realization/node_executor.rs;
+  };
   qemuNodeExecutorTests = builtins.readFile ../../crates/crucible-qemu/src/realization/node_executor/tests.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -454,6 +457,8 @@
         label = "resume QEMU real node baked load";
         needle = "QemuNodeRestorePlan::baked_genesis(admission)";
       }
+    ]
+    ++ failuresFor "crates/crucible-qemu/src/realization/backend_executor.rs" qemuBackendExecutor [
       {
         label = "resume QEMU real node replay shared memory";
         needle = ".advance_to_horizon(horizon)";

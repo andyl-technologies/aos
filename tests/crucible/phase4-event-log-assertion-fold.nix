@@ -8,7 +8,10 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  eventCatalog = builtins.readFile ../../crates/crucible/src/event_catalog.rs;
+  eventCatalog = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/event_catalog.rs;
+  };
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   assertionLogFoldTest = builtins.readFile ../../crates/crucible/tests/assertion_log_fold.rs;
   classCatalogTest = builtins.readFile ../../crates/crucible/tests/event_log_class_catalog.rs;
