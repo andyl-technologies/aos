@@ -9,9 +9,10 @@
     family = "libffi";
     stream = "3";
     owner = "pkgs/libs/libffi.nix";
-    version = "3.5.2";
-    upstreamId = "v3.5.2";
+    version = "3.8.0";
+    upstreamId = "v3.8.0";
     repository = "libffi/libffi";
+    provider = "github-releases";
     tagPrefix = "v";
     major = 3;
     source = {
@@ -70,7 +71,7 @@
           ];
         }
       ];
-      hash = "sha256-86MIKiOzfCk6T80QUxR7Nx8v+R+n6hsqUuM1Z2usgtw=";
+      hash = "sha256-faPi2aFx6woDj1kuytP/K7JVDzSW2Hs7Ka0M9EMMDbQ=";
       allowedRedirectHosts = ["gcc.gnu.org" "github.com" "release-assets.githubusercontent.com"];
     };
   };

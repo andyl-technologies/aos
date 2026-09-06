@@ -16,6 +16,7 @@
     version = "1.7.0";
     upstreamId = "v1.7.0";
     repository = "libbpf/libbpf";
+    provider = "github-releases";
     tagPrefix = "v";
     major = 1;
     source = {

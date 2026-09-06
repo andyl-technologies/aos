@@ -14,6 +14,7 @@
     version = "3.12.0";
     upstreamId = "v3.12.0";
     repository = "nlohmann/json";
+    provider = "github-releases";
     tagPrefix = "v";
     major = 3;
     source = {

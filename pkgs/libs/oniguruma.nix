@@ -12,6 +12,7 @@
     version = "6.9.10";
     upstreamId = "v6.9.10";
     repository = "kkos/oniguruma";
+    provider = "github-releases";
     tagPrefix = "v";
     major = 6;
     source = {

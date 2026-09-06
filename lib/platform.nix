@@ -84,7 +84,8 @@ let
           i686 = "ld-linux.so.2";
           aarch64 = "ld-linux-aarch64.so.1";
           riscv64 = "ld-linux-riscv64-lp64d.so.1";
-        }.${
+        }
+        .${
           cpuName
         };
       executableCpus = cpu: cpu.canExecute;

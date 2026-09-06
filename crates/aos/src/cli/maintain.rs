@@ -92,17 +92,42 @@ pub struct MaintainScanArgs {
     /// Environment variable holding an optional read-only GitHub discovery token
     #[arg(long, default_value = "AOS_GITHUB_READ_TOKEN", value_name = "NAME")]
     pub token_env: String,
+
+    /// Probe matching Repology project names when no explicit advisor exists
+    #[arg(long)]
+    pub repology_fallback: bool,
+
+    /// Bound the number of uncached Repology fallback requests
+    #[arg(
+        long,
+        default_value_t = 100,
+        value_name = "COUNT",
+        requires = "repology_fallback"
+    )]
+    pub repology_limit: usize,
 }
 
 #[derive(Args)]
 pub struct MaintainReportArgs {
     /// Show only units with a selectable newer release
-    #[arg(long)]
+    #[arg(long, conflicts_with_all = ["unknown", "advisory", "vulnerable", "license_change"])]
     pub outdated: bool,
 
     /// Show only units whose required upstream evidence is incomplete
-    #[arg(long)]
+    #[arg(long, conflicts_with_all = ["outdated", "advisory", "vulnerable", "license_change"])]
     pub unknown: bool,
+
+    /// Show units with any non-authoritative provider finding
+    #[arg(long, conflicts_with_all = ["outdated", "unknown", "vulnerable", "license_change"])]
+    pub advisory: bool,
+
+    /// Show units whose current version is reported vulnerable
+    #[arg(long, conflicts_with_all = ["outdated", "unknown", "advisory", "license_change"])]
+    pub vulnerable: bool,
+
+    /// Show units with a corroborated license-set difference
+    #[arg(long, conflicts_with_all = ["outdated", "unknown", "advisory", "vulnerable"])]
+    pub license_change: bool,
 
     /// Restrict the report to one upstream family
     #[arg(long, value_name = "FAMILY")]

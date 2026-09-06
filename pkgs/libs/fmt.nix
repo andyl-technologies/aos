@@ -10,9 +10,10 @@
     family = "fmt";
     stream = "12";
     owner = "pkgs/libs/fmt.nix";
-    version = "12.1.0";
-    upstreamId = "12.1.0";
+    version = "12.2.0";
+    upstreamId = "12.2.0";
     repository = "fmtlib/fmt";
+    provider = "github-releases";
     major = 12;
     source = {
       authority = "github.com";
@@ -34,7 +35,7 @@
           ];
         }
       ];
-      hash = "sha256-6n3kKZaJ4Stt3dOS+YlvCPsHd6xxaIl6JEptYIUEP+o=";
+      hash = "sha256-i4UrtapufYVk+egTlAVTld0dGTbTjf06F3kqAr69evA=";
     };
   };
   inherit (upstream) version;

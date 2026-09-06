@@ -15,6 +15,7 @@
     version = "8.2.12";
     upstreamId = "v8.2.12";
     repository = "ivmai/bdwgc";
+    provider = "github-releases";
     tagPrefix = "v";
     major = 8;
     source = {

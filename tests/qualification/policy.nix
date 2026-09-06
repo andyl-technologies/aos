@@ -89,7 +89,8 @@
         packageNames = ["aos"];
         modules = [module];
       })
-      true)).success;
+      true))
+    .success;
 in
   assert fixture == capturedFixture;
   assert builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+$" (builtins.toString sourceRoot) != null;

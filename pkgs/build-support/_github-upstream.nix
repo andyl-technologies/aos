@@ -9,6 +9,7 @@
   version,
   upstreamId,
   repository,
+  provider ? "github-tags",
   tagPrefix ? "",
   repology ? null,
   major,
@@ -53,7 +54,7 @@
         };
         discovery = {
           primary = {
-            provider = "github-tags";
+            inherit provider;
             inherit repository tagPrefix;
           };
           inherit advisors;
@@ -69,7 +70,7 @@
           fetcher = "fetchurl";
           urlTemplates =
             source.urlTemplates
-          or [
+            or [
               {
                 scheme = "https";
                 inherit (source) authority path;
@@ -79,7 +80,7 @@
           hashMode = source.hashMode or "flat";
           allowedRedirectHosts =
             source.allowedRedirectHosts
-          or (
+            or (
               if (builtins.head (source.urlTemplates or [{inherit (source) authority;}])).authority == "github.com"
               then [
                 "codeload.github.com"

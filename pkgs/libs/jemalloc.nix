@@ -12,9 +12,10 @@
     family = "jemalloc";
     stream = "5";
     owner = "pkgs/libs/jemalloc.nix";
-    version = "5.3.0";
-    upstreamId = "5.3.0";
+    version = "5.3.1";
+    upstreamId = "5.3.1";
     repository = "jemalloc/jemalloc";
+    provider = "github-releases";
     major = 5;
     source = {
       authority = "github.com";
@@ -46,7 +47,7 @@
           ];
         }
       ];
-      hash = "sha256-LbgtHnEZ3z5xt2QCGbbf6EeJvAU3mDw7esT3GJrs/qo=";
+      hash = "sha256-OCa8gCMvIu1cRmLzA095nKMW6BkQO9x7uZAYpCFwb5I=";
     };
   };
   inherit (upstream) version;

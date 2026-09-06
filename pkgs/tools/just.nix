@@ -9,9 +9,10 @@
     family = "just";
     stream = "1";
     owner = "pkgs/tools/just.nix";
-    version = "1.46.0";
-    upstreamId = "1.46.0";
+    version = "1.58.0";
+    upstreamId = "1.58.0";
     repository = "casey/just";
+    provider = "github-releases";
     major = 1;
     source = {
       authority = "github.com";
@@ -33,7 +34,7 @@
           ];
         }
       ];
-      hash = "sha256-9gpXhQLQsp6qKnLFsNkTkLIGTf2NGhKRw7JSXVh/05U=";
+      hash = "sha256-yKNubpOX8v38sMwkb823kLUqeE88jKvA2LrrAxhSoUg=";
     };
     artifacts.cargoDeps = {
       inputs = [
@@ -43,7 +44,7 @@
           slot = "source";
         }
       ];
-      hash = "sha256-NDqWrsIBL+fWS0cLrf2iZuKfyXC5xSj4JfD/QLlsdgA=";
+      hash = "sha256-ADCjggkHVPGm/kX2RpSH1oETg5lcspfZhTZGMhFvORw=";
       materializer = {
         kind = "cargo-deps";
         sourceRoot = ".";

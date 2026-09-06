@@ -14,7 +14,7 @@
     classification = "automatic";
 
     package = {
-      currentVersion = "1.3.1";
+      currentVersion = "1.3.2";
       versionProjection = {
         kind = "component-field";
         component = "main";
@@ -24,12 +24,12 @@
 
     components.main = {
       current = {
-        upstreamId = "v1.3.1";
-        comparisonVersion = "1.3.1";
+        upstreamId = "v1.3.2";
+        comparisonVersion = "1.3.2";
       };
       discovery = {
         primary = {
-          provider = "github-tags";
+          provider = "github-releases";
           repository = "madler/zlib";
           tagPrefix = "v";
         };
@@ -64,7 +64,7 @@
             ];
           }
         ];
-        hash = "sha256-OO+WuN/lENQnB9nHgYd5FHklQRM+GHCEFGO/pz+IPjI=";
+        hash = "sha256-16BlR4Ok2lKdG7eTt62cMxgCCvd2Z7yuNfldDkKnkvM=";
         hashMode = "flat";
         allowedRedirectHosts = ["zlib.net"];
       };

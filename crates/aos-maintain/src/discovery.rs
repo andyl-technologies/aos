@@ -12,7 +12,7 @@ use aos_contract::Sha256Digest;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
-use crate::inventory::{Component, ComponentVersion, UpdateUnit, VersionScheme};
+use crate::inventory::{Component, ComponentVersion, ReleasePolicy, UpdateUnit, VersionScheme};
 use crate::workflow::DiscoveryDecision;
 use crate::{DISCOVERY_SNAPSHOT_V1, UPSTREAM_OBSERVATION_V1};
 
@@ -71,6 +71,15 @@ pub struct ObservationCandidate {
     /// Sanitized public release URL, when supplied.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release_url: Option<String>,
+    /// Provider-native lifecycle or freshness status, when supplied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// Reports whether the provider marks this exact version as vulnerable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vulnerable: Option<bool>,
+    /// Provider-reported license identifiers in deterministic order.
+    #[serde(default)]
+    pub licenses: Vec<String>,
 }
 
 /// Records one immutable, bounded provider response and its parsed candidates.
@@ -127,6 +136,17 @@ impl UpstreamObservationV1 {
         for candidate in &self.candidates {
             validate_text("candidate identity", &candidate.raw_id)?;
             validate_text("candidate version", &candidate.raw_version)?;
+            if let Some(status) = &candidate.status {
+                validate_text("candidate status", status)?;
+            }
+            let mut prior_license: Option<&str> = None;
+            for license in &candidate.licenses {
+                validate_text("candidate license", license)?;
+                if prior_license.is_some_and(|value| value >= license.as_str()) {
+                    bail!("candidate licenses must be unique and strictly ordered");
+                }
+                prior_license = Some(license);
+            }
             if candidate.first_observed_at_unix > self.retrieved_at_unix {
                 bail!("candidate first-observed time is after retrieval time");
             }
@@ -165,6 +185,59 @@ pub struct ComponentDiscovery {
     pub rejected: Vec<CandidateRejection>,
 }
 
+/// Classifies a non-authoritative maintenance signal.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AdvisoryKind {
+    /// Another package index reports a newer version.
+    NewerVersion,
+    /// Another package index marks the current version as vulnerable.
+    VulnerableCurrent,
+    /// Current and newer records report different unanimous license sets.
+    LicenseChange,
+}
+
+/// Preserves one bounded advisory signal without granting selection authority.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct AdvisoryFinding {
+    /// Component identity inside its update unit.
+    pub component: String,
+    /// Stable advisory provider name.
+    pub provider: String,
+    /// Provider-native project identity.
+    pub project: String,
+    /// Kind of maintainer attention requested by the signal.
+    pub kind: AdvisoryKind,
+    /// Exact current comparison version evaluated by the adapter.
+    pub current_version: String,
+    /// Provider-reported candidate versions in deterministic order.
+    #[serde(default)]
+    pub candidate_versions: Vec<String>,
+    /// Unanimous licenses reported for the current version.
+    #[serde(default)]
+    pub current_licenses: Vec<String>,
+    /// Unanimous licenses reported for the candidate version set.
+    #[serde(default)]
+    pub candidate_licenses: Vec<String>,
+}
+
+impl AdvisoryFinding {
+    fn validate(&self) -> Result<()> {
+        for (label, value) in [
+            ("advisory component", self.component.as_str()),
+            ("advisory provider", self.provider.as_str()),
+            ("advisory project", self.project.as_str()),
+            ("advisory current version", self.current_version.as_str()),
+        ] {
+            validate_text(label, value)?;
+        }
+        validate_ordered_text("advisory candidate versions", &self.candidate_versions)?;
+        validate_ordered_text("advisory current licenses", &self.current_licenses)?;
+        validate_ordered_text("advisory candidate licenses", &self.candidate_licenses)
+    }
+}
+
 /// Contains one unit's complete component-vector discovery decision.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -175,6 +248,9 @@ pub struct UnitDiscovery {
     pub decision: DiscoveryDecision,
     /// Component results in component identity order.
     pub components: Vec<ComponentDiscovery>,
+    /// Non-authoritative findings in deterministic component/kind order.
+    #[serde(default)]
+    pub advisories: Vec<AdvisoryFinding>,
 }
 
 /// Freezes repository-bound observations and their pure decisions.
@@ -210,6 +286,17 @@ impl DiscoverySnapshotV1 {
         for pair in self.units.windows(2) {
             if pair[0].unit_id >= pair[1].unit_id {
                 bail!("discovery snapshot units must be unique and ordered");
+            }
+        }
+        for unit in &self.units {
+            let mut prior = None;
+            for finding in &unit.advisories {
+                finding.validate()?;
+                let key = (finding.component.as_str(), finding.kind);
+                if prior.is_some_and(|previous| previous >= key) {
+                    bail!("unit advisory findings must be unique and strictly ordered");
+                }
+                prior = Some(key);
             }
         }
         Ok(())
@@ -274,7 +361,20 @@ pub fn select_unit(
         unit_id: unit.unit_id.to_string(),
         decision,
         components,
+        advisories: Vec::new(),
     })
+}
+
+fn validate_ordered_text(label: &str, values: &[String]) -> Result<()> {
+    let mut prior: Option<&str> = None;
+    for value in values {
+        validate_text(label, value)?;
+        if prior.is_some_and(|previous| previous >= value.as_str()) {
+            bail!("{label} must be unique and strictly ordered");
+        }
+        prior = Some(value);
+    }
+    Ok(())
 }
 
 fn select_component(
@@ -306,12 +406,15 @@ fn select_component(
             Some("yanked")
         } else if candidate.prerelease && !component.release_policy.allow_prerelease {
             Some("prerelease-disallowed")
-        } else if now_unix < candidate.first_observed_at_unix
-            || now_unix.saturating_sub(candidate.first_observed_at_unix) < minimum_age
-        {
-            Some("stabilizing")
         } else {
-            None
+            let observed_at = candidate
+                .published_at_unix
+                .unwrap_or(candidate.first_observed_at_unix);
+            if now_unix < observed_at || now_unix.saturating_sub(observed_at) < minimum_age {
+                Some("stabilizing")
+            } else {
+                None
+            }
         };
         if let Some(reason) = rejection {
             rejected.push(reject(candidate, reason));
@@ -453,6 +556,33 @@ fn version_key(scheme: VersionScheme, value: &str) -> Result<VersionKey> {
     }
 }
 
+/// Reports whether a candidate version advances the package's maintained stream.
+///
+/// This applies the same ordering and major-series rules used during direct
+/// provider selection. Callers remain responsible for provider authenticity,
+/// release age, prerelease, and yank policy.
+///
+/// # Errors
+///
+/// Returns an error when either version cannot be parsed under the declared
+/// version scheme.
+pub fn version_is_newer_in_stream(
+    policy: &ReleasePolicy,
+    current: &str,
+    candidate: &str,
+) -> Result<bool> {
+    let current = version_key(policy.version_scheme, current)?;
+    let candidate = version_key(policy.version_scheme, candidate)?;
+
+    if let Some(major) = policy.series_major
+        && candidate.major() != Some(major)
+    {
+        return Ok(false);
+    }
+
+    Ok(candidate.cmp(&current) == Ordering::Greater)
+}
+
 fn numeric_cmp(left: &[u64], right: &[u64]) -> Ordering {
     let length = left.len().max(right.len());
     (0..length)
@@ -571,6 +701,9 @@ mod tests {
             prerelease: false,
             yanked: false,
             release_url: None,
+            status: None,
+            vulnerable: None,
+            licenses: Vec::new(),
         }
     }
 
@@ -622,6 +755,24 @@ mod tests {
     }
 
     #[test]
+    fn advisory_version_comparison_rejects_older_and_cross_stream_candidates() -> Result<()> {
+        let semver_policy = &unit(0)?.components[&ComponentId::parse("main")?].release_policy;
+
+        assert!(version_is_newer_in_stream(semver_policy, "1.3.1", "1.3.2")?);
+        assert!(!version_is_newer_in_stream(
+            semver_policy,
+            "1.3.1",
+            "1.2.13"
+        )?);
+        assert!(!version_is_newer_in_stream(
+            semver_policy,
+            "1.3.1",
+            "2.0.0"
+        )?);
+        Ok(())
+    }
+
+    #[test]
     fn stale_truncated_and_stabilizing_evidence_fail_closed() -> Result<()> {
         let mut truncated = observation(vec![candidate("v1.3.2", "1.3.2", 999_999)]);
         truncated.coverage = ObservationCoverage::Truncated {
@@ -644,6 +795,23 @@ mod tests {
         )?;
         assert_eq!(result.decision, DiscoveryDecision::Current);
         assert_eq!(result.components[0].rejected[0].reason, "stabilizing");
+        Ok(())
+    }
+
+    #[test]
+    fn provider_publication_time_supersedes_first_observation_for_stabilization() -> Result<()> {
+        let mut release = candidate("v1.3.2", "1.3.2", 999_999);
+        release.published_at_unix = Some(1);
+        let evidence = observation(vec![release]);
+
+        let selected = select_unit(
+            &unit(3)?,
+            &BTreeMap::from([("main".to_string(), evidence)]),
+            1_000_100,
+            3_600,
+        )?;
+
+        assert_eq!(selected.decision, DiscoveryDecision::UpdateAvailable);
         Ok(())
     }
 
@@ -674,5 +842,24 @@ mod tests {
 
         let future = observation(vec![candidate("v1.3.2", "1.3.2", 1_000_001)]);
         assert!(future.validate().is_err());
+    }
+
+    #[test]
+    fn observation_and_advisory_metadata_require_canonical_ordering() {
+        let mut invalid_observation = observation(vec![candidate("v1.3.2", "1.3.2", 1)]);
+        invalid_observation.candidates[0].licenses = vec!["Zlib".to_string(), "MIT".to_string()];
+        assert!(invalid_observation.validate().is_err());
+
+        let invalid_advisory = AdvisoryFinding {
+            component: "main".to_string(),
+            provider: "repology".to_string(),
+            project: "zlib".to_string(),
+            kind: AdvisoryKind::LicenseChange,
+            current_version: "1.3.1".to_string(),
+            candidate_versions: vec!["1.3.2".to_string(), "1.3.2".to_string()],
+            current_licenses: vec!["Zlib".to_string()],
+            candidate_licenses: vec!["Zlib".to_string()],
+        };
+        assert!(invalid_advisory.validate().is_err());
     }
 }

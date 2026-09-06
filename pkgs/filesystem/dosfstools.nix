@@ -14,6 +14,7 @@
     inherit version;
     upstreamId = "v4.2";
     repository = "dosfstools/dosfstools";
+    provider = "github-releases";
     tagPrefix = "v";
     major = 4;
     versionScheme = "numeric";

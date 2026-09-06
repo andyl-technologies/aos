@@ -28,7 +28,8 @@
         seen = [];
         result = [];
       }
-      values).result;
+      values)
+    .result;
 
   sortedBuilds =
     builtins.sort (

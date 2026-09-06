@@ -130,7 +130,7 @@
   in "${normalized.scheme}://${normalized.authority}/${path}";
 
   normalizeProvider = provider: let
-    providerName = requireEnum "discovery provider" ["github-tags"] provider.provider;
+    providerName = requireEnum "discovery provider" ["github-releases" "github-tags"] provider.provider;
     checked = assertFields "primary discovery" ["provider" "repository"] ["tagPrefix"] provider;
   in {
     provider = providerName;
@@ -247,7 +247,8 @@
         go-modules = "fetchGoModules/v1";
         npm-deps = "fetchNpmDeps/v1";
         bazel-deps = "fetchBazelDeps/v1";
-      }.${
+      }
+      .${
         kind
       };
     builder = requireString "artifact builder identity" materializer.builder;
@@ -381,7 +382,7 @@ in
               name: value: let
                 actual =
                   artifactDerivations.${name}.passthru.aos.fixedOutput
-                    or (throw "mkUpstream: artifact '${name}' lacks AOS fixed-output instrumentation");
+                  or (throw "mkUpstream: artifact '${name}' lacks AOS fixed-output instrumentation");
               in
                 if actual.schema != "aos.fixed-output/v1"
                 then throw "mkUpstream: artifact '${name}' has an incompatible fixed-output contract"
