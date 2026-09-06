@@ -35,12 +35,36 @@ pub(super) const CHILD_GROUP_ID: u32 = 65534;
 pub(super) const MAXIMUM_TASKS: u32 = 64;
 pub(super) const MAXIMUM_INODES: u64 = 4096;
 pub(super) const FINISH_TIMEOUT: Duration = Duration::from_secs(15);
-pub(super) const MEMORY_BYTES: u64 = 512 * 1024 * 1024;
-pub(super) const DISK_BYTES: u64 = 1024 * 1024 * 1024;
+/// Memory an attempt may use beyond the guest-proportional part of its
+/// budget: QEMU's own heap, the plugin, page tables, and the private VMState
+/// copy.
+pub(super) const ATTEMPT_MEMORY_HEADROOM_BYTES: u64 = 512 * 1024 * 1024;
+/// Writable storage an attempt may use beyond its VMState containers.
+pub(super) const ATTEMPT_DISK_HEADROOM_BYTES: u64 = 1024 * 1024 * 1024;
 pub(super) const MAXIMUM_RING_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 pub(super) const SOURCE_BUSY_CEILING: u64 = 3_000_001;
 pub(super) const CHILD_REAP_POLLS: u32 = 400;
 pub(super) const CHILD_REAP_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Memory budget for one attempt: four times the configured guest RAM plus
+/// headroom. Under the plugin's instrumentation the source alone reached
+/// 2.8 times its guest RAM while booting a 512 MiB guest to the busy
+/// ceiling, and a forked child that touches all of its RAM adds up to a
+/// second guest image of private copies.
+pub(super) fn attempt_memory_bytes(config: &QemuLiveNodeStepGateConfig) -> u64 {
+    u64::from(config.memory_mib())
+        .saturating_mul(4 * 1024 * 1024)
+        .saturating_add(ATTEMPT_MEMORY_HEADROOM_BYTES)
+}
+
+/// Writable-storage budget for one attempt: twice the configured guest RAM
+/// plus headroom, since a VMState container grows with the guest image and
+/// a child saves a second one through its private copy.
+pub(super) fn attempt_disk_bytes(config: &QemuLiveNodeStepGateConfig) -> u64 {
+    u64::from(config.memory_mib())
+        .saturating_mul(2 * 1024 * 1024)
+        .saturating_add(ATTEMPT_DISK_HEADROOM_BYTES)
+}
 /// Children forked in sequence from the one retained template, so the flight
 /// exercises the stage releases and restaging that template reuse requires.
 const CHILD_FORK_COUNT: u32 = 3;
@@ -269,7 +293,7 @@ fn fork_one_child(
     // Target attempt: its provisioned empty VMState container becomes the
     // child's private copy. No image helper runs for the target.
     let mut target_owner = factory
-        .begin(1, MEMORY_BYTES, DISK_BYTES)
+        .begin(1, attempt_memory_bytes(config), attempt_disk_bytes(config))
         .map_err(|source| realization("create target attempt owner", source))?;
     let target_directory = target_owner
         .prepare_generation_run_directory(config.resource_requirements())
@@ -536,7 +560,7 @@ pub(super) fn launch_guarded_source(
 
     // Source attempt: fresh guarded launch, exact pause, retained template.
     let mut source_owner = factory
-        .begin(1, MEMORY_BYTES, DISK_BYTES)
+        .begin(1, attempt_memory_bytes(config), attempt_disk_bytes(config))
         .map_err(|source| realization("create source attempt owner", source))?;
     let mut source_directory = source_owner
         .prepare_generation_run_directory(config.resource_requirements())

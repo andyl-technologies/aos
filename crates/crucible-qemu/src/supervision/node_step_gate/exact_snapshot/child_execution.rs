@@ -6,9 +6,11 @@
 //! externally parented scheduler node, proven to stand at the captured
 //! boundary, resumed, and advanced through an observable suffix. A fresh
 //! process then restores the same snapshot and advances to the child's
-//! suffix boundary; both must report the same execution fingerprint and
-//! round-robin sample. This is the child-side half of the RFC's exact-restore
-//! comparison, run against the same guest the child-file flight uses.
+//! suffix boundary, and a second fresh process boots from genesis and
+//! executes straight to that boundary with no snapshot in between; all three
+//! must report the same execution fingerprint and round-robin sample. This is
+//! the child-side half of the RFC's exact-restore and thin-replay comparison,
+//! run against the same guest the child-file flight uses.
 
 use std::fs;
 use std::os::fd::AsFd as _;
@@ -19,10 +21,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::child_files::{
-    ChildDebuggerWatch, DISK_BYTES, GuardedSource, MAXIMUM_RING_IMAGE_BYTES, MEMORY_BYTES,
-    SOURCE_BUSY_CEILING, describe_child_diagnostics, describe_forked_child, describe_reaped_child,
-    describe_retained_child_diagnostics, file_identity, invariant, launch_guarded_source,
-    qmp_operation, realization, verify_child_placement, wait_for_child_exit,
+    ChildDebuggerWatch, GuardedSource, MAXIMUM_RING_IMAGE_BYTES, SOURCE_BUSY_CEILING,
+    attempt_disk_bytes, attempt_memory_bytes, describe_child_diagnostics, describe_forked_child,
+    describe_reaped_child, describe_retained_child_diagnostics, file_identity, invariant,
+    launch_guarded_source, qmp_operation, realization, verify_child_placement, wait_for_child_exit,
 };
 use super::child_measure::{elapsed_milliseconds, monotonic_nanoseconds};
 use super::{
@@ -61,12 +63,18 @@ pub struct QemuLiveHotForkChildExecutionReport {
     pub child_suffix_fingerprint: String,
     /// Execution fingerprint the exact restore reported at the same boundary.
     pub restore_suffix_fingerprint: String,
+    /// Execution fingerprint a fresh process that booted from genesis and
+    /// executed to the same boundary reported, the thin-replay oracle.
+    pub genesis_replay_suffix_fingerprint: String,
     /// Milliseconds from the fork call until the child stood installed at the
     /// captured boundary with its fingerprint read.
     pub fork_ready_ms: u64,
     /// Milliseconds the fresh process took to launch and restore the same
     /// snapshot to the captured boundary.
     pub exact_restore_ms: u64,
+    /// Milliseconds the genesis process took to boot and execute to the
+    /// suffix boundary.
+    pub genesis_replay_ms: u64,
 }
 
 /// Process control for a flight-owned child whose status the source reaps.
@@ -305,7 +313,7 @@ pub fn run_qemu_live_hot_fork_child_execution_gate(
     }
 
     let mut target_owner = factory
-        .begin(1, MEMORY_BYTES, DISK_BYTES)
+        .begin(1, attempt_memory_bytes(config), attempt_disk_bytes(config))
         .map_err(|source| realization("create target attempt owner", source))?;
     let target_directory = target_owner
         .prepare_generation_run_directory(config.resource_requirements())
@@ -526,6 +534,53 @@ pub fn run_qemu_live_hot_fork_child_execution_gate(
         .map_err(|source| QemuLiveNodeStepGateError::node_op("reap exact restore", source))?;
     drop(restored);
 
+    // Thin oracle: a fresh process boots from genesis and executes straight
+    // to the child's suffix boundary with no snapshot in between.
+    let replay_directory = run_root.join("genesis-replay");
+    fs::create_dir_all(&replay_directory).map_err(|source| {
+        QemuLiveNodeStepGateError::PrepareRunDirectory {
+            path: replay_directory.clone(),
+            source,
+        }
+    })?;
+    let replay_config = config.clone().with_run_directory(&replay_directory);
+    let replay_started = monotonic_nanoseconds();
+    let mut replayed = launch_qemu_live_node(
+        &replay_config,
+        &replay_directory,
+        GATE_NODE,
+        GATE_ROUTER,
+        "live-hot-fork-genesis-replay",
+    )?;
+    advance_to_busy_ceiling(&mut replayed, suffix_icount)?;
+    let genesis_replay_ms = elapsed_milliseconds(replay_started);
+    let genesis_replay_suffix_fingerprint = replayed
+        .execution_fingerprint()
+        .map_err(|source| QemuLiveNodeStepGateError::ExecutionFingerprint { source })?
+        .hash;
+    let genesis_replay_suffix_sample = replayed.fingerprint_sample().map_err(|source| {
+        QemuLiveNodeStepGateError::node_op("read genesis replay suffix fingerprint sample", source)
+    })?;
+    if child_suffix_fingerprint != genesis_replay_suffix_fingerprint
+        || child_suffix_sample != genesis_replay_suffix_sample
+    {
+        let components = fingerprint_sample_mismatch_components(
+            &child_suffix_sample,
+            &genesis_replay_suffix_sample,
+        )
+        .join(",");
+        return Err(invariant(&format!(
+            "child suffix fingerprint {} differs from the genesis replay's {}; differing \
+             components [{components}]",
+            child_suffix_fingerprint.to_hex(),
+            genesis_replay_suffix_fingerprint.to_hex(),
+        )));
+    }
+    replayed
+        .force_crash_and_reap_for_gate()
+        .map_err(|source| QemuLiveNodeStepGateError::node_op("reap genesis replay", source))?;
+    drop(replayed);
+
     // Teardown: the child node ends through its external process control,
     // the source reaps it, and every stage is released in order.
     child
@@ -578,7 +633,9 @@ pub fn run_qemu_live_hot_fork_child_execution_gate(
         suffix_icount,
         child_suffix_fingerprint: child_suffix_fingerprint.to_hex(),
         restore_suffix_fingerprint: restore_suffix_fingerprint.to_hex(),
+        genesis_replay_suffix_fingerprint: genesis_replay_suffix_fingerprint.to_hex(),
         fork_ready_ms,
         exact_restore_ms,
+        genesis_replay_ms,
     })
 }
