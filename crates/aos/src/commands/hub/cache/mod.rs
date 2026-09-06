@@ -30,7 +30,7 @@ pub(in crate::commands::hub) async fn cache(
             org,
             pagination,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ListBinaryCachesResponse>(
                 printer,
                 &client,
@@ -44,7 +44,7 @@ pub(in crate::commands::hub) async fn cache(
             .await
         }
         HubCacheCmd::Show { access, cache } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::BinaryCacheResponse>(
                 printer,
                 &client,
@@ -65,7 +65,7 @@ pub(in crate::commands::hub) async fn cache(
             mass_query,
             mutation,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             if mutation.plan_id.is_some() {
                 return topology_mutation(
                     printer,
@@ -147,7 +147,7 @@ pub(in crate::commands::hub) async fn cache(
             mutation,
         } => {
             if mutation.plan_id.is_some() {
-                let client = hub_client(&access.hub, access.token.as_deref())?;
+                let client = hub_client(&access.hub, access.token.as_deref()).await?;
                 return topology_mutation::<
                     _,
                     hub_types::ApplyBinaryCacheMutationRequest,
@@ -196,7 +196,7 @@ pub(in crate::commands::hub) async fn cache(
             if mass_query.is_some() {
                 update_mask.push("want_mass_query".into());
             }
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_mutation::<
                 _,
                 hub_types::ApplyBinaryCacheMutationRequest,

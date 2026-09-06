@@ -35,7 +35,7 @@ pub(in crate::commands::hub) async fn publish(
             state,
             pagination,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ListRegistryPublicationsResponse>(
                 printer,
                 &client,
@@ -66,7 +66,7 @@ pub(in crate::commands::hub) async fn publish(
             manifest,
         } => {
             let request = publication_manifest_request(manifest, registry)?;
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             let publication = begin_registry_publication_chunked(&client, &request).await?;
             print_topology_message(printer, &publication)
         }
@@ -74,7 +74,7 @@ pub(in crate::commands::hub) async fn publish(
             access,
             publication_id,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::RegistryPublication>(
                 printer,
                 &client,
@@ -89,7 +89,7 @@ pub(in crate::commands::hub) async fn publish(
             access,
             publication_id,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::RegistryPublication>(
                 printer,
                 &client,
@@ -104,7 +104,7 @@ pub(in crate::commands::hub) async fn publish(
             access,
             publication_id,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::RegistryPublication>(
                 printer,
                 &client,
@@ -389,10 +389,7 @@ async fn upload_declared_publication_object(
 }
 
 async fn publication_client(access: &HubAccessArgs) -> Result<HubClient> {
-    if access.token.is_none() {
-        crate::commands::hub_auth::prepare_active_profile().await?;
-    }
-    hub_client(&access.hub, access.token.as_deref())
+    hub_client(&access.hub, access.token.as_deref()).await
 }
 
 /// Orders immutable publication objects before mutable entry-point objects.

@@ -391,7 +391,7 @@ pub(super) async fn route(printer: &Printer, command: &HubRouteCmd) -> Result<()
             surface_ref,
             pagination,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ListRoutesResponse>(
                 printer,
                 &client,
@@ -464,7 +464,7 @@ pub(super) async fn route(printer: &Printer, command: &HubRouteCmd) -> Result<()
             {
                 anyhow::bail!("route update requires at least one changed field");
             }
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             let current: hub_types::RouteResponse = client
                 .call_topology(
                     HubTopologyMethod::GetRoute,
@@ -499,7 +499,7 @@ pub(super) async fn route(printer: &Printer, command: &HubRouteCmd) -> Result<()
             spec,
             mutation,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             if mutation.plan_id.is_some() {
                 return topology_mutation(
                     printer,
@@ -568,7 +568,7 @@ pub(super) async fn route(printer: &Printer, command: &HubRouteCmd) -> Result<()
             path,
             access_class,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ExplainRouteResponse>(
                 printer,
                 &client,
@@ -634,7 +634,7 @@ pub(super) async fn route(printer: &Printer, command: &HubRouteCmd) -> Result<()
             audience,
             mutation,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_mutation::<
                 _,
                 hub_types::ApplyRouteAdvertisementRequest,
@@ -681,7 +681,7 @@ async fn route_mutation(
     request: hub_types::PlanRouteMutationRequest,
     mutation: &HubMutationArgs,
 ) -> Result<()> {
-    let client = hub_client(&access.hub, access.token.as_deref())?;
+    let client = hub_client(&access.hub, access.token.as_deref()).await?;
     topology_mutation::<_, hub_types::ApplyRouteMutationRequest, hub_types::RouteResponse, _>(
         printer,
         &client,
