@@ -268,7 +268,10 @@ readable for archival verification.
 
 Record a `qualification_predecessor` with the same registry, a distinct
 `release_id`, and the verified preceding `manifest_digest`. First public
-releases use a retained signed qualification snapshot as their predecessor.
+releases use the restricted, non-public
+[qualification snapshot workflow](canonical-releases.md#create-a-first-qualification-predecessor)
+as their predecessor. A descriptor alone is insufficient: retain the signed
+bundle and verification keys for the image update executor.
 A testing-to-main transition is a new main release and installation unless a
 separate authenticated migration contract has been implemented and qualified.
 

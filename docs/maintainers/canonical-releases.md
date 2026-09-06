@@ -163,6 +163,57 @@ and never replaces an existing output. The resulting file is canonical JSON;
 its SHA-256 digest becomes the identity bound by every later operation. Preserve
 both the reviewed request and generated plan as release evidence.
 
+## Create a first qualification predecessor
+
+When a registry has no prior signed release, create one retained, non-public
+qualification snapshot from an earlier protected source revision and an older,
+distinct calendar version. Its plan request uses the complete current contract
+and normal package and image matrices, with exactly these reserved fields:
+
+```json
+{
+  "release_id": "qualification-snapshot-2026.9.0-dev.20260904.0",
+  "version": "2026.9.0-dev.20260904.0",
+  "source": {
+    "source_tag": "qualification-snapshot/2026.9.0-dev.20260904.0"
+  },
+  "intended_channels": []
+}
+```
+
+The `qualification_predecessor` field is absent. The fragment shows the
+relationship among the reserved values; retain all other required request
+fields. Any other missing-predecessor shape fails planning, and the reserved
+release id and source tag cannot be used by a plan that has a predecessor.
+
+Run the ordinary plan, build, image-finalization, isolated-registry,
+cache, manifest, TUF, timestamp-refresh, and surface-composition steps. Use the
+same release-evidence and image authorities required by the contract. Do not
+run `bootstrap`, `stage`, `qualify`, `qualify-run`, `record`, `promote`,
+`timestamp publish`, or `channel`: those commands reject qualification
+snapshots before a Hub effect. The snapshot does not claim that it passed an
+update from an earlier installation; its purpose is to provide the first exact
+installed source for the candidate's update and rollback cases.
+
+Verify the final bundle offline with independently supplied manifest keys and
+retain the JSON result:
+
+```sh
+aos --json release verify \
+  --bundle qualification-snapshot/bundle \
+  --journal qualification-snapshot/release-journal.jsonl \
+  --trusted-key release-1=/media/trust/release-1.pub \
+  --trusted-key release-2=/media/trust/release-2.pub \
+  > qualification-snapshot-verification.json
+```
+
+The first public plan copies `verification.release_id` and
+`verification.manifest_digest` into `qualification_predecessor` together with
+the same registry identity. Preserve the closed snapshot bundle, journal,
+verification output, public keys, and source tag. The Linux image executor must
+verify that bundle again and exercise the exact snapshot-to-candidate transition;
+a descriptor without the retained signed bytes is insufficient.
+
 ## Build the frozen package matrix
 
 Record the UTC start time and select a new output directory. The command

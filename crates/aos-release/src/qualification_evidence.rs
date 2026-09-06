@@ -169,9 +169,11 @@ pub fn cases(
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("archival plan has no shared qualification contract"))?;
     let current = contract.schema_version == CONTRACT_V2;
+    let qualification_snapshot = plan.is_qualification_snapshot();
     let mut requirements: Vec<_> = contract
         .selected(plan.release_class)
         .filter(|gate| gate.phase == phase)
+        .filter(|gate| !qualification_snapshot || gate.id != "image-update-recovery")
         .filter(|gate| {
             !current
                 || !matches!(
@@ -182,7 +184,18 @@ pub fn cases(
         .cloned()
         .map(|requirement| (requirement, None))
         .collect();
-    for claim in contract.claims.iter().filter(|claim| claim.phase == phase) {
+    for claim in contract
+        .claims
+        .iter()
+        .filter(|claim| claim.phase == phase)
+        .filter(|claim| {
+            !qualification_snapshot
+                || !claim
+                    .requirements
+                    .iter()
+                    .any(|requirement| requirement == "image-update-recovery")
+        })
+    {
         let target = contract
             .targets
             .iter()
