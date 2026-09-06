@@ -9,9 +9,11 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crucible::{
+    // crucible-lint: allow host-nondeterminism-state -- These engine types are forwarded only through scheduler-owned lifecycle traits; operational observations never influence engine state.
     Configuration, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, ScenarioDef,
     ScenarioDefForm, SchedulerError, SchedulerEventLogEntry,
 };
+// crucible-lint: allow host-nondeterminism-state -- The wrapper preserves the validated production lifecycle boundary and observes only ownership phases.
 use crucible_api::{
     ProductionFaultEvidenceSnapshot, ProductionVmLifecycleResumeState,
     ProductionVmNodeReplayLaunchProfile,
@@ -262,8 +264,10 @@ where
 
     fn start_fresh_lifecycle(
         &mut self,
+        // crucible-lint: allow host-nondeterminism-state -- The wrapper forwards the canonical scenario unchanged and records only an operational phase.
         scenario: &ScenarioDef,
         source: &ScenarioDefForm,
+        // crucible-lint: allow host-nondeterminism-state -- The wrapper forwards the canonical start configuration unchanged.
         start: &Configuration,
         signal_fault_replay: &crucible::SignalFaultCampaignReplayPlan,
         context: &AttemptExecutionContext,
@@ -299,9 +303,12 @@ where
         &mut self,
         checkpoints: &ExactCheckpointStore,
         checkpoint: crucible_campaign::ExactCheckpointId,
+        // crucible-lint: allow host-nondeterminism-state -- The wrapper forwards the canonical scenario unchanged and records only an operational phase.
         scenario: &ScenarioDef,
         source: &ScenarioDefForm,
+        // crucible-lint: allow host-nondeterminism-state -- The wrapper forwards the canonical resume configurations unchanged.
         initial: &Configuration,
+        // crucible-lint: allow host-nondeterminism-state -- The wrapper forwards the optional post-selection configuration unchanged.
         post_selection: Option<&Configuration>,
         context: &AttemptExecutionContext,
     ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>> {
@@ -335,7 +342,9 @@ where
         self.inner.enable_signal_fault_campaign_promotion();
     }
 
+    // crucible-lint: allow host-nondeterminism-state -- Quantum ownership remains with the wrapped lifecycle; this method forwards the request and outcome unchanged.
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        // crucible-lint: allow host-nondeterminism-state -- The wrapped lifecycle remains the sole quantum driver.
         self.inner.drive_quantum(request)
     }
 

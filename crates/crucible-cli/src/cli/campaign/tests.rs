@@ -8,6 +8,7 @@ use super::*;
 use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
 use crucible_campaign::*;
@@ -16,6 +17,28 @@ use crucible_daemon::serve_loopback_campaign_once;
 
 #[derive(Clone, Copy)]
 struct FixedHeadService;
+
+struct StatusSequenceService {
+    calls: Arc<StatusSequenceCalls>,
+    stale_statuses: usize,
+    terminal_failure: Option<CampaignServiceFailure>,
+}
+
+#[derive(Default)]
+struct StatusSequenceCalls {
+    get: AtomicUsize,
+    status: AtomicUsize,
+}
+
+macro_rules! unreachable_status_sequence_operations {
+    ($(fn $name:ident($request:ty) -> $response:ty;)*) => {
+        $(
+            fn $name(&self, _request: &$request) -> Result<$response, Self::Error> {
+                unreachable!(concat!(stringify!($name), " is not used by the status retry fixture"))
+            }
+        )*
+    };
+}
 
 struct GraphPageService {
     map: MerkleMap,
@@ -114,6 +137,30 @@ fn fixed_branch_response(
     .expect("fixed branch response")
 }
 
+fn fixed_campaign_status_response(request: &GetCampaignStatusRequest) -> GetCampaignStatusResponse {
+    let continuations = CampaignContinuationStatus::new(2, 3, 5, 7, 11);
+    let semantic = CampaignSemanticStatus::new(continuations, 13, 17, 28, 2_048)
+        .expect("fixed semantic status");
+    let operational = CampaignOperationalStatus::Observed(CampaignOperationalEvidence::new(
+        DaemonEpoch::from_bytes([0x44; 16]).expect("daemon epoch"),
+        hash("inventory"),
+        CampaignWorldStatus::new(19, 23, 29, 31, 37, 41),
+        43,
+        47,
+    ));
+    GetCampaignStatusResponse::new(request, CampaignStatusSummary::new(semantic, operational))
+        .expect("fixed status response")
+}
+
+fn status_sequence_head(index: usize) -> CampaignSnapshotId {
+    match index {
+        0 => snapshot("head-a"),
+        1 => snapshot("head-b"),
+        2 => snapshot("head-c"),
+        _ => snapshot("head-d"),
+    }
+}
+
 impl CampaignService for FixedHeadService {
     type Error = Infallible;
 
@@ -199,21 +246,7 @@ impl CampaignService for FixedHeadService {
         &self,
         request: &GetCampaignStatusRequest,
     ) -> Result<GetCampaignStatusResponse, Self::Error> {
-        let continuations = CampaignContinuationStatus::new(2, 3, 5, 7, 11);
-        let semantic = CampaignSemanticStatus::new(continuations, 13, 17, 28, 2_048)
-            .expect("fixed semantic status");
-        let operational = CampaignOperationalStatus::Observed(CampaignOperationalEvidence::new(
-            DaemonEpoch::from_bytes([0x44; 16]).expect("daemon epoch"),
-            hash("inventory"),
-            CampaignWorldStatus::new(19, 23, 29, 31, 37, 41),
-            43,
-            47,
-        ));
-        Ok(GetCampaignStatusResponse::new(
-            request,
-            CampaignStatusSummary::new(semantic, operational),
-        )
-        .expect("fixed status response"))
+        Ok(fixed_campaign_status_response(request))
     }
 
     fn get_campaign_snapshot(
@@ -351,6 +384,66 @@ impl CampaignService for FixedHeadService {
         request: &SubmitCampaignBranchRequest,
     ) -> Result<SubmitCampaignBranchResponse, Self::Error> {
         Ok(fixed_branch_response(request, "branched"))
+    }
+}
+
+impl CampaignService for StatusSequenceService {
+    type Error = CampaignServiceFailure;
+
+    fn get_campaign(
+        &self,
+        request: &GetCampaignRequest,
+    ) -> Result<GetCampaignResponse, Self::Error> {
+        let get_index = self.calls.get.fetch_add(1, Ordering::SeqCst);
+        let head = status_sequence_head(get_index);
+
+        Ok(GetCampaignResponse::new(
+            request,
+            head,
+            lineage("lineage"),
+            policy("policy"),
+            CampaignState::Running,
+        )
+        .expect("scripted get response"))
+    }
+
+    fn get_campaign_status(
+        &self,
+        request: &GetCampaignStatusRequest,
+    ) -> Result<GetCampaignStatusResponse, Self::Error> {
+        let status_index = self.calls.status.fetch_add(1, Ordering::SeqCst);
+        if let Some(failure) = self.terminal_failure {
+            return Err(failure);
+        }
+        if status_index < self.stale_statuses {
+            return Err(CampaignServiceFailure::Stale {
+                expected: request.snapshot(),
+                current: status_sequence_head(status_index + 1),
+            });
+        }
+
+        Ok(fixed_campaign_status_response(request))
+    }
+
+    unreachable_status_sequence_operations! {
+        fn list_campaigns(ListCampaignsRequest) -> ListCampaignsResponse;
+        fn create_campaign(CreateCampaignRequest) -> CreateCampaignResponse;
+        fn derive_campaign(DeriveCampaignRequest) -> DeriveCampaignResponse;
+        fn get_campaign_snapshot(GetCampaignSnapshotRequest) -> GetCampaignSnapshotResponse;
+        fn watch_campaign(WatchCampaignRequest) -> WatchCampaignResponse;
+        fn query_campaign_graph(QueryCampaignGraphRequest) -> QueryCampaignGraphResponse;
+        fn get_campaign_graph_object(GetCampaignGraphObjectRequest) -> GetCampaignGraphObjectResponse;
+        fn query_campaign_choices(QueryCampaignChoicesRequest) -> QueryCampaignChoicesResponse;
+        fn query_campaign_frontier(QueryCampaignFrontierRequest) -> QueryCampaignFrontierResponse;
+        fn query_campaign_findings(QueryCampaignFindingsRequest) -> QueryCampaignFindingsResponse;
+        fn get_campaign_finding_object(GetCampaignFindingObjectRequest) -> GetCampaignFindingObjectResponse;
+        fn explain_campaign_attempt(ExplainCampaignAttemptRequest) -> ExplainCampaignAttemptResponse;
+        fn get_campaign_planner_rankings(GetCampaignPlannerRankingsRequest) -> GetCampaignPlannerRankingsResponse;
+        fn get_campaign_frontier_object(GetCampaignFrontierObjectRequest) -> GetCampaignFrontierObjectResponse;
+        fn get_campaign_choice_object(GetCampaignChoiceObjectRequest) -> GetCampaignChoiceObjectResponse;
+        fn apply_campaign_command(ApplyCampaignCommandRequest) -> ApplyCampaignCommandResponse;
+        fn pin_campaign(PinCampaignRequest) -> PinCampaignResponse;
+        fn submit_branch_request(SubmitCampaignBranchRequest) -> SubmitCampaignBranchResponse;
     }
 }
 
@@ -1098,6 +1191,89 @@ fn campaign_status_and_watch_use_the_checked_loopback_transport() {
     let watch_value = serde_json::to_value(&watch_report).expect("watch JSON");
     assert!(watch_value.get("semantic").is_none());
     assert!(watch_value.get("operational").is_none());
+}
+
+#[test]
+fn campaign_status_refreshes_the_entire_pair_after_one_stale_snapshot() {
+    let calls = Arc::new(StatusSequenceCalls::default());
+    let client = CampaignClient::new(StatusSequenceService {
+        calls: Arc::clone(&calls),
+        stale_statuses: 1,
+        terminal_failure: None,
+    });
+    let command = CampaignCommand::Status(CampaignStatusArgs {
+        name: "example".to_string(),
+    });
+
+    let report = query_campaign_head(
+        &client,
+        CampaignPrincipal::new("operator").expect("campaign principal"),
+        &command,
+    )
+    .expect("the refreshed paired read succeeds");
+
+    assert_eq!(report.snapshot, snapshot("head-b").to_string());
+    assert_eq!(calls.get.load(Ordering::SeqCst), 2);
+    assert_eq!(calls.status.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn campaign_status_stops_after_bounded_snapshot_churn() {
+    let calls = Arc::new(StatusSequenceCalls::default());
+    let client = CampaignClient::new(StatusSequenceService {
+        calls: Arc::clone(&calls),
+        stale_statuses: usize::MAX,
+        terminal_failure: None,
+    });
+    let command = CampaignCommand::Status(CampaignStatusArgs {
+        name: "example".to_string(),
+    });
+
+    let error = match query_campaign_head(
+        &client,
+        CampaignPrincipal::new("operator").expect("campaign principal"),
+        &command,
+    ) {
+        Ok(_) => panic!("persistent churn must remain a terminal status failure"),
+        Err(error) => error,
+    };
+
+    let rendered = error.to_string();
+    assert!(rendered.contains("stale"), "unexpected error: {rendered}");
+    assert_eq!(
+        calls.get.load(Ordering::SeqCst),
+        MAX_CAMPAIGN_STATUS_PAIR_ATTEMPTS
+    );
+    assert_eq!(
+        calls.status.load(Ordering::SeqCst),
+        MAX_CAMPAIGN_STATUS_PAIR_ATTEMPTS
+    );
+}
+
+#[test]
+fn campaign_status_does_not_retry_a_non_stale_failure() {
+    let calls = Arc::new(StatusSequenceCalls::default());
+    let client = CampaignClient::new(StatusSequenceService {
+        calls: Arc::clone(&calls),
+        stale_statuses: 0,
+        terminal_failure: Some(CampaignServiceFailure::Unauthorized),
+    });
+    let command = CampaignCommand::Status(CampaignStatusArgs {
+        name: "example".to_string(),
+    });
+
+    let error = match query_campaign_head(
+        &client,
+        CampaignPrincipal::new("operator").expect("campaign principal"),
+        &command,
+    ) {
+        Ok(_) => panic!("authorization failure must remain terminal"),
+        Err(error) => error,
+    };
+
+    assert!(error.to_string().contains("not authorized"));
+    assert_eq!(calls.get.load(Ordering::SeqCst), 1);
+    assert_eq!(calls.status.load(Ordering::SeqCst), 1);
 }
 
 #[test]

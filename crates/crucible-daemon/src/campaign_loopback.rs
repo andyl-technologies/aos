@@ -1130,6 +1130,7 @@ where
 ///
 /// Returns [`LoopbackCampaignServerError::Protocol`] for malformed framing,
 /// canonical input, invalid response binding, or bounded socket I/O.
+// crucible-lint: allow host-nondeterminism-state -- This public transport boundary applies finite socket deadlines but never exposes their values or feeds them into campaign state.
 pub fn serve_loopback_campaign_once<S>(
     stream: &mut UnixStream,
     service: &S,
