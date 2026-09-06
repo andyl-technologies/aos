@@ -25,7 +25,7 @@ pub(super) async fn signing_key(printer: &Printer, command: &HubSigningKeyCmd) -
             scope,
             pagination,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ListSigningKeysResponse>(
                 printer,
                 &client,
@@ -43,7 +43,7 @@ pub(super) async fn signing_key(printer: &Printer, command: &HubSigningKeyCmd) -
             scope,
             name,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::SigningKeyResponse>(
                 printer,
                 &client,
@@ -64,7 +64,8 @@ pub(super) async fn signing_key(printer: &Printer, command: &HubSigningKeyCmd) -
                 public_key_fingerprint,
                 custody,
             } => {
-                let client = hub_client(&request.access.hub, request.access.token.as_deref())?;
+                let client =
+                    hub_client(&request.access.hub, request.access.token.as_deref()).await?;
                 let mutation = retained_plan_mutation(&request.idempotency_key, None);
                 let public_key = read_signing_public_key(public_key_file)?;
                 topology_mutation::<
@@ -111,7 +112,8 @@ pub(super) async fn signing_key(printer: &Printer, command: &HubSigningKeyCmd) -
                 custody,
                 if_version,
             } => {
-                let client = hub_client(&request.access.hub, request.access.token.as_deref())?;
+                let client =
+                    hub_client(&request.access.hub, request.access.token.as_deref()).await?;
                 let mutation =
                     retained_plan_mutation(&request.idempotency_key, Some(if_version.as_str()));
                 let public_key = read_signing_public_key(public_key_file)?;
@@ -156,7 +158,8 @@ pub(super) async fn signing_key(printer: &Printer, command: &HubSigningKeyCmd) -
                 name,
                 if_version,
             } => {
-                let client = hub_client(&request.access.hub, request.access.token.as_deref())?;
+                let client =
+                    hub_client(&request.access.hub, request.access.token.as_deref()).await?;
                 let mutation =
                     retained_plan_mutation(&request.idempotency_key, Some(if_version.as_str()));
                 topology_mutation::<
@@ -188,7 +191,7 @@ pub(super) async fn signing_key(printer: &Printer, command: &HubSigningKeyCmd) -
                 consumer,
                 purpose,
             } => {
-                let client = hub_client(&access.hub, access.token.as_deref())?;
+                let client = hub_client(&access.hub, access.token.as_deref()).await?;
                 topology_read::<_, hub_types::SigningKeyUsageResponse>(
                     printer,
                     &client,
@@ -209,7 +212,8 @@ pub(super) async fn signing_key(printer: &Printer, command: &HubSigningKeyCmd) -
                 state,
                 if_version,
             } => {
-                let client = hub_client(&request.access.hub, request.access.token.as_deref())?;
+                let client =
+                    hub_client(&request.access.hub, request.access.token.as_deref()).await?;
                 let mutation =
                     retained_plan_mutation(&request.idempotency_key, Some(if_version.as_str()));
                 topology_mutation::<
@@ -269,7 +273,7 @@ async fn apply_signing_key_mutation(
         Response = hub_types::SigningKeyResponse,
     > + Copy,
 ) -> Result<()> {
-    let client = hub_client(&apply.access.hub, apply.access.token.as_deref())?;
+    let client = hub_client(&apply.access.hub, apply.access.token.as_deref()).await?;
     let mutation = retained_apply_mutation(apply);
     topology_mutation(
         printer,
@@ -284,7 +288,7 @@ async fn apply_signing_key_mutation(
 }
 
 async fn apply_retire_signing_key(printer: &Printer, apply: &HubReviewedApplyArgs) -> Result<()> {
-    let client = hub_client(&apply.access.hub, apply.access.token.as_deref())?;
+    let client = hub_client(&apply.access.hub, apply.access.token.as_deref()).await?;
     let mutation = retained_apply_mutation(apply);
     topology_mutation::<_, hub_types::ApplyTopologyPlanRequest, hub_types::SigningKeyResponse, _>(
         printer,
@@ -299,7 +303,7 @@ async fn apply_retire_signing_key(printer: &Printer, apply: &HubReviewedApplyArg
 }
 
 async fn apply_signing_key_usage(printer: &Printer, apply: &HubReviewedApplyArgs) -> Result<()> {
-    let client = hub_client(&apply.access.hub, apply.access.token.as_deref())?;
+    let client = hub_client(&apply.access.hub, apply.access.token.as_deref()).await?;
     let mutation = retained_apply_mutation(apply);
     topology_mutation::<_, hub_types::ApplyTopologyPlanRequest, hub_types::SigningKeyUsageResponse, _>(
         printer,

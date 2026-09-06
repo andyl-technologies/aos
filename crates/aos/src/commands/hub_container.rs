@@ -43,8 +43,8 @@ pub async fn run(printer: &Printer, command: &HubContainerCmd) -> Result<()> {
     }
 }
 
-fn client(access: &HubAccessArgs) -> Result<HubClient> {
-    container_hub_client(access)
+async fn client(access: &HubAccessArgs) -> Result<HubClient> {
+    container_hub_client(access).await
 }
 
 fn apply_request(
@@ -120,7 +120,7 @@ async fn repository(printer: &Printer, command: &HubContainerRepositoryCmd) -> R
             repository_prefix,
             pagination,
         } => {
-            let client = client(access)?;
+            let client = client(access).await?;
             topology_read::<_, hub_types::ListContainerRepositoriesResponse>(
                 printer,
                 &client,
@@ -140,7 +140,7 @@ async fn repository(printer: &Printer, command: &HubContainerRepositoryCmd) -> R
             registry,
             repository,
         } => {
-            let client = client(access)?;
+            let client = client(access).await?;
             topology_read::<_, hub_types::ContainerRepositoryResponse>(
                 printer,
                 &client,
@@ -159,7 +159,7 @@ async fn repository(printer: &Printer, command: &HubContainerRepositoryCmd) -> R
             description,
             mutation,
         } => {
-            let client = client(access)?;
+            let client = client(access).await?;
             let request = if mutation.plan_id.is_some() {
                 hub_types::PlanCreateContainerRepositoryRequest::default()
             } else {
@@ -194,7 +194,7 @@ async fn repository(printer: &Printer, command: &HubContainerRepositoryCmd) -> R
             clear_description,
             mutation,
         } => {
-            let client = client(access)?;
+            let client = client(access).await?;
             let request = if mutation.plan_id.is_some() {
                 hub_types::PlanUpdateContainerRepositoryRequest::default()
             } else {
@@ -232,7 +232,7 @@ async fn repository(printer: &Printer, command: &HubContainerRepositoryCmd) -> R
             repository,
             mutation,
         } => {
-            let client = client(access)?;
+            let client = client(access).await?;
             let request = if mutation.plan_id.is_some() {
                 hub_types::PlanDeleteContainerRepositoryRequest::default()
             } else {
@@ -270,7 +270,7 @@ async fn tag(printer: &Printer, command: &HubContainerTagCmd) -> Result<()> {
             tag_prefix,
             pagination,
         } => {
-            let client = client(access)?;
+            let client = client(access).await?;
             topology_read::<_, hub_types::ListContainerTagsResponse>(
                 printer,
                 &client,
@@ -292,7 +292,7 @@ async fn tag(printer: &Printer, command: &HubContainerTagCmd) -> Result<()> {
             repository,
             tag,
         } => {
-            let client = client(access)?;
+            let client = client(access).await?;
             topology_read::<_, hub_types::ContainerTagResponse>(
                 printer,
                 &client,
@@ -311,7 +311,7 @@ async fn tag(printer: &Printer, command: &HubContainerTagCmd) -> Result<()> {
             repository,
             reference,
         } => {
-            let client = client(access)?;
+            let client = client(access).await?;
             if reference.starts_with("sha256:") {
                 topology_read::<_, hub_types::ContainerManifestResponse>(
                     printer,
@@ -350,7 +350,7 @@ async fn tag(printer: &Printer, command: &HubContainerTagCmd) -> Result<()> {
             tag,
             pagination,
         } => {
-            let client = client(access)?;
+            let client = client(access).await?;
             topology_read::<_, hub_types::ListContainerTagHistoryResponse>(
                 printer,
                 &client,
@@ -374,7 +374,7 @@ async fn tag(printer: &Printer, command: &HubContainerTagCmd) -> Result<()> {
             if_digest,
             mutation,
         } => {
-            let client = client(access)?;
+            let client = client(access).await?;
             let request = if mutation.plan_id.is_some() {
                 hub_types::PlanSetContainerTagRequest::default()
             } else {
@@ -415,7 +415,7 @@ async fn tag(printer: &Printer, command: &HubContainerTagCmd) -> Result<()> {
             if_digest,
             mutation,
         } => {
-            let client = client(access)?;
+            let client = client(access).await?;
             let request = if mutation.plan_id.is_some() {
                 hub_types::PlanUnsetContainerTagRequest::default()
             } else {
@@ -456,7 +456,7 @@ async fn manifest(printer: &Printer, command: &HubContainerManifestCmd) -> Resul
         repository,
         reference,
     } = command;
-    let client = client(access)?;
+    let client = client(access).await?;
     if reference.starts_with("sha256:") {
         topology_read::<_, hub_types::ContainerManifestResponse>(
             printer,
@@ -511,7 +511,7 @@ async fn platform(printer: &Printer, command: &HubContainerPlatformCmd) -> Resul
             reference,
             pagination,
         } => {
-            let client = client(access)?;
+            let client = client(access).await?;
             topology_read::<_, hub_types::ListContainerPlatformsResponse>(
                 printer,
                 &client,
@@ -535,7 +535,7 @@ async fn platform(printer: &Printer, command: &HubContainerPlatformCmd) -> Resul
             os_version,
             os_features,
         } => {
-            let client = client(access)?;
+            let client = client(access).await?;
             topology_read::<_, hub_types::ContainerPlatformResponse>(
                 printer,
                 &client,
@@ -566,7 +566,7 @@ async fn layer(printer: &Printer, command: &HubContainerLayerCmd) -> Result<()> 
             os_features,
             pagination,
         } => {
-            let client = client(access)?;
+            let client = client(access).await?;
             let manifest_digest = if let Some(platform) = platform {
                 client
                     .call_topology(
@@ -610,7 +610,7 @@ async fn layer(printer: &Printer, command: &HubContainerLayerCmd) -> Result<()> 
             manifest,
             digest,
         } => {
-            let client = client(access)?;
+            let client = client(access).await?;
             topology_read::<_, hub_types::ContainerLayerResponse>(
                 printer,
                 &client,
@@ -637,7 +637,7 @@ async fn referrer(printer: &Printer, command: &HubContainerReferrerCmd) -> Resul
         artifact_type,
         pagination,
     } = command;
-    let client = client(access)?;
+    let client = client(access).await?;
     topology_read::<_, hub_types::ListContainerReferrersResponse>(
         printer,
         &client,
@@ -663,7 +663,7 @@ async fn publication(printer: &Printer, command: &HubContainerPublicationCmd) ->
             state,
             pagination,
         } => {
-            let client = client(access)?;
+            let client = client(access).await?;
             topology_read::<_, hub_types::ListContainerPublicationsResponse>(
                 printer,
                 &client,
@@ -683,7 +683,7 @@ async fn publication(printer: &Printer, command: &HubContainerPublicationCmd) ->
             registry,
             publication_id,
         } => {
-            let client = client(access)?;
+            let client = client(access).await?;
             topology_read::<_, hub_types::ContainerPublication>(
                 printer,
                 &client,
@@ -706,7 +706,7 @@ async fn provenance(printer: &Printer, command: &HubContainerProvenanceCmd) -> R
         reference,
         release,
     } = command;
-    let client = client(access)?;
+    let client = client(access).await?;
     topology_read::<_, hub_types::ContainerProvenanceResponse>(
         printer,
         &client,
@@ -724,7 +724,7 @@ async fn provenance(printer: &Printer, command: &HubContainerProvenanceCmd) -> R
 async fn retention(printer: &Printer, command: &HubContainerRetentionCmd) -> Result<()> {
     match command {
         HubContainerRetentionCmd::Show { access, registry } => {
-            let client = client(access)?;
+            let client = client(access).await?;
             topology_read::<_, hub_types::ContainerRetentionPolicyResponse>(
                 printer,
                 &client,
@@ -744,7 +744,7 @@ async fn retention(printer: &Printer, command: &HubContainerRetentionCmd) -> Res
             retain_referrers,
             mutation,
         } => {
-            let client = client(access)?;
+            let client = client(access).await?;
             let request = if mutation.plan_id.is_some() {
                 hub_types::PlanSetContainerRetentionPolicyRequest::default()
             } else {
@@ -812,7 +812,7 @@ async fn gc(printer: &Printer, command: &HubContainerGcCmd) -> Result<()> {
             if_version,
             idempotency_key,
         } => {
-            let client = client(access)?;
+            let client = client(access).await?;
             let response: hub_types::ContainerGcPlanResponse = client
                 .call_topology(
                     Method::PlanRunContainerGc,
@@ -834,7 +834,7 @@ async fn gc(printer: &Printer, command: &HubContainerGcCmd) -> Result<()> {
             idempotency_key,
             yes,
         } => {
-            let client = client(access)?;
+            let client = client(access).await?;
             if !*yes {
                 anyhow::bail!("--yes is required to apply a reviewed garbage-collection plan");
             }
@@ -859,7 +859,7 @@ async fn gc(printer: &Printer, command: &HubContainerGcCmd) -> Result<()> {
             idempotency_key,
             yes,
         } => {
-            let client = client(access)?;
+            let client = client(access).await?;
             if !*yes {
                 anyhow::bail!("--yes is required to requeue a failed garbage-collection action");
             }
@@ -883,7 +883,7 @@ async fn gc(printer: &Printer, command: &HubContainerGcCmd) -> Result<()> {
                 registry,
                 pagination,
             } => {
-                let client = client(access)?;
+                let client = client(access).await?;
                 topology_read::<_, hub_types::ListContainerUntrackedInventoryResponse>(
                     printer,
                     &client,
@@ -904,7 +904,7 @@ async fn gc(printer: &Printer, command: &HubContainerGcCmd) -> Result<()> {
                 object_key,
                 mutation,
             } => {
-                let client = client(access)?;
+                let client = client(access).await?;
                 let expected_resource_version = mutation
                     .if_version
                     .clone()
@@ -948,7 +948,7 @@ async fn gc(printer: &Printer, command: &HubContainerGcCmd) -> Result<()> {
                 .await
             }
             HubContainerGcUntrackedCmd::RepairStatus { access, plan_id } => {
-                let client = client(access)?;
+                let client = client(access).await?;
                 topology_read::<_, hub_types::ContainerUntrackedRepairResponse>(
                     printer,
                     &client,
@@ -968,7 +968,7 @@ async fn gc(printer: &Printer, command: &HubContainerGcCmd) -> Result<()> {
                 if_version,
                 idempotency_key,
             } => {
-                let client = client(access)?;
+                let client = client(access).await?;
                 let action = match action.as_str() {
                     "begin" => hub_types::ContainerRegistryPurgeFenceAction::Begin as i32,
                     "abort" => hub_types::ContainerRegistryPurgeFenceAction::Abort as i32,
@@ -1000,7 +1000,7 @@ async fn gc(printer: &Printer, command: &HubContainerGcCmd) -> Result<()> {
                 if !*yes {
                     anyhow::bail!("--yes is required to apply a registry purge fence plan");
                 }
-                let client = client(access)?;
+                let client = client(access).await?;
                 topology_read::<_, hub_types::ContainerRegistryPurgeFenceResponse>(
                     printer,
                     &client,
@@ -1015,7 +1015,7 @@ async fn gc(printer: &Printer, command: &HubContainerGcCmd) -> Result<()> {
                 .await
             }
             HubContainerGcPurgeFenceCmd::Status { access, plan_id } => {
-                let client = client(access)?;
+                let client = client(access).await?;
                 topology_read::<_, hub_types::ContainerRegistryPurgeFenceResponse>(
                     printer,
                     &client,
@@ -1032,7 +1032,7 @@ async fn gc(printer: &Printer, command: &HubContainerGcCmd) -> Result<()> {
             registry,
             id,
         } => {
-            let client = client(access)?;
+            let client = client(access).await?;
             topology_read::<_, hub_types::ContainerGcRunResponse>(
                 printer,
                 &client,
@@ -1052,7 +1052,7 @@ async fn gc(printer: &Printer, command: &HubContainerGcCmd) -> Result<()> {
             state,
             pagination,
         } => {
-            let client = client(access)?;
+            let client = client(access).await?;
             match resource.as_str() {
                 "runs" => {
                     if run_id.is_some() {

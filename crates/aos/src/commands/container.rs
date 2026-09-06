@@ -669,9 +669,7 @@ async fn publish(input: PublishInput<'_>, printer: &Printer) -> Result<()> {
     let default_registry_origin = immutable_reference.default_origin()?.to_string();
     let registry_origin = registry_origin.unwrap_or(&default_registry_origin);
     let control_access = if !stage_only || registry_token.is_none() {
-        if hub.is_none() || token.is_none() {
-            crate::commands::hub_auth::prepare_active_profile().await?;
-        }
+        crate::commands::hub_auth::prepare_hub_access(hub, token).await?;
         let (control_origin, control_token) =
             crate::commands::hub_auth::resolve_access(hub, token)?;
         let control_token = control_token.context(

@@ -20,7 +20,7 @@ pub(super) async fn surface(printer: &Printer, command: &HubSurfaceCmd) -> Resul
             access,
             surface_ref,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             let surface = surface_ref.parse::<HubSurfaceRef>()?;
             let response: hub_types::GetSurfaceTopologyResponse = client
                 .call_topology(
@@ -54,7 +54,7 @@ pub(super) async fn surface(printer: &Printer, command: &HubSurfaceCmd) -> Resul
             access,
             surface_ref,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             let response: hub_types::GetSurfaceTopologyResponse = client
                 .call_topology(
                     HubTopologyMethod::GetSurfaceTopology,
@@ -75,7 +75,7 @@ pub(super) async fn surface(printer: &Printer, command: &HubSurfaceCmd) -> Resul
             path,
             access_class,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ExplainSurfaceRequestResponse>(
                 printer,
                 &client,

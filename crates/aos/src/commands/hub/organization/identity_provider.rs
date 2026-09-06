@@ -21,7 +21,7 @@ pub(super) async fn identity_provider(
 ) -> Result<()> {
     match command {
         HubIdentityProviderCmd::Show { access, org } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read(
                 printer,
                 &client,
@@ -51,7 +51,8 @@ pub(super) async fn identity_provider(
                 default_role,
                 if_version,
             } => {
-                let client = hub_client(&request.access.hub, request.access.token.as_deref())?;
+                let client =
+                    hub_client(&request.access.hub, request.access.token.as_deref()).await?;
                 let mutation = retained_plan_mutation(&request.idempotency_key, Some(if_version));
                 topology_mutation(
                     printer,
@@ -82,7 +83,7 @@ pub(super) async fn identity_provider(
                 .await
             }
             HubIdentityProviderSetCmd::Apply(apply) => {
-                let client = hub_client(&apply.access.hub, apply.access.token.as_deref())?;
+                let client = hub_client(&apply.access.hub, apply.access.token.as_deref()).await?;
                 let mutation = retained_apply_mutation(apply);
                 topology_mutation(
                     printer,
@@ -102,7 +103,8 @@ pub(super) async fn identity_provider(
                 org,
                 if_version,
             } => {
-                let client = hub_client(&request.access.hub, request.access.token.as_deref())?;
+                let client =
+                    hub_client(&request.access.hub, request.access.token.as_deref()).await?;
                 let mutation = retained_plan_mutation(&request.idempotency_key, Some(if_version));
                 topology_mutation(
                     printer,
@@ -120,7 +122,7 @@ pub(super) async fn identity_provider(
                 .await
             }
             HubIdentityProviderRemoveCmd::Apply(apply) => {
-                let client = hub_client(&apply.access.hub, apply.access.token.as_deref())?;
+                let client = hub_client(&apply.access.hub, apply.access.token.as_deref()).await?;
                 let mutation = retained_apply_mutation(apply);
                 topology_mutation(
                     printer,

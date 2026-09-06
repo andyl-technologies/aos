@@ -19,7 +19,7 @@ pub(super) async fn config(printer: &Printer, command: &HubConfigCmd) -> Result<
             scope,
             pagination,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ListChangesetsResponse>(
                 printer,
                 &client,
@@ -33,7 +33,7 @@ pub(super) async fn config(printer: &Printer, command: &HubConfigCmd) -> Result<
             .await
         }
         HubConfigCmd::Show { access, change_id } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::GetChangesetResponse>(
                 printer,
                 &client,
@@ -49,7 +49,7 @@ pub(super) async fn config(printer: &Printer, command: &HubConfigCmd) -> Result<
             registry,
             pagination,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::GitLogResponse>(
                 printer,
                 &client,
@@ -68,7 +68,7 @@ pub(super) async fn config(printer: &Printer, command: &HubConfigCmd) -> Result<
             from,
             to,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::GitDiffResponse>(
                 printer,
                 &client,
@@ -86,7 +86,7 @@ pub(super) async fn config(printer: &Printer, command: &HubConfigCmd) -> Result<
             registry,
             pagination,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ListChangeRequestsResponse>(
                 printer,
                 &client,

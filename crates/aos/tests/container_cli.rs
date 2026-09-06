@@ -57,22 +57,7 @@ fn local_artifact_commands_do_not_require_nix_or_a_checkout() {
 #[test]
 fn unrelated_expired_hub_profile_does_not_block_public_pull() {
     let workspace = tempfile::tempdir().expect("temporary workspace");
-    let config = workspace.path().join("config");
-    std::fs::create_dir(&config).expect("config directory");
-    std::fs::write(
-        config.join("hub-profiles.json"),
-        br#"{
-          "schema_version":"aos.hub.profiles/v1",
-          "active_origin":"http://127.0.0.1:1",
-          "profiles":{"http://127.0.0.1:1":{
-            "access_token":"expired-unrelated-secret",
-            "access_expires_at":0,
-            "refresh_token":"unrelated-refresh-secret",
-            "refresh_expires_at":4102444800
-          }}
-        }"#,
-    )
-    .expect("unrelated profile fixture");
+    let config = write_unrelated_expired_profile(workspace.path());
 
     let output = Command::new(env!("CARGO_BIN_EXE_aos"))
         .args([
@@ -99,4 +84,55 @@ fn unrelated_expired_hub_profile_does_not_block_public_pull() {
     );
     assert!(!stderr.contains("refreshing Hub profile"), "{stderr}");
     assert!(!stderr.contains("unrelated-refresh-secret"), "{stderr}");
+}
+
+#[test]
+fn unrelated_expired_profile_does_not_block_explicit_hub_command() {
+    let workspace = tempfile::tempdir().expect("temporary workspace");
+    let config = write_unrelated_expired_profile(workspace.path());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_aos"))
+        .args([
+            "hub",
+            "registry",
+            "show",
+            "--hub",
+            "http://127.0.0.1:9",
+            "andyl/testing",
+        ])
+        .current_dir(workspace.path())
+        .env_clear()
+        .env("HOME", workspace.path())
+        .env("AOS_CONFIG_HOME", &config)
+        .output()
+        .expect("run explicit Hub command");
+
+    assert!(!output.status.success(), "closed loopback port must fail");
+    let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
+    assert!(
+        stderr.contains("http://127.0.0.1:9/aos.hub.v1.RegistryService/GetRegistry"),
+        "command did not reach the requested Hub: {stderr}"
+    );
+    assert!(!stderr.contains("refreshing Hub profile"), "{stderr}");
+    assert!(!stderr.contains("unrelated-refresh-secret"), "{stderr}");
+}
+
+fn write_unrelated_expired_profile(workspace: &std::path::Path) -> std::path::PathBuf {
+    let config = workspace.join("config");
+    std::fs::create_dir(&config).expect("config directory");
+    std::fs::write(
+        config.join("hub-profiles.json"),
+        br#"{
+          "schema_version":"aos.hub.profiles/v1",
+          "active_origin":"http://127.0.0.1:1",
+          "profiles":{"http://127.0.0.1:1":{
+            "access_token":"expired-unrelated-secret",
+            "access_expires_at":0,
+            "refresh_token":"unrelated-refresh-secret",
+            "refresh_expires_at":4102444800
+          }}
+        }"#,
+    )
+    .expect("unrelated profile fixture");
+    config
 }

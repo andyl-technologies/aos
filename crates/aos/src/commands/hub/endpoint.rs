@@ -103,7 +103,7 @@ pub(super) async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Res
             include_granted,
             pagination,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ListEndpointsResponse>(
                 printer,
                 &client,
@@ -118,7 +118,7 @@ pub(super) async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Res
             .await
         }
         HubEndpointCmd::Show { access, endpoint } | HubEndpointCmd::Status { access, endpoint } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::EndpointResponse>(
                 printer,
                 &client,
@@ -134,7 +134,7 @@ pub(super) async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Res
             endpoint,
             pagination,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ListEndpointGenerationsResponse>(
                 printer,
                 &client,
@@ -152,7 +152,7 @@ pub(super) async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Res
             endpoint,
             generation,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::EndpointGenerationResponse>(
                 printer,
                 &client,
@@ -217,7 +217,7 @@ pub(super) async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Res
                 })
                 .transpose()?
                 .unwrap_or_else(|| (network_policy.clone(), 0));
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             if let Some(hub_types::endpoint_host::Host::DomainId(hostname)) = host.host.as_mut() {
                 let response: hub_types::DomainResponse = client
                     .call_topology(
@@ -288,7 +288,7 @@ pub(super) async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Res
             mutation,
         } => {
             if mutation.plan_id.is_some() {
-                let client = hub_client(&access.hub, access.token.as_deref())?;
+                let client = hub_client(&access.hub, access.token.as_deref()).await?;
                 return topology_mutation(
                     printer,
                     &client,
@@ -343,7 +343,7 @@ pub(super) async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Res
                 probe_signer_secret_ref.as_deref(),
                 probe_public_key.as_deref(),
             )?;
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_mutation::<
                 _,
                 hub_types::ApplyEndpointGenerationRequest,
@@ -410,7 +410,7 @@ pub(super) async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Res
             generation,
             mutation,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_mutation::<
                 _,
                 hub_types::ApplyEndpointGenerationRequest,

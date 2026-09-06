@@ -23,7 +23,7 @@ pub(in crate::commands::hub) async fn project(
             org,
             pagination,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ListProjectsResponse>(
                 printer,
                 &client,
@@ -43,7 +43,7 @@ pub(in crate::commands::hub) async fn project(
             name,
             mutation,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_mutation::<
                 _,
                 hub_types::ApplyProjectMutationRequest,
@@ -67,7 +67,7 @@ pub(in crate::commands::hub) async fn project(
             .await
         }
         HubProjectCmd::Show { access, org, path } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ProjectResponse>(
                 printer,
                 &client,
@@ -85,7 +85,7 @@ pub(in crate::commands::hub) async fn project(
             path,
             mutation,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_mutation::<
                 _,
                 hub_types::ApplyProjectMutationRequest,

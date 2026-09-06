@@ -153,7 +153,7 @@ pub(in crate::commands::hub) async fn placement_policy(
             surface,
             pagination,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ListPlacementPoliciesResponse>(
                 printer,
                 &client,
@@ -172,7 +172,7 @@ pub(in crate::commands::hub) async fn placement_policy(
             policy,
             revision,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             if let Some(revision) = revision {
                 topology_read::<_, hub_types::PlacementPolicyRevisionResponse>(
                     printer,
@@ -204,7 +204,7 @@ pub(in crate::commands::hub) async fn placement_policy(
             policy,
             pagination,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ListPlacementPolicyRevisionsResponse>(
                 printer,
                 &client,
@@ -233,7 +233,7 @@ pub(in crate::commands::hub) async fn placement_policy(
             retry_on,
             mutation,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             if mutation.plan_id.is_some() {
                 return topology_mutation(
                     printer,
@@ -299,7 +299,7 @@ pub(in crate::commands::hub) async fn placement_policy(
             retry_on,
             mutation,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             if mutation.plan_id.is_some() {
                 return topology_mutation(
                     printer,
@@ -358,7 +358,7 @@ pub(in crate::commands::hub) async fn placement_policy(
             object,
             access_class,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::TestPlacementPolicyRevisionResponse>(
                 printer,
                 &client,

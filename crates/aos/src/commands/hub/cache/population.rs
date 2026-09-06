@@ -25,7 +25,7 @@ pub(super) async fn cache_population(
             cache,
             pagination,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ListPopulationTargetsResponse>(
                 printer,
                 &client,
@@ -84,7 +84,7 @@ pub(super) async fn cache_population(
             if mutation.plan_id.is_none() {
                 required_plan_version(mutation, "population run")?;
             }
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_operation_mutation(
                 printer,
                 &client,
@@ -139,7 +139,7 @@ pub(super) async fn cache_coverage(printer: &Printer, command: &HubCacheCoverage
             cache,
             registry,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::CoverageResponse>(
                 printer,
                 &client,
@@ -208,7 +208,7 @@ async fn run_coverage_operation(
     mutation: &HubMutationArgs,
     operation: &HubOperationArgs,
 ) -> Result<()> {
-    let client = hub_client(&access.hub, access.token.as_deref())?;
+    let client = hub_client(&access.hub, access.token.as_deref()).await?;
     if mutation.plan_id.is_none() {
         required_plan_version(mutation, "coverage operation")?;
     }

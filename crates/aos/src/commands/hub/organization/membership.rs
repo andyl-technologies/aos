@@ -25,7 +25,7 @@ pub(super) async fn org_member(printer: &Printer, command: &HubOrgMemberCmd) -> 
             principal,
             scope,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::MembershipResponse>(
                 printer,
                 &client,
@@ -93,7 +93,7 @@ async fn plan_membership(
     role: &str,
     if_version: &str,
 ) -> Result<()> {
-    let client = hub_client(&request.access.hub, request.access.token.as_deref())?;
+    let client = hub_client(&request.access.hub, request.access.token.as_deref()).await?;
     let mutation = retained_plan_mutation(&request.idempotency_key, Some(if_version));
     topology_mutation::<_, hub_types::ApplyTopologyPlanRequest, hub_types::MembershipResponse, _>(
         printer,
@@ -115,7 +115,7 @@ async fn plan_membership(
 }
 
 async fn apply_membership(printer: &Printer, apply: &HubReviewedApplyArgs) -> Result<()> {
-    let client = hub_client(&apply.access.hub, apply.access.token.as_deref())?;
+    let client = hub_client(&apply.access.hub, apply.access.token.as_deref()).await?;
     let mutation = retained_apply_mutation(apply);
     topology_mutation::<_, hub_types::ApplyTopologyPlanRequest, hub_types::MembershipResponse, _>(
         printer,

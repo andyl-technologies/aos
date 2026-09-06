@@ -23,7 +23,7 @@ pub(super) async fn domain(printer: &Printer, command: &HubDomainCmd) -> Result<
             org,
             pagination,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ListDomainsResponse>(
                 printer,
                 &client,
@@ -37,7 +37,7 @@ pub(super) async fn domain(printer: &Printer, command: &HubDomainCmd) -> Result<
             .await
         }
         HubDomainCmd::Show { access, hostname } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::DomainResponse>(
                 printer,
                 &client,
@@ -49,7 +49,7 @@ pub(super) async fn domain(printer: &Printer, command: &HubDomainCmd) -> Result<
             .await
         }
         HubDomainCmd::Status { access, hostname } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::DomainResponse>(
                 printer,
                 &client,
@@ -66,7 +66,7 @@ pub(super) async fn domain(printer: &Printer, command: &HubDomainCmd) -> Result<
             org,
             mutation,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_mutation::<
                 _,
                 hub_types::ApplyDomainMutationRequest,
@@ -105,7 +105,7 @@ pub(super) async fn domain(printer: &Printer, command: &HubDomainCmd) -> Result<
             if mutation.plan_id.is_none() {
                 required_plan_version(mutation, "domain verification")?;
             }
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_operation_mutation(
                 printer,
                 &client,
@@ -165,7 +165,7 @@ async fn domain_dns(printer: &Printer, command: &HubDomainDnsCmd) -> Result<()> 
         expected_target,
         mutation,
     } = command;
-    let client = hub_client(&access.hub, access.token.as_deref())?;
+    let client = hub_client(&access.hub, access.token.as_deref()).await?;
     let domain_id = domain_stable_id(&client, hostname).await?;
     let configuration = if mode == "external" {
         if provider.is_some() || zone_id.is_some() || record_ttl.is_some() {
@@ -225,7 +225,7 @@ async fn domain_certificate(printer: &Printer, command: &HubDomainCertificateCmd
         certificate_ref,
         mutation,
     } = command;
-    let client = hub_client(&access.hub, access.token.as_deref())?;
+    let client = hub_client(&access.hub, access.token.as_deref()).await?;
     let domain_id = domain_stable_id(&client, hostname).await?;
     let configuration = if mode == "external" {
         hub_types::certificate_configuration::Configuration::External(

@@ -56,7 +56,7 @@ pub(in crate::commands::hub) async fn organization_scope_key(
 pub(in crate::commands::hub) async fn org(printer: &Printer, command: &HubOrgCmd) -> Result<()> {
     match command {
         HubOrgCmd::List { access, pagination } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ListOrganizationsResponse>(
                 printer,
                 &client,
@@ -69,7 +69,7 @@ pub(in crate::commands::hub) async fn org(printer: &Printer, command: &HubOrgCmd
             .await
         }
         HubOrgCmd::Show { access, org } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::OrganizationResponse>(
                 printer,
                 &client,
@@ -84,7 +84,7 @@ pub(in crate::commands::hub) async fn org(printer: &Printer, command: &HubOrgCmd
             display_name,
             mutation,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             if mutation.plan_id.is_some() {
                 return topology_mutation(
                     printer,
@@ -128,7 +128,7 @@ pub(in crate::commands::hub) async fn org(printer: &Printer, command: &HubOrgCmd
             display_name,
             mutation,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             if mutation.plan_id.is_some() {
                 return topology_mutation(
                     printer,
@@ -189,7 +189,7 @@ pub(in crate::commands::hub) async fn org(printer: &Printer, command: &HubOrgCmd
             org,
             mutation,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             if mutation.plan_id.is_some() {
                 return topology_mutation(
                     printer,

@@ -28,7 +28,7 @@ pub(super) async fn service_account(
             org,
             pagination,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read(
                 printer,
                 &client,
@@ -42,7 +42,7 @@ pub(super) async fn service_account(
             .await
         }
         HubServiceAccountCmd::Show { access, org, name } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read(
                 printer,
                 &client,
@@ -61,7 +61,8 @@ pub(super) async fn service_account(
                 name,
                 if_version,
             } => {
-                let client = hub_client(&request.access.hub, request.access.token.as_deref())?;
+                let client =
+                    hub_client(&request.access.hub, request.access.token.as_deref()).await?;
                 let mutation =
                     retained_plan_mutation(&request.idempotency_key, if_version.as_deref());
                 topology_mutation(
@@ -81,7 +82,7 @@ pub(super) async fn service_account(
                 .await
             }
             HubServiceAccountCreateCmd::Apply(apply) => {
-                let client = hub_client(&apply.access.hub, apply.access.token.as_deref())?;
+                let client = hub_client(&apply.access.hub, apply.access.token.as_deref()).await?;
                 let mutation = retained_apply_mutation(apply);
                 topology_mutation(
                     printer,
@@ -103,7 +104,8 @@ pub(super) async fn service_account(
                 new_name,
                 if_version,
             } => {
-                let client = hub_client(&request.access.hub, request.access.token.as_deref())?;
+                let client =
+                    hub_client(&request.access.hub, request.access.token.as_deref()).await?;
                 let mutation = retained_plan_mutation(&request.idempotency_key, Some(if_version));
                 topology_mutation(
                     printer,
@@ -123,7 +125,7 @@ pub(super) async fn service_account(
                 .await
             }
             HubServiceAccountUpdateCmd::Apply(apply) => {
-                let client = hub_client(&apply.access.hub, apply.access.token.as_deref())?;
+                let client = hub_client(&apply.access.hub, apply.access.token.as_deref()).await?;
                 let mutation = retained_apply_mutation(apply);
                 topology_mutation(
                     printer,
@@ -144,7 +146,8 @@ pub(super) async fn service_account(
                 name,
                 if_version,
             } => {
-                let client = hub_client(&request.access.hub, request.access.token.as_deref())?;
+                let client =
+                    hub_client(&request.access.hub, request.access.token.as_deref()).await?;
                 let mutation = retained_plan_mutation(&request.idempotency_key, Some(if_version));
                 topology_mutation(
                     printer,
@@ -163,7 +166,7 @@ pub(super) async fn service_account(
                 .await
             }
             HubServiceAccountDeleteCmd::Apply(apply) => {
-                let client = hub_client(&apply.access.hub, apply.access.token.as_deref())?;
+                let client = hub_client(&apply.access.hub, apply.access.token.as_deref()).await?;
                 let mutation = retained_apply_mutation(apply);
                 topology_mutation(
                     printer,

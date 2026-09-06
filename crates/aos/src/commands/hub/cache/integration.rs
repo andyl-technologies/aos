@@ -39,7 +39,7 @@ pub(in crate::commands::hub) async fn registry_cache_stack(
 ) -> Result<()> {
     match command {
         HubRegistryCacheStackCmd::Show { access, registry } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ConsumerCacheStackResponse>(
                 printer,
                 &client,
@@ -51,7 +51,7 @@ pub(in crate::commands::hub) async fn registry_cache_stack(
             .await
         }
         HubRegistryCacheStackCmd::Validate { access, registry } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ConsumerCacheStackValidationResponse>(
                 printer,
                 &client,
@@ -154,7 +154,7 @@ async fn registry_cache_stack_mutation(
     change: hub_types::ConsumerCacheChange,
     mutation: &HubMutationArgs,
 ) -> Result<()> {
-    let client = hub_client(&access.hub, access.token.as_deref())?;
+    let client = hub_client(&access.hub, access.token.as_deref()).await?;
     topology_mutation::<
         _,
         hub_types::ApplyTopologyPlanRequest,
@@ -197,7 +197,7 @@ pub(in crate::commands::hub) async fn cache_integration(
             registry,
             pagination,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             match registry {
                 Some(registry) => {
                     let response: hub_types::CacheIntegrationResponse = client
@@ -237,7 +237,7 @@ pub(in crate::commands::hub) async fn cache_integration(
             cache,
             registry,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::CacheIntegrationResponse>(
                 printer,
                 &client,
@@ -326,7 +326,7 @@ pub(in crate::commands::hub) async fn preview_cache_integration(
         placement_policy_revision_id: String::new(),
         validation_gate: "integrity".into(),
     });
-    let client = hub_client(&access.hub, access.token.as_deref())?;
+    let client = hub_client(&access.hub, access.token.as_deref()).await?;
     topology_read::<_, hub_types::PreviewCacheIntegrationResponse>(
         printer,
         &client,

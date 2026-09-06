@@ -27,7 +27,7 @@ pub(super) async fn gateway(printer: &Printer, command: &HubGatewayCmd) -> Resul
             include_granted,
             pagination,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ListGatewaysResponse>(
                 printer,
                 &client,
@@ -43,7 +43,7 @@ pub(super) async fn gateway(printer: &Printer, command: &HubGatewayCmd) -> Resul
             .await
         }
         HubGatewayCmd::Show { access, gateway } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::GatewayResponse>(
                 printer,
                 &client,
@@ -67,7 +67,7 @@ pub(super) async fn gateway(printer: &Printer, command: &HubGatewayCmd) -> Resul
             if policy.access.is_none() {
                 anyhow::bail!("gateway add requires --access");
             }
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             let binding_response: hub_types::GetBindingResponse = client
                 .call_topology(
                     HubTopologyMethod::GetBinding,
@@ -220,7 +220,7 @@ pub(super) async fn gateway(printer: &Printer, command: &HubGatewayCmd) -> Resul
             }
         }
         HubGatewayCmd::Preview { access, gateway } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::GatewayRoutePreviewResponse>(
                 printer,
                 &client,
@@ -293,7 +293,7 @@ async fn gateway_mutation(
     request: hub_types::PlanGatewayMutationRequest,
     mutation: &HubMutationArgs,
 ) -> Result<()> {
-    let client = hub_client(&access.hub, access.token.as_deref())?;
+    let client = hub_client(&access.hub, access.token.as_deref()).await?;
     topology_mutation::<_, hub_types::ApplyGatewayMutationRequest, hub_types::GatewayResponse, _>(
         printer,
         &client,

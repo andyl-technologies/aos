@@ -23,28 +23,13 @@ enum ReviewedStage {
 /// # Errors
 /// Returns an error for invalid input, unavailable credentials, or a rejected Hub request.
 pub(super) async fn run(printer: &Printer, command: &HubDeliveryCmd) -> Result<()> {
-    let access = match command {
-        HubDeliveryCmd::Plan { request, .. } | HubDeliveryCmd::Resume { request, .. } => {
-            &request.access
-        }
-        HubDeliveryCmd::Apply(apply) => &apply.access,
-        HubDeliveryCmd::Show { access, .. } | HubDeliveryCmd::List { access, .. } => access,
-        HubDeliveryCmd::Activate { command } => match command {
-            HubDeliveryActivationCmd::Plan { request, .. } => &request.access,
-            HubDeliveryActivationCmd::Apply(apply) => &apply.access,
-        },
-    };
-    // Explicit credentials must not refresh an unrelated stored login. This
-    // also keeps a stale staging profile from blocking a local recovery task.
-    crate::commands::hub_auth::prepare_hub_access(access.hub.as_deref(), access.token.as_deref())
-        .await?;
     match command {
         HubDeliveryCmd::Plan {
             request,
             intent_file,
         } => {
             let intent = read_intent(intent_file)?;
-            let client = hub_client(&request.access.hub, request.access.token.as_deref())?;
+            let client = hub_client(&request.access.hub, request.access.token.as_deref()).await?;
             topology_read(
                 printer,
                 &client,
@@ -59,7 +44,7 @@ pub(super) async fn run(printer: &Printer, command: &HubDeliveryCmd) -> Result<(
         }
         HubDeliveryCmd::Apply(apply) => apply_reviewed(printer, apply, ReviewedStage::Setup).await,
         HubDeliveryCmd::Show { access, workflow } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read(
                 printer,
                 &client,
@@ -75,7 +60,7 @@ pub(super) async fn run(printer: &Printer, command: &HubDeliveryCmd) -> Result<(
             surface,
             pagination,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read(
                 printer,
                 &client,
@@ -93,7 +78,7 @@ pub(super) async fn run(printer: &Printer, command: &HubDeliveryCmd) -> Result<(
             workflow,
             if_version,
         } => {
-            let client = hub_client(&request.access.hub, request.access.token.as_deref())?;
+            let client = hub_client(&request.access.hub, request.access.token.as_deref()).await?;
             topology_read(
                 printer,
                 &client,
@@ -112,7 +97,8 @@ pub(super) async fn run(printer: &Printer, command: &HubDeliveryCmd) -> Result<(
                 workflow,
                 if_version,
             } => {
-                let client = hub_client(&request.access.hub, request.access.token.as_deref())?;
+                let client =
+                    hub_client(&request.access.hub, request.access.token.as_deref()).await?;
                 topology_read(
                     printer,
                     &client,
@@ -141,7 +127,7 @@ async fn apply_reviewed(
         printer.info("Cancelled.");
         return Ok(());
     }
-    let client = hub_client(&apply.access.hub, apply.access.token.as_deref())?;
+    let client = hub_client(&apply.access.hub, apply.access.token.as_deref()).await?;
     let request = pb::ApplyDeliveryDestinationRequest {
         plan_id: apply.plan_id.clone(),
         confirmation_hash: apply.confirm_hash.clone(),

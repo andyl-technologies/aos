@@ -19,7 +19,7 @@ pub(super) async fn package(printer: &Printer, command: &HubPackageCmd) -> Resul
             registry,
             pagination,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ListPackagesResponse>(
                 printer,
                 &client,
@@ -37,7 +37,7 @@ pub(super) async fn package(printer: &Printer, command: &HubPackageCmd) -> Resul
             registry,
             name,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::GetPackageResponse>(
                 printer,
                 &client,
@@ -64,7 +64,7 @@ pub(super) async fn channel(printer: &Printer, command: &HubChannelCmd) -> Resul
             registry,
             pagination,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ListChannelsResponse>(
                 printer,
                 &client,
@@ -82,7 +82,7 @@ pub(super) async fn channel(printer: &Printer, command: &HubChannelCmd) -> Resul
             registry,
             name,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::GetChannelResponse>(
                 printer,
                 &client,

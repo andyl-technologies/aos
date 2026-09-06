@@ -131,7 +131,7 @@ pub(super) async fn operation(printer: &Printer, command: &HubOperationCmd) -> R
             access,
             operation_id,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::OperationDetailResponse>(
                 printer,
                 &client,
@@ -149,7 +149,7 @@ pub(super) async fn operation(printer: &Printer, command: &HubOperationCmd) -> R
             state,
             pagination,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ListOperationsResponse>(
                 printer,
                 &client,
@@ -169,7 +169,7 @@ pub(super) async fn operation(printer: &Printer, command: &HubOperationCmd) -> R
             operation_id,
             timeout,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             watch_hub_operation(printer, &client, operation_id, timeout.as_deref()).await
         }
         HubOperationCmd::Cancel {
@@ -177,7 +177,7 @@ pub(super) async fn operation(printer: &Printer, command: &HubOperationCmd) -> R
             operation_id,
             if_version,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::OperationDetailResponse>(
                 printer,
                 &client,
@@ -196,7 +196,7 @@ pub(super) async fn operation(printer: &Printer, command: &HubOperationCmd) -> R
             if_version,
             operation,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             let response: hub_types::OperationDetailResponse = client
                 .call_topology(
                     HubTopologyMethod::RetryOperation,

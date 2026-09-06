@@ -20,7 +20,7 @@ pub(super) async fn webhook(printer: &Printer, command: &HubWebhookCmd) -> Resul
             org,
             pagination,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ListWebhooksResponse>(
                 printer,
                 &client,
@@ -42,7 +42,7 @@ pub(super) async fn webhook(printer: &Printer, command: &HubWebhookCmd) -> Resul
             credential_fingerprint,
             mutation,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_mutation::<
                 _,
                 hub_types::ApplyWebhookMutationRequest,
@@ -72,7 +72,7 @@ pub(super) async fn webhook(printer: &Printer, command: &HubWebhookCmd) -> Resul
             id,
             mutation,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_mutation::<
                 _,
                 hub_types::ApplyWebhookMutationRequest,

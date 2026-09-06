@@ -21,7 +21,7 @@ pub(super) async fn cache_root(printer: &Printer, command: &HubCacheRootCmd) -> 
             cache,
             pagination,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ListRetentionRootsResponse>(
                 printer,
                 &client,
@@ -39,7 +39,7 @@ pub(super) async fn cache_root(printer: &Printer, command: &HubCacheRootCmd) -> 
             cache,
             root_id,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::RetentionRootResponse>(
                 printer,
                 &client,

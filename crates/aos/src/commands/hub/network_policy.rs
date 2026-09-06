@@ -67,7 +67,7 @@ pub(super) async fn network_policy(printer: &Printer, command: &HubNetworkPolicy
             include_granted,
             pagination,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ListNetworkPoliciesResponse>(
                 printer,
                 &client,
@@ -83,7 +83,7 @@ pub(super) async fn network_policy(printer: &Printer, command: &HubNetworkPolicy
         }
         HubNetworkPolicyCmd::Show { access, boundary }
         | HubNetworkPolicyCmd::Status { access, boundary } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::NetworkPolicyResponse>(
                 printer,
                 &client,
@@ -109,7 +109,7 @@ pub(super) async fn network_policy(printer: &Printer, command: &HubNetworkPolicy
             probe_location,
             mutation,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             if mutation.plan_id.is_some() {
                 return topology_mutation(
                     printer,
@@ -270,7 +270,7 @@ pub(super) async fn network_policy(printer: &Printer, command: &HubNetworkPolicy
             mutation,
         } => {
             if mutation.plan_id.is_some() {
-                let client = hub_client(&access.hub, access.token.as_deref())?;
+                let client = hub_client(&access.hub, access.token.as_deref()).await?;
                 return topology_mutation(
                     printer,
                     &client,
@@ -366,7 +366,7 @@ pub(super) async fn network_policy(printer: &Printer, command: &HubNetworkPolicy
                 })
                 .transpose()?;
             let updates_trusted_ingress = trusted_ingress.is_some();
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_mutation::<
                 _,
                 hub_types::ApplyNetworkPolicyRevisionRequest,
@@ -488,7 +488,7 @@ async fn network_policy_revision(
             boundary,
             pagination,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ListNetworkPolicyRevisionsResponse>(
                 printer,
                 &client,
@@ -507,7 +507,7 @@ async fn network_policy_revision(
         } => {
             let (boundary_id, revision) =
                 parse_generation_ref(boundary_revision, "network policy revision")?;
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::NetworkPolicyRevisionResponse>(
                 printer,
                 &client,

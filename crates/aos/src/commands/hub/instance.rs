@@ -46,7 +46,7 @@ async fn instance_settings_section(
 ) -> Result<()> {
     match command {
         HubInstanceSettingsSectionCmd::Show { access } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::GetInstanceSettingsResponse>(
                 printer,
                 &client,
@@ -78,7 +78,8 @@ async fn instance_settings_section(
                         "instance {section} update plan requires KEY=VALUE or --clear KEY"
                     );
                 }
-                let client = hub_client(&request.access.hub, request.access.token.as_deref())?;
+                let client =
+                    hub_client(&request.access.hub, request.access.token.as_deref()).await?;
                 let mutation =
                     retained_plan_mutation(&request.idempotency_key, Some(if_version.as_str()));
                 topology_mutation::<
@@ -103,7 +104,7 @@ async fn instance_settings_section(
                 .await
             }
             HubInstanceSettingsMutationCmd::Apply(apply) => {
-                let client = hub_client(&apply.access.hub, apply.access.token.as_deref())?;
+                let client = hub_client(&apply.access.hub, apply.access.token.as_deref()).await?;
                 let mutation = retained_apply_mutation(apply);
                 topology_mutation::<
                     _,
@@ -258,7 +259,7 @@ pub(super) async fn organization_topology_defaults(
         | HubOrgTopologyDefaultsCmd::Set { access, org, .. }
         | HubOrgTopologyDefaultsCmd::Clear { access, org, .. } => (access, org),
     };
-    let client = hub_client(&access.hub, access.token.as_deref())?;
+    let client = hub_client(&access.hub, access.token.as_deref()).await?;
     if let HubOrgTopologyDefaultsCmd::Set { mutation, .. }
     | HubOrgTopologyDefaultsCmd::Clear { mutation, .. } = command
     {
@@ -362,7 +363,7 @@ async fn instance_topology_defaults(
         | HubInstanceTopologyDefaultsCmd::Set { access, .. }
         | HubInstanceTopologyDefaultsCmd::Clear { access, .. } => access,
     };
-    let client = hub_client(&access.hub, access.token.as_deref())?;
+    let client = hub_client(&access.hub, access.token.as_deref()).await?;
     if let HubInstanceTopologyDefaultsCmd::Set { mutation, .. }
     | HubInstanceTopologyDefaultsCmd::Clear { mutation, .. } = command
     {

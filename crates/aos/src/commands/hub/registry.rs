@@ -20,7 +20,7 @@ use aos_remote::{hub_rpc as HubTopologyMethod, hub_types};
 async fn registry_mirror(printer: &Printer, command: &HubRegistryMirrorCmd) -> Result<()> {
     match command {
         HubRegistryMirrorCmd::Show { access, registry } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::RegistryMirrorResponse>(
                 printer,
                 &client,
@@ -42,7 +42,7 @@ async fn registry_mirror(printer: &Printer, command: &HubRegistryMirrorCmd) -> R
             mode,
             mutation,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             if mutation.plan_id.is_some() {
                 return topology_mutation(
                     printer,
@@ -124,7 +124,7 @@ async fn registry_mirror(printer: &Printer, command: &HubRegistryMirrorCmd) -> R
             if mutation.plan_id.is_none() {
                 required_plan_version(mutation, "registry mirror synchronization")?;
             }
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_operation_mutation(
                 printer,
                 &client,
@@ -151,7 +151,7 @@ async fn registry_mirror(printer: &Printer, command: &HubRegistryMirrorCmd) -> R
 pub(super) async fn registry(printer: &Printer, command: &HubRegistryCmd) -> Result<()> {
     match command {
         HubRegistryCmd::List { access, pagination } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ListRegistriesResponse>(
                 printer,
                 &client,
@@ -164,7 +164,7 @@ pub(super) async fn registry(printer: &Printer, command: &HubRegistryCmd) -> Res
             .await
         }
         HubRegistryCmd::Show { access, registry } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::GetRegistryResponse>(
                 printer,
                 &client,
@@ -180,7 +180,7 @@ pub(super) async fn registry(printer: &Printer, command: &HubRegistryCmd) -> Res
             registry,
             pagination,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ListReleasesResponse>(
                 printer,
                 &client,
@@ -202,7 +202,7 @@ pub(super) async fn registry(printer: &Printer, command: &HubRegistryCmd) -> Res
             trust_keys,
             mutation,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             if mutation.plan_id.is_some() {
                 return topology_mutation(
                     printer,
@@ -254,7 +254,7 @@ pub(super) async fn registry(printer: &Printer, command: &HubRegistryCmd) -> Res
             clear_trust_keys,
             mutation,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             if mutation.plan_id.is_some() {
                 return topology_mutation(
                     printer,
@@ -314,7 +314,7 @@ pub(super) async fn registry(printer: &Printer, command: &HubRegistryCmd) -> Res
             registry,
             mutation,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_mutation::<
                 _,
                 hub_types::ApplyDeleteTopologyResourceRequest,
