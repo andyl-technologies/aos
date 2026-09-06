@@ -158,6 +158,7 @@ enum ChannelCall {
     QmpExactSave(ContentHash),
     QmpExactDelete(ContentHash),
     QmpActivateDebugGuest,
+    QmpRetireProcessScopedEndpoints,
     PluginQuit,
     QmpQuit,
 }
@@ -200,6 +201,7 @@ struct ScriptedHostIoRuntime {
 struct ScriptedQmpMachineControl {
     log: SharedLog,
     process_id: u32,
+    track_process_endpoint_retirement: bool,
     fail_stop: bool,
     fail_snapshot: bool,
     timeout_snapshot: bool,
@@ -265,6 +267,9 @@ struct ScriptedExternalProcessControl {
     basis: crate::QemuHotForkChildProcessBasis,
 }
 
+#[derive(Debug)]
+struct UnreapableExternalProcessControl;
+
 impl crate::QemuNodeExternalProcessControl for ScriptedExternalProcessControl {
     fn hot_fork_process_basis(&self) -> crate::QemuHotForkChildProcessBasis {
         self.basis
@@ -272,6 +277,49 @@ impl crate::QemuNodeExternalProcessControl for ScriptedExternalProcessControl {
 
     fn process_id(&self) -> u32 {
         self.basis.child_process_id()
+    }
+
+    fn reaped(&self) -> bool {
+        false
+    }
+
+    fn try_wait_natural_exit(
+        &mut self,
+    ) -> Result<Option<std::process::ExitStatus>, crate::QemuShutdownTargetError> {
+        Ok(None)
+    }
+
+    fn send_sigterm(&mut self) -> Result<(), crate::QemuShutdownTargetError> {
+        Ok(())
+    }
+
+    fn send_sigkill(&mut self) -> Result<(), crate::QemuShutdownTargetError> {
+        Ok(())
+    }
+
+    fn wait_for_exit(
+        &mut self,
+        _rung: crate::QemuShutdownRung,
+        _timeout: Duration,
+    ) -> Result<crate::QemuChildWait, crate::QemuShutdownTargetError> {
+        Ok(crate::QemuChildWait::StillRunning)
+    }
+
+    fn reap(
+        &mut self,
+        _timeout: Duration,
+    ) -> Result<crate::QemuReap, crate::QemuShutdownTargetError> {
+        Ok(crate::QemuReap::StillAlive)
+    }
+}
+
+impl crate::QemuNodeExternalProcessControl for UnreapableExternalProcessControl {
+    fn hot_fork_process_basis(&self) -> crate::QemuHotForkChildProcessBasis {
+        unreachable!("shutdown must not query the hot-fork process basis")
+    }
+
+    fn process_id(&self) -> u32 {
+        999_999
     }
 
     fn reaped(&self) -> bool {
@@ -1630,6 +1678,15 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
         Ok(())
     }
 
+    fn retire_process_scoped_endpoints_after_reap(&mut self) {
+        if self.track_process_endpoint_retirement {
+            self.log
+                .lock()
+                .unwrap()
+                .push(ChannelCall::QmpRetireProcessScopedEndpoints);
+        }
+    }
+
     fn activate_debug_guest(&mut self) -> Result<(), QemuNodeChannelError> {
         self.log
             .lock()
@@ -2606,6 +2663,7 @@ fn scripted_hot_fork_capture_node(
         ScriptedQmpMachineControl {
             log: Arc::clone(&log),
             process_id,
+            track_process_endpoint_retirement: false,
             fail_stop: false,
             fail_snapshot: false,
             timeout_snapshot: false,
@@ -2713,6 +2771,7 @@ fn scripted_node_with_runtime(
             qmp_snapshot_timeout: false,
             fingerprint_retry_countdown: 0,
             fingerprint_fault_event_count: 0,
+            track_process_endpoint_retirement: false,
         },
         runtime_outcomes,
     )
@@ -2727,6 +2786,7 @@ struct ScriptedNodeOptions {
     qmp_snapshot_timeout: bool,
     fingerprint_retry_countdown: u8,
     fingerprint_fault_event_count: u8,
+    track_process_endpoint_retirement: bool,
 }
 
 fn scripted_node_with_options(
@@ -2772,6 +2832,7 @@ fn scripted_node_with_fault_events(
         ScriptedQmpMachineControl {
             log: Arc::clone(&log),
             process_id,
+            track_process_endpoint_retirement: false,
             fail_stop: false,
             fail_snapshot: false,
             timeout_snapshot: false,
@@ -2877,6 +2938,7 @@ fn scripted_node_with_coverage(
         ScriptedQmpMachineControl {
             log: Arc::clone(&log),
             process_id,
+            track_process_endpoint_retirement: options.track_process_endpoint_retirement,
             fail_stop: options.fail_qmp_stop,
             fail_snapshot: options.fail_qmp_snapshot,
             timeout_snapshot: options.qmp_snapshot_timeout,

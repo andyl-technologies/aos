@@ -1241,6 +1241,13 @@ pub trait QemuQmpMachineControlChannel: Send {
     /// Returns [`QemuNodeChannelError`] when QMP cannot send the quit command.
     fn quit(&mut self) -> Result<(), QemuNodeChannelError>;
 
+    /// Releases the process-scoped guest activation endpoint after proven reap.
+    ///
+    /// Implementations that do not retain a guest activation endpoint may use
+    /// the default no-op. The caller must prove that the exact QEMU child was
+    /// reaped before invoking this method.
+    fn retire_process_scoped_endpoints_after_reap(&mut self) {}
+
     /// Sends the fixed fork-time activation token to the dormant guest bootstrap.
     ///
     /// # Errors

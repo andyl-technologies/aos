@@ -352,3 +352,123 @@ fn qemu_node_repeated_shutdown_is_idempotent_after_reap() -> Result<(), Box<dyn 
 
     Ok(())
 }
+
+#[test]
+fn qemu_node_retires_process_endpoints_after_normal_reap() -> Result<(), Box<dyn Error>> {
+    let log = shared_log();
+    let mut node = scripted_node_with_options(
+        Arc::clone(&log),
+        ScriptedNodeOptions {
+            track_process_endpoint_retirement: true,
+            ..ScriptedNodeOptions::default()
+        },
+        [QemuAsyncWaitOutcome::Completed],
+    )?;
+
+    let report = node.shutdown_child()?;
+
+    assert!(report.reaped);
+    assert_eq!(
+        recorded(&log),
+        vec![
+            ChannelCall::PluginQuit,
+            ChannelCall::QmpQuit,
+            ChannelCall::QmpRetireProcessScopedEndpoints,
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn qemu_node_retires_process_endpoints_when_already_reaped() -> Result<(), Box<dyn Error>> {
+    let log = shared_log();
+    let mut node = scripted_node_with_options(
+        Arc::clone(&log),
+        ScriptedNodeOptions {
+            track_process_endpoint_retirement: true,
+            ..ScriptedNodeOptions::default()
+        },
+        [QemuAsyncWaitOutcome::Completed],
+    )?;
+
+    assert!(node.shutdown_child()?.reaped);
+    let second = node.shutdown_child()?;
+
+    assert!(second.reaped);
+    assert!(second.attempts.is_empty());
+    assert_eq!(
+        recorded(&log),
+        vec![
+            ChannelCall::PluginQuit,
+            ChannelCall::QmpQuit,
+            ChannelCall::QmpRetireProcessScopedEndpoints,
+            ChannelCall::QmpRetireProcessScopedEndpoints,
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn qemu_node_retires_process_endpoints_after_crash_reap() -> Result<(), Box<dyn Error>> {
+    let log = shared_log();
+    let mut node = scripted_node_with_options(
+        Arc::clone(&log),
+        ScriptedNodeOptions {
+            track_process_endpoint_retirement: true,
+            ..ScriptedNodeOptions::default()
+        },
+        [QemuAsyncWaitOutcome::TimedOut],
+    )?;
+
+    let result = Backend::advance_to_horizon(
+        &mut node,
+        ExecutionHorizon {
+            icount: Icount { retired: 31 },
+        },
+    );
+
+    assert!(matches!(result, Err(BackendError::Rejected { .. })));
+    assert!(node.child_reaped());
+    assert_eq!(
+        recorded(&log).last(),
+        Some(&ChannelCall::QmpRetireProcessScopedEndpoints)
+    );
+    Ok(())
+}
+
+#[test]
+fn qemu_node_retains_process_endpoints_when_reap_fails() -> Result<(), Box<dyn Error>> {
+    let log = shared_log();
+    let mut node = scripted_node_with_options(
+        Arc::clone(&log),
+        ScriptedNodeOptions {
+            track_process_endpoint_retirement: true,
+            ..ScriptedNodeOptions::default()
+        },
+        [QemuAsyncWaitOutcome::Completed],
+    )?;
+
+    // Reap the fixture's owned child before installing the controlled
+    // externally parented process that remains alive through every rung.
+    assert!(node.shutdown_child()?.reaped);
+    node.child = QemuNodeProcessControl::External(Box::new(UnreapableExternalProcessControl));
+    log.lock().unwrap().clear();
+
+    let error = node
+        .shutdown_child()
+        .expect_err("an unreapable process must fail shutdown");
+
+    let QemuNodeError::Shutdown {
+        source: crate::QemuShutdownError::LeakedChild { report },
+    } = error
+    else {
+        panic!("expected a leaked-child shutdown error, got {error:?}");
+    };
+    assert!(report.leaked);
+    assert!(!report.reaped);
+    assert_eq!(
+        recorded(&log),
+        vec![ChannelCall::PluginQuit, ChannelCall::QmpQuit]
+    );
+    Ok(())
+}
