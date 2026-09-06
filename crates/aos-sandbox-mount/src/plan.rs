@@ -23,9 +23,9 @@ use sha2::{Digest as _, Sha256};
 use crate::{MountError, Result};
 
 const MAGIC: &[u8; 8] = b"AOSMNT01";
-const VERSION: u16 = 4;
+const VERSION: u16 = 5;
 const FIXED_PREFIX_BYTES: usize =
-    8 + 2 + 1 + 1 + 8 + 8 + 8 + 16 + 16 + 32 + (11 * 8) + 16 + 16 + 8 + 2;
+    8 + 2 + 1 + 1 + 8 + 8 + 8 + 8 + 16 + 16 + 32 + (11 * 8) + 16 + 16 + 8 + 2;
 const CHECKSUM_BYTES: usize = 32;
 const MAXIMUM_TARGET_PATH_BYTES: usize = 4096;
 const MAXIMUM_PLAN_BYTES: usize = FIXED_PREFIX_BYTES + MAXIMUM_TARGET_PATH_BYTES + CHECKSUM_BYTES;
@@ -134,8 +134,10 @@ pub struct HelperPlan {
     pub source_generation: u64,
     /// Payload namespace generation.
     pub namespace_generation: u64,
-    /// Desired attachment generation.
-    pub attachment_generation: u64,
+    /// Current desired attachment generation authorizing the effect.
+    pub desired_attachment_generation: u64,
+    /// Attachment generation of the resource recipe being affected.
+    pub resource_attachment_generation: u64,
     /// Attachment identity.
     pub attachment_id: [u8; 16],
     /// Destination-slot identity.
@@ -185,7 +187,8 @@ impl HelperPlan {
         bytes.push(self.roles.bits());
         bytes.extend_from_slice(&self.source_generation.to_le_bytes());
         bytes.extend_from_slice(&self.namespace_generation.to_le_bytes());
-        bytes.extend_from_slice(&self.attachment_generation.to_le_bytes());
+        bytes.extend_from_slice(&self.desired_attachment_generation.to_le_bytes());
+        bytes.extend_from_slice(&self.resource_attachment_generation.to_le_bytes());
         bytes.extend_from_slice(&self.attachment_id);
         bytes.extend_from_slice(&self.destination_slot_id);
         bytes.extend_from_slice(&self.request_digest);
@@ -248,7 +251,8 @@ impl HelperPlan {
             roles,
             source_generation: decoder.u64()?,
             namespace_generation: decoder.u64()?,
-            attachment_generation: decoder.u64()?,
+            desired_attachment_generation: decoder.u64()?,
+            resource_attachment_generation: decoder.u64()?,
             attachment_id: decoder.array()?,
             destination_slot_id: decoder.array()?,
             request_digest: decoder.array()?,
@@ -296,7 +300,8 @@ impl HelperPlan {
         if self.roles != DescriptorRoles::for_action(self.action)
             || self.source_generation == 0
             || self.namespace_generation == 0
-            || self.attachment_generation == 0
+            || self.desired_attachment_generation == 0
+            || self.resource_attachment_generation == 0
             || self.attachment_id == [0; 16]
             || self.destination_slot_id == [0; 16]
             || self.request_digest == [0; 32]
@@ -315,6 +320,11 @@ impl HelperPlan {
             .contains(&0)
         {
             return Err(invalid_plan("helper plan contains a sentinel"));
+        }
+        if self.desired_attachment_generation < self.resource_attachment_generation {
+            return Err(invalid_plan(
+                "helper resource generation is newer than desired state",
+            ));
         }
         let predecessor_valid = match self.action {
             HelperAction::Replace => self.expected_predecessor_mount_id != 0,
@@ -484,7 +494,8 @@ mod tests {
             roles: DescriptorRoles::for_action(HelperAction::Replace),
             source_generation: 7,
             namespace_generation: 9,
-            attachment_generation: 10,
+            desired_attachment_generation: 10,
+            resource_attachment_generation: 9,
             attachment_id: [1; 16],
             destination_slot_id: [2; 16],
             request_digest: [3; 32],

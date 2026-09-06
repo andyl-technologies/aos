@@ -10,7 +10,7 @@
 //! The serialized value is a versioned JSON envelope:
 //!
 //! ```text
-//! {"version":2,"resource":{...}}
+//! {"version":3,"resource":{...}}
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use crate::{MountError, Result};
 
 const KEY_PREFIX: &[u8] = b"aos.mount.resource.v1\0";
-const FORMAT_VERSION: u16 = 2;
+const FORMAT_VERSION: u16 = 3;
 
 /// Opaque, stable identity of one broker-owned mount resource.
 pub(crate) type MountHandleV1 = [u8; 32];
@@ -100,6 +100,7 @@ pub(crate) enum OwnedMountAttributeV1 {
     NoSuid,
     NoDevice,
     NoAtime,
+    Recursive,
 }
 
 /// Selects one closed filesystem-view mutation mode admitted by V1.
@@ -111,6 +112,15 @@ pub(crate) enum NativeMutationV1 {
     PrivateCow,
     AppendOnly,
     Service,
+}
+
+/// Selects the source-coherency contract implemented by the Mount broker.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum MountSourceConsistencyV1 {
+    ImmutableRevision,
+    LocalLive,
+    BestEffortReplica,
 }
 
 /// Carries an explicit, canonical set of broker-owned mount attributes.
@@ -192,7 +202,10 @@ pub(crate) struct MountRecipeV1 {
     pub(crate) destination_slot_id: [u8; 16],
     pub(crate) view_revision: ObjectDescriptorV1,
     pub(crate) source_generation: u64,
-    pub(crate) attachment_generation: u64,
+    pub(crate) resource_attachment_generation: u64,
+    pub(crate) source_view_id: [u8; 16],
+    pub(crate) source_incarnation_id: Option<[u8; 16]>,
+    pub(crate) source_consistency: MountSourceConsistencyV1,
     pub(crate) policy: MountPolicyV1,
 }
 
@@ -466,6 +479,8 @@ impl MountResourceTableV1 {
             || successor.recipe.attachment_id != predecessor.recipe.attachment_id
             || successor.recipe.destination_slot_id != predecessor.recipe.destination_slot_id
             || !successor.binding.strictly_advances(&predecessor.binding)
+            || successor.recipe.resource_attachment_generation
+                <= predecessor.recipe.resource_attachment_generation
         {
             return Err(state_error(
                 "replacement does not exactly and monotonically link its pair",
@@ -731,9 +746,21 @@ impl MountResourceV1 {
             || self.recipe.attachment_id == [0; 16]
             || self.recipe.destination_slot_id == [0; 16]
             || self.recipe.source_generation == 0
-            || self.recipe.attachment_generation == 0
+            || self.recipe.resource_attachment_generation == 0
+            || self.recipe.source_view_id == [0; 16]
         {
             return Err(state_error("mount resource contains a sentinel identity"));
+        }
+        if self.recipe.source_incarnation_id.is_some()
+            != matches!(
+                self.recipe.source_consistency,
+                MountSourceConsistencyV1::LocalLive
+            )
+            || self.recipe.source_incarnation_id == Some([0; 16])
+        {
+            return Err(state_error(
+                "mount resource source incarnation differs from its consistency contract",
+            ));
         }
         if self.fd_store_key != canonical_fd_store_key(self.handle) {
             return Err(state_error(
@@ -1161,6 +1188,8 @@ fn declares_replacement(successor: &MountResourceV1, predecessor: &MountResource
         && successor.recipe.attachment_id == predecessor.recipe.attachment_id
         && successor.recipe.destination_slot_id == predecessor.recipe.destination_slot_id
         && successor.binding.strictly_advances(&predecessor.binding)
+        && successor.recipe.resource_attachment_generation
+            > predecessor.recipe.resource_attachment_generation
 }
 
 fn validate_replacement_edges(resources: &BTreeMap<MountHandleV1, MountResourceV1>) -> Result<()> {
@@ -1584,7 +1613,10 @@ mod tests {
                     encoded_size: 10,
                 },
                 source_generation: 11,
-                attachment_generation: 12,
+                resource_attachment_generation: generation,
+                source_view_id: [13; 16],
+                source_incarnation_id: None,
+                source_consistency: MountSourceConsistencyV1::ImmutableRevision,
                 policy: policy(),
             },
             state: MountResourceStateV1::Allocated {
@@ -2235,11 +2267,23 @@ mod tests {
     }
 
     #[test]
-    fn attachment_generation_is_nonzero_durable_identity() {
+    fn source_recipe_fields_are_validated_as_durable_identity() {
         let mut sentinel_generation = resource(51, 4, None);
-        sentinel_generation.recipe.attachment_generation = 0;
+        sentinel_generation.recipe.resource_attachment_generation = 0;
 
         assert!(table().plan_allocate(&sentinel_generation).is_err());
+
+        let mut sentinel_view = resource(51, 4, None);
+        sentinel_view.recipe.source_view_id = [0; 16];
+        assert!(table().plan_allocate(&sentinel_view).is_err());
+
+        let mut missing_incarnation = resource(51, 4, None);
+        missing_incarnation.recipe.source_consistency = MountSourceConsistencyV1::LocalLive;
+        assert!(table().plan_allocate(&missing_incarnation).is_err());
+
+        let mut extraneous_incarnation = resource(51, 4, None);
+        extraneous_incarnation.recipe.source_incarnation_id = Some([14; 16]);
+        assert!(table().plan_allocate(&extraneous_incarnation).is_err());
     }
 
     #[test]

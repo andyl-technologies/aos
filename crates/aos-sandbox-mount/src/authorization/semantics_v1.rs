@@ -112,7 +112,7 @@ mod tests {
 
     use aos_proto::aos::sandbox::local::v1::{
         ApplyMountRequest, AssignmentFence, Audience, Descriptor, MountAction, MountAttributes,
-        RequestHeader,
+        MountSourceConsistency, RequestHeader,
     };
     use aos_sandbox_core::{BrokerGrantTarget, BrokerVerb};
     use aos_sandbox_protocol::{PeerCredentials, PeerPolicy, decode_mount_request};
@@ -161,7 +161,14 @@ mod tests {
             .into(),
             source_generation: 13,
             namespace_generation: 14,
-            attachment_generation: 15,
+            desired_attachment_generation: 15,
+            resource_attachment_generation: 15,
+            source_view_id: vec![16; 16],
+            source_consistency: MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION
+                .into(),
+            attachment_lease_id: vec![17; 16],
+            attachment_lease_issued_seconds: 18,
+            attachment_lease_expires_seconds: 19,
             ..Default::default()
         };
         decode_mount_request(
@@ -199,9 +206,9 @@ mod tests {
         assert_eq!(
             facade.commitment().digest(),
             ObjectDigest::from_bytes([
-                0x16, 0xa6, 0xa0, 0xba, 0xb1, 0xcc, 0xd7, 0x2e, 0x32, 0x06, 0x49, 0x6f, 0x71, 0x02,
-                0xcc, 0xc3, 0x73, 0x7b, 0x35, 0x6f, 0xac, 0x2d, 0xa8, 0x0d, 0x5a, 0xd9, 0x3b, 0x1f,
-                0x41, 0xc9, 0xe3, 0xdb,
+                0xfd, 0x21, 0xc8, 0x2a, 0x93, 0x79, 0xe2, 0x88, 0x2d, 0xf3, 0x25, 0x4e, 0x0a, 0xfa,
+                0x0c, 0xa1, 0x2e, 0x9d, 0x24, 0x7c, 0x32, 0x89, 0x3b, 0x7b, 0xb2, 0x7e, 0x6d, 0xdb,
+                0x8b, 0x1f, 0x08, 0x86,
             ])
         );
         assert_eq!(facade.canonical_bytes(), portable.canonical_bytes());

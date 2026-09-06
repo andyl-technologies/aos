@@ -2783,30 +2783,50 @@ all-target/all-feature Clippy passes for both changed crates. The hermetic
 `checks.eval` gate passes its release build, full workspace tests,
 configuration evaluation, and system structure checks.
 
-### Attachment-generation Mount fence
+### Complete Mount source recipe and generation fences
 
-Every Mount operation and broker-owned resource now carries the nonzero desired
-attachment generation independently from the source-view and payload-namespace
-generations. The generation is part of request validation, portable signed
-semantics, root-owned catalog matching and commitments, the broker's immutable
-durable recipe, sealed helper plans, success receipts, authoritative inventory,
-and controller attempt correlation. A replacement that deliberately keeps the
-same view, source revision, slot, and mount attributes therefore remains
-distinguishable from its predecessor after controller or broker restart.
+Every Mount operation now distinguishes the current desired attachment
+generation authorizing the action from the generation of the physical resource
+recipe it creates or addresses. Creation, install, and replacement require the
+two to agree; detach and release may name an older resource only while carrying
+an equal or newer desired generation. Both generations are part of request
+validation, portable signed semantics, root-owned catalog matching and
+commitments, sealed helper plans, success receipts, broker checks, and
+controller correlation. A recipe-identical older generation therefore cannot
+satisfy newer desired state, while cleanup no longer has to mislabel an old
+resource as the current generation.
+
+The immutable recipe also retains the logical source-view ID, exact source-view
+generation, optional local-live source incarnation, closed source consistency,
+view descriptor, and the complete mount policy. The recursive clone bit now
+survives validation, canonical authority, broker persistence, inventory, and
+the actual detached-mount syscall instead of being silently dropped.
+Transactional service projections remain outside the native Mount broker.
+Inventory replacement edges require strict assignment and resource generation
+advancement, and controller reconciliation applies the same rule without
+requiring the predecessor and successor to have an impossible equal assignment
+fence.
+
+The desired attachment lease ID and wall-clock interval are carried and bound
+by Apply, catalog commitments, signed semantics, and the exact success receipt.
+They are operation authority rather than physical recipe state, so inventory
+does not manufacture or extend lease authority. Source, generation, recursive,
+and lease substitutions fail closed across protocol, authorization, result,
+catalog, durable broker state, and reconciliation tests.
 
 The changed canonical Mount semantics, static and Host-backed catalog
 commitments, sealed helper plans, and durable broker-resource envelope advance
-their embedded format versions. Zero generations and request/result/inventory
-substitution fail closed, and older durable resource envelopes are not silently
-decoded under the stronger schema. This corrects the Mount 1.2 schema on this
+their embedded format versions. Older durable resource envelopes are not
+silently decoded under the stronger schema. This corrects Mount 1.2 on this
 unmerged implementation branch; it does not claim a migration path from an
 already deployed Mount resource journal.
 
-Validation passes all 264 sandbox unit tests, its downstream public API test,
-and 14 doctests; all 63 Mount unit tests, its helper-spawn integration test, and
-2 doctests; and all 73 protocol unit tests and its doctest. Strict
-all-target/all-feature Clippy passes for all three changed crates. The hermetic
-`checks.eval` build completed the release and test compilation and ran all
-4,514 workspace tests, with 4,513 passing. Its only failure was the unrelated
-OCI distribution upload-cancellation retry-window test; that exact test passes
-when rerun alone, and this increment does not change Hub or OCI code.
+Validation passes all 266 sandbox unit tests, its downstream public API test,
+and 14 doctests; all 63 Mount broker unit tests, its helper integration test,
+and two doctests; and all 76 protocol unit tests and its doctest. Strict
+all-target/all-feature Clippy passes for all three changed crates, and Rust
+formatting and diff checks pass. The hermetic `checks.eval` attempt built the
+release CLI and ran 4,519 workspace tests: 4,518 passed and the unrelated
+`aos-hub` OCI cancellation test timed out in its retry window. That exact test
+passed in isolation in 1.95 seconds; the timeout is retained as a visible gate
+caveat rather than represented as a successful full gate.

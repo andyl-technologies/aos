@@ -699,7 +699,7 @@ fn prepare_mount(
         .with_no_atime(attributes.no_atime());
     DetachedMount::clone_with_attributes(
         &resources.source,
-        false,
+        attributes.recursive(),
         linux_attributes,
         Some(&resources.user_namespace),
     )

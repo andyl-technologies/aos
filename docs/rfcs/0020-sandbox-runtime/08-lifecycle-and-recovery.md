@@ -265,6 +265,11 @@ readiness.
 Every attachment lease binds sandbox and view identity, both incarnations where
 live, policy digest, assignment epoch, authority scope, and deadline. A delayed
 request from an old coordinator cannot renew or release a newer attachment.
+Mount Apply semantics and the successful receipt reproduce the exact lease ID
+and interval together with the desired generation. The durable physical mount
+recipe instead retains the resource generation it created, allowing a newly
+authorized release to identify and drain that older generation without
+misstating it as current desired state.
 
 Lease expiry begins draining. It does not delete a backing object until active
 kernel/open pins are reconciled. FUSE worker failure can leave an attachment

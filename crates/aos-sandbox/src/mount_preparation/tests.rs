@@ -7,6 +7,7 @@
 
 use aos_proto::aos::sandbox::local::v1::{
     ApplyMountRequest, AssignmentFence, Audience, Descriptor, MountAction, MountAttributes,
+    MountSourceConsistency,
 };
 
 use super::*;
@@ -34,7 +35,14 @@ fn create_intent() -> ApplyMountRequest {
         })
         .into(),
         source_generation: 7,
-        attachment_generation: 8,
+        desired_attachment_generation: 8,
+        resource_attachment_generation: 8,
+        source_view_id: vec![9; 16],
+        source_consistency: MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION
+            .into(),
+        attachment_lease_id: vec![10; 16],
+        attachment_lease_issued_seconds: 11,
+        attachment_lease_expires_seconds: 12,
         ..Default::default()
     }
 }
@@ -93,7 +101,14 @@ fn intent_rejects_release_and_invalid_mount_shapes() {
         destination_slot_id: vec![4; 16],
         detached_mount_handle: vec![6; 32],
         source_generation: 7,
-        attachment_generation: 8,
+        desired_attachment_generation: 8,
+        resource_attachment_generation: 8,
+        source_view_id: vec![9; 16],
+        source_consistency: MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION
+            .into(),
+        attachment_lease_id: vec![10; 16],
+        attachment_lease_issued_seconds: 11,
+        attachment_lease_expires_seconds: 12,
         ..Default::default()
     };
     assert!(matches!(

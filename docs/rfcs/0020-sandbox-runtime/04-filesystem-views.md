@@ -115,7 +115,11 @@ Attachment replacement has durable `Planned`, `Prepared`, `Published`,
 `Verified`, `Draining`, and `Reaped` observations. Before publication, the node
 persists the desired attachment generation and operation digest. Every staged
 mount has a broker record binding its unique ID to sandbox, incarnation,
-namespace, attachment, and view generations. After a crash, inventory
+namespace, attachment, source-view identity and optional live incarnation,
+source consistency and generation, view descriptor, closed mount attributes,
+and the resource attachment generation. The current desired generation and
+attachment lease authorize an operation but are not rewritten into an older
+resource's immutable recipe during teardown. After a crash, inventory
 identifies the old, new, and any intermediate mount by unique ID and the
 durable record; the reconciler finishes the desired publication or removes
 only a proven stale generation. It never infers stack order from path text or

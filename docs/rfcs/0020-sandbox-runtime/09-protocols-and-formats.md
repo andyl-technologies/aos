@@ -689,10 +689,12 @@ descriptor authority.
 The controller's Apply client negotiates Mount 1.2 with the signed-plan/lease
 feature and authenticates both the hello and result writers against the pinned
 Mount service execution. It sends only the exact packet already admitted above.
-A successful `MountResult` must reproduce the attachment ID and desired
-generation, view, source generation, action-specific state, and broker handle
-derived from or supplied by the exact Apply body. The controller commits that
-receipt in the versioned `AOSMTC01` Mount-completion record before returning it.
+A successful `MountResult` must reproduce the attachment ID, current desired
+and addressed resource generations, logical source-view identity, optional
+local-live source incarnation, source consistency and generation, attachment
+lease ID and interval, view, action-specific state, and broker handle derived
+from or supplied by the exact Apply body. The controller commits that receipt
+in the versioned `AOSMTC01` Mount-completion record before returning it.
 A transport failure or broker error is not evidence of absence: Mount may retain
 a durable intermediate resource, so authoritative inventory still decides
 retry, adoption, or cleanup.
@@ -711,8 +713,13 @@ spanning kernel boots fail closed.
 Current-target comparison consumes a fresh snapshot and a live namespace
 proof. It rejects any resource whose fence, namespace generation, recipe, or
 replacement predecessor contradicts the exact durable attempt. The immutable
-recipe includes the desired attachment generation, so a recipe-identical older
-generation cannot satisfy newer desired state after restart. Each attempt is
+recipe includes its resource attachment generation, source-view identity,
+optional live incarnation, source consistency and generation, view descriptor,
+and recursive and security mount attributes. Creation and publication require
+the desired and resource generations to agree. Teardown may carry newer desired
+authority while naming an older resource generation, but it must reproduce that
+older recipe exactly. Replacement inventory requires both its assignment and
+resource attachment generations to advance strictly. Each attempt is
 then classified as unobserved, pending, faulted, successful without a retained
 reply, superseded, or completed with a durable reply. Current-bound resources
 with no local attempt are reported separately as untracked residuals. These are

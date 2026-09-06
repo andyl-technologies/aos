@@ -354,6 +354,15 @@ message MountAttributes {
   bool no_device = 4;
   bool no_atime = 5;
   uint32 mutation_mode = 6;
+  bool recursive = 7; // Includes source submounts in the detached clone.
+}
+
+enum MountSourceConsistency {
+  MOUNT_SOURCE_CONSISTENCY_UNSPECIFIED = 0;
+  MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION = 1;
+  MOUNT_SOURCE_CONSISTENCY_LOCAL_LIVE = 2;
+  MOUNT_SOURCE_CONSISTENCY_TRANSACTIONAL_SERVICE = 3;
+  MOUNT_SOURCE_CONSISTENCY_BEST_EFFORT_REPLICA = 4;
 }
 
 message ApplyMountRequest {
@@ -368,11 +377,20 @@ message ApplyMountRequest {
   // Current installed handle replaced by MOUNT_ACTION_REPLACE.
   bytes replacement_mount_handle = 8; // Exactly 32 bytes only for replace.
   MountAttributes attributes = 9;
-  uint64 source_generation = 10; // Nonzero for every action.
+  uint64 source_generation = 10; // Exact nonzero source-view revision/generation.
   // Exact payload mount-namespace generation; changes across internal reboot.
   uint64 namespace_generation = 11; // Nonzero for every action.
-  // Exact desired attachment generation; distinguishes recipe-identical replacements.
-  uint64 attachment_generation = 12; // Nonzero for every action.
+  // Current desired generation authorizing this operation.
+  uint64 desired_attachment_generation = 12; // Nonzero for every action.
+  // Generation whose immutable recipe is created or addressed by this operation.
+  uint64 resource_attachment_generation = 13; // Equal to desired except for teardown.
+  bytes source_view_id = 14; // Exactly 16 bytes.
+  bytes source_incarnation_id = 15; // Exactly 16 bytes only for local-live sources.
+  // Transactional service projections are not native Mount resources.
+  MountSourceConsistency source_consistency = 16;
+  bytes attachment_lease_id = 17; // Exactly 16 bytes.
+  int64 attachment_lease_issued_seconds = 18;
+  int64 attachment_lease_expires_seconds = 19; // Strictly after issue time.
 }
 
 // Mount 1.2 read-only preparation. The nested Mount request selects the exact
@@ -398,7 +416,14 @@ message MountResult {
   uint64 source_generation = 5;
   MountState state = 6;
   BrokerError error = 7;
-  uint64 attachment_generation = 8;
+  uint64 desired_attachment_generation = 8; // Exact Apply echo.
+  uint64 resource_attachment_generation = 9; // Exact Apply echo.
+  bytes source_view_id = 10; // Exact Apply echo.
+  bytes source_incarnation_id = 11; // Exact optional Apply echo.
+  MountSourceConsistency source_consistency = 12;
+  bytes attachment_lease_id = 13;
+  int64 attachment_lease_issued_seconds = 14;
+  int64 attachment_lease_expires_seconds = 15;
 }
 
 enum MountState {
@@ -420,14 +445,19 @@ message MountAssignmentBinding {
   uint64 namespace_generation = 2;
 }
 
-// Immutable recipe from which the broker created the detached mount.
+// Immutable physical recipe from which the broker created the detached mount.
+// Current desired generation and attachment lease are operation authority and
+// therefore do not appear in inventory.
 message MountRecipe {
   bytes attachment_id = 1; // Exactly 16 bytes.
   bytes destination_slot_id = 2; // Exactly 16 bytes.
   Descriptor view_revision = 3;
   uint64 source_generation = 4;
   MountAttributes attributes = 5;
-  uint64 attachment_generation = 6;
+  uint64 resource_attachment_generation = 6;
+  bytes source_view_id = 7;
+  bytes source_incarnation_id = 8;
+  MountSourceConsistency source_consistency = 9;
 }
 
 // Kernel identity observed for an installed mount. Paths are raw, NUL-free

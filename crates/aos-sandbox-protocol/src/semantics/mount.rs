@@ -5,7 +5,9 @@
 //! It never accepts catalog paths, kernel identities, descriptor numbers, or
 //! Linux mount/syscall objects.
 
-use aos_proto::aos::sandbox::local::v1::{BrokerDescriptorRole, MountAction};
+use aos_proto::aos::sandbox::local::v1::{
+    BrokerDescriptorRole, MountAction, MountSourceConsistency,
+};
 use aos_sandbox_core::{
     BrokerArgumentCommitment, BrokerGrantTarget, BrokerResourceHandle, BrokerVerb, ObjectDigest,
 };
@@ -13,7 +15,7 @@ use aos_sandbox_core::{
 use crate::{ValidatedMountAttributes, ValidatedMountRequest};
 
 const FORMAT_MAGIC: &[u8; 8] = b"AOSMSEM1";
-const FORMAT_VERSION: u16 = 2;
+const FORMAT_VERSION: u16 = 3;
 const MAXIMUM_DESCRIPTOR_ROLES: usize = 16;
 const MAXIMUM_CANONICAL_BYTES: usize = 2 * 1024;
 
@@ -137,7 +139,20 @@ pub fn canonical_mount_semantics_v1(
         request.replacement_mount_handle().map(<[u8; 32]>::as_slice),
     )?;
     encoder.roles(18, descriptor_roles)?;
-    encoder.field(19, &request.attachment_generation().to_be_bytes())?;
+    encoder.field(19, &request.desired_attachment_generation().to_be_bytes())?;
+    encoder.field(20, &request.resource_attachment_generation().to_be_bytes())?;
+    encoder.field(21, request.source_view_id())?;
+    encoder.optional_fixed(
+        22,
+        request.source_incarnation_id().map(<[u8; 16]>::as_slice),
+    )?;
+    encoder.field(23, &[source_consistency_code(request.source_consistency())])?;
+    encoder.field(24, request.attachment_lease_id())?;
+    encoder.field(25, &request.attachment_lease_issued_seconds().to_be_bytes())?;
+    encoder.field(
+        26,
+        &request.attachment_lease_expires_seconds().to_be_bytes(),
+    )?;
     let bytes = encoder.finish();
     Ok(CanonicalMountSemanticsV1 {
         commitment: BrokerArgumentCommitment::for_canonical_bytes(&bytes),
@@ -285,6 +300,7 @@ impl Encoder {
                 u8::from(attributes.no_suid()),
                 u8::from(attributes.no_device()),
                 u8::from(attributes.no_atime()),
+                u8::from(attributes.recursive()),
                 u8::try_from(attributes.mutation_mode())
                     .map_err(|_| MountSemanticError::EncodingTooLarge)?,
             ],
@@ -306,6 +322,16 @@ impl Encoder {
 
     fn finish(self) -> Vec<u8> {
         self.bytes
+    }
+}
+
+const fn source_consistency_code(consistency: MountSourceConsistency) -> u8 {
+    match consistency {
+        MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION => 1,
+        MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_LOCAL_LIVE => 2,
+        MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_TRANSACTIONAL_SERVICE => 3,
+        MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_BEST_EFFORT_REPLICA => 4,
+        MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_UNSPECIFIED => 0,
     }
 }
 

@@ -47,7 +47,7 @@ use aos_proto::aos::sandbox::local::v1::{
     ApplyGuardianRequest, ApplyGuestExecutionRequest, ApplyMountRequest, ApplyNetworkRequest,
     ApplyRuntimeRequest, ApplyStorageRequest, AssignmentFence, Audience, BrokerClientHello,
     BrokerErrorCode, BrokerRequestEnvelope, BrokerResponseEnvelope, Descriptor, MountAction,
-    RequestHeader, RuntimeAction, RuntimePlan,
+    MountSourceConsistency, RequestHeader, RuntimeAction, RuntimePlan,
 };
 use aos_sandbox_core::{
     DescriptorRole, FeatureRef, MediaType, ObjectDescriptor, ObjectDigest, ProtocolId,
@@ -305,7 +305,14 @@ pub struct ValidatedMountRequest {
     attributes: Option<ValidatedMountAttributes>,
     source_generation: u64,
     namespace_generation: u64,
-    attachment_generation: u64,
+    desired_attachment_generation: u64,
+    resource_attachment_generation: u64,
+    source_view_id: [u8; 16],
+    source_incarnation_id: Option<[u8; 16]>,
+    source_consistency: MountSourceConsistency,
+    attachment_lease_id: [u8; 16],
+    attachment_lease_issued_seconds: i64,
+    attachment_lease_expires_seconds: i64,
 }
 
 impl ValidatedMountRequest {
@@ -375,10 +382,52 @@ impl ValidatedMountRequest {
         self.namespace_generation
     }
 
-    /// Returns the nonzero desired attachment generation.
+    /// Returns the current desired generation authorizing this operation.
     #[must_use]
-    pub const fn attachment_generation(&self) -> u64 {
-        self.attachment_generation
+    pub const fn desired_attachment_generation(&self) -> u64 {
+        self.desired_attachment_generation
+    }
+
+    /// Returns the attachment generation of the addressed mount recipe.
+    #[must_use]
+    pub const fn resource_attachment_generation(&self) -> u64 {
+        self.resource_attachment_generation
+    }
+
+    /// Returns the logical source-view identity of the addressed recipe.
+    #[must_use]
+    pub const fn source_view_id(&self) -> &[u8; 16] {
+        &self.source_view_id
+    }
+
+    /// Returns the exact source incarnation required by a local-live recipe.
+    #[must_use]
+    pub const fn source_incarnation_id(&self) -> Option<&[u8; 16]> {
+        self.source_incarnation_id.as_ref()
+    }
+
+    /// Returns the closed source consistency contract.
+    #[must_use]
+    pub const fn source_consistency(&self) -> MountSourceConsistency {
+        self.source_consistency
+    }
+
+    /// Returns the lease identity of the desired attachment generation.
+    #[must_use]
+    pub const fn attachment_lease_id(&self) -> &[u8; 16] {
+        &self.attachment_lease_id
+    }
+
+    /// Returns the inclusive issue time of the desired attachment lease.
+    #[must_use]
+    pub const fn attachment_lease_issued_seconds(&self) -> i64 {
+        self.attachment_lease_issued_seconds
+    }
+
+    /// Returns the exclusive expiry time of the desired attachment lease.
+    #[must_use]
+    pub const fn attachment_lease_expires_seconds(&self) -> i64 {
+        self.attachment_lease_expires_seconds
     }
 }
 
@@ -395,6 +444,7 @@ impl ValidatedMountAttributes {
     const NO_SUID: u8 = 1 << 2;
     const NO_DEVICE: u8 = 1 << 3;
     const NO_ATIME: u8 = 1 << 4;
+    const RECURSIVE: u8 = 1 << 5;
 
     /// Reports whether the mount is VFS read-only.
     #[must_use]
@@ -424,6 +474,12 @@ impl ValidatedMountAttributes {
     #[must_use]
     pub const fn no_atime(self) -> bool {
         self.bits & Self::NO_ATIME != 0
+    }
+
+    /// Reports whether the detached clone includes source submounts.
+    #[must_use]
+    pub const fn recursive(self) -> bool {
+        self.bits & Self::RECURSIVE != 0
     }
 
     /// Returns the closed view mutation mode `0..=4`.
@@ -620,12 +676,56 @@ pub fn decode_mount_request(
     let attachment_id = exact_nonzero::<16>(&request.attachment_id, "attachment_id")?;
     let destination_slot_id =
         exact_nonzero::<16>(&request.destination_slot_id, "destination_slot_id")?;
+    let source_view_id = exact_nonzero::<16>(&request.source_view_id, "source_view_id")?;
+    let source_incarnation_id =
+        optional_exact_nonzero::<16>(&request.source_incarnation_id, "source_incarnation_id")?;
+    let source_consistency = request
+        .source_consistency
+        .as_known()
+        .filter(|consistency| {
+            !matches!(
+                consistency,
+                MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_UNSPECIFIED
+                    | MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_TRANSACTIONAL_SERVICE
+            )
+        })
+        .ok_or(ProtocolValidationError::InvalidField("source_consistency"))?;
+    let local_live =
+        source_consistency == MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_LOCAL_LIVE;
+    if source_incarnation_id.is_some() != local_live {
+        return Err(ProtocolValidationError::InvalidField(
+            "source_incarnation_id",
+        ));
+    }
+    let attachment_lease_id =
+        exact_nonzero::<16>(&request.attachment_lease_id, "attachment_lease_id")?;
+    if request.attachment_lease_expires_seconds <= request.attachment_lease_issued_seconds {
+        return Err(ProtocolValidationError::InvalidField(
+            "attachment lease interval",
+        ));
+    }
     if request.source_generation == 0
         || request.namespace_generation == 0
-        || request.attachment_generation == 0
+        || request.desired_attachment_generation == 0
+        || request.resource_attachment_generation == 0
     {
         return Err(ProtocolValidationError::InvalidField(
-            "source, namespace, or attachment generation",
+            "source, namespace, desired attachment, or resource attachment generation",
+        ));
+    }
+    let creates_or_publishes = matches!(
+        action,
+        MountAction::MOUNT_ACTION_CREATE_DETACHED
+            | MountAction::MOUNT_ACTION_INSTALL
+            | MountAction::MOUNT_ACTION_REPLACE
+    );
+    if (creates_or_publishes
+        && request.desired_attachment_generation != request.resource_attachment_generation)
+        || (!creates_or_publishes
+            && request.desired_attachment_generation < request.resource_attachment_generation)
+    {
+        return Err(ProtocolValidationError::InvalidField(
+            "attachment generation ordering",
         ));
     }
     let detached_mount_handle =
@@ -659,7 +759,14 @@ pub fn decode_mount_request(
         attributes,
         source_generation: request.source_generation,
         namespace_generation: request.namespace_generation,
-        attachment_generation: request.attachment_generation,
+        desired_attachment_generation: request.desired_attachment_generation,
+        resource_attachment_generation: request.resource_attachment_generation,
+        source_view_id,
+        source_incarnation_id,
+        source_consistency,
+        attachment_lease_id,
+        attachment_lease_issued_seconds: request.attachment_lease_issued_seconds,
+        attachment_lease_expires_seconds: request.attachment_lease_expires_seconds,
     })
 }
 
@@ -681,6 +788,7 @@ pub(crate) fn validate_mount_attributes(
         (attributes.no_suid, ValidatedMountAttributes::NO_SUID),
         (attributes.no_device, ValidatedMountAttributes::NO_DEVICE),
         (attributes.no_atime, ValidatedMountAttributes::NO_ATIME),
+        (attributes.recursive, ValidatedMountAttributes::RECURSIVE),
     ] {
         if enabled {
             bits |= bit;
@@ -1204,11 +1312,19 @@ mod tests {
         request.destination_slot_id = vec![6; 16];
         request.source_generation = 1;
         request.namespace_generation = 1;
-        request.attachment_generation = 1;
+        request.desired_attachment_generation = 1;
+        request.resource_attachment_generation = 1;
+        request.source_view_id = vec![8; 16];
+        request.source_consistency =
+            MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION.into();
+        request.attachment_lease_id = vec![9; 16];
+        request.attachment_lease_issued_seconds = 10;
+        request.attachment_lease_expires_seconds = 20;
         let attributes = request.attributes.get_or_insert_default();
         attributes.read_only = true;
         attributes.no_suid = true;
         attributes.no_device = true;
+        attributes.recursive = true;
         attributes.mutation_mode = 0;
         let descriptor = request.view_revision.get_or_insert_default();
         descriptor.media_type = "application/vnd.aos.sandbox.view.v1+cbor".to_owned();
@@ -1243,7 +1359,16 @@ mod tests {
         assert_eq!(validated.attachment_id(), &[5; 16]);
         assert_eq!(validated.source_generation(), 1);
         assert_eq!(validated.namespace_generation(), 1);
-        assert_eq!(validated.attachment_generation(), 1);
+        assert_eq!(validated.desired_attachment_generation(), 1);
+        assert_eq!(validated.resource_attachment_generation(), 1);
+        assert_eq!(validated.source_view_id(), &[8; 16]);
+        assert_eq!(validated.source_incarnation_id(), None);
+        assert_eq!(validated.attachment_lease_id(), &[9; 16]);
+        assert!(
+            validated
+                .attributes()
+                .is_some_and(|value| value.recursive())
+        );
 
         let mut wrong_peer = peer();
         wrong_peer.uid = 0;
@@ -1279,7 +1404,7 @@ mod tests {
         assert_eq!(
             decode_mount_request(&request.encode_to_vec(), peer(), policy(), 100),
             Err(ProtocolValidationError::InvalidField(
-                "source, namespace, or attachment generation"
+                "source, namespace, desired attachment, or resource attachment generation"
             ))
         );
 
@@ -1289,18 +1414,127 @@ mod tests {
         assert_eq!(
             decode_mount_request(&request.encode_to_vec(), peer(), policy(), 100),
             Err(ProtocolValidationError::InvalidField(
-                "source, namespace, or attachment generation"
+                "source, namespace, desired attachment, or resource attachment generation"
             ))
         );
 
         let mut request = ApplyMountRequest::decode_from_slice(&valid_mount_request())
             .unwrap_or_else(|error| panic!("fixture decode failed: {error}"));
-        request.attachment_generation = 0;
+        request.desired_attachment_generation = 0;
         assert_eq!(
             decode_mount_request(&request.encode_to_vec(), peer(), policy(), 100),
             Err(ProtocolValidationError::InvalidField(
-                "source, namespace, or attachment generation"
+                "source, namespace, desired attachment, or resource attachment generation"
             ))
+        );
+
+        let mut request = ApplyMountRequest::decode_from_slice(&valid_mount_request())
+            .unwrap_or_else(|error| panic!("fixture decode failed: {error}"));
+        request.resource_attachment_generation = 0;
+        assert_eq!(
+            decode_mount_request(&request.encode_to_vec(), peer(), policy(), 100),
+            Err(ProtocolValidationError::InvalidField(
+                "source, namespace, desired attachment, or resource attachment generation"
+            ))
+        );
+
+        let mut request = ApplyMountRequest::decode_from_slice(&valid_mount_request())
+            .unwrap_or_else(|error| panic!("fixture decode failed: {error}"));
+        request.source_consistency =
+            MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_LOCAL_LIVE.into();
+        assert_eq!(
+            decode_mount_request(&request.encode_to_vec(), peer(), policy(), 100),
+            Err(ProtocolValidationError::InvalidField(
+                "source_incarnation_id"
+            ))
+        );
+    }
+
+    #[test]
+    fn teardown_may_address_an_older_resource_generation_only() {
+        let create = ApplyMountRequest::decode_from_slice(&valid_mount_request())
+            .unwrap_or_else(|error| panic!("fixture decode failed: {error}"));
+        let mut request = create.clone();
+        request.action = MountAction::MOUNT_ACTION_RELEASE.into();
+        request.detached_mount_handle = vec![10; 32];
+        request.view_revision = None.into();
+        request.attributes = None.into();
+        request.desired_attachment_generation = 2;
+        request.resource_attachment_generation = 1;
+
+        let validated = decode_mount_request(&request.encode_to_vec(), peer(), policy(), 100)
+            .unwrap_or_else(|error| panic!("valid teardown failed: {error}"));
+        assert_eq!(validated.desired_attachment_generation(), 2);
+        assert_eq!(validated.resource_attachment_generation(), 1);
+
+        request.resource_attachment_generation = 3;
+        assert_eq!(
+            decode_mount_request(&request.encode_to_vec(), peer(), policy(), 100),
+            Err(ProtocolValidationError::InvalidField(
+                "attachment generation ordering"
+            ))
+        );
+
+        request.action = MountAction::MOUNT_ACTION_CREATE_DETACHED.into();
+        request.detached_mount_handle.clear();
+        request.view_revision = create.view_revision;
+        request.attributes = create.attributes;
+        request.resource_attachment_generation = 1;
+        assert_eq!(
+            decode_mount_request(&request.encode_to_vec(), peer(), policy(), 100),
+            Err(ProtocolValidationError::InvalidField(
+                "attachment generation ordering"
+            ))
+        );
+    }
+
+    #[test]
+    fn mount_source_and_attachment_lease_shapes_fail_closed() {
+        let baseline = ApplyMountRequest::decode_from_slice(&valid_mount_request())
+            .unwrap_or_else(|error| panic!("fixture decode failed: {error}"));
+
+        let mut local_live = baseline.clone();
+        local_live.source_consistency =
+            MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_LOCAL_LIVE.into();
+        local_live.source_incarnation_id = vec![10; 16];
+        let validated = decode_mount_request(&local_live.encode_to_vec(), peer(), policy(), 100)
+            .unwrap_or_else(|error| panic!("local-live source failed: {error}"));
+        assert_eq!(validated.source_incarnation_id(), Some(&[10; 16]));
+
+        let mut extraneous_incarnation = baseline.clone();
+        extraneous_incarnation.source_incarnation_id = vec![10; 16];
+        assert!(
+            decode_mount_request(
+                &extraneous_incarnation.encode_to_vec(),
+                peer(),
+                policy(),
+                100
+            )
+            .is_err()
+        );
+
+        let mut service = baseline.clone();
+        service.source_consistency =
+            MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_TRANSACTIONAL_SERVICE.into();
+        assert!(decode_mount_request(&service.encode_to_vec(), peer(), policy(), 100).is_err());
+
+        let mut sentinel_source = baseline.clone();
+        sentinel_source.source_view_id = vec![0; 16];
+        assert!(
+            decode_mount_request(&sentinel_source.encode_to_vec(), peer(), policy(), 100).is_err()
+        );
+
+        let mut sentinel_lease = baseline.clone();
+        sentinel_lease.attachment_lease_id = vec![0; 16];
+        assert!(
+            decode_mount_request(&sentinel_lease.encode_to_vec(), peer(), policy(), 100).is_err()
+        );
+
+        let mut empty_interval = baseline;
+        empty_interval.attachment_lease_expires_seconds =
+            empty_interval.attachment_lease_issued_seconds;
+        assert!(
+            decode_mount_request(&empty_interval.encode_to_vec(), peer(), policy(), 100).is_err()
         );
     }
 

@@ -8,8 +8,8 @@
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
 use aos_proto::aos::sandbox::local::v1::{
-    ApplyMountRequest, AssignmentFence, Descriptor, MountAttributes, MountResult, MountState,
-    RequestHeader,
+    ApplyMountRequest, AssignmentFence, Descriptor, MountAttributes, MountResult,
+    MountSourceConsistency, MountState, RequestHeader,
 };
 use aos_sandbox_core::format::{encode_ownership_lease, encode_signature, encode_trust_policy};
 use aos_sandbox_core::model::{
@@ -129,7 +129,14 @@ fn request(assignment: BrokerAssignment, deadline: u64) -> ApplyMountRequest {
         .into(),
         source_generation: 7,
         namespace_generation: 9,
-        attachment_generation: 10,
+        desired_attachment_generation: 10,
+        resource_attachment_generation: 10,
+        source_view_id: vec![11; 16],
+        source_consistency: MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION
+            .into(),
+        attachment_lease_id: vec![12; 16],
+        attachment_lease_issued_seconds: 13,
+        attachment_lease_expires_seconds: 14,
         ..Default::default()
     }
 }
@@ -326,7 +333,16 @@ fn successful_receipt(record: &Record) -> Vec<u8> {
         detached_mount_handle: detached_handle.to_vec(),
         view_revision: view_revision.into(),
         source_generation: request.source_generation(),
-        attachment_generation: request.attachment_generation(),
+        desired_attachment_generation: request.desired_attachment_generation(),
+        resource_attachment_generation: request.resource_attachment_generation(),
+        source_view_id: request.source_view_id().to_vec(),
+        source_incarnation_id: request
+            .source_incarnation_id()
+            .map_or_else(Vec::new, |value| value.to_vec()),
+        source_consistency: request.source_consistency().into(),
+        attachment_lease_id: request.attachment_lease_id().to_vec(),
+        attachment_lease_issued_seconds: request.attachment_lease_issued_seconds(),
+        attachment_lease_expires_seconds: request.attachment_lease_expires_seconds(),
         state: MountState::MOUNT_STATE_DETACHED.into(),
         ..Default::default()
     }

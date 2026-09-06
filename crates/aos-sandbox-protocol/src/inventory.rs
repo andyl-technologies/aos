@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use aos_proto::aos::sandbox::local::v1::{
     InventoryMountResourcesResponse, InventoryMountsRequest, MountFaultCorrelation,
     MountFaultPhase, MountInventoryRecord, MountKernelObservation, MountLifecycle,
-    MountOperationCorrelation, MountPublicationCorrelation, MountRecipe,
+    MountOperationCorrelation, MountPublicationCorrelation, MountRecipe, MountSourceConsistency,
 };
 use aos_sandbox_core::{DescriptorRole, ObjectDescriptor, ProtocolId};
 use buffa::Message as _;
@@ -99,7 +99,10 @@ pub struct ValidatedMountRecipe {
     view_revision: ObjectDescriptor,
     source_generation: u64,
     attributes: ValidatedMountAttributes,
-    attachment_generation: u64,
+    resource_attachment_generation: u64,
+    source_view_id: [u8; 16],
+    source_incarnation_id: Option<[u8; 16]>,
+    source_consistency: MountSourceConsistency,
 }
 
 impl ValidatedMountRecipe {
@@ -133,10 +136,28 @@ impl ValidatedMountRecipe {
         self.attributes
     }
 
-    /// Returns the desired attachment generation that created this resource.
+    /// Returns the attachment generation whose recipe created this resource.
     #[must_use]
-    pub const fn attachment_generation(&self) -> u64 {
-        self.attachment_generation
+    pub const fn resource_attachment_generation(&self) -> u64 {
+        self.resource_attachment_generation
+    }
+
+    /// Returns the logical source-view identity.
+    #[must_use]
+    pub const fn source_view_id(&self) -> &[u8; 16] {
+        &self.source_view_id
+    }
+
+    /// Returns the source incarnation required by a local-live recipe.
+    #[must_use]
+    pub const fn source_incarnation_id(&self) -> Option<&[u8; 16]> {
+        self.source_incarnation_id.as_ref()
+    }
+
+    /// Returns the closed source consistency contract.
+    #[must_use]
+    pub const fn source_consistency(&self) -> MountSourceConsistency {
+        self.source_consistency
     }
 }
 
@@ -608,6 +629,8 @@ fn declares_replacement(
         && successor.resource_kernel_boot_id == predecessor.resource_kernel_boot_id
         && same_slot(successor, predecessor)
         && binding_strictly_advances(&successor.binding, &predecessor.binding)
+        && successor.recipe.resource_attachment_generation
+            > predecessor.recipe.resource_attachment_generation
         && ((is_phase(successor, MountLifecycle::MOUNT_LIFECYCLE_PUBLISHING)
             && is_phase(predecessor, MountLifecycle::MOUNT_LIFECYCLE_INSTALLED))
             || (is_phase(successor, MountLifecycle::MOUNT_LIFECYCLE_INSTALLED)
@@ -871,10 +894,40 @@ fn validate_recipe(value: &MountRecipe) -> Result<ValidatedMountRecipe, Protocol
         value.source_generation,
         "inventory.recipe.source_generation",
     )?;
-    let attachment_generation = nonzero(
-        value.attachment_generation,
-        "inventory.recipe.attachment_generation",
+    let resource_attachment_generation = nonzero(
+        value.resource_attachment_generation,
+        "inventory.recipe.resource_attachment_generation",
     )?;
+    let source_view_id =
+        exact_nonzero::<16>(&value.source_view_id, "inventory.recipe.source_view_id")?;
+    let source_incarnation_id = if value.source_incarnation_id.is_empty() {
+        None
+    } else {
+        Some(exact_nonzero::<16>(
+            &value.source_incarnation_id,
+            "inventory.recipe.source_incarnation_id",
+        )?)
+    };
+    let source_consistency = value
+        .source_consistency
+        .as_known()
+        .filter(|consistency| {
+            !matches!(
+                consistency,
+                MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_UNSPECIFIED
+                    | MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_TRANSACTIONAL_SERVICE
+            )
+        })
+        .ok_or(ProtocolValidationError::InvalidField(
+            "inventory.recipe.source_consistency",
+        ))?;
+    if source_incarnation_id.is_some()
+        != (source_consistency == MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_LOCAL_LIVE)
+    {
+        return Err(ProtocolValidationError::InvalidField(
+            "inventory.recipe.source_incarnation_id",
+        ));
+    }
     let attributes = validate_mount_attributes(value.attributes.as_option().ok_or(
         ProtocolValidationError::MissingField("inventory.recipe.attributes"),
     )?)?;
@@ -884,7 +937,10 @@ fn validate_recipe(value: &MountRecipe) -> Result<ValidatedMountRecipe, Protocol
         view_revision,
         source_generation,
         attributes,
-        attachment_generation,
+        resource_attachment_generation,
+        source_view_id,
+        source_incarnation_id,
+        source_consistency,
     })
 }
 
@@ -1138,6 +1194,7 @@ mod tests {
             no_device: true,
             no_atime: true,
             mutation_mode: 0,
+            recursive: true,
             ..Default::default()
         };
         let recipe = MountRecipe {
@@ -1145,7 +1202,10 @@ mod tests {
             destination_slot_id: vec![10; 16],
             view_revision: Some(revision).into(),
             source_generation: 11,
-            attachment_generation: 13,
+            resource_attachment_generation: 13,
+            source_view_id: vec![14; 16],
+            source_consistency: MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION
+                .into(),
             attributes: Some(attributes).into(),
             ..Default::default()
         };
@@ -1187,6 +1247,20 @@ mod tests {
             publication: Some(publication).into(),
             ..Default::default()
         }
+    }
+
+    fn advance_replacement_generation(record: &mut MountInventoryRecord) {
+        let fence = record
+            .binding
+            .get_or_insert_default()
+            .fence
+            .get_or_insert_default();
+        fence.desired_generation = 5;
+        fence.assignment_digest = vec![21; 32];
+        record
+            .recipe
+            .get_or_insert_default()
+            .resource_attachment_generation = 14;
     }
 
     fn response(records: Vec<MountInventoryRecord>) -> InventoryMountResourcesResponse {
@@ -1241,7 +1315,9 @@ mod tests {
         assert_eq!(record.binding().fence().assignment_epoch(), 3);
         assert_eq!(record.binding().namespace_generation(), 6);
         assert_eq!(record.recipe().attachment_id(), &[9; 16]);
-        assert_eq!(record.recipe().attachment_generation(), 13);
+        assert_eq!(record.recipe().resource_attachment_generation(), 13);
+        assert_eq!(record.recipe().source_view_id(), &[14; 16]);
+        assert!(record.recipe().attributes().recursive());
         assert_eq!(record.resource_kernel_boot_id(), &[16; 16]);
         assert_eq!(record.detached_unique_mount_id(), Some(101));
         assert_eq!(
@@ -1382,13 +1458,7 @@ mod tests {
         .into();
 
         let mut successor = installed_record(2, 102);
-        let successor_fence = successor
-            .binding
-            .get_or_insert_default()
-            .fence
-            .get_or_insert_default();
-        successor_fence.desired_generation = 5;
-        successor_fence.assignment_digest = vec![21; 32];
+        advance_replacement_generation(&mut successor);
         successor
             .publication
             .get_or_insert_default()
@@ -1408,6 +1478,31 @@ mod tests {
     }
 
     #[test]
+    fn replacement_recipe_generation_must_strictly_advance() {
+        let predecessor = installed_record(1, 101);
+        let mut successor = installed_record(2, 102);
+        advance_replacement_generation(&mut successor);
+        successor
+            .recipe
+            .get_or_insert_default()
+            .resource_attachment_generation = 13;
+        successor.lifecycle = MountLifecycle::MOUNT_LIFECYCLE_PUBLISHING.into();
+        successor.installed_observation = None.into();
+        successor
+            .publication
+            .get_or_insert_default()
+            .replaces_mount_handle = vec![1; 32];
+
+        let encoded = response(vec![predecessor, successor]).encode_to_vec();
+        assert_eq!(
+            decode_mount_inventory_response(&encoded, MINIMUM_RESPONSE_BYTES),
+            Err(ProtocolValidationError::InvalidField(
+                "inventory replacement correlation"
+            ))
+        );
+    }
+
+    #[test]
     fn reciprocal_replacement_rows_must_share_one_kernel_boot() {
         let mut predecessor = installed_record(1, 101);
         predecessor.lifecycle = MountLifecycle::MOUNT_LIFECYCLE_FAULTED.into();
@@ -1422,13 +1517,7 @@ mod tests {
         .into();
 
         let mut successor = installed_record(2, 102);
-        let successor_fence = successor
-            .binding
-            .get_or_insert_default()
-            .fence
-            .get_or_insert_default();
-        successor_fence.desired_generation = 5;
-        successor_fence.assignment_digest = vec![21; 32];
+        advance_replacement_generation(&mut successor);
         successor
             .publication
             .get_or_insert_default()
@@ -1464,13 +1553,7 @@ mod tests {
 
         let mut successor = installed_record(2, 102);
         successor.resource_kernel_boot_id = vec![15; 16];
-        let successor_fence = successor
-            .binding
-            .get_or_insert_default()
-            .fence
-            .get_or_insert_default();
-        successor_fence.desired_generation = 5;
-        successor_fence.assignment_digest = vec![21; 32];
+        advance_replacement_generation(&mut successor);
         successor
             .publication
             .get_or_insert_default()
@@ -1508,13 +1591,7 @@ mod tests {
 
         let mut successor = installed_record(2, 102);
         successor.resource_kernel_boot_id = vec![15; 16];
-        let successor_fence = successor
-            .binding
-            .get_or_insert_default()
-            .fence
-            .get_or_insert_default();
-        successor_fence.desired_generation = 5;
-        successor_fence.assignment_digest = vec![21; 32];
+        advance_replacement_generation(&mut successor);
         successor
             .publication
             .get_or_insert_default()
@@ -1551,13 +1628,7 @@ mod tests {
 
         let mut successor = installed_record(2, 102);
         successor.resource_kernel_boot_id = vec![15; 16];
-        let successor_fence = successor
-            .binding
-            .get_or_insert_default()
-            .fence
-            .get_or_insert_default();
-        successor_fence.desired_generation = 5;
-        successor_fence.assignment_digest = vec![21; 32];
+        advance_replacement_generation(&mut successor);
         successor
             .publication
             .get_or_insert_default()
@@ -1597,13 +1668,7 @@ mod tests {
         .into();
 
         let mut successor = installed_record(2, 102);
-        let successor_fence = successor
-            .binding
-            .get_or_insert_default()
-            .fence
-            .get_or_insert_default();
-        successor_fence.desired_generation = 5;
-        successor_fence.assignment_digest = vec![21; 32];
+        advance_replacement_generation(&mut successor);
         successor
             .publication
             .get_or_insert_default()

@@ -6,7 +6,9 @@
 //! recomputed from the byte-exact request so a broker cannot redirect later
 //! operations by returning an unrelated opaque handle.
 
-use aos_proto::aos::sandbox::local::v1::{Audience, MountAction, MountResult, MountState};
+use aos_proto::aos::sandbox::local::v1::{
+    Audience, MountAction, MountResult, MountSourceConsistency, MountState,
+};
 use aos_sandbox_core::{DescriptorRole, ObjectDescriptor};
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
@@ -27,7 +29,14 @@ pub struct ValidatedMountResult {
     installed_mount_handle: Option<[u8; 32]>,
     view_revision: Option<ObjectDescriptor>,
     source_generation: u64,
-    attachment_generation: u64,
+    desired_attachment_generation: u64,
+    resource_attachment_generation: u64,
+    source_view_id: [u8; 16],
+    source_incarnation_id: Option<[u8; 16]>,
+    source_consistency: MountSourceConsistency,
+    attachment_lease_id: [u8; 16],
+    attachment_lease_issued_seconds: i64,
+    attachment_lease_expires_seconds: i64,
     state: MountState,
 }
 
@@ -62,10 +71,52 @@ impl ValidatedMountResult {
         self.source_generation
     }
 
-    /// Returns the desired attachment generation reproduced by Mount.
+    /// Returns the current desired generation authorizing the operation.
     #[must_use]
-    pub const fn attachment_generation(&self) -> u64 {
-        self.attachment_generation
+    pub const fn desired_attachment_generation(&self) -> u64 {
+        self.desired_attachment_generation
+    }
+
+    /// Returns the attachment generation of the addressed mount recipe.
+    #[must_use]
+    pub const fn resource_attachment_generation(&self) -> u64 {
+        self.resource_attachment_generation
+    }
+
+    /// Returns the logical source-view identity of the addressed recipe.
+    #[must_use]
+    pub const fn source_view_id(&self) -> &[u8; 16] {
+        &self.source_view_id
+    }
+
+    /// Returns the exact source incarnation required by a local-live recipe.
+    #[must_use]
+    pub const fn source_incarnation_id(&self) -> Option<&[u8; 16]> {
+        self.source_incarnation_id.as_ref()
+    }
+
+    /// Returns the closed source consistency contract.
+    #[must_use]
+    pub const fn source_consistency(&self) -> MountSourceConsistency {
+        self.source_consistency
+    }
+
+    /// Returns the lease identity authorizing the desired generation.
+    #[must_use]
+    pub const fn attachment_lease_id(&self) -> &[u8; 16] {
+        &self.attachment_lease_id
+    }
+
+    /// Returns the inclusive issue time of the desired attachment lease.
+    #[must_use]
+    pub const fn attachment_lease_issued_seconds(&self) -> i64 {
+        self.attachment_lease_issued_seconds
+    }
+
+    /// Returns the exclusive expiry time of the desired attachment lease.
+    #[must_use]
+    pub const fn attachment_lease_expires_seconds(&self) -> i64 {
+        self.attachment_lease_expires_seconds
     }
 
     /// Returns the action-dependent state observed by the broker.
@@ -86,8 +137,8 @@ impl ValidatedMountResult {
 ///
 /// Returns [`ProtocolValidationError`] for oversized or malformed bytes,
 /// unknown fields or enums, an inner method error, Apply-body substitution,
-/// mismatched attachment/view/source/generation fields, or an invalid action-specific
-/// handle and state shape.
+/// mismatched attachment, recipe, generation, or lease fields, or an invalid
+/// action-specific handle and state shape.
 pub fn decode_mount_result_for_apply(
     bytes: &[u8],
     request: &ValidatedMountRequest,
@@ -122,6 +173,20 @@ pub fn decode_mount_result_for_apply(
         .as_option()
         .map(|descriptor| validate_descriptor(descriptor, DescriptorRole::FilesystemViewRevision))
         .transpose()?;
+    let source_view_id = exact_nonzero::<16>(&result.source_view_id, "result.source_view_id")?;
+    let source_incarnation_id = optional_exact_nonzero::<16>(
+        &result.source_incarnation_id,
+        "result.source_incarnation_id",
+    )?;
+    let source_consistency =
+        result
+            .source_consistency
+            .as_known()
+            .ok_or(ProtocolValidationError::InvalidField(
+                "mount result source_consistency",
+            ))?;
+    let attachment_lease_id =
+        exact_nonzero::<16>(&result.attachment_lease_id, "result.attachment_lease_id")?;
     let state = result
         .state
         .as_known()
@@ -131,7 +196,14 @@ pub fn decode_mount_result_for_apply(
     if attachment_id != *request.attachment_id()
         || view_revision.as_ref() != request.view_revision()
         || result.source_generation != request.source_generation()
-        || result.attachment_generation != request.attachment_generation()
+        || result.desired_attachment_generation != request.desired_attachment_generation()
+        || result.resource_attachment_generation != request.resource_attachment_generation()
+        || source_view_id != *request.source_view_id()
+        || source_incarnation_id.as_ref() != request.source_incarnation_id()
+        || source_consistency != request.source_consistency()
+        || attachment_lease_id != *request.attachment_lease_id()
+        || result.attachment_lease_issued_seconds != request.attachment_lease_issued_seconds()
+        || result.attachment_lease_expires_seconds != request.attachment_lease_expires_seconds()
     {
         return Err(ProtocolValidationError::InvalidField(
             "mount result request binding",
@@ -152,7 +224,14 @@ pub fn decode_mount_result_for_apply(
         installed_mount_handle,
         view_revision,
         source_generation: result.source_generation,
-        attachment_generation: result.attachment_generation,
+        desired_attachment_generation: result.desired_attachment_generation,
+        resource_attachment_generation: result.resource_attachment_generation,
+        source_view_id,
+        source_incarnation_id,
+        source_consistency,
+        attachment_lease_id,
+        attachment_lease_issued_seconds: result.attachment_lease_issued_seconds,
+        attachment_lease_expires_seconds: result.attachment_lease_expires_seconds,
         state,
     })
 }
@@ -316,7 +395,14 @@ mod tests {
                 .into(),
             source_generation: 13,
             namespace_generation: 14,
-            attachment_generation: 15,
+            desired_attachment_generation: 15,
+            resource_attachment_generation: 15,
+            source_view_id: vec![16; 16],
+            source_consistency: MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION
+                .into(),
+            attachment_lease_id: vec![17; 16],
+            attachment_lease_issued_seconds: 18,
+            attachment_lease_expires_seconds: 19,
             ..Default::default()
         };
         let bytes = request.encode_to_vec();
@@ -376,7 +462,14 @@ mod tests {
                 })
                 .into(),
             source_generation: 13,
-            attachment_generation: 15,
+            desired_attachment_generation: 15,
+            resource_attachment_generation: 15,
+            source_view_id: vec![16; 16],
+            source_consistency: MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION
+                .into(),
+            attachment_lease_id: vec![17; 16],
+            attachment_lease_issued_seconds: 18,
+            attachment_lease_expires_seconds: 19,
             state: state.into(),
             ..Default::default()
         }
@@ -397,7 +490,10 @@ mod tests {
 
             assert_eq!(decoded.attachment_id(), &[7; 16]);
             assert_eq!(decoded.source_generation(), 13);
-            assert_eq!(decoded.attachment_generation(), 15);
+            assert_eq!(decoded.desired_attachment_generation(), 15);
+            assert_eq!(decoded.resource_attachment_generation(), 15);
+            assert_eq!(decoded.source_view_id(), &[16; 16]);
+            assert_eq!(decoded.attachment_lease_id(), &[17; 16]);
         }
     }
 
@@ -415,8 +511,21 @@ mod tests {
         wrong_view.view_revision.get_or_insert_default().sha256 = vec![24; 32];
         let mut wrong_generation = baseline.clone();
         wrong_generation.source_generation = 25;
-        let mut wrong_attachment_generation = baseline.clone();
-        wrong_attachment_generation.attachment_generation = 26;
+        let mut wrong_desired_generation = baseline.clone();
+        wrong_desired_generation.desired_attachment_generation = 26;
+        let mut wrong_resource_generation = baseline.clone();
+        wrong_resource_generation.resource_attachment_generation = 26;
+        let mut wrong_source_view = baseline.clone();
+        wrong_source_view.source_view_id = vec![27; 16];
+        let mut wrong_source_consistency = baseline.clone();
+        wrong_source_consistency.source_consistency =
+            MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_BEST_EFFORT_REPLICA.into();
+        let mut wrong_source_incarnation = baseline.clone();
+        wrong_source_incarnation.source_incarnation_id = vec![29; 16];
+        let mut wrong_lease = baseline.clone();
+        wrong_lease.attachment_lease_id = vec![28; 16];
+        let mut wrong_lease_expiry = baseline.clone();
+        wrong_lease_expiry.attachment_lease_expires_seconds += 1;
         let mut wrong_state = baseline;
         wrong_state.state = MountState::MOUNT_STATE_INSTALLED.into();
 
@@ -425,7 +534,13 @@ mod tests {
             wrong_handle,
             wrong_view,
             wrong_generation,
-            wrong_attachment_generation,
+            wrong_desired_generation,
+            wrong_resource_generation,
+            wrong_source_view,
+            wrong_source_consistency,
+            wrong_source_incarnation,
+            wrong_lease,
+            wrong_lease_expiry,
             wrong_state,
         ] {
             assert!(

@@ -538,7 +538,7 @@ mod tests {
 
     use aos_proto::aos::sandbox::local::v1::{
         AssignmentFence, Descriptor, InventoryMountResourcesResponse, MountAssignmentBinding,
-        MountAttributes, MountInventoryRecord, MountLifecycle, MountRecipe,
+        MountAttributes, MountInventoryRecord, MountLifecycle, MountRecipe, MountSourceConsistency,
     };
 
     use super::*;
@@ -596,7 +596,10 @@ mod tests {
             })
             .into(),
             source_generation: 11,
-            attachment_generation: 12,
+            resource_attachment_generation: 12,
+            source_view_id: vec![13; 16],
+            source_consistency: MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION
+                .into(),
             attributes: Some(MountAttributes {
                 read_only: true,
                 no_exec: true,

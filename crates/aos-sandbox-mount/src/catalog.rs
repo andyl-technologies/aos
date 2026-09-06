@@ -12,6 +12,7 @@ use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::Path;
 use std::path::PathBuf;
 
+use aos_proto::aos::sandbox::local::v1::MountSourceConsistency;
 use aos_sandbox_core::{ObjectDescriptor, ObjectDigest};
 use aos_sandbox_linux::path::{BeneathRoot, FileIdentity, ResolveOptions, ResolvedPath};
 use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceIdentity, NamespaceKind};
@@ -120,7 +121,14 @@ struct MountCatalogEntry {
     view_revision: ObjectDescriptor,
     source_generation: u64,
     namespace_generation: u64,
-    attachment_generation: u64,
+    desired_attachment_generation: u64,
+    resource_attachment_generation: u64,
+    source_view_id: [u8; 16],
+    source_incarnation_id: Option<[u8; 16]>,
+    source_consistency: CatalogSourceConsistency,
+    attachment_lease_id: [u8; 16],
+    attachment_lease_issued_seconds: i64,
+    attachment_lease_expires_seconds: i64,
     source_path: String,
     mount_namespace_path: String,
     user_namespace_path: String,
@@ -132,6 +140,36 @@ struct MountCatalogEntry {
     user_namespace_identity: NamespaceIdentityWire,
     target_root_identity: FileIdentityWire,
     target_slot_identity: FileIdentityWire,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CatalogSourceConsistency {
+    ImmutableRevision,
+    LocalLive,
+    BestEffortReplica,
+}
+
+impl CatalogSourceConsistency {
+    const fn protocol_value(self) -> MountSourceConsistency {
+        match self {
+            Self::ImmutableRevision => {
+                MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION
+            }
+            Self::LocalLive => MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_LOCAL_LIVE,
+            Self::BestEffortReplica => {
+                MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_BEST_EFFORT_REPLICA
+            }
+        }
+    }
+
+    const fn code(self) -> u8 {
+        match self {
+            Self::ImmutableRevision => 1,
+            Self::LocalLive => 2,
+            Self::BestEffortReplica => 4,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -447,7 +485,7 @@ fn catalog_authorization_commitment(
 ) -> Result<MountCatalogCommitmentV1> {
     let bytes = catalog_authorization_bytes(
         b"AOSMCAT1",
-        2,
+        3,
         generation,
         entry,
         &[],
@@ -473,7 +511,7 @@ fn prepared_catalog_authorization_commitment(
     host_binding.extend_from_slice(&binding.payload_scope_handle);
     let bytes = catalog_authorization_bytes(
         b"AOSMCAT2",
-        3,
+        4,
         generation,
         entry,
         &host_binding,
@@ -519,7 +557,14 @@ fn catalog_authorization_bytes(
     bytes.extend_from_slice(&entry.destination_slot_id);
     bytes.extend_from_slice(&entry.source_generation.to_be_bytes());
     bytes.extend_from_slice(&entry.namespace_generation.to_be_bytes());
-    bytes.extend_from_slice(&entry.attachment_generation.to_be_bytes());
+    bytes.extend_from_slice(&entry.desired_attachment_generation.to_be_bytes());
+    bytes.extend_from_slice(&entry.resource_attachment_generation.to_be_bytes());
+    bytes.extend_from_slice(&entry.source_view_id);
+    bytes.extend_from_slice(&entry.source_incarnation_id.unwrap_or([0; 16]));
+    bytes.push(entry.source_consistency.code());
+    bytes.extend_from_slice(&entry.attachment_lease_id);
+    bytes.extend_from_slice(&entry.attachment_lease_issued_seconds.to_be_bytes());
+    bytes.extend_from_slice(&entry.attachment_lease_expires_seconds.to_be_bytes());
     bytes.extend_from_slice(&media_length.to_be_bytes());
     bytes.extend_from_slice(media_type);
     bytes.extend_from_slice(entry.view_revision.digest().as_bytes());
@@ -607,10 +652,23 @@ impl MountCatalogEntry {
             || self.destination_slot_id == [0; 16]
             || self.source_generation == 0
             || self.namespace_generation == 0
-            || self.attachment_generation == 0
+            || self.desired_attachment_generation == 0
+            || self.resource_attachment_generation == 0
+            || self.desired_attachment_generation < self.resource_attachment_generation
+            || self.source_view_id == [0; 16]
+            || self.attachment_lease_id == [0; 16]
+            || self.attachment_lease_expires_seconds <= self.attachment_lease_issued_seconds
         {
             return Err(MountError::State(
                 "mount catalog entry contains a sentinel".to_owned(),
+            ));
+        }
+        if self.source_incarnation_id.is_some()
+            != matches!(self.source_consistency, CatalogSourceConsistency::LocalLive)
+            || self.source_incarnation_id == Some([0; 16])
+        {
+            return Err(MountError::State(
+                "mount catalog source incarnation differs from its consistency contract".to_owned(),
             ));
         }
         for path in [
@@ -658,7 +716,14 @@ impl MountCatalogEntry {
                 .is_none_or(|revision| revision == &self.view_revision)
             && self.source_generation == request.source_generation()
             && self.namespace_generation == request.namespace_generation()
-            && self.attachment_generation == request.attachment_generation()
+            && self.desired_attachment_generation == request.desired_attachment_generation()
+            && self.resource_attachment_generation == request.resource_attachment_generation()
+            && self.source_view_id == *request.source_view_id()
+            && self.source_incarnation_id.as_ref() == request.source_incarnation_id()
+            && self.source_consistency.protocol_value() == request.source_consistency()
+            && self.attachment_lease_id == *request.attachment_lease_id()
+            && self.attachment_lease_issued_seconds == request.attachment_lease_issued_seconds()
+            && self.attachment_lease_expires_seconds == request.attachment_lease_expires_seconds()
     }
 }
 
@@ -751,7 +816,14 @@ mod tests {
             view_revision: descriptor,
             source_generation: 1,
             namespace_generation: 1,
-            attachment_generation: 1,
+            desired_attachment_generation: 1,
+            resource_attachment_generation: 1,
+            source_view_id: [6; 16],
+            source_incarnation_id: None,
+            source_consistency: CatalogSourceConsistency::ImmutableRevision,
+            attachment_lease_id: [8; 16],
+            attachment_lease_issued_seconds: 9,
+            attachment_lease_expires_seconds: 10,
             source_path: "pins/source".to_owned(),
             mount_namespace_path: "pins/mntns".to_owned(),
             user_namespace_path: "pins/userns".to_owned(),
@@ -824,11 +896,56 @@ mod tests {
             commitment
         );
         let mut changed_attachment_generation = entry.clone();
-        changed_attachment_generation.attachment_generation += 1;
+        changed_attachment_generation.desired_attachment_generation += 1;
         assert_ne!(
             catalog_authorization_commitment(
                 1,
                 &changed_attachment_generation,
+                directory(1, 1),
+                namespace(1, 2),
+                namespace(1, 3),
+                directory(1, 4),
+                directory(1, 5),
+            )
+            .unwrap(),
+            commitment
+        );
+        let mut changed_resource_generation = entry.clone();
+        changed_resource_generation.resource_attachment_generation += 1;
+        assert_ne!(
+            catalog_authorization_commitment(
+                1,
+                &changed_resource_generation,
+                directory(1, 1),
+                namespace(1, 2),
+                namespace(1, 3),
+                directory(1, 4),
+                directory(1, 5),
+            )
+            .unwrap(),
+            commitment
+        );
+        let mut changed_source = entry.clone();
+        changed_source.source_view_id = [11; 16];
+        assert_ne!(
+            catalog_authorization_commitment(
+                1,
+                &changed_source,
+                directory(1, 1),
+                namespace(1, 2),
+                namespace(1, 3),
+                directory(1, 4),
+                directory(1, 5),
+            )
+            .unwrap(),
+            commitment
+        );
+        let mut changed_lease = entry.clone();
+        changed_lease.attachment_lease_id = [12; 16];
+        assert_ne!(
+            catalog_authorization_commitment(
+                1,
+                &changed_lease,
                 directory(1, 1),
                 namespace(1, 2),
                 namespace(1, 3),
@@ -851,6 +968,16 @@ mod tests {
             .unwrap(),
             commitment
         );
+        let mut local_live = entry.clone();
+        local_live.source_consistency = CatalogSourceConsistency::LocalLive;
+        assert!(local_live.validate().is_err());
+        local_live.source_incarnation_id = Some([13; 16]);
+        local_live.validate().unwrap();
+
+        let mut extraneous_incarnation = entry.clone();
+        extraneous_incarnation.source_incarnation_id = Some([13; 16]);
+        assert!(extraneous_incarnation.validate().is_err());
+
         let snapshot = MountCatalogSnapshot {
             generation: 1,
             entries: vec![entry.clone(), entry],

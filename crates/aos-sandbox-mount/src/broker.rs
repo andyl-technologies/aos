@@ -7,7 +7,7 @@ use aos_proto::aos::sandbox::local::v1::{
     AssignmentFence, Descriptor, InventoryMountResourcesResponse, MountAction,
     MountAssignmentBinding, MountAttributes, MountFaultCorrelation, MountFaultPhase,
     MountInventoryRecord, MountKernelObservation, MountLifecycle, MountOperationCorrelation,
-    MountPublicationCorrelation, MountRecipe, MountResult, MountState,
+    MountPublicationCorrelation, MountRecipe, MountResult, MountSourceConsistency, MountState,
 };
 use aos_sandbox::journal::{
     IdempotencyKey, IdempotencyOutcome, Journal, JournalRecord, JournalTransaction, RecordNamespace,
@@ -33,8 +33,8 @@ use crate::state::authorization_v1::{MountEffectIntentV2, MountEffectStatusV2};
 use crate::state::mount_resource_v1::{
     AssignmentBindingV1, DetachedMountIdentityV1, InstalledMountObservationV1, MountFaultPhaseV1,
     MountHandleV1, MountPolicyV1, MountRecipeV1, MountResourceLimitsV1, MountResourceStateV1,
-    MountResourceTableV1, MountResourceV1, NativeMutationV1, ObjectDescriptorV1,
-    OperationCorrelationV1, OwnedMountAttributeV1, PublicationCorrelationV1,
+    MountResourceTableV1, MountResourceV1, MountSourceConsistencyV1, NativeMutationV1,
+    ObjectDescriptorV1, OperationCorrelationV1, OwnedMountAttributeV1, PublicationCorrelationV1,
     canonical_fd_store_key,
 };
 use crate::worker::{
@@ -764,7 +764,10 @@ fn allocated_resource(
             destination_slot_id: *request.destination_slot_id(),
             view_revision: ObjectDescriptorV1::from_runtime(descriptor)?,
             source_generation: request.source_generation(),
-            attachment_generation: request.attachment_generation(),
+            resource_attachment_generation: request.resource_attachment_generation(),
+            source_view_id: *request.source_view_id(),
+            source_incarnation_id: request.source_incarnation_id().copied(),
+            source_consistency: mount_source_consistency(request.source_consistency()),
             policy: mount_policy(attributes),
         },
         state: MountResourceStateV1::Allocated { creation },
@@ -790,6 +793,7 @@ fn mount_policy(attributes: ValidatedMountAttributes) -> MountPolicyV1 {
         (attributes.no_suid(), OwnedMountAttributeV1::NoSuid),
         (attributes.no_device(), OwnedMountAttributeV1::NoDevice),
         (attributes.no_atime(), OwnedMountAttributeV1::NoAtime),
+        (attributes.recursive(), OwnedMountAttributeV1::Recursive),
     ] {
         if enabled {
             owned.push(attribute);
@@ -806,6 +810,38 @@ fn mount_policy(attributes: ValidatedMountAttributes) -> MountPolicyV1 {
     MountPolicyV1 {
         attributes: owned,
         mutation,
+    }
+}
+
+fn mount_source_consistency(value: MountSourceConsistency) -> MountSourceConsistencyV1 {
+    match value {
+        MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION => {
+            MountSourceConsistencyV1::ImmutableRevision
+        }
+        MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_LOCAL_LIVE => {
+            MountSourceConsistencyV1::LocalLive
+        }
+        MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_BEST_EFFORT_REPLICA => {
+            MountSourceConsistencyV1::BestEffortReplica
+        }
+        MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_UNSPECIFIED
+        | MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_TRANSACTIONAL_SERVICE => {
+            unreachable!("validated Mount source consistency is supported and closed")
+        }
+    }
+}
+
+fn protocol_source_consistency(value: MountSourceConsistencyV1) -> MountSourceConsistency {
+    match value {
+        MountSourceConsistencyV1::ImmutableRevision => {
+            MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION
+        }
+        MountSourceConsistencyV1::LocalLive => {
+            MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_LOCAL_LIVE
+        }
+        MountSourceConsistencyV1::BestEffortReplica => {
+            MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_BEST_EFFORT_REPLICA
+        }
     }
 }
 
@@ -840,7 +876,12 @@ fn validate_request_resource(
         || resource.recipe.attachment_id != *request.attachment_id()
         || resource.recipe.destination_slot_id != *request.destination_slot_id()
         || resource.recipe.source_generation != request.source_generation()
-        || resource.recipe.attachment_generation != request.attachment_generation()
+        || resource.recipe.resource_attachment_generation
+            != request.resource_attachment_generation()
+        || resource.recipe.source_view_id != *request.source_view_id()
+        || resource.recipe.source_incarnation_id.as_ref() != request.source_incarnation_id()
+        || resource.recipe.source_consistency
+            != mount_source_consistency(request.source_consistency())
         || !attributes_match
         || !view_matches
     {
@@ -884,6 +925,8 @@ fn replacement_predecessor<'a>(
         || predecessor.binding.sandbox_id != *request.fence().sandbox_id()
         || predecessor.binding.incarnation_id != *request.fence().incarnation_id()
         || successor_generation <= predecessor_generation
+        || request.resource_attachment_generation()
+            <= predecessor.recipe.resource_attachment_generation
     {
         return Err(MountError::Fence(
             "replacement predecessor is not the prior generation of this slot",
@@ -1286,7 +1329,16 @@ fn encode_result(
             )
             .into(),
         source_generation: request.source_generation(),
-        attachment_generation: request.attachment_generation(),
+        desired_attachment_generation: request.desired_attachment_generation(),
+        resource_attachment_generation: request.resource_attachment_generation(),
+        source_view_id: request.source_view_id().to_vec(),
+        source_incarnation_id: request
+            .source_incarnation_id()
+            .map_or_else(Vec::new, |value| value.to_vec()),
+        source_consistency: request.source_consistency().into(),
+        attachment_lease_id: request.attachment_lease_id().to_vec(),
+        attachment_lease_issued_seconds: request.attachment_lease_issued_seconds(),
+        attachment_lease_expires_seconds: request.attachment_lease_expires_seconds(),
         state: observation.state.into(),
         ..Default::default()
     };
@@ -1574,7 +1626,12 @@ fn inventory_recipe(value: &MountRecipeV1) -> MountRecipe {
         })
         .into(),
         source_generation: value.source_generation,
-        attachment_generation: value.attachment_generation,
+        resource_attachment_generation: value.resource_attachment_generation,
+        source_view_id: value.source_view_id.to_vec(),
+        source_incarnation_id: value
+            .source_incarnation_id
+            .map_or_else(Vec::new, |incarnation| incarnation.to_vec()),
+        source_consistency: protocol_source_consistency(value.source_consistency).into(),
         attributes: Some(MountAttributes {
             read_only: value
                 .policy
@@ -1596,6 +1653,10 @@ fn inventory_recipe(value: &MountRecipeV1) -> MountRecipe {
                 .policy
                 .attributes
                 .contains(&OwnedMountAttributeV1::NoAtime),
+            recursive: value
+                .policy
+                .attributes
+                .contains(&OwnedMountAttributeV1::Recursive),
             mutation_mode: match value.policy.mutation {
                 NativeMutationV1::ReadOnly => 0,
                 NativeMutationV1::ReadWrite => 1,
@@ -2403,7 +2464,14 @@ mod tests {
             .into(),
             source_generation: 1,
             namespace_generation: 1,
-            attachment_generation: 1,
+            desired_attachment_generation: 1,
+            resource_attachment_generation: 1,
+            source_view_id: vec![8; 16],
+            source_consistency: MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION
+                .into(),
+            attachment_lease_id: vec![9; 16],
+            attachment_lease_issued_seconds: 10,
+            attachment_lease_expires_seconds: 20,
             ..Default::default()
         }
         .encode_to_vec()
@@ -2516,7 +2584,8 @@ mod tests {
 
     fn action_request(
         request_id: u8,
-        generation: u64,
+        desired_attachment_generation: u64,
+        resource_attachment_generation: u64,
         source_generation: u64,
         action: MountAction,
         handle: Option<[u8; 32]>,
@@ -2527,13 +2596,15 @@ mod tests {
             sandbox_id: vec![1; 16],
             incarnation_id: vec![2; 16],
             assignment_epoch: 1,
-            desired_generation: generation,
-            assignment_digest: vec![u8::try_from(generation).unwrap() + 5; 32],
+            desired_generation: desired_attachment_generation,
+            assignment_digest: vec![u8::try_from(desired_attachment_generation).unwrap() + 5; 32],
             ..Default::default()
         })
         .into();
         request.action = action.into();
         request.source_generation = source_generation;
+        request.desired_attachment_generation = desired_attachment_generation;
+        request.resource_attachment_generation = resource_attachment_generation;
         request.detached_mount_handle = handle.map_or_else(Vec::new, |value| value.to_vec());
         request.replacement_mount_handle =
             replacement.map_or_else(Vec::new, |value| value.to_vec());
@@ -2579,11 +2650,27 @@ mod tests {
         assert_eq!(decoded.kernel_boot_id(), &broker.kernel_boot_id);
         assert_ne!(decoded.broker_instance_id(), &[0; 16]);
         assert!(decoded.journal_sequence() > 1);
+        let recipe = decoded.mounts()[0].recipe();
+        assert_eq!(recipe.resource_attachment_generation(), 1);
+        assert_eq!(recipe.source_view_id(), &[8; 16]);
+        assert_eq!(
+            recipe.source_consistency(),
+            MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION
+        );
+        assert!(!recipe.attributes().recursive());
     }
 
     #[test]
     fn signed_authority_rejects_wrong_signature_body_and_catalog_substitution() {
-        for attack in ["signature", "body", "attachment-generation", "catalog"] {
+        for attack in [
+            "signature",
+            "body",
+            "attachment-generation",
+            "source-view",
+            "recursive",
+            "attachment-lease",
+            "catalog",
+        ] {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join(format!("{attack}.journal"));
             let (mut broker, fixture) = test_broker(open(&path), ScriptedWorker::default());
@@ -2601,7 +2688,20 @@ mod tests {
                 substituted.encode_to_vec()
             } else if attack == "attachment-generation" {
                 let mut substituted = ApplyMountRequest::decode_from_slice(&original).unwrap();
-                substituted.attachment_generation += 1;
+                substituted.desired_attachment_generation += 1;
+                substituted.resource_attachment_generation += 1;
+                substituted.encode_to_vec()
+            } else if attack == "source-view" {
+                let mut substituted = ApplyMountRequest::decode_from_slice(&original).unwrap();
+                substituted.source_view_id = vec![88; 16];
+                substituted.encode_to_vec()
+            } else if attack == "recursive" {
+                let mut substituted = ApplyMountRequest::decode_from_slice(&original).unwrap();
+                substituted.attributes.get_or_insert_default().recursive = true;
+                substituted.encode_to_vec()
+            } else if attack == "attachment-lease" {
+                let mut substituted = ApplyMountRequest::decode_from_slice(&original).unwrap();
+                substituted.attachment_lease_id = vec![89; 16];
                 substituted.encode_to_vec()
             } else {
                 original
@@ -2839,12 +2939,14 @@ mod tests {
             41,
             1,
             1,
+            1,
             MountAction::MOUNT_ACTION_RELEASE,
             Some(handle),
             None,
         );
         let competing_release = action_request(
             42,
+            1,
             1,
             1,
             MountAction::MOUNT_ACTION_RELEASE,
@@ -2906,6 +3008,7 @@ mod tests {
             20,
             1,
             1,
+            1,
             MountAction::MOUNT_ACTION_CREATE_DETACHED,
             None,
             None,
@@ -2915,12 +3018,14 @@ mod tests {
             21,
             1,
             1,
+            1,
             MountAction::MOUNT_ACTION_INSTALL,
             Some(predecessor),
             None,
         );
         let create_successor = action_request(
             22,
+            2,
             2,
             2,
             MountAction::MOUNT_ACTION_CREATE_DETACHED,
@@ -2932,6 +3037,7 @@ mod tests {
             23,
             2,
             2,
+            2,
             MountAction::MOUNT_ACTION_REPLACE,
             Some(successor),
             Some(predecessor),
@@ -2939,6 +3045,7 @@ mod tests {
         let release = action_request(
             24,
             2,
+            1,
             1,
             MountAction::MOUNT_ACTION_RELEASE,
             Some(predecessor),
@@ -2956,7 +3063,11 @@ mod tests {
             MountResourceStateV1::Draining { .. }
         ));
 
-        apply_authorized(&mut broker, &fixture, &release, &generation_two).unwrap();
+        let release_receipt =
+            apply_authorized(&mut broker, &fixture, &release, &generation_two).unwrap();
+        let release_result = MountResult::decode_from_slice(&release_receipt).unwrap();
+        assert_eq!(release_result.desired_attachment_generation, 2);
+        assert_eq!(release_result.resource_attachment_generation, 1);
         assert!(matches!(
             broker.resources.get(&predecessor).unwrap().state,
             MountResourceStateV1::Released { .. }
@@ -2979,6 +3090,7 @@ mod tests {
             50,
             1,
             1,
+            1,
             MountAction::MOUNT_ACTION_CREATE_DETACHED,
             None,
             None,
@@ -2986,6 +3098,7 @@ mod tests {
         let predecessor = detached_mount_handle_v1(Sha256::digest(&create_predecessor).into());
         let install_predecessor = action_request(
             51,
+            1,
             1,
             1,
             MountAction::MOUNT_ACTION_INSTALL,
@@ -2996,6 +3109,7 @@ mod tests {
             52,
             2,
             2,
+            2,
             MountAction::MOUNT_ACTION_CREATE_DETACHED,
             None,
             None,
@@ -3003,6 +3117,7 @@ mod tests {
         let successor = detached_mount_handle_v1(Sha256::digest(&create_successor).into());
         let replace = action_request(
             53,
+            2,
             2,
             2,
             MountAction::MOUNT_ACTION_REPLACE,

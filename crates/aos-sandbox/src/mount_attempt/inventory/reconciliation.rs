@@ -230,12 +230,26 @@ fn validate_resource_matches_request(
     let fence = binding.fence();
     let request_fence = request.fence();
     let recipe = resource.recipe();
-    if fence != request_fence
+    let teardown_binding_matches = matches!(
+        request.action(),
+        MountAction::MOUNT_ACTION_DETACH | MountAction::MOUNT_ACTION_RELEASE
+    ) && fence.sandbox_id() == request_fence.sandbox_id()
+        && fence.incarnation_id() == request_fence.incarnation_id()
+        && binding.namespace_generation() == request.namespace_generation()
+        && (fence.assignment_epoch(), fence.desired_generation())
+            <= (
+                request_fence.assignment_epoch(),
+                request_fence.desired_generation(),
+            );
+    if (fence != request_fence && !teardown_binding_matches)
         || binding.namespace_generation() != request.namespace_generation()
         || recipe.attachment_id() != request.attachment_id()
         || recipe.destination_slot_id() != request.destination_slot_id()
         || recipe.source_generation() != request.source_generation()
-        || recipe.attachment_generation() != request.attachment_generation()
+        || recipe.resource_attachment_generation() != request.resource_attachment_generation()
+        || recipe.source_view_id() != request.source_view_id()
+        || recipe.source_incarnation_id() != request.source_incarnation_id()
+        || recipe.source_consistency() != request.source_consistency()
         || request
             .view_revision()
             .is_some_and(|revision| recipe.view_revision() != revision)
@@ -260,7 +274,21 @@ fn validate_replacement_predecessor(
         .get(predecessor_handle)
         .copied()
         .ok_or(MountAttemptError::Conflict)?;
-    if predecessor.binding() != successor.binding()
+    let predecessor_fence = predecessor.binding().fence();
+    let successor_fence = successor.binding().fence();
+    if predecessor_fence.sandbox_id() != successor_fence.sandbox_id()
+        || predecessor_fence.incarnation_id() != successor_fence.incarnation_id()
+        || predecessor.binding().namespace_generation()
+            != successor.binding().namespace_generation()
+        || (
+            predecessor_fence.assignment_epoch(),
+            predecessor_fence.desired_generation(),
+        ) >= (
+            successor_fence.assignment_epoch(),
+            successor_fence.desired_generation(),
+        )
+        || predecessor.recipe().resource_attachment_generation()
+            >= successor.recipe().resource_attachment_generation()
         || predecessor.recipe().attachment_id() != successor.recipe().attachment_id()
         || predecessor.recipe().destination_slot_id() != successor.recipe().destination_slot_id()
     {
@@ -422,7 +450,7 @@ mod tests {
         ApplyMountRequest, AssignmentFence, Audience, Descriptor, InventoryMountResourcesResponse,
         MountAssignmentBinding, MountAttributes, MountFaultCorrelation, MountInventoryRecord,
         MountKernelObservation, MountOperationCorrelation, MountPublicationCorrelation,
-        MountRecipe, RequestHeader,
+        MountRecipe, MountSourceConsistency, RequestHeader,
     };
     use aos_sandbox_core::{IncarnationId, SandboxId};
     use aos_sandbox_protocol::{
@@ -497,7 +525,14 @@ mod tests {
                 .into(),
             source_generation: 11,
             namespace_generation: 6,
-            attachment_generation: 12,
+            desired_attachment_generation: 12,
+            resource_attachment_generation: 12,
+            source_view_id: vec![22; 16],
+            source_consistency: MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION
+                .into(),
+            attachment_lease_id: vec![23; 16],
+            attachment_lease_issued_seconds: 24,
+            attachment_lease_expires_seconds: 25,
             ..Default::default()
         };
         let bytes = wire.encode_to_vec();
@@ -554,10 +589,11 @@ mod tests {
         request_body: &[u8],
         exact_operation: bool,
     ) -> ValidatedMountInventoryRecord {
+        let request = ApplyMountRequest::decode_from_slice(request_body).unwrap();
         let handle = if action == MountAction::MOUNT_ACTION_CREATE_DETACHED {
             detached_mount_handle_v1(Sha256::digest(request_body).into())
         } else {
-            HANDLE
+            request.detached_mount_handle.as_slice().try_into().unwrap()
         };
         let operation = MountOperationCorrelation {
             operation_id: if exact_operation {
@@ -573,16 +609,8 @@ mod tests {
             ..Default::default()
         };
         let binding = MountAssignmentBinding {
-            fence: Some(AssignmentFence {
-                sandbox_id: vec![1; 16],
-                incarnation_id: vec![2; 16],
-                assignment_epoch: 3,
-                desired_generation: 4,
-                assignment_digest: vec![5; 32],
-                ..Default::default()
-            })
-            .into(),
-            namespace_generation: 6,
+            fence: request.fence.clone(),
+            namespace_generation: request.namespace_generation,
             ..Default::default()
         };
         let recipe = MountRecipe {
@@ -595,8 +623,11 @@ mod tests {
                 ..Default::default()
             })
             .into(),
-            source_generation: 11,
-            attachment_generation: 12,
+            source_generation: request.source_generation,
+            resource_attachment_generation: request.resource_attachment_generation,
+            source_view_id: request.source_view_id.clone(),
+            source_incarnation_id: request.source_incarnation_id.clone(),
+            source_consistency: request.source_consistency,
             attributes: Some(MountAttributes {
                 read_only: true,
                 no_exec: true,
@@ -830,7 +861,7 @@ mod tests {
     }
 
     #[test]
-    fn attachment_generation_substitution_fails_before_classification() {
+    fn resource_generation_substitution_fails_before_classification() {
         let (body, validated) = request(MountAction::MOUNT_ACTION_INSTALL);
         let resource = resource(
             validated.action(),
@@ -839,7 +870,8 @@ mod tests {
             true,
         );
         let mut wire = ApplyMountRequest::decode_from_slice(&body).unwrap();
-        wire.attachment_generation += 1;
+        wire.desired_attachment_generation += 1;
+        wire.resource_attachment_generation += 1;
         let changed = wire.encode_to_vec();
         let wrong_request = decode_mount_request(
             &changed,
@@ -859,6 +891,79 @@ mod tests {
 
         assert!(matches!(
             validate_resource_matches_request(&resource, &wrong_request),
+            Err(MountAttemptError::Conflict)
+        ));
+    }
+
+    #[test]
+    fn teardown_with_newer_authority_matches_the_older_resource_recipe() {
+        let (body, request) = request(MountAction::MOUNT_ACTION_RELEASE);
+        let resource = resource(
+            request.action(),
+            MountLifecycle::MOUNT_LIFECYCLE_RELEASED,
+            &body,
+            false,
+        );
+        let mut newer = ApplyMountRequest::decode_from_slice(&body).unwrap();
+        let fence = newer.fence.get_or_insert_default();
+        fence.desired_generation = 5;
+        fence.assignment_digest = vec![6; 32];
+        newer.desired_attachment_generation = 13;
+        let newer = decode_mount_request(
+            &newer.encode_to_vec(),
+            PeerCredentials {
+                uid: 1,
+                gid: 1,
+                pid: Some(1),
+            },
+            PeerPolicy {
+                uid: 1,
+                gid: Some(1),
+                audience: Audience::AUDIENCE_NODE_CONTROLLER,
+            },
+            99,
+        )
+        .unwrap();
+
+        validate_resource_matches_request(&resource, &newer).unwrap();
+    }
+
+    #[test]
+    fn replacement_accepts_only_a_strictly_older_predecessor_generation() {
+        let (successor_body, successor_request) = request(MountAction::MOUNT_ACTION_REPLACE);
+        let successor = resource(
+            successor_request.action(),
+            MountLifecycle::MOUNT_LIFECYCLE_INSTALLED,
+            &successor_body,
+            true,
+        );
+
+        let mut predecessor_wire = ApplyMountRequest::decode_from_slice(&successor_body).unwrap();
+        predecessor_wire.action = MountAction::MOUNT_ACTION_INSTALL.into();
+        predecessor_wire.detached_mount_handle = vec![21; 32];
+        predecessor_wire.replacement_mount_handle.clear();
+        let predecessor_fence = predecessor_wire.fence.get_or_insert_default();
+        predecessor_fence.desired_generation = 3;
+        predecessor_fence.assignment_digest = vec![4; 32];
+        predecessor_wire.desired_attachment_generation = 11;
+        predecessor_wire.resource_attachment_generation = 11;
+        let predecessor_body = predecessor_wire.encode_to_vec();
+        let predecessor = resource(
+            MountAction::MOUNT_ACTION_INSTALL,
+            MountLifecycle::MOUNT_LIFECYCLE_INSTALLED,
+            &predecessor_body,
+            true,
+        );
+        let resources = BTreeMap::from([
+            (*predecessor.mount_handle(), &predecessor),
+            (*successor.mount_handle(), &successor),
+        ]);
+
+        validate_replacement_predecessor(&resources, &successor, &successor_request).unwrap();
+
+        let equal_resources = BTreeMap::from([([21; 32], &successor), (HANDLE, &successor)]);
+        assert!(matches!(
+            validate_replacement_predecessor(&equal_resources, &successor, &successor_request),
             Err(MountAttemptError::Conflict)
         ));
     }
