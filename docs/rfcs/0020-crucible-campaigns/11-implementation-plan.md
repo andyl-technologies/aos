@@ -3421,6 +3421,20 @@ process on the source side only, and neither device has a child flight.
 Hot fork stays an acceleration behind exact restore and thin replay for
 every configuration outside this profile, as 05.11 requires.
 
+Towards T-CAM-7.4, the child execution flight is now three phases, each a
+value the next consumes: a captured source paused at its boundary with its
+template retained, a child forked and installed as a scheduler node at that
+boundary, and the executed comparison against both oracles with teardown.
+`checks.crucible.phase6.qemuHotForkChildWorldVm` holds two sources at each
+phase: it captures both, forks both children before either executes, proves
+both children are alive at once, and then executes and compares each child.
+Each source lives in its own cgroup and project-quota namespace under its
+own run root. The sources exchange no traffic, so this is the coexistence
+half of a whole-world fork; the atomic all-or-nothing admission and the
+failed-node and non-VM I/O-node semantics remain the daemon's world assembly
+and its live matrix, which stay open.
+The two-source instance passes inside the nested test VM: both children were alive together after the second fork; the first child stood installed at its boundary 634 ms after its fork call against 1,314 ms for its exact restore and 1,138 ms for its genesis replay, the second 302 ms against 1,290 ms and 1,121 ms; and every child's suffix fingerprint and sample matched both oracles.
+
 The daemon's Linux fork launch now owns the child-private file plan for
 production children. Every node launcher exposes its admitted launch resource
 profile, the retained template identity records it, and the launch provisions
