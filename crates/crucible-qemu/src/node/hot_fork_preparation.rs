@@ -359,21 +359,22 @@ fn initial_template_state_is_exact(state: &QmpHotForkTemplateState) -> bool {
         && resource_stage_is_empty(state.resource_stage())
 }
 
+/// Whether the template holds no child stage.
+///
+/// The per-stage generation counters are monotonic identifiers of every stage
+/// QEMU ever admitted, so a template whose stages were released after an
+/// earlier child keeps nonzero counters; only the staged, bound, and
+/// transaction fields say whether a stage is present now.
 fn resource_stage_is_empty(state: QmpHotForkTemplateResourceStageState) -> bool {
     state.template_generation() == 0
         && !state.private_ring_staged()
-        && state.private_ring_generation() == 0
         && !state.diagnostics_staged()
-        && state.diagnostic_generation() == 0
         && !state.diagnostics_resource_plan_bound()
         && !state.qmp_staged()
-        && state.qmp_generation() == 0
         && !state.qmp_resource_plan_bound()
         && !state.console_staged()
-        && state.console_generation() == 0
         && !state.console_resource_plan_bound()
         && !state.plugin_endpoints_staged()
-        && state.plugin_endpoint_generation() == 0
         && state.plugin_private_ring_generation() == 0
         && state.plugin_barrier_generation() == 0
         && state.worker_mask() == 0

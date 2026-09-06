@@ -1637,6 +1637,13 @@
       enforces = "HFORK-4,HFORK-22";
       capability = "a hot-fork template marks every RAM block's host memory MADV_DOFORK before it holds its barriers, so a fork child inherits guest RAM as private copy-on-write pages, and restores the MADV_DONTFORK that RAM block creation applies when the template completes; the change is refused under KVM, which needs MADV_DONTFORK, and skipped for a qtest server, which never applied it; the live guarded fork flight lost the child to a fault on the first guest page its VMState save read before this change";
     }
+    {
+      file = "0235-crucible-release-stages-under-retained-template.patch";
+      catalogName = "crucible-stage-release-under-retained-template";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "the private-ring, diagnostics, child-QMP, child-console, and plugin endpoint stages may be released while a template is retained at its barrier phase and no fork operation is active, so a stage the last fork consumed gives way to the next child's and an unconsumed one can be withdrawn; release during a fork operation or a transitional template phase still fails closed, and the ordering rules between stages are unchanged; the live guarded fork flight could not release the plugin endpoints for a second child before this change";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

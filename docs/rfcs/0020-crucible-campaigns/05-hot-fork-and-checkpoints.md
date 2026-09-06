@@ -2463,7 +2463,14 @@ The supported launch profile optimizes the complete child-ready path:
   possible quiescent interval;
 - one successful template preparation permits a sequence of child transactions
   without re-running guest setup or convergence; the coordinator repeats only
-  the closed fork/rebind checks that can change between children;
+  the closed fork/rebind checks that can change between children. Between
+  children the host releases the stages the last fork consumed (plugin
+  endpoints, child console, child QMP, diagnostics, private ring, then the
+  reaped child record, the process contract, and the child-file plan) while
+  the template stays retained at its barrier phase, and QEMU recomputes the
+  template's readiness proofs from the stages that remain, returning it to the
+  state the next child's staging requires; a release is refused only during a
+  fork operation or a transitional template phase;
 - immutable file-backed pages, zero pages, code, and read-mostly QEMU heap state
   remain shared naturally until written;
 - transparent huge-page, NUMA, page-table, allocator-arena, and dirty-page

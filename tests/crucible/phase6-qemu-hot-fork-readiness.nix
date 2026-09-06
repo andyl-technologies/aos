@@ -2029,6 +2029,7 @@ in
           patch=0232-crucible-retain-child-file-plan-descriptors.patch
           patch=0233-crucible-drop-inherited-current-monitor.patch
           patch=0234-crucible-forkable-template-ram.patch
+          patch=0235-crucible-release-stages-under-retained-template.patch
           retained_template_fork_rejects_unprepared=true
           retained_child_unknown_generation_rejected=true
           child_process_contract_initially_absent=true

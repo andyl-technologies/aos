@@ -59,6 +59,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         report.child_saved_vmstate_bytes
     );
     println!("source_vmstate_unchanged=true");
+    println!("children_forked={}", report.children_forked);
     println!("whole_world_child_handoff=false");
     Ok(())
 }

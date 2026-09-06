@@ -3276,7 +3276,16 @@ inode and not the source's, greeting on its private QMP endpoint, and saving
 a VMState that grew the private copy from 1,441,792 to 2,425,114 bytes while
 the source container stayed unchanged. The full-series and drop-one patch
 gates for the new patches are the remaining evidence for this slice.
-The daemon's Linux fork launch now owns the child-private file plan for
+
+The flight then forks three children in sequence from the one retained
+template, releasing every child stage between children in the
+reconciliation's order and restaging the template. The first attempt failed
+to release the plugin endpoints, because every stage release refused any
+retained template, which admitted exactly one child per template; patch 0235
+refuses a release only during a fork operation or a transitional template
+phase, so a template retained at its barrier phase lets a consumed stage go
+and its readiness proofs recompute from what remains.
+The three-child flight passes: each child adopted its private VMState, greeted, saved through it, and was reaped before the next child was staged, and the third child consumed file plan generation 3. The host-side restage check had also to stop requiring zero stage-generation counters, which are monotonic identifiers of every stage QEMU admitted.The daemon's Linux fork launch now owns the child-private file plan for
 production children. Every node launcher exposes its admitted launch resource
 profile, the retained template identity records it, and the launch provisions
 the target attempt's run directory under that profile, lends its empty VMState
