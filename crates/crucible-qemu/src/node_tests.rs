@@ -2364,8 +2364,10 @@ pub(crate) fn node_set_hot_fork_source(
     fail_during_preparation: bool,
 ) -> Result<QemuNode, Box<dyn Error>> {
     if !fail_during_preparation {
-        return super::test_support::hot_fork::scripted_hot_fork_source_for_test(
-            super::test_support::hot_fork::QemuTestHotForkOutcome::Forked,
+        return Ok(
+            super::test_support::hot_fork::scripted_hot_fork_source_for_test(
+                super::test_support::hot_fork::QemuTestHotForkOutcome::Forked,
+            )?,
         );
     }
     let (setup_identity, host_barrier, image) = held_hot_fork_ring_image()?;

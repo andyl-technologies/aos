@@ -31,6 +31,25 @@ pub struct QmpHotForkChildProcessState {
 }
 
 impl QmpHotForkChildProcessState {
+    /// Builds a scripted child-process state for cross-crate conformance tests.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub const fn for_test(
+        generation: u64,
+        child_process_id: u32,
+        phase: QmpHotForkChildProcessPhase,
+        status: u8,
+        retained: bool,
+    ) -> Self {
+        Self {
+            generation,
+            child_process_id,
+            phase,
+            status,
+            retained,
+        }
+    }
+
     /// Returns the exact child-process generation from the fork request.
     #[must_use]
     pub const fn generation(self) -> u64 {

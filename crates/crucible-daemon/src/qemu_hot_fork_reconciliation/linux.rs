@@ -28,6 +28,7 @@ pub enum LinuxQemuHotForkReconciliationError {
 enum LinuxSourceReleasePhase {
     CloseChildChannel,
     PluginEndpoints,
+    ChildConsole,
     ChildQmp,
     Diagnostics,
     PrivateRing,
@@ -71,6 +72,13 @@ impl LinuxQemuHotForkSourceLoan<'_> {
         match self {
             Self::Detached(source) => source.release_hot_fork_plugin_endpoints(),
             Self::World(source) => source.release_plugin_endpoints(),
+        }
+    }
+
+    fn release_child_console(&mut self) -> Result<(), QemuNodeChannelError> {
+        match self {
+            Self::Detached(source) => source.release_hot_fork_child_console(),
+            Self::World(source) => source.release_child_console(),
         }
     }
 
@@ -156,7 +164,7 @@ impl LinuxQemuHotForkProcessOwner {
                 let mut source_world = source_world
                     .lock()
                     .map_err(|_source| LinuxQemuHotForkReconciliationError::SourceOwnerPoisoned)?;
-                let source = source_world.prepared_source(node).map_err(|error| {
+                let source = source_world.retained_source(node).map_err(|error| {
                     LinuxQemuHotForkReconciliationError::Source(QemuNodeChannelError::new(
                         "borrow production hot-fork source",
                         error.to_string(),
@@ -659,6 +667,284 @@ where
             source,
             template_identity,
         ))
+    }
+}
+
+type LinuxQemuHotForkWorldReconciliation<G> =
+    QemuHotForkAttemptReconciliation<LinuxQemuHotForkReconciliationBackend<G>>;
+
+/// Shared post-shutdown owner for every adopted child reconciliation.
+///
+/// Adoption leases transfer their exact reconciliation into this set only
+/// after the production lifecycle has reaped the corresponding `QemuNode` and
+/// the source parent has authenticated the same terminal process record.
+pub(crate) struct LinuxQemuHotForkWorldReconciliationSet<G>
+where
+    G: crate::QemuAttemptResourceGuard,
+{
+    expected: BTreeSet<NodeId>,
+    reconciliations: Arc<Mutex<BTreeMap<NodeId, LinuxQemuHotForkWorldReconciliation<G>>>>,
+}
+
+impl<G> Clone for LinuxQemuHotForkWorldReconciliationSet<G>
+where
+    G: crate::QemuAttemptResourceGuard,
+{
+    fn clone(&self) -> Self {
+        Self {
+            expected: self.expected.clone(),
+            reconciliations: Arc::clone(&self.reconciliations),
+        }
+    }
+}
+
+impl<G> LinuxQemuHotForkWorldReconciliationSet<G>
+where
+    G: crate::QemuAttemptResourceGuard,
+{
+    pub(crate) fn new(expected: BTreeSet<NodeId>) -> Self {
+        Self {
+            expected,
+            reconciliations: Arc::new(Mutex::new(BTreeMap::new())),
+        }
+    }
+
+    pub(crate) fn reconcile_execution_disposition(
+        &mut self,
+        disposition: crate::AttemptExecutionDisposition,
+    ) -> Result<crate::AttemptExecutionReconciliationStep, LifecycleApiError> {
+        let mut reconciliations = self.reconciliations.lock().map_err(|_| {
+            hot_fork_adoption_error("hot-fork world reconciliation registry is poisoned")
+        })?;
+        let actual = reconciliations.keys().cloned().collect::<BTreeSet<_>>();
+        if actual != self.expected {
+            return Err(hot_fork_adoption_error(
+                "hot-fork world reconciliation registry differs from its adopted child roster",
+            ));
+        }
+        let Some(node) = reconciliations.keys().next().cloned() else {
+            return Ok(crate::AttemptExecutionReconciliationStep::Complete);
+        };
+        let step = reconciliations
+            .get_mut(&node)
+            .ok_or_else(|| {
+                hot_fork_adoption_error("hot-fork world reconciliation disappeared during lookup")
+            })?
+            .reconcile_execution_disposition(disposition)
+            .map_err(|error| {
+                hot_fork_adoption_error(format!(
+                    "reconcile adopted hot-fork child `{}`: {error}",
+                    node.name
+                ))
+            })?;
+        if step == crate::AttemptExecutionReconciliationStep::Complete {
+            reconciliations.remove(&node);
+            self.expected.remove(&node);
+        }
+        if self.expected.is_empty() {
+            Ok(crate::AttemptExecutionReconciliationStep::Complete)
+        } else {
+            Ok(crate::AttemptExecutionReconciliationStep::Progressed)
+        }
+    }
+
+    pub(crate) fn validate_operational_handoff(&self) -> Result<(), LifecycleApiError> {
+        let reconciliations = self.reconciliations.lock().map_err(|_| {
+            hot_fork_adoption_error("hot-fork world reconciliation registry is poisoned")
+        })?;
+        let actual = reconciliations.keys().cloned().collect::<BTreeSet<_>>();
+        if actual != self.expected
+            || reconciliations.values().any(|reconciliation| {
+                reconciliation.phase() != QemuHotForkReconciliationPhase::AwaitingPublication
+            })
+        {
+            return Err(hot_fork_adoption_error(
+                "hot-fork world operational handoff is incomplete after lifecycle shutdown",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn quarantine(&mut self) {
+        match self.reconciliations.lock() {
+            Ok(mut reconciliations) => {
+                for reconciliation in reconciliations.values_mut() {
+                    reconciliation.quarantine();
+                }
+            }
+            Err(poisoned) => {
+                let mut reconciliations = poisoned.into_inner();
+                for reconciliation in reconciliations.values_mut() {
+                    reconciliation.quarantine();
+                }
+            }
+        }
+    }
+}
+
+struct LinuxQemuHotForkWorldNodeLease<G>
+where
+    G: crate::QemuAttemptResourceGuard,
+{
+    identity: ProductionVmNodeGeneration,
+    reconciliation: Option<LinuxQemuHotForkWorldReconciliation<G>>,
+    completed: LinuxQemuHotForkWorldReconciliationSet<G>,
+}
+
+impl<G> Drop for LinuxQemuHotForkWorldNodeLease<G>
+where
+    G: crate::QemuAttemptResourceGuard,
+{
+    fn drop(&mut self) {
+        let Some(mut reconciliation) = self.reconciliation.take() else {
+            return;
+        };
+
+        // An adoption can be rejected after this lease has entered an opaque
+        // API construction transaction. Keep the exact source-parent record,
+        // child authority, target share, and run directory alive after moving
+        // them to fail-closed quarantine.
+        reconciliation.quarantine();
+        std::mem::forget(reconciliation);
+    }
+}
+
+impl<G> ProductionVmNodeLease for LinuxQemuHotForkWorldNodeLease<G>
+where
+    G: crate::QemuAttemptResourceGuard + Send + 'static,
+{
+    fn identity(&self) -> &ProductionVmNodeGeneration {
+        &self.identity
+    }
+
+    fn finish(&mut self) -> Result<(), LifecycleApiError> {
+        let Some(reconciliation) = self.reconciliation.as_mut() else {
+            return Ok(());
+        };
+        for _ in 0..32 {
+            match reconciliation.reconcile_step().map_err(|error| {
+                hot_fork_adoption_error(format!(
+                    "reconcile reaped adopted child `{}`: {error}",
+                    self.identity.node().name
+                ))
+            })? {
+                QemuHotForkReconciliationStep::AwaitingPublication => {
+                    let mut completed = self.completed.reconciliations.lock().map_err(|_| {
+                        hot_fork_adoption_error(
+                            "hot-fork world reconciliation registry is poisoned",
+                        )
+                    })?;
+                    if completed.contains_key(self.identity.node()) {
+                        return Err(hot_fork_adoption_error(
+                            "hot-fork world already retained this child reconciliation",
+                        ));
+                    }
+                    let reconciliation = self.reconciliation.take().ok_or_else(|| {
+                        hot_fork_adoption_error(
+                            "adopted child reconciliation disappeared before transfer",
+                        )
+                    })?;
+                    completed.insert(self.identity.node().clone(), reconciliation);
+                    return Ok(());
+                }
+                QemuHotForkReconciliationStep::ChildRunning => {
+                    return Err(hot_fork_adoption_error(format!(
+                        "production lifecycle reported reaped child `{}` while its source parent still reports it running",
+                        self.identity.node().name
+                    )));
+                }
+                QemuHotForkReconciliationStep::ChildDiagnosticsDrained
+                | QemuHotForkReconciliationStep::Advanced(_) => {}
+                QemuHotForkReconciliationStep::Complete => {
+                    return Err(hot_fork_adoption_error(
+                        "adopted child reached complete reconciliation before publication",
+                    ));
+                }
+            }
+        }
+        Err(hot_fork_adoption_error(
+            "adopted child operational reconciliation exceeded its finite step bound",
+        ))
+    }
+}
+
+impl<G>
+    QemuHotForkAttemptReconciliation<
+        LinuxQemuHotForkReconciliationBackend<QemuHotForkWorldNodeTarget<G>>,
+    >
+where
+    G: crate::QemuAttemptResourceGuard + Send + 'static,
+{
+    /// Consumes a completely assembled child into the production adoption API.
+    ///
+    /// The returned value exposes no detachable node or reconciliation tuple.
+    /// Its lease keeps source-parent, target, run-directory, and publication
+    /// authority together until the production lifecycle reaps the node.
+    pub(crate) fn into_world_node_adoption(
+        mut self,
+        identity: ProductionVmNodeGeneration,
+        completed: LinuxQemuHotForkWorldReconciliationSet<QemuHotForkWorldNodeTarget<G>>,
+    ) -> Result<ProductionVmHotForkNodeAdoption, LifecycleApiError> {
+        if let Err(error) = self.require_phase(
+            "adopt assembled hot-fork scheduler node",
+            QemuHotForkReconciliationPhase::Live,
+        ) {
+            return retain_failed_world_adoption(self, error.to_string());
+        }
+        let Some(backend) = self.backend.as_mut() else {
+            return retain_failed_world_adoption(self, "hot-fork child backend is unavailable");
+        };
+        if backend.installed_node_id.as_ref() != Some(identity.node())
+            || backend.target.identity() != &identity
+        {
+            return retain_failed_world_adoption(
+                self,
+                "hot-fork child identity differs from its installed node or target reservation",
+            );
+        }
+        let Some(run_directory) = backend
+            .run_directory
+            .as_ref()
+            .map(|directory| directory.path())
+        else {
+            return retain_failed_world_adoption(
+                self,
+                "hot-fork child lost its pinned run-directory authority",
+            );
+        };
+        let run_directory = run_directory.to_path_buf();
+        let Some(node) = backend.installed_node.take() else {
+            return retain_failed_world_adoption(
+                self,
+                "hot-fork child lost its installed scheduler node",
+            );
+        };
+        let lease = LinuxQemuHotForkWorldNodeLease {
+            identity: identity.clone(),
+            reconciliation: Some(self),
+            completed,
+        };
+        ProductionVmHotForkNodeAdoption::new(identity, node, lease, run_directory)
+    }
+}
+
+fn retain_failed_world_adoption<G>(
+    mut reconciliation: QemuHotForkAttemptReconciliation<
+        LinuxQemuHotForkReconciliationBackend<QemuHotForkWorldNodeTarget<G>>,
+    >,
+    message: impl Into<String>,
+) -> Result<ProductionVmHotForkNodeAdoption, LifecycleApiError>
+where
+    G: crate::QemuAttemptResourceGuard,
+{
+    reconciliation.quarantine();
+    std::mem::forget(reconciliation);
+    Err(hot_fork_adoption_error(message))
+}
+
+fn hot_fork_adoption_error(message: impl Into<String>) -> LifecycleApiError {
+    LifecycleApiError::LoopFactory {
+        message: message.into(),
     }
 }
 

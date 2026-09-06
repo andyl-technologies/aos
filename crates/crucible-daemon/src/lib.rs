@@ -155,6 +155,8 @@ pub mod qemu_hot_fork_runner;
 #[cfg(target_os = "linux")]
 pub mod qemu_hot_fork_world;
 #[cfg(target_os = "linux")]
+pub mod qemu_hot_fork_world_factory;
+#[cfg(target_os = "linux")]
 pub mod qemu_hot_fork_world_resource;
 pub mod qemu_lifecycle_launcher;
 pub mod qemu_resource_guard;
@@ -522,6 +524,16 @@ pub use qemu_hot_fork_world::{
     QemuHotForkCompleteWorldAssembly, QemuHotForkWorldAssembly, QemuHotForkWorldAssemblyToken,
     QemuHotForkWorldChild, QemuHotForkWorldChildAdmissionError,
     QemuHotForkWorldChildAdmissionFailure, QemuHotForkWorldIncomplete,
+    QemuProductionHotForkWorldLifecycle,
+};
+#[cfg(target_os = "linux")]
+pub use qemu_hot_fork_world_factory::{
+    QemuHotForkSourceWorldProvider, QemuHotForkWorldExecutionAttempt,
+    QemuHotForkWorldExecutionRunner, QemuHotForkWorldExecutionRunnerError,
+    QemuHotForkWorldLifecycleFactory, QemuHotForkWorldLifecycleOwner,
+    QemuHotForkWorldLifecycleStart, QemuProductionHotForkWorldLifecycleFactory,
+    QemuProductionHotForkWorldLifecycleFactoryError, QemuSingleHotForkSourceWorldProvider,
+    QemuUnavailableHotForkSourceWorldProvider,
 };
 #[cfg(target_os = "linux")]
 pub use qemu_hot_fork_world_resource::{QemuHotForkWorldNodeTarget, QemuHotForkWorldResourceOwner};

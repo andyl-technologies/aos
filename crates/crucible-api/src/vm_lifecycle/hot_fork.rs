@@ -42,6 +42,27 @@ impl ProductionVmHotForkSourceWorld {
         &self.continuation
     }
 
+    /// Replaces one immutable-root identity for construction-failure tests.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when `node` is absent from the captured
+    /// world continuation.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn replace_immutable_root_for_test(
+        &mut self,
+        node: &NodeId,
+        root: ContentHash,
+    ) -> Result<(), LifecycleApiError> {
+        let retained = self
+            .continuation
+            .immutable_root_images
+            .get_mut(node)
+            .ok_or_else(|| loop_factory_error("test immutable-root node is absent"))?;
+        *retained = root;
+        Ok(())
+    }
+
     /// Returns the canonically ordered prepared retained-source nodes.
     #[must_use]
     pub fn prepared_nodes(&self) -> impl ExactSizeIterator<Item = &NodeId> {
@@ -109,6 +130,66 @@ impl ProductionVmHotForkSourceWorld {
                     node.name
                 ))
             })
+    }
+
+    /// Borrows one source during ordered child reconciliation.
+    ///
+    /// The loan authenticates the same source process and active transaction
+    /// generation captured at preparation while permitting branch-private
+    /// resources to have entered their ordered release sequence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when `node` was not prepared, the lifecycle
+    /// owner is unavailable, or the retained transaction identity changed.
+    pub fn retained_source(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<QemuNodeSetPreparedHotForkSource<'_>, SchedulerError> {
+        let prepared = self
+            .prepared
+            .iter()
+            .find(|prepared| prepared.node() == node)
+            .ok_or_else(|| {
+                hot_fork_boundary_error(format!(
+                    "production hot-fork source world has no retained node `{}`",
+                    node.name
+                ))
+            })?;
+        let lifecycle = self.lifecycle.as_deref_mut().ok_or_else(|| {
+            hot_fork_boundary_error("production hot-fork source world lost its lifecycle owner")
+        })?;
+        lifecycle
+            .inner
+            .backend_mut()
+            .retained_hot_fork_source(prepared)
+            .map_err(|error| {
+                hot_fork_boundary_error(format!(
+                    "authenticate reconciling hot-fork source `{}`: {error}",
+                    node.name
+                ))
+            })
+    }
+
+    /// Returns a fully prepared reusable source world.
+    ///
+    /// A world that still owns its complete prepared transaction is returned
+    /// unchanged. A reconciled child transaction is first rolled back to its
+    /// stopped lifecycle and then prepared again, minting fresh exact tokens
+    /// and branch-resource generations for the next fork.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProductionVmHotForkSourceWorldPreparationFailure`] retaining
+    /// the source lifecycle when rollback or renewed preparation fails.
+    pub fn into_reusable(
+        mut self,
+    ) -> Result<Self, ProductionVmHotForkSourceWorldPreparationFailure> {
+        if self.validate_source_ownership().is_ok() {
+            return Ok(self);
+        }
+
+        self.recover()?.prepare_hot_fork_source_world()
     }
 
     /// Aborts every retained-template transaction and recovers the lifecycle.
@@ -672,6 +753,31 @@ impl ProductionVmHotForkWorldContinuation {
 }
 
 impl ProductionVmLifecycleLoop {
+    /// Releases reaped child-world process loans before source-world recovery.
+    ///
+    /// This operation is valid after complete lifecycle shutdown and final
+    /// child reconciliation. It drops the modeled node channels that retain
+    /// non-owning source-process references; lifecycle metadata and generation
+    /// leases remain available for failure containment.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when shutdown is incomplete or any modeled
+    /// child has not reached terminal reap.
+    pub fn release_reaped_hot_fork_process_loans(&mut self) -> Result<(), LifecycleApiError> {
+        if !self.run_manifest.clean_shutdown {
+            return Err(loop_factory_error(
+                "cannot release hot-fork process loans before lifecycle shutdown",
+            ));
+        }
+        self.inner
+            .backend_mut()
+            .release_reaped_nodes()
+            .map_err(|error| {
+                loop_factory_error(format!("release reaped hot-fork process loans: {error}"))
+            })
+    }
+
     /// Prepares every retained QEMU source as one failure-atomic source world.
     ///
     /// The lifecycle is consumed before preparation begins. Each per-node
@@ -1131,7 +1237,12 @@ fn hot_fork_boundary_error(message: impl Into<String>) -> SchedulerError {
 #[cfg(feature = "test-support")]
 mod test_support;
 #[cfg(feature = "test-support")]
-pub use test_support::prepared_hot_fork_source_world_for_test;
+pub(super) use test_support::record_hot_fork_adoption_for_test;
+#[cfg(feature = "test-support")]
+pub use test_support::{
+    hot_fork_adoption_count_for_test, prepared_hot_fork_source_world_for_test,
+    prepared_multi_node_hot_fork_source_world_for_test, reset_hot_fork_adoption_count_for_test,
+};
 
 #[cfg(test)]
 #[path = "hot_fork/tests.rs"]

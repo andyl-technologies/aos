@@ -14,11 +14,14 @@ use std::sync::{Arc, Mutex};
 // crucible-lint: allow host-nondeterminism-state -- exact node generations index operational resource ownership, not scheduler decisions or guest time.
 use crucible_api::ProductionVmNodeGeneration;
 use crucible_campaign::AttemptResourceLimits;
-use crucible_qemu::QemuVmRealizationError;
+use crucible_qemu::{
+    QemuChildProcessContract, QemuLaunchResourceRequirements, QemuNodeChild,
+    QemuPreparedRunDirectory, QemuVmRealizationError,
+};
 
 use crate::{
     ExecutionCancellation, MAX_QEMU_ATTEMPT_GENERATION_NODES, QemuAttemptOperationalBoundary,
-    QemuAttemptResourceGuard,
+    QemuAttemptProcessResourceGuard, QemuAttemptResourceGuard,
 };
 
 struct QemuHotForkWorldResourceState<G>
@@ -29,6 +32,8 @@ where
     maximum_nodes: usize,
     issued: BTreeSet<ProductionVmNodeGeneration>,
     released: BTreeSet<ProductionVmNodeGeneration>,
+    lifecycle_launcher_required: bool,
+    lifecycle_launcher_finished: bool,
     terminal: bool,
     terminal_failure: Option<String>,
 }
@@ -88,6 +93,8 @@ where
                 maximum_nodes,
                 issued: BTreeSet::new(),
                 released: BTreeSet::new(),
+                lifecycle_launcher_required: false,
+                lifecycle_launcher_finished: false,
                 terminal: false,
                 terminal_failure: None,
             })),
@@ -185,6 +192,62 @@ where
         Ok(operation(&mut state.guard))
     }
 
+    /// Mints the shared guard used by the adopted production lifecycle launcher.
+    ///
+    /// The returned guard owns a duplicated process contract while every mutable
+    /// operation remains serialized through the aggregate owner. Its successful
+    /// `finish` records that all lifecycle-created generation leases were
+    /// released, but deliberately leaves aggregate enforcement installed until
+    /// post-publication reconciliation finishes every adopted child.
+    ///
+    /// # Errors
+    ///
+    /// Returns an executor error after terminal cleanup, a repeated launcher
+    /// handoff, registry poison, or process-contract duplication failure.
+    pub(crate) fn lifecycle_guard(
+        &mut self,
+    ) -> Result<QemuHotForkWorldLifecycleGuard<G>, QemuVmRealizationError>
+    where
+        G: QemuAttemptProcessResourceGuard,
+    {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
+        if state.terminal {
+            return Err(world_resource_error(
+                state
+                    .terminal_failure
+                    .as_deref()
+                    .unwrap_or("hot-fork world resource owner is terminal"),
+            ));
+        }
+        if state.lifecycle_launcher_required {
+            return Err(world_resource_error(
+                "hot-fork world lifecycle launcher was already issued",
+            ));
+        }
+        let process_contract = state
+            .guard
+            .child_process_contract()?
+            .try_clone_for_attempt_generation()
+            .map_err(|source| {
+                world_resource_error(format!(
+                    "duplicate hot-fork world lifecycle process contract: {source}"
+                ))
+            })?;
+        state.lifecycle_launcher_required = true;
+        drop(state);
+
+        Ok(QemuHotForkWorldLifecycleGuard {
+            state: Arc::clone(&self.state),
+            resources: self.resources,
+            cancellation: self.cancellation.clone(),
+            process_contract,
+            finished: false,
+        })
+    }
+
     /// Releases aggregate enforcement after every exact child target finished.
     ///
     /// The method is idempotent after success. An incomplete target set
@@ -213,6 +276,15 @@ where
             state.terminal_failure = Some(message.clone());
             return Err(world_resource_error(message));
         }
+        if state.lifecycle_launcher_required && !state.lifecycle_launcher_finished {
+            let message = String::from(
+                "hot-fork world aggregate release preceded lifecycle launcher cleanup",
+            );
+            state.guard.quarantine();
+            state.terminal = true;
+            state.terminal_failure = Some(message.clone());
+            return Err(world_resource_error(message));
+        }
         let result = state.guard.finish();
         state.terminal = true;
         if let Err(error) = &result {
@@ -224,6 +296,161 @@ where
     /// Transfers the complete aggregate guard to fail-closed quarantine.
     pub fn quarantine(&mut self) {
         quarantine_world_state(&self.state);
+    }
+}
+
+/// Shared process/storage guard for generations created after world adoption.
+///
+/// This guard is installed into [`crate::QemuAttemptGenerationResourceOwner`].
+/// Its normal finish proves that the lifecycle released all of its generation
+/// leases while deferring aggregate release to [`QemuHotForkWorldResourceOwner`].
+pub(crate) struct QemuHotForkWorldLifecycleGuard<G>
+where
+    G: QemuAttemptProcessResourceGuard,
+{
+    state: Arc<Mutex<QemuHotForkWorldResourceState<G>>>,
+    resources: AttemptResourceLimits,
+    cancellation: ExecutionCancellation,
+    process_contract: QemuChildProcessContract,
+    finished: bool,
+}
+
+impl<G> QemuAttemptOperationalBoundary for QemuHotForkWorldLifecycleGuard<G>
+where
+    G: QemuAttemptProcessResourceGuard,
+{
+    fn resource_limits(&self) -> AttemptResourceLimits {
+        self.resources
+    }
+
+    fn cancellation(&self) -> &ExecutionCancellation {
+        &self.cancellation
+    }
+
+    fn check_operational_boundary(&mut self) -> Result<(), QemuVmRealizationError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
+        if self.finished || state.terminal {
+            return Err(world_resource_error(
+                "hot-fork world lifecycle launcher is not operational",
+            ));
+        }
+        state.guard.check_operational_boundary()
+    }
+
+    fn charge_execution_quantum(&mut self) -> Result<(), QemuVmRealizationError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
+        if self.finished || state.terminal {
+            return Err(world_resource_error(
+                "hot-fork world lifecycle launcher is not operational",
+            ));
+        }
+        state.guard.charge_execution_quantum()
+    }
+}
+
+impl<G> QemuAttemptResourceGuard for QemuHotForkWorldLifecycleGuard<G>
+where
+    G: QemuAttemptProcessResourceGuard,
+{
+    fn finish(&mut self) -> Result<(), QemuVmRealizationError> {
+        if self.finished {
+            return Ok(());
+        }
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
+        if state.terminal {
+            return Err(world_resource_error(
+                state
+                    .terminal_failure
+                    .as_deref()
+                    .unwrap_or("hot-fork world resource owner is terminal"),
+            ));
+        }
+        state.lifecycle_launcher_finished = true;
+        self.finished = true;
+        Ok(())
+    }
+
+    fn quarantine(&mut self) {
+        if !self.finished {
+            quarantine_world_state(&self.state);
+            self.finished = true;
+        }
+    }
+}
+
+impl<G> QemuAttemptProcessResourceGuard for QemuHotForkWorldLifecycleGuard<G>
+where
+    G: QemuAttemptProcessResourceGuard,
+{
+    fn child_process_contract(&self) -> Result<&QemuChildProcessContract, QemuVmRealizationError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
+        if self.finished || state.terminal {
+            return Err(world_resource_error(
+                "hot-fork world lifecycle launcher cannot lend its process contract",
+            ));
+        }
+        drop(state);
+        Ok(&self.process_contract)
+    }
+
+    fn prepare_generation_run_directory(
+        &mut self,
+        requirements: QemuLaunchResourceRequirements,
+    ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
+        if self.finished || state.terminal {
+            return Err(world_resource_error(
+                "hot-fork world lifecycle launcher cannot prepare a generation directory",
+            ));
+        }
+        state.guard.prepare_generation_run_directory(requirements)
+    }
+
+    fn retain_failed_launch_child(&mut self, child: QemuNodeChild) {
+        match self.state.lock() {
+            Ok(mut state) => {
+                state.guard.retain_failed_launch_child(child);
+                state.guard.quarantine();
+                state.terminal = true;
+                state.terminal_failure = Some(String::from(
+                    "hot-fork world lifecycle retained an unreaped launch child",
+                ));
+            }
+            Err(poisoned) => {
+                let mut state = poisoned.into_inner();
+                state.guard.retain_failed_launch_child(child);
+                state.guard.quarantine();
+                state.terminal = true;
+                state.terminal_failure = Some(String::from(
+                    "hot-fork world lifecycle resource registry was poisoned",
+                ));
+            }
+        }
+        self.finished = true;
+    }
+}
+
+impl<G> Drop for QemuHotForkWorldLifecycleGuard<G>
+where
+    G: QemuAttemptProcessResourceGuard,
+{
+    fn drop(&mut self) {
+        self.quarantine();
     }
 }
 

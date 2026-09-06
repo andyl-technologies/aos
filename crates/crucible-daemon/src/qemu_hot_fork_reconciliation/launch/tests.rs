@@ -1,6 +1,7 @@
 //! Production source-world launch regressions through scripted QMP.
 
 // crucible-lint: allow panic-shortcut -- fixture-only unreachable process retention and assertions use panic shortcuts.
+// crucible-lint: allow rust-allow -- the scripted indeterminate branch deliberately panics if an impossible owned-child path is reached.
 #![allow(clippy::expect_used, clippy::panic)]
 
 use std::collections::BTreeMap;

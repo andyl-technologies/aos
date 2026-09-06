@@ -79,13 +79,16 @@ pub use fault_implementation::{
 };
 #[cfg(target_os = "linux")]
 mod hot_fork;
-#[cfg(all(target_os = "linux", feature = "test-support"))]
-pub use hot_fork::prepared_hot_fork_source_world_for_test;
 #[cfg(target_os = "linux")]
 pub use hot_fork::{
     ProductionVmHotForkNodeBoundary, ProductionVmHotForkNodeServiceState,
     ProductionVmHotForkSourceWorld, ProductionVmHotForkSourceWorldPreparationFailure,
     ProductionVmHotForkWorldContinuation,
+};
+#[cfg(all(target_os = "linux", feature = "test-support"))]
+pub use hot_fork::{
+    hot_fork_adoption_count_for_test, prepared_hot_fork_source_world_for_test,
+    prepared_multi_node_hot_fork_source_world_for_test, reset_hot_fork_adoption_count_for_test,
 };
 
 /// Default final icount available to one production CLI lifecycle session.

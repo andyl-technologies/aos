@@ -1,16 +1,18 @@
 //! Scripted retained-template transport for cross-crate hot-fork tests.
 
 use std::collections::VecDeque;
-use std::error::Error;
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::unix::process::ExitStatusExt as _;
 use std::process::Command;
+use std::thread;
 use std::time::Duration;
 
-use crucible::{
-    AdvanceOutcome, BackendInput, Checkpoint, ExecutionFingerprint, ExecutionHorizon, Icount,
-    ObservableEvent,
-};
+use crucible::{AdvanceOutcome, Checkpoint, ExecutionFingerprint, Icount, ObservableEvent};
+// crucible-lint: allow host-nondeterminism-state -- the scripted transport forwards fixed test input into the same validated node boundary as the production channel.
+use crucible::BackendInput;
+// crucible-lint: allow host-nondeterminism-state -- the fixed fixture horizon is an untrusted transport response consumed by scheduler validation.
+use crucible::ExecutionHorizon;
 use crucible_shmem::{
     CoverageEntry, DequeuedFaultEvent, DequeuedFaultResult, FaultCommandHeaderV1,
     FingerprintSample as QemuFingerprintSample, RegionAllocation, RegionConfig, mmap_setup_region,
@@ -65,12 +67,17 @@ struct ScriptedQmpMachineControl {
     )>,
     diagnostics: Option<RetainedStream>,
     child_qmp: Option<RetainedStream>,
+    child_qmp_endpoint: Option<std::os::unix::net::UnixStream>,
     child_console: Option<RetainedStream>,
     process_contract: Option<(
         crate::QmpHotForkChildProcessContractNames,
         crate::QmpHotForkChildProcessContractIdentity,
     )>,
     child_files: Option<ScriptedChildFiles>,
+    fork_child: Option<std::process::Child>,
+    fork_child_process_id: Option<u32>,
+    fork_child_terminal: Option<(crate::QmpHotForkChildProcessPhase, u8)>,
+    fork_child_retained: bool,
     aborted: bool,
     outcome: QemuTestHotForkOutcome,
 }
@@ -83,11 +90,14 @@ struct ScriptedQmpMachineControl {
 /// shared-memory image, or scripted transport state.
 pub fn scripted_hot_fork_source_for_test(
     outcome: QemuTestHotForkOutcome,
-) -> Result<QemuNode, Box<dyn Error>> {
+) -> Result<QemuNode, QemuTestHotForkSourceError> {
     let (setup_identity, host_barrier, image) = held_hot_fork_ring_image()?;
     let plugin_barrier =
         crate::QmpHotForkPluginBarrierState::one_quiescent(15, host_barrier.ring_count());
-    let child = Command::new("sleep").arg("60").spawn()?;
+    let child = Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .map_err(|source| QemuTestHotForkSourceError::new("spawn scripted source", source))?;
     let process_id = child.id();
     let channels = QemuNodeChannels::new(
         ScriptedPluginControl,
@@ -99,14 +109,19 @@ pub fn scripted_hot_fork_source_for_test(
         ScriptedQmpMachineControl {
             process_id,
             resource_identity: setup_identity,
-            plugin_barriers: [plugin_barrier; 8].into_iter().collect(),
+            plugin_barriers: [plugin_barrier; 32].into_iter().collect(),
             last_plugin_barrier: None,
             private_ring: None,
             diagnostics: None,
             child_qmp: None,
+            child_qmp_endpoint: None,
             child_console: None,
             process_contract: None,
             child_files: None,
+            fork_child: None,
+            fork_child_process_id: None,
+            fork_child_terminal: None,
+            fork_child_retained: false,
             aborted: false,
             outcome,
         },
@@ -134,23 +149,123 @@ fn held_hot_fork_ring_image() -> Result<
         crucible_shmem::MappedRingIoBarrierSnapshot,
         crucible_shmem::HotForkRingImage,
     ),
-    Box<dyn Error>,
+    QemuTestHotForkSourceError,
 > {
-    let mut allocation = RegionAllocation::new_model(RegionConfig::new(1, 4, 0))?;
-    allocation.enqueue_coverage_entry(0, CoverageEntry::new(17, 0, 0x4000, 4, 9)?)?;
-    let mut shmem = tempfile::tempfile()?;
-    shmem.write_all(&allocation.setup_region_bytes()?)?;
-    let mapped = mmap_setup_region(shmem.as_fd(), allocation.layout().region_size)?;
+    let mut allocation =
+        RegionAllocation::new_model(RegionConfig::new(1, 4, 0)).map_err(|source| {
+            QemuTestHotForkSourceError::new("allocate scripted shared memory", source)
+        })?;
+    let entry = CoverageEntry::new(17, 0, 0x4000, 4, 9).map_err(|source| {
+        QemuTestHotForkSourceError::new("construct scripted coverage entry", source)
+    })?;
+    allocation
+        .enqueue_coverage_entry(0, entry)
+        .map_err(|source| {
+            QemuTestHotForkSourceError::new("enqueue scripted coverage entry", source)
+        })?;
+    let mut shmem = tempfile::tempfile().map_err(|source| {
+        QemuTestHotForkSourceError::new("create scripted shared-memory file", source)
+    })?;
+    let bytes = allocation.setup_region_bytes().map_err(|source| {
+        QemuTestHotForkSourceError::new("encode scripted shared-memory region", source)
+    })?;
+    shmem.write_all(&bytes).map_err(|source| {
+        QemuTestHotForkSourceError::new("write scripted shared-memory region", source)
+    })?;
+    let mapped =
+        mmap_setup_region(shmem.as_fd(), allocation.layout().region_size).map_err(|source| {
+            QemuTestHotForkSourceError::new("map scripted shared-memory region", source)
+        })?;
     let identity = mapped.backing_identity();
-    let host_barrier = mapped.hold_hot_fork_ring_io()?;
-    let image = mapped.capture_hot_fork_ring_image(usize::MAX)?;
+    let host_barrier = mapped.hold_hot_fork_ring_io().map_err(|source| {
+        QemuTestHotForkSourceError::new("hold scripted hot-fork ring I/O", source)
+    })?;
+    let image = mapped
+        .capture_hot_fork_ring_image(usize::MAX)
+        .map_err(|source| {
+            QemuTestHotForkSourceError::new("capture scripted hot-fork ring image", source)
+        })?;
 
     Ok((identity, host_barrier, image))
+}
+
+/// Typed failure while constructing a scripted retained-template source.
+#[derive(Debug, thiserror::Error)]
+#[error("{operation}: {message}")]
+pub struct QemuTestHotForkSourceError {
+    operation: &'static str,
+    message: String,
+}
+
+impl QemuTestHotForkSourceError {
+    fn new(operation: &'static str, source: impl std::error::Error) -> Self {
+        Self {
+            operation,
+            message: source.to_string(),
+        }
+    }
 }
 
 impl QemuPluginIpcControlChannel for ScriptedPluginControl {
     fn send_quit(&mut self) -> Result<(), QemuNodeChannelError> {
         Ok(())
+    }
+}
+
+impl ScriptedQmpMachineControl {
+    fn fork_child_state(
+        &mut self,
+        generation: u64,
+    ) -> Result<crate::QmpHotForkChildProcessState, QemuNodeChannelError> {
+        if self.fork_child_terminal.is_none() {
+            let status = self
+                .fork_child
+                .as_mut()
+                .ok_or_else(|| {
+                    QemuNodeChannelError::new(
+                        "query scripted hot-fork child",
+                        "scripted child process is absent",
+                    )
+                })?
+                .try_wait()
+                .map_err(|source| {
+                    QemuNodeChannelError::new("query scripted hot-fork child", source.to_string())
+                })?;
+            if let Some(status) = status {
+                let terminal = if let Some(code) = status.code() {
+                    (
+                        crate::QmpHotForkChildProcessPhase::Exited,
+                        u8::try_from(code).unwrap_or(u8::MAX),
+                    )
+                } else {
+                    (
+                        crate::QmpHotForkChildProcessPhase::Signaled,
+                        status
+                            .signal()
+                            .and_then(|signal| u8::try_from(signal).ok())
+                            .unwrap_or(u8::MAX),
+                    )
+                };
+                self.fork_child_terminal = Some(terminal);
+            }
+        }
+
+        let child_process_id = self.fork_child_process_id.ok_or_else(|| {
+            QemuNodeChannelError::new(
+                "query scripted hot-fork child",
+                "scripted child process identity is absent",
+            )
+        })?;
+        let (phase, status) = self
+            .fork_child_terminal
+            .unwrap_or((crate::QmpHotForkChildProcessPhase::Running, 0));
+        Ok(crate::QmpHotForkChildProcessState::for_test(
+            generation,
+            child_process_id,
+            phase,
+            status,
+            self.fork_child_retained,
+        ))
     }
 }
 
@@ -233,6 +348,7 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
 
     fn start_quantum(
         &mut self,
+        // crucible-lint: allow host-nondeterminism-state -- this test source returns a scripted horizon without making a scheduler decision.
         horizon: ExecutionHorizon,
     ) -> Result<QemuNodePendingQuantum, QemuNodeChannelError> {
         Ok(QemuNodePendingQuantum::new(horizon.icount.retired))
@@ -303,6 +419,7 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
         Ok(Vec::new())
     }
 
+    // crucible-lint: allow host-nondeterminism-state -- this test source deliberately discards the already-modeled frame input.
     fn deliver_frame(&mut self, _input: BackendInput) -> Result<(), QemuNodeChannelError> {
         Ok(())
     }
@@ -587,10 +704,14 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
     fn install_hot_fork_child_qmp(
         &mut self,
         name: &crate::QmpDescriptorName,
-        _descriptor: BorrowedFd<'_>,
+        descriptor: BorrowedFd<'_>,
         socket_cookie: u64,
         template_generation: u64,
     ) -> Result<crate::QmpHotForkChildQmpState, QemuNodeChannelError> {
+        let descriptor = descriptor.try_clone_to_owned().map_err(|source| {
+            QemuNodeChannelError::new("install scripted hot-fork child QMP", source.to_string())
+        })?;
+        self.child_qmp_endpoint = Some(std::os::unix::net::UnixStream::from(descriptor));
         self.child_qmp = Some((name.clone(), socket_cookie, false));
         Ok(crate::QmpHotForkChildQmpState::one_template_staged(
             1,
@@ -865,10 +986,47 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
         match self.outcome {
             QemuTestHotForkOutcome::Forked => {
                 write_child_file_payloads(self.child_files.as_ref())?;
+                let child = Command::new("sleep").arg("60").spawn().map_err(|source| {
+                    crate::QemuHotForkCommandError::Rejected {
+                        source: QemuNodeChannelError::new(
+                            "fork scripted hot-fork template",
+                            source.to_string(),
+                        ),
+                    }
+                })?;
+                let child_process_id = child.id();
+                self.fork_child = Some(child);
+                self.fork_child_process_id = Some(child_process_id);
+                self.fork_child_terminal = None;
+                self.fork_child_retained = true;
+                let endpoint = self.child_qmp_endpoint.take().ok_or_else(|| {
+                    crate::QemuHotForkCommandError::Rejected {
+                        source: QemuNodeChannelError::new(
+                            "fork scripted hot-fork template",
+                            "scripted child QMP endpoint is absent",
+                        ),
+                    }
+                })?;
+                let (name, socket_cookie, _bound) = self.child_qmp.as_ref().ok_or_else(|| {
+                    crate::QemuHotForkCommandError::Rejected {
+                        source: QemuNodeChannelError::new(
+                            "fork scripted hot-fork template",
+                            "scripted child QMP basis is absent",
+                        ),
+                    }
+                })?;
+                spawn_scripted_child_qmp(
+                    endpoint,
+                    name.clone(),
+                    *socket_cookie,
+                    TEMPLATE_GENERATION,
+                    1,
+                    7,
+                );
                 Ok(crate::QmpHotForkState::for_test(
                     request,
                     crate::QmpHotForkOutcome::Forked,
-                    321,
+                    i64::from(child_process_id),
                 ))
             }
             QemuTestHotForkOutcome::Indeterminate => {
@@ -880,6 +1038,36 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
                 })
             }
         }
+    }
+
+    fn query_hot_fork_child_process(
+        &mut self,
+        generation: u64,
+    ) -> Result<crate::QmpHotForkChildProcessState, QemuNodeChannelError> {
+        self.fork_child_state(generation)
+    }
+
+    fn release_hot_fork_child_process(
+        &mut self,
+        generation: u64,
+    ) -> Result<crate::QmpHotForkChildProcessState, QemuNodeChannelError> {
+        let state = self.fork_child_state(generation)?;
+        if state.phase() == crate::QmpHotForkChildProcessPhase::Running {
+            return Err(QemuNodeChannelError::new(
+                "release scripted hot-fork child",
+                "scripted child remains live",
+            ));
+        }
+
+        self.fork_child_retained = false;
+        self.fork_child = None;
+        Ok(crate::QmpHotForkChildProcessState::for_test(
+            generation,
+            state.child_process_id(),
+            state.phase(),
+            state.status(),
+            false,
+        ))
     }
 
     fn query_hot_fork_bottom_half_inventory(
@@ -939,6 +1127,76 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
     fn activate_debug_guest(&mut self) -> Result<(), QemuNodeChannelError> {
         Ok(())
     }
+}
+
+fn spawn_scripted_child_qmp(
+    mut stream: std::os::unix::net::UnixStream,
+    descriptor_name: crate::QmpDescriptorName,
+    socket_cookie: u64,
+    template_generation: u64,
+    qmp_generation: u64,
+    monitor_generation: u64,
+) {
+    thread::spawn(move || {
+        if stream.set_nonblocking(false).is_err() {
+            return;
+        }
+        let _ = stream.write_all(b"{\"QMP\":{\"version\":{},\"capabilities\":[\"oob\"]}}\r\n");
+        let reader_stream = match stream.try_clone() {
+            Ok(stream) => stream,
+            Err(_) => return,
+        };
+        let mut reader = BufReader::new(reader_stream);
+        loop {
+            let mut request = String::new();
+            match reader.read_line(&mut request) {
+                Ok(0) | Err(_) => return,
+                Ok(_) => {}
+            }
+            let command = serde_json::from_str::<serde_json::Value>(&request)
+                .ok()
+                .and_then(|request| {
+                    request
+                        .get("execute")
+                        .or_else(|| request.get("exec-oob"))?
+                        .as_str()
+                        .map(str::to_owned)
+                });
+            let response = match command.as_deref() {
+                Some("crucible-hot-fork-child-qmp") => serde_json::json!({
+                    "return": {
+                        "schema-version": 8,
+                        "generation": qmp_generation,
+                        "template-generation": template_generation,
+                        "monitor-generation": monitor_generation,
+                        "staged": true,
+                        "fdname": descriptor_name.as_str(),
+                        "socket-cookie": socket_cookie,
+                        "retained-fd": 33,
+                        "resource-plan-bound": true,
+                        "nonblocking-unix-stream": true,
+                        "monitor-basis-bound": true,
+                        "monitor-disposition-bound": true,
+                        "monitor-socket-resources-bound": true,
+                        "reinitializer-prepared": true,
+                        "reinitialized": true,
+                        "disposition-complete": true,
+                        "readiness-proof-acknowledged": true
+                    }
+                }),
+                Some("query-status") => serde_json::json!({
+                    "return": { "status": "running", "singlestep": false, "running": true }
+                }),
+                _ => serde_json::json!({ "return": {} }),
+            };
+            if writeln!(stream, "{response}").is_err() {
+                return;
+            }
+            if command.as_deref() == Some("quit") {
+                return;
+            }
+        }
+    });
 }
 
 fn mark_stream_bound(
