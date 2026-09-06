@@ -499,6 +499,7 @@ let
     "strace"
     "sudo"
     "systemd"
+    "tailscale"
     "tmux"
     "util-linux"
     "valgrind"
