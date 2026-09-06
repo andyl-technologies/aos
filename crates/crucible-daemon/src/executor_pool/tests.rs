@@ -571,6 +571,35 @@ fn fixed_pool_requeues_once_then_stops_without_capacity_growth() {
 }
 
 #[test]
+fn operational_snapshots_are_read_only_and_revision_overflow_is_unavailable() {
+    let epoch = DaemonEpoch::from_bytes([0x30; 16]).expect("epoch");
+    let pool = pool(
+        epoch,
+        vec![SequencedFailureWorker {
+            calls: Arc::new(AtomicUsize::new(0)),
+        }],
+    );
+    let service = pool.service();
+
+    let before = service.operational_snapshot().expect("first snapshot");
+    thread::sleep(WORKER_RETRY_INTERVAL.saturating_mul(3));
+    let after = service.operational_snapshot().expect("second snapshot");
+    assert_eq!(after, before);
+
+    service
+        .shared
+        .ownership_revision
+        .store(u64::MAX, Ordering::Release);
+    assert!(matches!(
+        service.operational_snapshot(),
+        Err(LocalExecutorPoolServiceError::ObservationRevisionExhausted)
+    ));
+    assert!(service.report().is_ok());
+
+    pool.shutdown_and_join().expect("clean shutdown");
+}
+
+#[test]
 fn blocking_worker_does_not_block_service_and_shutdown_cancels_it() {
     let epoch = DaemonEpoch::from_bytes([0x32; 16]).expect("epoch");
     let entered = Arc::new(AtomicUsize::new(0));

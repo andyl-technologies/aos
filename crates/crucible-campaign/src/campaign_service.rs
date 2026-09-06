@@ -27,6 +27,7 @@ mod pin;
 mod query;
 mod ranking;
 mod repository;
+mod status;
 mod watch;
 
 pub use create::{
@@ -56,6 +57,12 @@ pub use ranking::{GetCampaignPlannerRankingsRequest, GetCampaignPlannerRankingsR
 pub use repository::{RepositoryCampaignService, RepositoryCampaignServiceError};
 #[cfg(test)]
 use repository::{repository_service_failure, store_service_failure};
+pub use status::{
+    CampaignContinuationStatus, CampaignOperationalEvidence, CampaignOperationalStatus,
+    CampaignOperationalStatusProvider, CampaignSemanticStatus, CampaignStatusSummary,
+    CampaignWorldStatus, GetCampaignStatusRequest, GetCampaignStatusResponse,
+    MAX_CAMPAIGN_STATUS_CONTINUATION_BYTES, MAX_CAMPAIGN_STATUS_CONTINUATIONS,
+};
 pub use watch::{WatchCampaignRequest, WatchCampaignResponse};
 
 const CAMPAIGN_SERVICE_SCHEMA_VERSION: u32 = 1;
@@ -152,6 +159,8 @@ pub enum CampaignServiceOperation {
     DeriveCampaign,
     /// Read the authenticated current campaign head and lifecycle state.
     GetCampaign,
+    /// Read bounded semantic and operational status at one exact current snapshot.
+    GetCampaignStatus,
     /// Read one authenticated snapshot from a named campaign history.
     GetCampaignSnapshot,
     /// Read the latest coalesced campaign head after an optional snapshot cursor.
@@ -343,6 +352,19 @@ impl CampaignServiceFailure {
             }),
             _ => Ok(()),
         }
+    }
+
+    /// Validates a failure for one exact campaign status projection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for a create- or mutation-only failure,
+    /// or when a stale failure does not describe this request's exact snapshot.
+    pub fn validate_for_get_campaign_status(
+        self,
+        expected_snapshot: CampaignSnapshotId,
+    ) -> Result<(), CampaignCodecError> {
+        self.validate_for_query_campaign_graph(expected_snapshot)
     }
 
     /// Validates that this failure is meaningful for `ListCampaigns`.
@@ -1567,6 +1589,18 @@ pub trait CampaignService {
         request: &GetCampaignRequest,
     ) -> Result<GetCampaignResponse, Self::Error>;
 
+    /// Returns bounded status at one exact current campaign snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns the implementation-specific failure when authorization,
+    /// snapshot precondition, repository projection, operational inventory,
+    /// or response construction fails.
+    fn get_campaign_status(
+        &self,
+        request: &GetCampaignStatusRequest,
+    ) -> Result<GetCampaignStatusResponse, Self::Error>;
+
     /// Returns one exact snapshot from the named campaign's authenticated history.
     ///
     /// # Errors
@@ -1862,6 +1896,32 @@ where
                 let failure = error.campaign_service_failure();
                 failure
                     .validate_for_get_campaign()
+                    .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+                return Err(failure.into());
+            }
+        };
+        response
+            .validate_for(request)
+            .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+        Ok(response)
+    }
+
+    /// Gets one exact campaign status projection and validates response binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignClientError`] when the service fails or answers a
+    /// different request or snapshot.
+    pub fn get_campaign_status(
+        &self,
+        request: &GetCampaignStatusRequest,
+    ) -> Result<GetCampaignStatusResponse, CampaignClientError> {
+        let response = match self.service.get_campaign_status(request) {
+            Ok(response) => response,
+            Err(error) => {
+                let failure = error.campaign_service_failure();
+                failure
+                    .validate_for_get_campaign_status(request.snapshot())
                     .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
                 return Err(failure.into());
             }

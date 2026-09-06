@@ -947,6 +947,112 @@ fn direct_campaign_service_uses_repository_owner_and_exact_replay() {
 }
 
 #[test]
+fn campaign_status_is_exactly_snapshot_bound_and_separates_operational_evidence() {
+    let (repository, lineage, policy) = fixture();
+    let genesis = repository
+        .create("service-status", &lineage, &policy, &BTreeMap::new())
+        .expect("create campaign");
+    let principal = crate::CampaignPrincipal::new("operator:alice").expect("principal");
+    let campaign = crate::CampaignName::new("service-status").expect("campaign name");
+    let client = crate::CampaignClient::new(crate::RepositoryCampaignService::new(
+        &repository,
+        PermitAlice,
+    ));
+    let request = crate::GetCampaignStatusRequest::new(
+        principal.clone(),
+        campaign.clone(),
+        genesis.snapshot_id(),
+    )
+    .expect("status request");
+
+    let response = client
+        .get_campaign_status(&request)
+        .expect("campaign status");
+    let semantic = response.status().semantic();
+    assert_eq!(response.snapshot(), genesis.snapshot_id());
+    assert_eq!(
+        semantic.continuations(),
+        crate::CampaignContinuationStatus::default()
+    );
+    assert_eq!(semantic.admitted_attempts(), 0);
+    assert_eq!(semantic.stored_graph_nodes(), 1);
+    assert_eq!(semantic.continuation_records_scanned(), 0);
+    assert_eq!(semantic.continuation_bytes_scanned(), 0);
+    assert_eq!(
+        response.status().operational(),
+        crate::CampaignOperationalStatus::Unavailable
+    );
+
+    let advanced = repository
+        .apply_control(
+            campaign.as_str(),
+            &command(
+                "service-status-resume",
+                genesis.snapshot_id(),
+                CampaignControlAction::Resume,
+            ),
+        )
+        .expect("advance campaign");
+    assert!(matches!(
+        client.get_campaign_status(&request),
+        Err(crate::CampaignClientError::Service(
+            crate::CampaignServiceFailure::Stale { expected, current }
+        )) if expected == genesis.snapshot_id() && current == advanced.new_snapshot
+    ));
+}
+
+struct AdvancingOperationalStatus<'a> {
+    repository: &'a CampaignRepository,
+}
+
+impl crate::CampaignOperationalStatusProvider for AdvancingOperationalStatus<'_> {
+    fn operational_status(
+        &self,
+        campaign: &crate::CampaignName,
+        snapshot: crate::CampaignSnapshotId,
+    ) -> crate::CampaignOperationalStatus {
+        self.repository
+            .apply_control(
+                campaign.as_str(),
+                &command(
+                    "advance-during-status",
+                    snapshot,
+                    CampaignControlAction::Resume,
+                ),
+            )
+            .expect("advance campaign during operational projection");
+        crate::CampaignOperationalStatus::Unavailable
+    }
+}
+
+#[test]
+fn campaign_status_rejects_a_head_change_during_operational_projection() {
+    let (repository, lineage, policy) = fixture();
+    let genesis = repository
+        .create("status-race", &lineage, &policy, &BTreeMap::new())
+        .expect("create campaign");
+    let provider = AdvancingOperationalStatus {
+        repository: &repository,
+    };
+    let service = crate::RepositoryCampaignService::new(&repository, PermitAlice)
+        .with_operational_status(&provider);
+    let client = crate::CampaignClient::new(service);
+    let request = crate::GetCampaignStatusRequest::new(
+        crate::CampaignPrincipal::new("operator:alice").expect("principal"),
+        crate::CampaignName::new("status-race").expect("campaign name"),
+        genesis.snapshot_id(),
+    )
+    .expect("status request");
+
+    assert!(matches!(
+        client.get_campaign_status(&request),
+        Err(crate::CampaignClientError::Service(
+            crate::CampaignServiceFailure::Stale { expected, current }
+        )) if expected == genesis.snapshot_id() && current != expected
+    ));
+}
+
+#[test]
 fn create_and_control_form_linear_authenticated_history() {
     let (repository, lineage, policy) = fixture();
     let genesis = repository

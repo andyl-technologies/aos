@@ -5,30 +5,42 @@
 
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use crucible::{Checkpoint, CheckpointKind, Configuration, ScenarioDef, VirtualTime};
+use crucible::{
+    Checkpoint, CheckpointKind, Configuration, Plan, Properties, QuantumOutcome, QuantumRequest,
+    QuantumTerminalVerdict, ScenarioDef, ScenarioDefForm, SchedulerError, SchedulerEventLogEntry,
+    Seed, VirtualTime, World,
+};
+use crucible_api::{ProductionFaultEvidenceSnapshot, ProductionVmNodeReplayLaunchProfile};
 use crucible_campaign::{
-    CampaignCommandId, CampaignLineage, CampaignMode, CampaignPolicy, CampaignSeed,
-    ConfigurationId, ExactCheckpointId, ExactRational, ExecutorClient, ExplorerPolicy,
-    FairnessPolicy, PinChange, PinRequest, PinRetention, ProgressiveWideningPolicy, PuctPolicy,
-    RetentionPolicy, ScenarioDefId,
+    AssignmentId, AttemptId, CampaignCommandId, CampaignLineage, CampaignLineageId, CampaignMode,
+    CampaignOperationalStatus, CampaignPolicy, CampaignSeed, CampaignWorldStatus, ConfigurationId,
+    ExactCheckpointId, ExactRational, ExecutionId, ExecutionRetentionIntent, ExecutorClient,
+    ExplorerPolicy, FairnessPolicy, PinChange, PinRequest, PinRetention, ProgressiveWideningPolicy,
+    PuctPolicy, RetentionPolicy, ScenarioDefId, SubmitAttemptRequest,
 };
 use crucible_cas::content_store::{
     BlobHandle, ContentId, DirectoryBlobBackend, ImmutableBlobBackend, MemoryBlobBackend,
     MemoryRefBackend, ObjectKind,
 };
+use crucible_protocol::SelectionReply;
 use crucible_qemu::{
     QemuChildProcessContract, QemuLaunchResourceRequirements, QemuNodeChild,
-    QemuPreparedRunDirectory, QemuReplayOracleValidation, QemuVmSnapshot,
+    QemuNodeSelectablePendingRequest, QemuPreparedRunDirectory, QemuReplayOracleValidation,
+    QemuVmSnapshot,
 };
 
 use super::*;
 use crate::{
-    DirectoryAssignmentLedger, DirectoryExactPinMaterializationStore,
-    EXACT_PIN_MATERIALIZATION_DIRECTORY, ExactCheckpointStore, ExactPinRetentionAdmin,
-    LoopbackExecutorService, QemuAttemptCancellationSignal,
+    AttemptExecutionContext, AttemptExecutionKey, AttemptExecutionRuntimeBasis, AttemptWorkResult,
+    AttemptWorkerFailure, DirectoryAssignmentLedger, DirectoryExactPinMaterializationStore,
+    EXACT_PIN_MATERIALIZATION_DIRECTORY, ExactCheckpointStore, ExactPinMaterializationSelection,
+    ExactPinRetentionAdmin, LocalAttemptWorker, LoopbackExecutorService,
+    QemuAttemptCancellationSignal, QemuFreshAttemptLifecycleFactory,
+    QemuFreshAttemptLifecycleOwner, QueuedAttempt,
 };
 
 #[derive(Debug)]
@@ -181,6 +193,7 @@ fn packaged_executor_serves_the_exact_composed_description_and_joins() {
     let config = config(&directory, 2);
     let socket = config.endpoint().path().to_owned();
     let repository = repository_with_campaigns(&[("packaged", b"shared", "qemu-test")]);
+    let status_repository = Arc::clone(&repository);
     let service = compose_packaged_qemu_executor(
         repository,
         Arc::new(crucible_cas::content_store::DirectoryBlobBackend::new(
@@ -194,6 +207,22 @@ fn packaged_executor_serves_the_exact_composed_description_and_joins() {
     )
     .expect("compose packaged executor");
     let executor = AttachedPackagedQemuExecutor::start(service).expect("start packaged executor");
+
+    let campaign = CampaignName::new("packaged").expect("campaign name");
+    let snapshot = status_repository
+        .head(campaign.as_str())
+        .expect("campaign head")
+        .snapshot_id();
+    let status = executor
+        .operational_status_provider()
+        .operational_status(&campaign, snapshot);
+    let CampaignOperationalStatus::Observed(evidence) = status else {
+        panic!("packaged executor status must be observed");
+    };
+    assert_eq!(evidence.daemon_epoch().as_bytes(), [0x61; 16]);
+    assert_eq!(evidence.worlds(), CampaignWorldStatus::default());
+    assert_eq!(evidence.retained_checkpoint_roots(), 0);
+    assert_eq!(evidence.materialized_checkpoints(), 0);
 
     let stream = UnixStream::connect(socket).expect("connect packaged executor");
     let service = LoopbackExecutorService::new(stream).expect("executor protocol");
@@ -488,6 +517,14 @@ fn exact_pin_materializer_fixture(directory: &tempfile::TempDir) -> ExactPinMate
 }
 
 fn apply_exact_pin(fixture: &ExactPinMaterializerFixture) {
+    apply_exact_pin_command(fixture, b"pin", "retain packaged exact checkpoint");
+}
+
+fn apply_exact_pin_command(
+    fixture: &ExactPinMaterializerFixture,
+    command_material: &[u8],
+    reason: &str,
+) {
     let expected_snapshot = fixture
         .repository
         .head(fixture.campaign.as_str())
@@ -500,18 +537,52 @@ fn apply_exact_pin(fixture: &ExactPinMaterializerFixture) {
             &PinRequest {
                 command: CampaignCommandId::from_hash(CampaignHash::derive(
                     "crucible.test.packaged-exact-pin.command.v1",
-                    b"pin",
+                    command_material,
                 )),
                 expected_snapshot,
-                change: PinChange::new(
-                    fixture.configuration,
-                    Some(PinRetention::Exact),
-                    "retain packaged exact checkpoint",
-                )
-                .expect("exact pin change"),
+                change: PinChange::new(fixture.configuration, Some(PinRetention::Exact), reason)
+                    .expect("exact pin change"),
             },
         )
         .expect("apply exact pin");
+}
+
+#[test]
+fn materializer_status_rejects_a_selection_for_a_superseded_pin_fact() {
+    let directory = tempfile::tempdir().expect("packaged exact-pin directory");
+    let fixture = exact_pin_materializer_fixture(&directory);
+    apply_exact_pin(&fixture);
+
+    let selection = ExactPinMaterializationSelection::prepare(
+        &fixture.repository,
+        &fixture.checkpoints,
+        &fixture.campaign,
+        fixture.configuration,
+        fixture.checkpoint,
+    )
+    .expect("prepare exact-pin selection");
+    let selection_root = directory.path().join(EXACT_PIN_MATERIALIZATION_DIRECTORY);
+    let mut selections = DirectoryExactPinMaterializationStore::open(&selection_root)
+        .expect("open exact-pin selections");
+    selections
+        .select(selection)
+        .expect("store exact-pin selection");
+
+    apply_exact_pin_command(&fixture, b"replacement-pin", "replace exact pin fact");
+    let snapshot = fixture
+        .repository
+        .head(fixture.campaign.as_str())
+        .expect("replacement pin head")
+        .snapshot_id();
+    let status = exact_pin_materializer::materialization_status(
+        &fixture.repository,
+        &fixture.campaign,
+        snapshot,
+        &mut selections,
+    )
+    .expect("read materialization status");
+
+    assert!(status.selected_roots.is_empty());
 }
 
 #[test]
@@ -541,6 +612,19 @@ fn packaged_materializer_tracks_a_late_pin_and_promoted_replacement() {
     owner.reconcile_now().expect("reconcile checkpoint catalog");
     apply_exact_pin(&fixture);
     owner.reconcile_now().expect("reconcile later exact pin");
+    let snapshot = fixture
+        .repository
+        .head(fixture.campaign.as_str())
+        .expect("pinned campaign head")
+        .snapshot_id();
+    let selected = owner
+        .status_handle()
+        .status(&fixture.campaign, snapshot)
+        .expect("materializer status after pin");
+    assert_eq!(
+        selected.selected_roots,
+        BTreeSet::from([fixture.checkpoint])
+    );
 
     let source = fixture
         .checkpoints
@@ -559,6 +643,11 @@ fn packaged_materializer_tracks_a_late_pin_and_promoted_replacement() {
     owner
         .reconcile_now()
         .expect("reconcile promoted checkpoint catalog");
+    let selected = owner
+        .status_handle()
+        .status(&fixture.campaign, snapshot)
+        .expect("materializer status after promotion");
+    assert_eq!(selected.selected_roots, BTreeSet::from([replacement]));
     owner.join().expect("join exact-pin materializer");
     assert!(!terminal.load(Ordering::Acquire));
 
@@ -572,6 +661,317 @@ fn packaged_materializer_tracks_a_late_pin_and_promoted_replacement() {
         .expect("read exact-pin selection")
         .expect("selected exact checkpoint");
     assert_eq!(selected.checkpoint(), replacement);
+}
+
+#[derive(Default)]
+struct ControlledLifecycleBoundary {
+    state: Mutex<(u8, u8)>,
+    changed: Condvar,
+}
+
+impl ControlledLifecycleBoundary {
+    fn arrive_and_wait(&self, phase: u8) {
+        let mut state = self.state.lock().expect("controlled lifecycle state");
+        state.0 = phase;
+        self.changed.notify_all();
+        while state.1 < phase {
+            state = self.changed.wait(state).expect("controlled lifecycle wait");
+        }
+    }
+
+    fn wait_for(&self, phase: u8) {
+        let mut state = self.state.lock().expect("controlled lifecycle state");
+        while state.0 < phase {
+            state = self.changed.wait(state).expect("controlled lifecycle wait");
+        }
+    }
+
+    fn release(&self, phase: u8) {
+        let mut state = self.state.lock().expect("controlled lifecycle state");
+        state.1 = phase;
+        self.changed.notify_all();
+    }
+}
+
+struct ControlledLifecycleFactory {
+    boundary: Arc<ControlledLifecycleBoundary>,
+    fail_shutdown: bool,
+}
+
+struct ControlledLifecycle {
+    boundary: Arc<ControlledLifecycleBoundary>,
+    fail_shutdown: bool,
+}
+
+impl QemuFreshAttemptLifecycleFactory for ControlledLifecycleFactory {
+    type Lifecycle = ControlledLifecycle;
+    type Error = ();
+
+    fn start_fresh_lifecycle(
+        &mut self,
+        _scenario: &ScenarioDef,
+        _source: &ScenarioDefForm,
+        _start: &Configuration,
+        _signal_fault_replay: &crucible::SignalFaultCampaignReplayPlan,
+        _context: &AttemptExecutionContext,
+    ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>> {
+        self.boundary.arrive_and_wait(1);
+        Ok(ControlledLifecycle {
+            boundary: Arc::clone(&self.boundary),
+            fail_shutdown: self.fail_shutdown,
+        })
+    }
+}
+
+impl QemuFreshAttemptLifecycleOwner for ControlledLifecycle {
+    fn enable_signal_fault_campaign_promotion(&mut self) {
+        panic!("controlled lifecycle does not drive a guest")
+    }
+
+    fn drive_quantum(
+        &mut self,
+        _request: QuantumRequest,
+    ) -> Result<QuantumOutcome, SchedulerError> {
+        panic!("controlled lifecycle does not drive a guest")
+    }
+
+    fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict> {
+        panic!("controlled lifecycle does not drive a guest")
+    }
+
+    fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
+        panic!("controlled lifecycle does not capture a checkpoint")
+    }
+
+    fn drain_pending_selectable_requests(
+        &mut self,
+    ) -> Result<Vec<QemuNodeSelectablePendingRequest>, SchedulerError> {
+        panic!("controlled lifecycle does not handle selections")
+    }
+
+    fn enqueue_selectable_reply(
+        &mut self,
+        _pending: &QemuNodeSelectablePendingRequest,
+        _reply: &SelectionReply,
+    ) -> Result<(), SchedulerError> {
+        panic!("controlled lifecycle does not handle selections")
+    }
+
+    fn capture_attempt_checkpoint(
+        &mut self,
+        _context: &AttemptExecutionContext,
+    ) -> Result<crate::CapturedAttemptCheckpoint, SchedulerError> {
+        panic!("controlled lifecycle does not capture a checkpoint")
+    }
+
+    fn replay_launch_profiles(
+        &self,
+    ) -> Result<Vec<ProductionVmNodeReplayLaunchProfile>, SchedulerError> {
+        panic!("controlled lifecycle does not expose replay profiles")
+    }
+
+    fn fault_evidence_snapshot(&self) -> Result<ProductionFaultEvidenceSnapshot, SchedulerError> {
+        panic!("controlled lifecycle does not expose fault evidence")
+    }
+
+    fn pending_network_output_count(&self) -> usize {
+        0
+    }
+
+    fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        self.boundary.arrive_and_wait(3);
+        if self.fail_shutdown {
+            Err(SchedulerError::BoundaryViolation {
+                message: String::from("controlled cleanup failure"),
+            })
+        } else {
+            Ok(Vec::new())
+        }
+    }
+}
+
+struct ControlledLifecycleWorker {
+    lifecycles: PackagedWorldLifecycleTracker,
+    boundary: Arc<ControlledLifecycleBoundary>,
+    fail_shutdown: bool,
+}
+
+impl LocalAttemptWorker for ControlledLifecycleWorker {
+    type Error = ();
+
+    fn execute(&mut self, queued: QueuedAttempt) -> AttemptWorkResult<Self::Error> {
+        let source = ScenarioDefForm::from_components(
+            &World::from_nodes_and_links(Vec::new(), Vec::new()).expect("empty world"),
+            &Plan::empty(),
+            &Properties::empty(),
+            Seed::from_u64(7),
+        )
+        .expect("controlled scenario");
+        let scenario = source.scenario_def();
+        let start = Configuration::genesis(scenario.clone());
+        let context = AttemptExecutionContext::new(
+            queued.request().resources(),
+            queued.request().retention(),
+            queued.cancellation().clone(),
+            queued.checkpoint_request().clone(),
+        )
+        .with_runtime_basis(AttemptExecutionRuntimeBasis::new(
+            AttemptExecutionKey::new(queued.request().lineage(), queued.request().attempt()),
+            queued.execution(),
+        ));
+        let mut factory = PackagedStatusLifecycleFactory {
+            inner: ControlledLifecycleFactory {
+                boundary: Arc::clone(&self.boundary),
+                fail_shutdown: self.fail_shutdown,
+            },
+            lifecycles: self.lifecycles.clone(),
+        };
+        let mut lifecycle = factory
+            .start_fresh_lifecycle(
+                &scenario,
+                &source,
+                &start,
+                &crucible::SignalFaultCampaignReplayPlan::empty(start.clone()),
+                &context,
+            )
+            .expect("start controlled lifecycle");
+
+        self.boundary.arrive_and_wait(2);
+        let cleanup = lifecycle.shutdown();
+        assert_eq!(cleanup.is_err(), self.fail_shutdown);
+        self.boundary.arrive_and_wait(4);
+
+        AttemptWorkResult::new(queued, Err(AttemptWorkerFailure::Terminal(())))
+    }
+}
+
+fn controlled_submit_request(epoch: DaemonEpoch) -> SubmitAttemptRequest {
+    let typed_id = |tag: &str, kind: &str, byte: u8| {
+        format!("{tag}@{kind}.1.{}", format!("{byte:02x}").repeat(32))
+    };
+    SubmitAttemptRequest::new(
+        AssignmentId::from_bytes([0x90; 16]).expect("assignment"),
+        epoch,
+        CampaignLineageId::parse(&typed_id(
+            "crucible.campaign.lineage",
+            "campaign-fact",
+            0x91,
+        ))
+        .expect("lineage"),
+        AttemptId::parse(&typed_id(
+            "crucible.campaign.attempt",
+            "campaign-fact",
+            0x92,
+        ))
+        .expect("attempt"),
+        resources(),
+        ExecutionRetentionIntent::Discard,
+    )
+    .expect("submit request")
+}
+
+#[test]
+fn packaged_lifecycle_wrappers_track_real_preparation_shutdown_and_sealing_boundaries() {
+    let tracker = PackagedWorldLifecycleTracker::new();
+    let boundary = Arc::new(ControlledLifecycleBoundary::default());
+    let execution = ExecutionId::from_bytes([0x93; 16]).expect("execution");
+    let epoch = DaemonEpoch::from_bytes([0x94; 16]).expect("daemon epoch");
+    let queued = QueuedAttempt::from_test_parts(execution, controlled_submit_request(epoch));
+    let mut worker = PackagedStatusAttemptWorker {
+        inner: ControlledLifecycleWorker {
+            lifecycles: tracker.clone(),
+            boundary: Arc::clone(&boundary),
+            fail_shutdown: false,
+        },
+        lifecycles: tracker.clone(),
+    };
+    let thread = thread::spawn(move || worker.execute(queued));
+    let runtime = AttemptRuntimeState::Running {
+        execution_basis: CampaignHash::derive("packaged-status-lifecycle-test", b"basis"),
+        origin: crate::AttemptExecutionOrigin::Initial,
+        daemon_epoch: epoch,
+        execution,
+    };
+    let activity = BTreeMap::from([(
+        execution,
+        LocalExecutionActivity {
+            execution,
+            worker_in_flight: true,
+            cancellation_requested: false,
+            completion_pending: false,
+            cancellation_pending: false,
+        },
+    )]);
+
+    boundary.wait_for(1);
+    let phases = tracker.snapshot().expect("preparation snapshot").phases;
+    assert_eq!(
+        operational_phase(runtime, epoch, &activity, &phases),
+        Ok(Some(OperationalPhase::Preparing))
+    );
+    boundary.release(1);
+
+    boundary.wait_for(2);
+    let phases = tracker.snapshot().expect("installed snapshot").phases;
+    assert_eq!(
+        operational_phase(runtime, epoch, &activity, &phases),
+        Ok(Some(OperationalPhase::Running))
+    );
+    boundary.release(2);
+
+    boundary.wait_for(3);
+    let phases = tracker.snapshot().expect("teardown snapshot").phases;
+    assert_eq!(
+        operational_phase(runtime, epoch, &activity, &phases),
+        Err(())
+    );
+    boundary.release(3);
+
+    boundary.wait_for(4);
+    let phases = tracker.snapshot().expect("post-shutdown snapshot").phases;
+    assert_eq!(
+        operational_phase(runtime, epoch, &activity, &phases),
+        Ok(Some(OperationalPhase::Publishing))
+    );
+    boundary.release(4);
+
+    let _result = thread.join().expect("controlled lifecycle worker");
+    assert!(
+        tracker
+            .snapshot()
+            .expect("completed worker snapshot")
+            .phases
+            .is_empty()
+    );
+}
+
+#[test]
+fn packaged_lifecycle_wrapper_invalidates_status_after_failed_cleanup() {
+    let tracker = PackagedWorldLifecycleTracker::new();
+    let boundary = Arc::new(ControlledLifecycleBoundary::default());
+    let execution = ExecutionId::from_bytes([0x95; 16]).expect("execution");
+    let epoch = DaemonEpoch::from_bytes([0x96; 16]).expect("daemon epoch");
+    let queued = QueuedAttempt::from_test_parts(execution, controlled_submit_request(epoch));
+    let mut worker = PackagedStatusAttemptWorker {
+        inner: ControlledLifecycleWorker {
+            lifecycles: tracker.clone(),
+            boundary: Arc::clone(&boundary),
+            fail_shutdown: true,
+        },
+        lifecycles: tracker.clone(),
+    };
+    let thread = thread::spawn(move || worker.execute(queued));
+
+    for phase in 1..=3 {
+        boundary.wait_for(phase);
+        boundary.release(phase);
+    }
+    boundary.wait_for(4);
+    assert!(tracker.snapshot().is_none());
+    boundary.release(4);
+
+    let _result = thread.join().expect("failed-cleanup lifecycle worker");
+    assert!(tracker.snapshot().is_none());
 }
 
 #[test]
@@ -811,4 +1211,116 @@ fn packaged_native_catalog_recovery_rejects_namespace_symlinks() {
         Err(PackagedNativeCatalogRecoveryError::InvalidPath { path }) if path == workers
     ));
     assert!(target.exists());
+}
+
+#[test]
+fn operational_phase_uses_exact_actor_ownership_and_durable_phase() {
+    let epoch = DaemonEpoch::from_bytes([0x91; 16]).expect("daemon epoch");
+    let execution = ExecutionId::from_bytes([0x92; 16]).expect("execution");
+    let basis = CampaignHash::derive("packaged-status-test", b"basis");
+    let running = AttemptRuntimeState::Running {
+        execution_basis: basis,
+        origin: crate::AttemptExecutionOrigin::Initial,
+        daemon_epoch: epoch,
+        execution,
+    };
+    let activity = |worker_in_flight, cancellation_requested, completion_pending| {
+        BTreeMap::from([(
+            execution,
+            LocalExecutionActivity {
+                execution,
+                worker_in_flight,
+                cancellation_requested,
+                completion_pending,
+                cancellation_pending: false,
+            },
+        )])
+    };
+
+    assert_eq!(
+        operational_phase(
+            running,
+            epoch,
+            &activity(false, false, false),
+            &BTreeMap::new(),
+        ),
+        Ok(Some(OperationalPhase::Preparing))
+    );
+    let preparing = BTreeMap::from([(execution, PackagedWorldLifecyclePhase::Preparing)]);
+    assert_eq!(
+        operational_phase(running, epoch, &activity(true, false, false), &preparing),
+        Ok(Some(OperationalPhase::Preparing))
+    );
+    let active = BTreeMap::from([(execution, PackagedWorldLifecyclePhase::Running)]);
+    assert_eq!(
+        operational_phase(running, epoch, &activity(true, false, false), &active),
+        Ok(Some(OperationalPhase::Running))
+    );
+    assert_eq!(
+        operational_phase(running, epoch, &activity(true, true, false), &active),
+        Ok(Some(OperationalPhase::Canceling))
+    );
+    assert_eq!(
+        operational_phase(
+            running,
+            epoch,
+            &activity(false, false, true),
+            &BTreeMap::new(),
+        ),
+        Ok(Some(OperationalPhase::Publishing))
+    );
+    assert_eq!(
+        operational_phase(
+            running,
+            DaemonEpoch::from_bytes([0x93; 16]).expect("stale epoch"),
+            &activity(true, false, false),
+            &active,
+        ),
+        Ok(None)
+    );
+    assert_eq!(
+        operational_phase(
+            running,
+            epoch,
+            &activity(true, false, false),
+            &BTreeMap::new()
+        ),
+        Err(())
+    );
+
+    let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
+        ObjectKind::ExactManifest,
+        4,
+        b"packaged-status-checkpoint",
+    ))
+    .expect("checkpoint");
+    let paused = AttemptRuntimeState::Paused {
+        execution_basis: basis,
+        origin: crate::AttemptExecutionOrigin::Initial,
+        daemon_epoch: epoch,
+        execution,
+        checkpoint,
+        promotion_basis: None,
+    };
+    assert_eq!(
+        operational_phase(paused, epoch, &BTreeMap::new(), &BTreeMap::new()),
+        Ok(Some(OperationalPhase::Paused))
+    );
+}
+
+#[test]
+fn actor_status_snapshots_reject_intervening_ownership_changes() {
+    let epoch = DaemonEpoch::from_bytes([0x94; 16]).expect("daemon epoch");
+    let stable = LocalExecutorOperationalSnapshot {
+        revision: 7,
+        daemon_epoch: epoch,
+        activities: Vec::new(),
+    };
+    assert!(successive_actor_snapshots(&stable, &stable));
+
+    let changed = LocalExecutorOperationalSnapshot {
+        revision: 8,
+        ..stable.clone()
+    };
+    assert!(!successive_actor_snapshots(&stable, &changed));
 }

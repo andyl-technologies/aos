@@ -482,15 +482,30 @@ page-limited grouped query.
 A concise status view includes:
 
 ```text
-network-recovery @ 9f7c2e1  running  mode=streaming
-
-configurations       184211    ready sources          913
-open branch points      7842    attempts running        32
-durable checkpoints     146    hot fork hubs            11
-unique findings           4    Pareto survivors         64
-
-coverage gain          +8.3%   consumed attempts    201338
+campaign                         network-recovery
+snapshot                         campaign-snapshot-v3:...
+state                            running
+latent_or_open_continuations     7842
+admitted_attempts                201338
+stored_graph_nodes               184211
+running_worlds                   32
+materialized_checkpoints         146
 ```
+
+`status` first authenticates the current head with `GetCampaign`, then sends a
+separate `GetCampaignStatus` request bound to that exact snapshot. A concurrent
+head advance returns `Stale`; counts from different semantic snapshots are
+never combined. Semantic status is derived from immutable repository indexes:
+it reports each continuation state, admitted attempts, stored configuration
+nodes, and the exact continuation records and canonical bytes scanned. The
+scan admits at most 1,000,000 records and 128 MiB. Operational status is a
+tagged `Unavailable` or `Observed` value. Observed evidence binds preparing,
+running, checkpointing, publishing, canceling, and paused world counts plus
+distinct retained roots and materialized checkpoints to one daemon epoch and
+one inventory generation. A deployment without an owner capable of producing
+one complete stable inventory reports `Unavailable` instead of partial or
+zero-filled operational counts. The version-2 status JSON nests these two
+domains as `semantic` and `operational`; watch remains the version-1 head view.
 
 `choices` shows choice opportunities and their branch points, domain, finite and
 generated sources, admitted values, visit counts, reward/metric summaries,
@@ -652,6 +667,7 @@ The coordinator exposes the sole user-facing campaign service:
 CampaignService
   CreateCampaign
   GetCampaign
+  GetCampaignStatus
   ApplyCampaignCommand
   GetSnapshot
   QueryGraph
@@ -705,7 +721,7 @@ The endpoint advertises exact restore only after one promotion owner per fixed
 worker has received the complete authenticated native scenario catalog.
 
 The direct service contract implements strict request-bound `CreateCampaign`,
-`DeriveCampaign`, `GetCampaign`, historical `GetSnapshot`, coalesced
+`DeriveCampaign`, `GetCampaign`, snapshot-bound `GetCampaignStatus`, historical `GetSnapshot`, coalesced
 `WatchCampaign`, snapshot-bound
 `QueryGraph`,
 `ApplyCampaignCommand`, semantic `PinCampaign`, and operator
