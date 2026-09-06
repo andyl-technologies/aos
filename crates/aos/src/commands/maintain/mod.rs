@@ -4,6 +4,7 @@ mod confinement;
 mod discovery;
 mod evidence;
 mod git;
+mod hash_refresh;
 mod inventory;
 mod materialize;
 mod mutation;
@@ -220,6 +221,9 @@ pub async fn run(cli: &Cli, args: &MaintainArgs, printer: &Printer) -> Result<Co
         Some(MaintainCommand::Status(command)) => status_command(args, command),
         Some(MaintainCommand::Ui(command)) => ui_command(args, command).await,
         Some(MaintainCommand::Plan(command)) => plan_command(args, command),
+        Some(MaintainCommand::RefreshHashes(command)) => {
+            refresh_hashes_command(cli, command, printer)
+        }
         Some(MaintainCommand::Run(command)) => run_command(cli, args, command, printer).await,
         Some(MaintainCommand::Resume(command)) => resume_command(cli, args, command, printer).await,
         Some(MaintainCommand::Inspect(command)) => inspect_command(args, command),
@@ -268,6 +272,106 @@ pub fn interrupted(command: &str) -> Result<CommandCompletion> {
             bound_context: None,
         }],
     )
+}
+
+fn refresh_hashes_command(
+    cli: &Cli,
+    command: &crate::cli::MaintainRefreshHashesArgs,
+    printer: &Printer,
+) -> Result<CommandCompletion> {
+    let activity = printer.activity(&format!("Refresh fixed-output hashes: {}", command.unit));
+    let refreshed = NixRunner::new(cli.verbose, cli.quiet).and_then(|nix| {
+        // Unit ownership is repository-wide. Evaluate the native inventory so
+        // a cross target cannot introduce target-package recursion before the
+        // selected member is instantiated for that target below.
+        let envelope = inventory::evaluate(&nix, None)?;
+        hash_refresh::execute(
+            &envelope,
+            &command.unit,
+            command.target.as_deref(),
+            command.check,
+            cli.verbose,
+        )
+    });
+    activity.finish();
+
+    match refreshed {
+        Ok(outcome) => {
+            let changed = outcome
+                .hashes
+                .iter()
+                .filter(|hash| hash.previous != hash.refreshed)
+                .count();
+            let mut values = BTreeMap::new();
+            values.insert("owner".to_string(), outcome.owner.clone());
+            values.insert("hashCount".to_string(), outcome.hashes.len().to_string());
+            values.insert("changedHashCount".to_string(), changed.to_string());
+            values.insert("repositoryUpdated".to_string(), outcome.wrote.to_string());
+
+            if command.check && changed > 0 {
+                let mut argv = vec![
+                    "aos".to_string(),
+                    "maintain".to_string(),
+                    "refresh-hashes".to_string(),
+                    command.unit.clone(),
+                ];
+                if let Some(target) = &command.target {
+                    argv.extend(["--target".to_string(), target.clone()]);
+                }
+                return completion(
+                    "refresh-hashes",
+                    CommandDisposition::ActionRequired,
+                    CommandData {
+                        values,
+                        ..CommandData::default()
+                    },
+                    vec![diagnostic(
+                        "maintain.fixed-output-hashes-stale",
+                        DiagnosticSeverity::Error,
+                        &format!("{changed} fixed-output hashes differ from their declared values"),
+                    )],
+                    Vec::new(),
+                    vec![NextAction {
+                        label: "Write the refreshed hashes".to_string(),
+                        argv,
+                        reason: "the check restored the package owner without changing it"
+                            .to_string(),
+                        prerequisites: vec!["review the edited package version".to_string()],
+                        effect_class: EffectClass::LocalMutation,
+                        bound_context: None,
+                    }],
+                );
+            }
+
+            completion(
+                "refresh-hashes",
+                if changed == 0 {
+                    CommandDisposition::NoChange
+                } else {
+                    CommandDisposition::Success
+                },
+                CommandData {
+                    values,
+                    ..CommandData::default()
+                },
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )
+        }
+        Err(error) => completion(
+            "refresh-hashes",
+            CommandDisposition::OperationFailed,
+            CommandData::default(),
+            vec![diagnostic(
+                "maintain.hash-refresh-failed",
+                DiagnosticSeverity::Error,
+                &format!("{error:#}"),
+            )],
+            Vec::new(),
+            Vec::new(),
+        ),
+    }
 }
 
 fn accept_command(
@@ -3112,6 +3216,7 @@ fn command_name(args: &MaintainArgs) -> &'static str {
         Some(MaintainCommand::Status(_)) => "status",
         Some(MaintainCommand::Ui(_)) => "ui",
         Some(MaintainCommand::Plan(_)) => "plan",
+        Some(MaintainCommand::RefreshHashes(_)) => "refresh-hashes",
         Some(MaintainCommand::Run(_)) => "run",
         Some(MaintainCommand::Resume(_)) => "resume",
         Some(MaintainCommand::Inspect(_)) => "inspect",
@@ -3134,6 +3239,7 @@ fn activity_label(args: &MaintainArgs) -> Option<&'static str> {
     match args.command.as_ref()? {
         MaintainCommand::Inventory(_) => Some("Evaluating package maintenance inventory"),
         MaintainCommand::Scan(_) => Some("Checking direct upstreams and advisory evidence"),
+        MaintainCommand::RefreshHashes(_) => Some("Refreshing fixed-output package hashes"),
         MaintainCommand::Run(_) | MaintainCommand::Resume(_) => {
             Some("Advancing the isolated package update")
         }

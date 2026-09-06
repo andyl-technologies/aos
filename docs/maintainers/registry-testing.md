@@ -222,6 +222,10 @@ aos maintain plan <unit>
 # Or plan one atomic update cohort:
 aos maintain plan --campaign <cohort>
 
+# For a manually edited package without complete artifact contracts:
+aos maintain refresh-hashes <unit> --check
+aos maintain refresh-hashes <unit>
+
 aos maintain run --plan <plan> --confirm-plan <plan-digest>
 aos maintain diff <run> --patch
 aos maintain accept <run> --confirm <patch-digest>

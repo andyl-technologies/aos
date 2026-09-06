@@ -427,7 +427,7 @@ fn realize_artifact(
     parse_hash_mismatch(&stderr)
 }
 
-fn parse_hash_mismatch(stderr: &[u8]) -> Result<String> {
+pub(super) fn parse_hash_mismatch(stderr: &[u8]) -> Result<String> {
     let text = std::str::from_utf8(stderr)
         .context("artifact materializer emitted non-UTF-8 diagnostics")?;
     let hashes = text
