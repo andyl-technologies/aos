@@ -4,6 +4,7 @@ use super::*;
 
 mod child_execution;
 mod child_files;
+mod child_measure;
 #[path = "exact_snapshot/retained_network.rs"]
 mod retained_network;
 mod source_set;

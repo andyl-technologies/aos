@@ -3308,6 +3308,33 @@ CPU, so the loop's icount deadline handling failed its vCPU-thread assertion
 on the child's first resume; patch 0236 names the CPU before the loop.
 The flight passes: the child stood at icount 3,000,001 with the captured fingerprint and sample, ran to 3,250,001, and the exact restore reported the same suffix fingerprint.
 
+Both flights now measure what a child costs, towards T-CAM-6.6 and the leak
+half of T-CAM-6.7. The three-child flight reads the source's thread count,
+descriptor count, anonymous RSS, and private dirty memory from procfs with
+the template retained and no child staged, times each fork call and each
+fork-to-private-QMP handshake on the host's monotonic clock, reads the
+child's footprint after its handshake, and after every child's release
+requires the source back at exactly its baseline thread and descriptor
+counts; the VM test greps the zero leak counters. The execution flight times
+the fork until the child stands installed at the captured boundary with its
+fingerprint read, against the fresh process launching and restoring the same
+snapshot to that boundary. The measurements are flight evidence only and
+never reach a node, a checkpoint, or a decision; the clock read is the
+crate's one host-clock call and is confined to the flight module.
+Measured inside the nested test VM against the flight's firmware guest: the retained source holds 6 threads and 24 descriptors and returned to exactly those after each of three children; each fork call took at most 20 ms and each child answered on its private QMP endpoint within 24 ms of the fork; a child held 6 threads, 32 descriptors, and 7,600 KiB of private dirty memory after its handshake; the source's private dirty memory grew by 21,044 KiB across the three children, which is the next thing to attribute. In the execution flight the child stood installed at the captured boundary with its fingerprint read 560 ms after the fork call, against 1,360 ms for the fresh process to launch and restore the same snapshot to that boundary. These are single-run numbers from a small guest under nested virtualization and bound no supported profile yet; the profile and the rejected-subsystem record wait on the larger-guest runs.
+
+Towards T-CAM-6.8, `checks.crucible.phase6.qemuPatchLicenseLedger` holds the
+QEMU patch license inventory to the series itself at evaluation time. It walks
+every patch's diff headers for created and deleted files and requires one
+ledger row per file the series leaves in the tree, no row for a file the
+series deletes or never creates, a recognized per-file license, and a stated
+basis; it currently sees 44 created files across the 233 patches and 44
+rows. The public protocol documentation the task names already lives in
+chapter 05.5 for the control protocol and RFC-0010 chapter 11 for every
+patch's rationale and prefix attribution; the remaining T-CAM-6.8 work is
+keeping those current as the series grows, which the series and attribution
+gates enforce.
+
 The daemon's Linux fork launch now owns the child-private file plan for
 production children. Every node launcher exposes its admitted launch resource
 profile, the retained template identity records it, and the launch provisions

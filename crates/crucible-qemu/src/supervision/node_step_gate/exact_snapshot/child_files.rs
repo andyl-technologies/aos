@@ -17,6 +17,7 @@ use std::os::fd::AsFd as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use super::child_measure::{ProcessFootprint, elapsed_milliseconds, monotonic_nanoseconds};
 use super::{exact_gate_checkpoint, source_set::require_vmstate_source, *};
 use crate::{
     DEFAULT_VMSTATE_FILE_NAME, DEFAULT_VMSTATE_NODE_NAME, LinuxQemuAttemptHostConfig,
@@ -62,6 +63,28 @@ pub struct QemuLiveHotForkChildReport {
     /// Children forked in sequence from the one retained template; the
     /// fields above describe the last of them.
     pub children_forked: u32,
+    /// Source threads before the first child was staged.
+    pub source_threads: u64,
+    /// Source descriptors before the first child was staged.
+    pub source_descriptors: u64,
+    /// Threads the source still held beyond that baseline after the last
+    /// child's release; a nonzero value fails the flight.
+    pub source_threads_leaked: u64,
+    /// Descriptors the source still held beyond that baseline after the
+    /// last child's release; a nonzero value fails the flight.
+    pub source_descriptors_leaked: u64,
+    /// Growth of the source's private dirty memory in KiB across every child.
+    pub source_private_dirty_growth_kib: i64,
+    /// Longest fork call among the children, in milliseconds.
+    pub max_fork_ms: u64,
+    /// Longest fork-to-private-QMP-handshake among the children, in ms.
+    pub max_ready_ms: u64,
+    /// The last child's threads after its handshake.
+    pub child_threads: u64,
+    /// The last child's descriptors after its handshake.
+    pub child_descriptors: u64,
+    /// The last child's private dirty memory in KiB after its handshake.
+    pub child_private_dirty_kib: u64,
 }
 
 /// Forks a retained VMState-only template into a sequence of children, each
@@ -118,7 +141,13 @@ pub fn run_qemu_live_hot_fork_child_gate(
     require_vmstate_source(&held)?;
     let template_generation = held.generation();
 
+    // The baseline is the retained template with no child staged; every
+    // child must return the source to it.
+    let source_baseline = ProcessFootprint::read(node.process_id())?;
     let mut last = None;
+    let mut max_fork_ms = 0;
+    let mut max_ready_ms = 0;
+    let mut source_after = source_baseline;
     for child_index in 0..CHILD_FORK_COUNT {
         let context = ChildForkContext {
             config,
@@ -130,11 +159,29 @@ pub fn run_qemu_live_hot_fork_child_gate(
             cgroup_root,
             child_index,
         };
-        last = Some(fork_one_child(&mut node, &mut factory, &context)?);
+        let outcome = fork_one_child(&mut node, &mut factory, &context)?;
+        max_fork_ms = max_fork_ms.max(outcome.fork_ms);
+        max_ready_ms = max_ready_ms.max(outcome.ready_ms);
+        source_after = ProcessFootprint::read(node.process_id())?;
+        if source_after.threads != source_baseline.threads
+            || source_after.descriptors != source_baseline.descriptors
+        {
+            return Err(invariant(&format!(
+                "source did not return to its baseline after child {child_index}: threads                  {}/{}, descriptors {}/{}",
+                source_after.threads,
+                source_baseline.threads,
+                source_after.descriptors,
+                source_baseline.descriptors
+            )));
+        }
+        last = Some(outcome);
     }
     let Some(last) = last else {
         return Err(invariant("no child was forked"));
     };
+    let private_dirty_growth_kib = i64::try_from(source_after.private_dirty_kib)
+        .unwrap_or(i64::MAX)
+        .saturating_sub(i64::try_from(source_baseline.private_dirty_kib).unwrap_or(0));
 
     node.force_crash_and_reap_for_gate().map_err(|source| {
         QemuLiveNodeStepGateError::node_op("reap hot-fork child flight source", source)
@@ -153,6 +200,18 @@ pub fn run_qemu_live_hot_fork_child_gate(
         private_vmstate_bytes: last.private_vmstate_bytes,
         child_saved_vmstate_bytes: last.child_saved_vmstate_bytes,
         children_forked: CHILD_FORK_COUNT,
+        source_threads: source_baseline.threads,
+        source_descriptors: source_baseline.descriptors,
+        source_threads_leaked: source_after.threads.saturating_sub(source_baseline.threads),
+        source_descriptors_leaked: source_after
+            .descriptors
+            .saturating_sub(source_baseline.descriptors),
+        source_private_dirty_growth_kib: private_dirty_growth_kib,
+        max_fork_ms,
+        max_ready_ms,
+        child_threads: last.child_footprint.threads,
+        child_descriptors: last.child_footprint.descriptors,
+        child_private_dirty_kib: last.child_footprint.private_dirty_kib,
     })
 }
 
@@ -174,6 +233,12 @@ struct ForkedChildOutcome {
     child_process_id: u32,
     private_vmstate_bytes: u64,
     child_saved_vmstate_bytes: u64,
+    /// Milliseconds the fork call took until the parent returned.
+    fork_ms: u64,
+    /// Milliseconds from the fork call until the child answered on QMP.
+    ready_ms: u64,
+    /// The child's footprint right after its handshake.
+    child_footprint: ProcessFootprint,
 }
 
 /// Stages, forks, verifies, and tears down one child of the sequence.
@@ -232,6 +297,7 @@ fn fork_one_child(
         )
         .map_err(|source| qmp_operation("stage child-private VMState destination", source))?;
 
+    let fork_started = monotonic_nanoseconds();
     let forked = node.fork_prepared_hot_fork_template_into(&mut target_owner, |owner| {
         owner.process_contract().map_err(|source| {
             QemuNodeChannelError::new(
@@ -240,6 +306,7 @@ fn fork_one_child(
             )
         })
     });
+    let fork_ms = elapsed_milliseconds(fork_started);
     let launch = match forked {
         Ok(launch) => launch,
         Err(QemuHotForkLaunchError::Rejected { source }) => {
@@ -333,6 +400,8 @@ fn fork_one_child(
             )));
         }
     };
+    let ready_ms = elapsed_milliseconds(fork_started);
+    let child_footprint = ProcessFootprint::read(child_process_id)?;
     // The child adopts its private files and closes the source's descriptors
     // during its reconstruction, which the handshake above proves complete;
     // only then is its descriptor table held to the plan.
@@ -427,6 +496,9 @@ fn fork_one_child(
         child_process_id,
         private_vmstate_bytes: private_after_fork.length,
         child_saved_vmstate_bytes: private_after_save.length,
+        fork_ms,
+        ready_ms,
+        child_footprint,
     })
 }
 
