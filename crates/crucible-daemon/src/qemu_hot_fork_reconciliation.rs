@@ -13,6 +13,7 @@
 //! it is serviced independently of the reusable source template while live and
 //! returned for exact source-side writer release at teardown.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 use std::os::unix::process::ExitStatusExt;
@@ -23,8 +24,10 @@ use std::time::Duration;
 
 use crucible::{ContentHash, EventLog, EventLogOffset, NodeId};
 // crucible-lint: allow host-nondeterminism-state -- node generations authenticate exact process ownership and carry no host timing into execution.
-use crucible_api::ProductionVmNodeGeneration;
-use crucible_api::vm_lifecycle::ProductionVmHotForkSourceWorld;
+use crucible_api::{
+    LifecycleApiError, ProductionVmHotForkNodeAdoption, ProductionVmHotForkSourceWorld,
+    ProductionVmNodeGeneration, ProductionVmNodeLease,
+};
 use crucible_campaign::{ExactCheckpointId, ObservationId};
 use crucible_qemu::{
     LinuxQemuHotForkChildProcessAuthority, QemuAsyncDriverPolicy, QemuChildWait, QemuCrashDetector,
@@ -410,6 +413,7 @@ pub use launch::{
     LinuxQemuHotForkSourceWorldFailureOwner, LinuxQemuHotForkWorldAttemptLaunchError,
     LinuxQemuHotForkWorldAttemptLaunchFailure,
 };
+pub(crate) use linux::LinuxQemuHotForkWorldReconciliationSet;
 pub use linux::{
     LinuxQemuHotForkLiveChild, LinuxQemuHotForkNodeProcessControl,
     LinuxQemuHotForkReconciliationBackend, LinuxQemuHotForkReconciliationError,

@@ -371,6 +371,24 @@ pub struct LinuxQemuHotForkChildProcessAuthority {
 }
 
 impl LinuxQemuHotForkChildProcessAuthority {
+    /// Builds an unvalidated authority for cross-crate ownership tests.
+    ///
+    /// The descriptor is accepted without pidfd or cgroup authentication. Test
+    /// fixtures must arrange for source-parent status to report a terminal
+    /// child before any signal operation is attempted.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn from_unvalidated_test_parts(
+        basis: QemuHotForkChildProcessBasis,
+        identity: QemuProcessIdentity,
+        descriptor: OwnedFd,
+    ) -> Self {
+        Self {
+            basis,
+            identity,
+            pidfd: descriptor,
+        }
+    }
+
     /// Returns the exact source, child, and fork-request basis.
     #[must_use]
     pub const fn basis(&self) -> QemuHotForkChildProcessBasis {

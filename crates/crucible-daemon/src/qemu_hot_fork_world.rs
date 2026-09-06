@@ -27,6 +27,9 @@ use crate::{
     QemuHotForkAttemptReconciliation, QemuHotForkWorldChildSourceBasis,
 };
 
+mod lifecycle;
+pub use lifecycle::QemuProductionHotForkWorldLifecycle;
+
 /// Unforgeable process-local identity of one atomic world assembly attempt.
 ///
 /// Only [`QemuHotForkWorldAssembly::child_launch_token`] can clone this token.
@@ -308,6 +311,14 @@ where
         self.token.clone()
     }
 
+    pub(crate) fn quarantine(&mut self) {
+        let children = std::mem::take(&mut self.children);
+        for (_node, mut child) in children {
+            child.quarantine();
+            std::mem::forget(child);
+        }
+    }
+
     /// Exact-binds one installed child without exposing it to modeled code.
     ///
     /// # Errors
@@ -401,9 +412,7 @@ where
         if self.published {
             return;
         }
-        for child in self.children.values_mut() {
-            child.quarantine();
-        }
+        self.quarantine();
     }
 }
 
@@ -434,6 +443,13 @@ where
     #[must_use]
     pub fn child_count(&self) -> usize {
         self.children.len()
+    }
+
+    pub(crate) fn quarantine(self) {
+        for (_node, mut child) in self.children {
+            child.quarantine();
+            std::mem::forget(child);
+        }
     }
 }
 
