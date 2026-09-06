@@ -134,8 +134,19 @@ The prepared first-release profile uses
 `aos.system.version` in the testing profile to the next calendar SemVer
 `YYYY.M.P-dev.YYYYMMDD.N` through the reviewed source-update workflow before
 building. That value is the disk version and the OCI signed release identity;
-the `aos` package version remains separate provenance. The plan request must
-use that exact version and contain:
+the `aos` package version remains separate provenance.
+
+Before freezing the epoch-one public `.1` plan, create and retain the
+[non-public qualification predecessor](canonical-releases.md#create-a-first-qualification-predecessor)
+at `2026.9.0-dev.20260904.0`. Its protected source revision carries the `.0`
+testing profile and uses the reserved snapshot release id and source tag. After
+offline verification, advance the profile to `.1` in a later reviewed protected
+source revision. Do not upload the `.0` snapshot or use its isolated registry
+commit as the public registry base. The `.1` request names the snapshot's
+verified release id and manifest digest while retaining the approved empty Hub
+base commit and generation.
+
+The public plan request must use the exact prepared version and contain:
 
 - `registry: "andyl/testing"` (or the active epoch identity);
 - `release_class: "edge"`;

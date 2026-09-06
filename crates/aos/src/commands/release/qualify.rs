@@ -34,7 +34,7 @@ pub(super) async fn run(args: &ReleaseQualifyArgs, printer: &Printer) -> Result<
     )?;
     let plan: aos_release::plan::ReleasePlanV1 =
         canonical::from_slice(&captured.plan_bytes, "release plan")?;
-    plan.require_current_qualification()?;
+    plan.require_publishable_qualification()?;
     let manifest: ManifestEnvelopeV1 =
         canonical::from_slice(&captured.manifest_bytes, "release manifest")?;
     let bundle_digest =

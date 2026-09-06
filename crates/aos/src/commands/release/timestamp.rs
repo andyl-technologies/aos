@@ -45,7 +45,7 @@ const PRODUCTION_HUB: &str = "https://aos.andyl.org";
 
 async fn publish(args: &ReleaseTimestampPublishArgs, printer: &Printer) -> Result<()> {
     let plan: ReleasePlanV1 = read_canonical(&args.plan, "release plan")?;
-    plan.validate()?;
+    plan.require_publishable_qualification()?;
     let root: TufEnvelopeV1<RootMetadataV1> = read_canonical(&args.root, "TUF root")?;
     let snapshot: TufEnvelopeV1<SnapshotMetadataV1> =
         read_canonical(&args.snapshot, "TUF snapshot")?;

@@ -1165,6 +1165,54 @@ pub(crate) mod tests {
         assert!(legacy.require_current_qualification().is_err());
         let (current, _) = qualification_fixture()?;
         current.require_current_qualification()?;
+        current.require_publishable_qualification()?;
+        Ok(())
+    }
+
+    #[test]
+    fn qualification_snapshot_uses_current_build_policy_but_cannot_be_published()
+    -> anyhow::Result<()> {
+        let (mut snapshot, manifest) = qualification_fixture()?;
+        snapshot.qualification_predecessor = None;
+        snapshot.release_id = format!(
+            "{}{}",
+            crate::plan::QUALIFICATION_SNAPSHOT_RELEASE_PREFIX,
+            snapshot.version
+        );
+        snapshot.source.source_tag = format!(
+            "{}{}",
+            crate::plan::QUALIFICATION_SNAPSHOT_TAG_PREFIX,
+            snapshot.version
+        );
+        snapshot.intended_channels.clear();
+
+        snapshot.validate()?;
+        snapshot.require_current_qualification()?;
+        assert!(snapshot.require_publishable_qualification().is_err());
+        let staging_cases = crate::qualification_evidence::cases(
+            &snapshot,
+            &manifest,
+            crate::qualification::QualificationPhase::Staging,
+        )?;
+        assert!(staging_cases.iter().all(|case| {
+            case.requirement_id != "image-update-recovery" && case.predecessor.is_none()
+        }));
+
+        let mut ordinary_name = snapshot.clone();
+        ordinary_name.release_id = "ordinary-release".into();
+        assert!(ordinary_name.validate().is_err());
+
+        let mut ordinary_tag = snapshot.clone();
+        ordinary_tag.source.source_tag = "release/ordinary".into();
+        assert!(ordinary_tag.validate().is_err());
+
+        let mut channel = snapshot;
+        channel.intended_channels.push(crate::plan::ChannelIntent {
+            channel: "stable".into(),
+            first_partition: 0,
+            last_partition: 255,
+        });
+        assert!(channel.validate().is_err());
         Ok(())
     }
 

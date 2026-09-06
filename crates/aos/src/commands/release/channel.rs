@@ -41,7 +41,7 @@ async fn advance(args: &ReleaseChannelAdvanceArgs, printer: &Printer) -> Result<
     )?;
     let plan: aos_release::plan::ReleasePlanV1 =
         canonical::from_slice(&captured.plan_bytes, "release plan")?;
-    plan.require_current_qualification()?;
+    plan.require_publishable_qualification()?;
     let bundle_digest =
         aos_release::verify::bundle_digest(&captured.manifest_bytes, &captured.files)?;
     if !plan.intended_channels.iter().any(|intent| {
@@ -229,7 +229,7 @@ async fn complete(args: &ReleaseChannelCompleteArgs, printer: &Printer) -> Resul
     )?;
     let plan: aos_release::plan::ReleasePlanV1 =
         canonical::from_slice(&captured.plan_bytes, "release plan")?;
-    plan.require_current_qualification()?;
+    plan.require_publishable_qualification()?;
     let bundle_digest =
         aos_release::verify::bundle_digest(&captured.manifest_bytes, &captured.files)?;
 

@@ -17,7 +17,10 @@ use serde::{Deserialize, Serialize};
 use crate::artifact::require_identifier;
 use crate::digest::Sha256Digest;
 use crate::evidence::GateRequirement;
-use crate::plan::{ReleaseClass, ReleasePlanV1};
+use crate::plan::{
+    QUALIFICATION_SNAPSHOT_RELEASE_PREFIX, QUALIFICATION_SNAPSHOT_TAG_PREFIX, ReleaseClass,
+    ReleasePlanV1,
+};
 use crate::platform::Platform;
 
 pub mod capabilities;
@@ -477,13 +480,31 @@ impl QualificationContract {
     /// blocked cells where the selected thresholds require completeness.
     pub fn validate_plan(&self, plan: &ReleasePlanV1) -> Result<()> {
         self.validate()?;
+        let snapshot_release_id =
+            format!("{QUALIFICATION_SNAPSHOT_RELEASE_PREFIX}{}", plan.version);
+        let snapshot_source_tag = format!("{QUALIFICATION_SNAPSHOT_TAG_PREFIX}{}", plan.version);
         match &plan.qualification_predecessor {
             Some(prior)
-                if prior.registry == plan.registry && prior.release_id != plan.release_id =>
+                if prior.registry == plan.registry
+                    && prior.release_id != plan.release_id
+                    && !plan
+                        .release_id
+                        .starts_with(QUALIFICATION_SNAPSHOT_RELEASE_PREFIX)
+                    && !plan
+                        .source
+                        .source_tag
+                        .starts_with(QUALIFICATION_SNAPSHOT_TAG_PREFIX) =>
             {
                 require_identifier(&prior.release_id, "qualification predecessor release")?;
             }
-            _ => bail!("server contract requires a distinct same-registry predecessor"),
+            None if plan.release_id == snapshot_release_id
+                && plan.source.source_tag == snapshot_source_tag
+                && plan.intended_channels.is_empty() => {}
+            _ => {
+                bail!(
+                    "server contract requires a distinct same-registry predecessor or an explicitly reserved non-public qualification snapshot"
+                )
+            }
         }
         if plan.gates != self.gates(plan.release_class)?
             || plan.public_evidence_policy_digest != self.digest()?

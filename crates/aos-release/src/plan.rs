@@ -23,6 +23,12 @@ use crate::signing::{SignerRequirement, SignerRole};
 /// Exact schema for pre-evaluation planner inputs.
 pub const PLAN_REQUEST_V1: &str = "aos.release.plan-request/v1";
 
+/// Reserved release-id prefix for a retained, non-public qualification snapshot.
+pub const QUALIFICATION_SNAPSHOT_RELEASE_PREFIX: &str = "qualification-snapshot-";
+
+/// Reserved source-tag prefix for a retained, non-public qualification snapshot.
+pub const QUALIFICATION_SNAPSHOT_TAG_PREFIX: &str = "qualification-snapshot/";
+
 /// Release maturity and authorization class.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -349,6 +355,18 @@ impl ReleasePlanRequestV1 {
 }
 
 impl ReleasePlanV1 {
+    /// Returns whether this plan is the reserved non-public predecessor snapshot.
+    #[must_use]
+    pub fn is_qualification_snapshot(&self) -> bool {
+        self.schema_version == crate::RELEASE_PLAN_V2
+            && self.qualification.is_some()
+            && self.qualification_predecessor.is_none()
+            && self.release_id == format!("{QUALIFICATION_SNAPSHOT_RELEASE_PREFIX}{}", self.version)
+            && self.source.source_tag
+                == format!("{QUALIFICATION_SNAPSHOT_TAG_PREFIX}{}", self.version)
+            && self.intended_channels.is_empty()
+    }
+
     /// Requires the shared contract before a new public release operation.
     ///
     /// # Errors
@@ -364,6 +382,23 @@ impl ReleasePlanV1 {
             bail!(
                 "archival release plans are read-only; new publication requires a v2 shared qualification contract"
             );
+        }
+        Ok(())
+    }
+
+    /// Requires a current plan that is authorized to cross a Hub boundary.
+    ///
+    /// Qualification snapshots deliberately use the ordinary build and signing
+    /// pipeline, but remain local inputs to predecessor testing. They cannot be
+    /// staged, bootstrapped, qualified, promoted, or assigned to a channel.
+    ///
+    /// # Errors
+    /// Returns an error for an archival plan, invalid shared contract, or
+    /// non-public qualification snapshot.
+    pub fn require_publishable_qualification(&self) -> Result<()> {
+        self.require_current_qualification()?;
+        if self.is_qualification_snapshot() {
+            bail!("qualification snapshots cannot cross a Hub publication boundary");
         }
         Ok(())
     }

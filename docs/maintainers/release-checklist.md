@@ -115,7 +115,10 @@ Complete this section before starting builds or requesting signatures.
   recorded registry/deployment identities, both Linux image decisions, signer
   roles, channel ranges, and retention policy. The first public release needs a
   retained signed test snapshot as its update predecessor; an empty registry
-  base is not an installed OS to upgrade from.
+  base is not an installed OS to upgrade from. When no prior release exists,
+  follow the
+  [restricted qualification snapshot workflow](canonical-releases.md#create-a-first-qualification-predecessor)
+  before freezing the public plan.
 
   **Check when:** the request has been reviewed against the release record,
   every requested target has a test environment, and the predecessor bundle and
