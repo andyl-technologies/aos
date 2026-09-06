@@ -13,6 +13,7 @@
     version = "1.17.1";
     upstreamId = "1.17.1";
     repository = "troglobit/editline";
+    provider = "github-releases";
     tagPrefix = "";
     major = 1;
     source = {

@@ -15,6 +15,7 @@
     version = "2.2.1";
     upstreamId = "v2.2.1";
     repository = "containerd/nerdctl";
+    provider = "github-releases";
     tagPrefix = "v";
     major = 2;
     source = {

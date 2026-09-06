@@ -15,6 +15,7 @@
     version = "2.15.0";
     upstreamId = "v2.15.0";
     repository = "akheron/jansson";
+    provider = "github-releases";
     tagPrefix = "v";
     major = 2;
     source = {

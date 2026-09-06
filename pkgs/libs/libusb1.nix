@@ -14,6 +14,7 @@
     version = "1.0.29";
     upstreamId = "v1.0.29";
     repository = "libusb/libusb";
+    provider = "github-releases";
     tagPrefix = "v";
     major = 1;
     source = {

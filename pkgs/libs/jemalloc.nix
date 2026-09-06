@@ -15,6 +15,7 @@
     version = "5.3.0";
     upstreamId = "5.3.0";
     repository = "jemalloc/jemalloc";
+    provider = "github-releases";
     major = 5;
     source = {
       authority = "github.com";

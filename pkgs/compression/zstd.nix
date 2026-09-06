@@ -16,6 +16,7 @@
     version = "1.5.7";
     upstreamId = "v1.5.7";
     repository = "facebook/zstd";
+    provider = "github-releases";
     tagPrefix = "v";
     major = 1;
     source = {

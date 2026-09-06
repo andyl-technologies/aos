@@ -13,6 +13,7 @@
     version = "1.10.0";
     upstreamId = "v1.10.0";
     repository = "lz4/lz4";
+    provider = "github-releases";
     tagPrefix = "v";
     major = 1;
     source = {

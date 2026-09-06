@@ -13,6 +13,7 @@
     version = "4.5.2";
     upstreamId = "v4.5.2";
     repository = "besser82/libxcrypt";
+    provider = "github-releases";
     tagPrefix = "v";
     major = 4;
     source = {
