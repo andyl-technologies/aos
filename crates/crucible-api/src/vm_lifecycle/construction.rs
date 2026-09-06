@@ -380,8 +380,12 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
                     )?;
                     if restored.limits() != cold_plan.limits()
                         || restored.declarations() != cold_plan.declarations()
-                        || restored.continuation().phase()
-                            != crucible_protocol::selectable_catalog_plan::SelectablePlanPhase::Frozen
+                        || !selectable_catalog_checkpoint_ready(
+                            &checkpoint.configuration,
+                            checkpoint.initial_lifecycle_observations_pending,
+                            checkpoint.scheduler.event_log_offset().events,
+                            restored,
+                        )
                     {
                         return Err(loop_factory_error(format!(
                             "exact checkpoint selectable catalog basis differs for `{}`",

@@ -39,6 +39,25 @@ fn classify_recorded_control_boundary(
     }
 }
 
+fn selectable_catalogs_checkpoint_ready(
+    configuration: &Configuration,
+    initial_lifecycle_observations_pending: bool,
+    event_log_events: u64,
+    live_nodes: &[NodeId],
+    plans: &BTreeMap<NodeId, crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan>,
+) -> bool {
+    live_nodes.iter().all(|node| {
+        plans.get(node).is_none_or(|plan| {
+            selectable_catalog_checkpoint_ready(
+                configuration,
+                initial_lifecycle_observations_pending,
+                event_log_events,
+                plan,
+            )
+        })
+    })
+}
+
 impl ProductionVmLifecycleLoop {
     /// Drains node-qualified guest selectable requests at the paused boundary.
     ///
@@ -144,7 +163,8 @@ impl ProductionVmLifecycleLoop {
     /// Reports whether every live node can enter an exact checkpoint now.
     ///
     /// A false result means an already-admitted device coroutine crosses the
-    /// current scheduler boundary. The caller may drive another ordinary
+    /// current scheduler boundary or a selectable catalog outside the initial
+    /// execution boundary has not frozen. The caller may drive another ordinary
     /// quantum and retry; checkpoint capture itself never advances through the
     /// deterministic completion coordinate.
     ///
@@ -162,6 +182,9 @@ impl ProductionVmLifecycleLoop {
             .inner
             .backend_mut()
             .drain_pending_selectable_requests()?;
+        let configuration = self.inner.loop_impl().configuration().clone();
+        let event_log_events = self.inner.loop_impl().event_log().offset().events;
+        let selectable_catalog_plans = self.inner.backend().selectable_catalog_plans();
         let live_nodes = self
             .source
             .world()
@@ -172,6 +195,15 @@ impl ProductionVmLifecycleLoop {
             })
             .map(|node| node.id.clone())
             .collect::<Vec<_>>();
+        if !selectable_catalogs_checkpoint_ready(
+            &configuration,
+            self.initial_lifecycle_observations_pending,
+            event_log_events,
+            &live_nodes,
+            &selectable_catalog_plans,
+        ) {
+            return Ok(false);
+        }
         for node in live_nodes {
             if !self
                 .inner

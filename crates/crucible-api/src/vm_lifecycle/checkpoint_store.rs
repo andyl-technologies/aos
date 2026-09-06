@@ -1102,12 +1102,16 @@ fn validate_checkpoint_set(
         .any(|(node, plan)| {
             !checkpoint.targets.contains_key(node)
                 || plan.declarations().is_empty()
-                || plan.continuation().phase()
-                    != crucible_protocol::selectable_catalog_plan::SelectablePlanPhase::Frozen
+                || !selectable_catalog_checkpoint_ready(
+                    &checkpoint.configuration,
+                    checkpoint.initial_lifecycle_observations_pending,
+                    checkpoint.scheduler.event_log_offset().events,
+                    plan,
+                )
         })
     {
         return Err(store_error(
-            "exact checkpoint selectable catalogs are not frozen live-node continuations",
+            "exact checkpoint selectable catalogs are neither frozen nor pristine pre-execution cold-genesis continuations",
         ));
     }
     for (node, state) in &checkpoint.node_service_states {
