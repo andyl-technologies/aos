@@ -655,6 +655,13 @@ The existing command concepts remain useful but use one implementation:
 | `replay` | Instantiate a recorded scenario/schedule artifact |
 | `triage` | Project and minimize the campaign findings ledger |
 
+The `run` compatibility path must record each discovered choice as a schema-v5
+`ScenarioDefault` request tied to the active policy. Repository admission
+accepts only the declared default as one finite candidate with a
+one-proposal/one-attempt budget, so this path cannot silently widen into search.
+Its execution-basis admission must use schema v2; all earlier request and admission
+schemas retain their historical bytes and identities.
+
 - **[CAPI-7]** These commands MUST call `CampaignService` and the same campaign
   primitives rather than maintain separate search, fuzz, branch, local-daemon,
   or future-endpoint state models.

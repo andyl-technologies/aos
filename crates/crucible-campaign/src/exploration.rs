@@ -22,8 +22,9 @@ use crate::{
 };
 
 const RECORD_SCHEMA_VERSION: u32 = 1;
-const BRANCH_REQUEST_SCHEMA_VERSION: u32 = 4;
+const BRANCH_REQUEST_SCHEMA_VERSION: u32 = 5;
 const BRANCH_PATH_SCHEMA_VERSION: u32 = 2;
+const ATTEMPT_ADMISSION_SCHEMA_VERSION: u32 = 2;
 const PLANNER_STEP_SCHEMA_VERSION: u32 = 4;
 const EXPANSION_STATE_SCHEMA_VERSION: u32 = 2;
 const MAX_FINITE_VALUES: usize = 4096;
@@ -61,6 +62,9 @@ fn add_cause_child(children: &mut Vec<(String, ContentId)>, cause: BranchRequest
             children.push(("planner-invocation".to_owned(), invocation.content_id()));
         }
         BranchRequestCause::ExhaustivePolicy(policy) => {
+            children.push(("policy".to_owned(), policy.content_id()));
+        }
+        BranchRequestCause::ScenarioDefault(policy) => {
             children.push(("policy".to_owned(), policy.content_id()));
         }
         BranchRequestCause::Operator(_) | BranchRequestCause::Debugger(_) => {}

@@ -403,6 +403,7 @@ pub(super) fn campaign_branch_cause_label(cause: BranchRequestCause) -> String {
         BranchRequestCause::Operator(value) => format!("operator:{value}"),
         BranchRequestCause::Debugger(value) => format!("debugger:{value}"),
         BranchRequestCause::ExhaustivePolicy(value) => format!("policy:{value}"),
+        BranchRequestCause::ScenarioDefault(value) => format!("scenario-default:{value}"),
     }
 }
 

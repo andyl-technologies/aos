@@ -791,6 +791,7 @@ impl CampaignRepository {
             }
             BranchRequestCause::Planner(_)
             | BranchRequestCause::ExhaustivePolicy(_)
+            | BranchRequestCause::ScenarioDefault(_)
             | BranchRequestCause::Debugger(_)
                 if prior_roots.accounting != next_roots.accounting =>
             {
@@ -800,6 +801,7 @@ impl CampaignRepository {
             }
             BranchRequestCause::Planner(_)
             | BranchRequestCause::ExhaustivePolicy(_)
+            | BranchRequestCause::ScenarioDefault(_)
             | BranchRequestCause::Debugger(_) => {}
         }
         if !self.coordination_matches_parent_result(parent, next_roots.coordination)? {

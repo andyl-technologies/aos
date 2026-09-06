@@ -394,8 +394,16 @@ impl AttemptAdmission {
     /// Builds an attempt admission record.
     #[must_use]
     pub const fn new(attempt: AttemptId, role: AttemptAdmissionRole) -> Self {
+        let schema_version = match role {
+            AttemptAdmissionRole::ExecutionBasis {
+                cause: BranchRequestCause::ScenarioDefault(_),
+                ..
+            } => ATTEMPT_ADMISSION_SCHEMA_VERSION,
+            AttemptAdmissionRole::ExecutionBasis { .. }
+            | AttemptAdmissionRole::AdditionalCause { .. } => RECORD_SCHEMA_VERSION,
+        };
         Self {
-            schema_version: RECORD_SCHEMA_VERSION,
+            schema_version,
             attempt,
             role,
         }
@@ -436,8 +444,9 @@ impl AttemptAdmission {
     /// Returns [`CampaignCodecError`] if canonical envelope construction fails.
     pub fn id(&self) -> Result<AttemptAdmissionId, CampaignCodecError> {
         AttemptAdmissionId::from_content_id(
-            crate::ObjectEnvelope::for_record(
+            crate::ObjectEnvelope::for_record_versioned(
                 crate::CampaignRecordKind::AttemptAdmission,
+                self.schema_version,
                 crate::object::content_children(self.content_children())?,
                 self.canonical_bytes(),
             )?
@@ -467,6 +476,10 @@ impl AttemptAdmission {
         }
         children
     }
+
+    pub(crate) const fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
 }
 
 impl Canonical for AttemptAdmission {
@@ -477,10 +490,30 @@ impl Canonical for AttemptAdmission {
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        require_schema(u32::decode(decoder)?)?;
-        Ok(Self::new(
-            AttemptId::decode(decoder)?,
-            AttemptAdmissionRole::decode(decoder)?,
-        ))
+        let schema_version = u32::decode(decoder)?;
+        let attempt = AttemptId::decode(decoder)?;
+        let role = AttemptAdmissionRole::decode(decoder)?;
+        let scenario_default_basis = matches!(
+            role,
+            AttemptAdmissionRole::ExecutionBasis {
+                cause: BranchRequestCause::ScenarioDefault(_),
+                ..
+            }
+        );
+        let compatible = match schema_version {
+            RECORD_SCHEMA_VERSION => !scenario_default_basis,
+            ATTEMPT_ADMISSION_SCHEMA_VERSION => scenario_default_basis,
+            _ => false,
+        };
+        if !compatible {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "unsupported attempt-admission schema or role",
+            });
+        }
+        Ok(Self {
+            schema_version,
+            attempt,
+            role,
+        })
     }
 }

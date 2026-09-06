@@ -299,7 +299,7 @@ ExplainCampaignAttemptRequestV1 = version | principal | campaign | snapshot |
                                   AttemptId
 ExplainCampaignAttemptResponseV2 = version | request_digest |
                                    CampaignSnapshotV2OrV3 | AttemptV1 |
-                                   AttemptAdmissionV1 | BranchPathV2 |
+                                   AttemptAdmissionV1-or-V2 | BranchPathV2 |
                                    optional SelectionV2 | optional ProposalV1 |
                                    optional PlannerStepV4 |
                                    optional ObservationV1 |
@@ -365,7 +365,7 @@ GetCampaignFrontierObjectRequestV1 = version | principal | campaign |
 GetCampaignFrontierObjectResponseV1 = version | request_digest |
                                       CampaignSnapshotV2OrV3 |
                                       ContinuationProjectionV1 |
-                                     BranchRequestV1-or-V2 |
+                                     BranchRequestV1-through-V5 |
                                       MerkleLookupProofV1 |
                                       MerkleLookupProofV1
 
@@ -388,7 +388,7 @@ PinCampaignResponseV1 = version | request_digest | prior_snapshot |
                         new_snapshot | replayed
 
 SubmitCampaignBranchRequestV1 = version | principal | campaign |
-                                expected_snapshot | BranchRequestV1-or-V2
+                                expected_snapshot | BranchRequestV1-through-V5
 SubmitCampaignBranchResponseV1 = version | request_digest | prior_snapshot |
                                  new_snapshot | branch_request | replayed
 
@@ -715,7 +715,7 @@ does not grant evidence bodies, checkpoint bytes, or any other child closure.
 `ExplainCampaignAttempt` is the separately authorized provenance view for one
 exact attempt in the current authenticated snapshot. Two minimal accounting
 lookup proofs bind the complete `AttemptV1` body and its unique execution-basis
-`AttemptAdmissionV1`; a third proof binds the execution-basis `ProposalV1` in
+`AttemptAdmissionV1-or-V2`; a third proof binds the execution-basis `ProposalV1` in
 the exploration root for branch attempts, and an observations-root proof binds
 either the canonical `ObservationV1` or authenticated absence. The response
 also carries the exact content-addressed `BranchPathV2` and, for a branch,
@@ -805,8 +805,8 @@ before generated work is advertised as executable.
 
 `GetFrontierObject` is the separately authorized body read for one exact
 `BranchRequestId` returned by `QueryFrontier`. The response repeats the
-authenticated projection and returns the strict `BranchRequestV1` or
-`BranchRequestV2` body. The
+authenticated projection and returns the strict `BranchRequestV1` through
+`BranchRequestV5` body. The
 first minimal lookup proof authenticates the fixed frontier-index anchor; the
 second authenticates the request-keyed projection ID inside that index. A
 checked client reconstructs both the projection and request content IDs,
@@ -840,6 +840,18 @@ choice policy to select that exact generator, and the cardinality to be no
 greater than `maximum_cardinality`. A non-`all` generator, another domain
 family, a partial or excessive proposal budget, or an over-ceiling domain is
 rejected before immutable request or Merkle publication.
+
+A scenario-default branch request uses
+`BranchRequestCause::ScenarioDefault` with the exact active policy. It is
+schema v5 and carries one unweighted finite value equal to the referenced
+opportunity's declared default, a one-proposal/one-attempt budget, and no
+alternative candidates. Local publication and imported-history validation
+require `admits_scenario_defaults`, the active policy child, the exact default,
+and the finite singleton shape. The version-1
+`SubmitCampaignBranchRequest` message embeds the branch request's own schema,
+so accepting v5 leaves the outer framing, outer schema, and digest algorithm
+unchanged. Historical outer requests retain their exact bytes; a new request
+that embeds a v5 body naturally has new full-message bytes and a new digest.
 
 The checked local porcelain exposes these proof-bearing reads through
 `campaign graph-object`, `campaign choice-object`, and

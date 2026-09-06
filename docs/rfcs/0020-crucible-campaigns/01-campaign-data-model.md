@@ -578,7 +578,7 @@ pub struct BranchPoint {
 }
 
 pub struct BranchRequest {
-    pub schema_version: u32, // v2 explicit/uniform, v3 modeled finite, v4 modeled generated
+    pub schema_version: u32, // v2 explicit/uniform, v3 modeled finite, v4 modeled generated, v5 scenario default
     pub branch_point: BranchPointId,
     pub parent: ConfigurationArtifactId,
     pub opportunity: ChoiceOpportunityId,
@@ -627,6 +627,7 @@ pub enum BranchRequestCause {
     Operator(CampaignCommandId),
     Debugger(DebugSessionId),
     ExhaustivePolicy(CampaignPolicyId),
+    ScenarioDefault(CampaignPolicyId),
 }
 
 pub struct Proposal {
@@ -673,6 +674,7 @@ pub struct BranchPath {
 }
 
 pub struct AttemptAdmission {
+    pub schema_version: u32, // v2 only when ExecutionBasis carries ScenarioDefault
     pub attempt: AttemptId,
     pub role: AttemptAdmissionRole,
 }
@@ -721,7 +723,13 @@ candidate-source tag 4 followed by one `ProbabilityModelId` and one
 exact implementation contract and the opportunity-model equality are
 owner-validated before publication, restart, or import acceptance. New modeled
 generated requests use v4; v1 through v3 bodies and envelope identities remain
-unchanged.
+unchanged. Schema v5 adds branch-request-cause tag 4 for
+`ScenarioDefault(CampaignPolicyId)`. It is valid only with the exact active
+policy, an enabled `admits_scenario_defaults` policy bit, an unweighted finite
+singleton equal to the referenced opportunity's declared default, and a
+one-proposal/one-attempt budget. Every other cause remains on its established
+v1 through v4 writer schema and is invalid in v5. V1 through v4 bodies and
+envelope identities remain unchanged.
 
 `BranchPath` schema version 2 retains each `BranchPointId` beside its
 non-invertible `BranchEdgeId`. This lets a restart rebuild observation credit
@@ -776,6 +784,11 @@ Planner cause names policy and observation basis directly rather than the
 `PlannerStepId` that records resulting proposals. This keeps the content graph
 acyclic while preserving the full causal chain.
 
+`ScenarioDefault` is distinct from adaptive planner and exhaustive-policy
+causes. It records the compatibility path that follows exactly one
+scenario-declared default and cannot widen that choice. Its policy child makes
+default admission replayable and fail-closed after import.
+
 `AttemptId` is the digest of the canonical `Attempt` semantic inputs. Executor,
 reservation generation, retry number, start time, preferred materialization,
 branch request, and
@@ -786,6 +799,12 @@ later duplicates are `AdditionalCause` and cannot trigger execution or
 retroactively change estimator eligibility. A repeated attempt may produce
 identical bytes and deduplicate. If it does not, the replay oracle localizes a
 determinism defect.
+
+`AttemptAdmission` schema v2 is written only for an `ExecutionBasis` whose
+cause is `ScenarioDefault`; the nested cause carries the new tag. All other
+execution bases and every `AdditionalCause` retain schema v1 and their exact
+historical body and envelope identities. A v1 body containing the new cause or
+a v2 body without it is invalid.
 
 `AttemptStart::Discover` is the bootstrap form. It realizes a configuration
 until the next pending choice or terminal outcome without pretending a choice
