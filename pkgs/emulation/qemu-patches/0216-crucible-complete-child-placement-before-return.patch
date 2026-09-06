@@ -1,0 +1,166 @@
+diff --git a/include/system/crucible-hot-fork-coordinator.h b/include/system/crucible-hot-fork-coordinator.h
+index 0f3caba0c..20869acb6 100644
+--- a/include/system/crucible-hot-fork-coordinator.h
++++ b/include/system/crucible-hot-fork-coordinator.h
+@@ -37,9 +37,10 @@ typedef struct QemuCrucibleHotForkMainLoopOperation {
+      * Optional Linux cgroup-v2 placement.  The directory authenticates the
+      * target; the child's first instruction writes itself into the
+      * supervisor-opened cgroup.procs descriptor, which the kernel authorizes
+-     * with the opener's credentials.  Production hot-fork requests always
+-     * provide both; -1 remains available only to focused coordinator tests
+-     * that own no attempt cgroup.
++     * with the opener's credentials, and the parent completes the fork only
++     * after the child has reported that placement.  Production hot-fork
++     * requests always provide both; -1 remains available only to focused
++     * coordinator tests that own no attempt cgroup.
+      */
+     int child_cgroup_fd;
+     int child_cgroup_procs_fd;
+diff --git a/system/crucible-hot-fork-coordinator.c b/system/crucible-hot-fork-coordinator.c
+index 20f445664..5fb11a3ee 100644
+--- a/system/crucible-hot-fork-coordinator.c
++++ b/system/crucible-hot-fork-coordinator.c
+@@ -15,6 +15,7 @@
+ 
+ #ifdef CONFIG_LINUX
+ #include <linux/sched.h>
++#include <poll.h>
+ #include <sys/syscall.h>
+ #endif
+ 
+@@ -55,6 +56,21 @@ typedef struct QemuCrucibleHotForkCoordinator {
+ 
+ static QemuCrucibleHotForkCoordinator crucible_hot_fork_coordinator;
+ 
++/* Bound on the child's first instruction reaching the parent. */
++#define CRUCIBLE_HOT_FORK_PLACEMENT_TIMEOUT_MS 10000
++
++static void crucible_hot_fork_close_pipe(int descriptors[2])
++{
++    if (descriptors[0] >= 0) {
++        close(descriptors[0]);
++        descriptors[0] = -1;
++    }
++    if (descriptors[1] >= 0) {
++        close(descriptors[1]);
++        descriptors[1] = -1;
++    }
++}
++
+ /*
+  * Create the child and place it in the target cgroup.
+  *
+@@ -65,21 +81,79 @@ static QemuCrucibleHotForkCoordinator crucible_hot_fork_coordinator;
+  * process that opened the descriptor, so the child migrates itself through
+  * the supervisor-opened descriptor as its first instruction; nothing else
+  * runs in the child before that write completes.
++ *
++ * The parent does not return until the child reports that placement, so a
++ * supervisor that observes the fork's completion observes the child inside
++ * its target cgroup.  Both pipe ends are closed in each process before any
++ * descriptor inventory runs.  In the parent, @placement receives 0 once the
++ * child reported, -ECHILD when the child ended first, or -ETIMEDOUT when it
++ * neither reported nor ended within the bound; the child is still retained
++ * so its terminal status is reaped through the coordinator.
+  */
+-static pid_t crucible_hot_fork_create_child(int cgroup_procs_fd)
++static pid_t crucible_hot_fork_create_child(int cgroup_procs_fd,
++                                            int *placement)
+ {
+-    pid_t child = fork();
++    int pipe_fds[2] = { -1, -1 };
++    struct pollfd reported;
++    char byte = 0;
++    ssize_t transferred;
++    int ready;
++    pid_t child;
++
++    *placement = 0;
++    if (pipe2(pipe_fds, O_CLOEXEC) < 0) {
++        return -1;
++    }
++    child = fork();
++    if (child == 0) {
++        close(pipe_fds[0]);
++        if (cgroup_procs_fd >= 0) {
++            do {
++                transferred = write(cgroup_procs_fd, "0", 1);
++            } while (transferred < 0 && errno == EINTR);
++            if (transferred != 1) {
++                _exit(EXIT_FAILURE);
++            }
++        }
++        do {
++            transferred = write(pipe_fds[1], "1", 1);
++        } while (transferred < 0 && errno == EINTR);
++        close(pipe_fds[1]);
++        if (transferred != 1) {
++            _exit(EXIT_FAILURE);
++        }
++        return 0;
++    }
++    if (child < 0) {
++        int saved_errno = errno;
+ 
+-    if (child == 0 && cgroup_procs_fd >= 0) {
+-        ssize_t written;
++        crucible_hot_fork_close_pipe(pipe_fds);
++        errno = saved_errno;
++        return -1;
++    }
+ 
++    close(pipe_fds[1]);
++    pipe_fds[1] = -1;
++    reported = (struct pollfd) {
++        .fd = pipe_fds[0],
++        .events = POLLIN,
++    };
++    do {
++        ready = poll(&reported, 1, CRUCIBLE_HOT_FORK_PLACEMENT_TIMEOUT_MS);
++    } while (ready < 0 && errno == EINTR);
++    if (ready == 0) {
++        *placement = -ETIMEDOUT;
++    } else if (ready < 0) {
++        *placement = -errno;
++    } else {
+         do {
+-            written = write(cgroup_procs_fd, "0", 1);
+-        } while (written < 0 && errno == EINTR);
+-        if (written != 1) {
+-            _exit(EXIT_FAILURE);
++            transferred = read(pipe_fds[0], &byte, 1);
++        } while (transferred < 0 && errno == EINTR);
++        if (transferred != 1 || byte != '1') {
++            *placement = -ECHILD;
+         }
+     }
++    crucible_hot_fork_close_pipe(pipe_fds);
+     return child;
+ }
+ 
+@@ -166,6 +240,7 @@ static void crucible_hot_fork_execute_main_loop_request(void)
+         &crucible_hot_fork_coordinator;
+     QemuCrucibleHotForkMainLoopOperation operation;
+     pid_t child_pid;
++    int placement = 0;
+     int parent_result;
+     int result;
+ 
+@@ -186,7 +261,7 @@ static void crucible_hot_fork_execute_main_loop_request(void)
+     }
+ 
+     child_pid = crucible_hot_fork_create_child(
+-        operation.child_cgroup_procs_fd);
++        operation.child_cgroup_procs_fd, &placement);
+     if (child_pid == 0) {
+         /*
+          * The copied waiter and notifier are parent-only.  Close the raw wake
+@@ -207,6 +282,8 @@ static void crucible_hot_fork_execute_main_loop_request(void)
+ 
+     if (child_pid < 0) {
+         result = -errno;
++    } else if (placement != 0) {
++        result = placement;
+     }
+     /*
+      * The parent callback releases the runtime transaction that still holds

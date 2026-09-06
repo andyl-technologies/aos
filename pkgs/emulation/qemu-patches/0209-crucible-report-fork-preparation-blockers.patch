@@ -1,0 +1,217 @@
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 2d4563ecb..7addeb533 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -560,6 +560,8 @@ typedef struct CrucibleHotForkOperation {
+     int excluded_fds[QEMU_CRUCIBLE_HOT_FORK_MAX_RETAINED_DESCRIPTORS];
+     size_t excluded_fd_count;
+     bool prepared;
++    /* Static description of the first basis that blocked preparation. */
++    const char *blocker;
+ } CrucibleHotForkOperation;
+ 
+ /*
+@@ -4060,6 +4062,7 @@ static int crucible_hot_fork_prepare_child_files(
+ 
+     if (!crucible_hot_fork_child_files_bound() ||
+         operation->child_files_generation != stage->generation) {
++        operation->blocker = "native roots require a bound child file plan";
+         return -ENOTSUP;
+     }
+     files = g_new0(QemuBlockHotForkChildFile, stage->files->len);
+@@ -4077,6 +4080,8 @@ static int crucible_hot_fork_prepare_child_files(
+             fstat(file->fd, &status) < 0 ||
+             (uint64_t)status.st_dev != file->expected_device ||
+             (uint64_t)status.st_ino != file->expected_inode) {
++            operation->blocker =
++                "a child file root or destination could not be resolved";
+             return -ENOENT;
+         }
+         files[index].descriptor = file->fd;
+@@ -4085,6 +4090,7 @@ static int crucible_hot_fork_prepare_child_files(
+         crucible_hot_fork_template_sources, files, stage->files->len,
+         stage->maximum_bytes, NULL);
+     if (!plan) {
++        operation->blocker = "child-private file copies could not be prepared";
+         return -EIO;
+     }
+     descriptors = g_new0(int, QEMU_CRUCIBLE_HOT_FORK_MAX_RETAINED_DESCRIPTORS);
+@@ -4100,6 +4106,7 @@ static int crucible_hot_fork_prepare_child_files(
+         if (!qemu_block_hot_fork_child_files_free(plan, &local_err)) {
+             error_free(local_err);
+         }
++        operation->blocker = "child file descriptors exceed the retained bound";
+         return -E2BIG;
+     }
+     operation->child_files = plan;
+@@ -4107,6 +4114,119 @@ static int crucible_hot_fork_prepare_child_files(
+     return 0;
+ }
+ 
++/*
++ * Names the first precondition that blocks a fork preparation.  The checks
++ * mirror the admission condition exactly so a live rejection identifies the
++ * stage whose generation, quiescence, or binding drifted.
++ */
++static const char *crucible_hot_fork_operation_blocker(
++    const CrucibleHotForkOperation *operation,
++    const CrucibleHotForkPluginBarrierState *plugin_barrier,
++    const CrucibleHotForkRcuBarrierState *rcu_barrier,
++    const CrucibleHotForkBhTimerBarrierState *bh_timer_barrier,
++    const CrucibleHotForkBlockBarrierState *block_barrier)
++{
++    struct qemu_plugin_crucible_hot_fork_child_plan child_plan = { 0 };
++
++    if (!crucible_hot_fork_operation_active) {
++        return "no fork operation is active";
++    }
++    if (!plugin_barrier || !block_barrier || !rcu_barrier ||
++        !bh_timer_barrier) {
++        return "a barrier report is absent";
++    }
++    if (!crucible_hot_fork_template_active ||
++        crucible_hot_fork_template_phase !=
++            CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BARRIERS_HELD) {
++        return "retained template is not in the held-barrier phase";
++    }
++    if (!crucible_hot_fork_exact_paused_boundary()) {
++        return "source is not at the exact paused boundary";
++    }
++    if (operation->template_generation !=
++        crucible_hot_fork_template_generation) {
++        return "template generation differs";
++    }
++    if (operation->private_ring_generation !=
++        crucible_hot_fork_private_ring_stage.generation) {
++        return "private ring generation differs";
++    }
++    if (operation->diagnostic_generation !=
++        crucible_hot_fork_diagnostic_stage.generation) {
++        return "diagnostic generation differs";
++    }
++    if (operation->qmp_generation != crucible_hot_fork_qmp_stage.generation) {
++        return "child QMP generation differs";
++    }
++    if (operation->console_generation !=
++        crucible_hot_fork_console_stage.generation) {
++        return "child console generation differs";
++    }
++    if (operation->monitor_generation !=
++        crucible_hot_fork_qmp_stage.monitor_generation) {
++        return "monitor generation differs";
++    }
++    if (operation->plugin_endpoint_generation !=
++        crucible_hot_fork_plugin_endpoint_stage.generation) {
++        return "plugin endpoint generation differs";
++    }
++    if (operation->plugin_barrier_generation != plugin_barrier->generation ||
++        operation->rcu_barrier_generation != rcu_barrier->generation ||
++        operation->bh_timer_barrier_generation !=
++            bh_timer_barrier->generation ||
++        operation->block_barrier_generation != block_barrier->generation) {
++        return "a barrier generation differs";
++    }
++    if (!plugin_barrier->quiescent || !rcu_barrier->quiescent ||
++        !bh_timer_barrier->quiescent || !block_barrier->quiescent) {
++        return "a barrier is not quiescent";
++    }
++    if (!block_barrier->snapshot_complete) {
++        return "block snapshot binding is incomplete";
++    }
++    if (!crucible_hot_fork_plugin_child_plan_bound(
++            plugin_barrier, NULL, NULL) ||
++        !crucible_hot_fork_current_plugin_child_plan(
++            plugin_barrier, &child_plan)) {
++        return "plugin child plan is not bound";
++    }
++    if (operation->parent_process_generation !=
++            child_plan.parent_process_generation ||
++        operation->child_process_generation !=
++            child_plan.child_process_generation) {
++        return "plugin process generations differ";
++    }
++    if (operation->child_process_contract_generation !=
++        crucible_hot_fork_child_process_contract_stage.generation) {
++        return "child process contract generation differs";
++    }
++    if (operation->child_files_generation !=
++        crucible_hot_fork_child_files_stage.generation) {
++        return "child file plan generation differs";
++    }
++    if (!crucible_hot_fork_child_process_contract_bound()) {
++        return "child process contract is not bound";
++    }
++    if (!crucible_hot_fork_plugin_child_resource_plan_bound(plugin_barrier)) {
++        return "plugin child resource plan is not bound";
++    }
++    if (!crucible_hot_fork_diagnostic_resource_plan_bound()) {
++        return "diagnostic resource plan is not bound";
++    }
++    if (!crucible_hot_fork_qmp_resource_plan_bound()) {
++        return "child QMP resource plan is not bound";
++    }
++    if (!crucible_hot_fork_console_resource_plan_bound()) {
++        return "child console resource plan is not bound";
++    }
++    if (!monitor_hot_fork_child_basis_matches_current(
++            &crucible_hot_fork_qmp_child_basis,
++            operation->monitor_generation)) {
++        return "child monitor basis changed";
++    }
++    return NULL;
++}
++
+ static int crucible_hot_fork_prepare_operation(void *opaque)
+ {
+     CrucibleHotForkOperation *operation = opaque;
+@@ -4177,6 +4297,9 @@ static int crucible_hot_fork_prepare_operation(void *opaque)
+         !monitor_hot_fork_child_basis_matches_current(
+             &crucible_hot_fork_qmp_child_basis,
+             operation->monitor_generation)) {
++        operation->blocker = crucible_hot_fork_operation_blocker(
++            operation, plugin_barrier, rcu_barrier, bh_timer_barrier,
++            block_barrier);
+         goto unlock;
+     }
+ 
+@@ -4256,6 +4379,7 @@ unlock:
+      */
+     if (!qemu_aio_hot_fork_thread_pools_empty() ||
+         !qemu_block_hot_fork_all_sources_read_only(NULL)) {
++        operation->blocker = "native workers or sources are not retired";
+         return -ENOTSUP;
+     }
+     {
+@@ -4264,16 +4388,21 @@ unlock:
+         if (!qemu_block_hot_fork_source_set_query(
+                 crucible_hot_fork_template_sources, &sources, NULL) ||
+             !sources.frozen) {
++            operation->blocker = "native source set is not frozen";
+             return -ENOTSUP;
+         }
+         if (sources.roots != 0) {
+             /* Every frozen native root needs its child-private successor. */
+             result = crucible_hot_fork_prepare_child_files(operation);
+             if (result != 0) {
++                if (!operation->blocker) {
++                    operation->blocker = "child-private file plan failed";
++                }
+                 return result;
+             }
+         } else if (crucible_hot_fork_child_files_stage.staged) {
+             /* A file plan without native roots replaces nothing. */
++            operation->blocker = "child file plan staged without native roots";
+             return -ENOTSUP;
+         }
+     }
+@@ -4551,7 +4680,9 @@ CrucibleHotForkState *qmp_crucible_hot_fork(
+     g_mutex_unlock(&crucible_hot_fork_template_lock);
+     if (child_pid <= 0) {
+         error_setg_errno(errp, result < 0 ? -result : EPROTO,
+-                         "Could not complete Crucible hot-fork preparation");
++                         "Could not complete Crucible hot-fork preparation: %s",
++                         operation.blocker ? operation.blocker :
++                             "runtime transaction or process creation failed");
+         return NULL;
+     }
+ 

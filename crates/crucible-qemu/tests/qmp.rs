@@ -302,7 +302,7 @@ fn hot_fork_thread_inventory_is_exact_bounded_and_sorted() -> Result<(), Box<dyn
     let stream = scripted_qmp([
         r#"{"QMP":{"version":{},"capabilities":[]}}"#,
         r#"{"return":{}}"#,
-        r#"{"return":{"schema-version":4,"generation":9,"complete":true,"overflowed":false,"unclassified-threads":1,"threads":[{"thread-id":10,"name":"qmp-main-loop","name-valid":true,"joinable":false,"disposition":"coordinator"},{"thread-id":11,"name":"call_rcu","name-valid":true,"joinable":false,"disposition":"rcu-restart"},{"thread-id":12,"name":"IO mon_iothread","name-valid":true,"joinable":true,"disposition":"monitor-restart"},{"thread-id":13,"name":"worker","name-valid":true,"joinable":true,"disposition":"unclassified"}]}}"#,
+        r#"{"return":{"schema-version":4,"generation":9,"complete":true,"overflowed":false,"unclassified-threads":1,"threads":[{"thread-id":10,"name":"qmp-main-loop","name-valid":true,"joinable":false,"disposition":"coordinator"},{"thread-id":11,"name":"call_rcu","name-valid":true,"joinable":false,"disposition":"rcu-restart"},{"thread-id":12,"name":"IO mon_iothread","name-valid":true,"joinable":true,"disposition":"monitor-restart"},{"thread-id":13,"name":"worker","name-valid":true,"joinable":true,"disposition":"unclassified"},{"thread-id":14,"name":"ALL CPUs/TCG","name-valid":true,"joinable":true,"disposition":"vcpu-restart"}]}}"#,
     ]);
     let audit = stream.audit_handle();
     let mut client = QmpClient::connect(stream)?;
@@ -312,7 +312,7 @@ fn hot_fork_thread_inventory_is_exact_bounded_and_sorted() -> Result<(), Box<dyn
     assert!(inventory.complete());
     assert!(!inventory.overflowed());
     assert_eq!(inventory.unclassified_threads(), 1);
-    assert_eq!(inventory.threads().len(), 4);
+    assert_eq!(inventory.threads().len(), 5);
     assert_eq!(inventory.threads()[0].thread_id(), 10);
     assert_eq!(inventory.threads()[0].name(), "qmp-main-loop");
     assert!(inventory.threads()[0].name_valid());
@@ -332,6 +332,10 @@ fn hot_fork_thread_inventory_is_exact_bounded_and_sorted() -> Result<(), Box<dyn
     assert_eq!(
         inventory.threads()[3].disposition(),
         QmpHotForkThreadDisposition::Unclassified
+    );
+    assert_eq!(
+        inventory.threads()[4].disposition(),
+        QmpHotForkThreadDisposition::VcpuRestart
     );
 
     drop(client);

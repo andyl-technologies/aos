@@ -177,17 +177,17 @@ where
     #[cfg(target_os = "linux")]
     fn install_hot_fork_child_process_contract(
         &mut self,
-        cgroup_name: &crate::QmpDescriptorName,
+        names: &crate::QmpHotForkChildProcessContractNames,
         cgroup: std::os::fd::BorrowedFd<'_>,
-        cancellation_name: &crate::QmpDescriptorName,
+        cgroup_procs: std::os::fd::BorrowedFd<'_>,
         cancellation: std::os::fd::BorrowedFd<'_>,
         identity: crate::QmpHotForkChildProcessContractIdentity,
         template_generation: u64,
     ) -> Result<crate::QmpHotForkChildProcessContractState, crate::QemuNodeChannelError> {
         self.vmstate.install_hot_fork_child_process_contract(
-            cgroup_name,
+            names,
             cgroup,
-            cancellation_name,
+            cgroup_procs,
             cancellation,
             identity,
             template_generation,
@@ -197,15 +197,11 @@ where
     #[cfg(target_os = "linux")]
     fn release_hot_fork_child_process_contract(
         &mut self,
-        cgroup_name: &crate::QmpDescriptorName,
-        cancellation_name: &crate::QmpDescriptorName,
+        names: &crate::QmpHotForkChildProcessContractNames,
         identity: crate::QmpHotForkChildProcessContractIdentity,
     ) -> Result<crate::QmpHotForkChildProcessContractState, crate::QemuNodeChannelError> {
-        self.vmstate.release_hot_fork_child_process_contract(
-            cgroup_name,
-            cancellation_name,
-            identity,
-        )
+        self.vmstate
+            .release_hot_fork_child_process_contract(names, identity)
     }
 
     fn query_hot_fork_child_process_contract(

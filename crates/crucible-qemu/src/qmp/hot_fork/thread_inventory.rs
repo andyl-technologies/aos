@@ -23,6 +23,8 @@ pub enum QmpHotForkThreadDisposition {
     MonitorRestart,
     /// AIO-context worker without an accepted barrier or child reinitializer.
     UnclassifiedAio,
+    /// Single round-robin TCG vCPU thread discarded in the child and restarted from its park.
+    VcpuRestart,
 }
 
 /// One active thread in QEMU's bounded internal fork registry.
@@ -245,6 +247,7 @@ pub(in crate::qmp) fn parse_hot_fork_thread_inventory(
                 unclassified_threads += 1;
                 QmpHotForkThreadDisposition::UnclassifiedAio
             }
+            Some("vcpu-restart") => QmpHotForkThreadDisposition::VcpuRestart,
             _ => return Err(malformed()),
         };
         names_valid &= name_valid;

@@ -48,8 +48,7 @@ type SharedChildFilesState = Arc<Mutex<Option<(Vec<crate::QmpHotForkChildFile>, 
 type SharedProcessContractState = Arc<
     Mutex<
         Option<(
-            crate::QmpDescriptorName,
-            crate::QmpDescriptorName,
+            crate::QmpHotForkChildProcessContractNames,
             crate::QmpHotForkChildProcessContractIdentity,
             u64,
             u64,
@@ -1315,29 +1314,25 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
             .lock()
             .unwrap()
             .push(ChannelCall::QmpHotForkChildProcessContract);
-        if let Some((cgroup_name, cancellation_name, identity, generation, template_generation)) =
+        if let Some((names, identity, generation, template_generation)) =
             self.process_contract_state.lock().unwrap().as_ref()
         {
             return Ok(
                 crate::QmpHotForkChildProcessContractState::one_template_staged(
                     *generation,
                     *template_generation,
-                    cgroup_name.clone(),
-                    cancellation_name.clone(),
+                    names,
                     *identity,
                 ),
             );
         }
-        let identity = crate::QmpHotForkChildProcessContractIdentity::new(1, 2, 3, 4)
+        let identity = crate::QmpHotForkChildProcessContractIdentity::new(1, 2, 9, 3, 4)
             .map_err(QemuNodeChannelError::from)?;
         Ok(
             crate::QmpHotForkChildProcessContractState::one_template_staged(
                 13,
                 1,
-                crate::QmpDescriptorName::new("test-hot-fork-cgroup")
-                    .map_err(QemuNodeChannelError::from)?,
-                crate::QmpDescriptorName::new("test-hot-fork-cancellation")
-                    .map_err(QemuNodeChannelError::from)?,
+                &test_hot_fork_contract_names()?,
                 identity,
             ),
         )
@@ -1345,9 +1340,9 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
 
     fn install_hot_fork_child_process_contract(
         &mut self,
-        cgroup_name: &crate::QmpDescriptorName,
+        names: &crate::QmpHotForkChildProcessContractNames,
         _cgroup: std::os::fd::BorrowedFd<'_>,
-        cancellation_name: &crate::QmpDescriptorName,
+        _cgroup_procs: std::os::fd::BorrowedFd<'_>,
         _cancellation: std::os::fd::BorrowedFd<'_>,
         identity: crate::QmpHotForkChildProcessContractIdentity,
         template_generation: u64,
@@ -1357,19 +1352,13 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
             .unwrap()
             .push(ChannelCall::QmpHotForkInstallProcessContract);
         let generation = 13;
-        *self.process_contract_state.lock().unwrap() = Some((
-            cgroup_name.clone(),
-            cancellation_name.clone(),
-            identity,
-            generation,
-            template_generation,
-        ));
+        *self.process_contract_state.lock().unwrap() =
+            Some((names.clone(), identity, generation, template_generation));
         Ok(
             crate::QmpHotForkChildProcessContractState::one_template_staged(
                 generation,
                 template_generation,
-                cgroup_name.clone(),
-                cancellation_name.clone(),
+                names,
                 identity,
             ),
         )
@@ -1377,8 +1366,7 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
 
     fn release_hot_fork_child_process_contract(
         &mut self,
-        cgroup_name: &crate::QmpDescriptorName,
-        cancellation_name: &crate::QmpDescriptorName,
+        names: &crate::QmpHotForkChildProcessContractNames,
         identity: crate::QmpHotForkChildProcessContractIdentity,
     ) -> Result<crate::QmpHotForkChildProcessContractState, QemuNodeChannelError> {
         self.log
@@ -1386,18 +1374,13 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
             .unwrap()
             .push(ChannelCall::QmpHotForkReleaseProcessContract);
         let retained = self.process_contract_state.lock().unwrap().take();
-        let Some((retained_cgroup, retained_cancellation, retained_identity, generation, _)) =
-            retained
-        else {
+        let Some((retained_names, retained_identity, generation, _)) = retained else {
             return Err(QemuNodeChannelError::new(
                 "release hot-fork child process contract",
                 "scripted process contract is absent",
             ));
         };
-        if retained_cgroup != *cgroup_name
-            || retained_cancellation != *cancellation_name
-            || retained_identity != identity
-        {
+        if retained_names != *names || retained_identity != identity {
             return Err(QemuNodeChannelError::new(
                 "release hot-fork child process contract",
                 "scripted process contract basis changed",
@@ -2301,11 +2284,32 @@ fn exact_hot_fork_request() -> crate::QmpHotForkRequest {
 }
 
 #[cfg(target_os = "linux")]
+fn test_hot_fork_contract_names()
+-> Result<crate::QmpHotForkChildProcessContractNames, QemuNodeChannelError> {
+    crate::QmpHotForkChildProcessContractNames::new(
+        crate::QmpDescriptorName::new("test-hot-fork-cgroup")
+            .map_err(QemuNodeChannelError::from)?,
+        crate::QmpDescriptorName::new("test-hot-fork-cgroup-procs")
+            .map_err(QemuNodeChannelError::from)?,
+        crate::QmpDescriptorName::new("test-hot-fork-cancellation")
+            .map_err(QemuNodeChannelError::from)?,
+    )
+    .map_err(QemuNodeChannelError::from)
+}
+
 fn unvalidated_hot_fork_process_contract() -> Result<crate::QemuChildProcessContract, Box<dyn Error>>
 {
     let directory = tempfile::tempdir()?;
     let cgroup_directory: OwnedFd = std::fs::File::open(directory.path())?.into();
-    let (cgroup_procs, _cgroup_peer) = std::os::unix::net::UnixStream::pair()?;
+    // Staging authenticates `cgroup.procs` as a writable regular file on the
+    // directory's device; a real cgroup is not needed for that shape.
+    let cgroup_procs: OwnedFd = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(directory.path().join("cgroup.procs"))?
+        .into();
     // SAFETY: eventfd returns a fresh owned descriptor or -1; this test adopts
     // the successful descriptor exactly once into OwnedFd.
     let cancellation = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
@@ -2317,7 +2321,7 @@ fn unvalidated_hot_fork_process_contract() -> Result<crate::QemuChildProcessCont
     Ok(
         crate::QemuChildProcessContract::from_unvalidated_hot_fork_test_descriptors(
             cgroup_directory,
-            cgroup_procs.into(),
+            cgroup_procs,
             cancellation,
             1,
             4096,

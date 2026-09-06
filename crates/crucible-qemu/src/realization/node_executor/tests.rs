@@ -87,6 +87,10 @@ struct ScriptedThinLauncher {
 
 impl QemuNodeLauncher for ScriptedLauncher {
     type Node = ScriptedNode;
+
+    fn launch_resources(&self) -> crate::QemuLaunchResourceRequirements {
+        crate::QemuLaunchResourceRequirements::from_vm_shape(128, 1, false)
+    }
 }
 
 impl QemuHotForkTemplatePreparer for ScriptedNode {
@@ -134,6 +138,10 @@ impl QemuNodeRealizationLauncher for ScriptedLauncher {
 
 impl QemuNodeLauncher for ScriptedGuardedLauncher {
     type Node = ScriptedNode;
+
+    fn launch_resources(&self) -> crate::QemuLaunchResourceRequirements {
+        crate::QemuLaunchResourceRequirements::from_vm_shape(128, 1, false)
+    }
 }
 
 impl QemuGuardedNodeRealizationLauncher for ScriptedGuardedLauncher {
@@ -190,6 +198,10 @@ impl QemuCapturedVmStateSource for ScriptedGuardedLauncher {
 
 impl QemuNodeLauncher for ScriptedThinLauncher {
     type Node = ScriptedNode;
+
+    fn launch_resources(&self) -> crate::QemuLaunchResourceRequirements {
+        crate::QemuLaunchResourceRequirements::from_vm_shape(128, 1, false)
+    }
 }
 
 impl QemuGuardedThinNodeRealizationLauncher for ScriptedThinLauncher {

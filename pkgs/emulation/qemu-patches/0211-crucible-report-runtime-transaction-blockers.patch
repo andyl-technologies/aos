@@ -1,0 +1,235 @@
+diff --git a/include/qemu/crucible-hot-fork-child.h b/include/qemu/crucible-hot-fork-child.h
+index 8f218cda3..91ffe4a23 100644
+--- a/include/qemu/crucible-hot-fork-child.h
++++ b/include/qemu/crucible-hot-fork-child.h
+@@ -58,6 +58,8 @@ int qemu_crucible_hot_fork_begin_retained_runtime_transaction(
+     QemuCrucibleHotForkRuntimeTransaction *transaction,
+     uint64_t expected_rcu_barrier_generation,
+     uint64_t expected_async_barrier_generation);
++/* Composed description of the step and basis that last blocked a runtime. */
++const char *qemu_crucible_hot_fork_runtime_transaction_blocker(void);
+ int qemu_crucible_hot_fork_release_parent_runtime_transaction(
+     QemuCrucibleHotForkRuntimeTransaction *transaction);
+ /* Prepare copied child state while the descriptor transaction stays active. */
+diff --git a/include/qemu/rcu.h b/include/qemu/rcu.h
+index a370abc95..88c61b66f 100644
+--- a/include/qemu/rcu.h
++++ b/include/qemu/rcu.h
+@@ -204,6 +204,8 @@ int qemu_rcu_hot_fork_begin_transaction(
+ int qemu_rcu_hot_fork_begin_retained_transaction(
+     QemuRcuHotForkTransaction *transaction,
+     uint64_t expected_barrier_generation);
++/* Static description of the basis that last blocked an RCU transaction. */
++const char *qemu_rcu_hot_fork_transaction_blocker(void);
+ int qemu_rcu_hot_fork_release_parent_transaction(
+     QemuRcuHotForkTransaction *transaction);
+ int qemu_rcu_hot_fork_prepare_child(
+diff --git a/include/qemu/thread.h b/include/qemu/thread.h
+index b2e726e75..eac6b0acd 100644
+--- a/include/qemu/thread.h
++++ b/include/qemu/thread.h
+@@ -272,6 +272,9 @@ int qemu_thread_hot_fork_bind_monitor_restart(int64_t thread_id);
+ int qemu_thread_hot_fork_begin_registry_transaction(
+     QemuThreadHotForkRegistryTransaction *transaction);
+ 
++/* Static description of the basis that last blocked a registry transaction. */
++const char *qemu_thread_hot_fork_registry_transaction_blocker(void);
++
+ /*
+  * Release the unchanged parent copy of a registry transaction.
+  */
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 4eb70724b..7d6110e94 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -4413,6 +4413,7 @@ unlock:
+     result = qemu_crucible_hot_fork_capture_parent_identity(
+         &operation->parent_identity);
+     if (result != 0) {
++        operation->blocker = "parent identity capture failed";
+         crucible_hot_fork_discard_child_files(operation);
+         return result;
+     }
+@@ -4420,6 +4421,11 @@ unlock:
+         &operation->runtime, operation->rcu_barrier_generation,
+         operation->bh_timer_barrier_generation);
+     if (result != 0) {
++        operation->blocker =
++            qemu_crucible_hot_fork_runtime_transaction_blocker();
++        if (!operation->blocker) {
++            operation->blocker = "retained runtime transaction failed";
++        }
+         qemu_crucible_hot_fork_release_parent_identity(
+             &operation->parent_identity);
+         crucible_hot_fork_discard_child_files(operation);
+diff --git a/util/crucible-hot-fork-child.c b/util/crucible-hot-fork-child.c
+index b87aef2db..2a8d27888 100644
+--- a/util/crucible-hot-fork-child.c
++++ b/util/crucible-hot-fork-child.c
+@@ -12,6 +12,23 @@
+ 
+ #include "qemu/crucible-hot-fork-child.h"
+ 
++/* Composed description of the step and basis that last blocked a runtime. */
++static char qemu_crucible_hot_fork_runtime_blocker[320];
++
++const char *qemu_crucible_hot_fork_runtime_transaction_blocker(void)
++{
++    return qemu_crucible_hot_fork_runtime_blocker[0] ?
++        qemu_crucible_hot_fork_runtime_blocker : NULL;
++}
++
++static void qemu_crucible_hot_fork_note_runtime_blocker(
++    const char *step, const char *basis)
++{
++    snprintf(qemu_crucible_hot_fork_runtime_blocker,
++             sizeof(qemu_crucible_hot_fork_runtime_blocker), "%s: %s",
++             step, basis ? basis : "no basis reported");
++}
++
+ static int qemu_crucible_hot_fork_begin_runtime_transaction_common(
+     QemuCrucibleHotForkRuntimeTransaction *transaction,
+     bool retain_parent_barriers, uint64_t expected_rcu_barrier_generation,
+@@ -31,13 +48,20 @@ static int qemu_crucible_hot_fork_begin_runtime_transaction_common(
+             &transaction->rcu, expected_rcu_barrier_generation) :
+         qemu_rcu_hot_fork_begin_transaction(&transaction->rcu);
+     if (result < 0) {
++        qemu_crucible_hot_fork_note_runtime_blocker(
++            "RCU transaction", qemu_rcu_hot_fork_transaction_blocker());
+         return result;
+     }
+     if (retain_parent_barriers) {
+         result = qemu_bh_timer_hot_fork_begin_retained_transaction(
+             &transaction->async, expected_async_barrier_generation);
+         if (result < 0) {
+-            int release_result =
++            int release_result;
++
++            qemu_crucible_hot_fork_note_runtime_blocker(
++                "asynchronous-source transaction",
++                "barrier is not retained and quiescent for this generation");
++            release_result =
+                 qemu_rcu_hot_fork_release_parent_transaction(
+                     &transaction->rcu);
+ 
+@@ -53,6 +77,10 @@ static int qemu_crucible_hot_fork_begin_runtime_transaction_common(
+         int async_result = 0;
+         int rcu_result;
+ 
++        qemu_crucible_hot_fork_note_runtime_blocker(
++            "thread registry transaction",
++            qemu_thread_hot_fork_registry_transaction_blocker());
++
+         if (retain_parent_barriers) {
+             async_result =
+                 qemu_bh_timer_hot_fork_release_parent_retained_transaction(
+diff --git a/util/qemu-thread-posix.c b/util/qemu-thread-posix.c
+index 55648a5bf..476b0d771 100644
+--- a/util/qemu-thread-posix.c
++++ b/util/qemu-thread-posix.c
+@@ -990,6 +990,18 @@ static QemuHotForkThreadRecord *qemu_hot_fork_register_coordinator(void)
+     return qemu_hot_fork_current_thread;
+ }
+ 
++/*
++ * Static description of the basis that last blocked a registry transaction.
++ * Diagnostics only: the coordinator reports it with the errno-style status.
++ */
++static char qemu_hot_fork_registry_blocker[192];
++
++const char *qemu_thread_hot_fork_registry_transaction_blocker(void)
++{
++    return qemu_hot_fork_registry_blocker[0] ?
++        qemu_hot_fork_registry_blocker : NULL;
++}
++
+ static bool qemu_hot_fork_registered_mutexes_quiescent(void)
+ {
+     QemuMutex *mutex;
+@@ -1005,6 +1017,21 @@ static bool qemu_hot_fork_registered_mutexes_quiescent(void)
+             qatomic_read(&mutex->crucible_hot_fork_acquisition_waiters) != 0 ||
+             qatomic_read(&mutex->crucible_hot_fork_condition_waiters) != 0 ||
+             qatomic_read(&mutex->crucible_hot_fork_unlock_active)) {
++            snprintf(qemu_hot_fork_registry_blocker,
++                     sizeof(qemu_hot_fork_registry_blocker),
++                     "registered mutex %zu is not quiescent (owner thread "
++                     "%" PRId64 ", depth %u, waiters %u/%u, unlock %u)",
++                     count,
++                     (int64_t)qatomic_read(
++                         &mutex->crucible_hot_fork_owner_thread_id),
++                     (unsigned)qatomic_read(
++                         &mutex->crucible_hot_fork_recursion_depth),
++                     (unsigned)qatomic_read(
++                         &mutex->crucible_hot_fork_acquisition_waiters),
++                     (unsigned)qatomic_read(
++                         &mutex->crucible_hot_fork_condition_waiters),
++                     (unsigned)qatomic_read(
++                         &mutex->crucible_hot_fork_unlock_active));
+             return false;
+         }
+     }
+@@ -1049,6 +1076,7 @@ int qemu_thread_hot_fork_begin_registry_transaction(
+             monitor_restart_count++;
+         }
+     }
++    qemu_hot_fork_registry_blocker[0] = '\0';
+     if (qemu_hot_fork_thread_overflow != 0 ||
+         qemu_hot_fork_thread_starts_in_flight != 0 ||
+         qemu_hot_fork_thread_count != 3 ||
+@@ -1061,6 +1089,20 @@ int qemu_thread_hot_fork_begin_registry_transaction(
+         coordinator->disposition != QEMU_THREAD_HOT_FORK_COORDINATOR ||
+         !qemu_hot_fork_registered_mutexes_quiescent() ||
+         qemu_hot_fork_thread_generation == UINT64_MAX) {
++        if (!qemu_hot_fork_registry_blocker[0]) {
++            snprintf(qemu_hot_fork_registry_blocker,
++                     sizeof(qemu_hot_fork_registry_blocker),
++                     "thread registry is not forkable (threads %zu, "
++                     "coordinators %zu, rcu %zu, monitor %zu, overflow %zu, "
++                     "starts %zu, caller %" PRId64 ", coordinator %" PRId64
++                     ")",
++                     qemu_hot_fork_thread_count, coordinator_count,
++                     rcu_restart_count, monitor_restart_count,
++                     (size_t)qemu_hot_fork_thread_overflow,
++                     (size_t)qemu_hot_fork_thread_starts_in_flight,
++                     thread_id,
++                     (int64_t)qemu_hot_fork_coordinator_thread_id);
++        }
+         err = pthread_mutex_unlock(&qemu_hot_fork_thread_lock);
+         if (err) {
+             error_exit(err, __func__);
+diff --git a/util/rcu.c b/util/rcu.c
+index 4d0187a65..3a4857c66 100644
+--- a/util/rcu.c
++++ b/util/rcu.c
+@@ -561,6 +561,13 @@ static bool qemu_rcu_hot_fork_reader_is_registered(
+     return matches == 1;
+ }
+ 
++static const char *qemu_rcu_hot_fork_blocker;
++
++const char *qemu_rcu_hot_fork_transaction_blocker(void)
++{
++    return qemu_rcu_hot_fork_blocker;
++}
++
+ static int qemu_rcu_hot_fork_begin_transaction_common(
+     QemuRcuHotForkTransaction *transaction,
+     bool retain_parent_barrier, uint64_t expected_barrier_generation)
+@@ -593,6 +600,8 @@ static int qemu_rcu_hot_fork_begin_transaction_common(
+                                       &inventory);
+         }
+         qatomic_set(&rcu_hot_fork_transaction_active, 0);
++        qemu_rcu_hot_fork_blocker =
++            "RCU barrier is not retained and quiescent for this generation";
+         return -EBUSY;
+     }
+ 
+@@ -607,6 +616,8 @@ static int qemu_rcu_hot_fork_begin_transaction_common(
+                                       &inventory);
+         }
+         qatomic_set(&rcu_hot_fork_transaction_active, 0);
++        qemu_rcu_hot_fork_blocker =
++            "coordinator RCU reader is not registered and idle";
+         return -EBUSY;
+     }
+ 

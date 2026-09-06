@@ -104,7 +104,7 @@ fn qmp_getfd_transfers_one_exact_descriptor_and_closefd_releases_name() -> Resul
 
     let (getfd, closefd, received_metadata) = join_server(server)?;
     assert_eq!(
-        getfd.get("execute").and_then(Value::as_str),
+        getfd.get("exec-oob").and_then(Value::as_str),
         Some(QMP_GETFD_COMMAND)
     );
     assert_eq!(
@@ -112,7 +112,7 @@ fn qmp_getfd_transfers_one_exact_descriptor_and_closefd_releases_name() -> Resul
         Some(name.as_str())
     );
     assert_eq!(
-        closefd.get("execute").and_then(Value::as_str),
+        closefd.get("exec-oob").and_then(Value::as_str),
         Some(QMP_CLOSEFD_COMMAND)
     );
     assert_eq!(
@@ -228,7 +228,7 @@ fn vmstate_control_stages_and_releases_both_descriptor_ownership_layers()
 
     let requests = join_server(server)?;
     assert_eq!(
-        requests[0].get("execute").and_then(Value::as_str),
+        requests[0].get("exec-oob").and_then(Value::as_str),
         Some(QMP_GETFD_COMMAND)
     );
     assert_eq!(
@@ -248,7 +248,7 @@ fn vmstate_control_stages_and_releases_both_descriptor_ownership_layers()
         Some("release")
     );
     assert_eq!(
-        requests[3].get("execute").and_then(Value::as_str),
+        requests[3].get("exec-oob").and_then(Value::as_str),
         Some(QMP_CLOSEFD_COMMAND)
     );
     Ok(())
@@ -320,7 +320,7 @@ fn vmstate_control_orders_both_plugin_endpoint_ownership_layers() -> Result<(), 
 
     let requests = join_server(server)?;
     assert_eq!(
-        requests[0].get("execute").and_then(Value::as_str),
+        requests[0].get("exec-oob").and_then(Value::as_str),
         Some(QMP_GETFD_COMMAND)
     );
     assert_eq!(
@@ -330,7 +330,7 @@ fn vmstate_control_orders_both_plugin_endpoint_ownership_layers() -> Result<(), 
         Some(control_name.as_str())
     );
     assert_eq!(
-        requests[1].get("execute").and_then(Value::as_str),
+        requests[1].get("exec-oob").and_then(Value::as_str),
         Some(QMP_GETFD_COMMAND)
     );
     assert_eq!(

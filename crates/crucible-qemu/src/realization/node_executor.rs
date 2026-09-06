@@ -284,6 +284,12 @@ impl QemuRealizedNodeBackend for QemuNode {
 pub trait QemuNodeLauncher {
     /// Concrete node handle returned by this launcher.
     type Node: QemuRealizedNodeBackend;
+
+    /// Returns the admitted host-resource profile of every node it launches.
+    ///
+    /// A retained hot-fork template records this profile so a child forked
+    /// from it is admitted into its own run directory under the same baseline.
+    fn launch_resources(&self) -> crate::QemuLaunchResourceRequirements;
 }
 
 /// Paused node operation that seals one retained hot-fork template.
@@ -336,6 +342,7 @@ impl QemuHotForkTemplatePreparer for QemuNode {
 pub struct QemuHotForkTemplateIdentity {
     configuration: ContentHash,
     event_log: EventLog,
+    launch_resources: crate::QemuLaunchResourceRequirements,
 }
 
 impl QemuHotForkTemplateIdentity {
@@ -343,6 +350,16 @@ impl QemuHotForkTemplateIdentity {
     #[must_use]
     pub const fn configuration(&self) -> ContentHash {
         self.configuration
+    }
+
+    /// Returns the admitted launch resource profile of the retained source.
+    ///
+    /// A child forked from the template is admitted into its own run
+    /// directory under this same baseline; its private VMState container is
+    /// provisioned there before the fork copies the frozen source bytes.
+    #[must_use]
+    pub const fn launch_resources(&self) -> crate::QemuLaunchResourceRequirements {
+        self.launch_resources
     }
 
     /// Clones the immutable event prefix for one branch-private child.
@@ -364,6 +381,7 @@ impl std::fmt::Debug for QemuHotForkTemplateIdentity {
             .debug_struct("QemuHotForkTemplateIdentity")
             .field("configuration", &self.configuration)
             .field("event_log_offset", &self.event_log.offset())
+            .field("launch_resources", &self.launch_resources)
             .finish_non_exhaustive()
     }
 }
@@ -391,6 +409,12 @@ impl<N> QemuPreparedHotForkTemplate<N> {
     #[must_use]
     pub const fn event_log(&self) -> &EventLog {
         self.identity.event_log()
+    }
+
+    /// Returns the admitted launch resource profile a forked child inherits.
+    #[must_use]
+    pub const fn launch_resources(&self) -> crate::QemuLaunchResourceRequirements {
+        self.identity.launch_resources()
     }
 
     /// Separates the node from its non-forgeable configuration/log identity.
@@ -831,6 +855,10 @@ where
     F: FnMut(&Configuration) -> QemuNodeFactoryRuntime<A, R>,
 {
     type Node = QemuNode;
+
+    fn launch_resources(&self) -> crate::QemuLaunchResourceRequirements {
+        self.command.resource_requirements()
+    }
 }
 
 impl<A, R, F> QemuNodeLauncher for QemuExactRootWarmRestoreNodeLauncher<A, R, F>
@@ -840,6 +868,10 @@ where
     F: FnMut(&Configuration) -> QemuNodeFactoryRuntime<A, R>,
 {
     type Node = QemuNode;
+
+    fn launch_resources(&self) -> crate::QemuLaunchResourceRequirements {
+        self.command.resource_requirements()
+    }
 }
 
 impl<A, R, F> QemuNodeLauncher for QemuPreparedThinWarmRestoreNodeLauncher<A, R, F>
@@ -849,14 +881,26 @@ where
     F: FnMut(&Configuration) -> QemuNodeFactoryRuntime<A, R>,
 {
     type Node = QemuNode;
+
+    fn launch_resources(&self) -> crate::QemuLaunchResourceRequirements {
+        self.command.resource_requirements()
+    }
 }
 
 impl QemuNodeLauncher for QemuExactProfileWarmRestoreNodeLauncher {
     type Node = QemuNode;
+
+    fn launch_resources(&self) -> crate::QemuLaunchResourceRequirements {
+        self.config.resource_requirements()
+    }
 }
 
 impl QemuNodeLauncher for QemuThinProfileWarmRestoreNodeLauncher {
     type Node = QemuNode;
+
+    fn launch_resources(&self) -> crate::QemuLaunchResourceRequirements {
+        self.config.resource_requirements()
+    }
 }
 
 impl<X, T> QemuNodeLauncher for QemuReplayValidationNodeLauncher<X, T>
@@ -865,6 +909,10 @@ where
     T: QemuNodeLauncher<Node = X::Node>,
 {
     type Node = X::Node;
+
+    fn launch_resources(&self) -> crate::QemuLaunchResourceRequirements {
+        self.exact.launch_resources()
+    }
 }
 
 impl<A, R, F> QemuFailedLaunchChildSource for QemuWarmRestoreNodeLauncher<A, R, F>
@@ -1233,6 +1281,7 @@ where
             identity: QemuHotForkTemplateIdentity {
                 configuration,
                 event_log,
+                launch_resources: self.launcher.launch_resources(),
             },
         })
     }

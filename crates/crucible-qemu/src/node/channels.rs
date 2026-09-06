@@ -763,9 +763,9 @@ pub trait QemuQmpMachineControlChannel: Send {
     #[cfg(target_os = "linux")]
     fn install_hot_fork_child_process_contract(
         &mut self,
-        _cgroup_name: &crate::QmpDescriptorName,
+        _names: &crate::QmpHotForkChildProcessContractNames,
         _cgroup: BorrowedFd<'_>,
-        _cancellation_name: &crate::QmpDescriptorName,
+        _cgroup_procs: BorrowedFd<'_>,
         _cancellation: BorrowedFd<'_>,
         _identity: crate::QmpHotForkChildProcessContractIdentity,
         _template_generation: u64,
@@ -785,8 +785,7 @@ pub trait QemuQmpMachineControlChannel: Send {
     #[cfg(target_os = "linux")]
     fn release_hot_fork_child_process_contract(
         &mut self,
-        _cgroup_name: &crate::QmpDescriptorName,
-        _cancellation_name: &crate::QmpDescriptorName,
+        _names: &crate::QmpHotForkChildProcessContractNames,
         _identity: crate::QmpHotForkChildProcessContractIdentity,
     ) -> Result<crate::QmpHotForkChildProcessContractState, QemuNodeChannelError> {
         Err(QemuNodeChannelError::new(

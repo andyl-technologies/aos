@@ -1,0 +1,64 @@
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 7addeb533..4eb70724b 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -562,6 +562,13 @@ typedef struct CrucibleHotForkOperation {
+     bool prepared;
+     /* Static description of the first basis that blocked preparation. */
+     const char *blocker;
++    /*
++     * The dispatching monitor thread verified the child monitor basis before
++     * submitting this operation.  It holds its recursive parser lock while
++     * it waits, so the main loop cannot observe that monitor as stable; the
++     * inventory is frozen for the same reason.
++     */
++    bool monitor_basis_verified;
+ } CrucibleHotForkOperation;
+ 
+ /*
+@@ -4219,10 +4226,8 @@ static const char *crucible_hot_fork_operation_blocker(
+     if (!crucible_hot_fork_console_resource_plan_bound()) {
+         return "child console resource plan is not bound";
+     }
+-    if (!monitor_hot_fork_child_basis_matches_current(
+-            &crucible_hot_fork_qmp_child_basis,
+-            operation->monitor_generation)) {
+-        return "child monitor basis changed";
++    if (!operation->monitor_basis_verified) {
++        return "child monitor basis was not verified before submission";
+     }
+     return NULL;
+ }
+@@ -4294,9 +4299,7 @@ static int crucible_hot_fork_prepare_operation(void *opaque)
+         !crucible_hot_fork_diagnostic_resource_plan_bound() ||
+         !crucible_hot_fork_qmp_resource_plan_bound() ||
+         !crucible_hot_fork_console_resource_plan_bound() ||
+-        !monitor_hot_fork_child_basis_matches_current(
+-            &crucible_hot_fork_qmp_child_basis,
+-            operation->monitor_generation)) {
++        !operation->monitor_basis_verified) {
+         operation->blocker = crucible_hot_fork_operation_blocker(
+             operation, plugin_barrier, rcu_barrier, bh_timer_barrier,
+             block_barrier);
+@@ -4661,6 +4664,21 @@ CrucibleHotForkState *qmp_crucible_hot_fork(
+                    "one-shot child process contract");
+         return NULL;
+     }
++    /*
++     * This command runs on the monitor thread under its recursive parser
++     * lock, which the main-loop preparation cannot take.  Verify the child
++     * monitor basis here, where the recursive lock succeeds, and carry the
++     * verdict; the monitor thread then blocks inside this command, so no
++     * monitor state can change before preparation consumes it.
++     */
++    if (!monitor_hot_fork_child_basis_matches_current(
++            &crucible_hot_fork_qmp_child_basis, monitor_generation)) {
++        g_mutex_unlock(&crucible_hot_fork_template_lock);
++        error_setg(errp, "Crucible hot fork requires the exact staged child "
++                   "monitor basis");
++        return NULL;
++    }
++    operation.monitor_basis_verified = true;
+     request.child_cgroup_fd =
+         crucible_hot_fork_child_process_contract_stage.cgroup_fd;
+     crucible_hot_fork_operation_active = true;

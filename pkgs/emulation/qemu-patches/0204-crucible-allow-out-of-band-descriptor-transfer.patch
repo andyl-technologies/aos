@@ -1,0 +1,40 @@
+diff --git a/qapi/misc.json b/qapi/misc.json
+index 16c7ebec3..81e726f33 100644
+--- a/qapi/misc.json
++++ b/qapi/misc.json
+@@ -281,12 +281,17 @@
+ #    The 'closefd' command can be used to explicitly close the file
+ #    descriptor when it is no longer needed.
+ #
++# .. note:: Crucible permits out-of-band execution.  A retained hot-fork
++#    template parks main-loop dispatch, so descriptor transfer for its
++#    branch-private resources must complete on the monitor thread.
++#
+ # .. qmp-example::
+ #
+ #     -> { "execute": "getfd", "arguments": { "fdname": "fd1" } }
+ #     <- { "return": {} }
+ ##
+-{ 'command': 'getfd', 'data': {'fdname': 'str'}, 'if': 'CONFIG_POSIX' }
++{ 'command': 'getfd', 'data': {'fdname': 'str'}, 'if': 'CONFIG_POSIX',
++  'allow-oob': true }
+ 
+ ##
+ # @get-win32-socket:
+@@ -325,12 +330,15 @@
+ #
+ # Since: 0.14
+ #
++# .. note:: Crucible permits out-of-band execution so a retained
++#    hot-fork template can release transferred descriptors.
++#
+ # .. qmp-example::
+ #
+ #     -> { "execute": "closefd", "arguments": { "fdname": "fd1" } }
+ #     <- { "return": {} }
+ ##
+-{ 'command': 'closefd', 'data': {'fdname': 'str'} }
++{ 'command': 'closefd', 'data': {'fdname': 'str'}, 'allow-oob': true }
+ 
+ ##
+ # @AddfdInfo:

@@ -240,6 +240,7 @@ pub(super) enum QmpCommand<'a> {
     HotForkChildProcessContract {
         action: HotForkChildProcessContractAction,
         cgroup_name: Option<&'a QmpDescriptorName>,
+        cgroup_procs_name: Option<&'a QmpDescriptorName>,
         cancellation_name: Option<&'a QmpDescriptorName>,
         identity: Option<QmpHotForkChildProcessContractIdentity>,
     },
@@ -482,6 +483,7 @@ impl QmpCommand<'_> {
             Self::HotForkChildProcessContract {
                 action,
                 cgroup_name,
+                cgroup_procs_name,
                 cancellation_name,
                 identity,
             } => {
@@ -493,6 +495,12 @@ impl QmpCommand<'_> {
                 if let Some(name) = cgroup_name {
                     arguments.insert(
                         String::from("cgroup-fdname"),
+                        Value::String(name.as_str().to_owned()),
+                    );
+                }
+                if let Some(name) = cgroup_procs_name {
+                    arguments.insert(
+                        String::from("cgroup-procs-fdname"),
                         Value::String(name.as_str().to_owned()),
                     );
                 }
@@ -510,6 +518,10 @@ impl QmpCommand<'_> {
                     arguments.insert(
                         String::from("expected-cgroup-inode"),
                         Value::from(identity.cgroup_inode()),
+                    );
+                    arguments.insert(
+                        String::from("expected-cgroup-procs-inode"),
+                        Value::from(identity.cgroup_procs_inode()),
                     );
                     arguments.insert(
                         String::from("expected-cancellation-eventfd-id"),
@@ -725,12 +737,15 @@ impl QmpCommand<'_> {
             Self::Quit => json!({
                 "execute": QMP_QUIT_COMMAND_NAME,
             }),
+            // Descriptor transfer must reach QEMU on the monitor thread: a
+            // retained hot-fork template parks main-loop dispatch, and patched
+            // QEMU admits both commands out of band.
             Self::GetFd { name } => json!({
-                "execute": QMP_GETFD_COMMAND,
+                "exec-oob": QMP_GETFD_COMMAND,
                 "arguments": { "fdname": name.as_str() },
             }),
             Self::CloseFd { name } => json!({
-                "execute": QMP_CLOSEFD_COMMAND,
+                "exec-oob": QMP_CLOSEFD_COMMAND,
                 "arguments": { "fdname": name.as_str() },
             }),
         }

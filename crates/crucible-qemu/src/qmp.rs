@@ -41,6 +41,7 @@ mod snapshot_tag;
 mod unix_socket;
 mod vmstate_control;
 
+pub(crate) use hot_fork::source_mapping_extent;
 use hot_fork::{
     HotForkChildFilesAction, HotForkChildProcessAction, HotForkChildProcessContractAction,
     parse_hot_fork_aio_handler_inventory, parse_hot_fork_aio_inventory,
@@ -98,17 +99,18 @@ pub use hot_fork::{
     QmpHotForkBlockSnapshotRoot, QmpHotForkBlockSourceProof, QmpHotForkBottomHalf,
     QmpHotForkBottomHalfInventory, QmpHotForkChildConsoleState, QmpHotForkChildDiagnosticState,
     QmpHotForkChildFile, QmpHotForkChildFileRoot, QmpHotForkChildFilesState,
-    QmpHotForkChildProcessContractIdentity, QmpHotForkChildProcessContractState,
-    QmpHotForkChildProcessPhase, QmpHotForkChildProcessState, QmpHotForkChildQmpState,
-    QmpHotForkChildRuntimePhase, QmpHotForkChildRuntimeState, QmpHotForkMonitorInventory,
-    QmpHotForkMutex, QmpHotForkMutexInventory, QmpHotForkOutcome, QmpHotForkPluginBarrierState,
-    QmpHotForkPluginEndpointDescriptorPlan, QmpHotForkPluginEndpointIdentity,
-    QmpHotForkPluginEndpointState, QmpHotForkPluginResourceInventory, QmpHotForkPrivateRingState,
-    QmpHotForkProof, QmpHotForkRcuBarrierState, QmpHotForkRcuInventory, QmpHotForkRcuReader,
-    QmpHotForkReadiness, QmpHotForkRequest, QmpHotForkRequestError, QmpHotForkState,
-    QmpHotForkTemplateOutcome, QmpHotForkTemplateResourceStageState, QmpHotForkTemplateState,
-    QmpHotForkThread, QmpHotForkThreadDisposition, QmpHotForkThreadInventory, QmpHotForkTimer,
-    QmpHotForkTimerClock, QmpHotForkTimerInventory,
+    QmpHotForkChildProcessContractIdentity, QmpHotForkChildProcessContractNames,
+    QmpHotForkChildProcessContractState, QmpHotForkChildProcessPhase, QmpHotForkChildProcessState,
+    QmpHotForkChildQmpState, QmpHotForkChildRuntimePhase, QmpHotForkChildRuntimeState,
+    QmpHotForkMonitorInventory, QmpHotForkMutex, QmpHotForkMutexInventory, QmpHotForkOutcome,
+    QmpHotForkPluginBarrierState, QmpHotForkPluginEndpointDescriptorPlan,
+    QmpHotForkPluginEndpointIdentity, QmpHotForkPluginEndpointState,
+    QmpHotForkPluginResourceInventory, QmpHotForkPrivateRingState, QmpHotForkProof,
+    QmpHotForkRcuBarrierState, QmpHotForkRcuInventory, QmpHotForkRcuReader, QmpHotForkReadiness,
+    QmpHotForkRequest, QmpHotForkRequestError, QmpHotForkState, QmpHotForkTemplateOutcome,
+    QmpHotForkTemplateResourceStageState, QmpHotForkTemplateState, QmpHotForkThread,
+    QmpHotForkThreadDisposition, QmpHotForkThreadInventory, QmpHotForkTimer, QmpHotForkTimerClock,
+    QmpHotForkTimerInventory,
 };
 pub use snapshot_tag::QmpSnapshotTag;
 pub use vmstate_control::QemuQmpVmStateControlChannel;
@@ -1552,9 +1554,11 @@ where
 
     /// Stages one exact target-attempt process contract for a future hot fork.
     ///
-    /// Both descriptors must already be imported with [`Self::install_descriptor`].
-    /// QEMU independently authenticates the cgroup-v2 directory, nonblocking
-    /// cancellation eventfd, and resource ceiling before retaining duplicates.
+    /// All three descriptors must already be imported with
+    /// [`Self::install_descriptor`]. QEMU independently authenticates the
+    /// cgroup-v2 directory, its writable `cgroup.procs`, the nonblocking
+    /// cancellation eventfd, and the resource ceiling before retaining
+    /// duplicates.
     ///
     /// # Errors
     ///
@@ -1562,21 +1566,20 @@ where
     /// fails, or the returned state does not match the exact staged contract.
     pub fn stage_hot_fork_child_process_contract(
         &mut self,
-        cgroup_name: &QmpDescriptorName,
-        cancellation_name: &QmpDescriptorName,
+        names: &QmpHotForkChildProcessContractNames,
         identity: QmpHotForkChildProcessContractIdentity,
     ) -> Result<QmpHotForkChildProcessContractState, QmpError> {
         let response = self.send_command_return(QmpCommand::HotForkChildProcessContract {
             action: HotForkChildProcessContractAction::Stage,
-            cgroup_name: Some(cgroup_name),
-            cancellation_name: Some(cancellation_name),
+            cgroup_name: Some(names.cgroup()),
+            cgroup_procs_name: Some(names.cgroup_procs()),
+            cancellation_name: Some(names.cancellation()),
             identity: Some(identity),
         })?;
         let state = parse_hot_fork_child_process_contract_state(&response.value)?;
         if !state.staged()
             || state.consumed()
-            || state.cgroup_name() != Some(cgroup_name)
-            || state.cancellation_name() != Some(cancellation_name)
+            || !state.names_match(names)
             || state.identity() != Some(identity)
         {
             return Err(QmpError::MalformedTypedResponse {
@@ -1599,6 +1602,7 @@ where
         let response = self.send_command_return(QmpCommand::HotForkChildProcessContract {
             action: HotForkChildProcessContractAction::Query,
             cgroup_name: None,
+            cgroup_procs_name: None,
             cancellation_name: None,
             identity: None,
         })?;
@@ -1613,14 +1617,14 @@ where
     /// exchange fails, or the released-state postcondition is malformed.
     pub fn release_hot_fork_child_process_contract(
         &mut self,
-        cgroup_name: &QmpDescriptorName,
-        cancellation_name: &QmpDescriptorName,
+        names: &QmpHotForkChildProcessContractNames,
         identity: QmpHotForkChildProcessContractIdentity,
     ) -> Result<QmpHotForkChildProcessContractState, QmpError> {
         let response = self.send_command_return(QmpCommand::HotForkChildProcessContract {
             action: HotForkChildProcessContractAction::Release,
-            cgroup_name: Some(cgroup_name),
-            cancellation_name: Some(cancellation_name),
+            cgroup_name: Some(names.cgroup()),
+            cgroup_procs_name: Some(names.cgroup_procs()),
+            cancellation_name: Some(names.cancellation()),
             identity: Some(identity),
         })?;
         let state = parse_hot_fork_child_process_contract_state(&response.value)?;
@@ -2805,9 +2809,11 @@ mod tests {
     fn hot_fork_command_carries_every_exact_generation() {
         let request = hot_fork_request();
         let cgroup = QmpDescriptorName::new("target-cgroup").expect("valid cgroup name");
+        let cgroup_procs =
+            QmpDescriptorName::new("target-cgroup-procs").expect("valid cgroup.procs name");
         let cancellation =
             QmpDescriptorName::new("target-cancellation").expect("valid cancellation name");
-        let identity = QmpHotForkChildProcessContractIdentity::new(11, 12, 13, 4096)
+        let identity = QmpHotForkChildProcessContractIdentity::new(11, 12, 14, 13, 4096)
             .expect("valid child process identity");
 
         assert_eq!(
@@ -2895,6 +2901,7 @@ mod tests {
             QmpCommand::HotForkChildProcessContract {
                 action: HotForkChildProcessContractAction::Stage,
                 cgroup_name: Some(&cgroup),
+                cgroup_procs_name: Some(&cgroup_procs),
                 cancellation_name: Some(&cancellation),
                 identity: Some(identity),
             }
@@ -2904,9 +2911,11 @@ mod tests {
                 "arguments": {
                     "action": "stage",
                     "cgroup-fdname": "target-cgroup",
+                    "cgroup-procs-fdname": "target-cgroup-procs",
                     "cancellation-fdname": "target-cancellation",
                     "expected-cgroup-device": 11,
                     "expected-cgroup-inode": 12,
+                    "expected-cgroup-procs-inode": 14,
                     "expected-cancellation-eventfd-id": 13,
                     "maximum-file-bytes": 4096,
                 },
@@ -2916,6 +2925,7 @@ mod tests {
             QmpCommand::HotForkChildProcessContract {
                 action: HotForkChildProcessContractAction::Query,
                 cgroup_name: None,
+                cgroup_procs_name: None,
                 cancellation_name: None,
                 identity: None,
             }

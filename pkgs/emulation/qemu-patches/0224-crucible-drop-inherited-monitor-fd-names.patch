@@ -1,0 +1,130 @@
+diff --git a/monitor/fds.c b/monitor/fds.c
+index e5d88ba4b..c9b720678 100644
+--- a/monitor/fds.c
++++ b/monitor/fds.c
+@@ -222,6 +222,29 @@ static void monitor_fdset_fd_free(MonFdsetFd *mon_fdset_fd)
+     g_free(mon_fdset_fd);
+ }
+ 
++/*
++ * A hot-fork child inherits the names its source registered with getfd,
++ * but the child's descriptor table transaction has already closed or
++ * replaced every number they refer to.  Drop the names without touching
++ * the table; the transaction, not this registry, owns the child's
++ * descriptors.  Returns how many names were dropped.
++ */
++static unsigned int monitor_hot_fork_child_drop_fd_names(Monitor *mon)
++{
++    mon_fd_t *monfd;
++    mon_fd_t *next;
++    unsigned int dropped = 0;
++
++    QEMU_LOCK_GUARD(&mon->mon_lock);
++    QLIST_FOREACH_SAFE(monfd, &mon->fds, next, next) {
++        QLIST_REMOVE(monfd, next);
++        g_free(monfd->name);
++        g_free(monfd);
++        dropped++;
++    }
++    return dropped;
++}
++
+ void monitor_fdsets_cleanup(void)
+ {
+     MonFdset *mon_fdset;
+@@ -550,4 +573,6 @@ static void __attribute__((__constructor__)) monitor_fds_init(void)
+ {
+     qemu_mutex_init(&mon_fdsets_lock);
+     monitor_hot_fork_register_fdsets_empty(monitor_fdsets_is_empty);
++    monitor_hot_fork_register_drop_fd_names(
++        monitor_hot_fork_child_drop_fd_names);
+ }
+diff --git a/monitor/monitor-internal.h b/monitor/monitor-internal.h
+index d5fe4518f..e9841a353 100644
+--- a/monitor/monitor-internal.h
++++ b/monitor/monitor-internal.h
+@@ -297,6 +297,8 @@ int monitor_hot_fork_release_child_protocol_input(
+ void monitor_hot_fork_reset_child_basis(MonitorHotForkChildBasis *basis);
+ void monitor_fdsets_cleanup(void);
+ void monitor_hot_fork_register_fdsets_empty(bool (*check)(void));
++void monitor_hot_fork_register_drop_fd_names(
++    unsigned int (*drop)(Monitor *mon));
+ 
+ void qmp_send_response(MonitorQMP *mon, const QDict *rsp);
+ void monitor_data_destroy_qmp(MonitorQMP *mon);
+diff --git a/monitor/monitor.c b/monitor/monitor.c
+index 170bd8f99..761725b87 100644
+--- a/monitor/monitor.c
++++ b/monitor/monitor.c
+@@ -875,6 +875,23 @@ static bool monitor_hot_fork_child_local_state_clean(MonitorQMP *qmp_mon)
+     return clean;
+ }
+ 
++/* Names each local-state predicate on the child's diagnostics stream. */
++static void monitor_hot_fork_child_report_local_state(MonitorQMP *qmp_mon)
++{
++    Monitor *mon = &qmp_mon->common;
++
++    qemu_mutex_lock(&mon->mon_lock);
++    fprintf(stderr,
++            "crucible hot-fork monitor child local state: fd-names-empty %d "
++            "outbuf %d outbuf-len %zu out-watch %u mux-out %d reset-seen %d "
++            "frontend-open %d\n",
++            QLIST_EMPTY(&mon->fds), mon->outbuf != NULL,
++            mon->outbuf ? (size_t)mon->outbuf->len : (size_t)0,
++            mon->out_watch, mon->mux_out, mon->reset_seen,
++            mon->chr.fe_is_open);
++    qemu_mutex_unlock(&mon->mon_lock);
++}
++
+ /*
+  * Global fdsets are system-emulator state, while this file is also linked
+  * into tools such as qemu-storage-daemon.  Require the system-only owner to
+@@ -890,6 +907,20 @@ void monitor_hot_fork_register_fdsets_empty(bool (*check)(void))
+     monitor_hot_fork_fdsets_empty = check;
+ }
+ 
++/*
++ * The per-monitor getfd registry likewise lives with the system emulator;
++ * a build without it has no names for a child to drop.
++ */
++static unsigned int (*monitor_hot_fork_drop_fd_names)(Monitor *mon);
++
++void monitor_hot_fork_register_drop_fd_names(
++    unsigned int (*drop)(Monitor *mon))
++{
++    assert(drop);
++    assert(!monitor_hot_fork_drop_fd_names);
++    monitor_hot_fork_drop_fd_names = drop;
++}
++
+ /* Names the failing stage on the child's diagnostics stream (its stderr). */
+ static void monitor_hot_fork_report_child_stage(const char *stage, int result)
+ {
+@@ -922,6 +953,16 @@ int monitor_hot_fork_reconstruct_child_protocol_held(
+     monitor_hot_fork_inventory_locked(&inventory);
+     mon = QTAILQ_FIRST(&mon_list);
+     qmp_mon = basis->monitor;
++    /*
++     * The source's getfd names survive the fork while the numbers behind
++     * them did not: the child's descriptor table transaction closed or
++     * replaced each one before this reconstruction.  Drop the names so the
++     * inherited registry cannot be used to close a descriptor the
++     * transaction now owns; only then is the local state judged.
++     */
++    if (monitor_hot_fork_drop_fd_names) {
++        monitor_hot_fork_drop_fd_names(&qmp_mon->common);
++    }
+     {
+         /*
+          * Each precondition is evaluated on its own so a stale basis names
+@@ -956,6 +997,9 @@ int monitor_hot_fork_reconstruct_child_protocol_held(
+             !iothread_matches || !iothread_id_matches ||
+             !dispatcher_matches || !dispatcher_idle || !chardev_matches ||
+             !local_state_clean || !fdsets_empty) {
++            if (single_qmp_monitor && !local_state_clean) {
++                monitor_hot_fork_child_report_local_state(qmp_mon);
++            }
+             fprintf(stderr,
+                     "crucible hot-fork monitor child basis is stale: "
+                     "supported %d generation %d single-qmp-monitor %d "

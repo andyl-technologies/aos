@@ -121,7 +121,12 @@ pub const QEMU_PLUGIN_WAKE_FD: i32 = FIXED_PLUGIN_WAKE_FD;
 pub const DEFAULT_ROOT_OVERLAY_FILE_NAME: &str = "crucible-root-overlay.qcow2";
 /// Default per-run qcow2 container for exact VMState snapshots.
 pub const DEFAULT_VMSTATE_FILE_NAME: &str = "crucible-vmstate.qcow2";
-const VMSTATE_DRIVE_ID: &str = "vmstate";
+/// Node name of the parentless qcow2 VMState container in every launch.
+///
+/// Hot-fork child-private file plans select the container's writable leaf by
+/// this name, so it is part of the QEMU-facing launch contract.
+pub const DEFAULT_VMSTATE_NODE_NAME: &str = "vmstate";
+const VMSTATE_DRIVE_ID: &str = DEFAULT_VMSTATE_NODE_NAME;
 const ROOT_DRIVE_ID: &str = "crucible-root0";
 const ROOT_DEVICE_ID: &str = "crucible-root-device0";
 const MAX_ICOUNT_SHIFT: u8 = 62;
@@ -445,7 +450,12 @@ pub struct QemuLaunchResourceRequirements {
 }
 
 impl QemuLaunchResourceRequirements {
-    pub(crate) const fn from_vm_shape(memory_mib: u32, smp_vcpus: u16, root_overlay: bool) -> Self {
+    /// Builds the fixed host-resource baseline for one VM shape.
+    ///
+    /// The writable minimum reserves the guest memory plus the fixed VMState
+    /// container headroom every launch profile carries.
+    #[must_use]
+    pub const fn from_vm_shape(memory_mib: u32, smp_vcpus: u16, root_overlay: bool) -> Self {
         let mebibyte = 1024_u64 * 1024;
         Self {
             virtual_cpus: smp_vcpus as u32,

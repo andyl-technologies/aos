@@ -1010,7 +1010,8 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
     let exact_mapping_plan = crate::QemuPluginHotForkChildPlan {
         shmem_length: length,
         source_mapping_start,
-        source_mapping_length: length,
+        // QEMU reports the whole-page VMA extent for the exact region length.
+        source_mapping_length: super::host_mapping_extent(length),
         source_mapping_offset: 0,
         ..crate::QemuPluginHotForkChildPlan::default()
     };
@@ -1027,7 +1028,7 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
     ));
     assert!(!hot_fork_child_mapping_basis_matches(
         &crate::QemuPluginHotForkChildPlan {
-            source_mapping_length: length - 1,
+            source_mapping_length: super::host_mapping_extent(length) - 1,
             ..exact_mapping_plan
         },
         runtime._callbacks.setup(),

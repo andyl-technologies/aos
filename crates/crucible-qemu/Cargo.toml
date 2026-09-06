@@ -20,7 +20,7 @@ crucible-linux-resource = { path = "../crucible-linux-resource", default-feature
 crucible-protocol = { path = "../crucible-protocol" }
 crucible-shmem = { path = "../crucible-shmem" }
 libc = { workspace = true }
-rustix = { workspace = true, features = ["process"] }
+rustix = { workspace = true, features = ["param", "process"] }
 serde_json = { workspace = true }
 serde = { workspace = true }
 ciborium = { workspace = true }

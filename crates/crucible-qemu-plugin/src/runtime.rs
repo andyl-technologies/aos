@@ -566,25 +566,33 @@ impl OwnedCallbackRuntimeState {
                 source,
             })?;
 
-        let mut owner = self
-            .child_workers
-            .lock()
-            .map_err(|_poisoned| HotForkChildRuntimeError::WorkerOwner)?;
-        if owner.is_some() {
-            return Err(HotForkChildRuntimeError::WorkerOwner);
+        // Both guards are released before the snapshot below, which takes the
+        // binding lock again; holding it across that call deadlocks the child
+        // on its own mutex, which the live fork flight surfaced as a child
+        // that never greeted on its private QMP endpoint.
+        {
+            let mut owner = self
+                .child_workers
+                .lock()
+                .map_err(|_poisoned| HotForkChildRuntimeError::WorkerOwner)?;
+            if owner.is_some() {
+                return Err(HotForkChildRuntimeError::WorkerOwner);
+            }
+            *owner = Some(HotForkChildWorkerOwner {
+                _control_reader: control_reader,
+                _teardown_worker: teardown_worker,
+            });
         }
-        *owner = Some(HotForkChildWorkerOwner {
-            _control_reader: control_reader,
-            _teardown_worker: teardown_worker,
-        });
-        let mut installed_binding = self
-            .child_binding
-            .lock()
-            .map_err(|_poisoned| HotForkChildRuntimeError::WorkerOwner)?;
-        if installed_binding.is_some() {
-            return Err(HotForkChildRuntimeError::WorkerOwner);
+        {
+            let mut installed_binding = self
+                .child_binding
+                .lock()
+                .map_err(|_poisoned| HotForkChildRuntimeError::WorkerOwner)?;
+            if installed_binding.is_some() {
+                return Err(HotForkChildRuntimeError::WorkerOwner);
+            }
+            *installed_binding = Some(binding);
         }
-        *installed_binding = Some(binding);
         self.process_generation = binding.child_process_generation;
         self.child_runtime_state
             .store(CHILD_RUNTIME_WORKERS_HELD, Ordering::Release);
@@ -1603,28 +1611,12 @@ extern "C" fn crucible_qemu_plugin_hot_fork_child_runtime(
             // SAFETY: QEMU retains the fixed-layout plan for this synchronous
             // callback invocation, and the non-null pointer is read only once.
             let plan = unsafe { *plan };
-            let expected_size = std::mem::size_of::<crate::QemuPluginHotForkChildPlan>();
-            if plan.schema_version != crate::QEMU_PLUGIN_HOT_FORK_CHILD_PLAN_VERSION
-                || usize::try_from(plan.struct_size).ok() != Some(expected_size)
-                || plan.flags != 0
-                || plan.reserved != 0
-                || !hot_fork_child_process_generation_matches(&plan, state.process_generation)
-                || plan.template_generation == 0
-                || plan.private_ring_generation == 0
-                || plan.plugin_endpoint_generation == 0
-                || plan.plugin_barrier_generation == 0
-                || plan.control_socket_cookie == 0
-                || plan.wake_eventfd_id == 0
-                || plan.reserved_fd != -1
-                || plan.private_ring_fd < 0
-                || plan.control_fd != state.control_fd
-                || plan.wake_fd != state.setup.wake_fd().as_raw_fd()
-                || plan.private_ring_fd == plan.control_fd
-                || plan.private_ring_fd == plan.wake_fd
-                || plan.worker_mask != state.workers.worker_mask()
-                || !hot_fork_child_endpoint_identity_matches(&plan)
-                || !hot_fork_child_mapping_basis_matches(&plan, &state.setup)
-            {
+            if let Some(rejected) = hot_fork_child_plan_rejection(&plan, state) {
+                // The child's stderr is its branch-private diagnostics stream
+                // by now, so the host learns which check failed.
+                emit_control_worker_diagnostic(&format!(
+                    "hot-fork child plan rejected: {rejected}"
+                ));
                 return -libc::EPROTO;
             }
             let Some(identity) = crucible_shmem::SetupRegionBackingIdentity::from_parts(
@@ -1649,7 +1641,12 @@ extern "C" fn crucible_qemu_plugin_hot_fork_child_runtime(
     };
     let snapshot = match result {
         Ok(snapshot) => snapshot,
-        Err(error) => return hot_fork_child_runtime_status(error),
+        Err(error) => {
+            emit_control_worker_diagnostic(&format!(
+                "hot-fork child runtime action {action} failed: {error}"
+            ));
+            return hot_fork_child_runtime_status(error);
+        }
     };
 
     let Ok(struct_size) = u32::try_from(std::mem::size_of::<crate::QemuPluginHotForkChildStatus>())
@@ -1700,9 +1697,92 @@ extern "C" fn crucible_qemu_plugin_hot_fork_child_runtime(
 
 const HOT_FORK_ENDPOINT_FDINFO_MAX_BYTES: u64 = 4_096;
 
+/// Returns the first check a fork-child plan fails, named for diagnostics.
+///
+/// Every check is a protocol invariant between QEMU's plan and the runtime
+/// state the plugin sealed at registration; the first failure is reported
+/// because later checks describe the same plan.
+fn hot_fork_child_plan_rejection(
+    plan: &crate::QemuPluginHotForkChildPlan,
+    state: &OwnedCallbackRuntimeState,
+) -> Option<&'static str> {
+    let expected_size = std::mem::size_of::<crate::QemuPluginHotForkChildPlan>();
+    let checks: [(&'static str, bool); 21] = [
+        (
+            "schema version",
+            plan.schema_version == crate::QEMU_PLUGIN_HOT_FORK_CHILD_PLAN_VERSION,
+        ),
+        (
+            "struct size",
+            usize::try_from(plan.struct_size).ok() == Some(expected_size),
+        ),
+        ("flags", plan.flags == 0),
+        ("reserved", plan.reserved == 0),
+        (
+            "process generation",
+            hot_fork_child_process_generation_matches(plan, state.process_generation),
+        ),
+        ("template generation", plan.template_generation != 0),
+        ("private ring generation", plan.private_ring_generation != 0),
+        (
+            "plugin endpoint generation",
+            plan.plugin_endpoint_generation != 0,
+        ),
+        (
+            "plugin barrier generation",
+            plan.plugin_barrier_generation != 0,
+        ),
+        ("control socket cookie", plan.control_socket_cookie != 0),
+        ("wake eventfd id", plan.wake_eventfd_id != 0),
+        ("reserved fd", plan.reserved_fd == -1),
+        ("private ring fd", plan.private_ring_fd >= 0),
+        ("control fd", plan.control_fd == state.control_fd),
+        ("wake fd", plan.wake_fd == state.setup.wake_fd().as_raw_fd()),
+        (
+            "private ring fd distinct from control fd",
+            plan.private_ring_fd != plan.control_fd,
+        ),
+        (
+            "private ring fd distinct from wake fd",
+            plan.private_ring_fd != plan.wake_fd,
+        ),
+        (
+            "worker mask",
+            plan.worker_mask == state.workers.worker_mask(),
+        ),
+        (
+            "endpoint identity",
+            hot_fork_child_endpoint_identity_matches(plan),
+        ),
+        (
+            "mapping basis",
+            hot_fork_child_mapping_basis_matches(plan, &state.setup),
+        ),
+        ("plan", true),
+    ];
+    checks
+        .into_iter()
+        .find_map(|(name, holds)| (!holds).then_some(name))
+}
+
 fn hot_fork_child_endpoint_identity_matches(plan: &crate::QemuPluginHotForkChildPlan) -> bool {
     hot_fork_control_socket_cookie(plan.control_fd).ok() == Some(plan.control_socket_cookie)
         && hot_fork_wake_eventfd_id(plan.wake_fd).ok() == Some(plan.wake_eventfd_id)
+}
+
+/// Returns the whole-page VMA extent that a shared mapping of `length` spans.
+///
+/// The setup region length is an exact protocol value while QEMU binds and
+/// reports the page-rounded mapping, so the plan is compared at page
+/// granularity.
+fn host_mapping_extent(length: u64) -> u64 {
+    // SAFETY: sysconf reads a process-constant kernel parameter and touches no
+    // memory owned by this crate.
+    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    let page = u64::try_from(page).unwrap_or(4096).max(1);
+    length
+        .checked_add(page - 1)
+        .map_or(u64::MAX, |rounded| rounded - rounded % page)
 }
 
 fn hot_fork_child_mapping_basis_matches(
@@ -1710,8 +1790,8 @@ fn hot_fork_child_mapping_basis_matches(
     setup: &crate::setup::PluginSetupCompletion,
 ) -> bool {
     usize::try_from(plan.source_mapping_start).ok() == Some(setup.mapped_region().mapping_start())
-        && plan.source_mapping_length == setup.mapped_region().region_len()
-        && plan.source_mapping_length == plan.shmem_length
+        && plan.source_mapping_length == host_mapping_extent(setup.mapped_region().region_len())
+        && plan.source_mapping_length == host_mapping_extent(plan.shmem_length)
         && plan.source_mapping_offset == 0
         && plan
             .source_mapping_start

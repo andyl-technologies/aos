@@ -2683,8 +2683,15 @@ child endpoint enter the child spool.
 Patch 0194 now supplies the birth-time process contract. A generation-bound QMP
 operation authenticates and retains the target attempt's cgroup-v2 directory,
 sticky cancellation eventfd, and file-size ceiling. The source main-loop
-coordinator creates the child with `clone3(CLONE_INTO_CGROUP)`, and the child
-checks cancellation plus `RLIMIT_FSIZE` before runtime reconstruction. The Rust
+coordinator originally created the child with `clone3(CLONE_INTO_CGROUP)`; the
+kernel evaluates that flag with the caller's own credentials against the
+destination and the common ancestor of source and destination, so the first
+live fork from an unprivileged source QEMU was rejected with `EPERM`. Patch
+0214 retains the supervisor-opened `cgroup.procs` descriptor in the same
+contract and has the child write itself into it as its first instruction; a
+`cgroup.procs` write is authorized with the opener's credentials, so the child
+is charged to the target cgroup before any other instruction runs. The child
+then checks cancellation plus `RLIMIT_FSIZE` before runtime reconstruction. The Rust
 node stages those exact descriptor identities and requires the resulting
 generation in the fork request. The Linux attempt owner then opens a pidfd for
 the reported PID and brackets its bounded process-identity/cgroup-membership
@@ -3094,6 +3101,192 @@ regeneration and the source-set lifecycle flight pass, and the crucible-qemu
 suite covers destination validation, plan release, and plan consumption
 through the scripted fork. No live child has yet been forked through the
 plan, so T-CAM-6.3 remains open until the VM-hosted flight proves adoption.
+
+The first VM-hosted guarded fork flight (`checks.crucible.phase6.qemuHotForkChildVm`)
+reached the retained template with a frozen native VMState source and then
+timed out staging the private ring: standard `getfd` dispatches on the main
+loop, which the retained asynchronous-source barrier parks, so no
+branch-private descriptor transfer could ever complete under a retained
+template. Patch 0204 admits `getfd` and `closefd` out of band; both handlers
+touch only the chardev `SCM_RIGHTS` stash and the monitor-locked descriptor
+list. The typed client now issues every descriptor transfer through
+`exec-oob`. The readiness gate proves stock QEMU rejects out-of-band `getfd`
+while patched QEMU dispatches out-of-band `getfd` and `closefd`; the 204-patch
+package builds and regeneration passes.
+
+With descriptor transfer working, the same flight advanced to private-ring
+staging, where QEMU rejected the plugin source mapping with `EINVAL`: setup
+region lengths are exact ring-aligned byte counts, while the source-mapping
+lookup demanded a page-multiple length and compared it against the whole-page
+VMA. Patch 0205 keeps the protocol length exact and compares mapping extents
+page-rounded at the process boundary: the lookup binds the VMA spanning the
+page-rounded extent and reports it, the coordinator compares the private-ring
+source length against the page-rounded manifest length, and the plugin and
+typed host client compare the same extent. Page size is host-specific, so it
+never enters the shared-memory layout. A new `test-crucible-hot-fork-child`
+case binds a page-plus-one-byte region to its two-page VMA; the 205-patch
+package builds, readiness and regeneration pass, and the crucible-qemu and
+plugin suites pass with fixtures that now report the rounded extent.
+
+The next reruns of the same flight passed private-ring, diagnostics, child-QMP,
+and (once the flight enabled the `crucible-console` frontend) child-console
+staging, then stopped at plugin endpoint staging with one opaque rejection.
+Patch 0206 names the first blocking precondition in that QMP error, which
+showed every named basis held and pointed at the later plan validity predicate:
+it still demanded the mapping extent equal the exact region length. Patch 0207
+makes plan validation accept the page-rounded extent while keeping page-aligned
+start and extent, zero offset, and a bounded range. With endpoint staging and
+the child-private file plan staged, the fork itself was rejected at process
+contract staging because the cancellation eventfd had become blocking: QEMU
+clears `O_NONBLOCK` on every descriptor received over `SCM_RIGHTS`, and that
+flag lives on the open file description the host still shares. Patch 0208
+restores nonblocking mode on the retained duplicate before authenticating it.
+Each patch keeps the readiness and regeneration gates green; the live flight
+remains the acceptance evidence for the fork itself.
+
+The flight then reached `crucible-hot-fork` and was rejected with a bare
+`ESTALE`. Patch 0209 names the first blocking basis in that error and patch
+0211 does the same for the runtime transaction, which exposed three
+structural blockers in turn. The main-loop preparation counted the
+dispatching monitor as unstable because an out-of-band command runs on the
+monitor thread under its recursive parser lock; patch 0210 verifies the child
+monitor basis on that thread before submission and carries the verdict. The
+thread registry then rejected every held mutex: the coordinator forks while it
+owns the BQL, the monitor thread waits inside the command holding its parser
+lock and parked on the coordinator's completion condition, and the vCPU thread
+is the sole condition waiter on the BQL. Patch 0212 records each mutex's sole
+condition waiter, classifies every registered mutex as quiescent,
+coordinator-owned, parked on one discard-and-restart thread, or blocked, and
+has the child rebind coordinator-owned mutexes, reinitialize the pthread state
+a vanished thread held, and re-prove the registry; forking unit tests must run
+inside the runtime transaction because RCU's atfork handler locks registered
+mutexes. The registry next reported four threads where three were admitted:
+the round-robin TCG thread was a plain `unclassified` blocker. Patch 0213
+gives it the `vcpu-restart` disposition, publishes its guest random stream at
+every VM-stop park, and restarts it in the child after the plugin child is
+active, adopting the sole TCG context and the published stream before parking
+again on the inherited stop; the readiness gate's machine-less QEMU has no
+vCPU thread, so the gate admits at most one. The fork itself then failed with
+`EPERM` from `clone3(CLONE_INTO_CGROUP)`, which the kernel evaluates with the
+unprivileged source's own credentials against the delegated common ancestor.
+Patch 0214 retains the supervisor-opened `cgroup.procs` descriptor in the
+process contract (schema 2), authenticates it through the source's own
+descriptor links because attempt credentials cannot traverse the
+supervisor-owned directory, and has the child write itself into it as its
+first instruction, which the kernel authorizes with the opener's credentials.
+That fork created the first child, and the parent then hung until the QMP
+command timed out: the registry transaction retains the registered-mutex
+guard across `fork()`, and the coordinator retained the child through its own
+registered lock before the parent callback that releases the transaction.
+Patch 0215 runs the parent callback first, releases the runtime transaction
+before the child-file plan is freed, and makes the guard abort with a named
+diagnostic on re-entrant use instead of deadlocking silently. The host then
+rejected the child as not a member of its target cgroup because the fork
+completed before the child's first instruction had run; patch 0216 has the
+child report its placement through a close-on-exec pipe and the parent wait
+for that report, bounded at ten seconds, before it completes the fork. The
+placed child was next found reaped with no cause, because guarded launch
+gives it no stderr: patches 0217 and 0218 make a failed reconstruction exit
+with 64 plus its step, or 96 plus the sub-step of the runtime resource plan
+application, documented on the child-process status, and the flight reports
+the reaped status. That named the shared mapping table check, which bounded
+a page-rounded mapping extent by the ring memfd's exact ring-aligned size;
+patch 0219 bounds it by the backing's page-rounded size instead.
+The child then forked, was placed, and adopted its private VMState, but
+never greeted on its private QMP endpoint. Patch 0220 bounds the child's
+wait for its rebuilt monitor iothread and records that thread's start
+progress, which ruled the iothread out. The flight's failure report now
+attaches a debugger when one is named in its environment and runs against a
+QEMU that keeps its symbol table, and the backtrace placed the child's main
+thread inside the plugin's child initialization: the plugin held its
+`child_binding` mutex across the final snapshot, which takes the same lock,
+so the child deadlocked on itself. With that guard scoped, the child exited
+with status 100 (plugin reinitializer), and patch 0221 has a failing child
+write its step, detail, and negative errno to its stderr, which descriptor
+application has already routed to the branch-private diagnostics stream the
+flight now quotes. That named `EPROTO` from the reinitializer's status check:
+the plugin's replacement workers park behind the retained hold from their own
+threads after the synchronous initialization returns, so the complete held
+status the reinitializer demanded could not yet exist. Patch 0222 separates
+the status identity from its readiness and queries the runtime, bounded at
+ten seconds, while only readiness is outstanding; the plugin API's own status
+validation, which demanded the same readiness from the initialization result,
+now ties the readiness flag to the parked mask instead of the held phase.
+The child then failed its QMP reinitializer with a bare ESTALE; patch 0223
+names the failing QMP reconstruction stage, the precondition that went
+stale, its result, and the basis flags on the diagnostics stream.
+That named the monitor's local state: the getfd names the source registered
+for the process contract and child files survive the fork while the child's
+descriptor table transaction has already disposed of their numbers, so patch
+0224 drops the inherited names, without closing anything, before the child
+judges that state.
+The child's monitor socket, protocol, dispatcher, and iothread then rebuilt,
+and the greeting failed: the replacement iothread's push of the inherited
+GLib context failed its ownership assertion, because that context records
+the vanished parent thread as its owner and GLib lets no other thread
+acquire it, so the thread waited forever. Patch 0225 gives the rebuilt
+thread a fresh context and loop, moves the AioContext source into it, and
+re-homes the held monitor socket before any input source is attached.
+The greeting then found the rebuilt dispatcher busy: its coroutine is
+scheduled on the iohandler context and reaches its idle wait only when the
+main thread runs it, which the child's main thread, still inside its
+reconstruction, never did. Patch 0226 drives that context until the
+dispatcher is idle before the rebuild reports its replacement.
+The child then greeted on its private QMP endpoint and died in the console
+reinitializer with a bare ESTALE; patch 0227 names the stale console
+precondition, the failing socket stage, and the socket state it was
+compared against on the diagnostics stream.
+That named the basis context: the console chardev runs on GLib's default
+main context, recorded as NULL, which the child runtime rejected; patch
+0228 requires only the staged identity and the bound objects there.
+The whole resource plan then applied, and plugin activation failed: its
+matcher demanded an empty parked-worker mask for an active child, while an
+idle released worker parks at its receive safe point. Patch 0229 confines
+the worker constraints to the held state.
+The child then activated, restarted its vCPU thread, released the block
+barrier, and failed to install its child-private file plan with no
+detail; patch 0230 writes the block layer's error to the diagnostics
+stream.
+That named a source file descriptor that was no longer settled, without
+saying which node or why; patch 0231 names the node and the failed
+condition in the file driver's error.
+That named the VMState file node's own descriptor, closed in the child: the
+fork operation had added the plan's source and prepared descriptors to the
+set the child must close, while adoption queries each source before
+closing it and reopens each replacement. Patch 0232 leaves them to the
+retained table and blocks a fork whose plan descriptor is already excluded.
+The flight itself then had to move its check of the child's descriptor table
+behind the child's QMP handshake, since adoption closes the source
+descriptors during reconstruction rather than at the fork.
+The child then answered its capability negotiation and aborted on its first
+out-of-band command: dispatch asserts that no monitor is current, but the
+source's monitor thread was inside the fork command, and the replacement
+thread inherits the vanished thread's stack and thread-local storage, so
+its leader coroutine carried the binding. Patch 0233 drops every
+current-monitor binding during the child's monitor reconstruction.
+The child then answered every flight command up to its VMState save and
+died of a segmentation fault on the first guest page the save read: QEMU
+marks guest RAM `MADV_DONTFORK` at RAM block creation, so the child had
+no guest RAM at all. The VM test now collects a core from a child that
+dies by signal, and patch 0234 makes every RAM block forkable while a
+template is retained, refusing under KVM.
+With patch 0234 the flight passes: `checks.crucible.phase6.qemuHotForkChildVm`
+reports the child forked into its target cgroup, holding the private VMState
+inode and not the source's, greeting on its private QMP endpoint, and saving
+a VMState that grew the private copy from 1,441,792 to 2,425,114 bytes while
+the source container stayed unchanged. The full-series and drop-one patch
+gates for the new patches are the remaining evidence for this slice.
+The daemon's Linux fork launch now owns the child-private file plan for
+production children. Every node launcher exposes its admitted launch resource
+profile, the retained template identity records it, and the launch provisions
+the target attempt's run directory under that profile, lends its empty VMState
+container as the sole destination, stages the plan against the template
+generation QEMU reports, and forks through the same production composition
+the flight uses. An explicit pre-fork rejection releases the plan with the
+process contract; the reconciliation owner retains the pinned run directory
+for the child's lifetime, drops it before the target guard's storage cleanup,
+and releases the consumed plan with the contract once the child's outcome is
+reconciled. Scripted node tests cover the staging order and the rollback.
 
 **Exit:** either the spike satisfies the structural and minimum-speedup targets,
 its manual lab evidence is accepted, or hot fork remains rejected and the RFC is

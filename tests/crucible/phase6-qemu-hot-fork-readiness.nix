@@ -187,6 +187,11 @@ in
           jq -e -s 'any(.[]; has("error"))' "$out/stock-child-files.json" >/dev/null \
             || fail "stock QEMU unexpectedly exposed the Crucible child-files plan stage"
           qmp "$stock_socket" \
+            '{"exec-oob":"getfd","arguments":{"fdname":"crucible-oob-probe"}}' \
+            "$out/stock-getfd-oob.json"
+          jq -e -s 'any(.[]; (.error.desc // "") | test("does not support OOB"))' "$out/stock-getfd-oob.json" >/dev/null \
+            || { cat "$out/stock-getfd-oob.json" >&2; fail "stock QEMU unexpectedly accepted out-of-band getfd"; }
+          qmp "$stock_socket" \
             '{"exec-oob":"crucible-hot-fork-child-console","arguments":{"action":"query"}}' \
             "$out/stock-child-console.json"
           jq -e -s 'any(.[]; has("error"))' "$out/stock-child-console.json" >/dev/null \
@@ -263,16 +268,17 @@ in
             "$out/child-process-contract-initial.json"
           jq -e -s '
             [.[] | select(has("return"))][-1].return == {
-              "schema-version": 1,
+              "schema-version": 2,
               "generation": 0,
               "template-generation": 0,
               "staged": false,
               "consumed": false,
               "cgroup-device": 0,
               "cgroup-inode": 0,
+              "cgroup-procs-inode": 0,
               "cancellation-eventfd-id": 0,
               "maximum-file-bytes": 0,
-              "clone-into-cgroup": false
+              "cgroup-placement-bound": false
             }
           ' "$out/child-process-contract-initial.json" >/dev/null \
             || { cat "$out/child-process-contract-initial.json" >&2; fail "initial child-process contract state was not exact"; }
@@ -304,6 +310,20 @@ in
             "$out/child-files-release-unstaged.json"
           jq -e -s 'any(.[]; has("error"))' "$out/child-files-release-unstaged.json" >/dev/null \
             || { cat "$out/child-files-release-unstaged.json" >&2; fail "child-files release did not fail closed without a staged plan"; }
+
+          # Out-of-band descriptor transfer reaches the handlers: without an
+          # SCM_RIGHTS payload getfd reports the missing descriptor, and closefd
+          # reports the unknown name, instead of an OOB-not-allowed rejection.
+          qmp "$patched_socket" \
+            '{"exec-oob":"getfd","arguments":{"fdname":"crucible-oob-probe"}}' \
+            "$out/getfd-oob.json"
+          jq -e -s 'any(.[]; (.error.desc // "") | test("No file descriptor supplied"))' "$out/getfd-oob.json" >/dev/null \
+            || { cat "$out/getfd-oob.json" >&2; fail "patched QEMU did not dispatch getfd out of band"; }
+          qmp "$patched_socket" \
+            '{"exec-oob":"closefd","arguments":{"fdname":"crucible-oob-probe"}}' \
+            "$out/closefd-oob.json"
+          jq -e -s 'any(.[]; (.error.desc // "") | test("not found"))' "$out/closefd-oob.json" >/dev/null \
+            || { cat "$out/closefd-oob.json" >&2; fail "patched QEMU did not dispatch closefd out of band"; }
 
           qmp "$patched_socket" \
             '{"exec-oob":"crucible-hot-fork-child-console","arguments":{"action":"query"}}' \
@@ -824,7 +844,8 @@ in
                .disposition == "unclassified" or
                .disposition == "rcu-restart" or
                .disposition == "monitor-restart" or
-               .disposition == "unclassified-aio")) and
+               .disposition == "unclassified-aio" or
+               .disposition == "vcpu-restart")) and
             ([ $report.threads[] | select(.disposition == "coordinator") ] | length) == 1 and
             ([ $report.threads[] |
                select(.disposition == "unclassified" or
@@ -836,6 +857,11 @@ in
             ([ $report.threads[] |
                select(.name == "IO mon_iothread" and .disposition == "monitor-restart") ] |
              length) == 1 and
+            ([ $report.threads[] | select(.disposition == "vcpu-restart") ] |
+             length) <= 1 and
+            ([ $report.threads[] |
+               select(.disposition == "vcpu-restart" and .name != "ALL CPUs/TCG") ] |
+             length) == 0 and
             $report.complete ==
               (($report.overflowed | not) and
                all($report.threads[]; ."name-valid") and
@@ -1972,12 +1998,46 @@ in
           patch=0194-crucible-contain-hot-fork-children-from-birth.patch
           patch=0195-crucible-replace-fork-child-console-endpoint.patch
           patch=0203-crucible-bind-child-private-files-to-fork.patch
+          patch=0204-crucible-allow-out-of-band-descriptor-transfer.patch
+          patch=0205-crucible-round-source-mapping-extents.patch
+          patch=0206-crucible-report-plugin-child-plan-blockers.patch
+          patch=0207-crucible-validate-child-plan-mapping-extents.patch
+          patch=0208-crucible-restore-nonblocking-cancellation-eventfd.patch
+          patch=0209-crucible-report-fork-preparation-blockers.patch
+          patch=0210-crucible-verify-monitor-basis-before-fork.patch
+          patch=0211-crucible-report-runtime-transaction-blockers.patch
+          patch=0212-crucible-carry-parked-mutexes-across-fork.patch
+          patch=0213-crucible-restart-rr-vcpu-thread-in-child.patch
+          patch=0214-crucible-place-child-through-cgroup-procs.patch
+          patch=0215-crucible-release-registry-before-parent-locks.patch
+          patch=0216-crucible-complete-child-placement-before-return.patch
+          patch=0217-crucible-identify-failed-child-step-in-exit-status.patch
+          patch=0218-crucible-identify-failed-resource-plan-substep.patch
+          patch=0219-crucible-admit-mapping-into-backing-partial-page.patch
+          patch=0220-crucible-bound-child-iothread-start.patch
+          patch=0221-crucible-report-child-failure-result.patch
+          patch=0222-crucible-wait-for-plugin-child-workers.patch
+          patch=0223-crucible-name-failing-qmp-child-stage.patch
+          patch=0224-crucible-drop-inherited-monitor-fd-names.patch
+          patch=0225-crucible-rebuild-child-monitor-iothread-context.patch
+          patch=0226-crucible-idle-rebuilt-dispatcher-in-child.patch
+          patch=0227-crucible-name-failing-console-child-stage.patch
+          patch=0228-crucible-admit-default-console-context.patch
+          patch=0229-crucible-admit-idle-active-plugin-workers.patch
+          patch=0230-crucible-report-child-file-install-failure.patch
+          patch=0231-crucible-name-unsettled-source-descriptor.patch
+          patch=0232-crucible-retain-child-file-plan-descriptors.patch
+          patch=0233-crucible-drop-inherited-current-monitor.patch
+          patch=0234-crucible-forkable-template-ram.patch
           retained_template_fork_rejects_unprepared=true
           retained_child_unknown_generation_rejected=true
           child_process_contract_initially_absent=true
           child_files_initially_absent=true
           child_files_stage_rejects_without_template=true
           child_files_release_rejects_unstaged=true
+          stock_getfd_rejects_out_of_band=true
+          getfd_out_of_band_dispatch=true
+          closefd_out_of_band_dispatch=true
           child_console_initially_absent=true
           plugin_endpoint_schema_version=4
           plugin_endpoint_source_descriptors_observed=true
