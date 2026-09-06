@@ -9,10 +9,17 @@
 
   patternDoc = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
   ioDoc = builtins.readFile ../../docs/rfcs/0010-crucible/15-io-subnodes.md;
-  blockModule = builtins.readFile ../../crates/crucible-device/src/block.rs;
+  blockModule = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-device/src/block.rs;
+    siblingTests = true;
+  };
   overlay = builtins.readFile ../../crates/crucible-device/src/block/overlay.rs;
   device =
-    builtins.readFile ../../crates/crucible-device/src/block/device.rs
+    import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-device/src/block/device.rs;
+    }
     + builtins.readFile ../../crates/crucible-device/src/block/device/snapshot.rs;
   defaultChecks = builtins.readFile ./default.nix;
 

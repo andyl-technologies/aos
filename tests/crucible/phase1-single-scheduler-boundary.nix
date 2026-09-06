@@ -45,7 +45,6 @@
     "crucible-qemu"
     "crucible-qemu-plugin"
     "crucible-guest"
-    "crucible-daemon"
     "crucible-cli"
   ];
 

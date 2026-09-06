@@ -1,4 +1,5 @@
 [
+  "crucible-campaign"
   "crucible-cas"
   "crucible-linux-resource"
   "crucible-s3-store"

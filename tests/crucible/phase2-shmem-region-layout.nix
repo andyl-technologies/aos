@@ -11,7 +11,10 @@
 
   shmemContract = builtins.concatStringsSep "\n" [
     (import ./_crucible-shmem-source.nix {inherit lib;})
-    (builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs)
+    (import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-shmem/src/shmem/frame_node.rs;
+    })
     (builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/frame_entry.rs)
     (builtins.readFile ../../crates/crucible-shmem/src/shmem/region.rs)
     (builtins.readFile ../../crates/crucible-shmem/src/shmem/ring_coverage.rs)
@@ -87,7 +90,7 @@
       }
       {
         label = "ABI version";
-        needle = "pub const ABI_VERSION: u32 = 20;";
+        needle = "pub const ABI_VERSION: u32 = 21;";
       }
       {
         label = "physical slot capacity";

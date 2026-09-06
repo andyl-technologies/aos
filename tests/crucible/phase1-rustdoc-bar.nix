@@ -394,8 +394,8 @@
     ++ lib.optionals (!(hasInfix "contains non-ASCII comment/doc text" rustdocBarBaseline)) [
       "tests/crucible/rustdoc-bar-baseline.txt: missing non-ASCII debt baseline"
     ]
-    ++ lib.optionals (!(hasInfix "missing `# Errors`" rustdocBarBaseline)) [
-      "tests/crucible/rustdoc-bar-baseline.txt: missing # Errors debt baseline"
+    ++ lib.optionals (!(hasInfix "missing `# Errors`" rustdocBarTest)) [
+      "crates/crucible-harness/tests/rustdoc_bar.rs: missing # Errors finding kind"
     ];
 
   failures = packageSetFailures ++ regressionFailures ++ sourceFailures ++ attrFailures ++ baselineFailures;
