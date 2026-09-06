@@ -459,7 +459,7 @@ fn production_boundary_drops_a_preexisting_world_link_frame() {
         down_plan(segment.clone()),
         Some(Arc::new(NoArtifacts)),
         ContentHash::from_bytes(b"production-availability-drop"),
-        super::super::duplicate_network_fault_checkpoint_fixture(
+        super::super::test_support::duplicate_network_fault_checkpoint_fixture(
             &checkpoint,
             &down_plan(segment.clone()),
         ),
@@ -522,7 +522,10 @@ fn production_boundary_drops_a_preexisting_world_link_frame() {
     let mut restored_pending = Vec::new();
     let restored_plan = down_plan(segment);
     let restored_fault_checkpoint =
-        super::super::duplicate_network_fault_checkpoint_fixture(&checkpoint, &restored_plan);
+        super::super::test_support::duplicate_network_fault_checkpoint_fixture(
+            &checkpoint,
+            &restored_plan,
+        );
     let (restored_interceptor, restored_committed_frontier) =
         ProductionFaultNetworkInterceptor::restore(
             restored_plan,

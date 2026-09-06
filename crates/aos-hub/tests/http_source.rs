@@ -88,7 +88,7 @@ async fn http_source_indexes_without_creating_an_implicit_route() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/demo/-/packages")
+                .uri("/demo/-/packages?release=1.0.0")
                 .header(header::HOST, "127.0.0.1:8420")
                 .body(Body::empty())
                 .unwrap(),

@@ -1,5 +1,6 @@
 ##! glib — GLib core library (data structures, type system, event loop)
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -13,6 +14,8 @@
   util-linux,
   gettext,
   bash,
+  gobject-introspection ? null,
+  enableIntrospection ? false,
   stdenv,
   buildPackages,
 }: let
@@ -33,13 +36,15 @@ in
       hash = "sha256-N90Id/6WTNFemicQsEShgw+xvZNlKm0Mtriy3/GHxwk=";
     };
 
-    buildDeps = [
-      gnumake
-      pkg-config
-      meson
-      ninja
-      python3
-    ];
+    buildDeps =
+      [
+        gnumake
+        pkg-config
+        meson
+        ninja
+        python3
+      ]
+      ++ lib.optional enableIntrospection gobject-introspection;
     runtimeDeps =
       [
         libffi
@@ -144,6 +149,11 @@ in
             -Ddtrace=disabled \
             -Dsystemtap=disabled \
             -Ddocumentation=false \
+            -Dintrospection=${
+            if enableIntrospection
+            then "enabled"
+            else "disabled"
+          } \
             -Dinstalled_tests=false \
             -Dnls=disabled \
             -Doss_fuzz=disabled \
