@@ -2,12 +2,23 @@
 {pkgs}: {
   name,
   identity,
-  reportPath,
+  reportPath ? null,
+  reportRoot ? null,
 }: let
   quote = value: "'" + builtins.replaceStrings ["'"] ["'\\''"] value + "'";
+  reportArgument =
+    if reportPath != null
+    then "--report ${quote reportPath}"
+    else "--report-root ${quote reportRoot}";
 in
   assert identity != "";
-  assert builtins.substring 0 1 reportPath == "/";
+  assert (reportPath == null) != (reportRoot == null);
+  assert builtins.substring 0 1 (
+    if reportPath != null
+    then reportPath
+    else reportRoot
+  )
+  == "/";
     pkgs.writeShellScriptBin name ''
       # The coordinator writes the same request to request.json before the
       # scenario starts. Drain stdin so large requests cannot block its writer.
@@ -16,6 +27,6 @@ in
       exec ${pkgs.aos}/bin/aos release qualification respond \
         --request request.json \
         --scenarios scenario-registry.json \
-        --report ${quote reportPath} \
+        ${reportArgument} \
         --identity ${quote identity}
     ''

@@ -366,8 +366,9 @@ aos release qualification cases --plan release-bundle/release-plan.json \
   --manifest release-bundle/release-manifest.json --phase staging
 ```
 
-This command displays requirements; it does not verify signatures or claim a
-pass. Use `aos release verify` with independent public anchors for verification.
+This command displays requirements and a `case_digests` map keyed by case ID;
+it does not verify signatures or claim a pass. Use `aos release verify` with
+independent public anchors for verification.
 
 Run `aos release qualify-run --prepare-only` with the bundle, publication
 receipt, applicable executor mappings, and `--qualified-at now` described in
@@ -464,6 +465,13 @@ aos release qualification respond \
   --identity linux-x86-v1
 ```
 
+An executor that imports reports from several machines or package exercises can
+instead use `--report-root DIR`. The CLI selects
+`DIR/<case-digest-without-sha256-prefix>.json` from the exact case in the
+request. The report producer obtains that digest from `qualification cases` and
+must create a new canonical file for every case; a report for another release,
+manifest, receipt, or case is rejected.
+
 The report uses the common fields below and may retain additional
 scenario-specific measurements and diagnostics. `checks` must contain every and
 only the case's required checks. Release-wide and package reports use an
@@ -474,6 +482,11 @@ A1 reports omit `environment`.
 ```json
 {
   "schema_version": "aos.release.qualification-scenario-report/v1",
+  "registry": "andyl/testing",
+  "release_id": "release-2026.9.0",
+  "staging_receipt_digest": "sha256:<staging-receipt-hash>",
+  "manifest_digest": "sha256:<manifest-hash>",
+  "case_digest": "sha256:<qualification-case-hash>",
   "started_at": "2026-09-06T18:00:00Z",
   "finished_at": "2026-09-06T18:02:00Z",
   "observed_seconds": 120,
@@ -488,20 +501,26 @@ A1 reports omit `environment`.
 }
 ```
 
-`qualification respond` derives the request, case, executor, environment,
-report, subject, predecessor, authority and nonce bindings. It rejects an
-unknown registry mapping, wrong check set, empty check details, malformed UTC
-times, an observation longer than its execution interval, or an environment
-shape that does not match the case.
+`qualification respond` derives the request, executor, environment, report,
+subject, predecessor, authority and nonce bindings. It verifies the report's
+registry, release, publication receipt, manifest, and case identities first. It
+also rejects an unknown registry mapping, wrong check set, empty check details,
+malformed UTC times, an observation longer than its execution interval, or an
+environment shape that does not match the case.
 
-The x86_64 Linux operator adapter is exposed as
-`packages.x86_64-linux.qualification-operator-executor`. Before starting it,
-install a single-link canonical report for each applicable case at
-`/run/aos-release/qualification-reports/operator-recovery.json` and, for main
-releases, `production-recovery.json`. The adapter drains the coordinator
-request, captures the report without following links, and binds it through
-`qualification respond`. A missing, changing, stale, malformed, or
-case-incomplete operator report fails the attempt.
+The flake exposes `qualification-executor-<platform>` packages for all four
+release platforms under `packages.x86_64-linux`, plus a native
+`qualification-executor` alias on each supported system. Install the exact
+platform closures at the paths passed to `qualify-run`. Before starting an
+executor, install each applicable single-link canonical report at
+`/run/aos-release/qualification-reports/<platform>/<case-digest>.json`.
+The x86_64 Linux executor uses the fixed paths
+`/run/aos-release/qualification-reports/operator-recovery.json` and
+`production-recovery.json` for those two operator exercises. Each adapter
+drains the coordinator request, captures the selected report without following
+links, and binds it through `qualification respond`. A missing, changing,
+stale, malformed, incorrectly identified, or case-incomplete report fails the
+attempt.
 
 A fixture gate proves regression behavior only. The native Hub fleet uses
 visibly synthetic observations and timing to test admission mechanics; those

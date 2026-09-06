@@ -264,7 +264,16 @@
 
   # Testing harness (headless mode for package integration tests)
   testing = import ./lib/testing {inherit pkgs lib;};
-  qualificationExecutorIdentity = "aos-x86_64-linux-qualification-v1";
+  releaseQualification = import ./qualification {
+    inherit lib;
+    packageNames = pkgs.allPackageNames;
+  };
+  qualificationExecutorIdentity = "aos-${hostPlatform.system}-qualification-v1";
+  qualificationReportScenario = testing.mkQualificationReportScenario {
+    name = "aos-qualification-${hostPlatform.system}-report";
+    identity = qualificationExecutorIdentity;
+    reportRoot = "/run/aos-release/qualification-reports/${hostPlatform.system}";
+  };
   operatorRecoveryScenario = testing.mkQualificationReportScenario {
     name = "aos-qualification-operator-recovery";
     identity = qualificationExecutorIdentity;
@@ -275,20 +284,44 @@
     identity = qualificationExecutorIdentity;
     reportPath = "/run/aos-release/qualification-reports/production-recovery.json";
   };
-  releaseQualificationOperatorExecutor =
-    if hostPlatform.system == "x86_64-linux"
-    then
-      testing.mkQualificationExecutor {
-        name = "aos-qualification-x86_64-linux-operator";
-        platform = hostPlatform.system;
-        identity = qualificationExecutorIdentity;
-        scenarios = {
-          operator-recovery = "${operatorRecoveryScenario}/bin/aos-qualification-operator-recovery";
-          production-recovery = "${productionRecoveryScenario}/bin/aos-qualification-production-recovery";
-        };
-        workRoot = "/var/lib/aos-release/qualification/x86_64-linux";
-      }
-    else null;
+  qualificationTargetIds = map (target: target.id) (
+    builtins.filter (target: target.platform == hostPlatform.system) releaseQualification.targets
+  );
+  qualificationRequirementScenarioIds = map (requirement: requirement.id) (
+    builtins.filter (
+      requirement:
+        requirement.scope
+        == "packages"
+        || (
+          hostPlatform.system
+          == "x86_64-linux"
+          && requirement.scope == "release"
+          && requirement.phase != "build"
+        )
+    )
+    releaseQualification.requirements
+  );
+  qualificationClaimScenarioIds = map (claim: "claim-${claim.id}") (
+    builtins.filter (claim: builtins.elem claim.target qualificationTargetIds) releaseQualification.claims
+  );
+  qualificationScenarioIds = qualificationRequirementScenarioIds ++ qualificationClaimScenarioIds;
+  qualificationReportScenarios = builtins.listToAttrs (map (scenarioId: {
+      name = scenarioId;
+      value = "${qualificationReportScenario}/bin/aos-qualification-${hostPlatform.system}-report";
+    })
+    qualificationScenarioIds);
+  releaseQualificationExecutor = testing.mkQualificationExecutor {
+    name = "aos-qualification-${hostPlatform.system}";
+    platform = hostPlatform.system;
+    identity = qualificationExecutorIdentity;
+    scenarios =
+      qualificationReportScenarios
+      // lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
+        operator-recovery = "${operatorRecoveryScenario}/bin/aos-qualification-operator-recovery";
+        production-recovery = "${productionRecoveryScenario}/bin/aos-qualification-production-recovery";
+      };
+    workRoot = "/var/lib/aos-release/qualification/${hostPlatform.system}";
+  };
 
   prefixAttrs = prefix: attrs:
     builtins.listToAttrs (
@@ -1111,15 +1144,12 @@
       referenceIntegrity = crucibleReferenceIntegrity;
     };
 in {
-  inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem packagesWithExpose containerImages containerDefinitions releaseQualificationOperatorExecutor;
+  inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem packagesWithExpose containerImages containerDefinitions releaseQualificationExecutor;
 
   # Pure, fail-closed release eligibility data. The release coordinator reads
   # this value with strict JSON evaluation before resolving any derivation.
   releasePackageInventory = pkgs.platformSupport.releaseInventory pkgs.allPackageNames;
-  releaseQualification = import ./qualification {
-    inherit lib;
-    packageNames = pkgs.allPackageNames;
-  };
+  inherit releaseQualification;
   releasePackageDerivations =
     pkgs.platformSupport.releaseDerivations
     hostPlatform.system
@@ -1137,7 +1167,10 @@ in {
   # Checks hierarchy — module checks come from systems, everything else
   # stays at the top level.
   checks = rec {
-    qualification = import ./tests/qualification {inherit pkgs lib build fleet container;};
+    qualification = import ./tests/qualification {
+      inherit pkgs lib build fleet container;
+      releaseExecutor = releaseQualificationExecutor;
+    };
     rust = {
       cargo-artifacts = import ./tests/cargo-artifacts {inherit pkgs;};
       aos = pkgs.aos;

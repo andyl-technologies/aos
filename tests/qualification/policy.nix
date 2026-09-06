@@ -2,6 +2,7 @@
 {
   pkgs,
   lib,
+  releaseExecutor,
 }: let
   contract = import ../../qualification {
     inherit lib;
@@ -97,7 +98,8 @@
         packageNames = ["aos"];
         modules = [module];
       })
-      true)).success;
+      true))
+    .success;
 in
   assert fixture == capturedFixture;
   assert builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+$" (builtins.toString sourceRoot) != null;
@@ -110,6 +112,19 @@ in
   assert builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+/scenarios.json$" executor.passthru.qualification.registryPath != null;
   assert executor.passthru.qualification.platform == "x86_64-linux";
   assert executor.passthru.qualification.scenarios.package-function == "/nix/store/00000000000000000000000000000000-scenario/bin/run";
+  assert builtins.attrNames releaseExecutor.passthru.qualification.scenarios
+  == [
+    "claim-container-x86_64-linux-functional"
+    "claim-container-x86_64-linux-qualified"
+    "claim-disk-x86_64-linux-functional"
+    "claim-disk-x86_64-linux-qualified"
+    "operator-recovery"
+    "package-function"
+    "production-recovery"
+    "rollout-health"
+    "rollout-observation"
+    "staging-delivery"
+  ];
   assert builtins.length contract.claims == 8;
   assert contract.support.default
   == {
