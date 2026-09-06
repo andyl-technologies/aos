@@ -573,7 +573,10 @@ fn resolve_executable(name: &str) -> Result<std::path::PathBuf> {
                     directory.join(target)
                 };
                 if target.starts_with("/nix/store") {
-                    return Ok(target);
+                    // Nix exposes legacy subcommands through multicall links.
+                    // Preserve the selected link so argv[0] retains the
+                    // `nix-instantiate` or `nix-store` command identity.
+                    return Ok(candidate);
                 }
             }
             return candidate
@@ -1029,7 +1032,7 @@ fn git(root: &Path, arguments: &[&str]) -> Result<std::process::Output> {
 mod tests {
     use anyhow::Result;
 
-    use super::{FAKE_HASH, diagnostic_tail, parse_hash_mismatch};
+    use super::{FAKE_HASH, diagnostic_tail, parse_hash_mismatch, resolve_executable};
 
     #[test]
     fn redirect_allowlist_rejects_invalid_host_shapes() {
@@ -1077,5 +1080,16 @@ mod tests {
         assert!(tail.ends_with("actual failure"));
         assert!(!tail.contains('\r'));
         assert!(!tail.contains('\n'));
+    }
+
+    #[test]
+    fn executable_resolution_preserves_nix_multicall_identity() -> Result<()> {
+        let executable = resolve_executable("nix-instantiate")?;
+
+        assert_eq!(
+            executable.file_name().and_then(|name| name.to_str()),
+            Some("nix-instantiate")
+        );
+        Ok(())
     }
 }
