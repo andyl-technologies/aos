@@ -5,6 +5,7 @@
   ruby,
   zfs,
   coreutils,
+  grep,
   mariadb,
   postgresql,
 }: let
@@ -64,6 +65,7 @@ in
       tool = testing.mkToolCheck {
         pname = "tool-zfstools";
         tool = self;
+        extraDeps = [grep];
         command = "zfs-auto-snapshot > /tmp/zfstools-usage && grep -q '^Usage:' /tmp/zfstools-usage";
       };
     };
