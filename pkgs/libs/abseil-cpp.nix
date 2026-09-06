@@ -12,8 +12,8 @@
     stream = "20230802";
     owner = "pkgs/libs/abseil-cpp.nix";
     classification = "assisted";
-    version = "20230802.0";
-    upstreamId = "20230802.0";
+    version = "20230802.3";
+    upstreamId = "20230802.3";
     repository = "abseil/abseil-cpp";
     provider = "github-releases";
     major = 20230802;
@@ -39,7 +39,7 @@
           ];
         }
       ];
-      hash = "sha256-WdKXavnW7PABqBo1dJpuVRozW5SdNJGM+t4Hc3udk8U=";
+      hash = "sha256-BS0ThCZqPaCk0WtkTX+cTCv+xIVXIKyYipQHrrwGo9g=";
     };
   };
   inherit (upstream) version;

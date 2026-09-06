@@ -11,8 +11,8 @@
     family = "nghttp2";
     stream = "1";
     owner = "pkgs/networking/nghttp2.nix";
-    version = "1.68.0";
-    upstreamId = "v1.68.0";
+    version = "1.70.0";
+    upstreamId = "v1.70.0";
     repository = "nghttp2/nghttp2";
     provider = "github-releases";
     tagPrefix = "v";
@@ -48,7 +48,7 @@
           ];
         }
       ];
-      hash = "sha256-jYDLTkWtylRqIAW4YlG6Wntj9eoyIiiuKOmWl0P5lwc=";
+      hash = "sha256-j6yh94qpmsO8F2ina34PazbY5qYsE4GHUbHSBfAvlAU=";
     };
   };
   inherit (upstream) version;

@@ -12,8 +12,8 @@
     family = "jansson";
     stream = "2";
     owner = "pkgs/libs/jansson.nix";
-    version = "2.15.0";
-    upstreamId = "v2.15.0";
+    version = "2.15.1";
+    upstreamId = "v2.15.1";
     repository = "akheron/jansson";
     provider = "github-releases";
     tagPrefix = "v";
@@ -39,7 +39,7 @@
           ];
         }
       ];
-      hash = "sha256-c6wSu8Yv9TbkDHo+Fe0AeZPFyk0jiX3iPxkG+JG1pLs=";
+      hash = "sha256-2/lcsK+QP0+4thUH2WtFtn230UeWiO3jUuHVcTlNBvc=";
     };
   };
   inherit (upstream) version;

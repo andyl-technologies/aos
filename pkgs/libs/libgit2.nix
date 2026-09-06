@@ -16,8 +16,8 @@
     family = "libgit2";
     stream = "1";
     owner = "pkgs/libs/libgit2.nix";
-    version = "1.9.2";
-    upstreamId = "v1.9.2";
+    version = "1.9.7";
+    upstreamId = "v1.9.7";
     repository = "libgit2/libgit2";
     provider = "github-releases";
     tagPrefix = "v";
@@ -43,7 +43,7 @@
           ];
         }
       ];
-      hash = "sha256-bwl8gvwG7OT0BTn7F+nUG68aWi/CaxuFYtIbibw1X+Y=";
+      hash = "sha256-Gk++dYnoFHd652tkc0rYD07K0izTOiJoKiqupK5Tdec=";
     };
     riskFloor = "high";
   };
