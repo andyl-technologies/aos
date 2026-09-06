@@ -2006,6 +2006,18 @@ use crate::stack::{self, StackNode};
 pub struct RegistryRootConfig {
     /// The `[registry]` metadata table.
     pub registry: RegistryRootMeta,
+    /// The committed `[support]` release-train support policy, copied
+    /// verbatim from the qualification contract's `support` export.
+    ///
+    /// Absent registries make no support statement; the public browser then
+    /// falls back to treating the newest two stable trains as supported. See
+    /// [`crate::support`] for the schema and its invariants.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_support",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub support: Option<crate::support::SupportPolicy>,
     /// The committed `[caches]` cache stack: the binary caches every consumer
     /// of this registry should use, in preference order.
     ///
@@ -2076,6 +2088,17 @@ pub struct RegistryRootMeta {
     /// above the registry home. Blank lines separate paragraphs.
     #[serde(default)]
     pub readme: Option<String>,
+    /// Exact release initially selected by the public registry browser.
+    ///
+    /// This preference does not change package-manager tracking or channel
+    /// assignments. When absent, the browser prefers the highest verified
+    /// non-prerelease version, then the highest verified prerelease.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_default_release",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub default_release: Option<String>,
     /// Whether the producer records content addresses in the `store/`
     /// realisation graph (RFC-0005), so the registry serves both
     /// input-addressed and content-addressed consumers. Default `true`;
@@ -2090,6 +2113,34 @@ pub struct RegistryRootMeta {
     /// registries that intentionally publish unsigned images.
     #[serde(default)]
     pub require_signed_ukis: bool,
+}
+
+/// Validates the committed support policy when reading registry metadata.
+fn deserialize_support<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<crate::support::SupportPolicy>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<crate::support::SupportPolicy>::deserialize(deserializer)?;
+    if let Some(policy) = &value {
+        policy.validate().map_err(serde::de::Error::custom)?;
+    }
+    Ok(value)
+}
+
+/// Validates the optional browser preference when reading committed metadata.
+fn deserialize_default_release<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    if let Some(version) = &value {
+        semver::Version::parse(version).map_err(serde::de::Error::custom)?;
+    }
+    Ok(value)
 }
 
 /// Serde default for [`RegistryRootMeta::content_addressed`].
@@ -2315,6 +2366,23 @@ mod root_config_tests {
         [registry]
         name = "example"
     "#;
+
+    #[test]
+    fn support_policy_parses_and_fails_closed() {
+        let src = format!(
+            "{META}\n[support.default]\nkind = \"standard\"\nsuperseded_after_trains = 3\n\n[support.trains.\"2026.9\"]\nkind = \"lts\"\nsupported_until = \"2028-09-30\"\n"
+        );
+        let cfg: RegistryRootConfig = toml::from_str(&src).unwrap();
+        let policy = cfg.support.unwrap();
+        assert_eq!(policy.default.superseded_after_trains, 3);
+        assert_eq!(policy.trains.len(), 1);
+        assert_eq!(policy.kind((2026, 9)), crate::support::SupportKind::Lts);
+        let absent: RegistryRootConfig = toml::from_str(META).unwrap();
+        assert!(absent.support.is_none());
+        // An LTS train without an end date is a schema error, not a warning.
+        let broken = format!("{META}\n[support.trains.\"2026.9\"]\nkind = \"lts\"\n");
+        assert!(toml::from_str::<RegistryRootConfig>(&broken).is_err());
+    }
 
     #[test]
     fn single_endpoint_stack_parses_and_flattens() {

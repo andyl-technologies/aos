@@ -37,9 +37,10 @@ use crate::db::{
 use crate::db::{PlatformDetail, VersionDetail};
 use crate::stack::StackNode;
 use crate::web::console_render::{
-    ago, live_table, meter, page_with_session, table_raw_headers, urlencode, Pager,
-    SessionIndicator, StateLine,
+    ago, live_table, page_with_session, table_raw_headers, urlencode, Pager, SessionIndicator,
+    StateLine,
 };
+use crate::web::release_browse::ReleaseContext;
 use crate::web::render::{
     escape, hash_value, hash_value_link, human_size, key_fingerprint, table, trust_key_value,
 };
@@ -82,26 +83,42 @@ pub(crate) fn registry_crumbs(slug: &str, tail: &[(String, String)]) -> Vec<(Str
 }
 
 pub(crate) fn registry_nav(slug: &str, active: &str) -> String {
+    registry_nav_at_release(slug, active, None)
+}
+
+pub(crate) fn registry_nav_at_release(slug: &str, active: &str, release: Option<&str>) -> String {
     let items = [
         ("overview", format!("/{slug}/"), "Overview"),
+        ("releases", format!("/{slug}/-/releases"), "Releases"),
         ("packages", format!("/{slug}/-/packages"), "Packages"),
         ("docs", format!("/{slug}/-/docs"), "Docs"),
         ("images", format!("/{slug}/-/images"), "Images"),
         ("containers", format!("/{slug}/-/containers"), "Containers"),
         ("channels", format!("/{slug}/-/channels"), "Channels"),
-        ("releases", format!("/{slug}/-/releases"), "Releases"),
         ("health", format!("/{slug}/-/health"), "Health"),
     ];
     let mut nav = String::from("<nav aria-label=\"registry\" class=\"local-nav\">");
     for (key, href, label) in items {
+        let release = release.filter(|value| {
+            matches!(key, "packages" | "docs" | "images" | "containers")
+                && (*value != "all" || matches!(key, "images" | "containers"))
+        });
+        let href = release
+            .map(|value| format!("{href}?release={}", urlencode(value)))
+            .unwrap_or(href);
         let current = (key == active)
             .then_some(" aria-current=\"page\"")
             .unwrap_or("");
         let _ = write!(
             nav,
-            "<a href=\"{}\"{}>{}</a>",
+            "<a href=\"{}\"{}{}>{}</a>",
             escape(&href),
             current,
+            if key == "health" {
+                " class=\"registry-utility\""
+            } else {
+                ""
+            },
             label,
         );
     }
@@ -176,10 +193,33 @@ impl RegistrySetup {
 
     fn add_command(&self) -> Option<String> {
         let url = self.registry_url.as_deref()?;
-        let mut command = format!("apr add {url} --name {}", self.client_name);
+        let mut command = format!(
+            "apm registry add {} --name {}",
+            shell_argument(url),
+            shell_argument(&self.client_name)
+        );
         for key in &self.trust_keys {
-            let _ = write!(command, " --trust-key {key}");
+            let _ = write!(command, " --trust-key {}", shell_argument(key));
         }
+        Some(command)
+    }
+
+    /// Builds an installation command whose registry is pinned to this release.
+    fn install_commands(&self, package: &str, release: Option<&str>) -> Option<String> {
+        let mut selected = self.clone();
+        if let Some(release) = release {
+            selected.client_name = format!("{}-{release}", self.client_name);
+        }
+        let mut command = selected.add_command()?;
+        if let Some(release) = release {
+            let _ = write!(command, " --tag {}", shell_argument(release));
+        }
+        let _ = write!(
+            command,
+            "\napm install {} --registry {}",
+            shell_argument(package),
+            shell_argument(&selected.client_name)
+        );
         Some(command)
     }
 
@@ -410,83 +450,103 @@ pub fn instance_home(
     )
 }
 
-/// The registry home: trust anchors with fingerprints, channels, cache
-/// validation health, package count, and the three setup snippets.
+/// Renders registry identity, client setup, and current release rollouts.
 #[allow(clippy::too_many_arguments)]
 pub fn registry_home(
     registry: &RegistryRecord,
     status: Option<&IndexStatus>,
     channels: &[ChannelSummary],
-    package_count: usize,
-    caches: &[(String, u32)],
     roster: &[(String, String, String)],
-    validations: &[ValidationRunRow],
     setup: &RegistrySetup,
+    context: &ReleaseContext,
     manage_link: bool,
     started: Instant,
     session: &SessionIndicator,
 ) -> String {
     let slug = &registry.slug;
-    let mut body = registry_nav(slug, "overview");
-
     let display_name = status
-        .and_then(|s| s.name.as_deref())
-        .unwrap_or(slug.as_str());
-    let _ = write!(body, "<h1>Registry {}</h1>", escape(display_name));
-    // A signed-in caller holding `registry.configure` here gets a link to the
-    // management landing page (the no-JS console's entry point for editing
-    // this registry); anonymous and unauthorized readers never see it.
+        .and_then(|status| status.name.as_deref())
+        .unwrap_or(slug);
+    let mut body = context.nav(slug, "overview");
+    let _ = write!(body, "<h1>{}</h1>", escape(display_name));
+    if let Some(description) = status.and_then(|status| status.description.as_deref()) {
+        let _ = write!(body, "<p class=\"lede\">{}</p>", escape(description));
+    }
+    if let Some(release) = context.selected() {
+        let _ = write!(
+            body,
+            "<p class=\"registry-default-release\">Default release <a href=\"{}\">{}</a></p>",
+            escape(&crate::web::release_browse::release_href(slug, release)),
+            escape(release)
+        );
+    }
     if manage_link {
         let _ = write!(
             body,
-            "\n<p><a href=\"/{}/-/settings\">manage this registry →</a></p>",
-            escape(slug),
+            "<p><a href=\"/{}/-/settings\">Manage registry →</a></p>",
+            escape(slug)
         );
     }
-    if let Some(at) = status.and_then(|s| s.indexed_at) {
-        let _ = write!(body, "\n<p class=\"dim\">indexed {}</p>", ago(at));
-    }
-    if let Some(desc) = status.and_then(|s| s.description.as_deref()) {
-        let _ = write!(body, "<p>{}</p>", escape(desc));
-    }
-    // The longer README-style preamble (committed `[registry] readme`): blank
-    // lines separate paragraphs, each rendered as its own escaped <p>.
-    if let Some(readme) = status.and_then(|s| s.readme.as_deref()) {
-        body.push_str("<div class=\"readme\">");
-        for para in readme.split("\n\n") {
-            let para = para.trim();
-            if !para.is_empty() {
-                let _ = write!(body, "<p>{}</p>", escape(para));
-            }
+    if let Some(readme) = status
+        .and_then(|status| status.readme.as_deref())
+        .filter(|readme| !readme.trim().is_empty())
+    {
+        body.push_str("<details class=\"readme\"><summary>About this registry</summary>");
+        for paragraph in readme.split("\n\n") {
+            let _ = write!(body, "<p>{}</p>", escape(paragraph));
         }
-        body.push_str("</div>\n");
+        body.push_str("</details>");
     }
-    if let Some(status) = status {
-        match status.state.as_str() {
-            "failed" => {
-                let _ = write!(
-                    body,
-                    "<p class=\"bad\">index failed: {}</p>",
-                    escape(status.error.as_deref().unwrap_or("unknown error")),
-                );
-            }
-            // A freshly-created registry with no surface published yet, or one
-            // still awaiting its first index pass — not an error. `empty` is the
-            // terminal "indexed, nothing published" state; `pending`/`indexing`
-            // are its transient cousins. All read the same to a visitor.
-            "empty" | "pending" | "indexing" => {
-                body.push_str("<p class=\"dim\">No releases published to this registry yet.</p>\n");
-            }
-            _ => {}
+    if status.is_some_and(|status| status.state == "failed") {
+        body.push_str("<p class=\"warn\">The registry could not be refreshed. Published release contents are shown from the last successful index.</p>");
+    }
+    body.push_str("<section class=\"registry-setup\"><h2>Get started</h2>");
+    if let Some(command) = setup.add_command() {
+        let _ = write!(
+            body,
+            "<p>Add this registry:</p><pre>{}</pre>",
+            escape(&command)
+        );
+        body.push_str("<details><summary>AOS module and Nix configuration</summary>");
+        if let Some(stanza) = setup.module_stanza() {
+            let _ = write!(body, "<h3>AOS module</h3><pre>{}</pre>", escape(&stanza));
         }
+        let _ = write!(
+            body,
+            "<h3>Nix cache configuration</h3><pre>{}</pre></details>",
+            escape(&setup.plain_nix())
+        );
+    } else {
+        body.push_str("<p class=\"dim\">Setup is unavailable until a registry delivery route is configured.</p>");
     }
-
-    body.push_str("<h2>Trust</h2>\n");
+    body.push_str("</section><section class=\"registry-rollouts\"><h2>Release rollouts</h2>");
+    if channels.is_empty() {
+        body.push_str("<p class=\"dim\">No channels have been published yet.</p>");
+    } else {
+        let rows = channels
+            .iter()
+            .map(|channel| {
+                vec![
+                    format!(
+                        "<a href=\"/{}/-/channels/{}\">{}</a>",
+                        escape(slug),
+                        urlencode(&channel.name),
+                        escape(&channel.name)
+                    ),
+                    crate::web::release_pages::rollout_distribution(slug, channel),
+                ]
+            })
+            .collect::<Vec<_>>();
+        body.push_str(&table(&["channel", "release assignments"], &rows));
+    }
+    body.push_str("</section>");
     if registry.trust_keys.is_empty() && roster.is_empty() {
         body.push_str(
             "<p class=\"warn\">No trust anchors pinned — content is displayed unverified.</p>\n",
         );
-    } else {
+    }
+    body.push_str("<details><summary>Signing keys</summary>\n");
+    if !registry.trust_keys.is_empty() || !roster.is_empty() {
         let rows: Vec<Vec<String>> = registry
             .trust_keys
             .iter()
@@ -513,124 +573,40 @@ pub fn registry_home(
             }))
             .collect();
         body.push_str(&table(&["anchor", "fingerprint", "key"], &rows));
-    }
-
-    body.push_str("<h2>Channels</h2>\n");
-    if channels.is_empty() {
-        body.push_str("<p class=\"dim\">No channels resolved.</p>\n");
     } else {
-        let rows: Vec<Vec<String>> = channels
-            .iter()
-            .map(|channel| {
-                let assigned = channel.partitions.iter().flatten().count();
-                let at_frontier = channel
-                    .frontier
-                    .as_ref()
-                    .map(|f| {
-                        channel
-                            .partitions
-                            .iter()
-                            .flatten()
-                            .filter(|r| *r == f)
-                            .count()
-                    })
-                    .unwrap_or(0);
-                let percent = at_frontier * 100 / 256;
-                vec![
-                    format!(
-                        "<a href=\"/{}/-/channels/{}\">{}</a>",
-                        escape(slug),
-                        escape(&channel.name),
-                        escape(&channel.name),
-                    ),
-                    escape(channel.frontier.as_deref().unwrap_or("—")),
-                    format!("{} {percent}%", meter(percent)),
-                    format!("{assigned}/256 assigned"),
-                ]
-            })
-            .collect();
-        body.push_str(&table(
-            &["channel", "frontier", "rollout", "partitions"],
-            &rows,
-        ));
+        body.push_str("<p>No trust anchors or roster keys are configured.</p>");
     }
 
-    let _ = write!(
-        body,
-        "<h2>Packages ({count})</h2>\n<p><a href=\"/{slug}/-/packages\">Browse the package index →</a></p>\n",
-        count = package_count,
-        slug = escape(slug),
-    );
-
-    body.push_str("<h2>Caches</h2>\n");
-    if caches.is_empty() {
-        body.push_str("<p class=\"dim\">No committed caches.</p>\n");
-    } else {
-        let runs_by_url: BTreeMap<&str, &ValidationRunRow> = validations
-            .iter()
-            .map(|run| (run.cache_url.as_str(), run))
-            .collect();
-        let rows: Vec<Vec<String>> = caches
-            .iter()
-            .map(|(url, priority)| {
-                let [status, coverage, checked, probed] =
-                    validation_cells(runs_by_url.get(url.as_str()).copied());
-                vec![
-                    format!("<code class=\"cache-url\">{}</code>", escape(url)),
-                    priority.to_string(),
-                    status,
-                    coverage,
-                    checked,
-                    probed,
-                ]
-            })
-            .collect();
-        body.push_str(&table(
-            &["url", "priority", "status", "coverage", "checked", "probed"],
-            &rows,
-        ));
-    }
-    let _ = writeln!(
-        body,
-        "<p><a href=\"/{}/-/health\">health →</a></p>",
-        escape(slug),
-    );
-
-    body.push_str("<h2>Setup</h2>\n");
-    let Some(add_command) = setup.add_command() else {
-        body.push_str(
-            "<p class=\"dim\">No canonical Git route is ready. Configure delivery before adding this registry to a client.</p>\n",
-        );
-        return page_with_session(
-            display_name,
-            &registry_crumbs(slug, &[]),
-            &body,
-            &state_line(status, started),
-            session,
-        );
-    };
-    let _ = write!(
-        body,
-        "<p class=\"dim\">apm:</p>\n<pre>{}</pre>\n",
-        escape(&add_command),
-    );
-    if let Some(stanza) = setup.module_stanza() {
-        let _ = write!(
-            body,
-            "<p class=\"dim\">AOS module:</p>\n<pre>{}</pre>\n",
-            escape(&stanza),
-        );
-    }
-    let plain = setup.plain_nix();
-    let _ = write!(
-        body,
-        "<p class=\"dim\">plain Nix (substitute from the advertised cache):</p>\n<pre>{}</pre>\n",
-        escape(&plain),
-    );
-
+    body.push_str("</details>\n");
     page_with_session(
         display_name,
         &registry_crumbs(slug, &[]),
+        &body,
+        &state_line(status, started),
+        session,
+    )
+}
+
+/// Carries the selected ordering through independent filter and snapshot forms.
+fn package_sort_inputs(body: &mut String, sort: Option<(SortColumn, SortDir)>) {
+    if let Some((column, direction)) = sort {
+        let _ = write!(body, "<input type=\"hidden\" name=\"sort\" value=\"{}\"><input type=\"hidden\" name=\"dir\" value=\"{}\">", column.token(), direction.token());
+    }
+}
+
+/// Explains an unknown or incomplete snapshot without presenting an empty catalog.
+pub fn package_snapshot_unavailable(
+    registry: &RegistryRecord,
+    status: Option<&IndexStatus>,
+    selection: &str,
+    started: Instant,
+    session: &SessionIndicator,
+) -> String {
+    let mut body = registry_nav(&registry.slug, "packages");
+    let _ = write!(body, "<h1>Package snapshot unavailable</h1><p>No complete, verified package snapshot is available for <code>{}</code>. The release may not exist or its index may still be incomplete.</p><p><a href=\"/{}/-/releases\">Browse published releases</a></p>", escape(selection), escape(&registry.slug));
+    page_with_session(
+        "Package snapshot unavailable",
+        &registry_crumbs(&registry.slug, &[]),
         &body,
         &state_line(status, started),
         session,
@@ -722,12 +698,8 @@ impl SortDir {
 /// (see [`crate::filter`]); `filter_error` carries a parse error to surface.
 #[derive(Debug, Clone, Copy)]
 pub struct PackageBrowse<'a> {
-    /// Selected verified release tag or exact release commit; `None` means the indexed HEAD.
-    pub snapshot: Option<&'a str>,
-    /// Commit of the current indexed HEAD, shown for an explicit default identity.
-    pub head_commit: Option<&'a str>,
-    /// Verified `(tag, commit)` choices available for snapshot selection.
-    pub snapshots: &'a [(String, String)],
+    /// Exact release shared by navigation, filtering, and package links.
+    pub context: &'a ReleaseContext,
     /// The raw `?filter=` expression text (repopulates the box), if any.
     pub filter: Option<&'a str>,
     /// A filter parse-error message to display, if the expression was invalid.
@@ -898,9 +870,7 @@ pub fn package_index(
     session: &SessionIndicator,
 ) -> String {
     let PackageBrowse {
-        snapshot,
-        head_commit,
-        snapshots,
+        context,
         filter,
         filter_error,
         sort,
@@ -913,6 +883,7 @@ pub fn package_index(
         licenses,
         platforms,
     } = *browse;
+    let snapshot = context.selected();
     let slug = &registry.slug;
     let snapshot_query = snapshot
         .map(|value| format!("release={}", urlencode(value)))
@@ -979,40 +950,17 @@ pub fn package_index(
         })
         .collect();
 
-    let mut body = registry_nav(slug, "packages");
-    let _ = writeln!(body, "<h1>Packages ({total_all})</h1>");
-
-    body.push_str("<form method=\"get\" class=\"snapshot-selector\"><label>registry snapshot <select name=\"release\">");
-    let _ = write!(
-        body,
-        "<option value=\"\"{}>indexed HEAD{}</option>",
-        if snapshot.is_none() { " selected" } else { "" },
-        head_commit
-            .map(|commit| format!(" · {}", escape(&commit[..commit.len().min(12)])))
-            .unwrap_or_default(),
-    );
-    for (tag, commit) in snapshots {
-        let _ = write!(
-            body,
-            "<option value=\"{}\"{}>{} · {}</option>",
-            escape(tag),
-            if snapshot == Some(tag.as_str()) || snapshot == Some(commit.as_str()) {
-                " selected"
-            } else {
-                ""
-            },
-            escape(tag),
-            escape(&commit[..commit.len().min(12)]),
-        );
+    let mut body = context.nav(slug, "packages");
+    let mut selection_filters = Vec::new();
+    if let Some(filter) = filter {
+        selection_filters.push(("filter", filter));
     }
-    body.push_str("</select></label> <button>Show snapshot</button></form>\n");
-    let _ = writeln!(
-        body,
-        "<p class=\"dim\">Showing package membership at <strong>{}</strong>.</p>",
-        snapshot.map(escape).unwrap_or_else(|| head_commit
-            .map(|commit| format!("indexed HEAD {}", hash_value(commit)))
-            .unwrap_or_else(|| "indexed HEAD".to_string())),
-    );
+    if let Some((column, direction)) = sort {
+        selection_filters.push(("sort", column.token()));
+        selection_filters.push(("dir", direction.token()));
+    }
+    body.push_str(&context.selector(slug, &format!("/{slug}/-/packages"), &selection_filters));
+    let _ = writeln!(body, "<h1>Packages ({total_all})</h1>");
 
     // The filter box is a Wireshark-style display-filter expression: every
     // attribute is queryable with operators and boolean connectives. A bare
@@ -1025,6 +973,7 @@ pub fn package_index(
     // registry's distinct values per field. (No native `<datalist>`: its popup
     // can't be themed.)
     body.push_str("<form method=\"get\" class=\"pkg-search\">");
+    package_sort_inputs(&mut body, sort);
     if let Some(snapshot) = snapshot {
         let _ = write!(
             body,
@@ -1071,9 +1020,20 @@ pub fn package_index(
              <code>{}</code> · <a href=\"/{}/-/packages{}\">clear filter</a></p>",
             escape(filter.unwrap_or("")),
             escape(slug),
-            snapshot
-                .map(|value| format!("?release={}", urlencode(value)))
-                .unwrap_or_default(),
+            {
+                let mut parameters = Vec::new();
+                if !snapshot_query.is_empty() {
+                    parameters.push(snapshot_query.clone());
+                }
+                if let Some((column, direction)) = sort {
+                    parameters.push(format!("sort={}&dir={}", column.token(), direction.token()));
+                }
+                if parameters.is_empty() {
+                    String::new()
+                } else {
+                    format!("?{}", parameters.join("&"))
+                }
+            },
         );
     } else {
         let _ = writeln!(body, "<p class=\"dim\">{total_all} packages</p>");
@@ -1089,8 +1049,32 @@ pub fn package_index(
         );
     }
 
+    // Carry the filter and sort across pagination so paging never re-sorts or
+    // drops the filter. The query has no leading separator; Pager::nav appends
+    // `&page=N` itself.
+    let mut params: Vec<String> = Vec::new();
+    if !snapshot_query.is_empty() {
+        params.push(snapshot_query.clone());
+    }
+    if !filter_query.is_empty() {
+        params.push(filter_query.clone());
+    }
+    if let Some((col, dir)) = sort {
+        params.push(format!("sort={}", col.token()));
+        params.push(format!("dir={}", dir.token()));
+    }
+    let pager = Pager::new(page_number, PACKAGES_PER_PAGE, total_matches);
+    let navigation = pager.nav(&format!("/{slug}/-/packages"), &params.join("&"));
+    body.push_str(&navigation);
+
     if body_rows.is_empty() {
-        body.push_str("<p class=\"dim\">No packages.</p>\n");
+        body.push_str(if total_all == 0 {
+            "<p class=\"dim\">No packages have been published in this registry snapshot.</p>\n"
+        } else if total_matches == 0 {
+            "<p class=\"dim\">No packages match this filter. Change or clear the filter to browse packages.</p>\n"
+        } else {
+            "<p class=\"dim\">No packages on this page. Use the pagination controls to return to the results.</p>\n"
+        });
     } else {
         let preserved_query = [snapshot_query.as_str(), filter_query.as_str()]
             .into_iter()
@@ -1114,22 +1098,7 @@ pub fn package_index(
         body.push_str(&table_raw_headers(&headers, &body_rows));
     }
 
-    // Carry the filter and sort across pagination so paging never re-sorts or
-    // drops the filter. The query has no leading separator; Pager::nav appends
-    // `&page=N` itself.
-    let mut params: Vec<String> = Vec::new();
-    if !snapshot_query.is_empty() {
-        params.push(snapshot_query);
-    }
-    if !filter_query.is_empty() {
-        params.push(filter_query.clone());
-    }
-    if let Some((col, dir)) = sort {
-        params.push(format!("sort={}", col.token()));
-        params.push(format!("dir={}", dir.token()));
-    }
-    let pager = Pager::new(page_number, PACKAGES_PER_PAGE, total_matches);
-    body.push_str(&pager.nav(&format!("/{slug}/-/packages"), &params.join("&")));
+    body.push_str(&navigation);
 
     page_with_session(
         &format!("{slug} packages"),
@@ -1190,6 +1159,36 @@ pub struct PackageDocumentationPanel {
     pub nar_hash: String,
 }
 
+/// Signed indexed documentation reference, without loading the document bytes.
+#[derive(Debug, Clone)]
+pub struct PackageDocumentationReference {
+    /// Exact package identity.
+    pub package: String,
+    /// Displayed package version.
+    pub version: String,
+    /// Displayed platform.
+    pub platform: String,
+    /// Referenced Nix store object.
+    pub store_path: String,
+    /// Signed canonical document digest.
+    pub document_sha256: String,
+    /// Signed NAR identity of the referenced object.
+    pub nar_hash: String,
+}
+
+impl From<crate::db::PackageDocumentationLocator> for PackageDocumentationReference {
+    fn from(locator: crate::db::PackageDocumentationLocator) -> Self {
+        Self {
+            package: locator.package_name,
+            version: locator.package_version,
+            platform: locator.platform,
+            store_path: locator.artifact.store_path,
+            document_sha256: locator.artifact.document_sha256,
+            nar_hash: locator.artifact.nar_hash,
+        }
+    }
+}
+
 /// One package's detail page — the data-rich closure browser.
 ///
 /// Renders, in order: a header with name + latest version + the prominent
@@ -1210,31 +1209,28 @@ pub fn package_page(
     detail: &PackageDetail,
     closure: &PackageClosure,
     setup: &RegistrySetup,
-    snapshot: Option<&str>,
-    documentation: Option<&PackageDocumentationPanel>,
+    context: &ReleaseContext,
+    documentation: Option<&PackageDocumentationReference>,
     documentation_unavailable: bool,
     started: Instant,
     session: &SessionIndicator,
 ) -> String {
     let slug = &registry.slug;
+    let snapshot = context.selected();
 
     // Header: name, latest version, then the description prominently.
     let latest = detail.versions.first().map(|v| v.version.as_str());
-    let mut body = registry_nav(slug, "packages");
+    let mut body = context.nav(slug, "packages");
+    body.push_str(&context.selector(
+        slug,
+        &format!("/{slug}/-/packages/{}", urlencode(&detail.name)),
+        &[],
+    ));
     let _ = write!(body, "<h1 id=\"overview\">{}", escape(&detail.name));
     if let Some(latest) = latest {
         let _ = write!(body, " <span class=\"dim\">{}</span>", escape(latest));
     }
     body.push_str("</h1>\n");
-    if let Some(snapshot) = snapshot {
-        let _ = writeln!(
-            body,
-            "<p class=\"dim\">Package state authenticated by registry snapshot <strong>{}</strong> · <a href=\"/{}/-/packages?release={}\">back to this snapshot</a></p>",
-            escape(snapshot),
-            escape(slug),
-            urlencode(snapshot),
-        );
-    }
     if !detail.description.is_empty() {
         let _ = writeln!(
             body,
@@ -1243,7 +1239,7 @@ pub fn package_page(
         );
     }
     body.push_str(
-        "<nav class=\"package-section-nav\" aria-label=\"Package documentation sections\"><a href=\"#overview\">Overview</a><a href=\"#configure\">Configure</a><a href=\"#runtime\">Services</a><a href=\"#dependencies\">Dependencies</a><a href=\"#versions\">Versions</a><a href=\"#integrity\">Integrity</a></nav>",
+        "<nav class=\"package-section-nav\" aria-label=\"Package documentation sections\"><a href=\"#overview\">Overview</a><a href=\"#install\">Install</a><a href=\"#versions\">Versions</a><a href=\"#configure\">Documentation</a><a href=\"#dependencies\">Dependencies</a><a href=\"#integrity\">Integrity</a></nav>",
     );
 
     // The union of every version's platforms, as chips near the top.
@@ -1298,128 +1294,16 @@ pub fn package_page(
     }
     body.push_str(&table(&["field", "value"], &meta_rows));
 
-    // Install snippet: apm is the consumer CLI; the registry-add and
-    // substituter lines mirror the registry home setup, package-focused.
-    body.push_str("<h2>Install</h2>\n");
-    if let Some(add_command) = setup.add_command() {
-        let snippet = format!(
-            "{add_command}\napm install {name}\n\n# or as a plain Nix substituter:\n{plain}",
-            name = detail.name,
-            plain = setup.plain_nix(),
-        );
-        let _ = write!(
-            body,
-            "<p class=\"dim\">apm is the consumer CLI; add the registry, then install:</p>\n<pre>{}</pre>\n",
-            escape(&snippet),
-        );
+    body.push_str("<h2 id=\"install\">Install</h2>\n");
+    if let Some(command) = setup.install_commands(&detail.name, snapshot) {
+        let instruction = if snapshot.is_some() {
+            "Add a registry pinned to this release, then install:"
+        } else {
+            "Add this registry, then install using its configured tracking:"
+        };
+        let _ = write!(body, "<p>{instruction}</p><pre>{}</pre>", escape(&command));
     } else {
-        body.push_str(
-            "<p class=\"dim\">No canonical Git route is ready. Configure delivery before adding this registry to a client.</p>\n",
-        );
-    }
-
-    body.push_str("<section id=\"configure\" class=\"package-docs\"><div class=\"section-heading\"><div><p class=\"eyebrow\">Canonical reference</p><h2>Configuration &amp; runtime</h2></div>");
-    let _ = write!(
-        body,
-        "<a class=\"button secondary\" href=\"/{}/-/docs?q={}\">Search all docs</a></div>",
-        escape(slug),
-        escape(&detail.name),
-    );
-    if let Some(documentation) = documentation {
-        let document = &documentation.document;
-        let _ = write!(
-            body,
-            "<p id=\"integrity\" class=\"dim docs-provenance\">Verified from <code>{}</code> · document {} · NAR {}</p>",
-            escape(&documentation.store_path),
-            hash_value(&documentation.document_sha256),
-            hash_value(&documentation.nar_hash),
-        );
-        body.push_str(&document.render_html_fragment());
-        let _ = write!(
-            body,
-            "<p><a href=\"/{}/-/docs/{}/{}/{}\">Open a permanent version/platform reference</a> · <a href=\"/{}/-/api/docs/{}/{}/{}\">canonical JSON</a></p>",
-            escape(slug),
-            escape(&document.package.name),
-            escape(&document.package.version),
-            escape(&document.package.platform),
-            escape(slug),
-            escape(&document.package.name),
-            escape(&document.package.version),
-            escape(&document.package.platform),
-        );
-    } else if documentation_unavailable {
-        body.push_str("<aside class=\"notice warning\"><strong>Documentation temporarily unavailable.</strong> The signed locator exists, but its Nix object could not be reverified. Runtime package metadata is still shown below.</aside>");
-    } else {
-        body.push_str("<p class=\"dim\">This package version predates canonical structured documentation.</p>");
-    }
-    body.push_str("</section>");
-
-    // Dependencies: the closure edges of the latest primary platform, made
-    // legible — resolvable hashes link to their package page, the rest fall
-    // back to a narinfo permalink.
-    let _ = writeln!(
-        body,
-        "<h2 id=\"dependencies\">Dependencies ({})</h2>",
-        closure.dependencies.len(),
-    );
-    if closure.dependencies.is_empty() {
-        body.push_str("<p class=\"dim\">No runtime dependencies recorded.</p>\n");
-    } else {
-        if let Some(platform) = &closure.platform {
-            let _ = writeln!(
-                body,
-                "<p class=\"dim\">runtime closure of the latest version on {}:</p>",
-                escape(platform),
-            );
-        }
-        body.push_str("<ul class=\"deps\">\n");
-        for dep in &closure.dependencies {
-            match (&dep.name, &dep.version) {
-                (Some(name), version) => {
-                    let _ = write!(
-                        body,
-                        "<li><a href=\"/{}/-/packages/{}\">{}</a>",
-                        escape(slug),
-                        escape(name),
-                        escape(name),
-                    );
-                    if let Some(version) = version {
-                        let _ = write!(body, " <span class=\"dim\">{}</span>", escape(version));
-                    }
-                    body.push_str("</li>\n");
-                }
-                (None, _) => {
-                    let _ = writeln!(body, "<li>{}</li>", narinfo_link(setup, &dep.hash));
-                }
-            }
-        }
-        body.push_str("</ul>\n");
-    }
-
-    // Reverse dependencies: who requires this package.
-    let _ = writeln!(body, "<h2>Required by ({})</h2>", closure.reverse_total);
-    if closure.reverse.is_empty() {
-        body.push_str("<p class=\"dim\">No packages in this registry require it.</p>\n");
-    } else {
-        body.push_str("<ul class=\"deps\">\n");
-        for (name, version) in &closure.reverse {
-            let _ = writeln!(
-                body,
-                "<li><a href=\"/{}/-/packages/{}\">{}</a> <span class=\"dim\">{}</span></li>",
-                escape(slug),
-                escape(name),
-                escape(name),
-                escape(version),
-            );
-        }
-        body.push_str("</ul>\n");
-        if closure.reverse_total > closure.reverse.len() {
-            let _ = writeln!(
-                body,
-                "<p class=\"dim\">… and {} more</p>",
-                closure.reverse_total - closure.reverse.len(),
-            );
-        }
+        body.push_str("<p class=\"dim\">Installation instructions are unavailable until a registry delivery route is configured.</p>");
     }
 
     body.push_str("<h2 id=\"versions\">Versions</h2>\n");
@@ -1480,6 +1364,102 @@ pub fn package_page(
         }
     }
     body.push_str("</table></div>\n");
+
+    body.push_str("<section id=\"configure\" class=\"package-docs\"><h2>Documentation</h2>");
+    if let Some(documentation) = documentation {
+        let release_query = snapshot
+            .map(|release| format!("&amp;release={}", urlencode(release)))
+            .unwrap_or_default();
+        let _ = write!(
+            body,
+            "<p><a href=\"/{}/-/docs/{}/{}/{}?digest={}{}\">View package documentation →</a></p>",
+            escape(slug),
+            urlencode(&documentation.package),
+            urlencode(&documentation.version),
+            urlencode(&documentation.platform),
+            urlencode(&documentation.document_sha256),
+            release_query
+        );
+    } else if documentation_unavailable {
+        body.push_str(
+            "<p class=\"warn\">Documentation is temporarily unavailable for this release.</p>",
+        );
+    } else {
+        body.push_str(
+            "<p class=\"dim\">No documentation was published for this package in this release.</p>",
+        );
+    }
+    body.push_str("</section>");
+
+    // Dependencies: the closure edges of the latest primary platform, made
+    // legible — resolvable hashes link to their package page, the rest fall
+    // back to a narinfo permalink.
+    let _ = writeln!(
+        body,
+        "<h2 id=\"dependencies\">Dependencies ({})</h2>",
+        closure.dependencies.len(),
+    );
+    if closure.dependencies.is_empty() {
+        body.push_str("<p class=\"dim\">No runtime dependencies recorded.</p>\n");
+    } else {
+        if let Some(platform) = &closure.platform {
+            let _ = writeln!(
+                body,
+                "<p class=\"dim\">runtime closure of the latest version on {}:</p>",
+                escape(platform),
+            );
+        }
+        body.push_str("<ul class=\"deps\">\n");
+        for dep in &closure.dependencies {
+            match (&dep.name, &dep.version) {
+                (Some(name), version) => {
+                    let _ = write!(
+                        body,
+                        "<li><a href=\"/{}/-/packages/{}?release={}\">{}</a>",
+                        escape(slug),
+                        urlencode(name),
+                        urlencode(snapshot.unwrap_or_default()),
+                        escape(name),
+                    );
+                    if let Some(version) = version {
+                        let _ = write!(body, " <span class=\"dim\">{}</span>", escape(version));
+                    }
+                    body.push_str("</li>\n");
+                }
+                (None, _) => {
+                    let _ = writeln!(body, "<li>{}</li>", narinfo_link(setup, &dep.hash));
+                }
+            }
+        }
+        body.push_str("</ul>\n");
+    }
+
+    // Reverse dependencies: who requires this package.
+    let _ = writeln!(body, "<h2>Required by ({})</h2>", closure.reverse_total);
+    if closure.reverse.is_empty() {
+        body.push_str("<p class=\"dim\">No packages in this registry require it.</p>\n");
+    } else {
+        body.push_str("<ul class=\"deps\">\n");
+        for (name, version) in &closure.reverse {
+            let _ = writeln!(
+                body,
+                "<li><a href=\"/{}/-/packages/{}?release={}\">{}</a> <span class=\"dim\">{}</span></li>",
+                escape(slug),
+                urlencode(name),
+                urlencode(snapshot.unwrap_or_default()),
+                escape(name),
+                escape(version),
+            );
+        }
+        body.push_str("</ul>\n");
+        if closure.reverse_total > closure.reverse.len() {
+            let _ = writeln!(
+                body,
+                "<p class=\"dim\">… and {} more</p>",
+                closure.reverse_total - closure.reverse.len(),
+            );
+        }
+    }
 
     for version in &detail.versions {
         let image_rows: Vec<Vec<String>> = version
@@ -1616,16 +1596,28 @@ pub fn documentation_index_page(
         );
     }
 
+    let mut params = Vec::new();
+    if let Some(query) = query.filter(|query| !query.trim().is_empty()) {
+        params.push(format!("q={}", urlencode(query)));
+    }
+    if let Some(kind) = kind {
+        params.push(format!("kind={}", urlencode(kind)));
+    }
+    let pager = Pager::new(page_number, PACKAGES_PER_PAGE, total_results);
+    let navigation = pager.nav(&format!("/{slug}/-/docs"), &params.join("&"));
+    body.push_str(&navigation);
+
     if !results.is_empty() {
         body.push_str("<ol class=\"docs-results\">");
         for result in results {
             let _ = write!(
                 body,
-                "<li><a href=\"/{}/-/docs/{}/{}/{}\"><span class=\"doc-kind\">{}</span><strong>{}</strong><span>{}</span><code>{} {} · {}</code></a></li>",
+                "<li><a href=\"/{}/-/docs/{}/{}/{}#{}\"><span class=\"doc-kind\">{}</span><strong>{}</strong><span>{}</span><code>{} {} · {}</code></a></li>",
                 escape(slug),
                 escape(&result.package_name),
                 escape(&result.package_version),
                 escape(&result.platform),
+                aos_doc_model::documentation_anchor(&result.kind, &result.key),
                 escape(&result.kind),
                 escape(&result.title),
                 escape(&result.summary),
@@ -1636,15 +1628,7 @@ pub fn documentation_index_page(
         }
         body.push_str("</ol>");
     }
-    let mut params = Vec::new();
-    if let Some(query) = query.filter(|query| !query.trim().is_empty()) {
-        params.push(format!("q={}", urlencode(query)));
-    }
-    if let Some(kind) = kind {
-        params.push(format!("kind={}", urlencode(kind)));
-    }
-    let pager = Pager::new(page_number, PACKAGES_PER_PAGE, total_results);
-    body.push_str(&pager.nav(&format!("/{slug}/-/docs"), &params.join("&")));
+    body.push_str(&navigation);
     let _ = write!(
         body,
         "<p class=\"docs-tools\"><a href=\"/{}/-/api/docs/schema\">JSON Schema</a> · <code>apm docs search &lt;query&gt;</code> · editor completion via <code>apm docs lsp</code></p>",
@@ -1673,12 +1657,10 @@ pub fn documentation_page(
     body.push_str("<div class=\"docs-detail-toolbar\">");
     let _ = write!(
         body,
-        "<a href=\"/{}/-/docs\">← Search documentation</a><span><a href=\"/{}/-/api/docs/{}/{}/{}\">Canonical JSON</a> · <a href=\"/{}/-/api/docs/schema\">JSON Schema</a></span>",
+        "<a href=\"/{}/-/docs\">← Search documentation</a><span><a href=\"/{}/-/api/v1/documentation/{}\">Canonical JSON</a> · <a href=\"/{}/-/api/docs/schema\">JSON Schema</a></span>",
         escape(slug),
         escape(slug),
-        escape(&document.package.name),
-        escape(&document.package.version),
-        escape(&document.package.platform),
+        escape(&documentation.document_sha256),
         escape(slug),
     );
     body.push_str("</div>");
@@ -2065,8 +2047,8 @@ pub fn channel_grid_pre(channel: &ChannelSummary) -> String {
     out
 }
 
-/// The channel page with the 16×16 partition grid, the anti-rollback
-/// floor, and the no-JS `?bucket=` calculator.
+/// The channel page: target, floor, and coverage facts, the rollout bar, a
+/// colour-coded 16×16 bucket map, and the no-JS `?bucket=` lookup.
 pub fn channel_page(
     registry: &RegistryRecord,
     status: Option<&IndexStatus>,
@@ -2076,82 +2058,81 @@ pub fn channel_page(
     started: Instant,
     session: &SessionIndicator,
 ) -> String {
+    use crate::web::release_pages::{rollout_distribution, rollout_shares, ROLLOUT_PALETTE};
     let slug = &registry.slug;
+    let release_link = |release: &str| {
+        format!(
+            "<a href=\"/{}/-/releases/{}\">{}</a>",
+            escape(slug),
+            urlencode(release),
+            escape(release)
+        )
+    };
 
-    // Assign glyphs frontier-first so the newest release is always '■'.
-    let mut release_order: Vec<String> = Vec::new();
-    if let Some(frontier) = &channel.frontier {
-        release_order.push(frontier.clone());
-    }
-    for release in channel.partitions.iter().flatten() {
-        if !release_order.contains(release) {
-            release_order.push(release.clone());
-        }
-    }
-    let class_for: BTreeMap<&str, usize> = release_order
-        .iter()
+    // Colours follow the rollout bar's order so the bar, its labels, and the
+    // bucket map read as one legend.
+    let class_for: BTreeMap<&str, usize> = rollout_shares(channel)
+        .into_iter()
         .enumerate()
-        .map(|(i, release)| (release.as_str(), i.min(GRID_GLYPHS.len() - 1)))
+        .filter_map(|(index, (release, _))| {
+            release.map(|release| (release, index % ROLLOUT_PALETTE))
+        })
         .collect();
-
+    let assigned = channel.partitions.iter().flatten().count();
     let hit = bucket_query.and_then(parse_bucket);
-    let mut grid = String::new();
-    for row in 0..16 {
-        for col in 0..16 {
-            let bucket = row * 16 + col;
-            let cell = match channel.partitions[bucket].as_deref() {
-                Some(release) => {
-                    let i = class_for
-                        .get(release)
-                        .copied()
-                        .unwrap_or(GRID_GLYPHS.len() - 1);
-                    format!("<span class=\"r{i}\">{}</span>", GRID_GLYPHS[i])
-                }
-                None => "<span class=\"dim\">·</span>".to_string(),
-            };
-            if hit == Some(bucket as u8) {
-                let _ = write!(grid, "<strong class=\"hit\">{cell}</strong>");
-            } else {
-                grid.push_str(&cell);
-            }
-        }
-        grid.push('\n');
-    }
 
     let mut body = registry_nav(slug, "channels");
     let _ = writeln!(body, "<h1>Channel {}</h1>", escape(&channel.name));
-    let frontier = channel.frontier.as_deref().map_or_else(
-        || "—".to_string(),
-        |release| {
-            format!(
-                "<strong><a href=\"/{}/-/releases#release-{}\">{}</a></strong> · <a href=\"/{}/-/images?release={}\">images</a>",
-                escape(slug),
-                urlencode(release),
-                escape(release),
-                escape(slug),
-                urlencode(release),
-            )
-        },
-    );
-    let _ = writeln!(
-        body,
-        "<p>frontier {frontier} · floor {} · {} of 256 partitions assigned</p>",
-        match floor {
-            Some(floor) => format!(
-                "<strong><a href=\"/{}/-/releases#release-{}\">{}</a></strong>",
-                escape(slug),
-                urlencode(floor),
-                escape(floor),
-            ),
-            None => "<span class=\"dim\">—</span>".to_string(),
-        },
-        channel.partitions.iter().flatten().count(),
-    );
 
+    body.push_str("<div class=\"channel-facts\">");
+    let _ = write!(
+        body,
+        "<div class=\"channel-fact\"><span>Target release</span><strong>{}</strong>{}</div>",
+        channel
+            .frontier
+            .as_deref()
+            .map(&release_link)
+            .unwrap_or_else(|| "<span class=\"dim\">None</span>".into()),
+        channel
+            .frontier
+            .as_deref()
+            .map(|release| format!(
+                "<a class=\"dim\" href=\"/{}/-/images?release={}\">images</a>",
+                escape(slug),
+                urlencode(release)
+            ))
+            .unwrap_or_default()
+    );
+    let _ = write!(
+        body,
+        "<div class=\"channel-fact\"><span>Minimum allowed release</span><strong>{}</strong></div>",
+        floor
+            .map(&release_link)
+            .unwrap_or_else(|| "<span class=\"dim\">None</span>".into())
+    );
+    let _ = write!(
+        body,
+        "<div class=\"channel-fact\"><span>Buckets assigned</span><strong>{}%</strong><small class=\"dim\">{assigned} of 256</small></div>",
+        crate::web::release_pages::percentage(assigned)
+    );
+    body.push_str("</div>");
+    body.push_str(&rollout_distribution(slug, channel));
+
+    if assigned == 0 {
+        let _ = write!(
+            body,
+            "<p>No release is assigned to this channel yet. <a href=\"/{}/-/releases\">Browse signed releases</a> or <a href=\"/{}/-/images\">available images</a>.</p>",
+            escape(slug), escape(slug),
+        );
+    }
+
+    // The lookup is the one interactive element: a host's bucket comes from its
+    // registries.d entry, and the answer is the release that bucket maps to.
+    body.push_str("<section class=\"bucket-lookup\"><h2>Which release does my host get?</h2>");
     let _ = writeln!(
         body,
-        "<form method=\"get\"><label>which version will my host get? bucket \
-         <input name=\"bucket\" value=\"{}\" size=\"6\"></label> <button>resolve</button></form>",
+        "<form method=\"get\" class=\"bucket-form\"><label>Bucket <input name=\"bucket\" value=\"{}\" size=\"6\" placeholder=\"0x1A\"></label> <button>Look up release</button></form>\
+         <p class=\"dim bucket-help\">The bucket is <code>[registry.state] bucket</code> in the host's <code>registries.d</code> entry, 0–255 or 0x00–0xFF.</p>",
         escape(bucket_query.unwrap_or("")),
     );
     if let Some(raw) = bucket_query {
@@ -2159,10 +2140,8 @@ pub fn channel_page(
             Some(bucket) => {
                 let target = match channel.partitions[bucket as usize].as_deref() {
                     Some(release) => format!(
-                        "release <strong><a href=\"/{}/-/releases#release-{}\">{}</a></strong> · <a href=\"/{}/-/images?release={}\">images</a>",
-                        escape(slug),
-                        urlencode(release),
-                        escape(release),
+                        "release <strong>{}</strong> · <a href=\"/{}/-/images?release={}\">images</a>",
+                        release_link(release),
                         escape(slug),
                         urlencode(release),
                     ),
@@ -2170,7 +2149,7 @@ pub fn channel_page(
                 };
                 let _ = writeln!(
                     body,
-                    "<p>bucket <strong>0x{bucket:02X}</strong> ({bucket}) → {target}</p>",
+                    "<p class=\"bucket-result\">bucket <strong>0x{bucket:02X}</strong> ({bucket}) → {target}</p>",
                 );
             }
             None => {
@@ -2182,41 +2161,40 @@ pub fn channel_page(
             }
         }
     }
+    body.push_str("</section>");
 
-    let _ = writeln!(body, "<pre class=\"partition-grid\">{grid}</pre>");
-
-    let legend_rows: Vec<Vec<String>> = release_order
-        .iter()
-        .map(|release| {
-            let count = channel
-                .partitions
-                .iter()
-                .flatten()
-                .filter(|r| *r == release)
-                .count();
-            let i = class_for
-                .get(release.as_str())
-                .copied()
-                .unwrap_or(GRID_GLYPHS.len() - 1);
-            vec![
-                format!("<span class=\"r{i}\">{}</span>", GRID_GLYPHS[i]),
+    // One cell per bucket in row-major order; the colour is the release and the
+    // title carries the exact mapping for hover and assistive readers.
+    body.push_str("<section class=\"bucket-map\"><h2>Bucket map</h2><div class=\"partition-grid\" role=\"img\" aria-label=\"256 rollout buckets coloured by release\">");
+    for bucket in 0..256usize {
+        let (class, title) = match channel.partitions[bucket].as_deref() {
+            Some(release) => (
                 format!(
-                    "<a href=\"/{}/-/releases#release-{}\">{}</a> · <a href=\"/{}/-/images?release={}\">images</a>",
-                    escape(slug),
-                    urlencode(release),
-                    escape(release),
-                    escape(slug),
-                    urlencode(release),
+                    "r{}",
+                    class_for
+                        .get(release)
+                        .copied()
+                        .unwrap_or(ROLLOUT_PALETTE - 1)
                 ),
-                format!("{count} partitions ({}%)", count * 100 / 256),
-            ]
-        })
-        .collect();
-    body.push_str(&table(&["glyph", "release", "coverage"], &legend_rows));
+                format!("bucket 0x{bucket:02X} ({bucket}) → {}", escape(release)),
+            ),
+            None => (
+                "unassigned".to_string(),
+                format!("bucket 0x{bucket:02X} ({bucket}) → unassigned"),
+            ),
+        };
+        let _ = write!(
+            body,
+            "<span class=\"{class}{}\" title=\"{title}\"></span>",
+            if hit == Some(bucket as u8) {
+                " hit"
+            } else {
+                ""
+            }
+        );
+    }
     body.push_str(
-        "<p class=\"dim\">Your bucket is the low byte of sha256(registry‑name \\0 salt) — see \
-         <code>[registry.state] bucket</code> in your registries.d entry, or resolve it with the \
-         form above (row = bucket / 16, column = bucket % 16).</p>\n",
+        "</div><p class=\"dim\">Rows run left to right from bucket 0x00 to 0xFF.</p></section>",
     );
 
     page_with_session(
@@ -2260,20 +2238,32 @@ pub fn channels_index(
                     || "—".to_string(),
                     |release| {
                         format!(
-                            "<a href=\"/{}/-/releases#release-{}\">{}</a>",
+                            "<a href=\"/{}/-/releases/{}\">{}</a>",
                             escape(slug),
                             urlencode(release),
                             escape(release),
                         )
                     },
                 ),
-                format!("{}/256", channel.partitions.iter().flatten().count()),
+                crate::web::release_pages::rollout_distribution(slug, channel),
             ]
         })
         .collect();
     let mut body = registry_nav(slug, "channels");
     body.push_str("<h1>Channels</h1>\n");
-    body.push_str(&table(&["channel", "frontier", "assigned"], &rows));
+    body.push_str("<p>Channels assign signed releases to host buckets for gradual updates. Open a channel to look up your host's assigned release.</p>");
+    if channels.is_empty() {
+        let _ = write!(
+            body,
+            "<p>No channels are published yet. <a href=\"/{}/-/releases\">Browse signed releases</a> for an immutable version, or <a href=\"/{}/-/images\">view available images</a>.</p>",
+            escape(slug), escape(slug),
+        );
+    } else {
+        body.push_str(&table(
+            &["channel", "target release", "release assignments"],
+            &rows,
+        ));
+    }
     body.push_str(&pager.nav(&format!("/{slug}/-/channels"), ""));
     page_with_session(
         &format!("{slug} channels"),
@@ -2385,6 +2375,54 @@ fn image_select(
     html
 }
 
+// Quote metadata as one shell argument before escaping the command for HTML.
+fn shell_argument(value: &str) -> String {
+    if !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"/_-.:@".contains(&byte))
+    {
+        value.to_string()
+    } else {
+        format!("'{}'", value.replace('\'', "'\"'\"'"))
+    }
+}
+
+fn copy_command(label: &str, command: &str) -> String {
+    format!(
+        "<div class=\"copy-row\"><code class=\"merge-cmd\">{}</code><button type=\"button\" class=\"hash-copy copy-btn\" data-copy-value=\"{}\" aria-label=\"Copy {} command\">copy</button></div>",
+        escape(command), escape(command), escape(label),
+    )
+}
+
+fn image_download_commands(
+    image: &IndexedSystemImage,
+    registry: &RegistryRecord,
+    setup: &RegistrySetup,
+    hub_url: &str,
+) -> String {
+    let apm_command = setup
+        .install_commands(&image.package, Some(&image.release))
+        .map(|command| format!("{command} --image {}", shell_argument(&image.format)));
+    let mut hub_command = String::from("aos image download");
+    for (flag, value) in [
+        ("hub", hub_url),
+        ("registry", registry.slug.as_str()),
+        ("package", image.package.as_str()),
+        ("release", image.release.as_str()),
+        ("architecture", image.delivery.architecture.as_str()),
+        ("format", image.format.as_str()),
+    ] {
+        let _ = write!(hub_command, " --{flag}={}", shell_argument(value));
+    }
+    let mut body = copy_command("image download", &hub_command);
+    if let Some(command) = apm_command {
+        let _ = write!(body, "<details><summary>Download with APM</summary><p>Pins this release. Run on a host matching <code>{}</code>.</p>{}</details>",
+            escape(&image.platform), copy_command("APM image download", &command));
+    }
+    body
+}
+
 /// The signed system-image catalog with end-user disk download actions.
 pub fn images_page(
     registry: &RegistryRecord,
@@ -2392,7 +2430,9 @@ pub fn images_page(
     images: &[IndexedSystemImage],
     channels: &[ChannelSummary],
     download_base: Option<&str>,
+    hub_url: &str,
     browse: &ImageBrowse<'_>,
+    context: &ReleaseContext,
     started: Instant,
     session: &SessionIndicator,
 ) -> String {
@@ -2402,18 +2442,13 @@ pub fn images_page(
     }
     let query = normalize(browse.query);
     let needle = query.map(str::to_lowercase);
-    let release = normalize(browse.release);
+    let release = context.selected();
     let channel = normalize(browse.channel);
     let architecture = normalize(browse.architecture);
     let format = normalize(browse.format);
     let target = normalize(browse.target);
+    let setup = RegistrySetup::new(registry, status, download_base, &[]);
 
-    let mut release_values = images
-        .iter()
-        .map(|image| image.release.clone())
-        .collect::<Vec<_>>();
-    release_values.sort();
-    release_values.dedup();
     let mut architecture_values = images
         .iter()
         .map(|image| image.delivery.architecture.clone())
@@ -2428,15 +2463,16 @@ pub fn images_page(
     format_values.dedup();
     let mut sorted = images.iter().collect::<Vec<_>>();
     sorted.sort_by(|left, right| {
-        right
-            .release
-            .cmp(&left.release)
+        crate::web::release_browse::release_order(&left.release, &right.release)
             .then_with(|| left.package.cmp(&right.package))
             .then_with(|| left.delivery.architecture.cmp(&right.delivery.architecture))
             .then_with(|| left.format.cmp(&right.format))
     });
     let mut rows = Vec::new();
     for image in sorted {
+        if context.selected().is_none() && !context.is_all() {
+            continue;
+        }
         let channel_names = channels
             .iter()
             .filter(|channel| {
@@ -2521,7 +2557,7 @@ pub fn images_page(
                 },
             )
         } else {
-            "<span class=\"ok\" title=\"Delivered from the registry cache with aos image download\">CDN / CLI</span>".to_string()
+            image_download_commands(image, registry, &setup, hub_url)
         };
         let (store_path, nar_identity) = if image.store_path.is_empty() {
             (
@@ -2561,21 +2597,21 @@ pub fn images_page(
             escape(&image.delivery.image_info.filename),
             hash_value(&image.delivery.image_info.sha256),
         );
-        rows.push(format!(
+        rows.push((image.release.clone(), format!(
             "<tbody class=\"image-artifact\">\
              <tr class=\"image-summary\"><td>{release}<div class=\"subline\">{package}</div></td>\
              <td>{channel}</td><td>{architecture}</td><td>{format}</td><td>{size}</td><td>{download}</td></tr>\
              <tr class=\"image-detail\"><th scope=\"row\">details</th><td colspan=\"5\">\
-             <table class=\"image-facts\" aria-label=\"Details for {filename}\"><tbody>\
+             <details><summary>Details</summary><table class=\"image-facts\" aria-label=\"Details for {filename}\"><tbody>\
              <tr><th scope=\"row\">targets</th><td>{targets}</td><th scope=\"row\">verification</th><td>{verification}</td></tr>\
              <tr><th scope=\"row\">file</th><td>{filename}</td><th scope=\"row\">encoding</th><td>{encoding}</td></tr>\
              <tr><th scope=\"row\">file SHA-256</th><td>{checksum}</td><th scope=\"row\">logical disk</th><td>{logical_checksum}</td></tr>\
              <tr><th scope=\"row\">rootfs SHA-256</th><td>{rootfs_checksum}</td><th scope=\"row\">UKI SHA-256</th><td>{uki_checksum}</td></tr>\
              <tr><th scope=\"row\">store path</th><td>{store_path}</td><th scope=\"row\">NAR</th><td>{nar_identity}</td></tr>\
              <tr><th scope=\"row\">UKI</th><td>{uki}</td><th scope=\"row\">image info</th><td>{image_info}</td></tr>\
-             </tbody></table></td></tr></tbody>\n",
+             </tbody></table></details></td></tr></tbody>\n",
             release = format!(
-                "<a href=\"/{}/-/releases#release-{}\">{}</a>",
+                "<a href=\"/{}/-/releases/{}\">{}</a>",
                 escape(slug),
                 urlencode(&image.release),
                 escape(&image.release),
@@ -2591,14 +2627,14 @@ pub fn images_page(
             rootfs_checksum = hash_value(&image.delivery.rootfs_sha256),
             uki_checksum = hash_value(&image.delivery.uki.sha256),
             filename = escape(&image.delivery.filename),
-        ));
+        )));
     }
 
     let total_matches = rows.len();
     let pager = Pager::new(browse.page_number, IMAGES_PER_PAGE, total_matches);
     let pager_query = [
         ("q", query),
-        ("release", release),
+        ("release", context.query_value()),
         ("channel", channel),
         ("architecture", architecture),
         ("format", format),
@@ -2609,12 +2645,19 @@ pub fn images_page(
     .collect::<Vec<_>>()
     .join("&");
 
-    let mut body = registry_nav(slug, "images");
+    let mut body = context.nav(slug, "images");
+    let selection_filters = [
+        ("q", query),
+        ("channel", channel),
+        ("architecture", architecture),
+        ("format", format),
+        ("target", target),
+    ]
+    .into_iter()
+    .filter_map(|(key, value)| value.map(|value| (key, value)))
+    .collect::<Vec<_>>();
+    body.push_str(&context.selector(slug, &format!("/{slug}/-/images"), &selection_filters));
     body.push_str("<h1>Images</h1>\n");
-    let release_options = release_values
-        .into_iter()
-        .map(|value| (value.clone(), value))
-        .collect::<Vec<_>>();
     let channel_options = channels
         .iter()
         .map(|channel| (channel.name.clone(), channel.name.clone()))
@@ -2640,8 +2683,8 @@ pub fn images_page(
          <label>search<input type=\"search\" name=\"q\" value=\"{}\" \
          placeholder=\"package, checksum, or filename\"></label></div>\
          <div class=\"image-filter-actions\"><button>filter</button>\
-         <a href=\"/{}/-/images\">clear</a></div></form>",
-        image_select("release", "all releases", &release_options, release),
+         <a href=\"/{}/-/images?release={}\">Clear filters</a></div></form>",
+        format!("<input type=\"hidden\" name=\"release\" value=\"{}\">", escape(context.query_value().unwrap_or(""))),
         image_select("channel", "all channels", &channel_options, channel),
         image_select(
             "architecture",
@@ -2653,6 +2696,7 @@ pub fn images_page(
         image_select("target", "all targets", &target_options, target),
         escape(browse.query.unwrap_or("")),
         escape(slug),
+        urlencode(context.query_value().unwrap_or("")),
     );
     if total_matches == 0 {
         body.push_str("<p class=\"dim\">No matching signed disk images are published.</p>\n");
@@ -2668,7 +2712,13 @@ pub fn images_page(
              <table class=\"images-table\"><thead><tr><th>release</th><th>channel</th>\
              <th>architecture</th><th>format</th><th>size</th><th>download</th></tr></thead>\n",
         );
-        for row in pager.slice(&rows) {
+        let mut previous_release = None;
+        for (release, row) in pager.slice(&rows) {
+            if context.is_all() && previous_release != Some(release) {
+                let _ = write!(body, "<tbody class=\"release-group\"><tr><th colspan=\"6\"><a href=\"{}\">Release {}</a></th></tr></tbody>",
+                    escape(&crate::web::release_browse::release_href(slug, release)), escape(release));
+                previous_release = Some(release);
+            }
             body.push_str(row);
         }
         body.push_str("</table></div>\n");
@@ -3317,6 +3367,27 @@ mod tests {
         ]
     }
 
+    fn release_context(version: &str) -> ReleaseContext {
+        ReleaseContext::select(
+            vec![crate::db::ReleaseRow {
+                semver: version.into(),
+                tag_oid: "a".repeat(40),
+                commit_oid: "b".repeat(40),
+                signer: Some("alice".into()),
+                tagged_at: Some(1),
+                pack_present: true,
+            }],
+            None,
+            Some(version),
+            false,
+        )
+        .unwrap()
+    }
+
+    fn all_release_context() -> ReleaseContext {
+        ReleaseContext::select(Vec::new(), None, Some("all"), true).unwrap()
+    }
+
     #[test]
     fn images_are_discoverable_and_structured_filters_compose() {
         let images = vec![
@@ -3330,7 +3401,9 @@ mod tests {
             &images,
             &channels,
             Some("https://download.example/demo"),
+            "https://hub.example",
             &ImageBrowse::default(),
+            &all_release_context(),
             Instant::now(),
             &anon(),
         );
@@ -3359,6 +3432,7 @@ mod tests {
             &images,
             &channels,
             Some("https://download.example/demo"),
+            "https://hub.example",
             &ImageBrowse {
                 page_number: 1,
                 release: Some("2026.08"),
@@ -3368,6 +3442,7 @@ mod tests {
                 target: Some("bare-metal"),
                 query: Some("aos-system"),
             },
+            &all_release_context(),
             Instant::now(),
             &anon(),
         );
@@ -3384,7 +3459,9 @@ mod tests {
             &[unsigned],
             &[],
             Some("https://download.example/demo"),
+            "https://hub.example",
             &ImageBrowse::default(),
+            &all_release_context(),
             Instant::now(),
             &anon(),
         );
@@ -3404,18 +3481,20 @@ mod tests {
             &images,
             &image_channels(),
             Some("https://download.example/demo"),
+            "https://hub.example",
             &ImageBrowse {
                 page_number: 2,
                 query: Some("aos-system"),
                 ..ImageBrowse::default()
             },
+            &all_release_context(),
             Instant::now(),
             &anon(),
         );
 
         assert!(html.contains("26 images"));
         assert!(html.contains("page 2 of 2"));
-        assert!(html.contains("q=aos-system&amp;page=1"));
+        assert!(html.contains("q=aos-system&amp;release=all&amp;page=1"));
         assert!(html.contains("aos-release-00.img.zst"));
         assert!(!html.contains("aos-release-25.img.zst"));
     }
@@ -3429,10 +3508,12 @@ mod tests {
             std::slice::from_ref(&image),
             &image_channels(),
             Some("https://download.example/demo"),
+            "https://hub.example",
             &ImageBrowse {
                 target: Some("qemu-kvm"),
                 ..ImageBrowse::default()
             },
+            &all_release_context(),
             Instant::now(),
             &anon(),
         );
@@ -3446,14 +3527,61 @@ mod tests {
             &[image],
             &image_channels(),
             Some("https://download.example/demo"),
+            "https://hub.example",
             &ImageBrowse::default(),
+            &all_release_context(),
             Instant::now(),
             &anon(),
         );
-        assert!(html.contains("CDN / CLI"));
+        assert!(html.contains("Download with APM"));
+        assert!(html.contains("apm install aos-system --registry demo-2026.08 --image raw"));
+        assert!(html.contains("--tag 2026.08"));
+        assert!(html.contains("Pins this release."));
+        assert!(html.contains("aos image download --hub=https://hub.example --registry=demo --package=aos-system --release=2026.08 --architecture=x86_64 --format=raw"));
         assert!(!html.contains("href=\"https://download.example/demo/images/sha256/"));
         assert!(!html.contains("access_token="));
         assert!(!html.contains("Authorization="));
+    }
+
+    #[test]
+    fn image_commands_quote_metadata_before_html_escaping() {
+        let mut image = indexed_image("raw", "release'$(touch unsafe)");
+        image.package = "system<&>".into();
+        let registry = registry();
+        let setup = setup(&registry, "https://download.example/demo", &[]);
+        let html = image_download_commands(&image, &registry, &setup, "https://hub.example");
+        assert!(html.contains(&escape("--release='release'\"'\"'$(touch unsafe)'")));
+        assert!(html.contains(&escape("--package='system<&>'")));
+        assert!(!html.contains("system<&>"));
+    }
+
+    #[test]
+    fn empty_channels_offer_release_and_image_actions() {
+        let index = channels_index(&registry(), None, &[], 1, Instant::now(), &anon());
+        assert!(index.contains("No channels are published yet"));
+        assert!(index.contains("href=\"/demo/-/releases\""));
+        assert!(index.contains("href=\"/demo/-/images\""));
+        let channel = ChannelSummary {
+            name: "stable".into(),
+            frontier: None,
+            partitions: vec![None; 256],
+        };
+        let html = channel_page(
+            &registry(),
+            None,
+            &channel,
+            None,
+            None,
+            Instant::now(),
+            &anon(),
+        );
+        assert!(html.contains("No release is assigned to this channel yet"));
+        assert!(html.contains("[registry.state] bucket") && html.contains("name=\"bucket\""));
+        assert!(html.contains("Look up release"));
+        assert_eq!(
+            html.matches("class=\"unassigned\" title=\"bucket").count(),
+            256
+        );
     }
 
     #[tokio::test]
@@ -3479,21 +3607,31 @@ mod tests {
             &anon(),
         );
         let grid = html
-            .split("partition-grid\">")
+            .split("class=\"partition-grid\"")
             .nth(1)
             .unwrap()
-            .split("</pre>")
+            .split("</div>")
             .next()
             .unwrap();
-        assert_eq!(grid.lines().count(), 16);
-        assert!(grid.lines().all(|l| l.matches("</span>").count() == 16));
-        // Frontier glyph appears exactly 64 times, in the frontier class.
-        assert_eq!(grid.matches('■').count(), 64);
-        assert_eq!(grid.matches("<span class=\"r0\">■</span>").count(), 64);
+        assert_eq!(grid.matches("</span>").count(), 256);
+        // The frontier is the newest release, so it takes the first colour on
+        // exactly its 64 buckets, and each cell names its bucket and release.
+        assert_eq!(
+            grid.matches("<span class=\"r0\" title=\"bucket").count(),
+            64
+        );
+        assert_eq!(
+            grid.matches("<span class=\"r1\" title=\"bucket").count(),
+            192
+        );
+        assert!(grid.contains("title=\"bucket 0x3F (63) → 1.2.0\""));
+        assert!(grid.contains("title=\"bucket 0x40 (64) → 1.1.0\""));
         assert!(html.contains(
-            "frontier <strong><a href=\"/demo/-/releases#release-1.2.0\">1.2.0</a></strong>"
+            "<span>Target release</span><strong><a href=\"/demo/-/releases/1.2.0\">1.2.0</a></strong>"
         ));
         assert!(html.contains("/demo/-/images?release=1.2.0"));
+        assert!(html.contains("<span>Buckets assigned</span><strong>100%</strong>"));
+        assert!(html.contains("<span class=\"rollout-swatch r0\""));
     }
 
     #[tokio::test]
@@ -3513,12 +3651,12 @@ mod tests {
             &anon(),
         );
         assert!(html.contains("bucket <strong>0x0A</strong> (10)"), "{html}");
+        assert!(
+            html.contains("release <strong><a href=\"/demo/-/releases/1.2.0\">1.2.0</a></strong>")
+        );
+        assert!(html.contains("class=\"r0 hit\" title=\"bucket 0x0A (10) → 1.2.0\""));
         assert!(html.contains(
-            "release <strong><a href=\"/demo/-/releases#release-1.2.0\">1.2.0</a></strong>"
-        ));
-        assert!(html.contains("<strong class=\"hit\">"));
-        assert!(html.contains(
-            "floor <strong><a href=\"/demo/-/releases#release-1.1.0\">1.1.0</a></strong>"
+            "<span>Minimum allowed release</span><strong><a href=\"/demo/-/releases/1.1.0\">1.1.0</a></strong>"
         ));
 
         assert_eq!(parse_bucket("10"), Some(10), "decimal wins when both parse");
@@ -3549,18 +3687,18 @@ mod tests {
             &registry,
             None,
             &[],
-            0,
-            &caches,
             &[("alice".into(), "demo:Ed25519:<k>".into(), "active".into())],
-            &[],
             &setup,
+            &release_context("1.0.0"),
             false,
             Instant::now(),
             &anon(),
         );
+        assert!(html.find("<h2>Get started").unwrap() < html.find("Signing keys").unwrap());
+        assert!(!html.contains("<summary>Binary cache health and diagnostics</summary>"));
         assert!(html.contains("&lt;k&gt;"));
         assert!(html.contains(
-            "apr add http://127.0.0.1:8420/demo/ --name demo --trust-key demo:Ed25519:AAAA"
+            "apm registry add http://127.0.0.1:8420/demo/ --name demo --trust-key demo:Ed25519:AAAA"
         ));
         assert!(!html.contains("<k>"));
         // Fingerprints, the module stanza, and the plain-Nix snippet.
@@ -3570,12 +3708,12 @@ mod tests {
         // One canonical registry URL serves Git, AOS, and stock-Nix clients;
         // physical cache routes remain visible in the signed topology table.
         assert!(html.contains("substituters = http://127.0.0.1:8420/demo"));
-        assert!(html.contains("trusted-public-keys = demo:Ed25519:AAAA"));
+        assert!(html.contains("--trust-key demo:Ed25519:AAAA"));
         // Unvalidated caches say so; the health page is linked.
-        assert!(html.contains("not yet validated"));
+        assert!(!html.contains("not yet validated"));
         assert!(html.contains("/demo/-/health"));
         assert!(html.contains("aria-label=\"Copy full trust key\""));
-        assert!(html.contains("class=\"cache-url\""));
+        assert!(!html.contains("class=\"cache-url\""));
     }
 
     #[tokio::test]
@@ -3592,18 +3730,16 @@ mod tests {
             &registry,
             None,
             &[],
-            0,
-            &[],
-            &[],
             &[],
             &setup,
+            &release_context("1.0.0"),
             false,
             Instant::now(),
             &anon(),
         );
 
         assert!(html.contains(
-            "apr add https://cdn.example/andyl/main/ --name andyl-main \
+            "apm registry add https://cdn.example/andyl/main/ --name andyl-main \
              --trust-key andyl-main:Ed25519:AAAA"
         ));
         assert!(html.contains("--trust-key andyl-main:Ed25519:BBBB"));
@@ -3645,7 +3781,7 @@ mod tests {
             &detail,
             &closure,
             &setup,
-            None,
+            &release_context("1.0.0"),
             None,
             false,
             Instant::now(),
@@ -3664,7 +3800,7 @@ mod tests {
             &detail,
             &closure,
             &setup,
-            None,
+            &release_context("1.0.0"),
             None,
             false,
             Instant::now(),
@@ -3718,7 +3854,7 @@ mod tests {
             &detail,
             &closure,
             &setup,
-            None,
+            &release_context("1.0.0"),
             None,
             false,
             Instant::now(),
@@ -3731,17 +3867,17 @@ mod tests {
         assert!(html.contains("class=\"chip\">x86_64-linux"));
         // Install snippet: apm is the consumer CLI.
         assert!(html.contains("apm install curl"));
-        assert!(html.contains("apr add http://hub.example/demo/ --name demo"));
-        assert!(html.contains("substituters = http://hub.example/demo"));
-        assert!(html.contains("trusted-public-keys = demo:Ed25519:AAAA"));
+        assert!(html.contains("apm registry add http://hub.example/demo/ --name demo"));
+        assert!(html.contains("apm install curl --registry demo-1.0.0"));
+        assert!(html.contains("--trust-key demo:Ed25519:AAAA"));
         // A resolved dependency links to its package page; an unresolved one
         // falls back to its narinfo permalink.
         assert!(html.contains("Dependencies (2)"));
-        assert!(html.contains("<a href=\"/demo/-/packages/zlib\">zlib</a>"));
+        assert!(html.contains("<a href=\"/demo/-/packages/zlib?release=1.0.0\">zlib</a>"));
         assert!(html.contains("href=\"http://hub.example/demo/cccc.narinfo\""));
         // Reverse dependency.
         assert!(html.contains("Required by (1)"));
-        assert!(html.contains("<a href=\"/demo/-/packages/git\">git</a>"));
+        assert!(html.contains("<a href=\"/demo/-/packages/git?release=1.0.0\">git</a>"));
         // Bounded summary columns sit above full-width download rows for the
         // output and source derivation.
         assert!(html.contains("class=\"artifact-summary\""));
@@ -3784,7 +3920,7 @@ mod tests {
             &detail,
             &PackageClosure::default(),
             &setup,
-            None,
+            &release_context("1.0.0"),
             None,
             false,
             Instant::now(),
@@ -3792,14 +3928,14 @@ mod tests {
         );
 
         assert!(html.contains(
-            "apr add https://cdn.example/andyl/main/ --name andyl-main \
+            "apm registry add https://cdn.example/andyl/main/ --name andyl-main-1.0.0 \
              --trust-key andyl-main:Ed25519:AAAA"
         ));
         assert!(html.contains("--trust-key andyl-main:Ed25519:BBBB"));
         assert!(html.contains("apm install minisign"));
-        assert!(html.contains("substituters = https://cdn.example/andyl/main"));
+        assert!(html.contains("apm install minisign --registry andyl-main-1.0.0"));
         assert!(!html.contains("substituters = https://cache.example"));
-        assert!(!html.contains("apr add https://hub.example"));
+        assert!(!html.contains("apm registry add https://hub.example"));
     }
 
     #[tokio::test]
@@ -3821,7 +3957,7 @@ mod tests {
             &detail,
             &PackageClosure::default(),
             &setup,
-            None,
+            &release_context("1.0.0"),
             None,
             false,
             Instant::now(),
@@ -3847,24 +3983,40 @@ mod tests {
             versions: Vec::new(),
         };
         let setup = setup(&registry, "https://hub.example/demo", &[]);
+        let reference = PackageDocumentationReference {
+            package: panel.document.package.name.clone(),
+            version: panel.document.package.version.clone(),
+            platform: panel.document.package.platform.clone(),
+            store_path: panel.store_path.clone(),
+            document_sha256: panel.document_sha256.clone(),
+            nar_hash: panel.nar_hash.clone(),
+        };
         let package_html = package_page(
             &registry,
             None,
             &detail,
             &PackageClosure::default(),
             &setup,
-            None,
-            Some(&panel),
+            &release_context("1.0.0"),
+            Some(&reference),
             false,
             Instant::now(),
             &anon(),
         );
-        assert!(package_html.contains("Configuration &amp; runtime"));
+        assert!(package_html.contains("<h2>Documentation</h2>"));
+        assert!(package_html.contains("&amp;release=1.0.0"));
+        assert!(!package_html.contains("Verified from"));
         assert!(package_html.contains("aria-label=\"Package documentation sections\""));
         assert!(package_html.contains("href=\"#integrity\""));
-        assert!(package_html.contains("HTTP &lt;proxy&gt; service"));
+        assert!(!package_html.contains("HTTP &lt;proxy&gt; service"));
+        assert!(package_html.contains("View package documentation →"));
+        assert!(
+            package_html.find("id=\"versions\"").unwrap()
+                < package_html.find("id=\"configure\"").unwrap()
+        );
         assert!(!package_html.contains("HTTP <proxy> service"));
-        assert!(package_html.contains("/-/api/docs/nginx/1.30.4/x86_64-linux"));
+        assert!(package_html.contains("/-/docs/nginx/1.30.4/x86_64-linux?digest=sha256%3A"));
+        assert!(!package_html.contains("/-/api/v1/documentation/sha256:"));
 
         let detail_html = documentation_page(&registry, None, &panel, Instant::now(), &anon());
         assert!(
@@ -3896,6 +4048,10 @@ mod tests {
         assert!(!search_html.contains("<script>option</script>"));
         assert!(search_html.contains("&lt;script&gt;option&lt;/script&gt;"));
         assert!(search_html.contains("Enable &amp; start"));
+        assert!(search_html.contains(&format!(
+            "href=\"/demo/-/docs/nginx/1.30.4/x86_64-linux#{}\"",
+            aos_doc_model::documentation_anchor("option", "nginx.enable"),
+        )));
         assert!(!search_html.contains("Exact installable reference"));
         assert!(!search_html.contains("<h1>Package documentation</h1>"));
 
@@ -4013,6 +4169,7 @@ mod tests {
                 name: Some("Demo".into()),
                 description: Some("Fixture registry".into()),
                 readme: None,
+                support: None,
                 indexed_at: None,
                 generation: 0,
                 content_digest: None,
@@ -4028,6 +4185,52 @@ mod tests {
         let html = instance_home(&rows, Some("zzz"), 1, Instant::now(), &anon());
         assert!(html.contains("0 of 1 registries match"));
         assert!(html.contains("No registries match."));
+    }
+
+    #[test]
+    fn package_browse_preserves_selection_and_explains_empty_results() {
+        let mut browse = PackageBrowse {
+            context: &release_context("1.0.0"),
+            filter: Some("license == MIT"),
+            filter_error: None,
+            sort: Some((SortColumn::Name, SortDir::Asc)),
+            page_number: 1,
+            total_matches: 0,
+            total_all: 2,
+            truncated: false,
+            names: &[],
+            versions: &[],
+            licenses: &[],
+            platforms: &[],
+        };
+        let html = package_index(&registry(), None, &[], &browse, Instant::now(), &anon());
+        assert!(html.contains("No packages match this filter"));
+        let snapshot_form = html
+            .split("class=\"release-selector\"")
+            .nth(1)
+            .unwrap()
+            .split("</form>")
+            .next()
+            .unwrap();
+        assert!(snapshot_form.contains("name=\"filter\" value=\"license == MIT\""));
+        assert!(snapshot_form.contains("name=\"sort\" value=\"name\""));
+        let filter_form = html
+            .split("class=\"pkg-search\"")
+            .nth(1)
+            .unwrap()
+            .split("</form>")
+            .next()
+            .unwrap();
+        assert!(filter_form.contains("name=\"release\" value=\"1.0.0\""));
+        assert!(filter_form.contains("name=\"dir\" value=\"asc\""));
+        browse.total_all = 0;
+        let html = package_index(&registry(), None, &[], &browse, Instant::now(), &anon());
+        assert!(html.contains("No packages have been published"));
+        let html =
+            package_snapshot_unavailable(&registry(), None, "<unknown>", Instant::now(), &anon());
+        assert!(html.contains("No complete, verified package snapshot"));
+        assert!(html.contains("&lt;unknown&gt;"));
+        assert!(!html.contains("No packages have been published"));
     }
 
     #[tokio::test]
@@ -4052,9 +4255,7 @@ mod tests {
             None,
             &rows,
             &PackageBrowse {
-                snapshot: None,
-                head_commit: Some("abc123"),
-                snapshots: &[],
+                context: &release_context("1.0.0"),
                 filter: Some("license == MIT"),
                 filter_error: None,
                 sort: Some((SortColumn::Closure, SortDir::Desc)),
@@ -4097,9 +4298,7 @@ mod tests {
             None,
             &rows,
             &PackageBrowse {
-                snapshot: None,
-                head_commit: Some("abc123"),
-                snapshots: &[],
+                context: &release_context("1.0.0"),
                 filter: None,
                 filter_error: None,
                 sort: None,
@@ -4131,9 +4330,7 @@ mod tests {
             None,
             &rows,
             &PackageBrowse {
-                snapshot: None,
-                head_commit: Some("abc123"),
-                snapshots: &[],
+                context: &release_context("1.0.0"),
                 filter: Some("license == MIT"),
                 filter_error: None,
                 sort: None,
@@ -4157,9 +4354,7 @@ mod tests {
             None,
             &rows,
             &PackageBrowse {
-                snapshot: None,
-                head_commit: Some("abc123"),
-                snapshots: &[],
+                context: &release_context("1.0.0"),
                 filter: Some("license =="),
                 filter_error: Some("expected a value after `license ==`"),
                 sort: None,
@@ -4198,6 +4393,7 @@ mod tests {
             name: None,
             description: None,
             readme: None,
+            support: None,
             indexed_at: Some(0),
             generation: 1,
             content_digest: None,

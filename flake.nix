@@ -51,9 +51,13 @@
         (import ./. {
           system = coordinatorSystem;
           crossSystem = "aarch64-linux";
-        }).systems.${
+        })
+        .systems
+        .${
           variant
-        }.build.defaultContainer
+        }
+        .build
+        .defaultContainer
       ];
       oci = import ./lib/build/oci {
         inherit (coordinator) lib;
@@ -329,6 +333,7 @@
         }
         // flattenAttrs "build" aos.checks.build
         // flattenAttrs "container" aos.checks.container
+        // flattenAttrs "qualification" (builtins.removeAttrs aos.checks.qualification ["inventory"])
         // {
           container-multi-platform = production.check;
         }

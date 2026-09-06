@@ -161,6 +161,40 @@ If a hotfix cannot be made reachable from protected history without ambiguity,
 publication stops. The publisher does not release an unreviewed detached
 commit.
 
+### Train branches and backports
+
+A supported train keeps a long-lived source branch, `train/YYYY.M`, whose head
+is always the train's newest reviewed stable source. The branch is a named
+pointer to the same chain of hotfix heads described above, not a divergent
+line: every head is merged into protected `master` as a real parent before the
+planner may build it, so the reachability guarantee is unchanged. A train
+without a branch is one that will receive no further releases.
+
+A backport is a change cherry-picked onto the train branch, reviewed there,
+and merged into `master`. When `master` already carries an equivalent change,
+the merge records ancestry only and adds no content; git supports that
+directly. Trains are independent: a fix on `train/2026.3` neither waits for
+nor alters `train/2026.9`. The planner builds the train branch head exactly as
+it builds a hotfix head today, with the version selected from that train.
+
+Each train states its own support. The train branch's qualification contract
+declares `support.trains."YYYY.M"` for that train alone, and `master` declares
+`support.default`. Registry finalization copies the release's own train entry
+into the signed registry's `[support]` table and refuses a contract naming any
+other train, and only a release from the newest train may write `default`.
+The registry remains one linear history with section ownership enforced by
+the publisher; nothing in the registry repository branches.
+
+Two consequences remain open and must be settled before a second train
+branch exists. First, the client's monotonic floor is registry-wide today, so a
+host that has accepted `2026.9.0` can never take `2026.3.7`, and a host that
+stays on 2026.3 has no channel that stays with it. Per-train support therefore
+implies per-train stable channels (for example `stable-2026.3`) with per-channel
+floors, which the Hub's channel floors already model but the client floor rule
+and CLI warnings do not. Second, `previous` delta links and any pruning inside
+a package's version list must be train-aware, or a hotfix on an older train
+will point delta upgrades at a newer train's predecessor.
+
 ## Cadence
 
 Cadence is a target and a maximum exposure window, not permission to publish an

@@ -8,7 +8,7 @@ use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::components::InlineError;
+use crate::components::{InlineError, HelpTooltip};
 use crate::transport::ApiClient;
 
 #[derive(Clone, Copy)]
@@ -152,10 +152,7 @@ pub(super) fn CacheIntegrationPreview(client: ApiClient, cache_id: String) -> im
             <div class="section-heading">
                 <div>
                     <p class="section-kicker">"Cross-resource preview"</p>
-                    <h2>"Plan an integration"</h2>
-                    <p>
-                        "Preview publication, retention roots, and proactive population together. Apply each relationship from its owning settings page."
-                    </p>
+                    <h2>"Plan an integration"<HelpTooltip term="Plan an integration" summary="Preview publication, retention roots, and proactive population together. Apply each relationship from its owning settings page."/></h2>
                 </div>
             </div>
             <form class="editor-form" on:submit=on_submit>

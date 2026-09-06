@@ -30,6 +30,8 @@ resources.
   working server on localhost.
 - [Use the web interface](web.md) covers browsing, sign-in, and the management
   console.
+- [Set up a delivery destination](delivery.md) connects existing CDN and storage
+  infrastructure through reviewed setup, verification, and activation.
 - [Use the API](api.md) covers transport, authentication, and stable endpoint
   patterns.
 - [Choose the right CLI](cli.md) distinguishes local operator commands from

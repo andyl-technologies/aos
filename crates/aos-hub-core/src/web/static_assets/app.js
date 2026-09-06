@@ -681,3 +681,293 @@
   initHelp();
   initHashControls();
 })();
+
+// The release jump is a plain text submit; with scripts it gains a typeahead
+// over the page's compact release index (versions and channel names only), so
+// hundreds of releases stay reachable without a hundred-entry dropdown.
+(function () {
+  "use strict";
+  document.querySelectorAll("[data-release-picker]").forEach(function (picker) {
+    var input = picker.querySelector("[data-release-jump]");
+    var suggest = picker.querySelector(".release-suggest");
+    var indexEl = picker.querySelector("[data-release-index]");
+    var form = input && input.form;
+    if (!input || !suggest || !indexEl || !form) return;
+    var index;
+    try { index = JSON.parse(indexEl.textContent); } catch (_) { return; }
+    var entries = [];
+    (index.channels || []).forEach(function (channel) {
+      entries.push({value: channel.name, label: channel.name + " \u2192 " + channel.release, kind: "channel"});
+    });
+    (index.releases || []).forEach(function (release) {
+      var notes = [];
+      if (release.prerelease) notes.push("prerelease");
+      if (!release.verified) notes.push("unverified");
+      entries.push({value: release.version, label: release.version + (notes.length ? " \u00b7 " + notes.join(", ") : ""), kind: "release"});
+    });
+    var active = -1;
+    var shown = [];
+    function close() { suggest.hidden = true; suggest.innerHTML = ""; active = -1; shown = []; }
+    function choose(entry) { input.value = entry.value; close(); form.requestSubmit(); }
+    function render() {
+      var term = input.value.trim().toLowerCase();
+      shown = entries.filter(function (entry) { return !term || entry.value.toLowerCase().indexOf(term) !== -1; }).slice(0, 12);
+      suggest.innerHTML = "";
+      active = -1;
+      if (!shown.length) { suggest.hidden = true; return; }
+      shown.forEach(function (entry, position) {
+        var item = document.createElement("div");
+        item.className = "fs-item release-suggest-" + entry.kind;
+        item.setAttribute("role", "option");
+        item.textContent = entry.label;
+        item.addEventListener("mousedown", function (event) { event.preventDefault(); choose(entry); });
+        item.addEventListener("mouseenter", function () { highlight(position); });
+        suggest.appendChild(item);
+      });
+      suggest.hidden = false;
+    }
+    function highlight(position) {
+      active = position;
+      Array.from(suggest.children).forEach(function (item, at) { item.classList.toggle("active", at === active); });
+      if (active >= 0) suggest.children[active].scrollIntoView({block: "nearest"});
+    }
+    input.setAttribute("role", "combobox");
+    input.setAttribute("aria-expanded", "false");
+    input.setAttribute("aria-autocomplete", "list");
+    suggest.setAttribute("role", "listbox");
+    input.addEventListener("input", render);
+    input.addEventListener("focus", render);
+    input.addEventListener("blur", function () { setTimeout(close, 120); });
+    input.addEventListener("keydown", function (event) {
+      if (suggest.hidden) { if (event.key === "ArrowDown") { render(); event.preventDefault(); } return; }
+      if (event.key === "ArrowDown") { highlight(Math.min(active + 1, shown.length - 1)); event.preventDefault(); }
+      else if (event.key === "ArrowUp") { highlight(Math.max(active - 1, 0)); event.preventDefault(); }
+      else if (event.key === "Escape") { close(); event.preventDefault(); }
+      else if (event.key === "Enter" && active >= 0) { event.preventDefault(); choose(shown[active]); }
+    });
+    new MutationObserver(function () { input.setAttribute("aria-expanded", suggest.hidden ? "false" : "true"); }).observe(suggest, {attributes: true, attributeFilter: ["hidden"]});
+  });
+})();
+
+// Configuration folders fetch only one page on explicit expansion. No subtree
+// is prefetched. Docs links swap the reader in place while the tree keeps its
+// expanded state; ordinary links remain the navigation and no-JS fallback.
+(function () {
+  "use strict";
+  var browser = document.querySelector("[data-doc-browser]");
+  if (!browser || !window.fetch) return;
+  var base = browser.getAttribute("data-doc-base");
+  var release = browser.getAttribute("data-doc-release");
+  function nodeUrl(key, children, cursor) {
+    var url = new URL(base + (children ? "/children" : ""), location.origin);
+    url.searchParams.set("release", release);
+    url.searchParams.set("root", key);
+    if (cursor) url.searchParams.set("cursor", cursor);
+    return url;
+  }
+  function expansion(node) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "doc-expand";
+    button.textContent = "+";
+    button.setAttribute("aria-expanded", "false");
+    button.setAttribute("aria-label", "Expand " + node.label);
+    button.setAttribute("data-doc-expand", node.key);
+    return button;
+  }
+  function appendPage(container, data, key) {
+    if (!Array.isArray(data.items) || data.items.length > 50) throw new Error("Invalid child page");
+    var list = document.createElement("ul");
+    list.className = "doc-tree-list";
+    data.items.forEach(function (node) {
+      var row = document.createElement("li");
+      row.setAttribute("data-node", node.key);
+      if (node.child_count > 0) row.appendChild(expansion(node));
+      else {
+        var spacer = document.createElement("span");
+        spacer.className = "doc-tree-spacer";
+        row.appendChild(spacer);
+      }
+      var link = document.createElement("a");
+      link.href = nodeUrl(node.key, false);
+      link.textContent = node.label;
+      row.appendChild(link);
+      list.appendChild(row);
+    });
+    container.appendChild(list);
+    if (data.next_cursor) {
+      var more = document.createElement("button");
+      more.type = "button";
+      more.className = "doc-more";
+      more.textContent = "Load more children";
+      more.addEventListener("click", function () {
+        load(container, key, data.next_cursor, more).then(function (ok) { if (ok) more.remove(); });
+      });
+      container.appendChild(more);
+    }
+  }
+  function load(container, key, cursor, button) {
+    button.disabled = true;
+    container.setAttribute("aria-busy", "true");
+    return fetch(nodeUrl(key, true, cursor), {credentials: "same-origin", headers: {Accept: "application/json"}})
+      .then(function (response) {
+        if (!response.ok) throw new Error("Could not load children");
+        return response.json();
+      })
+      .then(function (data) { appendPage(container, data, key); return true; })
+      .catch(function () {
+        var error = document.createElement("p");
+        error.setAttribute("role", "status");
+        error.textContent = "Could not load children. Open the subtree link or try again.";
+        container.appendChild(error);
+        return false;
+      })
+      .finally(function () { button.disabled = false; container.removeAttribute("aria-busy"); });
+  }
+  browser.querySelectorAll("[data-doc-expand]").forEach(function (button) { button.hidden = false; });
+
+  // The tree is the scope selector and the reader is the destination. A docs
+  // link swaps only the reader, breadcrumbs, and scope inputs from the fetched
+  // page, so expanded branches survive navigation. Anything unexpected falls
+  // back to an ordinary load of the same URL.
+  var reader = browser.querySelector("[data-doc-reader]");
+  var crumbs = browser.querySelector(".doc-breadcrumbs");
+  function isDocPage(url) {
+    return url.origin === location.origin && url.pathname === base;
+  }
+  function markCurrent(key) {
+    browser.querySelectorAll(".doc-tree [aria-current]").forEach(function (row) { row.removeAttribute("aria-current"); });
+    var row = key && browser.querySelector('.doc-tree li[data-node="' + key + '"]');
+    if (row) row.setAttribute("aria-current", "location");
+    var expand = row && row.querySelector(":scope > [data-doc-expand]");
+    if (expand && expand.getAttribute("aria-expanded") !== "true") expand.click();
+  }
+  function swap(url, push) {
+    browser.setAttribute("aria-busy", "true");
+    return fetch(url, {credentials: "same-origin", headers: {Accept: "text/html"}})
+      .then(function (response) {
+        if (!response.ok) throw new Error("Could not load documentation");
+        return response.text();
+      })
+      .then(function (text) {
+        var page = new DOMParser().parseFromString(text, "text/html");
+        var next = page.querySelector("[data-doc-reader]");
+        var nextCrumbs = page.querySelector(".doc-breadcrumbs");
+        var nextBrowser = page.querySelector("[data-doc-browser]");
+        if (!next || !nextCrumbs || !nextBrowser) throw new Error("Unexpected page");
+        reader.innerHTML = next.innerHTML;
+        crumbs.innerHTML = nextCrumbs.innerHTML;
+        var root = nextBrowser.getAttribute("data-doc-root");
+        browser.setAttribute("data-doc-root", root);
+        document.querySelectorAll('.doc-search input[name="root"], .release-selector input[name="root"]').forEach(function (input) { input.value = root; });
+        var query = page.querySelector("#doc-query");
+        var current = document.getElementById("doc-query");
+        if (query && current) current.value = query.value;
+        if (push) history.pushState({docs: true}, "", url.href);
+        document.title = page.title || document.title;
+        markCurrent(root);
+        reader.setAttribute("tabindex", "-1");
+        reader.focus({preventScroll: true});
+        if (window.matchMedia("(max-width: 720px)").matches) reader.scrollIntoView({block: "start"});
+        return true;
+      })
+      .catch(function () { location.assign(url.href); return false; })
+      .finally(function () { browser.removeAttribute("aria-busy"); });
+  }
+  browser.addEventListener("click", function (event) {
+    var link = event.target.closest("a[href]");
+    if (!link || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || link.target) return;
+    var url = new URL(link.href, location.href);
+    if (!isDocPage(url) || url.searchParams.get("release") !== release) return;
+    event.preventDefault();
+    swap(url, true);
+  });
+  var search = browser.querySelector("form.doc-search");
+  if (search) search.addEventListener("submit", function (event) {
+    var url = new URL(search.action, location.href);
+    new FormData(search).forEach(function (value, key) { url.searchParams.set(key, String(value)); });
+    if (!isDocPage(url)) return;
+    event.preventDefault();
+    swap(url, true);
+  });
+  window.addEventListener("popstate", function () {
+    var url = new URL(location.href);
+    if (isDocPage(url) && url.searchParams.get("release") === release) swap(url, false);
+  });
+  history.replaceState({docs: true}, "", location.href);
+
+  // The filter narrows labels already in the tree; Enter escalates it to the
+  // release's own subtree search so unseen branches are still reachable.
+  var filter = browser.querySelector("[data-doc-tree-filter]");
+  if (filter) {
+    filter.hidden = false;
+    function applyFilter() {
+      var term = filter.value.trim().toLowerCase();
+      var rows = Array.from(browser.querySelectorAll(".doc-tree li"));
+      rows.forEach(function (row) { row.hidden = false; });
+      if (!term) return;
+      rows.reverse().forEach(function (row) {
+        var label = row.querySelector(":scope > a");
+        var own = label && label.textContent.toLowerCase().indexOf(term) !== -1;
+        var visibleChild = Array.from(row.querySelectorAll("li")).some(function (child) { return !child.hidden; });
+        row.hidden = !(own || visibleChild);
+      });
+    }
+    filter.addEventListener("input", applyFilter);
+    filter.addEventListener("keydown", function (event) {
+      if (event.key !== "Enter" || !search) return;
+      event.preventDefault();
+      var query = document.getElementById("doc-query");
+      var scope = search.querySelector('select[name="scope"]');
+      if (query) query.value = filter.value.trim();
+      if (scope) scope.value = "subtree";
+      search.requestSubmit();
+    });
+  }
+
+  browser.addEventListener("click", function (event) {
+    var button = event.target.closest("[data-doc-expand]");
+    if (!button) return;
+    var row = button.parentElement;
+    var subtree = Array.from(row.children).find(function (child) { return child.classList.contains("doc-subtree"); });
+    var expanded = button.getAttribute("aria-expanded") === "true";
+    button.setAttribute("aria-expanded", expanded ? "false" : "true");
+    button.textContent = expanded ? "+" : "−";
+    if (subtree) { subtree.hidden = expanded; return; }
+    subtree = document.createElement("div");
+    subtree.className = "doc-subtree";
+    row.appendChild(subtree);
+    load(subtree, button.getAttribute("data-doc-expand"), null, button).then(function (ok) {
+      if (!ok) {
+        button.setAttribute("aria-expanded", "false");
+        button.textContent = "+";
+        subtree.classList.remove("doc-subtree");
+      }
+    });
+  });
+})();
+
+// Historical doc:kind:key fragments select one panel, with no full anchor map.
+(function () {
+  "use strict";
+  if (!document.querySelector("[data-doc-legacy]")) return;
+  function selectAnchor() {
+    var match = /^#doc:([0-9a-f]+):([0-9a-f]+)$/.exec(location.hash);
+    if (!match || match[0].length > 8192) return;
+    function decode(hex) {
+      if (hex.length % 2) throw new Error("Invalid anchor");
+      return new TextDecoder("utf-8", {fatal: true}).decode(Uint8Array.from(hex.match(/../g), function (byte) { return parseInt(byte, 16); }));
+    }
+    try {
+      var url = new URL(location.href);
+      var kind = decode(match[1]);
+      var key = decode(match[2]);
+      if (url.searchParams.get("kind") === kind && url.searchParams.get("doc_key") === key) return;
+      url.searchParams.set("kind", kind);
+      url.searchParams.set("doc_key", key);
+      location.replace(url);
+    } catch (_) { /* An invalid old anchor leaves the package guide available. */ }
+  }
+  window.addEventListener("hashchange", selectAnchor);
+  selectAnchor();
+})();

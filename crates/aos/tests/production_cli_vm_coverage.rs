@@ -108,6 +108,15 @@ fn every_production_command_leaf_is_owned_by_an_executable_nix_test() {
         &fs::read_to_string(repository.join("tests/vm/hub-native-operations.nix"))
             .expect("native Hub operation test must be readable"),
     );
+    let settings_vm = fs::read_to_string(repository.join("tests/vm/hub-settings.nix"))
+        .expect("Hub settings VM test must be readable");
+    assert!(settings_vm.contains("builtins.readFile ../native/hub-settings.py"));
+    // This VM delegates its executable command coverage to the same Python
+    // process harness used locally. Its CLI calls spell out complete leaves.
+    source.push_str(
+        &fs::read_to_string(repository.join("tests/native/hub-settings.py"))
+            .expect("Hub settings process test must be readable"),
+    );
     let source = source.split_whitespace().collect::<Vec<_>>().join(" ");
 
     let missing = leaves

@@ -253,7 +253,6 @@ async fn canonical_management_links_serve_one_authenticated_shell() {
         "/-/org/acme/projects",
         "/-/org/acme/caches/build/garbage-collection",
         "/acme/main/-/settings",
-        "/acme/infra/prod/cdn/-/settings/images",
     ] {
         let response = send(&app, "GET", path, Some(&cookie), None).await;
         assert_eq!(response.status, StatusCode::OK, "{path}");
@@ -286,6 +285,20 @@ async fn canonical_management_links_serve_one_authenticated_shell() {
             "management shell contains a legacy form: {path}"
         );
     }
+
+    let catalog = send(
+        &app,
+        "GET",
+        "/acme/infra/prod/cdn/-/settings/images",
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(catalog.status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        catalog.location.as_deref(),
+        Some("/acme/infra/prod/cdn/-/images")
+    );
 
     let post = send(&app, "POST", "/-/org/acme/projects", Some(&cookie), None).await;
     assert_eq!(post.status, StatusCode::METHOD_NOT_ALLOWED);

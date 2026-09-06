@@ -3,12 +3,12 @@
 //! Subscriptions turn selected signed registry releases into GC roots. They
 //! remain independent from consumer publication and proactive population.
 
+use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
-use leptos::task::spawn_local;
 
-use crate::components::{InlineError, ReviewedPlanCard, StatusBadge};
-use crate::mutation::{idempotency_key, PendingPlan};
+use crate::components::{HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
+use crate::mutation::{idempotency_key, watch_draft, PendingPlan};
 use crate::transport::ApiClient;
 
 use super::cache_manual_roots::ManualRetentionRoots;
@@ -115,6 +115,7 @@ impl RetentionFields {
 /// Renders retention subscription inventory and the reviewed set editor.
 #[component]
 pub(super) fn CacheRetentionWorkflow(client: ApiClient, cache_id: String) -> impl IntoView {
+    let can_manage = client.allows("cache.retention.manage");
     let read_client = client.clone();
     let read_cache = cache_id.clone();
     let subscriptions = LocalResource::new(move || {
@@ -136,6 +137,8 @@ pub(super) fn CacheRetentionWorkflow(client: ApiClient, cache_id: String) -> imp
     });
     let view_client = client.clone();
     let view_cache = cache_id.clone();
+    let manage_client = client.clone();
+    let manage_cache = cache_id.clone();
 
     view! {
         <div class="workflow-stack">
@@ -143,10 +146,7 @@ pub(super) fn CacheRetentionWorkflow(client: ApiClient, cache_id: String) -> imp
                 <div class="section-heading">
                     <div>
                         <p class="section-kicker">"Registry-derived GC roots"</p>
-                        <h2>"Retention subscriptions"</h2>
-                        <p>
-                            "Retain signed catalogs, channels, releases, tags, or semantic-version ranges without changing client cache publication."
-                        </p>
+                        <h2>"Retention subscriptions"<HelpTooltip term="Retention subscriptions" summary="Retain signed catalogs, channels, releases, tags, or semantic-version ranges without changing client cache publication. Subscription roots are inherited from registry metadata; manual roots below supplement them for local recovery or incident control."/></h2>
                     </div>
                 </div>
                 <Suspense fallback=move || view! { <p class="loading-row">"Loading subscriptions…"</p> }>
@@ -156,7 +156,7 @@ pub(super) fn CacheRetentionWorkflow(client: ApiClient, cache_id: String) -> imp
                         Suspend::new(async move {
                         match subscriptions.await.as_ref() {
                             Ok(subscriptions) if subscriptions.is_empty() => view! {
-                                <p class="muted">"No registry retention subscriptions."</p>
+                                <div class="empty-state"><h3>"No registry retention subscriptions"</h3><p>"Create a subscription to inherit roots from a registry's signed catalogs, channels, or releases."</p></div>
                             }
                             .into_any(),
                             Ok(subscriptions) => view! {
@@ -166,6 +166,7 @@ pub(super) fn CacheRetentionWorkflow(client: ApiClient, cache_id: String) -> imp
                                             client=client.clone()
                                             cache_id=cache_id.clone()
                                             subscription=subscription
+                                            can_manage=can_manage
                                         />
                                     }).collect_view()}
                                 </div>
@@ -180,10 +181,20 @@ pub(super) fn CacheRetentionWorkflow(client: ApiClient, cache_id: String) -> imp
                     }}
                 </Suspense>
             </section>
-            <RetentionEditor client=client.clone() cache_id=cache_id.clone()/>
-            <RefreshAllRetention client=client.clone() cache_id=cache_id.clone()/>
-            <ManualRetentionRoots client=client.clone() cache_id=cache_id.clone()/>
-            <RetentionReasons client=client cache_id=cache_id/>
+            {can_manage.then(|| view! {
+                <details class="panel advanced-controls"><summary>"Add a retention subscription"</summary>
+                    <RetentionEditor client=manage_client.clone() cache_id=manage_cache.clone()/>
+                </details>
+                <details class="panel advanced-controls"><summary>"Refresh all subscriptions"</summary>
+                    <RefreshAllRetention client=manage_client.clone() cache_id=manage_cache.clone()/>
+                </details>
+                <details class="panel advanced-controls"><summary>"Manual roots and leases"</summary>
+                    <ManualRetentionRoots client=manage_client cache_id=manage_cache/>
+                </details>
+            })}
+            <details class="panel advanced-controls"><summary>"Inspect why an object is retained"</summary>
+                <RetentionReasons client=client cache_id=cache_id/>
+            </details>
         </div>
     }
 }
@@ -193,6 +204,7 @@ fn SubscriptionSummary(
     client: ApiClient,
     cache_id: String,
     subscription: aos_proto_types::RetentionSubscription,
+    can_manage: bool,
 ) -> impl IntoView {
     let edit_subscription = subscription.clone();
     let registry_id = subscription.registry_id.clone();
@@ -214,7 +226,7 @@ fn SubscriptionSummary(
                 <div><span>"Resource version"</span><code>{subscription.resource_version}</code></div>
                 <div><span>"Refresh operation"</span><code>{display_or(&subscription.current_refresh_id, "none")}</code></div>
             </div>
-            <div class="form-actions">
+            {can_manage.then(|| view! { <div class="form-actions">
                 <SubscriptionAction
                     client=client.clone()
                     cache_id=cache_id.clone()
@@ -237,7 +249,7 @@ fn SubscriptionSummary(
                     cache_id=cache_id.clone()
                     initial=edit_subscription
                 />
-            </details>
+            </details> })}
         </article>
     }
 }
@@ -388,6 +400,27 @@ fn RetentionEditor(
     #[prop(optional)] initial: Option<aos_proto_types::RetentionSubscription>,
 ) -> impl IntoView {
     let editing = initial.is_some();
+    let registry_client = client.clone();
+    let registries = LocalResource::new(move || {
+        let client = registry_client.clone();
+        async move {
+            // Existing subscriptions retain their exact registry; only creation
+            // needs the selectable inventory.
+            if editing {
+                return Ok(Vec::new());
+            }
+            client
+                .collect_pages::<_, aos_proto_types::ListRegistriesResponse, _, _, _>(
+                    aos_proto_types::REGISTRY_SERVICE_LIST_REGISTRIES_PATH,
+                    |page_token| aos_proto_types::ListRegistriesRequest {
+                        page_size: 100,
+                        page_token,
+                    },
+                    |response| (response.registries, response.next_page_token),
+                )
+                .await
+        }
+    });
     let fields = initial
         .as_ref()
         .map(RetentionFields::from_subscription)
@@ -395,9 +428,30 @@ fn RetentionEditor(
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
+    let draft_epoch = watch_draft(
+        move || {
+            let _ = (
+                fields.registry_id.get(),
+                fields.current_catalog.get(),
+                fields.all_channels.get(),
+                fields.channels.get(),
+                fields.recent_count.get(),
+                fields.recent_prereleases.get(),
+                fields.release_tags.get(),
+                fields.semver.get(),
+                fields.semver_prereleases.get(),
+                fields.all_releases.get(),
+                fields.removal_grace.get(),
+                fields.expected_version.get(),
+            );
+        },
+        pending,
+        error,
+    );
     let plan_client = client.clone();
     let on_submit = move |event: SubmitEvent| {
         event.prevent_default();
+        pending.set(None);
         let desired = match fields.desired() {
             Ok(desired) => desired,
             Err(detail) => {
@@ -407,7 +461,7 @@ fn RetentionEditor(
         };
         let registry_id = fields.registry_id.get_untracked().trim().to_string();
         if registry_id.is_empty() {
-            error.set(Some("Registry stable ID is required".to_string()));
+            error.set(Some("Choose a registry".to_string()));
             return;
         }
         let key = idempotency_key("retention-set");
@@ -422,6 +476,7 @@ fn RetentionEditor(
         pending.set(None);
         busy.set(true);
         let client = plan_client.clone();
+        let planned_epoch = draft_epoch.get_untracked();
         spawn_local(async move {
             let result = client
                 .call::<_, aos_proto_types::TopologyPlanResponse>(
@@ -432,7 +487,10 @@ fn RetentionEditor(
                 .map_err(|failure| failure.to_string())
                 .and_then(|response| PendingPlan::from_response(response, key));
             match result {
-                Ok(reviewed) => pending.set(Some(reviewed)),
+                Ok(reviewed) if draft_epoch.get_untracked() == planned_epoch => {
+                    pending.set(Some(reviewed));
+                }
+                Ok(_) => {}
                 Err(detail) => error.set(Some(detail)),
             }
             busy.set(false);
@@ -465,8 +523,26 @@ fn RetentionEditor(
                 <div><p class="section-kicker">"Signed release selectors"</p><h2>{if editing { "Edit subscription" } else { "Create subscription" }}</h2></div>
             </div>
             <form class="editor-form" on:submit=on_submit>
-                <label><span>"Registry stable ID"</span><input required prop:value=move || fields.registry_id.get() on:input=move |event| fields.registry_id.set(event_target_value(&event))/></label>
-                <label><span>"Expected version (empty when creating)"</span><input prop:value=move || fields.expected_version.get() on:input=move |event| fields.expected_version.set(event_target_value(&event))/></label>
+                <Suspense fallback=move || view! { <p class="loading-row">"Loading accessible registries…"</p> }>
+                    {move || Suspend::new(async move {
+                        match registries.await.as_ref() {
+                            Ok(registries) => {
+                                let selected = fields.registry_id.get_untracked();
+                                let missing = editing && !registries.iter().any(|registry| registry.stable_id == selected);
+                                view! { <label><span>"Registry"</span>
+                                    <select required disabled=editing prop:value=move || fields.registry_id.get() on:change=move |event| fields.registry_id.set(event_target_value(&event))>
+                                        <option value="">"Choose a registry…"</option>
+                                        {missing.then(|| view! { <option value=selected.clone()>{selected.clone()}</option> })}
+                                        {registries.iter().map(|registry| view! { <option value=registry.stable_id.clone()>{registry.slug.clone()}</option> }).collect_view()}
+                                    </select>
+                                    <small>"Retention uses this registry's signed release metadata. Client cache ordering stays unchanged."</small>
+                                </label> }.into_any()
+                            }
+                            Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any(),
+                        }
+                    })}
+                </Suspense>
+                {editing.then(|| view! { <div class="compact-list-row"><span>"Subscription version"</span><code>{move || fields.expected_version.get()}</code></div> })}
                 <label class="checkbox-row">
                     <input
                         type="checkbox"
@@ -512,7 +588,7 @@ fn RetentionEditor(
                     <span>"Retain all releases"</span>
                 </label>
                 <label><span>"Removal grace (seconds)"</span><input type="number" min="1" required prop:value=move || fields.removal_grace.get() on:input=move |event| fields.removal_grace.set(event_target_value(&event))/></label>
-                <button class="secondary-button" type="submit" disabled=move || busy.get()>"Review subscription"</button>
+                <div class="form-actions"><button class="secondary-button" type="submit" disabled=move || busy.get()>"Review subscription"</button></div>
             </form>
             {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
             {move || pending.get().map(|reviewed| view! {

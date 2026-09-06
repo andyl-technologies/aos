@@ -1199,7 +1199,7 @@ async fn pull_layout(
     token: Option<&str>,
     printer: &Printer,
 ) -> Result<aos_oci::VerifiedImage> {
-    let client = registry_client(reference, hub, token).await?;
+    let client = registry_client(reference, hub, token)?;
     let cancellation = CancellationToken::new();
     let signal = cancellation_on_signal(cancellation.clone());
     let (events, reporter) = progress_reporter(printer, "Pulling");
@@ -1225,7 +1225,7 @@ async fn push_layout(
     token: Option<&str>,
     printer: &Printer,
 ) -> Result<aos_oci::PushResult> {
-    let client = registry_client(reference, hub, token).await?;
+    let client = registry_client(reference, hub, token)?;
     let cancellation = CancellationToken::new();
     let signal = cancellation_on_signal(cancellation.clone());
     let (events, reporter) = progress_reporter(printer, "Pushing");
@@ -1281,26 +1281,26 @@ fn parse_mount_sources(
     Ok(sources)
 }
 
-async fn registry_client(
+fn registry_client(
     reference: &RegistryReference,
     hub: Option<&str>,
     token: Option<&str>,
 ) -> Result<RegistryClient> {
-    let (origin, token) = registry_access(reference, hub, token).await?;
-    RegistryClient::new(reference, Some(&origin), token)
-}
-
-async fn registry_access(
-    reference: &RegistryReference,
-    hub: Option<&str>,
-    token: Option<&str>,
-) -> Result<(String, Option<String>)> {
     let default_origin = reference.default_origin()?.to_string();
-    let selected_origin = hub.unwrap_or(&default_origin);
-    if token.is_none() {
-        crate::commands::hub_auth::prepare_registry_profile(selected_origin).await?;
+    let origin = hub.unwrap_or(&default_origin).to_owned();
+    if let Some(token) = token {
+        return RegistryClient::new(reference, Some(&origin), Some(token.to_owned()));
     }
-    crate::commands::hub_auth::resolve_registry_access(hub, token, &default_origin)
+    let profile_origin = origin.clone();
+    RegistryClient::with_credential_provider(reference, Some(&origin), move || {
+        let origin = profile_origin.clone();
+        async move {
+            crate::commands::hub_auth::prepare_registry_profile(&origin).await?;
+            let (_, token) =
+                crate::commands::hub_auth::resolve_registry_access(Some(&origin), None, &origin)?;
+            Ok(token)
+        }
+    })
 }
 
 fn same_http_origin(left: &str, right: &str) -> Result<bool> {

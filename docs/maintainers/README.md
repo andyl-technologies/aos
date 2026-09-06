@@ -1,5 +1,10 @@
 # Maintain AOS
 
+Start every release with the [release checklist](release-checklist.md). It gives
+the order of operations, manual checks, and conditions for proceeding. The
+[command reference](canonical-releases.md) and [qualification specification](qualification.md)
+provide supporting detail for testing and production.
+
 This section is for people changing the AOS source tree, package graph, system
 modules, release images, or Rust tools. Installing and operating a published
 AOS image should not require any of these workflows.

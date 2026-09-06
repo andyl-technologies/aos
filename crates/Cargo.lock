@@ -350,6 +350,7 @@ dependencies = [
  "anyhow",
  "aos-cache",
  "aos-core",
+ "aos-doc-model",
  "aos-hub-core",
  "aos-oci",
  "aos-oci-types",
@@ -408,6 +409,7 @@ dependencies = [
  "aos-doc-model",
  "aos-hub-console-contract",
  "aos-proto-types",
+ "futures",
  "gloo-net",
  "js-sys",
  "leptos",
@@ -744,6 +746,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "aos-contract",
+ "aos-registry-surface",
  "base64 0.22.1",
  "ed25519-dalek",
  "humantime",

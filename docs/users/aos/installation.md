@@ -1,7 +1,7 @@
 # Install an AOS image
 
-AOS is installed from a signed UEFI disk image published by an AOS Hub
-registry. There is no `aos install` command that writes a disk: installation
+AOS is installed from a signed UEFI disk image published by an AOS
+registry. A Hub can provide discovery, but static Git/HTTP registries also work. There is no `aos install` command that writes a disk: installation
 means downloading a verified image, importing it into a hypervisor, or writing
 it with the target platform's normal imaging tool.
 
@@ -11,9 +11,21 @@ boundary between image and package verification.
 
 ## Discover and download an image
 
-Open the registry's **Images** page at `https://HUB/REGISTRY/-/images`, or use
-the CLI. Select a target when possible; the Hub resolves it to a compatible
-disk encoding and an authenticated binary-cache identity:
+For a configured APM registry, use its local name from `apm registry list`:
+
+```sh
+aos image list --registry andyl --channel stable
+aos image download --registry andyl --channel stable \
+  --architecture x86_64 --target qemu-kvm --output aos-server.qcow2
+```
+
+These commands verify signed Git metadata and download through that registry's
+cache chain without a Hub. See [Registry configuration](registries.md) to add a
+registry and pin its maintainer-provided trust key.
+
+Alternatively, open the registry's **Images** page at
+`https://HUB/REGISTRY/-/images`, or select Hub discovery explicitly. In Hub mode,
+`REGISTRY` is the organization/registry slug rather than a local APM name:
 
 ```sh
 aos image list \

@@ -112,6 +112,29 @@ pub(crate) fn parse_registry_matching(
     HashMap<String, PackageMeta>,
     Vec<PackageMeta>,
 )> {
+    parse_registry_selection(dir, Some(platform), version_req)
+}
+
+/// Reads every validated package version and platform in an extracted registry.
+///
+/// # Errors
+///
+/// Returns an error for malformed package files, invalid image contracts, or
+/// unreadable registry directories.
+pub fn parse_registry_all_platforms(dir: &Path) -> Result<Vec<PackageMeta>> {
+    let (_, _, versions) = parse_registry_selection(dir, None, None)?;
+    Ok(versions)
+}
+
+fn parse_registry_selection(
+    dir: &Path,
+    platform: Option<&str>,
+    version_req: Option<&semver::VersionReq>,
+) -> Result<(
+    HashMap<String, PackageMeta>,
+    HashMap<String, PackageMeta>,
+    Vec<PackageMeta>,
+)> {
     let packages_dir = dir.join("packages");
     let mut packages = HashMap::new();
     let mut all_versions = Vec::new();
@@ -141,8 +164,21 @@ pub(crate) fn parse_registry_matching(
                 validate_package_layout(&toml_path, &toml.package.name).with_context(|| {
                     format!("validating package layout for {}", toml_path.display())
                 })?;
-                let metas = package_metas_for_platform(&toml, platform, version_req)
-                    .with_context(|| format!("validating {}", toml_path.display()))?;
+                let platforms = match platform {
+                    Some(platform) => BTreeSet::from([platform]),
+                    None => toml
+                        .versions
+                        .iter()
+                        .flat_map(|version| version.platforms.keys().map(String::as_str))
+                        .collect(),
+                };
+                let mut metas = Vec::new();
+                for platform in platforms {
+                    metas.extend(
+                        package_metas_for_platform(&toml, platform, version_req)
+                            .with_context(|| format!("validating {}", toml_path.display()))?,
+                    );
+                }
                 if metas.is_empty() {
                     continue;
                 }

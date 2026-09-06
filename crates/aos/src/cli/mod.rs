@@ -21,6 +21,7 @@ mod doc;
 mod gc;
 mod hub;
 mod hub_container;
+mod hub_delivery;
 mod hub_retained_control;
 mod image;
 mod maintain;
@@ -34,6 +35,7 @@ pub use cache::*;
 pub use container::*;
 pub use hub::*;
 pub use hub_container::*;
+pub use hub_delivery::*;
 pub use hub_retained_control::*;
 pub use image::*;
 pub use maintain::*;
@@ -363,8 +365,11 @@ pub enum Commands {
         command: ProfileCmd,
     },
     /// Browse documentation
+    #[command(
+        after_help = "Examples:\n  aos doc . --search services\n  aos doc package nginx\n  aos doc package --search listener\n  aos doc hub listener --hub https://hub.example --registry org/main"
+    )]
     Doc {
-        /// Source path or flake URI (default: current directory)
+        /// Repository path/flake URI, package, or hub (default: current directory)
         source: Option<String>,
         /// Look up a specific doc path
         path: Option<String>,
@@ -380,19 +385,19 @@ pub enum Commands {
         /// Select the system installed-package profile in package mode
         #[arg(long)]
         system: bool,
-        /// Hub base URL in package or hub mode
-        #[arg(long, env = "AOS_HUB")]
+        /// Hub origin for hub mode (or AOS_HUB)
+        #[arg(long)]
         hub: Option<String>,
-        /// Hub registry slug in package or hub mode
+        /// Organization/registry slug for hub mode
         #[arg(long)]
         registry: Option<String>,
-        /// Hub access token
-        #[arg(long, env = "AOS_TOKEN")]
+        /// Hub access token for hub mode (or AOS_TOKEN)
+        #[arg(long)]
         token: Option<String>,
-        /// Exact package version
+        /// Exact installed package version (package mode)
         #[arg(long)]
         version: Option<String>,
-        /// Exact package platform
+        /// Exact installed package platform (package mode)
         #[arg(long)]
         platform: Option<String>,
     },

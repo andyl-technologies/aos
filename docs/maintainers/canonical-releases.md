@@ -1,5 +1,12 @@
 # Canonical release coordinator
 
+Start with the [release checklist](release-checklist.md) for the order of
+operations and the conditions for proceeding. This page is the command reference;
+the [qualification specification](qualification.md) defines the evidence. New plans
+embed the source-controlled contract in `aos.release.plan/v2`; the contract
+selects applicable requirements and thresholds for testing and production.
+Export the contract with `aos release contract` before preparing a request.
+
 Canonical AOS releases are driven by one reviewed plan. The plan freezes the
 source revision, registry base, complete package and image matrices, required
 gates, signer roles, deployment identities, intended channels, and retention
@@ -246,6 +253,38 @@ or remove the private work path according to the restricted operator policy.
 Repeat for `x86_64-linux` and `aarch64-linux`. Darwin targets do not run this
 command because their release matrix contains packages only.
 
+## Compose the public release record
+
+After staging admission, derive the public release record from the exact
+evidence the promotion step consumes. Every field is copied from the frozen
+plan, the final manifest, the signed qualification receipt, and the public
+report after the same verification promotion performs; nothing is authored.
+
+```sh
+aos release record \
+  --bundle release-final \
+  --staging-receipt release-staged/staging-receipt.json \
+  --qualification-receipt release-qualified/qualification-receipt.json \
+  --signed-qualification release-qualified/signed-qualification.json \
+  --qualification-report qualification/report.json \
+  --trusted-key manifest-2026=/media/trust/manifest-2026.pub \
+  --qualification-key qualification-authority=/media/trust/qualification.pub \
+  --output release-qualified/release-record.json
+```
+
+The record (`aos.release-record/v1`) states the release identity and train,
+the qualification result, policy, authority, and admission time, every claim
+with its required and achieved assurance, the train's support statement from
+the plan's contract, provenance digests, and the exact signed qualification
+envelope. Pass it to `aos release tuf --release-record` so the delegated role
+authorizes it beside the manifest, and to `aos release compose-surface
+--release-record` so it is served at
+`releases/<class>/<version>/release-record.json`. Composition fails closed when
+the delegated targets and the supplied record disagree in either direction.
+Consumers verify the record through the TUF chain and, independently, through
+its embedded signed envelope; the Hub renders it only after verifying that
+envelope against its trusted qualification keys.
+
 ## Finalize the isolated registry
 
 Prepare canonical `aos.registry-release-transaction/v1` JSON whose entries are
@@ -278,6 +317,14 @@ aos release finalize-registry \
   --git-unix-seconds 1788436800 \
   --git-offset-minutes 0
 ```
+
+The transaction's optional `support` object states the `[support]` tables this
+release writes into `registry.toml`: its own train's entry and, only from the
+newest train, the rolling `default`. Finalization derives the same object from
+the plan's frozen contract and refuses a transaction that differs, and the
+policy digest describes `registry.toml` after those tables are applied. A
+contract that names another train's entry is rejected, so a backport release
+can only extend its own train.
 
 Omit both container arguments for a release with no OCI artifact; finalization
 removes any prior release's fixed-path sidecar from the new signed tree.
@@ -580,9 +627,14 @@ directory contains `staging-receipt.json` and a successor
 
 ## Run the native qualification matrix
 
-Configure four absolute executable paths. The Linux paths invoke native Linux
+Configure absolute executable paths for the applicable platforms. The Linux paths invoke Linux
 test closures. The Darwin paths are credential-free authenticated remote
 adapters whose far ends execute on supported Intel and Apple Silicon macOS.
+Release-wide cases use the x86_64 Linux executor. Image and container cases
+select their declared reference target; package cases select each published
+package/platform independently. An absent unrelated platform requires no
+adapter. Archival v1 plans remain readable, but new publication operations require v2.
+
 Each adapter reads one canonical request from standard input and writes one
 canonical `aos.release.qualification-executor-response/v1` object to standard
 output. Successful adapters must not write diagnostics. They download every
@@ -608,15 +660,22 @@ aos release qualify-run \
   --authority-verification-identity qualification-provider-v1 \
   --executor-nonce 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
   --authority-nonce abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789 \
-  --qualified-at 2026-09-03T12:00:00Z \
-  --output qualification
+  --qualified-at now \
+  --prepare-only \
+  --output qualification-prepared
 ```
 
 Both nonce values are single-use operator inputs. The plan must name a distinct
 `qualification` signer role with exactly the public key supplied above. The
-command retains each machine-readable executor report, the canonical aggregate
-report, its receipt, and the signed receipt. It refuses incomplete executor
-configuration even when a particular release has no artifact for one platform.
+collection command retains each machine-readable executor report and the canonical
+aggregate report. Review those exact bytes, then repeat the command with
+`--report-input qualification-prepared/qualification-report.json`,
+`--review-receipt approvals/review.json`, and `--output qualification`, omitting
+`--prepare-only`. Repeat review receipts to satisfy the planned threshold.
+The [shared qualification guide](qualification.md#collect-review-and-sign)
+specifies the review payload and later hold points. Missing applicable adapters
+fail closed. `--qualified-at now` resolves after collection, avoiding a receipt
+time earlier than the tests it authorizes.
 
 ## Admit signed qualification
 
@@ -659,7 +718,7 @@ aos release promote \
   --staging-receipt release-qualified/staging-receipt.json \
   --qualification-receipt release-qualified/qualification-receipt.json \
   --signed-qualification release-qualified/signed-qualification.json \
-  --qualification-report release-qualified/qualification-report.json \
+  --qualification-report qualification/qualification-report.json \
   --trusted-key release-2026=/media/keys/release-2026.pub \
   --staging-receipt-key staging-hub-2026=/media/keys/staging-hub-2026.pub \
   --qualification-key qualifier-2026=/media/keys/qualifier-2026.pub \
@@ -681,10 +740,14 @@ evidence.
 ## Advance a planned channel range
 
 Advance only a partition range frozen in the release plan, using the exact
-generation observed by the operator:
+generation observed by the operator. First collect and sign a `rollout` report
+against the current production receipt, journal, and exact next range, as
+specified in [the shared guide](qualification.md#collect-review-and-sign):
 
 ```sh
 aos release channel advance \
+  --qualification qualification-rollout \
+  --qualification-key qualifier-2026=/media/keys/qualifier-2026.pub \
   --bundle release-bundle \
   --journal release-promoted/release-journal.jsonl \
   --production-receipt release-promoted/production-receipt.json \
@@ -717,10 +780,14 @@ receipt, the exact rolling journal-head digest, the frozen retention policy,
 affirmative corresponding-source retention, affirmative operational handoff, a
 public authority identity, and an RFC 3339 UTC completion time.
 
-Then recheck the complete public rollout and close the journal:
+Collect and sign the `complete` observation report after the required workload
+window, using the production receipt and current rolling journal. Then recheck
+the complete public rollout and close the journal:
 
 ```sh
 aos release channel complete \
+  --qualification qualification-complete \
+  --qualification-key qualifier-2026=/media/keys/qualifier-2026.pub \
   --bundle release-bundle \
   --journal release-edge-final/release-journal.jsonl \
   --production-receipt release-promoted/production-receipt.json \

@@ -499,11 +499,11 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
         "raw"
     );
 
-    let (status, _, page) = get(&app, "/images/public/-/images").await;
+    let (status, _, page) = get(&app, "/images/public/-/images?release=1.0.0").await;
     assert_eq!(status, StatusCode::OK);
     let page = String::from_utf8(page).unwrap();
     assert!(page.contains("Images"));
-    assert!(page.contains("href=\"/images/public/-/images\""));
+    assert!(page.contains("href=\"/images/public/-/images?release=1.0.0\""));
     assert!(page.contains("aria-current=\"page\">Images"));
     assert!(page.to_ascii_lowercase().contains("qcow2"));
     assert!(page.contains("1.0.0"));
@@ -515,7 +515,7 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
     assert!(page.contains(&raw_sha256));
     assert!(page.contains("unsigned"));
     assert!(page.contains("verified"));
-    assert!(page.contains("CDN / CLI"));
+    assert!(page.contains("aos image download"));
 
     let private_uri = format!("/images/private/{}", private_fixture.qcow2_key);
     let (status, _, _) = request(&app, Method::GET, &private_uri, &[], Vec::new()).await;
@@ -845,7 +845,7 @@ async fn fixture_surface_indexes_and_serves() {
     assert!(home.contains("Fixture registry"));
     assert!(home.contains("stable"));
 
-    let (status, _, body) = get(&app, "/demo/-/packages/curl").await;
+    let (status, _, body) = get(&app, "/demo/-/packages/curl?release=1.0.0").await;
     assert_eq!(status, StatusCode::OK);
     let page = String::from_utf8(body).unwrap();
     assert!(page.contains("URL transfers"));

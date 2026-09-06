@@ -172,6 +172,7 @@ async fn seed_inventory(db: &Database, registry_id: i64) {
         releases: Vec::new(),
         release_artifact_snapshots: Vec::new(),
         release_images: Vec::new(),
+        support: None,
         channels: vec![ChannelSummary {
             name: "stable".into(),
             frontier: Some("8.5.0".into()),
