@@ -59,6 +59,15 @@ in {
       '';
     };
 
+    # zram-generator delegates swap formatting to systemd-makefs, which finds
+    # mkswap through PATH. If formatting cannot start, the first attempt has
+    # already initialized the device and later retries fail with EBUSY while
+    # changing its compression algorithm.
+    systemd.services."systemd-zram-setup@" = {
+      overrideStrategy = "asDropin";
+      path = [pkgs.util-linux];
+    };
+
     system.checks.zram = {
       description = "Compressed swap checks";
       checks = [
