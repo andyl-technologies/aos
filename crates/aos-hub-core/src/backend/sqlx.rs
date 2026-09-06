@@ -38,6 +38,8 @@
 //! (file-backed pools keep the default size). Every sqlite pool enables WAL and
 //! `foreign_keys = ON` to match the rusqlite backend the hub grew from.
 
+use std::time::Duration;
+
 use anyhow::{Context, Result};
 
 use super::super::dialect::Dialect;
@@ -64,13 +66,30 @@ pub enum SqlxBackend {
     Mysql(sqlx::MySqlPool),
 }
 
+const SQLITE_OPEN_LOCK_RETRY_LIMIT: Duration = Duration::from_secs(30);
+const SQLITE_OPEN_LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Returns whether sqlite rejected an operation because the database is busy
+/// or a table is locked.
+fn sqlite_lock_error(error: &sqlx::Error) -> bool {
+    matches!(
+        error
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::code)
+            .as_deref(),
+        Some("5" | "6")
+    )
+}
+
 impl SqlxBackend {
     /// Opens a sqlite pool at `path`, or an in-memory database when `path` is
     /// empty or `:memory:`.
     ///
     /// WAL journaling and `foreign_keys = ON` are enabled, and missing files
-    /// are created. An in-memory pool is pinned to a single connection so every
-    /// query observes the same database (see the module-level note).
+    /// are created. Concurrent file-backed starts retry the exclusive lock used
+    /// to enter WAL mode for up to 30 seconds. An in-memory pool is pinned to a
+    /// single connection so every query observes the same database (see the
+    /// module-level note).
     ///
     /// # Errors
     ///
@@ -97,10 +116,22 @@ impl SqlxBackend {
             // reads back what a prior one wrote.
             pool_options = pool_options.max_connections(1);
         }
-        let pool = pool_options
-            .connect_with(options)
-            .await
-            .with_context(|| format!("opening sqlite database {path:?}"))?;
+        let retry_deadline = tokio::time::Instant::now() + SQLITE_OPEN_LOCK_RETRY_LIMIT;
+        let pool = loop {
+            match pool_options.clone().connect_with(options.clone()).await {
+                Ok(pool) => break pool,
+                Err(error)
+                    if !in_memory
+                        && sqlite_lock_error(&error)
+                        && tokio::time::Instant::now() < retry_deadline =>
+                {
+                    tokio::time::sleep(SQLITE_OPEN_LOCK_RETRY_INTERVAL).await;
+                }
+                Err(error) => {
+                    return Err(error).with_context(|| format!("opening sqlite database {path:?}"));
+                }
+            }
+        };
         Ok(Self::Sqlite(pool))
     }
 
