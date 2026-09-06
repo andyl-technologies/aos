@@ -52,23 +52,25 @@ pub(super) fn shutdown_node_child(
     lifecycle_state: &mut QemuNodeLifecycleState,
     shutdown_policy: QemuShutdownPolicy,
 ) -> Result<QemuShutdownReport, QemuNodeError> {
-    if child.reaped() {
-        *lifecycle_state = QemuNodeLifecycleState::ShutdownRequested;
-        return Ok(QemuShutdownReport {
+    let report = if child.reaped() {
+        QemuShutdownReport {
             attempts: Vec::new(),
             failures: Vec::new(),
             reaped: true,
             leaked: false,
-        });
-    }
-
-    let mut target = QemuNodeShutdownTarget {
-        child,
-        plugin_control: channels.plugin_control.as_mut(),
-        qmp_machine_control: channels.qmp_machine_control.as_mut(),
+        }
+    } else {
+        let mut target = QemuNodeShutdownTarget {
+            child,
+            plugin_control: channels.plugin_control.as_mut(),
+            qmp_machine_control: channels.qmp_machine_control.as_mut(),
+        };
+        shutdown_qemu_child(&mut target, shutdown_policy).map_err(QemuNodeError::from_shutdown)?
     };
-    let report =
-        shutdown_qemu_child(&mut target, shutdown_policy).map_err(QemuNodeError::from_shutdown)?;
+
+    channels
+        .qmp_machine_control
+        .retire_process_scoped_endpoints_after_reap();
     *lifecycle_state = QemuNodeLifecycleState::ShutdownRequested;
     Ok(report)
 }

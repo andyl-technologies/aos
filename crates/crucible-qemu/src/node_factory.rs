@@ -449,6 +449,10 @@ where
         self.vmstate.quit().map(|_complete| ())
     }
 
+    fn retire_process_scoped_endpoints_after_reap(&mut self) {
+        self.vmstate.retire_process_scoped_endpoints_after_reap();
+    }
+
     fn activate_debug_guest(&mut self) -> Result<(), QemuNodeChannelError> {
         self.vmstate.activate_debug_guest().map(|_complete| ())
     }

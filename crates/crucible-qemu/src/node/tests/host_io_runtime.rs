@@ -29,6 +29,7 @@ pub(crate) fn scripted_node_with_live_host_runtime(
         ScriptedQmpMachineControl {
             log,
             process_id,
+            track_process_endpoint_retirement: false,
             fail_stop: false,
             fail_snapshot: false,
             timeout_snapshot: false,

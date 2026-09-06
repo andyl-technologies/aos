@@ -64,6 +64,15 @@ where
         self
     }
 
+    /// Releases the guest activation stream after its exact QEMU process is reaped.
+    ///
+    /// The stream may retain the inode of its child-owned Unix socket after the
+    /// pathname is unlinked. Teardown therefore closes it before the attempt's
+    /// project quota is released.
+    pub(crate) fn retire_process_scoped_endpoints_after_reap(&mut self) {
+        self.debug_guest_activation_stream = None;
+    }
+
     /// Connects to an established QMP stream and negotiates capabilities.
     ///
     /// # Errors
