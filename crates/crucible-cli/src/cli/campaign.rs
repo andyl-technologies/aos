@@ -65,21 +65,21 @@ use std::os::unix::net::UnixStream;
 use crucible_campaign::{
     ActiveAttemptPolicy, AlternativeId, ApplyCampaignCommandRequest, BranchBudget, BranchPointId,
     BranchRequest, BranchRequestCause, BranchRequestId, BudgetGrant, CampaignChoiceObject,
-    CampaignChoiceObjectKind, CampaignClient, CampaignCommandId, CampaignControlAction,
-    CampaignHash, CampaignLineage, CampaignName, CampaignPolicy, CampaignPolicyId,
-    CampaignPrincipal, CampaignService, CampaignServiceFailureSource, CampaignSnapshotId,
-    CampaignState, CandidateGeneratorAlgorithm, CandidateGeneratorSpec, CandidateGeneratorSpecId,
-    CandidateSource, ChoiceDomain, ChoiceDomainId, ChoiceOpportunityId, ChoiceValue,
-    ConfigurationArtifactId, ConfigurationId, ContinuationState, ControlRequest,
-    CreateCampaignRequest, DeriveCampaignRequest, FindingKind, GetCampaignChoiceObjectRequest,
-    GetCampaignRequest, GetCampaignStatusRequest, IntegerValue, ListCampaignsRequest,
-    MAX_CAMPAIGN_CHOICE_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_FINDING_QUERY_PAGE_ITEMS,
-    MAX_CAMPAIGN_FRONTIER_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_LIST_PAGE_ITEMS,
-    MAX_CAMPAIGN_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, PinCampaignRequest,
-    PinChange, PinRequest, PinRetention, QueryCampaignChoicesRequest, QueryCampaignFindingsRequest,
-    QueryCampaignFrontierRequest, QueryCampaignGraphRequest,
-    STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION, SelectableDeclaration, SelectableId,
-    StopCondition, SubmitCampaignBranchRequest, WatchCampaignRequest,
+    CampaignChoiceObjectKind, CampaignClient, CampaignClientError, CampaignCommandId,
+    CampaignControlAction, CampaignHash, CampaignLineage, CampaignName, CampaignPolicy,
+    CampaignPolicyId, CampaignPrincipal, CampaignService, CampaignServiceFailure,
+    CampaignServiceFailureSource, CampaignSnapshotId, CampaignState, CandidateGeneratorAlgorithm,
+    CandidateGeneratorSpec, CandidateGeneratorSpecId, CandidateSource, ChoiceDomain,
+    ChoiceDomainId, ChoiceOpportunityId, ChoiceValue, ConfigurationArtifactId, ConfigurationId,
+    ContinuationState, ControlRequest, CreateCampaignRequest, DeriveCampaignRequest, FindingKind,
+    GetCampaignChoiceObjectRequest, GetCampaignRequest, GetCampaignStatusRequest, IntegerValue,
+    ListCampaignsRequest, MAX_CAMPAIGN_CHOICE_QUERY_PAGE_ITEMS,
+    MAX_CAMPAIGN_FINDING_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_FRONTIER_QUERY_PAGE_ITEMS,
+    MAX_CAMPAIGN_LIST_PAGE_ITEMS, MAX_CAMPAIGN_QUERY_PAGE_ITEMS,
+    MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, PinCampaignRequest, PinChange, PinRequest, PinRetention,
+    QueryCampaignChoicesRequest, QueryCampaignFindingsRequest, QueryCampaignFrontierRequest,
+    QueryCampaignGraphRequest, STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION, SelectableDeclaration,
+    SelectableId, StopCondition, SubmitCampaignBranchRequest, WatchCampaignRequest,
 };
 use crucible_daemon::{
     AttachCampaignRuntimeRequest, CampaignRuntimeAttachmentDisposition, LoopbackCampaignService,
@@ -1593,18 +1593,19 @@ where
                 GetCampaignRequest::new(principal, campaign.clone()).map_err(|error| {
                     usage_error(format!("invalid campaign status request: {error}"))
                 })?;
-            let response = client
-                .get_campaign(&request)
-                .map_err(|error| backend_error(format!("campaign status failed: {error}")))?;
-            let status_request = GetCampaignStatusRequest::new(
-                request.principal().clone(),
-                campaign.clone(),
-                response.snapshot(),
-            )
-            .map_err(|error| usage_error(format!("invalid campaign status request: {error}")))?;
-            let status_response = client
-                .get_campaign_status(&status_request)
-                .map_err(|error| backend_error(format!("campaign status failed: {error}")))?;
+            let (response, status_response) = retry_campaign_status_pair(|| {
+                let response = client.get_campaign(&request)?;
+                let status_request = GetCampaignStatusRequest::new(
+                    request.principal().clone(),
+                    campaign.clone(),
+                    response.snapshot(),
+                )
+                .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+                let status_response = client.get_campaign_status(&status_request)?;
+
+                Ok((response, status_response))
+            })
+            .map_err(|error| backend_error(format!("campaign status failed: {error}")))?;
             let status_summary = status_response.status();
             let semantic = status_summary.semantic();
             let continuations = semantic.continuations();
@@ -1688,6 +1689,22 @@ where
             "campaign mutation reached the read-only command path",
         )),
     }
+}
+
+const MAX_CAMPAIGN_STATUS_PAIR_ATTEMPTS: usize = 3;
+
+fn retry_campaign_status_pair<T>(
+    mut read_pair: impl FnMut() -> Result<T, CampaignClientError>,
+) -> Result<T, CampaignClientError> {
+    for _ in 1..MAX_CAMPAIGN_STATUS_PAIR_ATTEMPTS {
+        match read_pair() {
+            Ok(value) => return Ok(value),
+            Err(CampaignClientError::Service(CampaignServiceFailure::Stale { .. })) => {}
+            Err(error) => return Err(error),
+        }
+    }
+
+    read_pair()
 }
 
 fn query_campaign_page<S>(
