@@ -8,7 +8,8 @@ use aos_sandbox_protocol::mount_catalog::decode_mount_catalog_preparation;
 use aos_sandbox_protocol::session::SIGNED_PLAN_LEASE_FEATURE_NAMESPACE;
 use aos_sandbox_protocol::{
     AuthorizationArtifactBytes, MAXIMUM_HANDSHAKE_BYTES, PeerPolicy, ProtocolValidationError,
-    ValidatedBrokerRequestEnvelope, decode_mount_inventory_request, decode_mount_request,
+    ValidatedBrokerRequestEnvelope, decode_destination_slot_inventory_request,
+    decode_destination_slot_request, decode_mount_inventory_request, decode_mount_request,
     encode_error_response_envelope, encode_success_response_envelope, failed_server_hello,
     negotiate_client_hello, validate_request_descriptor_roles,
 };
@@ -93,17 +94,24 @@ impl<W: MountWorker> MountService<W> {
             Ok(_) | Err(_) => return Ok(ConnectionOutcome::TransportRejected),
         };
         let advertised_features = [signed_plan_lease_feature()?];
+        let mut advertised_methods = vec![
+            BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
+            BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES,
+            BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG,
+        ];
+        if self.broker.supports_destination_slots() {
+            advertised_methods.extend([
+                BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT,
+                BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS,
+            ]);
+        }
         let session = match negotiate_client_hello(
             &hello,
             peer.credentials(),
             self.peer_policy,
             ProtocolId::MountBroker,
             &advertised_features,
-            &[
-                BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
-                BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES,
-                BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG,
-            ],
+            &advertised_methods,
         ) {
             Ok(session) => session,
             Err(error) => {
@@ -173,6 +181,53 @@ impl<W: MountWorker> MountService<W> {
                     *header.request_id(),
                     ceiling,
                     Ok(self.broker.inventory_resources()),
+                )
+            }
+            BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT => {
+                let Some(artifacts) = envelope.authorization() else {
+                    return Ok(ConnectionOutcome::RequestRejected);
+                };
+                let Ok(validated) = decode_destination_slot_request(
+                    envelope.body(),
+                    peer.credentials(),
+                    self.peer_policy,
+                    now,
+                ) else {
+                    return Ok(ConnectionOutcome::RequestRejected);
+                };
+                if session.validate_header(validated.header()).is_err() {
+                    return Ok(ConnectionOutcome::RequestRejected);
+                }
+                let ceiling = validated.header().maximum_response_bytes();
+                (
+                    *validated.header().request_id(),
+                    ceiling,
+                    self.broker.apply_destination_slot(
+                        envelope.body(),
+                        artifacts,
+                        session.version(),
+                        peer.credentials(),
+                        self.peer_policy,
+                        trusted_paired_clock_sample,
+                    ),
+                )
+            }
+            BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS => {
+                let Ok(header) = decode_destination_slot_inventory_request(
+                    envelope.body(),
+                    peer.credentials(),
+                    self.peer_policy,
+                    now,
+                ) else {
+                    return Ok(ConnectionOutcome::RequestRejected);
+                };
+                if session.validate_header(&header).is_err() {
+                    return Ok(ConnectionOutcome::RequestRejected);
+                }
+                (
+                    *header.request_id(),
+                    header.maximum_response_bytes(),
+                    self.broker.inventory_destination_slots(),
                 )
             }
             BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG => {

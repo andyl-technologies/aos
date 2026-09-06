@@ -1013,6 +1013,7 @@ const fn method_requires_authorization(method: BrokerMethod) -> bool {
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
             | BrokerMethod::BROKER_METHOD_MOUNT_APPLY
+            | BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT
             | BrokerMethod::BROKER_METHOD_STORAGE_APPLY
             | BrokerMethod::BROKER_METHOD_NETWORK_APPLY
     )
@@ -1077,6 +1078,8 @@ fn validate_outbound_carriers(
         | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY
         | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES
         | BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG
+        | BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT
+        | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS
         | BrokerMethod::BROKER_METHOD_STORAGE_APPLY
         | BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY
         | BrokerMethod::BROKER_METHOD_NETWORK_APPLY
@@ -1463,6 +1466,8 @@ fn validate_method(
                 | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY
                 | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES
                 | BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG
+                | BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT
+                | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS
         ) | (
             ProtocolId::StorageBroker,
             BrokerMethod::BROKER_METHOD_STORAGE_APPLY
@@ -1485,6 +1490,13 @@ fn method_available_in_version(method: BrokerMethod, version: ProtocolVersion) -
     }
     if method == BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG {
         return version.minor() >= 2;
+    }
+    if matches!(
+        method,
+        BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT
+            | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS
+    ) {
+        return version.minor() >= 3;
     }
     !matches!(
         method,
@@ -3267,6 +3279,93 @@ mod tests {
 
         let mut legacy = hello;
         legacy.protocol_minor = 1;
+        assert_eq!(
+            negotiate_client_hello(
+                &legacy.encode_to_vec(),
+                peer(),
+                policy(),
+                ProtocolId::MountBroker,
+                &client_features(),
+                &methods,
+            ),
+            Err(ProtocolValidationError::MethodMismatch)
+        );
+    }
+
+    #[test]
+    fn destination_slot_methods_are_split_and_available_only_in_mount_1_3() {
+        let apply = BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT;
+        let inventory = BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS;
+        let methods = [apply, inventory];
+        for method in methods {
+            assert!(!method_available_in_version(
+                method,
+                ProtocolVersion::new(1, 2)
+            ));
+            assert!(method_available_in_version(
+                method,
+                ProtocolVersion::new(1, 3)
+            ));
+        }
+
+        let hello = BrokerClientHello {
+            protocol_major: 1,
+            protocol_minor: 3,
+            audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+            maximum_response_bytes: 8192,
+            required_features: client_features().iter().map(proto_feature).collect(),
+            required_methods: methods.into_iter().map(Into::into).collect(),
+            ..Default::default()
+        };
+        let session = negotiate_client_hello(
+            &hello.encode_to_vec(),
+            peer(),
+            policy(),
+            ProtocolId::MountBroker,
+            &client_features(),
+            &methods,
+        )
+        .unwrap_or_else(|error| panic!("valid Mount 1.3 slot hello failed: {error}"));
+
+        let authorized_apply = BrokerRequestEnvelope {
+            method: apply.into(),
+            body: vec![1],
+            authorization: Some(authorization_artifacts()).into(),
+            ..Default::default()
+        };
+        assert!(
+            session
+                .decode_request(&authorized_apply.encode_to_vec(), 0)
+                .is_ok()
+        );
+        let untrusted_inventory = BrokerRequestEnvelope {
+            method: inventory.into(),
+            body: vec![1],
+            ..Default::default()
+        };
+        assert!(
+            session
+                .decode_request(&untrusted_inventory.encode_to_vec(), 0)
+                .is_ok()
+        );
+
+        let mut missing_authority = authorized_apply.clone();
+        missing_authority.authorization = buffa::MessageField::default();
+        assert!(
+            session
+                .decode_request(&missing_authority.encode_to_vec(), 0)
+                .is_err()
+        );
+        let mut unexpected_authority = untrusted_inventory;
+        unexpected_authority.authorization = Some(authorization_artifacts()).into();
+        assert!(
+            session
+                .decode_request(&unexpected_authority.encode_to_vec(), 0)
+                .is_err()
+        );
+
+        let mut legacy = hello;
+        legacy.protocol_minor = 2;
         assert_eq!(
             negotiate_client_hello(
                 &legacy.encode_to_vec(),

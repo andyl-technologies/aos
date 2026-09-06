@@ -65,7 +65,8 @@ fn run() -> Result<()> {
     })?;
     let authority = MountAuthorityV1::from_protected_directory(credential_directory)
         .map_err(|error| MountError::State(error.to_string()))?;
-    let broker = MountBroker::new(journal, worker, authority)?;
+    let broker =
+        MountBroker::new_with_destination_slots(journal, worker, authority, CATALOG_ROOT, 0)?;
     let verifier = ControllerPeerVerifier::new(open_cgroup_root()?);
     let mut service = MountService::new(broker, verifier, open_cgroup_root()?, controller_identity);
     loop {

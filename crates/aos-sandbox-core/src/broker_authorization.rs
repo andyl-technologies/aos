@@ -120,6 +120,10 @@ pub enum BrokerVerb {
     MountInventorySummary,
     /// Inventories retained mount resources.
     MountInventoryResources,
+    /// Materializes a broker-owned destination-slot anchor.
+    MountMaterializeDestinationSlot,
+    /// Reaps an exact broker-owned destination-slot anchor.
+    MountReapDestinationSlot,
     /// Creates an assignment workspace and mints its storage handle.
     StorageCreateWorkspace,
     /// Snapshots an existing workspace.
@@ -187,6 +191,8 @@ impl BrokerVerb {
             26 => Ok(Self::NetworkDisarm),
             27 => Ok(Self::NetworkDestroy),
             28 => Ok(Self::NetworkInventory),
+            29 => Ok(Self::MountMaterializeDestinationSlot),
+            30 => Ok(Self::MountReapDestinationSlot),
             _ => Err(InvalidBrokerAuthorizationPlan::UnknownVerb),
         }
     }
@@ -223,6 +229,8 @@ impl BrokerVerb {
             Self::NetworkDisarm => 26,
             Self::NetworkDestroy => 27,
             Self::NetworkInventory => 28,
+            Self::MountMaterializeDestinationSlot => 29,
+            Self::MountReapDestinationSlot => 30,
         }
     }
 
@@ -243,7 +251,9 @@ impl BrokerVerb {
             | Self::MountDetach
             | Self::MountRelease
             | Self::MountInventorySummary
-            | Self::MountInventoryResources => BrokerAudience::Mount,
+            | Self::MountInventoryResources
+            | Self::MountMaterializeDestinationSlot
+            | Self::MountReapDestinationSlot => BrokerAudience::Mount,
             Self::StorageCreateWorkspace
             | Self::StorageSnapshot
             | Self::StorageHoldSnapshot
@@ -268,6 +278,7 @@ impl BrokerVerb {
             | Self::MountCreate
             | Self::MountInventorySummary
             | Self::MountInventoryResources
+            | Self::MountMaterializeDestinationSlot
             | Self::StorageCreateWorkspace
             | Self::StorageInventory
             | Self::NetworkPrepare
@@ -280,6 +291,7 @@ impl BrokerVerb {
             | Self::MountInstall
             | Self::MountDetach
             | Self::MountRelease
+            | Self::MountReapDestinationSlot
             | Self::StorageSnapshot
             | Self::StorageHoldSnapshot
             | Self::StorageReleaseHold
@@ -1403,6 +1415,8 @@ mod tests {
             (26, BrokerVerb::NetworkDisarm),
             (27, BrokerVerb::NetworkDestroy),
             (28, BrokerVerb::NetworkInventory),
+            (29, BrokerVerb::MountMaterializeDestinationSlot),
+            (30, BrokerVerb::MountReapDestinationSlot),
         ];
         for (code, expected) in stable_codes {
             let verb = BrokerVerb::from_code(code)
@@ -1411,7 +1425,7 @@ mod tests {
             assert_eq!(verb.get(), code);
         }
         assert_eq!(
-            BrokerVerb::from_code(29),
+            BrokerVerb::from_code(31),
             Err(InvalidBrokerAuthorizationPlan::UnknownVerb)
         );
         assert_eq!(
@@ -1522,6 +1536,7 @@ mod tests {
             BrokerVerb::MountCreate,
             BrokerVerb::MountInventorySummary,
             BrokerVerb::MountInventoryResources,
+            BrokerVerb::MountMaterializeDestinationSlot,
             BrokerVerb::StorageCreateWorkspace,
             BrokerVerb::StorageInventory,
             BrokerVerb::NetworkPrepare,
@@ -1536,6 +1551,7 @@ mod tests {
             BrokerVerb::MountInstall,
             BrokerVerb::MountDetach,
             BrokerVerb::MountRelease,
+            BrokerVerb::MountReapDestinationSlot,
             BrokerVerb::StorageSnapshot,
             BrokerVerb::StorageHoldSnapshot,
             BrokerVerb::StorageReleaseHold,

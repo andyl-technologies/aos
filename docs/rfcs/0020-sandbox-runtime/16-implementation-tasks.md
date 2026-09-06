@@ -3140,3 +3140,53 @@ the exact portable declaration, own catalog publication and resource-table
 serialization, install the attachment anchor read-only before payload launch,
 and orchestrate lease-expiry reaping. Source-handle resolution, live namespace
 VM qualification, and end-to-end attachment lifecycle coverage also remain.
+
+### Signed Mount destination-slot authority
+
+Mount protocol 1.3 now exposes a signed destination-slot effect method and a
+separate peer-authenticated inventory method. Materialization carries the exact
+canonical sandbox specification, its independently reproduced descriptor, the
+declared slot ID, namespace generation, and current assignment fence. Reaping
+additionally names the exact ready-record digest and preserves the immutable
+creation fence separately from newer assignment authority. The validator
+accepts that resource fence only for the same sandbox and incarnation and only
+when it exactly matches or strictly precedes the current epoch and desired
+generation; equal-generation digest substitution fails closed.
+
+Portable canonical semantics commit every action, assignment, specification,
+slot, resource, and historical-fence field. Append-only broker verbs 29 and 30
+name materialization and reap, while Mount-local authenticated effect codes 6
+and 7 preserve those operations across journal recovery without crossing
+broker domains. Common signed-plan admission now accepts registered compatible
+protocol versions from 1.1 onward, allowing the 1.3 plan to remain version-bound
+while Storage and Network stay capped at their registered 1.1 maximum.
+
+The production Mount broker opens the existing private catalog root as the
+destination-slot anchor store. It atomically persists the signed assignment
+fence, request-ID consumption, and authenticated effect intent before entering
+the materializer, rechecks lease and plan authority immediately before each
+filesystem boundary, and persists a validated lifecycle receipt for exact
+replay. A complete inventory exposes the original binding, specification
+descriptor, operation correlations, physical device/inode/mount identity,
+lifecycle, and exact record digest. Reap checks the same serialized native Mount
+resource table before and after its own durable admission, so installed or
+draining resources prevent directory removal.
+
+Focused tests cover exact replay across broker restart, complete inventory,
+newer-authority teardown of an older immutable binding, historical-fence
+substitution, signature and semantic substitution, domain-separated effect
+record round trips, protocol-1.3-only method negotiation, and installed Mount
+state blocking reap. The changed sandbox, portable core, common broker,
+protocol, and Mount crates pass 676 unit tests. Strict all-target/all-feature
+Clippy with warnings denied (excluding dependency linting), warnings-as-errors
+rustdoc, targeted Rust formatting, and diff checks pass. The hermetic
+`nix-build -A checks.eval --cores 8` gate passes the release build, complete
+workspace test phase, configuration evaluation, and system-structure checks.
+
+This completes signed broker admission, durable destination-slot effects, and
+lossless inventory for this portion of `SBX-VIEW-01`. It does not yet publish
+the catalog JSON entry that connects a source descriptor and Host namespace
+scope to the materialized destination identity. Controller-side catalog
+publication, read-only attachment-anchor installation before payload launch,
+lease-expiry scheduling, source-handle resolution, live namespace VM
+qualification, and end-to-end attachment reconciliation remain.

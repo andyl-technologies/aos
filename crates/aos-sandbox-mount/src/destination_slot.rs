@@ -380,6 +380,30 @@ impl DestinationSlotResourceV1 {
     pub const fn record_digest(&self) -> ObjectDigest {
         ObjectDigest::from_bytes(self.record.digest)
     }
+
+    pub(crate) const fn kernel_boot_id(&self) -> &[u8; 16] {
+        &self.record.kernel_boot_id
+    }
+
+    pub(crate) const fn materialization_operation(&self) -> OperationId {
+        self.record.materialize_operation
+    }
+
+    pub(crate) const fn materialization_request(&self) -> ObjectDigest {
+        self.record.materialize_request
+    }
+
+    pub(crate) const fn reap_operation(&self) -> Option<OperationId> {
+        self.record.reap_operation
+    }
+
+    pub(crate) const fn reap_request(&self) -> Option<ObjectDigest> {
+        self.record.reap_request
+    }
+
+    pub(crate) const fn expected_materialization(&self) -> Option<ObjectDigest> {
+        self.record.expected_materialization
+    }
 }
 
 /// Borrows a ready broker-owned destination descriptor.
@@ -494,6 +518,19 @@ impl DestinationSlotStoreV1 {
         journal: &mut Journal,
         request: &DestinationSlotMaterializationV1,
     ) -> Result<(DestinationSlotResourceV1, DestinationSlotMutationOutcomeV1)> {
+        self.materialize_guarded(journal, request, || Ok(()))
+    }
+
+    /// Runs the caller's final authority guard after intent and before `mkdirat`.
+    pub(crate) fn materialize_guarded<F>(
+        &mut self,
+        journal: &mut Journal,
+        request: &DestinationSlotMaterializationV1,
+        mut before_effect: F,
+    ) -> Result<(DestinationSlotResourceV1, DestinationSlotMutationOutcomeV1)>
+    where
+        F: FnMut() -> Result<()>,
+    {
         request.binding.validate()?;
         let key = request.binding.key();
         let outcome = match self.records.get(&key) {
@@ -547,6 +584,7 @@ impl DestinationSlotStoreV1 {
                 "stale-boot destination slot must be reaped before replacement",
             ));
         }
+        before_effect()?;
         let pin = self.materialize_directory(&current.binding)?;
         let identity = pin.identity();
         let mount_id = MountId::from_fd(pin.as_fd()).map_err(linux_error)?;
@@ -712,6 +750,14 @@ impl DestinationSlotStoreV1 {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.records.is_empty()
+    }
+
+    /// Iterates the complete durable table in canonical logical-key order.
+    pub(crate) fn resources(&self) -> impl Iterator<Item = DestinationSlotResourceV1> + '_ {
+        self.records
+            .values()
+            .cloned()
+            .map(|record| DestinationSlotResourceV1 { record })
     }
 
     fn recover_pins(&mut self) -> Result<()> {

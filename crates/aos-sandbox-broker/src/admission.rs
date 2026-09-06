@@ -12,8 +12,8 @@ use aos_sandbox_core::{
     BrokerPlanExpectation, BrokerPlanRequest, BrokerPlanTrustAnchor, BrokerVerb,
     CLOCK_PAIR_TOLERANCE_NANOSECONDS, DecodeLimits, NodeId, ObjectDigest,
     OwnershipLeaseExpectation, OwnershipLeaseTrustAnchor, ProtocolId, ProtocolVersion,
-    RawPairedClockSample, intersect_broker_admission, prepare_local_lease_record,
-    verify_broker_plan, verify_ownership_lease,
+    RawPairedClockSample, intersect_broker_admission, negotiate_protocol,
+    prepare_local_lease_record, verify_broker_plan, verify_ownership_lease,
 };
 use aos_sandbox_protocol::session::{
     MAXIMUM_AUTHORIZATION_SIGNATURE_BYTES, MAXIMUM_BROKER_PLAN_BYTES,
@@ -124,7 +124,8 @@ impl BrokerAuthority {
         current_clock: &RawPairedClockSample,
         prior_fence: Option<&[u8]>,
     ) -> Result<VerifiedBrokerAdmission, BrokerAdmissionError> {
-        if request.protocol_version != ProtocolVersion::new(1, 1)
+        if request.protocol_version.minor() < 1
+            || negotiate_protocol(request.protocol, request.protocol_version).is_err()
             || request.audience.protocol() != request.protocol
             || request.audience != self.domain.audience()
             || request.request_id == [0; 16]

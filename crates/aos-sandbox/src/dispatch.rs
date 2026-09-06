@@ -468,14 +468,18 @@ fn validate_method(
     signed_plan: &SignedBrokerPlan,
     method: BrokerMethod,
 ) -> Result<(), BrokerDispatchTemplateError> {
-    let expected = match signed_plan.plan().protocol() {
-        ProtocolId::HostBroker => BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
-        ProtocolId::MountBroker => BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
-        ProtocolId::StorageBroker => BrokerMethod::BROKER_METHOD_STORAGE_APPLY,
-        ProtocolId::NetworkBroker => BrokerMethod::BROKER_METHOD_NETWORK_APPLY,
+    let method_matches_protocol = match signed_plan.plan().protocol() {
+        ProtocolId::HostBroker => method == BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
+        ProtocolId::MountBroker => matches!(
+            method,
+            BrokerMethod::BROKER_METHOD_MOUNT_APPLY
+                | BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT
+        ),
+        ProtocolId::StorageBroker => method == BrokerMethod::BROKER_METHOD_STORAGE_APPLY,
+        ProtocolId::NetworkBroker => method == BrokerMethod::BROKER_METHOD_NETWORK_APPLY,
         _ => return Err(BrokerDispatchTemplateError::MethodMismatch),
     };
-    if method != expected
+    if !method_matches_protocol
         || signed_plan.plan().audience().protocol() != signed_plan.plan().protocol()
     {
         return Err(BrokerDispatchTemplateError::MethodMismatch);

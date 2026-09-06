@@ -12,8 +12,11 @@ use aos_sandbox_core::{
     ObjectDigest, OwnershipLeaseTrustAnchor, ProtocolId, ProtocolVersion, RawPairedClockSample,
     SandboxId,
 };
-use aos_sandbox_protocol::ValidatedMountRequest;
+use aos_sandbox_protocol::semantics::canonical_destination_slot_semantics_v1;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
+use aos_sandbox_protocol::{
+    ValidatedAssignmentFence, ValidatedDestinationSlotRequest, ValidatedMountRequest,
+};
 
 use super::semantics_v1::{MountCatalogCommitmentV1, canonical_mount_semantics_v1};
 
@@ -106,6 +109,43 @@ impl MountAuthorityV1 {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the adapter receives one closed slot request plus its protected context"
+    )]
+    pub(crate) fn admit_destination_slot(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        request: &ValidatedDestinationSlotRequest,
+        request_body: &[u8],
+        protocol_version: ProtocolVersion,
+        current_clock: &RawPairedClockSample,
+        prior_fence: Option<&[u8]>,
+    ) -> Result<VerifiedMountAdmissionV1, MountAdmissionError> {
+        let semantics = canonical_destination_slot_semantics_v1(request)
+            .map_err(|_| MountAdmissionError::RequestMismatch)?;
+        self.0.admit(
+            artifacts,
+            AdmissionRequest {
+                audience: aos_sandbox_core::BrokerAudience::Mount,
+                protocol: ProtocolId::MountBroker,
+                protocol_version,
+                assignment: assignment(request.fence())?,
+                request_id: *request.header().request_id(),
+                request_body,
+                descriptor_count: 0,
+                verb: semantics.verb(),
+                target: semantics.target(),
+                argument_commitment: semantics.commitment(),
+                request_deadline_boottime_nanoseconds: request
+                    .header()
+                    .deadline_boottime_nanoseconds(),
+            },
+            current_clock,
+            prior_fence,
+        )
+    }
+
     pub(crate) fn open_effect(
         &self,
         request_id: &[u8; 16],
@@ -153,12 +193,16 @@ impl MountAuthorityV1 {
 fn request_assignment(
     request: &ValidatedMountRequest,
 ) -> Result<BrokerAssignment, MountAdmissionError> {
+    assignment(request.fence())
+}
+
+fn assignment(fence: &ValidatedAssignmentFence) -> Result<BrokerAssignment, MountAdmissionError> {
     BrokerAssignment::new(
-        SandboxId::from_bytes(*request.fence().sandbox_id()),
-        IncarnationId::from_bytes(*request.fence().incarnation_id()),
-        aos_sandbox_core::AssignmentEpoch::new(request.fence().assignment_epoch()),
-        DesiredGeneration::new(request.fence().desired_generation()),
-        ObjectDigest::from_bytes(*request.fence().assignment_digest()),
+        SandboxId::from_bytes(*fence.sandbox_id()),
+        IncarnationId::from_bytes(*fence.incarnation_id()),
+        aos_sandbox_core::AssignmentEpoch::new(fence.assignment_epoch()),
+        DesiredGeneration::new(fence.desired_generation()),
+        ObjectDigest::from_bytes(*fence.assignment_digest()),
     )
     .map_err(|_| MountAdmissionError::RequestMismatch)
 }

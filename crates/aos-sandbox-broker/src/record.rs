@@ -510,9 +510,15 @@ impl BrokerEffectIntentV2 {
                 | BrokerVerb::HostObserve,
                 BrokerGrantTarget::Resource(_),
             ) => true,
-            (BrokerVerb::MountCreate, BrokerGrantTarget::Assignment) => true,
             (
-                BrokerVerb::MountInstall | BrokerVerb::MountDetach | BrokerVerb::MountRelease,
+                BrokerVerb::MountCreate | BrokerVerb::MountMaterializeDestinationSlot,
+                BrokerGrantTarget::Assignment,
+            ) => true,
+            (
+                BrokerVerb::MountInstall
+                | BrokerVerb::MountDetach
+                | BrokerVerb::MountRelease
+                | BrokerVerb::MountReapDestinationSlot,
                 BrokerGrantTarget::Resource(_),
             ) => true,
             (
@@ -1129,6 +1135,8 @@ const fn verb_code(domain: BrokerDomain, verb: BrokerVerb) -> u8 {
         | (BrokerDomain::Mount, BrokerVerb::MountDetach) => 4,
         (BrokerDomain::Host, BrokerVerb::HostKill)
         | (BrokerDomain::Mount, BrokerVerb::MountRelease) => 5,
+        (BrokerDomain::Mount, BrokerVerb::MountMaterializeDestinationSlot) => 6,
+        (BrokerDomain::Mount, BrokerVerb::MountReapDestinationSlot) => 7,
         (BrokerDomain::Storage, BrokerVerb::StorageCreateWorkspace)
         | (BrokerDomain::Network, BrokerVerb::NetworkPrepare) => 1,
         (BrokerDomain::Storage, BrokerVerb::StorageSnapshot)
@@ -1157,6 +1165,8 @@ fn decode_verb(domain: BrokerDomain, code: u8) -> Result<BrokerVerb, Authorizati
         (BrokerDomain::Mount, 3) => Ok(BrokerVerb::MountReplace),
         (BrokerDomain::Mount, 4) => Ok(BrokerVerb::MountDetach),
         (BrokerDomain::Mount, 5) => Ok(BrokerVerb::MountRelease),
+        (BrokerDomain::Mount, 6) => Ok(BrokerVerb::MountMaterializeDestinationSlot),
+        (BrokerDomain::Mount, 7) => Ok(BrokerVerb::MountReapDestinationSlot),
         (BrokerDomain::Storage, 1) => Ok(BrokerVerb::StorageCreateWorkspace),
         (BrokerDomain::Storage, 2) => Ok(BrokerVerb::StorageSnapshot),
         (BrokerDomain::Storage, 3) => Ok(BrokerVerb::StorageHoldSnapshot),
@@ -1547,6 +1557,12 @@ mod tests {
             (BrokerDomain::Mount, BrokerVerb::MountReplace, 3),
             (BrokerDomain::Mount, BrokerVerb::MountDetach, 4),
             (BrokerDomain::Mount, BrokerVerb::MountRelease, 5),
+            (
+                BrokerDomain::Mount,
+                BrokerVerb::MountMaterializeDestinationSlot,
+                6,
+            ),
+            (BrokerDomain::Mount, BrokerVerb::MountReapDestinationSlot, 7),
             (BrokerDomain::Storage, BrokerVerb::StorageCreateWorkspace, 1),
             (BrokerDomain::Storage, BrokerVerb::StorageSnapshot, 2),
             (BrokerDomain::Storage, BrokerVerb::StorageHoldSnapshot, 3),
@@ -1577,6 +1593,7 @@ mod tests {
             intent.target = match verb {
                 BrokerVerb::HostLaunch
                 | BrokerVerb::MountCreate
+                | BrokerVerb::MountMaterializeDestinationSlot
                 | BrokerVerb::StorageCreateWorkspace
                 | BrokerVerb::NetworkPrepare => BrokerGrantTarget::Assignment,
                 BrokerVerb::MountReplace => BrokerGrantTarget::ResourcePair {

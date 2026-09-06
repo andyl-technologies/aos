@@ -411,6 +411,23 @@ impl MountResourceTableV1 {
         self.resources.values()
     }
 
+    /// Reports whether no retained mount resource claims one physical slot.
+    pub(crate) fn destination_slot_is_unused(
+        &self,
+        sandbox_id: &[u8; 16],
+        incarnation_id: &[u8; 16],
+        namespace_generation: u64,
+        destination_slot_id: &[u8; 16],
+    ) -> bool {
+        !self.resources.values().any(|resource| {
+            resource.binding.sandbox_id == *sandbox_id
+                && resource.binding.incarnation_id == *incarnation_id
+                && resource.binding.namespace_generation == namespace_generation
+                && resource.recipe.destination_slot_id == *destination_slot_id
+                && is_slot_claim(&resource.state)
+        })
+    }
+
     /// Plans creation of a fresh `Allocated` record before any external effect.
     pub(crate) fn plan_allocate(&self, resource: &MountResourceV1) -> Result<Vec<JournalRecord>> {
         if resource.revision != 1

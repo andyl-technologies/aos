@@ -73,6 +73,8 @@ enum BrokerMethod {
   BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE = 12;
   BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE = 13;
   BROKER_METHOD_MOUNT_PREPARE_CATALOG = 14;
+  BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT = 15;
+  BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS = 16;
 }
 
 // Semantic roles for SCM_RIGHTS descriptors carried beside one packet.
@@ -408,6 +410,71 @@ message PrepareMountCatalogResponse {
   uint64 valid_until_boottime_nanoseconds = 2;
 }
 
+// Mount 1.3 destination-slot effects operate only on broker-derived paths.
+// The exact canonical sandbox specification proves the portable declaration;
+// its descriptor prevents the broker from accepting substituted bytes.
+enum DestinationSlotAction {
+  DESTINATION_SLOT_ACTION_UNSPECIFIED = 0;
+  DESTINATION_SLOT_ACTION_MATERIALIZE = 1;
+  DESTINATION_SLOT_ACTION_REAP = 2;
+}
+
+message ApplyDestinationSlotRequest {
+  RequestHeader header = 1;
+  AssignmentFence fence = 2;
+  DestinationSlotAction action = 3;
+  uint64 namespace_generation = 4;
+  bytes destination_slot_id = 5; // Exactly 16 bytes.
+  Descriptor sandbox_spec = 6;
+  bytes sandbox_spec_bytes = 7; // Exact canonical portable specification.
+  // Empty for materialization; exact ready-record digest for reap.
+  bytes expected_resource_digest = 8;
+  // Absent for materialization; immutable creation fence of the slot for reap.
+  AssignmentFence resource_fence = 9;
+}
+
+enum DestinationSlotLifecycle {
+  DESTINATION_SLOT_LIFECYCLE_UNSPECIFIED = 0;
+  DESTINATION_SLOT_LIFECYCLE_MATERIALIZING = 1;
+  DESTINATION_SLOT_LIFECYCLE_READY = 2;
+  DESTINATION_SLOT_LIFECYCLE_REAPING = 3;
+  DESTINATION_SLOT_LIFECYCLE_RELEASED = 4;
+}
+
+message DestinationSlotReapCorrelation {
+  MountOperationCorrelation operation = 1;
+  bytes expected_resource_digest = 2; // Exact ready-record digest.
+}
+
+// One lossless durable destination-slot row. Physical identity is absent only
+// while materializing and remains as historical evidence after release.
+message DestinationSlotInventoryRecord {
+  MountAssignmentBinding binding = 1;
+  bytes destination_slot_id = 2; // Exactly 16 bytes.
+  Descriptor sandbox_spec = 3;
+  DestinationSlotLifecycle lifecycle = 4;
+  bytes resource_kernel_boot_id = 5; // Exactly 16 bytes.
+  MountOperationCorrelation materialization = 6;
+  DestinationSlotReapCorrelation reap = 7;
+  optional uint64 slot_device = 8;
+  optional uint64 slot_inode = 9;
+  optional uint64 anchor_unique_mount_id = 10;
+  bytes resource_digest = 11; // Exact durable-record digest.
+}
+
+message ApplyDestinationSlotResponse {
+  DestinationSlotInventoryRecord resource = 1;
+}
+
+message InventoryDestinationSlotsRequest { RequestHeader header = 1; }
+
+message InventoryDestinationSlotsResponse {
+  bytes kernel_boot_id = 1; // Current Linux boot ID, exactly 16 bytes.
+  uint64 journal_sequence = 2; // Nonzero next-frame durable boundary.
+  repeated DestinationSlotInventoryRecord slots = 3; // At most 16384, strict key order.
+  bytes broker_instance_id = 4; // Exactly 16 bytes; changes on broker start.
+}
+
 message MountResult {
   bytes attachment_id = 1;
   bytes detached_mount_handle = 2;
@@ -569,6 +636,9 @@ service MountBroker {
   rpc ApplyMount(ApplyMountRequest) returns (MountResult);
   rpc InventoryMounts(InventoryMountsRequest) returns (InventoryMountsResponse);
   rpc InventoryMountResources(InventoryMountsRequest) returns (InventoryMountResourcesResponse);
+  rpc ApplyDestinationSlot(ApplyDestinationSlotRequest) returns (ApplyDestinationSlotResponse);
+  rpc InventoryDestinationSlots(InventoryDestinationSlotsRequest)
+      returns (InventoryDestinationSlotsResponse);
 }
 
 enum NetworkAction {
