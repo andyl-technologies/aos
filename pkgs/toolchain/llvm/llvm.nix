@@ -7,6 +7,9 @@
   ninja,
   python3,
   zlib,
+  zstd,
+  libxml2,
+  libedit,
   bootstrapTools,
   stdenv,
   buildPackages,
@@ -20,6 +23,9 @@ import ./llvm-22.nix {
     ninja
     python3
     zlib
+    zstd
+    libxml2
+    libedit
     bootstrapTools
     stdenv
     buildPackages
