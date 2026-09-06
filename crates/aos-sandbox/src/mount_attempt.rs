@@ -15,9 +15,11 @@
 //! ```
 //!
 //! The durable record is audit and crash-correlation state, not reconstructed
-//! authority. Restart loses the token and any Mount descriptor catalog, so the
-//! controller must authenticate inventory and repeat action preparation before
-//! issuing another effect.
+//! authority. Restart loses the token and any Mount descriptor catalog. After
+//! authenticated inventory proves the exact operation remains pending, the
+//! controller must reacquire that catalog, reproduce the original signed plan,
+//! and obtain a current ownership lease. It may then rebuild an envelope around
+//! only the original request body and deadline.
 
 use std::collections::BTreeMap;
 
@@ -35,7 +37,7 @@ use aos_sandbox_protocol::semantics::mount::{MountCatalogBindingV1, canonical_mo
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use aos_sandbox_protocol::{
     MAXIMUM_REQUEST_BYTES, PeerCredentials, PeerPolicy, decode_mount_request,
-    decode_request_envelope,
+    decode_request_envelope, detached_mount_handle_v1,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -53,7 +55,10 @@ use crate::runtime_scope::{
     CurrentRuntimeScopeError, DurableNamespaceTargetReferenceV1, NamespaceTargetError,
     validate_durable_reference_in_validated_namespace, validate_namespace_target_namespace,
 };
-use crate::{Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace};
+use crate::{
+    BrokerDispatchTemplateV1, Journal, JournalError, JournalRecord, JournalTransaction,
+    RecordNamespace,
+};
 
 mod completion;
 mod format;
@@ -146,12 +151,13 @@ pub enum MountAttemptAdmissionOutcomeV1 {
     Replay,
 }
 
-/// Retains one live preparation whose exact Mount packet is already durable.
+/// Retains live authority for a Mount request durably admitted before I/O.
 ///
-/// This token cannot be reconstructed from the journal or cloned. Its packet
-/// remains non-authorizing input until Mount independently verifies every
-/// signature, fence, catalog-backed or catalogless semantics, protected clock
-/// bound, and durable broker admission rule.
+/// A first issue retains the packet recorded at admission. A pending resume may
+/// carry a newer ownership lease with the exact original plan and Apply body;
+/// that envelope is intentionally volatile. This token cannot be cloned, and
+/// every packet remains non-authorizing until Mount independently verifies the
+/// signatures, fence, semantics, protected clock, and durable idempotency state.
 ///
 /// ```compile_fail
 /// use aos_sandbox::mount_attempt::DurableCurrentMountAttemptV1;
@@ -163,6 +169,13 @@ pub struct DurableCurrentMountAttemptV1 {
     attempt: BrokerDispatchAttemptV1,
     record: Record,
     outcome: MountAttemptAdmissionOutcomeV1,
+    packet_source: MountAttemptPacketSource,
+}
+
+#[derive(Clone, Copy)]
+enum MountAttemptPacketSource {
+    Recorded,
+    Reconstructed,
 }
 
 enum PreparedMountDispatch {
@@ -247,10 +260,14 @@ impl DurableCurrentMountAttemptV1 {
         self.record.namespace_target.target_generation()
     }
 
-    /// Borrows the exact deadline-bearing packet admitted before dispatch.
+    /// Borrows the packet carrying the exact durably admitted Apply body.
     #[must_use]
     pub const fn dispatch_attempt(&self) -> &BrokerDispatchAttemptV1 {
         &self.attempt
+    }
+
+    pub(crate) fn target(&self) -> &crate::runtime_scope::CurrentNamespaceTarget {
+        self.prepared.target()
     }
 
     pub(crate) fn recheck<T>(
@@ -265,9 +282,15 @@ impl DurableCurrentMountAttemptV1 {
         check_mount_deadline(self.attempt.deadline_boottime_nanoseconds())?;
 
         let history = History::load(journal)?;
-        if history.records.get(&self.record.request_id) != Some(&self.record)
-            || !self.record.matches_attempt(&self.prepared, &self.attempt)?
-        {
+        let attempt_matches = match self.packet_source {
+            MountAttemptPacketSource::Recorded => {
+                self.record.matches_attempt(&self.prepared, &self.attempt)?
+            }
+            MountAttemptPacketSource::Reconstructed => self
+                .record
+                .matches_resumed_attempt(&self.prepared, &self.attempt)?,
+        };
+        if history.records.get(&self.record.request_id) != Some(&self.record) || !attempt_matches {
             return Err(MountAttemptError::Conflict);
         }
 
@@ -307,6 +330,40 @@ where
         journal,
         PreparedMountDispatch::Release(prepared),
         deadline_boottime_nanoseconds,
+        clock,
+    )
+}
+
+pub(crate) fn resume_current<T>(
+    journal: &mut Journal,
+    record: Record,
+    prepared: PreparedCurrentMountDispatchV1,
+    clock: &mut T,
+) -> Result<DurableCurrentMountAttemptV1, MountAttemptError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    resume_prepared(
+        journal,
+        record,
+        PreparedMountDispatch::Catalog(prepared),
+        clock,
+    )
+}
+
+pub(crate) fn resume_current_release<T>(
+    journal: &mut Journal,
+    record: Record,
+    prepared: PreparedCurrentMountReleaseDispatchV1,
+    clock: &mut T,
+) -> Result<DurableCurrentMountAttemptV1, MountAttemptError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    resume_prepared(
+        journal,
+        record,
+        PreparedMountDispatch::Release(prepared),
         clock,
     )
 }
@@ -360,15 +417,83 @@ where
         attempt,
         record,
         outcome,
+        packet_source: MountAttemptPacketSource::Recorded,
     })
+}
+
+fn resume_prepared<T>(
+    journal: &mut Journal,
+    record: Record,
+    prepared: PreparedMountDispatch,
+    clock: &mut T,
+) -> Result<DurableCurrentMountAttemptV1, MountAttemptError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    prepared.recheck(journal, clock)?;
+    if record.namespace_target != prepared.target().durable_reference() {
+        return Err(MountAttemptError::Conflict);
+    }
+    if record.deadline_boottime_nanoseconds > prepared.valid_until_boottime_nanoseconds() {
+        return Err(MountAttemptError::Deadline);
+    }
+    check_mount_deadline(record.deadline_boottime_nanoseconds)?;
+
+    let history = History::load(journal)?;
+    if history.records.get(&record.request_id) != Some(&record) {
+        return Err(MountAttemptError::Conflict);
+    }
+    let attempt = prepared
+        .target()
+        .runtime_generation()
+        .scope()
+        .prepare_mount_attempt(
+            journal,
+            prepared.template(),
+            record.deadline_boottime_nanoseconds,
+            clock,
+        )?;
+    if !record.matches_resumed_attempt(&prepared, &attempt)? {
+        return Err(MountAttemptError::Conflict);
+    }
+
+    prepared.recheck(journal, clock)?;
+    check_mount_deadline(record.deadline_boottime_nanoseconds)?;
+    let resumed = DurableCurrentMountAttemptV1 {
+        prepared,
+        attempt,
+        record,
+        outcome: MountAttemptAdmissionOutcomeV1::Replay,
+        packet_source: MountAttemptPacketSource::Reconstructed,
+    };
+    resumed.recheck(journal, clock)?;
+    Ok(resumed)
 }
 
 pub(crate) fn validate_namespace(journal: &mut Journal) -> Result<(), MountAttemptError> {
     History::load(journal).map(|_| ())
 }
 
+pub(crate) fn replay_record(
+    journal: &mut Journal,
+    request_id: [u8; 16],
+    target: &crate::runtime_scope::CurrentNamespaceTarget,
+) -> Result<Record, MountAttemptError> {
+    let history = History::load(journal)?;
+    let record = history
+        .records
+        .get(&request_id)
+        .cloned()
+        .ok_or(MountAttemptError::Conflict)?;
+    if record.namespace_target != target.durable_reference() {
+        return Err(MountAttemptError::Conflict);
+    }
+    check_mount_deadline(record.deadline_boottime_nanoseconds)?;
+    Ok(record)
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct Record {
+pub(crate) struct Record {
     request_id: [u8; 16],
     namespace_target: DurableNamespaceTargetReferenceV1,
     assignment_epoch: u64,
@@ -419,6 +544,57 @@ impl Record {
         Ok(record)
     }
 
+    pub(crate) const fn request_id(&self) -> [u8; 16] {
+        self.request_id
+    }
+
+    pub(crate) const fn namespace_target(&self) -> DurableNamespaceTargetReferenceV1 {
+        self.namespace_target
+    }
+
+    pub(crate) fn catalog_commitment(&self) -> Option<ObjectDigest> {
+        self.catalog_commitment.map(ObjectDigest::from_bytes)
+    }
+
+    pub(crate) const fn plan_digest(&self) -> ObjectDigest {
+        ObjectDigest::from_bytes(self.plan_digest)
+    }
+
+    pub(crate) const fn deadline_boottime_nanoseconds(&self) -> u64 {
+        self.deadline_boottime_nanoseconds
+    }
+
+    pub(crate) fn body_without_deadline(&self) -> &[u8] {
+        &self.template_body
+    }
+
+    pub(crate) fn matches_resume_template(&self, template: &BrokerDispatchTemplateV1) -> bool {
+        let assignment = template.signed_plan().plan().assignment();
+
+        self.assignment_epoch == assignment.epoch().get()
+            && self.desired_generation == assignment.desired_generation().get()
+            && self.assignment_digest == *assignment.digest().as_bytes()
+            && self.plan_digest == *template.signed_plan().digest().as_bytes()
+            && self.template_digest == *template.digest().as_bytes()
+            && self.semantic_digest == *semantic_identity_digest(template.semantics()).as_bytes()
+            && self.template_body == template.body_without_deadline()
+    }
+
+    pub(crate) fn action(&self) -> Result<MountAction, MountAttemptError> {
+        Ok(decode_attempt_body(&self.body, self.deadline_boottime_nanoseconds)?.action())
+    }
+
+    pub(crate) fn mount_handle(&self) -> Result<[u8; 32], MountAttemptError> {
+        let request = decode_attempt_body(&self.body, self.deadline_boottime_nanoseconds)?;
+        if request.action() == MountAction::MOUNT_ACTION_CREATE_DETACHED {
+            return Ok(detached_mount_handle_v1(Sha256::digest(&self.body).into()));
+        }
+        request
+            .detached_mount_handle()
+            .copied()
+            .ok_or(MountAttemptError::CorruptState)
+    }
+
     fn key(&self) -> Vec<u8> {
         let mut key = Vec::with_capacity(17);
         key.push(b'a');
@@ -456,6 +632,37 @@ impl Record {
         attempt: &BrokerDispatchAttemptV1,
     ) -> Result<bool, MountAttemptError> {
         Ok(self == &Self::from_attempt(prepared, attempt)?)
+    }
+
+    fn matches_resumed_attempt(
+        &self,
+        prepared: &PreparedMountDispatch,
+        attempt: &BrokerDispatchAttemptV1,
+    ) -> Result<bool, MountAttemptError> {
+        let candidate = Self::from_attempt(prepared, attempt)?;
+        Ok(self.matches_resumed_record(&candidate))
+    }
+
+    fn matches_resumed_record(&self, candidate: &Self) -> bool {
+        // `candidate` was reconstructed through the ordinary live verifier and
+        // fully validated by `from_attempt`. Mount's equal-generation fence
+        // requires the exact original plan; only its monotonic lease and the
+        // resulting envelope may legitimately change.
+        self.request_id == candidate.request_id
+            && self.namespace_target == candidate.namespace_target
+            && self.assignment_epoch == candidate.assignment_epoch
+            && self.desired_generation == candidate.desired_generation
+            && self.assignment_digest == candidate.assignment_digest
+            && self.catalog_commitment == candidate.catalog_commitment
+            && self.semantic_digest == candidate.semantic_digest
+            && self.plan_digest == candidate.plan_digest
+            && self.template_digest == candidate.template_digest
+            && self.deadline_boottime_nanoseconds == candidate.deadline_boottime_nanoseconds
+            && self.template_body == candidate.template_body
+            && self.body == candidate.body
+            && (candidate.lease_generation > self.lease_generation
+                || (candidate.lease_generation == self.lease_generation
+                    && candidate.lease_digest == self.lease_digest))
     }
 
     fn validate_contents(&self) -> Result<(), MountAttemptError> {

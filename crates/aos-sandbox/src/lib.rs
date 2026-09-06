@@ -52,7 +52,8 @@ pub mod runtime_scope;
 pub use attachment_mount::{
     AttachmentMountError, AttachmentMountPreparationInputV1,
     CompletedCurrentAttachmentMountAttemptV1, DurableCurrentAttachmentMountAttemptV1,
-    PreparedCurrentAttachmentMountDispatchV1, PreparedCurrentAttachmentMountV1,
+    PreparedCurrentAttachmentMountDispatchV1, PreparedCurrentAttachmentMountResumeDispatchV1,
+    PreparedCurrentAttachmentMountResumeV1, PreparedCurrentAttachmentMountV1,
 };
 #[cfg(target_os = "linux")]
 pub use attachment_reconciliation::{

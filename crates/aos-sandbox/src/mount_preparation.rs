@@ -22,7 +22,7 @@
 use std::os::fd::OwnedFd;
 
 use aos_proto::aos::sandbox::local::v1::{
-    ApplyMountRequest, AssignmentFence, Audience, BrokerClientHello, BrokerMethod,
+    ApplyMountRequest, AssignmentFence, Audience, BrokerClientHello, BrokerMethod, MountAction,
     ObserveMountScopeRequest, PrepareMountCatalogRequest, RequestHeader,
 };
 use aos_sandbox_core::{ObjectDigest, ProtocolId, ProtocolVersion, RawPairedClockSample};
@@ -77,6 +77,9 @@ pub enum MountCatalogPreparationError {
     /// The request or bounded exchange deadline elapsed or overflowed.
     #[error("mount catalog exchange deadline elapsed or clock is invalid")]
     Deadline,
+    /// Restart recovery changed the exact admitted request or catalog identity.
+    #[error("mount replay preparation differs from the durable attempt")]
+    ReplayMismatch,
     /// Current Host authority does not grant this exact RootMount query.
     #[error(transparent)]
     HostAuthority(#[from] CurrentRuntimeScopeError),
@@ -125,9 +128,7 @@ impl MountCatalogIntentV1 {
     /// generations.
     pub fn new(request: ApplyMountRequest) -> Result<Self, MountCatalogPreparationError> {
         let validated = validate_fence_free_intent(&request)?;
-        if validated.action()
-            == aos_proto::aos::sandbox::local::v1::MountAction::MOUNT_ACTION_RELEASE
-        {
+        if validated.action() == MountAction::MOUNT_ACTION_RELEASE {
             return Err(MountCatalogPreparationError::InvalidIntent);
         }
 
@@ -435,6 +436,62 @@ where
     mount_request.fence = Some(current_fence(&target)).into();
     mount_request.namespace_generation = target.target_generation();
 
+    prepare_catalog_request(journal, target, mount_request, client, clock)
+}
+
+pub(crate) fn prepare_current_replay<T>(
+    journal: &mut Journal,
+    target: CurrentNamespaceTarget,
+    body_without_deadline: &[u8],
+    deadline_boottime_nanoseconds: u64,
+    expected_catalog_commitment: ObjectDigest,
+    client: MountCatalogClient,
+    clock: &mut T,
+) -> Result<PreparedCurrentMountCatalogV1, MountCatalogPreparationError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    target.recheck(journal, clock)?;
+    let (mount_request, action) = replay_mount_request(
+        &target,
+        body_without_deadline,
+        deadline_boottime_nanoseconds,
+    )?;
+    if action == MountAction::MOUNT_ACTION_RELEASE {
+        return Err(MountCatalogPreparationError::ReplayMismatch);
+    }
+
+    let prepared = prepare_catalog_request(journal, target, mount_request, client, clock)?;
+    if prepared.body_without_deadline != body_without_deadline
+        || prepared.catalog_commitment != expected_catalog_commitment
+        || deadline_boottime_nanoseconds > prepared.valid_until_boottime_nanoseconds
+    {
+        return Err(MountCatalogPreparationError::ReplayMismatch);
+    }
+    Ok(prepared)
+}
+
+fn prepare_catalog_request<T>(
+    journal: &mut Journal,
+    target: CurrentNamespaceTarget,
+    mut mount_request: ApplyMountRequest,
+    client: MountCatalogClient,
+    clock: &mut T,
+) -> Result<PreparedCurrentMountCatalogV1, MountCatalogPreparationError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    let header = mount_request
+        .header
+        .as_option()
+        .ok_or(MountCatalogPreparationError::InvalidIntent)?;
+    let request_id: [u8; 16] = header
+        .request_id
+        .as_slice()
+        .try_into()
+        .map_err(|_| MountCatalogPreparationError::InvalidIntent)?;
+    let deadline = header.deadline_boottime_nanoseconds;
+
     let observed = target.runtime_generation().scope().observed();
     let host_request = ObserveMountScopeRequest {
         header: Some(request_header(
@@ -543,9 +600,7 @@ where
 {
     target.recheck(journal, clock)?;
     let validated_probe = validate_fence_free_intent(&request)?;
-    if validated_probe.action()
-        != aos_proto::aos::sandbox::local::v1::MountAction::MOUNT_ACTION_RELEASE
-    {
+    if validated_probe.action() != MountAction::MOUNT_ACTION_RELEASE {
         return Err(MountCatalogPreparationError::InvalidIntent);
     }
 
@@ -564,6 +619,32 @@ where
     .into();
     request.fence = Some(current_fence(&target)).into();
     request.namespace_generation = target.target_generation();
+
+    prepare_release_request(journal, target, request, deadline, None, clock)
+}
+
+fn prepare_release_request<T>(
+    journal: &mut Journal,
+    target: CurrentNamespaceTarget,
+    mut request: ApplyMountRequest,
+    deadline_boottime_nanoseconds: u64,
+    expected_body_without_deadline: Option<&[u8]>,
+    clock: &mut T,
+) -> Result<PreparedCurrentMountReleaseV1, MountCatalogPreparationError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    if request
+        .header
+        .as_option()
+        .is_none_or(|header| header.deadline_boottime_nanoseconds != deadline_boottime_nanoseconds)
+    {
+        return Err(if expected_body_without_deadline.is_some() {
+            MountCatalogPreparationError::ReplayMismatch
+        } else {
+            MountCatalogPreparationError::InvalidIntent
+        });
+    }
 
     let credentials = local_credentials();
     let request_body = request.encode_to_vec();
@@ -588,14 +669,112 @@ where
         .header
         .get_or_insert_default()
         .deadline_boottime_nanoseconds = 0;
+    let body_without_deadline = request.encode_to_vec();
+    if expected_body_without_deadline
+        .is_some_and(|expected| expected != body_without_deadline.as_slice())
+    {
+        return Err(MountCatalogPreparationError::ReplayMismatch);
+    }
     let prepared = PreparedCurrentMountReleaseV1 {
         target,
-        body_without_deadline: request.encode_to_vec(),
+        body_without_deadline,
         semantics,
-        valid_until_boottime_nanoseconds: deadline,
+        valid_until_boottime_nanoseconds: deadline_boottime_nanoseconds,
     };
     prepared.recheck(journal, clock)?;
     Ok(prepared)
+}
+
+pub(crate) fn prepare_current_release_replay<T>(
+    journal: &mut Journal,
+    target: CurrentNamespaceTarget,
+    body_without_deadline: &[u8],
+    deadline_boottime_nanoseconds: u64,
+    clock: &mut T,
+) -> Result<PreparedCurrentMountReleaseV1, MountCatalogPreparationError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    target.recheck(journal, clock)?;
+    let (request, action) = replay_mount_request(
+        &target,
+        body_without_deadline,
+        deadline_boottime_nanoseconds,
+    )?;
+    if action != MountAction::MOUNT_ACTION_RELEASE {
+        return Err(MountCatalogPreparationError::ReplayMismatch);
+    }
+
+    prepare_release_request(
+        journal,
+        target,
+        request,
+        deadline_boottime_nanoseconds,
+        Some(body_without_deadline),
+        clock,
+    )
+}
+
+fn replay_mount_request(
+    target: &CurrentNamespaceTarget,
+    body_without_deadline: &[u8],
+    deadline_boottime_nanoseconds: u64,
+) -> Result<(ApplyMountRequest, MountAction), MountCatalogPreparationError> {
+    let fence = current_fence(target);
+    decode_replay_mount_request(
+        body_without_deadline,
+        deadline_boottime_nanoseconds,
+        target
+            .runtime_generation()
+            .scope()
+            .deadline_boottime_nanoseconds(),
+        &fence,
+        target.target_generation(),
+    )
+}
+
+fn decode_replay_mount_request(
+    body_without_deadline: &[u8],
+    deadline_boottime_nanoseconds: u64,
+    maximum_deadline_boottime_nanoseconds: u64,
+    expected_fence: &AssignmentFence,
+    expected_namespace_generation: u64,
+) -> Result<(ApplyMountRequest, MountAction), MountCatalogPreparationError> {
+    if deadline_boottime_nanoseconds == 0
+        || deadline_boottime_nanoseconds > maximum_deadline_boottime_nanoseconds
+    {
+        return Err(MountCatalogPreparationError::Deadline);
+    }
+
+    let mut request = ApplyMountRequest::decode_from_slice(body_without_deadline)
+        .map_err(|_| MountCatalogPreparationError::ReplayMismatch)?;
+    if request.encode_to_vec() != body_without_deadline
+        || request
+            .header
+            .as_option()
+            .is_none_or(|header| header.deadline_boottime_nanoseconds != 0)
+        || request.fence.as_option() != Some(expected_fence)
+        || request.namespace_generation != expected_namespace_generation
+    {
+        return Err(MountCatalogPreparationError::ReplayMismatch);
+    }
+    request
+        .header
+        .get_or_insert_default()
+        .deadline_boottime_nanoseconds = deadline_boottime_nanoseconds;
+
+    let credentials = local_credentials();
+    let validated = decode_mount_request(
+        &request.encode_to_vec(),
+        credentials,
+        PeerPolicy {
+            uid: credentials.uid,
+            gid: Some(credentials.gid),
+            audience: Audience::AUDIENCE_NODE_CONTROLLER,
+        },
+        transport::boottime()?,
+    )?;
+    Ok((request, validated.action()))
 }
 
 pub(crate) fn bind_signed_mount_plan<T>(

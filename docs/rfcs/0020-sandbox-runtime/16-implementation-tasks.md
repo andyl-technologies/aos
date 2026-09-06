@@ -2944,3 +2944,46 @@ An initial unconstrained run exposed a pre-existing SQLite lock race in one Hub
 test, and its first retry gave one `rustc` process SIGSEGV under 128-way build
 parallelism. The exact Hub test passed independently, and the concurrency-capped
 hermetic rerun passed without changing source or test scope.
+
+### Restart-safe exact pending attachment Mount resumption
+
+The controller can now resume one already admitted attachment Mount operation
+after losing its in-memory dispatch token. Recovery begins only from a current
+attachment reconciliation whose authenticated complete inventory reports the
+exact local request as pending. It loads the immutable `AOSMTA02` attempt by
+request ID and current namespace-allocation reference, checks the inventory's
+derived or supplied Mount handle, and preserves the original action, Apply body,
+request identity, semantic commitment, and exclusive BOOTTIME deadline.
+
+Catalog-backed operations repeat the Host-to-Mount preparation exchange using
+the original request and must reproduce the durable catalog commitment. RELEASE
+reconstructs only its catalogless preparation. The preparation reports the
+required original plan digest so the caller can select the exact signed
+artifact. That plan and signature must still verify under current trust and
+assignment state; same-generation plan replacement is rejected because Mount's
+durable authority fence admits only the original plan digest. The current
+ownership lease may be an exact replay or a monotonic renewal. A stale lease,
+equal-generation equivocation, changed plan or template, changed catalog or
+namespace, modified body or deadline, and expired authority all fail before
+dispatch.
+
+Resumption does not write a second controller admission record. It builds a
+volatile envelope containing the exact original plan and Apply request with the
+current lease, then uses the ordinary authenticated Mount client and durable
+completion path. Mount's request-ID and request-digest idempotency fence resumes
+the pending worker or replays a completed receipt without allocating a second
+resource. If the original deadline has elapsed, recovery remains fail-closed;
+the controller does not manufacture a replacement operation from ambiguous
+pending state.
+
+Focused regressions prove that reconstruction changes only a monotonic ownership
+lease and volatile envelope fields, rejects every durable request, plan,
+catalog, namespace, semantic, and deadline substitution, and recreates the
+deadline-bearing protobuf from only the exact canonical deadline-free body.
+Validation passes all 329 sandbox unit tests, two downstream public API tests,
+and 14 doctests with one test thread. Strict all-target/all-feature crate-local
+Clippy with warnings denied, warnings-as-errors rustdoc, targeted Rust
+formatting, and diff checks pass. The hermetic
+`nix-build -A checks.eval --cores 8` gate passes the release build, full
+workspace test phase with all 4,540 tests passing and five skipped,
+configuration evaluation, and system-structure checks.

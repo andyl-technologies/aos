@@ -293,6 +293,19 @@ dispatch. Release is catalogless because it removes only broker custody, but it
 still requires current authority, an exact signed plan, durable-before-I/O
 admission, and a validated success receipt.
 
+After controller restart, only a fresh authenticated inventory result that
+classifies one exact local attempt as pending permits resumption. The controller
+loads that immutable attempt by request ID and current namespace target, checks
+the observed Mount handle, and reacquires the exact catalog commitment; release
+remains catalogless. It must reproduce the original signed plan and may attach a
+newer current ownership lease, but it preserves the admitted Apply body and its
+exclusive BOOTTIME deadline byte for byte. The original attempt record is not
+rewritten. Mount's request-ID and request-digest fence then resumes the already
+admitted operation or returns its completed receipt without allocating a second
+resource. An elapsed deadline or plan, changed catalog, stale namespace,
+equal-generation plan substitution, or lease rollback fails closed and does not
+authorize a replacement operation.
+
 An installed row is not immediately ready. The controller first commits an
 immutable post-attach verification record binding current desired state and
 namespace authority to Mount's complete kernel observation and installed

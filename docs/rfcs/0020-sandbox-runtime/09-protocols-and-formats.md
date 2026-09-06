@@ -684,9 +684,24 @@ lease, attenuates a local deadline, and commits the exact deadline-free template
 body, deadline-bearing Apply body, authorization packet, catalog commitment,
 and immutable namespace-allocation reference before returning a dispatch token.
 The token retains the live proof and cannot be cloned or recreated from journal
-bytes. On restart, authenticated inventory and fresh action preparation are
-required before replay; catalog-backed actions reacquire their catalog, and a
+bytes. On restart, authenticated inventory must first report the exact local
+request as pending. Catalog-backed actions then reacquire their catalog, and a
 durable packet or catalog digest alone is never descriptor authority.
+
+Pending resumption loads the immutable `AOSMTA02` record by request ID and exact
+current namespace-allocation reference, matches the Mount handle observed in
+inventory, and reconstructs preparation from the original deadline-free body.
+The reacquired catalog commitment must equal the durable commitment; release is
+reconstructed through the catalogless path. The exact original signed plan and
+signature must still verify under current controller trust and assignment state.
+An equal assignment generation cannot substitute another plan digest. A current
+ownership lease may replay exactly or advance monotonically, but it cannot roll
+back or equivocate. The controller injects only the original exclusive BOOTTIME
+deadline, requires the resulting Apply body to equal the durable bytes, leaves
+the original attempt record immutable, and emits a volatile envelope containing
+the reverified plan and current lease. An expired original deadline or plan,
+changed catalog or namespace state, missing durable attempt, or any semantic or
+body mismatch fails closed without issuing a new operation.
 
 For attachment reconciliation, the caller does not supply even that fence-free
 body. The controller consumes one closed action with its current desired record,
@@ -710,13 +725,18 @@ receipt-bound; only descriptor acquisition is omitted.
 
 The controller's Apply client negotiates Mount 1.2 with the signed-plan/lease
 feature and authenticates both the hello and result writers against the pinned
-Mount service execution. It sends only the exact packet already admitted above.
+Mount service execution. First issue sends the packet durably admitted above;
+pending resumption sends the same body and deadline under the exact plan with a
+current lease. Mount admits by request ID plus request digest, refreshes only
+permitted authority on a matching pending effect, resumes its worker without
+allocating a second resource, and returns an already completed receipt exactly.
 A successful `MountResult` must reproduce the attachment ID, current desired
 and addressed resource generations, logical source-view identity, optional
 local-live source incarnation, source consistency and generation, attachment
 lease ID and interval, view, action-specific state, and broker handle derived
 from or supplied by the exact Apply body. The controller commits that receipt
-in the versioned `AOSMTC01` Mount-completion record before returning it.
+against the original attempt in the versioned `AOSMTC01` Mount-completion record
+before returning it.
 A transport failure or broker error is not evidence of absence: Mount may retain
 a durable intermediate resource, so authoritative inventory still decides
 retry, adoption, or cleanup.

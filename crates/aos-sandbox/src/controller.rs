@@ -663,14 +663,15 @@ where
         attempt.recheck(self.reconciler.journal_mut(), clock)
     }
 
-    /// Dispatches one already durable current Mount attempt and records success.
+    /// Dispatches one already durable current Mount request and records success.
     ///
     /// The connected client authenticates the actual Mount hello and response
-    /// writers, sends the exact admitted packet, and validates the result
-    /// against its byte-exact Apply body. A successful receipt is committed
-    /// before this method returns it. Broker rejection or transport loss is not
-    /// treated as proof that no resource exists; recovery requires authoritative
-    /// Mount inventory.
+    /// writers, sends either the admission packet or an exact-plan envelope with
+    /// a current ownership lease and the admitted Apply body, and validates the
+    /// result against that body. A successful receipt is committed before this
+    /// method returns it. Broker rejection or transport loss is not treated as
+    /// proof that no resource exists; recovery requires authoritative Mount
+    /// inventory.
     ///
     /// # Errors
     ///
@@ -817,6 +818,142 @@ where
         )
     }
 
+    /// Reacquires live Mount preparation for one exact pending attachment attempt.
+    ///
+    /// The reconciliation must report `Wait` for a broker-authenticated pending
+    /// request. Recovery loads that request's immutable durable attempt, preserves
+    /// its request ID, deadline, and Apply body, and reacquires the same catalog
+    /// commitment. Release remains catalogless. The original deadline is never
+    /// renewed, so elapsed or substituted work fails closed.
+    ///
+    /// # Errors
+    ///
+    /// Rejects non-pending or stale reconciliation, missing or mismatched durable
+    /// attempt state, an action/input mismatch, expired authority, or a changed
+    /// live catalog, request, namespace target, or broker identity.
+    #[cfg(target_os = "linux")]
+    pub fn prepare_current_attachment_mount_resume<T>(
+        &mut self,
+        reconciliation: crate::CurrentAttachmentReconciliationV1,
+        input: crate::AttachmentMountPreparationInputV1,
+        clock: &mut T,
+    ) -> Result<crate::PreparedCurrentAttachmentMountResumeV1, crate::AttachmentMountError>
+    where
+        T: FnMut() -> Result<
+            RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        crate::attachment_mount::prepare_current_resume(
+            self.reconciler.journal_mut(),
+            reconciliation,
+            input,
+            clock,
+        )
+    }
+
+    /// Rechecks exact pending-attempt preparation without binding fresh authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed desired state, inventory, durable attempt bytes, live
+    /// target, reacquired catalog, or original deadline.
+    #[cfg(target_os = "linux")]
+    pub fn recheck_current_attachment_mount_resume<T>(
+        &mut self,
+        prepared: &crate::PreparedCurrentAttachmentMountResumeV1,
+        clock: &mut T,
+    ) -> Result<(), crate::AttachmentMountError>
+    where
+        T: FnMut() -> Result<
+            RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        prepared.recheck(self.reconciler.journal_mut(), clock)
+    }
+
+    /// Binds the exact original signed Mount plan to a pending request.
+    ///
+    /// The plan and signature must reproduce the original admission exactly and
+    /// remain live under the current assignment. A current ownership lease is
+    /// attached only when the resume token is constructed. Binding cannot change
+    /// the original Apply bytes or deadline.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale replay evidence, a substituted or unauthorized plan,
+    /// changed ownership authority, or an expired original deadline.
+    #[cfg(target_os = "linux")]
+    pub fn bind_current_attachment_mount_resume_plan<T>(
+        &mut self,
+        prepared: crate::PreparedCurrentAttachmentMountResumeV1,
+        signed_plan: crate::SignedBrokerPlan,
+        clock: &mut T,
+    ) -> Result<crate::PreparedCurrentAttachmentMountResumeDispatchV1, crate::AttachmentMountError>
+    where
+        T: FnMut() -> Result<
+            RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        crate::attachment_mount::bind_resume_signed_plan(
+            self.reconciler.journal_mut(),
+            prepared,
+            signed_plan,
+            clock,
+        )
+    }
+
+    /// Rechecks a signed pending-attempt resume without constructing its packet.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed desired, inventory, attempt, signed authority, catalog,
+    /// live target, or deadline evidence.
+    #[cfg(target_os = "linux")]
+    pub fn recheck_current_attachment_mount_resume_dispatch<T>(
+        &mut self,
+        prepared: &crate::PreparedCurrentAttachmentMountResumeDispatchV1,
+        clock: &mut T,
+    ) -> Result<(), crate::AttachmentMountError>
+    where
+        T: FnMut() -> Result<
+            RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        prepared.recheck(self.reconciler.journal_mut(), clock)
+    }
+
+    /// Constructs a refreshed packet for an already durable pending attempt.
+    ///
+    /// This transition writes no second admission. It re-verifies the current
+    /// ownership lease and exact signed plan, injects the original deadline into
+    /// the immutable body, and requires the resulting Apply body to equal the
+    /// admitted bytes exactly. The returned token uses the ordinary authenticated
+    /// dispatch and completion-recording path.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale or missing durable state, changed semantics, request bytes,
+    /// catalog or namespace authority, expired plan/lease/deadline, and corrupt
+    /// cross-referenced history.
+    #[cfg(target_os = "linux")]
+    pub fn resume_current_attachment_mount_attempt<T>(
+        &mut self,
+        prepared: crate::PreparedCurrentAttachmentMountResumeDispatchV1,
+        clock: &mut T,
+    ) -> Result<crate::DurableCurrentAttachmentMountAttemptV1, crate::AttachmentMountError>
+    where
+        T: FnMut() -> Result<
+            RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        crate::attachment_mount::resume_current(self.reconciler.journal_mut(), prepared, clock)
+    }
+
     /// Derives and prepares the exact Mount action selected by reconciliation.
     ///
     /// No protobuf intent comes from the caller. Create and publication fields
@@ -931,12 +1068,13 @@ where
         )
     }
 
-    /// Rechecks an admitted attachment Mount attempt without dispatching it.
+    /// Rechecks an admitted or resumed attachment Mount attempt without dispatch.
     ///
     /// # Errors
     ///
     /// Rejects changed desired state or lease status, stale live authority,
-    /// substituted durable bytes, and expired deadlines.
+    /// substituted durable bytes, and expired deadlines. A resumed token also
+    /// requires its authenticated pending inventory evidence to remain current.
     #[cfg(target_os = "linux")]
     pub fn recheck_current_attachment_mount_attempt<T>(
         &mut self,

@@ -1,8 +1,10 @@
 //! Authenticates Mount Apply replies and durably records exact success receipts.
 //!
-//! The controller transmits only an already durable attempt. A successful
-//! response is bound back to that attempt and committed before the live result
-//! token is returned. Transport errors and broker rejections are deliberately
+//! The controller transmits only an already durable Apply request. Initial issue
+//! uses its recorded packet; pending recovery may wrap the same body and deadline
+//! in the exact plan with a current ownership lease. A successful response is
+//! bound back to the original attempt and committed before the live result token
+//! is returned. Transport errors and broker rejections are deliberately
 //! non-terminal: the broker may already hold an intermediate durable resource,
 //! so authoritative inventory must decide recovery.
 
@@ -53,7 +55,7 @@ pub enum MountCompletionOutcomeV1 {
     Replay,
 }
 
-/// Owns one connected channel for an exact, already durable Mount Apply.
+/// Owns one connected channel for an exact, already durable Mount Apply body.
 pub struct MountDispatchClient {
     socket: DescriptorSubjectSocket,
     expected_mount: MountServiceIdentity,

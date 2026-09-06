@@ -518,6 +518,80 @@ fn request_identity_replays_only_byte_exact_attempts() {
 }
 
 #[test]
+fn pending_resume_refreshes_only_monotonic_ownership_lease_authority() {
+    let original = record();
+    let mut refreshed = original.clone();
+    refreshed.lease_digest = [33; 32];
+    refreshed.lease_generation += 1;
+    refreshed.packet = vec![34; refreshed.packet.len()];
+    refreshed.digest = [35; 32];
+
+    // Runtime candidates pass full packet validation before this comparison;
+    // the predicate deliberately ignores only their volatile envelope record.
+    assert!(original.matches_resumed_record(&refreshed));
+
+    let mut replayed = original.clone();
+    replayed.packet = vec![36; replayed.packet.len()];
+    replayed.digest = [37; 32];
+    assert!(original.matches_resumed_record(&replayed));
+
+    let mut changed_request = refreshed.clone();
+    changed_request.request_id = [38; 16];
+    let mut changed_target = refreshed.clone();
+    changed_target.namespace_target = DurableNamespaceTargetReferenceV1::from_parts(
+        SandboxId::from_bytes([38; 16]),
+        IncarnationId::from_bytes([2; 16]),
+        7,
+        [13; 32],
+        9,
+        [14; 32],
+    );
+    let mut changed_epoch = refreshed.clone();
+    changed_epoch.assignment_epoch += 1;
+    let mut changed_generation = refreshed.clone();
+    changed_generation.desired_generation += 1;
+    let mut changed_assignment = refreshed.clone();
+    changed_assignment.assignment_digest = [39; 32];
+    let mut changed_catalog = refreshed.clone();
+    changed_catalog.catalog_commitment = Some([40; 32]);
+    let mut changed_semantics = refreshed.clone();
+    changed_semantics.semantic_digest = [41; 32];
+    let mut changed_plan = refreshed.clone();
+    changed_plan.plan_digest = [42; 32];
+    let mut changed_template = refreshed.clone();
+    changed_template.template_digest = [43; 32];
+    let mut changed_deadline = refreshed.clone();
+    changed_deadline.deadline_boottime_nanoseconds += 1;
+    let mut changed_template_body = refreshed.clone();
+    changed_template_body.template_body.push(1);
+    let mut changed_body = refreshed.clone();
+    changed_body.body.push(1);
+    let mut stale_lease = refreshed.clone();
+    stale_lease.lease_generation = original.lease_generation - 1;
+    let mut equivocated_lease = refreshed;
+    equivocated_lease.lease_generation = original.lease_generation;
+
+    for changed in [
+        changed_request,
+        changed_target,
+        changed_epoch,
+        changed_generation,
+        changed_assignment,
+        changed_catalog,
+        changed_semantics,
+        changed_plan,
+        changed_template,
+        changed_deadline,
+        changed_template_body,
+        changed_body,
+        stale_lease,
+        equivocated_lease,
+    ] {
+        assert!(!original.matches_resumed_record(&changed));
+    }
+}
+
+#[test]
 fn fixed_count_and_byte_capacity_fail_closed() {
     let record = record();
     let full_records = (0..MAXIMUM_ATTEMPTS)

@@ -133,3 +133,78 @@ fn intent_rejects_release_and_invalid_mount_shapes() {
         Err(MountCatalogPreparationError::Protocol(_))
     ));
 }
+
+#[test]
+fn pending_replay_preserves_the_exact_body_and_original_deadline() {
+    let fence = AssignmentFence {
+        sandbox_id: vec![1; 16],
+        incarnation_id: vec![2; 16],
+        assignment_epoch: 3,
+        desired_generation: 4,
+        assignment_digest: vec![5; 32],
+        ..Default::default()
+    };
+    let deadline = transport::boottime()
+        .unwrap()
+        .checked_add(60_000_000_000)
+        .unwrap();
+    let maximum_deadline = deadline.checked_add(1).unwrap();
+    let mut request = create_intent();
+    request.header = Some(request_header(
+        MOUNT_VERSION,
+        Audience::AUDIENCE_NODE_CONTROLLER,
+        [6; 16],
+        0,
+    ))
+    .into();
+    request.fence = Some(fence.clone()).into();
+    request.namespace_generation = 7;
+    let body = request.encode_to_vec();
+
+    let (mut replay, action) =
+        decode_replay_mount_request(&body, deadline, maximum_deadline, &fence, 7).unwrap();
+    assert_eq!(action, MountAction::MOUNT_ACTION_CREATE_DETACHED);
+    assert_eq!(
+        replay
+            .header
+            .as_option()
+            .unwrap()
+            .deadline_boottime_nanoseconds,
+        deadline
+    );
+    replay
+        .header
+        .get_or_insert_default()
+        .deadline_boottime_nanoseconds = 0;
+    assert_eq!(replay.encode_to_vec(), body);
+
+    let mut with_deadline = request.clone();
+    with_deadline
+        .header
+        .get_or_insert_default()
+        .deadline_boottime_nanoseconds = deadline;
+    let mut wrong_fence = request.clone();
+    wrong_fence.fence.get_or_insert_default().assignment_epoch += 1;
+    let mut wrong_generation = request;
+    wrong_generation.namespace_generation += 1;
+    let mut trailing = body.clone();
+    trailing.push(0);
+
+    for changed in [
+        with_deadline.encode_to_vec(),
+        wrong_fence.encode_to_vec(),
+        wrong_generation.encode_to_vec(),
+        trailing,
+    ] {
+        assert!(matches!(
+            decode_replay_mount_request(&changed, deadline, maximum_deadline, &fence, 7),
+            Err(MountCatalogPreparationError::ReplayMismatch)
+        ));
+    }
+    for invalid_deadline in [0, maximum_deadline + 1] {
+        assert!(matches!(
+            decode_replay_mount_request(&body, invalid_deadline, maximum_deadline, &fence, 7),
+            Err(MountCatalogPreparationError::Deadline)
+        ));
+    }
+}
