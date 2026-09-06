@@ -686,6 +686,16 @@ bytes. On restart, authenticated inventory and a new catalog preparation are
 required before replay; a durable packet or catalog digest alone is never
 descriptor authority.
 
+The controller's Apply client negotiates Mount 1.2 with the signed-plan/lease
+feature and authenticates both the hello and result writers against the pinned
+Mount service execution. It sends only the exact packet already admitted above.
+A successful `MountResult` must reproduce the attachment, view, source
+generation, action-specific state, and broker handle derived from or supplied by
+the exact Apply body. The controller commits that receipt in the versioned
+`AOSMTC01` Mount-completion record before returning it. A transport failure or
+broker error is not evidence of absence: Mount may retain a durable intermediate
+resource, so authoritative inventory still decides retry, adoption, or cleanup.
+
 Caller role derives from peer credentials, socket activation, and the expected
 service-unit identity; a serialized role is descriptive only. Unknown
 operations, features, or FD roles fail before effects. An exact request replay

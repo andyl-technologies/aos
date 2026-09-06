@@ -7,7 +7,7 @@ use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_linux::inventory::{MountId, MountNamespace, MountObservation};
 use aos_sandbox_linux::mount::{DetachedMount, MountAttributes};
 use aos_sandbox_linux::pidfd::NamespaceIdentity;
-use aos_sandbox_protocol::ValidatedMountRequest;
+use aos_sandbox_protocol::{ValidatedMountRequest, detached_mount_handle_v1};
 
 use crate::catalog::{MountCatalog, ResolvedMountResources};
 use crate::host_scope::ObservedMountScope;
@@ -713,7 +713,7 @@ pub(crate) fn expected_handles(
 ) -> Result<EffectHandles> {
     let handles = match action {
         MountAction::MOUNT_ACTION_CREATE_DETACHED => EffectHandles {
-            detached: Some(derive_handle(b"detached", request_digest)),
+            detached: Some(detached_mount_handle_v1(request_digest)),
             installed: None,
         },
         MountAction::MOUNT_ACTION_INSTALL | MountAction::MOUNT_ACTION_REPLACE => EffectHandles {
@@ -730,16 +730,6 @@ pub(crate) fn expected_handles(
         },
     };
     Ok(handles)
-}
-
-fn derive_handle(label: &[u8], request_digest: [u8; 32]) -> [u8; 32] {
-    use sha2::{Digest as _, Sha256};
-
-    let mut digest = Sha256::new();
-    digest.update(b"aos.sandbox.mount.handle.v1\0");
-    digest.update(label);
-    digest.update(request_digest);
-    digest.finalize().into()
 }
 
 #[cfg(test)]

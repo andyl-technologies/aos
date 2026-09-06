@@ -21,7 +21,7 @@ use aos_sandbox_protocol::mount_catalog::{
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use aos_sandbox_protocol::{
     PeerCredentials, PeerPolicy, ValidatedMountAttributes, ValidatedMountRequest,
-    decode_mount_request,
+    decode_mount_request, detached_mount_handle_v1,
 };
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
@@ -752,7 +752,7 @@ fn allocated_resource(
     let descriptor = request.view_revision().ok_or_else(|| {
         MountError::State("create request lost validated view descriptor".to_owned())
     })?;
-    let handle = derive_handle(b"detached", request_digest);
+    let handle = detached_mount_handle_v1(request_digest);
     Ok(MountResourceV1 {
         handle,
         fd_store_key: canonical_fd_store_key(handle),
@@ -892,7 +892,7 @@ fn replacement_predecessor<'a>(
 
 fn operation_handle(request: &ValidatedMountRequest, request_digest: [u8; 32]) -> Result<[u8; 32]> {
     if request.action() == MountAction::MOUNT_ACTION_CREATE_DETACHED {
-        Ok(derive_handle(b"detached", request_digest))
+        Ok(detached_mount_handle_v1(request_digest))
     } else {
         request
             .detached_mount_handle()
@@ -909,14 +909,6 @@ fn operation_correlation(
         operation_id: *request.header().request_id(),
         request_digest,
     }
-}
-
-fn derive_handle(label: &[u8], request_digest: [u8; 32]) -> [u8; 32] {
-    let mut digest = Sha256::new();
-    digest.update(b"aos.sandbox.mount.handle.v1\0");
-    digest.update(label);
-    digest.update(request_digest);
-    digest.finalize().into()
 }
 
 fn installed_mount_id(resource: &MountResourceV1) -> Result<u64> {
@@ -2833,7 +2825,7 @@ mod tests {
         let path = directory.path().join("mount.journal");
         let (mut broker, fixture) = test_broker(open(&path), ScriptedWorker::default());
         let create = request(40);
-        let handle = derive_handle(b"detached", Sha256::digest(&create).into());
+        let handle = detached_mount_handle_v1(Sha256::digest(&create).into());
         let release = action_request(
             41,
             1,
@@ -2909,7 +2901,7 @@ mod tests {
             None,
             None,
         );
-        let predecessor = derive_handle(b"detached", Sha256::digest(&create_predecessor).into());
+        let predecessor = detached_mount_handle_v1(Sha256::digest(&create_predecessor).into());
         let install_predecessor = action_request(
             21,
             1,
@@ -2926,7 +2918,7 @@ mod tests {
             None,
             None,
         );
-        let successor = derive_handle(b"detached", Sha256::digest(&create_successor).into());
+        let successor = detached_mount_handle_v1(Sha256::digest(&create_successor).into());
         let replace = action_request(
             23,
             2,
@@ -2982,7 +2974,7 @@ mod tests {
             None,
             None,
         );
-        let predecessor = derive_handle(b"detached", Sha256::digest(&create_predecessor).into());
+        let predecessor = detached_mount_handle_v1(Sha256::digest(&create_predecessor).into());
         let install_predecessor = action_request(
             51,
             1,
@@ -2999,7 +2991,7 @@ mod tests {
             None,
             None,
         );
-        let successor = derive_handle(b"detached", Sha256::digest(&create_successor).into());
+        let successor = detached_mount_handle_v1(Sha256::digest(&create_successor).into());
         let replace = action_request(
             53,
             2,

@@ -1195,6 +1195,20 @@ where
                     "mount attempts require Linux validation",
                 ));
             }
+            if self
+                .journal
+                .records(RecordNamespace::MountCompletion)
+                .next()
+                .is_some()
+            {
+                #[cfg(target_os = "linux")]
+                crate::mount_attempt::validate_completion_namespace(&mut self.journal)
+                    .map_err(|error| ReconcilerError::MountAttempt(Box::new(error)))?;
+                #[cfg(not(target_os = "linux"))]
+                return Err(ReconcilerError::CorruptLedger(
+                    "mount completions require Linux validation",
+                ));
+            }
             self.ledger_validated = true;
         }
         Ok(())

@@ -12,6 +12,7 @@
 pub mod fencing;
 pub mod inventory;
 pub mod mount_catalog;
+mod mount_result;
 pub mod mount_scope;
 pub mod payload_scope;
 pub mod semantics;
@@ -23,6 +24,9 @@ pub use inventory::{
     ValidatedMountKernelObservation, ValidatedMountOperationCorrelation,
     ValidatedMountPublicationCorrelation, ValidatedMountRecipe, decode_mount_inventory_request,
     decode_mount_inventory_response,
+};
+pub use mount_result::{
+    ValidatedMountResult, decode_mount_result_for_apply, detached_mount_handle_v1,
 };
 
 mod runtime_template;

@@ -2648,3 +2648,38 @@ Rust formatting, and diff checks. The hermetic `checks.eval` gate passes its
 release build, full workspace test phase, configuration evaluation, and system
 structure checks. No live Mount dispatch or attachment VM qualification is
 claimed by this admission-only increment.
+
+### Authenticated Mount Apply and durable success correlation
+
+The controller can now transmit an already durable current Mount attempt over a
+single-use Mount 1.2 client. The client requires signed-plan/lease negotiation,
+authenticates the actual hello and response writers against the configured
+service cgroup and credentials, and sends the byte-exact admitted authorization
+packet. Successful `MountResult` decoding rejects unknown fields, inner errors,
+Apply-body substitution, and every mismatched attachment, view, source
+generation, state, or handle. CREATE handle derivation is shared by the
+protocol validator and privileged broker so the two sides cannot drift.
+
+Successful responses enter journal namespace 14 as bounded, digest-protected
+`AOSMTC01` records that cross-reference the exact `AOSMTA01` attempt digest.
+The controller commits and reloads this receipt before returning a non-cloneable
+live completion token, then rechecks current namespace authority. Completion
+corruption or an orphaned result blocks ordinary reconciliation before executor
+access. An exact re-dispatch replays only the same success bytes.
+
+This is success correlation, not attachment readiness. A request can become
+durable inside Mount and then lose its reply or return a retryable backend
+error. Such outcomes remain non-terminal and require the separately
+authenticated resource inventory and attachment desired-state reconciler still
+to be implemented; no absence, rollback, or cleanup inference is made from the
+transport result alone.
+
+Validation passes all 289 sandbox unit tests, its downstream public API test
+and 14 doctests; all 73 protocol unit tests and its doctest; and all 62 default
+Mount broker unit tests with one test thread. Strict all-target/all-feature
+Clippy passes for all three changed crates. The Mount crate's all-feature run
+also reaches its root-only Host scope fixture, whose explicit non-root guard
+rejects this development environment; that VM-only exchange is not claimed as
+positive evidence here. The hermetic `checks.eval` gate passes its release
+build, full workspace tests, configuration evaluation, and system structure
+checks.

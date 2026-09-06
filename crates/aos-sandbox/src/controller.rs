@@ -610,6 +610,41 @@ where
         attempt.recheck(self.reconciler.journal_mut(), clock)
     }
 
+    /// Dispatches one already durable current Mount attempt and records success.
+    ///
+    /// The connected client authenticates the actual Mount hello and response
+    /// writers, sends the exact admitted packet, and validates the result
+    /// against its byte-exact Apply body. A successful receipt is committed
+    /// before this method returns it. Broker rejection or transport loss is not
+    /// treated as proof that no resource exists; recovery requires authoritative
+    /// Mount inventory.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale live authority, substituted durable state, service
+    /// identity or negotiation failure, malformed or mismatched results,
+    /// conflicting completion replay, capacity, and failed durable commits.
+    #[cfg(target_os = "linux")]
+    pub fn dispatch_current_mount_attempt<T>(
+        &mut self,
+        attempt: crate::mount_attempt::DurableCurrentMountAttemptV1,
+        client: crate::mount_attempt::MountDispatchClient,
+        clock: &mut T,
+    ) -> Result<crate::mount_attempt::CompletedCurrentMountAttemptV1, crate::MountAttemptError>
+    where
+        T: FnMut() -> Result<
+            RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        crate::mount_attempt::dispatch_current(
+            self.reconciler.journal_mut(),
+            attempt,
+            client,
+            clock,
+        )
+    }
+
     /// Issues a local holder channel from an acquired current-runtime scope.
     ///
     /// The complete Host and payload proof moves into the live session. Scope

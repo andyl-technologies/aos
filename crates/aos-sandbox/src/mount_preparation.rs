@@ -52,7 +52,7 @@ use crate::runtime_scope::{
 };
 use crate::{BrokerDispatchTemplateError, BrokerDispatchTemplateV1, SignedBrokerPlan};
 
-mod transport;
+pub(crate) mod transport;
 
 const MOUNT_VERSION: ProtocolVersion = ProtocolVersion::new(1, 2);
 const HOST_VERSION: ProtocolVersion = ProtocolVersion::new(1, 3);
@@ -584,13 +584,13 @@ fn local_credentials() -> PeerCredentials {
     }
 }
 
-struct ServiceExecution {
+pub(crate) struct ServiceExecution {
     subject: KernelAuthorizedRecordSubject,
     info: PidFdInfo,
 }
 
 impl ServiceExecution {
-    fn new(
+    pub(crate) fn new(
         expected: &MountServiceIdentity,
         subject: KernelAuthorizedRecordSubject,
     ) -> Result<Self, MountCatalogPreparationError> {
@@ -598,7 +598,7 @@ impl ServiceExecution {
         Ok(Self { subject, info })
     }
 
-    fn recheck(
+    pub(crate) fn recheck(
         &self,
         expected: &MountServiceIdentity,
     ) -> Result<PidFdInfo, MountCatalogPreparationError> {
@@ -609,7 +609,7 @@ impl ServiceExecution {
         Ok(fresh)
     }
 
-    fn validate_response(
+    pub(crate) fn validate_response(
         &self,
         expected: &MountServiceIdentity,
         subject: &KernelAuthorizedRecordSubject,

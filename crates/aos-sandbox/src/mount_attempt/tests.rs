@@ -8,7 +8,8 @@
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
 use aos_proto::aos::sandbox::local::v1::{
-    ApplyMountRequest, AssignmentFence, Descriptor, MountAttributes, RequestHeader,
+    ApplyMountRequest, AssignmentFence, Descriptor, MountAttributes, MountResult, MountState,
+    RequestHeader,
 };
 use aos_sandbox_core::format::{encode_ownership_lease, encode_signature, encode_trust_policy};
 use aos_sandbox_core::model::{
@@ -309,6 +310,27 @@ fn journal() -> (tempfile::TempDir, Journal) {
     (directory, journal)
 }
 
+fn successful_receipt(record: &Record) -> Vec<u8> {
+    let request = decode_attempt_body(&record.body, record.deadline_boottime_nanoseconds).unwrap();
+    let request_digest = Sha256::digest(&record.body);
+    let detached_handle = aos_sandbox_protocol::detached_mount_handle_v1(request_digest.into());
+    let view_revision = request.view_revision().map(|descriptor| Descriptor {
+        media_type: descriptor.media_type().as_str().to_owned(),
+        sha256: descriptor.digest().as_bytes().to_vec(),
+        encoded_size: descriptor.encoded_size(),
+        ..Default::default()
+    });
+    MountResult {
+        attachment_id: request.attachment_id().to_vec(),
+        detached_mount_handle: detached_handle.to_vec(),
+        view_revision: view_revision.into(),
+        source_generation: request.source_generation(),
+        state: MountState::MOUNT_STATE_DETACHED.into(),
+        ..Default::default()
+    }
+    .encode_to_vec()
+}
+
 #[test]
 fn codec_preserves_one_exact_self_consistent_attempt() {
     let record = record();
@@ -478,6 +500,83 @@ fn corrupt_attempt_blocks_reconciliation_before_executor_access() {
             .unwrap(),
         )
         .unwrap();
+    let mut reconciler = Reconciler::new(journal, NoEffects);
+
+    assert!(matches!(
+        reconciler.reconcile_next(),
+        Err(crate::ReconcilerError::MountAttempt(error))
+            if matches!(*error, MountAttemptError::CorruptState)
+    ));
+}
+
+#[test]
+fn completion_codec_binds_one_exact_success_receipt() {
+    let attempt = record();
+    let receipt = successful_receipt(&attempt);
+    let (completion, result) =
+        completion::CompletionRecord::from_attempt(&attempt, receipt).unwrap();
+    let encoded = completion.encode();
+
+    assert_eq!(result.state(), MountState::MOUNT_STATE_DETACHED);
+    assert_eq!(encoded.len(), completion.encoded_len());
+    assert_eq!(
+        completion::CompletionRecord::decode(&encoded).unwrap(),
+        completion
+    );
+    assert_eq!(completion.key(), [vec![b'c'], vec![10; 16]].concat());
+}
+
+#[test]
+fn completion_codec_rejects_every_changed_or_truncated_byte() {
+    let attempt = record();
+    let (completion, _) =
+        completion::CompletionRecord::from_attempt(&attempt, successful_receipt(&attempt)).unwrap();
+    let encoded = completion.encode();
+
+    for index in 0..encoded.len() {
+        let mut changed = encoded.clone();
+        changed[index] ^= 1;
+        assert!(
+            completion::CompletionRecord::decode(&changed).is_err(),
+            "changed byte {index}"
+        );
+        assert!(
+            completion::CompletionRecord::decode(&encoded[..index]).is_err(),
+            "length {index}"
+        );
+    }
+}
+
+#[test]
+fn completion_replay_conflicts_on_any_different_success_bytes() {
+    let attempt = record();
+    let (completion, _) =
+        completion::CompletionRecord::from_attempt(&attempt, successful_receipt(&attempt)).unwrap();
+    let history = completion::CompletionHistory {
+        records: BTreeMap::from([(completion.request_id, completion.clone())]),
+        retained_bytes: completion.encoded_len() + completion.key().len(),
+    };
+    assert_eq!(
+        history.outcome(&completion).unwrap(),
+        Some(MountCompletionOutcomeV1::Replay)
+    );
+
+    let mut conflicting = completion;
+    conflicting.receipt.push(0);
+    conflicting.digest = conflicting.compute_digest();
+    assert!(matches!(
+        history.outcome(&conflicting),
+        Err(MountAttemptError::Conflict)
+    ));
+}
+
+#[test]
+fn orphaned_completion_blocks_reconciliation_before_executor_access() {
+    let (_directory, mut journal) = journal();
+    let attempt = record();
+    let (completion, _) =
+        completion::CompletionRecord::from_attempt(&attempt, successful_receipt(&attempt)).unwrap();
+    journal.commit(&completion.transaction().unwrap()).unwrap();
     let mut reconciler = Reconciler::new(journal, NoEffects);
 
     assert!(matches!(

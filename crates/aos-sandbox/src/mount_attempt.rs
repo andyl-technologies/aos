@@ -28,6 +28,7 @@ use aos_sandbox_core::{
     BrokerAudience, DecodeLimits, MediaType, ObjectDigest, PortableMediaType, ProtocolId,
     ProtocolVersion, RawPairedClockSample, descriptor_for_bytes,
 };
+use aos_sandbox_linux::seqpacket::SeqpacketError;
 use aos_sandbox_protocol::semantics::mount::{MountCatalogBindingV1, canonical_mount_semantics_v1};
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use aos_sandbox_protocol::{
@@ -49,9 +50,17 @@ use crate::runtime_scope::{
 };
 use crate::{Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace};
 
+mod completion;
 mod format;
 #[cfg(test)]
 mod tests;
+
+pub use completion::{
+    CompletedCurrentMountAttemptV1, MountCompletionOutcomeV1, MountDispatchClient,
+};
+pub(crate) use completion::{
+    dispatch_current, validate_namespace as validate_completion_namespace,
+};
 
 const NAMESPACE: RecordNamespace = RecordNamespace::MountAttempt;
 const MOUNT_CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(1, 2);
@@ -77,6 +86,26 @@ pub enum MountAttemptError {
     /// The requested attempt deadline exceeds the prepared catalog lifetime.
     #[error("mount attempt deadline exceeds the prepared catalog lifetime")]
     Deadline,
+    /// The responding process is not the configured live Mount service execution.
+    #[error("Mount Apply response does not match the pinned Mount service")]
+    MountIdentity,
+    /// Mount rejected or could not complete the already admitted request.
+    #[error("Mount rejected the admitted request with {code:?} (retryable: {retryable})")]
+    BrokerRejected {
+        /// Closed broker error code.
+        code: aos_proto::aos::sandbox::local::v1::BrokerErrorCode,
+        /// Whether the same semantics may succeed on a later attempt.
+        retryable: bool,
+    },
+    /// Negotiated envelopes or the Mount result failed validation.
+    #[error(transparent)]
+    Protocol(#[from] aos_sandbox_protocol::ProtocolValidationError),
+    /// Kernel record-subject validation or packet transfer failed.
+    #[error(transparent)]
+    Transport(#[from] SeqpacketError),
+    /// Kernel service identity or cgroup validation failed.
+    #[error(transparent)]
+    Kernel(#[from] aos_sandbox_linux::Error),
     /// Volatile catalog preparation is stale, expired, or otherwise invalid.
     #[error(transparent)]
     Preparation(#[from] MountCatalogPreparationError),

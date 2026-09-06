@@ -10,7 +10,7 @@ use super::MountCatalogPreparationError;
 
 const EXCHANGE_NANOSECONDS: u64 = 10_000_000_000;
 
-pub(super) fn boottime() -> Result<u64, MountCatalogPreparationError> {
+pub(crate) fn boottime() -> Result<u64, MountCatalogPreparationError> {
     let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
     let seconds = u64::try_from(now.tv_sec).map_err(|_| MountCatalogPreparationError::Deadline)?;
     let nanos = u64::try_from(now.tv_nsec).map_err(|_| MountCatalogPreparationError::Deadline)?;
@@ -20,7 +20,7 @@ pub(super) fn boottime() -> Result<u64, MountCatalogPreparationError> {
         .ok_or(MountCatalogPreparationError::Deadline)
 }
 
-pub(super) fn exchange_deadline(request: u64) -> Result<u64, MountCatalogPreparationError> {
+pub(crate) fn exchange_deadline(request: u64) -> Result<u64, MountCatalogPreparationError> {
     let now = boottime()?;
     if now >= request {
         return Err(MountCatalogPreparationError::Deadline);
@@ -31,14 +31,14 @@ pub(super) fn exchange_deadline(request: u64) -> Result<u64, MountCatalogPrepara
     ))
 }
 
-pub(super) fn check_deadline(deadline: u64) -> Result<(), MountCatalogPreparationError> {
+pub(crate) fn check_deadline(deadline: u64) -> Result<(), MountCatalogPreparationError> {
     if boottime()? >= deadline {
         return Err(MountCatalogPreparationError::Deadline);
     }
     Ok(())
 }
 
-pub(super) fn send(
+pub(crate) fn send(
     socket: &mut DescriptorSubjectSocket,
     bytes: &[u8],
     deadline: u64,
@@ -54,7 +54,7 @@ pub(super) fn send(
     }
 }
 
-pub(super) fn receive(
+pub(crate) fn receive(
     socket: &mut DescriptorSubjectSocket,
     maximum_bytes: usize,
     deadline: u64,
