@@ -472,6 +472,23 @@ remaining engineering-hygiene findings
 are separate from the passing standalone source-size guard above; no complete
 packaging or release-gate closure is claimed.
 
+A sweep of every `checks.crucible` attribute, evaluated under `tryEval` on
+this branch and on a detached `origin/master` worktree, separated the gates
+this branch had broken from the ones master already fails. The branch's share
+is repaired: version literals follow the bumped shmem ABI, event-kind
+catalog, golden-vector, block-wire, plugin-API, and doorbell-frame constants;
+the package-set gates know the campaign, Linux resource, S3 store, and debug
+gateway crates and read RFC-0020 spec-index references; gates whose needles
+moved into split modules read the module tree through
+`_rust-module-source.nix`; the RFC-0010 11.3 patch catalog carries a row for
+every shipped patch with manifest-matching classes and tokens; and the
+control-plane and single-scheduler boundary gates follow 04a's daemon-hosted
+executor. Four failures found on master too were fixed here because they
+blocked evaluation outright: the phase-0 aarch64 kernel source import, the
+phase-1 workspace build's missing `gdb`, and the phase-0 S12/S14 checks that
+copied a developer's whole cargo target directory into the store.
+The sweep started from 107 failing attributes on the branch against 66 on master before master's evaluation aborted in its phase 7 packaging checks. After the repairs the branch fails 56: 54 that master fails too, among them the eleven `phase1.spatial*` gates whose model items exist in neither tree, the engineering-hygiene file-size findings, and the phase 6 debug and triage gates that name an ADV-28 wording neither chapter carries; the reproduction-artifact format gate, whose inputs are byte-identical to master's; and `referenceIntegrity`, which only reports that those checks do not evaluate. Twelve gates master fails now pass here. The shared failures are master debt and stay out of this branch's scope.
+
 The live-network adversary now prepares both its controller and independent
 resume watchdog before the caller publishes guest work. A readiness handshake
 removes thread creation from the publication-to-first-stop interval; the
