@@ -3057,3 +3057,36 @@ evaluation, and system-structure checks. This advances `SBX-VIEW-01` but does
 not complete it: portable-spec declaration proof, node-local resolution to a
 broker-owned pinned destination descriptor, slot materialization and reaping,
 lease-expiry scheduling, and live Mount namespace VM qualification remain.
+
+### Portable sandbox-spec declaration authority
+
+The controller can now publish and retrieve the canonical portable sandbox
+specification named by assignment authority. Journal namespace 20 stores a
+bounded, immutable `AOSSPS01` record keyed by the specification's exact
+domain-separated object digest and encoded size. Each record retains canonical
+specification bytes, their decoded semantics, operation identity, normalized
+request digest, and an independently checked record digest. Exact replays
+survive restart and compaction; descriptor collisions, operation reuse,
+noncanonical bytes, malformed records, and count or retained-byte exhaustion
+fail closed before new state is admitted.
+
+Destination-slot records advance to the fixed-size `AOSSLT02` schema. Creation
+derives the sandbox-spec descriptor from the retained current namespace target,
+requires that exact published specification to declare the slot ID, and binds
+the descriptor beside the sandbox, incarnation, and namespace generation.
+Release preserves the creation descriptor even when assignment authority has
+since advanced to another specification. Restart validation checks every
+historical slot creation against the immutable specification ledger in one
+bounded scan, so a missing, rewritten, or non-declaring specification blocks
+ordinary reconciliation before executor or broker I/O.
+
+Focused validation passes all 356 sandbox unit tests, five downstream public
+API tests, and 14 doctests with one test thread. Strict all-target/all-feature
+crate-local Clippy with warnings denied, warnings-as-errors rustdoc, targeted
+Rust formatting, and diff checks pass. The hermetic
+`nix-build -A checks.eval --cores 8` gate passes the release build, all 4,674
+workspace tests with five skipped, configuration evaluation, and
+system-structure checks. This closes the portable-spec declaration-proof
+portion of `SBX-VIEW-01`; node-local resolution to a broker-owned pinned
+destination descriptor, slot materialization and reaping, lease-expiry
+scheduling, and live Mount namespace VM qualification remain.

@@ -428,13 +428,52 @@ where
         target.recheck(self.reconciler.journal_mut(), clock)
     }
 
+    /// Publishes one canonical portable sandbox specification by content identity.
+    ///
+    /// Publication retains the exact canonical bytes needed to prove later
+    /// destination-slot declarations. It does not create a sandbox, select an
+    /// assignment, or grant runtime or broker authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid publication metadata, content or operation conflicts,
+    /// corrupt or exhausted history, and failed durable commits.
+    pub fn publish_sandbox_spec(
+        &mut self,
+        publication: crate::SandboxSpecPublicationV1,
+    ) -> Result<
+        (
+            crate::DurableSandboxSpecV1,
+            crate::SandboxSpecCommitOutcomeV1,
+        ),
+        crate::SandboxSpecStateError,
+    > {
+        crate::sandbox_spec_state::commit(self.reconciler.journal_mut(), publication)
+    }
+
+    /// Loads one validated canonical sandbox specification by exact descriptor.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an invalid descriptor, corrupt or exhausted specification
+    /// history, and journal health failures observed before lookup.
+    pub fn sandbox_spec(
+        &mut self,
+        descriptor: &aos_sandbox_core::ObjectDescriptor,
+    ) -> Result<Option<crate::DurableSandboxSpecV1>, crate::SandboxSpecStateError> {
+        let journal = self.reconciler.journal_mut();
+        journal.ensure_healthy()?;
+        crate::sandbox_spec_state::get(journal, descriptor)
+    }
+
     /// Commits one destination-slot creation or release while its target is current.
     ///
-    /// The controller derives the immutable sandbox, incarnation, and namespace
-    /// binding from the retained target. The slot is logical desired state: it
-    /// carries no path or descriptor and grants no Mount authority. Release is
-    /// permanent and waits for attachment intent and authenticated Mount
-    /// inventory to prove the slot drained.
+    /// The controller derives the immutable sandbox, incarnation, namespace,
+    /// and portable specification binding from the retained target. Creation
+    /// requires that exact published specification to declare the slot. The
+    /// slot carries no path or OS descriptor and grants no Mount authority.
+    /// Release is permanent and waits for attachment intent and authenticated
+    /// Mount inventory to prove the slot drained.
     ///
     /// # Errors
     ///

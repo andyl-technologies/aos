@@ -118,6 +118,8 @@ pub enum RecordNamespace {
     FilesystemViewRevision = 18,
     /// Namespace-bound logical destination slots for filesystem attachments.
     AttachmentSlot = 19,
+    /// Canonical portable sandbox specifications indexed by content identity.
+    SandboxSpec = 20,
 }
 
 impl RecordNamespace {
@@ -142,6 +144,7 @@ impl RecordNamespace {
             17 => Ok(Self::AttachmentVerification),
             18 => Ok(Self::FilesystemViewRevision),
             19 => Ok(Self::AttachmentSlot),
+            20 => Ok(Self::SandboxSpec),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }
@@ -1904,13 +1907,14 @@ mod tests {
             RecordNamespace::AttachmentVerification,
             RecordNamespace::FilesystemViewRevision,
             RecordNamespace::AttachmentSlot,
+            RecordNamespace::SandboxSpec,
         ];
         for (index, namespace) in namespaces.into_iter().enumerate() {
             let code = u8::try_from(index + 1).unwrap();
             assert_eq!(namespace as u8, code);
             assert_eq!(RecordNamespace::from_byte(code).unwrap(), namespace);
         }
-        for code in [0, 20, 255] {
+        for code in [0, 21, 255] {
             assert!(RecordNamespace::from_byte(code).is_err());
         }
     }

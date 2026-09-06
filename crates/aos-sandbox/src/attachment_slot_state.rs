@@ -5,22 +5,24 @@
 //! its optional successor is a permanent release tombstone:
 //!
 //! ```text
-//! AOSSLT01 | presence:1 | flags:1 | reserved:2 | slot-id:16 |
+//! AOSSLT02 | presence:1 | flags:1 | reserved:2 | slot-id:16 |
 //! revision:8 | sandbox-id:16 | incarnation-id:16 |
-//! namespace-generation:8 | operation-id:16 | request-digest:32 |
-//! predecessor-digest:32 | digest:32
+//! namespace-generation:8 | sandbox-spec-digest:32 | sandbox-spec-size:8 |
+//! operation-id:16 | request-digest:32 | predecessor-digest:32 | digest:32
 //! ```
 //!
-//! The record contains no destination path or OS descriptor. A separately
-//! authorized node-local catalog must resolve the logical slot and prove its
-//! pinned kernel identity before Mount may publish into it.
+//! The portable specification descriptor proves that current assignment
+//! authority declared the logical slot. The record contains no destination
+//! path or OS descriptor. A separately authorized node-local catalog must
+//! resolve the slot and prove its pinned kernel identity before Mount may
+//! publish into it.
 
 use std::collections::BTreeMap;
 
 use aos_sandbox_core::model::AttachmentIntent;
 use aos_sandbox_core::{
-    AttachmentSlotId, IncarnationId, ObjectDigest, OperationId, RawPairedClockSample, Revision,
-    SandboxId,
+    AttachmentSlotId, IncarnationId, MediaType, ObjectDescriptor, ObjectDigest, OperationId,
+    PortableMediaType, RawPairedClockSample, Revision, SandboxId,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -28,10 +30,10 @@ use crate::ownership_authority::ProtectedOwnershipClockError;
 use crate::runtime_scope::{CurrentNamespaceTarget, NamespaceTargetError};
 use crate::{Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace};
 
-const MAGIC: &[u8; 8] = b"AOSSLT01";
-const DOMAIN: &[u8] = b"aos.sandbox.attachment-slot.v1\0";
-const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.attachment-slot.transaction.v1\0";
-const RECORD_BYTES: usize = 188;
+const MAGIC: &[u8; 8] = b"AOSSLT02";
+const DOMAIN: &[u8] = b"aos.sandbox.attachment-slot.v2\0";
+const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.attachment-slot.transaction.v2\0";
+const RECORD_BYTES: usize = 228;
 const FLAG_EXPECTED_PREVIOUS: u8 = 1;
 const MAXIMUM_SLOT_RECORDS: usize = 65_536;
 const MAXIMUM_NAMESPACE_BYTES: usize = 32 * 1024 * 1024;
@@ -177,6 +179,12 @@ impl DurableAttachmentSlotV1 {
         self.record.binding.namespace_generation
     }
 
+    /// Borrows the exact portable specification that declared this slot.
+    #[must_use]
+    pub const fn sandbox_spec(&self) -> &ObjectDescriptor {
+        &self.record.sandbox_spec
+    }
+
     /// Returns the operation that committed this revision.
     #[must_use]
     pub const fn operation_id(&self) -> OperationId {
@@ -298,6 +306,7 @@ struct Record {
     slot_id: AttachmentSlotId,
     revision: Revision,
     binding: SlotBinding,
+    sandbox_spec: ObjectDescriptor,
     operation_id: OperationId,
     request_digest: ObjectDigest,
     expected_previous: Option<ObjectDigest>,
@@ -305,12 +314,17 @@ struct Record {
 }
 
 impl Record {
-    fn new(mutation: &AttachmentSlotMutationV1, binding: SlotBinding) -> Self {
+    fn new(
+        mutation: &AttachmentSlotMutationV1,
+        binding: SlotBinding,
+        sandbox_spec: ObjectDescriptor,
+    ) -> Self {
         let mut record = Self {
             presence: mutation.presence,
             slot_id: mutation.slot_id,
             revision: mutation.revision,
             binding,
+            sandbox_spec,
             operation_id: mutation.operation_id,
             request_digest: mutation.request_digest,
             expected_previous: mutation.expected_previous,
@@ -336,6 +350,8 @@ impl Record {
         digest.update(self.binding.sandbox.as_bytes());
         digest.update(self.binding.incarnation.as_bytes());
         digest.update(self.binding.namespace_generation.to_be_bytes());
+        digest.update(self.sandbox_spec.digest().as_bytes());
+        digest.update(self.sandbox_spec.encoded_size().to_be_bytes());
         digest.update(self.operation_id.as_bytes());
         digest.update(self.request_digest.as_bytes());
         digest.update([u8::from(self.expected_previous.is_some())]);
@@ -348,6 +364,8 @@ impl Record {
 
     fn validate(&self) -> Result<(), AttachmentSlotStateError> {
         self.binding.validate()?;
+        crate::sandbox_spec_state::validate_spec_descriptor(&self.sandbox_spec)
+            .map_err(|_| AttachmentSlotStateError::CorruptState)?;
         if self.slot_id.as_bytes() == &[0; 16]
             || self.revision.get() == 0
             || self.operation_id.as_bytes() == &[0; 16]
@@ -377,6 +395,8 @@ impl Record {
         bytes.extend_from_slice(self.binding.sandbox.as_bytes());
         bytes.extend_from_slice(self.binding.incarnation.as_bytes());
         bytes.extend_from_slice(&self.binding.namespace_generation.to_be_bytes());
+        bytes.extend_from_slice(self.sandbox_spec.digest().as_bytes());
+        bytes.extend_from_slice(&self.sandbox_spec.encoded_size().to_be_bytes());
         bytes.extend_from_slice(self.operation_id.as_bytes());
         bytes.extend_from_slice(self.request_digest.as_bytes());
         bytes.extend_from_slice(
@@ -409,6 +429,10 @@ impl Record {
             incarnation: IncarnationId::from_bytes(take(&mut bytes)?),
             namespace_generation: u64::from_be_bytes(take(&mut bytes)?),
         };
+        let sandbox_spec = sandbox_spec_descriptor(
+            ObjectDigest::from_bytes(take(&mut bytes)?),
+            u64::from_be_bytes(take(&mut bytes)?),
+        )?;
         let operation_id = OperationId::from_bytes(take(&mut bytes)?);
         let request_digest = ObjectDigest::from_bytes(take(&mut bytes)?);
         let expected_previous_bytes = take::<32>(&mut bytes)?;
@@ -428,6 +452,7 @@ impl Record {
             slot_id,
             revision,
             binding,
+            sandbox_spec,
             operation_id,
             request_digest,
             expected_previous,
@@ -520,6 +545,17 @@ impl History {
             history.current.insert(*slot_id, record.clone());
         }
 
+        crate::sandbox_spec_state::validate_historical_slot_declarations(
+            journal,
+            history
+                .revisions
+                .iter()
+                .filter_map(|((_, revision), record)| {
+                    (*revision == 1).then_some((&record.sandbox_spec, record.slot_id))
+                }),
+        )
+        .map_err(|_| AttachmentSlotStateError::CorruptState)?;
+
         Ok(history)
     }
 
@@ -527,12 +563,15 @@ impl History {
         &self,
         mutation: &AttachmentSlotMutationV1,
         binding: SlotBinding,
+        sandbox_spec: &ObjectDescriptor,
     ) -> Result<(Record, AttachmentSlotCommitOutcomeV1), AttachmentSlotStateError> {
         binding.validate()?;
-        let proposed = Record::new(mutation, binding);
-        proposed.validate()?;
 
         let Some(current) = self.current.get(&mutation.slot_id) else {
+            crate::sandbox_spec_state::validate_spec_descriptor(sandbox_spec)
+                .map_err(|_| AttachmentSlotStateError::Conflict)?;
+            let proposed = Record::new(mutation, binding, sandbox_spec.clone());
+            proposed.validate()?;
             if mutation.presence != AttachmentSlotPresenceV1::Available
                 || mutation.revision.get() != 1
                 || mutation.expected_previous.is_some()
@@ -544,6 +583,10 @@ impl History {
             return Ok((proposed, AttachmentSlotCommitOutcomeV1::Recorded));
         };
 
+        // Release tombstones preserve the creation declaration rather than
+        // accepting a later assignment's replacement descriptor.
+        let proposed = Record::new(mutation, binding, current.sandbox_spec.clone());
+        proposed.validate()?;
         if current == &proposed {
             return Ok((proposed, AttachmentSlotCommitOutcomeV1::Replay));
         }
@@ -584,7 +627,14 @@ where
 {
     target.recheck(journal, clock)?;
     let binding = SlotBinding::from_target(&target);
-    let (record, outcome) = commit_bound(journal, &mutation, binding)?;
+    let sandbox_spec = target
+        .runtime_generation()
+        .scope()
+        .binding()
+        .manifest()
+        .manifest()
+        .sandbox_spec();
+    let (record, outcome) = commit_bound(journal, &mutation, binding, sandbox_spec)?;
     target.recheck(journal, clock)?;
 
     Ok(CommittedCurrentAttachmentSlotV1 {
@@ -598,10 +648,15 @@ fn commit_bound(
     journal: &mut Journal,
     mutation: &AttachmentSlotMutationV1,
     binding: SlotBinding,
+    sandbox_spec: &ObjectDescriptor,
 ) -> Result<(Record, AttachmentSlotCommitOutcomeV1), AttachmentSlotStateError> {
     journal.ensure_healthy()?;
     let history = History::load(journal)?;
-    let (record, outcome) = history.select(mutation, binding)?;
+    let (record, outcome) = history.select(mutation, binding, sandbox_spec)?;
+
+    if outcome == AttachmentSlotCommitOutcomeV1::Recorded && record.revision.get() == 1 {
+        validate_slot_declaration(journal, &record.sandbox_spec, record.slot_id)?;
+    }
 
     #[cfg(target_os = "linux")]
     if outcome == AttachmentSlotCommitOutcomeV1::Recorded
@@ -644,6 +699,8 @@ pub(crate) fn commit_for_test(
     incarnation: IncarnationId,
     namespace_generation: u64,
 ) -> Result<(DurableAttachmentSlotV1, AttachmentSlotCommitOutcomeV1), AttachmentSlotStateError> {
+    let sandbox_spec =
+        crate::sandbox_spec_state::publish_slot_spec_for_test(journal, mutation.slot_id);
     let (record, outcome) = commit_bound(
         journal,
         mutation,
@@ -652,6 +709,7 @@ pub(crate) fn commit_for_test(
             incarnation,
             namespace_generation,
         },
+        &sandbox_spec,
     )?;
     Ok((DurableAttachmentSlotV1 { record }, outcome))
 }
@@ -718,6 +776,36 @@ fn take<const N: usize>(bytes: &mut &[u8]) -> Result<[u8; N], AttachmentSlotStat
         .get(N..)
         .ok_or(AttachmentSlotStateError::CorruptState)?;
     Ok(value)
+}
+
+fn sandbox_spec_descriptor(
+    digest: ObjectDigest,
+    encoded_size: u64,
+) -> Result<ObjectDescriptor, AttachmentSlotStateError> {
+    let media_type = MediaType::new(PortableMediaType::SandboxSpec.as_str().to_owned())
+        .map_err(|_| AttachmentSlotStateError::CorruptState)?;
+    let descriptor = ObjectDescriptor::new(media_type, digest, encoded_size);
+    crate::sandbox_spec_state::validate_spec_descriptor(&descriptor)
+        .map_err(|_| AttachmentSlotStateError::CorruptState)?;
+    Ok(descriptor)
+}
+
+fn validate_slot_declaration(
+    journal: &Journal,
+    sandbox_spec: &ObjectDescriptor,
+    slot_id: AttachmentSlotId,
+) -> Result<(), AttachmentSlotStateError> {
+    crate::sandbox_spec_state::validate_slot_declaration(journal, sandbox_spec, slot_id).map_err(
+        |error| match error {
+            crate::SandboxSpecStateError::InvalidPublication
+            | crate::SandboxSpecStateError::Conflict => AttachmentSlotStateError::Conflict,
+            crate::SandboxSpecStateError::CorruptState => AttachmentSlotStateError::CorruptState,
+            crate::SandboxSpecStateError::Capacity => AttachmentSlotStateError::Capacity,
+            crate::SandboxSpecStateError::Journal(error) => {
+                AttachmentSlotStateError::Journal(error)
+            }
+        },
+    )
 }
 
 #[cfg(test)]
@@ -795,14 +883,24 @@ mod tests {
         }
     }
 
+    fn commit_declared(
+        journal: &mut Journal,
+        mutation: &AttachmentSlotMutationV1,
+        binding: SlotBinding,
+    ) -> Result<(Record, AttachmentSlotCommitOutcomeV1), AttachmentSlotStateError> {
+        let sandbox_spec =
+            crate::sandbox_spec_state::publish_slot_spec_for_test(journal, mutation.slot_id());
+        commit_bound(journal, mutation, binding, &sandbox_spec)
+    }
+
     #[test]
     fn creation_release_and_replay_are_exactly_fenced() {
         let (directory, mut journal) = journal();
         let create = mutation(AttachmentSlotPresenceV1::Available, 1, None);
-        let (first, outcome) = commit_bound(&mut journal, &create, binding()).unwrap();
+        let (first, outcome) = commit_declared(&mut journal, &create, binding()).unwrap();
         assert_eq!(outcome, AttachmentSlotCommitOutcomeV1::Recorded);
         assert_eq!(
-            commit_bound(&mut journal, &create, binding()).unwrap().1,
+            commit_declared(&mut journal, &create, binding()).unwrap().1,
             AttachmentSlotCommitOutcomeV1::Replay
         );
 
@@ -811,7 +909,7 @@ mod tests {
             2,
             Some(ObjectDigest::from_bytes(first.digest)),
         );
-        let (_, outcome) = commit_bound(&mut journal, &release, binding()).unwrap();
+        let (_, outcome) = commit_declared(&mut journal, &release, binding()).unwrap();
         assert_eq!(outcome, AttachmentSlotCommitOutcomeV1::Recorded);
         assert_eq!(
             get_current(&journal, AttachmentSlotId::from_bytes([1; 16]))
@@ -841,15 +939,67 @@ mod tests {
     }
 
     #[test]
+    fn creation_requires_an_exact_published_slot_declaration() {
+        let (_directory, mut journal) = journal();
+        let slot_id = AttachmentSlotId::from_bytes([1; 16]);
+        let create = mutation(AttachmentSlotPresenceV1::Available, 1, None);
+        let unpublished =
+            crate::sandbox_spec_state::slot_spec_publication_for_test(vec![slot_id], 30);
+        let unpublished_descriptor = unpublished.descriptor().clone();
+
+        assert!(matches!(
+            commit_bound(&mut journal, &create, binding(), &unpublished_descriptor),
+            Err(AttachmentSlotStateError::Conflict)
+        ));
+
+        let undeclared = crate::sandbox_spec_state::slot_spec_publication_for_test(
+            vec![AttachmentSlotId::from_bytes([2; 16])],
+            31,
+        );
+        let undeclared_descriptor = undeclared.descriptor().clone();
+        crate::sandbox_spec_state::commit(&mut journal, undeclared).unwrap();
+        assert!(matches!(
+            commit_bound(&mut journal, &create, binding(), &undeclared_descriptor),
+            Err(AttachmentSlotStateError::Conflict)
+        ));
+    }
+
+    #[test]
+    fn release_preserves_the_creation_specification_across_assignment_updates() {
+        let (_directory, mut journal) = journal();
+        let slot_id = AttachmentSlotId::from_bytes([1; 16]);
+        let create = mutation(AttachmentSlotPresenceV1::Available, 1, None);
+        let (first, _) = commit_declared(&mut journal, &create, binding()).unwrap();
+
+        let later = crate::sandbox_spec_state::slot_spec_publication_for_test(
+            vec![slot_id, AttachmentSlotId::from_bytes([2; 16])],
+            32,
+        );
+        let later_descriptor = later.descriptor().clone();
+        crate::sandbox_spec_state::commit(&mut journal, later).unwrap();
+        let release = mutation(
+            AttachmentSlotPresenceV1::Released,
+            2,
+            Some(ObjectDigest::from_bytes(first.digest)),
+        );
+
+        let (released, outcome) =
+            commit_bound(&mut journal, &release, binding(), &later_descriptor).unwrap();
+        assert_eq!(outcome, AttachmentSlotCommitOutcomeV1::Recorded);
+        assert_eq!(released.sandbox_spec, first.sandbox_spec);
+        assert_ne!(released.sandbox_spec, later_descriptor);
+    }
+
+    #[test]
     fn changed_target_stale_release_and_resurrection_fail_closed() {
         let (_directory, mut journal) = journal();
         let create = mutation(AttachmentSlotPresenceV1::Available, 1, None);
-        let (first, _) = commit_bound(&mut journal, &create, binding()).unwrap();
+        let (first, _) = commit_declared(&mut journal, &create, binding()).unwrap();
 
         let mut changed_binding = binding();
         changed_binding.namespace_generation += 1;
         assert!(matches!(
-            commit_bound(&mut journal, &create, changed_binding),
+            commit_declared(&mut journal, &create, changed_binding),
             Err(AttachmentSlotStateError::Conflict)
         ));
         let stale = mutation(
@@ -858,7 +1008,7 @@ mod tests {
             Some(ObjectDigest::from_bytes([9; 32])),
         );
         assert!(matches!(
-            commit_bound(&mut journal, &stale, binding()),
+            commit_declared(&mut journal, &stale, binding()),
             Err(AttachmentSlotStateError::Conflict)
         ));
 
@@ -867,7 +1017,7 @@ mod tests {
             2,
             Some(ObjectDigest::from_bytes(first.digest)),
         );
-        commit_bound(&mut journal, &release, binding()).unwrap();
+        commit_declared(&mut journal, &release, binding()).unwrap();
         let resurrection = AttachmentSlotMutationV1::new(
             AttachmentSlotPresenceV1::Available,
             AttachmentSlotId::from_bytes([1; 16]),
@@ -878,16 +1028,22 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            commit_bound(&mut journal, &resurrection, binding()),
+            commit_declared(&mut journal, &resurrection, binding()),
             Err(AttachmentSlotStateError::Conflict)
         ));
     }
 
     #[test]
     fn codec_rejects_every_changed_and_truncated_byte() {
+        let (_directory, mut journal) = journal();
+        let sandbox_spec = crate::sandbox_spec_state::publish_slot_spec_for_test(
+            &mut journal,
+            AttachmentSlotId::from_bytes([1; 16]),
+        );
         let record = Record::new(
             &mutation(AttachmentSlotPresenceV1::Available, 1, None),
             binding(),
+            sandbox_spec,
         );
         let encoded = record.encode();
         assert_eq!(encoded.len(), RECORD_BYTES);
@@ -905,7 +1061,7 @@ mod tests {
     fn operation_ids_are_unique_across_slots() {
         let (_directory, mut journal) = journal();
         let first = mutation(AttachmentSlotPresenceV1::Available, 1, None);
-        commit_bound(&mut journal, &first, binding()).unwrap();
+        commit_declared(&mut journal, &first, binding()).unwrap();
         let reused = AttachmentSlotMutationV1::new(
             AttachmentSlotPresenceV1::Available,
             AttachmentSlotId::from_bytes([8; 16]),
@@ -916,7 +1072,7 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            commit_bound(&mut journal, &reused, binding()),
+            commit_declared(&mut journal, &reused, binding()),
             Err(AttachmentSlotStateError::Conflict)
         ));
     }
@@ -932,6 +1088,39 @@ mod tests {
                         RecordNamespace::AttachmentSlot,
                         vec![1; 24],
                         b"corrupt".to_vec(),
+                    )],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        assert!(matches!(
+            validate_namespace(&journal),
+            Err(AttachmentSlotStateError::CorruptState)
+        ));
+        let mut reconciler = Reconciler::new(journal, NoEffects);
+        assert!(matches!(
+            reconciler.reconcile_next(),
+            Err(crate::ReconcilerError::AttachmentSlot(error))
+                if matches!(*error, AttachmentSlotStateError::CorruptState)
+        ));
+    }
+
+    #[test]
+    fn orphaned_slot_declaration_blocks_reconciliation_startup() {
+        let (_directory, mut journal) = journal();
+        let create = mutation(AttachmentSlotPresenceV1::Available, 1, None);
+        let (slot, _) = commit_declared(&mut journal, &create, binding()).unwrap();
+        let mut descriptor_key = Vec::with_capacity(40);
+        descriptor_key.extend_from_slice(slot.sandbox_spec.digest().as_bytes());
+        descriptor_key.extend_from_slice(&slot.sandbox_spec.encoded_size().to_be_bytes());
+        journal
+            .commit(
+                &JournalTransaction::new(
+                    [70; 16],
+                    vec![JournalRecord::delete(
+                        RecordNamespace::SandboxSpec,
+                        descriptor_key,
                     )],
                 )
                 .unwrap(),

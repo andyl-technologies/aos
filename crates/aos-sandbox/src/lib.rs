@@ -50,6 +50,7 @@ pub mod reconciler;
 pub mod runtime_authority;
 #[cfg(target_os = "linux")]
 pub mod runtime_scope;
+pub mod sandbox_spec_state;
 
 #[cfg(target_os = "linux")]
 pub use attachment_mount::{
@@ -136,4 +137,8 @@ pub use reconciler::{
     EffectReceipt, OperationPlan, OwnershipGateActivationOutcome, OwnershipGatePlanV1,
     OwnershipGateStatusV1, PreparedAuthorityEffectV2, ReconcileOutcome, Reconciler,
     ReconcilerError, SingleNodeEffectExecutor, ValidatedHostEffectReceiptV1,
+};
+pub use sandbox_spec_state::{
+    DurableSandboxSpecV1, SandboxSpecCommitOutcomeV1, SandboxSpecPublicationV1,
+    SandboxSpecStateError,
 };

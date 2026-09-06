@@ -42,8 +42,9 @@ pub use crypto::{
 };
 pub use format::{
     CanonicalCborError, DecodeLimits, ObjectDescriptorVerificationError, ObjectDescriptorVerifier,
-    StreamingDirectory, decode_attachment_intent_v1, decode_view, descriptor_for_bytes,
-    encode_attachment_intent_v1, encode_view, hardlink_group_digest, validate_canonical_cbor,
+    StreamingDirectory, decode_attachment_intent_v1, decode_sandbox_spec, decode_view,
+    descriptor_for_bytes, encode_attachment_intent_v1, encode_sandbox_spec, encode_view,
+    hardlink_group_digest, validate_canonical_cbor,
 };
 pub use identity::{
     AttachmentId, AttachmentSlotId, AuditId, CacheDomainId, CapabilityId, ExecutionId, ExportId,

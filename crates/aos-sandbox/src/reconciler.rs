@@ -511,6 +511,9 @@ pub enum ReconcileOutcome {
 /// Reports admission, ledger, journal, or executor-contract failures.
 #[derive(Debug, thiserror::Error)]
 pub enum ReconcilerError {
+    /// Protected portable sandbox-specification history could not be validated.
+    #[error("sandbox-specification state failed: {0}")]
+    SandboxSpec(#[source] Box<crate::SandboxSpecStateError>),
     /// Protected destination-slot history could not be validated.
     #[cfg(target_os = "linux")]
     #[error("attachment-slot state failed: {0}")]
@@ -1160,6 +1163,15 @@ where
             })?;
             self.validate_all_ownership_gates()?;
             validate_runtime_authority_operations(&self.journal)?;
+            if self
+                .journal
+                .records(RecordNamespace::SandboxSpec)
+                .next()
+                .is_some()
+            {
+                crate::sandbox_spec_state::validate_namespace(&self.journal)
+                    .map_err(|error| ReconcilerError::SandboxSpec(Box::new(error)))?;
+            }
             if self
                 .journal
                 .records(RecordNamespace::FilesystemViewRevision)
