@@ -97,6 +97,31 @@ const PRODUCTION_QUEUE_CAPACITY: u32 = 1_024;
 /// Maximum number of trigger batches admitted at one scheduler boundary.
 const MAX_TRIGGER_SETTLE_BATCHES: usize = 1_024;
 
+// Packaged execution captures baked genesis before its first modeled quantum,
+// while the guest catalog is still exactly cold. Both lifecycle and event-log
+// state bind that one boundary; configuration can remain genesis later. Any
+// partial or later registration would make a fresh plugin repeat guest setup.
+fn selectable_catalog_checkpoint_ready(
+    configuration: &Configuration,
+    initial_lifecycle_observations_pending: bool,
+    event_log_events: u64,
+    plan: &crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan,
+) -> bool {
+    use crucible_protocol::selectable_catalog_plan::{
+        SelectablePlanContinuation, SelectablePlanPhase,
+    };
+
+    match plan.continuation().phase() {
+        SelectablePlanPhase::Frozen => true,
+        SelectablePlanPhase::Registering => {
+            initial_lifecycle_observations_pending
+                && event_log_events == 0
+                && configuration == &Configuration::genesis(configuration.def.clone())
+                && plan.continuation() == &SelectablePlanContinuation::cold()
+        }
+    }
+}
+
 #[cfg(test)]
 fn duplicate_network_fault_checkpoint_fixture(
     checkpoint: &ProductionFaultRuntimeCheckpoint,

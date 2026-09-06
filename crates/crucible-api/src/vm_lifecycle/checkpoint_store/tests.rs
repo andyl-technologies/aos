@@ -173,9 +173,17 @@ fn refresh_target_manifest_identities(manifest: &mut ClosureManifest) {
     }
 }
 
-fn publish_one_node_raw_checkpoint(
+fn build_one_node_raw_checkpoint(
     run_state_root: &Path,
-) -> (ScenarioDefForm, ContentHash, NodeId, ContentHash) {
+    selectable_continuation: Option<
+        crucible_protocol::selectable_catalog_plan::SelectablePlanContinuation,
+    >,
+) -> (
+    ScenarioDefForm,
+    ProductionVmExactCheckpointSet,
+    NodeId,
+    ContentHash,
+) {
     let node = NodeId {
         name: String::from("vm-a"),
     };
@@ -187,7 +195,11 @@ fn publish_one_node_raw_checkpoint(
         ready_point: crucible::ReadyPoint::FixedIcount {
             icount: Icount { retired: 0 },
         },
-        white_box: crucible::WhiteBoxPolicy::Disabled,
+        white_box: if selectable_continuation.is_some() {
+            crucible::WhiteBoxPolicy::Enabled
+        } else {
+            crucible::WhiteBoxPolicy::Disabled
+        },
         smp_vcpus: 1,
         icount_shift: 0,
         kernel: None,
@@ -195,7 +207,7 @@ fn publish_one_node_raw_checkpoint(
         initrd: None,
     }])
     .expect("build one-node checkpoint world");
-    let source = ScenarioDefForm::from_components_with_app_random_draw_cap(
+    let mut source = ScenarioDefForm::from_components_with_app_random_draw_cap(
         &world,
         &crucible::Plan::empty(),
         &crucible::Properties::empty(),
@@ -203,6 +215,81 @@ fn publish_one_node_raw_checkpoint(
         0,
     )
     .expect("build one-node checkpoint scenario");
+    let selectable_plan = if let Some(continuation) = selectable_continuation {
+        use crucible_protocol::selectable_catalog_plan::{
+            SelectableCatalogPlan, SelectablePlanDeclaration, SelectablePlanLimits,
+            SelectablePlanPresence,
+        };
+
+        let domain = crucible::campaign::ChoiceDomain::Boolean(
+            crucible::campaign::BooleanDomain::new(1).expect("build selectable Boolean domain"),
+        );
+        let default = crucible::campaign::ChoiceValue::Boolean(false);
+        let recovery = crucible::campaign::SelectableDeclaration::new(
+            "checkpoint.recovery",
+            crucible::campaign::ChoiceSource::Guest {
+                node: node.name.clone(),
+                protocol_version: u32::from(crucible_protocol::SELECTABLE_PROTOCOL_VERSION),
+            },
+            domain.clone(),
+            default.clone(),
+            crucible::campaign::ChoiceClassContext::new(BTreeSet::new())
+                .expect("build selectable choice class"),
+            BTreeSet::new(),
+            true,
+        )
+        .expect("build scenario selectable declaration");
+        let retry = crucible::campaign::SelectableDeclaration::new(
+            "checkpoint.retry",
+            crucible::campaign::ChoiceSource::Guest {
+                node: node.name.clone(),
+                protocol_version: u32::from(crucible_protocol::SELECTABLE_PROTOCOL_VERSION),
+            },
+            domain.clone(),
+            crucible::campaign::ChoiceValue::Boolean(true),
+            crucible::campaign::ChoiceClassContext::new(BTreeSet::new())
+                .expect("build selectable choice class"),
+            BTreeSet::new(),
+            true,
+        )
+        .expect("build second scenario selectable declaration");
+        let limits = crucible::ScenarioSelectableLimits::new(2, 2, 1, 2)
+            .expect("build scenario selectable limits");
+        let selectables = crucible::ScenarioSelectables::new(&world, limits, vec![recovery, retry])
+            .expect("build scenario selectables");
+        source = source
+            .with_selectables(selectables)
+            .expect("attach scenario selectables");
+
+        let declarations = vec![
+            SelectablePlanDeclaration::new(
+                "checkpoint.recovery",
+                domain.canonical_bytes(),
+                default.canonical_bytes(),
+                Vec::new(),
+                SelectablePlanPresence::Required,
+            )
+            .expect("build checkpoint selectable declaration"),
+            SelectablePlanDeclaration::new(
+                "checkpoint.retry",
+                domain.canonical_bytes(),
+                crucible::campaign::ChoiceValue::Boolean(true).canonical_bytes(),
+                Vec::new(),
+                SelectablePlanPresence::Required,
+            )
+            .expect("build second checkpoint selectable declaration"),
+        ];
+        Some(
+            SelectableCatalogPlan::new(
+                SelectablePlanLimits::new(2, 1, 2).expect("build checkpoint selectable limits"),
+                declarations,
+                continuation,
+            )
+            .expect("build checkpoint selectable plan"),
+        )
+    } else {
+        None
+    };
     let scenario = source.scenario_def();
     let runtime_scenario = SchedulerLivenessScenario::from_runnable_world(
         &scenario.id().to_hex(),
@@ -290,7 +377,7 @@ fn publish_one_node_raw_checkpoint(
             overlay: overlay_artifact.identity,
             vmstate: vmstate_artifact.identity,
         });
-    let mut checkpoint = ProductionVmExactCheckpointSet {
+    let checkpoint = ProductionVmExactCheckpointSet {
         identity: ContentHash::default(),
         configuration,
         scheduler: scheduler_checkpoint,
@@ -303,7 +390,9 @@ fn publish_one_node_raw_checkpoint(
         initial_lifecycle_observations_pending: true,
         branch: None,
         recorded_controls: Vec::new(),
-        selectable_catalog_plans: BTreeMap::new(),
+        selectable_catalog_plans: selectable_plan
+            .map(|plan| BTreeMap::from([(node.clone(), plan)]))
+            .unwrap_or_default(),
         fault_checkpoint: Some(fault_checkpoint),
         targets: BTreeMap::from([(
             node.clone(),
@@ -324,6 +413,14 @@ fn publish_one_node_raw_checkpoint(
         node_generations: BTreeMap::from([(node.clone(), 1)]),
         node_service_states: BTreeMap::from([(node.clone(), ProductionNodeServiceState::Running)]),
     };
+    (source, checkpoint, node, snapshot_identity)
+}
+
+fn publish_one_node_raw_checkpoint(
+    run_state_root: &Path,
+) -> (ScenarioDefForm, ContentHash, NodeId, ContentHash) {
+    let (source, mut checkpoint, node, snapshot_identity) =
+        build_one_node_raw_checkpoint(run_state_root, None);
     let prepared = prepare_exact_checkpoint_set(
         run_state_root,
         source.scenario_def().id(),
@@ -336,6 +433,98 @@ fn publish_one_node_raw_checkpoint(
         .publish()
         .expect("publish one-node production checkpoint");
     (source, identity, node, snapshot_identity)
+}
+
+#[test]
+fn cold_genesis_catalog_checkpoint_round_trips_only_at_initial_boundary() {
+    std::thread::Builder::new()
+        .name(String::from("cold-genesis-selectable-checkpoint"))
+        .stack_size(32 * 1024 * 1024)
+        .spawn(run_cold_genesis_catalog_checkpoint_test)
+        .expect("spawn cold-genesis selectable checkpoint test")
+        .join()
+        .expect("cold-genesis selectable checkpoint test should not panic");
+}
+
+fn run_cold_genesis_catalog_checkpoint_test() {
+    use crucible_protocol::selectable_catalog_plan::{
+        SelectablePlanContinuation, SelectablePlanPhase,
+    };
+
+    let store = tempfile::tempdir().expect("create cold-genesis checkpoint store");
+    let (source, mut checkpoint, node, _) =
+        build_one_node_raw_checkpoint(store.path(), Some(SelectablePlanContinuation::cold()));
+    let expected_plan = checkpoint
+        .selectable_catalog_plans
+        .get(&node)
+        .expect("cold selectable plan should exist")
+        .clone();
+    let prepared = prepare_exact_checkpoint_set(
+        store.path(),
+        source.scenario_def().id(),
+        source.plan().fault_signals().resource_limits(),
+        &mut checkpoint,
+    )
+    .expect("prepare cold-genesis selectable checkpoint");
+    let identity = prepared.identity();
+    prepared
+        .publish()
+        .expect("publish cold-genesis selectable checkpoint");
+
+    let restored =
+        load_exact_checkpoint_set(store.path(), &source.scenario_def(), &source, identity)
+            .expect("load cold-genesis selectable checkpoint");
+    assert_eq!(
+        restored.selectable_catalog_plans.get(&node),
+        Some(&expected_plan)
+    );
+    open_exact_checkpoint_closure(store.path(), &source, identity)
+        .expect("open cold-genesis selectable checkpoint closure")
+        .validate_complete()
+        .expect("authenticate complete cold-genesis selectable checkpoint closure");
+
+    let partial_store = tempfile::tempdir().expect("create partial-registration checkpoint store");
+    let partial = SelectablePlanContinuation::new(
+        SelectablePlanPhase::Registering,
+        BTreeSet::from([String::from("checkpoint.recovery")]),
+        Some(1),
+        BTreeMap::new(),
+        None,
+        None,
+    )
+    .expect("build partial selectable continuation");
+    let (partial_source, mut partial_checkpoint, _, _) =
+        build_one_node_raw_checkpoint(partial_store.path(), Some(partial));
+    let error = prepare_exact_checkpoint_set(
+        partial_store.path(),
+        partial_source.scenario_def().id(),
+        partial_source.plan().fault_signals().resource_limits(),
+        &mut partial_checkpoint,
+    )
+    .err()
+    .expect("partial selectable registration must fail checkpoint preparation");
+    let PersistExactCheckpointError::Unpublished(source) = error else {
+        panic!("partial catalog rejection must precede publication");
+    };
+    assert!(source.to_string().contains(
+        "selectable catalogs are neither frozen nor pristine pre-execution cold-genesis continuations"
+    ));
+
+    let progressed_store = tempfile::tempdir().expect("create progressed checkpoint store");
+    let (progressed_source, mut progressed_checkpoint, _, _) = build_one_node_raw_checkpoint(
+        progressed_store.path(),
+        Some(SelectablePlanContinuation::cold()),
+    );
+    progressed_checkpoint.initial_lifecycle_observations_pending = false;
+    let error = prepare_exact_checkpoint_set(
+        progressed_store.path(),
+        progressed_source.scenario_def().id(),
+        progressed_source.plan().fault_signals().resource_limits(),
+        &mut progressed_checkpoint,
+    )
+    .err()
+    .expect("progressed cold catalog must fail checkpoint preparation");
+    assert!(matches!(error, PersistExactCheckpointError::Unpublished(_)));
 }
 
 fn regular_file_count(path: &Path) -> usize {
