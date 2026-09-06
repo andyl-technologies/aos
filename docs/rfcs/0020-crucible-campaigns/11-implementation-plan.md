@@ -3387,8 +3387,20 @@ Deep template promotion is refused by design today: a forked child resets
 the inherited template state, marks itself a child, and rejects child-file
 staging, so a child cannot retain a template or fork a grandchild without
 first being re-adopted as a source. Lifting that needs its own QEMU
-coordinator and host reconciliation work and stays open under T-CAM-6.7
-with the resource-pressure fallback stress.
+coordinator and host reconciliation work and stays open under T-CAM-6.7.
+
+The resource-pressure half of T-CAM-6.7 now has a manager-level stress in
+the daemon's hot-checkpoint tests: ten thousand lifecycles retain a source
+hotter than every one before it under a four-template ceiling, so from the
+fifth on each admission plan must name exactly the coldest retained source
+as its capacity-pressure demotion and carry that source's secured exact
+fallback identity, and the committed inventory never exceeds the ceiling;
+every lifecycle also takes a fork permit under a one-start rate window. The
+loop finishes in well under a second, and the retained set ends as exactly
+the four hottest keys. This proves the admission, demotion, and fallback
+accounting is bounded under sustained pressure; driving real templates
+through the packaged daemon under host memory pressure remains part of the
+Phase 6 lab audit.
 
 The daemon's Linux fork launch now owns the child-private file plan for
 production children. Every node launcher exposes its admitted launch resource

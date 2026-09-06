@@ -455,6 +455,65 @@ fn exhausted_generation_rejects_plans_before_external_work() {
     assert!(manager.status(coordinate).is_some());
 }
 
+#[test]
+fn ten_thousand_admissions_under_capacity_pressure_stay_bounded_and_secured() {
+    // Every lifecycle retains a source hotter than all before it under a
+    // four-template ceiling, so from the fifth on each admission must demote
+    // exactly the coldest retained source and carry that source's secured
+    // fallback; the inventory never grows past the ceiling.
+    const LIFECYCLES: usize = 10_000;
+    const CEILING: usize = 4;
+    // Keys cycle through 250 bytes, far beyond the ceiling, so a reused key's
+    // earlier coordinate was demoted long before the key returns.
+    const KEY_CYCLE: usize = 250;
+    let key_byte = |lifecycle: usize| u8::try_from(lifecycle % KEY_CYCLE + 1).expect("key byte");
+
+    let mut manager = manager(CEILING, resources(40, 40, 4, 4, 40, 4), 1);
+    let mut demoted = 0;
+    for lifecycle in 0..LIFECYCLES {
+        let byte = key_byte(lifecycle);
+        let score = i64::try_from(lifecycle).expect("score");
+        let nanos = u64::try_from(lifecycle).expect("clock") * 10;
+        let _permit = manager
+            .admit_fork(nanos)
+            .expect("one fork start per rate window");
+
+        let plan = manager
+            .plan_admission(candidate(byte, score, false, unit_resources()))
+            .expect("a strictly hotter candidate always admits");
+        if lifecycle < CEILING {
+            assert!(plan.demotions().is_empty());
+        } else {
+            assert_eq!(plan.demotions().len(), 1);
+            let victim = plan.demotions()[0];
+            assert_eq!(
+                victim.reason(),
+                HotCheckpointDemotionReason::CapacityPressure
+            );
+            let coldest = key_byte(lifecycle - CEILING);
+            assert_eq!(victim.slot(), slot(coldest, 0));
+            assert_eq!(victim.fallback(), exact_fallback(coldest));
+        }
+
+        let committed = manager
+            .commit_admission(plan, slot(byte, 0))
+            .expect("pressure commit");
+        demoted += committed.demoted().len();
+        assert!(manager.usage().templates() <= CEILING);
+        assert!(manager.retained().len() <= CEILING);
+    }
+
+    assert_eq!(manager.usage().templates(), CEILING);
+    assert_eq!(demoted, LIFECYCLES - CEILING);
+    let mut retained: Vec<_> = manager.retained().map(|status| status.slot()).collect();
+    retained.sort();
+    let mut expected: Vec<_> = (LIFECYCLES - CEILING..LIFECYCLES)
+        .map(|lifecycle| slot(key_byte(lifecycle), 0))
+        .collect();
+    expected.sort();
+    assert_eq!(retained, expected);
+}
+
 fn manager(
     maximum_templates: usize,
     maximum_resources: HotCheckpointResourceProfile,
