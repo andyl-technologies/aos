@@ -9,7 +9,12 @@
   perl,
   which,
   file,
+  gc,
+  gmp,
   guile,
+  libffi,
+  libunistring,
+  libxcrypt,
   libxml2,
   zlib,
 }: let
@@ -33,8 +38,12 @@ in
     };
 
     buildDeps = [gnumake autoconf automake pkg-config perl which file];
-    runtimeDeps = [guile libxml2 zlib];
-    propagatedDeps = [guile libxml2 zlib];
+    # AutoGen's libtool link includes Guile's public libraries directly in the
+    # executable's DT_NEEDED set. Declare them here so the scrub phase retains
+    # the corresponding RPATH entries instead of treating them as build-only
+    # transitive references.
+    runtimeDeps = [gc gmp guile libffi libunistring libxcrypt libxml2 zlib];
+    propagatedDeps = [gc gmp guile libffi libunistring libxcrypt libxml2 zlib];
 
     # Output specifications end in the classic struct-hack member
     # `char os_sfx[1]`, with the allocation extended for the actual suffix.
@@ -67,6 +76,10 @@ in
         name = "configure";
         script = ''
           export MAN_PAGE_DATE=1970-01-01
+          # Several installed helper programs link the in-tree libopts via
+          # libtool. Give those helpers a final-store RPATH in addition to the
+          # temporary build-tree path that libtool records.
+          export LDFLAGS="$LDFLAGS -Wl,-rpath,$out/lib"
           ./configure $configureFlags \
             --prefix="$out" \
             --disable-dependency-tracking \
