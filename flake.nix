@@ -211,6 +211,11 @@
             pkgs = aos.pkgs;
           };
         }
+        // (
+          if aos.releaseQualificationOperatorExecutor == null
+          then {}
+          else {qualification-operator-executor = aos.releaseQualificationOperatorExecutor;}
+        )
         // systemPackages aos
         // containers
         // individualPackages

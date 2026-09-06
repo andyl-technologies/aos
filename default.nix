@@ -264,6 +264,31 @@
 
   # Testing harness (headless mode for package integration tests)
   testing = import ./lib/testing {inherit pkgs lib;};
+  qualificationExecutorIdentity = "aos-x86_64-linux-qualification-v1";
+  operatorRecoveryScenario = testing.mkQualificationReportScenario {
+    name = "aos-qualification-operator-recovery";
+    identity = qualificationExecutorIdentity;
+    reportPath = "/run/aos-release/qualification-reports/operator-recovery.json";
+  };
+  productionRecoveryScenario = testing.mkQualificationReportScenario {
+    name = "aos-qualification-production-recovery";
+    identity = qualificationExecutorIdentity;
+    reportPath = "/run/aos-release/qualification-reports/production-recovery.json";
+  };
+  releaseQualificationOperatorExecutor =
+    if hostPlatform.system == "x86_64-linux"
+    then
+      testing.mkQualificationExecutor {
+        name = "aos-qualification-x86_64-linux-operator";
+        platform = hostPlatform.system;
+        identity = qualificationExecutorIdentity;
+        scenarios = {
+          operator-recovery = "${operatorRecoveryScenario}/bin/aos-qualification-operator-recovery";
+          production-recovery = "${productionRecoveryScenario}/bin/aos-qualification-production-recovery";
+        };
+        workRoot = "/var/lib/aos-release/qualification/x86_64-linux";
+      }
+    else null;
 
   prefixAttrs = prefix: attrs:
     builtins.listToAttrs (
@@ -1086,7 +1111,7 @@
       referenceIntegrity = crucibleReferenceIntegrity;
     };
 in {
-  inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem packagesWithExpose containerImages containerDefinitions;
+  inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem packagesWithExpose containerImages containerDefinitions releaseQualificationOperatorExecutor;
 
   # Pure, fail-closed release eligibility data. The release coordinator reads
   # this value with strict JSON evaluation before resolving any derivation.

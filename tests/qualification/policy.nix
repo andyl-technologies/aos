@@ -33,6 +33,14 @@
     };
   };
   sourceRoot = builtins.head sourceEvidence.sourcePaths;
+  testing = import ../../lib/testing {inherit pkgs lib;};
+  executor = testing.mkQualificationExecutor {
+    name = "qualification-executor-contract-fixture";
+    platform = "x86_64-linux";
+    identity = "fixture-executor";
+    scenarios.package-function = "/nix/store/00000000000000000000000000000000-scenario/bin/run";
+    workRoot = "/var/lib/aos-release/qualification-fixture";
+  };
   names = map (rule: rule.name) contract.package_rules;
   phases = map (gate: gate.phase) contract.requirements;
   composed = import ../../qualification/_eval.nix {
@@ -99,6 +107,9 @@ in
   assert builtins.all (phase: builtins.elem phase phases) ["build" "staging" "rollout" "complete"];
   assert builtins.length contract.targets == 4;
   assert builtins.all (target: builtins.length target.environment.layers == 2) contract.targets;
+  assert builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+/scenarios.json$" executor.passthru.qualification.registryPath != null;
+  assert executor.passthru.qualification.platform == "x86_64-linux";
+  assert executor.passthru.qualification.scenarios.package-function == "/nix/store/00000000000000000000000000000000-scenario/bin/run";
   assert builtins.length contract.claims == 8;
   assert contract.support.default
   == {

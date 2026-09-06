@@ -27,6 +27,7 @@
   checks = import ./checks.nix;
 in {
   mkQualificationExecutor = import ./qualification.nix {inherit pkgs;};
+  mkQualificationReportScenario = import ./qualification-report.nix {inherit pkgs;};
   inherit (vm) mkVMTest mkTestDisk;
   inherit (fleet) mkFleetTest uriEncode dataUrl;
   inherit (darling) mkDarlingFleetSpec mkDarlingFleetSuite;
