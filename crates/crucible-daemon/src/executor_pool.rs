@@ -13,6 +13,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use crate::executor_supervisor::LocalExecutionActivity;
 use crucible_api::{
     ProductionExactCheckpointRetirement, retire_production_exact_checkpoint_catalog,
 };
@@ -101,6 +102,14 @@ pub struct LocalExecutorPoolService<L, V> {
     shared: Arc<SharedExecutor<L, V>>,
 }
 
+/// Bounded process-owned executor activity captured under the actor mutex.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LocalExecutorOperationalSnapshot {
+    pub(crate) revision: u64,
+    pub(crate) daemon_epoch: crucible_campaign::DaemonEpoch,
+    pub(crate) activities: Vec<LocalExecutionActivity>,
+}
+
 impl<L, V> Clone for LocalExecutorPoolService<L, V> {
     fn clone(&self) -> Self {
         Self {
@@ -143,8 +152,26 @@ where
     pub fn report(
         &self,
     ) -> Result<LocalExecutorPoolReport, LocalExecutorPoolServiceError<L::Error>> {
-        let executor = self.shared.lock_executor()?;
+        let executor = self.shared.lock_executor_read_only()?;
         Ok(self.shared.report(executor.supervisor()))
+    }
+
+    /// Copies process-owned execution activity under one short actor lock.
+    pub(crate) fn operational_snapshot(
+        &self,
+    ) -> Result<LocalExecutorOperationalSnapshot, LocalExecutorPoolServiceError<L::Error>> {
+        self.shared.require_running()?;
+        let executor = self.shared.lock_executor_read_only()?;
+        let revision = self.shared.ownership_revision.load(Ordering::Acquire);
+        if revision == u64::MAX {
+            return Err(LocalExecutorPoolServiceError::ObservationRevisionExhausted);
+        }
+        let supervisor = executor.supervisor();
+        Ok(LocalExecutorOperationalSnapshot {
+            revision,
+            daemon_epoch: supervisor.daemon_epoch(),
+            activities: supervisor.operational_activity_snapshot(),
+        })
     }
 }
 
@@ -200,7 +227,7 @@ where
     fn describe_executor(&mut self) -> Result<ExecutorDescription, Self::Error> {
         self.shared.require_running()?;
         self.shared
-            .lock_executor()?
+            .lock_executor_read_only()?
             .describe_executor()
             .map_err(LocalExecutorPoolServiceError::Supervisor)
     }
@@ -228,7 +255,7 @@ where
     ) -> Result<GetAttemptExecutionResponse, Self::Error> {
         self.shared.require_running()?;
         self.shared
-            .lock_executor()?
+            .lock_executor_read_only()?
             .get_attempt_execution(request)
             .map_err(LocalExecutorPoolServiceError::Supervisor)
     }
@@ -694,6 +721,9 @@ pub enum LocalExecutorPoolServiceError<E> {
     /// Shared supervisor ownership was poisoned.
     #[error("local executor supervisor lock was poisoned")]
     SupervisorPoisoned,
+    /// The monotone status-observation revision can no longer advance.
+    #[error("local executor status observation revision is exhausted")]
+    ObservationRevisionExhausted,
     /// The sole-writer supervisor rejected or could not persist the operation.
     #[error("local executor supervisor operation failed")]
     Supervisor(LocalExecutorError<E>),
@@ -865,6 +895,7 @@ struct SharedExecutor<L, V> {
     ready: Condvar,
     promotions: PromotionQueue,
     state: AtomicU8,
+    ownership_revision: AtomicU64,
     worker_count: usize,
     promotion_worker_count: usize,
     checkpoint_observer: Option<Arc<dyn PausedCheckpointObserver>>,
@@ -889,6 +920,7 @@ impl<L, V> SharedExecutor<L, V> {
             ready: Condvar::new(),
             promotions: PromotionQueue::from_restart_work(restart_work),
             state: AtomicU8::new(POOL_RUNNING),
+            ownership_revision: AtomicU64::new(0),
             worker_count,
             promotion_worker_count,
             checkpoint_observer,
@@ -918,6 +950,28 @@ impl<L, V> SharedExecutor<L, V> {
         L: AssignmentLedger,
     {
         match self.executor.lock() {
+            Ok(executor) => {
+                self.bump_ownership_revision();
+                Ok(executor)
+            }
+            Err(poisoned) => {
+                drop(poisoned.into_inner());
+                self.fail_closed();
+                Err(LocalExecutorPoolServiceError::SupervisorPoisoned)
+            }
+        }
+    }
+
+    fn lock_executor_read_only(
+        &self,
+    ) -> Result<
+        MutexGuard<'_, LocalExecutorCapabilityService<L, V>>,
+        LocalExecutorPoolServiceError<L::Error>,
+    >
+    where
+        L: AssignmentLedger,
+    {
+        match self.executor.lock() {
             Ok(executor) => Ok(executor),
             Err(poisoned) => {
                 drop(poisoned.into_inner());
@@ -925,6 +979,14 @@ impl<L, V> SharedExecutor<L, V> {
                 Err(LocalExecutorPoolServiceError::SupervisorPoisoned)
             }
         }
+    }
+
+    fn bump_ownership_revision(&self) {
+        let _ =
+            self.ownership_revision
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |revision| {
+                    revision.checked_add(1)
+                });
     }
 
     fn request_shutdown(&self) {
@@ -936,7 +998,10 @@ impl<L, V> SharedExecutor<L, V> {
         );
         self.completion.signal_stopping();
         match self.executor.lock() {
-            Ok(executor) => executor.supervisor().signal_all_active_cancellation(),
+            Ok(executor) => {
+                self.bump_ownership_revision();
+                executor.supervisor().signal_all_active_cancellation();
+            }
             Err(poisoned) => poisoned
                 .into_inner()
                 .supervisor()
@@ -955,7 +1020,10 @@ impl<L, V> SharedExecutor<L, V> {
         self.state.store(POOL_POISONED, Ordering::Release);
         self.completion.signal_stopping();
         match self.executor.lock() {
-            Ok(executor) => executor.supervisor().signal_all_active_cancellation(),
+            Ok(executor) => {
+                self.bump_ownership_revision();
+                executor.supervisor().signal_all_active_cancellation();
+            }
             Err(poisoned) => poisoned
                 .into_inner()
                 .supervisor()
@@ -1052,6 +1120,7 @@ where
                     return Err(CheckpointHandoffFailure::Terminal);
                 }
             };
+            shared.bump_ownership_revision();
             match executor
                 .supervisor_mut()
                 .stage_checkpoint_publication_before_teardown(&self.queued, root)
@@ -1156,6 +1225,11 @@ where
         }
     };
     loop {
+        if executor.supervisor().queued_count() != 0 {
+            // `next_queued` transfers actor ownership to a worker and may also
+            // discard stale queue entries. Stamp every post-wake mutation.
+            shared.bump_ownership_revision();
+        }
         if let Some(mut queued) = executor.supervisor_mut().next_queued() {
             let handoff = PoolCheckpointHandoff {
                 shared: Arc::downgrade(shared),
@@ -1439,6 +1513,7 @@ fn enqueue_paused_checkpoint_promotion<L, V>(
                 return;
             }
         };
+        shared.bump_ownership_revision();
         match executor
             .supervisor()
             .paused_checkpoint_promotion_recovery(key)
@@ -1831,6 +1906,7 @@ fn reconcile_panicked_worker<L, V>(
                 retain_forever(shared, (key, execution));
             }
         };
+        shared.bump_ownership_revision();
         match executor
             .supervisor_mut()
             .reconcile_panicked_worker(key, execution)
@@ -1853,7 +1929,10 @@ fn lock_or_retain<'a, L, V, T>(
     token: &T,
 ) -> MutexGuard<'a, LocalExecutorCapabilityService<L, V>> {
     match shared.executor.lock() {
-        Ok(executor) => executor,
+        Ok(executor) => {
+            shared.bump_ownership_revision();
+            executor
+        }
         Err(poisoned) => {
             drop(poisoned.into_inner());
             retain_forever(shared, token);

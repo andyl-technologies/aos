@@ -14,7 +14,7 @@ use crate::{
     BranchAcceptanceCount, BranchAcceptanceSummary, BranchBudget, BranchPointId,
     BranchRequestCause, CampaignCommandId, CampaignControlAction, CampaignRoots, CandidateSource,
     ChoiceDomainId, ChoiceOpportunityId, ChoiceValue, ConfigurationArtifactId, ConfigurationId,
-    PinChange, PinRequest, PinRetention, StopCondition,
+    DaemonEpoch, PinChange, PinRequest, PinRetention, StopCondition,
 };
 
 fn hash(label: &str) -> CampaignHash {
@@ -206,6 +206,64 @@ fn get_campaign_messages_are_canonical_and_request_bound() {
 }
 
 #[test]
+fn campaign_status_messages_are_snapshot_bound_and_have_raw_vectors() {
+    let head_request = get_request("network-recovery");
+    let request = GetCampaignStatusRequest::new(
+        head_request.principal().clone(),
+        head_request.campaign().clone(),
+        snapshot("snapshot"),
+    )
+    .expect("status request");
+    let semantic = CampaignSemanticStatus::new(
+        CampaignContinuationStatus::new(1, 2, 3, 4, 5),
+        6,
+        7,
+        15,
+        8_192,
+    )
+    .expect("semantic status");
+    let operational = CampaignOperationalStatus::Observed(CampaignOperationalEvidence::new(
+        DaemonEpoch::from_bytes([0x42; 16]).expect("daemon epoch"),
+        hash("inventory"),
+        CampaignWorldStatus::new(8, 9, 10, 11, 12, 13),
+        14,
+        15,
+    ));
+    let response =
+        GetCampaignStatusResponse::new(&request, CampaignStatusSummary::new(semantic, operational))
+            .expect("status response");
+
+    assert_eq!(
+        GetCampaignStatusRequest::from_canonical_bytes(&request.canonical_bytes())
+            .expect("decode status request"),
+        request
+    );
+    assert_eq!(
+        GetCampaignStatusResponse::from_canonical_bytes(&response.canonical_bytes())
+            .expect("decode status response"),
+        response
+    );
+    response.validate_for(&request).expect("request binding");
+
+    let other_snapshot = GetCampaignStatusRequest::new(
+        request.principal().clone(),
+        request.campaign().clone(),
+        snapshot("other"),
+    )
+    .expect("other status request");
+    assert!(response.validate_for(&other_snapshot).is_err());
+
+    assert_eq!(
+        encode_hex(&request.canonical_bytes()),
+        "00000001000000000000000e6f70657261746f723a616c69636500000000000000106e6574776f726b2d7265636f76657279000000000000001a6372756369626c652e63616d706169676e2e736e617073686f74000000000000005463616d706169676e2d736e617073686f742e322e65623633643230366361623833326333326338333464303736346132613538646230373335363565623366386431373339316335396366646165663566653961"
+    );
+    assert_eq!(
+        encode_hex(&response.canonical_bytes()),
+        "00000001c2645e11c40d98dafd76b6cd55d410ede6c68c1124fa31cf5c2535409a8ccb92000000000000001a6372756369626c652e63616d706169676e2e736e617073686f74000000000000005463616d706169676e2d736e617073686f742e322e656236336432303663616238333263333263383334643037363461326135386462303733353635656233663864313733393163353963666461656635666539610000000000000001000000000000000200000000000000030000000000000004000000000000000500000000000000060000000000000007000000000000000f000000000000200001424242424242424242424242424242428a56cb32569d9a14271f8d8ce49d59c77d6a288e42372209b4234532c01c3f2900000000000000080000000000000009000000000000000a000000000000000b000000000000000c000000000000000d000000000000000e000000000000000f"
+    );
+}
+
+#[test]
 fn apply_command_messages_bind_principal_name_and_payload() {
     let request = ApplyCampaignCommandRequest::new(
         CampaignPrincipal::new("operator:alice").expect("principal"),
@@ -290,6 +348,13 @@ impl CampaignService for WrongGetService {
         _request: &GetCampaignRequest,
     ) -> Result<GetCampaignResponse, Self::Error> {
         Ok(self.response.clone())
+    }
+
+    fn get_campaign_status(
+        &self,
+        _request: &GetCampaignStatusRequest,
+    ) -> Result<GetCampaignStatusResponse, Self::Error> {
+        unreachable!("test service only handles GetCampaign")
     }
 
     fn get_campaign_snapshot(
@@ -456,6 +521,13 @@ impl CampaignService for FixedFailureService {
         Err(self.0)
     }
 
+    fn get_campaign_status(
+        &self,
+        _request: &GetCampaignStatusRequest,
+    ) -> Result<GetCampaignStatusResponse, Self::Error> {
+        Err(self.0)
+    }
+
     fn get_campaign_snapshot(
         &self,
         _request: &GetCampaignSnapshotRequest,
@@ -590,6 +662,13 @@ impl CampaignService for WrongApplyService {
         &self,
         _request: &GetCampaignRequest,
     ) -> Result<GetCampaignResponse, Self::Error> {
+        unreachable!("test service only handles ApplyCampaignCommand")
+    }
+
+    fn get_campaign_status(
+        &self,
+        _request: &GetCampaignStatusRequest,
+    ) -> Result<GetCampaignStatusResponse, Self::Error> {
         unreachable!("test service only handles ApplyCampaignCommand")
     }
 

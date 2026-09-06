@@ -24,7 +24,7 @@ use crate::executor_pool::PausedCheckpointObserver;
 use crate::{
     AssignmentLedger, DirectoryAssignmentLedger, DirectoryExactPinMaterializationStore,
     ExactCheckpointStore, ExactCheckpointStoreError, ExactPinMaterializationSelection,
-    ExactPinRetentionError, MAX_LOCAL_EXECUTOR_WORKERS,
+    ExactPinRetentionAdmin, ExactPinRetentionError, MAX_LOCAL_EXECUTOR_WORKERS,
 };
 
 /// Maximum distinct durable roots retained by one packaged materializer.
@@ -33,6 +33,7 @@ pub(crate) const MAX_PACKAGED_EXACT_PIN_CHECKPOINTS: usize = 65_536;
 pub(crate) const MAX_PACKAGED_EXACT_PINS_PER_PASS: usize = 65_536;
 
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(1);
+const STATUS_TIMEOUT: Duration = Duration::from_millis(250);
 
 pub(crate) struct PreparedPackagedExactPinMaterializer {
     repository: Arc<CampaignRepository>,
@@ -51,6 +52,17 @@ pub(crate) struct PackagedExactPinMaterializerOwner {
     thread: Option<JoinHandle<Result<(), PackagedExactPinMaterializerError>>>,
 }
 
+#[derive(Clone)]
+pub(crate) struct PackagedExactPinStatusHandle {
+    sender: SyncSender<MaterializerCommand>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PackagedExactPinStatus {
+    pub(crate) generation: CampaignHash,
+    pub(crate) selected_roots: BTreeSet<ExactCheckpointId>,
+}
+
 struct PackagedExactPinObserver {
     sender: SyncSender<MaterializerCommand>,
 }
@@ -62,6 +74,11 @@ enum MaterializerCommand {
         promoted: ExactCheckpointId,
     },
     Reconcile(SyncSender<()>),
+    Status {
+        campaign: CampaignName,
+        snapshot: crucible_campaign::CampaignSnapshotId,
+        response: SyncSender<Result<PackagedExactPinStatus, PackagedExactPinMaterializerError>>,
+    },
     Shutdown,
 }
 
@@ -202,6 +219,29 @@ impl PreparedPackagedExactPinMaterializer {
                     let _ = acknowledged.send(());
                     continue;
                 }
+                Ok(MaterializerCommand::Status {
+                    campaign,
+                    snapshot,
+                    response,
+                }) => {
+                    let status = reconcile_exact_pins(
+                        &self.repository,
+                        &self.checkpoints,
+                        &self.campaigns,
+                        &self.catalog,
+                        &mut self.selections,
+                    )
+                    .and_then(|()| {
+                        materialization_status(
+                            &self.repository,
+                            &campaign,
+                            snapshot,
+                            &mut self.selections,
+                        )
+                    });
+                    let _ = response.try_send(status);
+                    continue;
+                }
                 Ok(MaterializerCommand::Shutdown) => {
                     reconcile_exact_pins(
                         &self.repository,
@@ -227,6 +267,12 @@ impl PreparedPackagedExactPinMaterializer {
 }
 
 impl PackagedExactPinMaterializerOwner {
+    pub(crate) fn status_handle(&self) -> PackagedExactPinStatusHandle {
+        PackagedExactPinStatusHandle {
+            sender: self.sender.clone(),
+        }
+    }
+
     pub(crate) fn request_shutdown(&self) {
         if self
             .shutdown
@@ -259,6 +305,26 @@ impl PackagedExactPinMaterializerOwner {
         thread
             .join()
             .map_err(|_| PackagedExactPinMaterializerError::ThreadPanicked)?
+    }
+}
+
+impl PackagedExactPinStatusHandle {
+    pub(crate) fn status(
+        &self,
+        campaign: &CampaignName,
+        snapshot: crucible_campaign::CampaignSnapshotId,
+    ) -> Result<PackagedExactPinStatus, PackagedExactPinMaterializerError> {
+        let (response, completed) = sync_channel(1);
+        self.sender
+            .try_send(MaterializerCommand::Status {
+                campaign: campaign.clone(),
+                snapshot,
+                response,
+            })
+            .map_err(|_| PackagedExactPinMaterializerError::StatusUnavailable)?;
+        completed
+            .recv_timeout(STATUS_TIMEOUT)
+            .map_err(|_| PackagedExactPinMaterializerError::StatusUnavailable)?
     }
 }
 
@@ -396,6 +462,66 @@ fn reconcile_exact_pins(
     Ok(())
 }
 
+pub(super) fn materialization_status(
+    repository: &CampaignRepository,
+    campaign: &CampaignName,
+    snapshot: crucible_campaign::CampaignSnapshotId,
+    selections: &mut DirectoryExactPinMaterializationStore,
+) -> Result<PackagedExactPinStatus, PackagedExactPinMaterializerError> {
+    if repository.head(campaign.as_str())?.snapshot_id() != snapshot {
+        return Err(PackagedExactPinMaterializerError::StatusSnapshotChanged);
+    }
+
+    let mut exact_pins = Vec::new();
+    let mut exact_pin_count = 0_usize;
+    let mut overflow = false;
+    repository.visit_pin_retention_roots(campaign.as_str(), &mut |pin| {
+        if pin.retention() != PinRetention::Exact {
+            return;
+        }
+        if exact_pin_count >= MAX_PACKAGED_EXACT_PINS_PER_PASS {
+            overflow = true;
+            return;
+        }
+        exact_pin_count += 1;
+        exact_pins.push((pin.request().change.configuration(), pin.fact()));
+    })?;
+    if overflow {
+        return Err(PackagedExactPinMaterializerError::PinLimit);
+    }
+    if repository.head(campaign.as_str())?.snapshot_id() != snapshot {
+        return Err(PackagedExactPinMaterializerError::StatusSnapshotChanged);
+    }
+
+    let mut selected_roots = BTreeSet::new();
+    let mut fence = selections.acquire_exact_pin_retention_fence()?;
+    for (configuration, pin_fact) in exact_pins {
+        if let Some(selection) = fence.selection(campaign, configuration)?
+            && selection.pin_fact() == pin_fact
+        {
+            selected_roots.insert(selection.checkpoint());
+        }
+    }
+
+    let mut generation_material = Vec::new();
+    append_generation_text(&mut generation_material, &snapshot.to_string());
+    for checkpoint in &selected_roots {
+        append_generation_text(&mut generation_material, &checkpoint.to_string());
+    }
+    Ok(PackagedExactPinStatus {
+        generation: CampaignHash::derive(
+            "crucible.executor.packaged-materialization-status.v1",
+            &generation_material,
+        ),
+        selected_roots,
+    })
+}
+
+fn append_generation_text(material: &mut Vec<u8>, value: &str) {
+    material.extend_from_slice(&(value.len() as u64).to_be_bytes());
+    material.extend_from_slice(value.as_bytes());
+}
+
 /// Failure to retain operational exact checkpoints for current semantic pins.
 #[derive(Debug, thiserror::Error)]
 pub enum PackagedExactPinMaterializerError {
@@ -405,6 +531,12 @@ pub enum PackagedExactPinMaterializerError {
     /// One current semantic projection contained too many exact pins.
     #[error("packaged exact-pin projection exceeds 65,536 selections")]
     PinLimit,
+    /// The bounded status queue or response deadline was exhausted.
+    #[error("packaged exact-pin status is temporarily unavailable")]
+    StatusUnavailable,
+    /// The requested campaign head changed during materialization inventory.
+    #[error("packaged exact-pin status snapshot changed during inventory")]
+    StatusSnapshotChanged,
     /// A promotion completion named a source absent from the authenticated catalog.
     #[error(
         "packaged exact-pin promotion source {checkpoint} is absent from the checkpoint catalog"

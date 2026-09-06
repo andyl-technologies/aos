@@ -45,7 +45,9 @@
 //!       38 (ListCampaignsRequestV1) |
 //!       39 (ListCampaignsResponseV1) |
 //!       40 (AttachCampaignRuntimeRequestV1) |
-//!       41 (AttachCampaignRuntimeResponseV1)
+//!       41 (AttachCampaignRuntimeResponseV1) |
+//!       42 (GetCampaignStatusRequestV1) |
+//!       43 (GetCampaignStatusResponseV1)
 //! magic = "CRUCCS20"
 //! ```
 //!
@@ -70,23 +72,24 @@ use std::time::{Duration, Instant};
 
 use crucible_campaign::{
     ApplyCampaignCommandRequest, ApplyCampaignCommandResponse, CampaignAuthorizationError,
-    CampaignCodecError, CampaignName, CampaignPrincipal, CampaignPrincipalAuthorizer,
-    CampaignRepository, CampaignService, CampaignServiceErrorResponse, CampaignServiceFailure,
-    CampaignServiceFailureSource, CampaignServiceOperation, CreateCampaignRequest,
-    CreateCampaignResponse, DeriveCampaignRequest, DeriveCampaignResponse,
+    CampaignCodecError, CampaignName, CampaignOperationalStatusProvider, CampaignPrincipal,
+    CampaignPrincipalAuthorizer, CampaignRepository, CampaignService, CampaignServiceErrorResponse,
+    CampaignServiceFailure, CampaignServiceFailureSource, CampaignServiceOperation,
+    CreateCampaignRequest, CreateCampaignResponse, DeriveCampaignRequest, DeriveCampaignResponse,
     ExplainCampaignAttemptRequest, ExplainCampaignAttemptResponse, GetCampaignChoiceObjectRequest,
     GetCampaignChoiceObjectResponse, GetCampaignFindingObjectRequest,
     GetCampaignFindingObjectResponse, GetCampaignFrontierObjectRequest,
     GetCampaignFrontierObjectResponse, GetCampaignGraphObjectRequest,
     GetCampaignGraphObjectResponse, GetCampaignPlannerRankingsRequest,
     GetCampaignPlannerRankingsResponse, GetCampaignRequest, GetCampaignResponse,
-    GetCampaignSnapshotRequest, GetCampaignSnapshotResponse, ListCampaignsRequest,
-    ListCampaignsResponse, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, PinCampaignRequest,
-    PinCampaignResponse, QueryCampaignChoicesRequest, QueryCampaignChoicesResponse,
-    QueryCampaignFindingsRequest, QueryCampaignFindingsResponse, QueryCampaignFrontierRequest,
-    QueryCampaignFrontierResponse, QueryCampaignGraphRequest, QueryCampaignGraphResponse,
-    RepositoryCampaignService, SubmitCampaignBranchRequest, SubmitCampaignBranchResponse,
-    WatchCampaignRequest, WatchCampaignResponse,
+    GetCampaignSnapshotRequest, GetCampaignSnapshotResponse, GetCampaignStatusRequest,
+    GetCampaignStatusResponse, ListCampaignsRequest, ListCampaignsResponse,
+    MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, PinCampaignRequest, PinCampaignResponse,
+    QueryCampaignChoicesRequest, QueryCampaignChoicesResponse, QueryCampaignFindingsRequest,
+    QueryCampaignFindingsResponse, QueryCampaignFrontierRequest, QueryCampaignFrontierResponse,
+    QueryCampaignGraphRequest, QueryCampaignGraphResponse, RepositoryCampaignService,
+    SubmitCampaignBranchRequest, SubmitCampaignBranchResponse, WatchCampaignRequest,
+    WatchCampaignResponse,
 };
 
 use crate::{
@@ -137,6 +140,8 @@ const LIST_CAMPAIGNS_REQUEST_KIND: u8 = 38;
 const LIST_CAMPAIGNS_RESPONSE_KIND: u8 = 39;
 const ATTACH_CAMPAIGN_RUNTIME_REQUEST_KIND: u8 = 40;
 const ATTACH_CAMPAIGN_RUNTIME_RESPONSE_KIND: u8 = 41;
+const GET_CAMPAIGN_STATUS_REQUEST_KIND: u8 = 42;
+const GET_CAMPAIGN_STATUS_RESPONSE_KIND: u8 = 43;
 const DEFAULT_LOOPBACK_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_LOOPBACK_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 pub(crate) const DEFAULT_CAMPAIGN_REQUESTS_PER_CONNECTION: usize = 4_096;
@@ -388,6 +393,24 @@ impl CampaignService for LoopbackCampaignService {
                 Ok(response)
             },
             CampaignServiceFailure::validate_for_get_campaign,
+        )
+    }
+
+    fn get_campaign_status(
+        &self,
+        request: &GetCampaignStatusRequest,
+    ) -> Result<GetCampaignStatusResponse, Self::Error> {
+        self.exchange(
+            GET_CAMPAIGN_STATUS_REQUEST_KIND,
+            GET_CAMPAIGN_STATUS_RESPONSE_KIND,
+            request.request_digest(),
+            &request.canonical_bytes(),
+            |response| {
+                let response = GetCampaignStatusResponse::from_canonical_bytes(response)?;
+                response.validate_for(request)?;
+                Ok(response)
+            },
+            |failure| failure.validate_for_get_campaign_status(request.snapshot()),
         )
     }
 
@@ -1006,6 +1029,44 @@ where
     R: UnixPeerCampaignPrincipalResolver + ?Sized,
     A: CampaignPrincipalAuthorizer + ?Sized,
 {
+    serve_authenticated_repository_campaign_connection_with_controls_limits(
+        stream,
+        repository,
+        principal_resolver,
+        authorizer,
+        runtime_control,
+        None,
+        timeouts,
+        maximum_requests,
+    )
+}
+
+/// Serves one authenticated connection with optional runtime and status capabilities.
+///
+/// The status provider is consulted only after the ordinary request principal,
+/// campaign, and current snapshot have been authenticated by the repository
+/// service. `None` returns explicit unavailable operational evidence.
+///
+/// # Errors
+///
+/// Returns the same failures as
+/// [`serve_authenticated_repository_campaign_connection_with_limits`].
+// crucible-lint: allow rust-allow -- the explicit arguments expose every security boundary.
+#[allow(clippy::too_many_arguments)]
+pub fn serve_authenticated_repository_campaign_connection_with_controls_limits<R, A>(
+    stream: &mut UnixStream,
+    repository: &CampaignRepository,
+    principal_resolver: &R,
+    authorizer: &A,
+    runtime_control: Option<&dyn CampaignRuntimeControlService>,
+    operational_status: Option<&dyn CampaignOperationalStatusProvider>,
+    timeouts: LoopbackCampaignTimeouts,
+    maximum_requests: usize,
+) -> Result<(), LoopbackCampaignServerError>
+where
+    R: UnixPeerCampaignPrincipalResolver + ?Sized,
+    A: CampaignPrincipalAuthorizer + ?Sized,
+{
     if maximum_requests == 0 || maximum_requests > MAX_CAMPAIGN_REQUESTS_PER_CONNECTION {
         let _ = stream.shutdown(Shutdown::Both);
         return Err(LoopbackCampaignProtocolError::InvalidRequestLimit.into());
@@ -1024,6 +1085,10 @@ where
             inner: authorizer,
         };
         let service = RepositoryCampaignService::new(repository, peer_authorizer);
+        let service = match operational_status {
+            Some(provider) => service.with_operational_status(provider),
+            None => service,
+        };
         let runtime_dispatch = AuthorizedRuntimeControlDispatch {
             principal: &principal,
             authorizer,
@@ -1259,6 +1324,38 @@ where
                 Err(error) => {
                     let failure = error.campaign_service_failure();
                     if let Err(error) = failure.validate_for_get_campaign() {
+                        return reject_invalid_service_response(
+                            stream,
+                            request.request_digest(),
+                            error,
+                            timeouts.write,
+                        );
+                    }
+                    service_error_response(request.request_digest(), &failure)?
+                }
+            }
+        }
+        GET_CAMPAIGN_STATUS_REQUEST_KIND => {
+            let request = GetCampaignStatusRequest::from_canonical_bytes(&body)?;
+            match service.get_campaign_status(&request) {
+                Ok(response) => {
+                    if let Err(error) = response.validate_for(&request) {
+                        return reject_invalid_service_response(
+                            stream,
+                            request.request_digest(),
+                            error,
+                            timeouts.write,
+                        );
+                    }
+                    (
+                        GET_CAMPAIGN_STATUS_RESPONSE_KIND,
+                        response.canonical_bytes(),
+                    )
+                }
+                Err(error) => {
+                    let failure = error.campaign_service_failure();
+                    if let Err(error) = failure.validate_for_get_campaign_status(request.snapshot())
+                    {
                         return reject_invalid_service_response(
                             stream,
                             request.request_digest(),

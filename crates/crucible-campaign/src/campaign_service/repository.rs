@@ -96,6 +96,7 @@ pub(super) fn store_service_failure(error: &StoreError) -> CampaignServiceFailur
 pub struct RepositoryCampaignService<'a, A> {
     repository: &'a CampaignRepository,
     authorizer: A,
+    operational_status: Option<&'a dyn CampaignOperationalStatusProvider>,
 }
 
 impl<'a, A> RepositoryCampaignService<'a, A> {
@@ -105,7 +106,18 @@ impl<'a, A> RepositoryCampaignService<'a, A> {
         Self {
             repository,
             authorizer,
+            operational_status: None,
         }
+    }
+
+    /// Installs the daemon owner that supplies generation-bound operational evidence.
+    #[must_use]
+    pub const fn with_operational_status(
+        mut self,
+        operational_status: &'a dyn CampaignOperationalStatusProvider,
+    ) -> Self {
+        self.operational_status = Some(operational_status);
+        self
     }
 }
 
@@ -229,6 +241,44 @@ where
             head.snapshot().lineage(),
             head.snapshot().active_policy(),
             state,
+        )?)
+    }
+
+    fn get_campaign_status(
+        &self,
+        request: &GetCampaignStatusRequest,
+    ) -> Result<GetCampaignStatusResponse, Self::Error> {
+        self.authorizer.authorize(
+            request.principal(),
+            CampaignServiceOperation::GetCampaignStatus,
+            request.campaign(),
+            request.request_digest(),
+        )?;
+        let head = self.repository.head(request.campaign().as_str())?;
+        if head.snapshot_id() != request.snapshot() {
+            return Err(CampaignRepositoryError::Stale {
+                expected: request.snapshot(),
+                current: head.snapshot_id(),
+            }
+            .into());
+        }
+        let semantic = self.repository.semantic_status_at(request.snapshot())?;
+        let operational = self
+            .operational_status
+            .map_or(CampaignOperationalStatus::Unavailable, |provider| {
+                provider.operational_status(request.campaign(), request.snapshot())
+            });
+        let current = self.repository.head(request.campaign().as_str())?;
+        if current.snapshot_id() != request.snapshot() {
+            return Err(CampaignRepositoryError::Stale {
+                expected: request.snapshot(),
+                current: current.snapshot_id(),
+            }
+            .into());
+        }
+        Ok(GetCampaignStatusResponse::new(
+            request,
+            CampaignStatusSummary::new(semantic, operational),
         )?)
     }
 

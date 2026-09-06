@@ -356,6 +356,10 @@ fn policy_operation_labels_cover_the_closed_service_vocabulary() {
         ("derive-campaign", CampaignServiceOperation::DeriveCampaign),
         ("get-campaign", CampaignServiceOperation::GetCampaign),
         (
+            "get-campaign-status",
+            CampaignServiceOperation::GetCampaignStatus,
+        ),
+        (
             "get-campaign-snapshot",
             CampaignServiceOperation::GetCampaignSnapshot,
         ),

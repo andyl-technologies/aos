@@ -195,6 +195,27 @@ impl CampaignService for FixedHeadService {
         .expect("fixed get response"))
     }
 
+    fn get_campaign_status(
+        &self,
+        request: &GetCampaignStatusRequest,
+    ) -> Result<GetCampaignStatusResponse, Self::Error> {
+        let continuations = CampaignContinuationStatus::new(2, 3, 5, 7, 11);
+        let semantic = CampaignSemanticStatus::new(continuations, 13, 17, 28, 2_048)
+            .expect("fixed semantic status");
+        let operational = CampaignOperationalStatus::Observed(CampaignOperationalEvidence::new(
+            DaemonEpoch::from_bytes([0x44; 16]).expect("daemon epoch"),
+            hash("inventory"),
+            CampaignWorldStatus::new(19, 23, 29, 31, 37, 41),
+            43,
+            47,
+        ));
+        Ok(GetCampaignStatusResponse::new(
+            request,
+            CampaignStatusSummary::new(semantic, operational),
+        )
+        .expect("fixed status response"))
+    }
+
     fn get_campaign_snapshot(
         &self,
         _request: &GetCampaignSnapshotRequest,
@@ -361,6 +382,13 @@ impl CampaignService for GraphPageService {
         &self,
         _request: &GetCampaignRequest,
     ) -> Result<GetCampaignResponse, Self::Error> {
+        unreachable!("unused campaign-service operation")
+    }
+
+    fn get_campaign_status(
+        &self,
+        _request: &GetCampaignStatusRequest,
+    ) -> Result<GetCampaignStatusResponse, Self::Error> {
         unreachable!("unused campaign-service operation")
     }
 
@@ -732,6 +760,8 @@ fn campaign_head_report_renders_machine_and_human_forms() {
         policy: "policy".to_owned(),
         state: "running",
         advanced: Some(true),
+        semantic: None,
+        operational: None,
     };
 
     let json = render_campaign_head(&report, OutputFormat::Json).expect("JSON report");
@@ -1038,6 +1068,24 @@ fn campaign_status_and_watch_use_the_checked_loopback_transport() {
     assert_eq!(status_report.operation, "status");
     assert_eq!(status_report.snapshot, snapshot("current").to_string());
     assert_eq!(status_report.advanced, None);
+    let status_json =
+        render_campaign_head(&status_report, OutputFormat::Json).expect("campaign status JSON");
+    let status_value: serde_json::Value =
+        serde_json::from_str(&status_json).expect("valid campaign status JSON");
+    assert_eq!(status_value["schema"], CAMPAIGN_STATUS_REPORT_SCHEMA);
+    assert_eq!(status_value["semantic"]["latent_or_open_continuations"], 10);
+    assert_eq!(status_value["semantic"]["admitted_attempts"], 13);
+    assert_eq!(status_value["semantic"]["stored_graph_nodes"], 17);
+    assert_eq!(status_value["semantic"]["continuation_records_scanned"], 28);
+    assert_eq!(status_value["operational"]["availability"], "observed");
+    assert_eq!(status_value["operational"]["running_worlds"], 23);
+    assert_eq!(status_value["operational"]["retained_checkpoint_roots"], 43);
+    assert_eq!(status_value["operational"]["materialized_checkpoints"], 47);
+    let status_table =
+        render_campaign_head(&status_report, OutputFormat::Table).expect("campaign status table");
+    assert!(status_table.contains("latent_or_open_continuations 10"));
+    assert!(status_table.contains("operational observed"));
+    assert!(status_table.contains("running_worlds 23"));
 
     let watch = CampaignCommand::Watch(CampaignWatchArgs {
         name: "example".to_owned(),
@@ -1047,6 +1095,9 @@ fn campaign_status_and_watch_use_the_checked_loopback_transport() {
     assert_eq!(watch_report.operation, "watch");
     assert_eq!(watch_report.state, "running");
     assert_eq!(watch_report.advanced, Some(true));
+    let watch_value = serde_json::to_value(&watch_report).expect("watch JSON");
+    assert!(watch_value.get("semantic").is_none());
+    assert!(watch_value.get("operational").is_none());
 }
 
 #[test]
@@ -3432,9 +3483,14 @@ fn campaign_status_watch_and_list_parse_under_the_nested_cli() {
 
 fn query_over_loopback(command: &CampaignCommand) -> CampaignHeadReport {
     let (client_stream, mut server_stream) = UnixStream::pair().expect("campaign stream pair");
+    let serves_status = matches!(command, CampaignCommand::Status(_));
     let server = thread::spawn(move || {
         serve_loopback_campaign_once(&mut server_stream, &FixedHeadService)
             .expect("serve one campaign request");
+        if serves_status {
+            serve_loopback_campaign_once(&mut server_stream, &FixedHeadService)
+                .expect("serve campaign status request");
+        }
     });
     let service = LoopbackCampaignService::new(client_stream).expect("loopback client");
     let client = CampaignClient::new(service);

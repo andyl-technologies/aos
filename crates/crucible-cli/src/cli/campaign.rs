@@ -72,13 +72,14 @@ use crucible_campaign::{
     CandidateSource, ChoiceDomain, ChoiceDomainId, ChoiceOpportunityId, ChoiceValue,
     ConfigurationArtifactId, ConfigurationId, ContinuationState, ControlRequest,
     CreateCampaignRequest, DeriveCampaignRequest, FindingKind, GetCampaignChoiceObjectRequest,
-    GetCampaignRequest, IntegerValue, ListCampaignsRequest, MAX_CAMPAIGN_CHOICE_QUERY_PAGE_ITEMS,
-    MAX_CAMPAIGN_FINDING_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_FRONTIER_QUERY_PAGE_ITEMS,
-    MAX_CAMPAIGN_LIST_PAGE_ITEMS, MAX_CAMPAIGN_QUERY_PAGE_ITEMS,
-    MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, PinCampaignRequest, PinChange, PinRequest, PinRetention,
-    QueryCampaignChoicesRequest, QueryCampaignFindingsRequest, QueryCampaignFrontierRequest,
-    QueryCampaignGraphRequest, STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION, SelectableDeclaration,
-    SelectableId, StopCondition, SubmitCampaignBranchRequest, WatchCampaignRequest,
+    GetCampaignRequest, GetCampaignStatusRequest, IntegerValue, ListCampaignsRequest,
+    MAX_CAMPAIGN_CHOICE_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_FINDING_QUERY_PAGE_ITEMS,
+    MAX_CAMPAIGN_FRONTIER_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_LIST_PAGE_ITEMS,
+    MAX_CAMPAIGN_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, PinCampaignRequest,
+    PinChange, PinRequest, PinRetention, QueryCampaignChoicesRequest, QueryCampaignFindingsRequest,
+    QueryCampaignFrontierRequest, QueryCampaignGraphRequest,
+    STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION, SelectableDeclaration, SelectableId,
+    StopCondition, SubmitCampaignBranchRequest, WatchCampaignRequest,
 };
 use crucible_daemon::{
     AttachCampaignRuntimeRequest, CampaignRuntimeAttachmentDisposition, LoopbackCampaignService,
@@ -86,6 +87,7 @@ use crucible_daemon::{
 use serde::Serialize;
 
 const CAMPAIGN_HEAD_REPORT_SCHEMA: &str = "crucible.cli.campaign-head.v1";
+const CAMPAIGN_STATUS_REPORT_SCHEMA: &str = "crucible.cli.campaign-head.v2";
 const CAMPAIGN_LIST_REPORT_SCHEMA: &str = "crucible.cli.campaign-list.v1";
 const CAMPAIGN_MUTATION_REPORT_SCHEMA: &str = "crucible.cli.campaign-mutation.v1";
 const CAMPAIGN_PAGE_REPORT_SCHEMA: &str = "crucible.cli.campaign-page.v2";
@@ -109,6 +111,42 @@ struct CampaignHeadReport {
     state: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     advanced: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    semantic: Option<CampaignSemanticStatusReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    operational: Option<CampaignOperationalStatusReport>,
+}
+
+#[derive(Serialize)]
+struct CampaignSemanticStatusReport {
+    latent_or_open_continuations: u64,
+    ready_continuations: u64,
+    waiting_for_feedback_continuations: u64,
+    open_continuations: u64,
+    exhausted_continuations: u64,
+    closed_continuations: u64,
+    admitted_attempts: u64,
+    stored_graph_nodes: u64,
+    continuation_records_scanned: u64,
+    continuation_bytes_scanned: u64,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "availability", rename_all = "kebab-case")]
+enum CampaignOperationalStatusReport {
+    Unavailable,
+    Observed {
+        daemon_epoch: String,
+        inventory_generation: String,
+        preparing_worlds: u64,
+        running_worlds: u64,
+        checkpointing_worlds: u64,
+        publishing_worlds: u64,
+        canceling_worlds: u64,
+        paused_worlds: u64,
+        retained_checkpoint_roots: u64,
+        materialized_checkpoints: u64,
+    },
 }
 
 #[derive(Serialize)]
@@ -1558,8 +1596,57 @@ where
             let response = client
                 .get_campaign(&request)
                 .map_err(|error| backend_error(format!("campaign status failed: {error}")))?;
+            let status_request = GetCampaignStatusRequest::new(
+                request.principal().clone(),
+                campaign.clone(),
+                response.snapshot(),
+            )
+            .map_err(|error| usage_error(format!("invalid campaign status request: {error}")))?;
+            let status_response = client
+                .get_campaign_status(&status_request)
+                .map_err(|error| backend_error(format!("campaign status failed: {error}")))?;
+            let status_summary = status_response.status();
+            let semantic = status_summary.semantic();
+            let continuations = semantic.continuations();
+            let semantic = CampaignSemanticStatusReport {
+                latent_or_open_continuations: continuations.latent_or_open().map_err(|error| {
+                    backend_error(format!("campaign status is invalid: {error}"))
+                })?,
+                ready_continuations: continuations.ready(),
+                waiting_for_feedback_continuations: continuations.waiting_for_feedback(),
+                open_continuations: continuations.open(),
+                exhausted_continuations: continuations.exhausted(),
+                closed_continuations: continuations.closed(),
+                admitted_attempts: semantic.admitted_attempts(),
+                stored_graph_nodes: semantic.stored_graph_nodes(),
+                continuation_records_scanned: semantic.continuation_records_scanned(),
+                continuation_bytes_scanned: semantic.continuation_bytes_scanned(),
+            };
+            let operational = match status_summary.operational() {
+                crucible_campaign::CampaignOperationalStatus::Unavailable => {
+                    CampaignOperationalStatusReport::Unavailable
+                }
+                crucible_campaign::CampaignOperationalStatus::Observed(evidence) => {
+                    let worlds = evidence.worlds();
+                    CampaignOperationalStatusReport::Observed {
+                        daemon_epoch: format!(
+                            "{:032x}",
+                            u128::from_be_bytes(evidence.daemon_epoch().as_bytes())
+                        ),
+                        inventory_generation: evidence.inventory_generation().to_hex(),
+                        preparing_worlds: worlds.preparing(),
+                        running_worlds: worlds.running(),
+                        checkpointing_worlds: worlds.checkpointing(),
+                        publishing_worlds: worlds.publishing(),
+                        canceling_worlds: worlds.canceling(),
+                        paused_worlds: worlds.paused(),
+                        retained_checkpoint_roots: evidence.retained_checkpoint_roots(),
+                        materialized_checkpoints: evidence.materialized_checkpoints(),
+                    }
+                }
+            };
             Ok(CampaignHeadReport {
-                schema: CAMPAIGN_HEAD_REPORT_SCHEMA,
+                schema: CAMPAIGN_STATUS_REPORT_SCHEMA,
                 operation: "status",
                 campaign: campaign.as_str().to_owned(),
                 snapshot: response.snapshot().to_string(),
@@ -1567,6 +1654,8 @@ where
                 policy: response.policy().to_string(),
                 state: campaign_state_label(response.state()),
                 advanced: None,
+                semantic: Some(semantic),
+                operational: Some(operational),
             })
         }
         CampaignCommand::Watch(watch) => {
@@ -1591,6 +1680,8 @@ where
                 policy: response.policy().to_string(),
                 state: campaign_state_label(response.state()),
                 advanced: Some(response.advanced()),
+                semantic: None,
+                operational: None,
             })
         }
         _ => Err(backend_error(
@@ -2398,42 +2489,110 @@ fn render_campaign_head(
             .map_err(|error| backend_error(format!("campaign JSON encoding failed: {error}"))),
         OutputFormat::Json => serde_json::to_string_pretty(report)
             .map_err(|error| backend_error(format!("campaign JSON encoding failed: {error}"))),
-        OutputFormat::Table => {
-            let mut rows = vec![
-                ("campaign", report.campaign.as_str()),
-                ("snapshot", report.snapshot.as_str()),
-                ("lineage", report.lineage.as_str()),
-                ("policy", report.policy.as_str()),
-                ("state", report.state),
-            ];
-            let advanced;
-            if let Some(value) = report.advanced {
-                advanced = value.to_string();
-                rows.push(("advanced", advanced.as_str()));
-            }
-            Ok(rows
-                .into_iter()
-                .map(|(field, value)| format!("{field:<10} {value}"))
-                .collect::<Vec<_>>()
-                .join("\n"))
-        }
+        OutputFormat::Table => Ok(campaign_head_rows(report)
+            .into_iter()
+            .map(|(field, value)| format!("{field:<10} {value}"))
+            .collect::<Vec<_>>()
+            .join("\n")),
         OutputFormat::Markdown => {
             let mut output = String::from("| Field | Value |\n| --- | --- |\n");
-            for (field, value) in [
-                ("campaign", report.campaign.as_str()),
-                ("snapshot", report.snapshot.as_str()),
-                ("lineage", report.lineage.as_str()),
-                ("policy", report.policy.as_str()),
-                ("state", report.state),
-            ] {
+            for (field, value) in campaign_head_rows(report) {
                 output.push_str(&format!("| {field} | {value} |\n"));
-            }
-            if let Some(advanced) = report.advanced {
-                output.push_str(&format!("| advanced | {advanced} |\n"));
             }
             Ok(output.trim_end().to_owned())
         }
     }
+}
+
+fn campaign_head_rows(report: &CampaignHeadReport) -> Vec<(&'static str, String)> {
+    let mut rows = vec![
+        ("campaign", report.campaign.clone()),
+        ("snapshot", report.snapshot.clone()),
+        ("lineage", report.lineage.clone()),
+        ("policy", report.policy.clone()),
+        ("state", report.state.to_owned()),
+    ];
+    if let Some(advanced) = report.advanced {
+        rows.push(("advanced", advanced.to_string()));
+    }
+    if let Some(semantic) = &report.semantic {
+        rows.extend([
+            (
+                "latent_or_open_continuations",
+                semantic.latent_or_open_continuations.to_string(),
+            ),
+            (
+                "ready_continuations",
+                semantic.ready_continuations.to_string(),
+            ),
+            (
+                "waiting_for_feedback_continuations",
+                semantic.waiting_for_feedback_continuations.to_string(),
+            ),
+            (
+                "open_continuations",
+                semantic.open_continuations.to_string(),
+            ),
+            (
+                "exhausted_continuations",
+                semantic.exhausted_continuations.to_string(),
+            ),
+            (
+                "closed_continuations",
+                semantic.closed_continuations.to_string(),
+            ),
+            ("admitted_attempts", semantic.admitted_attempts.to_string()),
+            (
+                "stored_graph_nodes",
+                semantic.stored_graph_nodes.to_string(),
+            ),
+            (
+                "continuation_records_scanned",
+                semantic.continuation_records_scanned.to_string(),
+            ),
+            (
+                "continuation_bytes_scanned",
+                semantic.continuation_bytes_scanned.to_string(),
+            ),
+        ]);
+    }
+    match report.operational.as_ref() {
+        None => {}
+        Some(CampaignOperationalStatusReport::Unavailable) => {
+            rows.push(("operational", String::from("unavailable")));
+        }
+        Some(CampaignOperationalStatusReport::Observed {
+            daemon_epoch,
+            inventory_generation,
+            preparing_worlds,
+            running_worlds,
+            checkpointing_worlds,
+            publishing_worlds,
+            canceling_worlds,
+            paused_worlds,
+            retained_checkpoint_roots,
+            materialized_checkpoints,
+        }) => rows.extend([
+            ("operational", String::from("observed")),
+            ("daemon_epoch", daemon_epoch.clone()),
+            ("inventory_generation", inventory_generation.clone()),
+            ("preparing_worlds", preparing_worlds.to_string()),
+            ("running_worlds", running_worlds.to_string()),
+            ("checkpointing_worlds", checkpointing_worlds.to_string()),
+            ("publishing_worlds", publishing_worlds.to_string()),
+            ("canceling_worlds", canceling_worlds.to_string()),
+            ("paused_worlds", paused_worlds.to_string()),
+            (
+                "retained_checkpoint_roots",
+                retained_checkpoint_roots.to_string(),
+            ),
+            (
+                "materialized_checkpoints",
+                materialized_checkpoints.to_string(),
+            ),
+        ]),
+    }
+    rows
 }
 
 fn render_campaign_mutation(

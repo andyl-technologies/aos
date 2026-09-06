@@ -424,11 +424,30 @@ impl AttemptRuntimeState {
         }
     }
 
-    fn retained_checkpoint_roots(self) -> [Option<ExactCheckpointId>; 3] {
+    pub(crate) fn retained_checkpoint_roots(self) -> [Option<ExactCheckpointId>; 3] {
         let current = self.checkpoint();
         let promotion_source = self
             .promotion_source_checkpoint()
             .filter(|checkpoint| Some(*checkpoint) != current);
+        let origin = self.origin_checkpoint().filter(|checkpoint| {
+            Some(*checkpoint) != current && Some(*checkpoint) != promotion_source
+        });
+        [current, promotion_source, origin]
+    }
+
+    /// Returns complete checkpoint roots known to be materialized in this state.
+    pub(crate) fn materialized_checkpoint_roots(self) -> [Option<ExactCheckpointId>; 3] {
+        let current = match self {
+            Self::Paused { checkpoint, .. } => Some(checkpoint),
+            Self::Running { .. }
+            | Self::CheckpointRequested { .. }
+            | Self::CheckpointPublishing { .. }
+            | Self::CheckpointPromoting { .. }
+            | Self::Publishing { .. }
+            | Self::Completed { .. }
+            | Self::Canceled { .. } => None,
+        };
+        let promotion_source = self.promotion_source_checkpoint();
         let origin = self.origin_checkpoint().filter(|checkpoint| {
             Some(*checkpoint) != current && Some(*checkpoint) != promotion_source
         });
@@ -1008,12 +1027,7 @@ impl DirectoryAssignmentLedger {
     }
 
     fn attempt_path(&self, key: AttemptExecutionKey) -> PathBuf {
-        let mut material = Vec::with_capacity(256);
-        push_bytes(&mut material, key.lineage.to_text().as_bytes());
-        push_bytes(&mut material, key.attempt.to_text().as_bytes());
-        let encoded =
-            CampaignHash::derive("crucible.executor.attempt-execution-key.v1", &material).to_hex();
-        self.root.join("attempts").join(&encoded[..2]).join(encoded)
+        attempt_path_at(&self.root, key)
     }
 
     fn advance_retention_state(&mut self) -> Result<(), AssignmentLedgerError> {
@@ -1028,80 +1042,132 @@ impl DirectoryAssignmentLedger {
         &self,
         visitor: &mut dyn FnMut(AttemptExecutionKey, AttemptRuntimeState),
     ) -> Result<(), AssignmentLedgerError> {
-        let attempts = self.root.join("attempts");
-        let shards = match fs::read_dir(&attempts) {
-            Ok(shards) => shards,
-            Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(source) => return Err(io_error("read-attempt-root-shards", &attempts, source)),
-        };
-        for shard in shards {
-            let shard =
-                shard.map_err(|source| io_error("read-attempt-root-shard", &attempts, source))?;
-            let shard_path = shard.path();
-            let shard_name = shard.file_name();
-            let shard_name = shard_name
-                .to_str()
-                .ok_or_else(|| corrupt("attempt-root-shard-name"))?;
-            if shard_name.len() != 2
-                || !shard_name
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-            {
-                return Err(corrupt("attempt-root-shard-name"));
-            }
-            if !shard
-                .file_type()
-                .map_err(|source| io_error("stat-attempt-root-shard", &shard_path, source))?
-                .is_dir()
-            {
-                return Err(corrupt("attempt-root-shard-is-not-directory"));
-            }
-            let records = fs::read_dir(&shard_path)
-                .map_err(|source| io_error("read-attempt-root-records", &shard_path, source))?;
-            for record in records {
-                let record = record
-                    .map_err(|source| io_error("read-attempt-root-record", &shard_path, source))?;
-                let path = record.path();
-                let name = record.file_name();
-                let name = name
-                    .to_str()
-                    .ok_or_else(|| corrupt("attempt-root-record-name"))?;
-                if name.starts_with('.') {
-                    if is_staging_name(name)
-                        && record
-                            .file_type()
-                            .map_err(|source| io_error("stat-attempt-root-staging", &path, source))?
-                            .is_file()
-                    {
-                        continue;
-                    }
-                    return Err(corrupt("attempt-root-unknown-hidden-entry"));
-                }
-                if name.len() != 64
-                    || !name
-                        .bytes()
-                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-                {
-                    return Err(corrupt("attempt-root-record-name"));
-                }
-                if !record
-                    .file_type()
-                    .map_err(|source| io_error("stat-attempt-root-record", &path, source))?
-                    .is_file()
-                {
-                    return Err(corrupt("attempt-root-record-is-not-file"));
-                }
-                let bytes = read_optional_bounded(&path)?
-                    .ok_or_else(|| corrupt("attempt-root-record-disappeared"))?;
-                let (key, state) = decode_attempt_state(&bytes)?;
-                if self.attempt_path(key) != path {
-                    return Err(corrupt("attempt-root-record-path-identity-mismatch"));
-                }
-                visitor(key, state);
-            }
+        let complete = visit_directory_attempt_states_bounded(&self.root, usize::MAX, visitor)?;
+        if !complete {
+            return Err(corrupt(
+                "attempt-record-count-exceeds-process-address-space",
+            ));
         }
         Ok(())
     }
+}
+
+fn attempt_path_at(root: &Path, key: AttemptExecutionKey) -> PathBuf {
+    let mut material = Vec::with_capacity(256);
+    push_bytes(&mut material, key.lineage.to_text().as_bytes());
+    push_bytes(&mut material, key.attempt.to_text().as_bytes());
+    let encoded =
+        CampaignHash::derive("crucible.executor.attempt-execution-key.v1", &material).to_hex();
+    root.join("attempts").join(&encoded[..2]).join(encoded)
+}
+
+/// Loads the persistent generation surrounding a read-only status inventory.
+pub(crate) fn directory_assignment_retention_generation(
+    root: &Path,
+) -> Result<AssignmentRetentionGeneration, AssignmentLedgerError> {
+    let path = root.join(RETENTION_STATE_FILE);
+    let bytes = read_optional_with_limit(&path, MAX_RETENTION_STATE_BYTES, "retention-state-size")?
+        .ok_or_else(|| corrupt("retention-state-is-missing"))?;
+    decode_retention_state(&bytes).map(AssignmentRetentionState::digest)
+}
+
+/// Streams at most `maximum` durable runtime records from a directory ledger.
+///
+/// The returned boolean is true only when the complete authenticated directory
+/// inventory fit within the supplied bound. This reader does not acquire the
+/// ledger's exclusive writer lock. Every returned record is authenticated, but
+/// concurrent writes can span the inventory; callers that require one coherent
+/// operational projection must use the generation-bound campaign status API.
+///
+/// # Errors
+///
+/// Returns [`AssignmentLedgerError`] when the directory shape or any visited
+/// runtime record is malformed, corrupt, unavailable, or exceeds its bound.
+pub fn visit_directory_attempt_states_bounded(
+    root: &Path,
+    maximum: usize,
+    visitor: &mut dyn FnMut(AttemptExecutionKey, AttemptRuntimeState),
+) -> Result<bool, AssignmentLedgerError> {
+    let attempts = root.join("attempts");
+    let shards = match fs::read_dir(&attempts) {
+        Ok(shards) => shards,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+        Err(source) => return Err(io_error("read-attempt-root-shards", &attempts, source)),
+    };
+    let mut visited = 0_usize;
+    for shard in shards {
+        let shard =
+            shard.map_err(|source| io_error("read-attempt-root-shard", &attempts, source))?;
+        let shard_path = shard.path();
+        let shard_name = shard.file_name();
+        let shard_name = shard_name
+            .to_str()
+            .ok_or_else(|| corrupt("attempt-root-shard-name"))?;
+        if shard_name.len() != 2
+            || !shard_name
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(corrupt("attempt-root-shard-name"));
+        }
+        if !shard
+            .file_type()
+            .map_err(|source| io_error("stat-attempt-root-shard", &shard_path, source))?
+            .is_dir()
+        {
+            return Err(corrupt("attempt-root-shard-is-not-directory"));
+        }
+        let records = fs::read_dir(&shard_path)
+            .map_err(|source| io_error("read-attempt-root-records", &shard_path, source))?;
+        for record in records {
+            let record = record
+                .map_err(|source| io_error("read-attempt-root-record", &shard_path, source))?;
+            let path = record.path();
+            let name = record.file_name();
+            let name = name
+                .to_str()
+                .ok_or_else(|| corrupt("attempt-root-record-name"))?;
+            if name.starts_with('.') {
+                if is_staging_name(name)
+                    && record
+                        .file_type()
+                        .map_err(|source| io_error("stat-attempt-root-staging", &path, source))?
+                        .is_file()
+                {
+                    continue;
+                }
+                return Err(corrupt("attempt-root-unknown-hidden-entry"));
+            }
+            if name.len() != 64
+                || !name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            {
+                return Err(corrupt("attempt-root-record-name"));
+            }
+            if !record
+                .file_type()
+                .map_err(|source| io_error("stat-attempt-root-record", &path, source))?
+                .is_file()
+            {
+                return Err(corrupt("attempt-root-record-is-not-file"));
+            }
+            if visited >= maximum {
+                return Ok(false);
+            }
+            let bytes = read_optional_bounded(&path)?
+                .ok_or_else(|| corrupt("attempt-root-record-disappeared"))?;
+            let (key, state) = decode_attempt_state(&bytes)?;
+            if attempt_path_at(root, key) != path {
+                return Err(corrupt("attempt-root-record-path-identity-mismatch"));
+            }
+            visitor(key, state);
+            visited = visited
+                .checked_add(1)
+                .ok_or_else(|| corrupt("attempt-record-count-overflow"))?;
+        }
+    }
+    Ok(true)
 }
 
 fn is_staging_name(name: &str) -> bool {

@@ -355,6 +355,7 @@ fn parse_operation(operation: &str) -> Option<CampaignServiceOperation> {
         "create-campaign" => Some(CampaignServiceOperation::CreateCampaign),
         "derive-campaign" => Some(CampaignServiceOperation::DeriveCampaign),
         "get-campaign" => Some(CampaignServiceOperation::GetCampaign),
+        "get-campaign-status" => Some(CampaignServiceOperation::GetCampaignStatus),
         "get-campaign-snapshot" => Some(CampaignServiceOperation::GetCampaignSnapshot),
         "watch-campaign" => Some(CampaignServiceOperation::WatchCampaign),
         "query-campaign-graph" => Some(CampaignServiceOperation::QueryCampaignGraph),

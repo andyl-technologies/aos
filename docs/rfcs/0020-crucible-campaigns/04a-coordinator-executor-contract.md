@@ -187,7 +187,8 @@ privileged internal mutation.
 the CLI, an in-process caller, and a future external coordinator implementation:
 
 ```text
-CreateCampaign        GetCampaign          ApplyCampaignCommand
+CreateCampaign        GetCampaign          GetCampaignStatus
+ApplyCampaignCommand
 ListCampaigns
 GetSnapshot           QueryGraph           GetGraphObject
 QueryFrontier          GetFrontierObject    QueryChoices
@@ -207,7 +208,7 @@ ref and immutable objects remain authoritative. A stale or lost watch cursor
 therefore cannot lose campaign state.
 
 The strict service checkpoint defines principal-aware `ListCampaigns`, `CreateCampaign`,
-`DeriveCampaign`, `GetCampaign`, `GetSnapshot`, `WatchCampaign`,
+`DeriveCampaign`, `GetCampaign`, `GetCampaignStatus`, `GetSnapshot`, `WatchCampaign`,
 `ApplyCampaignCommand`, `QueryGraph`, `GetGraphObject`, and
 `QueryChoices`, `QueryFrontier`, `QueryFindings`, `GetFindingObject`,
 `ExplainAttempt`, `GetPlannerRankings`, `GetFrontierObject`, `GetChoiceObject`,
@@ -229,6 +230,27 @@ DeriveCampaignResponseV1 = version | request_digest | source_snapshot |
 GetCampaignRequestV1 = version | principal | campaign
 GetCampaignResponseV1 = version | request_digest | snapshot | lineage |
                         active_policy | lifecycle_state
+
+GetCampaignStatusRequestV1 = version | principal | campaign | snapshot
+GetCampaignStatusResponseV1 = version | request_digest | snapshot |
+                              CampaignStatusSummaryV1
+CampaignStatusSummaryV1 = CampaignSemanticStatusV1 |
+                          CampaignOperationalStatusV1
+CampaignSemanticStatusV1 = CampaignContinuationStatusV1 |
+                           admitted_attempts:u64 | stored_graph_nodes:u64 |
+                           continuation_records_scanned:u64 |
+                           continuation_bytes_scanned:u64
+CampaignContinuationStatusV1 = ready:u64 | waiting_for_feedback:u64 |
+                               open:u64 | exhausted:u64 | closed:u64
+CampaignOperationalStatusV1 = 0 Unavailable |
+                              1 Observed(CampaignOperationalEvidenceV1)
+CampaignOperationalEvidenceV1 = daemon_epoch[16] |
+                                inventory_generation[32] |
+                                CampaignWorldStatusV1 |
+                                retained_checkpoint_roots:u64 |
+                                materialized_checkpoints:u64
+CampaignWorldStatusV1 = preparing:u64 | running:u64 | checkpointing:u64 |
+                        publishing:u64 | canceling:u64 | paused:u64
 
 ListCampaignsRequestV1 = version | principal | optional after_campaign | limit
 CampaignListEntryV1 = campaign | snapshot | lineage | active_policy |
@@ -422,7 +444,7 @@ Every operation permits tags 0, 1, 8, 9, 10, 11, 12, and 13.
 `CreateCampaign` additionally permits 3; `DeriveCampaign` additionally permits
 2, 3, and 6; `GetCampaign`, `GetSnapshot`, and `WatchCampaign` additionally
 permit 2;
-`QueryGraph`, `GetGraphObject`, `QueryChoices`, `QueryFrontier`,
+`GetCampaignStatus`, `QueryGraph`, `GetGraphObject`, `QueryChoices`, `QueryFrontier`,
 `QueryFindings`, `GetFindingObject`, `ExplainAttempt`, `GetFrontierObject`, and
 `GetChoiceObject`, `GetPlannerRankings`
 additionally permit 2 and 4;
@@ -451,6 +473,9 @@ exact language-neutral derivations are:
 ```text
 get_request_digest =
   H("crucible.campaign-service.get-campaign.v1", GetCampaignRequestV1)
+get_status_request_digest =
+  H("crucible.campaign-service.get-campaign-status.v1",
+    GetCampaignStatusRequestV1)
 list_request_digest =
   H("crucible.campaign-service.list-campaigns.v1", ListCampaignsRequestV1)
 get_snapshot_request_digest =
@@ -907,7 +932,9 @@ kind = 1 (GetCampaignRequestV1) |
       38 (ListCampaignsRequestV1) |
       39 (ListCampaignsResponseV1) |
       40 (AttachCampaignRuntimeRequestV1) |
-      41 (AttachCampaignRuntimeResponseV1)
+      41 (AttachCampaignRuntimeResponseV1) |
+      42 (GetCampaignStatusRequestV1) |
+      43 (GetCampaignStatusResponseV1)
 ```
 
 Loopback frame versions 1 through 19 are rejected rather than reinterpreted

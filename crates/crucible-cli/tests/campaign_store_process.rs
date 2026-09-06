@@ -214,6 +214,11 @@ campaign = "*"
 
 [[grants]]
 principal = "{PRINCIPAL}"
+operation = "get-campaign-status"
+campaign = "*"
+
+[[grants]]
+principal = "{PRINCIPAL}"
 operation = "get-campaign-snapshot"
 campaign = "*"
 
