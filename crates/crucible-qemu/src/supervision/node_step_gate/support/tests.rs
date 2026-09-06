@@ -55,8 +55,9 @@ fn pre_directory_resource_admission_matches_the_concrete_launch_command() {
         .try_into_deterministic()
         .unwrap_or_else(|error| panic!("launch profile should validate: {error}"));
     let vm = vm_launch_config(&config, "vm-a");
-    let plugin = live_node_plugin_config(&config, &profile, &vm, config.run_directory(), "vm-a")
-        .unwrap_or_else(|error| panic!("plugin profile should validate: {error}"));
+    let plugin =
+        live_node_plugin_config(&config, &profile, &vm, config.run_directory(), "vm-a", None)
+            .unwrap_or_else(|error| panic!("plugin profile should validate: {error}"));
     let command = QemuLaunchCommandBuilder::new_for_live_gate(
         profile,
         vm,
@@ -134,8 +135,9 @@ fn selectable_catalog_plan_reaches_the_launch_bound_plugin_setup_plan() {
         .unwrap_or_else(|error| panic!("launch profile should validate: {error}"));
     let vm = vm_launch_config(&config, "vm-a");
 
-    let plugin = live_node_plugin_config(&config, &profile, &vm, config.run_directory(), "vm-a")
-        .unwrap_or_else(|error| panic!("plugin profile should validate: {error}"));
+    let plugin =
+        live_node_plugin_config(&config, &profile, &vm, config.run_directory(), "vm-a", None)
+            .unwrap_or_else(|error| panic!("plugin profile should validate: {error}"));
 
     assert_eq!(config.selectable_catalog_plan(), Some(&selectable));
     assert_eq!(plugin.selectable_catalog_plan(), &selectable);

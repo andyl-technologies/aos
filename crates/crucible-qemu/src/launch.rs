@@ -58,6 +58,8 @@ pub use validation::{
     validate_pre_spawn_qemu_launch_args,
 };
 use validation::{canonical_cpu_model, validate_accelerator, validate_fixed_text};
+#[cfg(target_os = "linux")]
+pub(crate) use whitebox_setup::probe_x86_whitebox_setup_guarded;
 pub use whitebox_setup::{
     QemuWhiteboxSetupError, QemuWhiteboxSetupValidation, probe_x86_whitebox_setup,
     validate_aarch64_whitebox_setup, validate_x86_whitebox_hmp_mtree,
@@ -533,6 +535,12 @@ impl QemuLaunchCommand {
     #[must_use]
     pub fn executable(&self) -> &str {
         &self.executable
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_executable(mut self, executable: impl Into<String>) -> Self {
+        self.executable = executable.into();
+        self
     }
 
     /// Returns the argv tail passed after the executable.

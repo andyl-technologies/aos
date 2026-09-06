@@ -114,9 +114,6 @@ pub enum QemuLiveNodeStepGateError {
         /// Exact path retained by the prepared directory capability.
         prepared: PathBuf,
     },
-    /// Guarded x86 launch would require an uncontained setup-probe process.
-    #[error("guarded x86 white-box launch requires a contained setup-probe authority")]
-    GuardedWhiteboxProbeUnavailable,
     /// The supplied exact snapshot was not emitted by a live QEMU node.
     #[error("production exact restore rejected a non-live or identity-inconsistent snapshot")]
     InvalidExactSnapshot,
@@ -254,6 +251,7 @@ impl QemuLiveNodeStepGateError {
     #[must_use]
     pub fn take_unreaped_child(&mut self) -> Option<crate::QemuNodeChild> {
         match self {
+            Self::WhiteboxSetup { source } => source.take_unreaped_child(),
             Self::NodeFactory { source } => source.take_unreaped_child(),
             Self::FailedCleanup { unreaped_child, .. } => unreaped_child.take().map(|child| *child),
             _ => None,

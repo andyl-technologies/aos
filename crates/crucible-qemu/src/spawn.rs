@@ -8,20 +8,22 @@
 
 use std::ffi::CString;
 use std::fs::{self, File};
-use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::io::{self, Read, Write as _};
+use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::fs::FileExt;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
 use crate::supervision::HostSupervisionDeadline;
 
-use rustix::fs::{FileType, Mode, OFlags, fstat, fstatfs, fsync, open, openat};
+use rustix::fs::{
+    FileType, Mode, OFlags, fcntl_getfl, fcntl_setfl, fstat, fstatfs, fsync, open, openat,
+};
 use thiserror::Error;
 
 use crate::{
@@ -1008,6 +1010,15 @@ pub enum QemuSpawnError {
         /// Stable preparation operation.
         operation: &'static str,
     },
+    /// A guarded QEMU setup probe exceeded its absolute execution deadline.
+    #[error("guarded QEMU setup probe exceeded its execution deadline")]
+    GuardedQemuProbeTimeout,
+    /// A guarded QEMU setup probe exceeded its bounded diagnostic output.
+    #[error("guarded QEMU setup probe exceeded its {maximum_bytes}-byte output limit")]
+    GuardedQemuProbeOutputLimit {
+        /// Maximum bytes retained independently for stdout and stderr.
+        maximum_bytes: usize,
+    },
     /// A disk-backed fresh launch omitted its immutable root image.
     #[error("fresh disk-backed QEMU preparation requires one root image")]
     FreshRootImageMissing,
@@ -1514,19 +1525,204 @@ fn spawn_process_with_resources(
         .map_err(|source| QemuSpawnError::Io { operation, source })
 }
 
-fn run_guarded_image_tool(
-    executable: &Path,
-    args: &[std::ffi::OsString],
-    operation: &'static str,
+/// Runs the stopped QEMU setup probe through an admitted attempt contract.
+///
+/// The probe uses the exact descriptor-pinned launch directory and child
+/// credentials of the eventual VM. Its input, lifetime, and two diagnostic
+/// streams are bounded. A helper that cannot be synchronously reaped remains
+/// owned by the returned error for transfer to the attempt resource owner.
+pub(crate) fn run_guarded_qemu_setup_probe(
+    launch: &QemuLaunchCommand,
+    args: &[String],
+    input: &[u8],
+    maximum_output_bytes: usize,
+    timeout: Duration,
     run_directory: &QemuPreparedRunDirectory,
     process_contract: &QemuChildProcessContract,
-) -> Result<(), QemuGuardedImagePreparationError> {
-    if let Err(source) = run_directory.validate_helper_basis(process_contract) {
+) -> Result<Output, QemuGuardedImagePreparationError> {
+    if let Err(source) = run_directory
+        .validate_launch_basis(launch, process_contract)
+        .and_then(|()| run_directory.revalidate())
+    {
         return Err(QemuGuardedImagePreparationError {
             source,
             child: None,
         });
     }
+
+    let deadline = HostSupervisionDeadline::start(timeout);
+    let mut command = Command::new(launch.executable());
+    command
+        .env_clear()
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    install_guarded_helper_authority(&mut command, run_directory, process_contract);
+
+    let mut child = command
+        .spawn()
+        .map_err(|source| QemuGuardedImagePreparationError {
+            source: QemuSpawnError::Io {
+                operation: "spawn guarded QEMU setup probe",
+                source,
+            },
+            child: None,
+        })?;
+    let child_stdin = match child.stdin.take() {
+        Some(stdin) => stdin,
+        None => {
+            return Err(cleanup_missing_guarded_probe_pipe(
+                child,
+                "open guarded QEMU probe stdin",
+            ));
+        }
+    };
+    let child_stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            return Err(cleanup_missing_guarded_probe_pipe(
+                child,
+                "open guarded QEMU probe stdout",
+            ));
+        }
+    };
+    let child_stderr = match child.stderr.take() {
+        Some(stderr) => stderr,
+        None => {
+            return Err(cleanup_missing_guarded_probe_pipe(
+                child,
+                "open guarded QEMU probe stderr",
+            ));
+        }
+    };
+
+    if let Err(source) = nonblocking_probe_pipe(&child_stdin)
+        .and_then(|()| nonblocking_probe_pipe(&child_stdout))
+        .and_then(|()| nonblocking_probe_pipe(&child_stderr))
+    {
+        return Err(cleanup_failed_image_tool(QemuNodeChild::new(child), source));
+    }
+
+    let mut stdin = (!input.is_empty()).then_some(child_stdin);
+    let mut stdout = child_stdout;
+    let mut stderr = child_stderr;
+    let mut written = 0;
+    let mut stdout_capture = ProbeCapture::new(maximum_output_bytes);
+    let mut stderr_capture = ProbeCapture::new(maximum_output_bytes);
+    let mut child = QemuNodeChild::new(child);
+    let mut status = None;
+
+    loop {
+        if !deadline.has_time_remaining() {
+            return Err(cleanup_failed_image_tool(
+                child,
+                QemuSpawnError::GuardedQemuProbeTimeout,
+            ));
+        }
+
+        let mut progressed = false;
+        if let Some(pipe) = stdin.as_mut() {
+            match pipe.write(&input[written..]) {
+                Ok(0) => {
+                    return Err(cleanup_failed_image_tool(
+                        child,
+                        QemuSpawnError::Io {
+                            operation: "write guarded QEMU setup probe input",
+                            source: io::ErrorKind::WriteZero.into(),
+                        },
+                    ));
+                }
+                Ok(count) => {
+                    written += count;
+                    progressed = true;
+                    if written == input.len() {
+                        stdin = None;
+                    }
+                }
+                Err(error) if retryable_probe_io(&error) => {}
+                Err(source) => {
+                    return Err(cleanup_failed_image_tool(
+                        child,
+                        QemuSpawnError::Io {
+                            operation: "write guarded QEMU setup probe input",
+                            source,
+                        },
+                    ));
+                }
+            }
+        }
+
+        match stdout_capture.read_once(&mut stdout) {
+            Ok(read_progressed) => progressed |= read_progressed,
+            Err(source) => {
+                return Err(cleanup_failed_image_tool(
+                    child,
+                    QemuSpawnError::Io {
+                        operation: "read guarded QEMU setup probe stdout",
+                        source,
+                    },
+                ));
+            }
+        }
+        match stderr_capture.read_once(&mut stderr) {
+            Ok(read_progressed) => progressed |= read_progressed,
+            Err(source) => {
+                return Err(cleanup_failed_image_tool(
+                    child,
+                    QemuSpawnError::Io {
+                        operation: "read guarded QEMU setup probe stderr",
+                        source,
+                    },
+                ));
+            }
+        }
+        if stdout_capture.exceeded || stderr_capture.exceeded {
+            return Err(cleanup_failed_image_tool(
+                child,
+                QemuSpawnError::GuardedQemuProbeOutputLimit {
+                    maximum_bytes: maximum_output_bytes,
+                },
+            ));
+        }
+
+        if status.is_none() {
+            match child.try_wait_natural_exit() {
+                Ok(observed) => status = observed,
+                Err(error) => {
+                    return Err(cleanup_failed_image_tool(
+                        child,
+                        QemuSpawnError::Io {
+                            operation: "poll guarded QEMU setup probe",
+                            source: io::Error::other(error.to_string()),
+                        },
+                    ));
+                }
+            }
+        }
+        if let Some(status) = status
+            && stdout_capture.eof
+            && stderr_capture.eof
+            && stdin.is_none()
+        {
+            return Ok(Output {
+                status,
+                stdout: stdout_capture.bytes,
+                stderr: stderr_capture.bytes,
+            });
+        }
+
+        if !progressed {
+            thread::sleep(GUARDED_IMAGE_TOOL_POLL_INTERVAL);
+        }
+    }
+}
+
+fn install_guarded_helper_authority(
+    command: &mut Command,
+    run_directory: &QemuPreparedRunDirectory,
+    process_contract: &QemuChildProcessContract,
+) {
     let expected_parent_pid = unsafe {
         // SAFETY: `getpid` has no preconditions.
         libc::getpid()
@@ -1542,13 +1738,6 @@ fn run_guarded_image_tool(
         vmstate_device: run_directory.vmstate_identity.device,
         vmstate_inode: run_directory.vmstate_identity.inode,
     };
-    let mut command = Command::new(executable);
-    command
-        .env_clear()
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
     unsafe {
         // SAFETY: the closure uses only async-signal-safe scalar syscalls and
         // captures raw descriptor numbers plus copyable credentials.
@@ -1561,6 +1750,99 @@ fn run_guarded_image_tool(
             set_parent_death_signal(expected_parent_pid)
         });
     }
+}
+
+fn cleanup_missing_guarded_probe_pipe(
+    child: Child,
+    operation: &'static str,
+) -> QemuGuardedImagePreparationError {
+    cleanup_failed_image_tool(
+        QemuNodeChild::new(child),
+        QemuSpawnError::Io {
+            operation,
+            source: io::Error::other("configured pipe was unavailable"),
+        },
+    )
+}
+
+struct ProbeCapture {
+    bytes: Vec<u8>,
+    maximum_bytes: usize,
+    exceeded: bool,
+    eof: bool,
+}
+
+impl ProbeCapture {
+    fn new(maximum_bytes: usize) -> Self {
+        Self {
+            bytes: Vec::with_capacity(maximum_bytes.min(64 * 1024)),
+            maximum_bytes,
+            exceeded: false,
+            eof: false,
+        }
+    }
+
+    // One read per iteration prevents a flooding stream from starving the
+    // deadline, the monitor request, or the other diagnostic stream.
+    fn read_once(&mut self, reader: &mut impl Read) -> io::Result<bool> {
+        if self.eof {
+            return Ok(false);
+        }
+        let mut buffer = [0_u8; 16 * 1024];
+        match reader.read(&mut buffer) {
+            Ok(0) => {
+                self.eof = true;
+                Ok(true)
+            }
+            Ok(count) => {
+                let retained = count.min(self.maximum_bytes.saturating_sub(self.bytes.len()));
+                self.bytes.extend_from_slice(&buffer[..retained]);
+                self.exceeded |= retained != count;
+                Ok(true)
+            }
+            Err(error) if retryable_probe_io(&error) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+fn nonblocking_probe_pipe(pipe: &impl AsFd) -> Result<(), QemuSpawnError> {
+    fcntl_getfl(pipe)
+        .and_then(|flags| fcntl_setfl(pipe, flags | OFlags::NONBLOCK))
+        .map_err(|source| QemuSpawnError::Io {
+            operation: "configure guarded QEMU probe pipe",
+            source: source.into(),
+        })
+}
+
+fn retryable_probe_io(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+    )
+}
+
+fn run_guarded_image_tool(
+    executable: &Path,
+    args: &[std::ffi::OsString],
+    operation: &'static str,
+    run_directory: &QemuPreparedRunDirectory,
+    process_contract: &QemuChildProcessContract,
+) -> Result<(), QemuGuardedImagePreparationError> {
+    if let Err(source) = run_directory.validate_helper_basis(process_contract) {
+        return Err(QemuGuardedImagePreparationError {
+            source,
+            child: None,
+        });
+    }
+    let mut command = Command::new(executable);
+    command
+        .env_clear()
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    install_guarded_helper_authority(&mut command, run_directory, process_contract);
     let child = command
         .spawn()
         .map_err(|source| QemuGuardedImagePreparationError {

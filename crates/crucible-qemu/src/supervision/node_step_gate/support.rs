@@ -361,6 +361,7 @@ pub(super) fn live_node_plugin_config(
     vm: &QemuVmLaunchConfig,
     run_directory: &Path,
     node_name: &str,
+    guarded_probe: Option<(&QemuPreparedRunDirectory, &QemuChildProcessContract)>,
 ) -> Result<QemuLaunchPluginConfig, QemuLiveNodeStepGateError> {
     let plugin_base = live_node_plugin_base(config).with_fault_target_node(node_name);
     let mut plugin = if config.whitebox == QemuLaunchPluginSwitch::On {
@@ -373,9 +374,16 @@ pub(super) fn live_node_plugin_config(
             )
             .map_err(|source| QemuLiveNodeStepGateError::LaunchCommand { source })?;
         let validation = match config.architecture {
-            LivePluginGuestArchitecture::X86_64 => {
-                crate::probe_x86_whitebox_setup(&probe_command, run_directory)
-            }
+            LivePluginGuestArchitecture::X86_64 => match guarded_probe {
+                Some((run_directory, process_contract)) => {
+                    crate::launch::probe_x86_whitebox_setup_guarded(
+                        &probe_command,
+                        run_directory,
+                        process_contract,
+                    )
+                }
+                None => crate::probe_x86_whitebox_setup(&probe_command, run_directory),
+            },
             LivePluginGuestArchitecture::Aarch64 => {
                 crate::validate_aarch64_whitebox_setup(config.doorbell_instruction_abi_version)
             }
