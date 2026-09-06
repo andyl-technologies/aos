@@ -50,6 +50,11 @@ struct ScenarioRegistry {
 #[derive(Deserialize)]
 struct ScenarioReport {
     schema_version: String,
+    registry: String,
+    release_id: String,
+    staging_receipt_digest: Sha256Digest,
+    manifest_digest: Sha256Digest,
+    case_digest: Sha256Digest,
     started_at: String,
     finished_at: String,
     observed_seconds: u64,
@@ -93,7 +98,15 @@ pub(super) fn inspect(command: &ReleaseQualificationCommand, printer: &Printer) 
         _ => bail!("unknown qualification phase"),
     };
     let cases = aos_release::qualification_evidence::cases(&plan, &manifest, phase)?;
-    let output = serde_json::json!({"status": "not-evaluated", "cases": cases});
+    let case_digests = cases
+        .iter()
+        .map(|case| Ok((case.id.clone(), case.digest()?)))
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    let output = serde_json::json!({
+        "status": "not-evaluated",
+        "cases": cases,
+        "case_digests": case_digests,
+    });
     if !printer.json_if_active(&output) {
         std::io::stdout().write_all(&canonical::canonical_json(&output)?)?;
         println!();
@@ -121,7 +134,16 @@ fn respond(args: &ReleaseQualificationRespondArgs) -> Result<()> {
     let registry: ScenarioRegistry = canonical::from_slice(&registry_bytes, "scenario registry")?;
     select(&registry, &request)?;
 
-    let report_bytes = capture::control_file(&args.report, "scenario report")?;
+    let case = request
+        .qualification_case
+        .as_ref()
+        .context("native scenario response requires a shared-contract case")?;
+    let report_path = match (&args.report, &args.report_root) {
+        (Some(path), None) => path.clone(),
+        (None, Some(root)) => root.join(format!("{}.json", case.digest()?.hex())),
+        _ => bail!("select exactly one scenario report or report root"),
+    };
+    let report_bytes = capture::control_file(&report_path, "scenario report")?;
     canonical::require_canonical(&report_bytes, "scenario report")?;
     let report: serde_json::Value = canonical::from_slice(&report_bytes, "scenario report")?;
     let fields: ScenarioReport = serde_json::from_value(report.clone())?;
@@ -149,7 +171,7 @@ fn build_response(
         .qualification_case
         .as_ref()
         .context("native scenario response requires a shared-contract case")?;
-    validate_report_fields(case, &fields)?;
+    validate_report_fields(request, case, &fields)?;
 
     let environment = match (&case.target, fields.environment.as_ref()) {
         (Some(_), Some(value)) => Some(serde_json::from_value::<EnvironmentInventory>(
@@ -210,11 +232,20 @@ fn build_response(
 }
 
 fn validate_report_fields(
+    request: &QualificationExecutorRequestV1,
     case: &aos_release::qualification_evidence::QualificationCase,
     report: &ScenarioReport,
 ) -> Result<()> {
     if report.schema_version != SCENARIO_REPORT_V1 {
         bail!("unsupported qualification scenario report schema");
+    }
+    if report.registry != request.registry
+        || report.release_id != request.release_id
+        || report.staging_receipt_digest != request.staging_receipt_digest
+        || report.manifest_digest != request.manifest_digest
+        || report.case_digest != case.digest()?
+    {
+        bail!("scenario report identity differs from the exact qualification request");
     }
     let required = case
         .checks
@@ -475,6 +506,11 @@ mod tests {
     fn package_report() -> serde_json::Value {
         serde_json::json!({
             "schema_version": SCENARIO_REPORT_V1,
+            "registry": "andyl/testing",
+            "release_id": "release-2026.9.0",
+            "staging_receipt_digest": Sha256Digest::of_bytes(b"receipt"),
+            "manifest_digest": Sha256Digest::of_bytes(b"manifest"),
+            "case_digest": package_case().digest().unwrap(),
             "started_at": "2026-09-06T18:00:00Z",
             "finished_at": "2026-09-06T18:01:00Z",
             "observed_seconds": 60,
@@ -581,12 +617,13 @@ mod tests {
         let report = package_report();
         let mut fields: ScenarioReport = serde_json::from_value(report.clone())?;
         fields.checks.remove("functional-behavior");
-        assert!(validate_report_fields(&case, &fields).is_err());
+        let request = package_request()?;
+        assert!(validate_report_fields(&request, &case, &fields).is_err());
 
         let mut report = package_report();
         report["finished_at"] = serde_json::json!("2026-09-06T17:59:00Z");
         let fields: ScenarioReport = serde_json::from_value(report)?;
-        assert!(validate_report_fields(&case, &fields).is_err());
+        assert!(validate_report_fields(&request, &case, &fields).is_err());
 
         let mut report = package_report();
         report
@@ -594,7 +631,12 @@ mod tests {
             .context("test report is not an object")?
             .remove("environment");
         let fields: ScenarioReport = serde_json::from_value(report)?;
-        assert!(validate_report_fields(&case, &fields).is_err());
+        assert!(validate_report_fields(&request, &case, &fields).is_err());
+
+        let mut report = package_report();
+        report["manifest_digest"] = serde_json::json!(Sha256Digest::of_bytes(b"other"));
+        let fields: ScenarioReport = serde_json::from_value(report)?;
+        assert!(validate_report_fields(&request, &case, &fields).is_err());
         Ok(())
     }
 }

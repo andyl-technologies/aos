@@ -110,8 +110,15 @@ pub struct ReleaseQualificationRespondArgs {
     #[arg(long)]
     pub scenarios: PathBuf,
     /// Canonical report produced by the scenario exercise
-    #[arg(long)]
-    pub report: PathBuf,
+    #[arg(
+        long,
+        conflicts_with = "report_root",
+        required_unless_present = "report_root"
+    )]
+    pub report: Option<PathBuf>,
+    /// Directory of case-digest-named canonical scenario reports
+    #[arg(long, conflicts_with = "report")]
+    pub report_root: Option<PathBuf>,
     /// Public executor identity expected by the coordinator
     #[arg(long)]
     pub identity: String,
@@ -1386,6 +1393,41 @@ mod tests {
                 "qualification",
             ])
             .is_ok()
+        );
+    }
+
+    #[test]
+    fn qualification_response_requires_one_report_source() {
+        let base = [
+            "aos",
+            "release",
+            "qualification",
+            "respond",
+            "--request",
+            "request.json",
+            "--scenarios",
+            "scenarios.json",
+            "--identity",
+            "linux-x86-v1",
+        ];
+
+        assert!(Cli::try_parse_from(base.into_iter().chain(["--report", "report.json"])).is_ok());
+        assert!(
+            Cli::try_parse_from(
+                base.into_iter()
+                    .chain(["--report-root", "/run/aos-release/reports"])
+            )
+            .is_ok()
+        );
+        assert!(Cli::try_parse_from(base).is_err());
+        assert!(
+            Cli::try_parse_from(base.into_iter().chain([
+                "--report",
+                "report.json",
+                "--report-root",
+                "/run/aos-release/reports",
+            ]))
+            .is_err()
         );
     }
 
