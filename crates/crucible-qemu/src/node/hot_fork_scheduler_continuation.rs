@@ -223,7 +223,7 @@ impl QemuHotForkSchedulerNodeContinuation {
     /// Returns [`QemuHotForkSchedulerNodeInstallError`] with both linear inputs
     /// when the process-control basis differs from this continuation.
     pub fn into_qemu_node(
-        self,
+        mut self,
         node: crucible::NodeId,
         process: impl QemuNodeExternalProcessControl + 'static,
         shutdown_policy: QemuShutdownPolicy,
@@ -240,6 +240,26 @@ impl QemuHotForkSchedulerNodeContinuation {
                     "install hot-fork scheduler node",
                     "external process control does not match the retained fork basis",
                 ),
+            ));
+        }
+
+        // The private ring's fresh slot must carry the counter the child
+        // inherited before any host request reaches the plugin; the larger of
+        // the observed time and the last step ceiling is where the source
+        // stopped.
+        let inherited_icount = self
+            .state
+            .last_step_ceiling
+            .map_or(self.state.last_observed_time.ticks, |ceiling| {
+                ceiling.retired.max(self.state.last_observed_time.ticks)
+            });
+        if let Err(source) = self
+            .channels
+            .shmem_hot_path
+            .arm_hot_fork_child_ceiling(inherited_icount)
+        {
+            return Err(QemuHotForkSchedulerNodeInstallError::new(
+                self, process, source,
             ));
         }
 

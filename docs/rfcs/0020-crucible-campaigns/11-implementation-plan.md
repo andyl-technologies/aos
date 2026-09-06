@@ -3285,7 +3285,30 @@ retained template, which admitted exactly one child per template; patch 0235
 refuses a release only during a fork operation or a transitional template
 phase, so a template retained at its barrier phase lets a consumed stage go
 and its readiness proofs recompute from what remains.
-The three-child flight passes: each child adopted its private VMState, greeted, saved through it, and was reaped before the next child was staged, and the third child consumed file plan generation 3. The host-side restage check had also to stop requiring zero stage-generation counters, which are monotonic identifiers of every stage QEMU admitted.The daemon's Linux fork launch now owns the child-private file plan for
+The three-child flight passes: each child adopted its private VMState, greeted, saved through it, and was reaped before the next child was staged, and the third child consumed file plan generation 3. The host-side restage check had also to stop requiring zero stage-generation counters, which are monotonic identifiers of every stage QEMU admitted.
+
+A second VM-hosted flight (`checks.crucible.phase6.qemuHotForkChildExecutionVm`)
+executes in the child. The source pauses at an exact snapshot and retains a
+template; the flight forks a child, installs it as an externally parented
+scheduler node through a gate-owned process control that observes the
+child's status through the source, proves the child stands at the captured
+boundary with the captured fingerprint and round-robin sample, resumes it,
+and advances it through an observable suffix. A fresh process restores the
+same snapshot and advances to the child's suffix boundary, and both must
+report the same execution fingerprint and sample. This is the child-side
+half of T-CAM-6.5 against the flight's firmware guest; the increasing guest
+RAM sizes and thin replay comparison remain open. Two more findings came out
+of it: the child's private ring carries the source's queue contents but a
+fresh node slot, so its scheduler ceiling was zero while the plugin still
+stood at the source's counter and the first control boundary aborted the
+plugin; installing a child node now arms the inherited counter as its
+ceiling through the same quiesced-executor arming an exact restore uses.
+And the restarted round-robin vCPU thread never set its thread-local current
+CPU, so the loop's icount deadline handling failed its vCPU-thread assertion
+on the child's first resume; patch 0236 names the CPU before the loop.
+The flight passes: the child stood at icount 3,000,001 with the captured fingerprint and sample, ran to 3,250,001, and the exact restore reported the same suffix fingerprint.
+
+The daemon's Linux fork launch now owns the child-private file plan for
 production children. Every node launcher exposes its admitted launch resource
 profile, the retained template identity records it, and the launch provisions
 the target attempt's run directory under that profile, lends its empty VMState
