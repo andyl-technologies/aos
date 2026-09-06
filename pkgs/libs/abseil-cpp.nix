@@ -15,6 +15,7 @@
     version = "20230802.0";
     upstreamId = "20230802.0";
     repository = "abseil/abseil-cpp";
+    provider = "github-releases";
     major = 20230802;
     versionScheme = "numeric";
     riskFloor = "high";

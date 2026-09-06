@@ -19,6 +19,7 @@
     version = "1.9.2";
     upstreamId = "v1.9.2";
     repository = "libgit2/libgit2";
+    provider = "github-releases";
     tagPrefix = "v";
     major = 1;
     source = {

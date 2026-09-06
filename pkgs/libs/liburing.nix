@@ -12,6 +12,7 @@
     version = "2.12";
     upstreamId = "liburing-2.12";
     repository = "axboe/liburing";
+    provider = "github-releases";
     tagPrefix = "liburing-";
     major = 2;
     versionScheme = "numeric";

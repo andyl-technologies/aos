@@ -12,6 +12,7 @@
     version = "10.47";
     upstreamId = "pcre2-10.47";
     repository = "PCRE2Project/pcre2";
+    provider = "github-releases";
     tagPrefix = "pcre2-";
     major = 10;
     versionScheme = "numeric";

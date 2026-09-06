@@ -17,6 +17,7 @@
     version = "1.8.1";
     upstreamId = "jq-1.8.1";
     repository = "jqlang/jq";
+    provider = "github-releases";
     tagPrefix = "jq-";
     major = 1;
     source = {

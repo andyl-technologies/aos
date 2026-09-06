@@ -12,6 +12,7 @@
     version = "1.46.0";
     upstreamId = "1.46.0";
     repository = "casey/just";
+    provider = "github-releases";
     major = 1;
     source = {
       authority = "github.com";

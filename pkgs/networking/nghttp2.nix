@@ -14,6 +14,7 @@
     version = "1.68.0";
     upstreamId = "v1.68.0";
     repository = "nghttp2/nghttp2";
+    provider = "github-releases";
     tagPrefix = "v";
     major = 1;
     source = {

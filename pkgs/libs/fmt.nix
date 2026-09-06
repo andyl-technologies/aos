@@ -13,6 +13,7 @@
     version = "12.1.0";
     upstreamId = "12.1.0";
     repository = "fmtlib/fmt";
+    provider = "github-releases";
     major = 12;
     source = {
       authority = "github.com";

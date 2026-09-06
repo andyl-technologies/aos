@@ -13,6 +13,7 @@
     version = "58";
     upstreamId = "r58";
     repository = "benhoyt/inih";
+    provider = "github-releases";
     tagPrefix = "r";
     major = 58;
     versionScheme = "numeric";

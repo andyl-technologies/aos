@@ -13,6 +13,7 @@
     version = "5.8.2";
     upstreamId = "v5.8.2";
     repository = "tukaani-project/xz";
+    provider = "github-releases";
     tagPrefix = "v";
     major = 5;
     source = {

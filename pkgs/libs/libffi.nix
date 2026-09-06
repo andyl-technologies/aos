@@ -12,6 +12,7 @@
     version = "3.5.2";
     upstreamId = "v3.5.2";
     repository = "libffi/libffi";
+    provider = "github-releases";
     tagPrefix = "v";
     major = 3;
     source = {

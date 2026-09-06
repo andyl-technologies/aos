@@ -13,6 +13,7 @@
     version = "2.6.0";
     upstreamId = "v2.6.0";
     repository = "seccomp/libseccomp";
+    provider = "github-releases";
     tagPrefix = "v";
     major = 2;
     riskFloor = "high";
