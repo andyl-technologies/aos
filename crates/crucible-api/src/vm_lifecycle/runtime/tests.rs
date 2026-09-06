@@ -2,7 +2,10 @@
 
 use std::collections::BTreeSet;
 
-use crucible_protocol::selectable_catalog_plan::{SelectableCatalogPlan, SelectablePlanPresence};
+use crucible_protocol::selectable_catalog_plan::{
+    SelectableCatalogPlan, SelectablePlanContinuation, SelectablePlanDeclaration,
+    SelectablePlanLimits, SelectablePlanPhase, SelectablePlanPresence,
+};
 
 use super::*;
 
@@ -20,6 +23,29 @@ fn node() -> NodeId {
     NodeId {
         name: String::from("vm-a"),
     }
+}
+
+fn checkpoint_selectable_plan(continuation: SelectablePlanContinuation) -> SelectableCatalogPlan {
+    let declarations = ["checkpoint.recovery", "checkpoint.retry"]
+        .into_iter()
+        .map(|name| {
+            SelectablePlanDeclaration::new(
+                name,
+                vec![1, 2],
+                vec![1],
+                Vec::new(),
+                SelectablePlanPresence::Required,
+            )
+            .unwrap_or_else(|error| panic!("selectable declaration should build: {error}"))
+        })
+        .collect();
+    SelectableCatalogPlan::new(
+        SelectablePlanLimits::new(2, 1, 2)
+            .unwrap_or_else(|error| panic!("selectable limits should build: {error}")),
+        declarations,
+        continuation,
+    )
+    .unwrap_or_else(|error| panic!("selectable plan should build: {error}"))
 }
 
 struct FailingFinishLauncher {
@@ -243,6 +269,72 @@ fn recorded_control_boundary_waits_until_every_node_reaches_the_exact_time() {
         ),
         RecordedControlBoundary::Bypassed
     );
+}
+
+#[test]
+fn checkpoint_readiness_limits_cold_catalog_to_initial_execution_boundary() {
+    let scenario = crucible::happy_path_scenario()
+        .unwrap_or_else(|error| panic!("checkpoint scenario should build: {error}"))
+        .scenario
+        .scenario_def();
+    let genesis = Configuration::genesis(scenario.clone());
+    let node = node();
+    let live_nodes = vec![node.clone()];
+    let cold = checkpoint_selectable_plan(SelectablePlanContinuation::cold());
+    assert!(selectable_catalogs_checkpoint_ready(
+        &genesis,
+        true,
+        0,
+        &live_nodes,
+        &BTreeMap::from([(node.clone(), cold.clone())]),
+    ));
+
+    assert!(!selectable_catalogs_checkpoint_ready(
+        &genesis,
+        false,
+        0,
+        &live_nodes,
+        &BTreeMap::from([(node.clone(), cold.clone())]),
+    ));
+    assert!(!selectable_catalogs_checkpoint_ready(
+        &genesis,
+        true,
+        1,
+        &live_nodes,
+        &BTreeMap::from([(node.clone(), cold.clone())]),
+    ));
+
+    let partial = SelectablePlanContinuation::new(
+        SelectablePlanPhase::Registering,
+        BTreeSet::from([String::from("checkpoint.recovery")]),
+        Some(1),
+        BTreeMap::new(),
+        None,
+        None,
+    )
+    .unwrap_or_else(|error| panic!("partial selectable continuation should build: {error}"));
+    assert!(!selectable_catalogs_checkpoint_ready(
+        &genesis,
+        true,
+        0,
+        &live_nodes,
+        &BTreeMap::from([(node.clone(), checkpoint_selectable_plan(partial))]),
+    ));
+
+    let advanced = Configuration {
+        def: scenario,
+        schedule: Schedule::from_decisions([Decision::RngDraw(crucible::RngDecision {
+            stream: crucible::RngStreamId::from_name("checkpoint-catalog"),
+            value: 7,
+        })]),
+    };
+    assert!(!selectable_catalogs_checkpoint_ready(
+        &advanced,
+        true,
+        0,
+        &live_nodes,
+        &BTreeMap::from([(node, cold)]),
+    ));
 }
 
 #[test]
