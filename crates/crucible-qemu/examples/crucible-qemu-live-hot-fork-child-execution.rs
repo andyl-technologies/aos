@@ -67,6 +67,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "restore_suffix_fingerprint={}",
         report.restore_suffix_fingerprint
     );
+    println!("fork_ready_ms={}", report.fork_ready_ms);
+    println!("exact_restore_ms={}", report.exact_restore_ms);
     println!("child_boundary_matches_capture=true");
     println!("child_suffix_matches_exact_restore=true");
     Ok(())
