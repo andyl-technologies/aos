@@ -6,6 +6,7 @@ mod child_execution;
 mod child_files;
 mod child_measure;
 mod child_stress;
+mod child_support;
 mod child_world;
 #[path = "exact_snapshot/retained_network.rs"]
 mod retained_network;
