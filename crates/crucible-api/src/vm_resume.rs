@@ -60,7 +60,7 @@ pub(crate) use crucible_qemu::{
 };
 #[cfg(target_os = "linux")]
 pub(crate) use crucible_qemu::{
-    QemuLiveNodeStepGateConfig as ProductionLiveNodeStepGateConfig, QemuNode as ProductionLiveNode,
+    QemuLiveNodeStepGateConfig as ProductionLiveNodeStepGateConfig,
     QemuNodeSet as ProductionNodeSet, launch_qemu_live_node as launch_production_live_node,
     launch_qemu_live_node_exact_snapshot as launch_production_live_node_exact_snapshot,
     launch_qemu_live_node_exact_snapshot_paused as launch_production_live_node_exact_snapshot_paused,
