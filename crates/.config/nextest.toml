@@ -16,6 +16,14 @@ slow-timeout = { period = "60s", terminate-after = 2 }
 filter = 'test(crucible_features_resolve_for_declared_powersets)'
 slow-timeout = { period = "60s", terminate-after = 10 }
 
+# This end-to-end registry test deliberately cancels an in-flight upload and
+# waits for the server-side transaction to release before issuing DELETE. Keep
+# it isolated so unrelated I/O-heavy tests cannot consume its bounded retry
+# window.
+[[profile.default.overrides]]
+filter = 'test(real_client_mounts_cancels_and_roundtrips_a_complete_multi_platform_graph)'
+threads-required = "num-test-threads"
+
 [profile.ci]
 inherits = "default"
 fail-fast = false

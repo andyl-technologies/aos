@@ -209,6 +209,26 @@
 
           cc -std=gnu11 -O2 stock-disk-touch.c -o "$out/bin/stock-disk-touch"
 
+          cat > stock-mount.c <<'STOCK_MOUNT_C'
+          #include <stdio.h>
+          #include <sys/mount.h>
+
+          int main(int argc, char **argv) {
+            if (argc != 4) {
+              fprintf(stderr, "usage: stock-mount SOURCE TARGET FILESYSTEM\n");
+              return 1;
+            }
+
+            if (mount(argv[1], argv[2], argv[3], 0, NULL) != 0) {
+              perror(argv[2]);
+              return 1;
+            }
+            return 0;
+          }
+          STOCK_MOUNT_C
+
+          cc -std=c11 -O2 stock-mount.c -o "$out/bin/stock-mount"
+
         '';
       }
     ];
@@ -240,7 +260,6 @@
     initramfsDeps = [
       pkgs.bash
       pkgs.coreutils
-      pkgs.util-linux
       stockWorkload
     ];
     depPaths = builtins.concatStringsSep ":" (
@@ -298,11 +317,11 @@
             export PATH="/bin:/sbin:${depPaths}"
             export HOME=/tmp
 
-            mount -t proc proc /proc
-            mount -t sysfs sysfs /sys
-            mount -t devtmpfs devtmpfs /dev
-            mount -t tmpfs tmpfs /tmp
-            mount -t tmpfs tmpfs /run
+            stock-mount proc /proc proc
+            stock-mount sysfs /sys sysfs
+            stock-mount devtmpfs /dev devtmpfs
+            stock-mount tmpfs /tmp tmpfs
+            stock-mount tmpfs /run tmpfs
 
             echo 'AOS_ANY_GUEST_READY'
             stock-spin

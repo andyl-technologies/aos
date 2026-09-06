@@ -6,6 +6,7 @@
   nettle,
   gmp,
   libtasn1,
+  libunistring,
   zlib,
 }: let
   version = "3.8.5";
@@ -24,8 +25,8 @@ in
     };
 
     buildDeps = [gnumake pkg-config];
-    runtimeDeps = [nettle gmp libtasn1 zlib];
-    propagatedDeps = [nettle libtasn1];
+    runtimeDeps = [nettle gmp libtasn1 libunistring zlib];
+    propagatedDeps = [nettle libtasn1 libunistring];
 
     phases = [
       {
@@ -36,9 +37,8 @@ in
         '';
       }
       {
-        # No p11-kit, no TPM provider (we are bringing up the TPM stack,
-        # not consuming it here), bundled libunistring to avoid an extra
-        # package. certtool is kept — swtpm's localca uses it.
+        # No p11-kit or TPM provider. certtool is kept for local certificate
+        # authorities, and Unicode handling uses the shared AOS library.
         name = "configure";
         script = ''
           # Default X.509 trust store: the canonical runtime path owned by the
@@ -52,7 +52,6 @@ in
             --with-default-trust-store-file=/etc/ssl/certs/ca-certificates.crt \
             --disable-static \
             --without-p11-kit \
-            --with-included-unistring \
             --without-tpm \
             --without-tpm2 \
             --disable-libdane \
@@ -77,6 +76,25 @@ in
         '';
       }
     ];
+
+    checks = {
+      testing,
+      self,
+      ...
+    }: {
+      link = testing.mkLinkCheck {
+        pname = "link-gnutls";
+        library = self;
+        libs = ["-lgnutls"];
+        testSource = ''
+          #include <gnutls/gnutls.h>
+
+          int main(void) {
+              return gnutls_check_version(GNUTLS_VERSION) == NULL;
+          }
+        '';
+      };
+    };
 
     meta = {
       description = "GnuTLS — TLS/SSL and certificate library";

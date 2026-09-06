@@ -34,7 +34,8 @@ in
       expat
       zlib
     ];
-    propagatedDeps = [];
+    # Consumers need these to resolve fontconfig.pc's Requires fields.
+    propagatedDeps = [freetype expat];
 
     phases = [
       {
