@@ -528,9 +528,9 @@ semantic_id!(
 content_object_id!(
     BranchRequestId,
     ObjectKind::CampaignFact,
-    [1, 2, 3, 4],
+    [1, 2, 3, 4, 5],
     "crucible.campaign.branch-request",
-    "Identifies one bounded request for branch candidates; versions 1 through 3 remain decodable for history compatibility."
+    "Identifies one bounded request for branch candidates; versions 1 through 4 remain decodable for history compatibility."
 );
 content_object_id!(
     CandidateGeneratorSpecId,
@@ -564,8 +564,9 @@ content_object_id!(
 content_object_id!(
     AttemptAdmissionId,
     ObjectKind::CampaignFact,
+    [1, 2],
     "crucible.campaign.attempt-admission",
-    "Identifies one immutable attempt admission or additional cause."
+    "Identifies one immutable attempt admission or additional cause; version 1 remains decodable for history compatibility."
 );
 content_object_id!(
     ObservationId,

@@ -286,6 +286,8 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
         "crucible.campaign.derive-campaign-response",
         "crucible.campaign.get-campaign-request",
         "crucible.campaign.get-campaign-response",
+        "crucible.campaign.get-campaign-status-request",
+        "crucible.campaign.get-campaign-status-response",
         "crucible.campaign.list-campaigns-request",
         "crucible.campaign.list-campaigns-response",
         "crucible.campaign.get-campaign-snapshot-request",
@@ -2579,6 +2581,205 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
             .any(|child| child.role() == "continuation.00000000"
                 && child.id() == request_id.content_id())
     );
+}
+
+#[test]
+fn scenario_default_records_have_frozen_versioned_vectors() {
+    let branch_point = BranchPointId::from_hash(hash("scenario-default-branch-point"));
+    let parent = stored_id!(
+        ConfigurationArtifactId,
+        ObjectKind::Configuration,
+        "scenario-default-parent"
+    );
+    let opportunity = stored_id!(
+        ChoiceOpportunityId,
+        ObjectKind::CampaignFact,
+        "scenario-default-opportunity"
+    );
+    let domain = stored_id!(
+        ChoiceDomainId,
+        ObjectKind::CampaignFact,
+        "scenario-default-domain"
+    );
+    let policy = stored_id!(
+        CampaignPolicyId,
+        ObjectKind::Policy,
+        "scenario-default-policy"
+    );
+    let operator = BranchRequestCause::Operator(CampaignCommandId::from_hash(hash(
+        "scenario-default-vector-command",
+    )));
+    let finite = CandidateSource::finite(BTreeSet::from([ChoiceValue::Boolean(false)]))
+        .expect("finite vector source");
+    let encode_request =
+        |schema_version: u32, source: &CandidateSource, cause: BranchRequestCause| {
+            let mut encoder = Encoder::new();
+            schema_version.encode(&mut encoder);
+            branch_point.encode(&mut encoder);
+            parent.encode(&mut encoder);
+            opportunity.encode(&mut encoder);
+            domain.encode(&mut encoder);
+            source.encode(&mut encoder);
+            cause.encode(&mut encoder);
+            BranchBudget::new(1, 1)
+                .expect("vector budget")
+                .encode(&mut encoder);
+            StopCondition::NextChoice.encode(&mut encoder);
+            encoder.finish()
+        };
+    let model = ProbabilityModelId::from_hash(hash("scenario-default-vector-model"));
+    let modeled_finite =
+        CandidateSource::modeled_finite(model, BTreeMap::from([(ChoiceValue::Boolean(false), 1)]))
+            .expect("modeled finite vector source");
+    let modeled_generated = CandidateSource::modeled_generated(
+        model,
+        stored_id!(
+            CandidateGeneratorSpecId,
+            ObjectKind::Policy,
+            "scenario-default-vector-generator"
+        ),
+    );
+    let request_bodies = [
+        encode_request(1, &finite, operator),
+        encode_request(2, &finite, operator),
+        encode_request(3, &modeled_finite, operator),
+        encode_request(4, &modeled_generated, operator),
+    ];
+    let historical_vectors = [
+        (
+            "3afb6e7cec8c9591128825b6e8977eae491246fe398665dcf9ba918512f07441",
+            "crucible.campaign.branch-request@campaign-fact.1.806e7621b0bd3fe0f7de82ffaf2ca574f99a01a99f2639b5b8d68ccaebf3c8a8",
+        ),
+        (
+            "c469dcd133fd7f21e96e164d029aab8ca22bc69ad529b2aa1d7353d26ad295e6",
+            "crucible.campaign.branch-request@campaign-fact.2.e8e6f6351d3453132d4e6585e4afa7c3a235c0dee4b753e72d7df08d8e743aa2",
+        ),
+        (
+            "329c565701c73d8434cba0e49b61b89bf18f97a074a73c448930623cc53167fe",
+            "crucible.campaign.branch-request@campaign-fact.3.622b4a8e4f4a4755726aaa798f6e4b25ee20421c3c82335b2761ce552f337506",
+        ),
+        (
+            "232ec37538f0e31a429dc088a646f175ca30719d1a9da527523a88a654834045",
+            "crucible.campaign.branch-request@campaign-fact.4.380c8fe90cb736cb0e598c2e7cbf99770aa461befb52a9d59e7441c57569b8a2",
+        ),
+    ];
+    for (bytes, (expected_digest, expected_id)) in request_bodies.iter().zip(historical_vectors) {
+        let request = BranchRequest::from_canonical_bytes(bytes).expect("historical request");
+        assert_eq!(blake3::hash(bytes).to_hex().to_string(), expected_digest);
+        assert_eq!(
+            request.id().expect("historical request id").to_text(),
+            expected_id
+        );
+    }
+
+    let request = BranchRequest::new(
+        branch_point,
+        parent,
+        opportunity,
+        domain,
+        finite,
+        BranchRequestCause::ScenarioDefault(policy),
+        BranchBudget::new(1, 1).expect("scenario-default vector budget"),
+        StopCondition::NextChoice,
+    )
+    .expect("scenario-default vector request");
+    assert_eq!(request.schema_version(), 5);
+    assert_eq!(
+        blake3::hash(&request.canonical_bytes())
+            .to_hex()
+            .to_string(),
+        "0af469efcf6616309dec82715369e5856801b5801f70aa1e328699b5d1a74b77"
+    );
+    assert_eq!(
+        request.id().expect("request v5 id").to_text(),
+        "crucible.campaign.branch-request@campaign-fact.5.4a8ddd462a022341d775e64866313c45ededfff34db7daefe8eb6a6e5e43330f"
+    );
+
+    let admission = AttemptAdmission::new(
+        stored_id!(
+            AttemptId,
+            ObjectKind::CampaignFact,
+            "scenario-default-attempt"
+        ),
+        AttemptAdmissionRole::ExecutionBasis {
+            proposal: Some(stored_id!(
+                ProposalId,
+                ObjectKind::CampaignFact,
+                "scenario-default-proposal"
+            )),
+            cause: BranchRequestCause::ScenarioDefault(policy),
+            admission_ordinal: AdmissionOrdinal::new(7),
+        },
+    );
+    let historical_execution_basis = AttemptAdmission::new(
+        admission.attempt(),
+        AttemptAdmissionRole::ExecutionBasis {
+            proposal: Some(stored_id!(
+                ProposalId,
+                ObjectKind::CampaignFact,
+                "scenario-default-proposal"
+            )),
+            cause: operator,
+            admission_ordinal: AdmissionOrdinal::new(7),
+        },
+    );
+    assert_eq!(historical_execution_basis.schema_version(), 1);
+    assert_eq!(
+        blake3::hash(&historical_execution_basis.canonical_bytes())
+            .to_hex()
+            .to_string(),
+        "7d18eab10837d432f6daf2e714b9e8bd82c6eded18323ad1400fec92e551679d"
+    );
+    assert_eq!(
+        historical_execution_basis
+            .id()
+            .expect("admission v1 id")
+            .to_text(),
+        "crucible.campaign.attempt-admission@campaign-fact.1.43960bc8f2e8b7bc63ad58584a0cd552233a909c460f94ffb0f303ef66e78dfe"
+    );
+    assert_eq!(admission.schema_version(), 2);
+    assert_eq!(
+        blake3::hash(&admission.canonical_bytes())
+            .to_hex()
+            .to_string(),
+        "f054656caaf6b6eda5093072d40d0470f210bc63be7e3b2cd0498addd9de50e7"
+    );
+    assert_eq!(
+        admission.id().expect("admission v2 id").to_text(),
+        "crucible.campaign.attempt-admission@campaign-fact.2.739e2679ffa2b57d6b8ba13f35f3dc214a97bf3fde7a53f71369fe8237ddc79d"
+    );
+
+    let mut wrong_request_version = request.canonical_bytes();
+    wrong_request_version[..4].copy_from_slice(&1_u32.to_be_bytes());
+    assert!(BranchRequest::from_canonical_bytes(&wrong_request_version).is_err());
+
+    let mut wrong_admission_version = admission.canonical_bytes();
+    wrong_admission_version[..4].copy_from_slice(&1_u32.to_be_bytes());
+    assert!(AttemptAdmission::from_canonical_bytes(&wrong_admission_version).is_err());
+    let mismatched_admission_envelope = ObjectEnvelope::for_record_versioned(
+        CampaignRecordKind::AttemptAdmission,
+        1,
+        super::object::content_children(admission.content_children()).expect("admission children"),
+        admission.canonical_bytes(),
+    )
+    .expect("structural mismatched admission envelope");
+    assert!(
+        ObjectEnvelope::from_canonical_bytes(&mismatched_admission_envelope.canonical_bytes())
+            .is_err()
+    );
+    let historical_admission = AttemptAdmission::new(
+        admission.attempt(),
+        AttemptAdmissionRole::AdditionalCause {
+            proposal: stored_id!(
+                ProposalId,
+                ObjectKind::CampaignFact,
+                "scenario-default-proposal"
+            ),
+        },
+    );
+    let mut future_without_new_cause = historical_admission.canonical_bytes();
+    future_without_new_cause[..4].copy_from_slice(&2_u32.to_be_bytes());
+    assert!(AttemptAdmission::from_canonical_bytes(&future_without_new_cause).is_err());
 }
 
 struct ParityModel {

@@ -406,6 +406,8 @@ pub enum BranchRequestCause {
     Debugger(DebugSessionId),
     /// Active policy attached its default source.
     ExhaustivePolicy(CampaignPolicyId),
+    /// Active policy admitted the scenario-declared default as one exact path.
+    ScenarioDefault(CampaignPolicyId),
 }
 
 impl Canonical for BranchRequestCause {
@@ -427,6 +429,10 @@ impl Canonical for BranchRequestCause {
                 encoder.u8(3);
                 id.encode(encoder);
             }
+            Self::ScenarioDefault(id) => {
+                encoder.u8(4);
+                id.encode(encoder);
+            }
         }
     }
 
@@ -436,6 +442,7 @@ impl Canonical for BranchRequestCause {
             1 => CampaignCommandId::decode(decoder).map(Self::Operator),
             2 => DebugSessionId::decode(decoder).map(Self::Debugger),
             3 => CampaignPolicyId::decode(decoder).map(Self::ExhaustivePolicy),
+            4 => CampaignPolicyId::decode(decoder).map(Self::ScenarioDefault),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "branch-request-cause",
                 tag,
@@ -483,10 +490,11 @@ impl BranchRequest {
         budget: BranchBudget,
         stop: StopCondition,
     ) -> Result<Self, CampaignCodecError> {
-        let schema_version = match &source {
-            CandidateSource::ModeledFinite(_) => 3,
-            CandidateSource::ModeledGenerated(_) => BRANCH_REQUEST_SCHEMA_VERSION,
-            CandidateSource::Finite(_) | CandidateSource::Generated(_) => 2,
+        let schema_version = match (&cause, &source) {
+            (BranchRequestCause::ScenarioDefault(_), _) => BRANCH_REQUEST_SCHEMA_VERSION,
+            (_, CandidateSource::ModeledFinite(_)) => 3,
+            (_, CandidateSource::ModeledGenerated(_)) => 4,
+            (_, CandidateSource::Finite(_) | CandidateSource::Generated(_)) => 2,
         };
         Self::new_for_schema(
             schema_version,
@@ -519,12 +527,24 @@ impl BranchRequest {
                 source.prior_weights().is_some()
             }
             (CandidateSource::ModeledFinite(_), version) => version != 3,
-            (CandidateSource::ModeledGenerated(_), version) => {
-                version != BRANCH_REQUEST_SCHEMA_VERSION
-            }
+            (CandidateSource::ModeledGenerated(_), version) => version != 4,
             (CandidateSource::Finite(_) | CandidateSource::Generated(_), _) => false,
         };
-        if !matches!(schema_version, 1..=BRANCH_REQUEST_SCHEMA_VERSION) || incompatible_source {
+        let incompatible_cause = match cause {
+            BranchRequestCause::ScenarioDefault(_) => {
+                schema_version != BRANCH_REQUEST_SCHEMA_VERSION
+            }
+            BranchRequestCause::Planner(_)
+            | BranchRequestCause::Operator(_)
+            | BranchRequestCause::Debugger(_)
+            | BranchRequestCause::ExhaustivePolicy(_) => {
+                schema_version == BRANCH_REQUEST_SCHEMA_VERSION
+            }
+        };
+        if !matches!(schema_version, 1..=BRANCH_REQUEST_SCHEMA_VERSION)
+            || incompatible_source
+            || incompatible_cause
+        {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported branch-request schema or source",
             });
@@ -703,6 +723,9 @@ impl BranchRequest {
                 children.push(("planner-invocation", invocation.content_id()));
             }
             BranchRequestCause::ExhaustivePolicy(policy) => {
+                children.push(("policy", policy.content_id()));
+            }
+            BranchRequestCause::ScenarioDefault(policy) => {
                 children.push(("policy", policy.content_id()));
             }
             BranchRequestCause::Operator(_) | BranchRequestCause::Debugger(_) => {}
