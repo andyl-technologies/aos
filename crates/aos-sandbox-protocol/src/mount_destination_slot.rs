@@ -1,4 +1,4 @@
-//! Validated Mount 1.3 destination-slot requests and durable inventory.
+//! Validated Mount 1.4 destination-slot requests and durable inventory.
 //!
 //! Materialization requests carry the exact canonical portable sandbox
 //! specification that declares the slot. Inventory carries only the proven
@@ -14,7 +14,8 @@ use std::collections::BTreeSet;
 use aos_proto::aos::sandbox::local::v1::{
     ApplyDestinationSlotRequest, ApplyDestinationSlotResponse, DestinationSlotAction,
     DestinationSlotInventoryRecord, DestinationSlotLifecycle, DestinationSlotReapCorrelation,
-    InventoryDestinationSlotsRequest, InventoryDestinationSlotsResponse, MountOperationCorrelation,
+    DestinationSlotRematerializationCorrelation, InventoryDestinationSlotsRequest,
+    InventoryDestinationSlotsResponse, MountOperationCorrelation,
 };
 use aos_sandbox_core::{
     DecodeLimits, DescriptorRole, ObjectDescriptor, ProtocolId, ProtocolVersion,
@@ -147,6 +148,27 @@ pub struct ValidatedDestinationSlotReap {
     expected_resource_digest: [u8; 32],
 }
 
+/// Carries one exact stale-resource rematerialization correlation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ValidatedDestinationSlotRematerialization {
+    operation: ValidatedDestinationSlotOperation,
+    expected_resource_digest: [u8; 32],
+}
+
+impl ValidatedDestinationSlotRematerialization {
+    /// Returns the idempotent rematerialization operation correlation.
+    #[must_use]
+    pub const fn operation(&self) -> ValidatedDestinationSlotOperation {
+        self.operation
+    }
+
+    /// Returns the exact stale ready-record digest replaced by the operation.
+    #[must_use]
+    pub const fn expected_resource_digest(&self) -> &[u8; 32] {
+        &self.expected_resource_digest
+    }
+}
+
 impl ValidatedDestinationSlotReap {
     /// Returns the idempotent reap operation correlation.
     #[must_use]
@@ -171,6 +193,7 @@ pub struct ValidatedDestinationSlotInventoryRecord {
     lifecycle: DestinationSlotLifecycle,
     resource_kernel_boot_id: [u8; 16],
     materialization: ValidatedDestinationSlotOperation,
+    rematerialization: Option<ValidatedDestinationSlotRematerialization>,
     reap: Option<ValidatedDestinationSlotReap>,
     slot_device: Option<u64>,
     slot_inode: Option<u64>,
@@ -219,6 +242,12 @@ impl ValidatedDestinationSlotInventoryRecord {
     #[must_use]
     pub const fn materialization(&self) -> ValidatedDestinationSlotOperation {
         self.materialization
+    }
+
+    /// Returns the latest stale-resource rematerialization correlation.
+    #[must_use]
+    pub const fn rematerialization(&self) -> Option<ValidatedDestinationSlotRematerialization> {
+        self.rematerialization
     }
 
     /// Returns the admitted reap correlation after removal has begun.
@@ -296,7 +325,7 @@ impl ValidatedDestinationSlotInventory {
     }
 }
 
-/// Decodes and validates one hostile Mount 1.3 destination-slot effect body.
+/// Decodes and validates one hostile Mount 1.4 destination-slot effect body.
 ///
 /// # Errors
 ///
@@ -327,7 +356,7 @@ pub fn decode_destination_slot_request(
         ProtocolId::MountBroker,
         now_boottime_nanoseconds,
     )?;
-    if header.protocol_version() != ProtocolVersion::new(1, 3) {
+    if header.protocol_version() != ProtocolVersion::new(1, 4) {
         return Err(ProtocolValidationError::MethodMismatch);
     }
     let fence = validate_fence(
@@ -393,6 +422,12 @@ pub fn decode_destination_slot_request(
             expected_resource_digest.is_none() && resource_fence.is_none()
         }
         DestinationSlotAction::DESTINATION_SLOT_ACTION_REAP => {
+            expected_resource_digest.is_some()
+                && resource_fence
+                    .as_ref()
+                    .is_some_and(|resource_fence| resource_fence_precedes(&fence, resource_fence))
+        }
+        DestinationSlotAction::DESTINATION_SLOT_ACTION_REMATERIALIZE => {
             expected_resource_digest.is_some()
                 && resource_fence
                     .as_ref()
@@ -471,7 +506,7 @@ pub fn decode_destination_slot_inventory_request(
         ProtocolId::MountBroker,
         now_boottime_nanoseconds,
     )?;
-    if header.protocol_version() != ProtocolVersion::new(1, 3) {
+    if header.protocol_version() != ProtocolVersion::new(1, 4) {
         return Err(ProtocolValidationError::MethodMismatch);
     }
     Ok(header)
@@ -577,6 +612,9 @@ fn validate_inventory_response(
             ));
         }
         if !operations.insert(*slot.materialization.operation_id())
+            || slot.rematerialization.is_some_and(|rematerialization| {
+                !operations.insert(*rematerialization.operation.operation_id())
+            })
             || slot
                 .reap
                 .is_some_and(|reap| !operations.insert(*reap.operation.operation_id()))
@@ -642,6 +680,11 @@ fn validate_inventory_record(
     let materialization = validate_operation(record.materialization.as_option().ok_or(
         ProtocolValidationError::MissingField("destination_slot.materialization"),
     )?)?;
+    let rematerialization = record
+        .rematerialization
+        .as_option()
+        .map(validate_rematerialization)
+        .transpose()?;
     let reap = record.reap.as_option().map(validate_reap).transpose()?;
     let slot_device = optional_nonzero(record.slot_device, "destination_slot.slot_device")?;
     let slot_inode = optional_nonzero(record.slot_inode, "destination_slot.slot_inode")?;
@@ -667,7 +710,14 @@ fn validate_inventory_record(
         DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_UNSPECIFIED => false,
     };
     if !shape_valid
-        || reap.is_some_and(|value| value.operation.operation_id == materialization.operation_id)
+        || rematerialization
+            .is_some_and(|value| value.operation.operation_id == materialization.operation_id)
+        || reap.is_some_and(|value| {
+            value.operation.operation_id == materialization.operation_id
+                || rematerialization.is_some_and(|rematerialization| {
+                    value.operation.operation_id == rematerialization.operation.operation_id
+                })
+        })
     {
         return Err(ProtocolValidationError::InvalidField(
             "destination_slot lifecycle shape",
@@ -682,11 +732,27 @@ fn validate_inventory_record(
         lifecycle,
         resource_kernel_boot_id,
         materialization,
+        rematerialization,
         reap,
         slot_device,
         slot_inode,
         anchor_unique_mount_id,
         resource_digest,
+    })
+}
+
+fn validate_rematerialization(
+    rematerialization: &DestinationSlotRematerializationCorrelation,
+) -> Result<ValidatedDestinationSlotRematerialization, ProtocolValidationError> {
+    reject_unknown(&rematerialization.__buffa_unknown_fields)?;
+    Ok(ValidatedDestinationSlotRematerialization {
+        operation: validate_operation(rematerialization.operation.as_option().ok_or(
+            ProtocolValidationError::MissingField("destination_slot.rematerialization.operation"),
+        )?)?,
+        expected_resource_digest: exact_nonzero::<32>(
+            &rematerialization.expected_resource_digest,
+            "destination_slot.rematerialization.expected_resource_digest",
+        )?,
     })
 }
 
@@ -867,7 +933,7 @@ mod tests {
         ApplyDestinationSlotRequest {
             header: Some(RequestHeader {
                 protocol_major: 1,
-                protocol_minor: 3,
+                protocol_minor: 4,
                 request_id: vec![operation_byte; 16],
                 audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
                 deadline_boottime_nanoseconds: 100,
@@ -889,23 +955,29 @@ mod tests {
             destination_slot_id: vec![4; 16],
             sandbox_spec: Some(proto_descriptor(&spec_descriptor)).into(),
             sandbox_spec_bytes: spec_bytes,
-            expected_resource_digest: if action
-                == DestinationSlotAction::DESTINATION_SLOT_ACTION_REAP
-            {
+            expected_resource_digest: if matches!(
+                action,
+                DestinationSlotAction::DESTINATION_SLOT_ACTION_REAP
+                    | DestinationSlotAction::DESTINATION_SLOT_ACTION_REMATERIALIZE
+            ) {
                 vec![7; 32]
             } else {
                 Vec::new()
             },
-            resource_fence: (action == DestinationSlotAction::DESTINATION_SLOT_ACTION_REAP)
-                .then(|| AssignmentFence {
-                    sandbox_id: vec![1; 16],
-                    incarnation_id: vec![2; 16],
-                    assignment_epoch: 3,
-                    desired_generation: 4,
-                    assignment_digest: vec![5; 32],
-                    ..Default::default()
-                })
-                .into(),
+            resource_fence: matches!(
+                action,
+                DestinationSlotAction::DESTINATION_SLOT_ACTION_REAP
+                    | DestinationSlotAction::DESTINATION_SLOT_ACTION_REMATERIALIZE
+            )
+            .then(|| AssignmentFence {
+                sandbox_id: vec![1; 16],
+                incarnation_id: vec![2; 16],
+                assignment_epoch: 3,
+                desired_generation: 4,
+                assignment_digest: vec![5; 32],
+                ..Default::default()
+            })
+            .into(),
             ..Default::default()
         }
     }
@@ -972,6 +1044,24 @@ mod tests {
         }
     }
 
+    fn with_rematerialization(
+        mut record: DestinationSlotInventoryRecord,
+        operation_byte: u8,
+    ) -> DestinationSlotInventoryRecord {
+        record.rematerialization = Some(DestinationSlotRematerializationCorrelation {
+            operation: Some(MountOperationCorrelation {
+                operation_id: vec![operation_byte; 16],
+                request_digest: vec![operation_byte.wrapping_add(1); 32],
+                ..Default::default()
+            })
+            .into(),
+            expected_resource_digest: vec![operation_byte.wrapping_add(2); 32],
+            ..Default::default()
+        })
+        .into();
+        record
+    }
+
     #[test]
     fn request_binds_exact_declaration_action_and_protocol_version() {
         let materialize = request(
@@ -999,8 +1089,20 @@ mod tests {
         assert_eq!(reap.expected_resource_digest(), Some(&[7; 32]));
         assert_eq!(reap.resource_fence(), Some(reap.binding_fence()));
 
-        let mut missing_resource_fence =
-            request(DestinationSlotAction::DESTINATION_SLOT_ACTION_REAP, 11);
+        let rematerialize = decode(&request(
+            DestinationSlotAction::DESTINATION_SLOT_ACTION_REMATERIALIZE,
+            11,
+        ));
+        assert_eq!(rematerialize.expected_resource_digest(), Some(&[7; 32]));
+        assert_eq!(
+            rematerialize.resource_fence(),
+            Some(rematerialize.binding_fence())
+        );
+
+        let mut missing_resource_fence = request(
+            DestinationSlotAction::DESTINATION_SLOT_ACTION_REMATERIALIZE,
+            12,
+        );
         missing_resource_fence.resource_fence = Default::default();
         assert!(
             decode_destination_slot_request(
@@ -1095,7 +1197,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_semantics_separate_assignment_creation_from_exact_reap() {
+    fn canonical_semantics_separate_creation_from_exact_resource_mutations() {
         let materialize = decode(&request(
             DestinationSlotAction::DESTINATION_SLOT_ACTION_MATERIALIZE,
             9,
@@ -1119,6 +1221,22 @@ mod tests {
         );
         assert_ne!(materialize.commitment(), reap.commitment());
         assert_ne!(materialize.canonical_bytes(), reap.canonical_bytes());
+
+        let rematerialize = decode(&request(
+            DestinationSlotAction::DESTINATION_SLOT_ACTION_REMATERIALIZE,
+            12,
+        ));
+        let rematerialize = canonical_destination_slot_semantics_v1(&rematerialize).unwrap();
+        assert_eq!(
+            rematerialize.verb(),
+            BrokerVerb::MountRematerializeDestinationSlot
+        );
+        assert_eq!(
+            rematerialize.target(),
+            BrokerGrantTarget::Resource(BrokerResourceHandle::from_bytes([7; 32]).unwrap())
+        );
+        assert_ne!(materialize.commitment(), rematerialize.commitment());
+        assert_ne!(reap.commitment(), rematerialize.commitment());
 
         let mut historical = request(DestinationSlotAction::DESTINATION_SLOT_ACTION_REAP, 11);
         historical.fence.get_or_insert_default().desired_generation = 5;
@@ -1174,6 +1292,42 @@ mod tests {
     }
 
     #[test]
+    fn inventory_preserves_rematerialization_in_every_subsequent_phase() {
+        for lifecycle in [
+            DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_MATERIALIZING,
+            DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_READY,
+            DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_REAPING,
+            DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_RELEASED,
+        ] {
+            let record = with_rematerialization(
+                inventory_record(4, lifecycle as i32 as u8 + 20, lifecycle),
+                80,
+            );
+            let response = encode_destination_slot_response(record).unwrap();
+            let decoded = decode_destination_slot_response(&response, 4096).unwrap();
+            let rematerialization = decoded.rematerialization().unwrap();
+            assert_eq!(rematerialization.operation().operation_id(), &[80; 16]);
+            assert_eq!(rematerialization.expected_resource_digest(), &[82; 32]);
+        }
+
+        let original = inventory_record(
+            4,
+            30,
+            DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_READY,
+        );
+        let same_as_creation = with_rematerialization(original, 30);
+        assert!(encode_destination_slot_response(same_as_creation).is_err());
+
+        let reaping = inventory_record(
+            4,
+            30,
+            DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_REAPING,
+        );
+        let same_as_reap = with_rematerialization(reaping, 32);
+        assert!(encode_destination_slot_response(same_as_reap).is_err());
+    }
+
+    #[test]
     fn complete_inventory_requires_order_and_global_operation_uniqueness() {
         let first = inventory_record(
             4,
@@ -1207,6 +1361,28 @@ mod tests {
             .get_or_insert_default()
             .operation_id = vec![30; 16];
         assert!(encode_destination_slot_inventory_response(reused).is_err());
+
+        let first = with_rematerialization(first, 50);
+        let second = inventory_record(
+            5,
+            40,
+            DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_RELEASED,
+        );
+        let reused_rematerialization = InventoryDestinationSlotsResponse {
+            kernel_boot_id: vec![8; 16],
+            journal_sequence: 42,
+            slots: vec![first, second],
+            broker_instance_id: vec![9; 16],
+            ..Default::default()
+        };
+        let mut reused_rematerialization = reused_rematerialization;
+        reused_rematerialization.slots[1]
+            .reap
+            .get_or_insert_default()
+            .operation
+            .get_or_insert_default()
+            .operation_id = vec![50; 16];
+        assert!(encode_destination_slot_inventory_response(reused_rematerialization).is_err());
 
         let inventory_request = InventoryDestinationSlotsRequest {
             header: request(

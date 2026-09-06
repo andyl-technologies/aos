@@ -10,7 +10,7 @@ where
     C: ActivatedOperationCompiler,
     E: SingleNodeEffectExecutor,
 {
-    /// Derives a new materialize or reap request from current slot reconciliation.
+    /// Derives a new materialize, rematerialize, or reap request.
     ///
     /// The protocol body is assembled only from protected logical state,
     /// authenticated inventory, retained canonical specification bytes, and the
@@ -20,7 +20,7 @@ where
     /// # Errors
     ///
     /// Rejects stale reconciliation or assignment authority, missing canonical
-    /// state, a non-effect action, or an invalid protocol 1.3 request.
+    /// state, a non-effect action, or an invalid protocol 1.4 request.
     pub fn prepare_current_destination_slot<T>(
         &mut self,
         reconciliation: crate::CurrentDestinationSlotReconciliationV1,
@@ -61,7 +61,7 @@ where
         prepared.recheck(self.reconciler.journal_mut(), clock)
     }
 
-    /// Binds a separately signed Mount 1.3 plan to the derived slot request.
+    /// Binds a separately signed Mount 1.4 plan to the derived slot request.
     ///
     /// # Errors
     ///

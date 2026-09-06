@@ -14,6 +14,8 @@
 //! step installs read-only in the payload at the parent of the second path.
 //! Materialization persists intent before `mkdirat(2)`, then records the exact
 //! inode and kernel-unique anchor mount ID before exposing an `O_PATH` pin.
+//! Rematerialization replaces only an exact stale-boot ready record and retains
+//! its digest as the predecessor of the new physical identity.
 //! Reaping persists intent before `unlinkat(2)` and keeps a permanent tombstone.
 //! An interrupted operation resumes only when its operation and request digests
 //! reproduce the retained record.
@@ -43,10 +45,10 @@ use sha2::{Digest as _, Sha256};
 
 use crate::{MountError, Result};
 
-const MAGIC: &[u8; 8] = b"AOSMSL01";
-const DOMAIN: &[u8] = b"aos.sandbox.mount-destination-slot.v1\0";
-const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.mount-destination-slot.transaction.v1\0";
-const RECORD_BYTES: usize = 356;
+const MAGIC: &[u8; 8] = b"AOSMSL02";
+const DOMAIN: &[u8] = b"aos.sandbox.mount-destination-slot.v2\0";
+const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.mount-destination-slot.transaction.v2\0";
+const RECORD_BYTES: usize = 436;
 const MAXIMUM_SLOT_RESOURCES: usize = 16_384;
 const SLOT_DIRECTORY_MODE: u32 = 0o500;
 const PARENT_DIRECTORY_MODE: u32 = 0o700;
@@ -226,6 +228,51 @@ pub struct DestinationSlotMaterializationV1 {
     request_digest: ObjectDigest,
 }
 
+/// Describes one exact stale-ready rematerialization request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DestinationSlotRematerializationV1 {
+    binding: DestinationSlotBindingV1,
+    operation_id: OperationId,
+    request_digest: ObjectDigest,
+    expected_resource: ObjectDigest,
+}
+
+impl DestinationSlotRematerializationV1 {
+    /// Constructs one non-authorizing rematerialization request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for zero operation, request, or predecessor identity.
+    pub fn new(
+        binding: DestinationSlotBindingV1,
+        operation_id: OperationId,
+        request_digest: ObjectDigest,
+        expected_resource: ObjectDigest,
+    ) -> Result<Self> {
+        binding.validate()?;
+        if operation_id.as_bytes() == &[0; 16]
+            || request_digest.as_bytes() == &[0; 32]
+            || expected_resource.as_bytes() == &[0; 32]
+        {
+            return Err(invalid(
+                "destination-slot rematerialization operation is unspecified",
+            ));
+        }
+        Ok(Self {
+            binding,
+            operation_id,
+            request_digest,
+            expected_resource,
+        })
+    }
+
+    /// Borrows the exact destination-slot binding.
+    #[must_use]
+    pub const fn binding(&self) -> &DestinationSlotBindingV1 {
+        &self.binding
+    }
+}
+
 impl DestinationSlotMaterializationV1 {
     /// Constructs one non-authorizing materialization request.
     ///
@@ -391,6 +438,18 @@ impl DestinationSlotResourceV1 {
 
     pub(crate) const fn materialization_request(&self) -> ObjectDigest {
         self.record.materialize_request
+    }
+
+    pub(crate) const fn rematerialization_operation(&self) -> Option<OperationId> {
+        self.record.rematerialize_operation
+    }
+
+    pub(crate) const fn rematerialization_request(&self) -> Option<ObjectDigest> {
+        self.record.rematerialize_request
+    }
+
+    pub(crate) const fn rematerialization_predecessor(&self) -> Option<ObjectDigest> {
+        self.record.rematerialize_predecessor
     }
 
     pub(crate) const fn reap_operation(&self) -> Option<OperationId> {
@@ -608,6 +667,123 @@ impl DestinationSlotStoreV1 {
         Ok((DestinationSlotResourceV1 { record: ready }, outcome))
     }
 
+    /// Recreates an exact stale-boot ready slot under the current kernel boot.
+    ///
+    /// The predecessor digest is checked and retained before intent is
+    /// committed. The old physical identity never grants a current descriptor.
+    /// Returning success means the replacement directory, descriptor, and ready
+    /// record are all current and durable.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the named resource is a stale ready row with the
+    /// same immutable binding, no native Mount resource still names the slot,
+    /// and the filesystem path remains absent around durable admission.
+    pub fn rematerialize_guarded<F, U>(
+        &mut self,
+        journal: &mut Journal,
+        request: &DestinationSlotRematerializationV1,
+        mut slot_unused: U,
+        mut before_effect: F,
+    ) -> Result<(DestinationSlotResourceV1, DestinationSlotMutationOutcomeV1)>
+    where
+        F: FnMut() -> Result<()>,
+        U: FnMut(&DestinationSlotBindingV1) -> Result<bool>,
+    {
+        request.binding.validate()?;
+        let key = request.binding.key();
+        let current = self
+            .records
+            .get(&key)
+            .cloned()
+            .ok_or_else(|| conflict("destination-slot resource is absent"))?;
+        if !current.matches_binding(&request.binding) {
+            return Err(conflict(
+                "destination-slot rematerialization binding differs from creation",
+            ));
+        }
+
+        let (materializing, outcome) = match current.phase {
+            DestinationSlotResourcePhaseV1::Ready if current.matches_rematerialization(request) => {
+                if current.kernel_boot_id != self.kernel_boot_id {
+                    return Err(conflict(
+                        "stale rematerialization replay did not reach current boot",
+                    ));
+                }
+                self.verify_ready_pin(&key, &current)?;
+                return Ok((
+                    DestinationSlotResourceV1 { record: current },
+                    DestinationSlotMutationOutcomeV1::Replay,
+                ));
+            }
+            DestinationSlotResourcePhaseV1::Ready => {
+                if current.kernel_boot_id == self.kernel_boot_id
+                    || current.digest != *request.expected_resource.as_bytes()
+                {
+                    return Err(conflict(
+                        "destination-slot rematerialization resource digest is stale",
+                    ));
+                }
+                self.require_unused_operation(request.operation_id)?;
+                if !slot_unused(&request.binding)? {
+                    return Err(conflict("destination slot is still named by Mount state"));
+                }
+                if self
+                    .resolve_optional_path(&current.binding.catalog_relative_path())?
+                    .is_some()
+                {
+                    return Err(corrupt(
+                        "stale-boot destination-slot path unexpectedly exists",
+                    ));
+                }
+                let next = current.rematerializing(self.kernel_boot_id, request)?;
+                commit_record(journal, &next)?;
+                self.records.insert(key, next.clone());
+                (next, DestinationSlotMutationOutcomeV1::Recorded)
+            }
+            DestinationSlotResourcePhaseV1::Materializing
+                if current.matches_rematerialization(request) =>
+            {
+                if current.kernel_boot_id != self.kernel_boot_id {
+                    return Err(corrupt(
+                        "rematerialization intent belongs to another kernel boot",
+                    ));
+                }
+                (current, DestinationSlotMutationOutcomeV1::Recorded)
+            }
+            DestinationSlotResourcePhaseV1::Materializing => {
+                return Err(conflict(
+                    "destination slot is bound to another materialization",
+                ));
+            }
+            DestinationSlotResourcePhaseV1::Reaping | DestinationSlotResourcePhaseV1::Released => {
+                return Err(conflict(
+                    "released destination slot cannot be rematerialized",
+                ));
+            }
+        };
+
+        if !slot_unused(&request.binding)? {
+            return Err(conflict(
+                "destination slot became referenced after rematerialization admission",
+            ));
+        }
+        before_effect()?;
+        let pin = self.materialize_directory(&materializing.binding)?;
+        let identity = pin.identity();
+        let mount_id = MountId::from_fd(pin.as_fd()).map_err(linux_error)?;
+        if mount_id != self.anchor_mount_id {
+            return Err(corrupt(
+                "rematerialized destination slot crossed the attachment-anchor mount",
+            ));
+        }
+        let ready = materializing.ready(identity, mount_id)?;
+        commit_record(journal, &ready)?;
+        self.records.insert(key, ready.clone());
+        self.pins.insert(key, pin);
+        Ok((DestinationSlotResourceV1 { record: ready }, outcome))
+    }
+
     /// Reaps or resumes removal of one exact unused destination slot.
     ///
     /// `slot_unused` is checked before and after durable reap admission. It must
@@ -766,6 +942,37 @@ impl DestinationSlotStoreV1 {
             .values()
             .cloned()
             .map(|record| DestinationSlotResourceV1 { record })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn make_ready_record_stale_for_test(
+        &mut self,
+        journal: &mut Journal,
+        binding: &DestinationSlotBindingV1,
+    ) -> Result<ObjectDigest> {
+        let key = binding.key();
+        let mut record = self
+            .records
+            .get(&key)
+            .filter(|record| {
+                record.matches_binding(binding)
+                    && record.phase == DestinationSlotResourcePhaseV1::Ready
+                    && record.kernel_boot_id == self.kernel_boot_id
+            })
+            .cloned()
+            .ok_or_else(|| conflict("test fixture requires a current ready destination slot"))?;
+        self.remove_directory(&record)?;
+        self.pins.remove(&key);
+
+        record.kernel_boot_id[0] ^= 1;
+        if record.kernel_boot_id == [0; 16] {
+            record.kernel_boot_id[15] = 1;
+        }
+        record.digest = record.compute_digest();
+        record.validate()?;
+        commit_record(journal, &record)?;
+        self.records.insert(key, record.clone());
+        Ok(ObjectDigest::from_bytes(record.digest))
     }
 
     fn recover_pins(&mut self) -> Result<()> {
@@ -961,6 +1168,7 @@ impl DestinationSlotStoreV1 {
     fn require_unused_operation(&self, operation_id: OperationId) -> Result<()> {
         if self.records.values().any(|record| {
             record.materialize_operation == operation_id
+                || record.rematerialize_operation == Some(operation_id)
                 || record.reap_operation == Some(operation_id)
         }) {
             Err(conflict("destination-slot operation identity was reused"))
@@ -996,6 +1204,9 @@ struct Record {
     binding: DestinationSlotBindingV1,
     materialize_operation: OperationId,
     materialize_request: ObjectDigest,
+    rematerialize_operation: Option<OperationId>,
+    rematerialize_request: Option<ObjectDigest>,
+    rematerialize_predecessor: Option<ObjectDigest>,
     reap_operation: Option<OperationId>,
     reap_request: Option<ObjectDigest>,
     expected_materialization: Option<ObjectDigest>,
@@ -1018,6 +1229,9 @@ impl Record {
             binding,
             materialize_operation: operation_id,
             materialize_request: request_digest,
+            rematerialize_operation: None,
+            rematerialize_request: None,
+            rematerialize_predecessor: None,
             reap_operation: None,
             reap_request: None,
             expected_materialization: None,
@@ -1041,6 +1255,24 @@ impl Record {
         Ok(self)
     }
 
+    fn rematerializing(
+        mut self,
+        kernel_boot_id: [u8; 16],
+        request: &DestinationSlotRematerializationV1,
+    ) -> Result<Self> {
+        self.phase = DestinationSlotResourcePhaseV1::Materializing;
+        self.kernel_boot_id = kernel_boot_id;
+        self.rematerialize_operation = Some(request.operation_id);
+        self.rematerialize_request = Some(request.request_digest);
+        self.rematerialize_predecessor = Some(request.expected_resource);
+        self.slot_device = 0;
+        self.slot_inode = 0;
+        self.anchor_mount_id = 0;
+        self.digest = self.compute_digest();
+        self.validate()?;
+        Ok(self)
+    }
+
     fn reaping(mut self, request: &DestinationSlotReapV1) -> Result<Self> {
         self.phase = DestinationSlotResourcePhaseV1::Reaping;
         self.reap_operation = Some(request.operation_id);
@@ -1059,6 +1291,14 @@ impl Record {
         self.matches_binding(&request.binding)
             && self.materialize_operation == request.operation_id
             && self.materialize_request == request.request_digest
+            && self.rematerialize_operation.is_none()
+    }
+
+    fn matches_rematerialization(&self, request: &DestinationSlotRematerializationV1) -> bool {
+        self.matches_binding(&request.binding)
+            && self.rematerialize_operation == Some(request.operation_id)
+            && self.rematerialize_request == Some(request.request_digest)
+            && self.rematerialize_predecessor == Some(request.expected_resource)
     }
 
     fn matches_reap(&self, request: &DestinationSlotReapV1) -> bool {
@@ -1092,6 +1332,15 @@ impl Record {
             || self
                 .expected_materialization
                 .is_some_and(|value| value.as_bytes() == &[0; 32])
+            || self
+                .rematerialize_operation
+                .is_some_and(|value| value.as_bytes() == &[0; 16])
+            || self
+                .rematerialize_request
+                .is_some_and(|value| value.as_bytes() == &[0; 32])
+            || self
+                .rematerialize_predecessor
+                .is_some_and(|value| value.as_bytes() == &[0; 32])
             || partial_physical
             || (physical && MountId::new(self.anchor_mount_id).is_err())
             || (self.phase == DestinationSlotResourcePhaseV1::Materializing
@@ -1103,7 +1352,11 @@ impl Record {
             ) && (!physical || !reaping))
             || self.reap_operation.is_some() != self.reap_request.is_some()
             || self.reap_operation.is_some() != self.expected_materialization.is_some()
+            || self.rematerialize_operation.is_some() != self.rematerialize_request.is_some()
+            || self.rematerialize_operation.is_some() != self.rematerialize_predecessor.is_some()
             || self.reap_operation == Some(self.materialize_operation)
+            || self.rematerialize_operation == Some(self.materialize_operation)
+            || (reaping && self.reap_operation == self.rematerialize_operation)
             || self.compute_digest() != self.digest
         {
             return Err(corrupt("destination-slot resource record is inconsistent"));
@@ -1141,10 +1394,12 @@ impl Record {
 
     fn encode_fields(&self) -> Vec<u8> {
         let has_reap = self.reap_operation.is_some();
+        let has_rematerialization = self.rematerialize_operation.is_some();
         let mut bytes = Vec::with_capacity(RECORD_BYTES - 40);
         bytes.push(self.phase as u8);
         bytes.push(u8::from(has_reap));
-        bytes.extend_from_slice(&[0; 2]);
+        bytes.push(u8::from(has_rematerialization));
+        bytes.push(0);
         bytes.extend_from_slice(&self.kernel_boot_id);
         bytes.extend_from_slice(&self.binding.sandbox_id);
         bytes.extend_from_slice(&self.binding.incarnation_id);
@@ -1157,6 +1412,21 @@ impl Record {
         bytes.extend_from_slice(&self.binding.sandbox_spec.encoded_size().to_be_bytes());
         bytes.extend_from_slice(self.materialize_operation.as_bytes());
         bytes.extend_from_slice(self.materialize_request.as_bytes());
+        bytes.extend_from_slice(
+            self.rematerialize_operation
+                .map_or([0; 16], |value| *value.as_bytes())
+                .as_slice(),
+        );
+        bytes.extend_from_slice(
+            self.rematerialize_request
+                .map_or([0; 32], |value| *value.as_bytes())
+                .as_slice(),
+        );
+        bytes.extend_from_slice(
+            self.rematerialize_predecessor
+                .map_or([0; 32], |value| *value.as_bytes())
+                .as_slice(),
+        );
         bytes.extend_from_slice(
             self.reap_operation
                 .map_or([0; 16], |value| *value.as_bytes())
@@ -1192,7 +1462,12 @@ impl Record {
             1 => true,
             _ => return Err(corrupt("destination-slot record flags are invalid")),
         };
-        if take::<2>(&mut bytes)? != [0; 2] {
+        let has_rematerialization = match take::<1>(&mut bytes)?[0] {
+            0 => false,
+            1 => true,
+            _ => return Err(corrupt("destination-slot record flags are invalid")),
+        };
+        if take::<1>(&mut bytes)? != [0] {
             return Err(corrupt(
                 "destination-slot record reserved bytes are nonzero",
             ));
@@ -1209,6 +1484,9 @@ impl Record {
         let sandbox_spec_size = u64::from_be_bytes(take(&mut bytes)?);
         let materialize_operation = OperationId::from_bytes(take(&mut bytes)?);
         let materialize_request = ObjectDigest::from_bytes(take(&mut bytes)?);
+        let rematerialize_operation_bytes = take(&mut bytes)?;
+        let rematerialize_request_bytes = take(&mut bytes)?;
+        let rematerialize_predecessor_bytes = take(&mut bytes)?;
         let reap_operation_bytes = take(&mut bytes)?;
         let reap_request_bytes = take(&mut bytes)?;
         let expected_materialization_bytes = take(&mut bytes)?;
@@ -1224,10 +1502,20 @@ impl Record {
         let reap_request = has_reap.then(|| ObjectDigest::from_bytes(reap_request_bytes));
         let expected_materialization =
             has_reap.then(|| ObjectDigest::from_bytes(expected_materialization_bytes));
+        let rematerialize_operation =
+            has_rematerialization.then(|| OperationId::from_bytes(rematerialize_operation_bytes));
+        let rematerialize_request =
+            has_rematerialization.then(|| ObjectDigest::from_bytes(rematerialize_request_bytes));
+        let rematerialize_predecessor = has_rematerialization
+            .then(|| ObjectDigest::from_bytes(rematerialize_predecessor_bytes));
         if (!has_reap
             && (reap_operation_bytes != [0; 16]
                 || reap_request_bytes != [0; 32]
                 || expected_materialization_bytes != [0; 32]))
+            || (!has_rematerialization
+                && (rematerialize_operation_bytes != [0; 16]
+                    || rematerialize_request_bytes != [0; 32]
+                    || rematerialize_predecessor_bytes != [0; 32]))
             || sandbox_spec_size == 0
         {
             return Err(corrupt(
@@ -1252,6 +1540,9 @@ impl Record {
             binding,
             materialize_operation,
             materialize_request,
+            rematerialize_operation,
+            rematerialize_request,
+            rematerialize_predecessor,
             reap_operation,
             reap_request,
             expected_materialization,
@@ -1278,6 +1569,9 @@ fn load_records(journal: &Journal) -> Result<BTreeMap<SlotKey, Record>> {
         let key = record.binding.key();
         if key.encode() != key_bytes
             || !operations.insert(record.materialize_operation)
+            || record
+                .rematerialize_operation
+                .is_some_and(|operation| !operations.insert(operation))
             || record
                 .reap_operation
                 .is_some_and(|operation| !operations.insert(operation))
@@ -1883,6 +2177,145 @@ mod tests {
             .unwrap();
         assert_eq!(released.phase(), DestinationSlotResourcePhaseV1::Released);
         assert_eq!(released.file_identity(), ready.file_identity());
+    }
+
+    #[test]
+    fn stale_ready_rematerialization_is_exact_replayable_and_chainable() {
+        let mut fixture = Fixture::new();
+        let (original, _) = fixture
+            .store
+            .materialize(&mut fixture.journal, &fixture.materialization)
+            .unwrap();
+        let path = fixture
+            .directory
+            .path()
+            .join(fixture.binding.catalog_relative_path());
+        std::fs::remove_dir(&path).unwrap();
+
+        let mut stale = fixture
+            .store
+            .records
+            .get(&fixture.binding.key())
+            .cloned()
+            .unwrap();
+        stale.kernel_boot_id[0] ^= 1;
+        stale.digest = stale.compute_digest();
+        stale.validate().unwrap();
+        commit_record(&mut fixture.journal, &stale).unwrap();
+        fixture
+            .store
+            .records
+            .insert(fixture.binding.key(), stale.clone());
+
+        let mut fixture = fixture.reopen();
+        let request = DestinationSlotRematerializationV1::new(
+            fixture.binding.clone(),
+            OperationId::from_bytes([30; 16]),
+            ObjectDigest::from_bytes([31; 32]),
+            ObjectDigest::from_bytes(stale.digest),
+        )
+        .unwrap();
+        let mut unused_checks = 0;
+        let interrupted = fixture.store.rematerialize_guarded(
+            &mut fixture.journal,
+            &request,
+            |_| {
+                unused_checks += 1;
+                Ok(true)
+            },
+            || Err(conflict("simulated interruption after durable admission")),
+        );
+        assert!(interrupted.is_err());
+        assert_eq!(unused_checks, 2);
+        assert!(!path.exists());
+        assert_eq!(
+            fixture.store.get(&fixture.binding).unwrap().phase(),
+            DestinationSlotResourcePhaseV1::Materializing
+        );
+
+        let (recovered, outcome) = fixture
+            .store
+            .rematerialize_guarded(
+                &mut fixture.journal,
+                &request,
+                |_| {
+                    unused_checks += 1;
+                    Ok(true)
+                },
+                || Ok(()),
+            )
+            .unwrap();
+
+        assert_eq!(outcome, DestinationSlotMutationOutcomeV1::Recorded);
+        assert_eq!(unused_checks, 3);
+        assert_eq!(recovered.phase(), DestinationSlotResourcePhaseV1::Ready);
+        assert_eq!(recovered.kernel_boot_id(), &fixture.store.kernel_boot_id);
+        assert_eq!(
+            recovered.materialization_operation(),
+            original.materialization_operation()
+        );
+        assert_eq!(
+            recovered.rematerialization_operation(),
+            Some(OperationId::from_bytes([30; 16]))
+        );
+        assert_eq!(
+            recovered.rematerialization_predecessor(),
+            Some(ObjectDigest::from_bytes(stale.digest))
+        );
+        fixture.store.resolve(&fixture.binding).unwrap();
+
+        let (replayed, outcome) = fixture
+            .store
+            .rematerialize_guarded(
+                &mut fixture.journal,
+                &request,
+                |_| panic!("replay performed usage I/O"),
+                || panic!("replay performed filesystem I/O"),
+            )
+            .unwrap();
+        assert_eq!(outcome, DestinationSlotMutationOutcomeV1::Replay);
+        assert_eq!(replayed.record_digest(), recovered.record_digest());
+
+        std::fs::remove_dir(&path).unwrap();
+        let mut stale_again = fixture
+            .store
+            .records
+            .get(&fixture.binding.key())
+            .cloned()
+            .unwrap();
+        stale_again.kernel_boot_id[0] ^= 1;
+        stale_again.digest = stale_again.compute_digest();
+        stale_again.validate().unwrap();
+        commit_record(&mut fixture.journal, &stale_again).unwrap();
+        fixture
+            .store
+            .records
+            .insert(fixture.binding.key(), stale_again.clone());
+
+        let mut fixture = fixture.reopen();
+        let next = DestinationSlotRematerializationV1::new(
+            fixture.binding.clone(),
+            OperationId::from_bytes([32; 16]),
+            ObjectDigest::from_bytes([33; 32]),
+            ObjectDigest::from_bytes(stale_again.digest),
+        )
+        .unwrap();
+        let (recovered_again, _) = fixture
+            .store
+            .rematerialize_guarded(&mut fixture.journal, &next, |_| Ok(true), || Ok(()))
+            .unwrap();
+        assert_eq!(
+            recovered_again.materialization_operation(),
+            original.materialization_operation()
+        );
+        assert_eq!(
+            recovered_again.rematerialization_operation(),
+            Some(OperationId::from_bytes([32; 16]))
+        );
+        assert_eq!(
+            recovered_again.rematerialization_predecessor(),
+            Some(ObjectDigest::from_bytes(stale_again.digest))
+        );
     }
 
     #[test]

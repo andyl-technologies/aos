@@ -1,7 +1,7 @@
 //! Drives signed destination-slot materialization and reaping from reconciliation.
 //!
 //! The controller derives every protocol field from protected logical state,
-//! binds the resulting deadline-free body to a separately signed Mount 1.3
+//! binds the resulting deadline-free body to a separately signed Mount 1.4
 //! plan, and records the exact lease-bound packet before broker I/O:
 //!
 //! ```text
@@ -30,7 +30,8 @@ use aos_sandbox_protocol::{
 use buffa::Message as _;
 
 use crate::attachment_slot_state::{
-    AttachmentSlotPresenceV1, DurableAttachmentSlotV1, get_revision_in_validated_namespace,
+    AttachmentSlotPresenceV1, DurableAttachmentSlotV1, get_current,
+    get_revision_in_validated_namespace,
 };
 use crate::destination_slot_inventory::{
     CurrentDestinationSlotReconciliationV1, DestinationSlotReconciliationActionV1,
@@ -53,7 +54,7 @@ pub use completion::{
     DestinationSlotDispatchClient,
 };
 
-pub(crate) const CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(1, 3);
+pub(crate) const CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(1, 4);
 pub(crate) const METHOD: BrokerMethod = BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT;
 pub(crate) const RESPONSE_BYTES: u32 = 16 * 1024;
 
@@ -163,6 +164,14 @@ pub(super) struct ReadyResourceExpectation {
     pub(super) slot_inode: u64,
     pub(super) anchor_unique_mount_id: u64,
     pub(super) ready_resource_digest: [u8; 32],
+    pub(super) rematerialization: Option<RematerializationExpectation>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct RematerializationExpectation {
+    pub(super) operation_id: [u8; 16],
+    pub(super) request_digest: [u8; 32],
+    pub(super) predecessor_digest: [u8; 32],
 }
 
 impl ReadyResourceExpectation {
@@ -186,6 +195,13 @@ impl ReadyResourceExpectation {
                 .anchor_unique_mount_id()
                 .ok_or(DestinationSlotEffectError::CorruptState)?,
             ready_resource_digest: *resource.resource_digest(),
+            rematerialization: resource.rematerialization().map(|value| {
+                RematerializationExpectation {
+                    operation_id: *value.operation().operation_id(),
+                    request_digest: *value.operation().request_digest(),
+                    predecessor_digest: *value.expected_resource_digest(),
+                }
+            }),
         })
     }
 
@@ -199,6 +215,22 @@ impl ReadyResourceExpectation {
             && resource.slot_device() == Some(self.slot_device)
             && resource.slot_inode() == Some(self.slot_inode)
             && resource.anchor_unique_mount_id() == Some(self.anchor_unique_mount_id)
+            && resource
+                .rematerialization()
+                .map(|value| RematerializationExpectation {
+                    operation_id: *value.operation().operation_id(),
+                    request_digest: *value.operation().request_digest(),
+                    predecessor_digest: *value.expected_resource_digest(),
+                })
+                == self.rematerialization
+    }
+
+    pub(super) fn matches_original_materialization(
+        self,
+        resource: &ValidatedDestinationSlotInventoryRecord,
+    ) -> bool {
+        resource.materialization().operation_id() == &self.materialization_operation_id
+            && resource.materialization().request_digest() == &self.materialization_request_digest
     }
 
     pub(super) fn is_valid(self) -> bool {
@@ -209,6 +241,12 @@ impl ReadyResourceExpectation {
             && self.slot_inode != 0
             && self.anchor_unique_mount_id != 0
             && self.ready_resource_digest != [0; 32]
+            && self.rematerialization.is_none_or(|value| {
+                value.operation_id != [0; 16]
+                    && value.operation_id != self.materialization_operation_id
+                    && value.request_digest != [0; 32]
+                    && value.predecessor_digest != [0; 32]
+            })
     }
 }
 
@@ -225,7 +263,7 @@ impl PreparedCurrentDestinationSlotV1 {
         self.operation.semantics
     }
 
-    /// Borrows the exact deadline-free protocol 1.3 request body.
+    /// Borrows the exact deadline-free protocol 1.4 request body.
     #[must_use]
     pub fn body_without_deadline(&self) -> &[u8] {
         &self.operation.body_without_deadline
@@ -369,6 +407,7 @@ where
     if !matches!(
         action,
         DestinationSlotReconciliationActionV1::Materialize { .. }
+            | DestinationSlotReconciliationActionV1::Rematerialize { .. }
             | DestinationSlotReconciliationActionV1::Reap { .. }
     ) {
         return Err(DestinationSlotEffectError::NotPreparable);
@@ -542,6 +581,27 @@ fn build_operation(
                 Some(ready),
             )
         }
+        DestinationSlotReconciliationActionV1::Rematerialize {
+            operation_id,
+            expected_resource_digest,
+        } => {
+            let resource = matching_resource(slot, reconciliation.snapshot().inventory())?
+                .ok_or(DestinationSlotEffectError::Conflict)?;
+            let ready = ReadyResourceExpectation::from_ready(resource)?;
+            if expected_resource_digest.as_bytes() != &ready.ready_resource_digest
+                || resource.resource_kernel_boot_id()
+                    == reconciliation.snapshot().inventory().kernel_boot_id()
+            {
+                return Err(DestinationSlotEffectError::Conflict);
+            }
+            (
+                operation_id,
+                DestinationSlotAction::DESTINATION_SLOT_ACTION_REMATERIALIZE,
+                Some(proto_fence(resource.fence())),
+                expected_resource_digest.as_bytes().to_vec(),
+                Some(ready),
+            )
+        }
         _ => return Err(DestinationSlotEffectError::NotPreparable),
     };
     let deadline = target.deadline_boottime_nanoseconds();
@@ -708,6 +768,25 @@ fn request_matches_action(
                 && request_id == operation_id.as_bytes()
                 && ready.is_none()
         }
+        DestinationSlotReconciliationActionV1::Rematerialize {
+            operation_id,
+            expected_resource_digest,
+        }
+        | DestinationSlotReconciliationActionV1::ResumeRematerialize {
+            operation_id,
+            expected_resource_digest,
+        }
+        | DestinationSlotReconciliationActionV1::ResumeRematerializeForReap {
+            operation_id,
+            expected_resource_digest,
+            ..
+        } => {
+            let expected = ready.map(|value| value.ready_resource_digest);
+            request.action() == DestinationSlotAction::DESTINATION_SLOT_ACTION_REMATERIALIZE
+                && request_id == operation_id.as_bytes()
+                && request.expected_resource_digest() == expected.as_ref()
+                && expected_resource_digest.as_bytes() == expected.as_ref().unwrap_or(&[0; 32])
+        }
         DestinationSlotReconciliationActionV1::Reap {
             operation_id,
             expected_resource_digest,
@@ -760,6 +839,10 @@ fn resume_request_id(
     match action {
         DestinationSlotReconciliationActionV1::ResumeMaterialize { operation_id }
         | DestinationSlotReconciliationActionV1::ResumeMaterializeForReap {
+            operation_id, ..
+        }
+        | DestinationSlotReconciliationActionV1::ResumeRematerialize { operation_id, .. }
+        | DestinationSlotReconciliationActionV1::ResumeRematerializeForReap {
             operation_id, ..
         }
         | DestinationSlotReconciliationActionV1::ResumeReap { operation_id } => Ok(operation_id),
@@ -836,6 +919,19 @@ pub(super) fn logical_slot_for_request(
     let revision = match request.action() {
         DestinationSlotAction::DESTINATION_SLOT_ACTION_MATERIALIZE => Revision::new(1),
         DestinationSlotAction::DESTINATION_SLOT_ACTION_REAP => Revision::new(2),
+        DestinationSlotAction::DESTINATION_SLOT_ACTION_REMATERIALIZE => {
+            return get_current(
+                journal,
+                aos_sandbox_core::AttachmentSlotId::from_bytes(*request.destination_slot_id()),
+            )?
+            .filter(|slot| {
+                slot.sandbox().as_bytes() == request.binding_fence().sandbox_id()
+                    && slot.incarnation().as_bytes() == request.binding_fence().incarnation_id()
+                    && slot.namespace_generation() == request.namespace_generation()
+                    && slot.sandbox_spec() == request.sandbox_spec()
+            })
+            .ok_or(DestinationSlotEffectError::CorruptState);
+        }
         DestinationSlotAction::DESTINATION_SLOT_ACTION_UNSPECIFIED => {
             return Err(DestinationSlotEffectError::CorruptState);
         }
@@ -851,6 +947,7 @@ pub(super) fn logical_slot_for_request(
             AttachmentSlotPresenceV1::Available
         }
         DestinationSlotAction::DESTINATION_SLOT_ACTION_REAP => AttachmentSlotPresenceV1::Released,
+        DestinationSlotAction::DESTINATION_SLOT_ACTION_REMATERIALIZE => unreachable!(),
         DestinationSlotAction::DESTINATION_SLOT_ACTION_UNSPECIFIED => {
             return Err(DestinationSlotEffectError::CorruptState);
         }

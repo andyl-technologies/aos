@@ -3293,7 +3293,7 @@ mod tests {
     }
 
     #[test]
-    fn destination_slot_methods_are_split_and_available_only_in_mount_1_3() {
+    fn destination_slot_methods_are_split_from_mount_1_3_through_1_4() {
         let apply = BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT;
         let inventory = BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS;
         let methods = [apply, inventory];
@@ -3306,11 +3306,15 @@ mod tests {
                 method,
                 ProtocolVersion::new(1, 3)
             ));
+            assert!(method_available_in_version(
+                method,
+                ProtocolVersion::new(1, 4)
+            ));
         }
 
         let hello = BrokerClientHello {
             protocol_major: 1,
-            protocol_minor: 3,
+            protocol_minor: 4,
             audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
             maximum_response_bytes: 8192,
             required_features: client_features().iter().map(proto_feature).collect(),
@@ -3325,7 +3329,7 @@ mod tests {
             &client_features(),
             &methods,
         )
-        .unwrap_or_else(|error| panic!("valid Mount 1.3 slot hello failed: {error}"));
+        .unwrap_or_else(|error| panic!("valid Mount 1.4 slot hello failed: {error}"));
 
         let authorized_apply = BrokerRequestEnvelope {
             method: apply.into(),

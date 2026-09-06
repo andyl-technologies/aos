@@ -410,13 +410,14 @@ message PrepareMountCatalogResponse {
   uint64 valid_until_boottime_nanoseconds = 2;
 }
 
-// Mount 1.3 destination-slot effects operate only on broker-derived paths.
+// Mount 1.4 destination-slot effects operate only on broker-derived paths.
 // The exact canonical sandbox specification proves the portable declaration;
 // its descriptor prevents the broker from accepting substituted bytes.
 enum DestinationSlotAction {
   DESTINATION_SLOT_ACTION_UNSPECIFIED = 0;
   DESTINATION_SLOT_ACTION_MATERIALIZE = 1;
   DESTINATION_SLOT_ACTION_REAP = 2;
+  DESTINATION_SLOT_ACTION_REMATERIALIZE = 3;
 }
 
 message ApplyDestinationSlotRequest {
@@ -427,9 +428,11 @@ message ApplyDestinationSlotRequest {
   bytes destination_slot_id = 5; // Exactly 16 bytes.
   Descriptor sandbox_spec = 6;
   bytes sandbox_spec_bytes = 7; // Exact canonical portable specification.
-  // Empty for materialization; exact ready-record digest for reap.
+  // Empty for first materialization; exact ready-record digest for reap or
+  // rematerialization.
   bytes expected_resource_digest = 8;
-  // Absent for materialization; immutable creation fence of the slot for reap.
+  // Absent for first materialization; immutable creation fence of the slot for
+  // reap or rematerialization.
   AssignmentFence resource_fence = 9;
 }
 
@@ -446,6 +449,12 @@ message DestinationSlotReapCorrelation {
   bytes expected_resource_digest = 2; // Exact ready-record digest.
 }
 
+message DestinationSlotRematerializationCorrelation {
+  MountOperationCorrelation operation = 1;
+  // Exact stale ready-record digest replaced by this operation.
+  bytes expected_resource_digest = 2;
+}
+
 // One lossless durable destination-slot row. Physical identity is absent only
 // while materializing and remains as historical evidence after release.
 message DestinationSlotInventoryRecord {
@@ -460,6 +469,9 @@ message DestinationSlotInventoryRecord {
   optional uint64 slot_inode = 9;
   optional uint64 anchor_unique_mount_id = 10;
   bytes resource_digest = 11; // Exact durable-record digest.
+  // Present after a stale ready resource has begun rematerialization. The
+  // original materialization correlation remains immutable in field 6.
+  DestinationSlotRematerializationCorrelation rematerialization = 12;
 }
 
 message ApplyDestinationSlotResponse {

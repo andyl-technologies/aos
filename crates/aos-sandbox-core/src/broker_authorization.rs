@@ -124,6 +124,8 @@ pub enum BrokerVerb {
     MountMaterializeDestinationSlot,
     /// Reaps an exact broker-owned destination-slot anchor.
     MountReapDestinationSlot,
+    /// Recreates an exact stale destination-slot anchor after host reboot.
+    MountRematerializeDestinationSlot,
     /// Creates an assignment workspace and mints its storage handle.
     StorageCreateWorkspace,
     /// Snapshots an existing workspace.
@@ -193,6 +195,7 @@ impl BrokerVerb {
             28 => Ok(Self::NetworkInventory),
             29 => Ok(Self::MountMaterializeDestinationSlot),
             30 => Ok(Self::MountReapDestinationSlot),
+            31 => Ok(Self::MountRematerializeDestinationSlot),
             _ => Err(InvalidBrokerAuthorizationPlan::UnknownVerb),
         }
     }
@@ -231,6 +234,7 @@ impl BrokerVerb {
             Self::NetworkInventory => 28,
             Self::MountMaterializeDestinationSlot => 29,
             Self::MountReapDestinationSlot => 30,
+            Self::MountRematerializeDestinationSlot => 31,
         }
     }
 
@@ -253,7 +257,8 @@ impl BrokerVerb {
             | Self::MountInventorySummary
             | Self::MountInventoryResources
             | Self::MountMaterializeDestinationSlot
-            | Self::MountReapDestinationSlot => BrokerAudience::Mount,
+            | Self::MountReapDestinationSlot
+            | Self::MountRematerializeDestinationSlot => BrokerAudience::Mount,
             Self::StorageCreateWorkspace
             | Self::StorageSnapshot
             | Self::StorageHoldSnapshot
@@ -292,6 +297,7 @@ impl BrokerVerb {
             | Self::MountDetach
             | Self::MountRelease
             | Self::MountReapDestinationSlot
+            | Self::MountRematerializeDestinationSlot
             | Self::StorageSnapshot
             | Self::StorageHoldSnapshot
             | Self::StorageReleaseHold
@@ -1417,6 +1423,7 @@ mod tests {
             (28, BrokerVerb::NetworkInventory),
             (29, BrokerVerb::MountMaterializeDestinationSlot),
             (30, BrokerVerb::MountReapDestinationSlot),
+            (31, BrokerVerb::MountRematerializeDestinationSlot),
         ];
         for (code, expected) in stable_codes {
             let verb = BrokerVerb::from_code(code)
@@ -1425,7 +1432,7 @@ mod tests {
             assert_eq!(verb.get(), code);
         }
         assert_eq!(
-            BrokerVerb::from_code(31),
+            BrokerVerb::from_code(32),
             Err(InvalidBrokerAuthorizationPlan::UnknownVerb)
         );
         assert_eq!(
@@ -1552,6 +1559,7 @@ mod tests {
             BrokerVerb::MountDetach,
             BrokerVerb::MountRelease,
             BrokerVerb::MountReapDestinationSlot,
+            BrokerVerb::MountRematerializeDestinationSlot,
             BrokerVerb::StorageSnapshot,
             BrokerVerb::StorageHoldSnapshot,
             BrokerVerb::StorageReleaseHold,

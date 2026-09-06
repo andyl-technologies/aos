@@ -464,6 +464,25 @@ fn validate_receipt(
                 return Err(DestinationSlotEffectError::Conflict);
             }
         }
+        DestinationSlotAction::DESTINATION_SLOT_ACTION_REMATERIALIZE => {
+            let predecessor = attempt
+                .ready_expectation()
+                .ok_or(DestinationSlotEffectError::CorruptState)?;
+            let rematerialization = result
+                .rematerialization()
+                .ok_or(DestinationSlotEffectError::Conflict)?;
+            if result.lifecycle() != DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_READY
+                || !predecessor.matches_original_materialization(&result)
+                || result.resource_kernel_boot_id() == &predecessor.resource_kernel_boot_id
+                || rematerialization.operation().operation_id() != request.header().request_id()
+                || rematerialization.operation().request_digest() != &request_digest
+                || rematerialization.expected_resource_digest()
+                    != &predecessor.ready_resource_digest
+                || result.reap().is_some()
+            {
+                return Err(DestinationSlotEffectError::Conflict);
+            }
+        }
         DestinationSlotAction::DESTINATION_SLOT_ACTION_UNSPECIFIED => {
             return Err(DestinationSlotEffectError::CorruptState);
         }

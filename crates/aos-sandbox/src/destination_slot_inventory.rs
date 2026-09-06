@@ -1,6 +1,6 @@
 //! Authenticates, records, and reconciles Mount destination-slot inventories.
 //!
-//! The controller stores only the latest complete protocol 1.3 snapshot. Each
+//! The controller stores only the latest complete protocol 1.4 snapshot. Each
 //! record binds the exact query and response to the complete controller state
 //! that existed before the query. Reconciliation compares one current logical
 //! slot with that fresh evidence and returns a descriptive next action; it does
@@ -36,7 +36,9 @@ use crate::{Journal, JournalRecord, JournalTransaction, RecordNamespace};
 mod format;
 
 const NAMESPACE: RecordNamespace = RecordNamespace::DestinationSlotInventory;
-const CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(1, 3);
+const CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(1, 4);
+const REMATERIALIZATION_OPERATION_DOMAIN: &[u8] =
+    b"aos.sandbox.destination-slot-rematerialization.operation.v1\0";
 const METHOD: BrokerMethod = BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS;
 const RESPONSE_BYTES: u32 = 15 * 1024 * 1024;
 const QUERY_WINDOW_NANOSECONDS: u64 = 10_000_000_000;
@@ -72,21 +74,34 @@ pub enum DestinationSlotReconciliationActionV1 {
         /// The broker record digest identifying the ready resource.
         resource_digest: ObjectDigest,
     },
-    /// A durable ready row names physical state from an earlier kernel boot.
-    ///
-    /// The retained device, inode, and mount identities are audit evidence,
-    /// not a descriptor that can be published into the current runtime. A
-    /// separately authorized recovery transition must recreate the physical
-    /// slot before launch or attachment preparation may continue.
-    StaleReady {
-        /// The exact stale ready record that requires recovery.
-        resource_digest: ObjectDigest,
+    /// A separately authorized effect must replace an exact stale ready row.
+    Rematerialize {
+        /// The deterministic recovery operation for this predecessor and boot.
+        operation_id: OperationId,
+        /// The exact stale ready record that the effect must replace.
+        expected_resource_digest: ObjectDigest,
+    },
+    /// Mount admitted rematerialization but has not committed current identity.
+    ResumeRematerialize {
+        /// The deterministic recovery operation already admitted by Mount.
+        operation_id: OperationId,
+        /// The stale ready record named when recovery began.
+        expected_resource_digest: ObjectDigest,
     },
     /// A released logical slot still has incomplete broker materialization.
     ResumeMaterializeForReap {
         /// The original logical creation operation.
         operation_id: OperationId,
         /// The logical release operation that must reap the resulting resource.
+        reap_operation_id: OperationId,
+    },
+    /// A released logical slot still has incomplete physical rematerialization.
+    ResumeRematerializeForReap {
+        /// The deterministic recovery operation already admitted by Mount.
+        operation_id: OperationId,
+        /// The stale ready record named when recovery began.
+        expected_resource_digest: ObjectDigest,
+        /// The logical release operation that must reap the recovered resource.
         reap_operation_id: OperationId,
     },
     /// A released logical slot has a ready broker resource that must be reaped.
@@ -591,9 +606,13 @@ fn classify(
         (
             AttachmentSlotPresenceV1::Available,
             Some(DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_MATERIALIZING),
-        ) => Ok(DestinationSlotReconciliationActionV1::ResumeMaterialize {
-            operation_id: creation_operation,
-        }),
+        ) => classify_materializing(
+            slot,
+            creation_operation,
+            resource.ok_or(MountAttemptError::CorruptState)?,
+            current_kernel_boot_id,
+            None,
+        ),
         (
             AttachmentSlotPresenceV1::Available,
             Some(DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_READY),
@@ -604,7 +623,14 @@ fn classify(
             if resource.resource_kernel_boot_id() == current_kernel_boot_id {
                 Ok(DestinationSlotReconciliationActionV1::Ready { resource_digest })
             } else {
-                Ok(DestinationSlotReconciliationActionV1::StaleReady { resource_digest })
+                Ok(DestinationSlotReconciliationActionV1::Rematerialize {
+                    operation_id: rematerialization_operation(
+                        slot,
+                        resource_digest,
+                        current_kernel_boot_id,
+                    ),
+                    expected_resource_digest: resource_digest,
+                })
             }
         }
         (AttachmentSlotPresenceV1::Released, None) => {
@@ -613,11 +639,12 @@ fn classify(
         (
             AttachmentSlotPresenceV1::Released,
             Some(DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_MATERIALIZING),
-        ) => Ok(
-            DestinationSlotReconciliationActionV1::ResumeMaterializeForReap {
-                operation_id: creation_operation,
-                reap_operation_id: slot.operation_id(),
-            },
+        ) => classify_materializing(
+            slot,
+            creation_operation,
+            resource.ok_or(MountAttemptError::CorruptState)?,
+            current_kernel_boot_id,
+            Some(slot.operation_id()),
         ),
         (
             AttachmentSlotPresenceV1::Released,
@@ -648,6 +675,72 @@ fn classify(
         }
         _ => Err(MountAttemptError::Conflict),
     }
+}
+
+fn classify_materializing(
+    slot: &DurableAttachmentSlotV1,
+    creation_operation: OperationId,
+    resource: &ValidatedDestinationSlotInventoryRecord,
+    current_kernel_boot_id: &[u8; 16],
+    reap_operation_id: Option<OperationId>,
+) -> Result<DestinationSlotReconciliationActionV1, MountAttemptError> {
+    let Some(rematerialization) = resource.rematerialization() else {
+        return Ok(match reap_operation_id {
+            Some(reap_operation_id) => {
+                DestinationSlotReconciliationActionV1::ResumeMaterializeForReap {
+                    operation_id: creation_operation,
+                    reap_operation_id,
+                }
+            }
+            None => DestinationSlotReconciliationActionV1::ResumeMaterialize {
+                operation_id: creation_operation,
+            },
+        });
+    };
+    if resource.resource_kernel_boot_id() != current_kernel_boot_id {
+        return Err(MountAttemptError::Conflict);
+    }
+
+    let predecessor = ObjectDigest::from_bytes(*rematerialization.expected_resource_digest());
+    let operation_id = rematerialization_operation(slot, predecessor, current_kernel_boot_id);
+    if rematerialization.operation().operation_id() != operation_id.as_bytes() {
+        return Err(MountAttemptError::Conflict);
+    }
+    Ok(match reap_operation_id {
+        Some(reap_operation_id) => {
+            DestinationSlotReconciliationActionV1::ResumeRematerializeForReap {
+                operation_id,
+                expected_resource_digest: predecessor,
+                reap_operation_id,
+            }
+        }
+        None => DestinationSlotReconciliationActionV1::ResumeRematerialize {
+            operation_id,
+            expected_resource_digest: predecessor,
+        },
+    })
+}
+
+fn rematerialization_operation(
+    slot: &DurableAttachmentSlotV1,
+    predecessor: ObjectDigest,
+    current_kernel_boot_id: &[u8; 16],
+) -> OperationId {
+    let digest = Sha256::new()
+        .chain_update(REMATERIALIZATION_OPERATION_DOMAIN)
+        .chain_update(slot.sandbox().as_bytes())
+        .chain_update(slot.incarnation().as_bytes())
+        .chain_update(slot.namespace_generation().to_be_bytes())
+        .chain_update(slot.slot_id().as_bytes())
+        .chain_update(predecessor.as_bytes())
+        .chain_update(current_kernel_boot_id)
+        .finalize();
+    let mut operation_id = [0; 16];
+    operation_id.copy_from_slice(&digest[..16]);
+    if operation_id == [0; 16] {
+        operation_id[15] = 1;
+    }
+    OperationId::from_bytes(operation_id)
 }
 
 fn validate_reap_operation(
@@ -723,8 +816,8 @@ mod tests {
 
     use aos_proto::aos::sandbox::local::v1::{
         AssignmentFence, Descriptor, DestinationSlotInventoryRecord,
-        DestinationSlotReapCorrelation, InventoryDestinationSlotsResponse, MountAssignmentBinding,
-        MountOperationCorrelation,
+        DestinationSlotReapCorrelation, DestinationSlotRematerializationCorrelation,
+        InventoryDestinationSlotsResponse, MountAssignmentBinding, MountOperationCorrelation,
     };
     use aos_sandbox_core::{AttachmentSlotId, IncarnationId, Revision, SandboxId};
 
@@ -783,7 +876,7 @@ mod tests {
         InventoryDestinationSlotsRequest {
             header: Some(RequestHeader {
                 protocol_major: 1,
-                protocol_minor: 3,
+                protocol_minor: 4,
                 request_id: vec![request_byte; 16],
                 audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
                 deadline_boottime_nanoseconds: 100,
@@ -934,6 +1027,31 @@ mod tests {
         inventory.slots()[0].clone()
     }
 
+    fn rematerializing_resource(
+        slot: &DurableAttachmentSlotV1,
+        predecessor: ObjectDigest,
+        current_kernel_boot_id: [u8; 16],
+    ) -> DestinationSlotInventoryRecord {
+        let operation = rematerialization_operation(slot, predecessor, &current_kernel_boot_id);
+        let mut resource = resource(
+            slot,
+            DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_MATERIALIZING,
+        );
+        resource.resource_kernel_boot_id = current_kernel_boot_id.to_vec();
+        resource.rematerialization = Some(DestinationSlotRematerializationCorrelation {
+            operation: Some(MountOperationCorrelation {
+                operation_id: operation.as_bytes().to_vec(),
+                request_digest: vec![33; 32],
+                ..Default::default()
+            })
+            .into(),
+            expected_resource_digest: predecessor.as_bytes().to_vec(),
+            ..Default::default()
+        })
+        .into();
+        resource
+    }
+
     fn snapshot(
         request_byte: u8,
         sequence: u64,
@@ -1080,8 +1198,13 @@ mod tests {
         );
         assert_eq!(
             classify(&slot, operation, Some(&ready), &[9; 16]).unwrap(),
-            DestinationSlotReconciliationActionV1::StaleReady {
-                resource_digest: ObjectDigest::from_bytes(RESOURCE_DIGEST)
+            DestinationSlotReconciliationActionV1::Rematerialize {
+                operation_id: rematerialization_operation(
+                    &slot,
+                    ObjectDigest::from_bytes(RESOURCE_DIGEST),
+                    &[9; 16],
+                ),
+                expected_resource_digest: ObjectDigest::from_bytes(RESOURCE_DIGEST)
             }
         );
 
@@ -1092,6 +1215,70 @@ mod tests {
             let invalid = decoded_resource(&slot, lifecycle);
             assert!(classify(&slot, operation, Some(&invalid), &[8; 16]).is_err());
         }
+    }
+
+    #[test]
+    fn admitted_rematerialization_resumes_only_on_its_exact_current_boot() {
+        let (_directory, mut journal) = test_journal();
+        let slot = create_slot(&mut journal);
+        let predecessor = ObjectDigest::from_bytes([69; 32]);
+        let operation = rematerialization_operation(&slot, predecessor, &[9; 16]);
+        let row = rematerializing_resource(&slot, predecessor, [9; 16]);
+        let inventory = decode_destination_slot_inventory_response(
+            &response(1, 9, 10, vec![row.clone()]),
+            RESPONSE_BYTES,
+        )
+        .unwrap();
+        assert_eq!(
+            classify(
+                &slot,
+                OperationId::from_bytes(CREATE_OPERATION),
+                Some(&inventory.slots()[0]),
+                &[9; 16]
+            )
+            .unwrap(),
+            DestinationSlotReconciliationActionV1::ResumeRematerialize {
+                operation_id: operation,
+                expected_resource_digest: predecessor,
+            }
+        );
+
+        let stale_inventory = decode_destination_slot_inventory_response(
+            &response(1, 8, 10, vec![row.clone()]),
+            RESPONSE_BYTES,
+        )
+        .unwrap();
+        assert!(
+            classify(
+                &slot,
+                OperationId::from_bytes(CREATE_OPERATION),
+                Some(&stale_inventory.slots()[0]),
+                &[8; 16],
+            )
+            .is_err()
+        );
+
+        let mut substituted = row;
+        substituted
+            .rematerialization
+            .get_or_insert_default()
+            .operation
+            .get_or_insert_default()
+            .operation_id = vec![99; 16];
+        let substituted_inventory = decode_destination_slot_inventory_response(
+            &response(1, 9, 10, vec![substituted]),
+            RESPONSE_BYTES,
+        )
+        .unwrap();
+        assert!(
+            classify(
+                &slot,
+                OperationId::from_bytes(CREATE_OPERATION),
+                Some(&substituted_inventory.slots()[0]),
+                &[9; 16],
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1149,6 +1336,23 @@ mod tests {
             classify(&slot, creation, Some(&released), &[8; 16]).unwrap(),
             DestinationSlotReconciliationActionV1::Released
         );
+
+        let predecessor = ObjectDigest::from_bytes([69; 32]);
+        let operation_id = rematerialization_operation(&slot, predecessor, &[9; 16]);
+        let row = rematerializing_resource(&slot, predecessor, [9; 16]);
+        let inventory = decode_destination_slot_inventory_response(
+            &response(1, 9, 10, vec![row]),
+            RESPONSE_BYTES,
+        )
+        .unwrap();
+        assert_eq!(
+            classify(&slot, creation, Some(&inventory.slots()[0]), &[9; 16]).unwrap(),
+            DestinationSlotReconciliationActionV1::ResumeRematerializeForReap {
+                operation_id,
+                expected_resource_digest: predecessor,
+                reap_operation_id: release,
+            }
+        );
     }
 
     #[test]
@@ -1196,8 +1400,13 @@ mod tests {
 
         assert_eq!(
             reconciliation.action(),
-            DestinationSlotReconciliationActionV1::StaleReady {
-                resource_digest: ObjectDigest::from_bytes(RESOURCE_DIGEST),
+            DestinationSlotReconciliationActionV1::Rematerialize {
+                operation_id: rematerialization_operation(
+                    reconciliation.slot(),
+                    ObjectDigest::from_bytes(RESOURCE_DIGEST),
+                    &[9; 16],
+                ),
+                expected_resource_digest: ObjectDigest::from_bytes(RESOURCE_DIGEST),
             }
         );
     }

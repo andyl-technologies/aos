@@ -11,8 +11,9 @@ use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
 use aos_proto::aos::sandbox::local::v1::{
     AssignmentFence, Audience, DestinationSlotAction, DestinationSlotInventoryRecord,
-    DestinationSlotLifecycle, DestinationSlotReapCorrelation, MountAssignmentBinding,
-    MountOperationCorrelation, RequestHeader,
+    DestinationSlotLifecycle, DestinationSlotReapCorrelation,
+    DestinationSlotRematerializationCorrelation, MountAssignmentBinding, MountOperationCorrelation,
+    RequestHeader,
 };
 use aos_sandbox_core::format::{encode_ownership_lease, encode_signature, encode_trust_policy};
 use aos_sandbox_core::model::{
@@ -36,7 +37,8 @@ use sha2::Digest as _;
 use super::*;
 use crate::destination_slot_effect::completion::CompletionRecord;
 use crate::destination_slot_effect::{
-    METHOD, ReadyResourceExpectation, decode_request, proto_descriptor, proto_fence,
+    METHOD, ReadyResourceExpectation, RematerializationExpectation, decode_request,
+    proto_descriptor, proto_fence,
 };
 use crate::dispatch::{
     BrokerDispatchSemanticIdentityV1, semantic_identity_digest, template_digest_from_parts,
@@ -51,6 +53,7 @@ const INCARNATION_ID: [u8; 16] = [2; 16];
 const SLOT_ID: [u8; 16] = [3; 16];
 const CREATE_OPERATION: [u8; 16] = [10; 16];
 const RELEASE_OPERATION: [u8; 16] = [11; 16];
+const REMATERIALIZE_OPERATION: [u8; 16] = [12; 16];
 const NAMESPACE_GENERATION: u64 = 9;
 const DEADLINE: u64 = 2_000;
 const ORIGINAL_ASSIGNMENT_DIGEST: [u8; 32] = [5; 32];
@@ -121,6 +124,9 @@ fn assignment(action: DestinationSlotAction) -> BrokerAssignment {
             (3, 4, ORIGINAL_ASSIGNMENT_DIGEST)
         }
         DestinationSlotAction::DESTINATION_SLOT_ACTION_REAP => (4, 5, CURRENT_ASSIGNMENT_DIGEST),
+        DestinationSlotAction::DESTINATION_SLOT_ACTION_REMATERIALIZE => {
+            (4, 5, CURRENT_ASSIGNMENT_DIGEST)
+        }
         DestinationSlotAction::DESTINATION_SLOT_ACTION_UNSPECIFIED => {
             unreachable!("fixtures use a concrete action")
         }
@@ -150,6 +156,7 @@ fn operation_id(action: DestinationSlotAction) -> [u8; 16] {
     match action {
         DestinationSlotAction::DESTINATION_SLOT_ACTION_MATERIALIZE => CREATE_OPERATION,
         DestinationSlotAction::DESTINATION_SLOT_ACTION_REAP => RELEASE_OPERATION,
+        DestinationSlotAction::DESTINATION_SLOT_ACTION_REMATERIALIZE => REMATERIALIZE_OPERATION,
         DestinationSlotAction::DESTINATION_SLOT_ACTION_UNSPECIFIED => {
             unreachable!("fixtures use a concrete action")
         }
@@ -158,11 +165,11 @@ fn operation_id(action: DestinationSlotAction) -> [u8; 16] {
 
 fn request(action: DestinationSlotAction, deadline: u64) -> Vec<u8> {
     let (specification, descriptor) = sandbox_specification();
-    let reap = action == DestinationSlotAction::DESTINATION_SLOT_ACTION_REAP;
+    let resource_transition = action != DestinationSlotAction::DESTINATION_SLOT_ACTION_MATERIALIZE;
     aos_proto::aos::sandbox::local::v1::ApplyDestinationSlotRequest {
         header: Some(RequestHeader {
             protocol_major: 1,
-            protocol_minor: 3,
+            protocol_minor: 4,
             request_id: operation_id(action).to_vec(),
             audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
             deadline_boottime_nanoseconds: deadline,
@@ -171,7 +178,7 @@ fn request(action: DestinationSlotAction, deadline: u64) -> Vec<u8> {
         })
         .into(),
         fence: Some(wire_fence(assignment(action))).into(),
-        resource_fence: reap
+        resource_fence: resource_transition
             .then(|| {
                 wire_fence(assignment(
                     DestinationSlotAction::DESTINATION_SLOT_ACTION_MATERIALIZE,
@@ -183,7 +190,7 @@ fn request(action: DestinationSlotAction, deadline: u64) -> Vec<u8> {
         destination_slot_id: SLOT_ID.to_vec(),
         sandbox_spec: Some(proto_descriptor(&descriptor)).into(),
         sandbox_spec_bytes: specification,
-        expected_resource_digest: if reap {
+        expected_resource_digest: if resource_transition {
             READY_RESOURCE_DIGEST.to_vec()
         } else {
             Vec::new()
@@ -243,6 +250,7 @@ fn ready_expectation() -> ReadyResourceExpectation {
         slot_inode: SLOT_INODE,
         anchor_unique_mount_id: ANCHOR_MOUNT_ID,
         ready_resource_digest: READY_RESOURCE_DIGEST,
+        rematerialization: None,
     }
 }
 
@@ -380,7 +388,7 @@ fn record(action: DestinationSlotAction) -> Record {
         lease_generation: lease.lease_generation(),
         deadline_boottime_nanoseconds: DEADLINE,
         action,
-        ready: (action == DestinationSlotAction::DESTINATION_SLOT_ACTION_REAP)
+        ready: (action != DestinationSlotAction::DESTINATION_SLOT_ACTION_MATERIALIZE)
             .then(ready_expectation),
         template_body,
         body,
@@ -395,45 +403,72 @@ fn record(action: DestinationSlotAction) -> Record {
 fn response_record(attempt: &Record) -> DestinationSlotInventoryRecord {
     let request = decode_request(&attempt.body, attempt.deadline_boottime_nanoseconds).unwrap();
     let request_digest: [u8; 32] = sha2::Sha256::digest(&attempt.body).into();
-    let (fence, materialization, reap, lifecycle, resource_digest) = match request.action() {
-        DestinationSlotAction::DESTINATION_SLOT_ACTION_MATERIALIZE => (
-            proto_fence(request.binding_fence()),
-            MountOperationCorrelation {
-                operation_id: request.header().request_id().to_vec(),
-                request_digest: request_digest.to_vec(),
-                ..Default::default()
-            },
-            None,
-            DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_READY,
-            READY_RESOURCE_DIGEST,
-        ),
-        DestinationSlotAction::DESTINATION_SLOT_ACTION_REAP => {
-            let ready = attempt.ready.unwrap();
-            (
-                proto_fence(request.resource_fence().unwrap()),
+    let (fence, materialization, rematerialization, reap, lifecycle, resource_digest) =
+        match request.action() {
+            DestinationSlotAction::DESTINATION_SLOT_ACTION_MATERIALIZE => (
+                proto_fence(request.binding_fence()),
                 MountOperationCorrelation {
-                    operation_id: ready.materialization_operation_id.to_vec(),
-                    request_digest: ready.materialization_request_digest.to_vec(),
+                    operation_id: request.header().request_id().to_vec(),
+                    request_digest: request_digest.to_vec(),
                     ..Default::default()
                 },
-                Some(DestinationSlotReapCorrelation {
-                    operation: Some(MountOperationCorrelation {
-                        operation_id: request.header().request_id().to_vec(),
-                        request_digest: request_digest.to_vec(),
+                None,
+                None,
+                DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_READY,
+                READY_RESOURCE_DIGEST,
+            ),
+            DestinationSlotAction::DESTINATION_SLOT_ACTION_REAP => {
+                let ready = attempt.ready.unwrap();
+                (
+                    proto_fence(request.resource_fence().unwrap()),
+                    MountOperationCorrelation {
+                        operation_id: ready.materialization_operation_id.to_vec(),
+                        request_digest: ready.materialization_request_digest.to_vec(),
                         ..Default::default()
-                    })
-                    .into(),
-                    expected_resource_digest: ready.ready_resource_digest.to_vec(),
-                    ..Default::default()
-                }),
-                DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_RELEASED,
-                [31; 32],
-            )
-        }
-        DestinationSlotAction::DESTINATION_SLOT_ACTION_UNSPECIFIED => {
-            unreachable!("validated request has a concrete action")
-        }
-    };
+                    },
+                    None,
+                    Some(DestinationSlotReapCorrelation {
+                        operation: Some(MountOperationCorrelation {
+                            operation_id: request.header().request_id().to_vec(),
+                            request_digest: request_digest.to_vec(),
+                            ..Default::default()
+                        })
+                        .into(),
+                        expected_resource_digest: ready.ready_resource_digest.to_vec(),
+                        ..Default::default()
+                    }),
+                    DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_RELEASED,
+                    [31; 32],
+                )
+            }
+            DestinationSlotAction::DESTINATION_SLOT_ACTION_REMATERIALIZE => {
+                let ready = attempt.ready.unwrap();
+                (
+                    proto_fence(request.resource_fence().unwrap()),
+                    MountOperationCorrelation {
+                        operation_id: ready.materialization_operation_id.to_vec(),
+                        request_digest: ready.materialization_request_digest.to_vec(),
+                        ..Default::default()
+                    },
+                    Some(DestinationSlotRematerializationCorrelation {
+                        operation: Some(MountOperationCorrelation {
+                            operation_id: request.header().request_id().to_vec(),
+                            request_digest: request_digest.to_vec(),
+                            ..Default::default()
+                        })
+                        .into(),
+                        expected_resource_digest: ready.ready_resource_digest.to_vec(),
+                        ..Default::default()
+                    }),
+                    None,
+                    DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_READY,
+                    [32; 32],
+                )
+            }
+            DestinationSlotAction::DESTINATION_SLOT_ACTION_UNSPECIFIED => {
+                unreachable!("validated request has a concrete action")
+            }
+        };
     DestinationSlotInventoryRecord {
         binding: Some(MountAssignmentBinding {
             fence: Some(fence).into(),
@@ -444,8 +479,15 @@ fn response_record(attempt: &Record) -> DestinationSlotInventoryRecord {
         destination_slot_id: request.destination_slot_id().to_vec(),
         sandbox_spec: Some(proto_descriptor(request.sandbox_spec())).into(),
         lifecycle: lifecycle.into(),
-        resource_kernel_boot_id: RESOURCE_BOOT_ID.to_vec(),
+        resource_kernel_boot_id: if request.action()
+            == DestinationSlotAction::DESTINATION_SLOT_ACTION_REMATERIALIZE
+        {
+            vec![33; 16]
+        } else {
+            RESOURCE_BOOT_ID.to_vec()
+        },
         materialization: Some(materialization).into(),
+        rematerialization: rematerialization.into(),
         reap: reap.into(),
         slot_device: Some(SLOT_DEVICE),
         slot_inode: Some(SLOT_INODE),
@@ -678,6 +720,30 @@ fn pending_actions_reproduce_only_the_original_effect() {
         },
         Some(ready_expectation()),
     ));
+
+    let rematerialize = decode_request(
+        &attempt_body(DestinationSlotAction::DESTINATION_SLOT_ACTION_REMATERIALIZE),
+        DEADLINE,
+    )
+    .unwrap();
+    let rematerialization = OperationId::from_bytes(REMATERIALIZE_OPERATION);
+    assert!(crate::destination_slot_effect::request_matches_action(
+        &rematerialize,
+        crate::DestinationSlotReconciliationActionV1::ResumeRematerialize {
+            operation_id: rematerialization,
+            expected_resource_digest: ObjectDigest::from_bytes(READY_RESOURCE_DIGEST),
+        },
+        Some(ready_expectation()),
+    ));
+    assert!(crate::destination_slot_effect::request_matches_action(
+        &rematerialize,
+        crate::DestinationSlotReconciliationActionV1::ResumeRematerializeForReap {
+            operation_id: rematerialization,
+            expected_resource_digest: ObjectDigest::from_bytes(READY_RESOURCE_DIGEST),
+            reap_operation_id: release,
+        },
+        Some(ready_expectation()),
+    ));
 }
 
 #[test]
@@ -719,6 +785,52 @@ fn materialize_and_reap_receipts_bind_the_exact_resource() {
     substituted.binding.get_or_insert_default().fence = Some(proto_fence(request.fence())).into();
     let substituted = encode_destination_slot_response(substituted).unwrap();
     assert!(CompletionRecord::from_attempt(&reap, substituted).is_err());
+}
+
+#[test]
+fn rematerialization_attempt_and_receipt_bind_the_predecessor_and_new_boot() {
+    let mut attempt = record(DestinationSlotAction::DESTINATION_SLOT_ACTION_REMATERIALIZE);
+    attempt.ready.as_mut().unwrap().rematerialization = Some(RematerializationExpectation {
+        operation_id: [13; 16],
+        request_digest: [14; 32],
+        predecessor_digest: [15; 32],
+    });
+    attempt.digest = attempt.compute_digest();
+    attempt.validate_contents().unwrap();
+    assert_eq!(Record::decode(&attempt.encode()).unwrap(), attempt);
+
+    let (completion, ready) = CompletionRecord::from_attempt(&attempt, receipt(&attempt)).unwrap();
+    assert_eq!(
+        ready.lifecycle(),
+        DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_READY
+    );
+    assert_eq!(ready.resource_kernel_boot_id(), &[33; 16]);
+    assert_eq!(ready.resource_digest(), &[32; 32]);
+    assert_eq!(ready.materialization().operation_id(), &CREATE_OPERATION);
+    let rematerialization = ready.rematerialization().unwrap();
+    assert_eq!(
+        rematerialization.operation().operation_id(),
+        &REMATERIALIZE_OPERATION
+    );
+    assert_eq!(
+        rematerialization.expected_resource_digest(),
+        &READY_RESOURCE_DIGEST
+    );
+    completion.validate(&attempt).unwrap();
+
+    let mut substituted_predecessor = response_record(&attempt);
+    substituted_predecessor
+        .rematerialization
+        .get_or_insert_default()
+        .expected_resource_digest = vec![99; 32];
+    let substituted_predecessor =
+        encode_destination_slot_response(substituted_predecessor).unwrap();
+    assert!(CompletionRecord::from_attempt(&attempt, substituted_predecessor).is_err());
+
+    let mut unchanged_boot = response_record(&attempt);
+    unchanged_boot.resource_kernel_boot_id = RESOURCE_BOOT_ID.to_vec();
+    let unchanged_boot = encode_destination_slot_response(unchanged_boot).unwrap();
+    assert!(CompletionRecord::from_attempt(&attempt, unchanged_boot).is_err());
 }
 
 #[test]

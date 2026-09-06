@@ -3407,3 +3407,49 @@ without claiming that repair is implemented. The authorized rematerialization
 transition, read-only attachment-anchor launch installation, source
 materialization, lease-expiry scheduling, live namespace VM qualification,
 and end-to-end attachment reconciliation remain.
+
+### Crash-recoverable stale destination-slot rematerialization
+
+Mount protocol 1.4 now carries an explicit `REMATERIALIZE` action for an exact
+stale ready destination-slot record. The controller derives a domain-separated
+operation ID from the logical slot, predecessor record digest, and current
+kernel boot. Its signed grant is resource-scoped to that predecessor while the
+request separately carries current assignment authority and the immutable
+creation fence. A stale row can therefore advance only through one authorized
+replacement; it is never reinterpreted as current physical evidence.
+
+Mount checks the exact stale digest, original binding, complete native-resource
+table, and path absence before committing a current-boot `Materializing`
+intent. It repeats the usage check and rechecks signed authority before
+`mkdirat`, then records and pins the new device, inode, and mount identity.
+Exact retries resume an admitted intent or replay the completed result. The
+original creation correlation remains immutable, and inventory adds the latest
+rematerialization operation, request digest, and predecessor digest so recovery
+can distinguish initial materialization, pending replacement, completed
+replacement, and a later reap. Repeated host reboots can replace successive
+stale ready records without losing the original creation lineage.
+
+The durable Mount row advances to fixed `AOSMSL02` bytes, and controller
+destination-slot attempts advance to fixed `AOSDSE03` bytes so a later reap or
+rematerialization retains any prior replacement correlation. Older
+`AOSMSL01` and `AOSDSE02` records require migration and fail closed rather than
+being reinterpreted under the stronger formats. Broker verb and local effect
+codes remain append-only.
+
+Focused validation covers protocol action shape and resource-scoped semantics,
+inventory correlation shape and global operation uniqueness, deterministic
+stale classification, current-boot pending recovery, released-while-pending
+recovery, attempt and completion substitution, durable admission interruption,
+exact replay, chained replacement, broker authorization, and predecessor
+substitution. All 380 sandbox unit tests, seven downstream API tests, 15
+sandbox doctests, 186 core tests, 83 protocol tests, 19 broker tests, 85
+host-runnable Mount unit tests, the Mount helper integration test, and Mount
+doctests pass. The single omitted Mount test is the existing root-VM-only
+Host-scope fixture. Strict all-target/all-feature crate-local Clippy,
+warnings-as-errors rustdoc, targeted Rust formatting, and diff checks pass.
+The hermetic `nix-build -A checks.eval --cores 8` gate passes at
+`/nix/store/yknpajzkyc5gl5i6n7lgk97h6wbhs1mb-aos-eval-and-system-structure-checks-0`.
+
+This closes stale-ready reboot recovery. Read-only attachment-anchor launch
+installation, source-handle materialization, lease-expiry scheduling, live
+namespace VM qualification, and end-to-end attachment reconciliation remain.

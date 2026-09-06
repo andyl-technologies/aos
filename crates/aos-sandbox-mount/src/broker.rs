@@ -6,7 +6,8 @@ use std::path::Path;
 
 use aos_proto::aos::sandbox::local::v1::{
     AssignmentFence, Descriptor, DestinationSlotAction, DestinationSlotInventoryRecord,
-    DestinationSlotLifecycle, DestinationSlotReapCorrelation, InventoryDestinationSlotsResponse,
+    DestinationSlotLifecycle, DestinationSlotReapCorrelation,
+    DestinationSlotRematerializationCorrelation, InventoryDestinationSlotsResponse,
     InventoryMountResourcesResponse, MountAction, MountAssignmentBinding, MountAttributes,
     MountFaultCorrelation, MountFaultPhase, MountInventoryRecord, MountKernelObservation,
     MountLifecycle, MountOperationCorrelation, MountPublicationCorrelation, MountRecipe,
@@ -37,7 +38,8 @@ use crate::authorization::semantics_v1::MountCatalogCommitmentV1;
 use crate::authorization::{MountAuthorityV1, VerifiedMountAdmissionV1};
 use crate::destination_slot::{
     DestinationSlotBindingV1, DestinationSlotMaterializationV1, DestinationSlotReapV1,
-    DestinationSlotResourcePhaseV1, DestinationSlotResourceV1, DestinationSlotStoreV1,
+    DestinationSlotRematerializationV1, DestinationSlotResourcePhaseV1, DestinationSlotResourceV1,
+    DestinationSlotStoreV1,
 };
 use crate::host_scope::ObservedMountScope;
 use crate::state::authorization_v1::{MountEffectIntentV2, MountEffectStatusV2};
@@ -341,6 +343,44 @@ impl<W: MountWorker> MountBroker<W> {
                             })?;
                         Ok(destination_slot_is_unused(resources, binding))
                     })?
+                    .0
+            }
+            DestinationSlotAction::DESTINATION_SLOT_ACTION_REMATERIALIZE => {
+                let expected = request.expected_resource_digest().copied().ok_or_else(|| {
+                    MountError::State(
+                        "validated rematerialization lost its resource digest".to_owned(),
+                    )
+                })?;
+                let mutation = DestinationSlotRematerializationV1::new(
+                    binding.clone(),
+                    operation_id,
+                    ObjectDigest::from_bytes(request_digest),
+                    ObjectDigest::from_bytes(expected),
+                )?;
+                let authority = &self.authority;
+                let resources = &self.resources;
+                let slots = self.destination_slots.as_mut().ok_or_else(|| {
+                    MountError::State("destination-slot ownership disappeared".to_owned())
+                })?;
+                slots
+                    .rematerialize_guarded(
+                        &mut self.journal,
+                        &mutation,
+                        |binding| Ok(destination_slot_is_unused(resources, binding)),
+                        || {
+                            authority
+                                .check_before_effect(&effect, &mut || {
+                                    trusted_clock().map_err(|_| {
+                                        crate::authorization::MountAdmissionError::FenceRejected
+                                    })
+                                })
+                                .map_err(|_| {
+                                    MountError::Fence(
+                                        "destination-slot authority expired before rematerialization",
+                                    )
+                                })
+                        },
+                    )?
                     .0
             }
             DestinationSlotAction::DESTINATION_SLOT_ACTION_UNSPECIFIED => {
@@ -1773,6 +1813,24 @@ fn destination_slot_record(resource: DestinationSlotResourceV1) -> DestinationSl
                 }
             },
         );
+    let rematerialization = resource
+        .rematerialization_operation()
+        .zip(resource.rematerialization_request())
+        .zip(resource.rematerialization_predecessor())
+        .map(
+            |((operation_id, request_digest), expected_resource_digest)| {
+                DestinationSlotRematerializationCorrelation {
+                    operation: Some(MountOperationCorrelation {
+                        operation_id: operation_id.as_bytes().to_vec(),
+                        request_digest: request_digest.as_bytes().to_vec(),
+                        ..Default::default()
+                    })
+                    .into(),
+                    expected_resource_digest: expected_resource_digest.as_bytes().to_vec(),
+                    ..Default::default()
+                }
+            },
+        );
     DestinationSlotInventoryRecord {
         binding: Some(MountAssignmentBinding {
             fence: Some(AssignmentFence {
@@ -1818,6 +1876,7 @@ fn destination_slot_record(resource: DestinationSlotResourceV1) -> DestinationSl
             ..Default::default()
         })
         .into(),
+        rematerialization: rematerialization.into(),
         reap: reap.into(),
         slot_device: identity.map(|value| value.device),
         slot_inode: identity.map(|value| value.inode),
@@ -2498,7 +2557,7 @@ mod tests {
             let plan = BrokerAuthorizationPlan::new(
                 BrokerAudience::Mount,
                 ProtocolId::MountBroker,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 4),
                 assignment,
                 TEST_NODE,
                 self.lease_signer.clone(),
@@ -2839,7 +2898,7 @@ mod tests {
         broker.apply_destination_slot(
             request_bytes,
             &artifacts,
-            ProtocolVersion::new(1, 3),
+            ProtocolVersion::new(1, 4),
             peer(),
             policy(),
             || Ok(clock()),
@@ -3080,7 +3139,7 @@ mod tests {
         ApplyDestinationSlotRequest {
             header: Some(RequestHeader {
                 protocol_major: 1,
-                protocol_minor: 3,
+                protocol_minor: 4,
                 request_id: vec![request_id; 16],
                 audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
                 deadline_boottime_nanoseconds: 1_000,
@@ -3423,6 +3482,76 @@ mod tests {
     }
 
     #[test]
+    fn destination_slot_rematerialization_replaces_only_the_exact_stale_resource() {
+        let directory = private_destination_slot_root();
+        let journal_path = directory.path().join("mount.journal");
+        let (mut broker, fixture) = test_broker_with_destination_slots(
+            open(&journal_path),
+            ScriptedWorker::default(),
+            directory.path(),
+        );
+        let materialize = destination_slot_request(
+            88,
+            1,
+            6,
+            DestinationSlotAction::DESTINATION_SLOT_ACTION_MATERIALIZE,
+            None,
+            None,
+        );
+        apply_destination_slot(&mut broker, &fixture, &materialize, 1).unwrap();
+        let request = decode_destination_slot_request(
+            &materialize,
+            peer(),
+            policy(),
+            TEST_BOOTTIME_NANOSECONDS,
+        )
+        .unwrap();
+        let binding = destination_slot_binding(&request).unwrap();
+        let predecessor = broker
+            .destination_slots
+            .as_mut()
+            .unwrap()
+            .make_ready_record_stale_for_test(&mut broker.journal, &binding)
+            .unwrap();
+        let rematerialize = destination_slot_request(
+            89,
+            2,
+            7,
+            DestinationSlotAction::DESTINATION_SLOT_ACTION_REMATERIALIZE,
+            Some(*predecessor.as_bytes()),
+            Some(destination_slot_fence(1, 6)),
+        );
+
+        let first = apply_destination_slot(&mut broker, &fixture, &rematerialize, 1).unwrap();
+        let second = apply_destination_slot(&mut broker, &fixture, &rematerialize, 1).unwrap();
+        assert_eq!(first, second);
+        let ready = decode_destination_slot_response(&first, 4096).unwrap();
+        assert_eq!(
+            ready.lifecycle(),
+            DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_READY
+        );
+        assert_eq!(ready.resource_kernel_boot_id(), &broker.kernel_boot_id);
+        assert_eq!(ready.fence().desired_generation(), 1);
+        assert_eq!(ready.fence().assignment_digest(), &[6; 32]);
+        let correlation = ready.rematerialization().unwrap();
+        assert_eq!(correlation.operation().operation_id(), &[89; 16]);
+        assert_eq!(
+            correlation.expected_resource_digest(),
+            predecessor.as_bytes()
+        );
+
+        let substituted = destination_slot_request(
+            90,
+            2,
+            7,
+            DestinationSlotAction::DESTINATION_SLOT_ACTION_REMATERIALIZE,
+            Some([99; 32]),
+            Some(destination_slot_fence(1, 6)),
+        );
+        assert!(apply_destination_slot(&mut broker, &fixture, &substituted, 1).is_err());
+    }
+
+    #[test]
     fn destination_slot_reap_uses_new_authority_and_the_creation_fence() {
         let directory = private_destination_slot_root();
         let journal_path = directory.path().join("mount.journal");
@@ -3569,7 +3698,7 @@ mod tests {
                     .apply_destination_slot(
                         &presented,
                         &artifacts,
-                        ProtocolVersion::new(1, 3),
+                        ProtocolVersion::new(1, 4),
                         peer(),
                         policy(),
                         || Ok(clock()),

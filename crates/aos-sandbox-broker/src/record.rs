@@ -518,7 +518,8 @@ impl BrokerEffectIntentV2 {
                 BrokerVerb::MountInstall
                 | BrokerVerb::MountDetach
                 | BrokerVerb::MountRelease
-                | BrokerVerb::MountReapDestinationSlot,
+                | BrokerVerb::MountReapDestinationSlot
+                | BrokerVerb::MountRematerializeDestinationSlot,
                 BrokerGrantTarget::Resource(_),
             ) => true,
             (
@@ -1137,6 +1138,7 @@ const fn verb_code(domain: BrokerDomain, verb: BrokerVerb) -> u8 {
         | (BrokerDomain::Mount, BrokerVerb::MountRelease) => 5,
         (BrokerDomain::Mount, BrokerVerb::MountMaterializeDestinationSlot) => 6,
         (BrokerDomain::Mount, BrokerVerb::MountReapDestinationSlot) => 7,
+        (BrokerDomain::Mount, BrokerVerb::MountRematerializeDestinationSlot) => 8,
         (BrokerDomain::Storage, BrokerVerb::StorageCreateWorkspace)
         | (BrokerDomain::Network, BrokerVerb::NetworkPrepare) => 1,
         (BrokerDomain::Storage, BrokerVerb::StorageSnapshot)
@@ -1167,6 +1169,7 @@ fn decode_verb(domain: BrokerDomain, code: u8) -> Result<BrokerVerb, Authorizati
         (BrokerDomain::Mount, 5) => Ok(BrokerVerb::MountRelease),
         (BrokerDomain::Mount, 6) => Ok(BrokerVerb::MountMaterializeDestinationSlot),
         (BrokerDomain::Mount, 7) => Ok(BrokerVerb::MountReapDestinationSlot),
+        (BrokerDomain::Mount, 8) => Ok(BrokerVerb::MountRematerializeDestinationSlot),
         (BrokerDomain::Storage, 1) => Ok(BrokerVerb::StorageCreateWorkspace),
         (BrokerDomain::Storage, 2) => Ok(BrokerVerb::StorageSnapshot),
         (BrokerDomain::Storage, 3) => Ok(BrokerVerb::StorageHoldSnapshot),
@@ -1563,6 +1566,11 @@ mod tests {
                 6,
             ),
             (BrokerDomain::Mount, BrokerVerb::MountReapDestinationSlot, 7),
+            (
+                BrokerDomain::Mount,
+                BrokerVerb::MountRematerializeDestinationSlot,
+                8,
+            ),
             (BrokerDomain::Storage, BrokerVerb::StorageCreateWorkspace, 1),
             (BrokerDomain::Storage, BrokerVerb::StorageSnapshot, 2),
             (BrokerDomain::Storage, BrokerVerb::StorageHoldSnapshot, 3),

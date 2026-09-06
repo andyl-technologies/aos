@@ -5,11 +5,11 @@
 //! reap must preserve:
 //!
 //! ```text
-//! AOSDSE02 | flags:1 | action:1 | reserved:2 | request-id:16 |
+//! AOSDSE03 | flags:1 | action:1 | reserved:2 | request-id:16 |
 //! assignment-target:56 | slot-id:16 | spec-digest:32 | spec-size:8 |
 //! assignment:48 | semantic-digest:32 | plan-digest:32 |
 //! template-digest:32 | lease-digest:32 | lease-generation:8 | deadline:8 |
-//! ready-resource:120 | template-size:4 | body-size:4 | packet-size:4 |
+//! ready-resource:200 | template-size:4 | body-size:4 | packet-size:4 |
 //! template | body | packet | record-digest:32
 //! ```
 
@@ -33,7 +33,8 @@ use sha2::{Digest as _, Sha256};
 use super::{
     CARRIER_VERSION, DestinationSlotEffectError, METHOD, PreparedCurrentDestinationSlotDispatchV1,
     PreparedCurrentDestinationSlotResumeDispatchV1, PreparedOperation, RESPONSE_BYTES,
-    ReadyResourceExpectation, decode_request, logical_slot_for_request, validate_target,
+    ReadyResourceExpectation, RematerializationExpectation, decode_request,
+    logical_slot_for_request, validate_target,
 };
 use crate::attachment_slot_state;
 use crate::dispatch::{
@@ -53,10 +54,10 @@ use crate::{
 mod tests;
 
 const NAMESPACE: RecordNamespace = RecordNamespace::DestinationSlotAttempt;
-const MAGIC: &[u8; 8] = b"AOSDSE02";
-const RECORD_DOMAIN: &[u8] = b"aos.sandbox.destination-slot-attempt.v2\0";
-const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.destination-slot-attempt.transaction.v2\0";
-const FIXED_RECORD_BYTES: usize = 496;
+const MAGIC: &[u8; 8] = b"AOSDSE03";
+const RECORD_DOMAIN: &[u8] = b"aos.sandbox.destination-slot-attempt.v3\0";
+const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.destination-slot-attempt.transaction.v3\0";
+const FIXED_RECORD_BYTES: usize = 576;
 const MAXIMUM_ATTEMPTS: usize = 16_384;
 const MAXIMUM_NAMESPACE_BYTES: usize = 256 * 1024 * 1024;
 const MAXIMUM_RECORD_BYTES: usize = 3 * MAXIMUM_REQUEST_BYTES + FIXED_RECORD_BYTES;
@@ -375,7 +376,9 @@ impl Record {
         }
         match self.action {
             DestinationSlotAction::DESTINATION_SLOT_ACTION_MATERIALIZE if self.ready.is_none() => {}
-            DestinationSlotAction::DESTINATION_SLOT_ACTION_REAP if self.ready.is_some() => {}
+            DestinationSlotAction::DESTINATION_SLOT_ACTION_REAP
+            | DestinationSlotAction::DESTINATION_SLOT_ACTION_REMATERIALIZE
+                if self.ready.is_some() => {}
             _ => return Err(DestinationSlotEffectError::CorruptState),
         }
 
@@ -768,15 +771,20 @@ fn validate_materialization_links(
             materialization.deadline_boottime_nanoseconds,
         )
         .map_err(|_| DestinationSlotEffectError::CorruptState)?;
-        let reap_request = decode_request(&record.body, record.deadline_boottime_nanoseconds)
+        let resource_request = decode_request(&record.body, record.deadline_boottime_nanoseconds)
             .map_err(|_| DestinationSlotEffectError::CorruptState)?;
         let materialization_digest: [u8; 32] = Sha256::digest(&materialization.body).into();
         if materialization.action != DestinationSlotAction::DESTINATION_SLOT_ACTION_MATERIALIZE
             || request.fence()
-                != reap_request
+                != resource_request
                     .resource_fence()
                     .ok_or(DestinationSlotEffectError::CorruptState)?
             || materialization_digest != ready.materialization_request_digest
+            || !matches!(
+                record.action,
+                DestinationSlotAction::DESTINATION_SLOT_ACTION_REAP
+                    | DestinationSlotAction::DESTINATION_SLOT_ACTION_REMATERIALIZE
+            )
         {
             return Err(DestinationSlotEffectError::CorruptState);
         }
@@ -920,6 +928,15 @@ pub(super) fn recheck_resume_record(
             operation_id,
             ..
         } => operation_id,
+        crate::DestinationSlotReconciliationActionV1::ResumeRematerialize { .. }
+        | crate::DestinationSlotReconciliationActionV1::ResumeRematerializeForReap { .. } => {
+            aos_sandbox_core::OperationId::from_bytes(
+                record
+                    .ready
+                    .ok_or(DestinationSlotEffectError::CorruptState)?
+                    .materialization_operation_id,
+            )
+        }
         crate::DestinationSlotReconciliationActionV1::ResumeReap { .. } => {
             aos_sandbox_core::OperationId::from_bytes(
                 record
@@ -943,6 +960,31 @@ pub(super) fn recheck_resume_record(
                 || resource.lifecycle()
                     != aos_proto::aos::sandbox::local::v1::DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_MATERIALIZING
                 || resource.materialization().request_digest() != &request_digest
+            {
+                return Err(DestinationSlotEffectError::Conflict);
+            }
+        }
+        crate::DestinationSlotReconciliationActionV1::ResumeRematerialize {
+            operation_id,
+            expected_resource_digest,
+        }
+        | crate::DestinationSlotReconciliationActionV1::ResumeRematerializeForReap {
+            operation_id,
+            expected_resource_digest,
+            ..
+        } => {
+            let rematerialization = resource
+                .rematerialization()
+                .ok_or(DestinationSlotEffectError::Conflict)?;
+            let ready = record.ready.ok_or(DestinationSlotEffectError::CorruptState)?;
+            if record.action != DestinationSlotAction::DESTINATION_SLOT_ACTION_REMATERIALIZE
+                || resource.lifecycle()
+                    != aos_proto::aos::sandbox::local::v1::DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_MATERIALIZING
+                || rematerialization.operation().operation_id() != operation_id.as_bytes()
+                || rematerialization.operation().request_digest() != &request_digest
+                || rematerialization.expected_resource_digest()
+                    != expected_resource_digest.as_bytes()
+                || expected_resource_digest.as_bytes() != &ready.ready_resource_digest
             {
                 return Err(DestinationSlotEffectError::Conflict);
             }
@@ -1021,6 +1063,7 @@ fn encode_ready(bytes: &mut Vec<u8>, ready: Option<ReadyResourceExpectation>) {
         slot_inode: 0,
         anchor_unique_mount_id: 0,
         ready_resource_digest: [0; 32],
+        rematerialization: None,
     });
     bytes.extend_from_slice(&ready.materialization_operation_id);
     bytes.extend_from_slice(&ready.materialization_request_digest);
@@ -1029,6 +1072,16 @@ fn encode_ready(bytes: &mut Vec<u8>, ready: Option<ReadyResourceExpectation>) {
     bytes.extend_from_slice(&ready.slot_inode.to_be_bytes());
     bytes.extend_from_slice(&ready.anchor_unique_mount_id.to_be_bytes());
     bytes.extend_from_slice(&ready.ready_resource_digest);
+    let rematerialization = ready
+        .rematerialization
+        .unwrap_or(RematerializationExpectation {
+            operation_id: [0; 16],
+            request_digest: [0; 32],
+            predecessor_digest: [0; 32],
+        });
+    bytes.extend_from_slice(&rematerialization.operation_id);
+    bytes.extend_from_slice(&rematerialization.request_digest);
+    bytes.extend_from_slice(&rematerialization.predecessor_digest);
 }
 
 fn decode_ready(
@@ -1043,6 +1096,7 @@ fn decode_ready(
         slot_inode: decoder.u64()?,
         anchor_unique_mount_id: decoder.u64()?,
         ready_resource_digest: decoder.array()?,
+        rematerialization: decode_rematerialization_expectation(decoder)?,
     };
     let valid = ready.is_valid();
     match (
@@ -1057,11 +1111,37 @@ fn decode_ready(
                 slot_inode: 0,
                 anchor_unique_mount_id: 0,
                 ready_resource_digest: [0; 32],
+                rematerialization: None,
             },
     ) {
         (true, true, false) => Ok(Some(ready)),
         (false, false, true) => Ok(None),
         _ => Err(DestinationSlotEffectError::CorruptState),
+    }
+}
+
+fn decode_rematerialization_expectation(
+    decoder: &mut Decoder<'_>,
+) -> Result<Option<RematerializationExpectation>, DestinationSlotEffectError> {
+    let value = RematerializationExpectation {
+        operation_id: decoder.array()?,
+        request_digest: decoder.array()?,
+        predecessor_digest: decoder.array()?,
+    };
+    let zero = RematerializationExpectation {
+        operation_id: [0; 16],
+        request_digest: [0; 32],
+        predecessor_digest: [0; 32],
+    };
+    if value == zero {
+        Ok(None)
+    } else if value.operation_id != [0; 16]
+        && value.request_digest != [0; 32]
+        && value.predecessor_digest != [0; 32]
+    {
+        Ok(Some(value))
+    } else {
+        Err(DestinationSlotEffectError::CorruptState)
     }
 }
 

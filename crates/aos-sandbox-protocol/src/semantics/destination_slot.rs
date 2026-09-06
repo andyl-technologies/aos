@@ -133,6 +133,21 @@ fn action_semantics(
                 2,
             ))
         }
+        DestinationSlotAction::DESTINATION_SLOT_ACTION_REMATERIALIZE => {
+            let resource = request
+                .expected_resource_digest()
+                .copied()
+                .ok_or(DestinationSlotSemanticError::InvalidTarget)
+                .and_then(|digest| {
+                    BrokerResourceHandle::from_bytes(digest)
+                        .map_err(|_| DestinationSlotSemanticError::InvalidTarget)
+                })?;
+            Ok((
+                BrokerVerb::MountRematerializeDestinationSlot,
+                BrokerGrantTarget::Resource(resource),
+                3,
+            ))
+        }
         DestinationSlotAction::DESTINATION_SLOT_ACTION_UNSPECIFIED => {
             Err(DestinationSlotSemanticError::InvalidTarget)
         }

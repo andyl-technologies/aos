@@ -989,7 +989,7 @@ where
     /// Queries and durably records Mount's complete destination-slot inventory.
     ///
     /// The one-shot client authenticates the actual hello and response writers,
-    /// validates the closed protocol 1.3 response, and commits the exact query
+    /// validates the closed protocol 1.4 response, and commits the exact query
     /// and response. The resulting snapshot is observation evidence only.
     ///
     /// # Errors
