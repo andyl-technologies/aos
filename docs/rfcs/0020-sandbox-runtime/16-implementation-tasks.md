@@ -2683,3 +2683,32 @@ rejects this development environment; that VM-only exchange is not claimed as
 positive evidence here. The hermetic `checks.eval` gate passes its release
 build, full workspace tests, configuration evaluation, and system structure
 checks.
+
+### Authenticated Mount resource inventory snapshot
+
+The controller can now query the complete `InventoryMountResources` table over
+a dedicated Mount 1.2 session. The client authenticates the actual hello and
+response writers against the configured service execution, admits only the
+closed read-only method with an empty descriptor table, and validates every
+bounded resource, lifecycle, kernel identity, recipe, and replacement
+correlation before the response reaches controller state.
+
+The exact query and response become the latest durable `AOSMTI01` snapshot in
+journal namespace 15. Its response ceiling leaves explicit room below the
+journal's 16 MiB record-frame limit while carrying the protocol's complete
+1,024-row inventory. Snapshot replacement rejects broker journal rollback,
+same-sequence resource equivocation, request-ID reuse, and a single broker
+instance claiming two kernel boots. Corrupt records block ordinary controller
+reconciliation before executor access.
+
+This increment establishes authenticated durable observation, not a cleanup
+decision or attachment-ready state. The next controller layer must compare the
+snapshot with exact Mount attempts and completions, retain current namespace
+authority, and classify absent, pending, faulted, satisfied, and superseded
+resources without guessing. Live service exchange and reboot behavior still
+require the Mount namespace VM qualification.
+
+Validation passes all 294 sandbox unit tests, its downstream public API test,
+and 14 doctests. Strict all-target/all-feature Clippy passes for the changed
+crate. The hermetic `checks.eval` gate passes the release build, full workspace
+tests, configuration evaluation, and system structure checks.

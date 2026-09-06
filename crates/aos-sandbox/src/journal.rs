@@ -108,6 +108,8 @@ pub enum RecordNamespace {
     MountAttempt = 13,
     /// Successful Mount receipts bound to exact controller attempts.
     MountCompletion = 14,
+    /// Latest authenticated complete Mount resource inventory.
+    MountInventory = 15,
 }
 
 impl RecordNamespace {
@@ -127,6 +129,7 @@ impl RecordNamespace {
             12 => Ok(Self::NamespaceTarget),
             13 => Ok(Self::MountAttempt),
             14 => Ok(Self::MountCompletion),
+            15 => Ok(Self::MountInventory),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }
@@ -1884,13 +1887,14 @@ mod tests {
             RecordNamespace::NamespaceTarget,
             RecordNamespace::MountAttempt,
             RecordNamespace::MountCompletion,
+            RecordNamespace::MountInventory,
         ];
         for (index, namespace) in namespaces.into_iter().enumerate() {
             let code = u8::try_from(index + 1).unwrap();
             assert_eq!(namespace as u8, code);
             assert_eq!(RecordNamespace::from_byte(code).unwrap(), namespace);
         }
-        for code in [0, 15, 255] {
+        for code in [0, 16, 255] {
             assert!(RecordNamespace::from_byte(code).is_err());
         }
     }

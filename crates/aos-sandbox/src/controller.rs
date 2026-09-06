@@ -645,6 +645,26 @@ where
         )
     }
 
+    /// Queries and durably records one authenticated complete Mount inventory.
+    ///
+    /// The one-shot client authenticates the actual hello and response writers,
+    /// validates the closed resource-table response, and commits the exact
+    /// request and response before returning the snapshot. The snapshot is
+    /// observation evidence, not descriptor authority or attachment readiness.
+    ///
+    /// # Errors
+    ///
+    /// Rejects service identity or negotiation failure, malformed or
+    /// non-monotonic broker inventory, capacity, and failed durable commits.
+    #[cfg(target_os = "linux")]
+    pub fn record_mount_inventory(
+        &mut self,
+        client: crate::mount_attempt::MountInventoryClient,
+    ) -> Result<crate::mount_attempt::DurableMountInventorySnapshotV1, crate::MountAttemptError>
+    {
+        crate::mount_attempt::record_snapshot(self.reconciler.journal_mut(), client)
+    }
+
     /// Issues a local holder channel from an acquired current-runtime scope.
     ///
     /// The complete Host and payload proof moves into the live session. Scope

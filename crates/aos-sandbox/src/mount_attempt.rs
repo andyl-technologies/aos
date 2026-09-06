@@ -52,6 +52,7 @@ use crate::{Journal, JournalError, JournalRecord, JournalTransaction, RecordName
 
 mod completion;
 mod format;
+mod inventory;
 #[cfg(test)]
 mod tests;
 
@@ -61,6 +62,10 @@ pub use completion::{
 pub(crate) use completion::{
     dispatch_current, validate_namespace as validate_completion_namespace,
 };
+pub use inventory::{
+    DurableMountInventorySnapshotV1, MountInventoryClient, MountInventorySnapshotOutcomeV1,
+};
+pub(crate) use inventory::{record_snapshot, validate_namespace as validate_inventory_namespace};
 
 const NAMESPACE: RecordNamespace = RecordNamespace::MountAttempt;
 const MOUNT_CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(1, 2);
@@ -87,10 +92,10 @@ pub enum MountAttemptError {
     #[error("mount attempt deadline exceeds the prepared catalog lifetime")]
     Deadline,
     /// The responding process is not the configured live Mount service execution.
-    #[error("Mount Apply response does not match the pinned Mount service")]
+    #[error("Mount response does not match the pinned Mount service")]
     MountIdentity,
-    /// Mount rejected or could not complete the already admitted request.
-    #[error("Mount rejected the admitted request with {code:?} (retryable: {retryable})")]
+    /// Mount rejected or could not complete the request.
+    #[error("Mount rejected the request with {code:?} (retryable: {retryable})")]
     BrokerRejected {
         /// Closed broker error code.
         code: aos_proto::aos::sandbox::local::v1::BrokerErrorCode,

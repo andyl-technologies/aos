@@ -566,7 +566,7 @@ fn validation_fence() -> AssignmentFence {
     }
 }
 
-fn request_id() -> Result<[u8; 16], MountCatalogPreparationError> {
+pub(crate) fn request_id() -> Result<[u8; 16], MountCatalogPreparationError> {
     let mut request_id = [0_u8; 16];
     OsRng
         .try_fill_bytes(&mut request_id)
@@ -576,7 +576,7 @@ fn request_id() -> Result<[u8; 16], MountCatalogPreparationError> {
     Ok(request_id)
 }
 
-fn local_credentials() -> PeerCredentials {
+pub(crate) fn local_credentials() -> PeerCredentials {
     PeerCredentials {
         uid: rustix::process::geteuid().as_raw(),
         gid: rustix::process::getegid().as_raw(),

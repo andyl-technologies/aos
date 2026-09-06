@@ -696,6 +696,17 @@ the exact Apply body. The controller commits that receipt in the versioned
 broker error is not evidence of absence: Mount may retain a durable intermediate
 resource, so authoritative inventory still decides retry, adoption, or cleanup.
 
+The controller queries `InventoryMountResources` over a separate one-shot
+Mount 1.2 session with no effect authorization. It authenticates the actual
+hello and response writers, accepts no descriptors, and applies the complete
+resource-table validator before committing the exact query and response in a
+bounded `AOSMTI01` latest-snapshot record. Successive snapshots may advance the
+Mount journal sequence or refresh an unchanged sequence from a new broker
+process; sequence rollback, same-sequence resource changes, request-ID reuse,
+and one broker process spanning kernel boots fail closed. The snapshot remains
+observation evidence. Current desired-state comparison and a fresh namespace
+proof are still required before retry, adoption, or cleanup.
+
 Caller role derives from peer credentials, socket activation, and the expected
 service-unit identity; a serialized role is descriptive only. Unknown
 operations, features, or FD roles fail before effects. An exact request replay

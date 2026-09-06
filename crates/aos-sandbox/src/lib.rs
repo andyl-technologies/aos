@@ -61,8 +61,9 @@ pub use journal::{
 };
 #[cfg(target_os = "linux")]
 pub use mount_attempt::{
-    CompletedCurrentMountAttemptV1, DurableCurrentMountAttemptV1, MountAttemptAdmissionOutcomeV1,
-    MountAttemptError, MountCompletionOutcomeV1, MountDispatchClient,
+    CompletedCurrentMountAttemptV1, DurableCurrentMountAttemptV1, DurableMountInventorySnapshotV1,
+    MountAttemptAdmissionOutcomeV1, MountAttemptError, MountCompletionOutcomeV1,
+    MountDispatchClient, MountInventoryClient, MountInventorySnapshotOutcomeV1,
 };
 pub use ownership_authority::{
     DurableOwnershipAuthority, DurableOwnershipAuthorityError, DurableOwnershipBeginOutcome,
