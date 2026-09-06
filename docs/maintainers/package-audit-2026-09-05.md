@@ -21,6 +21,8 @@ A vulnerability signal means at least one Repology repository marks the exact cu
 
 The aligned zlib signals were verified against the declared `madler/zlib` release provider. The repository package was updated from `1.3.1` to `1.3.2`, including the exact upstream identity and fetched-source hash. Its package build passed for `aarch64-darwin`, `aarch64-linux`, `x86_64-darwin`, and `x86_64-linux` in the maintainer candidate worktree.
 
+A post-update scan used inventory envelope `sha256:108764c882e7129a3137d23970b48cc7396d718982ad630d95eca936715c8cab` and discovery snapshot `sha256:8aa462b70da398cf5f7d913bb46ffdb79069cb25c87feaa1e05cd807e785d1c6`. It reported 151 newer-version and 36 current-version vulnerability signals; zlib was absent from both sets.
+
 ## Vulnerability signals
 
 | Update unit | Current version | Repology project |
