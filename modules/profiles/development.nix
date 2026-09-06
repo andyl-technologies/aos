@@ -181,13 +181,25 @@ in {
           name = "development-libraries";
           description = "Compiler and pkg-config paths resolve common libraries";
           script = ''
-            vm.succeed("pkg-config --exists libcurl libxml-2.0 libpng zlib")
+            session_env = (
+                "export C_INCLUDE_PATH='${includePath}' "
+                "LIBRARY_PATH='${libraryPath}' "
+                "PKG_CONFIG_PATH='${pkgConfigPath}'; "
+            )
             vm.succeed(
-                "printf '#include <zlib.h>\\nint main(void) { return zlibVersion()[0] == 0; }\\n' "
+                "grep -F 'PKG_CONFIG_PATH   DEFAULT=\"${pkgConfigPath}\"' "
+                "/etc/pam/environment"
+            )
+            vm.succeed(
+                session_env + "pkg-config --exists libcurl libxml-2.0 libpng zlib"
+            )
+            vm.succeed(
+                session_env
+                + "printf '#include <zlib.h>\\nint main(void) { return zlibVersion()[0] == 0; }\\n' "
                 "| gcc -x c - -lz -o /tmp/aos-development-link "
                 "&& /tmp/aos-development-link"
             )
-            vm.fail("test -n \"$LD_LIBRARY_PATH\"")
+            vm.fail(session_env + "test -n \"$LD_LIBRARY_PATH\"")
           '';
         }
         {
