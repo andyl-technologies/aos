@@ -1015,6 +1015,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0236-crucible-restarted-vcpu-thread-current-cpu.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

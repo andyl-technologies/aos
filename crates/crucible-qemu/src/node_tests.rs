@@ -428,6 +428,14 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
         Ok(Box::new(self.clone()))
     }
 
+    fn arm_hot_fork_child_ceiling(
+        &mut self,
+        _inherited_icount: u64,
+    ) -> Result<(), QemuNodeChannelError> {
+        // The scripted channel has no slot to arm; installation proceeds.
+        Ok(())
+    }
+
     fn hot_fork_setup_region_identity(
         &mut self,
     ) -> Result<crucible_shmem::SetupRegionBackingIdentity, QemuNodeChannelError> {

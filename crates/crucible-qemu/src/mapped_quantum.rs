@@ -724,6 +724,16 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
         Ok(Box::new(continuation))
     }
 
+    fn arm_hot_fork_child_ceiling(
+        &mut self,
+        inherited_icount: u64,
+    ) -> Result<(), QemuNodeChannelError> {
+        // The same quiesced-executor arming an exact VMState restore uses:
+        // the child is a stopped executor whose first published counter is
+        // ahead of its fresh slot.
+        self.arm_vmstate_restore_ceiling(inherited_icount)
+    }
+
     fn checkpoint_network_transport(
         &mut self,
     ) -> Result<crate::QemuNetworkTransportCheckpoint, QemuNodeChannelError> {

@@ -4371,6 +4371,22 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   ordering between stages is unchanged.
 - **Risk:** F.
 
+### crucible-restarted-vcpu-thread-current-cpu — name the current CPU on the restarted vCPU thread
+
+- **Patch:** `0236-crucible-restarted-vcpu-thread-current-cpu.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the original vCPU thread sets its thread-local current
+  CPU while processing initial-wait work; the replacement started straight
+  in the steady-state loop, whose icount deadline handling runs before a
+  CPU is selected and asserts that it runs on a vCPU thread. The
+  replacement now names the CPU it restarted for before entering the loop.
+- **Micro-test:** the readiness gate keeps proving the child-process query's
+  exact behaviour; the live child execution flight resumes the child guest
+  and advances it through an observable suffix.
+- **Inertness:** the original thread function is unchanged; the parent
+  never restarts a vCPU thread.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.

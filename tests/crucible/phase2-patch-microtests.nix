@@ -3771,6 +3771,18 @@
         '';
       };
     }
+    {
+      patch = "0236-crucible-restarted-vcpu-thread-current-cpu.patch";
+      check = certifyExactPatch {
+        patchName = "0236-crucible-restarted-vcpu-thread-current-cpu.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "restarted-vcpu-thread-current-cpu";
+        liveEvidence = ''
+          grep -Fxq 'patch=0236-crucible-restarted-vcpu-thread-current-cpu.patch' "$live_result"
+          grep -Fxq 'plugin_endpoint_replacement_plan_bound=false' "$live_result"
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =

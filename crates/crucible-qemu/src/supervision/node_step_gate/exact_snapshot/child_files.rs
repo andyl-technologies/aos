@@ -20,25 +20,26 @@ use std::time::Duration;
 use super::{exact_gate_checkpoint, source_set::require_vmstate_source, *};
 use crate::{
     DEFAULT_VMSTATE_FILE_NAME, DEFAULT_VMSTATE_NODE_NAME, LinuxQemuAttemptHostConfig,
-    LinuxQemuAttemptHostFactory, QemuGuardedFreshNodeLaunch, QemuHotForkChildDiagnosticConsumer,
-    QemuHotForkChildFileDestination, QemuHotForkLaunchError, QmpHotForkChildFileRoot,
-    QmpHotForkChildProcessPhase, QmpHotForkOutcome, launch_qemu_live_node_guarded,
+    LinuxQemuAttemptHostFactory, LinuxQemuAttemptHostOwner, QemuGuardedFreshNodeLaunch,
+    QemuHotForkChildDiagnosticConsumer, QemuHotForkChildFileDestination, QemuHotForkLaunchError,
+    QemuPreparedRunDirectory, QmpHotForkChildFileRoot, QmpHotForkChildProcessPhase,
+    QmpHotForkOutcome, launch_qemu_live_node_guarded,
 };
 
-const FLIGHT_NAMESPACE: &str = "hot-fork-child-flight";
-const FIRST_PROJECT_ID: u32 = 20000;
-const PROJECT_ID_COUNT: u32 = 2;
-const CHILD_USER_ID: u32 = 65534;
-const CHILD_GROUP_ID: u32 = 65534;
-const MAXIMUM_TASKS: u32 = 64;
-const MAXIMUM_INODES: u64 = 4096;
-const FINISH_TIMEOUT: Duration = Duration::from_secs(15);
-const MEMORY_BYTES: u64 = 512 * 1024 * 1024;
-const DISK_BYTES: u64 = 1024 * 1024 * 1024;
-const MAXIMUM_RING_IMAGE_BYTES: usize = 64 * 1024 * 1024;
-const SOURCE_BUSY_CEILING: u64 = 3_000_001;
-const CHILD_REAP_POLLS: u32 = 400;
-const CHILD_REAP_POLL_INTERVAL: Duration = Duration::from_millis(50);
+pub(super) const FLIGHT_NAMESPACE: &str = "hot-fork-child-flight";
+pub(super) const FIRST_PROJECT_ID: u32 = 20000;
+pub(super) const PROJECT_ID_COUNT: u32 = 2;
+pub(super) const CHILD_USER_ID: u32 = 65534;
+pub(super) const CHILD_GROUP_ID: u32 = 65534;
+pub(super) const MAXIMUM_TASKS: u32 = 64;
+pub(super) const MAXIMUM_INODES: u64 = 4096;
+pub(super) const FINISH_TIMEOUT: Duration = Duration::from_secs(15);
+pub(super) const MEMORY_BYTES: u64 = 512 * 1024 * 1024;
+pub(super) const DISK_BYTES: u64 = 1024 * 1024 * 1024;
+pub(super) const MAXIMUM_RING_IMAGE_BYTES: usize = 64 * 1024 * 1024;
+pub(super) const SOURCE_BUSY_CEILING: u64 = 3_000_001;
+pub(super) const CHILD_REAP_POLLS: u32 = 400;
+pub(super) const CHILD_REAP_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// Children forked in sequence from the one retained template, so the flight
 /// exercises the stage releases and restaging that template reuse requires.
 const CHILD_FORK_COUNT: u32 = 3;
@@ -91,67 +92,14 @@ pub fn run_qemu_live_hot_fork_child_gate(
             "hot-fork child flight requires only the native VMState graph",
         ));
     }
-    let host = LinuxQemuAttemptHostConfig::new(
-        cgroup_root,
-        run_root,
-        FLIGHT_NAMESPACE,
-        FIRST_PROJECT_ID,
-        PROJECT_ID_COUNT,
-        CHILD_USER_ID,
-        CHILD_GROUP_ID,
-        MAXIMUM_TASKS,
-        MAXIMUM_INODES,
-        FINISH_TIMEOUT,
-    )
-    .map_err(|source| realization("configure attempt host namespace", source))?;
-    let mut factory = LinuxQemuAttemptHostFactory::open(host)
-        .map_err(|source| realization("open attempt host allocator", source))?;
-
-    // Source attempt: fresh guarded launch, exact pause, retained template.
-    let mut source_owner = factory
-        .begin(1, MEMORY_BYTES, DISK_BYTES)
-        .map_err(|source| realization("create source attempt owner", source))?;
-    let mut source_directory = source_owner
-        .prepare_generation_run_directory(config.resource_requirements())
-        .map_err(|source| realization("prepare source run directory", source))?;
-    let source_contract = source_owner
-        .process_contract()
-        .map_err(|source| realization("obtain source process contract", source))?;
-    if let Err(mut error) = source_directory.prepare_fresh_artifacts_guarded(
-        &config.qemu_executable,
-        None,
-        source_contract,
-    ) {
-        if let Some(child) = error.take_unreaped_child() {
-            source_owner.retain_failed_child(child);
-        }
-        return Err(invariant(&format!(
-            "guarded source artifact preparation failed: {error}"
-        )));
-    }
+    let GuardedSource {
+        mut factory,
+        mut source_owner,
+        source_directory,
+        mut node,
+        source_vmstate_path,
+    } = launch_guarded_source(config, cgroup_root, run_root)?;
     let identity = node_id(GATE_NODE);
-    let launch_config = config.clone().with_run_directory(source_directory.path());
-    let mut node = match launch_qemu_live_node_guarded(
-        &launch_config,
-        QemuGuardedFreshNodeLaunch::new(
-            &source_directory,
-            source_contract,
-            QemuLiveNodeIdentity {
-                node: GATE_NODE,
-                router: GATE_ROUTER,
-                crash_detector: "live-hot-fork-child",
-            },
-        ),
-    ) {
-        Ok(node) => node,
-        Err(mut error) => {
-            if let Some(child) = error.take_unreaped_child() {
-                source_owner.retain_failed_child(child);
-            }
-            return Err(error);
-        }
-    };
-    let source_vmstate_path = source_directory.path().join(DEFAULT_VMSTATE_FILE_NAME);
 
     let quantum = advance_to_busy_ceiling(&mut node, SOURCE_BUSY_CEILING)?;
     node.capture_exact_snapshot_paused(
@@ -482,15 +430,100 @@ fn fork_one_child(
     })
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct FileIdentity {
-    device: u64,
-    inode: u64,
-    length: u64,
-    modified: Option<std::time::SystemTime>,
+/// A guarded source launched for a hot-fork flight, still running.
+pub(super) struct GuardedSource {
+    pub(super) factory: LinuxQemuAttemptHostFactory,
+    pub(super) source_owner: LinuxQemuAttemptHostOwner,
+    pub(super) source_directory: QemuPreparedRunDirectory,
+    pub(super) node: QemuNode,
+    pub(super) source_vmstate_path: PathBuf,
 }
 
-fn file_identity(path: &Path) -> Result<FileIdentity, QemuLiveNodeStepGateError> {
+/// Launches the flight's source under attempt credentials in its own cgroup
+/// and project-quota namespace, retaining a failed child with its owner.
+pub(super) fn launch_guarded_source(
+    config: &QemuLiveNodeStepGateConfig,
+    cgroup_root: &Path,
+    run_root: &Path,
+) -> Result<GuardedSource, QemuLiveNodeStepGateError> {
+    let host = LinuxQemuAttemptHostConfig::new(
+        cgroup_root,
+        run_root,
+        FLIGHT_NAMESPACE,
+        FIRST_PROJECT_ID,
+        PROJECT_ID_COUNT,
+        CHILD_USER_ID,
+        CHILD_GROUP_ID,
+        MAXIMUM_TASKS,
+        MAXIMUM_INODES,
+        FINISH_TIMEOUT,
+    )
+    .map_err(|source| realization("configure attempt host namespace", source))?;
+    let mut factory = LinuxQemuAttemptHostFactory::open(host)
+        .map_err(|source| realization("open attempt host allocator", source))?;
+
+    // Source attempt: fresh guarded launch, exact pause, retained template.
+    let mut source_owner = factory
+        .begin(1, MEMORY_BYTES, DISK_BYTES)
+        .map_err(|source| realization("create source attempt owner", source))?;
+    let mut source_directory = source_owner
+        .prepare_generation_run_directory(config.resource_requirements())
+        .map_err(|source| realization("prepare source run directory", source))?;
+    let source_contract = source_owner
+        .process_contract()
+        .map_err(|source| realization("obtain source process contract", source))?;
+    if let Err(mut error) = source_directory.prepare_fresh_artifacts_guarded(
+        &config.qemu_executable,
+        None,
+        source_contract,
+    ) {
+        if let Some(child) = error.take_unreaped_child() {
+            source_owner.retain_failed_child(child);
+        }
+        return Err(invariant(&format!(
+            "guarded source artifact preparation failed: {error}"
+        )));
+    }
+    let launch_config = config.clone().with_run_directory(source_directory.path());
+    let node = match launch_qemu_live_node_guarded(
+        &launch_config,
+        QemuGuardedFreshNodeLaunch::new(
+            &source_directory,
+            source_contract,
+            QemuLiveNodeIdentity {
+                node: GATE_NODE,
+                router: GATE_ROUTER,
+                crash_detector: "live-hot-fork-child",
+            },
+        ),
+    ) {
+        Ok(node) => node,
+        Err(mut error) => {
+            if let Some(child) = error.take_unreaped_child() {
+                source_owner.retain_failed_child(child);
+            }
+            return Err(error);
+        }
+    };
+    let source_vmstate_path = source_directory.path().join(DEFAULT_VMSTATE_FILE_NAME);
+    Ok(GuardedSource {
+        factory,
+        source_owner,
+        source_directory,
+        node,
+        source_vmstate_path,
+    })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct FileIdentity {
+    pub(super) device: u64,
+    pub(super) inode: u64,
+    pub(super) length: u64,
+    pub(super) modified: Option<std::time::SystemTime>,
+}
+
+pub(super) fn file_identity(path: &Path) -> Result<FileIdentity, QemuLiveNodeStepGateError> {
     use std::os::unix::fs::MetadataExt as _;
 
     let metadata =
@@ -506,7 +539,9 @@ fn file_identity(path: &Path) -> Result<FileIdentity, QemuLiveNodeStepGateError>
     })
 }
 
-fn child_open_files(process_id: u32) -> Result<BTreeSet<(u64, u64)>, QemuLiveNodeStepGateError> {
+pub(super) fn child_open_files(
+    process_id: u32,
+) -> Result<BTreeSet<(u64, u64)>, QemuLiveNodeStepGateError> {
     use std::os::unix::fs::MetadataExt as _;
 
     let directory = PathBuf::from(format!("/proc/{process_id}/fd"));
@@ -537,7 +572,7 @@ fn child_open_files(process_id: u32) -> Result<BTreeSet<(u64, u64)>, QemuLiveNod
 ///
 /// The child may already be a zombie or gone; every field degrades to the
 /// error that prevented reading it rather than failing the report.
-fn describe_forked_child(process_id: i64) -> String {
+pub(super) fn describe_forked_child(process_id: i64) -> String {
     let process = PathBuf::from(format!("/proc/{process_id}"));
     let status = fs::read_to_string(process.join("status"))
         .map(|status| {
@@ -563,7 +598,7 @@ fn describe_forked_child(process_id: i64) -> String {
 
 /// Quotes what the child wrote on its diagnostics stream while the source
 /// still retains the consumer, as it does when retention itself failed.
-fn describe_retained_child_diagnostics(node: &mut QemuNode) -> String {
+pub(super) fn describe_retained_child_diagnostics(node: &mut QemuNode) -> String {
     match node.retained_hot_fork_child_diagnostics() {
         Ok(bytes) => format!("child diagnostics: {:?}", String::from_utf8_lossy(&bytes)),
         Err(source) => format!("child diagnostics unavailable: {source}"),
@@ -572,7 +607,9 @@ fn describe_retained_child_diagnostics(node: &mut QemuNode) -> String {
 
 /// Quotes what the child wrote on its diagnostics stream through the consumer
 /// the launch transferred to this owner.
-fn describe_child_diagnostics(diagnostics: &mut QemuHotForkChildDiagnosticConsumer) -> String {
+pub(super) fn describe_child_diagnostics(
+    diagnostics: &mut QemuHotForkChildDiagnosticConsumer,
+) -> String {
     match diagnostics.drain_available() {
         Ok(_drained) => format!(
             "child diagnostics: {:?}",
@@ -591,7 +628,7 @@ const CHILD_DEBUGGER_ENVIRONMENT: &str = "CRUCIBLE_HOT_FORK_CHILD_DEBUGGER";
 
 /// A debugger attached to the live child and continued, so that a death by
 /// signal during the watched operation is reported with a backtrace.
-struct ChildDebuggerWatch {
+pub(super) struct ChildDebuggerWatch {
     debugger: std::process::Child,
 }
 
@@ -599,7 +636,7 @@ impl ChildDebuggerWatch {
     /// Attaches the configured debugger to the child and lets it run.
     ///
     /// Returns `None` when no debugger is configured or it cannot start.
-    fn attach(process_id: u32) -> Option<Self> {
+    pub(super) fn attach(process_id: u32) -> Option<Self> {
         let debugger = std::env::var_os(CHILD_DEBUGGER_ENVIRONMENT)?;
         let debugger = std::process::Command::new(&debugger)
             .args(["--nx", "--batch", "-p", &process_id.to_string()])
@@ -616,7 +653,7 @@ impl ChildDebuggerWatch {
 
     /// Waits briefly for the debugger to report, detaches it otherwise, and
     /// returns whatever it printed.
-    fn finish(mut self) -> String {
+    pub(super) fn finish(mut self) -> String {
         // A bounded poll rather than a clock: host monotonic time stays out
         // of this crate, and the debugger reports within moments of a death.
         for _poll in 0..100 {
@@ -750,7 +787,7 @@ fn describe_child_tasks(process: &Path) -> String {
 /// index; the source owns `waitpid` and reports it through the child-process
 /// query on its own nonblocking cadence, so this polls with the same bound as
 /// the teardown path.
-fn describe_reaped_child(node: &mut QemuNode, generation: u64) -> String {
+pub(super) fn describe_reaped_child(node: &mut QemuNode, generation: u64) -> String {
     for poll in 0..CHILD_REAP_POLLS {
         let state = match node.query_hot_fork_child_process(generation) {
             Ok(state) => state,
@@ -770,7 +807,7 @@ fn describe_reaped_child(node: &mut QemuNode, generation: u64) -> String {
     String::from("source did not reap the child in time")
 }
 
-fn verify_child_placement(
+pub(super) fn verify_child_placement(
     process_id: u32,
     cgroup_root: &Path,
 ) -> Result<(), QemuLiveNodeStepGateError> {
@@ -813,7 +850,7 @@ fn verify_child_placement(
     Ok(())
 }
 
-fn wait_for_child_exit(
+pub(super) fn wait_for_child_exit(
     node: &mut QemuNode,
     generation: u64,
 ) -> Result<(), QemuLiveNodeStepGateError> {
@@ -833,20 +870,20 @@ fn wait_for_child_exit(
     Err(invariant("killed hot-fork child was not reaped in time"))
 }
 
-fn realization(
+pub(super) fn realization(
     operation: &'static str,
     source: crate::QemuVmRealizationError,
 ) -> QemuLiveNodeStepGateError {
     invariant(&format!("{operation} failed: {source}"))
 }
 
-fn invariant(reason: &str) -> QemuLiveNodeStepGateError {
+pub(super) fn invariant(reason: &str) -> QemuLiveNodeStepGateError {
     QemuLiveNodeStepGateError::ExactSnapshotInvariant {
         reason: reason.to_owned(),
     }
 }
 
-fn qmp_operation(
+pub(super) fn qmp_operation(
     operation: &'static str,
     source: QemuNodeChannelError,
 ) -> QemuLiveNodeStepGateError {
