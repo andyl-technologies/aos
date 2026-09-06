@@ -70,20 +70,7 @@ const PRODUCTION_QUEUE_CAPACITY: u32 = 1_024;
 const MAX_TRIGGER_SETTLE_BATCHES: usize = 1_024;
 
 #[cfg(test)]
-fn duplicate_network_fault_checkpoint_fixture(
-    checkpoint: &ProductionFaultRuntimeCheckpoint,
-    plan: &crucible::model::FaultSignalPlan,
-) -> ProductionFaultRuntimeCheckpoint {
-    let bytes = checkpoint
-        .to_canonical_bytes()
-        .unwrap_or_else(|error| panic!("checkpoint fixture should encode: {error}"));
-    ProductionFaultRuntimeCheckpoint::from_canonical_bytes(
-        &bytes,
-        plan,
-        ContentHash::from_bytes(b"production-availability-drop"),
-    )
-    .unwrap_or_else(|error| panic!("checkpoint fixture should decode: {error}"))
-}
+mod test_support;
 
 /// Immutable artifacts and bounds for local production QEMU execution.
 #[derive(Clone)]
