@@ -29,8 +29,9 @@ in
     }: {
       link = testing.mkLinkCheck {
         pname = "link-lzo";
-        libraries = [self];
-        source = ''
+        library = self;
+        libs = ["-llzo2"];
+        testSource = ''
           #include <lzo/lzo1x.h>
           int main(void) {
             return lzo_init() == LZO_E_OK ? 0 : 1;

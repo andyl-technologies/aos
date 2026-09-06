@@ -45,8 +45,9 @@ in
     }: {
       link = testing.mkLinkCheck {
         pname = "link-fuse3";
-        libraries = [self];
-        source = ''
+        library = self;
+        libs = ["-lfuse3"];
+        testSource = ''
           #define FUSE_USE_VERSION 35
           #include <fuse3/fuse.h>
           int main(void) {
