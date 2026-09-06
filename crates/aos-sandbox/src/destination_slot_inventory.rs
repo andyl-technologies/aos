@@ -72,6 +72,16 @@ pub enum DestinationSlotReconciliationActionV1 {
         /// The broker record digest identifying the ready resource.
         resource_digest: ObjectDigest,
     },
+    /// A durable ready row names physical state from an earlier kernel boot.
+    ///
+    /// The retained device, inode, and mount identities are audit evidence,
+    /// not a descriptor that can be published into the current runtime. A
+    /// separately authorized recovery transition must recreate the physical
+    /// slot before launch or attachment preparation may continue.
+    StaleReady {
+        /// The exact stale ready record that requires recovery.
+        resource_digest: ObjectDigest,
+    },
     /// A released logical slot still has incomplete broker materialization.
     ResumeMaterializeForReap {
         /// The original logical creation operation.
@@ -322,7 +332,13 @@ impl CurrentDestinationSlotReconciliationV1 {
                 return Err(MountAttemptError::Conflict);
             }
         }
-        if classify(&self.slot, creation, resource)? != self.action {
+        if classify(
+            &self.slot,
+            creation,
+            resource,
+            self.snapshot.inventory.kernel_boot_id(),
+        )? != self.action
+        {
             return Err(MountAttemptError::Conflict);
         }
         Ok(())
@@ -515,7 +531,12 @@ pub(crate) fn reconcile_current(
         }
     }
 
-    let action = classify(&slot, creation_operation, resource)?;
+    let action = classify(
+        &slot,
+        creation_operation,
+        resource,
+        snapshot.inventory.kernel_boot_id(),
+    )?;
 
     recheck_current(journal, &slot).map_err(|_| MountAttemptError::Conflict)?;
     snapshot.recheck(journal)?;
@@ -559,6 +580,7 @@ fn classify(
     slot: &DurableAttachmentSlotV1,
     creation_operation: OperationId,
     resource: Option<&ValidatedDestinationSlotInventoryRecord>,
+    current_kernel_boot_id: &[u8; 16],
 ) -> Result<DestinationSlotReconciliationActionV1, MountAttemptError> {
     match (slot.presence(), resource.map(|value| value.lifecycle())) {
         (AttachmentSlotPresenceV1::Available, None) => {
@@ -575,13 +597,16 @@ fn classify(
         (
             AttachmentSlotPresenceV1::Available,
             Some(DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_READY),
-        ) => Ok(DestinationSlotReconciliationActionV1::Ready {
-            resource_digest: ObjectDigest::from_bytes(
-                *resource
-                    .ok_or(MountAttemptError::CorruptState)?
-                    .resource_digest(),
-            ),
-        }),
+        ) => {
+            let resource = resource.ok_or(MountAttemptError::CorruptState)?;
+            let resource_digest = ObjectDigest::from_bytes(*resource.resource_digest());
+
+            if resource.resource_kernel_boot_id() == current_kernel_boot_id {
+                Ok(DestinationSlotReconciliationActionV1::Ready { resource_digest })
+            } else {
+                Ok(DestinationSlotReconciliationActionV1::StaleReady { resource_digest })
+            }
+        }
         (AttachmentSlotPresenceV1::Released, None) => {
             Ok(DestinationSlotReconciliationActionV1::Released)
         }
@@ -1026,7 +1051,7 @@ mod tests {
         let slot = create_slot(&mut journal);
         let operation = OperationId::from_bytes(CREATE_OPERATION);
         assert_eq!(
-            classify(&slot, operation, None).unwrap(),
+            classify(&slot, operation, None, &[8; 16]).unwrap(),
             DestinationSlotReconciliationActionV1::Materialize {
                 operation_id: operation
             }
@@ -1037,7 +1062,7 @@ mod tests {
             DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_MATERIALIZING,
         );
         assert_eq!(
-            classify(&slot, operation, Some(&materializing)).unwrap(),
+            classify(&slot, operation, Some(&materializing), &[8; 16]).unwrap(),
             DestinationSlotReconciliationActionV1::ResumeMaterialize {
                 operation_id: operation
             }
@@ -1048,8 +1073,14 @@ mod tests {
             DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_READY,
         );
         assert_eq!(
-            classify(&slot, operation, Some(&ready)).unwrap(),
+            classify(&slot, operation, Some(&ready), &[8; 16]).unwrap(),
             DestinationSlotReconciliationActionV1::Ready {
+                resource_digest: ObjectDigest::from_bytes(RESOURCE_DIGEST)
+            }
+        );
+        assert_eq!(
+            classify(&slot, operation, Some(&ready), &[9; 16]).unwrap(),
+            DestinationSlotReconciliationActionV1::StaleReady {
                 resource_digest: ObjectDigest::from_bytes(RESOURCE_DIGEST)
             }
         );
@@ -1059,7 +1090,7 @@ mod tests {
             DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_RELEASED,
         ] {
             let invalid = decoded_resource(&slot, lifecycle);
-            assert!(classify(&slot, operation, Some(&invalid)).is_err());
+            assert!(classify(&slot, operation, Some(&invalid), &[8; 16]).is_err());
         }
     }
 
@@ -1071,7 +1102,7 @@ mod tests {
         let creation = OperationId::from_bytes(CREATE_OPERATION);
         let release = OperationId::from_bytes(RELEASE_OPERATION);
         assert_eq!(
-            classify(&slot, creation, None).unwrap(),
+            classify(&slot, creation, None, &[8; 16]).unwrap(),
             DestinationSlotReconciliationActionV1::Released
         );
 
@@ -1080,7 +1111,7 @@ mod tests {
             DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_MATERIALIZING,
         );
         assert_eq!(
-            classify(&slot, creation, Some(&materializing)).unwrap(),
+            classify(&slot, creation, Some(&materializing), &[8; 16]).unwrap(),
             DestinationSlotReconciliationActionV1::ResumeMaterializeForReap {
                 operation_id: creation,
                 reap_operation_id: release,
@@ -1092,7 +1123,7 @@ mod tests {
             DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_READY,
         );
         assert_eq!(
-            classify(&slot, creation, Some(&ready)).unwrap(),
+            classify(&slot, creation, Some(&ready), &[8; 16]).unwrap(),
             DestinationSlotReconciliationActionV1::Reap {
                 operation_id: release,
                 expected_resource_digest: ObjectDigest::from_bytes(RESOURCE_DIGEST),
@@ -1104,7 +1135,7 @@ mod tests {
             DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_REAPING,
         );
         assert_eq!(
-            classify(&slot, creation, Some(&reaping)).unwrap(),
+            classify(&slot, creation, Some(&reaping), &[8; 16]).unwrap(),
             DestinationSlotReconciliationActionV1::ResumeReap {
                 operation_id: release
             }
@@ -1115,7 +1146,7 @@ mod tests {
             DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_RELEASED,
         );
         assert_eq!(
-            classify(&slot, creation, Some(&released)).unwrap(),
+            classify(&slot, creation, Some(&released), &[8; 16]).unwrap(),
             DestinationSlotReconciliationActionV1::Released
         );
     }
@@ -1137,6 +1168,35 @@ mod tests {
         assert_eq!(
             reconciliation.action(),
             DestinationSlotReconciliationActionV1::Ready {
+                resource_digest: ObjectDigest::from_bytes(RESOURCE_DIGEST),
+            }
+        );
+    }
+
+    #[test]
+    fn reconciliation_never_publishes_ready_identity_from_an_earlier_boot() {
+        let (_directory, mut journal) = test_journal();
+        let slot = create_slot(&mut journal);
+        let row = resource(
+            &slot,
+            DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_READY,
+        );
+        let controller_state = mount_controller_state_digest(&mut journal).unwrap();
+        let (record, inventory) =
+            SnapshotRecord::from_query(controller_state, query(15), response(1, 9, 10, vec![row]))
+                .unwrap();
+        journal.commit(&record.transaction().unwrap()).unwrap();
+        let snapshot = DurableDestinationSlotInventorySnapshotV1 {
+            record,
+            inventory,
+            outcome: DestinationSlotInventorySnapshotOutcomeV1::Recorded,
+        };
+
+        let reconciliation = reconcile_current(&mut journal, slot, snapshot).unwrap();
+
+        assert_eq!(
+            reconciliation.action(),
+            DestinationSlotReconciliationActionV1::StaleReady {
                 resource_digest: ObjectDigest::from_bytes(RESOURCE_DIGEST),
             }
         );

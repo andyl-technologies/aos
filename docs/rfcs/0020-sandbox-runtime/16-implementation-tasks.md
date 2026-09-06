@@ -3379,3 +3379,31 @@ launch. It does not yet install the broker-owned anchor read-only into the
 payload root or materialize a source pin. Host launch-resource integration,
 source-handle resolution, lease-expiry scheduling, stale-ready recovery, live
 namespace VM qualification, and end-to-end attachment reconciliation remain.
+
+### Fail-closed stale destination-slot identity
+
+Controller destination-slot reconciliation now distinguishes a physically
+ready row from a usable current-boot resource. A `Ready` record whose retained
+kernel boot ID differs from the complete Mount inventory's current boot is
+classified as `StaleReady`, retaining only its exact resource digest for a
+future authorized recovery transition. It is never returned as `Ready` and
+therefore cannot be published into a new payload launch or used as evidence
+that its old device, inode, and mount identities are live.
+
+The comparison is repeated when the opaque reconciliation value is consumed,
+so replacing the retained inventory or changing controller state cannot turn
+stale physical evidence into current authority. Released logical slots may
+still reap an exact stale row through the existing no-path cleanup path; an
+available logical slot remains blocked until the protocol gains an explicit
+crash-recoverable rematerialization operation.
+
+Focused validation covers both same-boot `Ready` and cross-boot `StaleReady`
+classification through a durable authenticated snapshot. The complete
+`aos-sandbox` all-feature test suite, strict all-target Clippy, warnings-as-errors
+rustdoc, and hermetic `checks.eval` passed; the latter produced
+`/nix/store/fr976ivn9i0cva6id2zzmw1svaj7akjf-aos-eval-and-system-structure-checks-0`.
+This closes the unsafe classification half of stale-ready reboot handling
+without claiming that repair is implemented. The authorized rematerialization
+transition, read-only attachment-anchor launch installation, source
+materialization, lease-expiry scheduling, live namespace VM qualification,
+and end-to-end attachment reconciliation remain.
