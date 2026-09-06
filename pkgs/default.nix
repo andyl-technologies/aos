@@ -1400,6 +1400,13 @@
     // discoveredPackages
     // {
       # --- Explicit overrides for packages needing non-standard arguments ---
+      # GLib bootstraps GObject Introspection, while downstream consumers need
+      # GLib's GIR metadata. Rebuild this internal variant after the bootstrap
+      # scanner exists to break that dependency cycle cleanly.
+      glibWithIntrospection = callPackage ./libs/glib.nix {
+        enableIntrospection = true;
+        gobject-introspection = self.gobject-introspection;
+      };
       linux = callPackage ./kernel/linux.nix {inherit linuxSource;};
       # Build a kernel variant with extra kconfig appended. Use this — not
       # `linux.override { extraConfig = …; }` — for deployment kernels:
@@ -1408,6 +1415,13 @@
       # (silent no-op). callPackage threads it directly. (RFC-0006 lockdown.)
       linuxWith = extraConfig:
         callPackage ./kernel/linux.nix {inherit linuxSource extraConfig;};
+      # Fixture kernels may deliberately omit facilities required by deployed
+      # systems. Keep that exception explicit and unavailable through linuxWith.
+      linuxFixtureWith = extraConfig:
+        callPackage ./kernel/linux.nix {
+          inherit linuxSource extraConfig;
+          enforceRequiredConfig = false;
+        };
       linux-headers = callPackage ./kernel/linux-headers.nix {inherit linuxSource;};
       zfsForKernel = kernel:
         callPackage ./filesystem/zfs.nix {inherit kernel;};

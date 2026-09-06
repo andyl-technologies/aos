@@ -18,18 +18,18 @@
   bash,
   gcc-libs,
   util-linux,
+  lz4,
+  xz,
+  zlib,
   zstd,
 }: let
   # v1.8.x is the last stable line whose `lib/Makefile.am` keeps the
-  # heavy optional deps (lz4, lzma, zstd, libdeflate, xxhash, json-c,
-  # libxml2, libcurl, openssl, zlib) all gated behind `--enable-*`
-  # `if ENABLE_*` blocks. v1.9.x unconditionally pulls in zlib +
+  # optional import and compression dependencies gated behind configure
+  # switches. v1.9.x unconditionally pulls in zlib +
   # libcurl + json-c + libxml2 + openssl for the new OCI / S3 / gzip
   # importer code paths, which AOS doesn't need for the
   # composefs-generated EROFS image used by `system.build.etcMetadataImage`.
-  # Sticking with 1.8.10 keeps the dependency closure to just util-linux
-  # (libuuid). Bump only when AOS actually grows a runtime dep on the
-  # 1.9 features.
+  # Bump when AOS needs those importer features.
   version = "1.8.10";
 in
   mkDerivation {
@@ -54,10 +54,13 @@ in
       automake
       libtool
       m4
+      lz4
+      xz
+      zlib
       zstd
     ];
-    runtimeDeps = [bash gcc-libs util-linux zstd];
-    propagatedDeps = [util-linux zstd];
+    runtimeDeps = [bash gcc-libs util-linux lz4 xz zlib zstd];
+    propagatedDeps = [util-linux lz4 xz zlib zstd];
 
     phases = [
       {
@@ -87,8 +90,9 @@ in
         name = "configure";
         # zstd is enabled: the read-only system root image is built with
         # `mkfs.erofs -z zstd` (lib/build/rootfs.nix), so the compressor must
-        # be linked in. LZ4/LZMA stay off (unused), and fuse stays off (the
-        # runtime mount is the in-kernel `mount -t erofs`).
+        # be linked in. LZ4, LZMA, and zlib keep the tools compatible with
+        # images produced by common Linux distribution tooling. Fuse stays off
+        # because runtime mounts use the in-kernel `mount -t erofs` path.
         #
         # Multithreading is enabled so `mkfs.erofs --workers=#` can compress
         # the system root in parallel. The root image build is dominated by
@@ -103,9 +107,10 @@ in
           ./configure \
             --prefix=$out \
             --disable-fuse \
-            --without-lz4 \
-            --without-lzma \
-            --enable-zstd \
+            --enable-lz4 \
+            --enable-lzma \
+            --with-zlib=yes \
+            --with-libzstd=yes \
             --enable-multithreading
         '';
       }

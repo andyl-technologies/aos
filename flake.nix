@@ -233,6 +233,7 @@
           aos.pkgs.perl
           aos.pkgs.pkg-config
           aos.pkgs.openssl
+          aos.pkgs.sqlite
           aos.pkgs.protobuf
           # Runtime tools the aos/apm/apr binaries shell out to by bare name
           # (see runtimeTools in pkgs/tools/aos/aos.nix), so impure cargo runs
@@ -278,15 +279,15 @@
               export RUST_SRC_PATH="${aos.pkgs.rust.dev}/lib/rustlib/src/rust/library"
               export OPENSSL_DIR="${aos.pkgs.openssl}"
               export OPENSSL_NO_VENDOR=1
+              export LIBSQLITE3_SYS_USE_PKG_CONFIG=1
+              export PKG_CONFIG_PATH="${aos.pkgs.sqlite}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
               # OPENSSL_DIR above only lets `openssl-sys` *link* against the AOS
-              # OpenSSL; the resulting binary still records only the SONAME, so
-              # an impure `cargo build` produces a binary that cannot find
-              # libssl at runtime. Bake the OpenSSL dir into the binary's rpath
-              # at link time, so `./target/debug/{aos,apr,apm}` run directly —
-              # no patchelf, and no LD_LIBRARY_PATH that would poison the `nix`
-              # subprocess they shell out to (which needs its own, newer
-              # OpenSSL). rpath is per-binary, so each keeps its own OpenSSL.
-              export ${cargoHostRustflagsVar}="-C link-arg=-Wl,-rpath,${aos.pkgs.openssl}/lib"
+              # OpenSSL and pkg-config above only let native crates link against
+              # the AOS libraries; the resulting binary still records SONAMEs.
+              # Bake both library directories into native cargo binaries so
+              # they run directly without an LD_LIBRARY_PATH that would poison
+              # the `nix` subprocesses they launch.
+              export ${cargoHostRustflagsVar}="-C link-arg=-Wl,-rpath,${aos.pkgs.openssl}/lib -C link-arg=-Wl,-rpath,${aos.pkgs.sqlite}/lib"
             '';
         };
       }

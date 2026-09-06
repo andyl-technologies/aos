@@ -79,7 +79,6 @@ in
             ${configureTarget} \
             no-ssl2 \
             no-ssl3 \
-            no-dtls \
             no-legacy \
             shared \
             zlib \
@@ -189,6 +188,27 @@ in
             EVP_MD_CTX_free(ctx);
             printf("openssl EVP SHA256 digest length: %u\n", len);
             return 0;
+          }
+        '';
+      };
+
+      dtls = testing.mkLinkCheck {
+        pname = "lib-openssl-dtls";
+        library = self;
+        libs = ["-lssl" "-lcrypto"];
+        testSource = ''
+          #include <openssl/opensslconf.h>
+          #include <openssl/ssl.h>
+
+          #ifdef OPENSSL_NO_DTLS
+          #error "OpenSSL was built without DTLS"
+          #endif
+
+          int main(void) {
+              SSL_CTX *ctx = SSL_CTX_new(DTLS_method());
+              if (ctx == NULL) return 1;
+              SSL_CTX_free(ctx);
+              return 0;
           }
         '';
       };

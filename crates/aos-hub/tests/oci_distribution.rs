@@ -801,8 +801,9 @@ async fn anonymous_container_browse_discovers_public_tags_and_manifests_only() {
     let public = spawn_registry("public", true, "public").await;
     let slug = "oci-native/containers";
     let browse_root = format!("{}{slug}/-/containers", public.origin);
+    let inventory_root = format!("{browse_root}/repositories");
 
-    let response = public.http.get(&browse_root).send().await.unwrap();
+    let response = public.http.get(&inventory_root).send().await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let index = response.text().await.unwrap();
     assert!(
@@ -819,7 +820,7 @@ async fn anonymous_container_browse_discovers_public_tags_and_manifests_only() {
 
     let response = public
         .http
-        .get(&browse_root)
+        .get(&inventory_root)
         .query(&[("cursor", "not-a-valid-cursor")])
         .send()
         .await

@@ -299,24 +299,24 @@ pub(crate) fn launch_production_live_node(
     Err(ProductionLiveNodeLaunchError)
 }
 
-pub(crate) fn launch_production_live_node_exact_snapshot(
+pub(crate) fn launch_production_live_node_exact_snapshot<T>(
     _config: &ProductionLiveNodeStepGateConfig,
     _run_directory: impl AsRef<Path>,
     _node: &str,
     _router: &str,
     _crash_detector: &str,
-    _snapshot: &crucible_qemu::QemuVmSnapshot,
+    _snapshot: &T,
 ) -> Result<ProductionLiveNode, ProductionLiveNodeLaunchError> {
     Err(ProductionLiveNodeLaunchError)
 }
 
-pub(crate) fn launch_production_live_node_exact_snapshot_paused(
+pub(crate) fn launch_production_live_node_exact_snapshot_paused<T>(
     _config: &ProductionLiveNodeStepGateConfig,
     _run_directory: impl AsRef<Path>,
     _node: &str,
     _router: &str,
     _crash_detector: &str,
-    _snapshot: &crucible_qemu::QemuVmSnapshot,
+    _snapshot: &T,
 ) -> Result<ProductionLiveNode, ProductionLiveNodeLaunchError> {
     Err(ProductionLiveNodeLaunchError)
 }

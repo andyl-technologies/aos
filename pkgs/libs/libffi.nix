@@ -121,6 +121,11 @@ in
             cp -a "$out/lib64/"* "$out/lib/"
             rm -rf "$out/lib64"
           fi
+          # Keep libtool and pkg-config metadata aligned with the normalized
+          # AOS lib/ layout. Downstream libtool consumers otherwise follow the
+          # original multilib path into the removed lib64 directory.
+          sed -i "s|$out/lib/../lib64|$out/lib|g" \
+            "$out/lib/libffi.la" "$out/lib/pkgconfig/libffi.pc"
           # Some packages look for libffi headers in include/ not lib/libffi-*/include/
           if [ -d "$out/lib/libffi-${version}/include" ]; then
             cp -n "$out/lib/libffi-${version}/include/"*.h "$out/include/" 2>/dev/null || true
