@@ -9,10 +9,10 @@ use aos_contract::{Sha256Digest, canonical};
 use aos_maintain::DISCOVERY_SNAPSHOT_V1;
 use aos_maintain::discovery::{
     AdvisoryFinding, AdvisoryKind, DiscoverySnapshotV1, ObservationCandidate, ObservationCoverage,
-    UnitDiscovery, UpstreamObservationV1, select_unit,
+    UnitDiscovery, UpstreamObservationV1, select_unit, version_is_newer_in_stream,
 };
 use aos_maintain::envelope::InventoryEnvelopeV1;
-use aos_maintain::inventory::DiscoveryProvider;
+use aos_maintain::inventory::{Component, DiscoveryProvider, VersionScheme};
 use futures_util::StreamExt as _;
 use reqwest::header::{ACCEPT, LINK, USER_AGENT};
 use serde_json::Value;
@@ -379,17 +379,19 @@ fn repology_advisory_summary(
                 .iter()
                 .filter(|candidate| candidate.status.as_deref() == Some("newest"))
                 .collect::<Vec<_>>();
-            if newest
-                .iter()
-                .any(|candidate| candidate.raw_version != component.current.comparison_version)
-            {
-                summary.newer += 1;
-                let candidate_versions = newest
+            let candidate_versions = if current.is_empty() {
+                Vec::new()
+            } else {
+                newest
                     .iter()
+                    .filter(|candidate| repology_candidate_is_newer(component, candidate))
                     .map(|candidate| candidate.raw_version.clone())
                     .collect::<BTreeSet<_>>()
                     .into_iter()
-                    .collect::<Vec<_>>();
+                    .collect::<Vec<_>>()
+            };
+            if !candidate_versions.is_empty() {
+                summary.newer += 1;
                 push_advisory(
                     units,
                     unit.unit_id.as_str(),
@@ -436,6 +438,22 @@ fn repology_advisory_summary(
         }
     }
     summary
+}
+
+fn repology_candidate_is_newer(component: &Component, candidate: &ObservationCandidate) -> bool {
+    if component.release_policy.version_scheme == VersionScheme::Provider {
+        return component.release_policy.series_major.is_none()
+            && candidate.raw_version != component.current.comparison_version;
+    }
+
+    matches!(
+        version_is_newer_in_stream(
+            &component.release_policy,
+            &component.current.comparison_version,
+            &candidate.raw_version,
+        ),
+        Ok(true)
+    )
 }
 
 fn push_advisory(units: &mut [UnitDiscovery], unit_id: &str, finding: AdvisoryFinding) {

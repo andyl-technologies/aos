@@ -12,7 +12,7 @@ use aos_contract::Sha256Digest;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
-use crate::inventory::{Component, ComponentVersion, UpdateUnit, VersionScheme};
+use crate::inventory::{Component, ComponentVersion, ReleasePolicy, UpdateUnit, VersionScheme};
 use crate::workflow::DiscoveryDecision;
 use crate::{DISCOVERY_SNAPSHOT_V1, UPSTREAM_OBSERVATION_V1};
 
@@ -556,6 +556,33 @@ fn version_key(scheme: VersionScheme, value: &str) -> Result<VersionKey> {
     }
 }
 
+/// Reports whether a candidate version advances the package's maintained stream.
+///
+/// This applies the same ordering and major-series rules used during direct
+/// provider selection. Callers remain responsible for provider authenticity,
+/// release age, prerelease, and yank policy.
+///
+/// # Errors
+///
+/// Returns an error when either version cannot be parsed under the declared
+/// version scheme.
+pub fn version_is_newer_in_stream(
+    policy: &ReleasePolicy,
+    current: &str,
+    candidate: &str,
+) -> Result<bool> {
+    let current = version_key(policy.version_scheme, current)?;
+    let candidate = version_key(policy.version_scheme, candidate)?;
+
+    if let Some(major) = policy.series_major
+        && candidate.major() != Some(major)
+    {
+        return Ok(false);
+    }
+
+    Ok(candidate.cmp(&current) == Ordering::Greater)
+}
+
 fn numeric_cmp(left: &[u64], right: &[u64]) -> Ordering {
     let length = left.len().max(right.len());
     (0..length)
@@ -724,6 +751,24 @@ mod tests {
                 .iter()
                 .any(|item| item.reason == "outside-maintained-stream")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn advisory_version_comparison_rejects_older_and_cross_stream_candidates() -> Result<()> {
+        let semver_policy = &unit(0)?.components[&ComponentId::parse("main")?].release_policy;
+
+        assert!(version_is_newer_in_stream(semver_policy, "1.3.1", "1.3.2")?);
+        assert!(!version_is_newer_in_stream(
+            semver_policy,
+            "1.3.1",
+            "1.2.13"
+        )?);
+        assert!(!version_is_newer_in_stream(
+            semver_policy,
+            "1.3.1",
+            "2.0.0"
+        )?);
         Ok(())
     }
 
