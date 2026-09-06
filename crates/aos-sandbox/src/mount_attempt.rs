@@ -81,7 +81,7 @@ pub use inventory::{
 };
 pub(crate) use inventory::{
     reconcile_current as reconcile_current_inventory, record_snapshot,
-    validate_namespace as validate_inventory_namespace,
+    source_view_absent_in_fresh_inventory, validate_namespace as validate_inventory_namespace,
 };
 
 const NAMESPACE: RecordNamespace = RecordNamespace::MountAttempt;

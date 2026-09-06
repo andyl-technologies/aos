@@ -2987,3 +2987,41 @@ formatting, and diff checks pass. The hermetic
 `nix-build -A checks.eval --cores 8` gate passes the release build, full
 workspace test phase with all 4,540 tests passing and five skipped,
 configuration evaluation, and system-structure checks.
+
+### Durable filesystem-view revision authority
+
+The controller can now publish a logical filesystem view before any attachment
+names it. Journal namespace 18 retains bounded, immutable `AOSVRS01` revision
+history keyed by exact `ViewId` and revision. Each record binds the canonical
+portable `View` bytes, their domain-separated object descriptor, the path-free
+logical source handle, normalized request digest, operation identity, and exact
+predecessor digest. Creation requires revision one and expected absence;
+successors are contiguous compare-and-swap revisions. Release carries the last
+view unchanged, cannot resurrect the identity, and preserves historical
+revisions through compaction and restart. The controller exposes commit,
+current-revision, and exact-revision APIs, while the core crate now exposes the
+existing canonical view codec needed by downstream clients to derive the same
+descriptor.
+
+Attachment admission now requires its source view identity, source revision,
+descriptor, consistency class, and mutation mode to match one exact available
+published revision. Missing, released, substituted, or semantically widened
+references fail before the attachment commit. Restart validation checks every
+historical attachment reference against the immutable view ledger in one
+bounded scan, so an orphaned or rewritten reference blocks reconciliation
+before broker I/O. A view with a present attachment cannot be released. After
+attachment release, view release additionally requires a fresh authenticated
+Mount inventory proving that no physical resource for any revision of that
+view remains; the Mount controller-state commitment advances to domain v5 and
+now includes the full view-revision namespace.
+
+Focused validation passes all 339 sandbox unit tests, three downstream public
+API tests, and 14 doctests with one test thread. Strict crate-local Clippy with
+warnings denied, warnings-as-errors rustdoc, targeted Rust formatting, and diff
+checks pass. The hermetic `nix-build -A checks.eval --cores 8` gate passes the
+release build, full workspace test phase, configuration evaluation, and
+system-structure checks. This advances `SBX-VIEW-01` but does not complete it:
+node-local broker resolution to pinned OS source descriptors, live-export
+authority and incarnation validation, lease-expiry scheduling, complete view
+release/reaping orchestration, and live Mount namespace VM qualification
+remain.

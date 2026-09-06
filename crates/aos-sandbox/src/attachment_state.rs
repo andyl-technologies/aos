@@ -217,12 +217,21 @@ pub enum AttachmentDesiredStateError {
     /// Attachment count or retained bytes exceed their fixed controller ceiling.
     #[error("attachment desired-state capacity is exhausted")]
     Capacity,
+    /// The named filesystem-view revision is absent, released, or mismatched.
+    #[error("filesystem-view revision failed: {0}")]
+    ViewRevision(#[source] Box<crate::FilesystemViewRevisionStateError>),
     /// The consumer namespace target is no longer current.
     #[error(transparent)]
     CurrentTarget(#[from] NamespaceTargetError),
     /// The durable journal rejected the transaction.
     #[error(transparent)]
     Journal(#[from] JournalError),
+}
+
+impl From<crate::FilesystemViewRevisionStateError> for AttachmentDesiredStateError {
+    fn from(error: crate::FilesystemViewRevisionStateError) -> Self {
+        Self::ViewRevision(Box::new(error))
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -461,6 +470,11 @@ impl History {
             }
         }
 
+        crate::filesystem_view_state::validate_historical_attachment_references(
+            journal,
+            generations.values().map(|record| &record.intent),
+        )?;
+
         Ok(Self {
             records,
             generations,
@@ -562,6 +576,10 @@ where
     let history = History::load(journal)?;
     let outcome = history.validate_mutation(&mutation)?;
     if outcome == AttachmentDesiredCommitOutcomeV1::Recorded {
+        crate::filesystem_view_state::validate_attachment_reference(
+            journal,
+            &mutation.record.intent,
+        )?;
         journal.commit(&mutation.record.transaction()?)?;
     }
 
@@ -622,6 +640,22 @@ pub(crate) fn validate_namespace(journal: &Journal) -> Result<(), AttachmentDesi
     History::load(journal).map(|_| ())
 }
 
+pub(crate) fn source_view_usage(
+    journal: &Journal,
+    view_id: aos_sandbox_core::ViewId,
+) -> Result<(bool, bool), AttachmentDesiredStateError> {
+    let history = History::load(journal)?;
+    let historical = history
+        .generations
+        .values()
+        .any(|record| record.intent.source_view().0 == view_id);
+    let present = history.records.values().any(|record| {
+        record.intent.source_view().0 == view_id
+            && record.presence == AttachmentDesiredPresenceV1::Present
+    });
+    Ok((historical, present))
+}
+
 fn validate_target(
     target: &CurrentNamespaceTarget,
     intent: &AttachmentIntent,
@@ -665,11 +699,13 @@ mod tests {
         EffectFailure, EffectObservation, EffectPlan, EffectReceipt, SingleNodeEffectExecutor,
     };
     use aos_sandbox_core::model::{
-        AttachmentConsistency, AttachmentLease, MountAttributes, ViewMutation,
+        AttachmentConsistency, AttachmentLease, CacheDomain, CacheDomainKind, MountAttributes,
+        View, ViewConsistency, ViewMutation, ViewSource,
     };
     use aos_sandbox_core::{
-        AttachmentSlotId, DesiredGeneration, IncarnationId, LeaseId, MediaType,
-        NamespaceGeneration, ObjectDescriptor, Revision, SandboxId, ViewId,
+        AttachmentSlotId, CacheDomainId, DesiredGeneration, FeatureRef, IncarnationId, LeaseId,
+        MediaType, NamespaceGeneration, ObjectDescriptor, Revision, SandboxId, ViewId,
+        descriptor_for_bytes, encode_view,
     };
 
     struct NoEffects;
@@ -712,6 +748,64 @@ mod tests {
         (directory, journal)
     }
 
+    fn view() -> View {
+        View::new(
+            ViewSource::ImmutableTree {
+                tree: ObjectDescriptor::new(
+                    MediaType::new("application/vnd.aos.sandbox.tree.v1+cbor").unwrap(),
+                    ObjectDigest::from_bytes([30; 32]),
+                    1,
+                ),
+            },
+            Vec::new(),
+            ViewConsistency::Immutable,
+            ViewMutation::ReadOnly,
+            FeatureRef::new("aos.sandbox.identity.posix32", 1, 0).unwrap(),
+            CacheDomain::new(
+                CacheDomainKind::Private,
+                CacheDomainId::from_bytes([31; 16]),
+            ),
+            Vec::new(),
+        )
+        .unwrap()
+    }
+
+    fn view_descriptor() -> ObjectDescriptor {
+        let bytes = encode_view(&view());
+        descriptor_for_bytes(
+            MediaType::new("application/vnd.aos.sandbox.view.v1+cbor").unwrap(),
+            &bytes,
+        )
+    }
+
+    fn ensure_view_revisions(journal: &mut Journal, final_revision: u64) {
+        let mut current =
+            crate::filesystem_view_state::get_current(journal, ViewId::from_bytes([6; 16]))
+                .unwrap();
+        let first_revision = current
+            .as_ref()
+            .map_or(1, |state| state.revision().get() + 1);
+
+        for revision in first_revision..=final_revision {
+            let expected_previous = current.as_ref().map(|state| state.record_digest());
+            let mutation = crate::FilesystemViewRevisionMutationV1::new(
+                crate::FilesystemViewRevisionPresenceV1::Available,
+                ViewId::from_bytes([6; 16]),
+                Revision::new(revision),
+                view(),
+                OperationId::from_bytes([u8::try_from(revision).unwrap() + 100; 16]),
+                ObjectDigest::from_bytes([u8::try_from(revision).unwrap() + 110; 32]),
+                expected_previous,
+            )
+            .unwrap();
+            current = Some(
+                crate::filesystem_view_state::commit(journal, mutation)
+                    .unwrap()
+                    .0,
+            );
+        }
+    }
+
     fn intent(id: u8, slot: u8, generation: u64) -> AttachmentIntent {
         AttachmentIntent::new(
             AttachmentId::from_bytes([id; 16]),
@@ -722,11 +816,7 @@ mod tests {
             ViewId::from_bytes([6; 16]),
             Revision::new(generation),
             None,
-            ObjectDescriptor::new(
-                MediaType::new("application/vnd.aos.sandbox.view.v1+cbor").unwrap(),
-                ObjectDigest::from_bytes([7; 32]),
-                8,
-            ),
+            view_descriptor(),
             AttachmentSlotId::from_bytes([slot; 16]),
             AttachmentConsistency::ImmutableRevision,
             ViewMutation::ReadOnly,
@@ -759,6 +849,7 @@ mod tests {
         journal: &mut Journal,
         mutation: &AttachmentDesiredMutationV1,
     ) -> AttachmentDesiredCommitOutcomeV1 {
+        ensure_view_revisions(journal, mutation.record.intent.source_view().1.get());
         let history = History::load(journal).unwrap();
         let outcome = history.validate_mutation(mutation).unwrap();
         if outcome == AttachmentDesiredCommitOutcomeV1::Recorded {
@@ -925,10 +1016,199 @@ mod tests {
         let before = crate::mount_attempt::mount_controller_state_digest(&mut journal).unwrap();
         let declaration = mutation(AttachmentDesiredPresenceV1::Present, intent(1, 2, 1), None);
 
+        ensure_view_revisions(&mut journal, 1);
+        let after_view = crate::mount_attempt::mount_controller_state_digest(&mut journal).unwrap();
+        assert_ne!(before, after_view);
+
         commit_without_target(&mut journal, &declaration);
         let after = crate::mount_attempt::mount_controller_state_digest(&mut journal).unwrap();
 
-        assert_ne!(before, after);
+        assert_ne!(after_view, after);
+    }
+
+    #[test]
+    fn attachment_admission_requires_an_available_exact_view_revision() {
+        let (_directory, mut journal) = journal();
+        let attachment = intent(1, 2, 1);
+        assert!(matches!(
+            crate::filesystem_view_state::validate_attachment_reference(&journal, &attachment),
+            Err(crate::FilesystemViewRevisionStateError::Conflict)
+        ));
+
+        ensure_view_revisions(&mut journal, 1);
+        crate::filesystem_view_state::validate_attachment_reference(&journal, &attachment).unwrap();
+        let substituted_descriptor = AttachmentIntent::new(
+            AttachmentId::from_bytes([2; 16]),
+            DesiredGeneration::new(1),
+            SandboxId::from_bytes([3; 16]),
+            IncarnationId::from_bytes([4; 16]),
+            NamespaceGeneration::new(5),
+            ViewId::from_bytes([6; 16]),
+            Revision::new(1),
+            None,
+            ObjectDescriptor::new(
+                MediaType::new("application/vnd.aos.sandbox.view.v1+cbor").unwrap(),
+                ObjectDigest::from_bytes([99; 32]),
+                1,
+            ),
+            AttachmentSlotId::from_bytes([3; 16]),
+            AttachmentConsistency::ImmutableRevision,
+            ViewMutation::ReadOnly,
+            MountAttributes::new(true, true, true, true, true, false),
+            AttachmentLease::new(LeaseId::from_bytes([9; 16]), 10, 20).unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            crate::filesystem_view_state::validate_attachment_reference(
+                &journal,
+                &substituted_descriptor
+            ),
+            Err(crate::FilesystemViewRevisionStateError::Conflict)
+        ));
+        for (consistency, mutation, attributes) in [
+            (
+                AttachmentConsistency::BestEffortReplica,
+                ViewMutation::ReadOnly,
+                MountAttributes::new(true, true, true, true, true, false),
+            ),
+            (
+                AttachmentConsistency::ImmutableRevision,
+                ViewMutation::PrivateCow,
+                MountAttributes::new(false, true, true, true, true, false),
+            ),
+        ] {
+            let substituted_semantics = AttachmentIntent::new(
+                AttachmentId::from_bytes([2; 16]),
+                DesiredGeneration::new(1),
+                SandboxId::from_bytes([3; 16]),
+                IncarnationId::from_bytes([4; 16]),
+                NamespaceGeneration::new(5),
+                ViewId::from_bytes([6; 16]),
+                Revision::new(1),
+                None,
+                view_descriptor(),
+                AttachmentSlotId::from_bytes([3; 16]),
+                consistency,
+                mutation,
+                attributes,
+                AttachmentLease::new(LeaseId::from_bytes([9; 16]), 10, 20).unwrap(),
+            )
+            .unwrap();
+            assert!(matches!(
+                crate::filesystem_view_state::validate_attachment_reference(
+                    &journal,
+                    &substituted_semantics
+                ),
+                Err(crate::FilesystemViewRevisionStateError::Conflict)
+            ));
+        }
+
+        let current =
+            crate::filesystem_view_state::get_current(&journal, ViewId::from_bytes([6; 16]))
+                .unwrap()
+                .unwrap();
+        let release = crate::FilesystemViewRevisionMutationV1::new(
+            crate::FilesystemViewRevisionPresenceV1::Released,
+            current.view_id(),
+            Revision::new(2),
+            view(),
+            OperationId::from_bytes([122; 16]),
+            ObjectDigest::from_bytes([123; 32]),
+            Some(current.record_digest()),
+        )
+        .unwrap();
+        crate::filesystem_view_state::commit(&mut journal, release).unwrap();
+
+        crate::filesystem_view_state::validate_historical_attachment_references(
+            &journal,
+            std::iter::once(&attachment),
+        )
+        .unwrap();
+        assert!(matches!(
+            crate::filesystem_view_state::validate_attachment_reference(&journal, &attachment),
+            Err(crate::FilesystemViewRevisionStateError::Conflict)
+        ));
+    }
+
+    #[test]
+    fn view_release_waits_for_present_attachment_intent_to_drain() {
+        let (_directory, mut journal) = journal();
+        let attachment = mutation(AttachmentDesiredPresenceV1::Present, intent(1, 2, 1), None);
+        commit_without_target(&mut journal, &attachment);
+
+        let current =
+            crate::filesystem_view_state::get_current(&journal, ViewId::from_bytes([6; 16]))
+                .unwrap()
+                .unwrap();
+        let release = crate::FilesystemViewRevisionMutationV1::new(
+            crate::FilesystemViewRevisionPresenceV1::Released,
+            current.view_id(),
+            Revision::new(2),
+            view(),
+            OperationId::from_bytes([124; 16]),
+            ObjectDigest::from_bytes([125; 32]),
+            Some(current.record_digest()),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            crate::filesystem_view_state::commit(&mut journal, release),
+            Err(crate::FilesystemViewRevisionStateError::Conflict)
+        ));
+    }
+
+    #[test]
+    fn view_release_requires_fresh_inventory_after_attachment_release() {
+        let (_directory, mut journal) = journal();
+        let present = mutation(AttachmentDesiredPresenceV1::Present, intent(1, 2, 1), None);
+        commit_without_target(&mut journal, &present);
+        let released_attachment = mutation(
+            AttachmentDesiredPresenceV1::Released,
+            intent(1, 2, 2),
+            Some(ObjectDigest::from_bytes(present.record.digest)),
+        );
+        commit_without_target(&mut journal, &released_attachment);
+
+        let current =
+            crate::filesystem_view_state::get_current(&journal, ViewId::from_bytes([6; 16]))
+                .unwrap()
+                .unwrap();
+        let release = crate::FilesystemViewRevisionMutationV1::new(
+            crate::FilesystemViewRevisionPresenceV1::Released,
+            current.view_id(),
+            Revision::new(3),
+            view(),
+            OperationId::from_bytes([126; 16]),
+            ObjectDigest::from_bytes([127; 32]),
+            Some(current.record_digest()),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            crate::filesystem_view_state::commit(&mut journal, release),
+            Err(crate::FilesystemViewRevisionStateError::Conflict)
+        ));
+    }
+
+    #[test]
+    fn orphaned_attachment_view_reference_blocks_restart() {
+        let (_directory, mut journal) = journal();
+        let attachment = mutation(AttachmentDesiredPresenceV1::Present, intent(1, 2, 1), None);
+        journal
+            .commit(&attachment.record.transaction().unwrap())
+            .unwrap();
+
+        assert!(matches!(
+            validate_namespace(&journal),
+            Err(AttachmentDesiredStateError::ViewRevision(error))
+                if matches!(*error, crate::FilesystemViewRevisionStateError::CorruptState)
+        ));
+        let mut reconciler = crate::Reconciler::new(journal, NoEffects);
+        assert!(matches!(
+            reconciler.reconcile_next(),
+            Err(crate::ReconcilerError::AttachmentDesired(error))
+                if matches!(*error, AttachmentDesiredStateError::ViewRevision(_))
+        ));
     }
 
     #[test]

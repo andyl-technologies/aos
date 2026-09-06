@@ -511,6 +511,9 @@ pub enum ReconcileOutcome {
 /// Reports admission, ledger, journal, or executor-contract failures.
 #[derive(Debug, thiserror::Error)]
 pub enum ReconcilerError {
+    /// Protected filesystem-view revision history could not be validated.
+    #[error("filesystem-view revision state failed: {0}")]
+    FilesystemViewRevision(#[source] Box<crate::FilesystemViewRevisionStateError>),
     /// Protected attachment desired-state history could not be validated.
     #[cfg(target_os = "linux")]
     #[error("attachment desired state failed: {0}")]
@@ -1153,6 +1156,15 @@ where
             })?;
             self.validate_all_ownership_gates()?;
             validate_runtime_authority_operations(&self.journal)?;
+            if self
+                .journal
+                .records(RecordNamespace::FilesystemViewRevision)
+                .next()
+                .is_some()
+            {
+                crate::filesystem_view_state::validate_namespace(&self.journal)
+                    .map_err(|error| ReconcilerError::FilesystemViewRevision(Box::new(error)))?;
+            }
             if self
                 .journal
                 .records(RecordNamespace::RuntimeAuthority)

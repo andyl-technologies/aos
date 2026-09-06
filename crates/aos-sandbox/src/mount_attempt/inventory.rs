@@ -4,8 +4,9 @@
 //! the pinned service execution that wrote both the hello and response. The
 //! controller keeps the exact validated query and response as its latest
 //! durable observation. Its controller-state commitment also covers durable
-//! attachment verification. This snapshot is evidence for later reconciliation;
-//! it does not recreate descriptor authority or prove attachment readiness.
+//! view-revision authority, attachment intent, and attachment verification. This
+//! snapshot is evidence for later reconciliation; it does not recreate
+//! descriptor authority or prove attachment readiness.
 
 use std::os::fd::OwnedFd;
 
@@ -49,7 +50,7 @@ const MAXIMUM_QUERY_BYTES: usize = 4 * 1024;
 const MAXIMUM_RECORD_BYTES: usize = 16 * 1024 * 1024 - 1024;
 const KEY: &[u8] = b"latest";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.mount-inventory.transaction.v1\0";
-const CONTROLLER_STATE_DOMAIN: &[u8] = b"aos.sandbox.mount-inventory.controller-state.v4\0";
+const CONTROLLER_STATE_DOMAIN: &[u8] = b"aos.sandbox.mount-inventory.controller-state.v5\0";
 
 /// Reports whether an authenticated inventory snapshot committed or replayed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -419,10 +420,30 @@ pub(crate) fn validate_namespace(journal: &mut Journal) -> Result<(), MountAttem
     SnapshotHistory::load(journal).map(|_| ())
 }
 
+pub(crate) fn source_view_absent_in_fresh_inventory(
+    journal: &mut Journal,
+    view_id: aos_sandbox_core::ViewId,
+) -> Result<bool, MountAttemptError> {
+    let history = SnapshotHistory::load(journal)?;
+    let Some((record, inventory)) = history.record else {
+        return Ok(false);
+    };
+    if controller_state_digest(journal)? != record.controller_state_digest {
+        return Ok(false);
+    }
+
+    Ok(inventory
+        .mounts()
+        .iter()
+        .all(|resource| resource.recipe().source_view_id() != view_id.as_bytes()))
+}
+
 pub(crate) fn controller_state_digest(
     journal: &mut Journal,
 ) -> Result<[u8; 32], MountAttemptError> {
     validate_namespace_target_namespace(journal)?;
+    crate::filesystem_view_state::validate_namespace(journal)
+        .map_err(|_| MountAttemptError::CorruptState)?;
     crate::attachment_state::validate_namespace(journal)
         .map_err(|_| MountAttemptError::CorruptState)?;
     crate::attachment_verification::validate_namespace(journal)
@@ -435,6 +456,12 @@ pub(crate) fn controller_state_digest(
         u32::try_from(attempts.records.len()).map_err(|_| MountAttemptError::Capacity)?;
     let completion_count =
         u32::try_from(completions.records.len()).map_err(|_| MountAttemptError::Capacity)?;
+    let view_revision_count = u32::try_from(
+        journal
+            .records(RecordNamespace::FilesystemViewRevision)
+            .count(),
+    )
+    .map_err(|_| MountAttemptError::Capacity)?;
     let attachment_count =
         u32::try_from(journal.records(RecordNamespace::AttachmentDesired).count())
             .map_err(|_| MountAttemptError::Capacity)?;
@@ -472,6 +499,21 @@ pub(crate) fn controller_state_digest(
         digest.update(b"completion\0");
         digest.update(request_id);
         digest.update(record.digest);
+    }
+    digest.update(view_revision_count.to_be_bytes());
+    for (key, value) in journal.records(RecordNamespace::FilesystemViewRevision) {
+        digest.update(
+            u32::try_from(key.len())
+                .map_err(|_| MountAttemptError::Capacity)?
+                .to_be_bytes(),
+        );
+        digest.update(key);
+        digest.update(
+            u32::try_from(value.len())
+                .map_err(|_| MountAttemptError::Capacity)?
+                .to_be_bytes(),
+        );
+        digest.update(value);
     }
     digest.update(attachment_count.to_be_bytes());
     for (key, value) in journal.records(RecordNamespace::AttachmentDesired) {

@@ -481,6 +481,74 @@ where
         crate::attachment_state::get(journal, attachment_id)
     }
 
+    /// Commits one immutable filesystem-view revision or release tombstone.
+    ///
+    /// Revision one creates a logical view. Each later revision is linked to
+    /// the exact prior record digest, and release permanently closes the view
+    /// identity without changing its last source semantics. This records
+    /// portable intent only; it does not resolve a host path or authorize a
+    /// broker effect.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid source handles, stale revisions or resource versions,
+    /// operation equivocation, resurrection after release, corrupt history,
+    /// capacity exhaustion, and failed protected commits.
+    pub fn commit_filesystem_view_revision(
+        &mut self,
+        mutation: crate::FilesystemViewRevisionMutationV1,
+    ) -> Result<
+        (
+            crate::DurableFilesystemViewRevisionV1,
+            crate::FilesystemViewRevisionCommitOutcomeV1,
+        ),
+        crate::FilesystemViewRevisionStateError,
+    > {
+        crate::filesystem_view_state::commit(self.reconciler.journal_mut(), mutation)
+    }
+
+    /// Loads the validated current revision for one logical filesystem view.
+    ///
+    /// A released view remains visible as its terminal tombstone.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed, discontinuous, conflicting, or over-limit revision
+    /// history and journal health failures observed during replay.
+    pub fn current_filesystem_view_revision(
+        &mut self,
+        view_id: aos_sandbox_core::ViewId,
+    ) -> Result<
+        Option<crate::DurableFilesystemViewRevisionV1>,
+        crate::FilesystemViewRevisionStateError,
+    > {
+        let journal = self.reconciler.journal_mut();
+        journal.ensure_healthy()?;
+        crate::filesystem_view_state::get_current(journal, view_id)
+    }
+
+    /// Loads one exact immutable filesystem-view revision.
+    ///
+    /// Historical available revisions remain addressable after publication of
+    /// successors so already-authorized attachments can retain exact sources.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed, discontinuous, conflicting, or over-limit revision
+    /// history and journal health failures observed during replay.
+    pub fn filesystem_view_revision(
+        &mut self,
+        view_id: aos_sandbox_core::ViewId,
+        revision: aos_sandbox_core::Revision,
+    ) -> Result<
+        Option<crate::DurableFilesystemViewRevisionV1>,
+        crate::FilesystemViewRevisionStateError,
+    > {
+        let journal = self.reconciler.journal_mut();
+        journal.ensure_healthy()?;
+        crate::filesystem_view_state::get_revision(journal, view_id, revision)
+    }
+
     /// Resolves one fence-free Mount intent against a live payload scope.
     ///
     /// The controller derives the current assignment and namespace generation,

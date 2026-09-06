@@ -21,6 +21,7 @@ pub mod attachment_verification;
 pub mod authority;
 pub mod controller;
 pub mod dispatch;
+pub mod filesystem_view_state;
 pub mod journal;
 #[cfg(target_os = "linux")]
 mod local_channel;
@@ -84,6 +85,11 @@ pub use controller::{
 pub use dispatch::{
     BrokerDispatchAttemptError, BrokerDispatchAttemptV1, BrokerDispatchSemanticIdentityV1,
     BrokerDispatchTemplateError, BrokerDispatchTemplateV1,
+};
+pub use filesystem_view_state::{
+    DurableFilesystemViewRevisionV1, FilesystemViewRevisionCommitOutcomeV1,
+    FilesystemViewRevisionMutationV1, FilesystemViewRevisionPresenceV1,
+    FilesystemViewRevisionStateError,
 };
 pub use journal::{
     CommitResult, IdempotencyKey, IdempotencyOutcome, Journal, JournalError, JournalLimits,
