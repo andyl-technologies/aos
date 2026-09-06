@@ -5,7 +5,7 @@
 //! distinct type cannot be passed to a broker as a validated runtime request.
 
 use aos_proto::aos::sandbox::local::v1::{ApplyRuntimeRequest, Audience, RuntimeAction};
-use aos_sandbox_core::ProtocolId;
+use aos_sandbox_core::{ProtocolId, ProtocolVersion};
 use buffa::Message as _;
 
 use crate::{
@@ -78,7 +78,7 @@ pub fn decode_runtime_template_v1(
     if !header.__buffa_unknown_fields.is_empty() {
         return Err(ProtocolValidationError::UnknownFields);
     }
-    validate_header_protocol(header, ProtocolId::HostBroker)?;
+    let protocol_version = validate_header_protocol(header, ProtocolId::HostBroker)?;
     exact_nonzero::<16>(&header.request_id, "header.request_id")?;
     if header.audience.as_known() != Some(Audience::AUDIENCE_NODE_CONTROLLER)
         || header.deadline_boottime_nanoseconds != 0
@@ -90,11 +90,12 @@ pub fn decode_runtime_template_v1(
     if !(MINIMUM_RESPONSE_BYTES..=MAXIMUM_RESPONSE_BYTES).contains(&header.maximum_response_bytes) {
         return Err(ProtocolValidationError::InvalidResponseBound);
     }
-    validate_runtime_body(&request)
+    validate_runtime_body(&request, protocol_version)
 }
 
 pub(super) fn validate_runtime_body(
     request: &ApplyRuntimeRequest,
+    protocol_version: ProtocolVersion,
 ) -> Result<ValidatedRuntimeTemplateV1, ProtocolValidationError> {
     if !request.__buffa_unknown_fields.is_empty() {
         return Err(ProtocolValidationError::UnknownFields);
@@ -111,7 +112,9 @@ pub(super) fn validate_runtime_body(
         .filter(|action| *action != RuntimeAction::RUNTIME_ACTION_UNSPECIFIED)
         .ok_or(ProtocolValidationError::UnknownAction)?;
     let launch_plan = match (action, request.launch_plan.as_option()) {
-        (RuntimeAction::RUNTIME_ACTION_LAUNCH, Some(plan)) => Some(validate_runtime_plan(plan)?),
+        (RuntimeAction::RUNTIME_ACTION_LAUNCH, Some(plan)) => {
+            Some(validate_runtime_plan(plan, protocol_version)?)
+        }
         (RuntimeAction::RUNTIME_ACTION_LAUNCH, None) => {
             return Err(ProtocolValidationError::MissingField("launch_plan"));
         }

@@ -214,6 +214,7 @@ pub struct ValidatedRuntimePlan {
     limits: Vec<ValidatedResourceLimit>,
     attachment_handles: Vec<[u8; OPAQUE_HANDLE_BYTES]>,
     required_features: Vec<FeatureRef>,
+    attachment_anchor_handle: Option<[u8; OPAQUE_HANDLE_BYTES]>,
 }
 
 impl ValidatedRuntimePlan {
@@ -263,6 +264,12 @@ impl ValidatedRuntimePlan {
     #[must_use]
     pub fn required_features(&self) -> &[FeatureRef] {
         &self.required_features
+    }
+
+    /// Returns the broker-minted attachment-anchor handle when required by the carrier.
+    #[must_use]
+    pub const fn attachment_anchor_handle(&self) -> Option<&[u8; OPAQUE_HANDLE_BYTES]> {
+        self.attachment_anchor_handle.as_ref()
     }
 }
 
@@ -613,7 +620,7 @@ pub fn decode_runtime_request(
         ProtocolId::HostBroker,
         now_boottime_nanoseconds,
     )?;
-    let template = runtime_template::validate_runtime_body(&request)?;
+    let template = runtime_template::validate_runtime_body(&request, header.protocol_version())?;
 
     Ok(ValidatedRuntimeRequest {
         header,
@@ -946,6 +953,7 @@ pub(crate) fn validate_fence(
 
 fn validate_runtime_plan(
     plan: &RuntimePlan,
+    protocol_version: ProtocolVersion,
 ) -> Result<ValidatedRuntimePlan, ProtocolValidationError> {
     if !plan.__buffa_unknown_fields.is_empty() {
         return Err(ProtocolValidationError::UnknownFields);
@@ -977,6 +985,23 @@ fn validate_runtime_plan(
     let limits = validate_resource_limits(&plan.limits)?;
     let attachment_handles = validate_attachment_handles(&plan.attachment_handles)?;
     let required_features = validate_features(&plan.required_features)?;
+    let attachment_anchor_handle = match plan.attachment_anchor_handle.as_slice() {
+        [] if protocol_version.minor() < 3 => None,
+        [] => {
+            return Err(ProtocolValidationError::MissingField(
+                "launch_plan.attachment_anchor_handle",
+            ));
+        }
+        bytes if protocol_version.minor() >= 3 => Some(exact_nonzero::<OPAQUE_HANDLE_BYTES>(
+            bytes,
+            "launch_plan.attachment_anchor_handle",
+        )?),
+        _ => {
+            return Err(ProtocolValidationError::InvalidField(
+                "launch_plan.attachment_anchor_handle",
+            ));
+        }
+    };
 
     Ok(ValidatedRuntimePlan {
         root_image,
@@ -987,6 +1012,7 @@ fn validate_runtime_plan(
         limits,
         attachment_handles,
         required_features,
+        attachment_anchor_handle,
     })
 }
 
@@ -1255,6 +1281,37 @@ mod tests {
         assert!(matches!(
             decode_runtime_template_v1(&vec![0; MAXIMUM_REQUEST_BYTES + 1]),
             Err(ProtocolValidationError::RequestTooLarge)
+        ));
+    }
+
+    #[test]
+    fn host_1_3_requires_one_nonzero_attachment_anchor_handle() {
+        let mut request = valid_runtime_request();
+        request.header.get_or_insert_default().protocol_minor = 3;
+        assert!(matches!(
+            decode_runtime_request(&request.encode_to_vec(), peer(), policy(), 0),
+            Err(ProtocolValidationError::MissingField(
+                "launch_plan.attachment_anchor_handle"
+            ))
+        ));
+
+        request
+            .launch_plan
+            .get_or_insert_default()
+            .attachment_anchor_handle = vec![9; OPAQUE_HANDLE_BYTES];
+        let validated =
+            decode_runtime_request(&request.encode_to_vec(), peer(), policy(), 0).unwrap();
+        assert_eq!(
+            validated.launch_plan().unwrap().attachment_anchor_handle(),
+            Some(&[9; OPAQUE_HANDLE_BYTES])
+        );
+
+        request.header.get_or_insert_default().protocol_minor = 2;
+        assert!(matches!(
+            decode_runtime_request(&request.encode_to_vec(), peer(), policy(), 0),
+            Err(ProtocolValidationError::InvalidField(
+                "launch_plan.attachment_anchor_handle"
+            ))
         ));
     }
 

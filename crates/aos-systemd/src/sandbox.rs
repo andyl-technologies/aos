@@ -79,6 +79,7 @@ const NSPAWN_ALLOWED_SYSCALLS: &[&str] = &[
 ];
 const NSPAWN_ENVIRONMENT: &[&str] = &["LANG=C.UTF-8", "PATH=", "SYSTEMD_LOG_TARGET=journal"];
 const NSPAWN_ROOT_DESCRIPTOR_ROLE: &str = "aos-sandbox-root-mount-v1";
+const NSPAWN_ATTACHMENT_ANCHOR_DESCRIPTOR_ROLE: &str = "aos-sandbox-attachment-anchor-v1";
 const NSPAWN_SUPERVISOR_SELINUX_CONTEXT: &str = "system_u:system_r:aos_nspawn_t:s0";
 const PAYLOAD_SELINUX_CONTEXT: &str = "system_u:system_r:aos_sandbox_payload_t:s0";
 const PAYLOAD_DROPPED_CAPABILITIES: &str = "CAP_AUDIT_CONTROL,CAP_AUDIT_READ,CAP_AUDIT_WRITE,CAP_BLOCK_SUSPEND,CAP_BPF,CAP_CHECKPOINT_RESTORE,CAP_DAC_READ_SEARCH,CAP_IPC_LOCK,CAP_IPC_OWNER,CAP_LEASE,CAP_LINUX_IMMUTABLE,CAP_MAC_ADMIN,CAP_MAC_OVERRIDE,CAP_MKNOD,CAP_NET_ADMIN,CAP_NET_BROADCAST,CAP_NET_RAW,CAP_PERFMON,CAP_SYSLOG,CAP_SYS_ADMIN,CAP_SYS_BOOT,CAP_SYS_CHROOT,CAP_SYS_MODULE,CAP_SYS_NICE,CAP_SYS_PACCT,CAP_SYS_PTRACE,CAP_SYS_RAWIO,CAP_SYS_RESOURCE,CAP_SYS_TIME,CAP_SYS_TTY_CONFIG,CAP_WAKE_ALARM";
@@ -357,6 +358,7 @@ pub struct SandboxResolvedPaths {
     network_namespace_path: String,
     root_pin: SandboxDescriptorPath,
     _network_pin: SandboxDescriptorPath,
+    attachment_anchor_pin: Option<SandboxDescriptorPath>,
 }
 
 /// Carries the sole nspawn command profile accepted by the typed transport.
@@ -440,9 +442,9 @@ impl SandboxNspawnCommand {
         })
     }
 
-    fn arguments(&self) -> Vec<String> {
+    fn arguments(&self, has_attachment_anchor: bool) -> Vec<String> {
         let machine = encode_hex(self.incarnation);
-        vec![
+        let mut arguments = vec![
             "--boot".to_owned(),
             "--quiet".to_owned(),
             "--keep-unit".to_owned(),
@@ -462,7 +464,13 @@ impl SandboxNspawnCommand {
             format!("--system-call-filter={PAYLOAD_SYSTEM_CALL_FILTER}"),
             "--aos-payload-seccomp-profile=aos-sandbox-payload-v1".to_owned(),
             "--aos-lifecycle-profile=aos-sandbox-lifecycle-v1".to_owned(),
-        ]
+        ];
+        if has_attachment_anchor {
+            arguments.push(format!(
+                "--aos-attachment-anchor-fd={NSPAWN_ATTACHMENT_ANCHOR_DESCRIPTOR_ROLE}"
+            ));
+        }
+        arguments
     }
 }
 
@@ -483,7 +491,15 @@ impl SandboxResolvedPaths {
             network_namespace_path: network_namespace.path.clone(),
             root_pin: root_directory,
             _network_pin: network_namespace,
+            attachment_anchor_pin: None,
         }
+    }
+
+    /// Adds the Mount-owned descriptor installed at `/run/aos/attachments`.
+    #[must_use]
+    pub fn with_attachment_anchor(mut self, anchor: SandboxDescriptorPath) -> Self {
+        self.attachment_anchor_pin = Some(anchor);
+        self
     }
 
     /// Returns the resolved private sandbox root.
@@ -554,7 +570,7 @@ impl SandboxUnitSpec {
                 "nspawn command incarnation does not match unit name",
             ));
         }
-        let arguments = command.arguments();
+        let arguments = command.arguments(paths.attachment_anchor_pin.is_some());
         validate_arguments(&arguments)?;
         duration_micros(timeout_start, "start timeout")?;
         duration_micros(timeout_stop, "stop timeout")?;
@@ -639,6 +655,19 @@ impl SandboxUnitSpec {
         let root_fd = self.paths.root_pin.pin.try_clone().map_err(|error| {
             invalid(format!("cannot duplicate nspawn root descriptor: {error}"))
         })?;
+        let mut setup_descriptors =
+            vec![(Fd::from(root_fd), NSPAWN_ROOT_DESCRIPTOR_ROLE.to_owned())];
+        if let Some(anchor) = &self.paths.attachment_anchor_pin {
+            let anchor_fd = anchor.pin.try_clone().map_err(|error| {
+                invalid(format!(
+                    "cannot duplicate nspawn attachment-anchor descriptor: {error}"
+                ))
+            })?;
+            setup_descriptors.push((
+                Fd::from(anchor_fd),
+                NSPAWN_ATTACHMENT_ANCHOR_DESCRIPTOR_ROLE.to_owned(),
+            ));
+        }
 
         let mut properties = vec![
             string_property("Description", format!("AOS sandbox {}", self.name)),
@@ -693,10 +722,7 @@ impl SandboxUnitSpec {
             bool_property("RestrictRealtime", true),
             string_property("KeyringMode", "private"),
             u32_property("UMask", 0o077),
-            complex_property(
-                "ExtraFileDescriptors",
-                vec![(Fd::from(root_fd), NSPAWN_ROOT_DESCRIPTOR_ROLE.to_owned())],
-            )?,
+            complex_property("ExtraFileDescriptors", setup_descriptors)?,
             bool_property("PrivateTmp", true),
             // Nspawn's transient propagation/export state is private to this
             // supervisor. The root is mounted from its received descriptor;
@@ -1277,6 +1303,42 @@ mod tests {
         assert_eq!(
             (observed.dev(), observed.ino()),
             (expected.dev(), expected.ino())
+        );
+    }
+
+    #[test]
+    fn attachment_anchor_is_a_second_named_setup_descriptor() {
+        let resources = SandboxResources::new(1, 1, 1, 1).unwrap();
+        let resolved = paths().with_attachment_anchor(descriptor_path("/"));
+        let spec = SandboxUnitSpec::new_nspawn(
+            SandboxUnitName::from_incarnation([1; 16]),
+            command([1; 16]),
+            resolved,
+            resources,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        assert!(spec.arguments().iter().any(|argument| {
+            argument == "--aos-attachment-anchor-fd=aos-sandbox-attachment-anchor-v1"
+        }));
+
+        let (_, property) = spec
+            .properties()
+            .unwrap()
+            .into_iter()
+            .find(|(name, _)| name == "ExtraFileDescriptors")
+            .unwrap();
+        let descriptors = Vec::<(Fd<'static>, String)>::try_from(property).unwrap();
+        assert_eq!(
+            descriptors
+                .iter()
+                .map(|(_, role)| role.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "aos-sandbox-root-mount-v1",
+                "aos-sandbox-attachment-anchor-v1",
+            ]
         );
     }
 

@@ -11,6 +11,7 @@
 //! parent and leaf entries for the complete verify-to-exec interval, and the
 //! worker post-validates the identities after systemd starts the supervisor.
 
+use std::os::fd::AsFd as _;
 use std::path::Path;
 
 use aos_sandbox_core::ObjectDescriptor;
@@ -19,8 +20,9 @@ use aos_sandbox_protocol::{ValidatedAssignmentFence, ValidatedRuntimePlan};
 use serde::{Deserialize, Serialize};
 
 use crate::plan::{
-    HostCatalog, NETWORK_PIN_PREFIX, OpaqueHandle, ResolvedIdentityAllocation,
-    ResolvedLaunchResources, ResolvedNetwork, ResolvedWorkspace, WORKSPACE_PIN_PREFIX,
+    ATTACHMENT_ANCHOR_PIN_PREFIX, HostCatalog, NETWORK_PIN_PREFIX, OpaqueHandle,
+    ResolvedAttachmentAnchor, ResolvedIdentityAllocation, ResolvedLaunchResources, ResolvedNetwork,
+    ResolvedWorkspace, WORKSPACE_PIN_PREFIX, validate_attachment_anchor_path,
     validate_published_pin,
 };
 use crate::{HostError, Result};
@@ -221,6 +223,82 @@ pub struct NetworkCatalogEntry {
     inode: u64,
 }
 
+/// Publishes one Mount-owned destination anchor for a payload namespace generation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttachmentAnchorCatalogEntry {
+    handle: OpaqueHandle,
+    assignment: CatalogAssignment,
+    namespace_generation: u64,
+    directory: String,
+    device: u64,
+    inode: u64,
+    mount_id: u64,
+}
+
+impl AttachmentAnchorCatalogEntry {
+    /// Constructs one assignment-bound attachment-anchor catalog record.
+    ///
+    /// The path is not caller-selected. It must exactly reproduce Mount's
+    /// namespace-generation anchor beneath its fixed private runtime root.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a sentinel, a noncanonical path, or missing
+    /// physical identity.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the constructor mirrors one closed, serialized catalog record"
+    )]
+    pub fn new(
+        handle: OpaqueHandle,
+        assignment: CatalogAssignment,
+        namespace_generation: u64,
+        directory: String,
+        device: u64,
+        inode: u64,
+        mount_id: u64,
+    ) -> Result<Self> {
+        let value = Self {
+            handle,
+            assignment,
+            namespace_generation,
+            directory,
+            device,
+            inode,
+            mount_id,
+        };
+        value.validate()?;
+        Ok(value)
+    }
+
+    fn validate(&self) -> Result<()> {
+        self.assignment.validate()?;
+        validate_handle(self.handle, "attachment anchor")?;
+        if self.namespace_generation == 0
+            || self.device == 0
+            || self.inode == 0
+            || self.mount_id == 0
+            || self.directory != self.expected_directory()
+        {
+            return Err(HostError::Catalog(
+                "attachment-anchor catalog record is invalid".to_owned(),
+            ));
+        }
+        validate_attachment_anchor_path(&self.directory)
+            .map_err(|error| HostError::Catalog(error.to_string()))
+    }
+
+    fn expected_directory(&self) -> String {
+        format!(
+            "{ATTACHMENT_ANCHOR_PIN_PREFIX}{}/{}/{:016x}",
+            encode_hex(&self.assignment.sandbox_id),
+            encode_hex(&self.assignment.incarnation_id),
+            self.namespace_generation,
+        )
+    }
+}
+
 impl NetworkCatalogEntry {
     /// Constructs one assignment-bound network catalog record.
     ///
@@ -270,6 +348,8 @@ pub struct HostCatalogSnapshot {
     generation: u64,
     workspaces: Vec<WorkspaceCatalogEntry>,
     networks: Vec<NetworkCatalogEntry>,
+    #[serde(default)]
+    attachment_anchors: Vec<AttachmentAnchorCatalogEntry>,
     retired_identity_allocations: Vec<CatalogIdentityAllocation>,
 }
 
@@ -289,10 +369,25 @@ impl HostCatalogSnapshot {
             generation,
             workspaces,
             networks,
+            attachment_anchors: Vec::new(),
             retired_identity_allocations: Vec::new(),
         };
         value.validate()?;
         Ok(value)
+    }
+
+    /// Adds the canonical Mount-owned attachment anchors published in this generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for excessive, invalid, or unordered entries.
+    pub fn with_attachment_anchors(
+        mut self,
+        anchors: Vec<AttachmentAnchorCatalogEntry>,
+    ) -> Result<Self> {
+        self.attachment_anchors = anchors;
+        self.validate()?;
+        Ok(self)
     }
 
     /// Adds bounded publisher-asserted allocation tombstones that block reuse.
@@ -341,9 +436,11 @@ impl HostCatalogSnapshot {
         if self.generation == 0
             || self.workspaces.len() > MAXIMUM_ENTRIES
             || self.networks.len() > MAXIMUM_ENTRIES
+            || self.attachment_anchors.len() > MAXIMUM_ENTRIES
             || self.retired_identity_allocations.len() > MAXIMUM_ENTRIES
             || !strictly_ordered_by(&self.workspaces, |entry| entry.handle)
             || !strictly_ordered_by(&self.networks, |entry| entry.handle)
+            || !strictly_ordered_by(&self.attachment_anchors, |entry| entry.handle)
         {
             return Err(HostError::Catalog(
                 "host catalog header or entry ordering is invalid".to_owned(),
@@ -354,6 +451,9 @@ impl HostCatalogSnapshot {
         }
         for network in &self.networks {
             network.validate()?;
+        }
+        for anchor in &self.attachment_anchors {
+            anchor.validate()?;
         }
         let mut allocations = self
             .workspaces
@@ -482,6 +582,37 @@ impl HostCatalog for FileHostCatalog {
             verify_workspace_pin(&workspace.root_directory, workspace.device, workspace.inode)?;
         let network_pin =
             verify_network_pin(&network.namespace_path, network.device, network.inode)?;
+        let attachment_anchor = plan
+            .attachment_anchor_handle()
+            .map(|handle| {
+                let anchor = snapshot
+                    .attachment_anchors
+                    .binary_search_by_key(handle, |entry| entry.handle)
+                    .ok()
+                    .map(|index| &snapshot.attachment_anchors[index])
+                    .ok_or_else(|| {
+                        HostError::Catalog("unknown attachment-anchor handle".to_owned())
+                    })?;
+                if !anchor.assignment.matches(fence) {
+                    return Err(HostError::Catalog(
+                        "attachment anchor does not bind the exact launch assignment".to_owned(),
+                    ));
+                }
+                let pin = verify_attachment_anchor_pin(
+                    &anchor.directory,
+                    anchor.device,
+                    anchor.inode,
+                    anchor.mount_id,
+                )?;
+                ResolvedAttachmentAnchor::from_pinned(
+                    anchor.directory.clone(),
+                    anchor.device,
+                    anchor.inode,
+                    anchor.mount_id,
+                    pin,
+                )
+            })
+            .transpose()?;
         Ok(ResolvedLaunchResources {
             workspace: ResolvedWorkspace::from_pinned(
                 workspace.root_directory.clone(),
@@ -500,6 +631,7 @@ impl HostCatalog for FileHostCatalog {
                 range_size: workspace.identity.range_size,
                 catalog_generation: workspace.identity.catalog_generation,
             },
+            attachment_anchor,
         })
     }
 }
@@ -559,6 +691,37 @@ fn verify_network_pin(
     Ok(namespace)
 }
 
+fn verify_attachment_anchor_pin(
+    path: &str,
+    device: u64,
+    inode: u64,
+    mount_id: u64,
+) -> Result<std::os::fd::OwnedFd> {
+    let fd = rustix::fs::open(
+        path,
+        rustix::fs::OFlags::PATH
+            | rustix::fs::OFlags::DIRECTORY
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(|error| HostError::Catalog(error.to_string()))?;
+    let stat = rustix::fs::fstat(&fd).map_err(|error| HostError::Catalog(error.to_string()))?;
+    let actual_mount_id = aos_sandbox_linux::inventory::MountId::from_fd(fd.as_fd())
+        .map_err(|error| HostError::Catalog(error.to_string()))?;
+    if stat.st_uid != 0
+        || stat.st_mode & 0o7777 != 0o755
+        || stat.st_dev != device
+        || stat.st_ino != inode
+        || actual_mount_id.get() != mount_id
+    {
+        return Err(HostError::Catalog(
+            "attachment-anchor pin identity or protection changed".to_owned(),
+        ));
+    }
+    Ok(fd)
+}
+
 fn current_network_namespace_identity() -> Result<aos_sandbox_linux::pidfd::NamespaceIdentity> {
     use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceKind};
 
@@ -584,6 +747,16 @@ fn strictly_ordered_by<T>(values: &[T], key: impl Fn(&T) -> OpaqueHandle) -> boo
     values.windows(2).all(|pair| key(&pair[0]) < key(&pair[1]))
 }
 
+pub(crate) fn encode_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(char::from(HEX[usize::from(byte >> 4)]));
+        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    output
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -600,6 +773,7 @@ mod tests {
         let mut request = ApplyRuntimeRequest::default();
         let header = request.header.get_or_insert_default();
         header.protocol_major = 1;
+        header.protocol_minor = 3;
         header.request_id = vec![1; 16];
         header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
         header.deadline_boottime_nanoseconds = 100;
@@ -638,6 +812,7 @@ mod tests {
             },
         ];
         plan.attachment_handles.push(vec![11; 32]);
+        plan.attachment_anchor_handle = vec![12; 32];
         plan.required_features.push(Feature {
             namespace: "aos.sandbox.runtime.linux-systemd".to_owned(),
             major: 1,
@@ -693,11 +868,55 @@ mod tests {
                 .unwrap(),
             ],
         )
+        .unwrap()
+        .with_attachment_anchors(vec![
+            AttachmentAnchorCatalogEntry::new(
+                [12; 32],
+                assignment,
+                7,
+                format!(
+                    "/run/aos/sandbox-mount-catalog/slots/{}/{}/0000000000000007",
+                    "02".repeat(16),
+                    "03".repeat(16),
+                ),
+                15,
+                16,
+                17,
+            )
+            .unwrap(),
+        ])
         .unwrap();
         let decoded = HostCatalogSnapshot::decode(&snapshot.encode().unwrap()).unwrap();
         assert_eq!(decoded, snapshot);
         assert!(decoded.workspaces[0].identity.matches(plan));
         assert!(decoded.workspaces[0].assignment.matches(fence));
+        assert_eq!(decoded.attachment_anchors[0].handle, [12; 32]);
+    }
+
+    #[test]
+    fn attachment_anchor_path_is_derived_from_assignment_and_generation() {
+        let assignment = CatalogAssignment::new([2; 16], [3; 16], 4, 5, [6; 32]).unwrap();
+        let path = format!(
+            "/run/aos/sandbox-mount-catalog/slots/{}/{}/0000000000000007",
+            "02".repeat(16),
+            "03".repeat(16),
+        );
+        let anchor =
+            AttachmentAnchorCatalogEntry::new([12; 32], assignment, 7, path, 15, 16, 17).unwrap();
+        assert_eq!(anchor.expected_directory(), anchor.directory);
+
+        assert!(
+            AttachmentAnchorCatalogEntry::new(
+                [12; 32],
+                assignment,
+                7,
+                "/run/aos/sandbox-mount-catalog/slots/substituted".to_owned(),
+                15,
+                16,
+                17,
+            )
+            .is_err()
+        );
     }
 
     #[test]

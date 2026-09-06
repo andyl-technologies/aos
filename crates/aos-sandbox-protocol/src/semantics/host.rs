@@ -131,6 +131,9 @@ fn canonical_semantics(
             features.extend_from_slice(&feature.minor().to_be_bytes());
         }
         encoder.field(17, &features)?;
+        if let Some(handle) = plan.attachment_anchor_handle() {
+            encoder.field(18, handle)?;
+        }
     } else {
         for tag in 10..=17 {
             encoder.field(tag, &[])?;
@@ -278,10 +281,18 @@ mod tests {
     use crate::{PeerCredentials, PeerPolicy, decode_runtime_request};
 
     fn request(action: RuntimeAction, deadline: u64) -> ValidatedRuntimeRequest {
+        request_with_anchor(action, deadline, None)
+    }
+
+    fn request_with_anchor(
+        action: RuntimeAction,
+        deadline: u64,
+        anchor: Option<u8>,
+    ) -> ValidatedRuntimeRequest {
         let mut request = ApplyRuntimeRequest::default();
         let header = request.header.get_or_insert_default();
         header.protocol_major = 1;
-        header.protocol_minor = 1;
+        header.protocol_minor = if anchor.is_some() { 3 } else { 1 };
         header.request_id = vec![1; 16];
         header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
         header.deadline_boottime_nanoseconds = deadline;
@@ -312,6 +323,9 @@ mod tests {
                 })
                 .collect();
             plan.attachment_handles.push(vec![10; 32]);
+            if let Some(byte) = anchor {
+                plan.attachment_anchor_handle = vec![byte; 32];
+            }
             plan.required_features.push(Feature {
                 namespace: "aos.sandbox.runtime.linux-systemd".to_owned(),
                 major: 1,
@@ -357,5 +371,22 @@ mod tests {
             semantics.target(),
             BrokerGrantTarget::Resource(runtime_resource_handle(&request).unwrap())
         );
+    }
+
+    #[test]
+    fn launch_commitment_binds_the_attachment_anchor_handle() {
+        let first = canonical_host_semantics_v1(&request_with_anchor(
+            RuntimeAction::RUNTIME_ACTION_LAUNCH,
+            1_000,
+            Some(11),
+        ))
+        .unwrap();
+        let substituted = canonical_host_semantics_v1(&request_with_anchor(
+            RuntimeAction::RUNTIME_ACTION_LAUNCH,
+            1_000,
+            Some(12),
+        ))
+        .unwrap();
+        assert_ne!(first.commitment(), substituted.commitment());
     }
 }

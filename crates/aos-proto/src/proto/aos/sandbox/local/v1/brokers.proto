@@ -199,6 +199,8 @@ message RuntimePlan {
   repeated ResourceLimit limits = 6;
   repeated bytes attachment_handles = 7;
   repeated Feature required_features = 8;
+  // Host 1.3: one broker-minted handle for the namespace-generation anchor.
+  bytes attachment_anchor_handle = 9;
 }
 
 message ApplyRuntimeRequest {

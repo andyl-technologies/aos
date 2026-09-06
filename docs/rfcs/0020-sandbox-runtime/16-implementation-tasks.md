@@ -3453,3 +3453,52 @@ The hermetic `nix-build -A checks.eval --cores 8` gate passes at
 This closes stale-ready reboot recovery. Read-only attachment-anchor launch
 installation, source-handle materialization, lease-expiry scheduling, live
 namespace VM qualification, and end-to-end attachment reconciliation remain.
+
+### Assignment-bound attachment anchors at launch
+
+Host protocol 1.3 launch plans now require one nonzero broker-minted
+attachment-anchor handle, and the signed Host semantics bind that handle
+independently from ordinary attachment handles. The Host catalog maps it to
+one exact assignment and the broker-derived sandbox, incarnation, and
+namespace-generation directory. Resolution pins that directory and rechecks
+its device, inode, kernel-unique mount ID, root ownership, and fixed mode before
+the launch compiler can consume it. Host 1.1 and 1.2 carriers remain compatible
+and reject the new field instead of silently ignoring it.
+
+The transient unit passes the root and attachment anchor as two exact named
+setup descriptors. The packaged nspawn accepts the anchor only with the AOS
+descriptor-root profile, consumes both setup descriptors before collecting
+payload activation descriptors, and retains the broker descriptor only in the
+supervisor for internal launch attempts. For each payload start it recursively
+clones the anchor, applies the payload user-namespace idmap plus read-only,
+`nosuid`, `nodev`, and `noexec` attributes, and installs it at
+`/run/aos/attachments`. Installation occurs after nspawn has mounted the final
+`/run`, applied custom mounts, and configured cgroups, but before it switches
+root or forks payload PID 1. Target creation and installation reject symlinks,
+wrong mapped-root ownership or mode, and an existing mountpoint.
+
+Mount's broker-side namespace-generation anchor is root-writable mode `0755`
+behind assignment-specific mode-`0700` ancestors, while payload slot
+directories are traversal-only mode `0555`. This lets Mount materialize and
+reap slots and lets non-root workloads traverse declared destinations; only
+the separately cloned payload mount is recursively read-only.
+
+Focused validation passes all 87 default-feature Host tests and two doctests,
+85 protocol tests and one doctest, 83 Mount tests plus its helper integration
+test and two doctests, and 38 systemd crate tests. The patched systemd 259.8
+package builds hermetically and passes its nspawn unit and packaged option
+checks. Two `nix-build -A checks.eval --cores 8 --no-out-link` runs compiled
+the complete hermetic workspace but did not produce a successful gate: the
+first passed 4,709 of 4,711 tests before an unrelated Hub SQLite-lock race and
+OCI upload-cancellation deadline, and the retry passed 4,710 before only the
+same load-sensitive OCI deadline remained. That exact OCI test passed alone in
+1.07 seconds through `nix develop -c cargo test`; no changed sandbox or systemd
+test failed in either full run.
+
+This closes initial pre-PID1 installation of a resolved destination anchor but
+does not claim end-to-end attachment readiness. Controller publication of the
+combined Host catalog, source-handle materialization, native attachment replay,
+lease-expiry scheduling, and live namespace VM qualification remain. A retained
+internal guest reboot also needs an explicit handoff for the next
+namespace-generation anchor before it can satisfy the RFC's reboot-replay
+invariant; reusing the initial descriptor is not treated as that proof.

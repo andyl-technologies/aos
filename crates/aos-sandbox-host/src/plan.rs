@@ -64,6 +64,7 @@ const READINESS_WATERMARK_SCHEMA: &str = "aos.sandbox.host-backend-readiness-wat
 const MAXIMUM_WATERMARK_BYTES: usize = 4096;
 pub(crate) const WORKSPACE_PIN_PREFIX: &str = "/run/aos/sandbox-pins/workspaces/";
 pub(crate) const NETWORK_PIN_PREFIX: &str = "/run/aos/sandbox-pins/netns/";
+pub(crate) const ATTACHMENT_ANCHOR_PIN_PREFIX: &str = "/run/aos/sandbox-mount-catalog/slots/";
 const SUPPORTED_BACKEND_FEATURES: &[(&str, u32, u32)] = &[
     ("aos.sandbox.runtime.linux-systemd", 1, 0),
     ("aos.sandbox.identity.posix32", 1, 0),
@@ -132,6 +133,56 @@ pub struct ResolvedNetwork {
     pin: NamespaceFd,
 }
 
+/// Describes one broker-owned destination anchor for a payload namespace generation.
+#[derive(Debug)]
+pub struct ResolvedAttachmentAnchor {
+    /// Absolute broker-derived directory containing the declared destination slots.
+    pub directory: String,
+    /// Device identity verified against the publisher record.
+    pub device: u64,
+    /// Inode identity verified against the publisher record.
+    pub inode: u64,
+    /// Kernel-unique mount identity verified against the publisher record.
+    pub mount_id: u64,
+    pin: OwnedFd,
+}
+
+impl ResolvedAttachmentAnchor {
+    /// Constructs an anchor only when its descriptor has the catalogued identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when descriptor inspection fails or any physical identity
+    /// differs from the trusted catalog record.
+    pub fn from_pinned(
+        directory: String,
+        device: u64,
+        inode: u64,
+        mount_id: u64,
+        pin: OwnedFd,
+    ) -> Result<Self> {
+        let identity =
+            rustix::fs::fstat(&pin).map_err(|error| HostError::Catalog(error.to_string()))?;
+        let actual_mount_id = aos_sandbox_linux::inventory::MountId::from_fd(pin.as_fd())
+            .map_err(|error| HostError::Catalog(error.to_string()))?;
+        if identity.st_dev != device
+            || identity.st_ino != inode
+            || actual_mount_id.get() != mount_id
+        {
+            return Err(HostError::Catalog(
+                "attachment-anchor descriptor identity changed".to_owned(),
+            ));
+        }
+        Ok(Self {
+            directory,
+            device,
+            inode,
+            mount_id,
+            pin,
+        })
+    }
+}
+
 impl ResolvedNetwork {
     /// Constructs a network resource from its type-checked namespace pin.
     ///
@@ -180,6 +231,8 @@ pub struct ResolvedLaunchResources {
     pub network: ResolvedNetwork,
     /// Incarnation-bound private user-namespace allocation.
     pub identity: ResolvedIdentityAllocation,
+    /// Broker-owned destination anchor, required by Host 1.3 launches.
+    pub attachment_anchor: Option<ResolvedAttachmentAnchor>,
 }
 
 /// Retains the exact workspace and network objects resolved for one launch.
@@ -193,6 +246,7 @@ pub struct LaunchPins {
     executable: Arc<OwnedFd>,
     workspace: OwnedFd,
     network: NamespaceFd,
+    attachment_anchor: Option<OwnedFd>,
 }
 
 impl LaunchPins {
@@ -214,12 +268,19 @@ impl LaunchPins {
         &self.network
     }
 
+    /// Returns the pinned attachment-anchor descriptor when present.
+    #[must_use]
+    pub fn attachment_anchor(&self) -> Option<BorrowedFd<'_>> {
+        self.attachment_anchor.as_ref().map(AsFd::as_fd)
+    }
+
     #[cfg(test)]
     pub(crate) fn for_tests(executable: OwnedFd, workspace: OwnedFd, network: NamespaceFd) -> Self {
         Self {
             executable: Arc::new(executable),
             workspace,
             network,
+            attachment_anchor: None,
         }
     }
 }
@@ -798,6 +859,12 @@ impl NspawnConfig {
         validate_backend_features(plan)?;
         let workspace = resolved.workspace;
         let network = resolved.network;
+        let attachment_anchor = resolved.attachment_anchor;
+        if plan.attachment_anchor_handle().is_some() != attachment_anchor.is_some() {
+            return Err(HostError::InvalidPlan(
+                "attachment-anchor handle did not resolve to exactly one descriptor".to_owned(),
+            ));
+        }
         validate_resolved_identity(&resolved.identity, plan)?;
         validate_published_pin(
             &workspace.root_directory,
@@ -849,7 +916,13 @@ impl NspawnConfig {
             resolved.identity.range_size,
         )
         .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
-        let paths = SandboxResolvedPaths::from_descriptors(root_path, network_path);
+        let mut paths = SandboxResolvedPaths::from_descriptors(root_path, network_path);
+        if let Some(anchor) = &attachment_anchor {
+            validate_attachment_anchor_path(&anchor.directory)?;
+            let anchor_path = SandboxDescriptorPath::for_current_process(anchor.pin.as_fd())
+                .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
+            paths = paths.with_attachment_anchor(anchor_path);
+        }
         let spec = SandboxUnitSpec::new_nspawn(
             SandboxUnitName::from_incarnation(*fence.incarnation_id()),
             command,
@@ -865,6 +938,7 @@ impl NspawnConfig {
                 executable: Arc::clone(&self.executable_pin),
                 workspace: workspace.pin,
                 network: network.pin,
+                attachment_anchor: attachment_anchor.map(|anchor| anchor.pin),
             },
         })
     }
@@ -980,6 +1054,32 @@ pub(crate) fn validate_published_pin(value: &str, prefix: &str, label: &str) -> 
         )));
     }
     Ok(())
+}
+
+pub(crate) fn validate_attachment_anchor_path(value: &str) -> Result<()> {
+    validate_absolute(value, "attachment anchor")?;
+    let components = value
+        .strip_prefix(ATTACHMENT_ANCHOR_PIN_PREFIX)
+        .map(|suffix| suffix.split('/').collect::<Vec<_>>());
+    let valid = components.is_some_and(|components| {
+        matches!(components.as_slice(), [sandbox, incarnation, generation]
+            if canonical_hex(sandbox, 32)
+                && canonical_hex(incarnation, 32)
+                && canonical_hex(generation, 16))
+    });
+    if !valid {
+        return Err(HostError::InvalidPlan(
+            "attachment anchor is not one exact namespace-generation pin".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn canonical_hex(value: &str, length: usize) -> bool {
+    value.len() == length
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 #[cfg(test)]

@@ -71,6 +71,7 @@ fn resources() -> ResolvedLaunchResources {
             range_size: 65_536,
             catalog_generation: 1,
         },
+        attachment_anchor: None,
     }
 }
 

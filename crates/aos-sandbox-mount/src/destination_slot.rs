@@ -50,7 +50,8 @@ const DOMAIN: &[u8] = b"aos.sandbox.mount-destination-slot.v2\0";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.mount-destination-slot.transaction.v2\0";
 const RECORD_BYTES: usize = 436;
 const MAXIMUM_SLOT_RESOURCES: usize = 16_384;
-const SLOT_DIRECTORY_MODE: u32 = 0o500;
+const SLOT_DIRECTORY_MODE: u32 = 0o555;
+const ANCHOR_DIRECTORY_MODE: u32 = 0o755;
 const PARENT_DIRECTORY_MODE: u32 = 0o700;
 const SPECIFICATION_BYTE_CEILING: usize = 1024 * 1024;
 const SLOT_ROOT_COMPONENT: &str = "slots";
@@ -1034,8 +1035,13 @@ impl DestinationSlotStoreV1 {
             ))
         })?;
         let mut parent = BeneathRoot::from_owned(root).map_err(linux_error)?;
-        for component in &components {
-            parent = self.open_or_create_parent(parent, component)?;
+        for (index, component) in components.iter().enumerate() {
+            let mode = if index + 1 == components.len() {
+                ANCHOR_DIRECTORY_MODE
+            } else {
+                PARENT_DIRECTORY_MODE
+            };
+            parent = self.open_or_create_parent(parent, component, mode)?;
         }
 
         let slot_name = encode_hex(binding.slot_id.as_bytes());
@@ -1055,19 +1061,20 @@ impl DestinationSlotStoreV1 {
         Ok(pin)
     }
 
-    fn open_or_create_parent(&self, parent: BeneathRoot, name: &str) -> Result<BeneathRoot> {
-        match rustix::fs::mkdirat(
-            parent.as_fd(),
-            name,
-            rustix::fs::Mode::from_raw_mode(PARENT_DIRECTORY_MODE),
-        ) {
+    fn open_or_create_parent(
+        &self,
+        parent: BeneathRoot,
+        name: &str,
+        mode: u32,
+    ) -> Result<BeneathRoot> {
+        match rustix::fs::mkdirat(parent.as_fd(), name, rustix::fs::Mode::from_raw_mode(mode)) {
             Ok(()) | Err(rustix::io::Errno::EXIST) => {}
             Err(error) => return Err(kernel_error(error)),
         }
         let child = parent
             .resolve(Path::new(name), ResolveOptions::directory())
             .map_err(linux_error)?;
-        self.verify_directory(&child, PARENT_DIRECTORY_MODE)?;
+        self.verify_directory(&child, mode)?;
         BeneathRoot::from_resolved(child).map_err(linux_error)
     }
 
@@ -1096,7 +1103,7 @@ impl DestinationSlotStoreV1 {
             .root
             .resolve(&binding.anchor_relative_path(), ResolveOptions::directory())
             .map_err(linux_error)?;
-        self.verify_directory(&resolved, PARENT_DIRECTORY_MODE)?;
+        self.verify_directory(&resolved, ANCHOR_DIRECTORY_MODE)?;
         BeneathRoot::from_resolved(resolved).map_err(linux_error)
     }
 
@@ -1863,6 +1870,11 @@ mod tests {
             .directory
             .path()
             .join(fixture.binding.catalog_relative_path());
+        let anchor_metadata = std::fs::symlink_metadata(path.parent().unwrap()).unwrap();
+        assert_eq!(
+            anchor_metadata.permissions().mode() & 0o7777,
+            ANCHOR_DIRECTORY_MODE
+        );
         let metadata = std::fs::symlink_metadata(&path).unwrap();
         assert!(metadata.file_type().is_dir());
         assert_eq!(metadata.permissions().mode() & 0o7777, SLOT_DIRECTORY_MODE);

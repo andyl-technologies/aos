@@ -714,7 +714,7 @@ fn historical_clock(effect: &BrokerEffectIntentV2) -> Result<RawPairedClockSampl
 }
 
 fn host_apply_carrier_version(version: ProtocolVersion) -> bool {
-    version == ProtocolVersion::new(1, 1) || version == ProtocolVersion::new(1, 2)
+    matches!(version.minor(), 1..=3) && version.major() == 1
 }
 
 fn encode_observation(
@@ -877,7 +877,8 @@ mod tests {
 
     use super::*;
     use crate::plan::{
-        ResolvedIdentityAllocation, ResolvedLaunchResources, ResolvedNetwork, ResolvedWorkspace,
+        ResolvedAttachmentAnchor, ResolvedIdentityAllocation, ResolvedLaunchResources,
+        ResolvedNetwork, ResolvedWorkspace,
     };
 
     #[derive(Clone, Default)]
@@ -911,7 +912,7 @@ mod tests {
     impl HostCatalog for FixedCatalog {
         fn resolve(
             &self,
-            _fence: &ValidatedAssignmentFence,
+            fence: &ValidatedAssignmentFence,
             plan: &aos_sandbox_protocol::ValidatedRuntimePlan,
         ) -> Result<ResolvedLaunchResources> {
             if plan.workspace_handle() != &[6; 32] {
@@ -941,6 +942,39 @@ mod tests {
             )
             .unwrap();
             let network_identity = network_pin.identity();
+            let attachment_anchor = plan
+                .attachment_anchor_handle()
+                .map(|handle| {
+                    if handle != &[12; 32] {
+                        return Err(HostError::Catalog("unknown attachment anchor".to_owned()));
+                    }
+                    let pin = rustix::fs::open(
+                        "/",
+                        rustix::fs::OFlags::PATH
+                            | rustix::fs::OFlags::DIRECTORY
+                            | rustix::fs::OFlags::CLOEXEC,
+                        rustix::fs::Mode::empty(),
+                    )
+                    .unwrap();
+                    let identity = rustix::fs::fstat(&pin).unwrap();
+                    let mount_id = aos_sandbox_linux::inventory::MountId::from_fd(
+                        std::os::fd::AsFd::as_fd(&pin),
+                    )
+                    .unwrap()
+                    .get();
+                    ResolvedAttachmentAnchor::from_pinned(
+                        format!(
+                            "/run/aos/sandbox-mount-catalog/slots/{}/{}/0000000000000007",
+                            crate::catalog::encode_hex(fence.sandbox_id()),
+                            crate::catalog::encode_hex(fence.incarnation_id()),
+                        ),
+                        identity.st_dev,
+                        identity.st_ino,
+                        mount_id,
+                        pin,
+                    )
+                })
+                .transpose()?;
             Ok(ResolvedLaunchResources {
                 workspace: ResolvedWorkspace::from_pinned(
                     "/run/aos/sandbox-pins/workspaces/test-root".to_owned(),
@@ -959,6 +993,7 @@ mod tests {
                     range_size: 65_536,
                     catalog_generation: 1,
                 },
+                attachment_anchor,
             })
         }
     }
@@ -980,7 +1015,7 @@ mod tests {
             before_effect: &mut (dyn FnMut() -> Result<()> + Send),
         ) -> Result<WorkerObservation> {
             let state = match operation {
-                WorkerOperation::Launch { spec, pins: _pins } => {
+                WorkerOperation::Launch { spec, pins } => {
                     let descriptor_prefix =
                         format!("/proc/{}/fd/", rustix::process::getpid().as_raw_nonzero());
                     assert!(spec.executable().starts_with(&descriptor_prefix));
@@ -992,7 +1027,7 @@ mod tests {
                             .map(|byte| format!("{byte:02x}"))
                             .collect::<String>()
                     );
-                    let expected_arguments = [
+                    let mut expected_arguments = vec![
                         "--boot",
                         "--quiet",
                         "--keep-unit",
@@ -1010,6 +1045,10 @@ mod tests {
                         "--aos-payload-seccomp-profile=aos-sandbox-payload-v1",
                         "--aos-lifecycle-profile=aos-sandbox-lifecycle-v1",
                     ];
+                    if pins.attachment_anchor().is_some() {
+                        expected_arguments
+                            .push("--aos-attachment-anchor-fd=aos-sandbox-attachment-anchor-v1");
+                    }
                     assert_eq!(spec.arguments(), expected_arguments);
                     assert!(spec.root_directory().starts_with(&descriptor_prefix));
                     assert!(
@@ -1441,6 +1480,12 @@ mod tests {
         let header = request.header.get_or_insert_default();
         header.protocol_major = u32::from(protocol_version.major());
         header.protocol_minor = u32::from(protocol_version.minor());
+        if protocol_version == ProtocolVersion::new(1, 3) {
+            request
+                .launch_plan
+                .get_or_insert_default()
+                .attachment_anchor_handle = vec![12; 32];
+        }
         request.encode_to_vec()
     }
 
@@ -2071,7 +2116,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apply_accepts_1_1_and_1_2_carriers_with_1_1_signed_semantics() {
+    async fn apply_accepts_1_1_through_1_3_carriers_with_1_1_signed_semantics() {
         let fixture = AuthorityFixture::new();
         let store = MemoryStore::default();
         let worker = FakeWorker::default();
@@ -2086,6 +2131,7 @@ mod tests {
         .unwrap();
         let request_1_1 = request_at_protocol(1, 2, ProtocolVersion::new(1, 1));
         let request_1_2 = request_at_protocol(2, 8, ProtocolVersion::new(1, 2));
+        let request_1_3 = request_at_protocol(3, 9, ProtocolVersion::new(1, 3));
 
         assert!(
             apply_protocol(
@@ -2105,7 +2151,17 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert!(
+            apply_protocol(
+                &mut broker,
+                &fixture,
+                &request_1_3,
+                ProtocolVersion::new(1, 3),
+            )
+            .await
+            .is_ok()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
 
         let artifacts = fixture.artifacts(&request_1_2, 1);
         let query = broker
@@ -2138,7 +2194,7 @@ mod tests {
             .await
             .is_err()
         );
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
     }
 
     #[tokio::test]

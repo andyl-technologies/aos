@@ -84,6 +84,8 @@ in
     #          reboot support. Runtime integration is a separate step.
     #   0010 — Authenticate per-boot shutdown intent and reset the empty payload
     #          cgroup while retaining the AOS supervisor and unit invocation.
+    #   0011 — Install a broker-owned attachment anchor from an exact named
+    #          descriptor with the target idmap and hard read-only attributes.
     patches = [
       ./patches/0001-remove-usr-lib-unit-lookup-paths.patch
       ./patches/0002-add-prefix-to-conf-paths.patch
@@ -95,6 +97,7 @@ in
       ./patches/0008-nspawn-owned-root-descriptor.patch
       ./patches/0009-nspawn-shutdown-intent-state.patch
       ./patches/0010-nspawn-retained-supervisor-reboot.patch
+      ./patches/0011-nspawn-attachment-anchor-descriptor.patch
     ];
 
     buildDeps = [
@@ -475,6 +478,16 @@ in
           if "$out/bin/systemd-nspawn" --aos-root-mount-fd=unknown \
             > /dev/null 2>&1; then
             echo "ERROR: systemd-nspawn accepted an unknown root descriptor role" >&2
+            exit 1
+          fi
+          if ! "$out/bin/systemd-nspawn" --help | grep -F -q -- \
+            '--aos-attachment-anchor-fd=NAME'; then
+            echo "ERROR: systemd-nspawn lacks the AOS attachment-anchor option" >&2
+            exit 1
+          fi
+          if "$out/bin/systemd-nspawn" --aos-attachment-anchor-fd=unknown \
+            > /dev/null 2>&1; then
+            echo "ERROR: systemd-nspawn accepted an unknown attachment-anchor descriptor role" >&2
             exit 1
           fi
         '';
