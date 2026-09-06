@@ -134,17 +134,34 @@ impl CampaignRepository {
         else {
             return Ok(None);
         };
-        if fact != CampaignFact::BranchRequestIssued(request) {
-            return Err(integrity("branch-request-result-index-type-mismatch"));
-        }
+        let acceptance_fact = fact.clone();
+        let recorded_summary = match fact {
+            CampaignFact::BranchRequestAccepted {
+                request: accepted,
+                summary,
+            } if accepted == request => Some(summary),
+            CampaignFact::BranchRequestIssued(accepted) if accepted == request => None,
+            _ => return Err(integrity("branch-request-result-index-type-mismatch")),
+        };
         let prior_snapshot = loaded
             .snapshot
             .parent()
             .ok_or_else(|| integrity("branch-request-transition-has-no-parent"))?;
+        let request_record = self.read_branch_request(request.content_id())?;
+        let prior = self.read_snapshot(prior_snapshot.content_id())?;
+        let summary =
+            self.branch_acceptance_summary(prior.snapshot.roots().graph, &request_record)?;
+        if recorded_summary.is_some_and(|recorded| recorded != summary) {
+            return Err(integrity("branch-request-acceptance-summary-mismatch"));
+        }
         Ok(Some(BranchRequestResult {
             prior_snapshot,
             new_snapshot: CampaignSnapshotId::from_content_id(result_content)?,
             request,
+            summary,
+            snapshot: loaded.snapshot,
+            acceptance_fact,
+            summary_recorded: recorded_summary.is_some(),
             replayed: true,
         }))
     }
@@ -421,6 +438,9 @@ impl CampaignRepository {
                 mutation_result_hash_key("pin", request.command.as_hash())
             }
             CampaignFact::BranchRequestIssued(request) => {
+                mutation_result_content_key("branch-request", request.content_id())
+            }
+            CampaignFact::BranchRequestAccepted { request, .. } => {
                 mutation_result_content_key("branch-request", request.content_id())
             }
             CampaignFact::ProposalIssued(proposal) => {

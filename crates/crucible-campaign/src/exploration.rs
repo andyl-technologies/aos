@@ -35,6 +35,7 @@ const MAX_CONTINUATIONS: usize = 65_536;
 const MAX_EXPANSION_PAGE_ITEMS: usize = 10_000;
 const MAX_EXACT_RECORD_BYTES: usize = 32 * 1024 * 1024;
 
+mod acceptance;
 mod attempt;
 mod guidance;
 mod planner;
@@ -44,6 +45,7 @@ mod projection;
 mod proposal;
 mod request;
 
+pub use acceptance::*;
 pub use attempt::*;
 pub use guidance::*;
 pub use planner::*;

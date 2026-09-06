@@ -1463,7 +1463,8 @@ impl CampaignRepository {
                     crate::CampaignRecordKind::Snapshot,
                 )?;
             }
-            CampaignFact::BranchRequestIssued(id) => {
+            CampaignFact::BranchRequestIssued(id)
+            | CampaignFact::BranchRequestAccepted { request: id, .. } => {
                 self.read_branch_request(id.content_id())?;
             }
             CampaignFact::PlannerAdvanced(id) => {

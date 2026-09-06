@@ -5,6 +5,8 @@ use super::cli_campaign_import::{
 };
 use super::*;
 
+#[path = "campaign/acceptance.rs"]
+mod acceptance;
 #[path = "campaign/authoring.rs"]
 mod authoring;
 #[path = "campaign/configuration.rs"]
@@ -30,6 +32,7 @@ mod snapshot;
 #[path = "campaign/validation.rs"]
 mod validation;
 
+use acceptance::CampaignBranchAcceptanceSummaryReport;
 use configuration::{compile_campaign_configuration, render_campaign_configuration_compilation};
 use explain::{
     query_campaign_attempt_explanation, query_campaign_explanation,
@@ -86,7 +89,7 @@ const CAMPAIGN_HEAD_REPORT_SCHEMA: &str = "crucible.cli.campaign-head.v1";
 const CAMPAIGN_LIST_REPORT_SCHEMA: &str = "crucible.cli.campaign-list.v1";
 const CAMPAIGN_MUTATION_REPORT_SCHEMA: &str = "crucible.cli.campaign-mutation.v1";
 const CAMPAIGN_PAGE_REPORT_SCHEMA: &str = "crucible.cli.campaign-page.v2";
-const CAMPAIGN_ACCEPTANCE_REPORT_SCHEMA: &str = "crucible.cli.campaign-acceptance.v2";
+const CAMPAIGN_ACCEPTANCE_REPORT_SCHEMA: &str = "crucible.cli.campaign-acceptance.v3";
 const CAMPAIGN_RUNTIME_ATTACHMENT_REPORT_SCHEMA: &str =
     "crucible.cli.campaign-runtime-attachment.v1";
 const MAX_CAMPAIGN_SELECTOR_SCAN_ITEMS: u32 = 4_096;
@@ -266,6 +269,8 @@ enum CampaignAcceptanceReport {
         request: String,
         prior_snapshot: String,
         new_snapshot: String,
+        #[serde(flatten)]
+        summary: CampaignBranchAcceptanceSummaryReport,
         replayed: bool,
     },
 }
@@ -1979,6 +1984,10 @@ where
                 request: response.request().to_string(),
                 prior_snapshot: response.prior_snapshot().to_string(),
                 new_snapshot: response.new_snapshot().to_string(),
+                summary: CampaignBranchAcceptanceSummaryReport::new(
+                    response.summary(),
+                    response.summary_recorded(),
+                ),
                 replayed: response.replayed(),
             })
         }
@@ -2481,7 +2490,7 @@ fn render_campaign_acceptance(
     }
 }
 
-fn campaign_acceptance_fields(report: &CampaignAcceptanceReport) -> Vec<(&'static str, &str)> {
+fn campaign_acceptance_fields(report: &CampaignAcceptanceReport) -> Vec<(&'static str, String)> {
     match report {
         CampaignAcceptanceReport::Create {
             campaign,
@@ -2493,22 +2502,19 @@ fn campaign_acceptance_fields(report: &CampaignAcceptanceReport) -> Vec<(&'stati
             ..
         } => {
             let mut fields = vec![
-                ("operation", "create"),
-                ("campaign", campaign.as_str()),
-                ("snapshot", snapshot.as_str()),
-                ("lineage", lineage.as_str()),
-                ("active_policy", active_policy.as_str()),
-                ("replayed", if *replayed { "true" } else { "false" }),
+                ("operation", "create".to_owned()),
+                ("campaign", campaign.clone()),
+                ("snapshot", snapshot.clone()),
+                ("lineage", lineage.clone()),
+                ("active_policy", active_policy.clone()),
+                ("replayed", replayed.to_string()),
             ];
             if let Some(start) = start {
                 fields.extend([
-                    ("start_command", start.command.as_str()),
-                    ("start_prior_snapshot", start.prior_snapshot.as_str()),
-                    ("start_snapshot", start.new_snapshot.as_str()),
-                    (
-                        "start_replayed",
-                        if start.replayed { "true" } else { "false" },
-                    ),
+                    ("start_command", start.command.clone()),
+                    ("start_prior_snapshot", start.prior_snapshot.clone()),
+                    ("start_snapshot", start.new_snapshot.clone()),
+                    ("start_replayed", start.replayed.to_string()),
                 ]);
             }
             fields
@@ -2522,29 +2528,34 @@ fn campaign_acceptance_fields(report: &CampaignAcceptanceReport) -> Vec<(&'stati
             replayed,
             ..
         } => vec![
-            ("operation", "derive"),
-            ("source_campaign", source_campaign),
-            ("source_snapshot", source_snapshot),
-            ("campaign", campaign),
-            ("new_snapshot", new_snapshot),
-            ("active_policy", active_policy),
-            ("replayed", if *replayed { "true" } else { "false" }),
+            ("operation", "derive".to_owned()),
+            ("source_campaign", source_campaign.clone()),
+            ("source_snapshot", source_snapshot.clone()),
+            ("campaign", campaign.clone()),
+            ("new_snapshot", new_snapshot.clone()),
+            ("active_policy", active_policy.clone()),
+            ("replayed", replayed.to_string()),
         ],
         CampaignAcceptanceReport::Branch {
             campaign,
             request,
             prior_snapshot,
             new_snapshot,
+            summary,
             replayed,
             ..
-        } => vec![
-            ("operation", "branch"),
-            ("campaign", campaign),
-            ("request", request),
-            ("prior_snapshot", prior_snapshot),
-            ("new_snapshot", new_snapshot),
-            ("replayed", if *replayed { "true" } else { "false" }),
-        ],
+        } => {
+            let mut fields = vec![
+                ("operation", "branch".to_owned()),
+                ("campaign", campaign.clone()),
+                ("request", request.clone()),
+                ("prior_snapshot", prior_snapshot.clone()),
+                ("new_snapshot", new_snapshot.clone()),
+            ];
+            fields.extend(summary.human_fields());
+            fields.push(("replayed", replayed.to_string()));
+            fields
+        }
     }
 }
 
