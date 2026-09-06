@@ -2,6 +2,7 @@
 {
   mkDerivation,
   fetchurl,
+  buildPackages,
   gnumake,
   pkg-config,
   check,
@@ -13,7 +14,6 @@
   e2fsprogs,
   perl,
   python3,
-  glibc-locales,
 }: let
   version = "3.7";
 in
@@ -32,6 +32,7 @@ in
       e2fsprogs
       perl
       python3
+      buildPackages.glibc-locales
     ];
     runtimeDeps = [gettext lvm2 readline util-linux];
     propagatedDeps = [util-linux];
@@ -67,7 +68,7 @@ in
       {
         name = "check";
         script = ''
-          export LOCPATH=${glibc-locales}/lib/locale
+          export LOCPATH=${buildPackages.glibc-locales}/lib/locale
           export LC_ALL=C.UTF-8
           make check
         '';

@@ -2,6 +2,7 @@
 {
   mkDerivation,
   fetchurl,
+  buildPackages,
   gnumake,
   gettext,
   pkg-config,
@@ -10,7 +11,6 @@
   c-ares,
   gpgme,
   glib,
-  glibc-locales,
   libidn2,
   libmetalink,
   libproxy,
@@ -80,7 +80,7 @@ in
       hash = "sha256-GSJcx1awoIj8gRSNxqQKDI8ymvf9hIPxx7L+UPTgih8=";
     };
 
-    buildDeps = [gnumake gettext pkg-config perl lzip glib.dev glibc-locales] ++ perlTestDeps;
+    buildDeps = [gnumake gettext pkg-config perl lzip glib.dev buildPackages.glibc-locales] ++ perlTestDeps;
     runtimeDeps = [
       c-ares
       gpgme
@@ -164,11 +164,11 @@ in
       {
         name = "check";
         script = ''
-          LOCPATH=${glibc-locales}/lib/locale \
+          LOCPATH=${buildPackages.glibc-locales}/lib/locale \
             LC_ALL=C.UTF-8 \
             PERL5LIB=${perlTestPath} \
             make -j"$NIX_BUILD_CORES" check \
-              TESTS_ENVIRONMENT='export LOCPATH=${glibc-locales}/lib/locale; export LC_ALL=C.UTF-8;'
+              TESTS_ENVIRONMENT='export LOCPATH=${buildPackages.glibc-locales}/lib/locale; export LC_ALL=C.UTF-8;'
         '';
       }
       {

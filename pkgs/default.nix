@@ -983,6 +983,7 @@
     "tar"
     "gzip"
     "patch"
+    "cmake"
   ];
   targetPackageArgumentProxy = name: {
     type = "derivation";

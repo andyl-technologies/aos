@@ -2,10 +2,10 @@
 {
   mkDerivation,
   fetchurl,
+  buildPackages,
   gnumake,
   pkg-config,
   rust,
-  glibc-locales,
   openssl,
   zlib,
   libyaml,
@@ -27,7 +27,7 @@ in
       hash = "sha256-nJ0SH+MxTqfIAeaQud6YHSudEteEnbmcJ0gkaKVBugo=";
     };
 
-    buildDeps = [gnumake pkg-config rust glibc-locales];
+    buildDeps = [gnumake pkg-config rust buildPackages.glibc-locales];
     runtimeDeps = [
       openssl
       zlib
@@ -70,7 +70,7 @@ in
       {
         name = "check";
         script = ''
-          export LOCPATH=${glibc-locales}/lib/locale
+          export LOCPATH=${buildPackages.glibc-locales}/lib/locale
           export LC_ALL=C.UTF-8
           check_cores=$NIX_BUILD_CORES
           if [ "$check_cores" -gt 16 ]; then check_cores=16; fi
