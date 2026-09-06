@@ -747,6 +747,10 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
                     .map_or_else(|failure| failure.to_string(), |()| String::from("released"))
             )));
         }
+        #[cfg(feature = "test-support")]
+        if adopted_process.is_some() {
+            hot_fork::record_hot_fork_adoption_for_test();
+        }
     }
 
     if hot_fork_restore.as_ref().is_some_and(|restore| {

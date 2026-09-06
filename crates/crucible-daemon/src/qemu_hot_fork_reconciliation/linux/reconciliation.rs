@@ -67,6 +67,11 @@ where
                 }
                 LinuxSourceReleasePhase::PluginEndpoints => {
                     self.with_source_mut(|source| source.release_plugin_endpoints())?;
+                    self.source_release = LinuxSourceReleasePhase::ChildConsole;
+                    return Ok(false);
+                }
+                LinuxSourceReleasePhase::ChildConsole => {
+                    self.with_source_mut(|source| source.release_child_console())?;
                     self.source_release = LinuxSourceReleasePhase::ChildQmp;
                     return Ok(false);
                 }

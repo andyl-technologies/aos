@@ -263,7 +263,9 @@ pub use node::{
 #[cfg(target_os = "linux")]
 pub use node::{QemuProcessIdentity, linux_process_identity, quarantine_orphaned_qemu_process};
 #[cfg(all(target_os = "linux", feature = "test-support"))]
-pub use node::{QemuTestHotForkOutcome, scripted_hot_fork_source_for_test};
+pub use node::{
+    QemuTestHotForkOutcome, QemuTestHotForkSourceError, scripted_hot_fork_source_for_test,
+};
 #[cfg(target_os = "linux")]
 pub use node_factory::{
     QemuNodeFactoryError, QemuNodeFactoryRuntime, QemuNodeRestoreAdmission, QemuNodeRestorePlan,

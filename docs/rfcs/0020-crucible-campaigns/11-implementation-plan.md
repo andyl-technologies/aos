@@ -3462,6 +3462,29 @@ for the child's lifetime, drops it before the target guard's storage cleanup,
 and releases the consumed plan with the contract once the child's outcome is
 reconciled. Scripted node tests cover the staging order and the rollback.
 
+The daemon also has a narrow scripted production-composition regression for
+T-CAM-7.4. It checks out one complete source world with two running nodes,
+forks and admits both children into one complete assembly, converts both into
+the real production lifecycle constructor, shuts that lifecycle down, and
+retains the source world and aggregate target guard until a canceled
+disposition has reconciled every child. Recovery rolls back and prepares the
+same source world again; a second execution incarnation repeats the complete
+two-node cycle. Separate failures prove that an indeterminate second fork
+retains the first child, both source processes, and the aggregate guard, and
+that a second-node construction failure occurs after one API adoption while
+the complete transaction remains retained. The source transaction is
+authenticated with its full prepared predicate for each fork and with its
+process incarnation and active generation during ordered child-resource
+release; PID reuse, generation changes, and completed rollback all fail the
+latter check.
+
+This is scripted composition evidence, not completion of T-CAM-7.4 or Phase 7.
+It drives shutdown and canceled-disposition reconciliation without modeled
+execution or successful durable observation publication. The real-QEMU atomic
+world matrix, managed pool and selection application, non-VM I/O-node
+semantics, PoweredOff exact/thin fallback, successful runner publication, and
+the equivalence, isolation, scaling, pressure, and dogfood gates remain open.
+
 **Exit:** either the spike satisfies the structural and minimum-speedup targets,
 its manual lab evidence is accepted, or hot fork remains rejected and the RFC is
 revised around another measured local-COW mechanism. No optimistic partial

@@ -898,6 +898,55 @@ fn current_supplementary_groups() -> Result<Vec<libc::gid_t>, QemuSpawnError> {
 }
 
 impl QemuChildProcessContract {
+    /// Duplicates this contract for another generation under the same attempt.
+    ///
+    /// The duplicated descriptors retain the same cgroup, cancellation event,
+    /// credentials, resource ceilings, and private attempt binding. This is for
+    /// a lifecycle launcher whose aggregate guard is shared through an ownership
+    /// registry and therefore cannot lend a reference while that registry is
+    /// unlocked.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError::Io`] when a retained descriptor cannot be
+    /// duplicated.
+    pub fn try_clone_for_attempt_generation(&self) -> Result<Self, QemuSpawnError> {
+        let cgroup_directory = self
+            .cgroup_directory
+            .as_ref()
+            .map(OwnedFd::try_clone)
+            .transpose()
+            .map_err(|source| QemuSpawnError::Io {
+                operation: "duplicate generation cgroup directory",
+                source,
+            })?;
+        let cgroup_procs = self
+            .cgroup_procs
+            .try_clone()
+            .map_err(|source| QemuSpawnError::Io {
+                operation: "duplicate generation cgroup.procs descriptor",
+                source,
+            })?;
+        let cancellation_event =
+            self.cancellation_event
+                .try_clone()
+                .map_err(|source| QemuSpawnError::Io {
+                    operation: "duplicate generation cancellation eventfd",
+                    source,
+                })?;
+
+        Ok(Self {
+            cgroup_directory,
+            cgroup_procs,
+            cancellation_event,
+            maximum_vcpus: self.maximum_vcpus,
+            maximum_resident_bytes: self.maximum_resident_bytes,
+            maximum_writable_bytes: self.maximum_writable_bytes,
+            credentials: self.credentials,
+            attempt_binding: Arc::clone(&self.attempt_binding),
+        })
+    }
+
     fn admitted_resource_ceiling(&self) -> (u32, u64, u64) {
         (
             self.maximum_vcpus,
