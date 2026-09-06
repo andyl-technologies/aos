@@ -248,6 +248,8 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0232-crucible-retain-child-file-plan-descriptors.patch",
     "0233-crucible-drop-inherited-current-monitor.patch",
     "0234-crucible-forkable-template-ram.patch",
+    "0235-crucible-release-stages-under-retained-template.patch",
+    "0236-crucible-restarted-vcpu-thread-current-cpu.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each
