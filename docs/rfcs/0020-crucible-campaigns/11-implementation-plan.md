@@ -3402,6 +3402,25 @@ accounting is bounded under sustained pressure; driving real templates
 through the packaged daemon under host memory pressure remains part of the
 Phase 6 lab audit.
 
+The supported profile T-CAM-6.6 asks to be recorded is the one every live
+hot-fork flight runs: the `sim` TCG accelerator, one round-robin vCPU, 128 MiB
+to 1 GiB of guest RAM, firmware boot of the `bios-256k` image with the
+crucible-console frontend attached, the QEMU plugin with fingerprinting on,
+and the native VMState graph as the only storage. Its source holds six
+threads, which the thread inventory classifies as the coordinator main loop,
+the RCU thread and monitor iothread that the child restarts, the round-robin
+vCPU thread the child restarts under the same current CPU, and the plugin's
+control workers the child re-binds; the child returns with the same six. The
+child flights reject two subsystems up front: a qcow2 root image and a
+shared-memory block device both fail the flights' precondition that only the
+native VMState graph is present, because their child-side adoption (the
+block source freeze covers the source, not a forked child's private overlay)
+is not proven. The 9p and network devices are outside the profile: the
+retained-network snapshot gate certifies a retained frame across a fresh
+process on the source side only, and neither device has a child flight.
+Hot fork stays an acceleration behind exact restore and thin replay for
+every configuration outside this profile, as 05.11 requires.
+
 The daemon's Linux fork launch now owns the child-private file plan for
 production children. Every node launcher exposes its admitted launch resource
 profile, the retained template identity records it, and the launch provisions
