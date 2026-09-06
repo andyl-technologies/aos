@@ -1742,6 +1742,8 @@ in rec {
   phase6 = {
     qemuSourceSetLifecycle = import ./phase6-qemu-source-set-lifecycle.nix {
       inherit pkgs lib;
+      attrPath = "checks.crucible.phase6.qemuSourceSetLifecycle";
+      taskIds = [];
     };
     qemuNativeSourceSet = import ./phase6-qemu-native-source-set.nix {
       inherit pkgs;

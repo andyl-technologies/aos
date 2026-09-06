@@ -159,3 +159,8 @@ crucible	src/model/world_network_policy	retry	1
 crucible	src/model/world_storage_policy	retry	1
 crucible	src/model/world_storage_policy/media	retry	1
 crucible	src/model/world_storage_policy_test	retry	1
+crucible-qemu	src/supervision/node_step_gate/exact_snapshot/child_execution	std::thread::sleep	1
+crucible-qemu	src/supervision/node_step_gate/exact_snapshot/child_execution	thread::sleep	1
+crucible-qemu	src/supervision/node_step_gate/exact_snapshot/child_support	std::thread::sleep	1
+crucible-qemu	src/supervision/node_step_gate/exact_snapshot/child_support	thread::sleep	1
+crucible-qemu	src/supervision/node_step_gate/exact_snapshot/source_set	thread::sleep	1
