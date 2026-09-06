@@ -9,6 +9,14 @@
   libselinux,
   libxcrypt,
   audit,
+  readline,
+  libutempter,
+  libcap-ng,
+  gettext,
+  python3,
+  cython,
+  linux-pam,
+  sqlite,
 }: let
   # 2.42.1 is the first stable release including
   # mount --beneath (commit cbf05f69 by Karel Zak, 2025-08-11; in-tree
@@ -31,6 +39,9 @@ in
     buildDeps = [
       gnumake
       pkg-config
+      gettext
+      python3
+      cython
     ];
     runtimeDeps = [
       zlib
@@ -42,6 +53,13 @@ in
       # libcrypt) isn't on the link line.
       libxcrypt
       audit
+      readline
+      libutempter
+      libcap-ng
+      gettext
+      python3
+      linux-pam
+      sqlite
     ];
     propagatedDeps = [libselinux];
 
@@ -65,38 +83,21 @@ in
         script = ''
           ./configure \
             --prefix=$out \
-            --disable-nls \
             --disable-static \
             --enable-shared \
-            --without-python \
+            --with-python=3 \
             --without-systemd \
             --without-ncurses \
             --with-ncursesw \
-            --without-readline \
-            --without-tinfo \
+            --with-readline \
             --without-slang \
-            --without-utempter \
-            --without-cap-ng \
+            --with-utempter \
             --without-btrfs \
             --with-selinux \
             --with-audit \
             --without-udev \
             --without-cryptsetup \
             --without-econf \
-            --disable-liblastlog2 \
-            --disable-pylibmount \
-            --disable-wall \
-            --disable-login \
-            --disable-su \
-            --enable-sulogin \
-            --enable-nologin \
-            --disable-runuser \
-            --disable-chfn-chsh \
-            --disable-newgrp \
-            --disable-vipw \
-            --disable-pg \
-            --disable-write \
-            --disable-mesg \
             --enable-libblkid \
             --enable-libmount \
             --enable-libfdisk \
@@ -126,6 +127,34 @@ in
         '';
       }
     ];
+
+    checks = {
+      testing,
+      self,
+      ...
+    }: {
+      tool = testing.mkToolCheck {
+        pname = "tool-util-linux";
+        tool = self;
+        command = "mount --version && su --version && lastlog2 --version && wall --version";
+      };
+
+      mount = testing.mkLinkCheck {
+        pname = "link-libmount";
+        library = self;
+        libs = ["-lmount"];
+        testSource = ''
+          #include <libmount/libmount.h>
+
+          int main(void) {
+              struct libmnt_context *context = mnt_new_context();
+              if (context == NULL) return 1;
+              mnt_free_context(context);
+              return 0;
+          }
+        '';
+      };
+    };
 
     meta = {
       description = "util-linux — miscellaneous system utilities for Linux";

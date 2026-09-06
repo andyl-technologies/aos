@@ -15,6 +15,11 @@
   zlib,
   libslirp,
   dtc,
+  libcap-ng,
+  libusb1,
+  libgcrypt,
+  gnutls,
+  fuse3,
   stdenv,
   buildPackages,
   pname ? "qemu",
@@ -165,19 +170,31 @@
       "--disable-curses"
       "--disable-xen"
       "--disable-brlapi"
-      "--disable-cap-ng"
-      "--disable-libusb"
       "--disable-usb-redir"
       "--disable-vde"
-      "--disable-nettle"
-      "--disable-gcrypt"
-      "--disable-gnutls"
       "--disable-libnfs"
       "--disable-libssh"
       "--disable-smartcard"
-      "--disable-vhost-net"
       "--enable-fdt=system"
       "--audio-drv-list="
+    ]
+    ++ lib.optionals (!isDarwinCross) [
+      "--enable-cap-ng"
+      "--enable-libusb"
+      "--disable-nettle"
+      "--enable-gcrypt"
+      "--enable-gnutls"
+      "--enable-vhost-net"
+      "--enable-fuse"
+    ]
+    ++ lib.optionals isDarwinCross [
+      "--disable-cap-ng"
+      "--disable-libusb"
+      "--disable-nettle"
+      "--disable-gcrypt"
+      "--disable-gnutls"
+      "--disable-vhost-net"
+      "--disable-fuse"
     ]
     # Mach-O executables use Darwin's platform-default PIE model.  QEMU's
     # generic probe passes `-pie` under `-Werror`, which Clang correctly
@@ -319,13 +336,21 @@ in
           glib.dev
           glib.tools
         ];
-      runtimeDeps = [
-        glib
-        pixman
-        zlib
-        libslirp
-        dtc
-      ];
+      runtimeDeps =
+        [
+          glib
+          pixman
+          zlib
+          libslirp
+          dtc
+        ]
+        ++ lib.optionals (!isDarwinCross) [
+          libcap-ng
+          libusb1
+          libgcrypt
+          gnutls
+          fuse3
+        ];
       propagatedDeps = [];
       # The Darwin install is finalized and signed below. Either generic
       # mutating pass would invalidate the resulting Mach-O code signatures.

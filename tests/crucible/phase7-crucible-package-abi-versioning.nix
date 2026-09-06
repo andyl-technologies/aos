@@ -83,6 +83,11 @@
     zlib = null;
     libslirp = null;
     dtc = null;
+    libcap-ng = null;
+    libusb1 = null;
+    libgcrypt = null;
+    gnutls = null;
+    fuse3 = null;
   };
   qemuPackageShmemAbi = qemuPackageMetadataProbe.shmemAbi;
   qemuPackageShmemAbiVersion = qemuPackageMetadataProbe.shmemAbiVersion;

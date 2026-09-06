@@ -147,6 +147,11 @@ in
                 zlib = null;
                 libslirp = null;
                 dtc = null;
+                libcap-ng = null;
+                libusb1 = null;
+                libgcrypt = null;
+                gnutls = null;
+                fuse3 = null;
                 pname = "qemu-crucible";
                 enablePlugins = true;
                 applyCruciblePatches = true;

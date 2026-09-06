@@ -82,6 +82,11 @@
     zlib = null;
     libslirp = null;
     dtc = null;
+    libcap-ng = null;
+    libusb1 = null;
+    libgcrypt = null;
+    gnutls = null;
+    fuse3 = null;
   };
   releaseManifest = import ../../pkgs/tools/crucible/_release-manifest.nix {
     inherit lib;

@@ -28,6 +28,7 @@
   systemd,
   mtools,
   qemu-img,
+  sqlite,
   tpm2-tools,
   util-linux,
   which,
@@ -147,7 +148,7 @@
   cargoArtifactContract = {
     family = "aos-native-release-and-test";
     checkType = "debug";
-    nativeInputs = map toString [openssl buildProtobuf buildCmake libssh2];
+    nativeInputs = map toString [openssl sqlite buildProtobuf buildCmake libssh2];
   };
   cargoEnv = {
     OPENSSL_DIR = "${openssl}";
@@ -155,6 +156,7 @@
     OPENSSL_INCLUDE_DIR = "${openssl}/include";
     OPENSSL_NO_VENDOR = "1";
     OPENSSL_STATIC = "0";
+    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
     PROTOC = "${buildProtobuf}/bin/protoc";
   };
   cargoArtifacts = mkCargoArtifacts {
@@ -172,8 +174,8 @@
       "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${applicationTestFlags}"
     ];
     inherit cargoEnv;
-    buildDeps = [buildPerl buildPkgConfig openssl buildProtobuf buildCmake libssh2];
-    runtimeDeps = [openssl zlib];
+    buildDeps = [buildPerl buildPkgConfig openssl sqlite buildProtobuf buildCmake libssh2];
+    runtimeDeps = [openssl sqlite zlib];
   };
 in
   mkCargoPackage {
@@ -203,10 +205,10 @@ in
     # remains in the `aos` runtime closure because maintainer commands create,
     # inspect, commit, and publish isolated Git worktrees without host tools.
     buildDeps =
-      [buildPerl buildPkgConfig openssl buildProtobuf buildCmake libssh2 buildGitMinimal buildOpenSsh]
+      [buildPerl buildPkgConfig openssl sqlite buildProtobuf buildCmake libssh2 buildGitMinimal buildOpenSsh]
       ++ lib.optionals isDarwinCross [buildPackages.aos];
     runtimeDeps =
-      [openssl zlib]
+      [openssl sqlite zlib]
       ++ aosRuntimeTools
       ++ aprRuntimeTools
       ++ apmRuntimeTools
@@ -217,7 +219,7 @@ in
     # retain the union of all four command closures here. The Rust programs
     # dynamically link only these shared libraries; command-specific tools are
     # referenced exclusively by the corresponding installed wrapper.
-    NIX_LDFLAGS = "-Wl,-rpath,${openssl}/lib -Wl,-rpath,${zlib}/lib";
+    NIX_LDFLAGS = "-Wl,-rpath,${openssl}/lib -Wl,-rpath,${sqlite}/lib -Wl,-rpath,${zlib}/lib";
 
     preBuild = ''
       # Keep the integration-test executable below the bounded verifier-
@@ -231,6 +233,7 @@ in
       export OPENSSL_INCLUDE_DIR="${openssl}/include"
       export OPENSSL_NO_VENDOR=1
       export OPENSSL_STATIC=0
+      export LIBSQLITE3_SYS_USE_PKG_CONFIG=1
       export PROTOC="${buildProtobuf}/bin/protoc"
       export AOS_MCOPY="${mtools}/bin/mcopy"
       export AOS_QEMU_IMG="${qemu-img}/bin/qemu-img"
