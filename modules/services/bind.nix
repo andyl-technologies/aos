@@ -102,8 +102,8 @@ in {
       requires = ["systemd-tmpfiles-setup.service"];
       serviceConfig = {
         Type = "notify";
-        ExecStart = "${pkgs.bind}/bin/named -f -c /etc/bind/named.conf";
-        ExecReload = "${pkgs.bind}/bin/rndc reload";
+        ExecStart = "${pkgs.bind}/sbin/named -f -c /etc/bind/named.conf";
+        ExecReload = "${pkgs.bind}/sbin/rndc reload";
         DynamicUser = true;
         User = "named";
         Group = "named";
