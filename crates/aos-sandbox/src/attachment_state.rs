@@ -220,6 +220,9 @@ pub enum AttachmentDesiredStateError {
     /// The named filesystem-view revision is absent, released, or mismatched.
     #[error("filesystem-view revision failed: {0}")]
     ViewRevision(#[source] Box<crate::FilesystemViewRevisionStateError>),
+    /// The named destination slot is absent, released, or bound elsewhere.
+    #[error("attachment slot failed: {0}")]
+    Slot(#[source] Box<crate::AttachmentSlotStateError>),
     /// The consumer namespace target is no longer current.
     #[error(transparent)]
     CurrentTarget(#[from] NamespaceTargetError),
@@ -231,6 +234,12 @@ pub enum AttachmentDesiredStateError {
 impl From<crate::FilesystemViewRevisionStateError> for AttachmentDesiredStateError {
     fn from(error: crate::FilesystemViewRevisionStateError) -> Self {
         Self::ViewRevision(Box::new(error))
+    }
+}
+
+impl From<crate::AttachmentSlotStateError> for AttachmentDesiredStateError {
+    fn from(error: crate::AttachmentSlotStateError) -> Self {
+        Self::Slot(Box::new(error))
     }
 }
 
@@ -474,6 +483,10 @@ impl History {
             journal,
             generations.values().map(|record| &record.intent),
         )?;
+        crate::attachment_slot_state::validate_historical_attachment_references(
+            journal,
+            generations.values().map(|record| &record.intent),
+        )?;
 
         Ok(Self {
             records,
@@ -580,6 +593,10 @@ where
             journal,
             &mutation.record.intent,
         )?;
+        crate::attachment_slot_state::validate_attachment_reference(
+            journal,
+            &mutation.record.intent,
+        )?;
         journal.commit(&mutation.record.transaction()?)?;
     }
 
@@ -651,6 +668,22 @@ pub(crate) fn source_view_usage(
         .any(|record| record.intent.source_view().0 == view_id);
     let present = history.records.values().any(|record| {
         record.intent.source_view().0 == view_id
+            && record.presence == AttachmentDesiredPresenceV1::Present
+    });
+    Ok((historical, present))
+}
+
+pub(crate) fn destination_slot_usage(
+    journal: &Journal,
+    slot_id: aos_sandbox_core::AttachmentSlotId,
+) -> Result<(bool, bool), AttachmentDesiredStateError> {
+    let history = History::load(journal)?;
+    let historical = history
+        .generations
+        .values()
+        .any(|record| record.intent.destination_slot() == slot_id);
+    let present = history.records.values().any(|record| {
+        record.intent.destination_slot() == slot_id
             && record.presence == AttachmentDesiredPresenceV1::Present
     });
     Ok((historical, present))
@@ -806,6 +839,36 @@ mod tests {
         }
     }
 
+    fn ensure_slot(journal: &mut Journal, intent: &AttachmentIntent) {
+        if crate::attachment_slot_state::get_current(journal, intent.destination_slot())
+            .unwrap()
+            .is_some()
+        {
+            return;
+        }
+        let operation_byte = intent.destination_slot().as_bytes()[0]
+            .checked_add(40)
+            .unwrap();
+        let mutation = crate::AttachmentSlotMutationV1::new(
+            crate::AttachmentSlotPresenceV1::Available,
+            intent.destination_slot(),
+            Revision::new(1),
+            OperationId::from_bytes([operation_byte; 16]),
+            ObjectDigest::from_bytes([operation_byte.checked_add(20).unwrap(); 32]),
+            None,
+        )
+        .unwrap();
+        let (sandbox, incarnation) = intent.consumer();
+        crate::attachment_slot_state::commit_for_test(
+            journal,
+            &mutation,
+            sandbox,
+            incarnation,
+            intent.expected_namespace_generation().get(),
+        )
+        .unwrap();
+    }
+
     fn intent(id: u8, slot: u8, generation: u64) -> AttachmentIntent {
         AttachmentIntent::new(
             AttachmentId::from_bytes([id; 16]),
@@ -850,6 +913,7 @@ mod tests {
         mutation: &AttachmentDesiredMutationV1,
     ) -> AttachmentDesiredCommitOutcomeV1 {
         ensure_view_revisions(journal, mutation.record.intent.source_view().1.get());
+        ensure_slot(journal, &mutation.record.intent);
         let history = History::load(journal).unwrap();
         let outcome = history.validate_mutation(mutation).unwrap();
         if outcome == AttachmentDesiredCommitOutcomeV1::Recorded {
@@ -1131,6 +1195,90 @@ mod tests {
     }
 
     #[test]
+    fn attachment_admission_requires_an_available_exact_destination_slot() {
+        let (_directory, mut journal) = journal();
+        let attachment = intent(1, 2, 1);
+        assert!(matches!(
+            crate::attachment_slot_state::validate_attachment_reference(&journal, &attachment),
+            Err(crate::AttachmentSlotStateError::Conflict)
+        ));
+
+        ensure_slot(&mut journal, &attachment);
+        crate::attachment_slot_state::validate_attachment_reference(&journal, &attachment).unwrap();
+        let wrong_consumer = AttachmentIntent::new(
+            AttachmentId::from_bytes([2; 16]),
+            DesiredGeneration::new(1),
+            SandboxId::from_bytes([33; 16]),
+            IncarnationId::from_bytes([4; 16]),
+            NamespaceGeneration::new(5),
+            ViewId::from_bytes([6; 16]),
+            Revision::new(1),
+            None,
+            view_descriptor(),
+            attachment.destination_slot(),
+            AttachmentConsistency::ImmutableRevision,
+            ViewMutation::ReadOnly,
+            MountAttributes::new(true, true, true, true, true, false),
+            AttachmentLease::new(LeaseId::from_bytes([9; 16]), 10, 20).unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            crate::attachment_slot_state::validate_attachment_reference(&journal, &wrong_consumer),
+            Err(crate::AttachmentSlotStateError::Conflict)
+        ));
+    }
+
+    #[test]
+    fn slot_release_waits_for_attachment_intent_and_fresh_inventory() {
+        let (_directory, mut journal) = journal();
+        let present = mutation(AttachmentDesiredPresenceV1::Present, intent(1, 2, 1), None);
+        commit_without_target(&mut journal, &present);
+        let slot = crate::attachment_slot_state::get_current(
+            &journal,
+            present.record.intent.destination_slot(),
+        )
+        .unwrap()
+        .unwrap();
+        let release = crate::AttachmentSlotMutationV1::new(
+            crate::AttachmentSlotPresenceV1::Released,
+            slot.slot_id(),
+            Revision::new(2),
+            OperationId::from_bytes([70; 16]),
+            ObjectDigest::from_bytes([71; 32]),
+            Some(slot.record_digest()),
+        )
+        .unwrap();
+        let (sandbox, incarnation) = present.record.intent.consumer();
+        assert!(matches!(
+            crate::attachment_slot_state::commit_for_test(
+                &mut journal,
+                &release,
+                sandbox,
+                incarnation,
+                present.record.intent.expected_namespace_generation().get(),
+            ),
+            Err(crate::AttachmentSlotStateError::Conflict)
+        ));
+
+        let released_attachment = mutation(
+            AttachmentDesiredPresenceV1::Released,
+            intent(1, 2, 2),
+            Some(ObjectDigest::from_bytes(present.record.digest)),
+        );
+        commit_without_target(&mut journal, &released_attachment);
+        assert!(matches!(
+            crate::attachment_slot_state::commit_for_test(
+                &mut journal,
+                &release,
+                sandbox,
+                incarnation,
+                present.record.intent.expected_namespace_generation().get(),
+            ),
+            Err(crate::AttachmentSlotStateError::Conflict)
+        ));
+    }
+
+    #[test]
     fn view_release_waits_for_present_attachment_intent_to_drain() {
         let (_directory, mut journal) = journal();
         let attachment = mutation(AttachmentDesiredPresenceV1::Present, intent(1, 2, 1), None);
@@ -1208,6 +1356,28 @@ mod tests {
             reconciler.reconcile_next(),
             Err(crate::ReconcilerError::AttachmentDesired(error))
                 if matches!(*error, AttachmentDesiredStateError::ViewRevision(_))
+        ));
+    }
+
+    #[test]
+    fn orphaned_attachment_slot_reference_blocks_restart() {
+        let (_directory, mut journal) = journal();
+        let attachment = mutation(AttachmentDesiredPresenceV1::Present, intent(1, 2, 1), None);
+        ensure_view_revisions(&mut journal, 1);
+        journal
+            .commit(&attachment.record.transaction().unwrap())
+            .unwrap();
+
+        assert!(matches!(
+            validate_namespace(&journal),
+            Err(AttachmentDesiredStateError::Slot(error))
+                if matches!(*error, crate::AttachmentSlotStateError::CorruptState)
+        ));
+        let mut reconciler = crate::Reconciler::new(journal, NoEffects);
+        assert!(matches!(
+            reconciler.reconcile_next(),
+            Err(crate::ReconcilerError::AttachmentDesired(error))
+                if matches!(*error, AttachmentDesiredStateError::Slot(_))
         ));
     }
 

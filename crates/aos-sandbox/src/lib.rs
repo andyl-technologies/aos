@@ -15,6 +15,8 @@ pub mod attachment_mount;
 #[cfg(target_os = "linux")]
 pub mod attachment_reconciliation;
 #[cfg(target_os = "linux")]
+pub mod attachment_slot_state;
+#[cfg(target_os = "linux")]
 pub mod attachment_state;
 #[cfg(target_os = "linux")]
 pub mod attachment_verification;
@@ -60,6 +62,11 @@ pub use attachment_mount::{
 pub use attachment_reconciliation::{
     AttachmentReconciliationActionV1, AttachmentReconciliationConflictV1,
     AttachmentReconciliationError, CurrentAttachmentReconciliationV1,
+};
+#[cfg(target_os = "linux")]
+pub use attachment_slot_state::{
+    AttachmentSlotCommitOutcomeV1, AttachmentSlotMutationV1, AttachmentSlotPresenceV1,
+    AttachmentSlotStateError, CommittedCurrentAttachmentSlotV1, DurableAttachmentSlotV1,
 };
 #[cfg(target_os = "linux")]
 pub use attachment_state::{

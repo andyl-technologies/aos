@@ -428,6 +428,60 @@ where
         target.recheck(self.reconciler.journal_mut(), clock)
     }
 
+    /// Commits one destination-slot creation or release while its target is current.
+    ///
+    /// The controller derives the immutable sandbox, incarnation, and namespace
+    /// binding from the retained target. The slot is logical desired state: it
+    /// carries no path or descriptor and grants no Mount authority. Release is
+    /// permanent and waits for attachment intent and authenticated Mount
+    /// inventory to prove the slot drained.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale namespace authority, sentinel mutation metadata, a stale
+    /// resource version, target substitution, operation equivocation, undrained
+    /// attachment or Mount state, corrupt history, capacity exhaustion, and
+    /// failed protected commits.
+    #[cfg(target_os = "linux")]
+    pub fn commit_current_attachment_slot<T>(
+        &mut self,
+        target: crate::runtime_scope::CurrentNamespaceTarget,
+        mutation: crate::AttachmentSlotMutationV1,
+        clock: &mut T,
+    ) -> Result<crate::CommittedCurrentAttachmentSlotV1, crate::AttachmentSlotStateError>
+    where
+        T: FnMut() -> Result<
+            RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        crate::attachment_slot_state::commit_current(
+            self.reconciler.journal_mut(),
+            target,
+            mutation,
+            clock,
+        )
+    }
+
+    /// Loads the validated current revision for one logical destination slot.
+    ///
+    /// Released slots remain visible as permanent tombstones. The result does
+    /// not contain a host destination path or broker descriptor authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed, discontinuous, conflicting, or over-limit slot
+    /// history and journal health failures observed during replay.
+    #[cfg(target_os = "linux")]
+    pub fn attachment_slot(
+        &mut self,
+        slot_id: aos_sandbox_core::AttachmentSlotId,
+    ) -> Result<Option<crate::DurableAttachmentSlotV1>, crate::AttachmentSlotStateError> {
+        let journal = self.reconciler.journal_mut();
+        journal.ensure_healthy()?;
+        crate::attachment_slot_state::get_current(journal, slot_id)
+    }
+
     /// Commits one generation-fenced attachment intent while its target is current.
     ///
     /// The desired generation and its normalized operation digest become

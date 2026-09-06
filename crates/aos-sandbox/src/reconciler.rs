@@ -511,6 +511,10 @@ pub enum ReconcileOutcome {
 /// Reports admission, ledger, journal, or executor-contract failures.
 #[derive(Debug, thiserror::Error)]
 pub enum ReconcilerError {
+    /// Protected destination-slot history could not be validated.
+    #[cfg(target_os = "linux")]
+    #[error("attachment-slot state failed: {0}")]
+    AttachmentSlot(#[source] Box<crate::AttachmentSlotStateError>),
     /// Protected filesystem-view revision history could not be validated.
     #[error("filesystem-view revision state failed: {0}")]
     FilesystemViewRevision(#[source] Box<crate::FilesystemViewRevisionStateError>),
@@ -1164,6 +1168,20 @@ where
             {
                 crate::filesystem_view_state::validate_namespace(&self.journal)
                     .map_err(|error| ReconcilerError::FilesystemViewRevision(Box::new(error)))?;
+            }
+            if self
+                .journal
+                .records(RecordNamespace::AttachmentSlot)
+                .next()
+                .is_some()
+            {
+                #[cfg(target_os = "linux")]
+                crate::attachment_slot_state::validate_namespace(&self.journal)
+                    .map_err(|error| ReconcilerError::AttachmentSlot(Box::new(error)))?;
+                #[cfg(not(target_os = "linux"))]
+                return Err(ReconcilerError::CorruptLedger(
+                    "attachment slots require Linux validation",
+                ));
             }
             if self
                 .journal

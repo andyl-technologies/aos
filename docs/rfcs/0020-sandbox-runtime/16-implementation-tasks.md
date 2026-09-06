@@ -3025,3 +3025,35 @@ node-local broker resolution to pinned OS source descriptors, live-export
 authority and incarnation validation, lease-expiry scheduling, complete view
 release/reaping orchestration, and live Mount namespace VM qualification
 remain.
+
+### Namespace-bound destination-slot authority
+
+The controller can now create a logical destination slot only while retaining
+current authority for the sandbox namespace that will own it. Journal namespace
+19 stores a fixed-size `AOSSLT01` creation record binding the slot ID to the
+exact sandbox, incarnation, and namespace generation derived from that live
+target. A compare-and-swap successor can release the slot, after which its
+identity is a permanent tombstone and cannot be rebound to another target or
+resurrected. The record contains no host path or descriptor and grants no Mount
+authority.
+
+Attachment admission now requires the named slot to be available and bound to
+the attachment's exact consumer. Restart validation checks every historical
+attachment generation against the immutable creation record, so missing,
+rewritten, cross-incarnation, or cross-namespace slot references block ordinary
+reconciliation before broker I/O. A present attachment prevents slot release.
+After any attachment history, release additionally requires fresh authenticated
+Mount inventory proving that no physical resource still names the slot. The
+inventory controller-state commitment advances to domain v6 and includes the
+complete slot namespace, so slot creation or release immediately makes an older
+snapshot stale.
+
+Focused validation passes all 347 sandbox unit tests, four downstream public
+API tests, and 14 doctests with one test thread. Strict all-target/all-feature
+crate-local Clippy with warnings denied, warnings-as-errors rustdoc, targeted
+Rust formatting, and diff checks pass. The hermetic `checks.eval` gate passes
+the release build, all 4,664 workspace tests with five skipped, configuration
+evaluation, and system-structure checks. This advances `SBX-VIEW-01` but does
+not complete it: portable-spec declaration proof, node-local resolution to a
+broker-owned pinned destination descriptor, slot materialization and reaping,
+lease-expiry scheduling, and live Mount namespace VM qualification remain.

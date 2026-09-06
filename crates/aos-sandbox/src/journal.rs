@@ -116,6 +116,8 @@ pub enum RecordNamespace {
     AttachmentVerification = 17,
     /// Immutable filesystem-view revisions and their durable source handles.
     FilesystemViewRevision = 18,
+    /// Namespace-bound logical destination slots for filesystem attachments.
+    AttachmentSlot = 19,
 }
 
 impl RecordNamespace {
@@ -139,6 +141,7 @@ impl RecordNamespace {
             16 => Ok(Self::AttachmentDesired),
             17 => Ok(Self::AttachmentVerification),
             18 => Ok(Self::FilesystemViewRevision),
+            19 => Ok(Self::AttachmentSlot),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }
@@ -1900,13 +1903,14 @@ mod tests {
             RecordNamespace::AttachmentDesired,
             RecordNamespace::AttachmentVerification,
             RecordNamespace::FilesystemViewRevision,
+            RecordNamespace::AttachmentSlot,
         ];
         for (index, namespace) in namespaces.into_iter().enumerate() {
             let code = u8::try_from(index + 1).unwrap();
             assert_eq!(namespace as u8, code);
             assert_eq!(RecordNamespace::from_byte(code).unwrap(), namespace);
         }
-        for code in [0, 19, 255] {
+        for code in [0, 20, 255] {
             assert!(RecordNamespace::from_byte(code).is_err());
         }
     }
