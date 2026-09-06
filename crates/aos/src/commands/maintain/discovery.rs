@@ -517,17 +517,11 @@ async fn github_releases(
             let Some(raw_version) = normalized_github_tag(&raw_id, tag_prefix) else {
                 continue;
             };
-            let first_key = format!(
-                "github-releases:{}:{repository}:{}:{raw_id}",
-                repository.len(),
-                raw_id.len()
-            );
-            let first_observed = store.record_first_observed(&first_key, retrieved_at)?;
             candidates.push(ObservationCandidate {
                 raw_id: raw_id.clone(),
                 raw_version: raw_version.to_string(),
                 published_at_unix: github_release_timestamp(entry)?,
-                first_observed_at_unix: first_observed,
+                first_observed_at_unix: retrieved_at,
                 prerelease: entry
                     .get("prerelease")
                     .and_then(Value::as_bool)
@@ -556,6 +550,13 @@ async fn github_releases(
             break;
         }
     }
+    record_github_first_observed(
+        store,
+        "github-releases",
+        repository,
+        &mut candidates,
+        retrieved_at,
+    )?;
     candidates.sort_by(|left, right| left.raw_id.cmp(&right.raw_id));
     if candidates
         .windows(2)
@@ -648,17 +649,11 @@ async fn github_tags(
             let Some(raw_version) = normalized_github_tag(&raw_id, tag_prefix) else {
                 continue;
             };
-            let first_key = format!(
-                "github-tags:{}:{repository}:{}:{raw_id}",
-                repository.len(),
-                raw_id.len()
-            );
-            let first_observed = store.record_first_observed(&first_key, retrieved_at)?;
             candidates.push(ObservationCandidate {
                 raw_id: raw_id.clone(),
                 raw_version: raw_version.to_string(),
                 published_at_unix: None,
-                first_observed_at_unix: first_observed,
+                first_observed_at_unix: retrieved_at,
                 prerelease: false,
                 yanked: false,
                 release_url: github_release_url(repository, &raw_id).ok(),
@@ -681,6 +676,13 @@ async fn github_tags(
             break;
         }
     }
+    record_github_first_observed(
+        store,
+        "github-tags",
+        repository,
+        &mut candidates,
+        retrieved_at,
+    )?;
     candidates.sort_by(|left, right| left.raw_id.cmp(&right.raw_id));
     if candidates
         .windows(2)
@@ -701,6 +703,34 @@ async fn github_tags(
     };
     observation.validate()?;
     Ok(observation)
+}
+
+fn record_github_first_observed(
+    store: &StateStore,
+    provider: &str,
+    repository: &str,
+    candidates: &mut [ObservationCandidate],
+    retrieved_at: u64,
+) -> Result<()> {
+    let first_keys = candidates
+        .iter()
+        .map(|candidate| {
+            format!(
+                "{provider}:{}:{repository}:{}:{}",
+                repository.len(),
+                candidate.raw_id.len(),
+                candidate.raw_id
+            )
+        })
+        .collect::<Vec<_>>();
+    let first_observed = store.record_first_observed_batch(&first_keys, retrieved_at)?;
+    for (candidate, first_key) in candidates.iter_mut().zip(first_keys) {
+        candidate.first_observed_at_unix = first_observed
+            .get(&first_key)
+            .copied()
+            .ok_or_else(|| anyhow::anyhow!("GitHub candidate observation was not recorded"))?;
+    }
+    Ok(())
 }
 
 fn github_api_base_url() -> Result<Url> {
