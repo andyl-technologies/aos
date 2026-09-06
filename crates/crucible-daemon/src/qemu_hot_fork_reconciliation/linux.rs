@@ -34,26 +34,146 @@ enum LinuxSourceReleasePhase {
     Complete,
 }
 
+enum LinuxQemuHotForkSourceOwner {
+    Detached(Box<Mutex<Option<QemuNode>>>),
+    World {
+        source_world: Arc<Mutex<ProductionVmHotForkSourceWorld>>,
+        node: NodeId,
+    },
+}
+
+enum LinuxQemuHotForkSourceLoan<'a> {
+    Detached(&'a mut QemuNode),
+    World(QemuNodeSetPreparedHotForkSource<'a>),
+}
+
+impl LinuxQemuHotForkSourceLoan<'_> {
+    fn process_identity(&self) -> Result<QemuProcessIdentity, QemuNodeChannelError> {
+        match self {
+            Self::Detached(source) => source.process_identity().map_err(|error| {
+                QemuNodeChannelError::new("authenticate hot-fork source process", error.to_string())
+            }),
+            Self::World(source) => Ok(source.process_identity().clone()),
+        }
+    }
+
+    fn query_child_process(
+        &mut self,
+        generation: u64,
+    ) -> Result<QmpHotForkChildProcessState, QemuNodeChannelError> {
+        match self {
+            Self::Detached(source) => source.query_hot_fork_child_process(generation),
+            Self::World(source) => source.query_child_process(generation),
+        }
+    }
+
+    fn release_plugin_endpoints(&mut self) -> Result<(), QemuNodeChannelError> {
+        match self {
+            Self::Detached(source) => source.release_hot_fork_plugin_endpoints(),
+            Self::World(source) => source.release_plugin_endpoints(),
+        }
+    }
+
+    fn release_child_qmp(&mut self) -> Result<(), QemuNodeChannelError> {
+        match self {
+            Self::Detached(source) => source.release_hot_fork_child_qmp(),
+            Self::World(source) => source.release_child_qmp(),
+        }
+    }
+
+    fn release_child_diagnostics(
+        &mut self,
+        consumer: &mut QemuHotForkChildDiagnosticConsumer,
+    ) -> Result<crucible_qemu::QemuHotForkChildDiagnosticCapture, QemuNodeChannelError> {
+        match self {
+            Self::Detached(source) => {
+                source.release_hot_fork_child_diagnostics_with_consumer(consumer)
+            }
+            Self::World(source) => source.release_child_diagnostics(consumer),
+        }
+    }
+
+    fn release_private_ring(&mut self) -> Result<(), QemuNodeChannelError> {
+        match self {
+            Self::Detached(source) => source.release_hot_fork_private_ring_mapping().map(drop),
+            Self::World(source) => source.release_private_ring(),
+        }
+    }
+
+    fn release_child_process(
+        &mut self,
+        generation: u64,
+    ) -> Result<QmpHotForkChildProcessState, QemuNodeChannelError> {
+        match self {
+            Self::Detached(source) => source.release_hot_fork_child_process(generation),
+            Self::World(source) => source.release_child_process(generation),
+        }
+    }
+
+    fn release_child_process_contract(
+        &mut self,
+    ) -> Result<crucible_qemu::QmpHotForkChildProcessContractState, QemuNodeChannelError> {
+        match self {
+            Self::Detached(source) => source.release_hot_fork_child_process_contract(),
+            Self::World(source) => source.release_child_process_contract(),
+        }
+    }
+
+    fn release_child_files(
+        &mut self,
+    ) -> Result<crucible_qemu::QmpHotForkChildFilesState, QemuNodeChannelError> {
+        match self {
+            Self::Detached(source) => source.release_hot_fork_child_files(),
+            Self::World(source) => source.release_child_files(),
+        }
+    }
+}
+
 struct LinuxQemuHotForkProcessOwner {
-    source: Mutex<Option<QemuNode>>,
+    source: LinuxQemuHotForkSourceOwner,
     process: LinuxQemuHotForkChildProcessAuthority,
     reaped: AtomicBool,
 }
 
 impl LinuxQemuHotForkProcessOwner {
+    fn with_source<T>(
+        &self,
+        operation: impl FnOnce(&mut LinuxQemuHotForkSourceLoan<'_>) -> Result<T, QemuNodeChannelError>,
+    ) -> Result<T, LinuxQemuHotForkReconciliationError> {
+        match &self.source {
+            LinuxQemuHotForkSourceOwner::Detached(source) => {
+                let mut source = source
+                    .lock()
+                    .map_err(|_source| LinuxQemuHotForkReconciliationError::SourceOwnerPoisoned)?;
+                let mut source = LinuxQemuHotForkSourceLoan::Detached(
+                    source
+                        .as_mut()
+                        .ok_or(LinuxQemuHotForkReconciliationError::BasisMismatch)?,
+                );
+                operation(&mut source).map_err(Into::into)
+            }
+            LinuxQemuHotForkSourceOwner::World { source_world, node } => {
+                let mut source_world = source_world
+                    .lock()
+                    .map_err(|_source| LinuxQemuHotForkReconciliationError::SourceOwnerPoisoned)?;
+                let source = source_world.prepared_source(node).map_err(|error| {
+                    LinuxQemuHotForkReconciliationError::Source(QemuNodeChannelError::new(
+                        "borrow production hot-fork source",
+                        error.to_string(),
+                    ))
+                })?;
+                let mut source = LinuxQemuHotForkSourceLoan::World(source);
+                operation(&mut source).map_err(Into::into)
+            }
+        }
+    }
+
     fn observe_child(
         &self,
     ) -> Result<QmpHotForkChildProcessState, LinuxQemuHotForkReconciliationError> {
-        let mut source = self
-            .source
-            .lock()
-            .map_err(|_source| LinuxQemuHotForkReconciliationError::SourceOwnerPoisoned)?;
-        let source = source
-            .as_mut()
-            .ok_or(LinuxQemuHotForkReconciliationError::BasisMismatch)?;
-        let state = source.query_hot_fork_child_process(
-            self.process.basis().request().child_process_generation(),
-        )?;
+        let state = self.with_source(|source| {
+            source.query_child_process(self.process.basis().request().child_process_generation())
+        })?;
         if state.generation() != self.process.basis().request().child_process_generation()
             || state.child_process_id() != self.process.basis().child_process_id()
         {
@@ -193,7 +313,9 @@ where
     G: crate::QemuAttemptResourceGuard,
 {
     process_owner: Arc<LinuxQemuHotForkProcessOwner>,
-    template_identity: QemuHotForkTemplateIdentity,
+    template_identity: Option<QemuHotForkTemplateIdentity>,
+    template_configuration: ContentHash,
+    template_event_log_offset: EventLogOffset,
     input: CrucibleAttemptExecution,
     world_assembly: Option<QemuHotForkWorldAssemblyToken>,
     child_event_log: EventLog,
@@ -213,6 +335,13 @@ where
     /// guard's storage cleanup, so the pinned descriptors never outlive the
     /// attempt storage they authenticate.
     run_directory: Option<crucible_qemu::QemuPreparedRunDirectory>,
+}
+
+pub(super) struct LinuxQemuHotForkWorldLaunchSource {
+    pub(super) source_world: Arc<Mutex<ProductionVmHotForkSourceWorld>>,
+    pub(super) node: NodeId,
+    pub(super) configuration: ContentHash,
+    pub(super) event_log: EventLog,
 }
 
 /// Narrow live-child capability retained by one hot-fork reconciliation owner.
@@ -332,16 +461,64 @@ where
             launch.into_parts();
         let basis = process.basis();
         let process_owner = Arc::new(LinuxQemuHotForkProcessOwner {
-            source: Mutex::new(Some(source)),
+            source: LinuxQemuHotForkSourceOwner::Detached(Box::new(Mutex::new(Some(source)))),
             process,
             reaped: AtomicBool::new(false),
         });
         let child_event_log = template_identity.fork_event_log();
+        let template_configuration = template_identity.configuration();
+        let template_event_log_offset = template_identity.event_log().offset();
         Self {
             process_owner,
-            template_identity,
+            template_identity: Some(template_identity),
+            template_configuration,
+            template_event_log_offset,
             input,
             world_assembly,
+            child_event_log,
+            target,
+            basis,
+            pending_child_qmp: Some(child_qmp),
+            scheduler_node: None,
+            installed_node: None,
+            installed_node_id: None,
+            diagnostics_consumer,
+            host_continuation: Some(host_continuation),
+            source_release: LinuxSourceReleasePhase::CloseChildChannel,
+            diagnostics: None,
+            run_directory: Some(run_directory),
+        }
+    }
+
+    pub(super) fn from_world_launch(
+        source: LinuxQemuHotForkWorldLaunchSource,
+        input: CrucibleAttemptExecution,
+        world_assembly: QemuHotForkWorldAssemblyToken,
+        target: G,
+        launch: QemuHotForkChildLaunch<LinuxQemuHotForkChildProcessAuthority>,
+        run_directory: crucible_qemu::QemuPreparedRunDirectory,
+    ) -> Self {
+        let template_event_log_offset = source.event_log.offset();
+        let child_event_log = source.event_log;
+        let (_parent, process, child_qmp, diagnostics_consumer, host_continuation) =
+            launch.into_parts();
+        let basis = process.basis();
+        let process_owner = Arc::new(LinuxQemuHotForkProcessOwner {
+            source: LinuxQemuHotForkSourceOwner::World {
+                source_world: source.source_world,
+                node: source.node,
+            },
+            process,
+            reaped: AtomicBool::new(false),
+        });
+
+        Self {
+            process_owner,
+            template_identity: None,
+            template_configuration: source.configuration,
+            template_event_log_offset,
+            input,
+            world_assembly: Some(world_assembly),
             child_event_log,
             target,
             basis,
@@ -368,19 +545,9 @@ where
 
     fn with_source_mut<T>(
         &self,
-        operation: impl FnOnce(&mut QemuNode) -> Result<T, QemuNodeChannelError>,
+        operation: impl FnOnce(&mut LinuxQemuHotForkSourceLoan<'_>) -> Result<T, QemuNodeChannelError>,
     ) -> Result<T, LinuxQemuHotForkReconciliationError> {
-        let mut source = self
-            .process_owner
-            .source
-            .lock()
-            .map_err(|_source| LinuxQemuHotForkReconciliationError::SourceOwnerPoisoned)?;
-        operation(
-            source
-                .as_mut()
-                .ok_or(LinuxQemuHotForkReconciliationError::BasisMismatch)?,
-        )
-        .map_err(Into::into)
+        self.process_owner.with_source(operation)
     }
 
     /// Returns the bounded final child diagnostic capture after source release.
@@ -408,8 +575,8 @@ where
                 .installed_node_id
                 .clone()
                 .ok_or(LinuxQemuHotForkReconciliationError::BasisMismatch)?,
-            configuration: self.template_identity.configuration(),
-            event_log_offset: self.template_identity.event_log().offset(),
+            configuration: self.template_configuration,
+            event_log_offset: self.template_event_log_offset,
             process,
         })
     }
@@ -475,15 +642,22 @@ where
         if Arc::strong_count(&self.process_owner) != 1 {
             return Err(Box::new(self));
         }
-        let source = Arc::get_mut(&mut self.process_owner)
-            .and_then(|owner| owner.source.get_mut().ok())
-            .and_then(Option::take);
+        let source =
+            Arc::get_mut(&mut self.process_owner).and_then(|owner| match &mut owner.source {
+                LinuxQemuHotForkSourceOwner::Detached(source) => {
+                    source.get_mut().ok().and_then(Option::take)
+                }
+                LinuxQemuHotForkSourceOwner::World { .. } => None,
+            });
         let Some(source) = source else {
+            return Err(Box::new(self));
+        };
+        let Some(template_identity) = self.template_identity.take() else {
             return Err(Box::new(self));
         };
         Ok(QemuPreparedHotForkTemplate::from_reconciled_parts(
             source,
-            self.template_identity,
+            template_identity,
         ))
     }
 }

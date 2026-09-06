@@ -66,34 +66,25 @@ where
                     self.source_release = LinuxSourceReleasePhase::PluginEndpoints;
                 }
                 LinuxSourceReleasePhase::PluginEndpoints => {
-                    self.with_source_mut(|source| source.release_hot_fork_plugin_endpoints())?;
+                    self.with_source_mut(|source| source.release_plugin_endpoints())?;
                     self.source_release = LinuxSourceReleasePhase::ChildQmp;
                     return Ok(false);
                 }
                 LinuxSourceReleasePhase::ChildQmp => {
-                    self.with_source_mut(|source| source.release_hot_fork_child_qmp())?;
+                    self.with_source_mut(|source| source.release_child_qmp())?;
                     self.source_release = LinuxSourceReleasePhase::Diagnostics;
                     return Ok(false);
                 }
                 LinuxSourceReleasePhase::Diagnostics => {
                     let process_owner = Arc::clone(&self.process_owner);
-                    let mut source = process_owner.source.lock().map_err(|_source| {
-                        LinuxQemuHotForkReconciliationError::SourceOwnerPoisoned
-                    })?;
-                    let source = source
-                        .as_mut()
-                        .ok_or(LinuxQemuHotForkReconciliationError::BasisMismatch)?;
-                    self.diagnostics =
-                        Some(source.release_hot_fork_child_diagnostics_with_consumer(
-                            &mut self.diagnostics_consumer,
-                        )?);
+                    self.diagnostics = Some(process_owner.with_source(|source| {
+                        source.release_child_diagnostics(&mut self.diagnostics_consumer)
+                    })?);
                     self.source_release = LinuxSourceReleasePhase::PrivateRing;
                     return Ok(false);
                 }
                 LinuxSourceReleasePhase::PrivateRing => {
-                    self.with_source_mut(|source| {
-                        source.release_hot_fork_private_ring_mapping().map(drop)
-                    })?;
+                    self.with_source_mut(|source| source.release_private_ring())?;
                     self.source_release = LinuxSourceReleasePhase::Complete;
                     return Ok(true);
                 }
@@ -113,9 +104,8 @@ where
         &mut self,
         terminal: QemuHotForkChildObservation,
     ) -> Result<(), Self::Error> {
-        let released = self.with_source_mut(|source| {
-            source.release_hot_fork_child_process(terminal.generation())
-        })?;
+        let released =
+            self.with_source_mut(|source| source.release_child_process(terminal.generation()))?;
         let observed = qmp_child_observation(released)?;
         if observed != terminal || released.retained() {
             return Err(LinuxQemuHotForkReconciliationError::BasisMismatch);
@@ -124,7 +114,7 @@ where
     }
 
     fn release_process_contract(&mut self) -> Result<(), Self::Error> {
-        let state = self.with_source_mut(QemuNode::release_hot_fork_child_process_contract)?;
+        let state = self.with_source_mut(|source| source.release_child_process_contract())?;
         if state.staged()
             || state.consumed()
             || state.generation() != self.basis.request().child_process_contract_generation()
@@ -133,7 +123,7 @@ where
         }
         // The consumed child-file plan is released with the contract so the
         // source can stage a fresh plan for its next child.
-        let files = self.with_source_mut(QemuNode::release_hot_fork_child_files)?;
+        let files = self.with_source_mut(|source| source.release_child_files())?;
         if files.staged()
             || files.consumed()
             || files.generation() != self.basis.request().child_files_generation()

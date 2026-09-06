@@ -50,7 +50,7 @@ impl QmpHotForkPluginResourceInventory {
         Self::one_complete_with_bindings(process_generation, 1, 2, 4096, 3, 4)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) const fn one_complete_with_bindings(
         process_generation: u64,
         shmem_device: u64,
@@ -256,7 +256,7 @@ pub struct QmpHotForkPluginBarrierState {
 }
 
 impl QmpHotForkPluginBarrierState {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) const fn one_quiescent(generation: u64, ring_count: u64) -> Self {
         Self {
             generation,

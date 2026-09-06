@@ -571,4 +571,50 @@ mod tests {
         assert_eq!(finishes.load(Ordering::Acquire), 1);
         assert_eq!(quarantines.load(Ordering::Acquire), 0);
     }
+
+    #[test]
+    fn partial_world_rejection_rolls_back_only_the_unforked_node() {
+        let finishes = Arc::new(AtomicUsize::new(0));
+        let quarantines = Arc::new(AtomicUsize::new(0));
+        let mut owner = QemuHotForkWorldResourceOwner::new(
+            guard(Arc::clone(&finishes), Arc::clone(&quarantines)),
+            2,
+        )
+        .expect("world owner");
+        let mut first = owner.reserve_node(identity("first", 4)).expect("first");
+        owner
+            .reserve_node(identity("second", 9))
+            .expect("second reservation")
+            .abort_without_child()
+            .expect("explicit no-child rollback");
+
+        let mut retried = owner
+            .reserve_node(identity("second", 9))
+            .expect("second retry");
+        QemuAttemptResourceGuard::finish(&mut first).expect("finish first");
+        QemuAttemptResourceGuard::finish(&mut retried).expect("finish retried second");
+        owner.finish().expect("finish aggregate");
+
+        assert_eq!(finishes.load(Ordering::Acquire), 1);
+        assert_eq!(quarantines.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn partial_world_ambiguous_failure_quarantines_the_aggregate() {
+        let finishes = Arc::new(AtomicUsize::new(0));
+        let quarantines = Arc::new(AtomicUsize::new(0));
+        let mut owner = QemuHotForkWorldResourceOwner::new(
+            guard(Arc::clone(&finishes), Arc::clone(&quarantines)),
+            2,
+        )
+        .expect("world owner");
+        let mut first = owner.reserve_node(identity("first", 4)).expect("first");
+        let ambiguous = owner.reserve_node(identity("second", 9)).expect("second");
+        QemuAttemptResourceGuard::finish(&mut first).expect("finish first");
+
+        drop(ambiguous);
+        assert!(owner.finish().is_err());
+        assert_eq!(finishes.load(Ordering::Acquire), 0);
+        assert_eq!(quarantines.load(Ordering::Acquire), 1);
+    }
 }

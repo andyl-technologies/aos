@@ -178,7 +178,7 @@ pub struct QmpHotForkChildFilesState {
 }
 
 impl QmpHotForkChildFilesState {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn one_template_staged(
         generation: u64,
         template_generation: u64,
@@ -195,7 +195,7 @@ impl QmpHotForkChildFilesState {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) const fn one_released(generation: u64) -> Self {
         Self {
             generation,

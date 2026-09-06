@@ -86,6 +86,10 @@ impl QemuHotForkChildFilesStage {
         self.proof.generation
     }
 
+    pub(super) fn files(&self) -> &[crate::QmpHotForkChildFile] {
+        &self.files
+    }
+
     pub(super) fn matches_state(&self, state: &crate::QmpHotForkChildFilesState) -> bool {
         state.staged()
             && !state.consumed()

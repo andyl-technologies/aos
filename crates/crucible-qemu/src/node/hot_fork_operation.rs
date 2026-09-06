@@ -234,6 +234,7 @@ pub struct QemuHotForkChildLaunch<A> {
     child_qmp: QemuHotForkChildQmpHostEndpoint,
     diagnostics: QemuHotForkChildDiagnosticConsumer,
     host_continuation: QemuHotForkHostContinuation,
+    child_files: Vec<crate::QmpHotForkChildFile>,
 }
 
 impl<A> QemuHotForkChildLaunch<A> {
@@ -253,6 +254,13 @@ impl<A> QemuHotForkChildLaunch<A> {
     #[must_use]
     pub const fn process_authority(&self) -> &A {
         &self.process_authority
+    }
+
+    /// Returns the exact root selectors and destination inode identities
+    /// consumed by this successful fork.
+    #[must_use]
+    pub fn child_files(&self) -> &[crate::QmpHotForkChildFile] {
+        &self.child_files
     }
 
     /// Returns the retained child-QMP endpoint basis without consuming it.
@@ -866,6 +874,11 @@ impl QemuNode {
         if let Some(process_contract) = self.hot_fork_child_process_contract_stage.as_mut() {
             process_contract.mark_consumed();
         }
+        let child_files = self
+            .hot_fork_child_files_stage
+            .as_ref()
+            .map(|stage| stage.files().to_vec())
+            .unwrap_or_default();
         if let Some(child_files) = self.hot_fork_child_files_stage.as_mut() {
             child_files.mark_consumed();
         }
@@ -964,6 +977,7 @@ impl QemuNode {
             child_qmp,
             diagnostics,
             host_continuation,
+            child_files,
         })
     }
 }

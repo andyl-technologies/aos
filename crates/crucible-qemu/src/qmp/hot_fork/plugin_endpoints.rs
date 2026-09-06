@@ -106,7 +106,7 @@ pub struct QmpHotForkPluginEndpointState {
 }
 
 impl QmpHotForkPluginEndpointState {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn one_template_staged(
         generation: u64,
         template_generation: u64,
