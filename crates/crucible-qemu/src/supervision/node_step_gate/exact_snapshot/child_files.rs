@@ -39,6 +39,9 @@ const MAXIMUM_RING_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 const SOURCE_BUSY_CEILING: u64 = 3_000_001;
 const CHILD_REAP_POLLS: u32 = 400;
 const CHILD_REAP_POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// Children forked in sequence from the one retained template, so the flight
+/// exercises the stage releases and restaging that template reuse requires.
+const CHILD_FORK_COUNT: u32 = 3;
 
 /// Records a live hot fork that adopted a child-private VMState copy.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,17 +58,23 @@ pub struct QemuLiveHotForkChildReport {
     pub private_vmstate_bytes: u64,
     /// Private copy length after the child saved new VMState through it.
     pub child_saved_vmstate_bytes: u64,
+    /// Children forked in sequence from the one retained template; the
+    /// fields above describe the last of them.
+    pub children_forked: u32,
 }
 
-/// Forks a retained VMState-only template into a child with private VMState.
+/// Forks a retained VMState-only template into a sequence of children, each
+/// with private VMState.
 ///
-/// The source and the target each own one attempt slot in the supplied cgroup
-/// and project-quota roots. The target's provisioned empty VMState container is
-/// the sole child-private destination. After the fork the flight verifies that
-/// the child process lives in the target cgroup, references the private inode
+/// The source and each target own one attempt slot in the supplied cgroup and
+/// project-quota roots. A target's provisioned empty VMState container is the
+/// sole child-private destination. After each fork the flight verifies that
+/// the child process lives in its target cgroup, references the private inode
 /// and not the source container, reports no inherited plan through its private
 /// QMP channel, and can save additional VMState that grows only the private
-/// copy. Both processes are terminated and both owners finish before return.
+/// copy; it then terminates the child, releases every child stage in the
+/// reconciliation's order, and restages the template for the next child. The
+/// source is terminated and every owner finishes before return.
 ///
 /// # Errors
 ///
@@ -160,6 +169,81 @@ pub fn run_qemu_live_hot_fork_child_gate(
         .map_err(|source| qmp_operation("prepare retained template", source))?;
     require_vmstate_source(&held)?;
     let template_generation = held.generation();
+
+    let mut last = None;
+    for child_index in 0..CHILD_FORK_COUNT {
+        let context = ChildForkContext {
+            config,
+            identity: &identity,
+            completion_icount: quantum.completion_icount,
+            template_generation,
+            source_vmstate_path: &source_vmstate_path,
+            source_before,
+            cgroup_root,
+            child_index,
+        };
+        last = Some(fork_one_child(&mut node, &mut factory, &context)?);
+    }
+    let Some(last) = last else {
+        return Err(invariant("no child was forked"));
+    };
+
+    node.force_crash_and_reap_for_gate().map_err(|source| {
+        QemuLiveNodeStepGateError::node_op("reap hot-fork child flight source", source)
+    })?;
+    drop(node);
+    drop(source_directory);
+    source_owner
+        .finish()
+        .map_err(|source| realization("finish source attempt owner", source))?;
+
+    Ok(QemuLiveHotForkChildReport {
+        template_generation,
+        child_files_generation: last.child_files_generation,
+        child_process_id: last.child_process_id,
+        source_vmstate_bytes: source_before.length,
+        private_vmstate_bytes: last.private_vmstate_bytes,
+        child_saved_vmstate_bytes: last.child_saved_vmstate_bytes,
+        children_forked: CHILD_FORK_COUNT,
+    })
+}
+
+/// What one child of the sequence is forked against.
+struct ChildForkContext<'a> {
+    config: &'a QemuLiveNodeStepGateConfig,
+    identity: &'a NodeId,
+    completion_icount: u64,
+    template_generation: u64,
+    source_vmstate_path: &'a Path,
+    source_before: FileIdentity,
+    cgroup_root: &'a Path,
+    child_index: u32,
+}
+
+/// What one child of the sequence proved before it was torn down.
+struct ForkedChildOutcome {
+    child_files_generation: u64,
+    child_process_id: u32,
+    private_vmstate_bytes: u64,
+    child_saved_vmstate_bytes: u64,
+}
+
+/// Stages, forks, verifies, and tears down one child of the sequence.
+///
+/// On return the source retains its template with no child stage, ready for
+/// the next child; every failure leaves the source quarantined for the gate's
+/// final reap.
+fn fork_one_child(
+    node: &mut QemuNode,
+    factory: &mut LinuxQemuAttemptHostFactory,
+    context: &ChildForkContext<'_>,
+) -> Result<ForkedChildOutcome, QemuLiveNodeStepGateError> {
+    let config = context.config;
+    let identity = context.identity;
+    let template_generation = context.template_generation;
+    let source_vmstate_path = context.source_vmstate_path;
+    let source_before = context.source_before;
+    let cgroup_root = context.cgroup_root;
     if let Err(source) = node.prepare_hot_fork_child_resources(MAXIMUM_RING_IMAGE_BYTES) {
         // The retained template report carries every barrier, worker, and
         // resource-stage field QEMU checks, so keep it with the rejection.
@@ -229,8 +313,8 @@ pub fn run_qemu_live_hot_fork_child_gate(
         }) => {
             let child = describe_forked_child(parent_state.child_pid());
             let reaped =
-                describe_reaped_child(&mut node, parent_state.request().child_process_generation());
-            let diagnostics = describe_retained_child_diagnostics(&mut node);
+                describe_reaped_child(node, parent_state.request().child_process_generation());
+            let diagnostics = describe_retained_child_diagnostics(node);
             return Err(invariant(&format!(
                 "hot fork left the source quarantined: child retention failed: {source}; \
                  parent outcome {:?} status {} child {}; {child}; {reaped}; {diagnostics}",
@@ -265,7 +349,7 @@ pub fn run_qemu_live_hot_fork_child_gate(
     // and a VMState save that must grow only the private copy.
     let child_process_id = launch.child_process_id();
     verify_child_placement(child_process_id, cgroup_root)?;
-    let source_after_fork = file_identity(&source_vmstate_path)?;
+    let source_after_fork = file_identity(source_vmstate_path)?;
     let private_after_fork = file_identity(&private_vmstate_path)?;
     // Freezing the source drains and flushes its qcow2 metadata caches, which
     // rewrites existing bytes in place and moves the modification time. The
@@ -294,7 +378,7 @@ pub fn run_qemu_live_hot_fork_child_gate(
             // The parent completes the fork before the child finishes its
             // reconstruction, so the child may have died since the checks above.
             let child = describe_forked_child(i64::from(child_process_id));
-            let reaped = describe_reaped_child(&mut node, child_process_generation);
+            let reaped = describe_reaped_child(node, child_process_generation);
             let written = describe_child_diagnostics(&mut diagnostics);
             return Err(invariant(&format!(
                 "child QMP handshake failed: {source}; {child}; {reaped}; {written}"
@@ -321,21 +405,24 @@ pub fn run_qemu_live_hot_fork_child_gate(
     // with a backtrace, which the reaped status alone cannot.
     let watch = ChildDebuggerWatch::attach(child_process_id);
     let saved = child_channel.save_checkpoint_vmstate(&exact_gate_checkpoint(
-        &identity,
-        quantum.completion_icount.saturating_add(1),
+        identity,
+        context
+            .completion_icount
+            .saturating_add(1)
+            .saturating_add(u64::from(context.child_index)),
         false,
     ));
     let watched = watch.map(ChildDebuggerWatch::finish).unwrap_or_default();
     if let Err(source) = saved {
         let child = describe_forked_child(i64::from(child_process_id));
-        let reaped = describe_reaped_child(&mut node, child_process_generation);
+        let reaped = describe_reaped_child(node, child_process_generation);
         let written = describe_child_diagnostics(&mut diagnostics);
         return Err(invariant(&format!(
             "save VMState through the child failed: {source}; {child}; {reaped}; {written}\
              {watched}"
         )));
     }
-    let source_after_save = file_identity(&source_vmstate_path)?;
+    let source_after_save = file_identity(source_vmstate_path)?;
     let private_after_save = file_identity(&private_vmstate_path)?;
     if source_after_save != source_after_fork {
         return Err(invariant(&format!(
@@ -352,37 +439,44 @@ pub fn run_qemu_live_hot_fork_child_gate(
     }
 
     // Teardown: kill the child through its retained pidfd, let the source
-    // parent reap it, then release both attempt owners.
+    // parent reap it, release every child stage in the reconciliation's
+    // order, then release the target owner so the template can be restaged.
     drop(child_channel);
-    drop(diagnostics);
     drop(continuation);
     authority
         .kill()
         .map_err(|source| realization("kill hot-fork child", source))?;
     let child_generation = parent_state.request().child_process_generation();
-    wait_for_child_exit(&mut node, child_generation)?;
+    wait_for_child_exit(node, child_generation)?;
+    node.release_hot_fork_plugin_endpoints()
+        .map_err(|source| qmp_operation("release plugin endpoints", source))?;
+    node.release_hot_fork_child_console()
+        .map_err(|source| qmp_operation("release child console", source))?;
+    node.release_hot_fork_child_qmp()
+        .map_err(|source| qmp_operation("release child QMP", source))?;
+    let _capture = node
+        .release_hot_fork_child_diagnostics_with_consumer(&mut diagnostics)
+        .map_err(|source| qmp_operation("release child diagnostics", source))?;
+    drop(
+        node.release_hot_fork_private_ring_mapping()
+            .map_err(|source| qmp_operation("release private ring", source))?,
+    );
     node.release_hot_fork_child_process(child_generation)
         .map_err(|source| qmp_operation("release reaped child record", source))?;
+    node.release_hot_fork_child_process_contract()
+        .map_err(|source| qmp_operation("release child process contract", source))?;
+    node.release_hot_fork_child_files()
+        .map_err(|source| qmp_operation("release child file plan", source))?;
     drop(authority);
-    node.force_crash_and_reap_for_gate().map_err(|source| {
-        QemuLiveNodeStepGateError::node_op("reap hot-fork child flight source", source)
-    })?;
-    drop(node);
     drop(private_file);
     drop(target_directory);
-    drop(source_directory);
     target_owner
         .finish()
         .map_err(|source| realization("finish target attempt owner", source))?;
-    source_owner
-        .finish()
-        .map_err(|source| realization("finish source attempt owner", source))?;
 
-    Ok(QemuLiveHotForkChildReport {
-        template_generation,
+    Ok(ForkedChildOutcome {
         child_files_generation: plan.generation(),
         child_process_id,
-        source_vmstate_bytes: source_before.length,
         private_vmstate_bytes: private_after_fork.length,
         child_saved_vmstate_bytes: private_after_save.length,
     })

@@ -1011,6 +1011,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0235-crucible-release-stages-under-retained-template.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =
